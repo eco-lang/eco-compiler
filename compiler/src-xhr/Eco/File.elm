@@ -6,11 +6,28 @@ module Eco.File exposing
     , getCwd, setCwd, canonicalize, appDataDir, createDir, removeFile, removeDir
     )
 
-{-| File system operations via XHR: file I/O, handles, locks, and directories.
+{-| Gives a program running on stock Elm, which has no access to files of its
+own, a way to read and write files and directories. Each operation here is a
+request to eco-io, the HTTP server that `Eco.XHR` describes, and eco-io does
+the work.
 
-This is the XHR-based bootstrap implementation. The kernel variant
-(in eco-kernel-cpp) has identical type signatures but delegates to
-Eco.Kernel.File directly.
+This module is one of two with the same name, exposed values and signatures.
+The native build uses a kernel module in its place, and code elsewhere imports
+`Eco.File` without knowing which of the two it gets.
+
+Each operation sends the op `"File."` followed by its own name, with its
+arguments as JSON. `writeBytes` and `writeBytesAtomic` are the exceptions: they
+send the bytes as the request body and the path in an `X-Eco-Path` header. How
+a reply becomes a result, a failure or a crash is set out in `Eco.XHR`.
+
+Operations that can fail return a `Task IOError`, with the failure classified
+as `Eco.IO.Error` describes. `fileExists`, `dirExists`, `findExecutable`,
+`getCwd` and `appDataDir` have no failure type: any failure of theirs crashes
+the program, through `Eco.XHR.orCrash`.
+
+What an operation does to the file system is decided by eco-io, not here.
+Where the eco-io server in this repository, `bin/eco-io-handler.js`, does
+something its name does not suggest, the operation's docstring says so.
 
 
 # File I/O by Path
@@ -49,13 +66,26 @@ import Task exposing (Task)
 import Time
 
 
-{-| An opaque file handle for reading, writing, or querying file metadata.
+{-| An open file, as `open` returns it, for `hWriteString`, `size` and `close`
+to act on.
+
+`Handle` carries the number eco-io gave the file when it opened it. The
+constructor is exposed, so a handle can be made from any `Int`, and every
+operation sends that number to eco-io as it is.
+
 -}
 type Handle
     = Handle Int
 
 
-{-| The mode in which a file is opened.
+{-| How `open` opens a file: for reading, writing, appending, or both reading
+and writing.
+
+The mode is sent to eco-io as 0, 1, 2 or 3, in that order. The server in this
+repository opens the file with the Node flags `r`, `w`, `a` and `r+`
+respectively, so `WriteMode` empties an existing file and `ReadMode` and
+`ReadWriteMode` fail on a missing one.
+
 -}
 type IOMode
     = ReadMode
@@ -68,7 +98,7 @@ type IOMode
 -- FILE I/O BY PATH
 
 
-{-| Read a file as a UTF-8 string.
+{-| Reads the whole of the file at `path` as UTF-8 text.
 -}
 readString : String -> Task IOError String
 readString path =
@@ -77,7 +107,8 @@ readString path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Write a UTF-8 string to a file.
+{-| Writes `content` as UTF-8 text to the file at `path`, replacing what it
+held, or creating it if it is missing.
 -}
 writeString : String -> String -> Task IOError ()
 writeString path content =
@@ -90,7 +121,7 @@ writeString path content =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Read a file as raw bytes.
+{-| Reads the whole of the file at `path` as bytes.
 -}
 readBytes : String -> Task IOError Bytes
 readBytes path =
@@ -99,7 +130,8 @@ readBytes path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Write raw bytes to a file.
+{-| Writes `bytes` to the file at `path`, replacing what it held, or creating it
+if it is missing.
 -}
 writeBytes : String -> Bytes -> Task IOError ()
 writeBytes path bytes =
@@ -109,8 +141,13 @@ writeBytes path bytes =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Write raw bytes to a temp file beside `path`, then rename it over `path`:
-readers never observe a partial file.
+{-| Writes `bytes` to the file at `path` by writing them to a new file beside it
+and then renaming that file over `path`, so that `path` itself is never partly
+written.
+
+The server in this repository names the new file `path` followed by `.tmp-`, its
+process id and a counter, and removes it if either step fails.
+
 -}
 writeBytesAtomic : String -> Bytes -> Task IOError ()
 writeBytesAtomic path bytes =
@@ -124,7 +161,7 @@ writeBytesAtomic path bytes =
 -- FILE HANDLES
 
 
-{-| Open a file handle with the given mode.
+{-| Opens the file at `path` in `mode` and returns a handle to it.
 -}
 open : String -> IOMode -> Task IOError Handle
 open path mode =
@@ -139,7 +176,11 @@ open path mode =
         |> Task.map Handle
 
 
-{-| Close a file handle.
+{-| Closes the file the handle names.
+
+The server in this repository also accepts the number of a stream it opened to
+a child process's standard input, and ends that stream.
+
 -}
 close : Handle -> Task IOError ()
 close (Handle h) =
@@ -148,7 +189,7 @@ close (Handle h) =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Write a string to a file handle.
+{-| Writes `content` as UTF-8 text to the open file.
 -}
 hWriteString : Handle -> String -> Task IOError ()
 hWriteString (Handle h) content =
@@ -161,7 +202,7 @@ hWriteString (Handle h) content =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Get the size of a file in bytes via its handle.
+{-| Returns the size in bytes of the open file.
 -}
 size : Handle -> Task IOError Int
 size (Handle h) =
@@ -175,7 +216,12 @@ size (Handle h) =
 -- FILE LOCKING
 
 
-{-| Acquire a lock on a file. Blocks until the lock is acquired.
+{-| Asks eco-io to lock the file at `path`.
+
+The server in this repository takes no lock and succeeds at once, as do the
+native build's kernels. Nothing waits, and nothing keeps another process
+out.
+
 -}
 lock : String -> Task IOError ()
 lock path =
@@ -184,7 +230,9 @@ lock path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Release a lock on a file.
+{-| Asks eco-io to release the lock on the file at `path`. Like `lock`, it
+succeeds at once and does nothing in the server in this repository and in the
+native build's kernels.
 -}
 unlock : String -> Task IOError ()
 unlock path =
@@ -197,7 +245,8 @@ unlock path =
 -- FILE AND DIRECTORY QUERIES
 
 
-{-| Check if a file exists at the given path.
+{-| Returns whether `path` names a file. The server in this repository answers
+`False` for a directory, and for a path it cannot examine.
 -}
 fileExists : String -> Task Never Bool
 fileExists path =
@@ -207,7 +256,8 @@ fileExists path =
         |> Eco.XHR.orCrash
 
 
-{-| Check if a directory exists at the given path.
+{-| Returns whether `path` names a directory. The server in this repository
+answers `False` for a file, and for a path it cannot examine.
 -}
 dirExists : String -> Task Never Bool
 dirExists path =
@@ -217,7 +267,8 @@ dirExists path =
         |> Eco.XHR.orCrash
 
 
-{-| Search for an executable on the system PATH.
+{-| Returns the path of the executable called `name` that the system's search
+path finds, or `Nothing` if it finds none.
 -}
 findExecutable : String -> Task Never (Maybe String)
 findExecutable name =
@@ -227,7 +278,8 @@ findExecutable name =
         |> Eco.XHR.orCrash
 
 
-{-| List the contents of a directory.
+{-| Returns the names of the entries in the directory at `path`, without the
+directory in front of them.
 -}
 list : String -> Task IOError (List String)
 list path =
@@ -237,7 +289,8 @@ list path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Get the modification time of a file.
+{-| Returns when the file at `path` was last modified. eco-io reports it as a
+whole number of milliseconds, and the server in this repository rounds it down.
 -}
 modificationTime : String -> Task IOError Time.Posix
 modificationTime path =
@@ -248,8 +301,8 @@ modificationTime path =
         |> Task.map Time.millisToPosix
 
 
-{-| Update the modification time of a file to the current time.
-Creates the file if it does not exist.
+{-| Sets the modification time of the file at `path` to now, creating an empty
+file there if it is missing.
 -}
 touch : String -> Task IOError ()
 touch path =
@@ -262,7 +315,7 @@ touch path =
 -- DIRECTORY OPERATIONS
 
 
-{-| Get the current working directory.
+{-| The task that reads eco-io's current working directory.
 -}
 getCwd : Task Never String
 getCwd =
@@ -270,7 +323,7 @@ getCwd =
         |> Eco.XHR.orCrash
 
 
-{-| Set the current working directory.
+{-| Changes eco-io's current working directory to `path`.
 -}
 setCwd : String -> Task IOError ()
 setCwd path =
@@ -279,7 +332,13 @@ setCwd path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Resolve symlinks and normalize a path.
+{-| Returns `path` as an absolute path, with symbolic links resolved.
+
+The server in this repository succeeds even when the links cannot be resolved,
+for instance because `path` does not exist: it then returns `path` made
+absolute and normalized, with no links resolved. The task can still fail when
+the request to eco-io itself fails.
+
 -}
 canonicalize : String -> Task IOError String
 canonicalize path =
@@ -288,7 +347,11 @@ canonicalize path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Get the application-specific user data directory.
+{-| Returns the directory where an application called `name` keeps its data for
+the current user. The server in this repository gives
+`~/Library/Application Support/name` on macOS, `name` under `%APPDATA%` (or
+under the home directory when that is unset) on Windows, and `~/.name`
+elsewhere. The directory need not exist.
 -}
 appDataDir : String -> Task Never String
 appDataDir name =
@@ -297,8 +360,9 @@ appDataDir name =
         |> Eco.XHR.orCrash
 
 
-{-| Create a directory. If the first argument is True, parent directories are
-created as needed.
+{-| Creates the directory at `path`. When `createParents` is `True`, missing
+parent directories are created too, and the server in this repository then
+does not fail when the directory already exists.
 -}
 createDir : Bool -> String -> Task IOError ()
 createDir createParents path =
@@ -311,7 +375,7 @@ createDir createParents path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Remove a file.
+{-| Removes the file at `path`.
 -}
 removeFile : String -> Task IOError ()
 removeFile path =
@@ -320,7 +384,9 @@ removeFile path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Remove a directory and all its contents recursively.
+{-| Removes the directory at `path` with everything in it. The server in this
+repository also removes a file at `path`, and does not fail when nothing is
+there.
 -}
 removeDir : String -> Task IOError ()
 removeDir path =
@@ -329,6 +395,8 @@ removeDir path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
+{-| Returns the number that stands for `mode` in an eco-io `open` request.
+-}
 ioModeToInt : IOMode -> Int
 ioModeToInt mode =
     case mode of

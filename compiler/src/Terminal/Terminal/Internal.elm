@@ -6,10 +6,27 @@ module Terminal.Terminal.Internal exposing
     , Error(..), ArgError(..), FlagError(..), Expectation(..)
     )
 
-{-| Internal types and data structures for terminal command parsing.
+{-| The vocabulary of the command-line framework: what a command is, the
+arguments and flags it accepts, and what can be wrong with the arguments it is
+given. The types live here, apart from the code that parses arguments and
+prints messages, so that the module that parses arguments
+(`Terminal.Terminal.Chomp`) and the module that prints help and error messages
+(`Terminal.Terminal.Error`) can share them without depending on each other.
 
-This module defines the core types used throughout the terminal command system,
-including command definitions, argument specifications, error types, and parsers.
+A command carries two separate accounts of its arguments. The `Args` and
+`Flags` values here are descriptions: they name each argument and flag and say
+what kind of value it holds, for use in help text, the command overview and
+suggestions for a mistyped flag. They cannot parse anything, because a `Parser`
+holds no parse function. The parsing is done by the command's `run`, which is
+built separately, and nothing in these types ties the two accounts together.
+
+`RequiredArgs` and `Flags` are lists built by adding to the end: the outermost
+constructor holds the last argument or flag, and help text shows them in the
+order they were added.
+
+When an argument or flag value is missing or cannot be parsed, the error
+carries an _expectation_: the name of the kind of value that was wanted,
+together with a task that produces example values to show the user.
 
 
 # Command Types
@@ -46,10 +63,15 @@ import Text.PrettyPrint.ANSI.Leijen exposing (Doc)
 -- ====== COMMAND ======
 
 
-{-| Configuration data for a terminal command.
+{-| Everything about one command: its name, its help, the descriptions of its
+arguments and flags, and how to run it.
 
-Includes the command name, summary, detailed help text, usage example,
-argument and flag specifications, and the run function that executes the command.
+`details` is prose that is reflowed when shown, so its own line breaks are not
+kept. `example` is a document shown as it is.
+
+`run` is given the command-line arguments that follow the command's name. It
+returns either the work the command is to do or the reason those arguments do
+not fit the command.
 
 -}
 type alias CommandData =
@@ -63,30 +85,25 @@ type alias CommandData =
     }
 
 
-{-| A terminal command with all its configuration.
-
-Wraps CommandData to provide a distinct type for commands.
-
+{-| One command of a command-line program, as described by its `CommandData`.
 -}
 type Command
     = Command CommandData
 
 
-{-| Extract the name from a command.
-
-Returns the command's name string.
-
+{-| Returns the name a command is invoked by.
 -}
 toName : Command -> String
 toName (Command cmdData) =
     cmdData.name
 
 
-{-| Indicates whether a command should be shown in the main help overview.
+{-| How prominently a command is shown in the overview of all commands.
 
-Common commands appear with a description in the overview, Uncommon commands
-are only listed by name. Use Common for frequently-used commands with a brief
-2-3 line description, Uncommon for specialized or advanced commands.
+Every command shown in the overview appears by name in its full list of
+commands. A `Common` command is also listed among the most common commands,
+with the usage line of its first argument alternative and the given text
+beneath it. An `Uncommon` command appears only in the full list.
 
 -}
 type Summary
@@ -98,10 +115,11 @@ type Summary
 -- ====== FLAGS ======
 
 
-{-| A collection of command-line flags.
+{-| The description of every flag a command accepts.
 
-FDone represents no flags, FMore adds a flag to the collection.
-Built up recursively to form a list of flags.
+`FDone` is no flags. `FMore rest flag` is the flags of `rest` followed by
+`flag`, so the outermost `FMore` holds the flag added last. Help text lists the
+flags in the order they were added.
 
 -}
 type Flags
@@ -109,10 +127,14 @@ type Flags
     | FMore Flags Flag
 
 
-{-| A single command-line flag specification.
+{-| The description of one flag. A flag's name is written without its leading
+`--`.
 
-Flag takes a name, parser, and description for flags with values.
-OnOff takes a name and description for boolean flags.
+`Flag name parser description` is a flag that takes a value, of the kind
+`parser` describes.
+
+`OnOff name description` is a flag that takes no value and is either present
+or absent.
 
 -}
 type Flag
@@ -124,18 +146,23 @@ type Flag
 -- ====== PARSERS ======
 
 
-{-| A parser for command-line argument values.
+{-| The description of one kind of argument or flag value, such as a file path
+or a version number. Despite its name it does not parse: it holds no parse
+function, and the function that turns a string into a value is supplied
+separately wherever one is parsed.
 
-Contains the singular and plural names for help text, a suggestion function
-for tab completion, and an examples function for error messages.
+`singular` names one such value in usage lines and error messages, and
+`plural` names a sequence of them in the usage line of a repeated argument.
+
+`suggest` produces the completions for a partly typed value. `examples`
+produces example values to show in an error message, given the string that was
+typed, or the empty string when the value is missing.
 
 -}
 type Parser
     = Parser
         { singular : String
         , plural : String
-
-        -- ,parser : String -> Maybe a
         , suggest : String -> Task Never (List String)
         , examples : String -> Task Never (List String)
         }
@@ -145,19 +172,22 @@ type Parser
 -- ====== ARGS ======
 
 
-{-| A specification for command arguments.
+{-| The description of a command's positional arguments, as a list of
+alternative shapes.
 
-Contains a list of possible complete argument patterns that the command accepts.
+Help text shows one usage line per alternative, in this order.
 
 -}
 type Args
     = Args (List CompleteArgs)
 
 
-{-| A complete pattern of arguments for a command.
+{-| One alternative shape for a command's positional arguments.
 
-Exactly means a fixed sequence of required arguments, Multiple adds a repeating
-argument that can appear zero or more times after the required arguments.
+`Exactly required` is the arguments of `required` and nothing more.
+
+`Multiple required repeated` is the arguments of `required` followed by zero or
+more further arguments, each of the kind `repeated` describes.
 
 -}
 type CompleteArgs
@@ -165,10 +195,11 @@ type CompleteArgs
     | Multiple RequiredArgs Parser
 
 
-{-| A sequence of required arguments.
+{-| A fixed sequence of required positional arguments.
 
-Done represents no more required arguments, Required adds one required argument
-to the sequence.
+`Done` is the empty sequence. `Required rest parser` is the arguments of `rest`
+followed by one more, of the kind `parser` describes, so the outermost
+`Required` holds the last argument.
 
 -}
 type RequiredArgs
@@ -180,9 +211,12 @@ type RequiredArgs
 -- ====== ERROR ======
 
 
-{-| Top-level error type for command parsing.
+{-| The reason a command's arguments do not fit it.
 
-BadArgs contains a list of argument errors, BadFlag contains a single flag error.
+`BadArgs` holds one `ArgError` for each alternative the command's `run` tried,
+in the order it tried them, saying why the arguments did not fit it.
+
+`BadFlag` holds the problem with one flag.
 
 -}
 type Error
@@ -190,11 +224,15 @@ type Error
     | BadFlag FlagError
 
 
-{-| Error type for argument parsing failures.
+{-| The reason the positional arguments do not fit one alternative.
 
-ArgMissing means a required argument was not provided, ArgBad means an argument
-was provided but couldn't be parsed, ArgExtras means unexpected extra arguments
-were provided.
+`ArgMissing` is a required argument that was not given, with the expectation
+for it.
+
+`ArgBad value expectation` is an argument that was given as `value` but could
+not be parsed.
+
+`ArgExtras` holds the arguments left over once the alternative was filled.
 
 -}
 type ArgError
@@ -203,11 +241,23 @@ type ArgError
     | ArgExtras (List String)
 
 
-{-| Error type for flag parsing failures.
+{-| The problem with one flag. Flag names here are written without their
+leading `--`.
 
-FlagWithValue means an on/off flag was given a value, FlagWithBadValue means
-a flag value couldn't be parsed, FlagWithNoValue means a flag requiring a value
-had none, FlagUnknown means an unrecognized flag was provided.
+`FlagWithValue name value` is an on/off flag that was given a value, as
+`--name=value`.
+
+`FlagWithBadValue name value expectation` is a flag whose value could not be
+parsed.
+
+`FlagWithNoValue name expectation` is a flag that takes a value but was given
+none.
+
+`FlagUnknown typed flags` is a string starting with `-` that was left over once
+the command's flags had been taken out, such as a flag the command does not
+have or a second occurrence of one it does. `typed` is the string exactly as
+given, dashes included, and `flags` is the description of every flag the
+command does accept, from which nearby names can be suggested.
 
 -}
 type FlagError
@@ -217,10 +267,9 @@ type FlagError
     | FlagUnknown String Flags
 
 
-{-| Expected value information for error messages.
-
-Contains the singular type name and a task to generate example values.
-
+{-| What was wanted where an argument or flag value was missing or bad: the
+singular name of the kind of value, and a task that produces example values of
+that kind.
 -}
 type Expectation
     = Expectation String (Task Never (List String))

@@ -8,12 +8,28 @@ module Common.Format.Cheapskate.Util exposing
     , upToCountChars
     )
 
-{-| Utility functions for the Cheapskate Markdown parser.
+{-| Small building blocks for Cheapskate, the Markdown parser the formatter
+reads doc comments with: tests on characters, helpers on strings, and scanners.
 
-This module provides low-level parsing utilities, character classification functions,
-and scanner combinators used throughout the Markdown parsing pipeline. Scanners operate
-on single lines (with exceptions like scanSpnl) and are designed for efficient pattern
-matching without capturing results.
+A _scanner_ is a parser run only to learn whether a pattern matches at the
+current place in the input, and to consume what matched. It returns nothing.
+The scanners here consume spaces, a given character or a newline, or check that
+something does not come next. Parsers, positions and columns are as
+`Common.Format.Cheapskate.ParserCombinators` describes them.
+
+`scanBlankline` takes the end of the input to be the end of the line, so it
+recognises a blank line only when run on a single line. Of the scanners here,
+only `scanSpnl`, and `scanChar` given a newline, consume a newline.
+
+The scanners count only the space character as a space. A tab is an ordinary
+character to them; `tabFilter` is what turns tabs into spaces.
+
+Two helpers do not do what their names suggest. `isEscapable` leaves out three
+ASCII punctuation characters, and `normalizeReference` keeps only the whitespace
+of a label. Their docstrings give the details.
+
+Most of the file's length is the table of Unicode punctuation behind
+`isEscapable`, of which only the ASCII entries can ever affect the result.
 
 @docs Scanner
 
@@ -50,19 +66,21 @@ import List.Extra as List
 import Utils.Crash exposing (crash)
 
 
-
--- Utility functions.
-
-
-{-| Concatenate lines with newlines between them, without adding a final newline.
-Similar to unlines but does not append a trailing newline.
+{-| Joins the lines into one string with a newline between each pair and none
+after the last.
 -}
 joinLines : List String -> String
 joinLines =
     String.join "\n"
 
 
-{-| Convert tabs to spaces using a 4-space tab stop.
+{-| Returns the string with each tab replaced by the spaces that reach the next
+tab stop, with stops every four columns. A tab always becomes at least one
+space, and becomes four when it already sits on a stop.
+
+Columns are counted from the start of the string, and a newline counts as an
+ordinary character, so the result is right only for a string holding one line.
+
 -}
 tabFilter : String -> String
 tabFilter =
@@ -91,9 +109,8 @@ tabFilter =
     String.split "\t" >> pad >> String.concat
 
 
-{-| Check if a character is a significant whitespace character for Markdown parsing.
-Only recognizes space, tab, newline, and carriage return as whitespace.
-Other Unicode whitespace characters like non-breaking space are treated as regular characters.
+{-| Tests whether `c` is a space, a tab, a line feed or a carriage return. No
+other character counts, not even a non-breaking space or a form feed.
 -}
 isWhitespace : Char -> Bool
 isWhitespace c =
@@ -114,23 +131,39 @@ isWhitespace c =
             False
 
 
-{-| Check if a character can be backslash-escaped in Markdown.
-Returns true for any ASCII punctuation mark or symbol, allowing more flexibility
-than the original Markdown specification which only allowed specific characters.
+{-| Tests whether `c` is one of the characters that a backslash escapes.
+
+Of the 32 ASCII characters that are not letters, digits, the space or control
+characters, all but three are escapable: `$`, `~` and the backtick are not. No
+character outside ASCII is escapable.
+
 -}
 isEscapable : Char -> Bool
 isEscapable c =
     isAscii c && (isSymbol c || isPunctuation c)
 
 
-{-| Normalize a link reference by removing whitespace and converting to lowercase.
-Link references are case-insensitive and ignore line breaks and repeated spaces.
+{-| Returns the whitespace characters of a string, as `isWhitespace` defines
+them, in order, and drops every other character.
+
+So `"Foo Bar"` gives `" "`, and every string without whitespace gives `""`. The
+result is not a case- and space-insensitive form of a reference label, which the
+name suggests. The final lower-casing changes nothing, since whitespace has no
+case.
+
 -}
 normalizeReference : String -> String
 normalizeReference =
     split isWhitespace >> String.concat >> String.toLower
 
 
+{-| Splits `t` before the first character that satisfies `p`, returning the part
+before it and the rest, which starts with that character. When no character
+satisfies `p` the result is `t` and `""`.
+
+Despite the name, the first part holds the characters that do not satisfy `p`.
+
+-}
 span_ : (Char -> Bool) -> String -> ( String, String )
 span_ p t =
     List.splitWhen p (String.toList t)
@@ -138,6 +171,15 @@ span_ p t =
         |> Maybe.withDefault ( t, "" )
 
 
+{-| Returns the pieces of `t` got by repeatedly taking the longest prefix whose
+characters all satisfy `p` and then dropping the one character after it. An
+empty `t` gives `[ "" ]`.
+
+The pieces therefore hold exactly the characters of `t` that satisfy `p`, in
+order, and every other character is dropped. This is not a split of `t` at the
+characters that satisfy `p`, which the name suggests.
+
+-}
 split : (Char -> Bool) -> String -> List String
 split p t =
     if String.isEmpty t then
@@ -170,23 +212,28 @@ split p t =
         loop t
 
 
-{-| A parser that consumes input without capturing any result.
-Scanners are intended to operate on a single line of input (except scanSpnl).
-They return unit () on success, indicating only that the pattern matched.
+{-| A parser run only for whether it matches and for what it consumes. Its
+result is always `()`.
+
+This is a name for `Parser ()`, not a new type, so any `Parser ()` is accepted
+where a `Scanner` is expected.
+
 -}
 type alias Scanner =
     Parser ()
 
 
-{-| Scan exactly four spaces, indicating an indented code block or list item.
+{-| A scanner that consumes four spaces, and fails unless the next four
+characters are all spaces. What follows them is not looked at.
 -}
 scanIndentSpace : Scanner
 scanIndentSpace =
     map (\_ -> ()) (count 4 (skip ((==) ' ')))
 
 
-{-| Scan spaces until reaching the specified column position.
-Consumes the minimum number of spaces needed to reach the target column.
+{-| Produces a scanner that consumes spaces up to column `col`: exactly as many
+as `col` is ahead of the current column, failing if there are fewer spaces than
+that. At or past `col` it consumes nothing and succeeds.
 -}
 scanSpacesToColumn : Int -> Scanner
 scanSpacesToColumn col =
@@ -208,60 +255,66 @@ scanSpacesToColumn col =
             )
 
 
-{-| Scan 0 to 3 spaces, which does not count as indentation.
+{-| A scanner that consumes as many spaces as come next, up to three. It never
+fails.
 -}
 scanNonindentSpace : Scanner
 scanNonindentSpace =
     map (\_ -> ()) (upToCountChars 3 ((==) ' '))
 
 
-{-| Scan a single occurrence of the specified character.
+{-| Produces a scanner that consumes `c` if it is the next character, and fails
+otherwise.
 -}
 scanChar : Char -> Scanner
 scanChar c =
     skip ((==) c) |> andThen (\_ -> return ())
 
 
-{-| Scan a blank line containing only whitespace.
+{-| A scanner that succeeds, consuming the rest of the input, when that rest is
+empty or holds only spaces. A tab or a newline makes it fail.
 -}
 scanBlankline : Scanner
 scanBlankline =
     scanSpaces |> andThen (\_ -> endOfInput)
 
 
-{-| Scan zero or more spaces.
+{-| A scanner that consumes every space that comes next, if any. It never fails.
 -}
 scanSpaces : Scanner
 scanSpaces =
     skipWhile ((==) ' ')
 
 
-{-| Scan spaces followed optionally by a newline and more spaces.
-Used to allow flexible whitespace across line boundaries.
+{-| A scanner that consumes spaces, then, if a newline comes next, that newline
+and the spaces after it. It crosses at most one newline, and never fails.
 -}
 scanSpnl : Scanner
 scanSpnl =
     scanSpaces |> andThen (\_ -> option () (char '\n' |> andThen (\_ -> scanSpaces)))
 
 
-{-| Succeed without consuming input if the specified parser would not succeed.
-Negative lookahead assertion that fails if the parser matches.
+{-| Produces a scanner that consumes nothing and succeeds exactly when `p` would
+fail at the current place in the input. The name is short for "not followed
+by".
 -}
 nfb : Parser a -> Scanner
 nfb =
     notFollowedBy
 
 
-{-| Succeed if not followed by the specified character.
-Negative lookahead that consumes no input.
+{-| Produces a scanner that consumes nothing and succeeds unless the next
+character is `c`. It succeeds at the end of the input.
 -}
 nfbChar : Char -> Scanner
 nfbChar c =
     nfb (skip ((==) c))
 
 
-{-| Parse up to a maximum count of characters satisfying the predicate.
-Returns the matched characters as a string.
+{-| Produces a parser that consumes and returns the longest prefix of the input
+whose characters all satisfy `f`, cut off at `cnt` characters. It never fails,
+and returns `""` when the next character does not satisfy `f` or `cnt` is zero
+or less.
 -}
 upToCountChars : Int -> (Char -> Bool) -> Parser String
 upToCountChars cnt f =
@@ -275,37 +328,30 @@ upToCountChars cnt f =
         )
 
 
-{-| Selects the first 128 characters of the Unicode character set,
-corresponding to the ASCII character set.
+{-| Tests whether `c` is an ASCII character, that is, below U+0080.
 -}
 isAscii : Char -> Bool
 isAscii c =
     c < '\u{0080}'
 
 
+{-| Tests whether `c` is one of the fifteen characters `+ - / * = . < > : & | ^ ? % !`.
+
+Together with `isPunctuation` this decides `isEscapable`. `$`, `~` and the
+backtick are in neither.
+
+-}
 isSymbol : Char -> Bool
 isSymbol c =
     String.contains (String.fromChar c) "+-/*=.<>:&|^?%!"
 
 
-{-| Selects Unicode punctuation characters, including various kinds
-of connectors, brackets and quotes.
+{-| Tests whether `c` is in a fixed table of code points that Unicode classes as
+punctuation, such as dashes, brackets and quotation marks.
 
-This function returns 'True' if its argument has one of the
-following 'GeneralCategory's, or 'False' otherwise:
-
-  - 'ConnectorPunctuation'
-  - 'DashPunctuation'
-  - 'OpenPunctuation'
-  - 'ClosePunctuation'
-  - 'InitialQuote'
-  - 'FinalQuote'
-  - 'OtherPunctuation'
-
-These classes are defined in the
-<<http://www.unicode.org/reports/tr44/tr44-14.html#GC_Values_Table> Unicode Character Database>,
-part of the Unicode standard. The same document defines what is
-and is not a "Punctuation".
+The table is not the whole of Unicode's punctuation: it stops at U+FF65 and
+lacks some code points below that. `isEscapable` asks only about ASCII
+characters, so only the table's ASCII entries ever matter.
 
 -}
 isPunctuation : Char -> Bool

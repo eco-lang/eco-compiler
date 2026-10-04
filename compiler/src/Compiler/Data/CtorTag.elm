@@ -3,21 +3,39 @@ module Compiler.Data.CtorTag exposing
     , checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor, nullConsCapacity
     )
 
-{-| Runtime ctor-tag conventions shared between monomorphization (which sets
-`CtorShape.tag` used at construction time) and code generation (which emits the
-ctor-tag constants used by pattern matching).
+{-| The tag a constructor carries at run time must be worked out the same way
+wherever a value is built and wherever one is matched, and must agree with
+numbers fixed in the C++ runtime, so the rules for it live here.
 
-Most constructors use their zero-based declaration index as the runtime tag.
-Some types, however, need the runtime to recognise them as "special" so that
-structural operations like `==` can implement type-specific semantics instead
-of the default tree-shape walk. We reserve the top of the 16-bit ctor range
-for those markers; the values must stay in sync with
-`elm-kernel-cpp/src/core/Utils.cpp`.
+A constructor's runtime tag is the number a value carries to say which of its
+type's constructors built it. For most constructors it is the zero-based
+position at which the constructor is declared in its type, its declaration
+index. The exception is a reserved tag: a value at the top of the 16-bit range
+the runtime keeps tags in, which the runtime recognises and treats specially.
+The one reserved tag given to a constructor is 0xFFFF, for `elm/core`'s
+`Dict.RBNode_elm_builtin`, so that the runtime compares two dictionaries by
+their contents in key order rather than by the shape of their trees.
+`effective` computes the tag.
 
-The current reservations cover `Dict`/`Set` so that `Dict` equality compares
-by content (in-order key/value traversal) instead of by tree shape.
+A nullary constructor, one with no fields, needs no heap object. It can be
+represented by a single word marked as a constant that holds the constructor's
+declaration index in a 10-bit field, which is called a null-cons constant.
+`embedsAsNullCons` says which nullary constructors are represented this way,
+and `checkNullConsCapacity` stops the compile for one whose index does not fit.
+
+`Nothing`, `True` and `False` are not null-cons constants. Each is a fixed
+constant word, and `isEmbeddedConstantCtor` picks them out. `Nothing` shares its
+word with the other empty values, such as `()` and `[]`, so its value cannot
+say which constructor it is, and the runtime reports `constantTag` as the tag
+of that shared word. `isEmbeddedConstantCtor` and `embedsAsNullCons` go by the
+constructor's name alone, not by the module that declares it.
+
+The numbers here must equal the runtime's: 0xFFFF its `CTOR_DICT_RBNODE`,
+0xFFFD its `CONSTANT_TAG`, and 1023 its `NULL_CONS_MAX`. Nothing in the compiler
+checks that they agree.
 
 @docs effective
+@docs checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor, nullConsCapacity
 
 -}
 
@@ -33,12 +51,13 @@ import Utils.Crash exposing (crash)
 -- ============================================================================
 
 
-{-| Ctor tag for `Dict.RBNode_elm_builtin`. Must match `Utils.cpp`.
+{-| The reserved runtime tag of `elm/core`'s `Dict.RBNode_elm_builtin`, the
+constructor of a node in a dictionary's tree. It must equal the runtime's
+`CTOR_DICT_RBNODE`.
 
-`RBEmpty_elm_builtin` is deliberately NOT reserved: it is nullary, so it
-compiles to an embedded null-cons constant carrying its plain declaration
-index 1 (HEAP\_044, plans/null-cons-hpointer-embedding.md P3.0). The reserved
-set is {0xFFFF RBNode, 0xFFFD constantTag}.
+`RBEmpty_elm_builtin`, the empty dictionary, has no reserved tag. It is
+nullary, so it is a null-cons constant carrying its declaration index like other
+nullary constructors.
 
 -}
 dictRBNode : Int
@@ -46,26 +65,20 @@ dictRBNode =
     0xFFFF
 
 
-{-| Ctor tag emitted for embedded "empty" constant constructor branches
-(`Nil`, `Nothing`, and any other nullary constant that shares the merged empty
-bit pattern). Because those constants can no longer be told apart by value, the
-runtime returns this single reserved tag for all of them (`eco_get_tag` / the
-`eco.case` lowering), and the compiler tags the matching branch the same. Sits
-just below the `Dict` reservations. Must match `CONSTANT_TAG` in
-`runtime/src/allocator/Heap.hpp` and `value_enc::ConstantTag`. See plan D9.
+{-| The runtime tag reported for the shared empty constant word, which
+`Nothing` uses along with `()`, `{}`, `[]` and `""`. Those values cannot be
+told apart by their word, so they all report this one tag. It must equal the
+runtime's `CONSTANT_TAG`.
 -}
 constantTag : Int
 constantTag =
     0xFFFD
 
 
-{-| True for a constructor whose runtime representation is an embedded HPointer
-constant (Nothing / True / False). Mirrors the nullary-constant selection in
-`Compiler.Generate.MLIR.Functions.generateNullaryConstructor`. Such
-constructors dispatch by the merged constant tag (`constantTag`) rather than a
-per-declaration index, since their bit pattern is shared with the other empties.
-(True / False normally reach pattern matching via `Test.IsBool`, not
-`Test.IsCtor`; they are included here for completeness.)
+{-| Returns whether `name` is `Nothing`, `True` or `False`, the constructors
+represented by a fixed constant word rather than a null-cons constant. `Nothing`
+uses the shared empty word, and `True` and `False` the Bool constants. The test
+is by name alone, so a constructor with one of these names in any module counts.
 -}
 isEmbeddedConstantCtor : Name -> Bool
 isEmbeddedConstantCtor name =
@@ -74,37 +87,31 @@ isEmbeddedConstantCtor name =
 
 
 -- ============================================================================
--- ====== NULL-CONS EMBEDDING (HEAP_044 / CGEN_079) ======
+-- ====== NULL-CONS EMBEDDING ======
 -- ============================================================================
 
 
-{-| Nullary ctors embed as HPointer null-cons constants carrying their
-zero-based DECLARATION INDEX (`(idx << 43) | 0b111` — see
-plans/null-cons-hpointer-embedding.md §2.1), EXCEPT the legacy three whose bit
-patterns predate this mechanism (True/False via Bool, Nothing via the merged
-empty 0x6 — see D3). RBEmpty is index 1 like any other ctor (P3.0 demoted its
-reservation); RBNode keeps 0xFFFF but has 5 fields so it never meets this
-mechanism.
+{-| The largest declaration index a null-cons constant can hold. The index
+occupies a 10-bit field of the word, so this is 2^10 - 1. It must equal the
+runtime's `NULL_CONS_MAX`.
 -}
 nullConsCapacity : Int
 nullConsCapacity =
     1023
 
 
-{-| Does this nullary constructor compile to `eco.constant.null_cons`?
-Takes the ctor name and its effective tag; the tag is unused today (every
-nullary ctor's effective tag is its declaration index after P3.0) but keeps
-the policy's signature honest should a reserved nullary tag ever reappear.
+{-| Returns whether the nullary constructor `name` is represented as a
+null-cons constant, which it is unless `isEmbeddedConstantCtor` picks it out.
+The tag argument is ignored.
 -}
 embedsAsNullCons : Name -> Int -> Bool
 embedsAsNullCons name _ =
     not (isEmbeddedConstantCtor name)
 
 
-{-| Enforce the 10-bit `null_cons_idx` capacity: passes the tag through
-unchanged, or hard-crashes the compile naming the constructor (user decision
-2026-08-19 — see plans/null-cons-hpointer-embedding.md §2.2; the corpus
-maximum is ~20, so this is theoretical headroom).
+{-| Returns `tag` unchanged when it fits in a null-cons constant, that is when
+it is at most `nullConsCapacity`. A larger `tag` stops the compile with an
+error naming the constructor `name` and its index.
 -}
 checkNullConsCapacity : Name -> Int -> Int
 checkNullConsCapacity name tag =
@@ -130,11 +137,12 @@ checkNullConsCapacity name tag =
 -- ============================================================================
 
 
-{-| Compute the runtime ctor tag for a constructor.
+{-| Returns the runtime tag of the constructor `name`, declared at position
+`index` in a type of module `home`. This is the declaration index, except for
+`Dict.RBNode_elm_builtin` in `elm/core`, which gets the reserved tag 0xFFFF.
 
-Normal constructors use `Index.toMachine` (their zero-based declaration index).
-Constructors in runtime-recognised types (currently `Dict`) use reserved tag
-values so the runtime can dispatch to a type-specific implementation.
+For `Nothing` the result is still its declaration index, although at run time a
+`Nothing` reports `constantTag`.
 
 -}
 effective : ModuleName.Canonical -> Name -> Index.ZeroBased -> Int

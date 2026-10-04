@@ -5,14 +5,24 @@ module Compiler.AST.TypeEnv exposing
     , globalTypeEnvEncoder, globalTypeEnvDecoder
     )
 
-{-| Type Environment for monomorphization.
+{-| Monomorphization specializes polymorphic code, and to do that it looks up
+the declarations of the custom types the code uses. Typed code is written to
+disk and read back by later builds, so those declarations are written
+alongside it. This module holds them.
 
-This module defines per-module and global type environments that store
-union and alias type definitions. These are extracted from canonical modules
-during compilation and stored alongside typed IR artifacts.
+A _type environment_ is the type declarations of one module, keyed by type
+name: its custom types, which the compiler calls _unions_, and its type
+aliases. `ModuleTypeEnv` is the environment of one module, taken from a
+canonical module by `fromCanonical`. `GlobalTypeEnv` holds the environments of
+many modules, each under its module's canonical name, and `fromInterfaces`
+builds one from module interfaces.
 
-The monomorphization phase uses these type environments to look up type
-definitions when specializing polymorphic code.
+The binary codecs intern their strings through a string table, as
+`Compiler.AST.StringTable` describes, and each encoding begins with its own
+preamble. `moduleTypeEnvEncoder` writes a preamble for its one module;
+`globalTypeEnvEncoder` writes one preamble for all of its modules. Neither
+writes the aliases, so every decoded environment has an empty `aliases`, and
+only an environment built in memory has any.
 
 
 # Types
@@ -50,7 +60,12 @@ import Utils.Bytes.Encode as BE
 -- TYPES
 
 
-{-| Per-module type environment containing union and alias definitions.
+{-| The type environment of one module: the custom types and type aliases it
+declares, keyed by name, and `home`, the module that declares them.
+
+`aliases` is empty in an environment read back by `moduleTypeEnvDecoder` or
+`globalTypeEnvDecoder`, because the encoders do not write it.
+
 -}
 type alias ModuleTypeEnv =
     { home : ModuleName.Canonical
@@ -59,8 +74,12 @@ type alias ModuleTypeEnv =
     }
 
 
-{-| Global type environment mapping canonical module names to their type environments.
-Uses `List String` as the comparable key for `ModuleName.Canonical`.
+{-| The type environments of many modules, keyed by canonical module name.
+
+By convention each entry is filed under its own `home`, with
+`ModuleName.toComparableCanonical` as the key projection; the type does not
+enforce either.
+
 -}
 type alias GlobalTypeEnv =
     Data.Map.Dict String ModuleName.Canonical ModuleTypeEnv
@@ -70,7 +89,8 @@ type alias GlobalTypeEnv =
 -- BUILDERS
 
 
-{-| Extract a type environment from a canonical module.
+{-| Returns the type environment of a canonical module: every custom type and
+type alias it declares, with the module's name as `home`.
 -}
 fromCanonical : Can.Module -> ModuleTypeEnv
 fromCanonical (Can.Module moduleData) =
@@ -80,10 +100,13 @@ fromCanonical (Can.Module moduleData) =
     }
 
 
-{-| Extract a type environment from an interface.
+{-| Returns the type environment recorded in the interface of the module named
+`moduleName`.
 
-Takes the module name (e.g., "Elm.JsArray") and the interface, and produces
-a ModuleTypeEnv suitable for monomorphization lookups.
+An interface records its module's package but not the module's name, so the
+name is supplied, and `home` combines the two. Every custom type and alias the
+interface holds is taken, whatever its visibility, as
+`Compiler.Elm.Interface.extractUnion` and `extractAlias` return it.
 
 -}
 fromInterface : ModuleName.Raw -> I.Interface -> ModuleTypeEnv
@@ -94,11 +117,9 @@ fromInterface moduleName (I.Interface data) =
     }
 
 
-{-| Build a GlobalTypeEnv from a dictionary of interfaces.
-
-This is useful for test infrastructure where interfaces define the types
-available for monomorphization (e.g., JsArray, List, Maybe).
-
+{-| Returns the global type environment of the interfaces in `ifaces`, each
+module named by its key in `ifaces` together with the package its interface
+records.
 -}
 fromInterfaces : Dict ModuleName.Raw I.Interface -> GlobalTypeEnv
 fromInterfaces ifaces =
@@ -114,24 +135,24 @@ fromInterfaces ifaces =
         ifaces
 
 
-{-| Empty global type environment.
+{-| A global type environment holding no modules, the same value as
+`emptyGlobalTypeEnv`.
 -}
 emptyGlobal : GlobalTypeEnv
 emptyGlobal =
     Data.Map.empty
 
 
-{-| Empty global type environment (alias for emptyGlobal).
+{-| A global type environment holding no modules, the same value as
+`emptyGlobal`.
 -}
 emptyGlobalTypeEnv : GlobalTypeEnv
 emptyGlobalTypeEnv =
     Data.Map.empty
 
 
-{-| Merge two global type environments.
-
-Module type environments from the second argument take precedence in case of conflicts.
-
+{-| Returns every module's type environment from `env1` and `env2`. Where both
+hold one for the same module, the one from `env1`, the first argument, is kept.
 -}
 mergeGlobalTypeEnv : GlobalTypeEnv -> GlobalTypeEnv -> GlobalTypeEnv
 mergeGlobalTypeEnv env1 env2 =
@@ -142,15 +163,11 @@ mergeGlobalTypeEnv env1 env2 =
 -- ENCODERS
 
 
-{-| Encode a module type environment.
+{-| Encodes a module type environment as a string-table preamble followed by
+`home` and the custom types, each string written as its index in that table.
 
-Per ECOT\_001 in design\_docs/invariants.csv, the `aliases` field is NOT
-serialized; it is reconstructed as `Dict.empty` on decode. Aliases are
-expanded during canonicalization / typed optimization, which run before
-.ecot is written, so no post-deserialization consumer reads them.
-
-Per ECOT\_002, this encoder emits a per-call string-table preamble; every
-string field in the body is encoded as an index into the table.
+The table is built from the strings the body writes. The `aliases` are not
+written, so `moduleTypeEnvDecoder` reads them back as empty.
 
 -}
 moduleTypeEnvEncoder : ModuleTypeEnv -> Bytes.Encode.Encoder
@@ -167,7 +184,8 @@ moduleTypeEnvEncoder env =
         ]
 
 
-{-| Decode a module type environment.
+{-| A decoder for a module type environment written by `moduleTypeEnvEncoder`,
+giving it an empty `aliases`.
 -}
 moduleTypeEnvDecoder : Bytes.Decode.Decoder ModuleTypeEnv
 moduleTypeEnvDecoder =
@@ -183,7 +201,15 @@ moduleTypeEnvDecoder =
             )
 
 
-{-| Encode a global type environment.
+{-| Encodes a global type environment as one string-table preamble, built from
+the strings of every module, followed by each module's canonical name and its
+type environment, without the aliases.
+
+The modules are written in descending order of their
+`ModuleName.toComparableCanonical` strings, as
+`Utils.Bytes.Encode.assocListDict` writes a `Data.Map`; the
+`ModuleName.compareCanonical` passed to it has no effect.
+
 -}
 globalTypeEnvEncoder : GlobalTypeEnv -> Bytes.Encode.Encoder
 globalTypeEnvEncoder env =
@@ -201,7 +227,8 @@ globalTypeEnvEncoder env =
         ]
 
 
-{-| Decode a global type environment.
+{-| A decoder for a global type environment written by `globalTypeEnvEncoder`,
+in which every module's `aliases` is empty.
 -}
 globalTypeEnvDecoder : Bytes.Decode.Decoder GlobalTypeEnv
 globalTypeEnvDecoder =
@@ -214,6 +241,13 @@ globalTypeEnvDecoder =
             )
 
 
+{-| Encodes a module type environment's `home` and custom types, each string
+written through `st`, with no preamble and without the aliases.
+
+In `globalTypeEnvEncoder` each module's canonical name is written twice, once as
+the map key and once here as `home`.
+
+-}
 moduleTypeEnvBodyEncoderS : StringTable -> ModuleTypeEnv -> Bytes.Encode.Encoder
 moduleTypeEnvBodyEncoderS st env =
     Bytes.Encode.sequence
@@ -222,6 +256,9 @@ moduleTypeEnvBodyEncoderS st env =
         ]
 
 
+{-| Produces a decoder for a module type environment written by
+`moduleTypeEnvBodyEncoderS` with the same table, giving it an empty `aliases`.
+-}
 moduleTypeEnvBodyDecoderS : StringTable -> Bytes.Decode.Decoder ModuleTypeEnv
 moduleTypeEnvBodyDecoderS st =
     Bytes.Decode.map2
@@ -233,10 +270,13 @@ moduleTypeEnvBodyDecoderS st =
 
 
 
--- ====== STRING COLLECTORS (ECOT_002) ======
+-- STRING COLLECTORS
 
 
-{-| Collect strings emitted by `moduleTypeEnvEncoder`'s body.
+{-| Returns the collector `acc` after giving it every string
+`moduleTypeEnvEncoder` writes after its preamble: the parts of `home`, and each
+custom type's name and the strings of its declaration. It keeps each as its own
+rule decides.
 -}
 collectStringsFromModuleTypeEnv : ModuleTypeEnv -> StringTable.Collector -> StringTable.Collector
 collectStringsFromModuleTypeEnv env acc =
@@ -252,7 +292,10 @@ collectStringsFromModuleTypeEnv env acc =
            )
 
 
-{-| Collect strings emitted by `globalTypeEnvEncoder`'s body.
+{-| Returns the collector `acc` after giving it every string
+`globalTypeEnvEncoder` writes after its preamble: for each module, the parts of
+its canonical name and the strings of its type environment. It keeps each as
+its own rule decides.
 -}
 collectStringsFromGlobalTypeEnv : GlobalTypeEnv -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalTypeEnv env acc =

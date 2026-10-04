@@ -20,15 +20,44 @@ module Compiler.AST.Canonical exposing
     , noArrow, tLambda
     )
 
-{-| The Canonical AST represents Elm code after name resolution.
+{-| The canonical AST is a module after name resolution. It exists so that
+later phases can read the facts below about a name from the node that uses
+it, instead of looking them up again.
 
-During canonicalization, all variable references are resolved to their home modules.
-For example, `L.map` becomes a reference to `elm/core:List.map`. This phase also
-caches information needed by later compiler phases to avoid expensive lookups during
-type inference and exhaustiveness checking.
+Canonicalization finds, for most references to a top-level value, type,
+constructor or operator, its _home_: the module it resolves to, as a
+`ModuleName.Canonical` (a package and a module name). In a module that
+imports `List as L`, `L.map` becomes a reference to `map` in `elm/core`'s
+`List`. At the same time canonicalization copies onto
+the node the facts that later phases would otherwise have to find in other
+declarations: the annotation of an imported value or operator and of any
+constructor, the function an operator stands for, a constructor's index and,
+in a constructor pattern, the whole declaration of its custom type. These
+copies are why several constructors of `Expr_` and `Pattern_` carry more than
+their syntax needs.
 
-Cached data is marked with comments like `-- CACHE for exhaustiveness` or
-`-- CACHE for inference` to clarify why certain fields exist.
+Every expression and pattern is wrapped twice: in `A.Located`, which gives its
+source region, and in a record (`ExprInfo`, `PatternInfo`) that adds its _node
+id_, an integer that tables of per-node types are indexed by. Canonicalization
+gives ids that are distinct within one module, not across modules;
+`Compiler.Canonicalize.Ids` describes how they are handed out.
+
+`Type` is parameterised by how a type variable is identified. A `Type Name`
+identifies it by its name, as written in source or as the type checker
+generates it, and is what canonicalization and type checking produce. A
+`Type MVarId` identifies it by a program-wide `Compiler.AST.TypeIds.MVarId`,
+and is what monomorphization works on. Every function arrow carries an _arrow
+slot_, whose possible values at each phase `Compiler.AST.TypeIds.ArrowSlot`
+describes.
+
+Most of the file is binary codecs. Types, annotations, aliases and unions each
+have a codec with an `S` suffix, which writes every string through a
+`StringTable` as `Compiler.AST.StringTable` describes, and a plain codec, which
+is the `S` codec with `StringTable.disabled` and so writes every string inline.
+For annotations, types and unions, a `collectStringsFrom*` function gives a
+`StringTable.Collector` every string the `S` encoder will write, so that the
+table can be built first. Expressions, patterns and definitions have only a
+plain codec, reached through `fieldUpdateEncoder`.
 
 
 # Modules
@@ -82,25 +111,6 @@ Cached data is marked with comments like `-- CACHE for exhaustiveness` or
 
 -}
 
-{- Internal note: Creating a canonical AST means finding the home module for all variables.
-   So if you have L.map, you need to figure out that it is from the elm/core
-   package in the List module.
-
-   In later phases (e.g. type inference, exhaustiveness checking, optimization)
-   you need to look up additional info from these modules. What is the type?
-   What are the alternative type constructors? These lookups can be quite costly,
-   especially in type inference. To reduce costs the canonicalization phase
-   caches info needed in later phases. This means we no longer build large
-   dictionaries of metadata with O(log(n)) lookups in those phases. Instead
-   there is an O(1) read of an existing field! I have tried to mark all
-   cached data with comments like:
-
-   -- CACHE for exhaustiveness
-   -- CACHE for inference
-
-   So it is clear why the data is kept around.
--}
-
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Source as Src
@@ -123,13 +133,13 @@ import Utils.Bytes.Encode as BE
 -- ====== Expressions ======
 
 
-{-| An expression with source location annotation and unique ID.
+{-| An expression with its source region and its node id.
 -}
 type alias Expr =
     A.Located ExprInfo
 
 
-{-| Expression info containing the unique ID and expression node.
+{-| An expression's node id together with the expression itself.
 -}
 type alias ExprInfo =
     { id : Int
@@ -137,9 +147,48 @@ type alias ExprInfo =
     }
 
 
-{-| Expression variants in the canonical AST.
+{-| One node of a canonical expression: which kind of expression it is, with
+its parts.
 
-Many variants include cached type annotations for efficient type inference.
+The variable references differ in where the name was found, and each carries
+what later phases need to know about it. `VarLocal` is a name bound inside the
+definition being canonicalized, by an argument, a pattern or a `let`.
+`VarTopLevel` is a top-level value of the module being canonicalized, with
+that module's home. `VarKernel` is a function of a kernel module, given as the
+kernel prefix (`Elm` or `Eco`), the rest of the module name (`List` for
+`Elm.Kernel.List`) and the function name; the canonicalizer produces it only in
+a module of a kernel package. `VarForeign` is a value imported from another
+module, other than a `Debug` value, with its annotation. `VarCtor` is a
+constructor reference, local or imported, with its custom type's `CtorOpts`,
+its home, its name, its zero-based index among its type's constructors, and
+its annotation. A record alias's constructor is a `VarCtor` too, with
+`Normal` and index 0. `VarDebug` is a reference to a value of `Debug`, with its
+annotation; the home it carries is the module the reference appears in, not
+`Debug`.
+
+`VarOperator` is an operator used as a value, as in `(+)`, and `Binop` is an
+operator applied to a left and a right operand. Both carry the operator as
+written, then the home and name of the function it stands for, and its
+annotation.
+
+`Chr` and `Str` hold the literal in escaped form, not the value it denotes;
+`Compiler.Parse.String` produces that form. `Negate` is a unary
+minus.
+
+`If` holds the `if` and `else if` conditions, each paired with its branch, in
+order, and then the final `else` branch. `Let` binds one definition, `LetRec`
+a group of definitions that may refer to one another, and `LetDestruct` a
+pattern to the value of an expression, before the body that follows.
+
+`Accessor` is a field-access function such as `.name`. `Access` reads one
+field of a record expression. `Update` holds the record being updated and the
+new value of each named field, and `Record` the fields of a record literal;
+both are keyed by field name, and each key keeps the region of the name.
+
+`Tuple` holds the first and second elements and a list of any further ones.
+`Shader` holds the source text of a GLSL shader and the types of its
+attributes, uniforms and varyings, in the forms `Compiler.AST.Utils.Shader`
+describes.
 
 -}
 type Expr_
@@ -149,14 +198,14 @@ type Expr_
     | VarForeign ModuleName.Canonical Name (Annotation Name)
     | VarCtor CtorOpts ModuleName.Canonical Name Index.ZeroBased (Annotation Name)
     | VarDebug ModuleName.Canonical Name (Annotation Name)
-    | VarOperator Name ModuleName.Canonical Name (Annotation Name) -- CACHE real name for optimization
+    | VarOperator Name ModuleName.Canonical Name (Annotation Name)
     | Chr String
     | Str String
     | Int Int
     | Float Float
     | List (List Expr)
     | Negate Expr
-    | Binop Name ModuleName.Canonical Name (Annotation Name) Expr Expr -- CACHE real name for optimization
+    | Binop Name ModuleName.Canonical Name (Annotation Name) Expr Expr
     | Lambda (List Pattern) Expr
     | Call Expr (List Expr)
     | If (List ( Expr, Expr )) Expr
@@ -173,13 +222,15 @@ type Expr_
     | Shader Shader.Source Shader.Types
 
 
-{-| A single branch in a case expression, pairing a pattern with its body.
+{-| One branch of a `case` expression: its pattern and the expression it
+evaluates to.
 -}
 type CaseBranch
     = CaseBranch Pattern Expr
 
 
-{-| A field update in a record update expression.
+{-| The new value of one field in a record update, with the region of the
+field's name.
 -}
 type FieldUpdate
     = FieldUpdate A.Region Expr
@@ -189,10 +240,16 @@ type FieldUpdate
 -- ====== Definitions ======
 
 
-{-| A value or function definition.
+{-| A definition of a value or function, top-level or in a `let`.
 
-  - `Def` - A definition without a type annotation
-  - `TypedDef` - A definition with a type annotation and free type variables
+A `Def` has no type annotation, and holds the name, the argument patterns and
+the body.
+
+A `TypedDef` has an annotation, and the annotation's type is split across it.
+It holds the name, the type variables the annotation quantifies over, each
+argument pattern paired with the type the annotation gives that argument, the
+body, and the result type: what remains of the annotated type once the
+arguments' types are taken off.
 
 -}
 type Def
@@ -200,11 +257,15 @@ type Def
     | TypedDef (A.Located Name) FreeVars (List ( Pattern, Type Name )) Expr (Type Name)
 
 
-{-| A linked list of top-level declarations in a module.
+{-| The top-level definitions of a module, as a linked list of groups.
 
-  - `Declare` - A non-recursive definition
-  - `DeclareRec` - A group of mutually recursive definitions
-  - `SaveTheEnvironment` - Sentinel marking the end of declarations
+`Declare` holds a definition that is not part of a recursive group.
+`DeclareRec` holds a group of definitions that refer to one another, as its
+first definition and the rest. A single definition that refers to itself is
+a `DeclareRec` with no further definitions. `Compiler.Canonicalize.Module`
+forms the groups.
+
+`SaveTheEnvironment` ends the list and carries nothing.
 
 -}
 type Decls
@@ -217,13 +278,13 @@ type Decls
 -- ====== Patterns ======
 
 
-{-| A pattern with source location annotation and unique ID.
+{-| A pattern with its source region and its node id.
 -}
 type alias Pattern =
     A.Located PatternInfo
 
 
-{-| Pattern info containing the unique ID and pattern node.
+{-| A pattern's node id together with the pattern itself.
 -}
 type alias PatternInfo =
     { id : Int
@@ -231,10 +292,26 @@ type alias PatternInfo =
     }
 
 
-{-| Pattern variants for destructuring values.
+{-| One node of a canonical pattern: which kind of pattern it is, with its
+parts.
 
-Constructor patterns (`PCtor`) include extensive cached data for type inference
-and exhaustiveness checking.
+`PAnything` is `_`. `PRecord` holds the names of the fields a record pattern
+such as `{ x, y }` binds. `PAlias` is a pattern followed by `as` and a name.
+`PTuple` holds the first and second elements and a list of any further ones,
+and `PCons` the head and tail patterns of `::`.
+
+`PChr` and `PStr` hold the literal in escaped form, as `Chr` and `Str` do.
+The `Bool` of `PStr` is `True` for a triple-quoted string.
+
+`PBool` is a `True` or `False` pattern: a constructor pattern for
+`Basics.Bool`, with the declaration of `Bool` and which of the two it is.
+
+`PCtor` is a pattern for any other constructor. `home` and `type_` are the
+module and name of the custom type, and `union` is that type's whole
+declaration, which gives its constructors, how many there are and its
+`CtorOpts` without a lookup. `name` is the constructor's name and `index` its
+zero-based position among the type's constructors. `args` holds a pattern for
+each of the constructor's arguments.
 
 -}
 type Pattern_
@@ -251,10 +328,6 @@ type Pattern_
     | PStr String Bool
     | PInt Int
     | PCtor
-        -- CACHE p_home, p_type, and p_vars for type inference
-        -- CACHE p_index to replace p_name in PROD code gen
-        -- CACHE p_opts to allocate less in PROD code gen
-        -- CACHE p_alts and p_numAlts for exhaustiveness checker
         { home : ModuleName.Canonical
         , type_ : Name
         , union : Union
@@ -264,14 +337,14 @@ type Pattern_
         }
 
 
-{-| A constructor argument in a pattern, with cached index and type.
+{-| One argument of a constructor pattern: its zero-based position among the
+constructor's arguments, the type the constructor declares for it, in terms of
+its custom type's own type variables, and the pattern it is matched against.
 -}
 type PatternCtorArg
     = PatternCtorArg
         Index.ZeroBased
-        -- CACHE for destructors/errors
         (Type Name)
-        -- CACHE for type inference
         Pattern
 
 
@@ -279,31 +352,43 @@ type PatternCtorArg
 -- ====== Types ======
 
 
-{-| A type annotation with universally quantified type variables.
-
-The `FreeVars` contains the names of type variables that are polymorphic.
-
+{-| A type together with the names of the type variables it is polymorphic in.
 -}
 type Annotation id
     = Forall FreeVars (Type id)
 
 
-{-| Free type variables in a type annotation.
+{-| The names of the type variables an annotation quantifies over. Only the
+keys mean anything.
+
+This is a name for a `Dict`, not a new type, so the compiler does not check
+that its names are the variables of any particular type.
+
 -}
 type alias FreeVars =
     Dict Name ()
 
 
-{-| Canonical type representation.
+{-| A canonical type, in which every named type carries its home and a type
+variable is identified by an `id`, as the module documentation describes.
 
-  - `TLambda` - Function type (a -> b), carrying its `TypeIds.ArrowSlot`
-    (see `tLambda` / `noArrow`)
-  - `TVar` - Type variable
-  - `TType` - Named type with arguments (e.g., List Int)
-  - `TRecord` - Record type with optional extension variable
-  - `TUnit` - Unit type ()
-  - `TTuple` - Tuple type
-  - `TAlias` - Type alias application
+`TLambda` is a function type from its first type to its second, so a function
+of several arguments is a chain of them. Its first field is the arrow slot,
+whose meaning `Compiler.AST.TypeIds.ArrowSlot` describes; `tLambda` builds an
+arrow with no identity.
+
+`TType` is a named type other than an alias, by home and name, applied to its
+arguments.
+
+`TRecord` holds each field's type by field name, and the extension variable of
+an extensible record type such as `{ r | x : Int }`, or `Nothing`.
+
+`TTuple` holds the first and second element types and a list of any further
+ones.
+
+`TAlias` is a use of a type alias: its home and name, each of the alias's
+parameter names paired with the type given for it at this use, and the
+aliased type as an `AliasType`.
 
 -}
 type Type id
@@ -316,11 +401,12 @@ type Type id
     | TAlias ModuleName.Canonical Name (List ( id, Type id )) (AliasType id)
 
 
-{-| Wire encoding of an arrow slot: `0` = none, `idx + 1` = a solver root.
+{-| Returns the integer an arrow slot is serialized as: `idx + 1` for
+`SolverRoot idx`, and 0 for `NoArrow` and for `Arrow`.
 
-`Arrow` cannot occur — the codec is `Can.Type Name` only — and encodes as `0`
-rather than crashing, because a wrong-phase value should degrade to "no
-identity" (an occurrence id downstream), never to a WRONG identity.
+A `NoArrow`, and a `SolverRoot` whose index is not negative, come back
+unchanged from `arrowSlotFromInt`. An `Arrow`, or a `SolverRoot` with a
+negative index, comes back as `NoArrow`, an arrow with no identity.
 
 -}
 arrowSlotToInt : TypeIds.ArrowSlot -> Int
@@ -333,6 +419,9 @@ arrowSlotToInt slot =
             0
 
 
+{-| Returns the arrow slot that `arrowSlotToInt` serializes as `raw`: `NoArrow`
+for 0 or any negative number, and otherwise `SolverRoot (raw - 1)`.
+-}
 arrowSlotFromInt : Int -> TypeIds.ArrowSlot
 arrowSlotFromInt raw =
     if raw <= 0 then
@@ -342,19 +431,16 @@ arrowSlotFromInt raw =
         TypeIds.SolverRoot (raw - 1)
 
 
-{-| Build an arrow with **no** identity in its arrow slot.
+{-| Builds the function type from `a` to `b` whose arrow has no identity, the
+`NoArrow` slot.
 
-Route every construction site through this rather than `TLambda` directly, so
-an identity-policy change is one edit instead of two hundred. Only two sites
-may name a slot explicitly: `Compiler.Compile`, which stamps `SolverRoot` while
-the solver state is live (Phase 2b), and `AssignMVarIds.rewriteCanType`, which
-resolves those to global `Arrow` ids.
+This is the constructor to use for a function type wherever no arrow identity
+is known. Which phases put another slot on an arrow, and which slot values
+occur in a `Type Name` and in a `Type MVarId`, is described by
+`Compiler.AST.TypeIds.ArrowSlot`.
 
-**INVARIANT (`plans/lss-unknown-elimination.md` §4.6c, amended by Phase 2b):**
-a `Can.Type Name` carries `NoArrow` or `SolverRoot`, NEVER `Arrow`; a
-`Can.Type MVarId` carries `NoArrow` or `Arrow`, never `SolverRoot`. `PostSolve`
-works on `Can.Type Name`, so its whole-tree `existing == t` can now be split by
-a `SolverRoot` difference where it previously could not — see the note there.
+Because `==` on types compares arrow slots too, a function type built here is
+not equal to the same type carrying a `SolverRoot`.
 
 -}
 tLambda : Type id -> Type id -> Type id
@@ -362,18 +448,27 @@ tLambda =
     TLambda TypeIds.NoArrow
 
 
-{-| Re-export of `TypeIds.NoArrow` so pattern-heavy modules that already import
-`Compiler.AST.Canonical as Can` do not need a second import.
+{-| The arrow slot of an arrow with no identity, `TypeIds.NoArrow`, available
+here so that a module working with canonical types needs no import of
+`Compiler.AST.TypeIds` to name it.
 -}
 noArrow : TypeIds.ArrowSlot
 noArrow =
     TypeIds.NoArrow
 
 
-{-| Tracks whether a type alias has been fully expanded.
+{-| The aliased type at one use of a type alias, in one of two forms.
 
-  - `Holey` - Alias body still contains type variables to substitute
-  - `Filled` - Alias has been fully expanded with concrete types
+A `Holey` body is written in terms of the alias's own parameter names, which
+the use's argument list in `TAlias` gives types to. Those names are bound by
+the alias, not free in the type, and the body mentions only the parameters it
+uses, so a phantom parameter does not appear in it. `Compiler.Canonicalize.Type`
+builds every alias named in a type this way.
+
+A `Filled` body has the use's argument types already put in place of the
+parameters. It is the form of the result type of a record alias's
+constructor, and of an alias in a type converted back from the type checker's
+solution.
 
 -}
 type AliasType id
@@ -381,17 +476,24 @@ type AliasType id
     | Filled (Type id)
 
 
-{-| A record field with its source order index and type.
+{-| One field of a record type: its position and its type.
 
-The index preserves source order for canonical types from annotations.
-Inferred types may have all zeros for the index.
+The position is the field's zero-based index in source order in a record type
+written in source. In a type converted from the type checker's solution every
+field's position is 0, so there it orders nothing.
 
 -}
 type FieldType id
     = FieldType Int (Type id)
 
 
-{-| Converts record fields to an ordered list, sorted by source position.
+{-| Returns the fields of a record type as a list of names and types, sorted by
+their `FieldType` positions.
+
+That is source order only where the positions are meaningful, as `FieldType`
+describes. Where they are all 0, as in a type from the solver, the result is
+in order of field name.
+
 -}
 fieldsToList : Dict Name (FieldType id) -> List ( Name, Type id )
 fieldsToList fields =
@@ -413,7 +515,13 @@ fieldsToList fields =
 -- ====== Modules ======
 
 
-{-| Internal data for a canonical module.
+{-| Everything canonicalization produces for one module.
+
+`name` is the module's own home. `docs` holds its documentation comments as
+the parser read them. `decls` holds its top-level definitions, and `unions`,
+`aliases` and `binops` the custom types, type aliases and infix operators it
+declares, each by name.
+
 -}
 type alias ModuleData =
     { name : ModuleName.Canonical
@@ -427,45 +535,60 @@ type alias ModuleData =
     }
 
 
-{-| A canonicalized Elm module.
+{-| A canonicalized module.
 -}
 type Module
     = Module ModuleData
 
 
-{-| A type alias definition with its type parameters and body.
+{-| A type alias declaration: its parameter names, in order, and the aliased
+type, written in terms of those names.
 -}
 type Alias
     = Alias (List Name) (Type Name)
 
 
-{-| An infix operator definition with associativity, precedence, and function name.
+{-| An infix operator declaration: the operator's associativity and
+precedence, and the name of the function it stands for.
 -}
 type Binop
     = Binop_ Binop.Associativity Binop.Precedence Name
 
 
-{-| Internal data for a union type declaration.
+{-| The declaration of a custom type: its parameter names, its constructors,
+the number of constructors, and the `CtorOpts` chosen for it.
+
+`numAlts` is the length of `alts`, kept so that it need not be counted; the
+decoder does not check that the two agree. A type that another module exposes
+without its constructors reaches an importing module, through
+`Compiler.Elm.Interface`, with no constructors and `numAlts` 0, but with its
+`opts`.
+
 -}
 type alias UnionData =
     { vars : List Name
     , alts : List Ctor
-    , numAlts : Int -- CACHE for exhaustiveness checking
-    , opts : CtorOpts -- CACHE which optimizations are available
+    , numAlts : Int
+    , opts : CtorOpts
     }
 
 
-{-| A union type (custom type) declaration.
+{-| The declaration of a custom type.
 -}
 type Union
     = Union UnionData
 
 
-{-| Code generation optimization hints for constructors.
+{-| The shape of a custom type's constructors, from which later phases choose
+a cheaper representation for its values where one is allowed.
 
-  - `Normal` - Standard constructor representation
-  - `Enum` - All constructors are nullary (no arguments)
-  - `Unbox` - Single constructor with single argument can be unboxed
+`Enum` is a type whose constructors all take no arguments. `Unbox` is a type
+with exactly one constructor taking exactly one argument, whose values can be
+represented by that argument alone. `Normal` is every other type, including
+one with a single constructor of two or more arguments.
+`Compiler.Canonicalize.Environment.Local` makes the choice for a custom type.
+A reference to a record alias's constructor carries `Normal`, which
+`Compiler.Canonicalize.Expression` gives it.
 
 -}
 type CtorOpts
@@ -474,17 +597,20 @@ type CtorOpts
     | Unbox
 
 
-{-| Internal data for a type constructor.
+{-| One constructor of a custom type: its name, its zero-based position among
+the type's constructors, its number of arguments, and the argument types, in
+terms of the type's parameter names. `numArgs` is the length of `args` when
+canonicalized; the decoder does not check that the two agree.
 -}
 type alias CtorData =
     { name : Name
     , index : Index.ZeroBased
-    , numArgs : Int -- CACHE length args
+    , numArgs : Int
     , args : List (Type Name)
     }
 
 
-{-| A type constructor in a union type.
+{-| One constructor of a custom type.
 -}
 type Ctor
     = Ctor CtorData
@@ -494,10 +620,11 @@ type Ctor
 -- ====== Exports ======
 
 
-{-| What a module exports.
+{-| What a module's `exposing` list exposes.
 
-  - `ExportEverything` - Module uses `exposing (..)` syntax
-  - `Export` - Module has explicit export list
+`ExportEverything` is `exposing (..)`, with the region of the list. `Export`
+is an explicit list: each name it exposes, with what kind of thing that name
+is and the region where the list names it.
 
 -}
 type Exports
@@ -505,7 +632,11 @@ type Exports
     | Export (Dict Name (A.Located Export))
 
 
-{-| The kind of thing being exported.
+{-| The kind of thing a name in an explicit `exposing` list is.
+
+`ExportUnionOpen` is a custom type exposed with its constructors, as
+`Type(..)`, and `ExportUnionClosed` one exposed without them.
+
 -}
 type Export
     = ExportValue
@@ -516,11 +647,14 @@ type Export
     | ExportPort
 
 
-{-| Effects that a module can define.
+{-| The kind of effects a module declares.
 
-  - `NoEffects` - A normal module
-  - `Ports` - A port module with JavaScript interop
-  - `Manager` - An effect manager (kernel code only)
+`NoEffects` is an ordinary module. `Ports` is a port module, with its ports by
+name.
+
+`Manager` is an effect module. Its three regions are those of the names of its
+`init`, `onEffects` and `onSelfMsg` definitions, in that order, and its
+`Manager` says which effects it manages.
 
 -}
 type Effects
@@ -529,10 +663,13 @@ type Effects
     | Manager A.Region A.Region A.Region Manager
 
 
-{-| A port declaration for JavaScript interop.
+{-| The types of a port declaration.
 
-  - `Incoming` - Receives values from JavaScript (subscription)
-  - `Outgoing` - Sends values to JavaScript (command)
+An `Incoming` port's annotated type ends in `Sub msg` and it receives values;
+an `Outgoing` port's ends in `Cmd msg` and it sends them. In both, `func` is
+the port's whole annotated type, `payload` the type of the value it carries,
+taken from that type with every alias expanded, and `freeVars` the type
+variables of the annotation.
 
 -}
 type Port
@@ -548,12 +685,9 @@ type Port
         }
 
 
-{-| The kind of effect manager.
-
-  - `Cmd` - Manages commands only
-  - `Sub` - Manages subscriptions only
-  - `Fx` - Manages both commands and subscriptions
-
+{-| The effects an effect module manages, each named by the custom type of the
+module that represents it: `Cmd` commands only, `Sub` subscriptions only, and
+`Fx` both, the command type first.
 -}
 type Manager
     = Cmd Name
@@ -565,21 +699,24 @@ type Manager
 -- ====== Serialization ======
 
 
-{-| Encodes an Annotation to bytes for serialization.
+{-| Encodes an annotation with every string written inline, as
+`annotationEncoderS` does with `StringTable.disabled`.
 -}
 annotationEncoder : Annotation Name -> Bytes.Encode.Encoder
 annotationEncoder =
     annotationEncoderS StringTable.disabled
 
 
-{-| Decodes an Annotation from bytes.
+{-| A decoder for an annotation written by `annotationEncoder`.
 -}
 annotationDecoder : Bytes.Decode.Decoder (Annotation Name)
 annotationDecoder =
     annotationDecoderS StringTable.disabled
 
 
-{-| String-interned variant of `annotationEncoder`.
+{-| Encodes an annotation with the strings written through `st`: the names of
+its type variables, as `freeVarsEncoderS` writes them, then its type, as
+`typeEncoderS` writes it.
 -}
 annotationEncoderS : StringTable -> Annotation Name -> Bytes.Encode.Encoder
 annotationEncoderS st (Forall freeVars tipe) =
@@ -589,7 +726,8 @@ annotationEncoderS st (Forall freeVars tipe) =
         ]
 
 
-{-| String-interned variant of `annotationDecoder`.
+{-| Produces a decoder for an annotation written by `annotationEncoderS` with a
+table equal to `st`.
 -}
 annotationDecoderS : StringTable -> Bytes.Decode.Decoder (Annotation Name)
 annotationDecoderS st =
@@ -598,42 +736,55 @@ annotationDecoderS st =
         (typeDecoderS st)
 
 
+{-| Encodes the names of an annotation's type variables as a list, in ascending
+order, each written through `st`.
+-}
 freeVarsEncoderS : StringTable -> FreeVars -> Bytes.Encode.Encoder
 freeVarsEncoderS st freeVars =
     BE.list (StringTable.string st) (Dict.keys freeVars)
 
 
+{-| Produces a decoder for the type-variable names written by `freeVarsEncoderS`
+with a table equal to `st`.
+-}
 freeVarsDecoderS : StringTable -> Bytes.Decode.Decoder FreeVars
 freeVarsDecoderS st =
     BD.list (StringTable.stringDec st)
         |> Bytes.Decode.map (List.map (\key -> ( key, () )) >> Dict.fromList)
 
 
+{-| Encodes type-variable names as `freeVarsEncoderS` does, with each name
+written inline.
+-}
 freeVarsEncoder : FreeVars -> Bytes.Encode.Encoder
 freeVarsEncoder =
     freeVarsEncoderS StringTable.disabled
 
 
+{-| A decoder for type-variable names written by `freeVarsEncoder`.
+-}
 freeVarsDecoder : Bytes.Decode.Decoder FreeVars
 freeVarsDecoder =
     freeVarsDecoderS StringTable.disabled
 
 
-{-| Encodes an Alias to bytes for serialization.
+{-| Encodes a type alias declaration with every string written inline: its
+parameter names, then the aliased type as `typeEncoder` writes it.
 -}
 aliasEncoder : Alias -> Bytes.Encode.Encoder
 aliasEncoder =
     aliasEncoderS StringTable.disabled
 
 
-{-| Decodes an Alias from bytes.
+{-| A decoder for a type alias declaration written by `aliasEncoder`.
 -}
 aliasDecoder : Bytes.Decode.Decoder Alias
 aliasDecoder =
     aliasDecoderS StringTable.disabled
 
 
-{-| String-interned variant of `aliasEncoder`.
+{-| Encodes a type alias declaration as `aliasEncoder` does, with the strings
+written through `st`.
 -}
 aliasEncoderS : StringTable -> Alias -> Bytes.Encode.Encoder
 aliasEncoderS st (Alias vars tipe) =
@@ -643,7 +794,8 @@ aliasEncoderS st (Alias vars tipe) =
         ]
 
 
-{-| String-interned variant of `aliasDecoder`.
+{-| Produces a decoder for a type alias declaration written by `aliasEncoderS`
+with a table equal to `st`.
 -}
 aliasDecoderS : StringTable -> Bytes.Decode.Decoder Alias
 aliasDecoderS st =
@@ -652,36 +804,38 @@ aliasDecoderS st =
         (typeDecoderS st)
 
 
-{-| Encodes a Type to bytes for serialization.
+{-| Encodes a type as `typeEncoderS` does, with every string written inline.
 -}
 typeEncoder : Type Name -> Bytes.Encode.Encoder
 typeEncoder =
     typeEncoderS StringTable.disabled
 
 
-{-| Decodes a Type from bytes.
+{-| A decoder for a type written by `typeEncoder`.
 -}
 typeDecoder : Bytes.Decode.Decoder (Type Name)
 typeDecoder =
     typeDecoderS StringTable.disabled
 
 
-{-| String-interned variant of `typeEncoder`.
+{-| Encodes a type with the strings written through `st`.
+
+Each constructor is written as a one-byte tag, then its fields in order: 0 for
+`TLambda`, 1 `TVar`, 2 `TType`, 3 `TRecord`, 4 `TUnit`, 5 `TTuple` and 6
+`TAlias`. A record's fields are written in ascending order of name, each with
+its position. An alias's body is written after a byte that is 0 for `Holey`
+and 1 for `Filled`.
+
+A `TLambda`'s arrow slot is written as `arrowSlotToInt` gives it, as an
+8-byte float like every `Int` written with `BE.int`. So a `SolverRoot` with a
+non-negative index is kept, and an `Arrow` is written, like `NoArrow`, as no
+identity.
+
 -}
 typeEncoderS : StringTable -> Type Name -> Bytes.Encode.Encoder
 typeEncoderS st type_ =
     case type_ of
         TLambda slot a b ->
-            -- Phase 2b: the arrow's SOLVER ROOT INDEX must cross this boundary.
-            -- `Compiler.Compile` stamps it while `solverState` is live, and
-            -- `AssignMVarIds` — which runs on the reassembled GlobalGraph, i.e.
-            -- on the far side of this codec — is what resolves it to a global
-            -- `ArrowId`. Encoded as `0` for "none" and `idx + 1` otherwise, so
-            -- the common unstamped case is a single zero byte.
-            --
-            -- `Arrow` is unrepresentable here BY CONSTRUCTION: this codec is
-            -- `Can.Type Name` only, and `Arrow` ids exist only in
-            -- `Can.Type MVarId`. It encodes as `0` if it ever appears.
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , BE.int (arrowSlotToInt slot)
@@ -731,7 +885,8 @@ typeEncoderS st type_ =
                 ]
 
 
-{-| String-interned variant of `typeDecoder`.
+{-| Produces a decoder for a type written by `typeEncoderS` with a table equal
+to `st`.
 -}
 typeDecoderS : StringTable -> Bytes.Decode.Decoder (Type Name)
 typeDecoderS st =
@@ -780,6 +935,9 @@ typeDecoderS st =
             )
 
 
+{-| Encodes one record field's position, then its type as `typeEncoderS`
+writes it with `st`.
+-}
 fieldTypeEncoderS : StringTable -> FieldType Name -> Bytes.Encode.Encoder
 fieldTypeEncoderS st (FieldType index tipe) =
     Bytes.Encode.sequence
@@ -788,6 +946,9 @@ fieldTypeEncoderS st (FieldType index tipe) =
         ]
 
 
+{-| Encodes an alias body as a byte, 0 for `Holey` and 1 for `Filled`, then
+the body's type as `typeEncoderS` writes it with `st`.
+-}
 aliasTypeEncoderS : StringTable -> AliasType Name -> Bytes.Encode.Encoder
 aliasTypeEncoderS st aliasType =
     case aliasType of
@@ -804,6 +965,9 @@ aliasTypeEncoderS st aliasType =
                 ]
 
 
+{-| Produces a decoder for one record field written by `fieldTypeEncoderS`
+with a table equal to `st`.
+-}
 fieldTypeDecoderS : StringTable -> Bytes.Decode.Decoder (FieldType Name)
 fieldTypeDecoderS st =
     Bytes.Decode.map2 FieldType
@@ -811,6 +975,9 @@ fieldTypeDecoderS st =
         (typeDecoderS st)
 
 
+{-| Produces a decoder for an alias body written by `aliasTypeEncoderS` with a
+table equal to `st`.
+-}
 aliasTypeDecoderS : StringTable -> Bytes.Decode.Decoder (AliasType Name)
 aliasTypeDecoderS st =
     Bytes.Decode.unsignedInt8
@@ -828,21 +995,24 @@ aliasTypeDecoderS st =
             )
 
 
-{-| Encodes a Union to bytes for serialization.
+{-| Encodes a custom type's declaration as `unionEncoderS` does, with every
+string written inline.
 -}
 unionEncoder : Union -> Bytes.Encode.Encoder
 unionEncoder =
     unionEncoderS StringTable.disabled
 
 
-{-| Decodes a Union from bytes.
+{-| A decoder for a custom type's declaration written by `unionEncoder`.
 -}
 unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
     unionDecoderS StringTable.disabled
 
 
-{-| String-interned variant of `unionEncoder`.
+{-| Encodes a custom type's declaration with the strings written through `st`:
+its parameter names, its constructors, the number of constructors, and its
+`CtorOpts` as `ctorOptsEncoder` writes them.
 -}
 unionEncoderS : StringTable -> Union -> Bytes.Encode.Encoder
 unionEncoderS st (Union u) =
@@ -854,7 +1024,8 @@ unionEncoderS st (Union u) =
         ]
 
 
-{-| String-interned variant of `unionDecoder`.
+{-| Produces a decoder for a custom type's declaration written by
+`unionEncoderS` with a table equal to `st`.
 -}
 unionDecoderS : StringTable -> Bytes.Decode.Decoder Union
 unionDecoderS st =
@@ -865,6 +1036,9 @@ unionDecoderS st =
         ctorOptsDecoder
 
 
+{-| Encodes one constructor with the strings written through `st`: its name,
+index, number of arguments and argument types.
+-}
 ctorEncoderS : StringTable -> Ctor -> Bytes.Encode.Encoder
 ctorEncoderS st (Ctor c) =
     Bytes.Encode.sequence
@@ -875,6 +1049,9 @@ ctorEncoderS st (Ctor c) =
         ]
 
 
+{-| Produces a decoder for one constructor written by `ctorEncoderS` with a
+table equal to `st`.
+-}
 ctorDecoderS : StringTable -> Bytes.Decode.Decoder Ctor
 ctorDecoderS st =
     Bytes.Decode.map4 (\name_ index_ numArgs_ args_ -> Ctor { name = name_, index = index_, numArgs = numArgs_, args = args_ })
@@ -884,7 +1061,8 @@ ctorDecoderS st =
         (BD.list (typeDecoderS st))
 
 
-{-| Encodes CtorOpts to bytes for serialization.
+{-| Encodes a `CtorOpts` as one byte: 0 for `Normal`, 1 for `Enum` and 2 for
+`Unbox`.
 -}
 ctorOptsEncoder : CtorOpts -> Bytes.Encode.Encoder
 ctorOptsEncoder ctorOpts =
@@ -901,7 +1079,8 @@ ctorOptsEncoder ctorOpts =
         )
 
 
-{-| Decodes CtorOpts from bytes.
+{-| A decoder for a `CtorOpts` written by `ctorOptsEncoder`, which fails on any
+other byte.
 -}
 ctorOptsDecoder : Bytes.Decode.Decoder CtorOpts
 ctorOptsDecoder =
@@ -923,7 +1102,15 @@ ctorOptsDecoder =
             )
 
 
-{-| Encodes a FieldUpdate to bytes for serialization.
+{-| Encodes a field update: the region of the field's name in the fixed
+encoding of `Compiler.Reporting.Annotation.regionEncoder`, then the new value
+with the expression codec, which writes every string inline.
+
+The expression codec does not round-trip every expression. Within a record
+literal or a record update, it writes each field name without its region, but
+its decoder reads a region before each name, so `fieldUpdateDecoder` misreads
+a value containing either.
+
 -}
 fieldUpdateEncoder : FieldUpdate -> Bytes.Encode.Encoder
 fieldUpdateEncoder (FieldUpdate fieldRegion expr) =
@@ -933,7 +1120,7 @@ fieldUpdateEncoder (FieldUpdate fieldRegion expr) =
         ]
 
 
-{-| Decodes a FieldUpdate from bytes.
+{-| A decoder for a field update written by `fieldUpdateEncoder`.
 -}
 fieldUpdateDecoder : Bytes.Decode.Decoder FieldUpdate
 fieldUpdateDecoder =
@@ -942,16 +1129,22 @@ fieldUpdateDecoder =
         exprDecoder
 
 
+{-| Encodes an expression: its region, then its node id and node.
+-}
 exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder =
     A.locatedEncoder exprInfoEncoder
 
 
+{-| A decoder for an expression written by `exprEncoder`.
+-}
 exprDecoder : Bytes.Decode.Decoder Expr
 exprDecoder =
     A.locatedDecoder exprInfoDecoder
 
 
+{-| Encodes an expression's node id, then its node.
+-}
 exprInfoEncoder : ExprInfo -> Bytes.Encode.Encoder
 exprInfoEncoder info =
     Bytes.Encode.sequence
@@ -960,6 +1153,8 @@ exprInfoEncoder info =
         ]
 
 
+{-| A decoder for a node id and expression node written by `exprInfoEncoder`.
+-}
 exprInfoDecoder : Bytes.Decode.Decoder ExprInfo
 exprInfoDecoder =
     Bytes.Decode.map2 (\id node -> { id = id, node = node })
@@ -967,6 +1162,14 @@ exprInfoDecoder =
         expr_Decoder
 
 
+{-| Encodes an expression node as a one-byte tag, 0 to 27 in the order the
+constructors are listed in the `case`, followed by its fields, with every
+string written inline.
+
+`Record` and `Update` write each field's name without the region its key
+carries, although `expr_Decoder` reads a located name there.
+
+-}
 expr_Encoder : Expr_ -> Bytes.Encode.Encoder
 expr_Encoder expr_ =
     case expr_ of
@@ -1168,6 +1371,8 @@ expr_Encoder expr_ =
                 ]
 
 
+{-| A decoder for an expression node written by `expr_Encoder`.
+-}
 expr_Decoder : Bytes.Decode.Decoder Expr_
 expr_Decoder =
     Bytes.Decode.unsignedInt8
@@ -1314,16 +1519,22 @@ expr_Decoder =
             )
 
 
+{-| Encodes a pattern: its region, then its node id and node.
+-}
 patternEncoder : Pattern -> Bytes.Encode.Encoder
 patternEncoder =
     A.locatedEncoder patternInfoEncoder
 
 
+{-| A decoder for a pattern written by `patternEncoder`.
+-}
 patternDecoder : Bytes.Decode.Decoder Pattern
 patternDecoder =
     A.locatedDecoder patternInfoDecoder
 
 
+{-| Encodes a pattern's node id, then its node.
+-}
 patternInfoEncoder : PatternInfo -> Bytes.Encode.Encoder
 patternInfoEncoder info =
     Bytes.Encode.sequence
@@ -1332,6 +1543,8 @@ patternInfoEncoder info =
         ]
 
 
+{-| A decoder for a node id and pattern node written by `patternInfoEncoder`.
+-}
 patternInfoDecoder : Bytes.Decode.Decoder PatternInfo
 patternInfoDecoder =
     Bytes.Decode.map2 PatternInfo
@@ -1339,6 +1552,10 @@ patternInfoDecoder =
         pattern_Decoder
 
 
+{-| Encodes a pattern node as a one-byte tag, 0 to 12 in the order the
+constructors are listed in the `case`, followed by its fields, with every
+string written inline.
+-}
 pattern_Encoder : Pattern_ -> Bytes.Encode.Encoder
 pattern_Encoder pattern_ =
     case pattern_ of
@@ -1426,6 +1643,8 @@ pattern_Encoder pattern_ =
                 ]
 
 
+{-| A decoder for a pattern node written by `pattern_Encoder`.
+-}
 pattern_Decoder : Bytes.Decode.Decoder Pattern_
 pattern_Decoder =
     Bytes.Decode.unsignedInt8
@@ -1506,6 +1725,9 @@ pattern_Decoder =
             )
 
 
+{-| Encodes one argument of a constructor pattern: its index, its declared type
+and its pattern.
+-}
 patternCtorArgEncoder : PatternCtorArg -> Bytes.Encode.Encoder
 patternCtorArgEncoder (PatternCtorArg index srcType pattern) =
     Bytes.Encode.sequence
@@ -1515,6 +1737,9 @@ patternCtorArgEncoder (PatternCtorArg index srcType pattern) =
         ]
 
 
+{-| A decoder for a constructor-pattern argument written by
+`patternCtorArgEncoder`.
+-}
 patternCtorArgDecoder : Bytes.Decode.Decoder PatternCtorArg
 patternCtorArgDecoder =
     Bytes.Decode.map3 PatternCtorArg
@@ -1523,6 +1748,9 @@ patternCtorArgDecoder =
         patternDecoder
 
 
+{-| Encodes a definition as a tag, 0 for `Def` and 1 for `TypedDef`, followed by
+its fields, with every string written inline.
+-}
 defEncoder : Def -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
@@ -1545,6 +1773,8 @@ defEncoder def =
                 ]
 
 
+{-| A decoder for a definition written by `defEncoder`.
+-}
 defDecoder : Bytes.Decode.Decoder Def
 defDecoder =
     Bytes.Decode.unsignedInt8
@@ -1570,6 +1800,8 @@ defDecoder =
             )
 
 
+{-| Encodes a `case` branch: its pattern, then its body.
+-}
 caseBranchEncoder : CaseBranch -> Bytes.Encode.Encoder
 caseBranchEncoder (CaseBranch pattern expr) =
     Bytes.Encode.sequence
@@ -1578,6 +1810,8 @@ caseBranchEncoder (CaseBranch pattern expr) =
         ]
 
 
+{-| A decoder for a `case` branch written by `caseBranchEncoder`.
+-}
 caseBranchDecoder : Bytes.Decode.Decoder CaseBranch
 caseBranchDecoder =
     Bytes.Decode.map2 CaseBranch
@@ -1586,10 +1820,12 @@ caseBranchDecoder =
 
 
 
--- ====== STRING COLLECTORS (for string-table interning; see ECOT_002) ======
+-- ====== STRING COLLECTORS ======
 
 
-{-| Add all strings emitted by `annotationEncoderS` to a collection set.
+{-| Gives the collector `acc` every string `annotationEncoderS` writes for the
+annotation: the names of its type variables and the strings of its type. Which
+of them `acc` keeps is its own rule, as `StringTable.Collector` describes.
 -}
 collectStringsFromAnnotation : Annotation Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromAnnotation (Forall freeVars tipe) acc =
@@ -1598,7 +1834,10 @@ collectStringsFromAnnotation (Forall freeVars tipe) acc =
         |> collectStringsFromType tipe
 
 
-{-| Add all strings emitted by `typeEncoderS` to a collection set.
+{-| Gives the collector `acc` every string `typeEncoderS` writes for the type:
+type variable names, the homes and names of named types and aliases, record
+field names and extension variables, alias parameter names, and every string
+of an alias's body. Which of them `acc` keeps is its own rule.
 -}
 collectStringsFromType : Type Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromType type_ acc =
@@ -1668,6 +1907,9 @@ collectStringsFromType type_ acc =
             collectStringsFromAliasType tipe withArgs
 
 
+{-| Gives the collector `acc` every string `typeEncoderS` writes for an alias's
+body, whether `Holey` or `Filled`.
+-}
 collectStringsFromAliasType : AliasType Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromAliasType at acc =
     case at of
@@ -1678,7 +1920,9 @@ collectStringsFromAliasType at acc =
             collectStringsFromType tipe acc
 
 
-{-| Add all strings emitted by `unionEncoderS` to a collection set.
+{-| Gives the collector `acc` every string `unionEncoderS` writes for the
+declaration: its parameter names, and each constructor's name and the strings
+of its argument types. Which of them `acc` keeps is its own rule.
 -}
 collectStringsFromUnion : Union -> StringTable.Collector -> StringTable.Collector
 collectStringsFromUnion (Union u) acc =
@@ -1690,6 +1934,9 @@ collectStringsFromUnion (Union u) acc =
     List.foldl collectStringsFromCtor withVars u.alts
 
 
+{-| Gives the collector `acc` a constructor's name and the strings of its
+argument types.
+-}
 collectStringsFromCtor : Ctor -> StringTable.Collector -> StringTable.Collector
 collectStringsFromCtor (Ctor c) acc =
     List.foldl collectStringsFromType (StringTable.add c.name acc) c.args

@@ -1,8 +1,59 @@
 module Compiler.GlobalOpt.Borrow.LifetimeTest exposing (suite)
 
-{-| Borrow-inference Phase 1 (§U1.3): the lifetime lattice against a
-brute-force reference model, fuzzed lattice laws, and pinned regressions.
-The deterministic exhaustive battery is the real `--fuzz 1` gate coverage.
+{-| Tests for `Compiler.GlobalOpt.Borrow.Lifetime`, the lattice from which
+borrow inference decides whether a resource is dead at a point. They guard
+against `endsBefore` reporting a resource dead while it is still live,
+`onBoundary` missing or inventing a last use, and `join` and `leq` ceasing to
+agree with each other.
+
+The fixture is the brute-force model in `Compiler.GlobalOpt.Borrow.SkelFuzz`,
+whose docstring defines its terms: a _skeleton_ is a piece of code reduced to
+sequences and alternatives, an _execution_ is one run through it, a _live set_
+is the leaves at which a resource is used, and a _probe_ is a leaf path or a
+proper prefix of one. `SkelFuzz.refEndsBefore` and `SkelFuzz.refOnBoundary`
+answer the lattice's two questions by looking at every execution. Every
+lifetime these tests build from a live set comes from `SkelFuzz.fromPaths`, so
+it is `LEmpty` or `LLocal`, never `LParams`.
+
+What the tests establish:
+
+  - `batteryTest`: for every skeleton in `SkelFuzz.allSkels` (every skeleton of
+    depth at most 2 with sequences of one or two children and alternatives of
+    two arms), every subset of its leaves as a live set, and every probe,
+    `endsBefore` and `onBoundary` give the same answers as the reference. It is
+    a fixed enumeration, so it covers all of these however many fuzz runs are
+    asked for.
+  - The law tests in `lawsTests`, each over random `Sample`s: `join` is
+    associative, commutative and idempotent; `join a LEmpty` is `a`; `leq a b`
+    holds exactly when `join a b` is `eq` to `b`; `leq` is reflexive, and
+    transitive on the triples where both premises hold; and `join a b` is
+    `leq`-above both `a` and `b`. Where a law equates two lifetimes, they are
+    compared with `eq`, not `==`.
+  - Also in `lawsTests`: the same agreement with the reference as the battery,
+    for one random live set and probe of a skeleton of depth at most 3 from
+    `SkelFuzz.skelFuzzer`.
+  - Also in `lawsTests`: `join (LParams {7}) a` is `eq` to `LParams {7}`, and
+    for a probe `p`, `onBoundary (fromPath p) p` is `True` and
+    `endsBefore (fromPath p) p` is `False`.
+  - Pinned case 1: a resource used only on arm 0 of alternatives node 0 is dead
+    at arm 1.
+  - Pinned case 2: for uses in children 0 and 1 of sequence node 0, the
+    resource is not dead at child 0 and child 0 is not on the boundary, while
+    child 1 is.
+  - Pinned case 3: a lifetime ending inside child 0 of sequence node 0 is dead
+    at the empty path, the end of the whole body.
+  - Pinned case 4: `endsBefore` is `True` for `LEmpty` and `False` for
+    `LParams {3}` at each of `[]`, `[Seq 0 0]` and `[Arm 1 1]`.
+  - Pinned case 5: joining `fromPath` lifetimes that end on arms 0 and 1 of node
+    0 gives `eq` results in either order.
+
+Among what is not tested: `joinAll`; no test states that `join LEmpty a` is
+`a` (only `join a LEmpty`); `onBoundary` of `LParams`; any law over `LParams`
+values except that `join (LParams {7}) a` is `LParams {7}`; a sequence step
+meeting an alternatives step at the same position, which no skeleton here
+produces; and `eq` itself, which the laws compare with and which is defined
+from `leq`.
+
 -}
 
 import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Life(..), Lifetime(..), Path, Step(..))
@@ -13,6 +64,9 @@ import Set
 import Test exposing (Test)
 
 
+{-| All the lifetime tests: the exhaustive battery, the fuzzed laws and the
+pinned cases.
+-}
 suite : Test
 suite =
     Test.describe "Borrow.Lifetime"
@@ -23,9 +77,13 @@ suite =
 
 
 
--- EXHAUSTIVE BATTERY (deterministic; the --fuzz 1 gate coverage)
+-- EXHAUSTIVE BATTERY
 
 
+{-| The exhaustive comparison of `endsBefore` and `onBoundary` with the
+reference model over every skeleton in `SkelFuzz.allSkels`, as one test that
+expects no disagreement and lists every one it finds.
+-}
 batteryTest : Test
 batteryTest =
     Test.test "endsBefore/onBoundary match the brute-force reference over all depth-≤2 skeletons" <|
@@ -33,6 +91,11 @@ batteryTest =
             Expect.equal [] (List.concatMap checkSkel SF.allSkels)
 
 
+{-| Returns a message for each disagreement with the reference model in `skel`.
+For every subset of its leaves as a live set and every probe, there is one
+message when `endsBefore` differs from `refEndsBefore` and one when
+`onBoundary` differs from `refOnBoundary`, so the list is empty when all agree.
+-}
 checkSkel : Skel -> List String
 checkSkel skel =
     let
@@ -85,9 +148,15 @@ checkSkel skel =
 
 
 
--- FUZZED LAWS (smoke at --fuzz 1; deep at dev --fuzz 200)
+-- FUZZED LAWS
 
 
+{-| One random case for the law tests: a skeleton, three lifetimes built from
+sets of its leaves, and a probe of it.
+
+`s` is the list of leaves `a` is built from.
+
+-}
 type alias Sample =
     { skel : Skel
     , a : Lifetime
@@ -98,6 +167,9 @@ type alias Sample =
     }
 
 
+{-| Produces a fuzzer of sublists of `items`, each item kept or dropped at
+random, in their original order.
+-}
 subsetFuzzer : List a -> Fuzzer (List a)
 subsetFuzzer items =
     Fuzz.map
@@ -109,6 +181,10 @@ subsetFuzzer items =
         (Fuzz.listOfLength (List.length items) Fuzz.bool)
 
 
+{-| A fuzzer of `Sample`s over skeletons of depth at most 3 from
+`SkelFuzz.skelFuzzer`, with three leaf subsets chosen independently and a probe
+chosen from all of the skeleton's probes.
+-}
 sampleFuzzer : Fuzzer Sample
 sampleFuzzer =
     SF.skelFuzzer 3
@@ -128,6 +204,10 @@ sampleFuzzer =
             )
 
 
+{-| Builds a `Sample` from `skel`, the first three leaf subsets in `subs`, and
+probe `p`. Given fewer than three subsets it uses `LEmpty` and an empty live
+set instead; `sampleFuzzer` always supplies three.
+-}
 mkSample : Skel -> List (List Path) -> Path -> Sample
 mkSample skel subs p =
     case subs of
@@ -144,6 +224,10 @@ mkSample skel subs p =
             { skel = skel, a = LEmpty, b = LEmpty, cc = LEmpty, s = [], p = p }
 
 
+{-| The fuzzed tests: the lattice laws of `join` and `leq`, agreement with the
+reference model on skeletons of depth at most 3, `LParams` absorbing a
+lifetime, and `fromPath p` ending exactly at `p`.
+-}
 lawsTests : Test
 lawsTests =
     Test.describe "lattice laws (checked with eq, never ==)"
@@ -199,9 +283,12 @@ lawsTests =
 
 
 
--- PINNED REGRESSIONS
+-- PINNED CASES
 
 
+{-| Five hand-written cases, each pinning answers of `endsBefore`, `onBoundary`
+or `join` on small lifetimes.
+-}
 regressions : Test
 regressions =
     Test.describe "pinned regressions"
@@ -255,6 +342,10 @@ regressions =
 -- HELPERS
 
 
+{-| Returns a pass when `a` and `b` are `eq`, and otherwise a failure showing
+both. A local lifetime is shown only as `LLocal(..)`, so the message does not
+say how two local lifetimes differ.
+-}
 expectEq : Lifetime -> Lifetime -> Expect.Expectation
 expectEq a b =
     if L.eq a b then
@@ -264,6 +355,8 @@ expectEq a b =
         Expect.fail ("not eq: " ++ ltStr a ++ " vs " ++ ltStr b)
 
 
+{-| Returns `"T"` or `"F"`, for failure messages.
+-}
 boolStr : Bool -> String
 boolStr b =
     if b then
@@ -273,6 +366,9 @@ boolStr b =
         "F"
 
 
+{-| Returns `step` in short form for failure messages: `S` for a sequence step
+or `A` for an arm step, then the node id and the index separated by a dot.
+-}
 stepStr : Step -> String
 stepStr step =
     case step of
@@ -283,16 +379,23 @@ stepStr step =
             "A" ++ String.fromInt n ++ "." ++ String.fromInt i
 
 
+{-| Returns `p` as its steps in `stepStr` form, comma-separated in brackets.
+-}
 pathStr : Path -> String
 pathStr p =
     "[" ++ String.join "," (List.map stepStr p) ++ "]"
 
 
+{-| Returns `ps` as paths in `pathStr` form, semicolon-separated in braces.
+-}
 pathsStr : List Path -> String
 pathsStr ps =
     "{" ++ String.join ";" (List.map pathStr ps) ++ "}"
 
 
+{-| Returns `lt` in short form for failure messages. `LParams` shows its set of
+positions; `LLocal` is shown as `LLocal(..)`, with nothing of its `Life`.
+-}
 ltStr : Lifetime -> String
 ltStr lt =
     case lt of

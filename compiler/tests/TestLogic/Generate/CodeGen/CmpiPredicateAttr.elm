@@ -1,11 +1,18 @@
 module TestLogic.Generate.CodeGen.CmpiPredicateAttr exposing (expectCmpiPredicateAttr)
 
-{-| Test logic for arith.cmpi predicate attribute invariant.
+{-| Checks that every `arith.cmpi` op in the MLIR generated for a program says
+which comparison it makes, so that an integer comparison emitted without one is
+caught.
 
-Every `arith.cmpi` op must have a `predicate` attribute (an integer specifying
-eq=0, ne=1, slt=2, etc.). Currently, char comparisons (i16 operands) emit
-`arith.cmpi` via `ecoBinaryOp` which does NOT include the `predicate` attribute,
-while integer comparisons correctly use `arithCmpI` which does include it.
+An `arith.cmpi` compares two integers, and its `predicate` attribute is an
+integer naming the comparison, in MLIR's numbering: 0 is `eq`, 1 is `ne`, 2 is
+`slt`, and so on. This module treats an `arith.cmpi` without that attribute as
+malformed.
+
+A violation is reported for each `arith.cmpi`, at any depth, whose `predicate`
+attribute is absent or is not an integer attribute. The value of the predicate
+is not checked, so an integer outside MLIR's numbering passes, and nor are the
+operands or the result.
 
 @docs expectCmpiPredicateAttr
 
@@ -24,7 +31,13 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that every arith.cmpi op has a predicate attribute.
+{-| Creates an expectation that `srcModule` compiles to MLIR in which every
+`arith.cmpi` op has an integer `predicate` attribute.
+
+The expectation fails with the test pipeline's error message, prefixed
+`Compilation failed:`, if compilation fails. When several ops lack the
+attribute, the failure reports only the first of them.
+
 -}
 expectCmpiPredicateAttr : Src.Module -> Expectation
 expectCmpiPredicateAttr srcModule =
@@ -36,7 +49,8 @@ expectCmpiPredicateAttr srcModule =
             violationsToExpectation (checkCmpiPredicateAttr mlirModule)
 
 
-{-| Check that all arith.cmpi ops have a predicate attribute.
+{-| Returns a violation for each `arith.cmpi` op of `mlirModule`, at any depth,
+that has no integer `predicate` attribute.
 -}
 checkCmpiPredicateAttr : MlirModule -> List Violation
 checkCmpiPredicateAttr mlirModule =
@@ -47,6 +61,9 @@ checkCmpiPredicateAttr mlirModule =
     List.filterMap checkCmpiOp cmpiOps
 
 
+{-| Returns a violation if `op` has no integer `predicate` attribute, whatever
+the op's name.
+-}
 checkCmpiOp : MlirOp -> Maybe Violation
 checkCmpiOp op =
     case getIntAttr "predicate" op of

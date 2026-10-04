@@ -1,6 +1,12 @@
 module Compiler.Elm.Interface.Bitwise exposing (bitwiseInterface)
 
-{-| Interface for elm/core Bitwise module functions used in tests.
+{-| A hand-built interface for elm/core's `Bitwise` module, so that test
+programs can import `Bitwise` without elm/core being compiled.
+
+It declares seven functions on `Int`: `and`, `or`, `xor`, `shiftLeftBy`,
+`shiftRightBy` and `shiftRightZfBy` take two, and `complement` takes one. It
+declares no types, aliases or operators.
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -17,7 +23,8 @@ import Dict exposing (Dict)
 -- ============================================================================
 
 
-{-| The Bitwise module interface containing bitwise operation functions.
+{-| The mock `Bitwise` interface, homed in the elm/core package, holding the
+functions of `bitwiseValues` and nothing else.
 -}
 bitwiseInterface : I.Interface
 bitwiseInterface =
@@ -30,7 +37,8 @@ bitwiseInterface =
         }
 
 
-{-| Helper to create a value annotation with no free vars.
+{-| Returns `tipe` as an annotation that quantifies no type variables, which is
+correct here because no type in this module mentions one.
 -}
 mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
@@ -43,19 +51,22 @@ mkAnnotation tipe =
 -- ============================================================================
 
 
+{-| The type `Int`, homed in elm/core's `Basics` module.
+-}
 intType : Can.Type Name
 intType =
     Can.TType ModuleName.basics "Int" []
 
 
-{-| Int -> Int -> Int
+{-| The type `Int -> Int -> Int`, shared by every function here except
+`complement`.
 -}
 intBinopType : Can.Type Name
 intBinopType =
     Can.tLambda intType (Can.tLambda intType intType)
 
 
-{-| Int -> Int
+{-| The type `Int -> Int`, the type of `complement`.
 -}
 intUnaryType : Can.Type Name
 intUnaryType =
@@ -68,29 +79,16 @@ intUnaryType =
 -- ============================================================================
 
 
-{-| Bitwise function values.
+{-| The annotations of the seven functions, keyed by name.
 -}
 bitwiseValues : Dict Name (Can.Annotation Name)
 bitwiseValues =
     Dict.fromList
-        [ -- and : Int -> Int -> Int
-          ( "and", mkAnnotation intBinopType )
-
-        -- or : Int -> Int -> Int
+        [ ( "and", mkAnnotation intBinopType )
         , ( "or", mkAnnotation intBinopType )
-
-        -- xor : Int -> Int -> Int
         , ( "xor", mkAnnotation intBinopType )
-
-        -- complement : Int -> Int
         , ( "complement", mkAnnotation intUnaryType )
-
-        -- shiftLeftBy : Int -> Int -> Int
         , ( "shiftLeftBy", mkAnnotation intBinopType )
-
-        -- shiftRightBy : Int -> Int -> Int
         , ( "shiftRightBy", mkAnnotation intBinopType )
-
-        -- shiftRightZfBy : Int -> Int -> Int
         , ( "shiftRightZfBy", mkAnnotation intBinopType )
         ]

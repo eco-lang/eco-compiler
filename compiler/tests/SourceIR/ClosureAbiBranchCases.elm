@@ -1,9 +1,47 @@
 module SourceIR.ClosureAbiBranchCases exposing (expectSuite)
 
-{-| Test cases targeting MonoGlobalOptimize ABI rewriting paths.
+{-| Source programs that make function values and call them, for whatever
+pipeline stage a caller wants to run them through.
 
-Exercises higher-order functions called with different closure shapes
-at different call sites, which triggers the ABI normalization system.
+A function value here is a lambda, a lambda that captures variables from where
+it was made, or the result of calling a function whose definition takes fewer
+parameters than its type has arrows and returns a lambda for the rest. In every
+case but `lambdaCapturingDifferent`, different function values of one type meet
+at one place: the parameter of a higher-order function passed different lambdas
+at different calls, the result of an `if` whose branches are different lambdas,
+or the payload of a constructor. A compiler that gives function values a calling
+convention has to make every value that reaches one place callable the same way
+there, and those cases give a stage that gets this wrong something to fail on.
+In `lambdaCapturingDifferent` the values do not meet: one lambda makes two
+closures capturing different values, and each is called under its own name.
+
+This module builds the programs and asserts nothing about them. `expectSuite`
+hands each built `Src.Module`, in turn, to the caller's expectation function,
+which decides the stage and the property checked. Each program is a module
+named `Test` with type-annotated top-level definitions, one of which is
+`testValue`, an `Int`.
+
+The cases, put in one test that `Compiler.BulkCheck.bulkCheck` runs in order,
+stopping at the first failure:
+
+  - `applyDifferentLambdas`: `apply f x = f x`, called with an adding lambda and
+    with a multiplying lambda.
+  - `caseReturningLambdas`: `picker`, typed `Bool -> Int -> Int` but taking one
+    parameter, returns one of two lambdas from an `if`. Its label says "Case",
+    but the program uses `if`.
+  - `higherOrderMultiSite`: `applyTwice f x = f (f x)`, called with two
+    different lambdas.
+  - `lambdaCapturingDifferent`: `makeAdder n` returns a lambda capturing `n`,
+    and two adders made from it with different `n` are each called.
+  - `ifReturningClosures`: `choose`, typed with four parameters but taking
+    three, returns from an `if` one of two lambdas capturing different
+    parameters, and the result is applied at once to a fourth argument.
+  - `customTypeWithFnField`: a type `Op` whose one constructor holds an
+    `Int -> Int`, unwrapped by a `case` in `runOp` and called; `runOp` is given
+    two `Op`s holding different lambdas.
+
+Among what is not tested: lambdas of more than one parameter passed as values,
+and function values stored in records, tuples or lists.
 
 -}
 
@@ -32,12 +70,18 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Closure ABI branch " followed by `condStr`, that
+passes when `expectFn` passes for every program in this module.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Closure ABI branch " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case of this module, labelled, each handing its program to
+`expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Apply different lambdas", run = applyDifferentLambdas expectFn }
@@ -49,6 +93,9 @@ testCases expectFn =
     ]
 
 
+{-| Returns the deferred check of a case, which hands `expectFn` a program in
+which `apply f x = f x` is called with `\n -> n + 1` and with `\n -> n * 2`.
+-}
 applyDifferentLambdas : (Src.Module -> Expectation) -> (() -> Expectation)
 applyDifferentLambdas expectFn _ =
     let
@@ -74,6 +121,11 @@ applyDifferentLambdas expectFn _ =
     expectFn modul
 
 
+{-| Returns the deferred check of a case, which hands `expectFn` a program in
+which `picker b`, typed `Bool -> Int -> Int`, returns `\x -> x + 10` or
+`\x -> x * 10` from an `if`, and `testValue` binds `picker True` and applies it
+to 3.
+-}
 caseReturningLambdas : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturningLambdas expectFn _ =
     let
@@ -100,6 +152,10 @@ caseReturningLambdas expectFn _ =
     expectFn modul
 
 
+{-| Returns the deferred check of a case, which hands `expectFn` a program in
+which `applyTwice f x = f (f x)` is called with `\n -> n + 1` and with
+`\n -> n * 3`.
+-}
 higherOrderMultiSite : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderMultiSite expectFn _ =
     let
@@ -125,6 +181,10 @@ higherOrderMultiSite expectFn _ =
     expectFn modul
 
 
+{-| Returns the deferred check of a case, which hands `expectFn` a program in
+which `makeAdder n` returns `\x -> x + n`, and `testValue` makes `makeAdder 1`
+and `makeAdder 10` and calls each with 5.
+-}
 lambdaCapturingDifferent : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaCapturingDifferent expectFn _ =
     let
@@ -152,6 +212,11 @@ lambdaCapturingDifferent expectFn _ =
     expectFn modul
 
 
+{-| Returns the deferred check of a case, which hands `expectFn` a program in
+which `choose flag a b`, typed `Bool -> Int -> Int -> Int -> Int`, returns
+`\x -> x + a` or `\x -> x + b` from an `if`, and `testValue` is
+`(choose True 100 200) 5`.
+-}
 ifReturningClosures : (Src.Module -> Expectation) -> (() -> Expectation)
 ifReturningClosures expectFn _ =
     let
@@ -176,6 +241,11 @@ ifReturningClosures expectFn _ =
     expectFn modul
 
 
+{-| Returns the deferred check of a case, which hands `expectFn` a program
+declaring `type Op = Op (Int -> Int)`, in which `runOp` takes the function out
+of an `Op` with a `case` and applies it to 10, and is called with an `Op` of
+`\x -> x + 1` and one of `\x -> x * 2`.
+-}
 customTypeWithFnField : (Src.Module -> Expectation) -> (() -> Expectation)
 customTypeWithFnField expectFn _ =
     let

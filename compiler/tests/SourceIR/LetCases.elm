@@ -1,6 +1,38 @@
 module SourceIR.LetCases exposing (expectSuite)
 
-{-| Tests for let expressions.
+{-| Supplies programs built around `let` expressions to a check that the caller
+provides. A `let` can hold several definitions, a definition that refers to an
+earlier one, a local function, or another `let`.
+
+This module asserts nothing itself. `expectSuite` takes the caller's
+expectation function and applies it to the programs in turn, so what is
+checked is decided by the caller. All the programs run inside one
+elm-test test through `Compiler.BulkCheck.bulkCheck`, which stops at the first
+program whose expectation fails and reports that program's label.
+
+Every program is a module built by `Compiler.AST.SourceBuilder.makeModule`:
+a module named `Test` that imports `Basics` and `List` and has one top-level
+value, `testValue`, with no arguments and no type annotation. Each case
+function builds that module around one expression, gives it to the
+expectation function, and is deferred behind `()` until `bulkCheck` runs it.
+
+The programs, by group:
+
+  - Simple `let`: one definition, `x = 42`, with a body that uses it and
+    with a unit body that does not.
+  - Several definitions: two independent ones, one that uses the one before
+    it, and a chain of three in which each refers to the previous one.
+  - Nested `let`: a `let` as the body of another, a `let` as the value of a
+    definition, two `let`s side by side in a tuple with no enclosing `let`,
+    and a `let` as an element of a list that is the body of another `let`.
+  - Local functions: a function defined with an argument, one defined as a
+    lambda, two functions of one and two arguments, and a function that calls
+    another defined in the same `let`.
+  - Compound values: a definition bound to a record, a tuple and a list.
+
+Among what is not tested: destructuring definitions, type annotations on
+`let` definitions, and recursive or mutually recursive definitions.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -26,12 +58,20 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named `"Let expressions "` followed by `condStr`, that
+applies `expectFn` to the programs in this module in turn. It fails with the
+label of the first program whose expectation fails, and the programs after it
+are not run.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Let expressions " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this module, group by group in the order the groups
+appear here.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     simpleLetCases expectFn
@@ -47,6 +87,8 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases whose `let` holds a single definition, `x = 42`.
+-}
 simpleLetCases : (Src.Module -> Expectation) -> List TestCase
 simpleLetCases expectFn =
     [ { label = "Let with single int binding", run = letWithSingleIntBinding expectFn }
@@ -54,6 +96,8 @@ simpleLetCases expectFn =
     ]
 
 
+{-| Builds `let x = 42 in x` and gives it to `expectFn`.
+-}
 letWithSingleIntBinding : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithSingleIntBinding expectFn _ =
     let
@@ -66,6 +110,9 @@ letWithSingleIntBinding expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `x = 42` and has the unit value `()` as its
+body, so `x` is never used, and gives it to `expectFn`.
+-}
 letWithUnitBody : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithUnitBody expectFn _ =
     let
@@ -84,6 +131,8 @@ letWithUnitBody expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases whose `let` holds two or three definitions.
+-}
 multipleBindingsCases : (Src.Module -> Expectation) -> List TestCase
 multipleBindingsCases expectFn =
     [ { label = "Let with two bindings", run = letWithTwoBindings expectFn }
@@ -92,6 +141,9 @@ multipleBindingsCases expectFn =
     ]
 
 
+{-| Builds a `let` that defines `x = 1` and `y = 2`, with body `( x, y )`,
+and gives it to `expectFn`.
+-}
 letWithTwoBindings : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithTwoBindings expectFn _ =
     let
@@ -107,6 +159,9 @@ letWithTwoBindings expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `x = 1` and then `y = ( x, 2 )`, with body
+`y`, and gives it to `expectFn`.
+-}
 letWithBindingUsingPrevious : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithBindingUsingPrevious expectFn _ =
     let
@@ -122,6 +177,9 @@ letWithBindingUsingPrevious expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `a = 1`, `b = a` and `c = b`, in that order,
+with body `c`, and gives it to `expectFn`.
+-}
 letWithChainedReferences : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithChainedReferences expectFn _ =
     let
@@ -146,6 +204,8 @@ letWithChainedReferences expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases with a `let` inside another expression.
+-}
 nestedLetCases : (Src.Module -> Expectation) -> List TestCase
 nestedLetCases expectFn =
     [ { label = "Let inside let", run = letInsideLet expectFn }
@@ -155,6 +215,9 @@ nestedLetCases expectFn =
     ]
 
 
+{-| Builds a `let` that defines `x = 1` and whose body is `let y = 2 in y`,
+so `x` is never used, and gives it to `expectFn`.
+-}
 letInsideLet : (Src.Module -> Expectation) -> (() -> Expectation)
 letInsideLet expectFn _ =
     let
@@ -170,6 +233,9 @@ letInsideLet expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `x` as `let inner = 42 in inner`, with body
+`x`, and gives it to `expectFn`.
+-}
 letInBindingValue : (Src.Module -> Expectation) -> (() -> Expectation)
 letInBindingValue expectFn _ =
     let
@@ -185,6 +251,10 @@ letInBindingValue expectFn _ =
     expectFn modul
 
 
+{-| Builds the tuple `( let a = 1 in a, let b = 2 in b )` as the whole of
+`testValue` and gives it to `expectFn`. Neither `let` is inside the other, and
+there is no enclosing `let`.
+-}
 multipleNestedLets : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleNestedLets expectFn _ =
     let
@@ -200,6 +270,9 @@ multipleNestedLets expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `x = 0` and whose body is the list
+`[ 1, let y = 2 in y, 3 ]`, so `x` is never used, and gives it to `expectFn`.
+-}
 letInsideListInsideLet : (Src.Module -> Expectation) -> (() -> Expectation)
 letInsideListInsideLet expectFn _ =
     let
@@ -221,6 +294,8 @@ letInsideListInsideLet expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that define functions in a `let`.
+-}
 letWithFunctionsCases : (Src.Module -> Expectation) -> List TestCase
 letWithFunctionsCases expectFn =
     [ { label = "Let with function", run = letWithFunction expectFn }
@@ -230,6 +305,9 @@ letWithFunctionsCases expectFn =
     ]
 
 
+{-| Builds a `let` that defines `f x = x`, with body `f 42`, and gives it to
+`expectFn`.
+-}
 letWithFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithFunction expectFn _ =
     let
@@ -242,6 +320,9 @@ letWithFunction expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `f` as the lambda `\x -> x`, with no
+arguments of its own, and body `f 42`, and gives it to `expectFn`.
+-}
 letWithLambdaBinding : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithLambdaBinding expectFn _ =
     let
@@ -254,6 +335,13 @@ letWithLambdaBinding expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `identity x = x` and `const x y = x`, with
+body `( identity 1, const 2 3 )`, and gives it to `expectFn`.
+
+The local `identity` hides the `identity` that the module's
+`import Basics exposing (..)` brings in.
+
+-}
 letWithMultipleFunctions : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithMultipleFunctions expectFn _ =
     let
@@ -275,6 +363,10 @@ letWithMultipleFunctions expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `double x = ( x, x )` and then
+`doubleTwice y = double (double y)`, with body `doubleTwice 1`, and gives it to
+`expectFn`. `double` pairs its argument with itself; it does no arithmetic.
+-}
 letWithFunctionCallingAnother : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithFunctionCallingAnother expectFn _ =
     let
@@ -299,6 +391,8 @@ letWithFunctionCallingAnother expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that bind a record, a tuple or a list in a `let`.
+-}
 letWithComplexExpressionsCases : (Src.Module -> Expectation) -> List TestCase
 letWithComplexExpressionsCases expectFn =
     [ { label = "Let with record binding", run = letWithRecordBinding expectFn }
@@ -307,6 +401,9 @@ letWithComplexExpressionsCases expectFn =
     ]
 
 
+{-| Builds a `let` that defines `r = { x = 1, y = 2 }`, with body `r.x`, and
+gives it to `expectFn`.
+-}
 letWithRecordBinding : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithRecordBinding expectFn _ =
     let
@@ -319,6 +416,9 @@ letWithRecordBinding expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `pair = ( 1, "one" )`, with body `pair`, and
+gives it to `expectFn`.
+-}
 letWithTupleBinding : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithTupleBinding expectFn _ =
     let
@@ -331,6 +431,9 @@ letWithTupleBinding expectFn _ =
     expectFn modul
 
 
+{-| Builds a `let` that defines `items = [ 1, 2, 3 ]`, with body `items`, and
+gives it to `expectFn`.
+-}
 letWithListBinding : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithListBinding expectFn _ =
     let

@@ -1,8 +1,7 @@
 module Compiler.Data.Map.Utils exposing (any)
 
-{-| Utility functions for working with dictionaries (maps).
-
-This module provides helper functions for constructing and querying dictionaries.
+{-| A helper over `Data.Map` dictionaries that `Data.Map` itself does not
+provide: asking whether any value satisfies a predicate.
 
 @docs any
 
@@ -11,12 +10,11 @@ This module provides helper functions for constructing and querying dictionaries
 import Data.Map as Dict exposing (Dict)
 
 
+{-| Returns whether `isGood` holds for at least one value in `dict`, and
+`False` for an empty dictionary. Keys are not consulted.
 
--- ====== FROM KEYS ======
--- ====== ANY ======
+`isGood` is applied to every value, even after one has satisfied it.
 
-
-{-| Checks if any value in the dictionary satisfies the given predicate.
 -}
 any : (v -> Bool) -> Dict c k v -> Bool
 any isGood dict =

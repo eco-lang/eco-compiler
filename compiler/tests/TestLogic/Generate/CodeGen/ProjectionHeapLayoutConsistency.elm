@@ -1,16 +1,48 @@
 module TestLogic.Generate.CodeGen.ProjectionHeapLayoutConsistency exposing (expectProjectionHeapLayoutConsistency)
 
-{-| Test logic for REP\_BOUNDARY\_003: Projection result types must match heap field layout.
+{-| Checks a compiled program for places where a list could be read with the
+wrong idea of how its elements are stored. Every problem message is tagged
+`[REP_BOUNDARY_003]`.
 
-At every call site where a list value is passed as an argument, the caller's
-list element type and the callee's corresponding parameter element type must
-agree on unboxability. If the caller has `Mono.mList MInt` (unboxed i64 heads) but
-the callee expects `Mono.mList (MVar \_ CEcoValue)` (boxed !eco.value heads), the
-callee's `eco.project.list\_head` will reinterpret unboxed data as a heap pointer,
-causing a segfault at runtime.
+A list element is _unboxed_ when it is held as a raw machine value rather than
+as a pointer to a heap object. The MLIR back end builds a list cell with its
+head unboxed or boxed according to the MLIR type of the head value, and
+`eco.project.list_head` reads a head back at the type the reading code
+expects. Code compiled for boxed elements that is handed a list with unboxed
+heads, or the reverse, misreads those heads. This module looks for two ways
+that can happen in the monomorphized graph; it examines no MLIR op.
 
-This is checked at the MonoGraph level by walking all MonoCall nodes and
-comparing argument types against callee parameter types.
+An element type is _unboxable_ here when its ABI type from
+`Types.monoTypeToAbi` is unboxed, which holds for `MInt`, `MFloat`, `MChar` and
+a number variable (`MVar _ CNumber`). An element type is _erased_ when it is a
+boxed type variable, `MVar _ CEcoValue`.
+
+`expectProjectionHeapLayoutConsistency` compiles a source module with
+`runToMlir`, takes the optimized graph that comes back, and runs two checks on
+it:
+
+  - The call check. At each call whose callee is a global (`MonoVarGlobal`),
+    each argument is paired with the callee's parameter at the same position,
+    using the function type the specialization registry records for the callee.
+    A pair in which both are lists and their element types differ in
+    unboxability is a problem.
+  - The specialization check. The registry's specializations are grouped by
+    name, and a name is a problem when the list element types found in their
+    types include both an unboxable one and an erased one. Two unboxable
+    element types that differ, such as `MInt` and `MFloat`, are not.
+
+Among what is not checked:
+
+  - a call through a local variable, a closure or a kernel, and a tail call;
+  - a call inside a branch inlined into a case's decision tree;
+  - an argument beyond the parameters of the callee's outermost function type;
+  - in the call check, a list nested inside another type, such as a tuple;
+  - in the specialization check, a list inside a record, a custom type or
+    another list.
+
+The specialization check groups by the bare name, without the module, so
+same-named functions from different modules share a group. It also pools the
+element types of every parameter and the result of one specialization.
 
 @docs expectProjectionHeapLayoutConsistency
 
@@ -25,7 +57,10 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that list element types agree on unboxability across call boundaries.
+{-| Passes when neither the call check nor the specialization check finds a
+problem in the optimized graph compiled from `srcModule`. Otherwise it fails
+with every problem found, one per line, or with the error when compilation
+fails.
 -}
 expectProjectionHeapLayoutConsistency : Src.Module -> Expectation
 expectProjectionHeapLayoutConsistency srcModule =
@@ -47,10 +82,14 @@ expectProjectionHeapLayoutConsistency srcModule =
 
 
 -- ============================================================================
--- MAIN CHECK: walk all nodes, check all MonoCall sites
+-- MAIN CHECK
 -- ============================================================================
 
 
+{-| Returns every problem the call check and the specialization check find in a
+graph, those of the call check first. The specialization check also finds a
+conflict between two specializations that no call connects.
+-}
 checkListElemConsistency : Mono.MonoGraph -> List String
 checkListElemConsistency (Mono.MonoGraph data) =
     let
@@ -68,17 +107,16 @@ checkListElemConsistency (Mono.MonoGraph data) =
                 data.nodes
                 |> Tuple.second
 
-        -- Also check: for any two specializations of the same Global that have
-        -- MList in their type, the element types must agree on unboxability.
-        -- This catches cases where the monomorphizer produces one specialization
-        -- with MList MInt and another with MList (MVar _ CEcoValue) for the same
-        -- function, even if no direct call edge connects them.
         specIssues =
             checkSpecializationConsistency data.registry
     in
     callIssues ++ specIssues
 
 
+{-| Returns the call check's problems in the body of one node, each labelled
+with `specId`, the node's own SpecId. Only a define, a tail function and a port
+have a body; any other node gives none.
+-}
 checkNode : Int -> Mono.SpecializationRegistry -> Mono.MonoNode -> List String
 checkNode specId registry node =
     let
@@ -108,6 +146,14 @@ checkNode specId registry node =
 -- ============================================================================
 
 
+{-| Returns the call check's problems at every call in `expr` and in its
+subexpressions, each prefixed with `ctx`.
+
+A case contributes the problems in the branches it jumps to but none from its
+decision tree (see `collectDeciderIssuesHelp`), so a call in a branch inlined
+into the tree is not checked.
+
+-}
 collectCallIssues : String -> Mono.SpecializationRegistry -> Mono.MonoExpr -> List String
 collectCallIssues ctx registry expr =
     case expr of
@@ -158,6 +204,8 @@ collectCallIssues ctx registry expr =
             []
 
 
+{-| Returns the call check's problems in the body of a let-bound definition.
+-}
 collectDefIssues : String -> Mono.SpecializationRegistry -> Mono.MonoDef -> List String
 collectDefIssues ctx registry def =
     case def of
@@ -168,11 +216,18 @@ collectDefIssues ctx registry def =
             collectCallIssues ctx registry expr
 
 
+{-| Returns the call check's problems in a case's decision tree, which are
+always none. The context and the registry are ignored.
+-}
 collectDeciderIssues : String -> Mono.SpecializationRegistry -> Mono.Decider Mono.MonoChoice -> List String
 collectDeciderIssues _ _ decider =
     collectDeciderIssuesHelp decider
 
 
+{-| Returns an empty list for any decision tree. It visits every node, but a
+leaf contributes nothing, including a leaf that holds an inlined branch
+(`Inline`), so the calls in such a branch are never checked.
+-}
 collectDeciderIssuesHelp : Mono.Decider Mono.MonoChoice -> List String
 collectDeciderIssuesHelp decider =
     case decider of
@@ -194,11 +249,12 @@ collectDeciderIssuesHelp decider =
 -- ============================================================================
 
 
-{-| At a MonoCall site, check that list arguments have consistent element types
-with the callee's parameter types.
+{-| Returns the problems at one call of `funcExpr` with `args`: each list
+argument whose element type differs in unboxability from that of the callee's
+parameter at the same position.
 
-Only checks calls to global functions (MonoVarGlobal) where we can look up the
-callee's full MonoType from the registry.
+Only a callee that is a global specialization (`MonoVarGlobal`) whose registry
+entry has a function type is checked; any other callee gives none.
 
 -}
 checkCallSite : String -> Mono.SpecializationRegistry -> Mono.MonoExpr -> List Mono.MonoExpr -> List String
@@ -216,7 +272,10 @@ checkCallSite ctx registry funcExpr args =
             []
 
 
-{-| Look up the callee's parameter types from the registry.
+{-| Returns the parameter types of the function type the registry records for
+`specId`, or `Nothing` when the entry is missing, empty or not a function type.
+Only the outermost function type is read, so for a curried type these are the
+parameters of the first call only.
 -}
 lookupCalleeParamTypes : Mono.SpecializationRegistry -> Int -> Maybe (List Mono.MonoType)
 lookupCalleeParamTypes registry specId =
@@ -233,7 +292,9 @@ lookupCalleeParamTypes registry specId =
             Nothing
 
 
-{-| Check each argument against the corresponding callee parameter type.
+{-| Returns the problems from pairing `args` with `paramTypes` by position.
+Pairing stops at the shorter of the two lists, so an argument with no
+parameter at its position is not checked.
 -}
 checkArgListTypes : String -> Int -> List Mono.MonoType -> List Mono.MonoExpr -> List String
 checkArgListTypes ctx calleeSpecId paramTypes args =
@@ -246,8 +307,10 @@ checkArgListTypes ctx calleeSpecId paramTypes args =
         |> List.concat
 
 
-{-| If both the caller's arg type and callee's param type are Mono.mList, check that
-the element types agree on unboxability.
+{-| Returns a problem when `calleeParamType` and `callerArgType` are both lists
+whose element types differ in unboxability, and nothing otherwise. A list
+nested inside either type is not looked at. The message names the call's
+context `ctx` and the callee's SpecId `calleeSpecId`.
 -}
 checkListArgConsistency : String -> Int -> Mono.MonoType -> Mono.MonoType -> List String
 checkListArgConsistency ctx calleeSpecId calleeParamType callerArgType =
@@ -294,26 +357,27 @@ checkListArgConsistency ctx calleeSpecId calleeParamType callerArgType =
 
 
 -- ============================================================================
--- HELPERS
--- ============================================================================
--- ============================================================================
 -- SPECIALIZATION CONSISTENCY CHECK
 -- ============================================================================
 
 
-{-| Check that all specializations of the same Global function agree on
-list element unboxability.
+{-| Returns one problem for each name whose specializations in `registry`,
+taken together, have both an unboxable list element type and an erased one.
+The list element types are those `collectListElemTypes` finds, and the problem
+lists every one found under that name with its SpecId.
 
-If Global "List.foldl" has two specializations, one with Mono.mList MInt (unboxed)
-and one with Mono.mList (MVar \_ CEcoValue) (boxed), that's a problem: code compiled
-for the boxed specialization will misinterpret unboxed list heads when called
-with a list that was constructed with unboxed heads.
+The check treats such a pair as a sign that code compiled for the erased
+element type could be handed a list whose heads are unboxed. Because names are
+grouped without their module, and the element types of every parameter and of
+the result are pooled, the two element types need not belong to the same
+function or the same parameter. Element types that differ in any other way,
+such as `MInt` beside `MFloat` or `MString`, are not a problem.
 
 -}
 checkSpecializationConsistency : Mono.SpecializationRegistry -> List String
 checkSpecializationConsistency registry =
     let
-        -- Build: Global -> List (specId, elemType, isUnboxed)
+        -- Keyed by bare name, so same-named globals of different modules share an entry.
         specsByGlobal =
             Array.foldl
                 (\maybeEntry ( i, acc ) ->
@@ -343,14 +407,6 @@ checkSpecializationConsistency registry =
                 registry.reverseMapping
                 |> Tuple.second
     in
-    -- For each Global, check if any specialization has a CEcoValue-constrained
-    -- list element coexisting with a specialization that has an unboxable concrete
-    -- element type. This catches the case where List.foldl is specialized once for
-    -- MList MInt (unboxed) and once for MList (MVar _ CEcoValue) (boxed) —
-    -- the boxed specialization will misinterpret unboxed cons cell heads.
-    --
-    -- We do NOT flag different concrete types (e.g. MList MInt vs MList MString)
-    -- since those are legitimate different instantiations.
     Dict.foldl
         (\globalName entries acc ->
             let
@@ -395,8 +451,10 @@ checkSpecializationConsistency registry =
         specsByGlobal
 
 
-{-| Collect all Mono.mList element types from a MonoType (there may be multiple
-if a function takes multiple list parameters with different element types).
+{-| Returns the element type of every list in `monoType` that is the type
+itself, or is reached through function parameter and result types and tuple
+elements. The element type of a list is not searched further, and a list
+inside a record or a custom type is not found.
 -}
 collectListElemTypes : Mono.MonoType -> List Mono.MonoType
 collectListElemTypes monoType =
@@ -415,6 +473,9 @@ collectListElemTypes monoType =
             []
 
 
+{-| Returns the name a specialization is grouped under: a global's bare name
+without its module, or `.field` for the record accessor of `field`.
+-}
 globalToString : Mono.Global -> String
 globalToString global =
     case global of
@@ -425,13 +486,8 @@ globalToString global =
             "." ++ name
 
 
-{-| True if a list element type is an erased type variable (MVar \_ CEcoValue).
-
-These represent "unknown/polymorphic" element types that the monomorphizer
-chose not to specialize. If the same function also has a specialization with
-a concrete unboxable element type (e.g. MInt), the erased version will
-misinterpret unboxed data as heap pointers.
-
+{-| Returns whether a list element type is erased: a type variable whose
+values are always boxed (`MVar _ CEcoValue`).
 -}
 isErasedElem : Mono.MonoType -> Bool
 isErasedElem elemType =
@@ -443,13 +499,18 @@ isErasedElem elemType =
             False
 
 
-{-| True if a list element MonoType would be stored unboxed in a cons cell.
+{-| Returns whether a list element type is unboxable: whether its ABI type is
+unboxed, which holds for `MInt`, `MFloat`, `MChar` and a number variable.
 -}
 isUnboxableElem : Mono.MonoType -> Bool
 isUnboxableElem elemType =
     Types.isUnboxable (Types.monoTypeToAbi elemType)
 
 
+{-| Returns a short label for an element type in a problem message. A type
+variable's label leaves out its id, a list's label wraps its element's, and
+any type without a label of its own is `composite`.
+-}
 monoTypeLabel : Mono.MonoType -> String
 monoTypeLabel t =
     case t of

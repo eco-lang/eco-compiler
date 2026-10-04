@@ -1,8 +1,15 @@
 module TestLogic.Generate.CodeGen.ConstructResultType exposing (expectConstructResultType)
 
-{-| Test logic for CGEN\_025: Construct Result Types invariant.
+{-| A construct op builds a boxed value, so the code generator is meant to give
+it a single result of type `!eco.value`, the type of a boxed value. This module
+checks that rule on the MLIR generated for a test program.
 
-All `eco.construct.*` ops must produce `!eco.value` result type.
+A _construct op_ is any op whose name starts with `eco.construct.`.
+`Compiler.Generate.MLIR.Ops` has them for list cells, 2- and 3-tuples, records
+and custom-type values. Each one found is reported as a violation, in the sense
+of `TestLogic.Generate.CodeGen.Invariants`, if it has a number of results other
+than one, or if its one result has a type other than `!eco.value`. Nothing else
+about the op is checked: not its operands, not its attributes.
 
 @docs expectConstructResultType
 
@@ -21,7 +28,13 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that construct result type invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR with
+`TestLogic.TestPipeline.runToMlir` and passes when every construct op in the
+result has exactly one result, of type `!eco.value`.
+
+It fails with the pipeline's error if compilation fails, and otherwise with the
+first violation found.
+
 -}
 expectConstructResultType : Src.Module -> Expectation
 expectConstructResultType srcModule =
@@ -33,7 +46,8 @@ expectConstructResultType srcModule =
             violationsToExpectation (checkConstructResultTypes mlirModule)
 
 
-{-| Check that all construct ops produce !eco.value result.
+{-| Returns a violation for each construct op, at any depth in the module, that
+does not have exactly one result of type `!eco.value`.
 -}
 checkConstructResultTypes : MlirModule -> List Violation
 checkConstructResultTypes mlirModule =
@@ -44,6 +58,9 @@ checkConstructResultTypes mlirModule =
     List.filterMap checkConstructResultTypeSingle constructOps
 
 
+{-| Returns a violation if `op` has a number of results other than one, or if
+its one result is not `!eco.value`, and `Nothing` otherwise.
+-}
 checkConstructResultTypeSingle : MlirOp -> Maybe Violation
 checkConstructResultTypeSingle op =
     let
@@ -80,6 +97,10 @@ checkConstructResultTypeSingle op =
                 Nothing
 
 
+{-| Returns a short name for `t`, for a violation message. A named struct is
+given by its name alone, without the leading `!`, and a function type is
+`function` whatever its inputs and results.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

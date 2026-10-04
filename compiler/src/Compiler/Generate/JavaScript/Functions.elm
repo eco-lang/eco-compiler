@@ -1,28 +1,38 @@
 module Compiler.Generate.JavaScript.Functions exposing (functions)
 
-{-| JavaScript runtime function wrappers for Elm functions.
+{-| The JavaScript definitions of the helpers through which a compiled Elm
+program creates and calls functions of two to nine arguments.
 
-This module provides the JavaScript code that implements Elm's curried function calling
-convention. It includes wrapper functions (F2-F9) that create curried versions of
-multi-argument JavaScript functions, and application functions (A2-A9) that efficiently
-call both wrapped and unwrapped functions.
+An Elm function of several arguments is curried: applying it to fewer arguments
+than it takes gives back a function waiting for the rest. The helpers keep that
+behaviour while letting a call that supplies every argument pass them all to
+the underlying JavaScript function at once, rather than one closure at a time.
+Generated code refers to the helpers by name, and `functions` is the JavaScript
+text that defines them.
 
-The F wrappers store the arity and original function, enabling efficient partial
-application and full application at call sites. The A functions check the arity
-at runtime to decide whether to call the optimized multi-argument form or the
-curried form.
+`F2` to `F9` each take an ordinary JavaScript function of that many parameters
+and return its curried form: a chain of one-argument closures that ends by
+calling the original with all the arguments. Through the helper `F`, the
+outermost closure also carries two properties, `a`, the number of parameters,
+and `f`, the original function.
 
+`A2` to `A9` each apply a function to that many arguments. When the function's
+`a` equals the number of arguments, they call its `f` with all of them at once.
+Otherwise they apply the arguments one at a time, which gives the right result
+for a function with no `a`, for one that takes more arguments than are given,
+and for one that takes fewer and returns another function.
 
-# Runtime Code
-
-@docs functions
+Only the outermost closure carries `a` and `f`. A partial application of a
+wrapped function is a plain closure, so a later call to it applies its
+arguments one at a time. There are no helpers for one argument or for more
+than nine.
 
 -}
 
--- ====== FUNCTIONS ======
 
-
-{-| JavaScript runtime code for function wrapping and application. Provides F2-F9 wrappers for creating curried functions and A2-A9 helpers for efficient function calls.
+{-| The JavaScript source text declaring the functions `F`, `F2` to `F9` and
+`A2` to `A9`. It starts and ends with line breaks, so it can be joined directly
+between other statements.
 -}
 functions : String
 functions =

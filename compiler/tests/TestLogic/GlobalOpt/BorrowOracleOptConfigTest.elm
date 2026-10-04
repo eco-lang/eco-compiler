@@ -1,11 +1,30 @@
 module TestLogic.GlobalOpt.BorrowOracleOptConfigTest exposing (suite)
 
-{-| OC0.1 (plans/borrow-oracle-consumers.md): the `bopt=1` hash token.
+{-| `Compiler.Eco.Config.hash` adds a token for the borrow setting `oracleOpt`
+when it is on, so a configuration hashes differently from the same configuration
+with it off. Without these tests, `hash` could leave the setting out and nothing
+would notice.
 
-The borrow config block is otherwise hash-inert (enabled/reify/report/
-validate mint no token), so `borrow.oracleOpt` — the first artifact-affecting
-borrow mode — must key caches: on-vs-off hashes differ, and off hashes
-exactly like the historical default (cache continuity, the `aggp` posture).
+`Config.hash` turns a configuration into a string of `|`-separated tokens, which
+`Builder.Elm.Details` uses as a cache key. Which settings add a token, and when,
+is stated in `Compiler.Eco.Config`. The token for `oracleOpt` is `bopt=1`.
+
+The fixture is `Config.default`, changed only in its `borrow` settings.
+
+The tests establish:
+
+  - Setting `oracleOpt` to `False` in `default` leaves the hash equal to that of
+    `default`. Because `oracleOpt` is off in `default`, the two configurations
+    are equal, so this test pins only that `default` keeps it off.
+  - Setting `oracleOpt` to `True` in `default` gives a hash that differs from
+    that of `default` and contains `bopt=1`.
+  - Switching on `enabled`, `report` and `validate` together in `default` leaves
+    the hash equal to that of `default`.
+
+Among what is not tested: the `reify` setting, which is never varied;
+`enabled`, `report` and `validate` one at a time; `oracleOpt` on any
+configuration other than `default`; and where in the hash the `bopt=1` token
+sits.
 
 -}
 
@@ -14,6 +33,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The three tests on how the borrow settings reach the configuration hash.
+-}
 suite : Test
 suite =
     Test.describe "OC0.1 borrow.oracleOpt hash token"
@@ -52,6 +73,9 @@ suite =
         ]
 
 
+{-| Returns `cfg` with its borrow setting `oracleOpt` set to `v` and every other
+setting unchanged.
+-}
 withOracleOpt : Bool -> Config.EcoConfig -> Config.EcoConfig
 withOracleOpt v cfg =
     let

@@ -1,44 +1,60 @@
 module TestLogic.Monomorphize.LssHonestSourcesTest exposing (suite)
 
-{-| LSS\_026(a) — honest ∅-as-source, demand side
-(`plans/lss-gap2-callarg-transport.md` §3.2(a), Phase 1).
+{-| A lambda-set resolution that carries members but passes through a source
+nothing has written would read back as a complete set when it is not. These
+tests pin the honest-sources rule of `Compiler.MonoSolver.Store`, which widens
+such a resolution to top, and the counters that record it.
 
-`Store.resolveSources` reads a terminal `FlexVar` SOURCE as an ∅
-contribution. That is exact ONLY under write-completeness of every inflow to
-the source slot — and A.1's disconnected instantiation params are precisely a
-write-INCOMPLETE population, so a members-carrying resolution reached OVER a
-dangling FlexVar claims a completeness it does not have (`Mono.LSet` IS a
-completeness claim). LSS\_026(a) widens exactly that case to ⊤.
+A lambda-set slot lists, as integer member ids, the functions that may reach
+an arrow. A slot may also draw on other slots, its _sources_, and resolving it
+collects the members of every slot reachable through sources. A set is a claim
+that nothing else arrives. A source that still holds an unwritten `FlexVar`
+contributes no members, which is exact only if nothing is ever written to it.
+`Store.resolveSlotMembersWith` owns the rule: its first argument switches it
+on, and it returns `Nothing` for top (any function may arrive) or `Just` the
+ascending union of the members. A _mixed crossing_ is a resolution that
+reaches an unwritten source, reaches no top, and collects at least one member.
+With the rule on it gives top; with it off, the members found. Either way, when
+the context holds a zonk accumulator, the store adds one to its `mixedFlex`,
+and one to `mixedFlexGc` as well when a member is registered as a standalone
+global (`Engine.SourceGlobal`, the `gc` class of `Engine.membersClass`). That
+class has its own counter because, as `Engine.memberClassOf` describes, a
+false set of globals can be turned into a direct call to the wrong function, a
+miscompile, where a false set of lambdas only loses precision.
 
-These tests own the RESOLVER semantics of that rule, at the store level, on a
-hand-built store — the `LssDirectedFlowTest` precedent (which owns the
-pre-LSS\_026 half: cycles, SCC exactness, ⊤ short-circuit, diamond dedupe).
-`resolveSlotMembers` reads only `store`, `lss` and `memberTable` from its
-`ZonkCtx`, so the fixture builds the record directly and toggles
-`lss.honestSources` — the field `zonkToMono` seeds True in every production
-zonk (`ZonkCtx` has no `S`, hence a field rather than a direct read); only
-these pins ever seed it False, to assert the shape the rule exists to
-reject.
+The fixtures build a small union-find store by hand, a few points holding
+`FlexVar`, member, top or source-carrying lambda-set content, and call
+`resolveSlotMembersWith` directly with the rule on, and for tests 1 to 3 also
+with it off. The context record is built field by field, with a zonk accumulator
+present so that the counters count.
 
-The four cases are the plan's §5 Phase-1 list:
+What the tests establish:
 
-1.  members + a dangling-flex source → honest-ON resolves `Nothing` (⊤),
-    honest-OFF resolves the members (the RED/GREEN pair — OFF is what HEAD
-    does, and it is the false-COMPLETE set).
-2.  members = [] + a dangling flex → `Just []` in BOTH arms: the
-    empty-resolution arm already reads `LTop` at `zonkSetSlot`, so nothing is
-    claimed and nothing is widened (and no counter bumps).
-3.  members + a WRITTEN source → the exact union, in both arms: no flex was
-    crossed, so the rule is silent.
-4.  the ⊤ short-circuit and the cycle walk still win under honest-ON —
-    absorption is checked BEFORE the mixed test, and a cycle whose SCC is
-    fully written is not mixed.
+  - 1a, 1b: members `[4]` over one unwritten source resolve to `Nothing` with
+    the rule on and to `Just [4]` with it off.
+  - 1c: that resolution is counted once in `mixedFlex` in both arms.
+  - 2a, 2b: no members over one unwritten source resolve to `Just []` in both
+    arms, and `mixedFlex` stays 0. The store reads an empty resolution back as
+    unknown rather than as a set, so it claims nothing.
+  - 3a, 3b: members `[4]` over a source holding the set `[9]` resolve to
+    `Just [4, 9]` in both arms, and `mixedFlex` stays 0.
+  - 4a: members `[4]` over a source that is top resolve to `Nothing` with the
+    rule on, and `mixedFlex` stays 0, because top ends the walk before the
+    mixed test is made.
+  - 4b: two sources that name each other, both written, resolve to
+    `Just [1, 2]` with the rule on, and `mixedFlex` stays 0.
+  - 4c: the same cycle with one node also naming an unwritten source resolves
+    to `Nothing` with the rule on, and `mixedFlex` is 1.
+  - 5a: members `[4]`, with 4 registered as a standalone global, over one
+    unwritten source give 1 in both `mixedFlex` and `mixedFlexGc` with the rule
+    on.
+  - 5b: the 1a resolution, whose member 4 is not in the member table, gives 1
+    in `mixedFlex` and 0 in `mixedFlexGc`.
 
-Plus the census riders, which are FLAG-INDEPENDENT by design (§2.1b): the
-`mixedFlex` counter must bump in both arms, and `mixedFlexGc` only when the
-carried members include a standalone global/ctor — the escalation class,
-since a `gc` member grounds (LSS\_019) and is devirt-consumable (LSS\_025),
-where a raw lambda id merely declines (LSS\_017).
+Among what is not tested: tests 4a to 5b with the rule off; kernel and
+partial-application members; `Store.resolveSlotMembers`, which chooses the rule
+from the context's `lssOn`; resolution with no accumulator, when nothing is
+counted; and how a zonk reads a resolution back.
 
 -}
 
@@ -57,6 +73,8 @@ import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
+{-| The honest-sources tests, numbered as in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "LSS_026(a) honest ∅-as-source (demand resolver, store level)"
@@ -65,9 +83,6 @@ suite =
                 Expect.equal Nothing (.members (mixedFixture True))
         , Test.test "1b. the same store, honest-OFF: HEAD publishes the false-COMPLETE set" <|
             \() ->
-                -- The RED half. This is not an aspiration — it asserts the
-                -- hole EXISTS at HEAD, so the record stays honest if someone
-                -- deletes the rule instead of the leak.
                 Expect.equal (Just [ 4 ]) (.members (mixedFixture False))
         , Test.test "1c. the crossing is CENSUSED in both arms (counters are flag-independent)" <|
             \() ->
@@ -97,11 +112,6 @@ suite =
                 Expect.equal ( Nothing, 1 ) ( .members (cycleFlexFixture True), .mixed (cycleFlexFixture True) )
         , Test.test "5a. the escalation class: a `gc` member in a mixed set bumps mixedFlexGc" <|
             \() ->
-                -- A standalone-global member GROUNDS at the consuming zonk
-                -- (LSS_019) and IS consumable by LSS_025 post-settle devirt,
-                -- so a false `{g|X}` singleton is the representative-hijack
-                -- MISCOMPILE class — which is why the plan's Phase-0 gate
-                -- keys on this counter and not on `mixedFlex`.
                 Expect.equal ( 1, 1 ) ( .mixed (gcFixture True), .mixedGc (gcFixture True) )
         , Test.test "5b. a lambda-id member in a mixed set does NOT bump mixedFlexGc" <|
             \() ->
@@ -113,7 +123,8 @@ suite =
 -- ====== FIXTURES ======
 
 
-{-| members `[4]` reached over ONE terminal FlexVar source: the §0.5 shape.
+{-| Resolves members `[4]` over one unwritten source, with the rule on when
+`honest` is True.
 -}
 mixedFixture : Bool -> Outcome
 mixedFixture honest =
@@ -121,7 +132,8 @@ mixedFixture honest =
         \_ -> mintOne (Vars.FlexVar Nothing)
 
 
-{-| No members anywhere, one dangling flex: the empty-resolution arm.
+{-| Resolves no members over one unwritten source, with the rule on when
+`honest` is True.
 -}
 emptyFixture : Bool -> Outcome
 emptyFixture honest =
@@ -129,7 +141,8 @@ emptyFixture honest =
         \_ -> mintOne (Vars.FlexVar Nothing)
 
 
-{-| members `[4]` plus a source that is WRITTEN (`{9}`): no crossing.
+{-| Resolves members `[4]` over one source holding the set `[9]`, with the rule
+on when `honest` is True.
 -}
 writtenFixture : Bool -> Outcome
 writtenFixture honest =
@@ -137,9 +150,8 @@ writtenFixture honest =
         \_ -> mintOne (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers [ 9 ])))
 
 
-{-| members `[4]` plus a reachable ⊤ — absorption must win over the mixed
-rule (⊤ is the same answer, but by the SHORT-CIRCUIT path, so no crossing is
-recorded).
+{-| Resolves members `[4]` over one source that is top, with the rule on when
+`honest` is True.
 -}
 topFixture : Bool -> Outcome
 topFixture honest =
@@ -147,8 +159,12 @@ topFixture honest =
         \_ -> mintOne (Vars.Structure (Vars.LambdaSet1 (Vars.LsTop 7)))
 
 
-{-| A ⊇ B, B ⊇ A, both carrying members and NO flex: the LssDirectedFlowTest
-cycle, re-asserted under the new signature.
+{-| Resolves members `[1]` over a cycle of two written sources, with the rule on
+when `honest` is True.
+
+Source `a` has members `[2]` and source `b`. Point `b` is created unwritten,
+then set, before resolution, to no members and source `a`.
+
 -}
 cycleFixture : Bool -> Outcome
 cycleFixture honest =
@@ -166,8 +182,9 @@ cycleFixture honest =
                     )
 
 
-{-| The same cycle, but one SCC node ALSO points at a dangling flex — the
-crossing must survive the visited-set walk.
+{-| Resolves members `[1]` over the cycle of `cycleFixture`, except that `b`'s
+sources are `a` and a third point that stays unwritten, with the rule on when
+`honest` is True.
 -}
 cycleFlexFixture : Bool -> Outcome
 cycleFlexFixture honest =
@@ -189,8 +206,8 @@ cycleFlexFixture honest =
                     )
 
 
-{-| A mixed set whose member is a STANDALONE GLOBAL (member id 4 registered
-as `SourceGlobal`) — the escalation class.
+{-| Resolves members `[4]` over one unwritten source, using `gcMemberTable`, so
+the member is a standalone global, with the rule on when `honest` is True.
 -}
 gcFixture : Bool -> Outcome
 gcFixture honest =
@@ -198,6 +215,9 @@ gcFixture honest =
         \_ -> mintOne (Vars.FlexVar Nothing)
 
 
+{-| A member table in which member id 4 is registered as a standalone global,
+`author/project`'s `Test.target`, and nothing else is registered.
+-}
 gcMemberTable : Engine.LssMemberTable
 gcMemberTable =
     let
@@ -216,8 +236,11 @@ gcMemberTable =
 -- ====== HARNESS ======
 
 
-{-| What one resolution reports: the resolved member list (`Nothing` = ⊤) and
-the two census counters the walk folded into the zonk accumulator.
+{-| What one resolution reports: its members, `Nothing` for top, and the two
+mixed-crossing counters read from the accumulator afterwards.
+
+`mixed` is the store's `mixedFlex` and `mixedGc` its `mixedFlexGc`.
+
 -}
 type alias Outcome =
     { members : Maybe (List Int)
@@ -226,8 +249,13 @@ type alias Outcome =
     }
 
 
-{-| Build a store with `mkSources`, then resolve `members0` over the sources it
-returns, with `honestSources` set to `honest`.
+{-| Returns what resolving `members0` reports, over the sources `mkSources`
+creates, with the honest-sources rule on when `honest` is True and member
+table `table`.
+
+The sources are created in a fresh store, and the store as they leave it is
+the one resolved over.
+
 -}
 runResolve : Bool -> Engine.LssMemberTable -> List Int -> (() -> IO.IO (List Vars.Variable)) -> Outcome
 runResolve honest table members0 mkSources =
@@ -251,33 +279,42 @@ runResolve honest table members0 mkSources =
         )
 
 
+{-| Creates one point holding `content` and returns it as a one-source list.
+-}
 mintOne : Vars.Content -> IO.IO (List Vars.Variable)
 mintOne content =
     UF.fresh (desc content) |> IO.map (\v -> [ v ])
 
 
+{-| Builds a descriptor holding `content`, with no rank, no mark and no copy.
+-}
 desc : Vars.Content -> Vars.Descriptor
 desc content =
     IO.makeDescriptor content Type.noRank Type.noMark Nothing
 
 
+{-| Builds lambda-set content with members `members` and sources `sources`.
+-}
 lsFrom : List Int -> List Vars.Variable -> Vars.Content
 lsFrom members sources =
     Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom members sources))
 
 
+{-| An action that returns the current store state and leaves it unchanged.
+-}
 captureState : IO.IO IO.State
 captureState =
     \st -> ( st, st )
 
 
-{-| The `ZonkCtx` `resolveSlotMembers` reads: `store` for the walk, `lss` for
-the policy bit + counters, `memberTable` for the `gc` classification. The rest
-are inert placeholders (the `LssDirectedFlowTest` precedent).
+{-| Builds the context for one resolution over store state `st`, with member
+table `table`.
 
-`censusOn` is True so the counters are live — they are FLAG-INDEPENDENT
-(§2.1b: the policy that widens is gated, the counters are not), which is what
-tests 1c/2b/3b assert.
+`Store.resolveSlotMembersWith` reads only `store`, `lss` and `memberTable`;
+the other fields are placeholders. `lss` holds an accumulator with every
+counter at zero, which is what lets a mixed crossing be counted: with
+`Nothing` there, none is. `lssOn` is True but is not read, since the rule is
+the function's own argument.
 
 -}
 ctx : Engine.LssMemberTable -> IO.State -> ZonkCtxShape
@@ -304,11 +341,6 @@ ctx table st =
             , causeEdgeTop = 0
             , causeUnknown = 0
             , multiSets = Dict.empty
-
-            -- LSS_035 (plans/lss-post-mono-architecture.md §3.2): the
-            -- arrow-attribution tables. Empty here — this fixture drives
-            -- `resolveSlotMembers` directly with `arrowOf = Dict.empty`, so
-            -- nothing can attribute, which is exactly what this test wants.
             , varArrows = Dict.empty
             , setArrows = Dict.empty
             }
@@ -322,8 +354,13 @@ ctx table st =
     }
 
 
-{-| `Store.ZonkCtx` is not exported by name; Elm's structural record aliases
-make the shape enough. Kept as a local alias so the fixture reads once.
+{-| The context record `Store.resolveSlotMembersWith` takes, written out field
+by field.
+
+`Store` does not expose a name for it, and Elm accepts any record with the
+same fields and types in its place, so this alias must list exactly the fields
+of the store's own.
+
 -}
 type alias ZonkCtxShape =
     { store : IO.State
@@ -341,6 +378,10 @@ type alias ZonkCtxShape =
     }
 
 
+{-| The zonk accumulator held in the context's `lss` field, written out for the
+same reason as `ZonkCtxShape`. The tests read only `mixedFlex` and
+`mixedFlexGc`.
+-}
 type alias LssAccShape =
     { zonked : Int
     , widenedBySize : Int
@@ -363,6 +404,9 @@ type alias LssAccShape =
     }
 
 
+{-| Returns the counter `get` selects from the accumulator in `c`, or -1, which
+no count can equal, when `c` holds no accumulator.
+-}
 counter : (LssAccShape -> Int) -> ZonkCtxShape -> Int
 counter get c =
     case c.lss of

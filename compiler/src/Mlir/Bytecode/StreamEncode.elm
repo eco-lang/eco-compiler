@@ -1,14 +1,42 @@
 module Mlir.Bytecode.StreamEncode exposing (StreamTables, emptyStreamTables, collectAndEncodeOps, assembleModule)
 
-{-| Streaming MLIR bytecode encoder.
+{-| Writes an MLIR bytecode file from operations handed over a batch at a time,
+so that a program's operations need not all be held in memory at once: each
+batch is encoded to bytes as soon as it is added, and only the bytes are kept.
 
-Enables incremental bytecode encoding where ops are generated one at a time,
-collected into growing tables, and encoded immediately. This avoids holding
-all MlirOps in memory simultaneously.
+MLIR bytecode refers to the operation names, attributes, types and locations
+an operation uses, and to most strings, by their index in a table section near
+the start of the file, rather than writing them where they are used.
+The IR section, which holds the operations, comes after the tables. Encoding an
+operation before the tables are complete is therefore safe only if every index
+is _append-only_: a new entry takes the next free index, in the order entries
+are first met, and an entry's index never changes after that. The string table
+and the streaming attribute and type table work this way, as
+`Mlir.Bytecode.StringTable` and `Mlir.Bytecode.AttrType.StreamAccum` describe.
+This module numbers operation names the same way, and keeps these tables
+together in `StreamTables`.
 
-Key design: all table indices are append-only (insertion order). The dialect
-section and attr/type offset section use run-length grouping to handle
-non-contiguous same-dialect entries.
+Append-only numbering shapes the dialect section. An operation name is a
+_dialect_, the text before its first `.`, and a _suffix_, the rest, and the
+section lists the names in _op groups_, each a dialect followed by suffixes of
+that dialect's names. A name's index is its position across all the groups.
+Names of different dialects may be met interleaved, so each run of
+consecutive names of one dialect, in the order they were numbered, becomes a
+group of its own, and a dialect may have several groups. That keeps every name
+at the position it was numbered. The attribute and type offset section is
+grouped in runs for the same reason, as
+`Mlir.Bytecode.AttrType.finalizeStreamAccum` describes.
+
+`emptyStreamTables` starts the tables, `collectAndEncodeOps` adds a batch, and
+`assembleModule` writes the file. An operation is encoded only after every
+operation of its batch has been collected into the tables. A lookup is not
+checked: anything missing from the tables is written as the index -1, so the
+file is corrupt rather than the encoding failing.
+
+The file declares bytecode version 4. Its operations sit in one
+`builtin.module` operation, whose single block holds every encoded operation in
+the order they were added. The lengths that frame the IR section are computed
+from the widths of the bytes already encoded.
 
 @docs StreamTables, emptyStreamTables, collectAndEncodeOps, assembleModule
 
@@ -38,21 +66,31 @@ import OrderedDict
 -- ==== Stream Tables (accumulator) ====
 
 
-{-| Accumulator for streaming bytecode encoding. Bundles growing tables
-and pre-encoded op bytes.
+{-| The tables of a bytecode file being written a batch at a time, together
+with the bytes of every operation encoded so far.
+
+A value starts as `emptyStreamTables` and grows through `collectAndEncodeOps`.
+Every index it has given out keeps its meaning as it grows, so the bytes it
+holds are still right when `assembleModule` writes the tables they refer to.
+
 -}
 type StreamTables
     = StreamTables
         { stringTable : StringTable
         , dialectBuilder : StreamDialectBuilder
         , attrAccum : AttrType.StreamAccum
-        , encodedOps : List Bytes -- reverse order (newest first)
+        , encodedOps : List Bytes -- newest first
         , numOps : Int
         }
 
 
-{-| Create empty stream tables with required initial entries:
-builtin/module strings, builtin.module op, and unknown location attr.
+{-| The tables before any operation is added.
+
+They already hold the names the enclosing `builtin.module` operation needs,
+since that operation is in no batch: the strings `builtin` and `module`, and
+the operation name `builtin.module`, numbered 0 in a dialect `builtin`
+numbered 0. They also hold `Mlir.Loc.unknown`.
+
 -}
 emptyStreamTables : StreamTables
 emptyStreamTables =
@@ -68,14 +106,18 @@ emptyStreamTables =
         }
 
 
-{-| Collect table entries from ops and encode each op to bytes.
-The ops' strings, attrs, types, and dialect op names are added to the
-growing tables, then each op is encoded using the current table state.
+{-| Adds `ops`, a batch of top-level operations, to the tables and encodes each
+of them, keeping their bytes in order after those of earlier batches.
+
+First the strings, operation names, attributes, types and locations of every
+operation in the batch, and of the operations nested inside them, are added.
+Then each operation is encoded, as `Mlir.Bytecode.IrSection.encodeFuncOp`
+describes, against the tables as they stand once the whole batch is in them.
+
 -}
 collectAndEncodeOps : List MlirOp -> StreamTables -> StreamTables
 collectAndEncodeOps ops (StreamTables st) =
     let
-        -- Step 1: Collect into all tables
         newStringTable =
             List.foldl StringTable.collectOp st.stringTable ops
 
@@ -85,14 +127,14 @@ collectAndEncodeOps ops (StreamTables st) =
         newAttrAccum =
             List.foldl AttrType.streamCollectOp st.attrAccum ops
 
-        -- Step 2: Build encoding views from the updated accumulators
+        -- Lookup-only views of the updated tables: they answer indices but
+        -- hold nothing to write.
         encDialectReg =
             DialectSection.registryFromOpMap (dialectOpMap newDialectBuilder)
 
         encAttrTable =
             AttrType.streamAccumEncodingView newAttrAccum
 
-        -- Step 3: Encode each op using current tables
         newEncodedOps =
             List.foldl
                 (\op acc ->
@@ -110,23 +152,24 @@ collectAndEncodeOps ops (StreamTables st) =
         }
 
 
-{-| Assemble the final bytecode from completed stream tables.
-Finalizes all tables, builds the module structure, and produces the output bytes.
+{-| Returns the whole bytecode file for every operation added to the tables,
+held in a `builtin.module` operation whose location is `moduleLoc`.
 
-The IR section is framed ARITHMETICALLY (plans/frontend-heap-release.md §7.6
-row 15): its two nested section lengths are computed from the varint widths
-and the summed `Bytes.width` of the pre-encoded ops, and the whole module is
-then encoded ONCE. Framing it with `Section.encodeSection` encoded the
-ops' bytes three more times (region content, region section, IR section) and
-then copied them into the module, so the module was materialised up to four
-times beside `encodedOps`. `Section.encodeSection` has no padding (id byte,
-varint length, content), so the bytes are identical.
+The file is the header (the magic number, the version, and the producer name
+`eco`), then the string, dialect, attribute and type, and attribute and type
+offset sections, the IR section, and resource and resource offset sections that
+declare no resources.
+
+`moduleLoc` is looked up in the tables but not added to them. It is found if it
+has the name and start of `Mlir.Loc.unknown`, which the tables always hold, or
+of a location that some added operation carries, since
+`Mlir.Bytecode.AttrType.locIndex` ignores a location's end; otherwise it is
+written as -1.
 
 -}
 assembleModule : StreamTables -> Loc -> Bytes
 assembleModule (StreamTables st) moduleLoc =
     let
-        -- Finalize tables
         stringTable =
             st.stringTable
 
@@ -136,7 +179,6 @@ assembleModule (StreamTables st) moduleLoc =
         attrTypeTable =
             AttrType.finalizeStreamAccum st.attrAccum
 
-        -- Encode table sections
         stringSectionBody =
             StringTable.encode stringTable
 
@@ -153,27 +195,25 @@ assembleModule (StreamTables st) moduleLoc =
             , BE.unsignedInt8 0x4C
             , BE.unsignedInt8 0xEF
             , BE.unsignedInt8 0x52
-
-            -- Version
             , encodeVarInt bytecodeVersion
 
-            -- Producer string (null-terminated)
+            -- Producer string, written inline and NUL-terminated
             , BE.string "eco"
             , BE.unsignedInt8 0x00
-
-            -- Sections
             , Section.encodeSection Section.sectionId.string stringSectionBody
             , Section.encodeSection Section.sectionId.dialect dialectSectionBody
             , Section.encodeSection Section.sectionId.attrType attrTypeSectionBody
             , Section.encodeSection Section.sectionId.attrTypeOffset attrTypeOffsetSectionBody
             , irSection dialectRegistry attrTypeTable st.numOps st.encodedOps moduleLoc
 
-            -- Empty resource sections
+            -- Resource sections declaring no resources
             , Section.encodeSection Section.sectionId.resource (BE.sequence [])
             , Section.encodeSection Section.sectionId.resourceOffset (encodeVarInt 0)
             ]
 
 
+{-| The version of the MLIR bytecode format that the file header declares.
+-}
 bytecodeVersion : Int
 bytecodeVersion =
     4
@@ -183,28 +223,35 @@ bytecodeVersion =
 -- ==== IR Section Assembly ====
 
 
-{-| The whole IR section (id, length, body) as one encoder over the
-pre-encoded op bytes, which it references but never copies.
+{-| Creates an encoder for the whole IR section, id and length included: a
+`builtin.module` operation located at `moduleLoc` whose one block holds the
+operations already encoded in `encodedOpsNewestFirst`, written oldest first.
+`numOps` must be the number of those operations.
 
-Wraps everything in a builtin.module op with an isolated region. The layout is
-exactly what `Section.encodeSection` produced for the nested framing:
+The module operation has one isolated region, written in an IR section of its
+own. The region has one block with no arguments, and is written as defining no
+values, which is right only while none of the operations has results. Laid
+out, the section is:
 
     u8 ir, varint irBodyLen,
         blockHeader, moduleNameIdx, 0x10, moduleLocIdx, regionEncoding,
         u8 ir, varint regionLen,
             varint 1, varint 0, bodyBlockHeader, op bytes...
 
-`encodedOpsNewestFirst` is in reverse order (newest first), as accumulated.
+Both lengths are worked out from `varIntWidth` and the widths of the operation
+bytes, instead of by encoding the contents and measuring them as
+`Mlir.Bytecode.Section.encodeSection` does. The bytes are those
+`encodeSection` would write, since it puts nothing between a section's length
+and its contents.
 
 -}
 irSection : DialectRegistry -> AttrTypeTable -> Int -> List Bytes -> Loc -> BE.Encoder
 irSection dialectReg attrTypeTable numOps encodedOpsNewestFirst moduleLoc =
     let
-        -- Module block header: 1 op (the module op), no block args
+        -- Block header (numOps << 1) | hasArgs: one op, the module, no arguments.
         blockHeaderValue =
             Bitwise.shiftLeftBy 1 1
 
-        -- Module op encoding
         moduleNameIdx =
             DialectSection.opIndex "builtin.module" dialectReg
 
@@ -215,12 +262,12 @@ irSection dialectReg attrTypeTable numOps encodedOpsNewestFirst moduleLoc =
         regionEncodingValue =
             Bitwise.or (Bitwise.shiftLeftBy 1 1) 1
 
-        -- Region content: 1 block, 0 values, block with all ops
+        -- The region's one block: every encoded op, no arguments.
         bodyBlockHeaderValue =
             Bitwise.shiftLeftBy 1 numOps
 
-        -- Oldest first, wrapped as encoders (no byte copies), plus their
-        -- total width — one pass over the newest-first list.
+        -- Folding the newest-first list onto the front reverses it to oldest
+        -- first.
         ( opEncoders, opsWidth ) =
             List.foldl
                 (\b ( acc, w ) -> ( BE.bytes b :: acc, w + Bytes.width b ))
@@ -259,8 +306,8 @@ irSection dialectReg attrTypeTable numOps encodedOpsNewestFirst moduleLoc =
             -- Region section header + region content header
             , BE.unsignedInt8 Section.sectionId.ir
             , encodeVarInt regionLen
-            , encodeVarInt 1
-            , encodeVarInt 0
+            , encodeVarInt 1 -- number of blocks
+            , encodeVarInt 0 -- number of values the blocks define
             , encodeVarInt bodyBlockHeaderValue
             ]
         , BE.sequence opEncoders
@@ -269,20 +316,31 @@ irSection dialectReg attrTypeTable numOps encodedOpsNewestFirst moduleLoc =
 
 
 -- ==== Streaming Dialect Builder ====
--- Assigns op indices in insertion order for stable, append-only indices.
 
 
+{-| The numbering of dialects and operation names for the dialect section,
+built up as operations are met.
+
+Each new dialect and each new operation name takes the next free index in its
+own numbering, and an index never changes once given, so operations can be
+encoded against `dialectOpMap` before every name is known. Each name's dialect
+index and suffix are kept, newest first, for `finalizeDialectBuilder` to turn
+into op groups.
+
+-}
 type StreamDialectBuilder
     = StreamDialectBuilder
-        { dialectList : List String -- reverse insertion order
-        , dialectSet : Dict String Int
+        { dialectList : List String -- newest first
+        , dialectSet : Dict String Int -- dialect -> its index
         , numDialects : Int
-        , opEntries : List { dialectIdx : Int, opSuffix : String } -- reverse insertion order
-        , opSet : Dict String Int -- fullName -> global index
+        , opEntries : List { dialectIdx : Int, opSuffix : String } -- newest first
+        , opSet : Dict String Int -- full operation name -> its index
         , nextOpIndex : Int
         }
 
 
+{-| A builder that has numbered no dialect and no operation name.
+-}
 emptyDialectBuilder : StreamDialectBuilder
 emptyDialectBuilder =
     StreamDialectBuilder
@@ -295,6 +353,14 @@ emptyDialectBuilder =
         }
 
 
+{-| Numbers the operation named `fullName` with the next free operation index,
+and its dialect with the next free dialect index if the dialect is new. A name
+already numbered leaves the builder unchanged.
+
+A name with no `.` is a dialect with an empty suffix, and keeps its index under
+the name itself.
+
+-}
 addDialectOp : String -> StreamDialectBuilder -> StreamDialectBuilder
 addDialectOp fullName (StreamDialectBuilder b) =
     case Dict.get fullName b.opSet of
@@ -342,11 +408,19 @@ addDialectOp fullName (StreamDialectBuilder b) =
                     StreamDialectBuilder b
 
 
+{-| Returns every operation name numbered so far, written in full, with its
+index.
+-}
 dialectOpMap : StreamDialectBuilder -> Dict String Int
 dialectOpMap (StreamDialectBuilder b) =
     b.opSet
 
 
+{-| Returns the registry the dialect section is written from: the dialects in
+the order they were numbered, and the operation names in op groups, one for
+each run of consecutive names of one dialect, so that each name's position in
+the section is the index it was given.
+-}
 finalizeDialectBuilder : StreamDialectBuilder -> DialectRegistry
 finalizeDialectBuilder (StreamDialectBuilder b) =
     let
@@ -367,6 +441,10 @@ finalizeDialectBuilder (StreamDialectBuilder b) =
         }
 
 
+{-| Splits `entries` into op groups, one for each run of consecutive entries of
+the same dialect, keeping their order. A dialect whose entries are interleaved
+with another's gets one group per run.
+-}
 buildRunLengthOpGroups : List { dialectIdx : Int, opSuffix : String } -> List DialectSection.OpGroup
 buildRunLengthOpGroups entries =
     case entries of
@@ -382,6 +460,10 @@ buildRunLengthOpGroups entries =
                 :: buildRunLengthOpGroups remaining
 
 
+{-| Splits off the run at the head of `entries` whose dialect is `dIdx`.
+Returns the suffixes of `acc`, which holds them newest first, followed by those
+of the run, in order, and the entries left after the run.
+-}
 spanByDialect : Int -> List String -> List { dialectIdx : Int, opSuffix : String } -> ( List String, List { dialectIdx : Int, opSuffix : String } )
 spanByDialect dIdx acc entries =
     case entries of
@@ -400,6 +482,9 @@ spanByDialect dIdx acc entries =
 -- ==== Walk ops for dialect op names ====
 
 
+{-| Numbers the name of `op` and then those of the operations nested in its
+regions.
+-}
 walkOpForDialects : MlirOp -> StreamDialectBuilder -> StreamDialectBuilder
 walkOpForDialects op builder =
     let
@@ -409,6 +494,9 @@ walkOpForDialects op builder =
     List.foldl walkRegionForDialects b1 op.regions
 
 
+{-| Numbers the operation names in a region: its entry block first, then its
+other blocks in their stored order.
+-}
 walkRegionForDialects : MlirRegion -> StreamDialectBuilder -> StreamDialectBuilder
 walkRegionForDialects (MlirRegion r) builder =
     let
@@ -418,6 +506,9 @@ walkRegionForDialects (MlirRegion r) builder =
     OrderedDict.foldl (\_ blk acc -> walkBlockForDialects blk acc) b1 r.blocks
 
 
+{-| Numbers the operation names in a block: its body in order, then its
+terminator.
+-}
 walkBlockForDialects : MlirBlock -> StreamDialectBuilder -> StreamDialectBuilder
 walkBlockForDialects blk builder =
     let

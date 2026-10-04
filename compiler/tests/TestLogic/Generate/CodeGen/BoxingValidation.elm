@@ -1,10 +1,30 @@
 module TestLogic.Generate.CodeGen.BoxingValidation exposing (expectBoxingValidation)
 
-{-| Test logic for CGEN\_001: Boxing Validation invariant.
+{-| The code generator moves a value between its primitive and its boxed form
+with two ops, `eco.box` and `eco.unbox`, and no type in `Mlir.Mlir` stops it
+emitting one with the wrong type on either side. This module checks the
+generated MLIR for such an op.
 
-Boxing operations must only convert between primitive MLIR types (i64, f64, i16)
-and `!eco.value`. Any conversion between mismatched primitives or no-op
-boxing/unboxing is a violation.
+A _boxed_ value has type `!eco.value`. A _primitive_, here, is a value of type
+`i64`, `f64`, `i16` or `i1`, the unboxed form of an Int, a Float, a Char or a
+Bool. `i1` is accepted because a Bool is `i1` in SSA operand context, such as
+the scrutinee of a case, and is unboxed to `i1` to get there. Where a Bool may
+be held as `i1` is not checked here.
+
+`expectBoxingValidation` compiles a source module to MLIR and looks at every
+`eco.box` and `eco.unbox` op in the result. A violation is:
+
+  - an `eco.box` whose operand is not a primitive, or whose result is not
+    `!eco.value`;
+  - an `eco.unbox` whose operand is not `!eco.value`, or whose result is not a
+    primitive.
+
+The operand type checked is the one the op records in its `_operand_types`
+attribute, as `TestLogic.Generate.CodeGen.Invariants` describes, not the type
+of the value the operand names.
+
+Among what is not checked: an op that does not record exactly one operand type,
+or that does not have exactly one result, is skipped without a violation.
 
 @docs expectBoxingValidation
 
@@ -25,7 +45,17 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that boxing validation invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR with
+`TestLogic.TestPipeline.runToMlir` and passes when no `eco.box` or `eco.unbox`
+op in the result is a violation. An `eco.box` must take `i64`, `f64`, `i16` or
+`i1` and produce `!eco.value`; an `eco.unbox` must take `!eco.value` and
+produce one of those four types. Ops that do not record exactly one operand
+type in `_operand_types`, or that do not have exactly one result, are skipped.
+
+It fails with the compiler's message if compilation fails, and otherwise with
+the first violation, as `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation`
+describes.
+
 -}
 expectBoxingValidation : Src.Module -> Expectation
 expectBoxingValidation srcModule =
@@ -37,10 +67,8 @@ expectBoxingValidation srcModule =
             violationsToExpectation (checkBoxingValidation mlirModule)
 
 
-{-| Check boxing/unboxing operations for validity.
-
-CGEN\_001: Boxing ops must convert between primitives (i64, f64, i16) and !eco.value only.
-
+{-| Returns the violations among the `eco.box` and `eco.unbox` ops of
+`mlirModule`, those of `eco.box` ops first.
 -}
 checkBoxingValidation : MlirModule -> List Violation
 checkBoxingValidation mlirModule =
@@ -60,17 +88,12 @@ checkBoxingValidation mlirModule =
     boxViolations ++ unboxViolations
 
 
-{-| Check a single eco.box operation.
+{-| Returns a violation if `op`, an `eco.box`, has an operand type that is not
+a primitive or a result that is not `!eco.value`. The operand is checked first,
+so an op wrong on both sides gives one violation, about its operand.
 
-eco.box must:
-
-  - Have input operand of primitive type (i64, f64, i16, or i1 for Bool)
-  - Have result of !eco.value type
-
-Note: i1 (Bool) is allowed as input because Bool values are unboxed to i1
-for control flow (case scrutinee) and then boxed back to !eco.value.
-The heap/closure storage checks (CGEN\_003, 026, 027, 049) verify that
-i1 is not stored unboxed in heap objects.
+Returns `Nothing` when `op` does not record exactly one operand type or does
+not have exactly one result.
 
 -}
 checkBoxOp : MlirOp -> Maybe Violation
@@ -99,15 +122,11 @@ checkBoxOp op =
                 Nothing
 
         _ ->
-            -- Malformed op, skip (other tests may catch this)
             Nothing
 
 
-{-| Check if a type is a valid primitive for boxing operations.
-
-This includes i1 (Bool) which can be boxed/unboxed for control flow,
-but is NOT allowed in heap/closure storage (checked by other tests).
-
+{-| Returns whether `t` is `i1`, `i16`, `i64` or `f64`, the types an `eco.box`
+may take and an `eco.unbox` may produce.
 -}
 isPrimitiveForBoxing : MlirType -> Bool
 isPrimitiveForBoxing t =
@@ -128,12 +147,12 @@ isPrimitiveForBoxing t =
             False
 
 
-{-| Check a single eco.unbox operation.
+{-| Returns a violation if `op`, an `eco.unbox`, has an operand type that is not
+`!eco.value` or a result that is not a primitive. The operand is checked first,
+so an op wrong on both sides gives one violation, about its operand.
 
-eco.unbox must:
-
-  - Have input operand of !eco.value type
-  - Have result of primitive type (i64, f64, i16, or i1 for Bool)
+Returns `Nothing` when `op` does not record exactly one operand type or does
+not have exactly one result.
 
 -}
 checkUnboxOp : MlirOp -> Maybe Violation
@@ -162,10 +181,13 @@ checkUnboxOp op =
                 Nothing
 
         _ ->
-            -- Malformed op, skip
             Nothing
 
 
+{-| Returns the text of `t` for a violation message: the MLIR name of an integer
+or float type, `!` followed by the name of a named type, or the word `function`
+for a function type.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

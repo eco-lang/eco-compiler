@@ -4,19 +4,25 @@ module Compiler.AST.Utils.Binop exposing
     , associativityEncoder, associativityDecoder
     )
 
-{-| Types and utilities for binary operator metadata in the Elm compiler.
+{-| An expression such as `a + b * c - d` is a chain of operators, and which
+operands each operator takes depends on two properties of the operators, their
+precedence and their associativity. This module is the one definition of those
+two properties, together with their binary codecs.
 
-This module defines the precedence and associativity properties of binary operators,
-along with serialization support for both JSON and binary formats. These properties
-determine how expressions with multiple operators are parsed and evaluated.
+An `infix` declaration gives an operator both properties, and a module's
+interface records them for each operator it exports. When a chain is resolved
+into nested applications, an operator of higher precedence takes its operands
+first. Associativity matters only between operators of equal precedence: it
+says whether a chain of them groups from the left, groups from the right, or is
+not allowed at all.
+
+The binary codecs write these properties in the compiler's binary format,
+which `Utils.Bytes.Encode` describes.
 
 
 # Types
 
 @docs Precedence, Associativity
-
-
-# JSON Serialization
 
 
 # Binary Serialization
@@ -32,20 +38,28 @@ import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
 
+{-| The binding strength of an operator: of two operators, the one with the
+higher precedence takes its operands first.
 
--- ====== BINOP STUFF ======
+This is a name for `Int`, not a new type, and the compiler accepts any `Int`
+here. An `infix` declaration in source can only give a single digit, 0 to 9.
 
-
-{-| Operator precedence level, with higher numbers binding more tightly.
 -}
 type alias Precedence =
     Int
 
 
-{-| Associativity determines how operators of the same precedence are grouped.
-Left: `a + b + c` is `(a + b) + c`
-Non: `a == b == c` is an error
-Right: `a :: b :: c` is `a :: (b :: c)`
+{-| How a chain of operators of equal precedence is grouped.
+
+For an operator `?`, `Left` groups the chain from the left, so that
+`a ? b ? c` means `(a ? b) ? c`, and `Right` groups it from the right, so that
+it means `a ? (b ? c)`.
+
+`Non` means the operator does not chain: if `?` is `Non`, `a ? b ? c` is
+reported as an error when operator chains are resolved during canonicalization.
+So is `a ? b ! c` when `?` and `!` have equal precedence and one is `Left` and
+the other `Right`.
+
 -}
 type Associativity
     = Left
@@ -53,26 +67,22 @@ type Associativity
     | Right
 
 
-
--- ====== JSON ENCODERS and DECODERS ======
--- ====== ENCODERS and DECODERS ======
-
-
-{-| Encode precedence to binary format.
+{-| Encodes a precedence as `Utils.Bytes.Encode.int` encodes any `Int`.
 -}
 precedenceEncoder : Precedence -> Bytes.Encode.Encoder
 precedenceEncoder =
     BE.int
 
 
-{-| Decode precedence from binary format.
+{-| A decoder for a precedence written by `precedenceEncoder`.
 -}
 precedenceDecoder : Bytes.Decode.Decoder Precedence
 precedenceDecoder =
     BD.int
 
 
-{-| Encode associativity to binary format as an unsigned 8-bit integer.
+{-| Encodes an associativity as a single byte: 0 for `Left`, 1 for `Non` and
+2 for `Right`.
 -}
 associativityEncoder : Associativity -> Bytes.Encode.Encoder
 associativityEncoder associativity =
@@ -89,7 +99,8 @@ associativityEncoder associativity =
         )
 
 
-{-| Decode associativity from binary format.
+{-| A decoder for an associativity written by `associativityEncoder`. Any byte
+other than 0, 1 or 2 makes it fail.
 -}
 associativityDecoder : Bytes.Decode.Decoder Associativity
 associativityDecoder =

@@ -8,49 +8,62 @@ module Compiler.GlobalOpt.CafHoist exposing
     , zeroRegions
     )
 
-{-| CAF hoisting (plans/caf-hoist-closed-expressions.md, CGEN\_069).
+{-| A function body that evaluates the same closed expression on every call
+does the same work every time, and this pass moves such an expression out so
+that it is evaluated once.
 
-Moves every eligible MAXIMAL closed subexpression inside a function body —
-a subtree referencing no locals bound outside itself — into a freshly
-minted nullary `MonoDefine` spec, replacing the site with a
-`MonoVarGlobal`. The existing CAF slot machinery (CGEN\_068) then evaluates
-each hoisted expression once per process instead of once per call. The
-move is VERBATIM: CallInfo/staging/LSS annotations travel with the tree
-(all per-node — plan DQ3), and `MonoCase` jump indices are case-local.
+A _closed_ subexpression is one that mentions no local variable bound outside
+itself, so its value does not depend on where it sits. A _CAF_ (constant
+applicative form) is a nullary top-level `MonoDefine`, a value with no
+arguments, which the back end evaluates once and keeps. To _hoist_ a closed
+subexpression is to mint a new CAF whose body is that subexpression, verbatim,
+and to replace the subexpression where it stood with a `MonoVarGlobal`
+referring to the new spec. Everything attached to the moved nodes, such as a
+call's `CallInfo`, moves with them unchanged.
 
-MAXIMALITY (plan DQ7, revised after H0 falsified the layered scheme:
-layered=12,668 vs maximal-eligible=4,642 — 2.1× mint inflation for no
-additional first-order win). Two phases per body:
+`run` is the pass. It looks inside the bodies of top-level closures, their
+capture expressions, and the bodies of top-level tail functions; the bodies of
+other nodes are left alone. Each body is handled in two walks.
 
-1.  `collectExpr` — pure bottom-up walk producing the ELIGIBLE-MAXIMAL
-    candidate subtree VALUES: a closed+eligible node collects itself and
-    discards its children's collections; a closed-but-INELIGIBLE or open
-    node passes its children's collections through (so eligible children
-    of e.g. bytes-excluded parents still hoist).
-2.  `replaceExpr` — top-down rebuild that replaces any node structurally
-    equal to a collected candidate (structure-shared `==`, fails fast on
-    constructor mismatch; candidate lists per body are tiny) and stops
-    descending at a replacement. Two equal maximal candidates in one body
-    both match and share one deduped spec — correct.
+The first walk, bottom-up, finds the body's _eligible-maximal candidates_. A
+node is a candidate when it is closed, is one of the kinds worth moving (a
+call, `let`, `if`, `case`, destructuring, record creation or update, tuple, or
+non-empty list), has at least `minNodes` nodes, and passes the exclusions
+below. A candidate is taken whole and nothing inside it is taken as well. A
+closed node that fails a test is not taken, but the candidates found inside it
+still are.
 
-No dead specs can result (every minted spec is referenced by at least one
-replaced site), and nothing is minted for nested candidates.
+The exclusions are these. A result of scalar type (`Int`, `Float`, `Char`, or
+a `number` variable) is not hoisted. Neither is a result of function type,
+because a call's `CallInfo` describes the shape of its callee expression, and
+replacing that expression with a global would leave the `CallInfo` describing
+a shape that is no longer there. A subtree that references a kernel whose home
+is `Debug` or `CellStore` is not hoisted: moving a `Debug` call would change
+how many times it logs, and `CellStore.new` allocates a mutable store, so one
+hoisted call would share a single store among all its evaluations. The test
+looks only at kernel references, so a subtree that calls a global function
+that logs can still be hoisted. A result whose type contains a type from the
+`elm/bytes` package, other than inside a function type, is not hoisted either,
+and nor is a call whose callee is a `Bytes` kernel.
 
-Dedupe (plan DQ2): closure-free subtrees merge by region-zeroed
-STRUCTURAL EQUALITY — collision-impossible — bucketed by a cheap
-kind tag and then keyed structurally on the demanded type
-(`Mono.SpecMap`; no type is ever rendered to a String). Closure-containing subtrees hoist per-site un-deduped
-(`MonoClosure.lambdaId` is identity-bearing; verbatim move only).
+The second walk, top-down, replaces every subtree equal under `==` to one of
+the body's candidates and does not look inside a subtree it has replaced.
 
-Exclusions (plan DQ4/DQ6): pkg-`bytes`-typed or -headed candidates
-(fusion's reified form beats memoization and its strict reifier does not
-look through bare globals in operand position); Debug-containing subtrees
-(inner `Debug.log` cardinality is not changed silently); scalar-ABI
-results (HEAP\_035); sizes below `minNodes`.
+Candidates that contain no closure are shared across the whole graph: one
+whose body, with every source region set to `A.zero`, equals that of a spec
+already minted at the same type reuses that spec instead of minting another.
+Only regions are erased, so two copies that differ only in the names of their
+local variables are not shared. A candidate that contains a closure gets a
+spec of its own at every site, because a closure carries a `lambdaId`
+identifying it. `zeroRegions` and `kindTagOf`, which build the key for this
+sharing, are exposed for the other passes that compare expressions the same
+way.
 
-Determinism (plan DQ8): specId-order fold, structural traversal order,
-encounter-order minting during replacement; the dedupe Dict is only ever
-looked up, never iterated for output.
+Once `maxHoists` specs have been minted, a candidate that would need a new
+spec is left where it is. Minted specs are appended after the existing nodes,
+named `hoist_0`, `hoist_1`, ... in the module `CafHoist` of the package
+`eco/hoisted`, in the order they were minted. Bodies are visited in SpecId
+order, so the result is deterministic.
 
 -}
 
@@ -64,19 +77,34 @@ import Set exposing (Set)
 import Utils.Crash
 
 
+{-| Counts describing what one `run` did.
+
+`sites` is the number of subexpressions replaced, which is `hoisted` (specs
+minted) plus `deduped` (sites given a spec minted earlier). `skippedBudget`
+counts sites left in place because `maxHoists` had been reached.
+
+The other `skipped` counts are of closed subexpressions of a candidate kind and
+of at least `minNodes` nodes that an exclusion rejected. A subexpression is
+counted under the first exclusion that rejects it, tried in the order scalar,
+function type, `Debug` or `CellStore`, bytes, and one below the size floor is
+counted nowhere. `skippedDebug` also counts `CellStore` rejections.
+
+-}
 type alias Stats =
-    { hoisted : Int -- specs minted
-    , sites : Int -- sites replaced (>= hoisted when dedupe hits)
-    , deduped : Int -- sites served by an existing spec
+    { hoisted : Int
+    , sites : Int
+    , deduped : Int
     , skippedBudget : Int
     , skippedBytes : Int
     , skippedDebug : Int
     , skippedScalar : Int
-    , skippedFnType : Int -- function-typed candidates (callee-shape hazard, plan DQ6.4b)
-    , origNodes : Int -- sum of ORIGINAL sizes over replaced sites
+    , skippedFnType : Int
+    , origNodes : Int -- total size, in nodes, of the subexpressions replaced
     }
 
 
+{-| Statistics with every count at zero.
+-}
 emptyStats : Stats
 emptyStats =
     { hoisted = 0
@@ -91,6 +119,8 @@ emptyStats =
     }
 
 
+{-| Returns `s` as one line of `name=value` pairs, beginning `caf-hoist:`.
+-}
 renderStats : Stats -> String
 renderStats s =
     "caf-hoist: hoisted="
@@ -113,7 +143,13 @@ renderStats s =
         ++ String.fromInt s.origNodes
 
 
-{-| Per-subtree analysis for the collect phase.
+{-| What the first walk has learned about one subtree.
+
+`free` holds the local names the subtree uses without binding them; the
+subtree is closed when it is empty. `size` is the number of nodes in the
+subtree. `hasDebug` is set when it references a `Debug` or a `CellStore`
+kernel.
+
 -}
 type alias Info =
     { free : Set Name.Name
@@ -123,11 +159,17 @@ type alias Info =
     }
 
 
+{-| The facts for a subtree that uses no local name, has no nodes counted yet,
+and contains no closure and no `Debug` or `CellStore` kernel.
+-}
 leafInfo : Info
 leafInfo =
     { free = Set.empty, size = 0, hasClosure = False, hasDebug = False }
 
 
+{-| Combines the facts of two sibling subtrees: the union of their free names,
+the sum of their sizes, and either one's flags.
+-}
 mergeInfo : Info -> Info -> Info
 mergeInfo a b =
     { free = Set.union a.free b.free
@@ -137,8 +179,8 @@ mergeInfo a b =
     }
 
 
-{-| An eligible-maximal candidate: the subtree value plus the analysis
-facts the mint step needs.
+{-| A subexpression chosen for hoisting, with its size in nodes and whether it
+contains a closure, which decides whether it may share a spec.
 -}
 type alias Candidate =
     { expr : Mono.MonoExpr
@@ -147,10 +189,19 @@ type alias Candidate =
     }
 
 
+{-| The state carried through the whole graph by `run`.
+
+`nextId` is the SpecId the next minted spec receives. `minted` holds the
+bodies and types of the specs minted so far, the most recent first. `dedupe`
+finds the spec already minted for a closure-free candidate: it is keyed by
+`kindTagOf` and then by type, and holds each region-zeroed body with its
+SpecId.
+
+-}
 type alias Ctx =
     { nextId : Int
-    , minted : List ( Mono.MonoExpr, Mono.MonoType ) -- REVERSED mint order
-    , dedupe : Dict String (Mono.SpecMap (List ( Mono.MonoExpr, Int ))) -- kindTag -> demanded type -> [(zeroed, specId)]
+    , minted : List ( Mono.MonoExpr, Mono.MonoType )
+    , dedupe : Dict String (Mono.SpecMap (List ( Mono.MonoExpr, Int )))
     , stats : Stats
     , maxHoists : Int
     }
@@ -160,6 +211,16 @@ type alias Ctx =
 -- ====== PUBLIC ENTRY ======
 
 
+{-| Returns the graph with its eligible-maximal candidates hoisted into new
+CAF specs, as the module documentation describes, and counts of what was done.
+
+The graph's registry must have `nextId` equal to the number of nodes and a
+`reverseMapping` of the same length, because new specs are numbered from
+`nextId` and appended to both; otherwise this crashes. The new specs get
+entries in `nodes` and `reverseMapping` only: the forward `mapping`,
+`countByGlobal` and `callEdges` are not extended.
+
+-}
 run : { minNodes : Int, maxHoists : Int } -> Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 run cfg (Mono.MonoGraph g) =
     let
@@ -167,9 +228,6 @@ run cfg (Mono.MonoGraph g) =
             Array.length g.nodes
 
         _ =
-            -- Append-only surgery precondition (plan DQ5): specIds are dense
-            -- and the registry arrays are nodes-parallel. Never observed to
-            -- fail; guards silent drift loudly.
             if g.registry.nextId /= nodesLen || Array.length g.registry.reverseMapping /= nodesLen then
                 Utils.Crash.crash
                     ("CafHoist: registry drift: nextId="
@@ -252,10 +310,10 @@ run cfg (Mono.MonoGraph g) =
     )
 
 
-{-| Bodies walked for hoisting (plan DQ6): function bodies + capture
-exprs, and tail-function bodies (loop-invariant hoists). Nullary define
-bodies are already memoized whole; ctors/enums/externs/manager
-leaves/ports untouched.
+{-| Returns `node` with candidates hoisted from the body and capture
+expressions of a closure-valued `MonoDefine`, or from the body of a
+`MonoTailFunc`. Any other node is returned unchanged; a `MonoDefine` whose body
+is not a closure is already a CAF and is evaluated once anyway.
 -}
 hoistNode : Int -> Ctx -> Mono.MonoNode -> ( Mono.MonoNode, Ctx )
 hoistNode minNodes ctx node =
@@ -297,9 +355,10 @@ hoistNode minNodes ctx node =
             ( node, ctx )
 
 
-{-| Phase 1 + phase 2 for one body: collect eligible-maximal candidates,
-then replace matching sites. Bodies with no candidates (the overwhelming
-majority) return verbatim after the pure collect walk.
+{-| Returns `body` with its eligible-maximal candidates replaced by references
+to specs, except where the hoist budget leaves a candidate in place, finding
+the candidates in one walk and replacing them in a second. A body with no
+candidates is returned as it was.
 -}
 hoistBody : Int -> Ctx -> Mono.MonoExpr -> ( Mono.MonoExpr, Ctx )
 hoistBody minNodes ctx body =
@@ -318,6 +377,14 @@ hoistBody minNodes ctx body =
 -- ====== PHASE 1: COLLECT (pure analysis; Ctx only for skip counters) ======
 
 
+{-| Returns the facts about `expr`, its eligible-maximal candidates, and `ctx`
+with the skip counts raised for any closed subexpression an exclusion
+rejected.
+
+If `expr` itself is a candidate it is the only one returned; otherwise the
+candidates found among its children are returned.
+
+-}
 collectExpr : Int -> Ctx -> Mono.MonoExpr -> ( Info, List Candidate, Ctx )
 collectExpr minNodes ctx expr =
     let
@@ -342,13 +409,6 @@ collectExpr minNodes ctx expr =
             ( info, childCands, bump (\s -> { s | skippedScalar = s.skippedScalar + 1 }) )
 
         else if isFnType ty then
-            -- Function-typed subtrees are EXCLUDED (found via the flag-on
-            -- corpus: Combinator* SIGABRTs): a composed-function value
-            -- hoisted out of CALLEE position leaves the enclosing MonoCall's
-            -- staged CallInfo describing a callee shape that no longer
-            -- exists — the typed-apply arity assert fires. CallInfo is
-            -- per-node (plan DQ3) but derives FROM the callee expr; the
-            -- callee's shape must not change under it.
             ( info, childCands, bump (\s -> { s | skippedFnType = s.skippedFnType + 1 }) )
 
         else if info.hasDebug then
@@ -358,7 +418,6 @@ collectExpr minNodes ctx expr =
             ( info, childCands, bump (\s -> { s | skippedBytes = s.skippedBytes + 1 }) )
 
         else
-            -- Eligible-maximal: collect SELF, discard nested candidates.
             ( info
             , [ { expr = expr, size = info.size, hasClosure = info.hasClosure } ]
             , ctx1
@@ -368,6 +427,16 @@ collectExpr minNodes ctx expr =
         ( info, childCands, ctx1 )
 
 
+{-| Returns the combined facts and candidates of the children of `expr`, not
+counting `expr` itself in the size.
+
+A name bound inside `expr` (a closure's parameters and captures, a `let`, a
+destructured name) is removed from its scope's free names. A tail call's own
+function name, a destructuring's source variable, and both names of a `case`
+are counted as free, so an expression containing them is closed only if an
+enclosing binding inside the candidate binds them.
+
+-}
 collectChildren : Int -> Ctx -> Mono.MonoExpr -> ( Info, List Candidate, Ctx )
 collectChildren minNodes ctx expr =
     let
@@ -397,26 +466,6 @@ collectChildren minNodes ctx expr =
             ( leafInfo, [], ctx )
 
         Mono.MonoVarKernel _ _ home _ _ ->
-            -- kernel-opt-11 Phase 4: the `home == "Debug"` test STAYS, and this
-            -- comment records why rather than replacing it with a KernelFacts
-            -- lookup. design_docs/debug-log-ordering-policy.md D-1/D-3 forbid
-            -- deleting or moving anything that transitively logs, and this pass
-            -- implements the strictest form of that: `hasDebug` => ineligible.
-            -- KernelFacts would give a FINER answer (per-row cseSafe), but the
-            -- table is whitelist-defaulted -- an unlisted kernel answers "not
-            -- safe" only because the consumer chooses to read it that way, and
-            -- this pass is default-off and unlisted-tolerant. Narrowing it here
-            -- would be a default-policy regression (kernel-opt-07 §6.F); the
-            -- fix for the table's optimism is listing the effectful rows, not
-            -- loosening this test.
-            --
-            -- `CellStore` is excluded on the same "ineligible" channel, for a
-            -- different reason: `Eco.CellStore.new` ALLOCATES A MUTABLE STORE,
-            -- so hoisting a call to it out of its scope would make one store
-            -- shared by every evaluation of that scope. The Elm side already
-            -- guards this by giving `new` an argument (a CAF cannot form), and
-            -- this pass is default-off; the test is here so that turning the
-            -- pass on can never reintroduce the aliasing by another route.
             ( { leafInfo | hasDebug = home == "Debug" || home == "CellStore" }, [], ctx )
 
         Mono.MonoUnit ->
@@ -536,6 +585,11 @@ collectChildren minNodes ctx expr =
             goList ctx items
 
 
+{-| Returns the combined facts and candidates of a `case` decision tree: the
+bodies held inline at its leaves, with the variable each test reads counted as
+free. A `Jump` leaf contributes nothing, since the branch it names is walked
+with the `case`'s branch list.
+-}
 collectDecider : Int -> Ctx -> Mono.Decider Mono.MonoChoice -> ( Info, List Candidate, Ctx )
 collectDecider minNodes ctx decider =
     case decider of
@@ -593,6 +647,11 @@ collectDecider minNodes ctx decider =
 -- ====== PHASE 2: REPLACE (top-down; stop at a replaced site) ======
 
 
+{-| Returns `expr` with every subtree equal to one of `cands` replaced by a
+reference to a spec for it, unless the budget is spent and it is left as it
+is, and `ctx` updated with any new spec. A matching subtree is not looked
+inside.
+-}
 replaceExpr : List Candidate -> Ctx -> Mono.MonoExpr -> ( Mono.MonoExpr, Ctx )
 replaceExpr cands ctx expr =
     case List.filter (\c -> c.expr == expr) cands of
@@ -603,6 +662,14 @@ replaceExpr cands ctx expr =
             replaceChildren cands ctx expr
 
 
+{-| Returns the expression to stand in place of `cand`.
+
+A candidate with no closure reuses a spec minted earlier for a body equal to it
+once regions are zeroed, at the same type and under the same `kindTagOf`;
+otherwise, or if it contains a closure, a new spec is minted for it, within the
+budget.
+
+-}
 mintOrDedupe : Ctx -> Candidate -> ( Mono.MonoExpr, Ctx )
 mintOrDedupe ctx cand =
     let
@@ -610,7 +677,6 @@ mintOrDedupe ctx cand =
             Mono.typeOf cand.expr
     in
     if cand.hasClosure then
-        -- Per-site, un-deduped (plan DQ2).
         mintOrBudget ctx cand ty Nothing
 
     else
@@ -645,6 +711,12 @@ mintOrDedupe ctx cand =
                 mintOrBudget ctx cand ty (Just ( tag, zeroed ))
 
 
+{-| Returns a reference to a newly minted spec whose body is `cand`, of type
+`ty`, or `cand` itself, unchanged, when `maxHoists` specs have already been
+minted. `maybeKey`, the kind tag and region-zeroed body of a closure-free
+candidate, records the new spec for later sites to reuse; `Nothing` records
+nothing.
+-}
 mintOrBudget : Ctx -> Candidate -> Mono.MonoType -> Maybe ( String, Mono.MonoExpr ) -> ( Mono.MonoExpr, Ctx )
 mintOrBudget ctx cand ty maybeKey =
     if ctx.stats.hoisted >= ctx.maxHoists then
@@ -694,6 +766,9 @@ mintOrBudget ctx cand ty maybeKey =
         )
 
 
+{-| Returns `expr` with `replaceExpr` applied to each of its children, threading
+`ctx` through them in order.
+-}
 replaceChildren : List Candidate -> Ctx -> Mono.MonoExpr -> ( Mono.MonoExpr, Ctx )
 replaceChildren cands ctx expr =
     let
@@ -910,6 +985,9 @@ replaceChildren cands ctx expr =
             ( Mono.MonoTupleCreate region items1 ty, ctx1 )
 
 
+{-| Returns a `case` decision tree with `replaceExpr` applied to the bodies held
+inline at its leaves.
+-}
 replaceDecider : List Candidate -> Ctx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, Ctx )
 replaceDecider cands ctx decider =
     case decider of
@@ -957,6 +1035,9 @@ replaceDecider cands ctx decider =
 -- ====== ELIGIBILITY ======
 
 
+{-| Tells whether `expr` is of a kind worth hoisting: a call, `let`, `if`,
+`case`, destructuring, record creation or update, tuple, or non-empty list.
+-}
 candidateKind : Mono.MonoExpr -> Bool
 candidateKind expr =
     case expr of
@@ -991,8 +1072,8 @@ candidateKind expr =
             False
 
 
-{-| Scalar-ABI results are outside the slot scope (HEAP\_035): mirrors
-Types.monoTypeToAbi without a Generate-layer import.
+{-| Tells whether a value of type `t` is not a scalar: false for `Int`,
+`Float`, `Char` and a `number` type variable, true for every other type.
 -}
 valueAbi : Mono.MonoType -> Bool
 valueAbi t =
@@ -1013,10 +1094,8 @@ valueAbi t =
             True
 
 
-{-| Function-typed exclusion (plan DQ6.4b): see the eligibility comment.
-`MVar CEcoValue` can in principle erase a function type — accepted residual
-risk, gated by the corpus (erased types cannot sit in staged callee
-position, which is the hazard).
+{-| Tells whether `t` is a function type. Only an `MFunction` counts, so a
+type variable is never treated as a function type, whatever it stands for.
 -}
 isFnType : Mono.MonoType -> Bool
 isFnType t =
@@ -1028,10 +1107,9 @@ isFnType t =
             False
 
 
-{-| pkg-`bytes` exclusion, TYPE side (plan DQ4): never hoist a value whose
-type reaches an elm/bytes type (Encoder/Decoder/Bytes) — those are
-fusion's operands; the strict reifier does not look through bare globals.
-`Mono.mFunction` is a barrier (encoder-RETURNING functions are fine).
+{-| Tells whether `t` contains a custom type from the `elm/bytes` package,
+looking through custom type arguments, lists, tuples and records, but not into
+function types: a function returning an encoder does not count.
 -}
 typeTouchesBytes : Mono.MonoType -> Bool
 typeTouchesBytes t =
@@ -1055,9 +1133,7 @@ typeTouchesBytes t =
             False
 
 
-{-| pkg-`bytes` exclusion, HEAD side (belt to the type rule): a call whose
-head is a Bytes kernel. Global heads are covered by the type rule (their
-results are bytes-typed when it matters).
+{-| Tells whether `expr` is a call whose callee is a kernel with home `Bytes`.
 -}
 bytesHeaded : Mono.MonoExpr -> Bool
 bytesHeaded expr =
@@ -1069,6 +1145,8 @@ bytesHeaded expr =
             False
 
 
+{-| Returns the variable a destructuring path starts from.
+-}
 pathRoot : Mono.MonoPath -> Name.Name
 pathRoot path =
     case path of
@@ -1085,6 +1163,8 @@ pathRoot path =
             pathRoot rest
 
 
+{-| Returns the variable a decision-tree path starts from.
+-}
 dtRoot : Mono.MonoDtPath -> Name.Name
 dtRoot path =
     case path of
@@ -1099,13 +1179,15 @@ dtRoot path =
 
 
 
--- ====== DEDUPE MACHINERY (plan DQ2 / §3) ======
+-- ====== DEDUPE MACHINERY ======
 
 
-{-| Rewrite every Region (the ONLY non-semantic payload in MonoExpr) to
-A.zero so structural equality compares meaning, not source positions.
-Only called on closure-free subtrees (closure-containing candidates never
-dedupe), but handles MonoClosure anyway for totality.
+{-| Returns `expr` with every source region in it set to `A.zero`, so that two
+copies of an expression from different places compare equal under `==`.
+
+Nothing else is changed: local names, closure `lambdaId`s and `CallInfo`s are
+kept, so expressions that differ in any of them still compare unequal.
+
 -}
 zeroRegions : Mono.MonoExpr -> Mono.MonoExpr
 zeroRegions expr =
@@ -1177,6 +1259,8 @@ zeroRegions expr =
             Mono.MonoTupleCreate A.zero (List.map zeroRegions items) ty
 
 
+{-| Returns a local definition with `zeroRegions` applied to its body.
+-}
 zeroRegionsDef : Mono.MonoDef -> Mono.MonoDef
 zeroRegionsDef def =
     case def of
@@ -1187,6 +1271,9 @@ zeroRegionsDef def =
             Mono.MonoTailDef n params (zeroRegions e)
 
 
+{-| Returns a `case` decision tree with `zeroRegions` applied to the bodies held
+inline at its leaves.
+-}
 zeroRegionsDecider : Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 zeroRegionsDecider decider =
     case decider of
@@ -1205,15 +1292,13 @@ zeroRegionsDecider decider =
                 (zeroRegionsDecider fallback)
 
 
-{-| Cheap bucket tag for an expression's TOP NODE — the outer half of the
-dedupe key; the type is the inner half and is keyed structurally by
-`Mono.SpecMap`, never rendered (speckey plan §10, the CafHoist follow-on).
-This used to append `Mono.toComparableMonoType ty`, which renders a whole
-type to a String — 4,786 characters for an arrow-free `Context`-shaped type
-(plan §8.6) — once per candidate site.
+{-| Returns a short tag for the kind of `expr`'s top node, used to divide
+expressions into buckets before comparing them in full.
 
-Equality within a bucket is exact (`==` on zeroed trees), so the tag only
-affects bucket sizes, never correctness.
+A call's tag also names its callee when the callee is a global (by SpecId) or a
+kernel (by home and name), and a list's tag includes its length. Two
+expressions with different tags are never equal, so the tag decides only how
+large each bucket is, never which expressions are found equal.
 
 -}
 kindTagOf : Mono.MonoExpr -> String

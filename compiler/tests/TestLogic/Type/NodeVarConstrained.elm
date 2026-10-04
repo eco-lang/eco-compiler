@@ -4,22 +4,46 @@ module TestLogic.Type.NodeVarConstrained exposing
     , formatViolations
     )
 
-{-| Test logic for invariant TYPE\_007: Recorded node variables are constrained.
+{-| Finds expressions whose solved type is a type variable that nothing
+constrained, so that a solver variable recorded for an expression and then
+never tied to anything does not go unnoticed.
 
-Every type variable registered via NodeIds.recordNodeVar for a Group A
-expression must resolve (after solving) to a type that is grounded in the
-enclosing annotation's binders. Group A expressions are those dispatched to
-specialised constraint helpers that call recordNodeVar:
+While generating constraints, the typed type checker records a solver variable
+for the type of each expression node, against the node's id. For the
+expression kinds called Group A it does so with
+`Compiler.Type.Constrain.Typed.NodeIds.recordNodeVar`; which kinds are in
+Group A is decided by `Compiler.Type.Constrain.Typed.Expression`. If no
+constraint ever ties such a variable to anything, solving leaves it free, and
+the node's type can come out as a bare type variable that is not a type
+variable of any enclosing definition. `check` looks for those nodes in a
+per-node type array, indexed by node id.
 
-    Int, Negate, Binop, Call, If, Case, Access, Update,
-    Accessor, List, Tuple, Record, Lambda, Let, LetRec, LetDestruct
+A type variable is accepted at a node if it is a binder there or a type-class
+variable. The binders at a node are the type variables of the definitions that
+enclose it:
 
-A bare TVar whose name does not appear in any enclosing annotation's binders
-indicates a solver variable that was recorded but never unified with anything.
+  - At a top-level definition with an annotation, they are the type variables
+    the annotation declares. At one without, they are the type variables of
+    the scheme held for its name in the annotations given to `check`, and
+    there are none if it has no entry.
+  - A let-bound definition adds to the enclosing binders, for its own body
+    only. With an annotation it adds the type variables the annotation
+    declares. Without one it adds the type variables that `collectFreeVars`
+    finds in the node types of its body and of its argument patterns, which
+    stand in for its inferred type.
 
-Group B expressions (Str, Chr, Float, Unit, Shader) use
-recordSyntheticExprVar instead and are handled by PostSolve — they are
-NOT in scope for TYPE\_007.
+A type-class variable is one whose name starts with `number`, `comparable`,
+`appendable` or `compappend`. The test is a prefix match, the same one
+`Compiler.Data.Name.isNumberType` and its siblings make.
+
+Only a node whose whole type is a bare type variable can fail. A structured
+type such as `List a` passes whatever variables it contains.
+
+The kinds checked are `Int`, `Negate`, `Binop`, `If`, `Case`, `Access`,
+`Update`, and `Call` except a call whose function is a kernel reference. The
+other Group A kinds (`Accessor`, `List`, `Tuple`, `Record`, `Lambda`, `Let`,
+`LetRec` and `LetDestruct`) are not checked themselves, but the expressions
+inside them are.
 
 -}
 
@@ -32,7 +56,14 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
-{-| A violation of TYPE\_007.
+{-| One expression that failed the check: its type is a bare type variable,
+`spuriousVar`, that is neither a binder at the node nor a type-class variable.
+
+`exprKind` names the kind of expression, such as `"If"`. `functionName` is the
+top-level definition the expression is in, also when it lies inside a
+let-bound definition. `binders` are the binders at the node, in ascending
+order.
+
 -}
 type alias Violation =
     { nodeId : Int
@@ -43,11 +74,11 @@ type alias Violation =
     }
 
 
-{-| Check TYPE\_007 across all declarations in a module.
+{-| Returns every expression in a module's top-level definitions that fails the
+check, given the schemes of the top-level definitions by name and the type of
+each node, indexed by node id. An empty list means the module passes.
 
-For each annotated declaration, walk its expression tree and check that
-every Group A expression's node type is grounded in the enclosing
-annotation's binders.
+A node with a negative id, or with no type in the array, passes.
 
 -}
 check :
@@ -59,6 +90,9 @@ check (Can.Module modData) annotations nodeTypes =
     checkDecls modData.decls annotations nodeTypes
 
 
+{-| Returns the violations in every definition of a declaration list, including
+each member of a recursive group.
+-}
 checkDecls :
     Can.Decls
     -> Dict Name.Name (Can.Annotation Name)
@@ -79,6 +113,10 @@ checkDecls decls annotations nodeTypes =
             []
 
 
+{-| Returns the violations in one top-level definition. Its binders are the type
+variables its annotation declares or, when it has none, the type variables of
+its scheme in `annotations`.
+-}
 checkDef :
     Can.Def
     -> Dict Name.Name (Can.Annotation Name)
@@ -101,7 +139,8 @@ checkDef def annotations nodeTypes =
             checkExpr name binders body nodeTypes
 
 
-{-| Extract binder names from an annotation, if one exists.
+{-| Returns the type variables of the scheme `annotations` holds for `name`, or
+none if it holds none.
 -}
 annotationBinders : Name.Name -> Dict Name.Name (Can.Annotation Name) -> Set String
 annotationBinders name annotations =
@@ -113,27 +152,28 @@ annotationBinders name annotations =
             Set.empty
 
 
-{-| Get the expression ID from a canonical expression.
+{-| Returns an expression's node id.
 -}
 getExprId : Can.Expr -> Int
 getExprId (A.At _ info) =
     info.id
 
 
-{-| Get the pattern ID from a canonical pattern.
+{-| Returns a pattern's node id.
 -}
 getPatternId : Can.Pattern -> Int
 getPatternId (A.At _ patInfo) =
     patInfo.id
 
 
-{-| Walk into a let-bound definition using the enclosing binders,
-or the def's own binders if it has a typed annotation.
+{-| Returns the violations in the body of a let-bound definition, checked with
+`enclosingBinders` extended for that body.
 
-For unannotated Def, infer let-generalized binders from the full inferred
-function type: argument pattern types + body result type from nodeTypes.
-This makes all scheme TVars (a, b, c, etc.) visible when checking Group A
-nodes inside the body, including TVars that only appear in parameter types.
+A definition with an annotation adds the type variables the annotation
+declares. One without adds the type variables `collectFreeVars` returns for the
+node types of its body and of its argument patterns, so that a variable of its
+inferred type counts as a binder even when it appears only in a parameter's
+type.
 
 -}
 walkDef :
@@ -190,7 +230,10 @@ walkDef enclosingFunc enclosingBinders def nodeTypes =
             checkExpr enclosingFunc defBinders body nodeTypes
 
 
-{-| Walk an expression tree, checking If and Case nodes.
+{-| Returns the violations in an expression and everything inside it. The
+expression itself is checked if it is an `Int`, `Negate`, `Binop`, `If`,
+`Case`, `Access` or `Update`, or a `Call` whose function is not a kernel
+reference.
 -}
 checkExpr :
     Name.Name
@@ -203,7 +246,6 @@ checkExpr funcName binders (A.At _ exprInfo) nodeTypes =
         nodeId =
             exprInfo.id
 
-        -- Check this node if it's a Group A expression (uses recordNodeVar)
         thisViolations =
             case exprInfo.node of
                 Can.Int _ ->
@@ -216,7 +258,7 @@ checkExpr funcName binders (A.At _ exprInfo) nodeTypes =
                     checkNodeType funcName binders nodeId "Binop" nodeTypes
 
                 Can.Call fn _ ->
-                    -- Skip direct kernel calls: their TVars come from kernel schemes.
+                    -- A direct kernel call is exempt, whatever its type.
                     case fn of
                         A.At _ fnInfo ->
                             case fnInfo.node of
@@ -239,21 +281,17 @@ checkExpr funcName binders (A.At _ exprInfo) nodeTypes =
                     checkNodeType funcName binders nodeId "Update" nodeTypes
 
                 _ ->
-                    -- Group B (Str, Chr, Float, Unit, Shader) or leaf Var* — not checked by TYPE_007
                     []
 
-        -- Recurse into children
         childViolations =
             walkChildren funcName binders exprInfo.node nodeTypes
     in
     thisViolations ++ childViolations
 
 
-{-| Is this TVar name a type-class variable?
-
-Elm's solver produces constrained type variables for numeric/comparison type
-classes. These never appear in Forall binders. Recognise by name prefix.
-
+{-| Tells whether a type variable is exempt as a type-class variable: one whose
+name starts with `number`, `comparable`, `appendable` or `compappend`. Being a
+prefix match, it also exempts a name such as `numberOfItems`.
 -}
 isTypeClassVar : String -> Bool
 isTypeClassVar name =
@@ -263,7 +301,13 @@ isTypeClassVar name =
         || String.startsWith "compappend" name
 
 
-{-| Check whether a node's resolved type contains spurious free variables.
+{-| Returns a violation for node `nodeId` if its type in `nodeTypes` is a bare
+type variable that is neither in `binders` nor a type-class variable, and
+nothing otherwise. `exprKind` is only copied into the violation.
+
+A negative id passes, as does a node with no type in the array. A structured
+type passes whatever variables it contains.
+
 -}
 checkNodeType :
     Name.Name
@@ -279,7 +323,6 @@ checkNodeType funcName binders nodeId exprKind nodeTypes =
     else
         case Array.get nodeId nodeTypes |> Maybe.andThen identity of
             Nothing ->
-                -- Missing node type; TYPE_003 covers this
                 []
 
             Just resolvedType ->
@@ -295,8 +338,6 @@ checkNodeType funcName binders nodeId exprKind nodeTypes =
                     []
 
                 else
-                    -- Only report if the resolved type is a BARE TVar
-                    -- (structured types with extra vars are a different issue)
                     case resolvedType of
                         Can.TVar varName ->
                             if Set.member varName binders then
@@ -312,11 +353,14 @@ checkNodeType funcName binders nodeId exprKind nodeTypes =
                                 ]
 
                         _ ->
-                            -- Structured type — not a bare unconstrained var
                             []
 
 
-{-| Collect all free TVar names from a canonical type.
+{-| Returns the names of the type variables in a type. A `Filled` alias is
+looked through to its body. A `Holey` alias is an exception: its body is written
+in the alias's own parameter names, so the result for it is the parameter names
+that body mentions, and the arguments are ignored. The extension variable of an
+extensible record is not collected either.
 -}
 collectFreeVars : Can.Type Name -> Set String
 collectFreeVars tipe =
@@ -348,7 +392,10 @@ collectFreeVars tipe =
             collectFreeVars aliased
 
 
-{-| Recursively walk child expressions.
+{-| Returns the violations in the expressions directly inside a node and
+everything inside them, checked with `binders`. A let-bound definition is the
+exception: its body is checked by `walkDef`, with binders of its own. Patterns
+are not visited.
 -}
 walkChildren :
     Name.Name
@@ -406,7 +453,6 @@ walkChildren funcName binders node nodeTypes =
         Can.Tuple a b extras ->
             go a ++ go b ++ List.concatMap go extras
 
-        -- Leaf nodes: no children to walk
         Can.VarLocal _ ->
             []
 
@@ -450,7 +496,9 @@ walkChildren funcName binders node nodeTypes =
             []
 
 
-{-| Format violations for test output.
+{-| Renders violations as a test failure message: a header with their count,
+then one indented line per violation giving its expression kind, node id,
+definition, variable and binders.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
@@ -460,6 +508,8 @@ formatViolations violations =
         ++ String.join "\n\n" (List.map formatOne violations)
 
 
+{-| Renders one violation as an indented line of the failure message.
+-}
 formatOne : Violation -> String
 formatOne v =
     "  "

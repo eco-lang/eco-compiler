@@ -1,8 +1,52 @@
 module TestLogic.Type.UnificationErrorsTest exposing (suite)
 
-{-| Test suite for invariant TYPE\_002: Unification failures become type errors.
+{-| Checks that the type checker turns a failed unification into a type error,
+and reports none for a well-typed module. A solver that let a failed
+unification pass would accept an ill-typed program, and one that reported a
+mismatch where there is none would reject a correct one; these tests are built
+to catch either.
 
-This module tests that type mismatches are properly reported as errors.
+Each test builds a small module with
+`Compiler.AST.SourceBuilder.makeModuleWithDefs`: unannotated top-level values,
+in a module that imports `Basics` and `List`. It passes the module to
+`expectTypeMismatchError` or `expectNoTypeErrors` from
+`TestLogic.Type.UnificationErrors`, which describes how the module is checked
+and which errors count as a mismatch. A comment inside each test of the
+mismatch group sketches its program as Elm source.
+
+Three facts about these programs matter. With nothing annotated, an integer
+literal has the constrained type `number`, not `Int`. In the mock `Basics` of
+`Compiler.Elm.Interface.Basic.testIfaces`, which the module is checked against,
+`+` has type `number -> number -> number` and `<` has type
+`comparable -> comparable -> Bool`. And the type checker accepts a tuple as
+`comparable` only when each of its elements is `comparable`, which a function
+never is.
+
+The mismatch group expects a mismatch error for:
+
+  - an integer literal as the condition of an `if`;
+  - an `if` whose branches are an integer literal and a string;
+  - a list of an integer literal and a string;
+  - a `case` whose branches give an integer literal and a string;
+  - `1 + "hello"`;
+  - `<` between two tuples that hold a function: as the first element of a
+    pair, as the middle and as the first element of a triple, and as the last
+    element of a pair.
+
+The group's first test is an exception. It applies the unannotated `f s = s`,
+whose type is `a -> a`, to `42`, and expects no type errors. Its label names
+an `Int` and `String` mismatch, but the program holds no string.
+
+The valid group expects no type errors for:
+
+  - a list of three integer literals;
+  - `if True then 1 else 2`;
+  - `f x = x` applied to `42`;
+  - `(1, 2) < (3, 4)` and `("a", 1) < ("b", 2)`.
+
+Among what is not tested: where a mismatch is reported or which types
+conflict, since only the kind of error is checked; annotated definitions; and
+comparison with `>`, `<=` or `>=`, or of lists.
 
 -}
 
@@ -15,6 +59,8 @@ import TestLogic.Type.UnificationErrors
         )
 
 
+{-| Every test of this module: the mismatch group and the valid group.
+-}
 suite : Test
 suite =
     Test.describe "Unification failures become type errors (TYPE_002)"
@@ -23,15 +69,18 @@ suite =
         ]
 
 
+{-| The mismatch group: tests that build an ill-typed module and expect a
+mismatch error, after a first test that builds a well-typed application and
+expects no type errors.
+-}
 typeMismatchTests : Test
 typeMismatchTests =
     Test.describe "Type mismatch detection"
         [ Test.test "Int vs String in function argument" <|
             \_ ->
                 let
-                    -- f : String -> String
                     -- f s = s
-                    -- x = f 42  -- Error: Int given where String expected
+                    -- x = f 42
                     modul =
                         SB.makeModuleWithDefs "TypeMismatch"
                             [ ( "f"
@@ -44,13 +93,11 @@ typeMismatchTests =
                               )
                             ]
                 in
-                -- This should produce a type error (if f is constrained to String)
-                -- For now, this may pass since f is polymorphic
                 expectNoTypeErrors modul
         , Test.test "Int in if condition" <|
             \_ ->
                 let
-                    -- x = if 42 then 1 else 2  -- Error: Int where Bool expected
+                    -- x = if 42 then 1 else 2
                     modul =
                         SB.makeModuleWithDefs "IfMismatch"
                             [ ( "x"
@@ -66,7 +113,7 @@ typeMismatchTests =
         , Test.test "mismatched if branches" <|
             \_ ->
                 let
-                    -- x = if True then 1 else "hello"  -- Error: Int vs String
+                    -- x = if True then 1 else "hello"
                     modul =
                         SB.makeModuleWithDefs "BranchMismatch"
                             [ ( "x"
@@ -82,7 +129,7 @@ typeMismatchTests =
         , Test.test "mismatched list elements" <|
             \_ ->
                 let
-                    -- x = [1, "hello"]  -- Error: Int vs String
+                    -- x = [1, "hello"]
                     modul =
                         SB.makeModuleWithDefs "ListMismatch"
                             [ ( "x"
@@ -97,7 +144,7 @@ typeMismatchTests =
                 let
                     -- x n = case n of
                     --   0 -> 1
-                    --   _ -> "hello"  -- Error: Int vs String
+                    --   _ -> "hello"
                     modul =
                         SB.makeModuleWithDefs "CaseMismatch"
                             [ ( "x"
@@ -114,7 +161,7 @@ typeMismatchTests =
         , Test.test "operator type mismatch" <|
             \_ ->
                 let
-                    -- x = 1 + "hello"  -- Error: String where number expected
+                    -- x = 1 + "hello"
                     modul =
                         SB.makeModuleWithDefs "OpMismatch"
                             [ ( "x"
@@ -128,9 +175,6 @@ typeMismatchTests =
             \_ ->
                 let
                     -- x = (\z -> z, 1) < (\w -> w, 2)
-                    -- First tuple element is a function (not comparable); last is Int.
-                    -- Must be rejected. Eco currently accepts it: Unify.elm:540 only
-                    -- unifies the LAST tuple element against comparable.
                     modul =
                         SB.makeModuleWithDefs "TupleCompFirst"
                             [ ( "x"
@@ -146,7 +190,6 @@ typeMismatchTests =
             \_ ->
                 let
                     -- x = (1, \z -> z, 2) < (3, \w -> w, 4)
-                    -- Middle element is a function; exercises the n-ary tuple tail (cs).
                     modul =
                         SB.makeModuleWithDefs "TupleCompMiddle"
                             [ ( "x"
@@ -177,8 +220,6 @@ typeMismatchTests =
             \_ ->
                 let
                     -- x = (1, \z -> z) < (2, \w -> w)
-                    -- Non-comparable element is LAST, which eco already checks, so this
-                    -- is rejected today too. Guards that a fix does not regress it.
                     modul =
                         SB.makeModuleWithDefs "TupleCompLast"
                             [ ( "x"
@@ -193,6 +234,9 @@ typeMismatchTests =
         ]
 
 
+{-| The valid group: tests that build a well-typed module and expect no type
+errors.
+-}
 validTypeTests : Test
 validTypeTests =
     Test.describe "Valid types succeed"
@@ -232,7 +276,6 @@ validTypeTests =
         , Test.test "comparable tuple with all comparable elements" <|
             \_ ->
                 let
-                    -- x = (1, 2) < (3, 4)   -- both elements comparable -> accepted
                     modul =
                         SB.makeModuleWithDefs "TupleCompValid"
                             [ ( "x"
@@ -247,7 +290,6 @@ validTypeTests =
         , Test.test "comparable tuple with mixed comparable elements" <|
             \_ ->
                 let
-                    -- x = ("a", 1) < ("b", 2)   -- String + Int both comparable -> accepted
                     modul =
                         SB.makeModuleWithDefs "TupleCompMixedValid"
                             [ ( "x"

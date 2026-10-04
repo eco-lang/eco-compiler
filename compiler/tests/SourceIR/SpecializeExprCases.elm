@@ -1,13 +1,44 @@
 module SourceIR.SpecializeExprCases exposing (expectSuite, suite)
 
-{-| Test cases for specializeExpr branches in Specialize.elm.
+{-| Small programs, each built around one kind of expression (a `case`,
+self-recursion, or a polymorphic function used at one type), so that a compiler
+stage that mishandles that kind of expression can be caught on a program that
+holds little else.
 
-These tests cover:
+The module is named after `specializeExpr` in
+`Compiler.Monomorphize.Specialize`, the substitution engine's expression
+specializer, and `suite` runs the programs through monomorphization on that
+engine.
 
-  - Enum patterns in case expressions
-  - Debug.log and Debug.todo
-  - Tail recursive functions
-  - Various expression specialization paths
+The fixture is nine programs. Each is a module named `Test`, built with
+`makeModuleWithTypedDefsUnionsAliases`, so it imports `Basics`, `Maybe`,
+`List`, `Elm.JsArray`, `String` and `Char`, and every top-level definition in
+it carries a type annotation. Each defines `testValue`, which
+`TestLogic.TestPipeline` needs from typed optimization onwards. The Elm
+sketches in the docstrings below are source text for the trees built; the
+trees have no `Parens` node where a sketch has parentheses.
+
+The cases only build programs and hand each to an expectation function; what is
+checked is that function's choice.
+
+  - `suite` runs the nine cases with
+    `TestLogic.TestPipeline.expectMonomorphization`, which passes when
+    `runToMono` succeeds and its graph has a `main` and at least one node.
+  - `expectSuite` runs the same nine cases with the caller's expectation.
+  - Three cases build a `case` on a custom type whose constructors take no
+    arguments: one flat, one with a second `case` inside a branch, and one that
+    ends with a catch-all branch.
+  - One case builds a polymorphic `identity` and applies it to an `Int`.
+  - Three cases build self-recursive functions: two with the self-call in tail
+    position, which differ only in their names and in the argument `testValue`
+    passes, and one (`factorial`) with the self-call as an operand of `*`.
+  - One case builds a `case` on `Int` literal patterns, and one a single-branch
+    `case` whose branch compares a `String` with `==`.
+
+Among what is not tested: no case uses `Debug`, builds a string literal
+pattern, or builds a wildcard pattern (each catch-all branch binds a variable
+named `_`). No case checks the value `testValue` would compute, and `suite`
+does not run the solver engine.
 
 -}
 
@@ -39,13 +70,19 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| A single test that runs every case with
+`TestLogic.TestPipeline.expectMonomorphization` and reports the first case that
+fails.
+-}
 suite : Test
 suite =
     Test.test "Specialize.elm expression coverage monomorphizes expressions" <|
         \_ -> bulkCheck (testCases expectMonomorphization)
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Creates a single test, named "Expression specialization " followed by
+`condStr`, that runs every case with `expectFn` and reports the first case
+that fails.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -53,6 +90,8 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this module, each checked with `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -69,6 +108,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the three cases that `case` on a custom type whose constructors take
+no arguments, each checked with `expectFn`.
+-}
 enumPatternCases : (Src.Module -> Expectation) -> List TestCase
 enumPatternCases expectFn =
     [ { label = "Simple enum case expression", run = simpleEnumCase expectFn }
@@ -77,8 +119,30 @@ enumPatternCases expectFn =
     ]
 
 
-{-| Simple enum type with case expression.
-Tests specializeExpr for enum/nullary constructor patterns.
+{-| Applies `expectFn` to a program with one `case` that has a branch for each
+constructor of a three-constructor type:
+
+    type Status
+        = Pending
+        | Active
+        | Completed
+
+    statusCode : Status -> Int
+    statusCode s =
+        case s of
+            Pending ->
+                0
+
+            Active ->
+                1
+
+            Completed ->
+                2
+
+    testValue : Int
+    testValue =
+        statusCode Active
+
 -}
 simpleEnumCase : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleEnumCase expectFn _ =
@@ -94,7 +158,6 @@ simpleEnumCase expectFn _ =
                 ]
             }
 
-        -- statusCode : Status -> Int
         statusCodeDef : TypedDef
         statusCodeDef =
             { name = "statusCode"
@@ -125,7 +188,39 @@ simpleEnumCase expectFn _ =
     expectFn modul
 
 
-{-| Nested case expressions on enums.
+{-| Applies `expectFn` to a program with a `case` on one argument whose `Red`
+branch holds a second `case`, on the other argument; the other two branches
+are plain values:
+
+    type Color
+        = Red
+        | Green
+        | Blue
+
+    mixColors : Color -> Color -> Int
+    mixColors c1 c2 =
+        case c1 of
+            Red ->
+                case c2 of
+                    Red ->
+                        16711680
+
+                    Green ->
+                        16776960
+
+                    Blue ->
+                        16711935
+
+            Green ->
+                65280
+
+            Blue ->
+                255
+
+    testValue : Int
+    testValue =
+        mixColors Red Green
+
 -}
 nestedEnumCase : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedEnumCase expectFn _ =
@@ -141,7 +236,6 @@ nestedEnumCase expectFn _ =
                 ]
             }
 
-        -- mixColors : Color -> Color -> Int
         mixColorsDef : TypedDef
         mixColorsDef =
             { name = "mixColors"
@@ -178,7 +272,38 @@ nestedEnumCase expectFn _ =
     expectFn modul
 
 
-{-| Enum case with wildcard fallback pattern.
+{-| Applies `expectFn` to a program with a `case` on a seven-constructor type
+that has branches for two constructors and then a catch-all branch:
+
+    type Day
+        = Monday
+        | Tuesday
+        | Wednesday
+        | Thursday
+        | Friday
+        | Saturday
+        | Sunday
+
+    isWeekend : Day -> Bool
+    isWeekend day =
+        case day of
+            Saturday ->
+                True
+
+            Sunday ->
+                True
+
+            _ ->
+                False
+
+    testValue : Bool
+    testValue =
+        isWeekend Saturday
+
+The catch-all is built with `pVar "_"`, a pattern that binds a variable named
+`_`, not the wildcard pattern the parser gives for `_`. `True` and `False` are
+references to the `Basics` constructors.
+
 -}
 enumWithFallback : (Src.Module -> Expectation) -> (() -> Expectation)
 enumWithFallback expectFn _ =
@@ -198,7 +323,6 @@ enumWithFallback expectFn _ =
                 ]
             }
 
-        -- isWeekend : Day -> Bool
         isWeekendDef : TypedDef
         isWeekendDef =
             { name = "isWeekend"
@@ -231,23 +355,37 @@ enumWithFallback expectFn _ =
 
 
 -- ============================================================================
--- DEBUG EXPRESSION TESTS
+-- POLYMORPHIC IDENTITY TEST (labelled as a placeholder for Debug tests)
 -- ============================================================================
 
 
+{-| Returns the one case labelled as a placeholder for `Debug` tests, checked
+with `expectFn`. It builds no `Debug` call.
+-}
 debugExprCases : (Src.Module -> Expectation) -> List TestCase
 debugExprCases expectFn =
     [ { label = "Identity function (placeholder for Debug tests)", run = identityFunctionTest expectFn }
     ]
 
 
-{-| Simple identity function test as placeholder.
-Debug module tests require special imports not available in standard test setup.
+{-| Applies `expectFn` to a program with a polymorphic top-level `identity`
+applied to an integer literal at type `Int`:
+
+    identity : a -> a
+    identity x =
+        x
+
+    testValue : Int
+    testValue =
+        identity 42
+
+Its label calls it a placeholder for `Debug` tests. It uses no `Debug`, and the
+module it builds does not import `Debug`.
+
 -}
 identityFunctionTest : (Src.Module -> Expectation) -> (() -> Expectation)
 identityFunctionTest expectFn _ =
     let
-        -- identity : a -> a
         identityDef : TypedDef
         identityDef =
             { name = "identity"
@@ -256,7 +394,6 @@ identityFunctionTest expectFn _ =
             , body = varExpr "x"
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -280,6 +417,9 @@ identityFunctionTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the three self-recursion cases, each checked with `expectFn`: two
+with the self-call in tail position and one without.
+-}
 tailRecursiveCases : (Src.Module -> Expectation) -> List TestCase
 tailRecursiveCases expectFn =
     [ { label = "Tail recursive sum", run = tailRecursiveSum expectFn }
@@ -288,14 +428,29 @@ tailRecursiveCases expectFn =
     ]
 
 
-{-| Tail recursive sum function.
-Tests tail call optimization detection in specializeExpr.
+{-| Applies `expectFn` to a program whose helper calls itself in tail position,
+in the `else` branch of an `if`, carrying an accumulator:
+
+    sumHelper : Int -> Int -> Int
+    sumHelper acc n =
+        if n <= 0 then
+            acc
+
+        else
+            sumHelper (acc + n) (n - 1)
+
+    sum : Int -> Int
+    sum n =
+        sumHelper 0 n
+
+    testValue : Int
+    testValue =
+        sum 100
+
 -}
 tailRecursiveSum : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecursiveSum expectFn _ =
     let
-        -- sumHelper : Int -> Int -> Int
-        -- sumHelper acc n = if n <= 0 then acc else sumHelper (acc + n) (n - 1)
         sumHelperDef : TypedDef
         sumHelperDef =
             { name = "sumHelper"
@@ -312,7 +467,6 @@ tailRecursiveSum expectFn _ =
                     )
             }
 
-        -- sum : Int -> Int
         sumDef : TypedDef
         sumDef =
             { name = "sum"
@@ -338,13 +492,13 @@ tailRecursiveSum expectFn _ =
     expectFn modul
 
 
-{-| Tail recursive function with Int accumulator.
+{-| Applies `expectFn` to the same program as `tailRecursiveSum`, with the
+helper named `countdownHelper`, the wrapper `countdown`, and `testValue`
+defined as `countdown 10`.
 -}
 tailRecursiveWithAccumulator : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecursiveWithAccumulator expectFn _ =
     let
-        -- countdownHelper : Int -> Int -> Int
-        -- Counts down from n while accumulating the sum
         countdownHelperDef : TypedDef
         countdownHelperDef =
             { name = "countdownHelper"
@@ -361,7 +515,6 @@ tailRecursiveWithAccumulator expectFn _ =
                     )
             }
 
-        -- countdown : Int -> Int
         countdownDef : TypedDef
         countdownDef =
             { name = "countdown"
@@ -387,12 +540,25 @@ tailRecursiveWithAccumulator expectFn _ =
     expectFn modul
 
 
-{-| Non-tail recursive function for comparison.
+{-| Applies `expectFn` to a program whose function calls itself as the right
+operand of `*`, so the self-call is not in tail position:
+
+    factorial : Int -> Int
+    factorial n =
+        if n <= 1 then
+            1
+
+        else
+            n * factorial (n - 1)
+
+    testValue : Int
+    testValue =
+        factorial 5
+
 -}
 nonTailRecursive : (Src.Module -> Expectation) -> (() -> Expectation)
 nonTailRecursive expectFn _ =
     let
-        -- factorial : Int -> Int (not tail recursive due to multiplication after call)
         factorialDef : TypedDef
         factorialDef =
             { name = "factorial"
@@ -429,10 +595,14 @@ nonTailRecursive expectFn _ =
 
 
 -- ============================================================================
--- LITERAL BRANCH TESTS
+-- INT LITERAL PATTERN AND STRING COMPARISON TESTS
 -- ============================================================================
 
 
+{-| Returns the two cases that branch on a value, each checked with `expectFn`:
+one on `Int` literal patterns, and one, labelled "String literal patterns",
+that compares a `String` with `==` instead.
+-}
 literalBranchCases : (Src.Module -> Expectation) -> List TestCase
 literalBranchCases expectFn =
     [ { label = "Int literal patterns", run = intLiteralPatterns expectFn }
@@ -440,12 +610,35 @@ literalBranchCases expectFn =
     ]
 
 
-{-| Case expression with int literal patterns.
+{-| Applies `expectFn` to a program with a `case` on an `Int` that has three
+literal patterns and a catch-all branch:
+
+    digitName : Int -> String
+    digitName n =
+        case n of
+            0 ->
+                "zero"
+
+            1 ->
+                "one"
+
+            2 ->
+                "two"
+
+            _ ->
+                "other"
+
+    testValue : String
+    testValue =
+        digitName 1
+
+As in `enumWithFallback`, the catch-all binds a variable named `_`; it is not
+a wildcard pattern.
+
 -}
 intLiteralPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 intLiteralPatterns expectFn _ =
     let
-        -- digitName : Int -> String
         digitNameDef : TypedDef
         digitNameDef =
             { name = "digitName"
@@ -477,12 +670,30 @@ intLiteralPatterns expectFn _ =
     expectFn modul
 
 
-{-| Case expression with string literal patterns.
+{-| Applies `expectFn` to a program with a single-branch `case` on a `String`
+whose one pattern is a variable, and whose branch compares that variable with
+`""` using `==`:
+
+    greet : String -> String
+    greet name =
+        case name of
+            n ->
+                if n == "" then
+                    "Hello, stranger!"
+
+                else
+                    "Hello!"
+
+    testValue : String
+    testValue =
+        greet "Alice"
+
+Despite its label, the program has no string literal pattern.
+
 -}
 stringLiteralPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 stringLiteralPatterns expectFn _ =
     let
-        -- greet : String -> String
         greetDef : TypedDef
         greetDef =
             { name = "greet"

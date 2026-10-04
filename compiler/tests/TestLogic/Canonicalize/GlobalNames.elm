@@ -3,11 +3,34 @@ module TestLogic.Canonicalize.GlobalNames exposing
     , expectGlobalNamesQualifiedCanonical
     )
 
-{-| Test logic for invariant CANON\_001: Global names are fully qualified.
+{-| Checks that the references in a canonical module carry a complete home, so
+that a reference resolved to a module with a missing part fails a test rather
+than going unnoticed into the later phases.
 
-For every non-local variable reference (VarForeign, VarKernel, VarCtor, VarOperator,
-VarTopLevel, VarDebug), assert its `home` is an `ModuleName.Canonical` referring to a valid
-module structure; assert local variables are always `VarLocal` and never carry `home`.
+Each reference checked here carries a **home**, a `ModuleName.Canonical`: a
+package author, a package project and a module name. Here a home is complete
+when none of those three strings is empty. Nothing checks that the home names a
+module that exists, or the right one.
+
+Nothing in this module is a test. Its two exposed functions are expectations
+for a test to apply to a module.
+
+`expectGlobalNamesQualified` takes a source module, canonicalizes it as package
+`eco/example` against `Compiler.Elm.Interface.Basic.testIfaces`, and fails if
+canonicalization reports an error. Otherwise it checks the result as
+`expectGlobalNamesQualifiedCanonical` does.
+
+`expectGlobalNamesQualifiedCanonical` takes a canonical module, walks every
+expression and pattern in its declarations, and fails, with one line per empty
+part, when the home of a `VarTopLevel`, `VarForeign`, `VarCtor`, `VarDebug`,
+`VarOperator`, `Binop` or `PCtor` node is not complete.
+
+Among what is not checked:
+
+  - `VarLocal` and `VarKernel` references, which carry no
+    `ModuleName.Canonical`;
+  - the type annotations of definitions, and the module's unions, aliases,
+    infix declarations and effects.
 
 -}
 
@@ -24,7 +47,15 @@ import Data.Map as DMap
 import Expect
 
 
-{-| Main test expectation: canonicalize the module and verify all global names are qualified.
+{-| Canonicalizes `modul` as package `eco/example` against
+`Compiler.Elm.Interface.Basic.testIfaces`, and passes when that succeeds and
+every `VarTopLevel`, `VarForeign`, `VarCtor`, `VarDebug`, `VarOperator`, `Binop`
+and `PCtor` node in the result has a home whose author, project and module name
+are all non-empty.
+
+A canonicalization failure fails the expectation with the number of errors and
+a short description of the first.
+
 -}
 expectGlobalNamesQualified : Src.Module -> Expect.Expectation
 expectGlobalNamesQualified modul =
@@ -57,7 +88,11 @@ expectGlobalNamesQualified modul =
             expectGlobalNamesQualifiedCanonical canModule
 
 
-{-| Verify global names are qualified in a pre-constructed canonical module.
+{-| Passes when every `VarTopLevel`, `VarForeign`, `VarCtor`, `VarDebug`,
+`VarOperator`, `Binop` and `PCtor` node in the declarations of `canModule` has a
+home whose author, project and module name are all non-empty. Otherwise it fails
+with one line for each empty part, naming the kind of node and, except for a
+`Binop`, which is named only as `operator`, the name it refers to.
 -}
 expectGlobalNamesQualifiedCanonical : Can.Module -> Expect.Expectation
 expectGlobalNamesQualifiedCanonical canModule =
@@ -75,14 +110,16 @@ expectGlobalNamesQualifiedCanonical canModule =
             )
 
 
-{-| Collect all global name qualification issues from a canonical module.
+{-| Returns one message for each empty home part found in the module's
+declarations. Only the declarations are walked.
 -}
 collectGlobalNameIssues : Can.Module -> List String
 collectGlobalNameIssues (Can.Module { decls }) =
     collectDeclsIssues decls
 
 
-{-| Collect issues from declarations.
+{-| Returns the issues found in every definition of a declaration list,
+including the definitions of recursive groups.
 -}
 collectDeclsIssues : Can.Decls -> List String
 collectDeclsIssues decls =
@@ -99,7 +136,8 @@ collectDeclsIssues decls =
             []
 
 
-{-| Collect issues from a definition.
+{-| Returns the issues found in a definition's argument patterns and body. A
+`TypedDef`'s types are not inspected.
 -}
 collectDefIssues : Can.Def -> List String
 collectDefIssues def =
@@ -113,38 +151,31 @@ collectDefIssues def =
                 ++ collectExprIssues expr
 
 
-{-| Collect issues from an expression.
+{-| Returns the issues found in an expression and everything inside it.
 -}
 collectExprIssues : Can.Expr -> List String
 collectExprIssues (A.At _ { node }) =
     collectExprNodeIssues node
 
 
-{-| Collect issues from an expression node.
+{-| Returns the issues found in an expression node and everything inside it.
 
-Checks:
-
-  - VarLocal: Should not have a home (correct by construction)
-  - VarTopLevel: home must be valid ModuleName.Canonical
-  - VarKernel: Uses kernel module naming (no ModuleName.Canonical home)
-  - VarForeign: home must be valid ModuleName.Canonical
-  - VarCtor: home must be valid ModuleName.Canonical
-  - VarDebug: home must be valid ModuleName.Canonical
-  - VarOperator: home must be valid ModuleName.Canonical
+The home of a `VarTopLevel`, `VarForeign`, `VarCtor`, `VarDebug`, `VarOperator`
+or `Binop` is checked by `validateHome`. `VarLocal` and `VarKernel` have no
+`ModuleName.Canonical` home and add nothing. A `Binop`'s messages name it as
+`operator`, not by the operator itself.
 
 -}
 collectExprNodeIssues : Can.Expr_ -> List String
 collectExprNodeIssues node =
     case node of
         Can.VarLocal _ ->
-            -- VarLocal has no home - this is correct by construction
             []
 
         Can.VarTopLevel home name ->
             validateHome "VarTopLevel" name home
 
         Can.VarKernel _ _ _ ->
-            -- VarKernel uses kernel module naming, no ModuleName.Canonical home to validate
             []
 
         Can.VarForeign home name _ ->
@@ -252,14 +283,15 @@ collectExprNodeIssues node =
             []
 
 
-{-| Collect issues from a pattern.
+{-| Returns the issues found in a pattern and every pattern inside it.
 -}
 collectPatternIssues : Can.Pattern -> List String
 collectPatternIssues (A.At _ { node }) =
     collectPatternNodeIssues node
 
 
-{-| Collect issues from a pattern node.
+{-| Returns the issues found in a pattern node and the patterns inside it. Only
+a `PCtor` has a home to check.
 -}
 collectPatternNodeIssues : Can.Pattern_ -> List String
 collectPatternNodeIssues node =
@@ -309,13 +341,9 @@ collectPatternNodeIssues node =
                     args
 
 
-{-| Validate that an ModuleName.Canonical home is properly structured.
-
-A valid ModuleName.Canonical has:
-
-  - A package tuple (author, project) with non-empty strings
-  - A non-empty module name
-
+{-| Returns one message for each of the author, project and module name of
+`home` that is the empty string, each naming the kind of node, `context`, and
+the name it refers to, `name`. An empty list means the home is complete.
 -}
 validateHome : String -> String -> ModuleName.Canonical -> List String
 validateHome context name home =
@@ -330,7 +358,8 @@ validateHome context name home =
                     (context ++ " '" ++ name ++ "': empty module name")
 
 
-{-| Helper to conditionally add an issue.
+{-| Returns `issues` with `issue` added at the front when `condition` holds, and
+`issues` unchanged otherwise.
 -}
 addIssueIf : Bool -> String -> List String -> List String
 addIssueIf condition issue issues =
@@ -341,7 +370,11 @@ addIssueIf condition issue issues =
         issues
 
 
-{-| Convert a canonicalization error to a string for debugging.
+{-| Returns a one-line description of a canonicalization error for a failure
+message: the kind of error and the name it concerns, with its module qualifier
+when the error carries one. Errors other than `NotFoundVar`, `NotFoundBinop`,
+`RecursiveLet`, `NotFoundType`, `NotFoundVariant` and `Shadowing` are all
+described as `Other error`.
 -}
 errorToString : CanError.Error -> String
 errorToString error =

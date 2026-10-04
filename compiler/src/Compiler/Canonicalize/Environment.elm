@@ -6,12 +6,34 @@ module Compiler.Canonicalize.Environment exposing
     , findType, findTypeQual, findCtor, findCtorQual, findBinop
     )
 
-{-| Environment for canonicalization, tracking available names and their definitions.
+{-| Canonicalization resolves every name a module mentions to its _home_, the
+module that defines it, so it needs a record of what each name in scope
+currently means. This module defines that record, the environment `Env`, and
+the lookups canonicalization makes in it.
 
-This module maintains the canonicalization environment which maps names to their
-definitions. It handles both unqualified (exposed) and qualified imports, detects
-ambiguous references when multiple modules expose the same name, and manages
-local variable scoping with shadowing checks.
+A name can be in scope in two ways. An _exposed_ name is written bare, as
+`Just`. A _qualified_ name is written with a prefix, as `Maybe.Just`, where the
+prefix is an import's alias or, without one, its module name. The environment
+keeps the two apart: one table per kind of name for exposed names, and for
+qualified names one table per prefix. Values, types and constructors can be
+written either way; operators are only ever exposed.
+
+Two imports can bring in one name from two different modules. That name is
+_ambiguous_. Ambiguity is not an error until the name is used, so the
+environment records it, as an `Info` holding every home, and the lookup that
+meets it reports the error. `mergeInfo` is how two entries for one name are
+combined.
+
+Values are kept apart from the other kinds of name because a module's own
+definitions and the variables bound inside its expressions live in the same
+table as the imported values. A value is _foreign_ when it is imported,
+_top-level_ when the module defines it, and _local_ when it is bound inside an
+expression, by an argument, a pattern or a `let`.
+`addLocals` adds local names, and it is where shadowing is checked.
+
+The environment is built elsewhere: `Compiler.Canonicalize.Environment.Foreign`
+builds it from the imports, and `Compiler.Canonicalize.Environment.Local` adds
+the module's own declarations.
 
 
 # Results
@@ -58,7 +80,8 @@ import Maybe exposing (Maybe(..))
 -- ====== RESULT ======
 
 
-{-| Result type for environment operations that may produce canonicalization errors.
+{-| A `Compiler.Reporting.Result` computation whose errors are canonicalization
+errors, the result type of every lookup here.
 -}
 type alias EResult i w a =
     ReportingResult.RResult i w Error.Error a
@@ -68,8 +91,14 @@ type alias EResult i w a =
 -- ====== ENVIRONMENT ======
 
 
-{-| The canonicalization environment tracks all names available in the current scope.
-It maintains both exposed (unqualified) and qualified imports, along with local variables.
+{-| Everything a module can refer to at one point in its source, and what each
+name means there.
+
+`home` is the module being canonicalized. `vars` holds every value that can be
+written bare: imported, top-level and local alike, as `Var` describes. The
+qualified values in `q_vars` carry only their type annotations, because a
+qualified name is always foreign.
+
 -}
 type alias Env =
     { home : Canonical
@@ -83,15 +112,14 @@ type alias Env =
     }
 
 
-{-| A map of exposed (unqualified) names to their definitions.
-Multiple modules can expose the same name, leading to ambiguity.
+{-| The names of one kind that can be written bare, each with what it means.
 -}
 type alias Exposed a =
     Dict Name.Name (Info a)
 
 
-{-| A two-level map for qualified names: module prefix -> name -> definition.
-Allows referencing names via `Module.name` syntax.
+{-| The names of one kind that can be written with a prefix, grouped by the
+prefix. A prefix shared by two imports holds the names of both.
 -}
 type alias Qualified a =
     Dict Name.Name (Dict Name.Name (Info a))
@@ -101,16 +129,27 @@ type alias Qualified a =
 -- ====== INFO ======
 
 
-{-| Information about a name: either specific to one module or ambiguous across multiple.
-When the same name is exposed by multiple imports, it becomes ambiguous.
+{-| What one name in scope refers to: one definition, or several from different
+modules.
+
+`Specific` carries the home of the definition and the definition itself.
+
+`Ambiguous` carries the homes of every definition the name could mean, and no
+definition, because using the name is an error.
+
 -}
 type Info a
     = Specific Canonical a
     | Ambiguous Canonical (OneOrMore.OneOrMore Canonical)
 
 
-{-| Merge two Info values, detecting when the same name comes from different modules.
-Results in an Ambiguous info if modules differ.
+{-| Combines two entries for one name into the entry that means both.
+
+Two `Specific` entries with the same home give the first unchanged. Any other
+pair gives an `Ambiguous` entry listing the homes of `info1` and then those of
+`info2`. The list is not deduplicated, so merging an `Ambiguous` entry with a
+home it already holds lists that home twice.
+
 -}
 mergeInfo : Info a -> Info a -> Info a
 mergeInfo info1 info2 =
@@ -140,8 +179,17 @@ mergeInfo info1 info2 =
 -- ====== VARIABLES ======
 
 
-{-| Represents a variable in scope: either local, top-level, or imported from another module.
-Foreigns tracks when multiple modules expose the same variable name (ambiguous imports).
+{-| What a value name written bare refers to.
+
+`Local` is a name bound inside an expression, and `TopLevel` a name the module
+binds at its top level. Each carries the region where the name is bound, which
+a `Shadowing` error reports.
+
+`Foreign` is an imported value, with its home and its type annotation.
+
+`Foreigns` is an imported name that two or more modules expose, with all their
+homes; it is the value counterpart of an ambiguous `Info`.
+
 -}
 type Var
     = Local A.Region
@@ -154,8 +202,15 @@ type Var
 -- ====== TYPES ======
 
 
-{-| Represents a type definition: either a type alias or a union (custom) type.
-The Int tracks the number of type parameters.
+{-| What a type name refers to: a type alias or a custom type, with what is
+needed to canonicalize a use of it.
+
+In both, the `Int` is the number of type parameters, which the use must supply
+in full, and the `Canonical` is the home.
+
+`Alias` also carries the parameter names and the aliased type, written in terms
+of those names, so that a use can pair each name with its argument.
+
 -}
 type Type
     = Alias Int Canonical (List Name.Name) (Can.Type Name)
@@ -166,8 +221,18 @@ type Type
 -- ====== CTORS ======
 
 
-{-| Represents a constructor: either a record constructor or a union type variant.
-Record constructors are special constructors for extensible records.
+{-| What a constructor name refers to.
+
+`RecordCtor` is the constructor function a type alias of a closed record
+defines: `type alias P = { x : Int }` defines `P : Int -> P`. An alias of an
+extensible record defines none. It carries the home, the alias's type
+parameters, and the function's type, which takes the fields in order and
+returns the alias.
+
+`Ctor` is a constructor of a custom type. It carries the home, the name of the
+type, the type's full definition, the constructor's position among the type's
+constructors, and its argument types.
+
 -}
 type Ctor
     = RecordCtor Canonical (List Name.Name) (Can.Type Name)
@@ -178,8 +243,12 @@ type Ctor
 -- ====== BINOPS ======
 
 
-{-| Complete information about a binary operator including its precedence,
-associativity, and the function it desugars to.
+{-| An infix operator in scope, with how it groups and the function it stands
+for.
+
+`op` is the operator's symbol. `name` is the function it stands for, defined in
+`home`, and `annotation` is that function's type.
+
 -}
 type alias BinopData =
     { op : Name.Name
@@ -191,7 +260,7 @@ type alias BinopData =
     }
 
 
-{-| Wrapper type for binary operator information.
+{-| What an operator symbol refers to: the `BinopData` of one operator.
 -}
 type Binop
     = Binop BinopData
@@ -201,9 +270,12 @@ type Binop
 -- ====== ADD LOCALS ======
 
 
-{-| Add local variable bindings to the environment, checking for shadowing.
-Returns an error if any new local shadows an existing local or top-level binding.
-Foreign bindings can be shadowed without error.
+{-| Returns `env` with each of `names` in scope as a `Local` bound at its region.
+
+A name already bound locally or at the module's top level fails with a
+`Shadowing` error. An imported name, ambiguous or not, is replaced without
+error. When several names shadow, only one error is reported.
+
 -}
 addLocals : Dict Name.Name A.Region -> Env -> EResult i w Env
 addLocals names env =
@@ -221,11 +293,18 @@ addLocals names env =
         )
 
 
+{-| Returns the entry for a new local bound at `region` whose name is not yet in
+scope.
+-}
 addLocalLeft : Name.Name -> A.Region -> Var
 addLocalLeft _ region =
     Local region
 
 
+{-| Returns the entry for a new local bound at `region` whose name is already in
+scope as `var`: the local, if `var` is imported, or a `Shadowing` error naming
+both regions if `var` is local or top-level.
+-}
 addLocalBoth : Name.Name -> A.Region -> Var -> EResult i w Var
 addLocalBoth name region var =
     case var of
@@ -246,8 +325,12 @@ addLocalBoth name region var =
 -- ====== FIND TYPE ======
 
 
-{-| Look up an unqualified type name in the environment.
-Returns an error if the type is not found or is ambiguous.
+{-| Looks up a type name written bare at `region`.
+
+An ambiguous name fails with `AmbiguousType`, and a name not in scope with
+`NotFoundType`, which lists the type names in scope, bare and qualified, as
+suggestions.
+
 -}
 findType : A.Region -> Env -> Name.Name -> EResult i w Type
 findType region { types, q_types } name =
@@ -262,8 +345,12 @@ findType region { types, q_types } name =
             ReportingResult.throw (Error.NotFoundType region Nothing name (toPossibleNames types q_types))
 
 
-{-| Look up a qualified type name (e.g., `Dict.Dict`) in the environment.
-Returns an error if the module or type is not found, or if the type is ambiguous.
+{-| Looks up the type name `name` written after `prefix`, as in `Dict.Dict`, at
+`region`.
+
+It fails as `findType` does. An unknown prefix is reported as `NotFoundType`
+too, with the prefix included.
+
 -}
 findTypeQual : A.Region -> Env -> Name.Name -> Name.Name -> EResult i w Type
 findTypeQual region { types, q_types } prefix name =
@@ -287,8 +374,12 @@ findTypeQual region { types, q_types } prefix name =
 -- ====== FIND CTOR ======
 
 
-{-| Look up an unqualified constructor name in the environment.
-Returns an error if the constructor is not found or is ambiguous.
+{-| Looks up a constructor name written bare at `region`.
+
+An ambiguous name fails with `AmbiguousVariant`, and a name not in scope with
+`NotFoundVariant`, which lists the constructor names in scope, bare and
+qualified, as suggestions.
+
 -}
 findCtor : A.Region -> Env -> Name.Name -> EResult i w Ctor
 findCtor region { ctors, q_ctors } name =
@@ -303,8 +394,12 @@ findCtor region { ctors, q_ctors } name =
             ReportingResult.throw (Error.NotFoundVariant region Nothing name (toPossibleNames ctors q_ctors))
 
 
-{-| Look up a qualified constructor name (e.g., `Maybe.Just`) in the environment.
-Returns an error if the module or constructor is not found, or if the constructor is ambiguous.
+{-| Looks up the constructor name `name` written after `prefix`, as in
+`Maybe.Just`, at `region`.
+
+It fails as `findCtor` does. An unknown prefix is reported as
+`NotFoundVariant` too, with the prefix included.
+
 -}
 findCtorQual : A.Region -> Env -> Name.Name -> Name.Name -> EResult i w Ctor
 findCtorQual region { ctors, q_ctors } prefix name =
@@ -328,8 +423,11 @@ findCtorQual region { ctors, q_ctors } prefix name =
 -- ====== FIND BINOP ======
 
 
-{-| Look up a binary operator by its symbol in the environment.
-Returns an error if the operator is not found or is ambiguous.
+{-| Looks up an operator symbol used at `region`.
+
+An ambiguous symbol fails with `AmbiguousBinop`, and one not in scope with
+`NotFoundBinop`, which lists the operators in scope as suggestions.
+
 -}
 findBinop : A.Region -> Env -> Name.Name -> EResult i w Binop
 findBinop region { binops } name =
@@ -348,6 +446,9 @@ findBinop region { binops } name =
 -- ====== TO POSSIBLE NAMES ======
 
 
+{-| Returns the names a not-found error suggests: every name in `exposed`, and
+every name in `qualified` under its prefix. Ambiguous names are included.
+-}
 toPossibleNames : Exposed a -> Qualified a -> Error.PossibleNames
 toPossibleNames exposed qualified =
     Error.PossibleNames (EverySet.fromList identity (Dict.keys exposed)) (Dict.map (\_ -> Dict.keys >> EverySet.fromList identity) qualified)

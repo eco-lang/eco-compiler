@@ -1,9 +1,47 @@
 module TestLogic.Canonicalize.DuplicateDeclsTest exposing (suite)
 
-{-| Test suite for invariant CANON\_003: No duplicate top-level declarations.
+{-| Elm forbids a module to declare two values, two types, or two constructors of
+one name, and forbids a local binding to reuse a name that an enclosing scope of
+the same module already binds (an imported name may be reused). Canonicalization
+enforces both rules. These tests check that it reports a repeated value, type or
+constructor name and a rebound function argument, and that it reports none of
+these for two modules that have none.
 
-This module tests that canonicalization properly rejects modules with
-duplicate declarations of various kinds.
+Each test builds a small source module with `Compiler.AST.SourceBuilder`, through
+one of the builders below, and hands it to an expectation from
+`TestLogic.Canonicalize.DuplicateDecls`, which canonicalizes it and looks only at
+the errors. An expectation that asks for an error passes when at least one reported
+error is of that kind and names the given name, whatever else is reported beside
+it. Value and shadowing modules import only `Basics` and `List`; the type and
+constructor modules declare no values.
+
+In the shadowing modules the outer binding is always an argument of a top-level
+function `test`, and the inner binding reuses its name.
+
+The tests establish:
+
+  - DuplicateDecl errors: a top-level value declared twice is reported as a
+    `DuplicateDecl` for its name, both when the two bodies are the same integer
+    literal and when they differ.
+  - DuplicateType errors: a `DuplicateType` for the name is reported for two
+    type aliases of one name, for two custom types of one name whose
+    constructors differ, and for an alias and a custom type sharing a name.
+  - DuplicateCtor errors: a `DuplicateCtor` for the name is reported for two
+    constructors of one name in the same custom type (one taking an `Int`, one
+    taking nothing), and for one constructor name used in two custom types.
+  - Shadowing errors: a `Shadowing` error for the argument's name is reported
+    when a `let` definition, a lambda argument, or a `case` branch's variable
+    pattern rebinds the argument.
+  - Valid modules without duplicates: no duplicate-related error (one of the
+    duplicate kinds, or `Shadowing`) is reported for three distinct top-level
+    values, nor for two top-level values that each bind a local `x` in a `let`.
+    The expectation also passes when canonicalization fails with errors of
+    other kinds, so these tests do not show that the modules canonicalize.
+
+Among what is not tested: duplicate operators, record fields, type parameters,
+pattern variables and exports; a constructor clashing with a record alias's
+constructor; a local binding that shadows a top-level value rather than an
+argument; and the regions an error carries.
 
 -}
 
@@ -20,6 +58,9 @@ import TestLogic.Canonicalize.DuplicateDecls
         )
 
 
+{-| The whole suite: the duplicate value, duplicate type, duplicate constructor,
+shadowing and valid-module groups.
+-}
 suite : Test
 suite =
     Test.describe "No duplicate top-level declarations (CANON_003)"
@@ -31,6 +72,9 @@ suite =
         ]
 
 
+{-| The tests that a top-level value declared twice is reported as a
+`DuplicateDecl`.
+-}
 duplicateDeclTests : Test
 duplicateDeclTests =
     Test.describe "DuplicateDecl errors"
@@ -51,6 +95,9 @@ duplicateDeclTests =
         ]
 
 
+{-| The tests that two type declarations of one name, aliases or custom types in
+any pairing, are reported as a `DuplicateType`.
+-}
 duplicateTypeTests : Test
 duplicateTypeTests =
     Test.describe "DuplicateType errors"
@@ -78,6 +125,9 @@ duplicateTypeTests =
         ]
 
 
+{-| The tests that two constructors of one name, in one custom type or in two, are
+reported as a `DuplicateCtor`.
+-}
 duplicateCtorTests : Test
 duplicateCtorTests =
     Test.describe "DuplicateCtor errors"
@@ -98,6 +148,9 @@ duplicateCtorTests =
         ]
 
 
+{-| The tests that rebinding a function argument's name in a `let`, a lambda or a
+`case` pattern is reported as `Shadowing`.
+-}
 shadowingTests : Test
 shadowingTests =
     Test.describe "Shadowing errors"
@@ -125,6 +178,9 @@ shadowingTests =
         ]
 
 
+{-| The tests that no duplicate-related error is reported for modules whose names
+are all distinct within each scope.
+-}
 validModuleTests : Test
 validModuleTests =
     Test.describe "Valid modules without duplicates"
@@ -168,7 +224,8 @@ validModuleTests =
 -- ============================================================================
 
 
-{-| Create a module with duplicate value declarations.
+{-| Builds a module `DupValue` that declares the top-level value `name` twice, both
+times with no arguments and the integer literal 1 as its body.
 -}
 makeDuplicateValueModule : String -> Src.Module
 makeDuplicateValueModule name =
@@ -178,7 +235,8 @@ makeDuplicateValueModule name =
         ]
 
 
-{-| Create a module with duplicate value declarations with different bodies.
+{-| Builds a module `DupValueDiff` that declares the top-level value `name` twice,
+once with the integer literal 1 as its body and once with 2.
 -}
 makeDuplicateValueModuleDifferentBodies : String -> Src.Module
 makeDuplicateValueModuleDifferentBodies name =
@@ -188,7 +246,8 @@ makeDuplicateValueModuleDifferentBodies name =
         ]
 
 
-{-| Create a module with duplicate type alias declarations.
+{-| Builds a module `DupAlias` that declares two type aliases named `name`, one for
+`Int` and one for `String`.
 -}
 makeDuplicateAliasModule : String -> Src.Module
 makeDuplicateAliasModule name =
@@ -200,7 +259,8 @@ makeDuplicateAliasModule name =
         ]
 
 
-{-| Create a module with duplicate union type declarations.
+{-| Builds a module `DupUnion` that declares two custom types named `name`, one with
+the single constructor `A` and one with `B`, so only the type name repeats.
 -}
 makeDuplicateUnionModule : String -> Src.Module
 makeDuplicateUnionModule name =
@@ -212,7 +272,8 @@ makeDuplicateUnionModule name =
         []
 
 
-{-| Create a module with an alias and union with the same name.
+{-| Builds a module `AliasUnionConflict` that declares a custom type named `name`,
+with the single constructor `C`, and a type alias of the same name for `Int`.
 -}
 makeAliasUnionConflictModule : String -> Src.Module
 makeAliasUnionConflictModule name =
@@ -222,7 +283,9 @@ makeAliasUnionConflictModule name =
         [ SB.AliasDef name [] (SB.tType "Int" []) ]
 
 
-{-| Create a module with duplicate constructor in the same union.
+{-| Builds a module `DupCtorSame` with one custom type, `MyType`, whose two
+constructors are both named `ctorName`: the first takes no argument and the
+second takes an `Int`.
 -}
 makeDuplicateCtorSameUnionModule : String -> Src.Module
 makeDuplicateCtorSameUnionModule ctorName =
@@ -237,7 +300,8 @@ makeDuplicateCtorSameUnionModule ctorName =
         []
 
 
-{-| Create a module with duplicate constructor across different unions.
+{-| Builds a module `DupCtorAcross` with two custom types, `Type1` and `Type2`, each
+having a single constructor named `ctorName` that takes no argument.
 -}
 makeDuplicateCtorAcrossUnionsModule : String -> Src.Module
 makeDuplicateCtorAcrossUnionsModule ctorName =
@@ -249,7 +313,8 @@ makeDuplicateCtorAcrossUnionsModule ctorName =
         []
 
 
-{-| Create a module with shadowing in a let binding.
+{-| Builds a module `ShadowLet` with one top-level function,
+`test name = let name = 1 in name`, whose `let` rebinds the argument.
 -}
 makeShadowingLetModule : String -> Src.Module
 makeShadowingLetModule name =
@@ -263,7 +328,8 @@ makeShadowingLetModule name =
         ]
 
 
-{-| Create a module with shadowing in a lambda.
+{-| Builds a module `ShadowLambda` with one top-level function,
+`test name = \name -> name`, whose lambda rebinds the argument.
 -}
 makeShadowingLambdaModule : String -> Src.Module
 makeShadowingLambdaModule name =
@@ -275,7 +341,9 @@ makeShadowingLambdaModule name =
         ]
 
 
-{-| Create a module with shadowing in a case pattern.
+{-| Builds a module `ShadowCase` with one top-level function,
+`test name = case 1 of name -> name`, whose `case` branch pattern rebinds the
+argument.
 -}
 makeShadowingCaseModule : String -> Src.Module
 makeShadowingCaseModule name =

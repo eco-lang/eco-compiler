@@ -1,15 +1,81 @@
 module SourceIR.DecisionTreeAdvancedCases exposing (expectSuite)
 
-{-| Advanced test cases for decision tree compilation and pattern matching.
+{-| Programs whose `case` expressions take the shapes a decision tree has to
+handle, so that a stage check run over them meets each shape in a small
+program.
 
-These tests exercise various pattern matching scenarios to improve coverage of:
+A decision tree is what the optimizer turns a `case` into: a tree of tests on
+parts of the value being matched, each test leading either to a branch or to
+further tests. On the typed path it is built by
+`Compiler.LocalOpt.Typed.DecisionTree.compile`, which
+`Compiler.LocalOpt.Typed.Case` calls. This module asserts nothing about it.
+`expectSuite` hands each program to the expectation function its caller
+supplies, and that function decides which stages run and what is checked.
 
-  - Compiler.LocalOpt.Typed.DecisionTree.toRelevantBranch
-  - Compiler.LocalOpt.Typed.DecisionTree.toDecisionTree
-  - Compiler.LocalOpt.Typed.DecisionTree.isComplete
-  - Compiler.LocalOpt.Typed.DecisionTree.flatten
-  - Compiler.LocalOpt.Typed.DecisionTree.gatherEdges
-  - Compiler.LocalOpt.Typed.Case
+Eleven of the forty cases have no `case`: the unit pattern, the four record
+cases, the four variable and wildcard cases, and the as-patterns around a
+variable and around a tuple. Each puts its pattern in a function argument,
+which the typed optimizer turns into bindings through
+`Compiler.LocalOpt.Typed.Expression.destructArgs`, building no decision tree.
+
+Each case builds one module named `Test` that has a top-level `testValue`, in
+one of two ways. Thirty-two cases use `makeModuleWithTypedDefsUnionsAliases`:
+every top-level definition is annotated, the module imports `Basics`, `Maybe`,
+`List`, `Elm.JsArray as JsArray`, `String` and `Char`, and declares any union
+type the case needs, and `testValue` applies a function holding the pattern to
+concrete arguments. The cases on `Maybe` declare no union and use the
+imported one. The other eight use `makeModule`: `testValue` is the only
+top-level value and has no annotation, the module imports only `Basics` and
+`List`, and the pattern is in a `let`-bound function or in a `case` directly
+in `testValue`.
+
+Four cases use `pVar "_"` where Elm source would have a wildcard. That is a
+variable pattern binding the name `_`, which the parser never produces, since
+it reads `_` as a wildcard. Each such case says so in its docstring.
+
+What the tests establish: `expectSuite` returns one test that runs the forty
+cases below in order through `Compiler.BulkCheck.bulkCheck`, so it passes when
+`expectFn` passes on every module, and a failure names only the first case
+that failed.
+
+  - Constructor patterns (8 cases): a union with one constructor, unions with
+    two and three nullary constructors, a constructor with one argument and
+    one with two, a constructor pattern inside another, and `Maybe` matched
+    `Just` first and `Nothing` first.
+  - List patterns (4 cases): a one-element list, a two-element list, two
+    nested `::` patterns, and `[]`, one-element and two-element patterns
+    followed by a wildcard.
+  - Literal patterns (4 cases): one `Int` literal, four `Int` literals and six
+    `Char` literals, each followed by a wildcard, and a unit pattern as the
+    argument of a `let`-bound function.
+  - Tuple patterns (2 cases): a three-tuple in an unannotated `let`-bound
+    function, and pairs mixing `Int` literals and wildcards.
+  - Record patterns (4 cases): each the argument of a `let`-bound function,
+    naming one field, two fields, or one field of a two-field record. None is
+    nested in another pattern.
+  - Variable and wildcard patterns (4 cases): function arguments only, with no
+    `case`.
+  - As-patterns (3 cases): `as` around a variable argument, around a `Just`
+    pattern in a `case`, and around a tuple argument.
+  - Nested patterns (4 cases): a constructor inside a constructor of a
+    recursive union, a tuple at the head of a `::` pattern, `::` patterns
+    inside a tuple, and `::` and `[]` inside a constructor.
+  - Larger matches (4 cases): pairs of `Int` literals ending in a
+    wildcard, every combination of `Just` and `Nothing` in a pair, a
+    seven-constructor union with one branch per constructor, and a pair of
+    pairs with a branch of literals and a branch that matches every value.
+  - Edge cases (3 cases): a one-constructor union, a `case` whose only branch
+    is a wildcard, and two `Int` literal branches followed by a variable.
+
+Among what is not tested:
+
+  - a union type with no constructors, and a redundant branch, although two
+    case labels name them;
+  - string literal patterns;
+  - a record pattern in a `case` or inside another pattern;
+  - a wildcard in the four places `pVar "_"` stands;
+  - a `case` that does not cover every value;
+  - the value `testValue` evaluates to, unless `expectFn` checks it.
 
 -}
 
@@ -57,12 +123,21 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named "Decision tree advanced " followed by `condStr`,
+that passes when `expectFn` passes on the module of every case in this file.
+The cases run in order and a failure reports only the first failing case, by
+its label and the description of its failure, as `Compiler.BulkCheck.bulkCheck`
+describes.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Decision tree advanced " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this file, group by group, each passing its module to
+`expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -81,10 +156,13 @@ testCases expectFn =
 
 
 -- ============================================================================
--- CONSTRUCTOR PATTERN TESTS (8 tests)
+-- CONSTRUCTOR PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases that match constructors of declared unions and of
+`Maybe`.
+-}
 constructorPatternCases : (Src.Module -> Expectation) -> List TestCase
 constructorPatternCases expectFn =
     [ { label = "Single constructor", run = singleConstructorPattern expectFn }
@@ -98,10 +176,13 @@ constructorPatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module declaring `type MyUnit = MyUnit` and
+`f : MyUnit -> Int`, whose body is a `case` with the one branch
+`MyUnit -> 42`. `testValue` is `f MyUnit`.
+-}
 singleConstructorPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singleConstructorPattern expectFn _ =
     let
-        -- type Unit = Unit
         unitUnion : UnionDef
         unitUnion =
             { name = "MyUnit"
@@ -109,7 +190,6 @@ singleConstructorPattern expectFn _ =
             , ctors = [ { name = "MyUnit", args = [] } ]
             }
 
-        -- f : MyUnit -> Int
         fDef : TypedDef
         fDef =
             { name = "f"
@@ -138,10 +218,13 @@ singleConstructorPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module declaring `type Bool2 = True2 | False2` and
+`toBool : Bool2 -> Bool`, which maps `True2` to `True` and `False2` to
+`False`. `testValue` is `toBool True2`.
+-}
 twoConstructorPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 twoConstructorPattern expectFn _ =
     let
-        -- type Bool2 = True2 | False2
         bool2Union : UnionDef
         bool2Union =
             { name = "Bool2"
@@ -152,7 +235,6 @@ twoConstructorPattern expectFn _ =
                 ]
             }
 
-        -- toBool : Bool2 -> Bool
         toBoolDef : TypedDef
         toBoolDef =
             { name = "toBool"
@@ -182,10 +264,13 @@ twoConstructorPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module declaring `type Color = Red | Green | Blue`
+and `toInt : Color -> Int`, which maps them to 0, 1 and 2. `testValue` is
+`toInt Green`.
+-}
 threeConstructorPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 threeConstructorPattern expectFn _ =
     let
-        -- type Color = Red | Green | Blue
         colorUnion : UnionDef
         colorUnion =
             { name = "Color"
@@ -197,7 +282,6 @@ threeConstructorPattern expectFn _ =
                 ]
             }
 
-        -- toInt : Color -> Int
         toIntDef : TypedDef
         toIntDef =
             { name = "toInt"
@@ -228,10 +312,13 @@ threeConstructorPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module declaring `type Box = Box Int` and
+`unbox : Box -> Int`, whose one branch `Box x` returns `x`. `testValue` is
+`unbox (Box 99)`.
+-}
 constructorWithOneArg : (Src.Module -> Expectation) -> (() -> Expectation)
 constructorWithOneArg expectFn _ =
     let
-        -- type Box = Box Int
         boxUnion : UnionDef
         boxUnion =
             { name = "Box"
@@ -239,7 +326,6 @@ constructorWithOneArg expectFn _ =
             , ctors = [ { name = "Box", args = [ tType "Int" [] ] } ]
             }
 
-        -- unbox : Box -> Int
         unboxDef : TypedDef
         unboxDef =
             { name = "unbox"
@@ -268,10 +354,13 @@ constructorWithOneArg expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module declaring `type Pair = Pair Int Int` and
+`sum : Pair -> Int`, whose one branch `Pair a b` returns `a + b`. `testValue`
+is `sum (Pair 3 4)`.
+-}
 constructorWithMultipleArgs : (Src.Module -> Expectation) -> (() -> Expectation)
 constructorWithMultipleArgs expectFn _ =
     let
-        -- type Pair = Pair Int Int
         pairUnion : UnionDef
         pairUnion =
             { name = "Pair"
@@ -279,7 +368,6 @@ constructorWithMultipleArgs expectFn _ =
             , ctors = [ { name = "Pair", args = [ tType "Int" [], tType "Int" [] ] } ]
             }
 
-        -- sum : Pair -> Int
         sumDef : TypedDef
         sumDef =
             { name = "sum"
@@ -308,11 +396,13 @@ constructorWithMultipleArgs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module declaring `type Box = Box Int`,
+`type Wrap = Wrap Box` and `unwrap : Wrap -> Int`, whose one branch
+`Wrap (Box x)` returns `x`. `testValue` is `unwrap (Wrap (Box 42))`.
+-}
 nestedConstructorPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedConstructorPattern expectFn _ =
     let
-        -- type Wrap = Wrap Box
-        -- type Box = Box Int
         boxUnion : UnionDef
         boxUnion =
             { name = "Box"
@@ -327,7 +417,6 @@ nestedConstructorPattern expectFn _ =
             , ctors = [ { name = "Wrap", args = [ tType "Box" [] ] } ]
             }
 
-        -- unwrap : Wrap -> Int
         unwrapDef : TypedDef
         unwrapDef =
             { name = "unwrap"
@@ -356,10 +445,14 @@ nestedConstructorPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with
+`withDefault : Int -> Maybe Int -> Int`, which matches `Just x` to `x` and
+then `Nothing` to its first argument. `testValue` is
+`withDefault 0 (Just 5)`.
+-}
 maybeJustPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 maybeJustPattern expectFn _ =
     let
-        -- withDefault : Int -> Maybe Int -> Int
         withDefaultDef : TypedDef
         withDefaultDef =
             { name = "withDefault"
@@ -389,10 +482,13 @@ maybeJustPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `isNothing : Maybe Int -> Bool`, which
+matches `Nothing` to `True` and then `Just _` to `False`. `testValue` is
+`isNothing Nothing`.
+-}
 maybeNothingPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 maybeNothingPattern expectFn _ =
     let
-        -- isNothing : Maybe Int -> Bool
         isNothingDef : TypedDef
         isNothingDef =
             { name = "isNothing"
@@ -424,10 +520,12 @@ maybeNothingPattern expectFn _ =
 
 
 -- ============================================================================
--- LIST PATTERN TESTS (6 tests)
+-- LIST PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases that match list literal patterns and `::` patterns.
+-}
 listPatternCases : (Src.Module -> Expectation) -> List TestCase
 listPatternCases expectFn =
     [ { label = "Singleton list pattern", run = singletonListPattern expectFn }
@@ -437,10 +535,14 @@ listPatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module with `isSingleton : List Int -> Bool`, which
+matches a one-element list pattern to `True` and then a wildcard to `False`.
+The element of the list pattern is `pVar "_"`, a variable named `_`, not a
+wildcard. `testValue` is `isSingleton [ 1 ]`.
+-}
 singletonListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singletonListPattern expectFn _ =
     let
-        -- isSingleton : List Int -> Bool
         isSingletonDef : TypedDef
         isSingletonDef =
             { name = "isSingleton"
@@ -470,10 +572,13 @@ singletonListPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `sumTwo : List Int -> Int`, which
+matches `[ a, b ]` to `a + b` and then a wildcard to 0. `testValue` is
+`sumTwo [ 3, 4 ]`.
+-}
 twoElementListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 twoElementListPattern expectFn _ =
     let
-        -- sumTwo : List Int -> Int
         sumTwoDef : TypedDef
         sumTwoDef =
             { name = "sumTwo"
@@ -503,10 +608,14 @@ twoElementListPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `sumFirstTwo : List Int -> Int`, which
+matches `a :: b :: _` to `a + b` and then a wildcard to 0. The innermost
+tail is `pVar "_"`, a variable named `_`, not a wildcard. `testValue` is
+`sumFirstTwo [ 5, 6, 7 ]`.
+-}
 multipleConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleConsPattern expectFn _ =
     let
-        -- sumFirstTwo : List Int -> Int
         sumFirstTwoDef : TypedDef
         sumFirstTwoDef =
             { name = "sumFirstTwo"
@@ -536,10 +645,13 @@ multipleConsPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `classify : List Int -> String`, which
+matches `[]`, `[ _ ]` and `[ _, _ ]` to "empty", "one" and "two", and then a
+wildcard to "many". `testValue` is `classify [ 1, 2, 3, 4 ]`.
+-}
 listPatternWithFallback : (Src.Module -> Expectation) -> (() -> Expectation)
 listPatternWithFallback expectFn _ =
     let
-        -- classify : List Int -> String
         classifyDef : TypedDef
         classifyDef =
             { name = "classify"
@@ -573,10 +685,12 @@ listPatternWithFallback expectFn _ =
 
 
 -- ============================================================================
--- LITERAL PATTERN TESTS (6 tests)
+-- LITERAL PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases that match `Int` and `Char` literals and the unit pattern.
+-}
 literalPatternCases : (Src.Module -> Expectation) -> List TestCase
 literalPatternCases expectFn =
     [ { label = "Int literal pattern", run = intLiteralPattern expectFn }
@@ -586,10 +700,13 @@ literalPatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module with `isZero : Int -> Bool`, which matches
+the literal 0 to `True` and then a wildcard to `False`. `testValue` is
+`isZero 0`.
+-}
 intLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 intLiteralPattern expectFn _ =
     let
-        -- isZero : Int -> Bool
         isZeroDef : TypedDef
         isZeroDef =
             { name = "isZero"
@@ -619,10 +736,13 @@ intLiteralPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `describe : Int -> String`, which
+matches the literals 0 to 3 to their names and then a wildcard to "other".
+`testValue` is `describe 2`.
+-}
 multipleIntPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleIntPatterns expectFn _ =
     let
-        -- describe : Int -> String
         describeDef : TypedDef
         describeDef =
             { name = "describe"
@@ -655,10 +775,13 @@ multipleIntPatterns expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `charType : Char -> Int`, which matches
+the characters '0' to '5' to the numbers they show and then a wildcard to -1.
+`testValue` is `charType '3'`.
+-}
 multipleCharPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleCharPatterns expectFn _ =
     let
-        -- charType : Char -> Int
         charTypeDef : TypedDef
         charTypeDef =
             { name = "charType"
@@ -693,11 +816,13 @@ multipleCharPatterns expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue` is
+`let result () = 42 in result ()`, a unit pattern as the argument of a
+`let`-bound function. There is no `case`.
+-}
 unitPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 unitPattern expectFn _ =
     let
-        -- Test matching against unit pattern using a simple let
-        -- let _ = () in 0
         modul =
             letExpr
                 [ define "result" [ pUnit ] (intExpr 42) ]
@@ -709,10 +834,12 @@ unitPattern expectFn _ =
 
 
 -- ============================================================================
--- TUPLE PATTERN TESTS (4 tests)
+-- TUPLE PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases that match a three-tuple and pairs holding literals.
+-}
 tuplePatternCases : (Src.Module -> Expectation) -> List TestCase
 tuplePatternCases expectFn =
     [ { label = "Tuple3 pattern", run = tuple3Pattern expectFn }
@@ -720,10 +847,14 @@ tuplePatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue`
+defines, unannotated in a `let`, a `sumTriple` that matches its argument with
+the single branch `( a, b, c )` and returns `a + b + c`. `testValue` is the
+result of `sumTriple ( 1, 2, 3 )`.
+-}
 tuple3Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple3Pattern expectFn _ =
     let
-        -- Test 3-tuple pattern matching using let with a case
         modul =
             letExpr
                 [ define "sumTriple"
@@ -741,10 +872,14 @@ tuple3Pattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `checkPair : ( Int, Int ) -> String`,
+which matches `( 0, 0 )`, `( 0, _ )` and `( _, 0 )` to "origin", "y-axis"
+and "x-axis", and then a wildcard to "other". `testValue` is
+`checkPair ( 0, 5 )`.
+-}
 tupleWithLiterals : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleWithLiterals expectFn _ =
     let
-        -- checkPair : ( Int, Int ) -> String
         checkPairDef : TypedDef
         checkPairDef =
             { name = "checkPair"
@@ -778,10 +913,12 @@ tupleWithLiterals expectFn _ =
 
 
 -- ============================================================================
--- RECORD PATTERN TESTS (4 tests)
+-- RECORD PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases that destructure a record in a function argument.
+-}
 recordPatternCases : (Src.Module -> Expectation) -> List TestCase
 recordPatternCases expectFn =
     [ { label = "Simple record pattern", run = simpleRecordPattern expectFn }
@@ -791,6 +928,9 @@ recordPatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue` is
+`let getX { x } = x in getX { x = 10 }`.
+-}
 simpleRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleRecordPattern expectFn _ =
     let
@@ -803,6 +943,9 @@ simpleRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue` is
+`let sumXY { x, y } = x + y in sumXY { x = 3, y = 4 }`.
+-}
 multiFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 multiFieldRecordPattern expectFn _ =
     let
@@ -815,6 +958,10 @@ multiFieldRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue` is
+`let getA { a } = a in getA { a = 1, b = 2 }`, a pattern naming one field of
+a two-field record.
+-}
 partialRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 partialRecordPattern expectFn _ =
     let
@@ -827,6 +974,10 @@ partialRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue` is
+`let extract { outer } = outer in extract { outer = 99 }`. Despite the case's
+label, nothing is nested: the one field holds an `Int`.
+-}
 nestedRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedRecordPattern expectFn _ =
     let
@@ -841,10 +992,12 @@ nestedRecordPattern expectFn _ =
 
 
 -- ============================================================================
--- WILDCARD AND VAR PATTERN TESTS (4 tests)
+-- WILDCARD AND VAR PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases whose function arguments are variables and wildcards.
+-}
 wildcardAndVarPatternCases : (Src.Module -> Expectation) -> List TestCase
 wildcardAndVarPatternCases expectFn =
     [ { label = "Wildcard pattern", run = wildcardPattern expectFn }
@@ -854,10 +1007,12 @@ wildcardAndVarPatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module with `always : Int -> Int -> Int`, defined
+as `always x _ = x`. `testValue` is `always 42 0`.
+-}
 wildcardPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 wildcardPattern expectFn _ =
     let
-        -- always : Int -> Int -> Int
         alwaysDef : TypedDef
         alwaysDef =
             { name = "always"
@@ -883,10 +1038,12 @@ wildcardPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `id : Int -> Int`, defined as
+`id x = x`. `testValue` is `id 123`.
+-}
 variablePattern : (Src.Module -> Expectation) -> (() -> Expectation)
 variablePattern expectFn _ =
     let
-        -- id : Int -> Int
         idDef : TypedDef
         idDef =
             { name = "id"
@@ -912,10 +1069,12 @@ variablePattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `first : ( Int, Int ) -> Int`, defined
+as `first ( a, _ ) = a`. `testValue` is `first ( 1, 2 )`.
+-}
 mixedWildcardAndVar : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedWildcardAndVar expectFn _ =
     let
-        -- first : ( Int, Int ) -> Int
         firstDef : TypedDef
         firstDef =
             { name = "first"
@@ -941,10 +1100,12 @@ mixedWildcardAndVar expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `ignore : Int -> Int -> Int`, defined
+as `ignore _ _ = 0`. `testValue` is `ignore 1 2`.
+-}
 allWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
 allWildcards expectFn _ =
     let
-        -- ignore : Int -> Int -> Int
         ignoreDef : TypedDef
         ignoreDef =
             { name = "ignore"
@@ -972,10 +1133,12 @@ allWildcards expectFn _ =
 
 
 -- ============================================================================
--- ALIAS PATTERN TESTS (3 tests)
+-- ALIAS PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases that use `as` patterns.
+-}
 aliasPatternCases : (Src.Module -> Expectation) -> List TestCase
 aliasPatternCases expectFn =
     [ { label = "Simple alias pattern", run = simpleAliasPattern expectFn }
@@ -984,10 +1147,12 @@ aliasPatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module with `useAlias : Int -> Int`, defined as
+`useAlias (x as whole) = x + whole`. `testValue` is `useAlias 5`.
+-}
 simpleAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleAliasPattern expectFn _ =
     let
-        -- useAlias : Int -> Int
         useAliasDef : TypedDef
         useAliasDef =
             { name = "useAlias"
@@ -1013,10 +1178,13 @@ simpleAliasPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `extractWithAlias : Maybe Int -> Int`,
+which matches `(Just x as whole)` to `x`, leaving `whole` unused, and then
+`Nothing` to 0. `testValue` is `extractWithAlias (Just 42)`.
+-}
 aliasWithConstructor : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasWithConstructor expectFn _ =
     let
-        -- extractWithAlias : Maybe Int -> Int
         extractWithAliasDef : TypedDef
         extractWithAliasDef =
             { name = "extractWithAlias"
@@ -1046,10 +1214,13 @@ aliasWithConstructor expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with `sumWithAlias : ( Int, Int ) -> Int`,
+defined as `sumWithAlias (( a, b ) as pair) = a + b`. `testValue` is
+`sumWithAlias ( 3, 7 )`.
+-}
 aliasWithTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasWithTuple expectFn _ =
     let
-        -- sumWithAlias : ( Int, Int ) -> Int
         sumWithAliasDef : TypedDef
         sumWithAliasDef =
             { name = "sumWithAlias"
@@ -1077,10 +1248,13 @@ aliasWithTuple expectFn _ =
 
 
 -- ============================================================================
--- NESTED PATTERN TESTS (4 tests)
+-- NESTED PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases that put constructor, tuple and list patterns inside one
+another.
+-}
 nestedPatternCases : (Src.Module -> Expectation) -> List TestCase
 nestedPatternCases expectFn =
     [ { label = "Deeply nested constructor", run = deeplyNestedConstructor expectFn }
@@ -1090,10 +1264,14 @@ nestedPatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module declaring
+`type Nest = Leaf Int | Node Nest Nest` and `extractLeft : Nest -> Int`,
+which matches `Leaf x` to `x`, `Node (Leaf x) _` to `x`, and then a wildcard
+to 0. `testValue` is `extractLeft (Leaf 99)`.
+-}
 deeplyNestedConstructor : (Src.Module -> Expectation) -> (() -> Expectation)
 deeplyNestedConstructor expectFn _ =
     let
-        -- type Nest = Leaf Int | Node Nest Nest
         nestUnion : UnionDef
         nestUnion =
             { name = "Nest"
@@ -1104,7 +1282,6 @@ deeplyNestedConstructor expectFn _ =
                 ]
             }
 
-        -- extractLeft : Nest -> Int
         extractLeftDef : TypedDef
         extractLeftDef =
             { name = "extractLeft"
@@ -1135,10 +1312,14 @@ deeplyNestedConstructor expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with
+`firstPairSum : List ( Int, Int ) -> Int`, which matches `( a, b ) :: _` to
+`a + b` and then `[]` to 0. The tail is `pVar "_"`, a variable named `_`,
+not a wildcard. `testValue` is `firstPairSum [ ( 2, 3 ) ]`.
+-}
 listOfTuplesPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 listOfTuplesPattern expectFn _ =
     let
-        -- firstPairSum : List ( Int, Int ) -> Int
         firstPairSumDef : TypedDef
         firstPairSumDef =
             { name = "firstPairSum"
@@ -1168,10 +1349,14 @@ listOfTuplesPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with
+`bothHeads : ( List Int, List Int ) -> Int`, which matches
+`( a :: _, b :: _ )` to `a + b` and then a wildcard to 0. `testValue` is
+`bothHeads ( [ 1 ], [ 2 ] )`.
+-}
 tupleOfListsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleOfListsPattern expectFn _ =
     let
-        -- bothHeads : ( List Int, List Int ) -> Int
         bothHeadsDef : TypedDef
         bothHeadsDef =
             { name = "bothHeads"
@@ -1203,10 +1388,15 @@ tupleOfListsPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module declaring
+`type Container = Container (List Int)` and
+`headOfContainer : Container -> Int`, which matches `Container (x :: _)` to
+`x` and then `Container []` to 0. The tail is `pVar "_"`, a variable named
+`_`, not a wildcard. `testValue` is `headOfContainer (Container [ 42 ])`.
+-}
 constructorWithList : (Src.Module -> Expectation) -> (() -> Expectation)
 constructorWithList expectFn _ =
     let
-        -- type Container = Container (List Int)
         containerUnion : UnionDef
         containerUnion =
             { name = "Container"
@@ -1214,7 +1404,6 @@ constructorWithList expectFn _ =
             , ctors = [ { name = "Container", args = [ tType "List" [ tType "Int" [] ] ] } ]
             }
 
-        -- headOfContainer : Container -> Int
         headOfContainerDef : TypedDef
         headOfContainerDef =
             { name = "headOfContainer"
@@ -1246,10 +1435,13 @@ constructorWithList expectFn _ =
 
 
 -- ============================================================================
--- COMPLEX DECISION TREE TESTS (4 tests)
+-- COMPLEX DECISION TREE TESTS
 -- ============================================================================
 
 
+{-| Returns the cases with larger matches: pairs of `Int` literals, pairs of
+`Maybe` values, a seven-constructor union and a pair of pairs.
+-}
 complexDecisionTreeCases : (Src.Module -> Expectation) -> List TestCase
 complexDecisionTreeCases expectFn =
     [ { label = "Multiple fallbacks", run = multipleFallbacks expectFn }
@@ -1259,10 +1451,14 @@ complexDecisionTreeCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module with `classify : ( Int, Int ) -> String`,
+which matches `( 0, 0 )`, `( 0, _ )`, `( _, 0 )` and `( 1, 1 )` to "origin",
+"y-axis", "x-axis" and "unit", and then a wildcard to "general". `testValue`
+is `classify ( 5, 5 )`.
+-}
 multipleFallbacks : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleFallbacks expectFn _ =
     let
-        -- classify : ( Int, Int ) -> String
         classifyDef : TypedDef
         classifyDef =
             { name = "classify"
@@ -1295,10 +1491,15 @@ multipleFallbacks expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with
+`match : ( Maybe Int, Maybe Int ) -> Int`, which has one branch for each of
+the four combinations of `Just` and `Nothing` and no wildcard. Despite the
+case's label, no two branches match the same value. `testValue` is
+`match ( Just 3, Just 4 )`.
+-}
 overlappingPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 overlappingPatterns expectFn _ =
     let
-        -- match : ( Maybe Int, Maybe Int ) -> Int
         matchDef : TypedDef
         matchDef =
             { name = "match"
@@ -1332,10 +1533,14 @@ overlappingPatterns expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module declaring
+`type Day = Mon | Tue | Wed | Thu | Fri | Sat | Sun` and
+`isWeekend : Day -> Bool`, which has one branch per constructor and no
+wildcard, `True` for `Sat` and `Sun`. `testValue` is `isWeekend Sat`.
+-}
 manyBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 manyBranches expectFn _ =
     let
-        -- type Day = Mon | Tue | Wed | Thu | Fri | Sat | Sun
         dayUnion : UnionDef
         dayUnion =
             { name = "Day"
@@ -1351,7 +1556,6 @@ manyBranches expectFn _ =
                 ]
             }
 
-        -- isWeekend : Day -> Bool
         isWeekendDef : TypedDef
         isWeekendDef =
             { name = "isWeekend"
@@ -1386,10 +1590,15 @@ manyBranches expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module with
+`extract : ( ( Int, Int ), ( Int, Int ) ) -> Int`, which matches
+`( ( 0, 0 ), ( 0, 0 ) )` to 0 and then `( ( a, _ ), ( _, d ) )`, which
+matches every value, to `a + d`. `testValue` is
+`extract ( ( 1, 2 ), ( 3, 4 ) )`.
+-}
 deepNestingWithFallback : (Src.Module -> Expectation) -> (() -> Expectation)
 deepNestingWithFallback expectFn _ =
     let
-        -- extract : ( ( Int, Int ), ( Int, Int ) ) -> Int
         extractDef : TypedDef
         extractDef =
             { name = "extract"
@@ -1423,10 +1632,13 @@ deepNestingWithFallback expectFn _ =
 
 
 -- ============================================================================
--- EDGE CASE PATTERN TESTS (3 tests)
+-- EDGE CASE PATTERN TESTS
 -- ============================================================================
 
 
+{-| Returns the cases with a one-constructor union, a single wildcard branch,
+and a variable branch after literal branches.
+-}
 edgeCasePatternCases : (Src.Module -> Expectation) -> List TestCase
 edgeCasePatternCases expectFn =
     [ { label = "Empty union case", run = emptyUnionCase expectFn }
@@ -1435,10 +1647,14 @@ edgeCasePatternCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module declaring `type Void = Void` and
+`absurd : Void -> Int`, whose one branch is `Void -> 0`. Despite the case's
+label, the union has one constructor, not none. `testValue` is
+`absurd Void`.
+-}
 emptyUnionCase : (Src.Module -> Expectation) -> (() -> Expectation)
 emptyUnionCase expectFn _ =
     let
-        -- type Void = Void
         voidUnion : UnionDef
         voidUnion =
             { name = "Void"
@@ -1446,7 +1662,6 @@ emptyUnionCase expectFn _ =
             , ctors = [ { name = "Void", args = [] } ]
             }
 
-        -- absurd : Void -> Int
         absurdDef : TypedDef
         absurdDef =
             { name = "absurd"
@@ -1475,6 +1690,9 @@ emptyUnionCase expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue` is
+`case 42 of _ -> 0`.
+-}
 singleBranchCase : (Src.Module -> Expectation) -> (() -> Expectation)
 singleBranchCase expectFn _ =
     let
@@ -1488,10 +1706,14 @@ singleBranchCase expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module built with `makeModule` whose `testValue`
+matches 5 against the literals 1 and 2 and then the variable `n`, which it
+returns. Despite the case's label, the last branch is a variable, not a
+wildcard, and no branch is redundant.
+-}
 redundantWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
 redundantWildcard expectFn _ =
     let
-        -- Note: This pattern has a wildcard that matches everything after specific cases
         modul =
             makeModule "testValue"
                 (caseExpr (intExpr 5)

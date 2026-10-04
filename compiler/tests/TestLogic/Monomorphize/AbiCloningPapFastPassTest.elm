@@ -1,20 +1,73 @@
 module TestLogic.Monomorphize.AbiCloningPapFastPassTest exposing (suite)
 
-{-| LSS\_040 at the PASS level (`plans/lss-pap-fast-stamp.md` §5).
+{-| Pins which call sites the `AbiCloning` pass gives a fast PAP stamp, and
+what the stamp records. A stamp naming the wrong spec would call code that reads
+the bound arguments at the wrong kind, and a stamp that rewrote the callee would
+lose them; these tests drive the whole pass on hand-built graphs to catch both.
 
-Shipped behind `lss.stamp.papFast`, default-ON since 2026-09-07; the flag was
-fixed at that default and removed 2026-09-18, so test 1 lost its flag-off leg
-and pins the shipping behaviour directly. Solo census when it was OFF:
-`noInstance` +3,331 and nothing else moved — the 2,041 stamping `p|` sites
-simply fell back to generic dispatch.
+A partial application (PAP) of a global `g` with `k` bound arguments is a heap
+object holding those `k` arguments. As a lambda-set member it is `p|g|k`, which
+the graph's `lssMemberOrigins` maps to `OriginPap g k`. The function type left
+after the bound arguments is the PAP's _residual_. Calling `g` in place of the
+callee would drop the bound arguments, so for such a member the pass leaves
+the callee as it is.
 
-A `p|<global>|<k>` member names a k-applied partial application of a global.
-The fence on it forbids a DIRECT rewrite (that drops the bound arguments); a
-FAST stamp keeps the heap object and loads the bound arguments out of it. These
-pins drive the whole pass on hand-built graphs, in the `PostSettleDevirtTest`
-mould, because the properties that matter are about WHICH sites get stamped and
-WHAT the stamp says — and, for soundness, that the callee expression is never
-touched.
+The _fast PAP stamp_ instead fills the call's `CallInfo`: `fastEvaluatorSpec`
+names the one spec of `g` to call, `fastPapPrefix` is `k`, `captureAbi` is that
+spec's parameter row split after `k` into `captureTypes` (the bound slots read
+out of the object) and `paramTypes` (the site's arguments), with its return
+type, and `fastEvaluator` is a sentinel `AnonymousLambda` in `g`'s home module
+whose negative uid is `-(specId) - 1`.
+
+The fixture, built by `run`, is a graph whose node 0 defines a list holding the
+call sites and whose nodes 1 onwards are specs of one global, each at the index
+of its registry entry. A site applies integer literals to a local variable
+whose type is the residual, with the singleton set holding the member `pap` as
+its head annotation, and `origins` maps `pap` to `OriginPap global k`. No spec
+node is a closure instance of `pap`, so the pass looks the global's specs up in
+the registry. The pass runs with its census switch on. Spec 1 is the only spec
+in every test but test 2.
+
+What the tests establish:
+
+  - Test 1: with one spec `[Int, Int] -> Int` and one bound argument, a site
+    applying one argument is stamped. It asserts one `stampedPapGlobal` and no
+    `declinedNoInstance`, a `fastPapPrefix` and `fastEvaluatorSpec` of 1, a
+    `captureAbi` of `[Int]`, `[Int]` and `Int`, a `fastEvaluator` of
+    `AnonymousLambda home -2`, and a callee that is still a local variable.
+  - Test 2: two specs, `[Int, Int] -> Int` and `[Float, Int] -> Int`, both fit
+    the residual `Int -> Int`, while their bound slot holds an `Int` in one and
+    a `Float` in the other. It asserts no stamp, one `declinedNoInstance`, and
+    no `fastPapPrefix`.
+  - Test 3: the global's one spec is a constant, not a function. It asserts no
+    stamp and one `declinedNoInstance`.
+  - Test 4: the bound parameter is a `Char`. It asserts no stamp.
+  - Test 5: a three-parameter spec with one bound argument, whose residual is
+    typed curried, `Int -> (Int -> Int)`, at a site applying two arguments at
+    once. It asserts one stamp, a `fastPapPrefix` of 1 and a `captureAbi` of
+    `[Int]`, `[Int, Int]` and `Int`.
+  - Test 6: the spec returns `Float` where the residual returns `Int`. It
+    asserts no stamp.
+  - Test 7: a three-parameter spec with two bound arguments. It asserts one
+    stamp, a `fastPapPrefix` of 2 and a `captureAbi` of `[Int, Int]`, `[Int]`
+    and `Int`.
+  - Test 8: the spec is a constructor (`MonoCtor`) with an `Int` and a `Float`
+    field, one bound. It asserts one stamp, a `fastPapPrefix` of 1, a
+    `captureAbi` of `[Int]`, `[Float]` and `shapeTy`, and a callee that is
+    still a local variable.
+  - Test 9: the spec is a constructor with 25 `Int` fields, one bound. The pass
+    treats a constructor as callable only up to 24 fields, because code
+    generation stores the fields from index 24 on boxed while a fast call
+    passes them unboxed. It asserts no stamp and one `declinedNoInstance`.
+
+The decline reasons in the test names (`papAmbiguous`, `papNonFn`, `papChar`,
+`papShapeMiss`) are not asserted; the tests read the counters, the stamped
+`CallInfo` and, in tests 1 and 8, the callee expression.
+
+Among what is not tested: the `closureKind` the stamp also sets; a callee that
+is not a local variable; a residual that cannot be split into exactly the
+site's argument count; a global with no spec; a tail-function spec; a blocked
+member; the sentinel for a spec id other than 1.
 
 -}
 
@@ -29,13 +82,15 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The nine tests of the fast PAP stamp, described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "LSS_040 p| fast stamp at the pass level"
         [ Test.test "1. a p| site FAST-stamps, callee untouched" <|
             \() ->
-                -- `add : Int -> Int -> Int`, the value is `add 5` (k = 1), the
-                -- site applies the residual's one argument.
+                -- `add : Int -> Int -> Int` with one bound argument (k = 1);
+                -- the site applies the residual's one argument.
                 let
                     reg =
                         registryOf [ Nothing, Just ( addGlobal, fn [ Mono.MInt, Mono.MInt ] Mono.MInt ) ]
@@ -53,7 +108,7 @@ suite =
                     [ \_ -> Expect.equal 1 onStats.stampedPapGlobal
                     , \_ -> Expect.equal 0 onStats.declinedNoInstance
 
-                    -- The stamp, field for field (§3.2).
+                    -- The stamp names spec 1 and splits its row after k = 1.
                     , \_ -> Expect.equal (Just 1) (Maybe.andThen (\ci -> ci.fastPapPrefix) (firstCallInfo onGraph))
                     , \_ -> Expect.equal (Just 1) (Maybe.andThen (\ci -> ci.fastEvaluatorSpec) (firstCallInfo onGraph))
                     , \_ ->
@@ -61,20 +116,20 @@ suite =
                             (Just { captureTypes = [ Mono.MInt ], paramTypes = [ Mono.MInt ], returnType = Mono.MInt })
                             (Maybe.andThen (\ci -> ci.captureAbi) (firstCallInfo onGraph))
 
-                    -- §3.6: the sentinel is a uid no mint produces.
+                    -- The sentinel's uid is -(specId) - 1, for spec 1.
                     , \_ -> Expect.equal (Just (Mono.AnonymousLambda home -2)) (Maybe.andThen (\ci -> ci.fastEvaluator) (firstCallInfo onGraph))
 
-                    -- SOUNDNESS: the callee is STILL the local var. A direct
-                    -- rewrite to `MonoVarGlobal` is the recorded miscompile.
+                    -- The callee is still the local variable: a rewrite to
+                    -- the global would drop the bound argument.
                     , \_ -> Expect.equal True (calleeIsLocal onGraph)
                     ]
                     ()
         , Test.test "2. P5 UNIQUENESS: two specs of the global with the same residual DECLINE (papAmbiguous)" <|
             \() ->
-                -- `p|add|1` is layout-blind. `add : Int -> Int -> Int` and
-                -- `add : Float -> Int -> Int` both have residual `Int -> Int`;
-                -- their PAP objects hold an Int and a Float in slot 0. Stamping
-                -- either would load slot 0 with the wrong kind.
+                -- `p|add|1` does not say which spec was applied. Both specs
+                -- have residual `Int -> Int`, but their PAP objects hold an Int
+                -- and a Float in slot 0, so stamping either one would load
+                -- slot 0 at the wrong kind for the other.
                 let
                     reg =
                         registryOf
@@ -102,8 +157,8 @@ suite =
                     ()
         , Test.test "3. P3 FUNCTION TARGET: a non-function spec node (CAF) DECLINES (papNonFn)" <|
             \() ->
-                -- The registry's only spec of the global is a value node, not
-                -- callable code. `specFunctionRow` is Nothing for it.
+                -- The registry's only spec of the global is a constant, not
+                -- callable code.
                 let
                     reg =
                         registryOf [ Nothing, Just ( addGlobal, Mono.MInt ) ]
@@ -140,9 +195,9 @@ suite =
                 Expect.equal 0 st.stampedPapGlobal
         , Test.test "5. P2 RESIDUAL PEEL: a curried residual applied flat is peeled and stamps with k=1, |params|=2" <|
             \() ->
-                -- `add3 : Int -> Int -> Int -> Int`, value `add3 1` (k = 1).
-                -- `Store.classifyGo` types the residual as `Int -> (Int -> Int)`
-                -- — first stage 1 — while the site applies 2 args flat.
+                -- A three-parameter spec with one bound argument (k = 1). The
+                -- residual is typed `Int -> (Int -> Int)`, one parameter per
+                -- stage, while the site applies two arguments at once.
                 let
                     reg =
                         registryOf [ Nothing, Just ( addGlobal, fn [ Mono.MInt, Mono.MInt, Mono.MInt ] Mono.MInt ) ]
@@ -186,7 +241,8 @@ suite =
                 Expect.equal 0 st.stampedPapGlobal
         , Test.test "7. k=2: two bound arguments split the row at 2" <|
             \() ->
-                -- `add3 4 5` (k = 2), residual `Int -> Int`.
+                -- A three-parameter spec with two bound arguments (k = 2);
+                -- the residual is `Int -> Int`.
                 let
                     reg =
                         registryOf [ Nothing, Just ( addGlobal, fn [ Mono.MInt, Mono.MInt, Mono.MInt ] Mono.MInt ) ]
@@ -211,9 +267,9 @@ suite =
                     ()
         , Test.test "8. §11.1 CONSTRUCTOR PAP: a MonoCtor spec within the typed-slot bound STAMPS" <|
             \() ->
-                -- `Rect : Int -> Float -> Shape`, value `Rect 2` (k = 1). The
-                -- ctor spec is a real func.func of its fields; the row is the
-                -- field list and the return is the custom type.
+                -- `Rect` with an Int and a Float field, one bound (k = 1). The
+                -- pass reads a constructor spec's row as its field list and its
+                -- return as the result of its type.
                 let
                     reg =
                         registryOf [ Nothing, Just ( rectGlobal, fn [ Mono.MInt, Mono.MFloat ] shapeTy ) ]
@@ -239,8 +295,8 @@ suite =
                     ()
         , Test.test "9. §11.1 GUARD: a constructor wider than 24 fields DECLINES (tail fields are boxed)" <|
             \() ->
-                -- `computeCtorLayout` leaves fields at index >= 24 boxed; the
-                -- fast call would pass them unboxed. 25 Int fields, k = 1.
+                -- 25 Int fields, k = 1. Code generation stores fields at index
+                -- 24 and above boxed, and the fast call would pass them unboxed.
                 let
                     fields =
                         List.repeat 25 Mono.MInt
@@ -269,39 +325,51 @@ suite =
 -- ====== FIXTURE MACHINERY ======
 
 
-{-| The `p|add|k` member id.
+{-| The lambda-set member id on every site's callee, standing for the partial
+application under test. Each test's `origins` says which global it applies and
+how many arguments it binds.
 -}
 pap : Int
 pap =
     99993
 
 
+{-| The module `M` of package `author/proj`, home of both globals.
+-}
 home : ModuleName.Canonical
 home =
     ModuleName.Canonical ( "author", "proj" ) "M"
 
 
+{-| The global `add`, used by tests 1 to 7. Tests 5 and 7 give it a
+three-parameter spec, and test 3 a constant one.
+-}
 addGlobal : Mono.Global
 addGlobal =
     Mono.Global home "add"
 
 
+{-| The constructor global `Rect`, used by tests 8 and 9.
+-}
 rectGlobal : Mono.Global
 rectGlobal =
     Mono.Global home "Rect"
 
 
-{-| The custom type a constructor spec returns. Any non-function layout will
-do for these pins; `eqLayout` compares it against the site's return.
+{-| The result type of the constructor specs in tests 8 and 9, standing in for
+a custom type. It is `List Float`. The pass never checks that it is a custom
+type: it compares it with `eqLayout` against the site's return type and records
+it as the stamp's return type.
 -}
 shapeTy : Mono.MonoType
 shapeTy =
     Mono.mList Mono.MFloat
 
 
-{-| A registry SPEC node of a constructor: `MonoCtor shape ty`, the node kind
-`specFunctionRow` reads the row off in §11.1 (fields = `shape.fieldTypes`,
-return = the decomposed result of `ty`).
+{-| Builds a constructor spec node: `MonoCtor` named `Rect` with tag 0 and
+fields `fieldTys`, typed as a function from those fields to `shapeTy`. The pass
+reads its parameter row as the field list and its return as the final result of
+that type.
 -}
 ctorSpec : List Mono.MonoType -> Mono.MonoNode
 ctorSpec fieldTys =
@@ -310,22 +378,28 @@ ctorSpec fieldTys =
         (fn fieldTys shapeTy)
 
 
+{-| Builds the function type from `params` to `ret` with the `topLegacy`
+annotation, for spec nodes and registry entries.
+-}
 fn : List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 fn params ret =
     Mono.mFunction Mono.topLegacy params ret
 
 
-{-| The site's callee type: the PAP's RESIDUAL, head-annotated with the
-singleton `{p|add|k}` (Translate.injectPapMember injects at the residual HEAD).
+{-| Builds a site's callee type: the residual from `params` to `ret`, whose head
+annotation is the singleton set holding `pap`. A singleton head is what makes
+the pass look the member up.
 -}
 fn1 : List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 fn1 params ret =
     Mono.mFunction (Mono.LSet [ pap ]) params ret
 
 
-{-| A registry SPEC node of the global: a top-level, capture-free closure
-with the given flat parameter row. No `lssMember`, so it is not an instance
-in AbiCloning's closure index — it is reached only through `specsByGlobal`.
+{-| Builds a function spec node: a top-level closure with no captures, one
+parameter per type in `paramTys`, and type `paramTys -> ret`. It carries no
+lambda-set member, no source lambda and an unannotated (`topLegacy`) type, so
+the pass indexes no closure instance for it and reaches it only through the
+registry's specs of its global.
 -}
 specClosure : List Mono.MonoType -> Mono.MonoType -> Mono.MonoNode
 specClosure paramTys ret =
@@ -333,12 +407,8 @@ specClosure paramTys ret =
         params =
             List.indexedMap (\i t -> ( "p" ++ String.fromInt i, t )) paramTys
 
-        -- The body's TYPE is the spec's return type: `specFunctionRow`
-        -- derives the return from `Mono.typeOf body` exactly as
-        -- `insertInstance` does, so a body typed as a parameter would make
-        -- a `[Float, Int] -> Int` spec report `Float` and silently drop out
-        -- of the match set (which is how pins 2 and 6 first passed for the
-        -- wrong reason).
+        -- Typed `ret` because the pass takes a spec's return type from its
+        -- body's type; a body typed as a parameter would report that type.
         body =
             Mono.MonoVarLocal "r" ret
     in
@@ -358,8 +428,10 @@ specClosure paramTys ret =
         (fn paramTys ret)
 
 
-{-| A site applying `argCount` args to a local var of the residual type. The
-third argument is unused except to document k at the call site.
+{-| Builds a call applying `argCount` integer literals to the local variable `h`
+of type `calleeTy`. The call's result type is the return of `calleeTy`'s first
+stage, which in test 5 is still a function. The third argument is ignored; it
+names k for the reader of each test.
 -}
 papSite : Int -> Mono.MonoType -> Int -> Mono.MonoExpr
 papSite argCount calleeTy _ =
@@ -376,11 +448,16 @@ papSite argCount calleeTy _ =
         Mono.defaultCallInfo
 
 
+{-| Builds the member-origin table from pairs of member id and origin.
+-}
 origins : List ( Int, Mono.MemberOrigin ) -> Dict.Dict Int Mono.MemberOrigin
 origins =
     Dict.fromList
 
 
+{-| Builds a registry whose entry i, in `entries` order, is SpecId i, with
+`nextId` set to the entry count and an empty key map.
+-}
 registryOf : List (Maybe ( Mono.Global, Mono.MonoType )) -> Mono.SpecializationRegistry
 registryOf entries =
     { nextId = List.length entries
@@ -390,6 +467,9 @@ registryOf entries =
     }
 
 
+{-| Returns the first call in the list node 0 defines, or `Nothing` when there
+is none.
+-}
 firstCall : Mono.MonoGraph -> Maybe Mono.MonoExpr
 firstCall (Mono.MonoGraph record) =
     case Array.get 0 record.nodes of
@@ -411,6 +491,8 @@ firstCall (Mono.MonoGraph record) =
             Nothing
 
 
+{-| Returns the `CallInfo` of `firstCall`.
+-}
 firstCallInfo : Mono.MonoGraph -> Maybe Mono.CallInfo
 firstCallInfo g =
     case firstCall g of
@@ -421,6 +503,9 @@ firstCallInfo g =
             Nothing
 
 
+{-| Tells whether the callee of `firstCall` is still a local variable; `False`
+when there is no call.
+-}
 calleeIsLocal : Mono.MonoGraph -> Bool
 calleeIsLocal g =
     case firstCall g of
@@ -431,9 +516,12 @@ calleeIsLocal g =
             False
 
 
-{-| Node 0 holds the sites; nodes 1.. are the registry specs, at the SAME
-index as their `reverseMapping` entry (nodes and reverseMapping share the
-SpecId index). The p| fast stamp rides E9.5's post-settle indices.
+{-| Runs `AbiCloning.abiCloningPass`, census switched on, and returns the graph
+and its stats. Node 0 defines a list of `exprs`, and `specNodes` follow from
+node 1. The pass reads node i as the spec at registry entry i, so each spec
+node sits at the index of its entry and the registry passed in must leave entry
+0 empty, for node 0. `memberOrigins` becomes the graph's `lssMemberOrigins`;
+the other tables are empty.
 -}
 run : Dict.Dict Int Mono.MemberOrigin -> Mono.SpecializationRegistry -> List Mono.MonoNode -> List Mono.MonoExpr -> ( Mono.MonoGraph, AbiCloning.AbiCloningStats )
 run memberOrigins registry specNodes exprs =

@@ -1,11 +1,20 @@
 module TestLogic.Type.PostSolve.GroupBTypes exposing (expectGroupBTypesValid)
 
-{-| Test logic for invariant POST\_001: GroupB types are fully resolved.
+{-| Checks that no node type left by PostSolve holds a type variable whose name
+starts with a digit.
 
-After solving, verify that all remaining GroupB expressions (Str, Chr, Float,
-Unit) have fully resolved types with no remaining unification variables.
-List, Tuple, Record, Lambda, Accessor, and Let forms are now Group A
-(solver-owned) and do not need PostSolve structural repair.
+Constraint generation types some expressions, its _Group B_, through a
+_synthetic placeholder_: a fresh type variable it allocates for an expression
+with no result variable of its own, such as a string, character, float or unit
+literal (`Compiler.Type.Constrain.Typed.Expression` makes the split).
+`Compiler.Type.PostSolve` then rewrites the types of some of those expressions.
+
+`expectGroupBTypesValid` runs the program to PostSolve and searches every
+node type PostSolve returns, not only those of Group B expressions. This
+module takes a placeholder to be a `TVar` whose name starts with a digit, and
+fails on any such variable. The names the solver generates for type variables
+start with a letter (`Compiler.Data.Name.fromTypeVariableScheme`), so no
+variable the solver named can fail the check.
 
 -}
 
@@ -18,7 +27,13 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that remaining Group B expressions get structural types.
+{-| Passes when `srcModule` compiles through PostSolve and no node type after
+PostSolve holds a `TVar` whose name starts with a digit.
+
+A canonicalization or type error fails with the pipeline's message. When
+several variables are found, the failure names only one of them, with the id
+of the node whose type holds it.
+
 -}
 expectGroupBTypesValid : Src.Module -> Expect.Expectation
 expectGroupBTypesValid srcModule =
@@ -32,6 +47,7 @@ expectGroupBTypesValid srcModule =
                     collectGroupBTypeChecks result.nodeTypesPost
             in
             case checks of
+                -- Expect.all fails when it is given no checks.
                 [] ->
                     Expect.pass
 
@@ -45,10 +61,11 @@ expectGroupBTypesValid srcModule =
 -- ============================================================================
 
 
-{-| Collect checks for remaining Group B types.
+{-| Returns one failing check for each digit-named `TVar` in `nodeTypes`,
+labelled with the id of the node whose type holds it.
 
-Remaining Group B expressions (Str, Chr, Float, Unit) should have
-fully structural types after PostSolve, with no unconstrained synthetic variables.
+The array index is the node id. Every node with a type is searched, whatever
+its expression or pattern form.
 
 -}
 collectGroupBTypeChecks : Array.Array (Maybe (Can.Type Name)) -> List (() -> Expect.Expectation)
@@ -67,18 +84,18 @@ collectGroupBTypeChecks nodeTypes =
         |> Tuple.second
 
 
-{-| Check a type for unconstrained synthetic variables.
+{-| Returns one failing check, labelled with `context`, for each occurrence of
+a digit-named `TVar` in `canType`.
 
-After PostSolve, types should be fully concrete with no synthetic variables
-(represented as TVar with specific naming patterns).
+The search goes through function types, the arguments of a named type,
+record-field and tuple types, and through both an alias's arguments and its
+body. A record's extension variable is not looked at.
 
 -}
 checkTypeForSyntheticVars : String -> Can.Type Name -> List (() -> Expect.Expectation)
 checkTypeForSyntheticVars context canType =
     case canType of
         Can.TVar name ->
-            -- Check if this looks like a synthetic variable
-            -- Synthetic variables typically have numeric suffixes or special prefixes
             if isSyntheticVarName name then
                 [ \() -> Expect.fail (context ++ ": Found synthetic type variable '" ++ name ++ "'") ]
 
@@ -113,7 +130,8 @@ checkTypeForSyntheticVars context canType =
                 ++ checkAliasedTypeForSyntheticVars context aliasedType
 
 
-{-| Check aliased type for synthetic variables.
+{-| Returns the checks `checkTypeForSyntheticVars` gives for the body of an
+alias, whether `Holey` or `Filled`.
 -}
 checkAliasedTypeForSyntheticVars : String -> Can.AliasType Name -> List (() -> Expect.Expectation)
 checkAliasedTypeForSyntheticVars context aliasType =
@@ -125,21 +143,13 @@ checkAliasedTypeForSyntheticVars context aliasType =
             checkTypeForSyntheticVars context canType
 
 
-{-| Check if a type variable name looks like a synthetic variable.
-
-Synthetic variables from the solver typically have patterns like:
-
-  - Numeric names (e.g., "1", "23")
-  - Generated prefixes
-
-User-declared type variables typically use lowercase letters.
-
+{-| Tells whether `name` starts with a digit, which is what this module takes
+to mark a solver placeholder. The empty name does not.
 -}
 isSyntheticVarName : String -> Bool
 isSyntheticVarName name =
     case String.uncons name of
         Just ( first, _ ) ->
-            -- Synthetic vars often start with digits or are all-numeric
             Char.isDigit first
 
         Nothing ->

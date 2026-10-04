@@ -9,11 +9,49 @@ module Compiler.Parse.Primitives exposing
     , Step(..)
     )
 
-{-| Core parser primitives and combinators for the Elm compiler.
+{-| This module is the parser library the compiler's own parsers are written
+in: a parser type, the combinators that build larger parsers from smaller ones,
+and the functions that run them. Its central idea is that a parser reports not
+only whether it succeeded but also whether it consumed any input before it
+finished, and that second fact decides when another alternative may still be
+tried.
 
-This module provides the foundational parsing infrastructure used throughout the
-compiler's parser. It implements a custom parser type with position tracking,
-indentation-sensitive parsing, and efficient error reporting.
+A _parser_ is a function from a `State` to a `PStep`. The state is the text
+being parsed, where the parser has got to in it, and the current indent. The
+position is kept in two forms. `pos` and `end` are indices into the text in the
+units `String.slice` uses, which are not bytes: a character above U+FFFF takes
+two of them, as `getCharWidth` says. `row` and `col` are a line and a column
+number, and both start from 1. A region recorded by `addLocation` ends at the
+position just after its last character.
+
+A parser's outcome answers two questions: did it succeed, and had it consumed
+input by the time it finished? `Cok` and `Cerr` report success and failure after
+consuming input; `Eok` and `Eerr` report that nothing was consumed, called
+_empty_. The report is the parser's own and nothing checks it against the
+position. `oneOf` tries its next alternative only after an `Eerr`. Once an
+alternative reports that it consumed input, its result stands, success or
+failure, so a choice commits to that branch. `loop` and `inContext` keep this
+record across the parsers they run in sequence: once anything has been
+consumed, a later empty outcome is reported as consumed.
+`andThen` does so for success only. When its first parser consumed and its
+second gives `Eerr`, the result is still `Eerr`, so an enclosing `oneOf` moves
+on to its next alternative from where it started.
+
+A failure carries its error as a function of a row and a column, together with
+the row and column to give it. `specialize` and `inContext` wrap a failure in
+the error of an enclosing construct: the inner error is given the row and
+column its failure carries, and the wrapping error is placed where the
+construct started.
+
+The _indent_ is the column a layout-sensitive construct is measured against. It
+is 0 when parsing starts, and `withIndent` and `withBacksetIndent` set it for a
+nested parser; the checks made against it are in `Compiler.Parse.Space`.
+
+`fromByteString` and `fromSnippet` run a parser over a text, and treat a parse
+that succeeds without reaching the end of its input as a failure, a _bad end_.
+`word1` and `word2` are parsers for one or two fixed characters. `unsafeIndex`,
+`isWord` and `getCharWidth` are for parsers written directly as functions on
+the state instead of being built from the combinators.
 
 
 # Parser Type
@@ -66,25 +104,32 @@ import Utils.Crash exposing (crash)
 -- ====== PARSER ======
 
 
-{-| The core parser type that transforms a State into a parse result.
+{-| A parser that produces a value of type `a` or fails with an error of type
+`x`.
 
-Parsers consume input and produce either success (with a value) or failure
-(with an error). The `x` type parameter represents the error type, and `a`
-represents the success value type.
+Running one on a state gives a `PStep`, which says whether it succeeded and
+whether it consumed input. The constructor is exposed, so a scanner can be
+written directly as a function on the state.
 
 -}
 type Parser x a
     = Parser (State -> PStep x a)
 
 
-{-| Parser step result type with four variants for different parse outcomes.
+{-| The outcome of running a parser once: success or failure, each either after
+consuming input or with nothing consumed.
 
-  - `Cok`: Consumed input, parse OK (success after consuming input)
-  - `Eok`: Empty OK (success without consuming input)
-  - `Cerr`: Consumed input, error (failure after consuming input)
-  - `Eerr`: Empty error (failure without consuming input)
+`Cok` and `Eok` carry the value and the state to continue from. `Cok` reports
+that input was consumed and `Eok` that none was. A parser written directly on
+the state chooses which to give, and nothing checks it; some give `Cok` having
+consumed nothing.
 
-The distinction between consumed/empty is crucial for backtracking behavior.
+`Cerr` and `Eerr` carry a row, a column and a function that builds the error
+from a row and a column; the error is that function given that row and column.
+`Cerr` reports that input was consumed before the failure, which stops `oneOf`
+from trying another alternative. `Eerr` reports that none was, and leaves
+`oneOf` free to try the next one. Neither carries a state, so a failure gives no
+position to continue from.
 
 -}
 type PStep x a
@@ -94,14 +139,12 @@ type PStep x a
     | Eerr Row Col (Row -> Col -> x)
 
 
-{-| The internal parser state data including source, position, and location.
+{-| Where a parser has got to in its text.
 
-  - `src`: The source string being parsed
-  - `pos`: Current byte position in the source
-  - `end`: End position (length of source or snippet)
-  - `indent`: Current indentation level for layout-sensitive parsing
-  - `row`: Current row (line) number (1-indexed)
-  - `col`: Current column number (1-indexed)
+`pos` and `end` are indices into `src` in the units `String.slice` uses, not
+bytes. `end` is where the input stops, which for a snippet can be before the
+end of `src`. `indent` is the column a layout-sensitive construct is measured
+against. `row` and `col` count from 1.
 
 -}
 type alias StateData =
@@ -114,20 +157,32 @@ type alias StateData =
     }
 
 
-{-| Parser state wrapper type.
+{-| The state a parser receives and passes on: the text, the position in it and
+the current indent, as `StateData` describes.
+
+The constructor is exposed, and nothing checks that the fields agree with one
+another, for example that `pos` is no greater than `end`.
+
 -}
 type State
-    = -- PERF try taking some out to avoid allocation
-      State StateData
+    = State StateData
 
 
-{-| Row (line) number type alias for position tracking (1-indexed).
+{-| A line number, counted from 1.
+
+This is a name for `Int`, not a new type, and the compiler checks nothing about
+the values given where a `Row` is expected.
+
 -}
 type alias Row =
     Int
 
 
-{-| Column number type alias for position tracking (1-indexed).
+{-| A column number within a line, counted from 1.
+
+This is a name for `Int`, not a new type, and the compiler checks nothing about
+the values given where a `Col` is expected.
+
 -}
 type alias Col =
     Int
@@ -137,11 +192,8 @@ type alias Col =
 -- ====== FUNCTOR ======
 
 
-{-| Transform the result of a parser by applying a function to the success value.
-
-This is the functor map operation for parsers. It does not affect error values
-or consume any additional input.
-
+{-| Produces a parser that runs `parser` and applies `f` to its value. Whether
+input was consumed, and any failure, are unchanged.
 -}
 map : (a -> b) -> Parser x a -> Parser x b
 map f (Parser parser) =
@@ -166,11 +218,13 @@ map f (Parser parser) =
 -- ====== ONE OF ======
 
 
-{-| Try a list of parsers in order, succeeding with the first one that succeeds.
+{-| Produces a parser that tries `parsers` in order, each from the same
+starting state, and gives the outcome of the first one that does not fail empty.
 
-If all parsers fail without consuming input (Eerr), returns an error created by
-the provided error constructor at the current position. If any parser consumes
-input, that result is returned immediately (no backtracking after consumption).
+A parser whose outcome says it consumed input ends the choice, whether it
+succeeded or failed. When every parser gives `Eerr`, or the list is empty, the
+result is an `Eerr` built from `toError` at the starting position, and the
+errors of the alternatives are discarded.
 
 -}
 oneOf : (Row -> Col -> x) -> List (Parser x a) -> Parser x a
@@ -181,6 +235,10 @@ oneOf toError parsers =
         )
 
 
+{-| Returns the outcome of the first of `parsers` that does not give `Eerr` when
+run on `state`, or an `Eerr` built from `toError` at the position of `state`
+when none is left.
+-}
 oneOfHelp : State -> (Row -> Col -> x) -> List (Parser x a) -> PStep x a
 oneOfHelp state toError parsers =
     case parsers of
@@ -204,10 +262,11 @@ oneOfHelp state toError parsers =
 -- ====== ONE OF WITH FALLBACK ======
 
 
-{-| Try a list of parsers, returning a fallback value if all fail without consuming input.
+{-| Produces a parser that tries `parsers` as `oneOf` does, but succeeds with
+`fallback`, consuming nothing, when every parser gives `Eerr`.
 
-Similar to `oneOf`, but instead of failing when all parsers fail, returns the
-provided fallback value. This is useful for optional syntax constructs.
+A parser whose outcome says it consumed input still ends the choice, so a
+`Cerr` is returned as it is.
 
 -}
 oneOfWithFallback : List (Parser x a) -> a -> Parser x a
@@ -215,6 +274,9 @@ oneOfWithFallback parsers fallback =
     Parser (\state -> oowfHelp state parsers fallback)
 
 
+{-| Returns the outcome of the first of `parsers` that does not give `Eerr` when
+run on `state`, or `Eok fallback` at `state` when none is left.
+-}
 oowfHelp : State -> List (Parser x a) -> a -> PStep x a
 oowfHelp state parsers fallback =
     case parsers of
@@ -234,22 +296,20 @@ oowfHelp state parsers fallback =
 -- ====== MONAD ======
 
 
-{-| Create a parser that always succeeds with the given value without consuming input.
-
-This is the monadic return/pure operation. It produces an Eok result.
-
+{-| Produces a parser that succeeds with `value` and consumes nothing.
 -}
 pure : a -> Parser x a
 pure value =
     Parser (\state -> Eok value state)
 
 
-{-| Sequence two parsers, using the result of the first to determine the second.
+{-| Produces a parser that runs the given parser, then runs the parser that
+`callback` builds from its value, continuing from where the first stopped.
 
-This is the monadic bind operation. The callback function receives the result
-of the first parser and returns the second parser to run. Properly handles
-consumption tracking: if the first parser consumed input (Cok), the second
-parser's Eok is promoted to Cok.
+If the first parser consumed input, a success of the second is reported as
+`Cok`. A failure of the second is passed on as it is, so `Eerr` after a
+consuming first parser is still `Eerr`, and an enclosing `oneOf` will try its
+next alternative.
 
 -}
 andThen : (a -> Parser x b) -> Parser x a -> Parser x b
@@ -287,11 +347,12 @@ andThen callback (Parser parserA) =
 -- ====== FROM BYTESTRING ======
 
 
-{-| Run a parser on a complete source string.
+{-| Runs a parser over the whole of `src`, starting at row 1, column 1 with an
+indent of 0.
 
-Returns `Ok` with the parsed value if successful and the entire input is consumed.
-Returns `Err` if parsing fails or if there is unconsumed input remaining (using
-the provided error constructor for the latter case).
+The result is `Ok` only if the parser succeeds and stops at the end of `src`.
+A parser that succeeds earlier gives `toBadEnd` applied to the row and column
+where it stopped. A failure gives its own error.
 
 -}
 fromByteString : Parser x a -> (Row -> Col -> x) -> String -> Result x a
@@ -315,6 +376,9 @@ fromByteString (Parser parser) toBadEnd src =
             toErr row col toError
 
 
+{-| Returns `Ok a` if the parser's final state is at the end of its input, and
+otherwise `toBadEnd` applied to the row and column where it stopped.
+-}
 toOk : (Row -> Col -> x) -> a -> State -> Result x a
 toOk toBadEnd a (State s) =
     if s.pos == s.end then
@@ -324,6 +388,8 @@ toOk toBadEnd a (State s) =
         Err (toBadEnd s.row s.col)
 
 
+{-| Returns the error of a failed parse: `toError` given `row` and `col`.
+-}
 toErr : Row -> Col -> (Row -> Col -> x) -> Result x a
 toErr row col toError =
     Err (toError row col)
@@ -333,18 +399,21 @@ toErr row col toError =
 -- ====== FROM SNIPPET ======
 
 
-{-| A snippet represents a slice of a source file with position information.
-Re-exported from Compiler.AST.Snippet for backward compatibility.
+{-| A piece of a source text given by its place in the whole text. This is
+`Compiler.AST.Snippet.Snippet` under a name in this module, not a new type;
+`Compiler.AST.Snippet` describes what it holds.
 -}
 type alias Snippet =
     Snippet.Snippet
 
 
-{-| Run a parser on a snippet of source code with position tracking.
+{-| Runs a parser over the piece of text a snippet names, with an indent of 0.
+It starts at the snippet's row and column, so positions are reported in the
+whole text rather than in the piece.
 
-Similar to `fromByteString`, but parses only a portion of a source string
-(defined by offset and length) while maintaining correct position information
-relative to the original source file.
+As with `fromByteString`, the result is `Ok` only if the parser succeeds and
+stops at the end of the piece; a parser that succeeds earlier gives
+`toBadEnd` applied to the row and column where it stopped.
 
 -}
 fromSnippet : Parser x a -> (Row -> Col -> x) -> Snippet -> Result x a
@@ -372,10 +441,7 @@ fromSnippet (Parser parser) toBadEnd (Snippet.Snippet { fptr, offset, length, of
 -- ====== POSITION ======
 
 
-{-| Get the current parser position without consuming any input.
-
-Returns a `Position` containing the current row and column numbers.
-
+{-| A parser that succeeds with the current row and column, consuming nothing.
 -}
 getPosition : Parser x A.Position
 getPosition =
@@ -385,11 +451,9 @@ getPosition =
         )
 
 
-{-| Annotate a parser's result with its source location.
-
-Captures the start position before parsing and the end position after parsing,
-wrapping the result in a `Located` value with the complete region.
-
+{-| Produces a parser that runs the given parser and places its value at the
+region it covered, from the position where it started to the position where it
+stopped. Whether input was consumed, and any failure, are unchanged.
 -}
 addLocation : Parser x a -> Parser x (A.Located a)
 addLocation (Parser parser) =
@@ -410,11 +474,8 @@ addLocation (Parser parser) =
         )
 
 
-{-| Create a located value from a start position, a value, and the current position.
-
-Uses the provided start position and the current parser position as the end,
-wrapping the value in a `Located` annotation. Does not consume any input.
-
+{-| Produces a parser that consumes nothing and succeeds with `value` placed at
+the region from `start` to the current position.
 -}
 addEnd : A.Position -> a -> Parser x (A.Located a)
 addEnd start value =
@@ -428,11 +489,11 @@ addEnd start value =
 -- ====== INDENT ======
 
 
-{-| Run a parser with the indentation level set to the current column.
+{-| Produces a parser that runs the given parser with the indent set to the
+current column.
 
-Sets the indent level to the current column before running the parser, then
-restores the previous indent level afterward. This is used for indentation-
-sensitive syntax like `let` blocks where nested definitions must align.
+On success the indent is put back to what it was. A failure carries no state,
+so there is nothing to put back.
 
 -}
 withIndent : Parser x a -> Parser x a
@@ -451,12 +512,11 @@ withIndent (Parser parser) =
         )
 
 
-{-| Run a parser with the indentation level set back by a specified offset.
+{-| Produces a parser that runs the given parser with the indent set to the
+current column minus `backset`.
 
-Sets the indent level to the current column minus the backset amount, then
-restores the previous indent level after parsing. Used for handling indentation
-in cases like `case` expressions where branches may be indented relative to
-a previous token.
+On success the indent is put back to what it was. A failure carries no state,
+so there is nothing to put back.
 
 -}
 withBacksetIndent : Int -> Parser x a -> Parser x a
@@ -479,12 +539,15 @@ withBacksetIndent backset (Parser parser) =
 -- ====== CONTEXT ======
 
 
-{-| Parse with contextual error information added to failures.
+{-| Produces a parser for a construct that begins with the parser `start`,
+whose value is discarded, followed by the given parser, whose value is the
+result.
 
-Runs a start parser to establish context, then runs the main parser. If the
-main parser fails, the error is wrapped with context information from the start
-position. This helps provide better error messages by showing where a syntactic
-construct began.
+A failure of the second parser becomes the error `addContext` builds from the
+inner error, given the row and column the failure carries, and is placed at
+the position where `start` began. If `start` consumed input, the whole is
+reported as consumed: an `Eok` becomes `Cok` and an `Eerr` becomes `Cerr`. A
+failure of `start` itself is passed on unwrapped.
 
 -}
 inContext : (x -> Row -> Col -> y) -> Parser y start -> Parser x a -> Parser y a
@@ -528,10 +591,12 @@ inContext addContext (Parser parserStart) (Parser parserA) =
         )
 
 
-{-| Transform parser errors by applying a context-adding function.
+{-| Produces a parser that runs the given parser and turns its error into the
+one `addContext` builds from it.
 
-Similar to `inContext` but without a separate start parser. Captures the current
-position and uses it to add context to any errors produced by the parser.
+The inner error is given the row and column its failure carries, and the new
+error is placed at the position where the parser started. Whether input was
+consumed is unchanged.
 
 -}
 specialize : (x -> Row -> Col -> y) -> Parser x a -> Parser y a
@@ -557,10 +622,11 @@ specialize addContext (Parser parser) =
 -- ====== SYMBOLS ======
 
 
-{-| Parse a single specific character.
+{-| Produces a parser that consumes the character `word` if it is next, and
+otherwise gives an `Eerr` built from `toError` at the current position.
 
-Succeeds if the next character matches the expected character, consuming it.
-Fails with an Eerr if the character doesn't match or if at end of input.
+It advances `pos` and `col` by one and leaves `row` alone, so `word` must be
+neither a newline nor a character above U+FFFF.
 
 -}
 word1 : Char -> (Row -> Col -> x) -> Parser x ()
@@ -580,11 +646,11 @@ word1 word toError =
         )
 
 
-{-| Parse a sequence of two specific characters.
+{-| Produces a parser that consumes `w1` followed by `w2` if they are next, and
+otherwise gives an `Eerr` built from `toError` at the current position.
 
-Succeeds if the next two characters match the expected sequence, consuming both.
-Fails with an Eerr if either character doesn't match or if there aren't enough
-characters remaining.
+It advances `pos` and `col` by two and leaves `row` alone, so neither character
+may be a newline or a character above U+FFFF.
 
 -}
 word2 : Char -> Char -> (Row -> Col -> x) -> Parser x ()
@@ -613,10 +679,12 @@ word2 w1 w2 toError =
 -- ====== LOW-LEVEL CHECKS ======
 
 
-{-| Get a character at a specific index in a string without bounds checking.
+{-| Returns the character that starts at `index` in `str`, counting in the
+units `String.slice` uses.
 
-This function is unsafe because it crashes if the index is out of bounds.
-It should only be used when the index is known to be valid.
+It crashes, through `Utils.Crash`, when `index` is at or past the end of
+`str`. It checks nothing against a parser's `end`, so a caller reading a
+snippet must check that bound itself, as `isWord` does.
 
 -}
 unsafeIndex : String -> Int -> Char
@@ -629,22 +697,15 @@ unsafeIndex str index =
             crash "Error on unsafeIndex!"
 
 
-{-| Check if the character at a given position matches an expected character.
-
-Returns `True` if position is within bounds and the character matches,
-`False` otherwise. This is a safe alternative to direct character comparison.
-
+{-| Returns `True` when `pos` is before `end` and the character there is `word`.
 -}
 isWord : String -> Int -> Int -> Char -> Bool
 isWord src pos end word =
     pos < end && unsafeIndex src pos == word
 
 
-{-| Get the width of a character in UTF-16 code units.
-
-Returns 2 for characters outside the Basic Multilingual Plane (code point > 0xFFFF),
-which require surrogate pairs in UTF-16, and 1 for all other characters.
-
+{-| Returns how many units of `pos` a character takes: 2 for a character above
+U+FFFF and 1 for any other.
 -}
 getCharWidth : Char -> Int
 getCharWidth word =
@@ -656,27 +717,25 @@ getCharWidth word =
 
 
 
--- ====== ENCODERS and DECODERS ======
 -- ====== LOOP ======
 
 
-{-| Control flow type for the `loop` combinator.
-
-  - `Loop state`: Continue looping with updated state
-  - `Done a`: Exit loop with final result
-
+{-| What one round of `loop` decides: `Loop` carries the loop state for the
+next round, and `Done` carries the result that ends the loop.
 -}
 type Step state a
     = Loop state
     | Done a
 
 
-{-| Repeatedly apply a parser-producing function until it returns `Done`.
+{-| Produces a parser that runs the parser `callback` builds from `loopState`,
+and keeps running rounds on the state each `Loop` gives until a round gives
+`Done` or fails.
 
-A general-purpose looping combinator for parsers. The callback receives the
-current state and returns a parser that produces either `Loop` (to continue
-with new state) or `Done` (to finish with a result). Properly tracks input
-consumption across iterations.
+Once any round has consumed input, the whole loop is reported as consumed: its
+success is `Cok` and an empty failure of a later round becomes `Cerr`. Nothing
+bounds the number of rounds, so a round that gives `Loop` without consuming must
+move the loop state towards `Done`.
 
 -}
 loop : (state -> Parser x (Step state a)) -> state -> Parser x a
@@ -687,6 +746,10 @@ loop callback loopState =
         )
 
 
+{-| Runs rounds of `loop` from `state` and `loopState`. `eok` and `eerr` build
+the outcome of a round that ends the loop with nothing consumed in that round;
+they are `Eok` and `Eerr` until a round consumes, and `Cok` and `Cerr` after.
+-}
 loopHelp :
     (state -> Parser x (Step state a))
     -> State

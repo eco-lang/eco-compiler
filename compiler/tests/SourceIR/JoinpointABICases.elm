@@ -1,15 +1,67 @@
 module SourceIR.JoinpointABICases exposing (expectSuite, suite)
 
-{-| Test cases for join-point ABI coercion in MonoCase expressions.
+{-| Programs in which the branches of a `case` return functions, for testing a
+compiler stage on the place where those branches meet.
 
-These tests cover the canonical segmentation selection and ABI wrapper
-generation when case branches return functions with different staging:
+Elm lets two lambdas of the same type group their parameters differently:
+`\a b -> \c -> a + b + c` and `\a -> \b c -> a + b + c` both have type
+`Int -> Int -> Int -> Int`. How a function value groups its parameters into
+lambda layers is its _segmentation_, written as the parameter count of each
+layer, so these two are `[2, 1]` and `[1, 2]`; a function with more than one
+layer is _staged_. When the branches of a `case` return functions, the value
+leaving the `case` must be callable one way whichever branch produced it. The
+point where the branches meet is the _join point_, and the segmentation every
+branch must present there is its _ABI_. `Compiler.GlobalOpt.Staging` is the
+pass that picks one segmentation for the function values it joins at a join
+point, by a majority vote that `Compiler.GlobalOpt.Staging.Solver` owns, and
+wraps those that differ from it. Which branches it joins is a rule
+`Compiler.GlobalOpt.Staging.GraphBuilder` owns. The categories below are
+arranged by how the segmentations of the branches, as written, compare.
 
-  - Category 1: Identical staging (no wrappers needed)
-  - Category 2: Different stagings (majority wins)
-  - Category 3: Tie-breaking (prefer flatter)
-  - Category 4: Nested control flow (inner stages separated)
-  - Category 5: Edge cases
+Every case builds a module `Test` with
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefsUnionsAliases`, holding two
+annotated top-level definitions. `caseFunc` names one or two parameters and
+its body is a `case` on the first of them. Except in 1.6, its annotation has
+more arrows than it names parameters, and the remaining arguments are taken by
+the lambdas its branches return. Every argument and result is an `Int`, except
+the scrutinee in `customTypeBranches` (a `MaybeInt`, the one union any case
+declares) and in `listPatternBranches` (a `List Int`). `testValue : Int`
+applies `caseFunc` to integer literals, sometimes in one call and sometimes in
+several, except for those two scrutinees, `JustInt 10` in 5.5 and
+`[ 10, 20 ]` in 5.6. Where a docstring gives `testValue` as
+`(caseFunc 0 5) 3`, the built tree holds one call as the function of another,
+with no `Parens` node.
+
+What the tests establish:
+
+  - `expectSuite expectFn condStr` is one test, named `"JoinpointABI "` followed
+    by `condStr`, that hands all 25 programs to `expectFn` in turn through
+    `Compiler.BulkCheck.bulkCheck`, which stops at the first failure and
+    reports that case's label. What is checked is up to `expectFn`.
+  - `suite` runs the same 25 programs with
+    `TestLogic.TestPipeline.expectMonomorphization`, which checks only that each
+    one monomorphizes to a graph with a `main` and a non-empty node array. It
+    runs no global optimization, so it never reaches the staging pass.
+  - Category 1 (cases 1.1 to 1.6): every branch has the same segmentation,
+    one of `[2]`, `[1, 1]`, `[3]`, `[1, 1, 1]` and `[2, 1]`, and in 1.6 every
+    branch returns an `Int`.
+  - Category 2 (2.1 to 2.4): the branches' segmentations differ, and one of
+    them belongs to more branches than any other.
+  - Category 3 (3.1 to 3.4): no segmentation has more branches than another.
+    In 3.1 to 3.3 the tied segmentations have different numbers of stages; in
+    3.4, `[2, 1]` against `[1, 2]`, they have the same number.
+  - Category 4 (4.1 to 4.6): a function value reaches the outer `case` through
+    a `case` nested in a branch (4.1, 4.2, 4.5, 4.6) or a `let`-bound name
+    (4.3), and in 4.4 a branch lambda's body is a `let` around a second lambda.
+  - Category 5 (5.2 to 5.6, there is no 5.1): a lone wildcard branch (5.2),
+    five lambda parameters in four segmentations (5.3), a `[2]` branch against
+    a `[1, 1]` branch (5.4), and `case`s on a custom type (5.5) and on a list
+    (5.6).
+
+Among what is not tested: no case checks which segmentation is chosen, that a
+wrapper is built, or what `testValue` evaluates to; no branch value is an `if`
+expression, a kernel function or a top-level function; no `caseFunc` is
+polymorphic.
 
 -}
 
@@ -44,13 +96,18 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| A test that every program in this module monomorphizes, with
+`TestLogic.TestPipeline.expectMonomorphization` as the expectation.
+-}
 suite : Test
 suite =
     Test.test "JoinpointABI coverage monomorphizes case branches" <|
         \_ -> bulkCheck (testCases expectMonomorphization)
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Creates one test, named `"JoinpointABI "` followed by `condStr`, that applies
+`expectFn` to every program in this module and fails with the label of the
+first program it rejects.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -58,6 +115,9 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the labelled cases of all five categories, in category order, each
+applying `expectFn` to its program.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -71,10 +131,14 @@ testCases expectFn =
 
 
 -- ============================================================================
--- CATEGORY 1: IDENTICAL STAGING (NO WRAPPERS NEEDED)
+-- CATEGORY 1: IDENTICAL STAGING
 -- ============================================================================
 
 
+{-| Returns the labelled cases of category 1, whose branches all return
+functions of one segmentation, or in 1.6 all return an `Int`, each applying
+`expectFn` to its program.
+-}
 identicalStagingCases : (Src.Module -> Expectation) -> List TestCase
 identicalStagingCases expectFn =
     [ { label = "1.1 identicalFlat2", run = identicalFlat2 expectFn }
@@ -86,16 +150,25 @@ identicalStagingCases expectFn =
     ]
 
 
-{-| All branches return flat binary function: \\a b -> expr
-Segmentation: all [2]
+{-| Applies `expectFn` to a program whose two branches both return a `[2]`
+function, called in one application.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b -> a + b
+
+            _ ->
+                \a b -> a - b
+
+    testValue =
+        caseFunc 0 5 3
+
 -}
 identicalFlat2 : (Src.Module -> Expectation) -> (() -> Expectation)
 identicalFlat2 expectFn _ =
     let
-        -- caseFunc : Int -> Int -> Int -> Int
-        -- caseFunc x a b = case x of
-        --     0 -> a + b
-        --     _ -> a - b
         caseFuncDef : TypedDef
         caseFuncDef =
             { name = "caseFunc"
@@ -135,8 +208,21 @@ identicalFlat2 expectFn _ =
     expectFn modul
 
 
-{-| All branches return curried unary functions: \\a -> \\b -> expr
-Segmentation: all [1,1]
+{-| Applies `expectFn` to a program whose two branches both return a `[1, 1]`
+function, called in two applications.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a -> \b -> a + b
+
+            _ ->
+                \a -> \b -> a - b
+
+`testValue` is `(caseFunc 0 5) 3`, built as one call applied to the
+result of another.
+
 -}
 identicalCurried11 : (Src.Module -> Expectation) -> (() -> Expectation)
 identicalCurried11 expectFn _ =
@@ -184,8 +270,21 @@ identicalCurried11 expectFn _ =
     expectFn modul
 
 
-{-| All branches return flat ternary function: \\a b c -> expr
-Segmentation: all [3]
+{-| Applies `expectFn` to a program whose two branches both return a `[3]`
+function, called in one application.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b c -> a + b + c
+
+            _ ->
+                \a b c -> a - b - c
+
+    testValue =
+        caseFunc 0 5 3 2
+
 -}
 identicalFlat3 : (Src.Module -> Expectation) -> (() -> Expectation)
 identicalFlat3 expectFn _ =
@@ -231,8 +330,21 @@ identicalFlat3 expectFn _ =
     expectFn modul
 
 
-{-| All branches return deeply curried: \\a -> \\b -> \\c -> expr
-Segmentation: all [1,1,1]
+{-| Applies `expectFn` to a program whose two branches both return a
+`[1, 1, 1]` function, called in three applications.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a -> \b -> \c -> a + b + c
+
+            _ ->
+                \a -> \b -> \c -> a - b - c
+
+`testValue` is `((caseFunc 0 5) 3) 2`, built as three calls, each applied to
+the result of the one before.
+
 -}
 identicalCurried111 : (Src.Module -> Expectation) -> (() -> Expectation)
 identicalCurried111 expectFn _ =
@@ -292,8 +404,21 @@ identicalCurried111 expectFn _ =
     expectFn modul
 
 
-{-| All branches return mixed staging: \\a b -> \\c -> expr
-Segmentation: all [2,1]
+{-| Applies `expectFn` to a program whose two branches both return a `[2, 1]`
+function, called in two applications.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b -> \c -> a + b + c
+
+            _ ->
+                \a b -> \c -> a - b - c
+
+`testValue` is `(caseFunc 0 5 3) 2`, built as one call applied to the
+result of another.
+
 -}
 identicalMixed21 : (Src.Module -> Expectation) -> (() -> Expectation)
 identicalMixed21 expectFn _ =
@@ -346,8 +471,24 @@ identicalMixed21 expectFn _ =
     expectFn modul
 
 
-{-| All branches return non-function values (Int).
-No function leaves, no coercion needed.
+{-| Applies `expectFn` to a program whose three branches return integer
+literals, so its `case` has no function value to join.
+
+    caseFunc : Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                1
+
+            1 ->
+                2
+
+            _ ->
+                3
+
+    testValue =
+        caseFunc 0
+
 -}
 nonFunctionBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 nonFunctionBranches expectFn _ =
@@ -384,10 +525,13 @@ nonFunctionBranches expectFn _ =
 
 
 -- ============================================================================
--- CATEGORY 2: DIFFERENT STAGINGS (MAJORITY WINS)
+-- CATEGORY 2: DIFFERENT STAGINGS, ONE IN THE MAJORITY
 -- ============================================================================
 
 
+{-| Returns the labelled cases of category 2, where one segmentation has more
+branches than any other, each applying `expectFn` to its program.
+-}
 majorityStagingCases : (Src.Module -> Expectation) -> List TestCase
 majorityStagingCases expectFn =
     [ { label = "2.1 majority2Flat", run = majority2Flat expectFn }
@@ -397,7 +541,24 @@ majorityStagingCases expectFn =
     ]
 
 
-{-| 2 flat [2], 1 curried [1,1] -> canonical [2]
+{-| Applies `expectFn` to a program with two `[2]` branches and one `[1, 1]`
+branch, called in one application.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b -> a + b
+
+            1 ->
+                \a b -> a - b
+
+            _ ->
+                \a -> \b -> a * b
+
+    testValue =
+        caseFunc 0 5 3
+
 -}
 majority2Flat : (Src.Module -> Expectation) -> (() -> Expectation)
 majority2Flat expectFn _ =
@@ -447,7 +608,24 @@ majority2Flat expectFn _ =
     expectFn modul
 
 
-{-| 1 flat [2], 2 curried [1,1] -> canonical [1,1]
+{-| Applies `expectFn` to a program with one `[2]` branch and two `[1, 1]`
+branches, called in two applications.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b -> a + b
+
+            1 ->
+                \a -> \b -> a - b
+
+            _ ->
+                \a -> \b -> a * b
+
+`testValue` is `(caseFunc 0 5) 3`, built as one call applied to the
+result of another.
+
 -}
 majority2Curried : (Src.Module -> Expectation) -> (() -> Expectation)
 majority2Curried expectFn _ =
@@ -499,7 +677,27 @@ majority2Curried expectFn _ =
     expectFn modul
 
 
-{-| 3 flat [3], 1 curried [1,1,1] -> canonical [3]
+{-| Applies `expectFn` to a program with three `[3]` branches and one
+`[1, 1, 1]` branch, called in one application.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b c -> a + b + c
+
+            1 ->
+                \a b c -> a - b - c
+
+            2 ->
+                \a b c -> a * b * c
+
+            _ ->
+                \a -> \b -> \c -> a + b - c
+
+    testValue =
+        caseFunc 0 5 3 2
+
 -}
 majority3Flat : (Src.Module -> Expectation) -> (() -> Expectation)
 majority3Flat expectFn _ =
@@ -557,7 +755,27 @@ majority3Flat expectFn _ =
     expectFn modul
 
 
-{-| 2x[2,1], 1x[1,2], 1x[3] -> canonical [2,1]
+{-| Applies `expectFn` to a program with two `[2, 1]` branches, one `[1, 2]`
+branch and one `[3]` branch, called in two applications.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b -> \c -> a + b + c
+
+            1 ->
+                \a b -> \c -> a - b - c
+
+            2 ->
+                \a -> \b c -> a * b * c
+
+            _ ->
+                \a b c -> a + b - c
+
+`testValue` is `(caseFunc 0 5 3) 2`, built as one call applied to the
+result of another.
+
 -}
 majorityMixed : (Src.Module -> Expectation) -> (() -> Expectation)
 majorityMixed expectFn _ =
@@ -576,29 +794,25 @@ majorityMixed expectFn _ =
             , body =
                 caseExpr (varExpr "x")
                     [ ( pInt 0
-                      , -- [2,1]: \a b -> \c -> ...
-                        lambdaExpr [ pVar "a", pVar "b" ]
+                      , lambdaExpr [ pVar "a", pVar "b" ]
                             (lambdaExpr [ pVar "c" ]
                                 (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "c"))
                             )
                       )
                     , ( pInt 1
-                      , -- [2,1]: \a b -> \c -> ...
-                        lambdaExpr [ pVar "a", pVar "b" ]
+                      , lambdaExpr [ pVar "a", pVar "b" ]
                             (lambdaExpr [ pVar "c" ]
                                 (binopsExpr [ ( varExpr "a", "-" ), ( varExpr "b", "-" ) ] (varExpr "c"))
                             )
                       )
                     , ( pInt 2
-                      , -- [1,2]: \a -> \b c -> ...
-                        lambdaExpr [ pVar "a" ]
+                      , lambdaExpr [ pVar "a" ]
                             (lambdaExpr [ pVar "b", pVar "c" ]
                                 (binopsExpr [ ( varExpr "a", "*" ), ( varExpr "b", "*" ) ] (varExpr "c"))
                             )
                       )
                     , ( pAnything
-                      , -- [3]: \a b c -> ...
-                        lambdaExpr [ pVar "a", pVar "b", pVar "c" ]
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c" ]
                             (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "-" ) ] (varExpr "c"))
                       )
                     ]
@@ -626,10 +840,13 @@ majorityMixed expectFn _ =
 
 
 -- ============================================================================
--- CATEGORY 3: TIE-BREAKING (PREFER FLATTER)
+-- CATEGORY 3: TIED STAGINGS
 -- ============================================================================
 
 
+{-| Returns the labelled cases of category 3, where no segmentation has more
+branches than another, each applying `expectFn` to its program.
+-}
 tieBreakingCases : (Src.Module -> Expectation) -> List TestCase
 tieBreakingCases expectFn =
     [ { label = "3.1 tieBreakBinary", run = tieBreakBinary expectFn }
@@ -639,7 +856,21 @@ tieBreakingCases expectFn =
     ]
 
 
-{-| 1 flat [2], 1 curried [1,1] (equal count) -> canonical [2] (fewer stages)
+{-| Applies `expectFn` to a program with one `[2]` branch and one `[1, 1]`
+branch, called in one application.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc n =
+        case n of
+            0 ->
+                \a x -> a + x
+
+            _ ->
+                \a -> \x -> a - x
+
+    testValue =
+        caseFunc 0 5 3
+
 -}
 tieBreakBinary : (Src.Module -> Expectation) -> (() -> Expectation)
 tieBreakBinary expectFn _ =
@@ -685,7 +916,24 @@ tieBreakBinary expectFn _ =
     expectFn modul
 
 
-{-| 1x[3], 1x[2,1], 1x[1,1,1] -> canonical [3] (1 stage vs 2 vs 3)
+{-| Applies `expectFn` to a program with one branch each of `[3]`, `[2, 1]` and
+`[1, 1, 1]`, called in one application.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b c -> a + b + c
+
+            1 ->
+                \a b -> \c -> a - b - c
+
+            _ ->
+                \a -> \b -> \c -> a * b * c
+
+    testValue =
+        caseFunc 0 5 3 2
+
 -}
 tieBreakTernary : (Src.Module -> Expectation) -> (() -> Expectation)
 tieBreakTernary expectFn _ =
@@ -704,20 +952,17 @@ tieBreakTernary expectFn _ =
             , body =
                 caseExpr (varExpr "x")
                     [ ( pInt 0
-                      , -- [3]: \a b c -> ...
-                        lambdaExpr [ pVar "a", pVar "b", pVar "c" ]
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c" ]
                             (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "c"))
                       )
                     , ( pInt 1
-                      , -- [2,1]: \a b -> \c -> ...
-                        lambdaExpr [ pVar "a", pVar "b" ]
+                      , lambdaExpr [ pVar "a", pVar "b" ]
                             (lambdaExpr [ pVar "c" ]
                                 (binopsExpr [ ( varExpr "a", "-" ), ( varExpr "b", "-" ) ] (varExpr "c"))
                             )
                       )
                     , ( pAnything
-                      , -- [1,1,1]: \a -> \b -> \c -> ...
-                        lambdaExpr [ pVar "a" ]
+                      , lambdaExpr [ pVar "a" ]
                             (lambdaExpr [ pVar "b" ]
                                 (lambdaExpr [ pVar "c" ]
                                     (binopsExpr [ ( varExpr "a", "*" ), ( varExpr "b", "*" ) ] (varExpr "c"))
@@ -744,7 +989,24 @@ tieBreakTernary expectFn _ =
     expectFn modul
 
 
-{-| 1x[4], 1x[2,2], 1x[1,1,1,1] -> canonical [4] (flattest)
+{-| Applies `expectFn` to a program with one branch each of `[4]`, `[2, 2]` and
+`[1, 1, 1, 1]`, called in one application.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b c d -> a + b + c + d
+
+            1 ->
+                \a b -> \c d -> a - b - c - d
+
+            _ ->
+                \a -> \b -> \c -> \d -> a * b * c * d
+
+    testValue =
+        caseFunc 0 5 3 2 1
+
 -}
 tieBreakQuaternary : (Src.Module -> Expectation) -> (() -> Expectation)
 tieBreakQuaternary expectFn _ =
@@ -765,20 +1027,17 @@ tieBreakQuaternary expectFn _ =
             , body =
                 caseExpr (varExpr "x")
                     [ ( pInt 0
-                      , -- [4]: \a b c d -> ...
-                        lambdaExpr [ pVar "a", pVar "b", pVar "c", pVar "d" ]
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c", pVar "d" ]
                             (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ), ( varExpr "c", "+" ) ] (varExpr "d"))
                       )
                     , ( pInt 1
-                      , -- [2,2]: \a b -> \c d -> ...
-                        lambdaExpr [ pVar "a", pVar "b" ]
+                      , lambdaExpr [ pVar "a", pVar "b" ]
                             (lambdaExpr [ pVar "c", pVar "d" ]
                                 (binopsExpr [ ( varExpr "a", "-" ), ( varExpr "b", "-" ), ( varExpr "c", "-" ) ] (varExpr "d"))
                             )
                       )
                     , ( pAnything
-                      , -- [1,1,1,1]: \a -> \b -> \c -> \d -> ...
-                        lambdaExpr [ pVar "a" ]
+                      , lambdaExpr [ pVar "a" ]
                             (lambdaExpr [ pVar "b" ]
                                 (lambdaExpr [ pVar "c" ]
                                     (lambdaExpr [ pVar "d" ]
@@ -807,7 +1066,21 @@ tieBreakQuaternary expectFn _ =
     expectFn modul
 
 
-{-| 1x[2,1], 1x[1,2] (both 2 stages) -> either valid (implementation-defined)
+{-| Applies `expectFn` to a program with one `[2, 1]` branch and one `[1, 2]`
+branch, both of two stages, called in two applications.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc n =
+        case n of
+            0 ->
+                \a b -> \c -> a + b + c
+
+            _ ->
+                \a -> \b c -> a - b - c
+
+`testValue` is `(caseFunc 0 5 3) 2`, built as one call applied to the
+result of another.
+
 -}
 tieEqualDepth : (Src.Module -> Expectation) -> (() -> Expectation)
 tieEqualDepth expectFn _ =
@@ -826,15 +1099,13 @@ tieEqualDepth expectFn _ =
             , body =
                 caseExpr (varExpr "n")
                     [ ( pInt 0
-                      , -- [2,1]: \a b -> \c -> ...
-                        lambdaExpr [ pVar "a", pVar "b" ]
+                      , lambdaExpr [ pVar "a", pVar "b" ]
                             (lambdaExpr [ pVar "c" ]
                                 (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "c"))
                             )
                       )
                     , ( pAnything
-                      , -- [1,2]: \a -> \b c -> ...
-                        lambdaExpr [ pVar "a" ]
+                      , lambdaExpr [ pVar "a" ]
                             (lambdaExpr [ pVar "b", pVar "c" ]
                                 (binopsExpr [ ( varExpr "a", "-" ), ( varExpr "b", "-" ) ] (varExpr "c"))
                             )
@@ -864,10 +1135,13 @@ tieEqualDepth expectFn _ =
 
 
 -- ============================================================================
--- CATEGORY 4: NESTED CONTROL FLOW (INNER STAGES SEPARATED)
+-- CATEGORY 4: NESTED CONTROL FLOW
 -- ============================================================================
 
 
+{-| Returns the labelled cases of category 4, where function values pass through
+nested `case` and `let` expressions, each applying `expectFn` to its program.
+-}
 nestedControlFlowCases : (Src.Module -> Expectation) -> List TestCase
 nestedControlFlowCases expectFn =
     [ { label = "4.1 nestedCaseInBranch", run = nestedCaseInBranch expectFn }
@@ -879,7 +1153,26 @@ nestedControlFlowCases expectFn =
     ]
 
 
-{-| Outer case with inner case in one branch.
+{-| Applies `expectFn` to a program whose outer `case` has an inner `case` as
+one branch. Every function value is a `[1]` lambda.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc x y =
+        case x of
+            0 ->
+                case y of
+                    0 ->
+                        \a -> a + 1
+
+                    _ ->
+                        \a -> a - 1
+
+            _ ->
+                \a -> a * 2
+
+    testValue =
+        caseFunc 0 0 5
+
 -}
 nestedCaseInBranch : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedCaseInBranch expectFn _ =
@@ -928,7 +1221,9 @@ nestedCaseInBranch expectFn _ =
     expectFn modul
 
 
-{-| Nested case inside outer case branch (variant of 4.1 with different structure).
+{-| Applies `expectFn` to the same program as `nestedCaseInBranch` with its
+parameters named `n` and `m`. Despite the name it contains no `if`: the inner
+expression is a `case`.
 -}
 ifInCaseBranch : (Src.Module -> Expectation) -> (() -> Expectation)
 ifInCaseBranch expectFn _ =
@@ -977,7 +1272,25 @@ ifInCaseBranch expectFn _ =
     expectFn modul
 
 
-{-| let binding function in branch.
+{-| Applies `expectFn` to a program where one branch returns a `let`-bound lambda
+by name and the other returns a lambda directly, both `[1]`.
+
+    caseFunc : Int -> Int -> Int
+    caseFunc n =
+        case n of
+            0 ->
+                let
+                    f =
+                        \a -> a + 1
+                in
+                f
+
+            _ ->
+                \a -> a * 2
+
+    testValue =
+        caseFunc 0 5
+
 -}
 letFunctionInBranch : (Src.Module -> Expectation) -> (() -> Expectation)
 letFunctionInBranch expectFn _ =
@@ -1020,8 +1333,28 @@ letFunctionInBranch expectFn _ =
     expectFn modul
 
 
-{-| let creates separated staging [1,1] vs flat [2].
-\\a -> let y = ... in \\z -> ... creates [1,1]
+{-| Applies `expectFn` to a program where a `let` sits between the two lambda
+layers of one branch, against a single two-parameter lambda in the other. The
+`let` reads `caseFunc`'s second parameter `k`, so the inner lambda captures a
+value computed from it.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int
+    caseFunc n k =
+        case n of
+            0 ->
+                \a ->
+                    let
+                        y =
+                            a + k
+                    in
+                    \z -> y + z
+
+            _ ->
+                \a z -> a + z
+
+`testValue` is `(caseFunc 0 10 5) 3`, built as one call applied to the
+result of another.
+
 -}
 letSeparatedStaging : (Src.Module -> Expectation) -> (() -> Expectation)
 letSeparatedStaging expectFn _ =
@@ -1040,8 +1373,7 @@ letSeparatedStaging expectFn _ =
             , body =
                 caseExpr (varExpr "n")
                     [ ( pInt 0
-                      , -- [1,1]: \a -> let y = a + k in \z -> y + z
-                        lambdaExpr [ pVar "a" ]
+                      , lambdaExpr [ pVar "a" ]
                             (letExpr
                                 [ define "y" [] (binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "k"))
                                 ]
@@ -1051,8 +1383,7 @@ letSeparatedStaging expectFn _ =
                             )
                       )
                     , ( pAnything
-                      , -- [2]: \a z -> a + z
-                        lambdaExpr [ pVar "a", pVar "z" ]
+                      , lambdaExpr [ pVar "a", pVar "z" ]
                             (binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "z"))
                       )
                     ]
@@ -1075,8 +1406,31 @@ letSeparatedStaging expectFn _ =
     expectFn modul
 
 
-{-| Multiple levels: case -> case -> let -> lambda.
-Tests staging preservation through nesting.
+{-| Applies `expectFn` to a program nesting a `case` in a `case` branch, with a
+`let` around the lambda in the first branch of the inner `case`. Every function
+value is a `[1]` lambda.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc x m =
+        case x of
+            0 ->
+                case m of
+                    0 ->
+                        let
+                            k =
+                                10
+                        in
+                        \a -> a + k
+
+                    _ ->
+                        \a -> a - 5
+
+            _ ->
+                \a -> a * 2
+
+    testValue =
+        caseFunc 0 0 5
+
 -}
 deeplyNestedControl : (Src.Module -> Expectation) -> (() -> Expectation)
 deeplyNestedControl expectFn _ =
@@ -1128,7 +1482,31 @@ deeplyNestedControl expectFn _ =
     expectFn modul
 
 
-{-| Inner case expressions in multiple branches.
+{-| Applies `expectFn` to a program where both branches of the outer `case` are
+inner `case`s on the second parameter. Every function value is a `[1]` lambda.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc x y =
+        case x of
+            0 ->
+                case y of
+                    0 ->
+                        \a -> a + 1
+
+                    _ ->
+                        \a -> a + 2
+
+            _ ->
+                case y of
+                    0 ->
+                        \a -> a - 1
+
+                    _ ->
+                        \a -> a - 2
+
+    testValue =
+        caseFunc 0 1 5
+
 -}
 caseInBothBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 caseInBothBranches expectFn _ =
@@ -1190,6 +1568,9 @@ caseInBothBranches expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the labelled cases of category 5, the edge cases, each applying
+`expectFn` to its program.
+-}
 edgeCases : (Src.Module -> Expectation) -> List TestCase
 edgeCases expectFn =
     [ { label = "5.2 wildcardOnlyCase", run = wildcardOnlyCase expectFn }
@@ -1200,7 +1581,18 @@ edgeCases expectFn =
     ]
 
 
-{-| Case with only wildcard pattern.
+{-| Applies `expectFn` to a program whose `case` has a single wildcard branch,
+returning a `[1]` lambda.
+
+    caseFunc : Int -> Int -> Int
+    caseFunc x =
+        case x of
+            _ ->
+                \a -> a + 1
+
+    testValue =
+        caseFunc 42 5
+
 -}
 wildcardOnlyCase : (Src.Module -> Expectation) -> (() -> Expectation)
 wildcardOnlyCase expectFn _ =
@@ -1237,8 +1629,28 @@ wildcardOnlyCase expectFn _ =
     expectFn modul
 
 
-{-| 5+ argument functions with varied staging.
-Test [5], [3,2], [2,2,1], [1,1,1,1,1]
+{-| Applies `expectFn` to a program whose branches return five-parameter
+functions, one branch each of `[5]`, `[3, 2]`, `[2, 2, 1]` and
+`[1, 1, 1, 1, 1]`, called in one application of six arguments.
+
+    caseFunc : Int -> Int -> Int -> Int -> Int -> Int -> Int
+    caseFunc x =
+        case x of
+            0 ->
+                \a b c d e -> a + b + c + d + e
+
+            1 ->
+                \a b c -> \d e -> a - b - c - d - e
+
+            2 ->
+                \a b -> \c d -> \e -> a * b * c * d * e
+
+            _ ->
+                \a -> \b -> \c -> \d -> \e -> a + b - c * d + e
+
+    testValue =
+        caseFunc 0 1 2 3 4 5
+
 -}
 highArityFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 highArityFunction expectFn _ =
@@ -1261,8 +1673,7 @@ highArityFunction expectFn _ =
             , body =
                 caseExpr (varExpr "x")
                     [ ( pInt 0
-                      , -- [5]: \a b c d e -> ...
-                        lambdaExpr [ pVar "a", pVar "b", pVar "c", pVar "d", pVar "e" ]
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c", pVar "d", pVar "e" ]
                             (binopsExpr
                                 [ ( varExpr "a", "+" )
                                 , ( varExpr "b", "+" )
@@ -1273,8 +1684,7 @@ highArityFunction expectFn _ =
                             )
                       )
                     , ( pInt 1
-                      , -- [3,2]: \a b c -> \d e -> ...
-                        lambdaExpr [ pVar "a", pVar "b", pVar "c" ]
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c" ]
                             (lambdaExpr [ pVar "d", pVar "e" ]
                                 (binopsExpr
                                     [ ( varExpr "a", "-" )
@@ -1287,8 +1697,7 @@ highArityFunction expectFn _ =
                             )
                       )
                     , ( pInt 2
-                      , -- [2,2,1]: \a b -> \c d -> \e -> ...
-                        lambdaExpr [ pVar "a", pVar "b" ]
+                      , lambdaExpr [ pVar "a", pVar "b" ]
                             (lambdaExpr [ pVar "c", pVar "d" ]
                                 (lambdaExpr [ pVar "e" ]
                                     (binopsExpr
@@ -1303,8 +1712,7 @@ highArityFunction expectFn _ =
                             )
                       )
                     , ( pAnything
-                      , -- [1,1,1,1,1]: \a -> \b -> \c -> \d -> \e -> ...
-                        lambdaExpr [ pVar "a" ]
+                      , lambdaExpr [ pVar "a" ]
                             (lambdaExpr [ pVar "b" ]
                                 (lambdaExpr [ pVar "c" ]
                                     (lambdaExpr [ pVar "d" ]
@@ -1342,13 +1750,27 @@ highArityFunction expectFn _ =
     expectFn modul
 
 
-{-| Case on Int with function-returning branches.
-Different staging demonstrates join-point ABI coercion.
+{-| Applies `expectFn` to a program with one `[2]` branch and one `[1, 1]` branch
+in a `case` on an `Int`, called in one application. Despite the name there is no
+record pattern; the program has the shape of `tieBreakBinary`, with the
+lambdas' parameters named `x` and `y`.
+
+    caseFunc : Int -> Int -> Int -> Int
+    caseFunc n =
+        case n of
+            0 ->
+                \x y -> x + y
+
+            _ ->
+                \x -> \y -> x - y
+
+    testValue =
+        caseFunc 0 5 3
+
 -}
 recordPatternBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternBranches expectFn _ =
     let
-        -- Use Int to select between branches, returning functions
         caseFuncDef : TypedDef
         caseFuncDef =
             { name = "caseFunc"
@@ -1361,13 +1783,11 @@ recordPatternBranches expectFn _ =
             , body =
                 caseExpr (varExpr "n")
                     [ ( pInt 0
-                      , -- [2]: \x y -> ...
-                        lambdaExpr [ pVar "x", pVar "y" ]
+                      , lambdaExpr [ pVar "x", pVar "y" ]
                             (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y"))
                       )
                     , ( pAnything
-                      , -- [1,1]: \x -> \y -> ...
-                        lambdaExpr [ pVar "x" ]
+                      , lambdaExpr [ pVar "x" ]
                             (lambdaExpr [ pVar "y" ]
                                 (binopsExpr [ ( varExpr "x", "-" ) ] (varExpr "y"))
                             )
@@ -1392,7 +1812,25 @@ recordPatternBranches expectFn _ =
     expectFn modul
 
 
-{-| Case on custom type (Maybe-like) with function-returning branches.
+{-| Applies `expectFn` to a program with a `case` on a locally declared union,
+whose branches return `[1]` lambdas, one capturing the constructor's payload.
+
+    type MaybeInt
+        = JustInt Int
+        | NothingInt
+
+    caseFunc : MaybeInt -> Int -> Int
+    caseFunc mx =
+        case mx of
+            JustInt n ->
+                \a -> a + n
+
+            NothingInt ->
+                \a -> a * 0
+
+    testValue =
+        caseFunc (JustInt 10) 5
+
 -}
 customTypeBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 customTypeBranches expectFn _ =
@@ -1442,7 +1880,21 @@ customTypeBranches expectFn _ =
     expectFn modul
 
 
-{-| Case on list structure with function-returning branches.
+{-| Applies `expectFn` to a program with a `case` on a list, whose branches
+return `[1]` lambdas, the cons branch capturing the head.
+
+    caseFunc : List Int -> Int -> Int
+    caseFunc xs =
+        case xs of
+            [] ->
+                \a -> a
+
+            h :: t ->
+                \a -> a + h
+
+    testValue =
+        caseFunc [ 10, 20 ] 5
+
 -}
 listPatternBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 listPatternBranches expectFn _ =

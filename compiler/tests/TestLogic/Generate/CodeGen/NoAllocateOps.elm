@@ -1,9 +1,21 @@
 module TestLogic.Generate.CodeGen.NoAllocateOps exposing (expectNoAllocateOps)
 
-{-| Test logic for CGEN\_039: No Allocate Ops in Codegen invariant.
+{-| Catches the code generator emitting an explicit allocation op.
 
-MLIR codegen must not emit `eco.allocate*` ops; these are introduced by later
-lowering passes.
+This module assumes, as its failure message says, that allocation ops are
+introduced only by a lowering step that runs after code generation, so the
+MLIR the code generator produces must contain none. An _allocation op_ here is
+an op named `eco.allocate`, `eco.allocate_ctor`, `eco.allocate_string` or
+`eco.allocate_closure`. No module under `src` builds an op with any of these
+names, so the check guards against one being introduced.
+
+`expectNoAllocateOps` compiles one source module to MLIR with
+`TestLogic.TestPipeline.runToMlir` and fails if any op in the result, at any
+depth, has one of those four names. Ops are matched by exact name, so an op
+whose name merely begins with `eco.allocate` is not reported.
+
+Among what is not tested: MLIR produced by the solver monomorphization engine,
+since `runToMlir` monomorphizes with the substitution engine.
 
 @docs expectNoAllocateOps
 
@@ -22,7 +34,12 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that no allocate ops invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR and passes when
+the result contains no allocation op.
+
+It fails with the pipeline's error message when compilation fails, and
+otherwise with a message naming the first allocation op found.
+
 -}
 expectNoAllocateOps : Src.Module -> Expectation
 expectNoAllocateOps srcModule =
@@ -34,6 +51,9 @@ expectNoAllocateOps srcModule =
             violationsToExpectation (checkNoAllocateOps mlirModule)
 
 
+{-| The names of the allocation ops: the ops that must not appear in the code
+generator's output.
+-}
 allocateOps : List String
 allocateOps =
     [ "eco.allocate"
@@ -43,7 +63,8 @@ allocateOps =
     ]
 
 
-{-| Check no allocate ops in codegen output.
+{-| Returns one violation for each op in `mlirModule`, at any depth, whose
+name is one of `allocateOps`.
 -}
 checkNoAllocateOps : MlirModule -> List Violation
 checkNoAllocateOps mlirModule =

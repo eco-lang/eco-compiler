@@ -1,16 +1,40 @@
 module SourceIR.TailRecLetRecClosureCases exposing (expectSuite)
 
-{-| Tests for local recursive closures inside tail-recursive functions.
+{-| Source programs in which a tail-recursive function defines, in a `let`
+inside one of its branches, a local function that calls itself.
 
-These exercise the TailRec.compileLetStep path for MonoDef closures that
-are self-recursive and capture variables from the enclosing scope. This is
-the pattern found in Cheapskate/Parse.elm's processElts/takeListItems.
+A function that calls itself in tail position is compiled by the MLIR back end
+as a loop (`Compiler.Generate.MLIR.TailRec`), and a `let` met in the loop body
+goes through that module's own let step, which sets up the names the `let`
+binds before each definition is compiled. A local function defined there must
+be able to refer to its own name from inside its body. This module builds
+programs of that shape and asserts nothing itself: what is checked is decided
+by the expectation function the caller passes to `expectSuite`.
 
-The bug: compileLetStep for MonoDef calls Expr.generateExpr directly
-without setting up currentLetSiblings or placeholder mappings, so the
-PendingLambda for the closure gets empty siblingMappings. When the closure
-body later tries to reference itself (for recursion), lookupVar fails with
-"unbound variable".
+Each case builds a module named `Test` with
+`makeModuleWithTypedDefsUnionsAliases`. It holds an annotated two-argument
+function whose first branch returns `[]`, whose second branch defines the local
+function in a `let`, and whose third branch is the tail call; and a `testValue`
+that calls it. In both cases the local function's self-call is not in tail
+position (it is the right operand of `::`), the local function refers to
+nothing from the enclosing function, and the enclosing function's first
+parameter, `threshold`, is only passed on unchanged in the tail call. The
+programs are given as Elm source in each case's docstring.
+
+What the cases are:
+
+  - "Local recursive closure in tail-rec case branch" (`tailRecWithLocalRecClosure`)
+    declares `type Item = Num Int | Blank`. The local function `takeMore`
+    collects the `Int`s from the leading `Num`s of a list, and its result is
+    bound to a second `let` name before use.
+  - "Local recursive closure capturing outer param" (`tailRecWithCapturingClosure`)
+    works on `List Int`. Despite its label, its local function `helper` captures
+    nothing. Its tail call is in a `_` branch that follows `[]` and `x :: rest`,
+    so it can never be reached; it still makes `process` tail-recursive.
+
+Among what is not tested: a local function that uses a variable of the
+enclosing function, a local function that is itself tail-recursive, and local
+functions that call each other.
 
 -}
 
@@ -42,12 +66,19 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Tail-rec with local recursive closure " followed by
+`condStr`, that gives each case's module to `expectFn` in turn, stopping at the
+first case that fails. The cases are run with `Compiler.BulkCheck.bulkCheck`,
+and the test reports that failure under the case's label.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Tail-rec with local recursive closure " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the two labelled cases, each giving its own module to `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Local recursive closure in tail-rec case branch", run = tailRecWithLocalRecClosure expectFn }
@@ -55,13 +86,14 @@ testCases expectFn =
     ]
 
 
-{-| Reproduces the takeListItems pattern:
-
+{-| Runs `expectFn` on a module holding this program, written here as Elm
+source:
 
     type Item
         = Num Int
         | Blank
 
+    processItems : Int -> List Item -> List Int
     processItems threshold items =
         case items of
             [] ->
@@ -85,10 +117,12 @@ testCases expectFn =
             Blank :: rest ->
                 processItems threshold rest
 
-    -- tail call
+    testValue : List Int
+    testValue =
+        processItems 0 [ Num 1, Num 2, Blank ]
 
-The function is tail-recursive (Blank branch), with a local recursive
-closure (takeMore) defined inside a let in the non-tail Num branch.
+The tail call is in the `Blank` branch; `takeMore` is defined in the `Num`
+branch, which ends the loop.
 
 -}
 tailRecWithLocalRecClosure : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -105,10 +139,6 @@ tailRecWithLocalRecClosure expectFn _ =
               }
             ]
 
-        -- takeMore : List Item -> List Int
-        -- takeMore xs = case xs of
-        --     (Num m) :: ys -> m :: takeMore ys
-        --     _ -> []
         takeMoreBody =
             caseExpr (varExpr "xs")
                 [ ( pCons (pCtor "Num" [ pVar "m" ]) (pVar "ys")
@@ -122,23 +152,17 @@ tailRecWithLocalRecClosure expectFn _ =
         takeMoreDef =
             define "takeMore" [ pVar "xs" ] takeMoreBody
 
-        -- collected = takeMore rest
         collectedDef =
             define "collected" [] (callExpr (varExpr "takeMore") [ varExpr "rest" ])
 
-        -- processItems : Int -> List Item -> List Int
-        -- processItems threshold items = case items of ...
         processItemsBody =
             caseExpr (varExpr "items")
-                [ -- [] -> []
-                  ( pList [], listExpr [] )
-                , -- (Num n) :: rest -> let takeMore = ...; collected = takeMore rest in n :: collected
-                  ( pCons (pCtor "Num" [ pVar "n" ]) (pVar "rest")
+                [ ( pList [], listExpr [] )
+                , ( pCons (pCtor "Num" [ pVar "n" ]) (pVar "rest")
                   , letExpr [ takeMoreDef, collectedDef ]
                         (binopsExpr [ ( varExpr "n", "::" ) ] (varExpr "collected"))
                   )
-                , -- Blank :: rest -> processItems threshold rest  (tail call!)
-                  ( pCons (pCtor "Blank" []) (pVar "rest")
+                , ( pCons (pCtor "Blank" []) (pVar "rest")
                   , callExpr (varExpr "processItems") [ varExpr "threshold", varExpr "rest" ]
                   )
                 ]
@@ -181,10 +205,10 @@ tailRecWithLocalRecClosure expectFn _ =
     expectFn modul
 
 
-{-| Simpler variant: the local recursive closure captures a parameter
-from the enclosing tail-recursive function.
+{-| Runs `expectFn` on a module holding this program, written here as Elm
+source:
 
-
+    process : Int -> List Int -> List Int
     process threshold items =
         case items of
             [] ->
@@ -205,18 +229,19 @@ from the enclosing tail-recursive function.
             _ ->
                 process threshold []
 
-    -- tail call
+    testValue : List Int
+    testValue =
+        process 0 [ 1, 2, 3 ]
 
-The helper closure captures nothing extra here but is self-recursive
-inside a let within a non-tail branch of a tail-recursive function.
+`helper` uses nothing of `process`: it refers to its own name, its argument
+and the names its patterns bind. The tail call is in the last branch, which
+the first two already cover, so it is never taken; the call still makes
+`process` tail-recursive.
 
 -}
 tailRecWithCapturingClosure : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecWithCapturingClosure expectFn _ =
     let
-        -- helper ys = case ys of
-        --     y :: zs -> y :: helper zs
-        --     _ -> []
         helperBody =
             caseExpr (varExpr "ys")
                 [ ( pCons (pVar "y") (pVar "zs")
@@ -232,18 +257,15 @@ tailRecWithCapturingClosure expectFn _ =
 
         processBody =
             caseExpr (varExpr "items")
-                [ -- [] -> []
-                  ( pList [], listExpr [] )
-                , -- x :: rest -> let helper = ... in x :: helper rest
-                  ( pCons (pVar "x") (pVar "rest")
+                [ ( pList [], listExpr [] )
+                , ( pCons (pVar "x") (pVar "rest")
                   , letExpr [ helperDef ]
                         (binopsExpr
                             [ ( varExpr "x", "::" ) ]
                             (callExpr (varExpr "helper") [ varExpr "rest" ])
                         )
                   )
-                , -- _ -> process threshold []  (tail call!)
-                  ( pAnything
+                , ( pAnything
                   , callExpr (varExpr "process") [ varExpr "threshold", listExpr [] ]
                   )
                 ]

@@ -1,20 +1,49 @@
 module TestLogic.Generate.CodeGen.PapExtendArity exposing (expectPapExtendArity)
 
-{-| Test logic for CGEN\_052: PapExtend remaining\_arity calculation invariant.
+{-| The code generator can write on an `eco.papExtend` how many arguments the
+closure it extends was still waiting for, and nothing in the `Mlir.Mlir` types
+checks that number. This module is the check, run on the MLIR compiled from a
+test program.
 
-`eco.papExtend` remaining\_arity must equal the source PAP's remaining arity
-(before this application), satisfying:
+A _PAP_ (partial application) is a closure value: a function together with the
+arguments captured so far. `eco.papCreate` builds one; its `arity` attribute
+counts the closure's captured values and parameters together, and its
+`num_captured` attribute the captured values alone. `eco.papExtend` applies one to
+more arguments, its _new arguments_: the operands after the first, which is the
+PAP being extended, less the trailing GC-root operands that its
+`eco.gc_roots_count` attribute counts. A PAP's _remaining arity_ is how many
+arguments it still needs before its function runs. The `remaining_arity`
+attribute of an `eco.papExtend` must be the remaining arity of the PAP it
+extends before this application, not after it.
 
-  - For `eco.papCreate`: remaining = arity - num\_captured
-  - For chained `eco.papExtend`: remaining comes from source PAP's remaining
-  - `remaining_arity >= num_new_args` (no over-application)
+`expectPapExtendArity` compiles a source module with
+`TestLogic.TestPipeline.runToMlir` and examines the MLIR one top-level op at a
+time, so the same SSA name in two top-level ops is never confused. Within one
+top-level op it first records the remaining arity of each PAP defined there:
+`arity - num_captured` for an `eco.papCreate`, and `remaining_arity` less the
+new arguments for an `eco.papExtend` whose result still needs at least one more
+argument. It then reports, for each `eco.papExtend` in that op, the first of
+these that applies:
 
-This test tracks PAP remaining arities from `eco.papCreate` ops and verifies that
-each `eco.papExtend` uses the correct remaining\_arity matching its source PAP.
+  - a missing `remaining_arity`, unless the op's `_call_kind` attribute is
+    `generic_apply` or `segmentation_unknown`, in which case nothing more is
+    checked;
+  - a negative `remaining_arity`;
+  - no operands at all;
+  - a `remaining_arity` different from the recorded remaining arity of the PAP
+    it extends;
+  - more new arguments than `remaining_arity`, which is an over-application.
 
-Note: SSA variable names are only unique within each function, not globally.
-This test checks invariants per-function to avoid false positives from SSA
-name collisions across different functions.
+The violations are turned into an expectation by
+`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation`.
+
+Among what is not checked: the last two checks are skipped when the extended
+PAP has no recorded remaining arity, as for a block argument, a value defined
+in another top-level op, an `eco.papCreate` without integer `arity` and
+`num_captured` attributes, or the result of an `eco.papExtend` that saturated
+its PAP or has no `remaining_arity`. A recorded remaining arity taken from an
+`eco.papExtend` trusts that op's own `remaining_arity`. The result type of an
+`eco.papExtend` is not examined.
 
 @docs expectPapExtendArity
 
@@ -35,7 +64,12 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that papExtend remaining\_arity equals the source PAP's remaining arity.
+{-| Returns an expectation that compiles `srcModule` to MLIR and passes when
+no `eco.papExtend` in it breaks the rules in the module docstring.
+
+When `runToMlir` fails, it fails with a message that starts
+`Compilation failed:` and goes on with the pipeline's message.
+
 -}
 expectPapExtendArity : Src.Module -> Expectation
 expectPapExtendArity srcModule =
@@ -47,59 +81,51 @@ expectPapExtendArity srcModule =
             violationsToExpectation (checkPapExtendArity mlirModule)
 
 
-{-| Check papExtend remaining\_arity calculation invariants.
-
-This processes each function independently to avoid SSA name collisions.
-For each function, it builds a map of SSA value names to their PAP arities
-from eco.papCreate ops, then verifies each eco.papExtend uses the correct
-remaining\_arity.
-
+{-| Returns the violations of the `eco.papExtend` rules in `mlirModule`, each
+top-level op checked on its own.
 -}
 checkPapExtendArity : MlirModule -> List Violation
 checkPapExtendArity mlirModule =
-    -- Process each top-level op (function) independently
     List.concatMap checkFunction mlirModule.body
 
 
-{-| Check PAP arities within a single function.
+{-| Returns the violations among the `eco.papExtend` ops nested at any depth in
+`funcOp`, judged against the remaining arities of the PAPs defined in `funcOp`.
+
+The remaining arities are all recorded before any `eco.papExtend` is checked,
+so a PAP defined after its use in walk order is still found.
+
 -}
 checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
     let
-        -- Get all ops within this function
         allOpsInFunc =
             walkOpAndChildren funcOp
 
-        -- Build a map from SSA value names to their PAP arities for this function
         papArityMap =
             buildPapArityMapForOps allOpsInFunc
 
-        -- Find all papExtend ops in this function
         papExtendOps =
             List.filter (\op -> op.name == "eco.papExtend") allOpsInFunc
     in
-    -- Check each papExtend against the function-local arity map
     List.filterMap (checkPapExtendOp papArityMap) papExtendOps
 
 
-{-| Build a map from SSA value names to their PAP remaining arities for a list of ops.
+{-| Returns the remaining arity of each PAP defined by `ops`, keyed by the SSA
+name of the op's first result.
 
-This collects remaining arities from:
-
-1.  eco.papCreate - remaining = arity - num\_captured (per dialect semantics)
-2.  eco.papExtend - remaining = remaining\_arity - num\_new\_args
-
-The map tracks how many arguments are still expected for each PAP value.
+An `eco.papCreate` gives `arity - num_captured`, and is left out unless both
+attributes are integers. An `eco.papExtend` gives its `remaining_arity` less
+its new arguments, and is left out when that is zero or less or when it has
+no integer `remaining_arity`.
 
 -}
 buildPapArityMapForOps : List MlirOp -> Dict String Int
 buildPapArityMapForOps ops =
     let
-        -- Process each op and add to map
         processOp : MlirOp -> Dict String Int -> Dict String Int
         processOp op map =
             if op.name == "eco.papCreate" then
-                -- eco.papCreate: remaining = arity - num_captured
                 case ( List.head op.results, getIntAttr "arity" op, getIntAttr "num_captured" op ) of
                     ( Just ( resultName, _ ), Just arity, Just numCaptured ) ->
                         let
@@ -112,8 +138,6 @@ buildPapArityMapForOps ops =
                         map
 
             else if op.name == "eco.papExtend" then
-                -- eco.papExtend: result remaining = remaining_arity - numNewArgs.
-                -- Operands: source PAP (1) + new args (N) + GC root hints (eco.gc_roots_count).
                 case ( List.head op.results, getIntAttr "remaining_arity" op ) of
                     ( Just ( resultName, _ ), Just remainingArity ) ->
                         let
@@ -126,7 +150,6 @@ buildPapArityMapForOps ops =
                             resultRemaining =
                                 remainingArity - numNewArgs
                         in
-                        -- Only add if still a PAP (remaining > 0)
                         if resultRemaining > 0 then
                             Dict.insert resultName resultRemaining map
 
@@ -142,7 +165,14 @@ buildPapArityMapForOps ops =
     List.foldl processOp Dict.empty ops
 
 
-{-| Check a single papExtend op for remaining\_arity correctness.
+{-| Returns the violation for the first rule that the `eco.papExtend` `op`
+breaks, given the remaining arities recorded in `papArityMap`, or `Nothing` when
+it breaks none.
+
+The rules are tried in the order the module docstring lists them. The
+comparison with the extended PAP and the over-application check are made only
+when the first operand has an entry in `papArityMap`.
+
 -}
 checkPapExtendOp : Dict String Int -> MlirOp -> Maybe Violation
 checkPapExtendOp papArityMap op =
@@ -150,22 +180,18 @@ checkPapExtendOp papArityMap op =
         maybeRemainingArity =
             getIntAttr "remaining_arity" op
 
-        -- First operand is the PAP being extended
         maybeSourcePap =
             List.head op.operands
 
         rootCount =
             Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
 
-        -- New args are operands after the source PAP, excluding the trailing
-        -- GC root hints (counted by eco.gc_roots_count).
+        -- The trailing GC-root operands are not arguments.
         numNewArgs =
             List.length op.operands - 1 - rootCount
     in
     case maybeRemainingArity of
         Nothing ->
-            -- Generic apply and segmentation_unknown emit papExtend without remaining_arity;
-            -- saturation is determined at runtime. This is valid per CGEN_052/CGEN_060 exemption.
             if getStringAttr "_call_kind" op == Just "generic_apply" || getStringAttr "_call_kind" op == Just "segmentation_unknown" then
                 Nothing
 
@@ -177,7 +203,6 @@ checkPapExtendOp papArityMap op =
                     }
 
         Just remainingArity ->
-            -- Check remaining_arity >= 0
             if remainingArity < 0 then
                 Just
                     { opId = op.id
@@ -189,7 +214,6 @@ checkPapExtendOp papArityMap op =
                     }
 
             else
-                -- Check the calculation: remaining_arity = source_arity - num_new_args
                 case maybeSourcePap of
                     Nothing ->
                         Just
@@ -201,14 +225,11 @@ checkPapExtendOp papArityMap op =
                     Just sourcePapName ->
                         case Dict.get sourcePapName papArityMap of
                             Nothing ->
-                                -- Source PAP not found in our map - could be a function
-                                -- reference or block argument. Skip this check.
-                                -- The runtime will catch actual errors.
+                                -- Not a PAP recorded in this top-level op, such as a
+                                -- block argument: nothing to compare against.
                                 Nothing
 
                             Just sourceRemaining ->
-                                -- remaining_arity attribute should equal source PAP's remaining arity
-                                -- (this is the closure's remaining arity *before* this application)
                                 if remainingArity /= sourceRemaining then
                                     Just
                                         { opId = op.id

@@ -3,7 +3,34 @@ module Compiler.AST.TypeIds exposing
     , ArrowPh, ArrowId, firstArrowId, ArrowSlot(..)
     )
 
-{-| Phantom-typed identifiers for type variables and monomorphization variables.
+{-| Once a program has been type checked, monomorphization and the passes
+around it number three different things with integers, and this module gives
+each numbering a type of its own so that one cannot be passed where another is
+expected.
+
+The three kinds of identity are:
+
+  - an _MVar id_ (`MVarId`), naming one type variable across the whole
+    program, as it appears in `Can.Type MVarId` and in the `MVar` of a
+    `Compiler.AST.Monomorphized.MonoType`;
+  - a _source lambda id_ (`SrcLambdaId`), naming one lambda node
+    (`Function` or `TrackedFunction`) of the typed optimized graph;
+  - an _arrow id_ (`ArrowId`), naming one arrow of a function type, or one
+    group of arrows the type checker unified.
+
+The last two serve _lambda-set specialization_, which attaches to each arrow
+of a function type the set of function values that can flow through it.
+
+Each is an `Id` from `Compiler.Data.Id` with a phantom kind (`MVarPh`, `LamPh`
+or `ArrowPh`); that module's docstring says what an id supply is and why
+uniqueness is up to whoever holds the supply. This module provides only the
+types and the first id of each kind; the supplies from which
+`Compiler.Monomorphize.AssignMVarIds` numbers the program are kept in that
+module.
+
+The module also defines `ArrowSlot`, the identity field carried by every
+`Can.TLambda`, because what identity an arrow has depends on how far the
+compiler has got.
 
 @docs MVarPh, MVarId, firstMVarId, LamPh, SrcLambdaId, firstSrcLambdaId
 @docs ArrowPh, ArrowId, firstArrowId, ArrowSlot
@@ -13,106 +40,117 @@ module Compiler.AST.TypeIds exposing
 import Compiler.Data.Id as Id exposing (Id)
 
 
-{-| Phantom marker for monomorphization variable IDs.
+{-| The phantom kind that marks an `Id` as an MVar id. It has no other use.
 -}
 type MVarPh
     = MVarPh
 
 
-{-| A monomorphization variable identifier used in Mono.MVar.
+{-| The identity of one type variable across the whole program, as used in
+`Can.Type MVarId` and in the `MVar` of a monomorphized type.
+
+This is a name for `Id MVarPh`, not a new type.
+
 -}
 type alias MVarId =
     Id MVarPh
 
 
-{-| The first MVarId in a sequential supply (value 0).
+{-| The MVar id at the start of a supply. Its `Id.toComparable` is 0.
 -}
 firstMVarId : MVarId
 firstMVarId =
     Id.first
 
 
-{-| Phantom marker for source-lambda identifiers (LSS member ids).
+{-| The phantom kind that marks an `Id` as a source lambda id. It has no other
+use.
 -}
 type LamPh
     = LamPh
 
 
-{-| Per-run identity of a source-level function value: a syntactic lambda
-(stamped by `AssignMVarIds` in Phase-0) or an interned non-lambda function
-value (MonoSolver engine interning). Dense from 0; the two producers share
-one supply (LSS\_003).
+{-| The identity of one lambda node (`Function` or `TrackedFunction`) of the
+typed optimized graph. `Compiler.GlobalOpt.PreMono.Fresh` gives an inlined
+copy of a lambda an id of its own, and gives ids to lambdas the passes create,
+so one lambda of the source program can have several ids, and an id need not
+come from the source program.
+
+This is a name for `Id LamPh`, not a new type. The MonoSolver engine names the
+members of a lambda set by plain `Int` member ids, which are not
+`SrcLambdaId`s; `Compiler.MonoSolver.Engine` says how they are numbered.
+
 -}
 type alias SrcLambdaId =
     Id LamPh
 
 
-{-| The first SrcLambdaId in a sequential supply (value 0).
+{-| The source lambda id at the start of a supply. Its `Id.toComparable` is 0.
 -}
 firstSrcLambdaId : SrcLambdaId
 firstSrcLambdaId =
     Id.first
 
 
-{-| Phantom marker for arrow (`Can.TLambda`) identity.
+{-| The phantom kind that marks an `Id` as an arrow id. It has no other use.
 -}
 type ArrowPh
     = ArrowPh
 
 
-{-| Per-run identity of a **syntactic arrow occurrence**
-(`plans/lss-unknown-elimination.md` Phase 2a).
+{-| The identity of one arrow of a function type, by which lambda-set
+specialization tells one arrow's lambda set from another's.
 
-The paper's `ℱ(t₁→t₂) = ℱ(t₁) --α--> ℱ(t₂)` assigns one lambda-set variable per
-arrow of a type. Eco's existing type identity is entirely NAME-based
-(`AssignMVarIds.ensureBinder` resolves `TVar name` through `schemeRootsForDef`),
-and **arrows have no name** — so before this id, every load of an arrow minted a
-DISJOINT set slot and the sets could not travel with the type. That is LSS\_006's
-per-load fragmentation, and it is what ~11 hand-written transport artifacts
-exist to bridge.
+This is a name for `Id ArrowPh`, not a new type.
 
-Resolved ONCE, in `AssignMVarIds.rewriteCanType` — either from the arrow's
-solver root (Phase 2b, when `Compiler.Compile` stamped a `SolverRoot`) or, as
-the fallback, freshly minted per syntactic OCCURRENCE (Phase 2a). Identity is
-never by name (two arrows in `(a -> b) -> a -> b` would collapse) and never
-structural (two distinct `Int -> Int` would collapse).
+An arrow cannot be identified by its structure, because two unrelated
+`Int -> Int` arrows would then share one lambda set. So `AssignMVarIds` gives
+each arrow an id when it converts a `Can.Type Name` to a `Can.Type MVarId`. An
+arrow stamped with a solver root (see `ArrowSlot`) takes the id of that root
+when `AssignMVarIds` is asked to use solver roots, so arrows stamped with the
+same root in one module share one id. Any other arrow gets a fresh id of its own.
+
+`Compiler.GlobalOpt.PreMono.Fresh` also mints arrow ids: it gives each arrow
+of a copied type a fresh id, and an id to any arrow still without one, so
+arrows that once shared an id need not keep sharing it.
 
 -}
 type alias ArrowId =
     Id ArrowPh
 
 
-{-| The first ArrowId in the global per-arrow supply (`AssignMVarIds.nextArrow`).
+{-| The arrow id at the start of a supply. Its `Id.toComparable` is 0.
 -}
 firstArrowId : ArrowId
 firstArrowId =
     Id.first
 
 
-{-| What a `Can.TLambda` carries in its identity slot. **Its meaning is
-PHASE-DEPENDENT, exactly as the `id` parameter of `Can.Type id` is** (`Name`
-before `AssignMVarIds`, `MVarId` after), and the three constructors make that
-impossible to confuse:
+{-| The identity a `Can.TLambda` carries for its arrow, whose meaning depends
+on the phase that built the type.
 
-  - `NoArrow` — unstamped. A type built before the type checker ran, or by one
-    of the post-`AssignMVarIds` constructors that has no id supply
-    (`Analysis.convertCanTypeNameToMVarId`, `TypeSubst.buildCurriedCanType`,
-    `Specialize.buildFuncType`). **Must ALWAYS MISS and NEVER be RECORDED in an
-    arrow memo** — recording it would collapse every unstamped arrow of a type
-    into one slot, the exact unsoundness structural keying would have. It is a
-    nullary constructor, so it is an embedded constant and costs no allocation
-    (REP\_CONSTANT\_001) — which is why this is a union rather than a `Maybe`.
+The phases follow the type parameter of `Can.Type`. A `Can.Type Name` carries
+`NoArrow` or `SolverRoot`. A `Can.Type MVarId`, which `AssignMVarIds`
+produces, carries `NoArrow` or `Arrow`. This is how the code that builds types
+uses the slot; the type does not prevent the other combinations.
 
-  - `SolverRoot idx` — **Phase 2b, `Can.Type Name` only.** The union-find root
-    index of this arrow in the OWNING MODULE's solve, stamped by
-    `Compiler.Compile` while `solverState` is still live. Module-local: each
-    module numbers its `Pt` from zero, so it is only ever meaningful together
-    with the home module of the global that carries it. `AssignMVarIds` resolves
-    the pair `(moduleKey, idx)` to a global `ArrowId`, mirroring
-    `ensureMVarIdForRoot`.
+`NoArrow` means the arrow has no identity. It is on arrows built before solver
+roots are stamped, on arrows the stamping could not reach, and on every arrow
+built with `Can.tLambda`, at any phase. Two `NoArrow` arrows are not the same
+arrow, so a table keyed by arrow identity must never record `NoArrow` as a key,
+or every unstamped arrow would share one entry.
 
-  - `Arrow id` — **`Can.Type MVarId` only.** The global per-arrow identity that
-    `Store.loadTypeC` memoises set slots by.
+`SolverRoot` carries the index of the arrow's union-find root in the type
+checker's solve of one module, stamped by `Compiler.Type.SolverRoots` after
+solving. Each module numbers its roots from zero, so the index means something
+only together with that module. When `AssignMVarIds` is asked to use solver
+roots, it resolves each pair of module and index to one `ArrowId`.
+
+`Arrow` carries the arrow's `ArrowId`.
+
+`Compiler.AST.Canonical`'s binary codec keeps only `SolverRoot`; it writes
+`NoArrow` and `Arrow` alike as no identity, so an `Arrow` does not survive
+serialization.
 
 -}
 type ArrowSlot

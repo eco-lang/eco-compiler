@@ -8,13 +8,34 @@ module Compiler.Monomorphize.Registry exposing
     , breadthLimitMessage, createdCount, prettyGlobal, typeNodesLimitMessage
     )
 
-{-| Specialization registry operations for monomorphization.
+{-| Every specialization the monomorphizer creates gets its number here, so that
+both engines, the substitution engine (`Compiler.Monomorphize.*`) and the
+solver engine (`Compiler.MonoSolver.*`), number and deduplicate
+specializations in the same way.
 
-This module provides functions for managing the specialization registry, which
-tracks all type specializations of polymorphic functions during monomorphization.
+A specialization is one definition, a `Global`, instantiated at one concrete
+`MonoType`. Its number is a `SpecId`. The record that holds the numbers is the
+`SpecializationRegistry`, whose fields `Compiler.AST.Monomorphized` describes.
+A demand for a global at a type is looked up by its `SpecKey`, the pair of
+global and type; a key not seen before gets the next unused `SpecId`, and a
+key seen before gets the `SpecId` it got the first time. Keys are compared as
+`SpecKeyMap` compares them, which tells apart arrows whose lambda sets
+differ. `SpecId`s are handed out in order from zero, and nothing here reuses or
+renumbers one.
 
-The registry maintains a bidirectional mapping between specialization keys
-(function + concrete type + optional lambda ID) and unique specialization IDs.
+Two ways of getting a `SpecId` exist. `getOrCreateSpecId` files a
+specialization under the type it records. `getOrCreateSpecIdKeyed` files it
+under one type and records another, so that demands whose types differ only
+in their lambda-set annotations can share one specialization; it then has to
+keep the recorded type wide enough for all of them, and `KeyedHit` reports
+what it did.
+
+The rest of the module serves the specialization budget: the limits, named
+by `ECO_SPEC_BREADTH_LIMIT` and `ECO_SPEC_TYPE_NODE_LIMIT`, on how many
+specializations one global may get and on how large a demanded type may be.
+The registry counts the specializations created for each global
+(`createdCount`), and both engines report an exceeded limit with the messages
+built here. The limits are checked elsewhere.
 
 
 # Registry Operations
@@ -25,6 +46,11 @@ The registry maintains a bidirectional mapping between specialization keys
 @docs getOrCreateSpecIdKeyed
 @docs lookupSpecKey
 @docs updateRegistryType
+
+
+# Specialization Budget
+
+@docs breadthLimitMessage, createdCount, prettyGlobal, typeNodesLimitMessage
 
 -}
 
@@ -38,21 +64,21 @@ import Dict
 -- ====== REGISTRY OPERATIONS ======
 
 
-{-| Outcome of a keyed registry probe.
+{-| What `getOrCreateSpecIdKeyed` found and did for one demand.
 
-Phase 1 of `plans/lss-set-write-substrate.md` splits what used to be a bare
-`Bool` (`storedChanged`) into the three hit shapes the census needs: the
-branches already existed inside `getOrCreateSpecIdKeyed`, they simply were
-not distinguishable by the caller. `HitChangedJoin` is the old `True`;
-everything else is the old `False`.
+`CreatedNew` means the key was new, so a `SpecId` was allocated and the
+demand's type recorded for it.
 
-  - `CreatedNew` — key miss, a new SpecId was allocated.
-  - `HitIdentical` — the stored type is bit-identical to the demand; no join
-    ran (the cheapest exit).
-  - `HitNoopJoin` — the join ran, rebuilt a tree, and changed nothing; the
-    result was discarded. Pure waste, and the population Phase 4 targets.
-  - `HitChangedJoin` — the join widened the stored type; the caller must mark
-    the spec dirty (LSS\_010).
+`HitIdentical` means the key was known and the recorded type is `==` to the
+demand's, so the registry is unchanged. It is also the answer when the key is
+known but its `SpecId` has no recorded entry.
+
+`HitNoopJoin` means the key was known and the recorded type already covers
+the demand's lambda-set annotations, so the registry is unchanged.
+
+`HitChangedJoin` means the key was known and the recorded type has been
+widened to cover the demand. A specialization already translated from the old
+type is out of date and needs translating again.
 
 -}
 type KeyedHit
@@ -62,7 +88,7 @@ type KeyedHit
     | HitChangedJoin
 
 
-{-| Create an empty specialization registry.
+{-| A registry with no specializations, whose first `SpecId` will be zero.
 -}
 emptyRegistry : SpecializationRegistry
 emptyRegistry =
@@ -73,8 +99,8 @@ emptyRegistry =
     }
 
 
-{-| MONO\_030: bump the created-spec count for a global. Called only on the
-create/miss branches — probe hits never touch it.
+{-| Returns the registry's per-global creation counts with one more counted for
+`global`. Only the branches that allocate a new `SpecId` call it.
 -}
 bumpCountByGlobal : Global -> SpecializationRegistry -> Dict.Dict String Int
 bumpCountByGlobal global registry =
@@ -83,16 +109,20 @@ bumpCountByGlobal global registry =
         registry.countByGlobal
 
 
-{-| The created-spec count for a global (MONO\_030 breadth watchdog probe).
+{-| Returns how many specializations of `global` this registry has created,
+or zero for none. A demand that found an existing `SpecId` is not counted.
 -}
 createdCount : Global -> SpecializationRegistry -> Int
 createdCount global registry =
     Maybe.withDefault 0 (Dict.get (Mono.toComparableGlobal global) registry.countByGlobal)
 
 
-{-| Get an existing SpecId for a specialization key, or create a new one.
+{-| Returns the `SpecId` of `global` at `monoType`, allocating the next one if
+the pair has none yet.
 
-Returns the SpecId and the (possibly updated) registry.
+On a new key the returned registry records `( global, monoType )` under the
+new `SpecId` and counts one more creation for `global`; otherwise the registry
+is returned unchanged.
 
 -}
 getOrCreateSpecId : Global -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
@@ -119,19 +149,20 @@ getOrCreateSpecId global monoType registry =
             )
 
 
-{-| Like `getOrCreateSpecId`, but the dedup KEY is computed from `keyType`
-while the reverse mapping stores `storeType`. LSS `keyed = False` semantics
-(design §8.5): keys are annotation-widened so lambda sets never fan out
-specializations, while the stored demand keeps its annotations (types never
-widen — MONO\_020/021/024).
+{-| Returns the `SpecId` that `global` is filed under at `keyType`, allocating
+the next one if there is none yet, and records `storeType` as its type.
 
-On a key hit the stored type becomes the annotation JOIN of itself and the
-new demand (LSS\_010): the single translated node serves every caller that
-hits this key, so its demand-seeded annotations must cover all of them —
-keeping only the first demand lets a singleton set lie about later
-callers' values, which a fast-dispatch stamp turns into a silent
-miscompile. `HitChangedJoin` means the join CHANGED the stored type — the
-caller must re-translate an already-translated spec.
+Callers pass a `keyType` with lambda-set annotations widened, so that demands
+differing only in their lambda sets share one specialization, and the
+demand's own type as `storeType`. On a new key, `storeType` is recorded and
+one more creation counted for `global`.
+
+On a known key the recorded type becomes the annotation join
+(`Mono.joinAnnotationsChanged`) of itself and `storeType`. One translated
+specialization serves every demand filed under the key, so the lambda sets on
+its recorded type must cover what each of those demands can pass; keeping
+only the first demand's would claim a narrower set than a later caller uses.
+The `KeyedHit` says whether the recorded type changed.
 
 -}
 getOrCreateSpecIdKeyed : Global -> MonoType -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry, KeyedHit )
@@ -145,15 +176,9 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
             case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
                 Just ( storedGlobal, storedType ) ->
                     if storedType == storeType then
-                        -- Common case: identical demand — one == walk, no join.
                         ( specId, registry, HitIdentical )
 
                     else
-                        -- Phase 4a: the changed flag replaces the old
-                        -- rebuild-then-compare pair. `False` means the join
-                        -- added nothing to the stored type, and no tree was
-                        -- rebuilt to discover it (was: full-tree rebuild + a
-                        -- second full `==` walk + discard).
                         case Mono.joinAnnotationsChanged storedType storeType of
                             ( False, _ ) ->
                                 ( specId, registry, HitNoopJoin )
@@ -185,8 +210,8 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
             )
 
 
-{-| Human-facing rendering of a Global for the watchdog messages —
-`Module.name (author/project)`, not the raw comparable key.
+{-| Returns `global` as a reader would name it: `Module.name (author/project)`
+for a top-level value, `.field` for an accessor.
 -}
 prettyGlobal : Global -> String
 prettyGlobal global =
@@ -198,12 +223,10 @@ prettyGlobal global =
             "." ++ field
 
 
-{-| MONO\_030 watchdog messages (plan §1.6): shared verbatim by the solver's
-`LimitExceeded` failure and the subst engine's drain-level `Err`, so both
-engines present the condition identically. The message must let a user act
-without reading compiler source: it names the global, the limit, and the
-env var that raises it. True source-region attribution would need demand
-provenance the registry does not track (explicit non-goal).
+{-| Builds the error message for `global` having had `count` specializations
+created, more than the breadth `limit` allows. It names the global, the count,
+the limit and the environment variable `ECO_SPEC_BREADTH_LIMIT`, and ends with
+advice on the usual cause and the remedies.
 -}
 breadthLimitMessage : Global -> Int -> Int -> String
 breadthLimitMessage global count limit =
@@ -217,6 +240,11 @@ breadthLimitMessage global count limit =
         ++ watchdogAdvice
 
 
+{-| Builds the error message for a type demanded of `global` having more than
+`limit` nodes. It names the global, the limit and the environment variable
+`ECO_SPEC_TYPE_NODE_LIMIT`, and ends with advice on the usual cause and
+the remedies.
+-}
 typeNodesLimitMessage : Global -> Int -> String
 typeNodesLimitMessage global limit =
     "specialization type too large for "
@@ -227,6 +255,10 @@ typeNodesLimitMessage global limit =
         ++ watchdogAdvice
 
 
+{-| The advice that ends both budget messages: the usual cause, polymorphic
+recursion or unbounded type growth, two remedies, and how to get a report of
+the specializations per global.
+-}
 watchdogAdvice : String
 watchdogAdvice =
     "\n  This usually means polymorphic recursion reached the monomorphizer — commonly an"
@@ -237,10 +269,12 @@ watchdogAdvice =
         ++ "\n  Inspect with ECO_MONO_LSS_REPORT=1 (see \"top specs/global\")."
 
 
-{-| Update the type stored for an existing SpecId in the registry.
+{-| Returns the registry with `actualType` recorded as the type of `specId`,
+keeping its global. A `specId` with no recorded entry leaves the registry
+unchanged.
 
-This is used when the actual type of a specialization becomes known
-(e.g., after type checking the body of a function).
+Only the recorded type changes: the specialization stays filed under the key
+it was created with.
 
 -}
 updateRegistryType : SpecId -> MonoType -> SpecializationRegistry -> SpecializationRegistry
@@ -256,10 +290,8 @@ updateRegistryType specId actualType registry =
             }
 
 
-{-| Look up a specialization key by its SpecId.
-
-Returns the Global, MonoType, and optional LambdaId if found.
-
+{-| Returns the global and type recorded for `specId`, or `Nothing` when there
+is no recorded entry for it.
 -}
 lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType )
 lookupSpecKey specId registry =

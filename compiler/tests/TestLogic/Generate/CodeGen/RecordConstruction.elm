@@ -1,9 +1,33 @@
 module TestLogic.Generate.CodeGen.RecordConstruction exposing (expectRecordConstruction)
 
-{-| Test logic for CGEN\_018: Record Construction invariant.
+{-| Checks the `field_count` attribute of every record construction in the MLIR
+generated for a test program, so that a construction whose count is missing,
+zero or larger than its operand list fails a test.
 
-Non-empty records must use `eco.construct.record`;
-empty records must use `eco.constant EmptyRec`.
+The code generator builds a non-empty record with an `eco.construct.record` op.
+Its operands are the field values followed by any GC-root hint operands, and
+`field_count` says how many of the operands are fields. The empty record is
+never constructed this way: it is an `eco.constant`. Both choices are made in
+`Compiler.Generate.MLIR.Expr`, and the op is built only by
+`Compiler.Generate.MLIR.Ops.ecoConstructRecord`.
+
+The program is supplied by the caller and compiled with
+`TestLogic.TestPipeline.runToMlir`, which uses the substitution engine.
+`expectRecordConstruction` fails if compilation fails, and otherwise reports a
+violation for each `eco.construct.record` op, at any depth in the module, whose
+`field_count`:
+
+  - is absent or not an integer;
+  - is 0;
+  - is larger than the op's number of operands.
+
+A failing test shows only the first violation, as
+`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
+
+Among what is not checked: that `field_count` equals the number of fields of
+the record's type, that the operands after the fields are GC-root hints, a
+negative `field_count`, and that an empty record is an `eco.constant` (only
+that no construction has a count of 0).
 
 @docs expectRecordConstruction
 
@@ -22,13 +46,12 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that record construction invariants hold for a source module.
+{-| Compiles `srcModule` to MLIR and returns an expectation that passes when
+every `eco.construct.record` op in it has an integer `field_count` that is
+neither 0 nor larger than its number of operands.
 
-This compiles the module to MLIR and checks:
-
-  - eco.construct.record has required field\_count attribute
-  - field\_count is non-zero (use eco.constant EmptyRec for empty records)
-  - field\_count matches operand count
+It fails, with a message starting `Compilation failed:`, when the program
+does not compile.
 
 -}
 expectRecordConstruction : Src.Module -> Expectation
@@ -41,7 +64,9 @@ expectRecordConstruction srcModule =
             violationsToExpectation (checkRecordConstruction mlirModule)
 
 
-{-| Check record construction invariants.
+{-| Returns one violation for each `eco.construct.record` op in `mlirModule`, at
+any depth, whose `field_count` is absent, not an integer, 0, or larger than
+its operand count.
 -}
 checkRecordConstruction : MlirModule -> List Violation
 checkRecordConstruction mlirModule =
@@ -52,6 +77,10 @@ checkRecordConstruction mlirModule =
     List.filterMap checkRecordOp recordOps
 
 
+{-| Returns a violation saying what is wrong with `op`, or `Nothing` when its
+`field_count` is an integer that is not 0 and not larger than its operand
+count. A negative `field_count` gives `Nothing`.
+-}
 checkRecordOp : MlirOp -> Maybe Violation
 checkRecordOp op =
     let
@@ -77,11 +106,8 @@ checkRecordOp op =
                 }
 
         Just fieldCount ->
-            -- Operands beyond field_count are GC root hints appended by the
-            -- Elm front-end (post-safepoint-op-removal). The C++ GCRootCarrier
-            -- interface splits via field_count, so any tail is roots — that is
-            -- expected and not a violation. Only flag when there are *fewer*
-            -- operands than fields.
+            -- Operands after the fields are GC-root hints, so only too few
+            -- operands is a violation.
             if operandCount < fieldCount then
                 Just
                     { opId = op.id

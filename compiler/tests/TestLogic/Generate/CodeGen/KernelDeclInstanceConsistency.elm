@@ -1,16 +1,51 @@
 module TestLogic.Generate.CodeGen.KernelDeclInstanceConsistency exposing (expectKernelDeclInstanceConsistency)
 
-{-| Test logic for CGEN\_038: Kernel calls use types matching the func.func declaration.
+{-| A kernel is a function the runtime implements rather than Elm code. The
+generated MLIR declares each kernel it uses as a `func.func` and refers to it
+by symbol from calls and closures, so a use whose MLIR types differ from the
+declaration's makes the module disagree with itself at the kernel boundary.
+Nothing in the types of `Mlir.Mlir` prevents that. This module checks, for one
+program, that the uses of its declared `Elm_Kernel_` kernels described below
+agree with their declarations.
 
-For every Elm\_Kernel\_\* symbol referenced anywhere in the module, every
-referencing eco.call / eco.papCreate / eco.papExtend must have operand and
-result MLIR types consistent with the matching func.func is\_kernel=true
-declaration's `function_type` attribute.
+`expectKernelDeclInstanceConsistency` compiles the source module it is given to
+an `MlirModule` with `TestLogic.TestPipeline.runToMlir`, and fails if that does
+not compile. It then finds the _kernel declarations_: the module's top-level
+`func.func` ops whose `is_kernel` attribute is true, whose `sym_name` starts
+with `Elm_Kernel_`, and whose `function_type` has exactly one result. The
+inputs and the result of that function type are the _declared signature_.
+An op's operand types are read from its `_operand_types` attribute.
 
-This test trusts the `_operand_types` attribute as canonical for operand
-types.
+Every op in the module, at any depth, is checked against the declared
+signatures:
 
-@docs expectKernelDeclInstanceConsistency
+  - An `eco.call` whose `callee` names a declared kernel must have operand
+    types, less the trailing GC root hints that `eco.gc_roots_count` counts,
+    equal to the declared inputs, in number and position by position, and
+    exactly one result, of the declared result type. A call with no
+    `_operand_types` is compared as having no operands.
+  - An `eco.papCreate` whose `function` names a declared kernel must record
+    exactly `num_captured` operand types, `num_captured` must not exceed the
+    number of declared inputs, and each recorded type must equal the declared
+    input at the same position. Its result is not compared.
+  - An `eco.papExtend` whose `function` names a declared kernel must have, less
+    the GC root hints, no more operand types than there are declared inputs,
+    each equal to the declared input at the same position. The first operand,
+    the closure being extended, is compared against the first input. When it is
+    saturated, meaning `remaining_arity` is 0, or is absent and the operand
+    types are as many as the inputs, it must also have exactly one result, of
+    the declared result type.
+
+Among what is not tested:
+
+  - A use of a kernel that has no declaration, which is skipped here.
+  - Kernels whose symbol starts with `Eco_Kernel_`, and declarations whose
+    function type has other than one result.
+  - Whether `_operand_types` matches the types of the values the op is actually
+    given; the recorded types are trusted.
+  - Any op other than the three above.
+  - An `eco.papCreate` or `eco.papExtend` with no `function` attribute, which
+    is skipped.
 
 -}
 
@@ -33,8 +68,10 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that every Elm\_Kernel\_\* reference in the module has operand and
-result types consistent with the matching kernel func.func declaration.
+{-| Compiles `srcModule` to MLIR and passes if every `eco.call`,
+`eco.papCreate` and `eco.papExtend` naming a declared `Elm_Kernel_` kernel
+agrees with that kernel's declared signature, as the module docstring sets out.
+Fails with the pipeline's message if the module does not compile to MLIR.
 -}
 expectKernelDeclInstanceConsistency : Src.Module -> Expectation
 expectKernelDeclInstanceConsistency srcModule =
@@ -46,7 +83,8 @@ expectKernelDeclInstanceConsistency srcModule =
             violationsToExpectation (checkKernelDeclInstanceConsistency mlirModule)
 
 
-{-| Type signature of a kernel function declaration.
+{-| The MLIR signature a kernel declaration states: the types of its inputs, in
+order, and of its one result.
 -}
 type alias KernelDeclSig =
     { inputs : List MlirType
@@ -54,6 +92,11 @@ type alias KernelDeclSig =
     }
 
 
+{-| Returns the violations of every `eco.call`, `eco.papCreate` and
+`eco.papExtend` in `mlirModule`, at any depth, against the declared signatures
+of the module's kernel declarations, by the rules the module docstring sets
+out.
+-}
 checkKernelDeclInstanceConsistency : MlirModule -> List Violation
 checkKernelDeclInstanceConsistency mlirModule =
     let
@@ -68,11 +111,10 @@ checkKernelDeclInstanceConsistency mlirModule =
     List.concatMap (checkOp kernelDeclSigs) allOps
 
 
-{-| Build a map from kernel sym\_name to its declared (inputs, result) types.
-
-Includes only func.func ops with `is_kernel = true`. Funcs with multiple
-result types are skipped (kernel func.funcs always have a single result).
-
+{-| Returns the declared signature of each kernel declared in `mlirModule`,
+keyed by symbol name. Only a top-level `func.func` with `is_kernel` true, a
+`sym_name` starting with `Elm_Kernel_`, and a `function_type` with exactly one
+result is included.
 -}
 buildKernelDeclSigs : MlirModule -> Dict String KernelDeclSig
 buildKernelDeclSigs mlirModule =
@@ -94,9 +136,9 @@ buildKernelDeclSigs mlirModule =
             Dict.empty
 
 
-{-| Extract the function\_type attribute from a func.func, returning a
-KernelDeclSig with a single result. Returns Nothing if the function has zero
-or multiple results, or no function\_type attribute.
+{-| Returns the inputs and the single result of the function type in `op`'s
+`function_type` attribute, or `Nothing` if the attribute is absent, holds
+something else, or has other than one result.
 -}
 getFunctionType : MlirOp -> Maybe KernelDeclSig
 getFunctionType op =
@@ -113,8 +155,8 @@ getFunctionType op =
             Nothing
 
 
-{-| Dispatch per-op consistency checks for the three kernel-referencing op
-kinds.
+{-| Returns the violations of `op` against the declared signatures when it is
+an `eco.call`, `eco.papCreate` or `eco.papExtend`, and none for any other op.
 -}
 checkOp : Dict String KernelDeclSig -> MlirOp -> List Violation
 checkOp kernelDeclSigs op =
@@ -131,7 +173,11 @@ checkOp kernelDeclSigs op =
         []
 
 
-{-| eco.call → operand and result types must equal the decl's signature exactly.
+{-| Returns the violations of an `eco.call` whose callee is a declared kernel.
+Its operand types, less the trailing GC root hints that `eco.gc_roots_count`
+counts, must equal the declared inputs, and it must have exactly one result, of
+the declared result type. A call to anything else, including a kernel with no
+declaration, gives none.
 -}
 checkCallOp : Dict String KernelDeclSig -> MlirOp -> List Violation
 checkCallOp kernelDeclSigs op =
@@ -142,7 +188,6 @@ checkCallOp kernelDeclSigs op =
         Just calleeName ->
             case Dict.get calleeName kernelDeclSigs of
                 Nothing ->
-                    -- Missing decl is CGEN_057's responsibility.
                     []
 
                 Just sig ->
@@ -150,8 +195,6 @@ checkCallOp kernelDeclSigs op =
                         allOperandTypes =
                             extractOperandTypes op |> Maybe.withDefault []
 
-                        -- Drop appended GC root hints; only the leading
-                        -- entries are ABI-relevant call operands.
                         rootCount =
                             Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
 
@@ -165,9 +208,11 @@ checkCallOp kernelDeclSigs op =
                         ++ resultViolations op calleeName "eco.call" (Just sig.result) resultTypes
 
 
-{-| eco.papCreate → captured-slot types must equal the matching prefix of
-the decl's inputs. Result is always !eco.value (the closure HPointer), so
-we don't compare it against the decl's result.
+{-| Returns the violations of an `eco.papCreate` whose `function` is a
+declared kernel. It must record exactly `num_captured` operand types,
+`num_captured` must not exceed the declared inputs, and each recorded type must
+equal the declared input at the same position. Without `num_captured`, every
+recorded type is taken as captured. The result, a closure, is not compared.
 -}
 checkPapCreateOp : Dict String KernelDeclSig -> MlirOp -> List Violation
 checkPapCreateOp kernelDeclSigs op =
@@ -195,13 +240,15 @@ checkPapCreateOp kernelDeclSigs op =
                         prefixViolations op funcName "eco.papCreate" sig.inputs captureTypes numCaptured
 
 
-{-| eco.papExtend → operand types must be a length-bounded prefix of the
-decl's inputs. Saturated form (remaining\_arity = 0 or absent with
-operandCount == arity) additionally compares the result type against the
-decl's result.
+{-| Returns the violations of an `eco.papExtend` whose `function` is a
+declared kernel. Its operand types, less the trailing GC root hints, must be no
+more than the declared inputs and must equal them position by position,
+starting from the first input. When it is saturated, meaning `remaining_arity`
+is 0, or is absent and the operand types are as many as the inputs, it must
+also have exactly one result, of the declared result type.
 
-Current codegen rarely sets the `function` attribute on papExtend, but this
-defensive check covers any future path that does.
+The first operand of an `eco.papExtend` is the closure being extended, and it
+is compared against the kernel's first input like the rest.
 
 -}
 checkPapExtendOp : Dict String KernelDeclSig -> MlirOp -> List Violation
@@ -224,17 +271,12 @@ checkPapExtendOp kernelDeclSigs op =
                             allOperandTypes =
                                 extractOperandTypes op |> Maybe.withDefault []
 
-                            -- Drop appended GC root hints; only the leading
-                            -- entries are ABI-relevant (closure + new args).
                             rootCount =
                                 Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
 
                             operandTypes =
                                 List.take (List.length allOperandTypes - rootCount) allOperandTypes
 
-                            -- Partial check: operand types must be a valid
-                            -- prefix of the decl's inputs. We use the
-                            -- length of operandTypes as the bound.
                             prefixOk =
                                 prefixViolations op funcName "eco.papExtend" sig.inputs operandTypes (List.length operandTypes)
 
@@ -259,10 +301,10 @@ checkPapExtendOp kernelDeclSigs op =
                         prefixOk ++ resultOk
 
 
-{-| Compare a list of observed operand types against the expected list.
-
-Reports both length and per-slot mismatches.
-
+{-| Returns the violations of the `observed` operand types against the
+`expected` ones: one if their counts differ, and otherwise one for each
+position where they differ. `symName` and `opLabel` name the kernel and the op
+in each message.
 -}
 inputsViolations : MlirOp -> String -> String -> List MlirType -> List MlirType -> List Violation
 inputsViolations op symName opLabel expected observed =
@@ -292,9 +334,10 @@ inputsViolations op symName opLabel expected observed =
         slotViolations op symName opLabel expected observed
 
 
-{-| Same as `inputsViolations`, but bounded to the first `n` decl inputs.
-Used for partial application sites where only a prefix of the decl's inputs
-is observed (eco.papCreate captures, partial eco.papExtend operands).
+{-| Returns the violations of the `observed` operand types against the first
+`prefixLen` of `declInputs`: one if `prefixLen` exceeds the number of inputs,
+otherwise one if `observed` does not have `prefixLen` entries, and otherwise one
+for each position where they differ.
 -}
 prefixViolations : MlirOp -> String -> String -> List MlirType -> List MlirType -> Int -> List Violation
 prefixViolations op symName opLabel declInputs observed prefixLen =
@@ -332,7 +375,9 @@ prefixViolations op symName opLabel declInputs observed prefixLen =
         slotViolations op symName opLabel (List.take prefixLen declInputs) observed
 
 
-{-| Per-slot equality check on two equally-sized type lists.
+{-| Returns a violation for each position, numbered from 0, where `expected`
+and `observed` hold different types. Positions past the end of the shorter list
+are not compared.
 -}
 slotViolations : MlirOp -> String -> String -> List MlirType -> List MlirType -> List Violation
 slotViolations op symName opLabel expected observed =
@@ -362,8 +407,9 @@ slotViolations op symName opLabel expected observed =
         |> List.filterMap identity
 
 
-{-| Compare the observed result types of an op against the decl's single
-result type. eco.call has exactly one result; the decl always has one.
+{-| Returns the violations of an op's `observed` result types against
+`expectedMaybe`: none when it is `Nothing`, and otherwise one if there is not
+exactly one result or that result is not the expected type.
 -}
 resultViolations : MlirOp -> String -> String -> Maybe MlirType -> List MlirType -> List Violation
 resultViolations op symName opLabel expectedMaybe observed =
@@ -404,9 +450,10 @@ resultViolations op symName opLabel expectedMaybe observed =
             []
 
 
-{-| Strip a leading "@" from a callee/function symbol reference, if present.
-The MLIR text printer renders SymbolRefAttr with a leading "@", but the
-attribute extractor returns the bare string. Defensive normalisation.
+{-| Returns `s` without its leading `@`, if it has one. The `@` belongs to the
+printed form of a symbol reference, not to the symbol's name. Only the callee
+of an `eco.call` is passed through this; the `function` of a closure op is
+compared as read.
 -}
 stripLeadingAt : String -> String
 stripLeadingAt s =
@@ -417,8 +464,8 @@ stripLeadingAt s =
         s
 
 
-{-| Read the kernel callee from an eco.call, returning Nothing if it is not
-a kernel reference.
+{-| Returns the `callee` of an `eco.call`, without a leading `@`, when it is
+an `Elm_Kernel_` symbol, and `Nothing` otherwise.
 -}
 getKernelCallee : MlirOp -> Maybe String
 getKernelCallee op =
@@ -438,7 +485,8 @@ getKernelCallee op =
                 Nothing
 
 
-{-| Predicate: is this an Elm kernel symbol name?
+{-| Returns whether `name` starts with `Elm_Kernel_`. A kernel symbol starting
+with `Eco_Kernel_` does not count.
 -}
 isKernelName : String -> Bool
 isKernelName name =

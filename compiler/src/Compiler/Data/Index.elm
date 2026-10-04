@@ -6,11 +6,24 @@ module Compiler.Data.Index exposing
     , zeroBasedEncoder, zeroBasedDecoder, zeroBasedEncoderV, zeroBasedDecoderV
     )
 
-{-| Zero-based indexing with type safety and length-verified list operations.
+{-| The compiler counts positions from zero and error messages count them from
+one, and this module keeps the two counts from being mixed up.
 
-This module provides a ZeroBased type that wraps integers to distinguish indices from
-arbitrary numbers, along with utilities for indexed operations and length verification
-when zipping lists.
+A _position_ is the place of one item in a sequence, such as a constructor in
+its type's declaration, an entry in a list literal or an argument in a call.
+A position held as a `ZeroBased` value cannot be used where an `Int` is
+expected. Turning one into a number takes either `toMachine`, the count from
+zero, or `toHuman`, the count from one that a reader of a message expects, so
+every conversion says which count it means.
+
+The module also numbers the elements of lists as it maps over them.
+`indexedZipWith` combines two lists element by element and, when their lengths
+differ, reports the length of each instead of dropping the extra elements.
+
+A position has two binary encodings: `zeroBasedEncoder` writes the count from
+zero as a 64-bit float, and `zeroBasedEncoderV` writes it as a varint. They are
+not interchangeable, so bytes must be read with the decoder that matches the
+encoder that wrote them.
 
 
 # Zero-Based Index
@@ -49,35 +62,42 @@ import Utils.Bytes.Encode as BE
 -- ====== ZERO BASED ======
 
 
-{-| A type-safe wrapper for zero-based indices.
-Distinguishes indices from arbitrary integers to prevent confusion.
+{-| A position in a sequence, counted from zero and kept apart from an
+ordinary `Int`.
+
+A position is made by starting from `first`, `second` or `third` and stepping
+with `next`, by `indexedMap` or `indexedZipWith`, which number list elements
+from `first`, or by decoding. A position made by counting is never negative; a
+decoded one is whatever was encoded. Reading a position as a number takes
+`toMachine` or `toHuman`.
+
 -}
 type ZeroBased
     = ZeroBased Int
 
 
-{-| The first index (0 in zero-based indexing).
+{-| The position of the first item, which `toHuman` turns into 1.
 -}
 first : ZeroBased
 first =
     ZeroBased 0
 
 
-{-| The second index (1 in zero-based indexing).
+{-| The position of the second item, which `toHuman` turns into 2.
 -}
 second : ZeroBased
 second =
     ZeroBased 1
 
 
-{-| The third index (2 in zero-based indexing).
+{-| The position of the third item, which `toHuman` turns into 3.
 -}
 third : ZeroBased
 third =
     ZeroBased 2
 
 
-{-| Get the next index after the given one (increment by 1).
+{-| Returns the position after the given one.
 -}
 next : ZeroBased -> ZeroBased
 next (ZeroBased i) =
@@ -88,16 +108,15 @@ next (ZeroBased i) =
 -- ====== DESTRUCT ======
 
 
-{-| Convert a zero-based index to a machine integer (0-indexed).
-Returns the raw integer value suitable for array/list indexing.
+{-| Returns the position counted from zero, so `first` gives 0.
 -}
 toMachine : ZeroBased -> Int
 toMachine (ZeroBased index) =
     index
 
 
-{-| Convert a zero-based index to a human-readable integer (1-indexed).
-Returns the index plus one, suitable for display to users.
+{-| Returns the position counted from one, as a reader of a message counts it,
+so `first` gives 1.
 -}
 toHuman : ZeroBased -> Int
 toHuman (ZeroBased index) =
@@ -108,8 +127,8 @@ toHuman (ZeroBased index) =
 -- ====== INDEXED MAP ======
 
 
-{-| Map over a list with zero-based indices provided to the mapping function.
-The function receives both the index and the element at that position.
+{-| Applies `func` to each element of the list together with its position,
+counted from `first`, and returns the results in order.
 -}
 indexedMap : (ZeroBased -> a -> b) -> List a -> List b
 indexedMap func xs =
@@ -118,27 +137,43 @@ indexedMap func xs =
 
 
 -- ====== VERIFIED/INDEXED ZIP ======
-{- NOTE: indexedTraverse and indexedForA are defined on Utils. -}
 
 
-{-| Result of an indexed zip operation that verifies list lengths match.
-LengthMatch contains the successfully zipped list when lengths are equal.
-LengthMismatch contains the actual lengths of both lists when they differ.
+{-| The result of combining two lists element by element, which succeeds only
+when the lists have the same length.
+
+`LengthMatch` carries the combined list, one element for each pair.
+
+`LengthMismatch` carries two lengths, the first list's and then the second's.
+From `indexedZipWith` each is the length of the whole list, not of the part
+that was paired.
+
 -}
 type VerifiedList a
     = LengthMatch (List a)
     | LengthMismatch Int Int
 
 
-{-| Zip two lists with a function that receives the zero-based index and both elements.
-Returns LengthMatch with the result if both lists have the same length, or
-LengthMismatch with both list lengths if they differ.
+{-| Combines `listX` and `listY` element by element, giving `func` each pair's
+position, counted from `first`, along with the two elements.
+
+When the lists have the same length the result is `LengthMatch` with the
+combined list in order. Otherwise it is `LengthMismatch` with the length of
+`listX` and then the length of `listY`.
+
 -}
 indexedZipWith : (ZeroBased -> a -> b -> c) -> List a -> List b -> VerifiedList c
 indexedZipWith func listX listY =
     indexedZipWithHelp func 0 listX listY []
 
 
+{-| Continues the zip that `indexedZipWith` starts, from position `index`,
+where `revListZ` holds the results for the earlier positions in reverse order.
+
+On a mismatch, `index` is added to each remaining length. `indexedZipWith`
+starts `index` at 0, so the sums are the lengths of the whole lists.
+
+-}
 indexedZipWithHelp : (ZeroBased -> a -> b -> c) -> Int -> List a -> List b -> List c -> VerifiedList c
 indexedZipWithHelp func index listX listY revListZ =
     case ( listX, listY ) of
@@ -156,29 +191,34 @@ indexedZipWithHelp func index listX listY revListZ =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a zero-based index to bytes as an integer.
+{-| Encodes a position as its count from zero, written as
+`Utils.Bytes.Encode.int` writes an integer, a 64-bit float.
 -}
 zeroBasedEncoder : ZeroBased -> Bytes.Encode.Encoder
 zeroBasedEncoder (ZeroBased zeroBased) =
     BE.int zeroBased
 
 
-{-| Decode a zero-based index from bytes.
-Reads an integer and wraps it in the ZeroBased type.
+{-| A decoder for a position written by `zeroBasedEncoder`.
 -}
 zeroBasedDecoder : Bytes.Decode.Decoder ZeroBased
 zeroBasedDecoder =
     Bytes.Decode.map ZeroBased BD.int
 
 
-{-| Varint index encoding for the typed artifacts only (plan S10).
+{-| Encodes a position as its count from zero, written as the varint of
+`Utils.Bytes.Encode.uintV`, which takes one byte for a count below 128.
+
+`uintV` requires a count below 2^31 and does not check it. Read the bytes back
+with `zeroBasedDecoderV`, not `zeroBasedDecoder`.
+
 -}
 zeroBasedEncoderV : ZeroBased -> Bytes.Encode.Encoder
 zeroBasedEncoderV (ZeroBased zeroBased) =
     BE.uintV zeroBased
 
 
-{-| Decode an index written by `zeroBasedEncoderV`.
+{-| A decoder for a position written by `zeroBasedEncoderV`.
 -}
 zeroBasedDecoderV : Bytes.Decode.Decoder ZeroBased
 zeroBasedDecoderV =

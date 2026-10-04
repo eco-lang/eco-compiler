@@ -1,15 +1,29 @@
 module TestLogic.Canonicalize.ImportResolution exposing (expectImportsResolved)
 
-{-| Test logic for invariant CANON\_004: Import resolution produces valid references.
+{-| A test expectation for the rule that every name a module takes from an
+import resolves to a definition, which in practice checks only that the module
+compiles as far as PostSolve.
 
-For each import statement:
+Canonicalization is the compiler stage that resolves each name in a module to
+the module that defines it, using the interfaces of the modules it imports. A
+name an import lists in its `exposing` clause that the imported module does not
+export, and a reference, qualified or not, to a name that nothing in scope
+provides, are canonicalization errors. So a module that canonicalizes has had
+its imported references resolved.
 
-  - Verify the imported module exists in the dependency graph.
-  - Verify all explicitly imported values/types exist in the target module's exports.
-  - Verify qualified references resolve to valid exported symbols.
+`expectImportsResolved` runs a module through `TestLogic.TestPipeline.runToPostSolve`
+(canonicalization, type checking and PostSolve, against the mock interfaces that
+module describes) and fails if canonicalization or type checking fails;
+PostSolve reports no failure. After a success it walks the definitions of the
+canonical module looking for problems with references, but no case of the walk
+ever reports one. So the expectation passes exactly when the run through
+PostSolve succeeds, and it adds no check of its own to what those stages do.
 
-This module reuses the existing typed optimization pipeline to verify
-import resolution works correctly.
+An import of a module that has no interface crashes the canonicalizer when
+that import is reached, rather than failing the expectation. It is not reached
+if an earlier import has already failed. A kernel module's import without `as`
+is dropped instead, because the module under test belongs to `eco/example`,
+which is a kernel package.
 
 -}
 
@@ -21,24 +35,28 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that all imports are properly resolved.
+{-| Passes when `srcModule` gets through canonicalization, type checking and
+PostSolve.
+
+A failure fails with the pipeline's message, prefixed with
+"Import resolution failed: " when the message contains "import" in any case.
+`TestLogic.TestPipeline.runToPostSolve` reports these failures by a count of
+errors, so its messages do not name the imports involved. After a success the
+canonical module is walked for problems with references, and the walk never
+finds one.
+
 -}
 expectImportsResolved : Src.Module -> Expect.Expectation
 expectImportsResolved srcModule =
-    -- If the module successfully canonicalizes, all imports were resolved
     case Pipeline.runToPostSolve srcModule of
         Err msg ->
-            -- Check if this is an import resolution error
             if String.contains "import" (String.toLower msg) then
-                -- Expected import resolution failure
                 Expect.fail ("Import resolution failed: " ++ msg)
 
             else
-                -- Other error
                 Expect.fail msg
 
         Ok result ->
-            -- Module canonicalized successfully, check the canonical module
             let
                 issues =
                     collectImportIssues result.canonical
@@ -52,23 +70,21 @@ expectImportsResolved srcModule =
 
 
 -- ============================================================================
--- IMPORT RESOLUTION VERIFICATION
+-- REFERENCE WALK
 -- ============================================================================
 
 
-{-| Collect import resolution issues from the canonical module.
-
-After canonicalization, all imports should have resolved to valid module references.
-
+{-| Returns a message for each problem with a reference found in the top-level
+definitions of a canonical module. The list is always empty, because no case of
+the walk reports a problem.
 -}
 collectImportIssues : Can.Module -> List String
 collectImportIssues (Can.Module moduleData) =
-    -- If canonicalization succeeded, imports were resolved.
-    -- We verify by checking that expressions don't have unresolved references.
     collectDefsImportIssues moduleData.decls
 
 
-{-| Collect import issues from declarations.
+{-| Returns the problems found in every definition of a declaration list,
+including each definition of a recursive group.
 -}
 collectDefsImportIssues : Can.Decls -> List String
 collectDefsImportIssues decls =
@@ -86,7 +102,8 @@ collectDefsImportIssues decls =
             []
 
 
-{-| Collect import issues from a single definition.
+{-| Returns the problems found in the body of a definition. Its argument
+patterns and type annotation are not looked at.
 -}
 collectDefImportIssues : Can.Def -> List String
 collectDefImportIssues def =
@@ -98,29 +115,27 @@ collectDefImportIssues def =
             collectExprImportIssues expr
 
 
-{-| Collect import issues from expressions.
+{-| Returns the problems found in an expression and the expressions inside it.
 
-In canonical form, all references should be fully qualified with valid module names.
+No case adds a problem. The reference cases `VarForeign`, `VarCtor` and
+`VarOperator`, which can name another module's value, constructor or operator,
+contribute nothing, and every other case either collects from its
+subexpressions or contributes nothing. Patterns are not looked at.
 
 -}
 collectExprImportIssues : Can.Expr -> List String
 collectExprImportIssues (A.At _ exprInfo) =
     case exprInfo.node of
         Can.VarForeign _ _ _ ->
-            -- Foreign variables should have valid home modules
-            -- The home module should exist (validated during canonicalization)
             []
 
         Can.VarCtor _ _ _ _ _ ->
-            -- Constructor references should have valid home modules
             []
 
         Can.VarOperator _ _ _ _ ->
-            -- Operator references should have valid home modules
             []
 
         Can.Binop _ _ _ _ left right ->
-            -- Binop should have valid home module
             collectExprImportIssues left
                 ++ collectExprImportIssues right
 

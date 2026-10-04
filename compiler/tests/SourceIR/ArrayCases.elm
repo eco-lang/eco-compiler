@@ -1,8 +1,58 @@
 module SourceIR.ArrayCases exposing (expectSuite)
 
-{-| Tests for Array functions that expose type variable scoping issues.
+{-| Source programs rebuilt from six functions of elm/core's `Array` module, so
+that the compiler is run on real library code in which the type variable `a` of
+a function's annotation is also at work in constructor patterns, lambdas and
+unannotated `let`-bound helpers. The test is named for this: type variable
+scoping, meaning how the `a` of an annotation relates to the types found for
+the code beneath it.
 
-These are EXACT copies of functions from elm/core Array.elm that fail type checking.
+This module only builds the programs. `expectSuite` hands them, in order, to
+the expectation function its caller supplies, stopping at the first that
+fails; that function decides what stage the program is run through and what
+counts as passing. `SourceIR.Suite.StandardTestSuites` describes how the case
+modules are used.
+
+Every program is a module named `Array`, built with
+`makeModuleWithTypedDefsUnionsAliases` and so importing that builder's standard
+set, `Elm.JsArray as JsArray` among them. It declares the same fixture:
+
+  - the custom type `Array a`, whose one constructor is
+    `Array_elm_builtin Int Int (JsArray (Node a)) (JsArray a)`;
+  - the custom type `Node a`, with `SubTree (JsArray (Node a))` and
+    `Leaf (JsArray a)`;
+  - the aliases `Tree a` (for `JsArray (Node a)`) and `Builder a` (a record of
+    `tail`, `nodeList` and `nodeListSize`);
+  - stubs of `Array` helpers (`helperStubs`), annotated with elm/core's types
+    but with trivial bodies;
+  - the function under test, rebuilt with the same expression structure as
+    the elm/core definition printed in the comment above its test (condensed
+    there in places), though without the `Parens` nodes the parser would add,
+    replacing the stub of the same name where there is one;
+  - `testValue : Array Int`, one application of the function under test.
+
+The tests, each labelled with the function it builds:
+
+  - `repeat function`: `repeat`, which passes a lambda ignoring its argument to
+    `initialize`. `testValue` is `repeat 3 42`.
+  - `push function`: `push`, whose second argument is an `as` pattern around an
+    `Array_elm_builtin` pattern. `testValue` is `push 42 empty`.
+  - `slice function`: `slice`, a `let` of two values and an `if` whose `else`
+    pipes the array through the `sliceRight` and `sliceLeft` stubs.
+    `testValue` is `slice 0 1 empty`.
+  - `fromListHelp function`: the recursive `fromListHelp`, which destructures a
+    pair in a `let` and conses a `Leaf` onto its list. `testValue` is
+    `fromListHelp [] [] 0`.
+  - `append function`: `append`, which matches `Array_elm_builtin` in both
+    arguments and, in each branch of an `if`, defines a recursive `foldHelper`
+    without an annotation, once over an `Array a` accumulator and once over a
+    `Builder a`. `testValue` is `append empty empty`.
+  - `sliceLeft function`: `sliceLeft`, a nested `if` whose last branch defines
+    a recursive `helper` in a `let`, cases on a list, and builds a `Builder`
+    record in an inner `let`. `testValue` is `sliceLeft 0 empty`.
+
+Among what is not tested: the rest of the `Array` module, and anything that
+depends on the stubbed helpers doing real work.
 
 -}
 
@@ -44,12 +94,20 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named `"Array type variable scoping "` followed by
+`condStr`, that runs the six cases in order through
+`Compiler.BulkCheck.bulkCheck`, handing each program to `expectFn`. When a
+case returns a failing expectation, the test fails with that case's label and
+the cases after it are not run.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Array type variable scoping " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the cases of this module, each passing its program to `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     arrayCases expectFn
@@ -61,6 +119,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the six labelled cases, one per rebuilt `Array` function, each
+passing its program to `expectFn`.
+-}
 arrayCases : (Src.Module -> Expectation) -> List TestCase
 arrayCases expectFn =
     [ { label = "repeat function", run = repeatTest expectFn }
@@ -78,38 +139,50 @@ arrayCases expectFn =
 -- ============================================================================
 
 
+{-| An empty list of formatting comments, used by `c1`.
+-}
 noComments : Src.FComments
 noComments =
     []
 
 
+{-| Pairs `a` with an empty list of comments.
+-}
 c1 : a -> Src.C1 a
 c1 a =
     ( noComments, a )
 
 
-{-| Pipe operator expression: left |> right
+{-| Builds `left |> right`.
+
+Feeding one result into another gives a `Binops` nested inside a `Binops`,
+where the parser makes one flat chain; `|>` groups to the left, so the meaning
+is the same.
+
 -}
 pipeExpr : Src.Expr -> Src.Expr -> Src.Expr
 pipeExpr left right =
     binopsExpr [ ( left, "|>" ) ] right
 
 
-{-| Create a qualified variable (e.g., JsArray.foldl)
+{-| Builds a reference to the lower-case `name` qualified with `moduleName`,
+such as `JsArray.foldl`.
 -}
 qualVarExpr : String -> Name -> Src.Expr
 qualVarExpr moduleName name =
     A.At A.zero (Src.VarQual Src.LowVar moduleName name)
 
 
-{-| Create a qualified constructor (e.g., Array\_elm\_builtin)
+{-| Builds an unqualified reference to the constructor `name`, such as
+`Array_elm_builtin`.
 -}
 qualCtorExpr : Name -> Src.Expr
 qualCtorExpr name =
     A.At A.zero (Src.Var Src.CapVar name)
 
 
-{-| Create a constructor pattern
+{-| Builds a pattern matching the unqualified constructor `name` applied to
+`args`.
 -}
 pCtorQual : Name -> List Src.Pattern -> Src.Pattern
 pCtorQual name args =
@@ -122,56 +195,57 @@ pCtorQual name args =
 -- ============================================================================
 
 
-{-| Array a type
+{-| Builds the type `Array a`, with `a` the given element type.
 -}
 tArray : Src.Type -> Src.Type
 tArray a =
     tType "Array" [ a ]
 
 
-{-| JsArray a type
+{-| Builds the type `JsArray a`, with `a` the given element type.
 -}
 tJsArray : Src.Type -> Src.Type
 tJsArray a =
     tType "JsArray" [ a ]
 
 
-{-| Node a type
+{-| Builds the type `Node a`, with `a` the given element type.
 -}
 tNode : Src.Type -> Src.Type
 tNode a =
     tType "Node" [ a ]
 
 
-{-| Tree a type (alias for JsArray (Node a))
+{-| Builds `JsArray (Node a)`, the type the alias `Tree a` stands for, written
+out rather than as a reference to `Tree`.
 -}
 tTree : Src.Type -> Src.Type
 tTree a =
     tJsArray (tNode a)
 
 
-{-| Builder a type
+{-| Builds the type `Builder a`, with `a` the given element type.
 -}
 tBuilder : Src.Type -> Src.Type
 tBuilder a =
     tType "Builder" [ a ]
 
 
-{-| Int type
+{-| The type `Int`.
 -}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
-{-| Bool type
+{-| The type `Bool`.
 -}
 tBool : Src.Type
 tBool =
     tType "Bool" []
 
 
-{-| List a type
+{-| Builds the type `List a`, with `a` the given element type.
 -}
 tList : Src.Type -> Src.Type
 tList a =
@@ -184,8 +258,12 @@ tList a =
 -- ============================================================================
 
 
-{-| Array union type definition:
-type Array a = Array\_elm\_builtin Int Int (Tree a) (JsArray a)
+{-| The declaration of `Array a`, with the one constructor
+`Array_elm_builtin Int Int (JsArray (Node a)) (JsArray a)`.
+
+elm/core gives the third argument as `Tree a`; here it is the type that alias
+stands for.
+
 -}
 arrayUnion : UnionDef
 arrayUnion =
@@ -199,8 +277,8 @@ arrayUnion =
     }
 
 
-{-| Node union type definition:
-type Node a = SubTree (Tree a) | Leaf (JsArray a)
+{-| The declaration of `Node a`, whose constructors are
+`SubTree (JsArray (Node a))` and `Leaf (JsArray a)`.
 -}
 nodeUnion : UnionDef
 nodeUnion =
@@ -213,8 +291,11 @@ nodeUnion =
     }
 
 
-{-| Tree type alias:
-type alias Tree a = JsArray (Node a)
+{-| The declaration `type alias Tree a = JsArray (Node a)`.
+
+Nothing in the built modules refers to `Tree` by name, since `tTree` writes the
+type out in full.
+
 -}
 treeAlias : AliasDef
 treeAlias =
@@ -224,8 +305,8 @@ treeAlias =
     }
 
 
-{-| Builder type alias:
-type alias Builder a = { tail : JsArray a, nodeList : List (Node a), nodeListSize : Int }
+{-| The declaration of `Builder a`, a record of `tail : JsArray a`,
+`nodeList : List (Node a)` and `nodeListSize : Int`.
 -}
 builderAlias : AliasDef
 builderAlias =
@@ -240,14 +321,14 @@ builderAlias =
     }
 
 
-{-| All unions for the Array module.
+{-| The custom types every built module declares: `Array` and `Node`.
 -}
 arrayUnions : List UnionDef
 arrayUnions =
     [ arrayUnion, nodeUnion ]
 
 
-{-| All aliases for the Array module.
+{-| The aliases every built module declares: `Tree` and `Builder`.
 -}
 arrayAliases : List AliasDef
 arrayAliases =
@@ -258,11 +339,16 @@ arrayAliases =
 -- ============================================================================
 -- HELPER FUNCTION STUBS
 -- ============================================================================
--- These are stub definitions for helper functions that the tested functions
--- depend on. They have correct type signatures but trivial implementations.
 
 
-{-| Stub helper functions needed by the Array tests.
+{-| Annotated stand-ins for `Array` helpers, each with its elm/core type and a
+trivial body.
+
+A stub returning an `Array` returns an empty `Array_elm_builtin` or one of its
+arguments unchanged, `builderFromArray` returns an empty `Builder`, and
+`shiftStep` and `branchFactor` are the literals 5 and 32. `sliceLeft` and
+`fromListHelp` are among them, and their tests leave them out.
+
 -}
 helperStubs : List TypedDef
 helperStubs =
@@ -290,7 +376,7 @@ helperStubs =
       , tipe = tLambda tInt (tLambda (tArray (tVar "a")) (tArray (tVar "a")))
       , body = varExpr "array"
       }
-    , -- sliceLeft : Int -> Array a -> Array a (stub - the real one is tested separately)
+    , -- sliceLeft : Int -> Array a -> Array a
       { name = "sliceLeft"
       , args = [ pVar "start", pVar "array" ]
       , tipe = tLambda tInt (tLambda (tArray (tVar "a")) (tArray (tVar "a")))
@@ -353,14 +439,15 @@ helperStubs =
     ]
 
 
-{-| Helper stubs excluding fromListHelp (for fromListHelpTest).
+{-| The stubs without `fromListHelp`, so that `fromListHelpTest` can add its
+own.
 -}
 helperStubsExcludingFromListHelp : List TypedDef
 helperStubsExcludingFromListHelp =
     List.filter (\def -> def.name /= "fromListHelp") helperStubs
 
 
-{-| Helper stubs excluding sliceLeft (for sliceLeftTest).
+{-| The stubs without `sliceLeft`, so that `sliceLeftTest` can add its own.
 -}
 helperStubsExcludingSliceLeft : List TypedDef
 helperStubsExcludingSliceLeft =
@@ -376,6 +463,9 @@ helperStubsExcludingSliceLeft =
 --     initialize n (\_ -> e)
 
 
+{-| Builds the fixture module with `repeat` and returns what `expectFn` gives
+for it.
+-}
 repeatTest : (Src.Module -> Expectation) -> (() -> Expectation)
 repeatTest expectFn _ =
     let
@@ -420,6 +510,9 @@ repeatTest expectFn _ =
 --     unsafeReplaceTail (JsArray.push a tail) array
 
 
+{-| Builds the fixture module with `push` and returns what `expectFn` gives
+for it.
+-}
 pushTest : (Src.Module -> Expectation) -> (() -> Expectation)
 pushTest expectFn _ =
     let
@@ -480,6 +573,9 @@ pushTest expectFn _ =
 --                 |> sliceLeft correctFrom
 
 
+{-| Builds the fixture module with `slice` and returns what `expectFn` gives
+for it.
+-}
 sliceTest : (Src.Module -> Expectation) -> (() -> Expectation)
 sliceTest expectFn _ =
     let
@@ -556,6 +652,9 @@ sliceTest expectFn _ =
 --                 (nodeListSize + 1)
 
 
+{-| Builds the fixture module with `fromListHelp` and returns what `expectFn`
+gives for it.
+-}
 fromListHelpTest : (Src.Module -> Expectation) -> (() -> Expectation)
 fromListHelpTest expectFn _ =
     let
@@ -665,6 +764,9 @@ fromListHelpTest expectFn _ =
 --                 |> builderToArray True
 
 
+{-| Builds the fixture module with `append` and returns what `expectFn` gives
+for it.
+-}
 appendTest : (Src.Module -> Expectation) -> (() -> Expectation)
 appendTest expectFn _ =
     let
@@ -819,6 +921,9 @@ appendTest expectFn _ =
 --                             |> builderToArray True
 
 
+{-| Builds the fixture module with `sliceLeft` and returns what `expectFn` gives
+for it.
+-}
 sliceLeftTest : (Src.Module -> Expectation) -> (() -> Expectation)
 sliceLeftTest expectFn _ =
     let

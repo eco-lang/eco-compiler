@@ -1,17 +1,42 @@
 module Compiler.Data.HashMapTest exposing (suite)
 
-{-| Tests for `HashMap.getBy`, the probe-typed lookup.
+{-| Tests for `HashMap.getBy`, the lookup that finds a stored key from a probe
+of a different type.
 
-`getBy` frees the PROBE's type from the stored key's type, so a caller can store
-keys that carry precomputed auxiliary data and still look them up with a bare
-probe. The contract it has to honour is the one `get` already has — the probe
-and the key it should find must hash equal and compare equal — and the risk is
-entirely in the bucket scan, so every case below forces COLLISIONS with a
-deliberately terrible hash (`modBy 3`). Without collisions a broken scan still
-passes.
+`getBy` answers a lookup by hashing the probe to pick a bucket, the group of
+entries whose keys share a hash, and then scanning that bucket for the first
+key that the supplied equality matches with the probe. With one entry per
+bucket, a scan that returned the bucket's entry without consulting the equality
+would find every stored key, so a scan that is wrong only when keys collide
+could go unnoticed. These tests use a hash with three values, so that every
+bucket holds several entries. The contract `getBy` relies on is stated in its
+own docstring in `Data.HashMap`.
 
-The stored key here is `( String, Int )`: the string is the identity and the Int
-is the "precomputed" part the probe does not have. The probe is the bare string.
+The fixture is `populated`, a map from `( String, Int )` keys to the upper-case
+form of the string. The probe is the bare string. The key's equality compares
+only the string, so the `Int` plays the part of data a stored key carries and a
+probe does not. The ten names fall into all three buckets: `ccc` and `ggg` in
+one; `a`, `dddd`, `e`, `hhhh` and `j` in the second; `bb`, `ff` and `iiiii` in
+the third.
+
+The tests establish:
+
+  - Every name in the fixture is found through its probe, with its value.
+  - For every name in the fixture, `getBy` with the probe gives the same
+    result as `get` with the stored key. `get` is `getBy` called with the
+    key's own hash and equality, so this compares the probe's pair with the
+    key's pair on the same map.
+  - The probes `z`, `zz`, `zzz` and `zzzz`, which are not in the map, give
+    `Nothing`. Each of them hashes to a bucket that holds entries.
+  - A probe into the empty map gives `Nothing`.
+  - After `insert` with a key equal to a stored one, the probe finds the new
+    value.
+  - After `bb` is removed, its probe gives `Nothing` and the probe `ff`, from
+    the same bucket, still finds its value.
+
+Among what is not tested: `member`, `getHashed`, `insertNew`, `size` and
+iteration order; removing the last entry of a bucket; and a probe that hashes
+differently from the key it should match.
 
 -}
 
@@ -20,34 +45,49 @@ import Expect
 import Test exposing (Test)
 
 
-{-| Deliberately terrible: three buckets, so every bucket holds several entries
-and the scan is always exercised.
+{-| Returns the hash of a stored key: the length of its string modulo 3, so that
+there are only three buckets.
 -}
 hashKey : ( String, Int ) -> Int
 hashKey ( name, _ ) =
     modBy 3 (String.length name)
 
 
+{-| Returns the hash of a probe, which agrees with `hashKey` on the key whose
+string is the probe.
+-}
 hashProbe : String -> Int
 hashProbe name =
     modBy 3 (String.length name)
 
 
+{-| Returns whether two stored keys are equal, comparing their strings and
+ignoring their `Int`s.
+-}
 eqKey : ( String, Int ) -> ( String, Int ) -> Bool
 eqKey ( a, _ ) ( b, _ ) =
     a == b
 
 
+{-| Returns whether a probe matches a stored key, which is when it equals the
+key's string.
+-}
 eqProbe : String -> ( String, Int ) -> Bool
 eqProbe probe ( name, _ ) =
     probe == name
 
 
+{-| The names stored in the fixture map. Their lengths put at least two of them
+in each of the three buckets.
+-}
 names : List String
 names =
     [ "a", "bb", "ccc", "dddd", "e", "ff", "ggg", "hhhh", "iiiii", "j" ]
 
 
+{-| The fixture map. Each name is stored under the key pairing it with its
+position in `names`, with its upper-case form as the value.
+-}
 populated : HashMap.HashMap ( String, Int ) String
 populated =
     List.foldl
@@ -58,6 +98,8 @@ populated =
         (List.indexedMap Tuple.pair names)
 
 
+{-| The tests of `HashMap.getBy` listed in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "Data.HashMap.getBy"
@@ -83,9 +125,6 @@ suite =
                     |> Expect.equalLists []
         , Test.test "misses in a POPULATED bucket return Nothing" <|
             \_ ->
-                -- "zz" collides with "bb"/"ff" (length 2), "z" with the length-1
-                -- entries, "zzz" with the length-3 ones: the scan must walk a
-                -- non-empty bucket and still answer Nothing.
                 [ "z", "zz", "zzz", "zzzz" ]
                     |> List.filter
                         (\name -> HashMap.getBy hashProbe eqProbe name populated /= Nothing)

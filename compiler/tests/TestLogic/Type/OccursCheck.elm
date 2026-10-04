@@ -3,14 +3,34 @@ module TestLogic.Type.OccursCheck exposing
     , expectNoInfiniteTypes
     )
 
-{-| Test logic for invariant TYPE\_004: Occurs check forbids infinite types.
+{-| Expectations for tests of the occurs check, the type checker's refusal of an
+infinite type.
 
-Force scenarios where a type variable must unify with a structure containing itself
-(e.g., `a ~ List a` or recursive record types). Assert `Compiler.Type.Occurs`
-triggers and the solver records a type error. Verify that no infinite type is
-present in NodeTypes or final schemes.
+A type is infinite when a type variable would have to equal a type that
+contains that same variable, as in `a = List a`: no finite type satisfies the
+equation. Where the type checker runs the check is described in
+`Compiler.Type.Solve` and `Compiler.Type.Occurs`.
+`expectInfiniteTypeDetected` lets a test fail when a program with an infinite
+type is accepted.
 
-This module provides tests for the occurs check invariant.
+Each expectation takes a test program, a `Src.Module`, and runs it through
+`TestLogic.TestPipeline.runToPostSolve`: canonicalization, type checking and
+PostSolve (`Compiler.Type.PostSolve`, a pass over the solved _node types_,
+which are the types recorded for each expression and pattern by node id).
+PostSolve itself cannot fail. That pipeline's `Err` carries only a count of
+errors, so neither expectation can see what kind of error a failure was.
+
+  - `expectInfiniteTypeDetected` passes when the pipeline fails and fails when
+    it succeeds.
+  - `expectNoInfiniteTypes` fails when the pipeline fails. When it succeeds,
+    the node types after PostSolve are walked for a type variable inside its
+    own definition. The walk reports a variable only if it has already marked
+    that name as seen, and it never marks one, so this expectation passes
+    whenever the pipeline succeeds.
+
+Among what is not tested: that a failure is an infinite-type error rather than
+any other canonicalization or type error, the top-level annotations, and the
+node types before PostSolve.
 
 -}
 
@@ -24,26 +44,30 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Expect type checking to detect an infinite type and report an error.
+{-| Returns an expectation that passes when `srcModule` fails to canonicalize
+or type check, and fails when it gets through PostSolve.
 
-This tests that the compiler correctly rejects code that would create
-infinite types (e.g., `let x = [x] in x`).
+The failure is not inspected, so any canonicalization or type error passes,
+not only an infinite type.
 
 -}
 expectInfiniteTypeDetected : Src.Module -> Expect.Expectation
 expectInfiniteTypeDetected srcModule =
-    -- For infinite type detection, we expect compilation to fail
     case Pipeline.runToPostSolve srcModule of
         Err _ ->
-            -- Expected - infinite type was detected and rejected
             Expect.pass
 
         Ok _ ->
-            -- Should have failed - infinite type was not detected
             Expect.fail "Expected infinite type to be detected, but compilation succeeded"
 
 
-{-| Verify that valid code has no infinite types in NodeTypes or final schemes.
+{-| Returns an expectation that fails with the pipeline's message when
+`srcModule` does not get through PostSolve, and otherwise fails with one line
+per issue `collectInfiniteTypeIssues` finds in the node types after PostSolve.
+
+That walk finds no issue in any type, so the expectation passes whenever the
+pipeline succeeds.
+
 -}
 expectNoInfiniteTypes : Src.Module -> Expect.Expectation
 expectNoInfiniteTypes srcModule =
@@ -69,10 +93,11 @@ expectNoInfiniteTypes srcModule =
 -- ============================================================================
 
 
-{-| Collect infinite type issues from node types.
+{-| Returns the messages `checkForInfiniteType` gives for every type in
+`nodeTypes`, each prefixed with the node id, which is the type's index in the
+array. A node with no type is skipped.
 
-An infinite type is one where a type variable appears within its own definition,
-creating an infinite structure.
+Each walk starts with no variables seen, so the result is always empty.
 
 -}
 collectInfiniteTypeIssues : Array.Array (Maybe (Can.Type Name)) -> List String
@@ -95,16 +120,21 @@ collectInfiniteTypeIssues nodeTypes =
         |> Tuple.second
 
 
-{-| Check a type for infinite/cyclic structure.
+{-| Returns one message, prefixed with `context`, for each occurrence of a type
+variable in `canType` whose name is in `seenVars`, other than a record's
+extension variable.
 
-We track type variables seen in the current path to detect cycles.
+The walk descends into function types, the arguments of named types, tuples
+and record fields, and into both an alias's arguments and its body; a record's
+extension variable is not looked at. `seenVars` is passed down unchanged and
+never added to, so a walk started with an empty set, as
+`collectInfiniteTypeIssues` starts it, returns nothing.
 
 -}
 checkForInfiniteType : String -> EverySet String String -> Can.Type Name -> List String
 checkForInfiniteType context seenVars canType =
     case canType of
         Can.TVar name ->
-            -- Check if we've seen this variable in the current path (cycle)
             if Set.member identity name seenVars then
                 [ context ++ ": Infinite type detected - type variable '" ++ name ++ "' appears in its own definition" ]
 

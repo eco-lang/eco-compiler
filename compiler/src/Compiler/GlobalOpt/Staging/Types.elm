@@ -5,15 +5,26 @@ module Compiler.GlobalOpt.Staging.Types exposing
     , emptyStagingGraph, emptyProducerInfo
     )
 
-{-| Core data types for the global staging algorithm.
+{-| Staging decides how each function value takes its arguments, and this module
+holds the vocabulary that decision is worked out in.
 
-This module defines:
+A function value can take its arguments in groups, called stages, and the list
+of group sizes is its segmentation. A function value that is passed around must
+agree on a segmentation with everywhere it can be called from, so the analysis
+groups together everything that can hold the same function value and picks one
+segmentation for each group.
 
-  - `ProducerId` - Identifies function producers (closures, tail-funcs, kernels)
-  - `SlotId` - Identifies slots that can hold function values
-  - `Node` - Union-find graph node (either producer or slot)
-  - `StagingGraph` - Union-find graph for computing equivalence classes
-  - `StagingSolution` - Output mapping classes to canonical segmentations
+Two kinds of thing are grouped. A producer is a place where a function value is
+created: a closure, a tail-recursive function, or a kernel function. A slot is a
+place that can hold a function value: a parameter, a field of a record, an
+element of a tuple or list, a closure capture, or the result of an `if` or
+`case`. Producers and slots are the nodes of a graph, and nodes that must agree
+are joined into one equivalence class with a union-find structure, which is a
+forest in which two nodes are in the same class when they have the same root.
+
+The maps in `ProducerInfo` and `StagingSolution` are keyed by strings, not by
+the id values themselves. The strings are made by
+`Compiler.GlobalOpt.Staging.UnionFind.producerIdToKey` and `slotIdToKey`.
 
 
 # IDs
@@ -43,8 +54,14 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
-{-| Segmentation is already defined in Monomorphized.elm as List Int.
-We re-export it here for convenience.
+{-| How a function's arguments are grouped into stages: the number each stage
+takes, outermost first.
+
+This is a separate name for `List Int` with the same meaning as
+`Compiler.AST.Monomorphized.Segmentation`, not a re-export of it. Either is
+accepted where the other is expected, and the compiler checks nothing that the
+name suggests.
+
 -}
 type alias Segmentation =
     List Int
@@ -56,7 +73,17 @@ type alias Segmentation =
 -- ============================================================================
 
 
-{-| Function producers: closures, tail-funcs, externs/kernels.
+{-| A place where a function value is created.
+
+`ProducerClosure` is a closure, identified by its lambda.
+
+`ProducerTailFunc` is a tail-recursive function, identified by the index of its
+node in the program graph.
+
+`ProducerKernel` is a kernel function, identified by a name string. Nothing here
+fixes the form of that string, and two producers built from different strings
+are different producers even when they name the same kernel.
+
 -}
 type ProducerId
     = ProducerClosure Mono.LambdaId
@@ -64,7 +91,23 @@ type ProducerId
     | ProducerKernel String
 
 
-{-| Slots: semantic places that can hold a function value.
+{-| A place that can hold a function value.
+
+`SlotParam` is a parameter, given by the index of its function's node in the
+program graph and the parameter's position.
+
+`SlotRecord` is a field, given by a string key for the record and the field
+name. `SlotTuple` and `SlotList` are elements, given by a string key for the
+container and the element's position. Because the key names a kind of container
+rather than one expression, every container that produces the same key shares
+the slot.
+
+`SlotCapture` is a value captured by a closure, given by the closure's lambda
+and the capture's position.
+
+`SlotIfResult` and `SlotCaseResult` are the result of one `if` or `case`
+expression, given by a number assigned to that expression.
+
 -}
 type SlotId
     = SlotParam Int Int
@@ -82,33 +125,53 @@ type SlotId
 -- ============================================================================
 
 
-{-| Node identifier in the union-find graph.
+{-| The index of a node in a `StagingGraph`, counting from zero in the order
+nodes are added.
+
+This is a name for `Int`, not a new type, so any `Int` is accepted, including a
+`ClassId`.
+
 -}
 type alias NodeId =
     Int
 
 
-{-| Equivalence class identifier.
+{-| The number of an equivalence class in a `StagingSolution`.
+
+This is a name for `Int`, not a new type, so any `Int` is accepted, including a
+`NodeId`.
+
 -}
 type alias ClassId =
     Int
 
 
-{-| A node in the staging graph - either a producer or a slot.
+{-| A node of the staging graph: a producer or a slot.
 -}
 type Node
     = NodeProducer ProducerId
     | NodeSlot SlotId
 
 
-{-| Union-find data structure for tracking equivalence classes.
+{-| A union-find structure over node ids, recording which nodes are in the same
+equivalence class.
+
+`parent` holds, at each node id, the id of that node's parent. A node that is
+its own parent is the root of its class.
+
 -}
 type alias Uf =
     { parent : Array Int
     }
 
 
-{-| The staging graph containing nodes and union-find structure.
+{-| The set of producers and slots found so far, with the classes they have
+been joined into.
+
+`nodeIndex` maps a key string for each node to its id, so that a node is added
+only once. `nodeById` holds the node at each id, and `nextNodeId` is the id the
+next node added will get.
+
 -}
 type alias StagingGraph =
     { nextNodeId : NodeId
@@ -118,7 +181,7 @@ type alias StagingGraph =
     }
 
 
-{-| An empty union-find structure.
+{-| A union-find structure with no nodes.
 -}
 emptyUf : Uf
 emptyUf =
@@ -126,7 +189,7 @@ emptyUf =
     }
 
 
-{-| An empty staging graph.
+{-| A staging graph with no nodes.
 -}
 emptyStagingGraph : StagingGraph
 emptyStagingGraph =
@@ -143,15 +206,19 @@ emptyStagingGraph =
 -- ============================================================================
 
 
-{-| Information about producers gathered during the first pass.
-Keys are producer ID strings (from producerIdToKey).
+{-| What is known about each producer by its own definition.
+
+`naturalSeg` holds, for each producer key, the segmentation that producer has
+before any class forces a choice on it. A producer with no entry contributes no
+segmentation.
+
 -}
 type alias ProducerInfo =
     { naturalSeg : Dict String Segmentation
     }
 
 
-{-| An empty producer info collection.
+{-| Producer information with no producers in it.
 -}
 emptyProducerInfo : ProducerInfo
 emptyProducerInfo =
@@ -165,13 +232,14 @@ emptyProducerInfo =
 -- ============================================================================
 
 
-{-| The solution produced by the staging algorithm.
+{-| The result of staging: the class each producer and slot belongs to, and the
+segmentation chosen for each class.
 
-  - `classSeg` maps each equivalence class to its canonical segmentation
-  - `producerClass` maps each producer to its equivalence class
-  - `slotClass` maps each slot to its equivalence class
-  - `dynamicSlots` contains slot keys that must use generic apply at runtime
-    (the solver could not assign a reliable segmentation for their class)
+`classSeg` is indexed by `ClassId`. A class with no segmentation to go on is
+not recorded as `Nothing` here; its slots are listed in `dynamicSlots`.
+`producerClass` and `slotClass` are keyed by producer and slot key strings.
+`dynamicSlots` holds the keys of slots whose calls are to use generic apply,
+because no segmentation could be relied on for their class.
 
 -}
 type alias StagingSolution =

@@ -1,28 +1,74 @@
 module TestLogic.Monomorphize.LssHonestSourcesPipelineTest exposing (suite)
 
-{-| LSS\_026(a) — honest ∅-as-source, PIPELINE level.
+{-| A function such as `pickG c f = if c then f else incr` can return either
+its argument or the global `incr`. If the monomorphizer annotated the result of
+a caller of `pickG` with the set `{incr}` alone, it would be claiming that
+`incr` is the only function that can arrive there, and a call through that
+result could be turned into a direct call to `incr`. These tests run whole
+modules through the solver engine and check that no one-member set is claimed
+at such a caller's result.
 
-The store-level semantics of the rule — including the pre-rule reading, which
-is the RED half — live in `LssHonestSourcesTest`, which drives
-`Store.resolveSlotMembers` directly with `honestSources` toggled. This file
-is the other end: it runs whole modules through the monomorphizer and asserts
-on the annotations of the stored (keyed) demand types in the registry
-(`LssSigFlowTest`'s precedent), so the rule is pinned where a real program
-meets it.
+With lambda-set specialization (LSS) on, every arrow in a `MonoType` carries a
+lambda-set annotation naming the function values, its _members_, that can flow
+through it. `LSet` claims exactly the listed members, `LPartial` at least those,
+and `LVar` and `LTop` (⊤) name none. A one-member `LSet` whose member is a
+global can be _devirtualized_: a call through it becomes a direct call to that
+global.
 
-**The shape being pinned** (plan §0.5). `pickG c f = if c then f else incr`
-has an honestly MIXED result fact — members `{g|incr}` plus a promoted source
-for its own `f` param. `d f = pickG True f` returns the CALLER's function at
-runtime, but inside `d` the argument `f` never connects to that param's
-instantiation slot (the A.1 arg-position leak), so the slot dangles as an
-unconstrained FlexVar. Reading that dangling inflow as an ∅ contribution
-makes `d`'s result read `LSet [g|incr]` — a COMPLETENESS claim that is false.
+The rule these tests concern is the honest-sources rule of
+`Compiler.MonoSolver.Store`. A lambda-set slot may draw on other slots, its
+_sources_, and resolving it collects its own members and those of every slot
+reachable through them. A resolution that collects members and also passes
+through a source slot nothing has written is widened to ⊤ instead of being read
+as a complete set. Such a resolution is a _mixed crossing_. The LSS report's
+`honestSources:` line ends with the word
+`topMixedFlex=<signature side>/<demand side>`. The demand-side number counts
+the mixed crossings Store meets, and only while the report is on, as
+`runReport` arranges. The signature-side number counts a separate widening,
+made by `Compiler.MonoSolver.LssInfer` on some signature facts that cross an
+unwritten source.
 
-It is not a hypothetical: LSS\_025's post-settle devirt acts on such a
-singleton, and `test/elm/src/LssMixedSigHonestyTest.elm` printed
-`[42, 42, 42]` for `[41, 42, 82]` at the shipping default before the rule
-went unconditional. That is why LSS\_026(a) is **not** behind a flag, and why
-these tests take no flag argument.
+The tests read annotations off _stored demand types_: the `MonoType` recorded in
+the registry's `reverseMapping` for each specialization.
+
+The fixtures are three modules, each run with `Config.defaultLimits` and
+`Config.defaultLss`, with the report switched on for test 3:
+
+  - `mixedSigModule` defines `incr x = x + 1`,
+    `pickG c f = if c then f else incr`, `d f = pickG True f`, and a
+    `testValue` that calls `d` with `\y -> y + 2`.
+    `{incr}` alone at `d`'s result would be false: `d` passes `True`, so at
+    run time it returns the function it is given.
+  - `mixedLambdaModule` is the same with `pickL` and `dl`, and with the lambda
+    `\x -> x + 1` in place of `incr`.
+  - `mk2Module` defines `mk2 s = if s then (\x -> x + 1) else (\y -> y + 2)`,
+    whose result can be either of two lambdas and which takes no function
+    argument for a source to come from.
+
+Test 3 expects no mixed crossing in either mixed fixture, so these fixtures do
+not exercise the widening itself. Tests 1 and 2 check the property the rule
+protects, whichever way the solver reaches it. The rule is tested directly, on a
+hand-built store, in `TestLogic.Monomorphize.LssHonestSourcesTest`.
+
+What the tests establish:
+
+  - 1: at least one stored demand type of `d` is a function type, and in each
+    one the annotation on the innermost arrow of its return spine is `LTop`,
+    `LVar`, `LPartial`, or an `LSet` of two or more members.
+  - 2: the same for `dl`, whose known member is a source lambda rather than a
+    global.
+  - 3: for both mixed fixtures a report is rendered, and its first line starting
+    `honestSources:` ends with the word `topMixedFlex=0/0`.
+  - 4: some annotation in some stored demand type of `mk2` is an `LSet` of
+    exactly two members, so a rule that widened every set to ⊤ would fail here.
+  - 5: no annotation in any stored demand type of any of the three fixtures is
+    `LSet []`. A fixture whose pipeline fails contributes no annotations to this
+    check.
+
+Among what is not tested: a pipeline run in which a mixed crossing occurs and is
+widened; annotations of `d` and `dl` other than the one on the innermost
+result arrow, beyond test 5's check that none is an empty set; and the
+generated code.
 
 -}
 
@@ -50,31 +96,13 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The five tests, in the order the module docstring lists them.
+-}
 suite : Test
 suite =
     Test.describe "LSS_026(a) honest ∅-as-source (pipeline level)"
         [ Test.test "1. the `g|` variant: `d`'s result is never the false singleton" <|
             \() ->
-                -- A standalone-global member GROUNDS at the consuming zonk
-                -- (LSS_019) and IS consumable by the devirts, so a false
-                -- `{g|incr}` here is the representative-hijack MISCOMPILE
-                -- class — the one the runtime fixture caught.
-                --
-                -- UNTIL 2026-08-25 this asserted ⊤, because the A.1 leak left
-                -- `d`'s `f` dangling and ⊤ was the honest reading of a fact
-                -- mixed with an UNCONSTRAINED source. `lss.arrowIdentity` going
-                -- default-on (plans/lss-paper-inclusion-constraints.md §5.A3)
-                -- CLOSED that leak — the arg now shares the param's slot — so
-                -- the source is no longer unconstrained and the fixture no
-                -- longer produces a mixed-with-flex fact at all.
-                --
-                -- What is asserted is therefore the property that actually
-                -- guards the miscompile, and it holds in both readings: the
-                -- result is ⊤, or a set with AT LEAST TWO members. LSS_025's
-                -- post-settle devirt acts on a SINGLETON; `{g|incr}` alone is
-                -- the false completeness claim. For this closed fixture the
-                -- complete inhabitant set is {incr, the caller's lambda} — two
-                -- members — so a singleton here is still exactly the bug.
                 case run mixedSigModule of
                     Err msg ->
                         Expect.fail msg
@@ -93,11 +121,6 @@ suite =
                                         ("a mixed fact must be ⊤ or a >=2 set, got: " ++ describeAnnos annos)
         , Test.test "2. the `l|` variant behaves identically — the rule is not class-sensitive" <|
             \() ->
-                -- The plan's literal §0.5 text uses a lambda in the else
-                -- branch. A raw `l|` member merely DECLINES at AbiCloning
-                -- (LSS_017), so this variant is imprecision rather than
-                -- miscompile — but the resolver rule is the same one and
-                -- must not depend on the member's class.
                 case run mixedLambdaModule of
                     Err msg ->
                         Expect.fail msg
@@ -116,20 +139,6 @@ suite =
                                         ("a mixed fact must be ⊤ or a >=2 set, got: " ++ describeAnnos annos)
         , Test.test "3. the crossing counter is PRESENT and reads what these fixtures now produce" <|
             \() ->
-                -- `topMixedFlex=<sig>/<demand>`. The counter is what let
-                -- Phase 0 size the exposure across a whole self-compile; a
-                -- silent widening would be untrackable.
-                --
-                -- It read `1/0` while the A.1 leak dangled `d`'s `f`. With
-                -- `lss.arrowIdentity` default-on the slot is shared, nothing is
-                -- mixed with an unconstrained source here, and the honest count
-                -- is `0/0`. THE COUNTER ITSELF IS STILL COVERED: the RULE is
-                -- pinned at store level by `LssHonestSourcesTest`, which drives
-                -- `Store.resolveSlotMembers` directly with `honestSources`
-                -- toggled and does not depend on a pipeline fixture reaching
-                -- the crossing. What this test still guards is that the line is
-                -- EMITTED and parses — a dropped counter would read the same as
-                -- a zero one otherwise.
                 case ( runReport mixedSigModule, runReport mixedLambdaModule ) of
                     ( Ok ( _, r1 ), Ok ( _, r2 ) ) ->
                         Expect.equal ( "topMixedFlex=0/0", "topMixedFlex=0/0" )
@@ -144,11 +153,6 @@ suite =
                         Expect.fail msg
         , Test.test "4. negative control: an UNMIXED signature is untouched by the rule" <|
             \() ->
-                -- `mk2 s = if s then λ else λ` carries members and NO
-                -- sources, so `sawFlex` is False and the fact must survive
-                -- verbatim. This is what separates "widen the mixed case"
-                -- from "widen everything" — without it, a rule that returned
-                -- ⊤ unconditionally would pass tests 1 and 2.
                 case run mk2Module of
                     Err msg ->
                         Expect.fail msg
@@ -164,10 +168,6 @@ suite =
                                 )
         , Test.test "5. LSS_001: the rule never manufactures an EMPTY set" <|
             \() ->
-                -- ⊤ is the fallback, never `LSet []` — an empty set claims
-                -- the position has NO inhabitants, the one reading that is
-                -- always wrong. Checked over every annotation of every
-                -- fixture.
                 let
                     everyAnno =
                         List.concatMap
@@ -193,15 +193,18 @@ suite =
 -- ====== HARNESS ======
 
 
-{-| `sigFlow` ON (without it there are no sources to be honest about);
-`layoutQualMembers` pinned OFF for the same reason `LssSigFlowTest` pins it
-off — these fixtures pin LSS\_026(a) in isolation from LSS\_024's id sharing.
+{-| Runs `srcModule` through the solver engine with LSS on and the default
+spec limits, returning the monomorphized graph or the pipeline's error message.
 -}
 run : Src.Module -> Result String Mono.MonoGraph
 run srcModule =
     Pipeline.runSolverMonoWithLimits Config.defaultLimits lssConfig srcModule
 
 
+{-| Runs `srcModule` as `run` does with the LSS report switched on, and
+returns the graph together with the rendered report. Gives an `Err` when no
+report is rendered.
+-}
 runReport : Src.Module -> Result String ( Mono.MonoGraph, String )
 runReport srcModule =
     Pipeline.runSolverMonoWithReport Config.defaultLimits lssConfig srcModule
@@ -216,6 +219,9 @@ runReport srcModule =
             )
 
 
+{-| The LSS settings these tests run with: `Config.defaultLss` with `enabled`
+set, which it already is.
+-}
 lssConfig : Config.LssConfig
 lssConfig =
     let
@@ -225,6 +231,9 @@ lssConfig =
     { defaults | enabled = True }
 
 
+{-| Returns the first line of `report` that starts with `prefix`, or the text
+`<no line starting with PREFIX>` when there is none.
+-}
 reportLine : String -> String -> String
 reportLine prefix report =
     String.lines report
@@ -233,13 +242,16 @@ reportLine prefix report =
         |> Maybe.withDefault ("<no line starting with " ++ prefix ++ ">")
 
 
+{-| Returns the last whitespace-separated word of `line`, or the empty string
+when it has none.
+-}
 lastWord : String -> String
 lastWord line =
     String.words line |> List.reverse |> List.head |> Maybe.withDefault ""
 
 
-{-| Every stored (keyed) demand type for the named global (MuTieTest /
-LssSigFlowTest precedent).
+{-| Returns every stored demand type in the registry of a global named
+`target`, from any module. Accessors are skipped.
 -}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
@@ -260,6 +272,9 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns every stored demand type in the registry, for every global and
+accessor.
+-}
 allDemands : Mono.MonoGraph -> List Mono.MonoType
 allDemands (Mono.MonoGraph g) =
     Array.foldl
@@ -275,14 +290,17 @@ allDemands (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| The RESULT arrow's annotation for each stored demand: the deepest
-`MFunction` on the return spine.
+{-| Returns, for each stored demand type of `target` that is a function type,
+the annotation on the innermost arrow of its return spine.
 -}
 resultAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 resultAnnos target graph =
     List.filterMap deepestRetAnno (demandsOf target graph)
 
 
+{-| Returns the annotation of the innermost arrow reached by following result
+types from `t`, or `Nothing` when `t` is not a function type.
+-}
 deepestRetAnno : Mono.MonoType -> Maybe Mono.LambdaSetAnno
 deepestRetAnno t =
     case t of
@@ -298,11 +316,18 @@ deepestRetAnno t =
             Nothing
 
 
+{-| Returns every lambda-set annotation in every stored demand type of
+`target`.
+-}
 allAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 allAnnos target graph =
     List.concatMap annosOf (demandsOf target graph)
 
 
+{-| Returns every lambda-set annotation in `t` at any depth: on its arrows,
+and inside list elements, tuple elements, record fields and custom-type
+arguments. Other types have none.
+-}
 annosOf : Mono.MonoType -> List Mono.LambdaSetAnno
 annosOf t =
     case t of
@@ -325,10 +350,9 @@ annosOf t =
             []
 
 
-{-| The guard LSS\_026(a) actually exists for: never a set small enough for a
-consumer to devirtualize on. ⊤ is fine (it claims nothing); a >=2 set is fine
-(no devirt arm takes it); a SINGLETON or an empty set is the false completeness
-claim that hijacks the representative.
+{-| Tells whether `anno` claims too little to be read as one complete call
+target. `LTop`, `LVar` and `LPartial` pass, and an `LSet` passes only with two
+or more members, so a one-member set fails and so does an empty one.
 -}
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
@@ -346,6 +370,8 @@ neverFalselyComplete anno =
             List.length members >= 2
 
 
+{-| Tells whether `anno` is an `LSet` of exactly `n` members.
+-}
 annoHasSize : Int -> Mono.LambdaSetAnno -> Bool
 annoHasSize n anno =
     case anno of
@@ -362,6 +388,10 @@ annoHasSize n anno =
             False
 
 
+{-| Renders `annos` for a failure message, separated by commas, each as its
+constructor name with its number or member ids. An `LTop` is shown without its
+provenance code.
+-}
 describeAnnos : List Mono.LambdaSetAnno -> String
 describeAnnos annos =
     String.join ", "
@@ -388,12 +418,17 @@ describeAnnos annos =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int -> Int`, used for the function values in the
+fixtures.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
-{-| §0.5, `gc`-member variant — the miscompile class.
+{-| A module in which `d f = pickG True f` returns, through
+`pickG c f = if c then f else incr`, either its argument or the global `incr`,
+and whose `testValue` calls `d` with a lambda.
 -}
 mixedSigModule : Src.Module
 mixedSigModule =
@@ -426,7 +461,9 @@ mixedSigModule =
         ]
 
 
-{-| The plan's literal §0.5 text: a LAMBDA in the else branch.
+{-| A module in which `dl f = pickL True f` returns, through `pickL`, either
+its argument or a lambda written in `pickL`'s else branch, and whose
+`testValue` calls `dl` with another lambda.
 -}
 mixedLambdaModule : Src.Module
 mixedLambdaModule =
@@ -457,8 +494,8 @@ mixedLambdaModule =
         ]
 
 
-{-| Negative control (LssSigFlowTest test 2's fixture): members, no sources,
-so nothing is mixed and the rule must be silent.
+{-| A module whose `mk2` returns one of two lambdas, chosen by its `Bool`
+argument, and which takes no function argument for a source to come from.
 -}
 mk2Module : Src.Module
 mk2Module =

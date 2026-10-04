@@ -1,29 +1,66 @@
 module TestLogic.Type.KernelIntrinsicsTest exposing (suite)
 
-{-| Intrinsic kernel type annotations
-(`plans/kernel-intrinsic-annotations.md`).
+{-| These tests check that the type checker applies two kernel intrinsic
+annotations, that it leaves a kernel without one unconstrained, and that every
+row of the annotation table passes a few checks on its bookkeeping fields.
 
-A kernel reference used to generate `CTrue` — no constraint at all — so an
-inline-used kernel was bounded by nothing and `List.toArray` behaved as
-`α -> β` with the two sides never equated. A row in
-`Compiler.Type.KernelIntrinsics` makes the generator emit a `CForeign`, which
-the solver instantiates fresh per occurrence and unifies with the context.
+A kernel reference is a name qualified with a kernel module, such as
+`Elm.Kernel.List.fromArray`, standing for a function the runtime implements
+rather than for Elm code. Neither canonicalization nor the type checker checks
+that the runtime has a function of that name. A kernel intrinsic annotation is
+a row of the table in `Compiler.Type.KernelIntrinsics` that gives one kernel a
+type. A row is keyed by the kernel's prefix (`Elm` or `Eco`), its home module
+and its name. When a kernel reference has a row, the type checker checks the
+use against the row's type, instantiated afresh for that use. A kernel without
+a row contributes no constraint of its own, so its type is bounded only by its
+context. `Compiler.Type.KernelIntrinsics` owns the table and the rules a row
+must follow.
 
-The behavioural tests below run the real canonicalize+typecheck pipeline over
-fixtures that write kernel syntax directly. That is legal here because
-`Canonicalize.Expression.findVarQual` produces a `Can.VarKernel` when the
-prefix is `Elm.Kernel.*`/`Eco.Kernel.*` AND the enclosing package is a kernel
-package — and the test harness canonicalizes as `( "eco", "example" )`, which
-`Pkg.isKernel` accepts.
+Tests 1 to 5 each build a module named `Test` holding one annotated function of
+one argument, whose body applies a kernel reference to that argument, and run it
+through `TestLogic.TestPipeline.runToTypeCheck`. Kernel syntax is accepted
+there because canonicalization (`findVarQual` in
+`Compiler.Canonicalize.Expression`) turns a reference qualified with
+`Elm.Kernel.X` or `Eco.Kernel.X` into a kernel reference when the module belongs
+to a kernel package, and the pipeline canonicalizes as the package
+`eco/example`, which is one. Three kernels are used. `Elm.Kernel.List.fromArray`
+has a row typed `List a -> List a`. `Elm.Kernel.Json.addEntry` has a row typed
+`(a -> Value) -> a -> Value -> Value`. `Elm.Kernel.List.nonesuch` has no row.
 
-Test 2 is the one that matters: it pins that the two `a`s in `List a -> List a`
-are now the SAME `a`. Before intrinsics that fixture typechecked, because
-nothing connected them.
+What the tests establish:
 
-Tests 3-4 pin the FAIL-STOP contract from the other side: a use that
-contradicts the annotation must produce a type ERROR, not a crash and not
-silent acceptance. That property is what makes the table dangerous enough to
-need `useSites` evidence per row, so it deserves a test rather than a comment.
+  - Test 1: `fromArray` used at `List String -> List String` type checks.
+  - Test 2: `fromArray` used at `List String -> List Int` is rejected, which
+    shows that the annotation's argument and result share one `a`.
+  - Test 3: `fromArray` given an `Int` argument, with a `List String` result,
+    is rejected.
+  - Test 4: `addEntry` applied to an `Int`, in a function annotated
+    `Int -> List Int`, is rejected. The argument contradicts the row's first
+    parameter and the result contradicts the row's remaining type, so the test
+    does not show which of the two is caught.
+  - Test 5: `nonesuch` used at `Int -> List String` type checks, so a kernel
+    without a row is unconstrained.
+  - Test 6: every entry of `KernelIntrinsics.rows` has the prefix `Elm` or
+    `Eco`, a non-empty `files` whose every path contains a `/` and does not
+    start with one, an `evidence` containing the text `audited:`, and a
+    non-empty `useSites`. Every row that fails is reported, with its full
+    kernel name and each check it fails.
+  - Test 7: `KernelIntrinsics.auditedFiles` is non-empty, sorted, and has no
+    repeated entry.
+  - Test 8: `KernelIntrinsics.lookup` finds a row for `Elm`, `List`,
+    `fromArray` and none for `Eco`, `List`, `fromArray`. The prefix has to be
+    part of the key because one home and name can name two different kernels,
+    such as `File.size` under `Elm` and under `Eco`.
+
+Tests 2, 3 and 4 pass on any `Err` from the pipeline, whose message gives only
+a count of errors, so they would also pass if canonicalization failed. Tests 1
+and 5 build modules of the same shape and expect them to type check, so a
+canonicalization failure common to that shape would also fail test 1 or 5.
+
+Among what is not tested: how the type checker applies the `addField` and
+`toArray` rows; the name a type error is reported under; that `useSites` and
+`evidence` say anything beyond the checks of test 6; and that `auditedFiles`
+agrees with any manifest.
 
 -}
 
@@ -45,13 +82,13 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The eight kernel intrinsic annotation tests described above.
+-}
 suite : Test
 suite =
     Test.describe "Kernel intrinsic annotations"
         [ Test.test "1. a use that INSTANTIATES the annotation typechecks" <|
             \() ->
-                -- `List.fromArray : List a -> List a` at a = String, which is
-                -- exactly elm/core's `String.split` use site.
                 case Pipeline.runToTypeCheck (fromArrayModule (tListOf tString) (tListOf tString)) of
                     Ok _ ->
                         Expect.pass
@@ -60,12 +97,6 @@ suite =
                         Expect.fail ("expected the annotated use to typecheck, got: " ++ msg)
         , Test.test "2. the two `a`s are CONNECTED — a result type differing from the argument is rejected" <|
             \() ->
-                -- THE pin for this whole change. `List String -> List Int`
-                -- through `fromArray` must fail, because the annotation shares
-                -- one `a` across argument and result. Pre-intrinsics this
-                -- typechecked: the kernel contributed `CTrue`, so the argument
-                -- and result types were never equated and the kernel behaved as
-                -- `α -> β`.
                 case Pipeline.runToTypeCheck (fromArrayModule (tListOf tString) (tListOf tInt)) of
                     Err _ ->
                         Expect.pass
@@ -74,7 +105,6 @@ suite =
                         Expect.fail "List String -> List Int through fromArray must NOT typecheck — the annotation's shared `a` is not being enforced"
         , Test.test "3. fail-stop: an argument the annotation forbids is a type ERROR" <|
             \() ->
-                -- `Int` cannot instantiate `List a`.
                 case Pipeline.runToTypeCheck (fromArrayModule tInt (tListOf tString)) of
                     Err _ ->
                         Expect.pass
@@ -83,10 +113,6 @@ suite =
                         Expect.fail "passing an Int to fromArray must be a type error"
         , Test.test "4. fail-stop reaches a kernel applied to a NON-FUNCTION where the annotation wants one" <|
             \() ->
-                -- `Json.addEntry`'s first parameter is `(a -> Value)`; an Int
-                -- cannot instantiate it. (`Value` itself is unnameable in the
-                -- mock interface env, so this fixture constrains only the
-                -- parameter — which is the position the row's shape asserts.)
                 case Pipeline.runToTypeCheck addEntryBadModule of
                     Err _ ->
                         Expect.pass
@@ -95,10 +121,6 @@ suite =
                         Expect.fail "passing an Int as Json.addEntry's encoder must be a type error"
         , Test.test "5. an UNANNOTATED kernel is still unconstrained (the table is opt-in)" <|
             \() ->
-                -- Negative control. `Elm.Kernel.List.nonesuch` has no row, so
-                -- the generator still emits `CTrue` and any shape is accepted.
-                -- If this ever fails, something started constraining kernels
-                -- globally and the opt-in property is gone.
                 case Pipeline.runToTypeCheck unannotatedKernelModule of
                     Ok _ ->
                         Expect.pass
@@ -167,9 +189,6 @@ suite =
                     ()
         , Test.test "8. discipline: lookup is keyed by PREFIX, not just (home, name)" <|
             \() ->
-                -- `KernelSetFacts` collides on `File.size` because it drops the
-                -- prefix. An annotation table must not: the two `File.size`
-                -- kernels have different types. Pin that a wrong prefix misses.
                 Expect.all
                     [ \() -> Expect.notEqual Nothing (KernelIntrinsics.lookup "Elm" "List" "fromArray")
                     , \() -> Expect.equal Nothing (KernelIntrinsics.lookup "Eco" "List" "fromArray")
@@ -178,10 +197,9 @@ suite =
         ]
 
 
-
--- ====== HARNESS ======
-
-
+{-| Removes each element that equals the one before it, so a sorted list loses
+its repeats.
+-}
 dedupe : List String -> List String
 dedupe xs =
     case xs of
@@ -196,27 +214,30 @@ dedupe xs =
             xs
 
 
-
--- ====== FIXTURES ======
-
-
+{-| The source type `Int`.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| The source type `String`.
+-}
 tString : Src.Type
 tString =
     tType "String" []
 
 
+{-| Builds the source type `List el`.
+-}
 tListOf : Src.Type -> Src.Type
 tListOf el =
     tType "List" [ el ]
 
 
-{-| `f : <argType> -> <resultType>` whose body is `Elm.Kernel.List.fromArray x`.
-Varying the two types is what tests 1-3 do.
+{-| Builds a module whose one function, `useFromArray`, is annotated
+`argType -> resultType` and returns `Elm.Kernel.List.fromArray` applied to its
+argument.
 -}
 fromArrayModule : Src.Type -> Src.Type -> Src.Module
 fromArrayModule argType resultType =
@@ -229,6 +250,15 @@ fromArrayModule argType resultType =
         ]
 
 
+{-| A module whose one function, `badEncoder`, is annotated `Int -> List Int`
+and returns `Elm.Kernel.Json.addEntry` applied to its `Int` argument alone.
+
+The annotation names no `Value`, because `Json.Encode` is not among the imports
+the module builder adds. The argument contradicts `addEntry`'s first parameter,
+`a -> Value`, and the result `List Int` contradicts the function type the
+partial application leaves.
+
+-}
 addEntryBadModule : Src.Module
 addEntryBadModule =
     makeModuleWithTypedDefs "Test"
@@ -240,8 +270,10 @@ addEntryBadModule =
         ]
 
 
-{-| Negative control: no row for this name, so it stays `CTrue` and the
-deliberately absurd shape is accepted.
+{-| A module whose one function, `useUnannotated`, is annotated
+`Int -> List String` and returns `Elm.Kernel.List.nonesuch` applied to its
+argument. No row exists for `nonesuch`, so nothing ties the argument to the
+result.
 -}
 unannotatedKernelModule : Src.Module
 unannotatedKernelModule =

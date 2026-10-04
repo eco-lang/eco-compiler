@@ -1,11 +1,38 @@
 module TestLogic.Generate.CodeGen.CmpiPredicateAttrTest exposing (suite)
 
-{-| Test suite for arith.cmpi predicate attribute invariant.
+{-| Runs the `arith.cmpi` predicate check on two programs that `case` on a
+`Char`, so that a character comparison emitted without its `predicate`
+attribute is caught.
 
-Every `arith.cmpi` operation requires a `predicate` attribute. This test
-catches the bug where char equality comparisons (i16) emit `arith.cmpi`
-via `ecoBinaryOp` (which only sets `_operand_types`) instead of using
-`arithCmpI` (which correctly sets both `_operand_types` and `predicate`).
+An `arith.cmpi` compares two integers, and its `predicate` attribute names the
+comparison. The check is `expectCmpiPredicateAttr`, and its module's docstring
+says what it requires: compilation must succeed, and every `arith.cmpi` in the
+generated MLIR must carry an integer `predicate`. A program that produces no
+`arith.cmpi` passes.
+
+In code generation, a `case` with one character literal and a catch-all branch
+becomes a single test that compares the character with an `arith.cmpi`. A
+`case` with several character literals and a catch-all branch becomes a
+fan-out: one `eco.case` on the character, with no `arith.cmpi` for its
+literals.
+
+Each fixture is a module named `Test`, holding an annotated function that
+matches its `Char` argument against character literals, and a `testValue` that
+calls it with one of those literals.
+
+The one test runs two cases through `bulkCheck`, in order, and reports only the
+first that fails:
+
+  - "Simple char case" checks `classify`, which matches `'a'` and otherwise a
+    catch-all variable pattern named `_` (built with `pVar "_"`).
+  - "Multi-branch char case" checks `describeChar`, which matches `','`, `'{'`
+    and `'}'` and otherwise a catch-all variable pattern named `_` (built with
+    `pVar "_"`). Its literals compile to an `eco.case` with no `arith.cmpi`, so
+    this case fails only if compilation fails or another `arith.cmpi` lacks a
+    predicate.
+
+Among what is not tested: the value of a predicate, character comparisons
+outside a `case`, and whether either program produces an `arith.cmpi` at all.
 
 -}
 
@@ -31,6 +58,8 @@ import Test exposing (Test)
 import TestLogic.Generate.CodeGen.CmpiPredicateAttr exposing (expectCmpiPredicateAttr)
 
 
+{-| The one test, which runs both cases with `expectCmpiPredicateAttr`.
+-}
 suite : Test
 suite =
     Test.describe "arith.cmpi predicate attribute"
@@ -39,6 +68,9 @@ suite =
         ]
 
 
+{-| Returns the two cases, each of which builds its program and hands it to
+`expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Simple char case", run = simpleCharCaseTest expectFn }
@@ -46,9 +78,9 @@ testCases expectFn =
     ]
 
 
-{-| Minimal reproduction: a case expression matching on a Char value.
-The compiler emits arith.cmpi for each char literal branch, but uses
-ecoBinaryOp instead of arithCmpI, so the predicate attribute is missing.
+{-| Applies `expectFn` to a module holding one character literal branch and a
+catch-all branch binding a variable named `_` (built with `pVar "_"`, shown as
+`_` below):
 
     classify : Char -> Int
     classify c =
@@ -58,6 +90,10 @@ ecoBinaryOp instead of arithCmpI, so the predicate attribute is missing.
 
             _ ->
                 0
+
+    testValue : Int
+    testValue =
+        classify 'a'
 
 -}
 simpleCharCaseTest : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -92,7 +128,9 @@ simpleCharCaseTest expectFn _ =
     expectFn modul
 
 
-{-| Multiple char branches -- each generates its own arith.cmpi.
+{-| Applies `expectFn` to a module holding three character literal branches and
+a catch-all branch binding a variable named `_` (built with `pVar "_"`, shown
+as `_` below):
 
     describeChar : Char -> String
     describeChar c =
@@ -108,6 +146,10 @@ simpleCharCaseTest expectFn _ =
 
             _ ->
                 "other"
+
+    testValue : String
+    testValue =
+        describeChar ','
 
 -}
 multiBranchCharCaseTest : (Src.Module -> Expectation) -> (() -> Expectation)

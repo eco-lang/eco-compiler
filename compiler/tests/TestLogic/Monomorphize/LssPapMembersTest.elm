@@ -1,25 +1,64 @@
 module TestLogic.Monomorphize.LssPapMembersTest exposing (suite)
 
-{-| INJECTION COMPLETENESS — `lss.papMembers`
-(`plans/lss-injection-completeness.md`).
+{-| Checks, on three small programs, that when a partial application of a
+top-level function is passed to another function, the lambda-set solver does
+not describe the receiving position as holding fewer functions than it can.
 
-**What is being pinned, and why it is a soundness test rather than a precision
-one.** A PARTIAL application of a known global is a PAP of that global, so the
-callee's member is sound on the residual arrows (LSS\_013's arity bound: "a PAP
-of member m is m"). Before this flag it was the ONE producer form that injected
-nothing — P0's injection-totality census measured 3,624 such positions on the
-self-compile — and that hole is what let a one-sided branch join publish a
-FALSE COMPLETE set.
+A _lambda set_ is the annotation on an arrow of a monomorphized type
+(`Compiler.AST.Monomorphized.LambdaSetAnno`) that says which functions, its
+_members_, can arrive at that position. `LSet` lists them, `LPartial` lists
+some of them as a lower bound, and `LTop` and `LVar` name none. A singleton
+`LSet` is the one form a later pass may read as "the function here is this
+one" (`Compiler.AST.Monomorphized.singletonHeadMember`), so a singleton that
+leaves out a function which really arrives can make a wrong program, not
+merely a slow one. Call such a set _falsely complete_.
 
-The recorded consequence is not hypothetical: with `arrowSolverRoots` sharing
-the slots, `\flg -> if flg then (::) x else identity` published `{identity}` as
-complete, devirt believed it, and `Task.map f` compiled to `\a -> succeed a` —
-the identity map. `Build.findModulePaths` then scanned every source directory
-to `[]` and the compiler could not find its own source files.
+`addTo 7`, where `addTo` takes two parameters, is a _partial application_: a
+function value of type `Int -> Int` that is not the same function as `addTo`.
+The solver gives it its own member, distinct from `addTo`'s
+(`Compiler.MonoSolver.Engine.papMemberIdFor`). That member is registered as a
+partial application, not a global, so the solver's direct-call rewrite never
+targets it (`Compiler.MonoSolver.Engine.standaloneMemberGlobal`).
 
-The paper has no such hole and needs no widening to avoid it: L^src is
-curry-free, so `(::) x` is necessarily a λ there and `𝒬` injects EVERY λ
-(Fig. 6). Injecting here restores that property.
+The fixtures are three modules built with `makeModuleWithTypedDefs`. Each
+defines `addTo a b = a + b` at `Int -> Int -> Int`, and its `testValue` passes
+a function value built from `addTo 7` to another function:
+
+  - `joinModule` passes `if True then addTo 7 else idf`, with `idf x = x`, to
+    `useIt f = f 1`;
+  - `loneModule` passes `addTo 7` alone to the same `useIt`;
+  - `papDevirtModule` passes `addTo 7` to `applyTwice f n = f (f n)`, which
+    calls it twice.
+
+Each is run through `TestLogic.TestPipeline` to a monomorphized graph with the
+solver engine and the default lambda-set configuration (`runWith`).
+Annotations are read from the demand types the graph's registry holds for each
+specialization. For `useIt` the outermost arrow's annotation is skipped,
+because the solver stamps `useIt`'s own member there wherever the annotation
+is not already an `LSet` (`allAnnos`), so what is read is `useIt`'s parameter
+and the arrows inside it.
+
+The tests:
+
+  - Test 1 finds at least one annotation below `useIt`'s outermost arrow in
+    `joinModule`'s graph, and checks that each is `LTop`, `LVar`, `LPartial`
+    or an `LSet` of two or more members, never a singleton or empty `LSet`.
+    Widening the position to `LTop` passes this test.
+  - Test 2 checks that at least one annotation below `useIt`'s outermost
+    arrow in `loneModule`'s graph is an `LSet` with at least one member.
+    Widening to `LTop` fails it.
+  - Test 4 checks only that `runWith papDevirtModule` returns `Ok`.
+  - Test 5 collects every annotation of every registry demand type in the
+    graphs of all three fixtures and checks that none is the empty `LSet`.
+
+There is no test 3.
+
+Among what is not tested: which members test 1's sets name, only that each
+has at least two; which member test 2's set holds, so a set naming some other
+function would pass; whether the partial application's member is
+distinct from `addTo`'s, which test 4 never inspects; any fixture whose run
+fails in test 5, which skips it, so test 5 passes if all three runs fail;
+and anything after monomorphization, since global optimization is not run.
 
 -}
 
@@ -47,24 +86,13 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The four tests listed in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "injection completeness for partial applications"
         [ Test.test "1. THE CRASH SHAPE: a one-sided join is never a false singleton" <|
             \() ->
-                -- `if flg then addTo 7 else idf`, passed as an ARGUMENT — the
-                -- minimal form of the `arrowSolverRoots` miscompile. The
-                -- `else` arm's bare reference injects; the `then` arm is a
-                -- PARTIAL application, which injected NOTHING before this
-                -- flag, so the join claimed the position had exactly ONE
-                -- inhabitant when it has two.
-                --
-                -- Asserted at the CONSUMER's parameter, which is where the
-                -- real bug lived (map's `f`) and where the arg's type is
-                -- store-tracked. A def's own result arrow is not the right
-                -- place to look: the storeless classifier stamps ⊤ there by
-                -- construction, which is what the first version of this test
-                -- got wrong.
                 case runWith joinModule of
                     Err msg ->
                         Expect.fail msg
@@ -85,12 +113,6 @@ suite =
                                         )
         , Test.test "2. the partial's member is PRESENT, not merely widened away" <|
             \() ->
-                -- Test 1 also passes if the position widens to ⊤ — which is
-                -- the GUARD-shaped repair (R2 in the solver-root plan), not
-                -- the paper-shaped one this plan implements. Injection is the
-                -- claim, so assert the strictly stronger property: the
-                -- consumer's parameter NAMES a member. "Always widen" fails
-                -- here, which is the point of having both tests.
                 case runWith loneModule of
                     Err msg ->
                         Expect.fail msg
@@ -106,17 +128,6 @@ suite =
                                 )
         , Test.test "4. the PAP member is NOT the callee's own `g|` identity" <|
             \() ->
-                -- The correction that made the first implementation a
-                -- miscompile. Reusing `g|addTo` would put the member in the
-                -- STAMPABLE class, and devirt would rewrite the call site to a
-                -- direct call of `addTo`'s 2-arity spec with ONE argument —
-                -- exactly the `demandUnify` arity abort observed on the first
-                -- flag-on self-compile.
-                --
-                -- Pinned behaviourally rather than by member id: the whole
-                -- fixture must still monomorphize. A `g|` member here aborts
-                -- the pipeline, so a green run IS the assertion, and test 2
-                -- separately proves a member was injected at all.
                 case runWith papDevirtModule of
                     Err msg ->
                         Expect.fail ("PAP member licensed a bad devirt: " ++ msg)
@@ -150,17 +161,10 @@ suite =
 -- ====== HARNESS ======
 
 
-{-| `lss.papMembers` was fixed at its default and removed 2026-09-18, and so
-was `regIdentity`, which this harness pinned OFF under the
-differential-overlap rule. The deleted test 3 pinned that the injection is
-gated at the MINT (flag-off produced observably different annotations, member
-allocation order being artifact-relevant). Solo census with `papMembers` OFF:
-`var` +3,803, artifact −61 KB.
-
-`sigRootIdentity` used to move WITH `papMembers` here, never independently:
-root identity WITHOUT injection completeness is the pairing that published the
-false singleton and compiled `Task.map` into the identity map. That flag was
-deleted 2026-09-17 (plans/remove-default-off-lss-flags.md).
+{-| Runs `srcModule` through the test pipeline and monomorphizes it with the
+solver engine, under the default lambda-set configuration with `enabled` set
+(already its default) and the default specialization limits. An `Err`
+carries the test pipeline's error message.
 -}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
@@ -177,20 +181,18 @@ runWith srcModule =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int -> Int`, the type of the function values the
+fixtures pass around.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
-{-| THE CRASH SHAPE. `addTo` is a two-parameter global, so `addTo 7` is a
-PARTIAL application (1 of 2 supplied) whose residual is `Int -> Int`; `idf` is
-a bare reference, which injects today. The `if` is passed straight into
-`useIt`'s parameter — an argument position, where the type is store-tracked —
-so the branch join lands exactly where the real bug lived (map's `f`).
-
-Before `papMembers` only the `else` arm injected, so the parameter's set was
-the FALSE SINGLETON `{g|idf}`.
-
+{-| A module in which `useIt`'s parameter receives one of two function
+values: `testValue` passes it `if True then addTo 7 else idf`, a partial
+application in one branch and a reference to the one-parameter `idf` in the
+other.
 -}
 joinModule : Src.Module
 joinModule =
@@ -220,8 +222,8 @@ joinModule =
         ]
 
 
-{-| A partial application as the SOLE inhabitant of a consumer's parameter:
-the direct test that a member is injected at all.
+{-| A module in which the only function value passed to `useIt` is the
+partial application `addTo 7`.
 -}
 loneModule : Src.Module
 loneModule =
@@ -244,13 +246,8 @@ loneModule =
         ]
 
 
-{-| The identity guard, in the shape that actually aborted the first flag-on
-self-compile: a partial application passed to a HIGHER-ORDER consumer that
-calls it, so a singleton set at the consumer's parameter is live for devirt.
-With the callee's `g|` identity, devirt rewrites `f 1` to a direct call of
-`addTo`'s 2-arity spec with one argument and monomorphization dies on
-`demandUnify`. With the PAP's own `p|` identity it declines, and the pipeline
-completes — so a GREEN run is the assertion.
+{-| A module in which the partial application `addTo 7` is the only function
+value passed to `applyTwice`, which calls it twice.
 -}
 papDevirtModule : Src.Module
 papDevirtModule =
@@ -274,9 +271,12 @@ papDevirtModule =
 
 
 
--- ====== READERS (LssHonestSourcesPipelineTest precedent) ======
+-- ====== READERS ======
 
 
+{-| Returns the demand type of every registry entry whose global is named
+`target`, in any module.
+-}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
     Array.foldl
@@ -296,6 +296,9 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns the demand type of every registry entry in the graph, accessors
+included.
+-}
 allDemands : Mono.MonoGraph -> List Mono.MonoType
 allDemands (Mono.MonoGraph g) =
     Array.foldl
@@ -311,19 +314,27 @@ allDemands (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| Every annotation of the named global's demands BELOW the demand type's own
-head. The head carries the registration stamp's tautological self-identity —
-an HONEST singleton — so scanning it would trip the false-completeness pin on
-correct behaviour. That used to be handled by pinning `regIdentity = False`;
-the flag was fixed at its default and removed 2026-09-18, so the reader is
-narrowed instead. The false-completeness class this file pins lives at the
-CONSUMER's parameter, which is below the head by construction.
+{-| Returns every lambda-set annotation in the demand types of the globals
+named `target`, except the annotation on each type's outermost arrow.
+
+The solver stamps the own member of a global defined in the program, such as
+`useIt`, on that arrow wherever the annotation is not already an `LSet`
+(`Compiler.MonoSolver.Translate.stampSelfSpine`), and the resulting singleton
+is correct, so reading it would fail test 1 for a correct graph. The
+parameter the tests are about is below it. Skipping the outermost arrow alone
+suffices for a one-parameter global such as `useIt`; the deeper spine arrows
+of a global with more parameters are stamped too and are not skipped.
+
 -}
 allAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 allAnnos target graph =
     List.concatMap belowHead (demandsOf target graph)
 
 
+{-| Returns every annotation in `t` except the one on its outermost arrow:
+those of its parameters and its result. A type that is not a function has no
+outermost arrow, and all its annotations are returned.
+-}
 belowHead : Mono.MonoType -> List Mono.LambdaSetAnno
 belowHead t =
     case t of
@@ -334,6 +345,9 @@ belowHead t =
             annosOf t
 
 
+{-| Returns every lambda-set annotation in `t`, looking inside functions,
+lists, tuples, records and custom type arguments.
+-}
 annosOf : Mono.MonoType -> List Mono.LambdaSetAnno
 annosOf t =
     case t of
@@ -356,8 +370,9 @@ annosOf t =
             []
 
 
-{-| ⊤ and `LVar` claim nothing; a >=2 set is not devirtable. A SINGLETON or an
-empty set is the false-completeness claim that hijacks the representative.
+{-| Returns `False` when `anno` is an `LSet` of fewer than two members, a
+complete set naming one function or none, and `True` for every other
+annotation: `LTop`, `LVar`, `LPartial` and an `LSet` of two or more members.
 -}
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
@@ -375,6 +390,9 @@ neverFalselyComplete anno =
             List.length ms >= 2
 
 
+{-| Returns whether `anno` is an `LSet` of at least `n` members. Every other
+form gives `False`.
+-}
 annoAtLeast : Int -> Mono.LambdaSetAnno -> Bool
 annoAtLeast n anno =
     case anno of
@@ -385,11 +403,18 @@ annoAtLeast n anno =
             False
 
 
+{-| Renders `annos` for a failure message, as a bracketed, comma-separated list
+of `describeAnno` renderings.
+-}
 describeAnnos : List Mono.LambdaSetAnno -> String
 describeAnnos annos =
     "[" ++ String.join ", " (List.map describeAnno annos) ++ "]"
 
 
+{-| Renders one annotation for a failure message: its constructor name, with an
+`LVar`'s number, an `LSet`'s member count, or an `LPartial`'s member count
+followed by its member ids.
+-}
 describeAnno : Mono.LambdaSetAnno -> String
 describeAnno anno =
     case anno of

@@ -1,21 +1,55 @@
 module TestLogic.CellStoreTest exposing (suite)
 
-{-| The `Eco.CellStore` API contract and its rollback algebra.
+{-| Tests for `Eco.CellStore`, an index-addressed store of cells with nested
+undo scopes. Without them, a write that is lost, or a rollback that forgets a
+cell pushed inside its scope, would go unnoticed until something built on the
+store misbehaved.
 
-This suite runs against the PURE twin (`compiler/src-xhr/Eco/CellStore.elm`),
-because stock Elm is what compiles the unit suite. That bounds what it can
-prove: the twin's handles are values, so a stale handle reads the OLD cells
-here and the NEW ones under the kernel. **Aliasing is therefore out of scope
-for this file** — the native pins under `test/eco-kernel` are the gate for it,
-and the byte-identity check in `benchmarks/lss-compile-opt-loop.md` is the
-backstop.
+An _undo scope_ is opened by `pushMark` and closed by either `rollback`, which
+puts the cells and the cell count back to what they were when the scope was
+opened, or `commit`, which keeps what was written. Scopes nest, and closing one
+closes the innermost scope still open.
 
-What IS in scope, and is the same for both implementations as long as callers
-thread handles linearly: indices, `size`, the first-write-wins padding pattern
-the union-find store depends on, and above all the rollback algebra — restore
-cells AND the cell count, nest correctly, and let an inner `commit` still be
-undone by an outer `rollback`. That last one is the property the union-find
-scratch scopes actually rely on.
+Stock Elm compiles this suite, so it runs against the pure twin of
+`Eco.CellStore`, the one in `src-xhr`, whose stores are immutable values.
+`Eco.CellStore`'s module docstring states what that twin shares with the kernel
+implementation. Within each test, the store an operation returns is the one
+passed to the next.
+
+The fixture is `seeded`, a store holding 10, 20 and 30 at indices 0, 1 and 2,
+with no undo scope open. Most tests start from it and read the result back with
+`toList`. Every test that starts from it reuses the one store value; that is
+safe here only because the pure twin's operations neither change nor free a
+store.
+
+The tests establish:
+
+  - Reading and writing: `new 8` has size 0; `seeded` reads back as
+    `[ 10, 20, 30 ]`; `set 1 99` changes cell 1 and no other; `set 0 7` leaves
+    the size at 3.
+  - Rollback: writes to two existing cells inside a scope are undone; two
+    pushes inside a scope are undone and the size returns to 3; a push, a write
+    to the pushed cell and a write to an existing cell are all undone together,
+    and the size returns to 3.
+  - Commit: a write and a push inside a scope survive `commit`, giving
+    `[ 111, 20, 30, 40 ]`.
+  - Nesting: an inner `rollback` followed by an outer `commit` keeps the outer
+    scope's write and drops the inner one's; an inner `commit` followed by an
+    outer `rollback` drops both writes; three nested scopes, each writing cell
+    0, closed by three `rollback`s, leave the original contents. Only the final
+    contents are checked, not the state between rollbacks.
+  - Padding: pushing zeros onto an empty store until its size is 5 and then
+    pushing 42 gives a store of size 6 with 42 at index 5.
+  - Lifecycle: `freeze seeded` is the `Array` `[ 10, 20, 30 ]`;
+    `renew seeded` has size 0; `release (new 1) seeded` reads back as
+    `seeded`; `disposeThen seeded "kept"` is `"kept"`.
+
+Among what is not tested: aliasing, that is, reading a store value after a
+later operation has been applied to it, which the pure twin cannot exhibit
+(`Eco.CellStore` describes how its two implementations differ there); the
+crashes on an out-of-range index and on `rollback` or `commit` with no scope
+open; whether `renew` discards open scopes; the capacity argument of `new`; and
+the kernel implementation itself.
 
 -}
 
@@ -25,7 +59,8 @@ import Expect
 import Test exposing (Test)
 
 
-{-| `[ 10, 20, 30 ]` as a store.
+{-| A store holding 10, 20 and 30 at indices 0, 1 and 2, with no undo scope
+open.
 -}
 seeded : CellStore.Store Int
 seeded =
@@ -35,11 +70,15 @@ seeded =
         |> CellStore.push 30
 
 
+{-| Reads the cells of `st` into a list, in index order from 0.
+-}
 toList : CellStore.Store Int -> List Int
 toList st =
     List.map (\i -> CellStore.get i st) (List.range 0 (CellStore.size st - 1))
 
 
+{-| The tests of `Eco.CellStore` that the module docstring lists.
+-}
 suite : Test
 suite =
     Test.describe "Eco.CellStore"
@@ -117,8 +156,6 @@ suite =
                         |> Expect.equalLists [ 111, 20, 30 ]
             , Test.test "an outer rollback undoes an inner COMMIT too" <|
                 \_ ->
-                    -- The scratch-scope property: committing an inner
-                    -- speculation does not make it survive the outer one.
                     seeded
                         |> CellStore.pushMark
                         |> CellStore.set 0 111

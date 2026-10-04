@@ -5,11 +5,26 @@ module Compiler.AST.TypedCanonical exposing
     , ExprTypes, ExprVars, NodeTypes
     )
 
-{-| The TypedCanonical AST pairs each canonical expression with its inferred type.
+{-| Phases that work on types need the type of each expression, not only its
+syntax. This module defines a form of the canonical AST that carries them: the
+_typed canonical AST_, together with the tables those types are kept in.
 
-This module provides a typed view of the canonical AST where every expression
-carries a `Can.Type Name` annotation. It is built by zipping the canonical AST with
-the expression types produced by the type checker.
+The typed canonical AST is the canonical AST of `Compiler.AST.Canonical` with
+one change. Each top-level definition's body is an `Expr`, a node that pairs a
+canonical expression with its type and, where there is one, the type checker's
+variable for it. Everything else, including argument patterns, type
+annotations, `let` definitions and the module's custom types, aliases and
+operators, is canonical and unchanged.
+
+The pairing is shallow. A `TypedExpr` holds a canonical `Can.Expr_`, so the
+sub-expressions of a typed body are canonical expressions with no type of their
+own, only a _node id_: the integer that canonicalization gives every expression
+and pattern, kept in the `id` field of `Can.ExprInfo` and `Can.PatternInfo`.
+The type of a sub-expression is found by looking its node id up in a table:
+`ExprTypes` (or `NodeTypes`, the same type) for its type, `ExprVars` for its
+type checker variable.
+
+The module is pure data: it defines types and no functions.
 
 
 # Modules
@@ -47,13 +62,20 @@ import Dict exposing (Dict)
 -- ====== Expressions ======
 
 
-{-| A typed expression with source location annotation.
+{-| A typed expression with its source region.
 -}
 type alias Expr =
     A.Located Expr_
 
 
-{-| A typed expression node containing the original canonical expression and its type.
+{-| One canonical expression node together with its type.
+
+`TypedExpr` is the only constructor. `tipe` is the type of the whole
+expression. `tvar` is the type checker's variable for the expression, or
+`Nothing` where none is recorded; a `Vars.Variable` identifies a point only
+within the type checker's store that made it, as `Compiler.Type.Vars`
+describes. The sub-expressions of `expr` are canonical, not typed.
+
 -}
 type Expr_
     = TypedExpr
@@ -67,10 +89,12 @@ type Expr_
 -- ====== Definitions ======
 
 
-{-| A typed definition.
+{-| A definition of a value or function whose body is typed.
 
-  - `Def` - A definition without a type annotation
-  - `TypedDef` - A definition with a type annotation and free type variables
+The constructors and their fields are those of `Can.Def`, which describes them;
+only the body differs, being an `Expr`. In a `TypedDef`, the type paired with
+each argument pattern and the final result type are the ones the annotation
+gives, not types inferred for the body.
 
 -}
 type Def
@@ -78,11 +102,13 @@ type Def
     | TypedDef (A.Located Name) Can.FreeVars (List ( Can.Pattern, Can.Type Name )) Expr (Can.Type Name)
 
 
-{-| A linked list of typed top-level declarations in a module.
+{-| The top-level definitions of a module, as a linked list of groups, each
+definition with a typed body.
 
-  - `Declare` - A non-recursive definition
-  - `DeclareRec` - A group of mutually recursive definitions
-  - `SaveTheEnvironment` - Sentinel marking the end of declarations
+The groups are those of `Can.Decls`. `Declare` holds a definition that is not
+part of a recursive group. `DeclareRec` holds a group of definitions that refer
+to one another, as its first definition and the rest. `SaveTheEnvironment` ends
+the list and carries nothing.
 
 -}
 type Decls
@@ -95,7 +121,11 @@ type Decls
 -- ====== Modules ======
 
 
-{-| Internal data for a typed canonical module.
+{-| Everything the typed canonical AST holds for one module.
+
+The fields are those of `Can.ModuleData`, except that `decls` holds typed
+definitions.
+
 -}
 type alias ModuleData =
     { name : ModuleName.Canonical
@@ -109,7 +139,7 @@ type alias ModuleData =
     }
 
 
-{-| A typed canonical Elm module.
+{-| A module in the typed canonical AST.
 -}
 type Module
     = Module ModuleData
@@ -119,36 +149,36 @@ type Module
 -- ====== Type Mapping ======
 
 
-{-| Dictionary mapping node IDs (expressions and patterns) to their canonical types.
-This is produced by the solver after constraint solving.
+{-| A table of types by node id: the entry at index `i` is the type of the
+expression or pattern whose node id is `i`, or `Nothing` where the table has no
+type for that id.
 
-This is an alias for `NodeTypes` to maintain backwards compatibility.
+This is a name for an `Array`, not a new type, and it is the same type as
+`NodeTypes`; the two names are interchangeable.
 
 -}
 type alias ExprTypes =
     Array (Maybe (Can.Type Name))
 
 
-{-| Dictionary mapping node IDs to their canonical types.
+{-| A table of types by node id, the same type as `ExprTypes`, which describes
+it.
 
-Node IDs include both expression IDs and pattern IDs, providing a unified
-mapping for all typed AST nodes. This is produced by the solver after
-constraint solving.
+This is a name for an `Array`, not a new type.
 
 -}
 type alias NodeTypes =
     Array (Maybe (Can.Type Name))
 
 
-{-| Dictionary mapping node IDs to their solver type variables.
+{-| A table of type checker variables by node id: the entry at index `i` is the
+variable for the node whose node id is `i`, or `Nothing` where the table has
+none.
 
-This preserves the solver's union-find variables for each expression,
-enabling the MonoDirect monomorphizer to query types directly via the solver.
+This is a name for an `Array`, not a new type. A variable identifies a point
+only within the type checker's store that made it, so the table means something
+only alongside that store, as `Compiler.Type.Vars` describes.
 
 -}
 type alias ExprVars =
     Array (Maybe Vars.Variable)
-
-
-
--- ====== Construction ======

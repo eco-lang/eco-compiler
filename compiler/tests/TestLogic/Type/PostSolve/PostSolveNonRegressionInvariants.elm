@@ -7,15 +7,38 @@ module TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants exposing
     , formatViolations
     )
 
-{-| Test logic for invariants POST\_005 and POST\_006.
+{-| Checks that PostSolve leaves alone the node types the solver had already
+worked out, so that a PostSolve that overwrites a solved type is caught, within
+the exemptions and the loose matching described below.
 
-POST\_005: For every non-negative node id whose solver-produced (pre-PostSolve)
-type is not a bare Can.TVar, PostSolve must not change that node's type
-(alpha-equivalent). Exception: VarKernel nodes.
+Expressions and patterns in a canonical module carry node ids, and the two
+share one id space. The solver records an optional type per id, held in a
+`PostSolve.NodeTypes` array indexed by id, and `Compiler.Type.PostSolve`
+rewrites some of those entries. Here the array before PostSolve gives each
+node's _pre-type_ and the array after it gives its _post-type_. A pre-type is
+_structured_ when it is anything other than a bare `Can.TVar`. A _node kind_
+(`NodeKind`) sorts each id into a kernel reference, a record accessor, or
+anything else, because the checks exempt some of them, as described below.
 
-POST\_006: For every non-negative node id (excluding VarKernel and Accessor nodes),
-the set of free Can.TVar names in the post-PostSolve type must be a subset of
-those in the pre-PostSolve type.
+There are two checks, and each returns a list of `Violation`s, empty when the
+check passes.
+
+`checkPost005` looks at every node with a structured pre-type, except kernel
+references, and requires a post-type that matches it. Matching is loose: any
+type variable matches any other type variable, with no consistent renaming
+required, so `a -> a` matches `a -> b`. Record extension variables only need to
+be present on both sides or absent on both, and arrow slots, record field
+indices and alias argument names are ignored. A PostSolve that renames or
+splits the variables inside a structured type therefore passes this check.
+
+`checkPost006` looks at every node with a structured pre-type and a post-type,
+except kernel references and record accessors, and requires that every type
+variable name in the post-type also occurs in the pre-type. A `Can.Type` has no
+binders, so every variable name counts, including record extension variables
+and the variables inside an alias's arguments and its body.
+
+`collectNodeKinds` builds the node kinds both checks take, and
+`formatViolations` renders a list of violations as a failure message.
 
 -}
 
@@ -29,7 +52,14 @@ import Data.Set as EverySet
 import Dict as StdDict
 
 
-{-| A violation of POST\_005 or POST\_006.
+{-| One node that failed one of the two checks.
+
+`invariant` is `"POST_005"` for a failure of `checkPost005` and `"POST_006"`
+for one of `checkPost006`. `kind` is the node's kind as text, `"Unknown"` when
+the check's `nodeKinds` has no entry for the id. When the node has no post-type
+at all, `postType` is `Can.TUnit` as a stand-in and `details` says the node
+disappeared.
+
 -}
 type alias Violation =
     { invariant : String
@@ -41,7 +71,12 @@ type alias Violation =
     }
 
 
-{-| Classification of node kinds.
+{-| The kind of a node, as far as the checks need to tell nodes apart.
+
+`KVarKernel` is a reference to a kernel value, which both checks skip.
+`KAccessor` is a record accessor such as `.name`, which only `checkPost006`
+skips. `KOther` is every other expression and every pattern.
+
 -}
 type NodeKind
     = KVarKernel
@@ -49,11 +84,13 @@ type NodeKind
     | KOther
 
 
-{-| Check POST\_005: PostSolve does not rewrite solver-structured node types.
+{-| Returns a violation for each node whose structured pre-type, in
+`nodeTypesPre`, was changed or dropped in `nodeTypesPost`.
 
-For every non-negative node id that is not VarKernel:
-if nodeTypesPre[id] is NOT a bare TVar, assert nodeTypesPost[id] is
-alpha-equivalent to nodeTypesPre[id].
+Kernel references in `nodeKinds` are skipped, and a node with no recorded kind
+is checked. Types are compared with the loose matching the module docstring
+describes, so a renaming of type variables is not reported. The violations come
+highest node id first.
 
 -}
 checkPost005 :
@@ -115,10 +152,13 @@ checkPost005 nodeKinds nodeTypesPre nodeTypesPost =
         |> Tuple.second
 
 
-{-| Check POST\_006: PostSolve does not introduce new free type variables.
+{-| Returns a violation for each node whose post-type, in `nodeTypesPost`, has a
+type variable name that its structured pre-type, in `nodeTypesPre`, does not.
 
-For every non-negative node id that is neither VarKernel nor Accessor:
-freeVars(postType) must be a subset of freeVars(preType).
+Kernel references and record accessors in `nodeKinds` are skipped, as is any
+node whose pre-type is missing or a bare type variable. A node with no
+post-type is not reported here. Each violation's `details` lists the new names
+in sorted order, and the violations come highest node id first.
 
 -}
 checkPost006 :
@@ -191,7 +231,7 @@ checkPost006 nodeKinds nodeTypesPre nodeTypesPost =
         |> Tuple.second
 
 
-{-| Check if set A is a subset of set B.
+{-| Returns whether every name in `setA` is also in `setB`.
 -}
 isSubset : EverySet.EverySet String String -> EverySet.EverySet String String -> Bool
 isSubset setA setB =
@@ -201,21 +241,23 @@ isSubset setA setB =
 
 
 -- ============================================================================
--- ALPHA EQUIVALENCE
+-- LOOSE TYPE MATCHING
 -- ============================================================================
 
 
-{-| Check if two types are alpha-equivalent.
+{-| Returns whether two types have the same shape, treating every type variable
+as matching every other.
 
-Two types are alpha-equivalent if they are structurally identical up to
-renaming of type variable names.
+This is weaker than alpha-equivalence: no consistent renaming is required, so
+`a -> a` matches `a -> b`. A type variable never matches a non-variable type.
+Arrow slots are ignored. Type constructors and aliases must have the same home
+module and name.
 
 -}
 alphaEq : Can.Type Name -> Can.Type Name -> Bool
 alphaEq a b =
     case ( a, b ) of
         ( Can.TVar _, Can.TVar _ ) ->
-            -- Any TVar matches any TVar (alpha-equivalent)
             True
 
         ( Can.TType h1 n1 as1, Can.TType h2 n2 as2 ) ->
@@ -240,6 +282,9 @@ alphaEq a b =
             False
 
 
+{-| Returns whether two lists of types have the same length and match
+element by element under `alphaEq`.
+-}
 alphaEqList : List (Can.Type Name) -> List (Can.Type Name) -> Bool
 alphaEqList xs ys =
     case ( xs, ys ) of
@@ -253,6 +298,9 @@ alphaEqList xs ys =
             False
 
 
+{-| Returns whether two record extensions are both absent or both present,
+whatever the extension variables are called.
+-}
 alphaEqExt : Maybe Name.Name -> Maybe Name.Name -> Bool
 alphaEqExt ext1 ext2 =
     case ( ext1, ext2 ) of
@@ -262,11 +310,13 @@ alphaEqExt ext1 ext2 =
         ( Just _, Just _ ) ->
             True
 
-        -- Extension vars are alpha-equivalent
         _ ->
             False
 
 
+{-| Returns whether two records have the same field names, with each field's
+type matching under `alphaEq`. Field indices are ignored.
+-}
 alphaEqFields :
     StdDict.Dict Name.Name (Can.FieldType Name)
     -> StdDict.Dict Name.Name (Can.FieldType Name)
@@ -290,6 +340,9 @@ alphaEqFields fields1 fields2 =
             (List.map2 Tuple.pair list1 list2)
 
 
+{-| Returns whether two alias argument lists have the same length and their
+types match position by position under `alphaEq`. Argument names are ignored.
+-}
 alphaEqArgs : List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Bool
 alphaEqArgs args1 args2 =
     case ( args1, args2 ) of
@@ -303,6 +356,9 @@ alphaEqArgs args1 args2 =
             False
 
 
+{-| Returns whether two alias bodies are both `Holey` or both `Filled`, with
+matching types under `alphaEq`.
+-}
 alphaEqAlias : Can.AliasType Name -> Can.AliasType Name -> Bool
 alphaEqAlias at1 at2 =
     case ( at1, at2 ) of
@@ -322,7 +378,11 @@ alphaEqAlias at1 at2 =
 -- ============================================================================
 
 
-{-| Extract all free type variable names from a type.
+{-| Returns every type variable name that occurs anywhere in `tipe`.
+
+That includes record extension variables, and both the arguments and the body
+of an alias, so a parameter name inside a `Holey` alias body is counted too.
+
 -}
 freeTypeVars : Can.Type Name -> EverySet.EverySet String String
 freeTypeVars tipe =
@@ -393,9 +453,11 @@ freeTypeVars tipe =
 -- ============================================================================
 
 
-{-| Collect node kinds from canonical module.
+{-| Returns the kind of every expression and pattern node in the module's
+declarations, keyed by node id.
 
-Walk the canonical AST and classify each node ID as VarKernel, Accessor, or Other.
+Kernel references are `KVarKernel`, record accessors are `KAccessor`, and every
+other expression and every pattern is `KOther`.
 
 -}
 collectNodeKinds : Can.Module -> Dict.Dict Int Int NodeKind
@@ -403,6 +465,8 @@ collectNodeKinds (Can.Module modData) =
     collectDeclsNodeKinds modData.decls Dict.empty
 
 
+{-| Adds to `acc` the kinds of the nodes in every definition of `decls`.
+-}
 collectDeclsNodeKinds : Can.Decls -> Dict.Dict Int Int NodeKind -> Dict.Dict Int Int NodeKind
 collectDeclsNodeKinds decls acc =
     case decls of
@@ -423,6 +487,9 @@ collectDeclsNodeKinds decls acc =
             acc
 
 
+{-| Adds to `acc` the kinds of the nodes in a definition's argument patterns
+and body.
+-}
 collectDefNodeKinds : Can.Def -> Dict.Dict Int Int NodeKind -> Dict.Dict Int Int NodeKind
 collectDefNodeKinds def acc =
     case def of
@@ -441,6 +508,9 @@ collectDefNodeKinds def acc =
             collectExprNodeKinds expr acc1
 
 
+{-| Adds to `acc` the kind of an expression node and of every expression and
+pattern node inside it.
+-}
 collectExprNodeKinds : Can.Expr -> Dict.Dict Int Int NodeKind -> Dict.Dict Int Int NodeKind
 collectExprNodeKinds (A.At _ exprInfo) acc =
     let
@@ -589,14 +659,18 @@ collectExprNodeKinds (A.At _ exprInfo) acc =
     Dict.insert identity nodeId kind childAcc
 
 
+{-| Adds to `acc` the kinds of the nodes in a case branch's pattern and body.
+-}
 collectBranchNodeKinds : Can.CaseBranch -> Dict.Dict Int Int NodeKind -> Dict.Dict Int Int NodeKind
 collectBranchNodeKinds (Can.CaseBranch pattern body) acc =
     collectExprNodeKinds body (collectPatternNodeKinds pattern acc)
 
 
+{-| Adds to `acc` a pattern node and every pattern node inside it, all as
+`KOther`.
+-}
 collectPatternNodeKinds : Can.Pattern -> Dict.Dict Int Int NodeKind -> Dict.Dict Int Int NodeKind
 collectPatternNodeKinds (A.At _ patInfo) acc =
-    -- Patterns are marked as KOther
     let
         nodeId =
             patInfo.id
@@ -656,7 +730,13 @@ collectPatternNodeKinds (A.At _ patInfo) acc =
 -- ============================================================================
 
 
-{-| Format violations for error reporting.
+{-| Returns the violations as text, one block per violation in list order,
+separated by blank lines. Each block names the check, node id and kind, then
+the pre-type, the post-type and the details.
+
+Types are shown in brief: a type constructor by its name and arguments with no
+home module, an alias by its name alone, and a record without its fields.
+
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
@@ -665,6 +745,8 @@ formatViolations violations =
         |> String.join "\n\n"
 
 
+{-| Returns one violation as a block of text, for `formatViolations`.
+-}
 formatViolation : Violation -> String
 formatViolation v =
     v.invariant
@@ -680,6 +762,10 @@ formatViolation v =
         ++ v.details
 
 
+{-| Returns a brief rendering of a type for a violation message. A type
+constructor shows its name and arguments, an alias only its name, and a record
+only its extension variable, if any.
+-}
 typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
@@ -716,6 +802,9 @@ typeToString tipe =
             "TAlias " ++ name
 
 
+{-| Returns the name of a node kind for a violation message, or `"Unknown"`
+for an id that has no recorded kind.
+-}
 nodeKindToString : Maybe NodeKind -> String
 nodeKindToString maybeKind =
     case maybeKind of

@@ -1,16 +1,52 @@
 module SourceIR.AccessorFuzzCases exposing (expectSuite)
 
-{-| Fuzz tests for accessor function handling.
+{-| Fuzz tests that put record accessors and field access through whatever
+check the caller supplies, on programs that vary from run to run in their field
+names, list lengths, record sizes or field values, rather than only on programs
+fixed in advance. One of the seven tests is the exception, as listed below.
 
-These tests stress the compiler's handling of .field accessor syntax by generating:
+An accessor is a field name written with a leading dot, such as `.name`. It is
+a function that takes a record and returns that field. Field access is the form
+`record.name`, which reads the field in place. The first group of tests passes
+accessors around as function values; the other two groups use field access, and
+build no accessor at all.
 
-1.  Accessors as first-class functions passed to higher-order functions
-2.  Chained field access (record.a.b.c)
-3.  Records with varying numbers of fields
-4.  Accessor expressions in various contexts
+Each test is a `Test.fuzz` whose fuzzer generates one expression. The test
+wraps it with `makeModule "testValue"`, which, as `Compiler.AST.SourceBuilder`
+describes, makes a module named `Test` that imports only `Basics` and `List`
+and whose one top-level value is `testValue`, defined as the expression with no
+annotation. The module is handed to the caller's `expectFn`. Nothing here
+asserts anything: which stage the program goes through, and what counts as
+passing, are up to `expectFn`.
 
-The goal is to find edge cases in how the compiler handles accessor
-functions, particularly when they're used in complex ways.
+The fixture is generated. Field names come from a fixed list of twelve
+lower-case names, except in the two multi-field programs, which use fixed
+letters and fixed words. Every field that does not hold another record holds
+an integer literal, apart from two fields of one record, which hold a string and
+`Basics.True`. A fuzzed integer can be negative, and `SourceBuilder.intExpr`
+stores it as a negative literal, a form the parser never produces.
+
+The tests, by the program each one builds:
+
+  - "Accessor with List.map": `List.map .f [ { f = n1 }, ... ]`, a list literal
+    of one to three records that each have the one field `f`.
+  - "Accessor in pipeline": the same list of records followed by
+    `|> List.map .f`.
+  - "Accessor passed to function": the accessor as the first argument of a
+    local function, `let applyAccessor f r = f r in applyAccessor .x { x = n }`.
+  - "Two-level chained access": `{ a = { b = 42 } }.a.b`, with the access
+    applied to the record literal itself. The two field names are drawn
+    independently and can be the same.
+  - "Three-level chained access": the same with three nested records.
+  - "Access on record with many fields": one field, chosen at random, read from
+    a record literal of five to eight fields.
+  - "Multiple accessors on same record": three field accesses on one `let`-bound
+    record, each field of a different type. Every run builds the same program.
+
+Among what is not tested: an accessor applied directly to a record (`.f r`), an
+accessor on a record of more than one field, a field value that is not a
+literal in the accessor and chained-access programs, record update, record
+patterns and type annotations.
 
 -}
 
@@ -35,6 +71,10 @@ import Test exposing (Test)
 -- =============================================================================
 
 
+{-| Builds the suite "Accessor fuzz tests" from the three groups of tests in
+this module, each test handing its generated module to `expectFn`. `condStr` is
+appended to the name of the suite, of each group and of each test.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.describe ("Accessor fuzz tests " ++ condStr)
@@ -50,6 +90,10 @@ expectSuite expectFn condStr =
 -- =============================================================================
 
 
+{-| Builds the tests that pass an accessor as a function value: to `List.map`,
+to `List.map` on the right of `|>`, and to a local function. Each fuzzer is
+given a depth budget of 2.
+-}
 accessorAsFirstClassTests : (Src.Module -> Expectation) -> String -> Test
 accessorAsFirstClassTests expectFn condStr =
     Test.describe ("Accessor as first-class function " ++ condStr)
@@ -65,7 +109,15 @@ accessorAsFirstClassTests expectFn condStr =
         ]
 
 
-{-| Generate: List.map .fieldName [ { fieldName = value }, ... ]
+{-| Produces a fuzzer for `List.map .f records`, where `f` is a name from
+`fieldNameFuzzer` and `records` is a list literal of one to three records whose
+one field is `f`.
+
+Each field value is an expression `SourceIR.Fuzz.TypedExpr` generates for
+`TInt`, at the depth budget of `scope` less two. With the empty scope of budget
+2 that the tests pass, that budget is 0 and there are no variables, so the value
+is always an integer literal.
+
 -}
 accessorWithMapFuzzer : Scope -> Fuzzer Src.Expr
 accessorWithMapFuzzer scope =
@@ -78,7 +130,6 @@ accessorWithMapFuzzer scope =
                             Fuzz.listOfLength listLen (recordWithFieldFuzzer (decrementDepth scope) fieldName TInt)
                                 |> Fuzz.map
                                     (\records ->
-                                        -- List.map .fieldName [ records... ]
                                         B.callExpr
                                             (B.qualVarExpr "List" "map")
                                             [ B.accessorExpr fieldName
@@ -89,8 +140,9 @@ accessorWithMapFuzzer scope =
             )
 
 
-{-| Generate: records |> List.map .field |> List.head
-Accessor used in pipeline context.
+{-| Produces a fuzzer for `records |> List.map .f`, with `f` and `records` as
+`accessorWithMapFuzzer` makes them. The right of the `|>` is `List.map` applied
+to the accessor alone.
 -}
 accessorInPipelineFuzzer : Scope -> Fuzzer Src.Expr
 accessorInPipelineFuzzer scope =
@@ -103,7 +155,6 @@ accessorInPipelineFuzzer scope =
                             Fuzz.listOfLength listLen (recordWithFieldFuzzer (decrementDepth scope) fieldName TInt)
                                 |> Fuzz.map
                                     (\records ->
-                                        -- [ records ] |> List.map .field
                                         let
                                             recordList =
                                                 B.listExpr records
@@ -121,8 +172,13 @@ accessorInPipelineFuzzer scope =
             )
 
 
-{-| Generate: applyToField .fieldName record
-Accessor passed directly to a helper function.
+{-| Produces a fuzzer for `let applyAccessor f r = f r in applyAccessor .x record`,
+where `x` is a name from `fieldNameFuzzer` and `record` is a record literal
+whose one field is `x`. `applyAccessor` is a local function with no annotation.
+
+The field value is made as in `accessorWithMapFuzzer`, so with the empty scope
+of budget 2 the tests pass it is always an integer literal.
+
 -}
 accessorPassedToFunctionFuzzer : Scope -> Fuzzer Src.Expr
 accessorPassedToFunctionFuzzer scope =
@@ -132,11 +188,6 @@ accessorPassedToFunctionFuzzer scope =
                 recordWithFieldFuzzer (decrementDepth scope) fieldName TInt
                     |> Fuzz.map
                         (\record ->
-                            -- Create a let expression that defines a function taking an accessor
-                            -- let
-                            --     applyAccessor f r = f r
-                            -- in
-                            -- applyAccessor .fieldName record
                             let
                                 accessorParam =
                                     B.pVar "f"
@@ -166,6 +217,9 @@ accessorPassedToFunctionFuzzer scope =
 -- =============================================================================
 
 
+{-| Builds the tests that read a field of a nested record literal, two and
+three levels down.
+-}
 chainedAccessTests : (Src.Module -> Expectation) -> String -> Test
 chainedAccessTests expectFn condStr =
     Test.describe ("Chained field access " ++ condStr)
@@ -178,21 +232,21 @@ chainedAccessTests expectFn condStr =
         ]
 
 
-{-| Generate: record.outer.inner
+{-| Produces a fuzzer for `{ a = { b = 42 } }.a.b`, where `a` and `b` are
+drawn independently from `fieldNameFuzzer` and so can be the same name. `scope`
+is not used.
 -}
 twoLevelAccessFuzzer : Scope -> Fuzzer Src.Expr
 twoLevelAccessFuzzer _ =
     Fuzz.map2
         (\outerField innerField ->
             let
-                -- Create { outer = { inner = 42 } }
                 innerRecord =
                     B.recordExpr [ ( innerField, B.intExpr 42 ) ]
 
                 outerRecord =
                     B.recordExpr [ ( outerField, innerRecord ) ]
             in
-            -- outerRecord.outer.inner
             B.accessExpr
                 (B.accessExpr outerRecord outerField)
                 innerField
@@ -201,14 +255,15 @@ twoLevelAccessFuzzer _ =
         fieldNameFuzzer
 
 
-{-| Generate: record.a.b.c
+{-| Produces a fuzzer for `{ a = { b = { c = 42 } } }.a.b.c`, where `a`, `b`
+and `c` are drawn independently from `fieldNameFuzzer` and so can repeat.
+`scope` is not used.
 -}
 threeLevelAccessFuzzer : Scope -> Fuzzer Src.Expr
 threeLevelAccessFuzzer _ =
     Fuzz.map3
         (\fieldA fieldB fieldC ->
             let
-                -- Create { a = { b = { c = 42 } } }
                 cRecord =
                     B.recordExpr [ ( fieldC, B.intExpr 42 ) ]
 
@@ -218,7 +273,6 @@ threeLevelAccessFuzzer _ =
                 aRecord =
                     B.recordExpr [ ( fieldA, bRecord ) ]
             in
-            -- aRecord.a.b.c
             B.accessExpr
                 (B.accessExpr
                     (B.accessExpr aRecord fieldA)
@@ -237,6 +291,8 @@ threeLevelAccessFuzzer _ =
 -- =============================================================================
 
 
+{-| Builds the tests that read fields of a record with more than one field.
+-}
 multiFieldRecordTests : (Src.Module -> Expectation) -> String -> Test
 multiFieldRecordTests expectFn condStr =
     Test.describe ("Multi-field record access " ++ condStr)
@@ -249,8 +305,10 @@ multiFieldRecordTests expectFn condStr =
         ]
 
 
-{-| Generate: record.fieldN where record has 5-8 fields
-Tests accessor lookup in records with many fields.
+{-| Produces a fuzzer for `{ a = 0, b = 1, ... }.x`: a record literal of five to
+eight fields, named with the letters from `a` onwards and each holding its own
+position from 0, read at one field `x` chosen at random. Only the number of
+fields and the field read vary. `scope` is not used.
 -}
 manyFieldAccessFuzzer : Scope -> Fuzzer Src.Expr
 manyFieldAccessFuzzer _ =
@@ -260,7 +318,6 @@ manyFieldAccessFuzzer _ =
                 generateFieldNames fieldCount
                     |> Fuzz.andThen
                         (\fieldNames ->
-                            -- Pick a random field to access
                             Fuzz.intRange 0 (fieldCount - 1)
                                 |> Fuzz.andThen
                                     (\targetIdx ->
@@ -283,12 +340,14 @@ manyFieldAccessFuzzer _ =
             )
 
 
-{-| Generate: (record.a, record.b, record.c)
-Multiple accessor expressions on the same record.
+{-| Produces a fuzzer that always gives
+`let r = { alpha = 1, beta = "hello", gamma = Basics.True } in ( r.alpha, r.beta, r.gamma )`:
+three field accesses on one `let`-bound record, reading an integer literal, a
+string and a `Bool`. The field names are fixed and distinct.
+It uses field access, not accessor functions. `scope` is not used.
 -}
 multipleAccessorsFuzzer : Scope -> Fuzzer Src.Expr
 multipleAccessorsFuzzer _ =
-    -- Use fixed distinct field names to avoid duplicates
     let
         fieldA =
             "alpha"
@@ -326,7 +385,7 @@ multipleAccessorsFuzzer _ =
 -- =============================================================================
 
 
-{-| Generate a valid Elm field name.
+{-| A fuzzer for a field name, one of twelve fixed lower-case names.
 -}
 fieldNameFuzzer : Fuzzer Name
 fieldNameFuzzer =
@@ -346,7 +405,8 @@ fieldNameFuzzer =
         ]
 
 
-{-| Generate a list of unique field names.
+{-| Produces a fuzzer that always gives the first `count` of the ten distinct
+names `a` to `j`, or all ten when `count` is larger.
 -}
 generateFieldNames : Int -> Fuzzer (List Name)
 generateFieldNames count =
@@ -357,8 +417,13 @@ generateFieldNames count =
     Fuzz.constant (List.take count baseNames)
 
 
-{-| Generate a record expression with the specified field.
-All records in a list must have the same shape, so we don't add extra fields.
+{-| Produces a fuzzer for a record literal whose one field is `fieldName`,
+holding an expression that `SourceIR.Fuzz.TypedExpr` generates for
+`fieldType`, at the depth budget of `scope` less one.
+
+The record has no other field, so records made with the same name and type all
+have the same type and can share a list.
+
 -}
 recordWithFieldFuzzer : Scope -> Name -> SimpleType -> Fuzzer Src.Expr
 recordWithFieldFuzzer scope fieldName fieldType =

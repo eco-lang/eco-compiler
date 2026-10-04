@@ -1,9 +1,23 @@
 module TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping)
 
-{-| Test logic for CGEN\_015: Char Type Mapping invariant.
+{-| Checks that the ops converting between `Char` and `Int` in the MLIR
+generated for a program give the `Char` side the type `i16`, so that a
+conversion emitted with some other width is caught.
 
-`monoTypeToMlir` must map `MChar` to `i16` (not `i32`),
-and all char constants/ops must use `i16`.
+The code generator's type for a `Char` is `i16`
+(`Compiler.Generate.MLIR.Types.ecoChar`). The ops that convert between a `Char`
+and an `Int` are where that width meets the `i64` of an `Int`, and they are what
+this module inspects. An op's operand types are read from its `_operand_types`
+attribute, the list of operand types the code generator records on an op.
+
+Among the ops whose names start with `eco.char.`, a violation is reported for:
+
+  - an `eco.char.toInt` whose first recorded operand type is not `i16`;
+  - an `eco.char.fromInt` whose first result type is not `i16`.
+
+Among what is not checked: every other `eco.char.` op, including the
+comparisons; a `Char` constant; a case on a `Char`; the `Int` side of either
+conversion; and an `eco.char.toInt` with no `_operand_types` attribute.
 
 @docs expectCharTypeMapping
 
@@ -23,10 +37,12 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that char type mapping invariants hold for a source module.
+{-| Creates an expectation that `srcModule` compiles to MLIR and that its
+`eco.char.toInt` operands and `eco.char.fromInt` results are `i16`.
 
-This compiles the module to MLIR and checks that all char operations
-use i16 (not i32) for character values.
+The expectation fails with the test pipeline's error message, prefixed
+`Compilation failed:`, if compilation fails. When several ops break the rule,
+the failure reports only the first of them.
 
 -}
 expectCharTypeMapping : Src.Module -> Expectation
@@ -39,7 +55,8 @@ expectCharTypeMapping srcModule =
             violationsToExpectation (checkCharTypeMapping mlirModule)
 
 
-{-| Check char type mapping invariants on an MlirModule.
+{-| Returns a violation for each op of `mlirModule`, at any depth, whose name
+starts with `eco.char.` and that `checkCharOp` rejects.
 -}
 checkCharTypeMapping : MlirModule -> List Violation
 checkCharTypeMapping mlirModule =
@@ -50,11 +67,18 @@ checkCharTypeMapping mlirModule =
     List.filterMap checkCharOp charOps
 
 
+{-| Returns a violation if `op` is an `eco.char.toInt` whose first recorded
+operand type is not `i16`, or an `eco.char.fromInt` whose first result type is
+not `i16`.
+
+An `eco.char.toInt` without the `_operand_types` attribute, or with an empty
+one, and an `eco.char.fromInt` with no result pass. Any other op passes.
+
+-}
 checkCharOp : MlirOp -> Maybe Violation
 checkCharOp op =
     case op.name of
         "eco.char.toInt" ->
-            -- eco.char.toInt: i16 -> i64
             case extractOperandTypes op of
                 Just (operandType :: _) ->
                     if operandType /= I16 then
@@ -71,7 +95,6 @@ checkCharOp op =
                     Nothing
 
         "eco.char.fromInt" ->
-            -- eco.char.fromInt: i64 -> i16
             let
                 resultTypes =
                     extractResultTypes op
@@ -92,10 +115,13 @@ checkCharOp op =
                     Nothing
 
         _ ->
-            -- Other char ops should also use i16
             Nothing
 
 
+{-| Returns the MLIR spelling of an integer or float type, as in `i16`, for use
+in a violation message. A named struct gives its bare name, without the leading
+`!`, and a function type gives the word `function`.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

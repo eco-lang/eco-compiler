@@ -4,11 +4,23 @@ module Compiler.AST.DecisionTree.Test exposing
     , testEncoderS, testDecoderS, collectStringsFromTest
     )
 
-{-| Runtime tests for pattern matching decision trees.
+{-| A `case` expression is compiled into a _decision tree_, which examines the
+value being matched one part at a time and chooses a branch from what it
+finds. Each examination is a _test_: a question about the value at one
+position, such as whether it was built with a particular constructor or
+equals a particular literal. This module defines the tests, once, for both the
+erased and the typed decision trees.
 
-This module defines the `Test` type used by both erased and typed decision trees.
-It is placed in the AST layer to avoid circular dependencies between AST and
-LocalOpt layers.
+A `Test` says what is asked, not where. The position it applies to is a path,
+which a decision tree keeps beside the test.
+
+Besides the type, the module gives each test a string key, so that tests can
+be compared and kept in sets, and a binary codec for storing tests in compiled
+artifacts. The codec comes in two forms. `testEncoderS` writes a test's
+strings through a string table, as `Compiler.AST.StringTable` describes, and
+`testDecoderS` reads them back. `collectStringsFromTest` gives a collector
+those strings before the table is built. `testEncoder` and `testDecoder` are
+the same codec with `StringTable.disabled`, which writes the strings inline.
 
 @docs Test, testToComparable
 @docs testEncoder, testDecoder
@@ -28,16 +40,29 @@ import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
 
-{-| A runtime test to determine which branch to take in a decision tree.
+{-| A question a decision tree asks about the value at one position, whose
+answer decides which way the tree goes.
 
-  - `IsCtor`: Tests if a value is a specific custom type constructor
-  - `IsCons`: Tests if a list is non-empty (has cons cell)
-  - `IsNil`: Tests if a list is empty
-  - `IsTuple`: Tests if a value is a tuple
-  - `IsInt`: Tests if a value equals a specific integer
-  - `IsChr`: Tests if a value equals a specific character
-  - `IsStr`: Tests if a value equals a specific string
-  - `IsBool`: Tests if a value equals a specific boolean
+`IsCtor home name index numAlts opts` asks whether the value was built with
+the constructor `name` of a custom type defined in the module `home`. `index`
+is the constructor's zero-based position among the type's constructors.
+`numAlts` is how many constructors the type has, carried here so that a set
+of tests can be judged to cover every constructor without looking the type up.
+`opts` is the type's `Can.CtorOpts`, carried so that the JavaScript code
+generator can tell how to read the value's tag without looking the type up.
+
+`IsCons` and `IsNil` ask whether a list is non-empty or empty.
+
+`IsTuple` is the test for a tuple pattern or the unit pattern. Every value of
+a tuple or unit type has the same shape, so nothing about the value can make
+it fail.
+
+`IsInt`, `IsChr` and `IsStr` ask whether the value equals a literal.
+`IsChr` and `IsStr` hold the literal as text in the escaped form that
+`Compiler.AST.Canonical` describes for `PChr` and `PStr`, which is why a
+character is a `String` here.
+
+`IsBool` asks whether a `Bool` is `True` or `False`.
 
 -}
 type Test
@@ -51,7 +76,14 @@ type Test
     | IsBool Bool
 
 
-{-| Convert a Test to a comparable String for use as a dictionary key.
+{-| Returns a string that identifies `test`, for comparing tests and keeping
+them in sets or as `Dict` keys.
+
+Each kind of test has its own prefix, so tests of different kinds never share
+a key, and an `IsCtor` key includes all five of its fields. A literal is keyed
+by its escaped text, so two literals that denote the same value can get
+different keys, for instance `'a'` and `'\u{0061}'`.
+
 -}
 testToComparable : Test -> String
 testToComparable test =
@@ -100,6 +132,8 @@ testToComparable test =
                 "Bf"
 
 
+{-| Returns the one-letter code for `opts` in an `IsCtor` key.
+-}
 ctorOptsToString : Can.CtorOpts -> String
 ctorOptsToString opts =
     case opts of
@@ -113,21 +147,35 @@ ctorOptsToString opts =
             "U"
 
 
-{-| Encode a Test to bytes for serialization.
+{-| Encodes a test with its strings written inline. This is `testEncoderS`
+with `StringTable.disabled`, so it needs no table, and `testDecoder` reads
+what it writes.
 -}
 testEncoder : Test -> Bytes.Encode.Encoder
 testEncoder =
     testEncoderS StringTable.disabled
 
 
-{-| Decode a Test from bytes.
+{-| A decoder for a test written by `testEncoder`.
 -}
 testDecoder : Bytes.Decode.Decoder Test
 testDecoder =
     testDecoderS StringTable.disabled
 
 
-{-| String-interned variant of `testEncoder`.
+{-| Encodes `test` as a tag byte, 0 to 7 in the order the constructors are
+declared, followed by its fields, with each string written through `st` as
+`StringTable.string` writes it.
+
+The strings are the home module and name of an `IsCtor` and the literal of an
+`IsChr` or `IsStr`, and `collectStringsFromTest` gives a collector the same
+ones. Each must be in `st`, unless `st`'s index width is 0; what happens to a
+missing one is described in `Compiler.AST.StringTable`.
+
+An `IsInt` literal is written as `Utils.Bytes.Encode.int64` writes it, exactly
+for any 64-bit integer, while an `IsCtor`'s index and `numAlts` are written as
+`Utils.Bytes.Encode.int` writes an integer.
+
 -}
 testEncoderS : StringTable -> Test -> Bytes.Encode.Encoder
 testEncoderS st test =
@@ -154,7 +202,7 @@ testEncoderS st test =
         IsInt value ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 4
-                , BE.int64 value -- a pattern literal: exact i64
+                , BE.int64 value
                 ]
 
         IsChr value ->
@@ -176,7 +224,8 @@ testEncoderS st test =
                 ]
 
 
-{-| String-interned variant of `testDecoder`.
+{-| Produces a decoder for a test written by `testEncoderS` with the same
+table. A tag byte above 7 makes it fail.
 -}
 testDecoderS : StringTable -> Bytes.Decode.Decoder Test
 testDecoderS st =
@@ -218,7 +267,9 @@ testDecoderS st =
             )
 
 
-{-| Add string components of a Test to a collection set.
+{-| Returns the collector `acc` after giving it every string `testEncoderS`
+writes for `test`: the home module and name of an `IsCtor`, or the literal of
+an `IsChr` or `IsStr`. The collector keeps each as its own rule decides.
 -}
 collectStringsFromTest : Test -> StringTable.Collector -> StringTable.Collector
 collectStringsFromTest test acc =

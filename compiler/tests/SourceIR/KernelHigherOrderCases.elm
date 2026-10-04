@@ -1,7 +1,58 @@
 module SourceIR.KernelHigherOrderCases exposing (expectSuite)
 
-{-| Kernel higher-order tests — kernel functions as arguments, composed with
-other kernels.
+{-| Source programs, most of which hand a function to a list function, each
+given to a check that the caller supplies.
+
+A function passed as an argument is a value, not the target of a call where it
+is written, and that value can be a reference to a kernel function, a named
+function, a lambda or a partial application. A stage that mishandles one of
+these kinds of function value could go unnoticed without a program that uses
+it, so these cases build one or more programs for each kind.
+
+Every case builds a module named `Test` whose one top-level value is
+`testValue`, and asserts nothing itself: `expectSuite` runs the caller's
+expectation on the modules in order, and `Compiler.BulkCheck.bulkCheck` stops at
+the first that fails and reports only that one.
+
+The first five cases call `Elm.Kernel.*` names directly, in a module built with
+`makeKernelModule`. Such a name is a kernel reference only when the module
+belongs to a kernel package (see `findVarQual` in
+`Compiler.Canonicalize.Expression`); elsewhere it is not found. The other
+fourteen call the `List` and `Basics` functions in a module built with
+`makeModule`, which imports only `Basics` and `List`. `List.reverse`,
+`List.length` and `++` take no function argument.
+
+The programs, one per case, in the order they run:
+
+  - `Elm.Kernel.List.map Elm.Kernel.Basics.negate [1, 2, 3]`.
+  - `Elm.Kernel.List.foldl (\x acc -> x + acc) 0 (Elm.Kernel.List.range 1 10)`.
+  - `Elm.Kernel.List.map Elm.Kernel.Tuple.first [(1, "a"), (2, "b")]`.
+  - `Elm.Kernel.List.map` of a lambda that itself calls
+    `Elm.Kernel.List.map (\x -> x + 1)`, over `[[1, 2], [3, 4]]`.
+  - `Elm.Kernel.List.foldl Elm.Kernel.Basics.add 0 [1, 2, 3]`.
+  - `List.map double [1, 2, 3]`, with `double x = x * 2` defined in a `let`.
+  - `List.map (\x -> x * 2) [1, 2, 3]`.
+  - `List.map addOne [1, 2, 3]`, with `add a b = a + b` and `addOne = add 1`
+    defined in a `let`.
+  - `List.filter isPositive [1, 2, 3, 4, 5]`, with `isPositive x = x > 0`
+    defined in a `let`.
+  - `List.foldl (\a b -> a + b) 0 [1, 2, 3, 4]`.
+  - `List.foldr (\a b -> a ++ b) "" ["a", "b", "c"]`.
+  - `List.map Basics.not [True, False, True]`.
+  - `List.reverse [1, 2, 3]`.
+  - `List.length [1, 2, 3]`.
+  - `(List.map double) [1, 2, 3]`, a call whose function is itself a call.
+  - `[1, 2] ++ [3, 4]`.
+  - `List.map (curried 5) [1, 2, 3]`, with `curried x = \y -> x + y`.
+  - `List.foldl (combine 2) 0 [1, 2, 3]`, with
+    `combine factor x acc = (factor * x) + acc`.
+  - `List.filter (eq 5) [1, 2, 5, 3, 5]`, with `eq a b = a == b`.
+
+Among what is not tested: an operator passed as a value, such as `(+)` (the
+two fold cases labelled as operators pass a lambda), the `|>` operator (the
+case labelled "Pipeline" has none), `(==)` partially applied directly, and the
+`List` functions over more than one list, such as `List.map2`.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -11,12 +62,18 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Kernel higher-order " followed by `condStr`, that
+passes when `expectFn` passes on every case's module.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Kernel higher-order " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this module, each labelled and with `expectFn`
+deferred until the case is run.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "List.map with Basics.negate", run = mapWithNegate expectFn }
@@ -41,6 +98,9 @@ testCases expectFn =
     ]
 
 
+{-| Returns a check of `expectFn` against
+`Elm.Kernel.List.map Elm.Kernel.Basics.negate [1, 2, 3]`.
+-}
 mapWithNegate : (Src.Module -> Expectation) -> (() -> Expectation)
 mapWithNegate expectFn _ =
     expectFn
@@ -53,6 +113,9 @@ mapWithNegate expectFn _ =
         )
 
 
+{-| Returns a check of `expectFn` against
+`Elm.Kernel.List.foldl (\x acc -> x + acc) 0 (Elm.Kernel.List.range 1 10)`.
+-}
 foldlSum : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlSum expectFn _ =
     expectFn
@@ -66,6 +129,9 @@ foldlSum expectFn _ =
         )
 
 
+{-| Returns a check of `expectFn` against
+`Elm.Kernel.List.map Elm.Kernel.Tuple.first [(1, "a"), (2, "b")]`.
+-}
 mapOnTuples : (Src.Module -> Expectation) -> (() -> Expectation)
 mapOnTuples expectFn _ =
     expectFn
@@ -78,6 +144,10 @@ mapOnTuples expectFn _ =
         )
 
 
+{-| Returns a check of `expectFn` against an `Elm.Kernel.List.map` call whose
+function is a lambda over `xs` making a second `Elm.Kernel.List.map` call with
+`\x -> x + 1` and `xs`, over `[[1, 2], [3, 4]]`.
+-}
 nestedMap : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedMap expectFn _ =
     expectFn
@@ -95,6 +165,9 @@ nestedMap expectFn _ =
         )
 
 
+{-| Returns a check of `expectFn` against
+`Elm.Kernel.List.foldl Elm.Kernel.Basics.add 0 [1, 2, 3]`.
+-}
 foldlWithKernelAdd : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlWithKernelAdd expectFn _ =
     expectFn
@@ -108,9 +181,8 @@ foldlWithKernelAdd expectFn _ =
         )
 
 
-{-| List.map with a user-defined named function (not a kernel function).
-Mirrors ListMapTest.elm: `List.map double [1, 2, 3]` where `double x = x * 2`.
-The function reference creates a PAP when passed to the kernel map.
+{-| Returns a check of `expectFn` against `List.map double [1, 2, 3]`, where
+`double x = x * 2` is defined in a `let` around the call and passed by name.
 -}
 mapWithUserFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 mapWithUserFunction expectFn _ =
@@ -131,8 +203,7 @@ mapWithUserFunction expectFn _ =
     expectFn modul
 
 
-{-| List.map with an inline anonymous lambda.
-Mirrors AnonymousFunctionTest.elm: `List.map (\x -> x * 2) [1, 2, 3]`.
+{-| Returns a check of `expectFn` against `List.map (\x -> x * 2) [1, 2, 3]`.
 -}
 mapWithAnonymousLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 mapWithAnonymousLambda expectFn _ =
@@ -148,9 +219,12 @@ mapWithAnonymousLambda expectFn _ =
     expectFn modul
 
 
-{-| List.map with a partially applied user function.
-Mirrors PartialApplicationTest.elm: `List.map (add 1) [1, 2, 3]`.
-The partial application creates a PAP that is then passed as a closure to map.
+{-| Returns a check of `expectFn` against `List.map addOne [1, 2, 3]`, where a
+`let` defines `add a b = a + b` and `addOne = add 1`.
+
+The partial application is the body of the definition `addOne`, not an
+argument written in the call.
+
 -}
 mapWithPartialApplication : (Src.Module -> Expectation) -> (() -> Expectation)
 mapWithPartialApplication expectFn _ =
@@ -174,8 +248,9 @@ mapWithPartialApplication expectFn _ =
     expectFn modul
 
 
-{-| List.filter with a user-defined predicate.
-Mirrors ListFilterTest.elm: `List.filter isPositive [-1, 0, 1, 2, 3]`.
+{-| Returns a check of `expectFn` against
+`List.filter isPositive [1, 2, 3, 4, 5]`, where `isPositive x = x > 0` is
+defined in a `let`. Every element passes the predicate.
 -}
 filterWithUserPredicate : (Src.Module -> Expectation) -> (() -> Expectation)
 filterWithUserPredicate expectFn _ =
@@ -198,9 +273,12 @@ filterWithUserPredicate expectFn _ =
     expectFn modul
 
 
-{-| List.foldl with a 2-arg lambda wrapping (+).
-Mirrors ListFoldlTest.elm: `List.foldl (+) 0 [1, 2, 3, 4]`.
-In source IR, operator sections are represented as lambdas wrapping binops.
+{-| Returns a check of `expectFn` against
+`List.foldl (\a b -> a + b) 0 [1, 2, 3, 4]`.
+
+The function is a lambda around `+`, not the operator `(+)` used as a value,
+although the label says otherwise.
+
 -}
 foldlWithOperatorValue : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlWithOperatorValue expectFn _ =
@@ -217,8 +295,9 @@ foldlWithOperatorValue expectFn _ =
     expectFn modul
 
 
-{-| List.foldr with a 2-arg lambda wrapping (++).
-Mirrors ListFoldrTest.elm: `List.foldr (++) "" ["a", "b", "c"]`.
+{-| Returns a check of `expectFn` against
+`List.foldr (\a b -> a ++ b) "" ["a", "b", "c"]`, where the function is a
+lambda around `++`.
 -}
 foldrWithStringAppend : (Src.Module -> Expectation) -> (() -> Expectation)
 foldrWithStringAppend expectFn _ =
@@ -235,9 +314,9 @@ foldrWithStringAppend expectFn _ =
     expectFn modul
 
 
-{-| List.map producing Bool results via a negation lambda.
-Mirrors ListMapBoolTest.elm: `List.map not [True, False, True]`.
-Bool is always eco.value in heap storage, exercises boxing path.
+{-| Returns a check of `expectFn` against
+`List.map Basics.not [True, False, True]`, which passes `not` by name and
+produces a list of `Bool`.
 -}
 mapWithBoolResult : (Src.Module -> Expectation) -> (() -> Expectation)
 mapWithBoolResult expectFn _ =
@@ -253,8 +332,7 @@ mapWithBoolResult expectFn _ =
     expectFn modul
 
 
-{-| List.reverse exercises kernel HOF internals.
-Mirrors ListReverseTest.elm: `List.reverse [1, 2, 3]`.
+{-| Returns a check of `expectFn` against `List.reverse [1, 2, 3]`.
 -}
 listReverseViaKernel : (Src.Module -> Expectation) -> (() -> Expectation)
 listReverseViaKernel expectFn _ =
@@ -268,8 +346,7 @@ listReverseViaKernel expectFn _ =
     expectFn modul
 
 
-{-| List.length exercises kernel internals.
-Mirrors ListLengthTest.elm: `List.length [1, 2, 3]`.
+{-| Returns a check of `expectFn` against `List.length [1, 2, 3]`.
 -}
 listLengthViaKernel : (Src.Module -> Expectation) -> (() -> Expectation)
 listLengthViaKernel expectFn _ =
@@ -283,9 +360,12 @@ listLengthViaKernel expectFn _ =
     expectFn modul
 
 
-{-| Pipeline with List.map.
-Mirrors PipelineTest.elm: `[1, 2, 3] |> List.map double`.
-The pipe operator desugars to apR which creates PAP chains.
+{-| Returns a check of `expectFn` against `(List.map double) [1, 2, 3]`, where
+`double x = x * 2` is defined in a `let`.
+
+The program contains no `|>`. It is a call whose function is the call
+`List.map double`.
+
 -}
 pipelineListMap : (Src.Module -> Expectation) -> (() -> Expectation)
 pipelineListMap expectFn _ =
@@ -293,10 +373,6 @@ pipelineListMap expectFn _ =
         double =
             define "double" [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
 
-        -- |> desugars to: apR value func = func value
-        -- So `[1,2,3] |> List.map double` becomes:
-        -- apR [1,2,3] (List.map double)
-        -- Which is: (List.map double) [1,2,3]
         modul =
             makeModule "testValue"
                 (letExpr [ double ]
@@ -309,8 +385,7 @@ pipelineListMap expectFn _ =
     expectFn modul
 
 
-{-| List concatenation via (++) operator.
-Mirrors ListConcatTest.elm: `[1, 2] ++ [3, 4]`.
+{-| Returns a check of `expectFn` against `[1, 2] ++ [3, 4]`.
 -}
 listConcatViaAppend : (Src.Module -> Expectation) -> (() -> Expectation)
 listConcatViaAppend expectFn _ =
@@ -325,22 +400,22 @@ listConcatViaAppend expectFn _ =
     expectFn modul
 
 
-{-| List.map with a partially applied multi-stage function.
-Mirrors PapExtendArityTest.elm: A function `curried x = \y -> x + y` is
-partially applied and passed to a higher-order function. The multi-stage
-type (MFunction [Int] (MFunction [Int] Int)) can cause sourceArityForCallee
-to miscalculate when falling back to countTotalArityFromType.
+{-| Returns a check of `expectFn` against `List.map (curried 5) [1, 2, 3]`,
+where `curried x = \y -> x + y` is defined in a `let`.
+
+`curried` takes its two arguments in two stages: one parameter, then a lambda
+taking the second. Applying it to 5 therefore saturates its first stage and
+returns that lambda as a closure, which is what `List.map` receives.
+
 -}
 mapWithPartialAppMultiStage : (Src.Module -> Expectation) -> (() -> Expectation)
 mapWithPartialAppMultiStage expectFn _ =
     let
-        -- curried x = \y -> x + y  (multi-stage: Int -> (Int -> Int))
         curried =
             define "curried"
                 [ pVar "x" ]
                 (lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y")))
 
-        -- List.map (curried 5) [1, 2, 3]  — curried 5 returns a closure
         modul =
             makeModule "testValue"
                 (letExpr [ curried ]
@@ -354,14 +429,18 @@ mapWithPartialAppMultiStage expectFn _ =
     expectFn modul
 
 
-{-| List.foldl with a partial application of a 3-arg function as accumulator fn.
-Exercises PAP chain: 3-arg function partially applied with 1 arg, then passed
-as a 2-arg callback to foldl.
+{-| Returns a check of `expectFn` against `List.foldl (combine 2) 0 [1, 2, 3]`,
+where `combine factor x acc = (factor * x) + acc` is defined in a `let`. The
+sketch is written as Elm source: none of its parentheses is a `Parens` node in
+the tree.
+
+`combine` takes three arguments; it is applied to one, and the two-argument
+function that leaves is the fold's function.
+
 -}
 foldlWithPartialAppAccum : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlWithPartialAppAccum expectFn _ =
     let
-        -- combine factor x acc = factor * x + acc
         combine =
             define "combine"
                 [ pVar "factor", pVar "x", pVar "acc" ]
@@ -370,7 +449,6 @@ foldlWithPartialAppAccum expectFn _ =
                     (varExpr "acc")
                 )
 
-        -- List.foldl (combine 2) 0 [1, 2, 3]
         modul =
             makeModule "testValue"
                 (letExpr [ combine ]
@@ -385,20 +463,21 @@ foldlWithPartialAppAccum expectFn _ =
     expectFn modul
 
 
-{-| List.filter with a partially applied equality check.
-Mirrors EqualityCharPapTest.elm: `List.filter (eq 5) [1, 2, 5, 3, 5]`
-where `eq = (==)` is used as a function value.
+{-| Returns a check of `expectFn` against `List.filter (eq 5) [1, 2, 5, 3, 5]`,
+where `eq a b = a == b` is defined in a `let`.
+
+The partially applied function is the named wrapper `eq`, not the operator
+`(==)`.
+
 -}
 filterWithPartialEq : (Src.Module -> Expectation) -> (() -> Expectation)
 filterWithPartialEq expectFn _ =
     let
-        -- eq a b = a == b (wrapping the operator)
         eqFn =
             define "eq"
                 [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
-        -- List.filter (eq 5) [1, 2, 5, 3, 5]
         modul =
             makeModule "testValue"
                 (letExpr [ eqFn ]

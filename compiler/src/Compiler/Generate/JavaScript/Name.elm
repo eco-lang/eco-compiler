@@ -7,12 +7,44 @@ module Compiler.Generate.JavaScript.Name exposing
     , dollar
     )
 
-{-| JavaScript identifier generation and mangling for the Elm compiler.
+{-| Generated JavaScript needs a name for every Elm value it defines or refers
+to, and this module decides what those names are.
 
-This module handles the conversion of Elm identifiers to valid JavaScript names,
-ensuring no collisions with JavaScript reserved words while maintaining compact
-and predictable naming. It implements name mangling for globals, locals, and
-temporary variables used during code generation.
+Elm and JavaScript disagree about which names are allowed and where. A local
+Elm name such as `new` or `int` is legal in Elm but reserved in JavaScript, and
+a top-level Elm name is unique only within its module, while the generated
+program puts every module's values side by side. So each kind of Elm name is
+spelled differently here:
+
+  - A local keeps its Elm name, unless that name is on the reserved list, in
+    which case `fromLocal` puts `_` in front of it. The reserved list is the
+    JavaScript keywords and reserved words, a few names with a fixed meaning
+    such as `NaN`, `undefined` and `arguments`, and the runtime helper names
+    `F2` to `F9` and `A2` to `A9` that `makeF` and `makeA` produce.
+  - A top-level value is spelled with the whole of its module's canonical name
+    in front: `fromGlobal` gives `$author$project$Module$Sub$name`.
+  - A kernel value, one the runtime implements in JavaScript, is
+    `_Module_name` (`fromKernel`).
+
+`fromInt` and `fromIndex` turn a number into a short name, shortest names
+first: `a` to `z`, `A` to `Z`, `_`, then names of two characters, and so on.
+Two different non-negative numbers below 5 × 10 ^ 10 (all of them names of up
+to six characters) never get the same name, and none of those names is a
+JavaScript reserved word or `$` on its own. On the JavaScript build of the
+compiler `//` keeps only 32 bits, so names of seven characters or more can come
+out wrong.
+
+Most of the file is the machinery behind that guarantee. The first character of
+a name is one of 54 (the letters, `_` and `$`) and each later character one of
+64 (those and the ten digits), so a number is written in base 64 with a
+narrower first digit. The one-character names come first, without `$`, and
+then each width in turn. Within one width, the last few names are held back,
+one for each reserved word of that width, and a number whose name would spell a
+reserved word is given one of the held-back names instead.
+
+The `HumanReadable` forms are not for emitting as code. They spell a name the
+way an Elm programmer would read it, for showing to a person; the global form,
+with its `.`, is not even a valid JavaScript identifier.
 
 
 # Core Type
@@ -57,7 +89,13 @@ import Dict exposing (Dict)
 -- ====== NAME ======
 
 
-{-| JavaScript identifier name as a string.
+{-| A name for the generated JavaScript or its source map: usually an identifier
+or the name of a property.
+
+This is a name for `String`, not a new type. Any `String` is accepted where a
+`Name` is expected, so the compiler does not check that a value is a valid, or
+a safe, JavaScript identifier.
+
 -}
 type alias Name =
     String
@@ -67,23 +105,34 @@ type alias Name =
 -- ====== CONSTRUCTORS ======
 
 
-{-| Convert a zero-based index to a compact JavaScript name using ASCII encoding.
+{-| Returns the short name `fromInt` gives to the position counted from zero, so
+`Index.first` gives `a`.
 -}
 fromIndex : Index.ZeroBased -> Name
 fromIndex index =
     fromInt (Index.toMachine index)
 
 
-{-| Convert an integer to a compact JavaScript name using ASCII encoding.
-Avoids JavaScript and Elm reserved words through a renaming scheme.
+{-| Returns the `n`th short name, counting from zero and shortest names first:
+0 to 25 give `a` to `z`, 26 to 51 give `A` to `Z`, 52 gives `_`, and 53 gives
+`aa`.
+
+For non-negative numbers below 5 × 10 ^ 10, different numbers give different
+names, and no name is `$` on its own or a word in the JavaScript reserved list;
+a number whose name would spell a reserved word gets one of the last names of
+that width instead (`do`, `if` and `in` become `$7`, `$8` and `$9`). Only the
+JavaScript words are avoided: the runtime helper names `F2` to `F9` and `A2` to
+`A9` are produced like any other name.
+
 -}
 fromInt : Int -> Name
 fromInt n =
     intToAscii n
 
 
-{-| Convert a local Elm name to a JavaScript name, prefixing with underscore
-if it conflicts with JavaScript or Elm reserved words.
+{-| Returns the JavaScript name of a local variable: `name` itself, or `name`
+with `_` in front when it is a JavaScript reserved word or one of the runtime
+helper names `F2` to `F9` and `A2` to `A9`.
 -}
 fromLocal : Name.Name -> Name
 fromLocal name =
@@ -94,47 +143,58 @@ fromLocal name =
         name
 
 
-{-| Convert a local Elm name to a human-readable JavaScript name without mangling.
-Used for debugging or when readability is prioritized over collision avoidance.
+{-| Returns a local name as an Elm programmer would read it, which is `name`
+unchanged. Unlike `fromLocal` it does not avoid reserved words, so it is for
+showing to a person, not for emitting as code.
 -}
 fromLocalHumanReadable : Name.Name -> Name
 fromLocalHumanReadable name =
     name
 
 
-{-| Convert a globally-qualified Elm name to a JavaScript name.
-Encodes the module's canonical name (author, project, module path) with the value name,
-using dollar signs as separators to ensure uniqueness.
+{-| Returns the JavaScript name of the top-level value `name` defined in the
+module `home`: `$author$project$Module$Sub$name`, with every `-` in the author
+and project replaced by `_` and every `.` in the module name by `$`. For
+example, `map` in `elm/core`'s `List` is `$elm$core$List$map`.
 -}
 fromGlobal : ModuleName.Canonical -> Name.Name -> Name
 fromGlobal home name =
     homeToBuilder home ++ usd ++ name
 
 
-{-| Convert a globally-qualified Elm name to a human-readable JavaScript name.
-Uses dot-separated module.name format for debugging output.
+{-| Returns a top-level name as an Elm programmer would read it, `Module.name`,
+for showing to a person. The package is left out, so values of two packages'
+modules with the same name read the same, and the `.` makes the result an
+invalid JavaScript identifier.
 -}
 fromGlobalHumanReadable : ModuleName.Canonical -> Name.Name -> Name
 fromGlobalHumanReadable (ModuleName.Canonical _ moduleName) name =
     moduleName ++ "." ++ name
 
 
-{-| Generate a name for a cyclic definition in the module dependency graph.
-Marks the value with $cyclic$ to distinguish it from regular global names.
+{-| Returns a JavaScript name for the top-level value `name` of `home` that
+differs from its `fromGlobal` name, for a value that is part of a cycle of
+definitions within its module: `$cyclic` goes before the value name, as in
+`$author$project$Module$cyclic$name`. It is used for the values of such a cycle
+that take no arguments.
 -}
 fromCycle : ModuleName.Canonical -> Name.Name -> Name
 fromCycle home name =
     homeToBuilder home ++ "$cyclic$" ++ name
 
 
-{-| Generate a name for a kernel function (built-in JavaScript implementation).
-Kernel names use underscore prefix and separator to namespace them separately.
+{-| Returns the JavaScript name of the kernel value `name` in the kernel module
+`home`, `_home_name`, so `fromKernel "List" "Nil"` is `_List_Nil`.
 -}
 fromKernel : Name.Name -> Name.Name -> Name
 fromKernel home name =
     "_" ++ home ++ "_" ++ name
 
 
+{-| Returns the prefix `fromGlobal` and `fromCycle` put in front of a value
+name: `$author$project$Module`, with `-` replaced by `_` in the author and
+project and `.` replaced by `$` in the module name.
+-}
 homeToBuilder : ModuleName.Canonical -> String
 homeToBuilder (ModuleName.Canonical ( author, project ) home) =
     usd
@@ -149,43 +209,49 @@ homeToBuilder (ModuleName.Canonical ( author, project ) home) =
 -- ====== TEMPORARY NAMES ======
 
 
-{-| Generate a function wrapper name (F2, F3, F4, etc.) for curried function application.
+{-| Returns `F` followed by `n`. For `n` from 2 to 9 this is the name of the
+runtime helper that wraps a JavaScript function of `n` arguments so that it can
+also be called one argument at a time.
 -}
 makeF : Int -> Name
 makeF n =
     "F" ++ String.fromInt n
 
 
-{-| Generate an argument name (A2, A3, A4, etc.) for function parameters.
+{-| Returns `A` followed by `n`. For `n` from 2 to 9 this is the name of the
+runtime helper that applies a function to `n` arguments.
 -}
 makeA : Int -> Name
 makeA n =
     "A" ++ String.fromInt n
 
 
-{-| Generate a labeled name with an index suffix (e.g., loop$0, branch$1).
-Used for loop labels and branching constructs in generated code.
+{-| Returns `name$index`, a name for a JavaScript statement label.
 -}
 makeLabel : String -> Int -> Name
 makeLabel name index =
     name ++ usd ++ String.fromInt index
 
 
-{-| Generate a temporary variable name with $temp$ prefix.
-Used for intermediate values during code generation.
+{-| Returns `$temp$name`, a name for a temporary variable that belongs with the
+local `name`.
 -}
 makeTemp : String -> Name
 makeTemp name =
     "$temp$" ++ name
 
 
-{-| The dollar sign character as a Name, used as a separator in generated identifiers.
+{-| The name `$`, the same text as `Compiler.Data.Name.dollar`. It is also the
+separator in the names `fromGlobal`, `fromCycle` and `makeLabel` build, and
+`fromInt` never returns it for a non-negative number.
 -}
 dollar : Name
 dollar =
     usd
 
 
+{-| The separator `$` that this module puts between the parts of a name.
+-}
 usd : String
 usd =
     Name.dollar
@@ -195,11 +261,19 @@ usd =
 -- ====== RESERVED NAMES ======
 
 
+{-| The names a local may not keep, which `fromLocal` prefixes with `_`: the
+JavaScript reserved list and the runtime helper names together.
+-}
 reservedNames : EverySet String String
 reservedNames =
     EverySet.union jsReservedWords elmReservedWords
 
 
+{-| The JavaScript reserved list: keywords, words reserved in some edition of
+the language, and names with a fixed meaning such as `NaN`, `Infinity`,
+`undefined`, `eval` and `arguments`. Neither `fromLocal` nor `fromInt` returns
+one of these, the latter for a non-negative number below 5 × 10 ^ 10.
+-}
 jsReservedWords : EverySet String String
 jsReservedWords =
     EverySet.fromList identity
@@ -273,6 +347,9 @@ jsReservedWords =
         ]
 
 
+{-| The runtime helper names `F2` to `F9` and `A2` to `A9`, the names `makeF`
+and `makeA` produce for 2 to 9, which a local must not hide.
+-}
 elmReservedWords : EverySet String String
 elmReservedWords =
     EverySet.fromList identity
@@ -299,16 +376,31 @@ elmReservedWords =
 -- ====== INT TO ASCII ======
 
 
+{-| Returns the `n`th short name, as `fromInt` describes. The first 53 numbers
+get one character each, every one-character name except `$`; from 53 on the
+count continues among names of two characters or more.
+-}
 intToAscii : Int -> Name.Name
 intToAscii n =
     if n < 53 then
-        -- skip $ as a standalone name
         Name.fromWords [ toByte n ]
 
     else
         intToAsciiHelp 2 (numStartBytes * numInnerBytes) allBadFields (n - 53)
 
 
+{-| Returns the `n`th name, counting from zero, among names of `width`
+characters or more, where `blockSize` is the number of names of exactly `width`
+characters.
+
+`badFields` must hold the reserved words of `width` characters first, then
+those of each next width in turn, since each step moves one width along and
+drops one entry. Within a width that has reserved words, the last of its names
+are skipped, one per reserved word, and a name that spells a reserved word is
+replaced by one of those skipped names. Once the list is empty no name is
+replaced.
+
+-}
 intToAsciiHelp : Int -> Int -> List BadFields -> Int -> Name.Name
 intToAsciiHelp width blockSize badFields n =
     case badFields of
@@ -341,6 +433,16 @@ intToAsciiHelp width blockSize badFields n =
 -- ====== UNSAFE INT TO ASCII ======
 
 
+{-| Returns the `n`th name of exactly `width` characters, followed by the
+characters `bytes`, without checking for reserved words. The last character is
+`n` modulo 64 and each earlier one the next base-64 digit, with whatever is
+left for the first.
+
+That first character is a valid start of an identifier only when `n` is below
+the number of `width`-character names, 54 × 64 ^ (`width` - 1); nothing here
+checks it.
+
+-}
 unsafeIntToAscii : Int -> List Char -> Int -> Name.Name
 unsafeIntToAscii width bytes n =
     if width <= 1 then
@@ -363,40 +465,45 @@ unsafeIntToAscii width bytes n =
 -- ====== ASCII BYTES ======
 
 
+{-| The number of characters a name can begin with: the 52 letters, `_` and
+`$`. A digit cannot begin an identifier.
+-}
 numStartBytes : Int
 numStartBytes =
     54
 
 
+{-| The number of characters that can follow the first in a name: those a name
+can begin with and the ten digits.
+-}
 numInnerBytes : Int
 numInnerBytes =
     64
 
 
+{-| Returns the character for the digit `n` of a name: 0 to 25 are `a` to `z`,
+26 to 51 are `A` to `Z`, 52 is `_`, 53 is `$`, and 54 to 63 are `0` to `9`.
+The digits a name can begin with are therefore the first 54. A number of 64 or
+more gives the character with that code, which is no part of the scheme.
+-}
 toByte : Int -> Char
 toByte n =
     if n < 26 then
-        -- lower
         Char.fromCode (97 + n)
 
     else if n < 52 then
-        -- upper
         Char.fromCode (65 + n - 26)
 
     else if n == 52 then
-        -- _
         Char.fromCode 95
 
     else if n == 53 then
-        -- $
         Char.fromCode 36
 
     else if n < 64 then
-        -- digit
         Char.fromCode (48 + n - 54)
 
     else
-        -- crash ("cannot convert int " ++ String.fromInt n ++ " to ASCII")
         Char.fromCode n
 
 
@@ -404,14 +511,32 @@ toByte n =
 -- ====== BAD FIELDS ======
 
 
+{-| The JavaScript reserved words of one width, each paired with the name of
+that width chosen to stand in its place.
+-}
 type BadFields
     = BadFields Renamings
 
 
+{-| A table from a reserved word to the name used in its place.
+
+This is a name for `Dict`, not a new type, and nothing checks that a key and its
+name have the same width.
+
+-}
 type alias Renamings =
     Dict Name.Name Name.Name
 
 
+{-| The replacements for every word of the JavaScript reserved list, one
+`BadFields` for each width that has a reserved word, shortest first.
+
+There is no entry for a width with no reserved word. The list has entries for
+2 to 10 characters and then 12, so from 11 characters on `intToAsciiHelp` is
+one entry out of step: it skips one 11-character name for nothing, and does not
+replace `synchronized`. Only numbers above 9 × 10 ^ 17 reach that width.
+
+-}
 allBadFields : List BadFields
 allBadFields =
     let
@@ -422,6 +547,11 @@ allBadFields =
     Dict.values (EverySet.foldr compare add Dict.empty jsReservedWords)
 
 
+{-| Returns the replacements for one width with `keyword` added, given those
+already chosen for its width. `keyword` gets the last name of its width that
+is not yet taken: the very last for the first word added, the one before it for
+the second, and so on.
+-}
 addRenaming : String -> Maybe BadFields -> BadFields
 addRenaming keyword maybeBadFields =
     let

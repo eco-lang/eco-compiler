@@ -1,14 +1,49 @@
 module TestLogic.Type.PostSolve.PostSolveGroupBStructuralTypesTest exposing (suite)
 
-{-| Test suite for invariant POST\_001.
+{-| `Compiler.Type.PostSolve` overwrites the type the solver recorded for each
+string, character and float literal and each unit with `String`, `Char`,
+`Float` or `()`. These tests check, on the standard case programs, that such a
+literal whose solver type is a bare type variable comes out of PostSolve with
+the type its form implies, rather than the variable or some other type.
 
-POST\_001: For remaining Group B expressions whose solver output still contains
-a synthetic placeholder (TVar), PostSolve must replace that placeholder with the
-structural type implied by the AST + children's types.
+The terms are those of `Compiler.Type.PostSolve`. A _Group B_ node is one whose
+recorded type is a _synthetic placeholder_: a fresh type variable that
+constraint generation allocates for the node and constrains to the type its
+context expects. Placeholders are allocated for `Str`, `Chr`, `Float`, `Unit`
+and `Shader` nodes and for variable references.
+`TestLogic.Type.PostSolve.CompileThroughPostSolve.compileToPostSolveDetailed`
+returns the ids of those nodes, together with every node's type before
+PostSolve, its _pre-type_, and after, its _post-type_.
 
-Remaining Group B expressions are: Str, Chr, Float, Unit, Shader.
-List, Tuple, Record, Lambda, Accessor, Let, LetRec, LetDestruct are now Group A
-(solver-owned via recordNodeVar) and do not need structural repair.
+The fixture is every program of the case modules that
+`SourceIR.Suite.StandardTestSuites.expectSuite` gathers, each checked by
+`expectGroupBStructuralTypes`:
+
+  - The program must canonicalize and type check; an error fails the test.
+  - Of the placeholder ids, only the nodes that
+    `PostSolveInvariantHelpers.isGroupBExprNode` accepts are kept, which
+    leaves the `Str`, `Chr`, `Float` and `Unit` nodes.
+  - A kept node is checked only when its pre-type is a bare `TVar`. Its
+    post-type must then exist and match `String`, `Char`, `Float` or `()`, by
+    the node's form, under `alphaEq`.
+
+The pre-type condition narrows the check. Constraint generation equates each
+of these placeholders with the literal's own type, so in a program that type
+checks the pre-type is expected to be that type already rather than a variable,
+and such a node is skipped. When no kept node has a bare variable as its
+pre-type, the test passes whenever the program compiles.
+
+Much of the file is expected-type logic for lists, tuples, records,
+lambdas, accessors and `let` forms (`isAccessorType`, `expectedLambdaType` and
+arms of `computeExpectedType`). No placeholder is allocated for those forms, so
+no node reaches that logic.
+
+Among what is not tested:
+
+  - `Shader` nodes and variable references, which have placeholders but are
+    filtered out.
+  - The post-type of a literal whose pre-type is not a bare variable.
+  - Type variable names: `alphaEq` treats any two type variables as equal.
 
 -}
 
@@ -29,7 +64,14 @@ import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
-{-| A violation of POST\_001.
+{-| One node that failed the check, with what is needed to report it.
+
+`exprKind` is the node's form as `exprKindToString` names it, or "Unknown"
+for a node missing from the walk. Where a type could not be read, a stand-in
+takes its place: `preType` and `postType` are `Can.TUnit` for a node missing
+from the walk, and `postType` is `Can.TUnit` for a node with no post-type. `expectedType` is `Nothing` when no expected type was
+computed.
+
 -}
 type alias Violation =
     { nodeId : Int
@@ -41,6 +83,9 @@ type alias Violation =
     }
 
 
+{-| The test group that runs `expectGroupBStructuralTypes` over every standard
+case program.
+-}
 suite : Test
 suite =
     Test.describe "POST_001: Group B Structural Types"
@@ -48,7 +93,13 @@ suite =
         ]
 
 
-{-| Check that a module passes POST\_001.
+{-| Expects `srcModule` to compile through PostSolve and every kept placeholder
+node with a bare type variable as its pre-type to get the post-type its form
+implies, as the module docstring sets out.
+
+A compile error fails with its message; violations fail with all of them
+formatted, in increasing node id order.
+
 -}
 expectGroupBStructuralTypes : Src.Module -> Expect.Expectation
 expectGroupBStructuralTypes srcModule =
@@ -58,13 +109,12 @@ expectGroupBStructuralTypes srcModule =
 
         Ok artifacts ->
             let
-                -- Build a map from expression ID to expression node
                 exprNodes =
                     Helpers.walkExprs artifacts.canonical
                         |> List.map (\n -> ( n.id, n ))
                         |> DataMap.fromList identity
 
-                -- Filter to only remaining Group B expressions that were synthetic (Str, Chr, Float, Unit, Shader)
+                -- isGroupBExprNode rejects Shader and variable references, so only Str, Chr, Float and Unit remain.
                 syntheticGroupBIds =
                     artifacts.syntheticExprIds
                         |> EverySet.toList compare
@@ -91,12 +141,11 @@ expectGroupBStructuralTypes srcModule =
                     Expect.fail (formatViolations vs)
 
 
-{-| Check a single remaining Group B expression.
+{-| Returns the violation, if any, for the node `exprId`.
 
-Returns a violation if:
-
-1.  The pre-type was a bare TVar (placeholder)
-2.  The post-type doesn't match the expected structural type
+A node with no pre-type, or whose pre-type is anything but a bare `TVar`, gives
+`Nothing`. A bare `TVar` hands the node to `checkSyntheticPlaceholder`. A node
+missing from `exprNodes` is itself a violation.
 
 -}
 checkGroupBExpr :
@@ -107,7 +156,7 @@ checkGroupBExpr :
 checkGroupBExpr exprId exprNodes artifacts =
     case DataMap.get identity exprId exprNodes of
         Nothing ->
-            -- Expression not found (shouldn't happen)
+            -- Unreachable from expectGroupBStructuralTypes, which keeps only ids found in exprNodes.
             Just
                 { nodeId = exprId
                 , exprKind = "Unknown"
@@ -120,22 +169,26 @@ checkGroupBExpr exprId exprNodes artifacts =
         Just exprNode ->
             case Array.get exprId artifacts.nodeTypesPre |> Maybe.andThen identity of
                 Nothing ->
-                    -- No pre-type (shouldn't happen for synthetic expressions)
                     Nothing
 
                 Just preType ->
                     case preType of
                         Can.TVar _ ->
-                            -- Pre-type is a bare TVar placeholder, check post-type
                             checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts
 
                         _ ->
-                            -- Pre-type is structured, PostSolve shouldn't rewrite it
-                            -- (This is POST_005's domain, not POST_001)
                             Nothing
 
 
-{-| Check that a synthetic placeholder was properly filled by PostSolve.
+{-| Returns the violation, if any, for a node whose pre-type `preType` is a bare
+type variable, by comparing its post-type with the type its form implies.
+
+A missing post-type is a violation. An `Accessor` must pass `isAccessorType`.
+A `Lambda` must match `expectedLambdaType` under `alphaEq`, and a failure to
+build that type is a violation. Any other form must match
+`computeExpectedType` under `alphaEq`; where that gives `Nothing`, the node
+passes.
+
 -}
 checkSyntheticPlaceholder :
     Int
@@ -157,10 +210,8 @@ checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts =
                 }
 
         Just postType ->
-            -- Handle Accessor and Lambda specially with stricter checks
             case exprNode.node of
                 Can.Accessor fieldName ->
-                    -- Use strict structural check for Accessor
                     if isAccessorType fieldName postType then
                         Nothing
 
@@ -175,7 +226,6 @@ checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts =
                             }
 
                 Can.Lambda patterns (A.At _ bodyInfo) ->
-                    -- Use strict structural check for Lambda with explicit error handling
                     case expectedLambdaType exprId patterns bodyInfo.id artifacts.nodeTypesPost of
                         LambdaTypeError errorMsg ->
                             Just
@@ -202,15 +252,12 @@ checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts =
                                     }
 
                 _ ->
-                    -- Use existing alphaEq-based check for other Group B expressions
                     let
                         maybeExpected =
                             computeExpectedType exprNode.node artifacts.nodeTypesPost exprNodes
                     in
                     case maybeExpected of
                         Nothing ->
-                            -- Could not compute expected type
-                            -- This shouldn't happen for non-Lambda/Accessor Group B expressions
                             Nothing
 
                         Just expectedType ->
@@ -228,9 +275,15 @@ checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts =
                                     }
 
 
-{-| Compute the expected structural type for a Group B expression.
+{-| Returns the type the expression form `expr` implies, reading the types of
+its children from `nodeTypes`, or `Nothing` where it gives none.
 
-Based on the expression AST and children's types from nodeTypesPost.
+A literal or unit gives its fixed type. An empty list gives `List a`, a
+non-empty list `List` of its first element's type, a tuple the types of its
+parts, a record a closed record of its fields' types, each at position 0, and a
+`let` form its body's type; each gives `Nothing` when a type it reads is
+missing. A lambda, an accessor and any other form give `Nothing`. The third
+argument is not used.
 
 -}
 computeExpectedType :
@@ -253,11 +306,9 @@ computeExpectedType expr nodeTypes _ =
             Just Can.TUnit
 
         Can.List [] ->
-            -- Empty list: should be List a (polymorphic)
             Just (Can.TType ModuleName.list Name.list [ Can.TVar "a" ])
 
         Can.List ((A.At _ firstInfo) :: _) ->
-            -- Non-empty list: element type from first element
             case Array.get firstInfo.id nodeTypes |> Maybe.andThen identity of
                 Just elemType ->
                     Just (Can.TType ModuleName.list Name.list [ elemType ])
@@ -331,21 +382,14 @@ computeExpectedType expr nodeTypes _ =
                     Nothing
 
         Can.Lambda _ (A.At _ bodyInfo) ->
-            -- Lambda: List.foldr TLambda bodyType argTypes
-            -- Get body type
             case Array.get bodyInfo.id nodeTypes |> Maybe.andThen identity of
                 Just _ ->
-                    -- For lambda, we need the pattern types as arg types
-                    -- But patterns don't always have direct types in nodeTypes
-                    -- Skip precise verification for now
                     Nothing
 
                 Nothing ->
                     Nothing
 
         Can.Accessor _ ->
-            -- Accessor: { ext | field : a } -> a
-            -- Complex polymorphic type, skip precise verification
             Nothing
 
         Can.Let _ (A.At _ bodyInfo) ->
@@ -358,7 +402,6 @@ computeExpectedType expr nodeTypes _ =
             Array.get bodyInfo.id nodeTypes |> Maybe.andThen identity
 
         _ ->
-            -- Not a Group B expression
             Nothing
 
 
@@ -368,16 +411,13 @@ computeExpectedType expr nodeTypes _ =
 -- ============================================================================
 
 
-{-| Check if a type matches the exact Accessor structural shape.
+{-| Returns whether `tipe` has the shape of the accessor `.fieldName`'s type,
+`{ ext | fieldName : a } -> a`.
 
-Accessor `.field` must have type `{ ext | field : a } -> a` where:
-
-  - The record has an extension variable (not closed)
-  - The field type is a TVar
-  - The return type is the SAME TVar as the field type
-
-This is stricter than generic alpha-equivalence because we enforce
-that the field type and return type are the same variable.
+The argument must be a record with an extension variable and a field
+`fieldName` whose type is a `TVar`, and the result must be a `TVar` with the
+same name. Other fields of the record are not looked at. Unlike `alphaEq`, this
+requires the two variables to be the same one.
 
 -}
 isAccessorType : Name.Name -> Can.Type Name -> Bool
@@ -388,7 +428,6 @@ isAccessorType fieldName tipe =
                 ( Can.TRecord fields maybeExt, Can.TVar retVar ) ->
                     case maybeExt of
                         Nothing ->
-                            -- Must have extension variable
                             False
 
                         Just _ ->
@@ -396,7 +435,6 @@ isAccessorType fieldName tipe =
                                 Just (Can.FieldType _ fieldTipe) ->
                                     case fieldTipe of
                                         Can.TVar fieldVar ->
-                                            -- Critical invariant: same TVar in both positions
                                             fieldVar == retVar
 
                                         _ ->
@@ -418,7 +456,12 @@ isAccessorType fieldName tipe =
 -- ============================================================================
 
 
-{-| Result of looking up a pattern type, with explicit failure modes.
+{-| What looking up a lambda parameter's type in the node types found.
+
+`PatternTypeFound` carries the type. `PatternTypeNegativeId` carries the
+pattern's id when it is negative, and `PatternTypeMissing` its id when the
+node types hold no type for it.
+
 -}
 type PatternTypeLookup
     = PatternTypeFound (Can.Type Name)
@@ -426,11 +469,8 @@ type PatternTypeLookup
     | PatternTypeMissing Int
 
 
-{-| Look up a pattern's type from nodeTypes with strict error handling.
-
-Lambda parameters should have non-negative IDs and be present in nodeTypes.
-Returns an explicit error if either condition is violated.
-
+{-| Looks up the type of a parameter pattern in `nodeTypes` by the pattern's
+id, saying which way the lookup failed when it does.
 -}
 lookupPatternType : Can.Pattern -> PostSolve.NodeTypes -> PatternTypeLookup
 lookupPatternType (A.At _ patInfo) nodeTypes =
@@ -446,19 +486,23 @@ lookupPatternType (A.At _ patInfo) nodeTypes =
                 PatternTypeMissing patInfo.id
 
 
-{-| Result of computing expected lambda type.
+{-| The type a lambda is expected to have, or why it could not be built.
+
+`LambdaTypeOk` carries the expected type. `LambdaTypeError` carries a message
+naming the lambda and the missing or negative id that stopped it.
+
 -}
 type LambdaTypeResult
     = LambdaTypeOk (Can.Type Name)
     | LambdaTypeError String
 
 
-{-| Compute the expected structural type for a lambda expression.
+{-| Returns the type the lambda `lambdaExprId` is expected to have, given its
+parameter `patterns` and the id of its body.
 
-Lambda `\p1 p2 -> body` has type `p1Type -> p2Type -> bodyType`,
-built as a curried chain of TLambda constructors.
-
-Fails loudly if any pattern has a negative ID or missing type.
+For `\p1 p2 -> body` that is `p1Type -> p2Type -> bodyType`, with each type
+read from `nodeTypes`. A missing body type, or a parameter with a negative id
+or no type, gives `LambdaTypeError` instead.
 
 -}
 expectedLambdaType : Int -> List Can.Pattern -> Int -> PostSolve.NodeTypes -> LambdaTypeResult
@@ -477,7 +521,8 @@ expectedLambdaType lambdaExprId patterns bodyId nodeTypes =
                     LambdaTypeOk (buildCurriedFunctionType argTypes bodyType)
 
 
-{-| Collect all pattern types, failing on first error.
+{-| Returns the types of `patterns`, in order, read from `nodeTypes`, or a
+message for the last pattern in the list whose lookup failed.
 -}
 collectPatternTypes : Int -> List Can.Pattern -> PostSolve.NodeTypes -> Result String (List (Can.Type Name))
 collectPatternTypes lambdaExprId patterns nodeTypes =
@@ -513,9 +558,9 @@ collectPatternTypes lambdaExprId patterns nodeTypes =
             (Ok [])
 
 
-{-| Build a curried function type from argument types and body type.
+{-| Returns the curried function type from `argTypes` to `bodyType`.
 
-    buildCurriedFunctionType [a, b, c] ret = a -> b -> c -> ret
+    buildCurriedFunctionType [ a, b, c ] ret == a -> b -> c -> ret
 
 -}
 buildCurriedFunctionType : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
@@ -529,7 +574,15 @@ buildCurriedFunctionType argTypes bodyType =
 -- ============================================================================
 
 
-{-| Check if two types are alpha-equivalent.
+{-| Returns whether two types have the same structure, with every type variable
+matching every other.
+
+This is looser than alpha-equivalence: no consistent renaming is checked, so
+`a -> a` matches `a -> b`, and any two record extension variables match. Type
+constructors and aliases must agree on module and name. Arrow slots, record
+field positions and alias parameter names are ignored, and an alias matches
+only another alias, never its expansion.
+
 -}
 alphaEq : Can.Type Name -> Can.Type Name -> Bool
 alphaEq a b =
@@ -559,6 +612,9 @@ alphaEq a b =
             False
 
 
+{-| Returns whether two lists of types have the same length and match pairwise
+under `alphaEq`.
+-}
 alphaEqList : List (Can.Type Name) -> List (Can.Type Name) -> Bool
 alphaEqList xs ys =
     case ( xs, ys ) of
@@ -572,6 +628,9 @@ alphaEqList xs ys =
             False
 
 
+{-| Returns whether two record extensions are both absent or both present,
+whatever the variables' names.
+-}
 alphaEqExt : Maybe Name.Name -> Maybe Name.Name -> Bool
 alphaEqExt ext1 ext2 =
     case ( ext1, ext2 ) of
@@ -585,6 +644,9 @@ alphaEqExt ext1 ext2 =
             False
 
 
+{-| Returns whether two records have the same field names and each field's
+types match under `alphaEq`, ignoring field positions.
+-}
 alphaEqFields :
     Dict.Dict Name.Name (Can.FieldType Name)
     -> Dict.Dict Name.Name (Can.FieldType Name)
@@ -608,6 +670,9 @@ alphaEqFields fields1 fields2 =
             (List.map2 Tuple.pair list1 list2)
 
 
+{-| Returns whether two alias argument lists have the same length and their
+types match pairwise under `alphaEq`, ignoring the parameter names.
+-}
 alphaEqArgs : List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Bool
 alphaEqArgs args1 args2 =
     case ( args1, args2 ) of
@@ -621,6 +686,9 @@ alphaEqArgs args1 args2 =
             False
 
 
+{-| Returns whether two alias bodies are both `Holey` or both `Filled` and
+match under `alphaEq`.
+-}
 alphaEqAlias : Can.AliasType Name -> Can.AliasType Name -> Bool
 alphaEqAlias at1 at2 =
     case ( at1, at2 ) of
@@ -640,6 +708,9 @@ alphaEqAlias at1 at2 =
 -- ============================================================================
 
 
+{-| Returns the report for `violations`, each formatted by `formatViolation`,
+separated by blank lines.
+-}
 formatViolations : List Violation -> String
 formatViolations violations =
     violations
@@ -647,6 +718,9 @@ formatViolations violations =
         |> String.join "\n\n"
 
 
+{-| Returns a multi-line report of one violation: its node id and form, then
+its pre-type, post-type, expected type (or "(not computed)") and details.
+-}
 formatViolation : Violation -> String
 formatViolation v =
     let
@@ -672,6 +746,12 @@ formatViolation v =
         ++ v.details
 
 
+{-| Returns a short debugging rendering of a type.
+
+It names type constructors and aliases without their module and leaves out
+alias arguments and record fields, so two different types can render the same.
+
+-}
 typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
@@ -708,6 +788,9 @@ typeToString tipe =
             "TAlias " ++ name
 
 
+{-| Returns the constructor name of an expression form, for the twelve forms
+`isGroupBExprNode` accepts, and "Other" for the rest.
+-}
 exprKindToString : Can.Expr_ -> String
 exprKindToString expr =
     case expr of

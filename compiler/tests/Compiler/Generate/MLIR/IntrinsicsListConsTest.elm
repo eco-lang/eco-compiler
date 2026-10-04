@@ -1,18 +1,49 @@
 module Compiler.Generate.MLIR.IntrinsicsListConsTest exposing (suite)
 
-{-| kernel-opt-01: the `("List", "cons")` intrinsic classifier.
+{-| Tests for the part of `Intrinsics.kernelIntrinsic` that decides whether a
+call to the `List.cons` kernel can be replaced by an inline list construction
+(`ConstructList`), and what MLIR type the new cell's head slot gets.
 
-Driven through the EXPOSED `Intrinsics.kernelIntrinsic`, not through the
-internal `listIntrinsic` — the module's `exposing` list is deliberately not
-widened for a test.
+The head slot type decides how the head is stored in the list cell: unboxed as
+`i64`, `f64` or `i16`, or boxed as `!eco.value`. The heads given a primitive slot
+here (Int, Float and Char) are the heads for which
+`Compiler.Generate.MLIR.KernelAbi` calls the `_Int`, `_Float` and `_Char`
+variants of the `List.cons` kernel. A head that is an unsettled `number` type
+variable gets neither a primitive slot here nor a suffixed variant there.
+Without these tests, a change to the classifier that accepted a shape, or chose
+a head slot type, out of step with the kernel call it replaces could go
+unnoticed. A declined call (`Nothing`) is generated as it would be without the
+intrinsic.
 
-This is the _authoritative_ decline coverage. `consIntrinsicFor` (Expr.elm)
-applies the config flag and the SSA-type admissibility test on top; everything
-below is the type-level classification that must hold before that gate is even
-consulted. The head kinds must reproduce the axis `kernelInstanceSymbol` uses
-for the `_Int`/`_Float`/`_Char` C variants (Generate/MLIR/KernelAbi.elm:310-317)
-— a disagreement here is a heap-layout bug (REP\_BOUNDARY\_002), not a missed
-optimization.
+The classifier is reached through the exposed `kernelIntrinsic`, with the home
+`"List"` and the name `"cons"`, the same entry point code generation calls. It
+classifies by types alone. `Compiler.Generate.MLIR.Expr` then applies
+the `list.consIntrinsic` configuration flag and a check that a primitive head
+slot is fed by an operand of that same type or a boxed one, before emitting
+anything; neither is exercised here.
+
+The fixture is `MonoType` values built directly. `listOfInt` serves the
+Int-head test and the declined tests; the other head tests each build a list of
+their own head type.
+
+The tests establish:
+
+  - A String head, with String list tail and result, gives a `!eco.value` head
+    slot.
+  - An Int head gives an `i64` slot, a Float head `f64` and a Char head `i16`,
+    each with a list of its own type as tail and result.
+  - A Bool head gives a `!eco.value` slot, not a primitive one.
+  - A head that is a `number` type variable (`MVar _ CNumber`) is declined,
+    although its ABI type (the MLIR type `Types.monoTypeToAbi` gives it at a
+    function boundary) is `i64`.
+  - An `Int` tail, or an `Int` result, is declined.
+  - A call with one argument, or with none, is declined.
+  - `List.reverse` is not classified as a list construction, and neither is a
+    `cons` in the home `"Platform"`.
+
+Among what is not tested: heads of other types (tuples, records, custom types,
+functions, lists, other type variables), a tail or result that is a type
+variable, and every other kernel the classifier handles.
 
 -}
 
@@ -24,18 +55,28 @@ import Expect
 import Test exposing (Test, describe, test)
 
 
-{-| A boxed list type usable as a tail / result slot.
+{-| A list of `Int`, for the Int-head test and the declined tests.
+
+It is built with the bare `MList` constructor and a hash field of 0, not through
+the smart constructor. Of a tail or a result, the classifier asks only whether
+its ABI type is boxed, and that does not read the hash.
+
 -}
 listOfInt : Mono.MonoType
 listOfInt =
     Mono.MList 0 Mono.MInt
 
 
+{-| Asks the classifier about a two-argument `List.cons` call with the given head,
+tail and result types.
+-}
 consOf : Mono.MonoType -> Mono.MonoType -> Mono.MonoType -> Maybe Intrinsics.Intrinsic
 consOf headTy tailTy resultTy =
     Intrinsics.kernelIntrinsic "List" "cons" [ headTy, tailTy ] resultTy
 
 
+{-| The tests, in two groups: calls given a `ConstructList`, and calls declined.
+-}
 suite : Test
 suite =
     describe "Generate.MLIR.Intrinsics — List.cons"

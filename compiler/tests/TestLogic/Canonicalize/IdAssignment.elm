@@ -3,13 +3,44 @@ module TestLogic.Canonicalize.IdAssignment exposing
     , expectUniqueIdsCanonical
     )
 
-{-| Shared test infrastructure for canonicalization ID testing.
+{-| Checks that canonicalization gives each expression and pattern node of a
+module an id of its own. Later phases attach information, such as an inferred
+type, to a node by its id, so two nodes given the same id would have that
+information mixed up.
 
-This module provides test verification functions that check canonicalization
-ID uniqueness.
+A _node id_ is the `id` in the `{ id, node }` record that wraps every
+expression and pattern in `Compiler.AST.Canonical`. `Compiler.Canonicalize.Ids`
+describes how ids are handed out. What matters here is that expressions and
+patterns draw from one counter, so an expression and a pattern should not share
+an id either, and that the counter starts at 0, so no id canonicalization
+gives is negative.
 
-For Source AST builders, use Compiler.AST.SourceBuilder.
-For Canonical AST builders, use Compiler.AST.CanonicalBuilder.
+The module to check comes from the caller. `expectUniqueIds` takes a source
+module and canonicalizes it as a module of the package `eco/example` against
+the stand-in interfaces of `Compiler.Elm.Interface.Basic.testIfaces`.
+`expectUniqueIdsCanonical` takes a canonical module that is already built.
+
+The ids checked are those of every expression in the module's top-level
+declarations, and of every pattern among the arguments of a top-level
+definition, nested patterns included. Each repeat is kept, so that a duplicate
+can be found.
+
+  - `expectUniqueIds` fails if canonicalization reports any error. Otherwise it
+    applies the checks below to the canonical module it produced.
+  - `expectUniqueIdsCanonical` applies the same checks to the module it is
+    given.
+
+The checks run in this order, and only the first that fails is reported: no
+id is negative; no expression id occurs twice; no pattern id occurs twice; no
+id is both an expression id and a pattern id.
+
+Among what is not tested:
+
+  - The patterns of lambdas, of `case` branches and of `let` destructuring, and
+    the arguments of `let`-bound definitions. Their ids are not collected, so a
+    duplicate, negative or shared id among them passes.
+  - Anything outside the module's top-level declarations, such as its ports.
+  - That ids start at 0 or have no gaps. Only negative ids are rejected.
 
 -}
 
@@ -33,16 +64,12 @@ import Set
 -- ============================================================================
 
 
-{-| Main test expectation: canonicalize the module and verify all IDs are unique.
+{-| Canonicalizes `modul` as a module of the package `eco/example` against
+`Compiler.Elm.Interface.Basic.testIfaces`, and passes when the node ids of the
+result pass the checks the module docstring lists.
 
-This function:
-
-1.  Runs the canonicalizer on the source module
-2.  Collects all expression IDs and pattern IDs from the result
-3.  Verifies that all IDs are positive
-4.  Verifies that all expression IDs are unique
-5.  Verifies that all pattern IDs are unique
-6.  Verifies that expression and pattern IDs are disjoint
+If canonicalization reports errors, the expectation fails with their number
+and a short description of the first one in the error list.
 
 -}
 expectUniqueIds : Src.Module -> Expect.Expectation
@@ -74,22 +101,18 @@ expectUniqueIds modul =
 
         ( _, Ok canModule ) ->
             let
-                -- Collect IDs as lists to detect duplicates
                 ( exprIdsList, patternIdsList ) =
                     collectModuleIdsAsList canModule
 
                 allIdsList =
                     exprIdsList ++ patternIdsList
 
-                -- Find duplicates in expression IDs
                 exprDuplicates =
                     findDuplicates exprIdsList
 
-                -- Find duplicates in pattern IDs
                 patternDuplicates =
                     findDuplicates patternIdsList
 
-                -- Find overlap between expression and pattern IDs
                 exprIdsSet =
                     Set.fromList exprIdsList
 
@@ -99,7 +122,6 @@ expectUniqueIds modul =
                 overlap =
                     Set.toList (Set.intersect exprIdsSet patternIdsSet)
 
-                -- Find negative IDs
                 negativeIds =
                     List.filter (\id -> id < 0) allIdsList
             in
@@ -131,7 +153,8 @@ expectUniqueIds modul =
                 Expect.pass
 
 
-{-| Find duplicate values in a list. Returns the values that appear more than once.
+{-| Returns each value that occurs more than once in `ids`, listed once, in
+descending order.
 -}
 findDuplicates : List Int -> List Int
 findDuplicates ids =
@@ -168,7 +191,11 @@ findDuplicates ids =
         counts
 
 
-{-| Convert a canonicalization error to a string for debugging.
+{-| Returns a one-line description of a canonicalization error for a failure
+message. For `NotFoundVar`, `NotFoundBinop`, `RecursiveLet`, `NotFoundType`,
+`NotFoundVariant` and `Shadowing` it is the constructor's name and the name the
+error concerns, qualified where the error carries a module qualifier. Every
+other kind of error gives `"Other error"`.
 -}
 errorToString : CanError.Error -> String
 errorToString error =
@@ -201,15 +228,17 @@ errorToString error =
             "Other error"
 
 
-{-| Collect all expression and pattern IDs from a canonical module as lists.
-This preserves duplicates so we can detect and report them.
+{-| Returns the expression ids and the pattern ids collected from the module's
+top-level declarations, as two lists that keep every repeat. Nothing else in
+the module, such as its ports or effects, is looked at.
 -}
 collectModuleIdsAsList : Can.Module -> ( List Int, List Int )
 collectModuleIdsAsList (Can.Module { decls }) =
     collectDeclsIdsAsList decls
 
 
-{-| Collect IDs from declarations as lists.
+{-| Returns the expression ids and the pattern ids of every definition in
+`decls`, the members of recursive groups included.
 -}
 collectDeclsIdsAsList : Can.Decls -> ( List Int, List Int )
 collectDeclsIdsAsList decls =
@@ -252,7 +281,8 @@ collectDeclsIdsAsList decls =
             ( [], [] )
 
 
-{-| Collect IDs from a definition as lists.
+{-| Returns the ids of the expressions in a definition's body, and the ids of
+the patterns among its arguments.
 -}
 collectDefIdsAsList : Can.Def -> ( List Int, List Int )
 collectDefIdsAsList def =
@@ -272,14 +302,22 @@ collectDefIdsAsList def =
             ( collectExprIdsAsList expr, patternIds )
 
 
-{-| Collect all expression IDs from an expression as a list (recursively).
+{-| Returns the id of an expression followed by the ids of every expression
+nested in it.
 -}
 collectExprIdsAsList : Can.Expr -> List Int
 collectExprIdsAsList (A.At _ { id, node }) =
     id :: collectExprNodeIdsAsList node
 
 
-{-| Collect expression IDs from an expression node as a list.
+{-| Returns the ids of every expression nested in one expression node, not
+counting the node itself.
+
+No pattern ids are collected here. The patterns of lambdas, `case` branches
+and `let` destructuring are skipped, and so are the arguments of `let`-bound
+definitions, whose pattern ids `collectDefIdsAsList` returns and this function
+drops.
+
 -}
 collectExprNodeIdsAsList : Can.Expr_ -> List Int
 collectExprNodeIdsAsList node =
@@ -386,14 +424,17 @@ collectExprNodeIdsAsList node =
             []
 
 
-{-| Collect all pattern IDs from a pattern as a list (recursively).
+{-| Returns the id of a pattern followed by the ids of every pattern nested in
+it.
 -}
 collectPatternIdsAsList : Can.Pattern -> List Int
 collectPatternIdsAsList (A.At _ { id, node }) =
     id :: collectPatternNodeIdsAsList node
 
 
-{-| Collect pattern IDs from a pattern node as a list.
+{-| Returns the ids of every pattern nested in one pattern node, not counting
+the node itself: the subpatterns of an alias, a tuple, a list, a cons and a
+constructor's arguments.
 -}
 collectPatternNodeIdsAsList : Can.Pattern_ -> List Int
 collectPatternNodeIdsAsList node =
@@ -446,29 +487,25 @@ collectPatternNodeIdsAsList node =
 -- ============================================================================
 
 
-{-| Verify unique IDs in a pre-constructed canonical module.
-This is for testing expressions that can't be created from source AST,
-like VarKernel expressions.
+{-| Passes when the node ids of `canModule`, taken as given, pass the checks
+the module docstring lists. This is for a module built directly as canonical
+AST rather than canonicalized from source.
 -}
 expectUniqueIdsCanonical : Can.Module -> Expect.Expectation
 expectUniqueIdsCanonical canModule =
     let
-        -- Collect IDs as lists to detect duplicates
         ( exprIdsList, patternIdsList ) =
             collectModuleIdsAsList canModule
 
         allIdsList =
             exprIdsList ++ patternIdsList
 
-        -- Find duplicates in expression IDs
         exprDuplicates =
             findDuplicates exprIdsList
 
-        -- Find duplicates in pattern IDs
         patternDuplicates =
             findDuplicates patternIdsList
 
-        -- Find overlap between expression and pattern IDs
         exprIdsSet =
             Set.fromList exprIdsList
 
@@ -478,7 +515,6 @@ expectUniqueIdsCanonical canModule =
         overlap =
             Set.toList (Set.intersect exprIdsSet patternIdsSet)
 
-        -- Find negative IDs
         negativeIds =
             List.filter (\id -> id < 0) allIdsList
     in

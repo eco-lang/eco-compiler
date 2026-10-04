@@ -5,11 +5,28 @@ module Compiler.Parse.Space exposing
     , docComment
     )
 
-{-| Parser for whitespace, comments, and indentation in Elm source code.
+{-| Elm's layout rule decides where a construct ends by the column its next
+token starts in, so the parser has to know the column after every gap between
+tokens. This module reads those gaps and checks the columns.
 
-This module handles the consumption of whitespace, line comments, multi-line
-block comments, and doc comments. It enforces Elm's indentation-sensitive
-syntax by checking indentation levels during parsing.
+A gap is any run of spaces, newlines, `--` line comments and `{- -}` block
+comments. Block comments nest. A carriage return between comments is skipped
+without moving the column, and a tab outside a line comment is an error,
+`E.HasTab`. The comments in a gap are kept, in source order, so that the
+formatter can put them back: `chomp` returns them as `Src.FComments`. A doc
+comment, a block comment whose opening is followed by `|`, ends a gap rather
+than being part of it, and is read by `docComment`.
+
+The checks look at the current column, mostly against the parser state's
+`indent`, the column a layout-sensitive construct is measured against. A token
+is _indented_ when its column is greater than `indent` and greater than 1,
+_aligned_ when its column equals `indent`, and on a _fresh line_ when its column
+is 1. This module counts one column per character, whatever its width in the
+source string.
+
+Most of the file is one scanner, `eat`, which reads whitespace and both kinds
+of comment in a single tail-recursive loop so that a long gap does not exhaust
+the JavaScript stack.
 
 
 # Space Parser Type
@@ -44,8 +61,13 @@ import Compiler.Reporting.Error.Syntax as E
 -- ====== SPACE PARSING ======
 
 
-{-| A parser that returns a value along with its ending position.
-Used throughout the space parsing system to track source locations.
+{-| A parser whose result is paired with a position, by convention the
+position where the parsed thing ends, before any whitespace after it.
+
+That position is what a caller passes to `checkIndent` before the next token.
+This is a name for `P.Parser x ( a, A.Position )`, and nothing checks which
+position a parser puts there.
+
 -}
 type alias Parser x a =
     P.Parser x ( a, A.Position )
@@ -55,8 +77,12 @@ type alias Parser x a =
 -- ====== CHOMP ======
 
 
-{-| Consumes whitespace and comments, returning any comments found.
-Handles spaces, newlines, line comments (--), and block comments.
+{-| Reads the gap at the current position and returns its comments in source
+order.
+
+It succeeds as consumed input even when the gap is empty, and stops without
+consuming at a doc comment. A tab fails with `toError E.HasTab` at the tab.
+
 -}
 chomp : (E.Space -> Row -> Col -> x) -> P.Parser x Src.FComments
 chomp toError =
@@ -86,8 +112,13 @@ chomp toError =
 -- ====== CHECKS ======
 
 
-{-| Checks that the current column is properly indented relative to the context.
-Must be called after chomp. Fails if indentation is insufficient.
+{-| Succeeds, consuming nothing, when the current column is indented: greater
+than `indent` and greater than 1.
+
+Otherwise it fails without consuming, at the position given as the first
+argument rather than at the current one. Callers pass the end of the previous
+token there.
+
 -}
 checkIndent : A.Position -> (Int -> Int -> x) -> P.Parser x ()
 checkIndent (A.Position endRow endCol) toError =
@@ -100,8 +131,11 @@ checkIndent (A.Position endRow endCol) toError =
                 P.Eerr endRow endCol toError
 
 
-{-| Checks that the current column is aligned with the expected indentation level.
-Must be called after chomp. Fails if the column doesn't match the indent exactly.
+{-| Succeeds, consuming nothing, when the current column equals `indent`.
+
+Otherwise it fails without consuming, at the current position, and the first
+argument `toError` receives is `indent`, the expected column.
+
 -}
 checkAligned : (Int -> Int -> Int -> x) -> P.Parser x ()
 checkAligned toError =
@@ -114,8 +148,8 @@ checkAligned toError =
                 P.Eerr st.row st.col (toError st.indent)
 
 
-{-| Checks that we're at the start of a new line (column 1).
-Must be called after chomp. Fails if we're not at the beginning of a line.
+{-| Succeeds, consuming nothing, when the current column is 1, and otherwise
+fails without consuming at the current position.
 -}
 checkFreshLine : (Row -> Col -> x) -> P.Parser x ()
 checkFreshLine toError =
@@ -132,8 +166,14 @@ checkFreshLine toError =
 -- ====== CHOMP AND CHECK ======
 
 
-{-| Consumes whitespace and comments, then checks indentation in one operation.
-More efficient than calling chomp followed by checkIndent separately.
+{-| Reads the gap as `chomp` does, then requires the column after it to be
+indented: greater than `indent` and greater than 1.
+
+Gap errors are reported as `chomp` reports them, through `toSpaceError`. An
+indentation failure is reported through `toIndentError` at the position before
+the gap, not at the end of a previous token as `checkIndent` reports it, and it
+counts as consumed input even when the gap was empty.
+
 -}
 chompAndCheckIndent : (E.Space -> Row -> Col -> x) -> (Row -> Col -> x) -> P.Parser x Src.FComments
 chompAndCheckIndent toSpaceError toIndentError =
@@ -163,27 +203,46 @@ chompAndCheckIndent toSpaceError toIndentError =
                     P.Cerr newRow newCol (toSpaceError E.EndlessMultiComment)
 
 
+{-| What `eat` is in the middle of reading.
 
-{- EAT SPACES, LINE COMMENTS AND MULTI COMMENTS
+`EatSpaces` is between comments. `EatLineComment` is inside a `--` comment and
+carries the index just after the `--`, where the comment's text starts.
+`EatMultiComment` is at a `{` that may open a block comment.
 
-   This function combines the functionality of the original `eatSpaces`, `eatLineComment`,
-   and `eatMultiComment` methods. The merge resolves a "RangeError: Maximum call stack size exceeded"
-   issue reported in guida-lang/compiler#53.
 -}
-
-
 type EatType
     = EatSpaces
     | EatLineComment Int
     | EatMultiComment
 
 
+{-| How a scan of a gap ended: at the end of the gap, at a tab, or at a block
+comment with no end.
+-}
 type Status
     = Good
     | HasTab
     | EndlessMultiComment
 
 
+{-| Reads a gap from `pos`, given the comments read so far, newest first, and
+returns how it ended, all the comments, newest first, and the index, row and
+column where it stopped.
+
+Reading whitespace, line comments and block comments in one self-calling loop,
+switched by `EatType`, keeps every step a tail call, so a long gap does not
+exhaust the stack.
+
+A `--` comment's text runs from after the `--` to before the newline, so a
+carriage return before the newline is part of it, and it may hold tabs. A block
+comment's text is everything between its `{-` and `-}`, split into lines. A
+block comment opening closer to `end` than two characters is left unread, as
+is a doc comment.
+
+On a tab the index, row and column are the tab's. For an unclosed block comment
+they are those of the comment's `{`.
+
+-}
 eat : EatType -> Src.FComments -> String -> Int -> Int -> Row -> Col -> ( ( Status, Src.FComments, Int ), ( Row, Col ) )
 eat eatType comments src pos end row col =
     case eatType of
@@ -297,12 +356,24 @@ eat eatType comments src pos end row col =
                     ( ( Good, comments, pos ), ( row, col ) )
 
 
+{-| How `eatMultiCommentHelp` ended: after the comment's close, at a tab, or
+at `end` with the comment still open.
+-}
 type MultiStatus
     = MultiGood
     | MultiTab
     | MultiEndless
 
 
+{-| Reads the inside of a block comment from `pos`, where `openComments` block
+comments are open, and returns how it ended with the index, row and column it
+stopped at.
+
+A `{-` inside opens one more comment and a `-}` closes one, and the result is
+`MultiGood` once the last is closed, with the index just after that close. On a
+tab the position is the tab's. A carriage return counts a column here.
+
+-}
 eatMultiCommentHelp : String -> Int -> Int -> Row -> Col -> Int -> ( ( MultiStatus, Int ), ( Row, Col ) )
 eatMultiCommentHelp src pos end row col openComments =
     if pos >= end then
@@ -343,8 +414,16 @@ eatMultiCommentHelp src pos end row col openComments =
 -- ====== DOCUMENTATION COMMENT ======
 
 
-{-| Parses a documentation comment (the kind that starts with open-brace, dash, pipe).
-Documentation comments are used to document exposed functions and types.
+{-| Reads a doc comment, from its opening to the matching close, at the
+current position, and returns its body as a snippet placed at the row and
+column where the body starts.
+
+The body excludes both delimiters, and block comments may nest in it. It reads
+no whitespace before the comment. Without a doc comment here it fails without
+consuming, through `toExpectation`. A tab in the comment fails at the tab, and
+a comment with no end fails at its opening `{`, both through `toSpaceError` and
+as consumed input.
+
 -}
 docComment : (Int -> Int -> x) -> (E.Space -> Int -> Int -> x) -> P.Parser x Src.Comment
 docComment toExpectation toSpaceError =

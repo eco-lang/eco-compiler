@@ -1,15 +1,35 @@
 module TestLogic.Generate.CEcoValueLayout exposing (expectValidCEcoValueLayout)
 
-{-| Test logic for invariant MONO\_003: CEcoValue layout is consistent.
+{-| A checker meant to catch a type variable left open by monomorphization
+deciding how a value is laid out at run time. As written it finds nothing, so
+the expectation it builds passes exactly when the program monomorphizes.
 
-For each monomorphized value:
+After monomorphization a `MonoType` can still contain a type variable, an
+`MVar`. One whose constraint is `CEcoValue` stands for a value that the back
+end holds as a boxed `eco.value`, whatever its Elm type;
+`Compiler.AST.Monomorphized` (`Constraint`) owns that meaning. The property
+this module is named for is that such a variable does not decide the layout of
+a record, tuple or constructor, or how a function is called.
 
-  - Verify the CEcoValue layout matches the MonoType.
-  - Verify field ordering is deterministic.
-  - Verify alignment and padding are correct.
+`expectValidCEcoValueLayout` runs a source module through the test pipeline as
+far as monomorphization (`TestLogic.TestPipeline.runToMono`) and walks every
+node of the resulting graph: each node's type, the parameter types of tail
+functions, closures and let-bound tail definitions, the shape of each
+constructor, and the expressions of defines, tail functions and ports.
 
-This module reuses the existing typed optimization pipeline to verify
-CEcoValue layout is correctly computed.
+What the walk establishes:
+
+  - Nothing beyond the pipeline succeeding. A `CEcoValue` variable, a record,
+    and every type with no case of its own are accepted outright. Lists, custom
+    types and functions are accepted when their parts are, which comes down to
+    the same acceptance. A tuple or a constructor shape is rejected only for a
+    negative number of elements or fields, which a list length cannot be. So
+    the expectation fails only when `runToMono` returns an error.
+
+Among what is not tested: where a `CEcoValue` variable appears in any type, the
+layout of records, tuples and constructors, and the expressions held in a
+`case`'s decision tree rather than in its jump branches, which the walk does
+not visit.
 
 -}
 
@@ -20,7 +40,13 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that CEcoValue MVars do not affect layout.
+{-| Runs `srcModule` through the test pipeline to monomorphization and passes
+when the walk of the resulting graph finds no issue.
+
+A pipeline error fails with the pipeline's message, and found issues fail with
+one issue per line. The walk finds none for any graph, so in effect this passes
+exactly when monomorphization succeeds.
+
 -}
 expectValidCEcoValueLayout : Src.Module -> Expect.Expectation
 expectValidCEcoValueLayout srcModule =
@@ -46,13 +72,11 @@ expectValidCEcoValueLayout srcModule =
 -- ============================================================================
 
 
-{-| Collect issues with CEcoValue layout.
+{-| Returns the issues found in every node of the graph, each labelled with the
+SpecId of its node.
 
-CEcoValue type variables should only appear in positions that don't affect
-runtime layout:
-
-  - As type arguments to generic containers (passed through)
-  - Never directly determining field layout, calling convention, or unboxing
+A node's SpecId is its index in `nodes`, and empty slots are skipped. Issues
+from later nodes come first in the list.
 
 -}
 collectCEcoValueLayoutIssues : Mono.MonoGraph -> List String
@@ -71,7 +95,9 @@ collectCEcoValueLayoutIssues (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Check CEcoValue layout for a single node.
+{-| Returns the issues in one node, labelled `SpecId <specId>`: those in the
+node's type, in a tail function's parameter types, in a constructor's shape, and
+in the expression of a define, tail function or port.
 -}
 checkNodeCEcoValueLayout : Int -> Mono.MonoNode -> List String
 checkNodeCEcoValueLayout specId node =
@@ -90,7 +116,6 @@ checkNodeCEcoValueLayout specId node =
                 ++ collectExprCEcoValueIssues context expr
 
         Mono.MonoCtor ctorShape monoType ->
-            -- Constructor fields must not have unresolved CEcoValue in layout positions
             checkCtorShapeCEcoValue context ctorShape
                 ++ checkCEcoValueInLayoutPosition context monoType
 
@@ -112,31 +137,28 @@ checkNodeCEcoValueLayout specId node =
                 ++ collectExprCEcoValueIssues context expr
 
 
-{-| Check if CEcoValue appears in a layout-affecting position.
+{-| Returns the issues in `monoType`, each prefixed with `context`.
 
-CEcoValue should only appear in type arguments to containers (like List a),
-not as direct record fields, tuple elements, or function parameters
-that would affect the runtime representation.
+It looks into a list's element type, a custom type's arguments, and a
+function's parameter and return types, and accepts a `CEcoValue` variable, a
+record and every type with no case of its own outright. A tuple is rejected
+only when its element list has a negative length, which cannot happen, so the
+result is always empty.
 
 -}
 checkCEcoValueInLayoutPosition : String -> Mono.MonoType -> List String
 checkCEcoValueInLayoutPosition context monoType =
     case monoType of
         Mono.MVar _ Mono.CEcoValue ->
-            -- CEcoValue at the top level is ok - it's erased at runtime
             []
 
         Mono.MList _ elemType ->
-            -- List element type can be CEcoValue (boxed reference)
             checkCEcoValueInLayoutPosition context elemType
 
         Mono.MRecord _ _ ->
-            -- Record fields should not directly be CEcoValue in unboxed positions
-            -- (For now, we just check the shape is valid)
             []
 
         Mono.MTuple _ elementTypes ->
-            -- Tuple elements should not directly be CEcoValue in unboxed positions
             if List.length elementTypes < 0 then
                 [ context ++ ": Tuple has invalid element count" ]
 
@@ -144,11 +166,9 @@ checkCEcoValueInLayoutPosition context monoType =
                 []
 
         Mono.MCustom _ _ _ typeArgs ->
-            -- Custom type arguments can be CEcoValue (passed through)
             List.concatMap (checkCEcoValueInLayoutPosition context) typeArgs
 
         Mono.MFunction _ _ paramTypes returnType ->
-            -- Function parameters and return types can contain CEcoValue
             List.concatMap (checkCEcoValueInLayoutPosition context) paramTypes
                 ++ checkCEcoValueInLayoutPosition context returnType
 
@@ -156,12 +176,14 @@ checkCEcoValueInLayoutPosition context monoType =
             []
 
 
-{-| Check constructor shape for CEcoValue issues.
+{-| Returns the issues in a constructor shape, prefixed with `context`.
+
+The field types are not examined. The one issue it can report is a negative
+number of fields, which a list length cannot be, so the result is always empty.
+
 -}
 checkCtorShapeCEcoValue : String -> Mono.CtorShape -> List String
 checkCtorShapeCEcoValue context shape =
-    -- Check that field types don't have CEcoValue (they need concrete types)
-    -- For now, just verify the shape is well-formed
     if List.length shape.fieldTypes < 0 then
         [ context ++ ": Constructor has invalid field count" ]
 
@@ -169,13 +191,20 @@ checkCtorShapeCEcoValue context shape =
         []
 
 
-{-| Collect CEcoValue issues from expressions.
+{-| Returns the issues in `expr` and the expressions inside it.
+
+The types checked are the parameter types of each closure and of each let-bound
+tail definition. The walk goes into closure captures and bodies, list
+elements, calls, tail calls, `if` branches, `let` definitions and bodies, the
+body of a destructuring, the jump branches of a `case`, and the parts of record
+and tuple expressions. It does not go into the expressions held in a `case`'s
+decision tree, and every other expression contributes nothing.
+
 -}
 collectExprCEcoValueIssues : String -> Mono.MonoExpr -> List String
 collectExprCEcoValueIssues context expr =
     case expr of
         Mono.MonoClosure closureInfo bodyExpr _ ->
-            -- Closure parameter types should be concrete for unboxed values
             List.concatMap (\( _, t ) -> checkCEcoValueInLayoutPosition context t) closureInfo.params
                 ++ List.concatMap (\( _, e, _ ) -> collectExprCEcoValueIssues context e) closureInfo.captures
                 ++ collectExprCEcoValueIssues context bodyExpr
@@ -221,7 +250,8 @@ collectExprCEcoValueIssues context expr =
             []
 
 
-{-| Collect CEcoValue issues from a MonoDef.
+{-| Returns the issues in a let-bound definition: those in its expression and,
+for a tail definition, in its parameter types.
 -}
 collectDefCEcoValueIssues : String -> Mono.MonoDef -> List String
 collectDefCEcoValueIssues context def =

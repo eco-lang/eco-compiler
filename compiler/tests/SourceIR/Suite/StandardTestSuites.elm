@@ -1,10 +1,25 @@
 module SourceIR.Suite.StandardTestSuites exposing (expectSuite)
 
-{-| Standard test suite aggregator that runs all common test modules.
+{-| This module lets a check on the compiler be run against the standard
+catalogue of `SourceIR` test programs in one call, so that the check is tried on
+all of those programs rather than on a hand-picked few.
 
-This module provides a single `expectSuite` function that aggregates all
-standard test modules, making it easy to run the same set of tests across
-different compiler phases.
+A case module's `expectSuite` builds Elm source programs (`Src.Module` values)
+and gives each one to the expectation its caller passes; it does not decide what
+is checked. `expectSuite` here does the same one level up. It takes an expectation
+and a description from its caller and passes both, unchanged, to the
+`expectSuite` of each of the 69 case modules it imports. What is checked, and
+after which compiler stage, is therefore decided by the caller.
+
+Most of these modules build fixed programs. Two of them,
+`PatternComplexityFuzzCases` and `AccessorFuzzCases`, hold fuzz tests
+(`Test.fuzz`), whose programs can vary from run to run.
+
+Four `SourceIR` case modules are not included. `ForeignCases` and `KernelCases`
+build canonical modules (`Can.Module`) rather than source modules, so their
+suites take a different kind of expectation. `TypeCheckFailsCases`, whose
+programs are meant to fail type checking, and `CaseSafepointLeakCases` take the
+same kind of expectation but are left out of this list.
 
 -}
 
@@ -82,10 +97,18 @@ import SourceIR.TypeAliasCtorCases as TypeAliasCtorCases
 import Test exposing (Test)
 
 
+{-| Builds one group of tests named `condStr`, holding the suite of each
+included case module, with `expectFn` as the check those suites apply to their
+programs.
+
+`condStr` is also passed to each case module, whose own test or group name ends
+with it, so it should say what `expectFn` checks.
+
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.describe condStr
-        [ -- Non-fuzzed Tests
+        [ -- Fixed programs
           AnnotatedCases.expectSuite expectFn condStr
         , ArrayCases.expectSuite expectFn condStr
         , AsPatternCases.expectSuite expectFn condStr
@@ -153,7 +176,7 @@ expectSuite expectFn condStr =
         , KernelCompositionCases.expectSuite expectFn condStr
         , KernelCtorArgCases.expectSuite expectFn condStr
 
-        -- Fuzz Tests
+        -- Fuzz tests (AccessorScopingCases builds fixed programs)
         , PatternComplexityFuzzCases.expectSuite expectFn condStr
         , AccessorScopingCases.expectSuite expectFn condStr
         , AccessorFuzzCases.expectSuite expectFn condStr

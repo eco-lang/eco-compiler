@@ -1,12 +1,20 @@
 module TestLogic.Type.PostSolve.NoSyntheticVars exposing (expectNoSyntheticVars)
 
-{-| Test logic for invariant POST\_003: No synthetic type variables remain.
+{-| Gives tests a check that no node type left after PostSolve contains a
+type variable whose name looks generated rather than written.
 
-After solving, verify that no synthetic (unification) type variables
-remain in the final types. All type variables should be either:
+A node is an expression or pattern of the canonical module that carries a
+node id. PostSolve produces an array of node types indexed by id, with
+`Nothing` for an id that has no type. The check runs the module under test to
+PostSolve and walks every type in that array.
 
-  - User-declared type variables in annotations
-  - Generalized type variables from let-polymorphism
+A _synthetic_ variable here is decided by its name alone, as
+`isSyntheticVariable` does: a name that is empty, starts with a digit, or is
+an underscore followed by at least one more character. A lone `_` is not
+synthetic. The check sees only names, so a variable the solver invented under
+an ordinary name passes. A record's extension variable is not looked at. A
+module that fails to canonicalize or type check fails with the pipeline's
+message.
 
 -}
 
@@ -19,7 +27,13 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that no unconstrained synthetic variables remain after PostSolve.
+{-| Runs `srcModule` through PostSolve and passes when no node type after
+PostSolve contains a synthetic variable.
+
+It fails with one line per synthetic variable found, labelled with its node
+id, or with the pipeline's message when canonicalization or type checking
+fails.
+
 -}
 expectNoSyntheticVars : Src.Module -> Expect.Expectation
 expectNoSyntheticVars srcModule =
@@ -45,7 +59,9 @@ expectNoSyntheticVars srcModule =
 -- ============================================================================
 
 
-{-| Collect synthetic variable issues from node types.
+{-| Returns one message for each synthetic variable found in `nodeTypes`,
+labelled with the array index of the type it was found in, which is the node
+id. Record extension variables are not examined.
 -}
 collectSyntheticVarIssues : Array.Array (Maybe (Can.Type Name)) -> List String
 collectSyntheticVarIssues nodeTypes =
@@ -67,13 +83,11 @@ collectSyntheticVarIssues nodeTypes =
         |> Tuple.second
 
 
-{-| Check a type for synthetic variables.
+{-| Returns one message, starting with `context`, for each type variable in
+`canType` whose name `isSyntheticVariable` accepts.
 
-Synthetic variables are unification variables that should be resolved
-by PostSolve. They typically have:
-
-  - Numeric names
-  - Special prefixes from the solver
+An alias is checked through both its arguments and its body. A record's
+extension variable is not examined.
 
 -}
 checkForSyntheticVars : String -> Can.Type Name -> List String
@@ -120,26 +134,14 @@ checkForSyntheticVars context canType =
                    )
 
 
-{-| Check if a type variable name indicates a synthetic variable.
-
-Synthetic variables from unification typically:
-
-  - Have purely numeric names (e.g., "0", "1", "23")
-  - Have special prefixes like "\_" or internal markers
-
-User-declared type variables use lowercase letters (a, b, msg, etc.)
-
+{-| Tells whether a type variable name looks generated: it is empty, starts
+with a digit, or is an underscore followed by at least one more character.
 -}
 isSyntheticVariable : String -> Bool
 isSyntheticVariable name =
     case String.uncons name of
         Just ( first, rest ) ->
-            -- Synthetic variables often:
-            -- 1. Start with digits
-            -- 2. Are purely numeric
-            -- 3. Start with underscore (internal)
             Char.isDigit first || (first == '_' && not (String.isEmpty rest))
 
         Nothing ->
-            -- Empty name is suspicious
             True

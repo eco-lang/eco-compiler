@@ -6,11 +6,35 @@ module Terminal.Terminal.Chomp exposing
     , map, pure, apply, andThen
     )
 
-{-| Command-line argument parsing using a chomper-based approach.
+{-| Turns the strings that follow a command's name into typed arguments and
+flags. This is the parsing half of the command-line framework. The parse
+functions are passed to the chompers separately from the `Parser` and `Flags`
+descriptions in `Terminal.Terminal.Internal`, which the chompers use only for
+error messages and completions. Nothing here checks that the chompers a command
+runs agree with the arguments and flags it describes.
 
-This module implements the core parsing logic for extracting and validating
-command-line arguments and flags. It uses a chomper pattern to incrementally
-consume and validate input strings.
+Each string is a _chunk_: the string together with its position among the
+strings, counting from 0. A _chomper_ is a parser over the list of chunks. It
+takes out the chunks it recognises and passes the rest on, so each chomper in a
+sequence sees only what the earlier ones left. A flag chomper looks through all
+the chunks for its flag; `chompArg`, the chomper for one positional argument,
+takes the first chunk left. Chompers are combined with `pure`, `map` and
+`apply`, and in sequence with `andThen`.
+
+`chomp` parses in two steps, because flags may appear anywhere among the
+arguments. First the flag chomper takes the flags out of the whole list. Then
+the chunks it left are given to each _argument alternative_ in turn: an
+alternative is one accepted shape for the positional arguments, usually made
+with `chompExactly` or `chompMultiple`, and the first to succeed wins.
+
+A flag chomper takes out only the first occurrence of its flag.
+`checkForUnknownFlags`, run after the flag chompers, treats every string still
+left that starts with `-` as an unknown flag.
+
+Parsing also gathers tab completions. The _suggestion state_ (`Suggest`) that
+is passed from chomper to chomper holds the position of the string to be
+completed, if any. Within one sequence of chompers it is filled in at most once,
+by the first chomper that finds completions for that position.
 
 
 # Core Types
@@ -50,11 +74,23 @@ import Utils.Task.Extra as Task
 -- ====== CHOMP INTERFACE ======
 
 
-{-| Main entry point for parsing command-line arguments and flags.
+{-| Parses `strings`, flags first and then positional arguments, and returns
+a task giving the tab completions together with the outcome.
 
-Takes an optional completion index, the raw argument strings, argument parsers,
-and a flag chomper. Returns suggestions for tab completion and either an error
-or the parsed arguments and flags.
+`maybeIndex` is the position, counting from 0, of the string to complete, or
+`Nothing` when no completions are wanted, in which case the task gives an empty
+list.
+
+The flag chomper runs over all of `strings`. If it fails, the outcome is
+`BadFlag` and no alternative in `args` is tried. Otherwise each alternative is
+tried in order on the chunks the flag chomper left, and the first to succeed
+gives the arguments. If none does, the outcome is `BadArgs` with each
+alternative's error, in the order tried.
+
+Every alternative starts from the suggestion state the flag chomper left. The
+completions returned are those of that state after the successful alternative,
+or, when all fail, those of each alternative's final state, in the order tried,
+so completions the flags found appear once for each alternative.
 
 -}
 chomp :
@@ -72,6 +108,8 @@ chomp maybeIndex strings args (Chomper flagChomper) =
             ( addSuggest (Task.succeed []) suggest, Err (BadFlag flagError) )
 
 
+{-| Pairs each string with its position in the list, counting from 0.
+-}
 toChunks : List String -> List Chunk
 toChunks strings =
     List.map2 Chunk
@@ -81,6 +119,9 @@ toChunks strings =
         strings
 
 
+{-| Returns the starting suggestion state: no completions wanted, or
+completions wanted for the string at the given position and none found yet.
+-}
 toSuggest : Maybe Int -> Suggest
 toSuggest maybeIndex =
     case maybeIndex of
@@ -95,34 +136,54 @@ toSuggest maybeIndex =
 -- ====== CHOMPER ======
 
 
-{-| A parser that consumes and validates command-line argument chunks.
+{-| A parser over a command's chunks that produces a value of type `a` or
+fails with an error of type `x`.
 
-Takes suggestions and chunks, produces either a success with remaining chunks
-and parsed value, or an error.
+A chomper takes out the chunks it recognises and passes the rest on, together
+with the suggestion state, to whatever runs after it. A failure still carries
+the suggestion state, with any completions found before it.
+
+Chompers are made with `chompArg`, `chompOnOffFlag`, `chompNormalFlag`,
+`checkForUnknownFlags` and `pure`, combined with `map`, `apply` and `andThen`,
+and run by `chomp`, `chompExactly` and `chompMultiple`.
 
 -}
 type Chomper x a
     = Chomper (Suggest -> List Chunk -> ChomperResult x a)
 
 
+{-| The outcome of running a chomper.
+
+`ChomperOk` carries the suggestion state, the chunks left for the next chomper
+and the value. `ChomperErr` carries the suggestion state and the error, and no
+chunks.
+
+-}
 type ChomperResult x a
     = ChomperOk Suggest (List Chunk) a
     | ChomperErr Suggest x
 
 
-{-| A command-line argument string paired with its position index.
+{-| One of a command's argument strings, together with its position among
+them, counting from 0.
 
-Used to track which argument is being parsed for error messages and completions.
+The position stays with the string while other chunks are taken out around it,
+which is how a chomper recognises the string being completed. Chunks are made
+only inside this module, by `chomp`.
 
 -}
 type Chunk
     = Chunk Int String
 
 
-{-| Tracks suggestions for tab completion.
+{-| The tab-completion state passed along a parse.
 
-NoSuggestion means no completion context, Suggest means we know the position,
-Suggestions contains the actual completion options.
+It is in one of three states: no completions are wanted; completions are wanted
+for the string at a given position and none have been found yet; or a chomper
+has found them, and the state holds the task that produces them. A state that
+holds found completions is passed on unchanged by every later chomper.
+
+Values are made only inside this module, starting from `chomp`.
 
 -}
 type Suggest
@@ -131,6 +192,11 @@ type Suggest
     | Suggestions (Task Never (List String))
 
 
+{-| Fills in the completions if they are still wanted. For `Suggest index` it
+returns `Suggestions` holding the task `maybeUpdate index` gives, or the state
+unchanged when that is `Nothing`. Any other state is returned unchanged, so the
+first completions found are the ones kept.
+-}
 makeSuggestion : Suggest -> (Int -> Maybe (Task Never (List String))) -> Suggest
 makeSuggestion suggest maybeUpdate =
     case suggest of
@@ -148,11 +214,20 @@ makeSuggestion suggest maybeUpdate =
 -- ====== ARGS ======
 
 
+{-| Tries each argument alternative in `completeArgsList`, in order, on
+`chunks`, and returns the completions with the first success, or with
+`BadArgs` when every alternative fails, as `chomp` describes.
+-}
 chompArgs : Suggest -> List Chunk -> List (Suggest -> List Chunk -> ( Suggest, Result ArgError a )) -> ( Task Never (List String), Result Error a )
 chompArgs suggest chunks completeArgsList =
     chompArgsHelp suggest chunks completeArgsList [] []
 
 
+{-| Tries the alternatives in `completeArgsList`, in order, each on `chunks`
+and starting from `suggest`. `revSuggest` and `revArgErrors` hold the final
+suggestion states and the errors of the alternatives that have already failed,
+newest first.
+-}
 chompArgsHelp :
     Suggest
     -> List Chunk
@@ -178,6 +253,9 @@ chompArgsHelp suggest chunks completeArgsList revSuggest revArgErrors =
                     )
 
 
+{-| Returns a task giving the completions `suggest` holds, if it holds any,
+followed by those `everything` gives.
+-}
 addSuggest : Task Never (List String) -> Suggest -> Task Never (List String)
 addSuggest everything suggest =
     case suggest of
@@ -197,9 +275,12 @@ addSuggest everything suggest =
 -- ====== COMPLETE ARGS ======
 
 
-{-| Parse arguments and ensure no extra arguments remain.
+{-| Turns a chomper into an argument alternative for `chomp` that must use
+every chunk it is given.
 
-Takes a chomper and runs it, returning an error if any unparsed arguments are left.
+The alternative succeeds with the chomper's value only when the chomper leaves
+no chunks; leftover chunks give `ArgExtras` with their strings, in order. A
+failure of the chomper is passed on as it is.
 
 -}
 chompExactly : Chomper ArgError a -> Suggest -> List Chunk -> ( Suggest, Result ArgError a )
@@ -217,10 +298,14 @@ chompExactly (Chomper chomper) suggest chunks =
             ( s, Err argError )
 
 
-{-| Parse zero or more arguments of the same type.
+{-| Turns a chomper into an argument alternative for `chomp` that also takes
+any number of further arguments of one kind.
 
-Takes a chomper producing a function that accepts a list, a parser, and a parse
-function. Collects all remaining arguments and applies them to the function.
+The chomper runs first. Every chunk it leaves is then parsed with the parse
+function, in order, and the function the chomper produced is given the list of
+values. The first chunk that does not parse gives `ArgBad` with that string and
+an expectation built from the `Parser`. No chunk is left over, so this
+alternative never gives `ArgExtras`.
 
 -}
 chompMultiple : Chomper ArgError (List a -> b) -> Parser -> (String -> Maybe a) -> Suggest -> List Chunk -> ( Suggest, Result ArgError b )
@@ -233,6 +318,10 @@ chompMultiple (Chomper chomper) parser parserFn suggest chunks =
             ( s1, Err argError )
 
 
+{-| Parses each of `chunks` with `parserFn`, adding the values to `revArgs`
+(newest first), and once every chunk has parsed applies `func` to all the
+values in their original order.
+-}
 chompMultipleHelp : Parser -> (String -> Maybe a) -> List a -> Suggest -> List Chunk -> (List a -> b) -> ( Suggest, Result ArgError b )
 chompMultipleHelp parser parserFn revArgs suggest chunks func =
     case chunks of
@@ -252,10 +341,17 @@ chompMultipleHelp parser parserFn revArgs suggest chunks func =
 -- ====== REQUIRED ARGS ======
 
 
-{-| Create a chomper for a single required argument.
+{-| Creates a chomper for one required positional argument. It takes the first
+chunk left and parses it with the parse function.
 
-Takes the total number of chunks, a parser for the argument type, and a parse
-function. Consumes one chunk and validates it.
+When no chunk is left the chomper fails with `ArgMissing`, and when the chunk
+does not parse it fails with `ArgBad`; both carry an expectation built from the
+`Parser`.
+
+The `Int` is used only for completion, and is meant to be the number of strings
+given to `chomp`. A missing argument offers the `Parser`'s completions when the
+position being completed is at or beyond that number, that is, past the last
+string.
 
 -}
 chompArg : Int -> Parser -> (String -> Maybe a) -> Chomper ArgError a
@@ -284,6 +380,10 @@ chompArg numChunks ((Parser { singular, examples }) as parser) parserFn =
                             ChomperOk newSuggest otherChunks arg
 
 
+{-| Returns the parser's completions for an empty string when `targetIndex`,
+the position being completed, is at or beyond `numChunks`, and `Nothing`
+otherwise.
+-}
 suggestArg : Parser -> Int -> Int -> Maybe (Task Never (List String))
 suggestArg (Parser { suggest }) numChunks targetIndex =
     if numChunks <= targetIndex then
@@ -297,6 +397,14 @@ suggestArg (Parser { suggest }) numChunks targetIndex =
 -- ====== PARSER ======
 
 
+{-| Parses `string`, the chunk at position `index`, with `parserFn`. A string
+that does not parse gives an expectation built from the parser, with examples
+for `string`.
+
+If `index` is the position being completed, the parser's completions for
+`string` go into the suggestion state, whether or not it parses.
+
+-}
 tryToParse : Suggest -> Parser -> (String -> Maybe a) -> Int -> String -> ( Suggest, Result Expectation a )
 tryToParse suggest (Parser parser) parserFn index string =
     let
@@ -326,9 +434,12 @@ tryToParse suggest (Parser parser) parserFn index string =
 -- ====== FLAG ======
 
 
-{-| Create a chomper for a boolean on/off flag.
+{-| Creates a chomper for a flag that takes no value. It gives `True` when the
+string `--flagName` is present, and takes it out, and `False` otherwise.
 
-Takes the flag name and returns True if the flag is present, False if absent.
+Only the first occurrence of the flag is taken out. A string after the flag
+that does not start with `-` stays where it was, for the positional arguments.
+`--flagName=value` fails with `FlagWithValue`.
 
 -}
 chompOnOffFlag : String -> Chomper FlagError Bool
@@ -351,10 +462,16 @@ chompOnOffFlag flagName =
                             ChomperErr suggest (FlagWithValue flagName string)
 
 
-{-| Create a chomper for a flag that takes a value.
+{-| Creates a chomper for a flag that takes a value. It gives `Just` the value,
+parsed with the parse function, when the flag is present, and `Nothing`
+otherwise.
 
-Takes the flag name, a parser, and a parse function. Returns Just the parsed
-value if the flag is present, Nothing if absent.
+The value is written `--flagName=value` or `--flagName value`. In the second
+form it is the next string, and only if that does not start with `-`. The flag
+and its value are taken out, and only the first occurrence of the flag is. A
+flag with no value fails with `FlagWithNoValue`, and a value that does not parse
+fails with `FlagWithBadValue`; both carry an expectation built from the
+`Parser`.
 
 -}
 chompNormalFlag : String -> Parser -> (String -> Maybe a) -> Chomper FlagError (Maybe a)
@@ -391,21 +508,48 @@ chompNormalFlag flagName ((Parser { singular, examples }) as parser) parserFn =
 -- ====== FIND FLAG ======
 
 
+{-| A flag found among the chunks: the chunks before it, in their original
+order, what followed the flag's name, and the chunks after it. When what
+followed is `Possibly` the next chunk, that chunk is not among those after it.
+-}
 type FoundFlag
     = FoundFlag (List Chunk) Value (List Chunk)
 
 
+{-| What followed a flag's name.
+
+`Definitely index value` is a value written after `=` in the flag's own chunk,
+which is at position `index`.
+
+`Possibly chunk` is the chunk after the flag, which does not start with `-`. It
+is the value of a flag that takes one, and an ordinary argument otherwise.
+
+`DefNope` means the flag was the last chunk, or the chunk after it starts with
+`-`.
+
+-}
 type Value
     = Definitely Int String
     | Possibly Chunk
     | DefNope
 
 
+{-| Finds the first chunk that is `--flagName` or begins with `--flagName=`,
+and splits the other chunks around it.
+-}
 findFlag : String -> List Chunk -> Maybe FoundFlag
 findFlag flagName chunks =
     findFlagHelp [] ("--" ++ flagName) ("--" ++ flagName ++ "=") chunks
 
 
+{-| Finds the first of `chunks` that begins with `flagPrefix` or equals
+`loneFlag`, given the chunks already passed in `revPrev`, newest first.
+
+A chunk beginning with `flagPrefix` gives `Definitely` the text after the
+prefix. A `loneFlag` chunk gives `Possibly` the next chunk, or `DefNope` when
+there is none or it starts with `-`.
+
+-}
 findFlagHelp : List Chunk -> String -> String -> List Chunk -> Maybe FoundFlag
 findFlagHelp revPrev loneFlag flagPrefix chunks =
     let
@@ -445,10 +589,17 @@ findFlagHelp revPrev loneFlag flagPrefix chunks =
 -- ====== CHECK FOR UNKNOWN FLAGS ======
 
 
-{-| Verify that all remaining flags are recognized.
+{-| Creates a chomper that fails with `FlagUnknown` if any chunk left starts
+with `-`, and otherwise succeeds without taking anything.
 
-Takes the valid flags specification and checks if any unrecognized flags remain
-in the input, producing an error with suggestions if found.
+It does not look at flag names: any string left that starts with `-` counts. So
+it is meant to run after every flag chomper, and a second occurrence of a known
+flag, a lone `-` or a negative number is reported as unknown. The error carries
+the first such string and the `Flags` description, from which nearby names can
+be suggested.
+
+For completion, an unknown string at the position being completed offers each
+flag name in the `Flags` description, and `--help`, that begins with it.
 
 -}
 checkForUnknownFlags : Flags -> Chomper FlagError ()
@@ -465,6 +616,10 @@ checkForUnknownFlags flags =
                         (FlagUnknown unknownFlag flags)
 
 
+{-| Returns the names in `flags`, and `--help`, that begin with the string of
+the chunk of `unknownFlags` at position `targetIndex`, or `Nothing` when no
+chunk of `unknownFlags` is at that position.
+-}
 suggestFlag : List Chunk -> Flags -> Int -> Maybe (Task Never (List String))
 suggestFlag unknownFlags flags targetIndex =
     case unknownFlags of
@@ -479,11 +634,16 @@ suggestFlag unknownFlags flags targetIndex =
                 suggestFlag otherUnknownFlags flags targetIndex
 
 
+{-| Returns whether a chunk's string starts with `-`.
+-}
 startsWithDash : Chunk -> Bool
 startsWithDash (Chunk _ string) =
     String.startsWith "-" string
 
 
+{-| Returns `--help`, then the name of every flag in `flags` with its leading
+`--`, in the order the flags were added, then `names`.
+-}
 getFlagNames : Flags -> List String -> List String
 getFlagNames flags names =
     case flags of
@@ -494,6 +654,8 @@ getFlagNames flags names =
             getFlagNames subFlags (getFlagName flag :: names)
 
 
+{-| Returns a flag's name with a leading `--`.
+-}
 getFlagName : Flag -> String
 getFlagName flag =
     case flag of
@@ -508,11 +670,8 @@ getFlagName flag =
 -- ====== CHOMPER INSTANCES ======
 
 
-{-| Transform the value produced by a chomper.
-
-Applies a function to the successful result of a chomper without changing
-the error type or parsing behavior.
-
+{-| Returns a chomper that does what the given one does and applies `func` to
+its value.
 -}
 map : (a -> b) -> Chomper x a -> Chomper x b
 map func (Chomper chomper) =
@@ -526,10 +685,7 @@ map func (Chomper chomper) =
                     ChomperErr sErr e
 
 
-{-| Create a chomper that always succeeds with a given value.
-
-Doesn't consume any input, just wraps the value in a successful chomper result.
-
+{-| Creates a chomper that succeeds with `value` and takes no chunks.
 -}
 pure : a -> Chomper x a
 pure value =
@@ -538,10 +694,12 @@ pure value =
             ChomperOk ss cs value
 
 
-{-| Apply a chomper producing a function to a chomper producing a value.
+{-| Returns a chomper that runs `funcChomper`, then `argChomper` on the chunks
+it left, and applies the function from the first to the value from the second.
 
-Sequences two chompers, applying the function from the first to the value
-from the second.
+The value chomper comes first in the argument list so that a pipeline reads in
+order: `pure f |> apply a |> apply b` runs `a`, then `b`, and gives `f` applied
+to both values. If `funcChomper` fails, `argChomper` is not run.
 
 -}
 apply : Chomper x a -> Chomper x (a -> b) -> Chomper x b
@@ -566,11 +724,9 @@ apply (Chomper argChomper) (Chomper funcChomper) =
                     ChomperErr s1 err
 
 
-{-| Chain chompers together, allowing the second to depend on the first's result.
-
-Takes a function that produces a chomper based on a value, and a chomper that
-produces that value. Enables dynamic parsing based on earlier results.
-
+{-| Returns a chomper that runs `aChomper`, then runs the chomper `callback`
+builds from its value on the chunks `aChomper` left. If `aChomper` fails,
+`callback` is not called.
 -}
 andThen : (a -> Chomper x b) -> Chomper x a -> Chomper x b
 andThen callback (Chomper aChomper) =

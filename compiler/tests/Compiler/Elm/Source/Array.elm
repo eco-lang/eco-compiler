@@ -1,20 +1,38 @@
 module Compiler.Elm.Source.Array exposing (source)
 
-{-| Full source code of elm/core Array module for compilation testing.
+{-| The source text of elm/core's `Array` module, held as a string so that a
+real package module can be compiled without reading a file.
 
-This module contains the exact source code from elm/core 1.0.5 Array.elm
-as an Elm string, enabling IO-free compilation tests.
+`source` is the whole module. It differs from the module elm/core 1.0.5
+publishes only in that the declarations from `sliceRight` to the end of the
+file, the private slicing and `Builder` helpers, carry no comments. The module
+imports `Basics`, `Bitwise`, `Elm.JsArray`, `List`, `Maybe` and `Tuple`, so
+compiling it needs those modules' interfaces.
+
+Everything between the triple quotes is string data. The doc comments and `--`
+comments in there belong to the embedded module, not to this one, and editing
+them changes what is compiled. A backslash in the embedded module is written
+as `\\` here, because the literal reads a single backslash as the start of an
+escape.
+
+The text is held in four private literals, `firstPart` to `fourthPart`, each
+cut between two top-level declarations of the embedded module, and `source` is
+their concatenation.
 
 -}
 
 
-{-| The complete source code of Array module.
+{-| The complete text of the embedded `Array` module, ready to parse as one
+source file.
 -}
 source : String
 source =
     firstPart ++ secondPart ++ thirdPart ++ fourthPart
 
 
+{-| The first part of the module text: the module header, its doc comment, its
+imports, and the declarations from `branchFactor` to `fromListHelp`.
+-}
 firstPart : String
 firstPart =
     """module Array
@@ -274,6 +292,9 @@ fromListHelp list nodeList nodeListSize =
 """
 
 
+{-| The second part of the module text: the declarations from `get` to
+`toIndexedList`.
+-}
 secondPart : String
 secondPart =
     """
@@ -489,6 +510,9 @@ toIndexedList ((Array_elm_builtin len _ _ _) as array) =
 """
 
 
+{-| The third part of the module text: the declarations from `foldr` to
+`appendHelpBuilder`.
+-}
 thirdPart : String
 thirdPart =
     """
@@ -683,6 +707,9 @@ appendHelpBuilder tail builder =
 """
 
 
+{-| The last part of the module text: the declarations from `slice` to
+`compressNodes`, the end of the module.
+-}
 fourthPart : String
 fourthPart =
     """

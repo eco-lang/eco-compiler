@@ -1,10 +1,27 @@
 module Compiler.Data.NameKernelTest exposing (suite)
 
-{-| Tests for kernel name prefix detection and stripping.
+{-| Tests for `Name.getKernel`, which splits the name of a kernel module into its
+kernel prefix and its home module.
 
-Verifies that getKernel correctly distinguishes Elm.Kernel.\* from
-Eco.Kernel.\* prefixes, which is critical for MLIR codegen to emit
-the correct C function name prefix (Elm\_Kernel\_ vs Eco\_Kernel\_).
+A kernel module is one named `Elm.Kernel.X` or `Eco.Kernel.X`; its prefix is
+`Elm` or `Eco` and its home is `X`. When the canonicalizer resolves a qualified
+reference into a kernel module it keeps both halves, and MLIR code generation
+names the kernel's C symbol starting `<prefix>_Kernel_<home>_`. A wrong split
+would make a reference name a different kernel's symbol.
+
+The fixture is nothing more than literal module names.
+
+The tests establish:
+
+  - `Elm.Kernel.List` and `Elm.Kernel.Http` split into `( "Elm", "List" )` and
+    `( "Elm", "Http" )`.
+  - `Eco.Kernel.File`, `Eco.Kernel.Http` and `Eco.Kernel.Crash` split into
+    `( "Eco", "File" )`, `( "Eco", "Http" )` and `( "Eco", "Crash" )`.
+  - `Elm.Kernel.File` and `Eco.Kernel.File` give results that are not equal.
+    This test does not check what either result is.
+
+Among what is not tested: a name that is not a kernel module name, on which
+`getKernel` crashes; a home whose name contains a dot; and `Name.isKernel`.
 
 -}
 
@@ -13,6 +30,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| All of this module's tests, grouped under the label `Name.getKernel`.
+-}
 suite : Test
 suite =
     Test.describe "Name.getKernel"

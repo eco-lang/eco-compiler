@@ -1,18 +1,35 @@
 module TestLogic.Monomorphize.NoCEcoValueInUserFunctions exposing (expectNoCEcoValueInUserFunctions, Violation)
 
-{-| Test logic for MONO\_021: No CEcoValue MVar in user-defined function types.
+{-| Holds a checker for the rule that no `CEcoValue` type variable be left in
+the types of user-defined functions and closures after monomorphization; the
+failure messages call this rule MONO\_021. As written, the checker can report
+nothing, so `expectNoCEcoValueInUserFunctions` passes whenever monomorphization
+succeeds.
 
-After monomorphization, no user-defined function or closure MonoType (including
-parameters and results of MonoDefine, MonoTailFunc, and MonoClosure) may contain
-MVar with CEcoValue constraint.
+A type variable that survives monomorphization is an `MVar` carrying a
+constraint, `CEcoValue` or `CNumber`; `Compiler.AST.Monomorphized` describes
+both. The checker skips `MonoExtern` and `MonoManagerLeaf` nodes.
 
-Remaining CEcoValue MVar is restricted to kernel ABI types (MonoExtern,
-MonoManagerLeaf, Debug kernels, and other layout-insensitive metadata) and must
-never appear in layout- or ABI-defining positions for non-kernel code.
+The caller supplies the program. It is compiled with
+`TestLogic.TestPipeline.runToMono`, which uses the substitution engine, and the
+checker walks every node of the resulting graph and every expression inside
+each node, including case branches held inline in a decision tree. It looks at
+these types:
 
-This invariant catches bugs where tail-recursive functions or local closures are
-not being fully specialized during monomorphization, leaving polymorphic type
-variables in positions that affect runtime layout and calling conventions.
+  - the type of a `MonoDefine` or `MonoTailFunc` node, when it is a function
+    type;
+  - the parameter types of a `MonoTailFunc` node, of a local `MonoTailDef`,
+    and of a closure;
+  - the type of a closure, when it is a function type.
+
+Each of these types is passed to `collectCEcoValueVars`, which is meant to list
+the offending variables in it. It lists none for any type: both of its `MVar`
+arms return nothing, and every other arm returns nothing or what the type's
+components give. So no `Violation` is ever produced.
+
+Among what is not checked: a variable of either constraint in any of the
+positions above; the types of port nodes; and the types of expressions other
+than closures.
 
 @docs expectNoCEcoValueInUserFunctions, Violation
 
@@ -26,7 +43,10 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Violation record for reporting MONO\_021 issues.
+{-| One finding of the check. `context` says where it is, starting with
+`SpecId` and the node's index in the graph, and `message` is a
+multi-line description naming the offending type and its variables. The check
+as written never produces one.
 -}
 type alias Violation =
     { context : String
@@ -34,7 +54,13 @@ type alias Violation =
     }
 
 
-{-| MONO\_021: Verify no CEcoValue MVar appears in user-defined function types.
+{-| Compiles `srcModule` with `TestLogic.TestPipeline.runToMono` and passes when
+the graph has no violation, failing with every violation found
+otherwise. A failed compilation fails with the pipeline's message.
+
+No type is ever reported as holding an offending variable, so this passes
+exactly when compilation succeeds.
+
 -}
 expectNoCEcoValueInUserFunctions : Src.Module -> Expectation
 expectNoCEcoValueInUserFunctions srcModule =
@@ -54,17 +80,9 @@ expectNoCEcoValueInUserFunctions srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check all nodes in the MonoGraph for MONO\_021 violations.
-
-Walks every MonoNode and every sub-expression, checking:
-
-  - MonoDefine: the node MonoType and the body expression types
-  - MonoTailFunc: the node MonoType, parameter types, and body expression types
-  - MonoClosure: closure params, captures, and body expression types
-  - MonoTailDef (local tail-recursive defs): parameter types and body types
-  - MonoPortIncoming/MonoPortOutgoing: body expression types
-    Kernel nodes (MonoExtern, MonoManagerLeaf) are explicitly exempted.
-
+{-| Returns the violations in every node of the graph, in SpecId order. A
+node's SpecId is its index in the graph's node array, and empty slots are
+skipped.
 -}
 checkNoCEcoValueInUserFunctions : Mono.MonoGraph -> List Violation
 checkNoCEcoValueInUserFunctions (Mono.MonoGraph data) =
@@ -82,7 +100,10 @@ checkNoCEcoValueInUserFunctions (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Check a single MonoNode for MONO\_021 violations.
+{-| Returns the violations in `node`, whose SpecId is `specId`. A `MonoDefine`
+or `MonoTailFunc` node is checked on its type, its parameters (a tail function
+only) and its body, and a port node on its body alone. `MonoExtern`,
+`MonoManagerLeaf`, constructor and enum nodes give none.
 -}
 checkNode : Int -> Mono.MonoNode -> List Violation
 checkNode specId node =
@@ -106,14 +127,12 @@ checkNode specId node =
         Mono.MonoPortOutgoing expr _ ->
             checkExpr ctx expr
 
-        -- Kernel nodes: CEcoValue is allowed (MONO_021 exemption)
         Mono.MonoExtern _ ->
             []
 
         Mono.MonoManagerLeaf _ _ ->
             []
 
-        -- Constructors and enums: no function bodies to check
         Mono.MonoCtor _ _ ->
             []
 
@@ -121,11 +140,9 @@ checkNode specId node =
             []
 
 
-{-| Check a node-level MonoType for CEcoValue in function-typed positions.
-
-Only flags violations when the MonoType is a function type (Mono.mFunction) since
-MONO\_021 specifically targets function parameter and result types.
-
+{-| Returns a violation for `monoType`, the type of a node of kind `nodeKind`,
+when it is a function type in which `collectCEcoValueVars` lists a variable.
+A type that is not a function type gives none.
 -}
 checkNodeType : String -> String -> Mono.MonoType -> List Violation
 checkNodeType ctx nodeKind monoType =
@@ -156,7 +173,8 @@ checkNodeType ctx nodeKind monoType =
             []
 
 
-{-| Check parameter types of a MonoTailFunc for CEcoValue.
+{-| Returns one violation for each of the `params` of a node of kind `nodeKind`
+whose type has a variable `collectCEcoValueVars` lists.
 -}
 checkParamTypes : String -> String -> List ( String, Mono.MonoType ) -> List Violation
 checkParamTypes ctx nodeKind params =
@@ -187,10 +205,15 @@ checkParamTypes ctx nodeKind params =
         params
 
 
-{-| Recursively check a MonoExpr for MONO\_021 violations.
+{-| Returns the violations in `expr` and in every expression inside it. A
+closure is checked on its parameters and its type, and a local `MonoTailDef`
+on its parameters; no other expression's type is looked at.
 
-Checks closure params, MonoTailDef params, and function-typed expressions
-for CEcoValue MVar that should have been resolved by monomorphization.
+`ctx` is the location prefix of each violation. It is extended with `closure`
+for everything found in or on a closure, including its own parameters and
+type; with `taildef=` and the definition's name for a tail definition's
+parameters and body; and with `inline-leaf` for a branch held inline in a
+case's decision tree.
 
 -}
 checkExpr : String -> Mono.MonoExpr -> List Violation
@@ -251,7 +274,6 @@ checkExpr ctx expr =
         Mono.MonoTupleCreate _ items _ ->
             List.concatMap (checkExpr ctx) items
 
-        -- Leaf expressions with no sub-expressions
         Mono.MonoLiteral _ _ ->
             []
 
@@ -271,7 +293,8 @@ checkExpr ctx expr =
             []
 
 
-{-| Check closure info for CEcoValue in parameter types.
+{-| Returns one violation for each parameter of the closure described by `info`
+whose type has a variable `collectCEcoValueVars` lists.
 -}
 checkClosureInfo : String -> Mono.ClosureInfo -> List Violation
 checkClosureInfo ctx info =
@@ -302,7 +325,8 @@ checkClosureInfo ctx info =
         info.params
 
 
-{-| Check MonoTailDef parameter types for CEcoValue.
+{-| Returns one violation for each of the `params` of the local tail
+definition `defName` whose type has a variable `collectCEcoValueVars` lists.
 -}
 checkTailDefParams : String -> String -> List ( String, Mono.MonoType ) -> List Violation
 checkTailDefParams ctx defName params =
@@ -336,7 +360,9 @@ checkTailDefParams ctx defName params =
         params
 
 
-{-| Check a function-typed expression for CEcoValue in its type.
+{-| Returns a violation for `monoType`, the type of an expression of kind
+`exprKind`, when it is a function type in which `collectCEcoValueVars` lists a
+variable. A type that is not a function type gives none.
 -}
 checkFunctionExprType : String -> String -> Mono.MonoType -> List Violation
 checkFunctionExprType ctx exprKind monoType =
@@ -367,7 +393,9 @@ checkFunctionExprType ctx exprKind monoType =
             []
 
 
-{-| Check the decider tree for closures or tail-defs with CEcoValue violations.
+{-| Returns the violations in the case branches held inline at the leaves of
+`decider`, with `inline-leaf` added to `ctx`. A `Jump` leaf gives none, because
+its branch is in the case's own branch list, which `checkExpr` walks.
 -}
 checkDecider : String -> Mono.Decider Mono.MonoChoice -> List Violation
 checkDecider ctx decider =
@@ -389,16 +417,19 @@ checkDecider ctx decider =
                 ++ checkDecider ctx fallback
 
 
-{-| Collect all banned type markers from a MonoType recursively.
+{-| Returns the names of the offending variables in `monoType`, which is
+always the empty list.
 
-Flags CEcoValue MVar (failed specialization).
+Both `MVar` arms, `CEcoValue` and `CNumber`, return nothing. A list, tuple,
+record, custom type or function type returns what its components give, and
+every other type returns nothing, so no type yields a name.
 
 -}
 collectCEcoValueVars : Mono.MonoType -> List String
 collectCEcoValueVars monoType =
     case monoType of
         Mono.MVar _ Mono.CEcoValue ->
-            -- CEcoValue MVars are acceptable — they compile identically to eco.value
+            -- Not reported, although these are the variables the check is named for.
             []
 
         Mono.MVar _ Mono.CNumber ->
@@ -424,7 +455,8 @@ collectCEcoValueVars monoType =
             []
 
 
-{-| Format violations as a readable string.
+{-| Returns the failure message for `violations`: a header giving their count,
+then each violation's context and message, separated by blank lines.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =

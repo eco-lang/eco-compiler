@@ -1,9 +1,49 @@
 module TestLogic.GlobalOpt.CafHoistTest exposing (suite)
 
-{-| Unit tests for the CAF hoisting pass
-(plans/caf-hoist-closed-expressions.md H1) on hand-built synthetic
-MonoGraphs — exact control over closedness, dedupe, exclusions, and the
-append-only registry surgery.
+{-| Tests for `Compiler.GlobalOpt.CafHoist.run`, without which a change to
+which subexpressions the pass moves, to how it shares one new definition
+between equal ones, or to how it adds that definition to the graph would go
+unnoticed.
+
+The pass looks inside function bodies for closed subexpressions, ones that
+read no local variable bound outside themselves. To hoist one is to append a
+new spec to the graph, a nullary `MonoDefine` whose body is the subexpression,
+and to replace the subexpression with a `MonoVarGlobal` naming that spec. A
+spec is one node of the `MonoGraph`, numbered by its position. The counters
+the tests read are the fields of `CafHoist.Stats`.
+
+The fixture is `testGraph`, built by hand so that the tests control exactly
+which subexpressions are closed. It has three specs, numbered 0 to 2, each a
+function of one `String` parameter whose body is a `String.append` kernel call
+of a closed subexpression and the parameter. That call reads the parameter, so
+it is never closed itself. Specs 0 and 1 both use `closedCall`, a call with
+result type `String` that counts four expression nodes; spec 2 uses
+`closedScalarCall`, a call with result type `Int` that counts three.
+
+The tests establish:
+
+  - With a minimum size of 3 and room for 100 hoists, one spec is minted
+    (`hoisted` 1) and two sites are replaced (`sites` 2), the second by reusing
+    the first's spec (`deduped` 1), and the `Int` call is counted in
+    `skippedScalar`. The graph then has four nodes,
+    `registry.nextId` is 4 and `registry.reverseMapping` has four entries. Node
+    3 is a `MonoDefine` of a call, of type `String`, and spec 0's body call
+    has `MonoVarGlobal` spec 3 as its first argument and a local variable as
+    its second (its name is not checked). Spec 1's body is not inspected.
+  - Running the pass again, with the same settings, on the graph the first run
+    produced mints nothing and replaces nothing.
+  - With a minimum size of 10, larger than either closed call, nothing is
+    minted and nothing is replaced.
+  - With room for no hoists, nothing is minted and `skippedBudget` is at
+    least 1.
+
+Among what is not tested: candidates that contain a closure, which are minted
+once per site rather than shared; the exclusions for function-typed, `Debug`
+or `CellStore` and `elm/bytes` candidates; tail-function bodies and closure
+capture expressions; an eligible subexpression inside an ineligible one; the
+names given to new specs in `reverseMapping`; the crash on a registry whose
+size does not match the node count; and the `origNodes` counter.
+
 -}
 
 import Array
@@ -17,6 +57,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The `CafHoist` tests, as the module docstring lists them.
+-}
 suite : Test
 suite =
     Test.describe "CafHoist"
@@ -35,7 +77,6 @@ suite =
                     , \_ -> Expect.equal 4 g1.registry.nextId
                     , \_ -> Expect.equal 4 (Array.length g1.registry.reverseMapping)
                     , \_ ->
-                        -- the appended spec is the closed expression as a define
                         case Array.get 3 g1.nodes of
                             Just (Just (Mono.MonoDefine (Mono.MonoCall _ _ _ _ _) ty)) ->
                                 Expect.equal Mono.MString ty
@@ -43,7 +84,6 @@ suite =
                             _ ->
                                 Expect.fail "expected appended MonoDefine call spec at id 3"
                     , \_ ->
-                        -- site in node 0 replaced by a global ref to spec 3
                         case Array.get 0 g1.nodes of
                             Just (Just (Mono.MonoDefine (Mono.MonoClosure _ (Mono.MonoCall _ _ [ Mono.MonoVarGlobal _ 3 _, Mono.MonoVarLocal _ _ ] _ _) _) _)) ->
                                 Expect.pass
@@ -85,30 +125,46 @@ suite =
 
 
 -- ====== SYNTHETIC GRAPH ======
--- node 0: f = \x -> strApp (CLOSED: strRepeat 3 "ab") x        → hoist
--- node 1: h = \y -> strApp (CLOSED: strRepeat 3 "ab") y        → dedupe with node 0
--- node 2: n = \z -> intAdd (CLOSED-SCALAR: strLen "ab") z      → skippedScalar
---   (result type MInt on the closed subtree ⇒ HEAP_035 exclusion)
 
 
+{-| The module the fixture's three functions and their lambdas are named in.
+No test depends on which module it is.
+-}
 home : ModuleName.Canonical
 home =
     ModuleName.Canonical ( "author", "proj" ) "M"
 
 
+{-| The `String` type, used for the fixture's parameters, string literals and
+`String` results.
+-}
 strTy : Mono.MonoType
 strTy =
     Mono.MString
 
 
+{-| The type `String -> String`, given to the three specs, their closures and
+all three kernel references.
+
+That is not the real type of any of the three kernels. It does not matter
+here, because `CafHoist.run` judges a call by the result type recorded on the
+call itself, not by the type of the function it calls.
+
+-}
 fnTy : Mono.MonoType
 fnTy =
     Mono.mFunction Mono.topLegacy [ strTy ] strTy
 
 
+{-| The closed call `String.repeat 3 "ab"`, with result type `String`, which
+the pass hoists when the minimum size and the hoist budget allow.
+
+It counts four expression nodes: the call, the kernel reference and the two
+literals. That reaches a minimum size of 3 but not one of 10.
+
+-}
 closedCall : Mono.MonoExpr
 closedCall =
-    -- strRepeat 3 "ab" : String — closed, value-ABI, size 4 (call+kernel+2 lits)
     Mono.MonoCall A.zero
         (Mono.MonoVarKernel A.zero "Elm" "String" "repeat" fnTy)
         [ Mono.MonoLiteral (Mono.LInt 3) Mono.MInt
@@ -118,9 +174,16 @@ closedCall =
         Mono.defaultCallInfo
 
 
+{-| The closed call `String.length "ab"`, with result type `Int`, which the pass
+does not hoist because an `Int` result is a scalar.
+
+It counts three expression nodes. At a minimum size of 3 it passes the size
+check and is then counted in `skippedScalar`; at a minimum size of 10 the size
+check rejects it first and no counter changes.
+
+-}
 closedScalarCall : Mono.MonoExpr
 closedScalarCall =
-    -- strLen "ab" : Int — closed but scalar-ABI ⇒ excluded
     Mono.MonoCall A.zero
         (Mono.MonoVarKernel A.zero "Elm" "String" "length" fnTy)
         [ Mono.MonoLiteral (Mono.LStr "ab") strTy ]
@@ -128,6 +191,10 @@ closedScalarCall =
         Mono.defaultCallInfo
 
 
+{-| Builds a function body that calls `String.append` on `closed` and the local
+variable `param`. Because the call reads `param`, the call itself is never
+closed.
+-}
 bodyUsing : String -> Mono.MonoExpr -> Mono.MonoExpr
 bodyUsing param closed =
     Mono.MonoCall A.zero
@@ -139,6 +206,10 @@ bodyUsing param closed =
         Mono.defaultCallInfo
 
 
+{-| Builds a spec defining a function of one `String` parameter, `param`, whose
+body is `bodyUsing param closed`. The function captures nothing, and `uid`
+numbers its anonymous lambda.
+-}
 funcNode : Int -> String -> Mono.MonoExpr -> Mono.MonoNode
 funcNode uid param closed =
     Mono.MonoDefine
@@ -157,6 +228,13 @@ funcNode uid param closed =
         fnTy
 
 
+{-| The three-spec graph every test runs on. Spec 0 (`f`) and spec 1 (`h`)
+both contain `closedCall`, and spec 2 (`n`) contains `closedScalarCall`.
+
+`registry.nextId` is 3 and `registry.reverseMapping` has three entries, one
+per node. `CafHoist.run` crashes unless both match the node count.
+
+-}
 testGraph : Mono.MonoGraph
 testGraph =
     Mono.MonoGraph

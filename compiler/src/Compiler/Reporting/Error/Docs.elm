@@ -4,11 +4,23 @@ module Compiler.Reporting.Error.Docs exposing
     , errorEncoder, errorDecoder
     )
 
-{-| Error reporting for documentation comment validation.
+{-| The errors a module's documentation can have, and the reports that explain
+them to the user.
 
-This module validates documentation comments in Elm packages, ensuring they
-follow the required format with proper documentation tags, type annotations, and
-alignment with the module's exposing list.
+Documentation for a module is assembled from its doc comments. The module
+docstring, here called the overview, must exist and must list every exposed
+name on `@docs` lines, and every exposed definition must carry a doc comment of
+its own. The checks themselves are made in `Compiler.Elm.Docs`; this module
+only describes what they can find and renders it.
+
+The problems fall into five kinds, in the order the checks meet them: the
+module exposes everything, the overview is missing, the `@docs` lines cannot be
+parsed, the names on them disagree with the `exposing` list, or an exposed
+definition lacks a comment or annotation. The last kind collects every
+definition problem found, so `toReports` gives one report per problem.
+
+Errors are also written to the build cache, so the module ends with a binary
+codec for them.
 
 
 # Errors
@@ -42,7 +54,17 @@ import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
 
-{-| Represents various errors that can occur during documentation validation.
+{-| One failure of a module's documentation, of one of the five kinds.
+
+`NoDocs` means the module has no overview; its region is where one should be.
+
+`ImplicitExposing` means the module is declared `exposing (..)`.
+
+`SyntaxProblem` means the `@docs` lines of the overview could not be parsed.
+
+`DefProblems` carries every definition problem that was found. `NameProblems`
+carries a non-empty list of name problems.
+
 -}
 type Error
     = NoDocs A.Region
@@ -52,7 +74,16 @@ type Error
     | DefProblems (NE.Nonempty DefProblem)
 
 
-{-| Represents syntax errors found while parsing documentation comments.
+{-| A failure to parse the `@docs` lines of a module overview, with the row and
+column where parsing stopped.
+
+`Op` means an operator in parentheses, written like `(+)`, could not be parsed
+after its opening parenthesis, and `OpBad` that the operator is a reserved
+symbol, which `BadOperator` names. `Name` means no name was found where one was
+expected. `Space` is a whitespace problem in the comment: a tab or an unclosed
+block comment. `Comma` means a comma was expected. `BadEnd` is the error given
+when the parser stops before the end of the overview for any other reason.
+
 -}
 type SyntaxProblem
     = Op Row Col
@@ -63,7 +94,14 @@ type SyntaxProblem
     | BadEnd Row Col
 
 
-{-| Represents mismatches between names in documentation and the exposing list.
+{-| A disagreement between the names on the `@docs` lines and the names in the
+module's `exposing` list.
+
+`NameDuplicate` is a name listed on `@docs` lines more than once, with the
+regions of two of its listings. `NameOnlyInDocs` carries the region of the
+name on a `@docs` line, and `NameOnlyInExports` the region of the name in the
+`exposing` list.
+
 -}
 type NameProblem
     = NameDuplicate Name.Name A.Region A.Region
@@ -71,15 +109,23 @@ type NameProblem
     | NameOnlyInExports Name.Name A.Region
 
 
-{-| Represents missing documentation or type annotations on definitions.
+{-| An exposed definition that lacks something the documentation needs.
+
+`NoComment` is an exposed name with no doc comment; its region is that of the
+name in the `exposing` list. `NoAnnotation` is an exposed value with no type
+annotation; its region is that of the definition's name.
+
 -}
 type DefProblem
     = NoComment Name.Name A.Region
     | NoAnnotation Name.Name A.Region
 
 
-{-| Convert documentation validation errors into one or more user-friendly error
-reports, helping package authors write proper documentation comments.
+{-| Builds the reports for a documentation error, showing code from `source`.
+
+`NameProblems` and `DefProblems` give one report per problem they carry; every
+other error gives a single report.
+
 -}
 toReports : Code.Source -> Error -> NE.Nonempty Report.Report
 toReports source err =
@@ -117,6 +163,10 @@ toReports source err =
             NE.map (toDefProblemReport source) problems
 
 
+{-| Builds the report for a `@docs` parse failure, pointing at the zero-width
+region at the position where parsing stopped. A `Space` problem gets the report
+`Compiler.Reporting.Error.Syntax.toSpaceReport` builds for it.
+-}
 toSyntaxProblemReport : Code.Source -> SyntaxProblem -> Report.Report
 toSyntaxProblemReport source problem =
     let
@@ -158,6 +208,8 @@ toSyntaxProblemReport source problem =
             toSyntaxReport row col "I am not really sure what I am getting stuck on though."
 
 
+{-| Returns the empty region that starts and ends at `row` and `col`.
+-}
 toRegion : Row -> Col -> A.Region
 toRegion row col =
     let
@@ -168,6 +220,9 @@ toRegion row col =
     A.Region pos pos
 
 
+{-| Builds the report for a name that disagrees between the `@docs` lines and the
+`exposing` list. A duplicate shows both listings and is reported at the second.
+-}
 toNameProblemReport : Code.Source -> NameProblem -> Report.Report
 toNameProblemReport source problem =
     case problem of
@@ -206,6 +261,9 @@ toNameProblemReport source problem =
                     )
 
 
+{-| Builds the report for an exposed definition with no doc comment or no type
+annotation.
+-}
 toDefProblemReport : Code.Source -> DefProblem -> Report.Report
 toDefProblemReport source problem =
     case problem of
@@ -241,7 +299,9 @@ toDefProblemReport source problem =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Serialize a documentation error to bytes for caching or transmission.
+{-| Produces the binary encoding of a documentation error: a one-byte tag, its
+constructor's position in the type's declaration, followed by its fields.
+Regions use the fixed-width `A.regionEncoder` form.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
@@ -277,7 +337,8 @@ errorEncoder error =
                 ]
 
 
-{-| Deserialize a documentation error from bytes.
+{-| A decoder for the encoding `errorEncoder` writes. An unknown tag fails the
+decode.
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
@@ -305,6 +366,9 @@ errorDecoder =
             )
 
 
+{-| Produces the encoding of a `SyntaxProblem`: a tag in declaration order, then
+its fields, with row and column each written as `BE.int`.
+-}
 syntaxProblemEncoder : SyntaxProblem -> Bytes.Encode.Encoder
 syntaxProblemEncoder syntaxProblem =
     case syntaxProblem of
@@ -353,6 +417,8 @@ syntaxProblemEncoder syntaxProblem =
                 ]
 
 
+{-| A decoder for the encoding `syntaxProblemEncoder` writes.
+-}
 syntaxProblemDecoder : Bytes.Decode.Decoder SyntaxProblem
 syntaxProblemDecoder =
     Bytes.Decode.unsignedInt8
@@ -396,6 +462,9 @@ syntaxProblemDecoder =
             )
 
 
+{-| Produces the encoding of a `NameProblem`: a tag in declaration order, then the
+name and its regions.
+-}
 nameProblemEncoder : NameProblem -> Bytes.Encode.Encoder
 nameProblemEncoder nameProblem =
     case nameProblem of
@@ -422,6 +491,8 @@ nameProblemEncoder nameProblem =
                 ]
 
 
+{-| A decoder for the encoding `nameProblemEncoder` writes.
+-}
 nameProblemDecoder : Bytes.Decode.Decoder NameProblem
 nameProblemDecoder =
     Bytes.Decode.unsignedInt8
@@ -449,6 +520,9 @@ nameProblemDecoder =
             )
 
 
+{-| Produces the encoding of a `DefProblem`: a tag in declaration order, then the
+name and its region.
+-}
 defProblemEncoder : DefProblem -> Bytes.Encode.Encoder
 defProblemEncoder defProblem =
     case defProblem of
@@ -467,6 +541,8 @@ defProblemEncoder defProblem =
                 ]
 
 
+{-| A decoder for the encoding `defProblemEncoder` writes.
+-}
 defProblemDecoder : Bytes.Decode.Decoder DefProblem
 defProblemDecoder =
     Bytes.Decode.unsignedInt8

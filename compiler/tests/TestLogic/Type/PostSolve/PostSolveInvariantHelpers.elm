@@ -7,10 +7,23 @@ module TestLogic.Type.PostSolve.PostSolveInvariantHelpers exposing
     , walkExprs
     )
 
-{-| Shared helpers for PostSolve invariant tests.
+{-| Checking a property of the types recorded for each node before and after
+`Compiler.Type.PostSolve`, across a whole module, means visiting every
+expression in it, knowing which definition each one sits in, and reading the
+type variables out of types. This module provides those pieces.
 
-This module provides AST traversal utilities for classifying expressions
-and extracting type information needed by the synthetic provenance tests.
+`Compiler.Type.PostSolve` is the pass that runs after the type solver and
+adjusts the types it recorded for individual nodes. Those types are indexed by
+node id, the module-unique integer that every canonical expression and pattern
+carries, so each expression here is identified by its id.
+
+Most of the file is one recursive walk over the canonical AST, behind
+`walkExprs`, which lists every expression node of a module as an `ExprNode`
+tagged with the name of the definition it sits in. The rest are small helpers:
+`collectKernelExprIds` picks out the kernel references, `isGroupBExprNode`
+classifies expression forms, `freeTypeVars` reads the type variable names out
+of a type, and `enclosingAnnotationVars` reads the quantified variables of a
+definition's annotation.
 
 -}
 
@@ -22,8 +35,18 @@ import Data.Set as EverySet exposing (EverySet)
 import Dict
 
 
-{-| An expression node with its ID, the Expr\_ payload, and the name of the
-enclosing top-level or let-bound definition (for scope lookups).
+{-| One expression found by `walkExprs`: its node id, its form, and the
+definition it sits in.
+
+`enclosingDef` names the innermost top-level or let-bound definition whose body
+contains the node. A lambda is not a definition, so the nodes in a lambda's
+body carry the name of the definition around the lambda. A `let` expression and
+its body carry the same name as the code around the `let`; only the bodies of
+the let-bound definitions carry those definitions' names. The value expression
+of a destructuring `let`, such as `e` in `let (a, b) = e`, binds no single name,
+so like the `let` body it carries the name of the code around the `let`.
+`walkExprs` always sets this field to `Just`.
+
 -}
 type alias ExprNode =
     { id : Int
@@ -32,13 +55,22 @@ type alias ExprNode =
     }
 
 
-{-| Walk all expressions in a module and collect nodes with scope info.
+{-| Lists every expression node in the module's declarations, each with the name
+of the definition it sits in.
+
+Patterns are walked through but produce no entries. The list is built by
+prepending, so a node comes before the nodes inside it, and a later
+declaration's nodes come before an earlier one's.
+
 -}
 walkExprs : Can.Module -> List ExprNode
 walkExprs (Can.Module modData) =
     walkDecls modData.decls []
 
 
+{-| Adds to `acc` the expression nodes of every definition in `decls`, each
+tagged with its enclosing definition as `ExprNode` describes.
+-}
 walkDecls : Can.Decls -> List ExprNode -> List ExprNode
 walkDecls decls acc =
     case decls of
@@ -59,7 +91,8 @@ walkDecls decls acc =
             acc
 
 
-{-| Extract the name from a Def.
+{-| Returns the name a definition binds, which is always `Just` for either kind
+of definition.
 -}
 defName : Can.Def -> Maybe Name.Name
 defName def =
@@ -71,6 +104,10 @@ defName def =
             Just name
 
 
+{-| Adds to `acc` the expression nodes of a definition's body, tagged as
+`walkExpr` describes. The definition's argument patterns are walked but add
+nothing.
+-}
 walkDef : Maybe Name.Name -> Can.Def -> List ExprNode -> List ExprNode
 walkDef scopeName def acc =
     case def of
@@ -89,14 +126,19 @@ walkDef scopeName def acc =
             walkExpr scopeName expr acc1
 
 
+{-| Adds to `acc` the node for the expression and every expression node inside
+it, with the expression's own node at the head of the result.
+
+Every node is tagged with `scopeName`, except those in the body of a let-bound
+definition, which are tagged with that definition's name.
+
+-}
 walkExpr : Maybe Name.Name -> Can.Expr -> List ExprNode -> List ExprNode
 walkExpr scopeName (A.At _ exprInfo) acc =
     let
-        -- Record this expression node
         thisNode =
             { id = exprInfo.id, node = exprInfo.node, enclosingDef = scopeName }
 
-        -- Walk children based on expression type
         childAcc =
             case exprInfo.node of
                 Can.VarLocal _ ->
@@ -226,14 +268,19 @@ walkExpr scopeName (A.At _ exprInfo) acc =
     thisNode :: childAcc
 
 
+{-| Adds to `acc` the expression nodes of a case branch's body, tagged as
+`walkExpr` describes.
+-}
 walkBranch : Maybe Name.Name -> Can.CaseBranch -> List ExprNode -> List ExprNode
 walkBranch scopeName (Can.CaseBranch pattern body) acc =
     walkExpr scopeName body (walkPattern pattern acc)
 
 
+{-| Returns `acc` unchanged. A pattern contains no expressions, so although this
+recurses through the sub-patterns, no case adds anything.
+-}
 walkPattern : Can.Pattern -> List ExprNode -> List ExprNode
 walkPattern (A.At _ patInfo) acc =
-    -- Patterns don't contribute to expression nodes, but walk their subpatterns
     case patInfo.node of
         Can.PAnything ->
             acc
@@ -280,16 +327,15 @@ walkPattern (A.At _ patInfo) acc =
                 ctorInfo.args
 
 
-{-| Check if an expression node is a Group B expression.
+{-| Returns whether an expression form is one of `Str`, `Chr`, `Float`, `Unit`,
+`List`, `Tuple`, `Record`, `Lambda`, `Accessor`, `Let`, `LetRec` or
+`LetDestruct`.
 
-Group B expressions are those where the constraint generator allocates
-a synthetic placeholder variable that PostSolve must fill:
-
-  - Str, Chr, Float, Unit (scalar literals)
-  - Shader
-
-List, Tuple, Record, Lambda, Accessor, Let, LetRec, LetDestruct are now
-Group A (solver-owned via recordNodeVar) and are no longer Group B.
+Despite its name, this is not the constraint generator's Group B, the forms for
+which it records a synthetic placeholder variable as the node's type
+(`Compiler.Type.Constrain.Typed.Expression` defines the split). Of that group
+it accepts only `Str`, `Chr`, `Float` and `Unit`, and rejects `Shader` and the
+variable references; the other eight forms it accepts are Group A there.
 
 -}
 isGroupBExprNode : Can.Expr_ -> Bool
@@ -335,7 +381,8 @@ isGroupBExprNode node =
             False
 
 
-{-| Check if expression is VarKernel.
+{-| Returns whether an expression form is a reference to a kernel function
+(`VarKernel`).
 -}
 isVarKernel : Can.Expr_ -> Bool
 isVarKernel node =
@@ -347,7 +394,8 @@ isVarKernel node =
             False
 
 
-{-| Collect expression IDs that are VarKernel nodes.
+{-| Returns the node ids of the kernel function references (`VarKernel`) in the
+module's declarations.
 -}
 collectKernelExprIds : Can.Module -> EverySet Int Int
 collectKernelExprIds canModule =
@@ -357,8 +405,14 @@ collectKernelExprIds canModule =
         |> EverySet.fromList identity
 
 
-{-| Extract the quantified type variables from an enclosing definition's
-annotation. Returns the set of var names from `Forall freeVars _`.
+{-| Returns the type variables quantified by the annotation that `annotations`
+holds for the definition named `maybeName`.
+
+The result is empty when `maybeName` is `Nothing` or has no entry. The lookup is
+by name alone: a node inside a let-bound definition, which `walkExprs` tags with
+that definition's name, finds nothing unless `annotations` has an entry under
+the let-bound name.
+
 -}
 enclosingAnnotationVars :
     Maybe Name.Name
@@ -379,9 +433,13 @@ enclosingAnnotationVars maybeName annotations =
                     EverySet.empty
 
 
-{-| Extract all free type variable names from a type.
+{-| Returns the name of every type variable that appears in a type, record
+extension variables included.
 
-(Re-implementation to avoid circular dependencies.)
+For an alias it takes the variables of the alias's argument types and of its
+body. A `Holey` body is written in terms of the alias's own parameters, so the
+parameter names it mentions are returned as well, even when the arguments
+mention no variable.
 
 -}
 freeTypeVars : Can.Type Name -> EverySet String String

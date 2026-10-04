@@ -7,12 +7,41 @@ module Compiler.Reporting.Error.Type exposing
     , errorEncoder, errorDecoder
     )
 
-{-| Type error reporting for the type checker.
+{-| When a type check fails, the type checker records an `Error`, and this
+module is both the vocabulary of those errors and the code that turns one into
+the message a user reads.
 
-This module defines type errors that occur during type inference and checking.
-It captures rich contextual information about where type mismatches occur,
-what was expected versus what was found, and provides utilities for generating
-detailed, actionable error messages with type diffs.
+Every check compares two types. The _actual_ type is the one an expression or
+pattern turned out to have, and the _expected_ type is the one its
+surroundings require. Two types that cannot be made equal make a poor message
+on their own: the user also needs to know why that type was expected, and what
+kind of thing produced the other one. So the constraint generator records,
+where it can, why a type was expected and what kind of thing produced the
+actual type.
+
+An _expectation_ (`Expected` for expressions, `PExpected` for patterns) is an
+expected type together with where it came from: nowhere in particular, a
+surrounding construct described by a _context_ (`Context`, `PContext`), or a
+type annotation (`FromAnnotation`). A _category_ (`Category`, `PCategory`)
+says what kind of expression or pattern has the actual type, such as a list
+literal, an `if`, or the result of a call.
+
+`Expected` and `PExpected` are parameterised by the type they carry. During
+constraint generation that is the solver's type; when a check fails,
+`Compiler.Type.Solve` swaps in the printable `Compiler.Type.Error.Type` with
+`typeReplace` or `ptypeReplace` and builds the `Error`. Every type inside an
+`Error` is therefore a `Compiler.Type.Error.Type`.
+
+Most of the file is `toReport` and its helpers, which choose for each error a
+title, the source snippet and the part of it to highlight, the wording, and
+hints. The arithmetic, boolean, comparison, equality, append, cons and pipe
+operators have their own explanations. The two types are printed and
+compared by `Compiler.Type.Error.toComparison`, and the first of the problems
+it detects becomes a hint; the rest are not shown. Positions such as a list
+entry, a branch or an argument are zero-based `Index.ZeroBased` values, printed
+as ordinals such as `1st`.
+
+`errorEncoder` and `errorDecoder` give an `Error` a binary form.
 
 
 # Errors
@@ -68,7 +97,19 @@ import Utils.Bytes.Encode as BE
 -- ====== ERRORS ======
 
 
-{-| Represents type errors discovered during type checking and inference.
+{-| A failed type check, holding what is needed to explain it.
+
+`BadExpr` is an expression whose actual type, the `T.Type`, does not fit its
+expectation. The region is the expression's own, and the category says what
+kind of expression it is.
+
+`BadPattern` is the same for a pattern.
+
+`InfiniteType` is a variable whose type would have to contain itself. It
+carries the variable's name and its type as far as it can be printed, with
+`∞` where it repeats. The name can be an argument or a pattern variable, not
+only a definition's.
+
 -}
 type Error
     = BadExpr A.Region Category T.Type (Expected T.Type)
@@ -80,7 +121,20 @@ type Error
 -- ====== EXPRESSION EXPECTATIONS ======
 
 
-{-| Expected type for an expression, with optional context about where the expectation came from.
+{-| An expected type for an expression, together with where the expectation
+came from.
+
+`NoExpectation` has no particular source.
+
+`FromContext` comes from a surrounding construct. Its region is that
+construct's, such as the whole call or the whole operator application, and
+it is the region a report shows.
+
+`FromAnnotation` comes from the type annotation of the named definition. The
+`Int` is the number of arguments the definition takes, which no report uses.
+The `SubContext` says which part of the definition must match, and the
+expected type is the part of the annotation left after one arrow per argument.
+
 -}
 type Expected tipe
     = NoExpectation tipe
@@ -88,7 +142,32 @@ type Expected tipe
     | FromAnnotation Name Int SubContext tipe
 
 
-{-| Context describing where in an expression a type expectation originated.
+{-| The construct that made an expression's type expected, with what is needed
+to word a report about it. Every `Index.ZeroBased` here is a zero-based
+position.
+
+`ListEntry` is an element of a list literal, expected to match the elements
+before it. `Negate` is the operand of a unary minus, expected to be a number.
+
+`OpLeft` and `OpRight` are the left and right operands of the named binary
+operator.
+
+`IfCondition` is the condition of an `if`, expected to be a `Bool`. `IfBranch`
+and `CaseBranch` are branches expected to match the branches before them.
+
+`CallArity` is the function in a call, carrying the number of arguments it was
+given; it fails when the function's type does not take that many. `CallArg` is
+one argument of a call.
+
+`RecordAccess` is the record in a field access. It carries the record
+expression's region, a name for the record where one can be given, the field
+name's region and the field name.
+
+`RecordUpdateKeys` is the record in a record update, carrying the fields the
+update sets. `RecordUpdateValue` is the new value of the named field.
+
+`Destructure` is the value of a definition whose left side is a pattern.
+
 -}
 type Context
     = ListEntry Index.ZeroBased
@@ -106,7 +185,14 @@ type Context
     | Destructure
 
 
-{-| Sub-context for type annotations, indicating where within an annotated definition the mismatch occurred.
+{-| The part of an annotated definition that is expected to match the type
+the annotation gives it.
+
+`TypedIfBranch` and `TypedCaseBranch` are one branch, by zero-based position,
+of an `if` or `case` that the definition's body results in, possibly through
+`let` bodies or other branches. `TypedBody` is the body as
+a whole.
+
 -}
 type SubContext
     = TypedIfBranch Index.ZeroBased
@@ -114,7 +200,9 @@ type SubContext
     | TypedBody
 
 
-{-| Optional name for a function, constructor, or operator involved in a type error.
+{-| The name of the thing being called, if it has one, and what kind of thing
+it is. A report uses it to name what was called, such as "the `f` function" or
+"the (+) operator"; with `NoName` it falls back to a generic phrase.
 -}
 type MaybeName
     = FuncName Name
@@ -123,7 +211,19 @@ type MaybeName
     | NoName
 
 
-{-| Category of expression that has a type error, used for generating appropriate error messages.
+{-| The kind of expression that has the actual type, which decides how a report
+introduces that type, as in "This `if` expression produces:" or "It is a list
+of type:".
+
+`Number` is an integer literal or a negation, whose type may be any number;
+`Float` is a float literal. `CallResult` is the result of a call, naming what
+was called. `Accessor` is a field access function such as `.name`, and `Access`
+the value of a field access such as `r.name`. `Local` is a variable defined in
+this module, local or top-level, annotated or not; `Foreign` is a name that
+carries its own type, such as an imported value, a constructor or an operator.
+`Effects` is used when checking an effect manager, which only core libraries
+define.
+
 -}
 type Category
     = List
@@ -150,14 +250,27 @@ type Category
 -- ====== PATTERN EXPECTATIONS ======
 
 
-{-| Expected type for a pattern, with optional context about where the expectation came from.
+{-| An expected type for a pattern, together with where the expectation came
+from.
+
+`PNoExpectation` has no particular source. `PFromContext` comes from the
+construct the pattern is in, whose region is the one a report shows.
+
 -}
 type PExpected tipe
     = PNoExpectation tipe
     | PFromContext A.Region PContext tipe
 
 
-{-| Context describing where in a pattern a type expectation originated.
+{-| The construct that made a pattern's type expected. Every `Index.ZeroBased`
+here is a zero-based position.
+
+`PTypedArg` is an argument pattern of the named annotated definition.
+`PCaseMatch` is a `case` branch's pattern, expected to match the value being
+examined, or the earlier patterns after the first. `PCtorArg` is an argument
+pattern of the named constructor. `PListEntry` is an entry of a list pattern.
+`PTail` is the pattern after `::`.
+
 -}
 type PContext
     = PTypedArg Name Index.ZeroBased
@@ -167,7 +280,8 @@ type PContext
     | PTail
 
 
-{-| Category of pattern that has a type error, used for generating appropriate error messages.
+{-| The kind of pattern that has the actual type, which decides how a report
+introduces that type. `PCtor` names the constructor.
 -}
 type PCategory
     = PRecord
@@ -185,8 +299,8 @@ type PCategory
 -- ====== HELPERS ======
 
 
-{-| Replace the type within an Expected value while preserving the error context.
-Used during type inference to substitute concrete types for type variables.
+{-| Returns `expectation` with its type replaced by `tipe`, keeping where the
+expectation came from.
 -}
 typeReplace : Expected a -> b -> Expected b
 typeReplace expectation tipe =
@@ -201,8 +315,8 @@ typeReplace expectation tipe =
             FromAnnotation name arity context tipe
 
 
-{-| Replace the type within a PExpected (pattern expected) value while preserving
-the error context. Used during pattern type checking.
+{-| Returns `expectation` with its type replaced by `tipe`, keeping where the
+expectation came from.
 -}
 ptypeReplace : PExpected a -> b -> PExpected b
 ptypeReplace expectation tipe =
@@ -218,8 +332,16 @@ ptypeReplace expectation tipe =
 -- ====== TO REPORT ======
 
 
-{-| Convert a type error into a user-friendly error report with type diffs,
-helpful hints, and suggestions for fixing type mismatches.
+{-| Builds the report for a type error, showing the code it concerns in
+`source`, with type names written as `localizer` says.
+
+An `InfiniteType` is titled INFINITE TYPE, a failed `CallArity` check TOO
+MANY ARGS, and every other error TYPE MISMATCH. A mismatch report explains
+the context the expected type came from and usually shows the two types with
+their differences highlighted, with a hint for the first problem
+`Compiler.Type.Error.toComparison` detects. The report's suggestion list is
+always empty.
+
 -}
 toReport : Code.Source -> L.Localizer -> Error -> Report.Report
 toReport source localizer err =
@@ -238,6 +360,9 @@ toReport source localizer err =
 -- ====== TO PATTERN REPORT ======
 
 
+{-| Builds the TYPE MISMATCH report for a pattern at `patternRegion` whose
+type `tipe` does not fit `expected`.
+-}
 toPatternReport : Code.Source -> L.Localizer -> A.Region -> PCategory -> T.Type -> PExpected T.Type -> Report.Report
 toPatternReport source localizer patternRegion category tipe expected =
     Report.report "TYPE MISMATCH" patternRegion [] <|
@@ -357,6 +482,10 @@ toPatternReport source localizer patternRegion category tipe expected =
 -- ====== PATTERN HELPERS ======
 
 
+{-| Builds the body of a pattern mismatch: the line `iAmSeeing` over the actual
+type, the line `insteadOf` over the expected type, then the hint for the first
+detected problem, then `contextHints`.
+-}
 patternTypeComparison : L.Localizer -> T.Type -> T.Type -> String -> String -> List D.Doc -> D.Doc
 patternTypeComparison localizer actual expected iAmSeeing insteadOf contextHints =
     let
@@ -373,6 +502,9 @@ patternTypeComparison localizer actual expected iAmSeeing insteadOf contextHints
             ++ contextHints
 
 
+{-| Returns `iAmTryingToMatch` completed with a phrase for the kind of pattern,
+such as " lists of type:".
+-}
 addPatternCategory : String -> PCategory -> String
 addPatternCategory iAmTryingToMatch category =
     iAmTryingToMatch
@@ -410,6 +542,11 @@ addPatternCategory iAmTryingToMatch category =
 -- ====== EXPR HELPERS ======
 
 
+{-| Builds the body of an expression mismatch: the line `iAmSeeing` over the
+actual type, the line `insteadOf` over the expected type, then `contextHints`,
+then the hint for the first detected problem. This is the reverse of the hint
+order in `patternTypeComparison`.
+-}
 typeComparison : L.Localizer -> T.Type -> T.Type -> String -> String -> List D.Doc -> D.Doc
 typeComparison localizer actual expected iAmSeeing insteadOf contextHints =
     let
@@ -426,6 +563,10 @@ typeComparison localizer actual expected iAmSeeing insteadOf contextHints =
             ++ problemsToHint problems
 
 
+{-| Builds a mismatch body that prints only the actual type: `iAmSeeing` over
+it, then `furtherDetails`, then the hint for the first problem detected
+against `expected`.
+-}
 loneType : L.Localizer -> T.Type -> T.Type -> D.Doc -> List D.Doc -> D.Doc
 loneType localizer actual expected iAmSeeing furtherDetails =
     let
@@ -440,6 +581,12 @@ loneType localizer actual expected iAmSeeing furtherDetails =
             ++ problemsToHint problems
 
 
+{-| Returns the line that introduces an expression's actual type. For a
+variable, a field access, a field access function, an `if`, a `case` or a call
+of a named function or constructor, the line describes that and `thisIs` is
+ignored; otherwise `thisIs` is completed with a phrase such as " a list of
+type:".
+-}
 addCategory : String -> Category -> String
 addCategory thisIs category =
     case category of
@@ -509,6 +656,9 @@ addCategory thisIs category =
                     thisIs ++ ":"
 
 
+{-| Returns the hint for the first of `problems`, or none for an empty list.
+The other problems are ignored.
+-}
 problemsToHint : List T.Problem -> List D.Doc
 problemsToHint problems =
     case problems of
@@ -519,6 +669,12 @@ problemsToHint problems =
             problemToHint problem
 
 
+{-| Returns the hint paragraphs for one detected problem, which may be none.
+
+A problem about a type variable gives no hint when the other type is an
+unconstrained flexible variable, an infinite type or an earlier error.
+
+-}
 problemToHint : T.Problem -> List D.Doc
 problemToHint problem =
     case problem of
@@ -822,6 +978,9 @@ problemToHint problem =
 -- ====== BAD RIGID HINTS ======
 
 
+{-| Returns the hint for a type variable `name` from an annotation that the code
+uses as `aThing`, a phrase such as "a record".
+-}
 badRigidVar : Name -> String -> List D.Doc
 badRigidVar name aThing =
     [ D.toSimpleHint <|
@@ -834,6 +993,9 @@ badRigidVar name aThing =
     ]
 
 
+{-| Returns the hint for two type variables from an annotation that the code
+uses as one.
+-}
 badDoubleRigid : Name -> Name -> List D.Doc
 badDoubleRigid x y =
     [ D.toSimpleHint <|
@@ -846,6 +1008,9 @@ badDoubleRigid x y =
     ]
 
 
+{-| Returns a phrase for a value of a constrained type, such as "a `number`
+value".
+-}
 toASuperThing : T.Super -> String
 toASuperThing super =
     case super of
@@ -866,6 +1031,14 @@ toASuperThing super =
 -- ====== BAD SUPER HINTS ======
 
 
+{-| Returns the hint for a constrained type variable the solver was free to bind
+that meets `tipe`, which does not satisfy the constraint.
+
+For `number` met by `String`, `direction` decides the advice: `Have`, where
+the number is the actual type, suggests `String.fromInt`, and `Need` suggests
+`String.toInt`.
+
+-}
 badFlexSuper : T.Direction -> T.Super -> T.Type -> List D.Doc
 badFlexSuper direction super tipe =
     case super of
@@ -941,6 +1114,8 @@ badFlexSuper direction super tipe =
                     badFlexSuperNumber
 
 
+{-| The hint that only `Int` and `Float` values are numbers.
+-}
 badFlexSuperNumber : List D.Doc
 badFlexSuperNumber =
     [ D.toFancyHint
@@ -956,6 +1131,9 @@ badFlexSuperNumber =
     ]
 
 
+{-| Returns the hint for a constrained type variable from an annotation that the
+code uses as `aThing`, a phrase such as "a record".
+-}
 badRigidSuper : T.Super -> String -> List D.Doc
 badRigidSuper super aThing =
     let
@@ -985,6 +1163,8 @@ badRigidSuper super aThing =
     ]
 
 
+{-| Returns the hint that no value satisfies both constraints.
+-}
 badFlexFlexSuper : T.Super -> T.Super -> List D.Doc
 badFlexFlexSuper s1 s2 =
     let
@@ -1016,6 +1196,21 @@ badFlexFlexSuper s1 s2 =
 -- ====== TO EXPR REPORT ======
 
 
+{-| Builds the report for an expression at `exprRegion` whose type `tipe` does
+not fit `expected`.
+
+Without a context, the snippet is the expression itself. With one, the snippet
+is the region the context carries. Inside it the expression is usually
+highlighted; a record access or update highlights the field or record
+concerned, and a destructuring definition, two operands that disagree, or a
+record update with no missing field highlight the whole region. The report's
+own region is always `exprRegion`.
+
+For a function given too many arguments, the message says how many it takes,
+counting the arguments in the function's type, or says it is not a function
+when that type is not a function type at its top level.
+
+-}
 toExprReport : Code.Source -> L.Localizer -> A.Region -> Category -> T.Type -> Expected T.Type -> Report.Report
 toExprReport source localizer exprRegion category tipe expected =
     case expected of
@@ -1442,6 +1637,9 @@ toExprReport source localizer exprRegion category tipe expected =
 -- ====== HELPERS ======
 
 
+{-| Returns the number of arguments of a function type, or 0 for any type that
+is not a function type at its top level, including an alias of one.
+-}
 countArgs : T.Type -> Int
 countArgs tipe =
     case tipe of
@@ -1456,6 +1654,11 @@ countArgs tipe =
 -- ====== FIELD NAME HELPERS ======
 
 
+{-| Builds an indented record type showing `f`, the field closest to a
+misspelt name, and the fields `fs` after it in order of closeness. Up to three
+of `fs` are shown; with more, the record is shown as an excerpt and without
+its extension variable.
+-}
 toNearbyRecord : L.Localizer -> ( Name, T.Type ) -> List ( Name, T.Type ) -> T.Extension -> D.Doc
 toNearbyRecord localizer f fs ext =
     D.indent 4 <|
@@ -1466,6 +1669,8 @@ toNearbyRecord localizer f fs ext =
             RT.vrecordSnippet (fieldToDocs localizer f) (List.map (fieldToDocs localizer) (List.take 3 fs))
 
 
+{-| Returns a field's name and printed type.
+-}
 fieldToDocs : L.Localizer -> ( Name, T.Type ) -> ( D.Doc, D.Doc )
 fieldToDocs localizer ( name, tipe ) =
     ( D.fromName name
@@ -1473,6 +1678,9 @@ fieldToDocs localizer ( name, tipe ) =
     )
 
 
+{-| Returns the name of the variable that extends a record, or `Nothing` for a
+closed record.
+-}
 extToDoc : T.Extension -> Maybe D.Doc
 extToDoc ext =
     case ext of
@@ -1490,6 +1698,14 @@ extToDoc ext =
 -- ====== OP LEFT ======
 
 
+{-| Builds the message and body for a left operand of `op` whose type `tipe`
+does not fit `expected`.
+
+Arithmetic, division, boolean, comparison, `++` and `<|` operators have their
+own explanations; `+` also recognises a `String` or a `List` operand, and `*`
+a `List`. Any other operator gets a plain comparison of the two types.
+
+-}
 opLeftToDocs : L.Localizer -> Category -> Name -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 opLeftToDocs localizer category op tipe expected =
     case op of
@@ -1567,11 +1783,30 @@ opLeftToDocs localizer category op tipe expected =
 -- ====== OP RIGHT ======
 
 
+{-| The message and body for a right operand, with which part of the code the
+report highlights.
+
+`EmphBoth` marks the whole operator application rather than one operand,
+because the two operands disagree and either may be wrong. `EmphRight`
+highlights the right operand.
+
+-}
 type RightDocs
     = EmphBoth ( D.Doc, D.Doc )
     | EmphRight ( D.Doc, D.Doc )
 
 
+{-| Builds the message and body for a right operand of `op` whose type `tipe`
+does not fit `expected`.
+
+For `+`, `*`, `-` and `^`, an `Int` where a `Float` is expected, or the
+reverse, gets advice on converting. Comparison and equality treat a mismatch as
+one between the two sides; so does `::` when both sides are lists, and `++`
+except for a number appended to a `String` or a `List`. For `|>` the right
+side's first parameter type is compared with the type of the value being
+piped. Any operator without its own explanation gets `badOpRightFallback`.
+
+-}
 opRightToDocs : L.Localizer -> Category -> Name -> T.Type -> T.Type -> RightDocs
 opRightToDocs localizer category op tipe expected =
     case op of
@@ -1698,6 +1933,10 @@ opRightToDocs localizer category op tipe expected =
             badOpRightFallback localizer category op tipe expected
 
 
+{-| Builds a plain comparison for a right operand of `op`, with a hint that the
+left side was checked first and so the problem may lie in how the two sides
+interact.
+-}
 badOpRightFallback : L.Localizer -> Category -> Name -> T.Type -> T.Type -> RightDocs
 badOpRightFallback localizer category op tipe expected =
     EmphRight
@@ -1715,6 +1954,8 @@ badOpRightFallback localizer category op tipe expected =
         )
 
 
+{-| Returns whether `tipe` is written as `Int`. An alias of `Int` is not.
+-}
 isInt : T.Type -> Bool
 isInt tipe =
     case tipe of
@@ -1725,6 +1966,8 @@ isInt tipe =
             False
 
 
+{-| Returns whether `tipe` is written as `Float`. An alias of `Float` is not.
+-}
 isFloat : T.Type -> Bool
 isFloat tipe =
     case tipe of
@@ -1735,6 +1978,8 @@ isFloat tipe =
             False
 
 
+{-| Returns whether `tipe` is written as `String`. An alias of `String` is not.
+-}
 isString : T.Type -> Bool
 isString tipe =
     case tipe of
@@ -1745,6 +1990,9 @@ isString tipe =
             False
 
 
+{-| Returns whether `tipe` is written as a `List` of something. An alias of a
+list is not.
+-}
 isList : T.Type -> Bool
 isList tipe =
     case tipe of
@@ -1759,6 +2007,15 @@ isList tipe =
 -- ====== BAD CONS ======
 
 
+{-| Builds the explanation for a right operand of `::` whose type `tipe` does
+not fit `expected`.
+
+When both are lists, the element types are compared, the left operand being
+the expected element and the list's elements the actual one, with a hint about
+`++` when the elements are themselves lists. A right side that is not a list
+gets an explanation that `::` needs one.
+
+-}
 badConsRight : L.Localizer -> Category -> T.Type -> T.Type -> RightDocs
 badConsRight localizer category tipe expected =
     case tipe of
@@ -1844,6 +2101,9 @@ badConsRight localizer category tipe expected =
 -- ====== BAD APPEND ======
 
 
+{-| What a type is as far as `++` is concerned. `ANumber` carries the number
+type's name and the function that turns it into a string.
+-}
 type AppendType
     = ANumber D.Doc D.Doc
     | AString
@@ -1851,6 +2111,9 @@ type AppendType
     | AOther
 
 
+{-| Returns what `tipe` is as far as `++` is concerned, looking only at its top
+level. A `number` variable is a number that `String.fromInt` converts.
+-}
 toAppendType : T.Type -> AppendType
 toAppendType tipe =
     case tipe of
@@ -1877,6 +2140,10 @@ toAppendType tipe =
             AOther
 
 
+{-| Builds the explanation for a left operand of `++` whose type `tipe`
+cannot be appended, with advice on converting it to a string when it is a
+number.
+-}
 badAppendLeft : L.Localizer -> Category -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 badAppendLeft localizer category tipe expected =
     case toAppendType tipe of
@@ -1962,6 +2229,14 @@ badAppendLeft localizer category tipe expected =
             )
 
 
+{-| Builds the explanation for a right operand of `++` whose type `tipe` does
+not fit `expected`, which the report presents as the left operand's type.
+
+A number appended to a `String` or a `List`, and a `String` and a `List`
+appended together, get specific advice; any other pair gets a comparison of
+the left side's type against the right's.
+
+-}
 badAppendRight : L.Localizer -> Category -> T.Type -> T.Type -> RightDocs
 badAppendRight localizer category tipe expected =
     case ( toAppendType expected, toAppendType tipe ) of
@@ -2101,11 +2376,17 @@ badAppendRight localizer category tipe expected =
 -- ====== BAD MATH ======
 
 
+{-| The two number types met by an arithmetic operator, left then right:
+`FloatInt` is a `Float` on the left and an `Int` on the right.
+-}
 type ThisThenThat
     = FloatInt
     | IntFloat
 
 
+{-| Builds the explanation for an arithmetic operator `op` with an `Int` on one
+side and a `Float` on the other, advising `toFloat` or `round`.
+-}
 badCast : Name -> ThisThenThat -> RightDocs
 badCast op thisThenThat =
     EmphBoth
@@ -2139,6 +2420,13 @@ badCast op thisThenThat =
         )
 
 
+{-| Builds the body of `badCast`: which types are on the left and the right,
+which conversion to use on each side, and a link about implicit casts.
+
+Despite their names, `anInt` and `aFloat` are the left and the right type, and
+`toFloat` and `round` the conversions for the left and the right.
+
+-}
 badCastHelp : List D.Doc -> List D.Doc -> D.Doc -> D.Doc -> D.Doc
 badCastHelp anInt aFloat toFloat round =
     D.stack
@@ -2179,6 +2467,8 @@ badCastHelp anInt aFloat toFloat round =
         ]
 
 
+{-| The message and body for a `String` operand of `+`, advising `++`.
+-}
 badStringAdd : ( D.Doc, D.Doc )
 badStringAdd =
     ( D.fillSep
@@ -2220,6 +2510,9 @@ badStringAdd =
     )
 
 
+{-| Builds the explanation for a list operand of `+`, advising `++`.
+`direction` is "left" or "right".
+-}
 badListAdd : L.Localizer -> Category -> String -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 badListAdd localizer category direction tipe expected =
     ( D.fromChars "I cannot do addition with lists:"
@@ -2252,6 +2545,9 @@ badListAdd localizer category direction tipe expected =
     )
 
 
+{-| Builds the explanation for a list operand of `*`, suggesting `List.repeat`.
+`direction` is "left" or "right".
+-}
 badListMul : L.Localizer -> Category -> String -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 badListMul localizer category direction tipe expected =
     badMath localizer category "Multiplication" direction "*" tipe expected <|
@@ -2271,6 +2567,10 @@ badListMul localizer category direction tipe expected =
         ]
 
 
+{-| Builds the explanation for an operand of the arithmetic operator `op` that
+is not a number. `operation` names the operation, as in "Addition", and
+`direction` is "left" or "right"; `otherHints` follow the explanation.
+-}
 badMath : L.Localizer -> Category -> String -> String -> String -> T.Type -> T.Type -> List D.Doc -> ( D.Doc, D.Doc )
 badMath localizer category operation direction op tipe expected otherHints =
     ( D.reflow <|
@@ -2296,6 +2596,9 @@ badMath localizer category operation direction op tipe expected otherHints =
     )
 
 
+{-| Builds the explanation for an operand of `/` that is not a `Float`. An
+`Int` operand gets advice on `toFloat` and `//`.
+-}
 badFDiv : L.Localizer -> D.Doc -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 badFDiv localizer direction tipe expected =
     ( D.reflow "The (/) operator is specifically for floating-point division:"
@@ -2356,6 +2659,9 @@ badFDiv localizer direction tipe expected =
     )
 
 
+{-| Builds the explanation for an operand of `//` that is not an `Int`. A
+`Float` operand gets a list of rounding functions.
+-}
 badIDiv : L.Localizer -> D.Doc -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 badIDiv localizer direction tipe expected =
     ( D.reflow "The (//) operator is specifically for integer division:"
@@ -2427,6 +2733,8 @@ badIDiv localizer direction tipe expected =
 -- ====== BAD BOOLS ======
 
 
+{-| Builds the explanation for an operand of `&&` or `||` that is not a `Bool`.
+-}
 badBool : L.Localizer -> D.Doc -> D.Doc -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 badBool localizer op direction tipe expected =
     ( D.reflow "I am struggling with this boolean operation:"
@@ -2457,6 +2765,9 @@ badBool localizer op direction tipe expected =
 -- ====== BAD COMPARISON ======
 
 
+{-| Builds the explanation for a left operand of a comparison operator that
+cannot be compared.
+-}
 badCompLeft : L.Localizer -> Category -> String -> String -> T.Type -> T.Type -> ( D.Doc, D.Doc )
 badCompLeft localizer category op direction tipe expected =
     ( D.reflow "I cannot do a comparison with this value:"
@@ -2503,6 +2814,9 @@ badCompLeft localizer category op direction tipe expected =
     )
 
 
+{-| Builds the explanation for a comparison whose right operand has a different
+type from the left, presenting `expected` as the left operand's type.
+-}
 badCompRight : L.Localizer -> String -> T.Type -> T.Type -> RightDocs
 badCompRight localizer op tipe expected =
     EmphBoth
@@ -2521,6 +2835,11 @@ badCompRight localizer op tipe expected =
 -- ====== BAD EQUALITY ======
 
 
+{-| Builds the explanation for `==` or `/=` whose right operand has a different
+type from the left, presenting `expected` as the left operand's type. When
+either side is a `Float`, it adds a note that float equality is unreliable
+instead of the usual remark.
+-}
 badEquality : L.Localizer -> String -> T.Type -> T.Type -> RightDocs
 badEquality localizer op tipe expected =
     EmphBoth
@@ -2543,6 +2862,9 @@ badEquality localizer op tipe expected =
 -- ====== INFINITE TYPES ======
 
 
+{-| Builds the INFINITE TYPE report for the variable `name`, whose type
+`overallType` contains itself.
+-}
 toInfiniteReport : Code.Source -> L.Localizer -> A.Region -> Name -> T.Type -> Report.Report
 toInfiniteReport source localizer region name overallType =
     ( ("I am inferring a weird self-referential type for " ++ name ++ ":") |> D.reflow
@@ -2563,7 +2885,7 @@ toInfiniteReport source localizer region name overallType =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Serialize a type error to bytes for caching or transmission.
+{-| Encodes a type error in the form `errorDecoder` reads.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
@@ -2595,7 +2917,13 @@ errorEncoder error =
                 ]
 
 
-{-| Deserialize a type error from bytes.
+{-| A decoder for a type error written by `errorEncoder`.
+
+Not every error survives the round trip. A `RecordUpdateKeys` context holds
+the update's field values as expressions, and they are encoded with
+`Compiler.AST.Canonical.fieldUpdateEncoder`, which cannot be read back when a
+value contains a record literal or a record update.
+
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
@@ -2628,6 +2956,8 @@ errorDecoder =
             )
 
 
+{-| Encodes a `Category` as a tag byte followed by its payload.
+-}
 categoryEncoder : Category -> Bytes.Encode.Encoder
 categoryEncoder category =
     case category of
@@ -2701,6 +3031,8 @@ categoryEncoder category =
                 ]
 
 
+{-| A decoder for a `Category` written by `categoryEncoder`.
+-}
 categoryDecoder : Bytes.Decode.Decoder Category
 categoryDecoder =
     Bytes.Decode.unsignedInt8
@@ -2766,6 +3098,8 @@ categoryDecoder =
             )
 
 
+{-| Encodes an expectation, writing its type with `encoder`.
+-}
 expectedEncoder : (a -> Bytes.Encode.Encoder) -> Expected a -> Bytes.Encode.Encoder
 expectedEncoder encoder expected =
     case expected of
@@ -2793,6 +3127,9 @@ expectedEncoder encoder expected =
                 ]
 
 
+{-| Produces a decoder for an expectation written by `expectedEncoder`, reading
+its type with `decoder`.
+-}
 expectedDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (Expected a)
 expectedDecoder decoder =
     Bytes.Decode.unsignedInt8
@@ -2821,6 +3158,8 @@ expectedDecoder decoder =
             )
 
 
+{-| Encodes a `Context` as a tag byte followed by its payload.
+-}
 contextEncoder : Context -> Bytes.Encode.Encoder
 contextEncoder context =
     case context of
@@ -2899,6 +3238,8 @@ contextEncoder context =
             Bytes.Encode.unsignedInt8 12
 
 
+{-| A decoder for a `Context` written by `contextEncoder`.
+-}
 contextDecoder : Bytes.Decode.Decoder Context
 contextDecoder =
     Bytes.Decode.unsignedInt8
@@ -2958,6 +3299,8 @@ contextDecoder =
             )
 
 
+{-| Encodes a `SubContext` as a tag byte followed by its payload.
+-}
 subContextEncoder : SubContext -> Bytes.Encode.Encoder
 subContextEncoder subContext =
     case subContext of
@@ -2977,6 +3320,8 @@ subContextEncoder subContext =
             Bytes.Encode.unsignedInt8 2
 
 
+{-| A decoder for a `SubContext` written by `subContextEncoder`.
+-}
 subContextDecoder : Bytes.Decode.Decoder SubContext
 subContextDecoder =
     Bytes.Decode.unsignedInt8
@@ -2997,6 +3342,8 @@ subContextDecoder =
             )
 
 
+{-| Encodes a `PCategory` as a tag byte followed by its payload.
+-}
 pCategoryEncoder : PCategory -> Bytes.Encode.Encoder
 pCategoryEncoder pCategory =
     case pCategory of
@@ -3031,6 +3378,8 @@ pCategoryEncoder pCategory =
             Bytes.Encode.unsignedInt8 8
 
 
+{-| A decoder for a `PCategory` written by `pCategoryEncoder`.
+-}
 pCategoryDecoder : Bytes.Decode.Decoder PCategory
 pCategoryDecoder =
     Bytes.Decode.unsignedInt8
@@ -3069,6 +3418,8 @@ pCategoryDecoder =
             )
 
 
+{-| Encodes a pattern expectation, writing its type with `encoder`.
+-}
 pExpectedEncoder : (a -> Bytes.Encode.Encoder) -> PExpected a -> Bytes.Encode.Encoder
 pExpectedEncoder encoder pExpected =
     case pExpected of
@@ -3087,6 +3438,9 @@ pExpectedEncoder encoder pExpected =
                 ]
 
 
+{-| Produces a decoder for a pattern expectation written by `pExpectedEncoder`,
+reading its type with `decoder`.
+-}
 pExpectedDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (PExpected a)
 pExpectedDecoder decoder =
     Bytes.Decode.unsignedInt8
@@ -3107,6 +3461,8 @@ pExpectedDecoder decoder =
             )
 
 
+{-| Encodes a `MaybeName` as a tag byte followed by its name, if any.
+-}
 maybeNameEncoder : MaybeName -> Bytes.Encode.Encoder
 maybeNameEncoder maybeName =
     case maybeName of
@@ -3132,6 +3488,8 @@ maybeNameEncoder maybeName =
             Bytes.Encode.unsignedInt8 3
 
 
+{-| A decoder for a `MaybeName` written by `maybeNameEncoder`.
+-}
 maybeNameDecoder : Bytes.Decode.Decoder MaybeName
 maybeNameDecoder =
     Bytes.Decode.unsignedInt8
@@ -3155,6 +3513,8 @@ maybeNameDecoder =
             )
 
 
+{-| Encodes a `PContext` as a tag byte followed by its payload.
+-}
 pContextEncoder : PContext -> Bytes.Encode.Encoder
 pContextEncoder pContext =
     case pContext of
@@ -3188,6 +3548,8 @@ pContextEncoder pContext =
             Bytes.Encode.unsignedInt8 4
 
 
+{-| A decoder for a `PContext` written by `pContextEncoder`.
+-}
 pContextDecoder : Bytes.Decode.Decoder PContext
 pContextDecoder =
     Bytes.Decode.unsignedInt8

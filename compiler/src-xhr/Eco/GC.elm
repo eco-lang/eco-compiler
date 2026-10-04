@@ -1,16 +1,24 @@
 module Eco.GC exposing (GCReport, minorGC, majorGC)
 
-{-| Explicit garbage collections via XHR (plans/frontend-heap-release.md §5.1).
+{-| Lets the compiler ask for a garbage collection at a point of its choosing,
+and learn what the collection did, in the build that runs on stock Elm.
 
-This is the XHR-based bootstrap implementation (stage 1). The kernel variant
-(in eco-kernel-cpp) has identical type signatures and the same `GCReport`
-record and decoder, but delegates to Eco.Kernel.GC. Here the eco-io handler
-(`compiler/bin/eco-io-handler.js`) returns the report object itself as
-`value`, so the decoder is applied directly. Without node `--expose-gc` no
-collection runs and `collected` is 0.
+This is the XHR twin of `Eco.GC`. The native build uses a kernel module with
+the same exposed names and the same `GCReport` record, so a caller compiles
+against either. Here a collection is a request to eco-io, as `Eco.XHR`
+describes: `minorGC` sends the op `"GC.minor"` and `majorGC` sends
+`"GC.major"`, both with no arguments, and the report is read from the `value`
+field of the reply. Which collection actually runs, if any, is up to eco-io.
 
-Report values are observations for logging only: no code may branch on them
-(HEAP\_076).
+The report has the shape the native collector fills in, and several of its
+fields name steps of that collector. In this build its values need not be
+measurements. The two builds therefore fill a report differently, and its
+values are for logging: nothing should decide what to do by them.
+
+A `value` that does not have the report's shape is not a failure: it is read as
+the zero record, whose `kind` is `"error"`. The program still crashes when the
+request itself fails, through `Eco.XHR.orCrash`, and when a 2xx reply is not
+JSON or has no `value` field, as `Eco.XHR.jsonTask` describes.
 
 
 # Collections
@@ -25,11 +33,22 @@ import Json.Encode as Encode
 import Task exposing (Task)
 
 
-{-| What a collection did. `kind` is `"minor"`, `"major"` or `"error"` (an
-undecodable kernel reply); `collected` is 1 when a collection ran and 0 when
-none could (JS without `--expose-gc`). Times are nanoseconds and sizes bytes;
-`rssAfterDiscard` and `rssAfter` are the resident set after the page discard
-and after `malloc_trim`.
+{-| What one collection did, as the reply to a GC request reports it.
+
+`kind` is `"error"` for a reply whose `value` could not be read as a report,
+and then every other field is 0. Otherwise it is the kind of collection the
+reply names, such as `"minor"` or `"major"`, and `collected` is 1 when a
+collection ran and 0 when none did. The fields ending in `Ns` are times in
+nanoseconds, and the other numbers, apart from `collected`, the counts
+(`minorCount`, `majorCount`, `majorsRun`) and `trimResult`, are sizes in bytes.
+`rssAfterDiscard` and `rssAfter` are the resident set size after the collector
+has discarded released pages and at the end.
+
+These are the conventions the record carries between the two builds. Decoding
+checks only that each field is present with the right JSON type (a string for
+`kind`, an integer for the rest), so nothing enforces a unit, and a placeholder
+decodes like a measurement.
+
 -}
 type alias GCReport =
     { kind : String
@@ -60,7 +79,7 @@ type alias GCReport =
     }
 
 
-{-| Run a minor collection.
+{-| Asks eco-io for a minor collection and returns its report.
 -}
 minorGC : Task Never GCReport
 minorGC =
@@ -68,7 +87,7 @@ minorGC =
         |> Eco.XHR.orCrash
 
 
-{-| Run a full release (a full collection in JS).
+{-| Asks eco-io for a major collection and returns its report.
 -}
 majorGC : Task Never GCReport
 majorGC =
@@ -76,23 +95,29 @@ majorGC =
         |> Eco.XHR.orCrash
 
 
-{-| A GC report must never crash the compile: an undecodable reply becomes the
-zero record with `kind = "error"`, as in the kernel variant.
+{-| A decoder for a report that never fails: a value that `reportDecoder`
+cannot read is read as `zero`.
 -}
 lenientDecoder : D.Decoder GCReport
 lenientDecoder =
     D.oneOf [ reportDecoder, D.succeed zero ]
 
 
-
--- DECODING (identical in eco-kernel-cpp/src/Eco/GC.elm)
-
-
+{-| Returns a decoder that reads the same value with both decoders and applies
+the function the second produces to the value the first produces. The argument
+order lets a record constructor be given its fields one decoder at a time, in a
+pipeline.
+-}
 andMap : D.Decoder a -> D.Decoder (a -> b) -> D.Decoder b
 andMap =
     D.map2 (|>)
 
 
+{-| A decoder for a `GCReport` from a JSON object with a string `kind` and an
+integer for every other field of the record, each under the field's own name.
+Other keys are ignored. A missing field, or a number that is not an integer,
+makes it fail.
+-}
 reportDecoder : D.Decoder GCReport
 reportDecoder =
     D.succeed GCReport
@@ -123,6 +148,9 @@ reportDecoder =
         |> andMap (D.field "trimResult" D.int)
 
 
+{-| The report that stands in for one that could not be read: `kind` is
+`"error"` and every number is 0.
+-}
 zero : GCReport
 zero =
     { kind = "error"

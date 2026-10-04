@@ -1,16 +1,35 @@
 module TestLogic.Generate.DebugPolymorphism exposing (expectDebugPolymorphismResolved)
 
-{-| Test logic for invariant MONO\_009: Debug.\* kernel functions handle polymorphism.
+{-| A `Debug` kernel function such as `Debug.log` or `Debug.toString` accepts a
+value of any type, so once a program is monomorphized the type variables left
+in its uses should be boxed values or have become concrete types. This module
+holds the check that none of them is still a number variable.
 
-For Debug.log, Debug.toString, and other kernel functions that operate
-on polymorphic values:
+In a `MonoType`, a type variable that monomorphization has not replaced is an
+`MVar` carrying a constraint, as `Compiler.AST.Monomorphized` describes. A
+`CEcoValue` variable stands for a value that is always boxed, and may remain
+until code generation. A `CNumber` variable is known only to be `Int` or
+`Float`, and has to be resolved before code generation.
 
-  - Verify type information is correctly passed at runtime.
-  - Verify string representations are type-appropriate.
-  - Verify no runtime type errors occur.
+`expectDebugPolymorphismResolved` runs a test program to the monomorphized
+graph with `TestLogic.TestPipeline.runToMono` and walks the expression of
+every node that has one. It examines two kinds of type: the function type of
+each reference to a kernel function whose home module is `Debug`, and the type
+of each argument of a call whose function is such a reference. In those types it
+reports every `MVar _ CNumber`, looking inside list element types, the
+arguments of custom types, and the parameter and result types of functions. A
+`CEcoValue` variable and a concrete type both pass, and a program with no
+`Debug` kernel reference passes as long as it compiles.
 
-This module reuses the existing typed optimization pipeline to verify
-debug kernel polymorphism is correctly handled.
+The graph `runToMono` returns has already been through
+`Compiler.Monomorphize.Prune`, which closes residual number variables to
+`MInt` in the nodes it keeps, so a `CNumber` found here is one that closing
+did not reach.
+
+Among what is not checked: the element types of tuples and the field types of
+records are not looked inside; the branch expressions held inline in a `case`
+expression's decision tree are not walked, only its jump targets; and nothing
+is run, so the values `Debug` functions print or return are not examined.
 
 -}
 
@@ -22,7 +41,15 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that Debug kernel calls remain polymorphic with CEcoValue.
+{-| Checks that, in the monomorphized graph of `srcModule`, no reference to a
+`Debug` kernel function and no argument of a call to one has a `CNumber` type
+variable in its type, looking where the module docstring describes.
+
+It fails with the pipeline's message if `runToMono` fails. Otherwise it passes
+when there is no such variable, and fails with one line per occurrence of one,
+naming the node's `SpecId`, the `Debug` function, and the parameter, result or
+call argument the variable is in, with positions counted from 0.
+
 -}
 expectDebugPolymorphismResolved : Src.Module -> Expect.Expectation
 expectDebugPolymorphismResolved srcModule =
@@ -48,14 +75,9 @@ expectDebugPolymorphismResolved srcModule =
 -- ============================================================================
 
 
-{-| Collect issues with Debug kernel polymorphism handling.
-
-Debug.log and Debug.toString are polymorphic functions that can accept any type.
-After monomorphization, they should:
-
-  - Retain polymorphic type parameters as MVar CEcoValue (not CNumber)
-  - Not have unresolved CNumber constraints
-
+{-| Returns the problem lines for every node of the graph, labelling each node
+with its index in the node array, which is its `SpecId`. Empty slots are
+skipped. The lines of a later node come before those of an earlier one.
 -}
 collectDebugPolymorphismIssues : Mono.MonoGraph -> List String
 collectDebugPolymorphismIssues (Mono.MonoGraph data) =
@@ -73,7 +95,9 @@ collectDebugPolymorphismIssues (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Check Debug polymorphism for a single node.
+{-| Returns the problem lines for the expression of one node, each prefixed with
+`SpecId` followed by the value of `specId`. A node with no expression (a
+constructor, enum, extern or effect-manager leaf) gives none.
 -}
 checkNodeDebugPolymorphism : Int -> Mono.MonoNode -> List String
 checkNodeDebugPolymorphism specId node =
@@ -98,17 +122,18 @@ checkNodeDebugPolymorphism specId node =
             []
 
 
-{-| Collect Debug-related issues from expressions.
+{-| Returns the problem lines for `expr` and every expression inside it: those
+for the type of each `Debug` kernel reference, and those for the argument types
+of each call whose function is a `Debug` kernel reference.
 
-Checks MonoVarKernel nodes that reference Debug module functions to ensure
-their polymorphic arguments are properly handled.
+The branch expressions held inline in a `case` decision tree are not visited,
+only the `case`'s jump targets.
 
 -}
 collectExprDebugIssues : String -> Mono.MonoExpr -> List String
 collectExprDebugIssues context expr =
     case expr of
         Mono.MonoVarKernel _ _ moduleName name monoType ->
-            -- Check Debug kernel calls for proper polymorphism handling
             if moduleName == "Debug" then
                 checkDebugKernelType context name monoType
 
@@ -116,7 +141,6 @@ collectExprDebugIssues context expr =
                 []
 
         Mono.MonoCall _ fnExpr argExprs _ _ ->
-            -- Check if this is a call to a Debug function
             let
                 debugCallIssues =
                     case fnExpr of
@@ -175,7 +199,7 @@ collectExprDebugIssues context expr =
             []
 
 
-{-| Collect Debug issues from a MonoDef.
+{-| Returns the problem lines for the body of a `let` definition.
 -}
 collectDefDebugIssues : String -> Mono.MonoDef -> List String
 collectDefDebugIssues context def =
@@ -187,17 +211,15 @@ collectDefDebugIssues context def =
             collectExprDebugIssues context expr
 
 
-{-| Check Debug kernel function type for proper polymorphism.
-
-Debug functions like Debug.log and Debug.toString accept any type.
-Their type arguments should be MVar CEcoValue, not CNumber.
-
+{-| Returns the problem lines for the type of a reference to the `Debug` kernel
+function `name`: one for each `CNumber` variable that `checkNoCNumberInDebugArg`
+finds in its result type and in each of its parameter types. A type that is not
+a function type gives none.
 -}
 checkDebugKernelType : String -> String -> Mono.MonoType -> List String
 checkDebugKernelType context name monoType =
     case monoType of
         Mono.MFunction _ _ paramTypes returnType ->
-            -- Check parameter types for CNumber constraints (should not be present)
             checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " return") returnType
                 ++ (List.indexedMap
                         (\idx paramType ->
@@ -208,15 +230,12 @@ checkDebugKernelType context name monoType =
                    )
 
         _ ->
-            -- Non-function Debug kernel - unusual but not an error
             []
 
 
-{-| Check Debug call arguments for proper polymorphism.
-
-When Debug.log or Debug.toString is called, the argument types should
-not have unresolved CNumber constraints.
-
+{-| Returns the problem lines for the arguments of a call to the `Debug` kernel
+function `name`: one for each `CNumber` variable that `checkNoCNumberInDebugArg`
+finds in each argument's type.
 -}
 checkDebugCallArgs : String -> String -> List Mono.MonoExpr -> List String
 checkDebugCallArgs context name argExprs =
@@ -232,11 +251,10 @@ checkDebugCallArgs context name argExprs =
         |> List.concat
 
 
-{-| Check that a type used in Debug context doesn't have CNumber constraints.
-
-CNumber should be resolved to MInt or MFloat. CEcoValue is acceptable
-since Debug functions handle polymorphic values at runtime.
-
+{-| Returns one problem line, prefixed with `context`, for each `CNumber`
+variable in `monoType`, looking inside list element types, custom-type
+arguments, and function parameter and result types. Tuple element and record
+field types are not looked inside.
 -}
 checkNoCNumberInDebugArg : String -> Mono.MonoType -> List String
 checkNoCNumberInDebugArg context monoType =
@@ -245,7 +263,6 @@ checkNoCNumberInDebugArg context monoType =
             [ context ++ ": Found CNumber constraint on type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' in Debug call (should be CEcoValue or concrete type)" ]
 
         Mono.MVar _ Mono.CEcoValue ->
-            -- CEcoValue is fine - Debug handles polymorphism at runtime
             []
 
         Mono.MList _ elemType ->

@@ -12,12 +12,66 @@ module Compiler.Reporting.Error.Syntax exposing
     , spaceEncoder, spaceDecoder
     )
 
-{-| Syntax error types and reporting for the parser.
+{-| A module whose text cannot be parsed, or whose header or name breaks a rule,
+must be reported to the user precisely, and this module is where such failures
+are described and turned into messages. The parsers of `Compiler.Parse` describe
+a failure with the types here, and `toReport` turns the description into the
+message the user sees.
 
-This module defines the complete taxonomy of syntax errors that can occur
-during parsing. Each error type captures precise location information and
-context about what was expected versus what was found, enabling highly
-specific and helpful error messages.
+A syntax error is a path down the grammar. Each type covers one construct, such
+as a module header, a declaration, a `case` expression, a record type or a
+string literal, and each of its constructors either names a way that construct
+can go wrong or wraps the error of a construct nested inside it. A `CaseBranch`
+error inside a `Case` inside the `DeclDefBody` of a `DeclDef` reads as: in the
+body of that definition, in a branch of a `case` expression, the branch's
+expression went wrong. The innermost constructor says what the problem is.
+
+Most constructors carry a `Row` and a `Col`, counted from 1 as
+`Compiler.Reporting.Annotation` describes. A constructor that wraps a nested
+error with a position of its own carries the position where the parse of the
+wrapped part began, which is where `Compiler.Parse.Primitives.specialize` or
+`inContext` was applied. Only the innermost position is the point where the
+parse stopped. A `Space`, `Char`, `String_`, `Number` or `Escape` error has no
+position, and the nearest constructor around it that has one is given its
+position directly by the scanner that failed, not by `specialize`.
+
+Many types have two constructors for the same expectation, one with `Indent` in
+its name. The plain one means that something other than the expected text was
+found. The `Indent` one means that the next text was not indented far enough to
+belong to the construct, by the layout rule `Compiler.Parse.Space` describes.
+
+A report, a `Report.Report`, has a title, a region and a message. `toReport`
+follows the path down to the innermost constructor and builds the report from
+it. Its region, which is also the part marked in red in the excerpt of source
+the message shows (drawn by `Compiler.Reporting.Render.Code.toSnippet`), is
+usually the single column where the parse stopped, widened to a whole word,
+symbol or literal where the report knows its width. Where a wrapping constructor
+gives the start of the enclosing construct, the excerpt shows the
+_surroundings_: the source from that start to the point of failure. Some reports
+choose their advice by looking at the source text itself, at the point of
+failure (`Code.whatIsNext`) or on the following line.
+
+While it follows an expression error down, the report carries a _context_: the
+chain of constructs the error lies in, from the innermost out to the definition
+(`Context`), so that the message can name what was being parsed, such as "the
+`foo` definition" or "a record". Patterns and types carry a smaller context,
+`PContext` and `TContext`, that only changes some wording.
+
+Most of this file is the text of those messages, one report function per type
+with a branch for each constructor. The rest is the binary codecs.
+
+`errorEncoder` and `spaceEncoder` write these values as bytes, and
+`errorDecoder` and `spaceDecoder` read them back; every other error type has
+an unexposed pair. A value is written as one byte, the tag, naming its
+constructor, followed by the constructor's fields in order. Positions, widths
+and other numbers are written with `Utils.Bytes.Encode.int`, names and strings
+with `Utils.Bytes.Encode.string`, and regions with
+`Compiler.Reporting.Annotation.regionEncoder`. The tags count each type's
+constructors from 0 in the order they are declared. They are written out by
+hand in both the encoder and the decoder, and nothing checks that the two
+agree: a decoder's tag check rejects only a tag past its type's last
+constructor, so bytes written under a different numbering can decode as the
+wrong constructor.
 
 
 # Top-Level Errors
@@ -91,7 +145,26 @@ import Utils.Bytes.Encode as BE
 -- ====== ALL SYNTAX ERRORS ======
 
 
-{-| Top-level syntax errors including module name issues, port violations, and parse errors.
+{-| A syntax error in one module: either its text could not be parsed, or it
+parsed but breaks a rule about its header or its name.
+
+`ParseError` is a failure of the parse itself, located by a `Module` error. It
+is the only constructor that describes a failed parse. `Builder.Elm.Details`
+also builds `ParseError (ModuleBadEnd 0 0)` to mark a module blocked by a
+dependency that failed, where no parse failed.
+
+`ModuleNameUnspecified` is a module with no `module` declaration, and carries
+the name it was expected to declare. Its report points at row 1, column 1 and
+shows no excerpt of the source. `ModuleNameMismatch` carries the expected name
+and the declared one with its region.
+
+`UnexpectedPort` is a port declared in a module that is not a `port module`, and
+`NoPorts` is a `port module` that declares no port. `NoPortsInPackage` carries
+the name and region of a port declared in a package, and
+`NoPortModulesInPackage` the region of a `port module` declaration in a package.
+`NoEffectsOutsideKernel` is an `effect module` in a project that may not have
+one.
+
 -}
 type Error
     = ModuleNameUnspecified ModuleName.Raw
@@ -104,42 +177,81 @@ type Error
     | ParseError Module
 
 
-{-| Errors that occur while parsing module declarations, imports, and top-level structure.
+{-| A failure to parse a module: its header, its imports, or its declarations.
+
+`ModuleBadEnd` means that the module parser finished at the given position,
+before the end of the text. Its report depends on the column: at column 1 it is
+a line that does not begin a declaration, anywhere else it is unexpected text
+partway along a line. `ModuleBadEnd 0 0` is also the marker of a blocked module
+that `Error` describes, with no parse behind it.
+
+`ModuleSpace` carries a whitespace error, a tab or a multi-line comment with no
+end.
+
+`ModuleProblem` is a `module` declaration that goes wrong other than in its name
+or its exposing list, `ModuleName` one whose module name is missing, in a
+`module` or an `effect module` declaration, and `ModuleExposing` carries an
+error in its exposing list. `PortModuleProblem`, `PortModuleName` and
+`PortModuleExposing` are the same for a `port module` declaration. `Effect` is
+an error in an `effect module` declaration other than a missing module name or
+a whitespace error, and is reported without detail.
+
+`FreshLine` is a point in the header or among the imports where the next line
+should start in column 1 and does not.
+
+`ImportStart`, `ImportName`, `ImportAs`, `ImportAlias` and `ImportExposing` are
+an import that goes wrong at the `import` keyword, the module name, the `as`
+keyword, the alias and the `exposing` keyword, and `ImportExposingList` carries
+an error in its exposing list. `ImportEnd` is an import followed by something
+other than `as`, `exposing` or a new line. `ImportIndentName`,
+`ImportIndentAlias` and `ImportIndentExposingList` are the `Indent` forms for
+the module name, the alias and the exposing list.
+
+`Infix` is any error in an infix operator declaration.
+
+`Declarations` carries an error in the declarations. Its own position is not
+used by the report.
+
 -}
 type Module
     = ModuleSpace Space Row Col
     | ModuleBadEnd Row Col
-      --
     | ModuleProblem Row Col
     | ModuleName Row Col
     | ModuleExposing Exposing Row Col
-      --
     | PortModuleProblem Row Col
     | PortModuleName Row Col
     | PortModuleExposing Exposing Row Col
-      --
     | Effect Row Col
-      --
     | FreshLine Row Col
-      --
     | ImportStart Row Col
     | ImportName Row Col
     | ImportAs Row Col
     | ImportAlias Row Col
     | ImportExposing Row Col
     | ImportExposingList Exposing Row Col
-    | ImportEnd Row Col -- different based on col=1 or if greater
-      --
+    | ImportEnd Row Col
     | ImportIndentName Row Col
     | ImportIndentAlias Row Col
     | ImportIndentExposingList Row Col
-      --
     | Infix Row Col
-      --
     | Declarations Decl Row Col
 
 
-{-| Errors related to module exposing lists, including values, operators, and type privacy.
+{-| An error in an exposing list, of a module declaration or of an import.
+
+`ExposingSpace` carries a whitespace error. `ExposingStart` is a missing opening
+parenthesis. `ExposingValue` is an entry that is none of `..`, a value, a type
+or a parenthesised operator. `ExposingOperator` is an opening parenthesis in the
+list not followed by an operator, `ExposingOperatorReserved` carries a symbol
+found there that cannot be an operator, and `ExposingOperatorRightParen` is an
+operator not followed directly by `)`. `ExposingTypePrivacy` is a type followed
+by parentheses that do not hold exactly `..`. `ExposingEnd` is an entry followed
+by something other than a comma or `)`.
+
+`ExposingIndentEnd` and `ExposingIndentValue` are the `Indent` forms for the
+closing parenthesis and for an entry.
+
 -}
 type Exposing
     = ExposingSpace Space Row Col
@@ -150,7 +262,6 @@ type Exposing
     | ExposingOperatorRightParen Row Col
     | ExposingTypePrivacy Row Col
     | ExposingEnd Row Col
-      --
     | ExposingIndentEnd Row Col
     | ExposingIndentValue Row Col
 
@@ -159,20 +270,41 @@ type Exposing
 -- ====== DECLARATIONS ======
 
 
-{-| Errors in top-level declarations including ports, type declarations, and definitions.
+{-| An error in a top-level declaration.
+
+`DeclStart` is a point where a declaration should start and none does.
+`DeclSpace` carries a whitespace error between declarations. `Port`, `DeclType`
+and `DeclDef` carry an error in a port declaration, in a declaration starting
+with `type`, and in a definition, whose name `DeclDef` also carries.
+`DeclFreshLineAfterDocComment` is a doc comment not followed by a declaration
+starting in column 1.
+
 -}
 type Decl
     = DeclStart Row Col
     | DeclSpace Space Row Col
-      --
     | Port Port Row Col
     | DeclType DeclType Row Col
     | DeclDef Name DeclDef Row Col
-      --
     | DeclFreshLineAfterDocComment Row Col
 
 
-{-| Errors in function and value definition syntax, including type annotations, arguments, and bodies.
+{-| An error in a top-level definition, with or without a type annotation.
+
+`DeclDefSpace` carries a whitespace error. `DeclDefEquals` is a point before the
+`=` where the definition cannot go on: neither an argument nor the `=` follows,
+nor, directly after the name, a `:`. `DeclDefType`, `DeclDefArg` and
+`DeclDefBody` carry an error in the annotation's type, in an argument pattern
+and in the body.
+
+After an annotation, `DeclDefNameRepeat` is a definition missing from the next
+line, and `DeclDefNameMatch` carries the name of a definition that differs from
+the annotation's.
+
+`DeclDefIndentType`, `DeclDefIndentEquals` and `DeclDefIndentBody` are the
+`Indent` forms for the annotation's type, for what follows the name or an
+argument, and for the body.
+
 -}
 type DeclDef
     = DeclDefSpace Space Row Col
@@ -182,13 +314,18 @@ type DeclDef
     | DeclDefBody Expr Row Col
     | DeclDefNameRepeat Row Col
     | DeclDefNameMatch Name Row Col
-      --
     | DeclDefIndentType Row Col
     | DeclDefIndentEquals Row Col
     | DeclDefIndentBody Row Col
 
 
-{-| Errors specific to port declaration syntax, including name and type annotation issues.
+{-| An error in a `port` declaration.
+
+`PortSpace` carries a whitespace error. `PortName` is a point after `port` where
+no name follows, `PortColon` a missing `:` after the name, and `PortType`
+carries an error in the port's type. `PortIndentName`, `PortIndentColon` and
+`PortIndentType` are the `Indent` forms of the same three.
+
 -}
 type Port
     = PortSpace Space Row Col
@@ -204,30 +341,53 @@ type Port
 -- ====== TYPE DECLARATIONS ======
 
 
-{-| Errors in type declaration syntax, dispatching to type alias or custom type errors.
+{-| An error in a declaration that starts with `type`, either before it is known
+whether it is a type alias or a custom type, or inside one of them.
+
+`DT_Space` carries a whitespace error. `DT_Name` is a point after `type` where
+neither `alias` nor a type name follows, and `DT_IndentName` is its `Indent`
+form. `DT_Alias` and `DT_Union` carry an error in a type alias and in a custom
+type.
+
 -}
 type DeclType
     = DT_Space Space Row Col
     | DT_Name Row Col
     | DT_Alias TypeAlias Row Col
     | DT_Union CustomType Row Col
-      --
     | DT_IndentName Row Col
 
 
-{-| Errors in type alias declarations, including name, equals sign, and body type syntax.
+{-| An error in a `type alias` declaration.
+
+`AliasSpace` carries a whitespace error. `AliasName` is a missing type name.
+`AliasEquals` is a point after the name where neither a type variable nor `=`
+follows. `AliasBody` carries an error in the aliased type. `AliasIndentEquals`
+and `AliasIndentBody` are the `Indent` forms for what follows the name and for
+the aliased type.
+
 -}
 type TypeAlias
     = AliasSpace Space Row Col
     | AliasName Row Col
     | AliasEquals Row Col
     | AliasBody Type Row Col
-      --
     | AliasIndentEquals Row Col
     | AliasIndentBody Row Col
 
 
-{-| Errors in custom type (union type) declarations, including variant names and arguments.
+{-| An error in a custom type declaration.
+
+`CT_Space` carries a whitespace error. `CT_Name` is a missing type name.
+`CT_Equals` is a point after the name where neither a type variable nor `=`
+follows. `CT_Bar` is a point where a `|` was expected. `CT_Variant` is a missing
+variant name, and `CT_VariantArg` carries an error in one of a variant's
+argument types.
+
+`CT_IndentEquals` and `CT_IndentBar` are the `Indent` forms of `CT_Equals` and
+`CT_Bar`. `CT_IndentAfterEquals` and `CT_IndentAfterBar` are the `Indent` forms
+for the variant that should follow the `=` and a `|`.
+
 -}
 type CustomType
     = CT_Space Space Row Col
@@ -236,7 +396,6 @@ type CustomType
     | CT_Bar Row Col
     | CT_Variant Row Col
     | CT_VariantArg Type Row Col
-      --
     | CT_IndentEquals Row Col
     | CT_IndentBar Row Col
     | CT_IndentAfterBar Row Col
@@ -247,7 +406,26 @@ type CustomType
 -- ====== EXPRESSIONS ======
 
 
-{-| Errors in expression syntax, covering all expression forms from literals to complex structures.
+{-| An error in an expression.
+
+`Let`, `Case`, `If`, `List`, `Record`, `Tuple` and `Func` carry an error inside
+a `let` expression, a `case` expression, an `if` expression, a list, a record, a
+parenthesised expression or tuple, and an anonymous function. `Char`, `String_`,
+`Number` and `Space` carry an error in a literal or in whitespace.
+
+`Start` is a point where an expression should begin and none does.
+
+`Dot` is a point where a `.` was expected, to start a record accessor, and
+`Access` is a `.` not followed by a field name.
+
+`OperatorRight` carries an operator that is not followed by an expression, and
+`IndentOperatorRight` one whose following expression is not indented far enough.
+`OperatorReserved` carries a symbol, such as `=` or `->`, found where an
+operator could follow an expression but which cannot be one.
+
+`EndlessShader` is a GLSL block with no closing `|]`, and `ShaderProblem`
+carries the error message of the GLSL parser.
+
 -}
 type Expr
     = Let Let Row Col
@@ -257,12 +435,10 @@ type Expr
     | Record Record Row Col
     | Tuple Tuple Row Col
     | Func Func Row Col
-      --
     | Dot Row Col
     | Access Row Col
     | OperatorRight Name Row Col
     | OperatorReserved BadOperator Row Col
-      --
     | Start Row Col
     | Char Char Row Col
     | String_ String_ Row Col
@@ -273,7 +449,18 @@ type Expr
     | IndentOperatorRight Name Row Col
 
 
-{-| Errors in record expression syntax, including field names, equals signs, and values.
+{-| An error in a record expression, either a record literal or a record update.
+
+`RecordOpen` is a point after `{` where neither a field name nor `}` follows.
+`RecordField` is a missing field name. `RecordEquals` is a field name not
+followed by `=` (or, after the first name, by `|`). `RecordExpr` carries an
+error in a field's value. `RecordEnd` is a value followed by something other
+than a comma or `}`. `RecordSpace` carries a whitespace error.
+
+`RecordIndentOpen`, `RecordIndentEnd`, `RecordIndentField`, `RecordIndentEquals`
+and `RecordIndentExpr` are the `Indent` forms for what follows `{`, for the
+closing `}`, for a field name, for the `=` and for a field's value.
+
 -}
 type Record
     = RecordOpen Row Col
@@ -282,7 +469,6 @@ type Record
     | RecordEquals Row Col
     | RecordExpr Expr Row Col
     | RecordSpace Space Row Col
-      --
     | RecordIndentOpen Row Col
     | RecordIndentEnd Row Col
     | RecordIndentField Row Col
@@ -290,7 +476,18 @@ type Record
     | RecordIndentExpr Row Col
 
 
-{-| Errors in tuple expression syntax, including element expressions and operators.
+{-| An error in parentheses: a parenthesised expression, a tuple, or an operator
+function such as `(+)`.
+
+`TupleExpr` carries an error in an expression inside the parentheses, and
+`TupleSpace` a whitespace error. `TupleEnd` is an entry followed by something
+other than a comma or `)`. `TupleOperatorClose` is an operator after `(` that is
+not followed directly by `)`, and `TupleOperatorReserved` carries a symbol after
+`(` that cannot be an operator.
+
+`TupleIndentExpr1`, `TupleIndentExprN` and `TupleIndentEnd` are the `Indent`
+forms for the first entry, for an entry after a comma, and for the closing `)`.
+
 -}
 type Tuple
     = TupleExpr Expr Row Col
@@ -298,39 +495,66 @@ type Tuple
     | TupleEnd Row Col
     | TupleOperatorClose Row Col
     | TupleOperatorReserved BadOperator Row Col
-      --
     | TupleIndentExpr1 Row Col
     | TupleIndentExprN Row Col
     | TupleIndentEnd Row Col
 
 
-{-| Errors in list expression syntax, including brackets and element expressions.
+{-| An error in a list expression.
+
+`ListSpace` carries a whitespace error. `ListOpen` is a point after `[` where
+neither an entry nor `]` follows, and `ListEnd` an entry followed by something
+other than a comma or `]`. `ListExpr` carries an error in an entry.
+
+`ListIndentOpen`, `ListIndentEnd` and `ListIndentExpr` are the `Indent` forms
+for what follows `[`, for the closing `]`, and for an entry after a comma.
+
 -}
 type List_
     = ListSpace Space Row Col
     | ListOpen Row Col
     | ListExpr Expr Row Col
     | ListEnd Row Col
-      --
     | ListIndentOpen Row Col
     | ListIndentEnd Row Col
     | ListIndentExpr Row Col
 
 
-{-| Errors in anonymous function (lambda) syntax, including arguments, arrows, and body.
+{-| An error in an anonymous function, such as `\x -> x + 1`.
+
+`FuncSpace` carries a whitespace error. `FuncArg` and `FuncBody` carry an error
+in an argument pattern and in the body. `FuncArrow` is a point after the
+arguments where neither another argument nor `->` follows.
+
+`FuncIndentArg`, `FuncIndentArrow` and `FuncIndentBody` are the `Indent` forms
+for the first argument, the arrow and the body.
+
 -}
 type Func
     = FuncSpace Space Row Col
     | FuncArg Pattern Row Col
     | FuncBody Expr Row Col
     | FuncArrow Row Col
-      --
     | FuncIndentArg Row Col
     | FuncIndentArrow Row Col
     | FuncIndentBody Row Col
 
 
-{-| Errors in case expression syntax, including patterns, arrows, branches, and alignment.
+{-| An error in a `case` expression.
+
+`CaseSpace` carries a whitespace error. `CaseExpr` carries an error in the
+expression being inspected, and `CaseOf` is a missing `of` after it.
+`CasePattern` and `CaseBranch` carry an error in a branch's pattern and in the
+expression after its arrow, and `CaseArrow` is a missing `->` after a pattern.
+
+`CaseIndentOf`, `CaseIndentExpr`, `CaseIndentPattern`, `CaseIndentArrow` and
+`CaseIndentBranch` are the `Indent` forms for the `of`, the inspected
+expression, a pattern, an arrow and a branch's expression.
+
+`CasePatternAlignment` is a pattern not lined up with the branches before it.
+Its `Int` is the column the pattern should start at, though the report shows it
+as a number of spaces.
+
 -}
 type Case
     = CaseSpace Space Row Col
@@ -339,7 +563,6 @@ type Case
     | CaseArrow Row Col
     | CaseExpr Expr Row Col
     | CaseBranch Expr Row Col
-      --
     | CaseIndentOf Row Col
     | CaseIndentExpr Row Col
     | CaseIndentPattern Row Col
@@ -348,18 +571,26 @@ type Case
     | CasePatternAlignment Int Row Col
 
 
-{-| Errors in if-then-else expression syntax, including condition, branches, and keywords.
+{-| An error in an `if` expression.
+
+`IfSpace` carries a whitespace error. `IfThen` and `IfElse` are a missing `then`
+and a missing `else`. `IfElseBranchStart` is a point after `else` where neither
+`if` nor an expression begins. `IfCondition`, `IfThenBranch` and `IfElseBranch`
+carry an error in the condition and in the two branches.
+
+`IfIndentCondition`, `IfIndentThen`, `IfIndentThenBranch`, `IfIndentElseBranch`
+and `IfIndentElse` are the `Indent` forms for the condition, the `then`, the
+`then` branch, the `else` branch and the `else`.
+
 -}
 type If
     = IfSpace Space Row Col
     | IfThen Row Col
     | IfElse Row Col
     | IfElseBranchStart Row Col
-      --
     | IfCondition Expr Row Col
     | IfThenBranch Expr Row Col
     | IfElseBranch Expr Row Col
-      --
     | IfIndentCondition Row Col
     | IfIndentThen Row Col
     | IfIndentThenBranch Row Col
@@ -367,7 +598,20 @@ type If
     | IfIndentElse Row Col
 
 
-{-| Errors in let-in expression syntax, including definitions, destructuring, and alignment.
+{-| An error in a `let` expression.
+
+`LetSpace` carries a whitespace error. `LetDefName` is a point where the name of
+a definition, or a pattern to destructure, was expected. `LetDef` carries an
+error in the definition it names, and `LetDestruct` one in a destructuring
+definition such as `( a, b ) = pair`. `LetIn` is a missing `in`, and `LetBody`
+carries an error in the expression after it.
+
+`LetDefAlignment` is a definition not lined up with the one before it. Its `Int`
+is the column the definitions start at, and the report does not use it.
+
+`LetIndentDef`, `LetIndentIn` and `LetIndentBody` are the `Indent` forms for the
+first definition, the `in` and the body.
+
 -}
 type Let
     = LetSpace Space Row Col
@@ -382,7 +626,24 @@ type Let
     | LetIndentBody Row Col
 
 
-{-| Errors in let-binding definition syntax, including type annotations, arguments, and bodies.
+{-| An error in a definition inside a `let` expression. The constructors mirror
+those of `DeclDef`.
+
+`DefSpace` carries a whitespace error. `DefEquals` is a point before the `=`
+where the definition cannot go on: neither an argument nor the `=` follows, nor,
+directly after the name, a `:`. `DefType`, `DefArg` and `DefBody` carry an error
+in the annotation's type, in an argument pattern and in the body. After an
+annotation, `DefNameRepeat` is a missing definition, and `DefNameMatch` carries
+the name of a definition that differs from the annotation's.
+
+`DefIndentEquals`, `DefIndentType` and `DefIndentBody` are the `Indent` forms
+for what follows the name or an argument, for the annotation's type and for the
+body.
+
+`DefAlignment` is a definition not lined up with its annotation. Its `Int` is
+the column the definition should start at, though the report shows it as a
+number of spaces.
+
 -}
 type Def
     = DefSpace Space Row Col
@@ -398,7 +659,14 @@ type Def
     | DefAlignment Int Row Col
 
 
-{-| Errors in destructuring let-bindings, where patterns extract values from expressions.
+{-| An error in a destructuring definition inside a `let` expression, such as `(
+a, b ) = pair`.
+
+`DestructSpace` carries a whitespace error. `DestructPattern` and `DestructBody`
+carry an error in the pattern and in the expression after the `=`, and
+`DestructEquals` is a missing `=`. `DestructIndentEquals` and
+`DestructIndentBody` are the `Indent` forms for the `=` and the expression.
+
 -}
 type Destruct
     = DestructSpace Space Row Col
@@ -413,13 +681,28 @@ type Destruct
 -- ====== PATTERNS ======
 
 
-{-| Errors in pattern syntax, covering all pattern forms including literals and structures.
+{-| An error in a pattern.
+
+`PRecord`, `PTuple` and `PList` carry an error inside a record, tuple or list
+pattern, and `PChar`, `PString`, `PNumber` and `PSpace` an error in a literal or
+in whitespace.
+
+`PStart` is a point where a pattern should begin and none does, and
+`PIndentStart` is its `Indent` form. `PAlias` is an `as` not followed by a name,
+and `PIndentAlias` its `Indent` form.
+
+`PFloat` is a float literal, which cannot be matched on. `PWildcardNotVar`
+carries a name that starts with `_`, which no variable may, and
+`PWildcardReservedWord` carries a reserved word written after a `_`. The `Int`
+each of these three carries is the width in columns the report highlights. For
+`PFloat` it is the length of the float as `String.fromFloat` prints it, which
+can differ from the source text.
+
 -}
 type Pattern
     = PRecord PRecord Row Col
     | PTuple PTuple Row Col
     | PList PList Row Col
-      --
     | PStart Row Col
     | PChar Char Row Col
     | PString String_ Row Col
@@ -429,45 +712,68 @@ type Pattern
     | PWildcardNotVar Name Int Row Col
     | PWildcardReservedWord Name Int Row Col
     | PSpace Space Row Col
-      --
     | PIndentStart Row Col
     | PIndentAlias Row Col
 
 
-{-| Errors in record pattern syntax, including field names and braces.
+{-| An error in a record pattern, such as `{ x, y }`.
+
+`PRecordOpen` is a point after `{` where neither a field name nor `}` follows,
+`PRecordField` a missing field name after a comma, and `PRecordEnd` a field
+followed by something other than a comma or `}`. `PRecordSpace` carries a
+whitespace error.
+
+`PRecordIndentOpen`, `PRecordIndentEnd` and `PRecordIndentField` are the
+`Indent` forms for what follows `{`, for the closing `}`, and for a field name.
+
 -}
 type PRecord
     = PRecordOpen Row Col
     | PRecordEnd Row Col
     | PRecordField Row Col
     | PRecordSpace Space Row Col
-      --
     | PRecordIndentOpen Row Col
     | PRecordIndentEnd Row Col
     | PRecordIndentField Row Col
 
 
-{-| Errors in tuple pattern syntax, including element patterns and parentheses.
+{-| An error in a parenthesised or tuple pattern.
+
+`PTupleOpen` is a point after `(` where neither a pattern nor `)` follows, and
+`PTupleEnd` a pattern followed by something other than a comma or `)`.
+`PTupleExpr` carries an error in a pattern inside the parentheses, and
+`PTupleSpace` a whitespace error.
+
+`PTupleIndentEnd`, `PTupleIndentExpr1` and `PTupleIndentExprN` are the `Indent`
+forms for the closing `)`, for the first pattern, and for a pattern after a
+comma.
+
 -}
 type PTuple
     = PTupleOpen Row Col
     | PTupleEnd Row Col
     | PTupleExpr Pattern Row Col
     | PTupleSpace Space Row Col
-      --
     | PTupleIndentEnd Row Col
     | PTupleIndentExpr1 Row Col
     | PTupleIndentExprN Row Col
 
 
-{-| Errors in list pattern syntax, including element patterns and brackets.
+{-| An error in a list pattern.
+
+`PListOpen` is a point after `[` where neither a pattern nor `]` follows, and
+`PListEnd` a pattern followed by something other than a comma or `]`.
+`PListExpr` carries an error in an entry, and `PListSpace` a whitespace error.
+
+`PListIndentOpen`, `PListIndentEnd` and `PListIndentExpr` are the `Indent` forms
+for what follows `[`, for the closing `]`, and for an entry after a comma.
+
 -}
 type PList
     = PListOpen Row Col
     | PListEnd Row Col
     | PListExpr Pattern Row Col
     | PListSpace Space Row Col
-      --
     | PListIndentOpen Row Col
     | PListIndentEnd Row Col
     | PListIndentExpr Row Col
@@ -477,30 +783,43 @@ type PList
 -- ====== TYPES ======
 
 
-{-| Errors in type annotation syntax, covering all type expression forms.
+{-| An error in a type, as written in an annotation or a declaration.
+
+`TRecord` and `TTuple` carry an error inside a record type or a parenthesised or
+tuple type. `TStart` is a point where a type should begin and none does, and
+`TIndentStart` is its `Indent` form. `TSpace` carries a whitespace error.
+
 -}
 type Type
     = TRecord TRecord Row Col
     | TTuple TTuple Row Col
-      --
     | TStart Row Col
     | TSpace Space Row Col
-      --
     | TIndentStart Row Col
 
 
-{-| Errors in record type syntax, including field names, colons, and field types.
+{-| An error in a record type.
+
+`TRecordOpen` is a point after `{` where neither a field name nor `}` follows,
+`TRecordField` a missing field name, and `TRecordColon` a field name not
+followed by `:` (or, after the first name, by `|`). `TRecordType` carries an
+error in a field's type, and `TRecordEnd` is a field type followed by
+something other than a comma or `}`.
+`TRecordSpace` carries a whitespace error.
+
+`TRecordIndentOpen`, `TRecordIndentField`, `TRecordIndentColon`,
+`TRecordIndentType` and `TRecordIndentEnd` are the `Indent` forms for what
+follows `{`, for a field name, for the `:`, for a field's type and for the
+closing `}`.
+
 -}
 type TRecord
     = TRecordOpen Row Col
     | TRecordEnd Row Col
-      --
     | TRecordField Row Col
     | TRecordColon Row Col
     | TRecordType Type Row Col
-      --
     | TRecordSpace Space Row Col
-      --
     | TRecordIndentOpen Row Col
     | TRecordIndentField Row Col
     | TRecordIndentColon Row Col
@@ -508,14 +827,21 @@ type TRecord
     | TRecordIndentEnd Row Col
 
 
-{-| Errors in tuple type syntax, including element types and parentheses.
+{-| An error in a parenthesised or tuple type.
+
+`TTupleOpen` is a point after `(` where no type follows, and `TTupleEnd` a type
+followed by something other than a comma or `)`. `TTupleType` carries an error
+in a type inside the parentheses, and `TTupleSpace` a whitespace error.
+
+`TTupleIndentType1`, `TTupleIndentTypeN` and `TTupleIndentEnd` are the `Indent`
+forms for the first type, for a type after a comma, and for the closing `)`.
+
 -}
 type TTuple
     = TTupleOpen Row Col
     | TTupleEnd Row Col
     | TTupleType Type Row Col
     | TTupleSpace Space Row Col
-      --
     | TTupleIndentType1 Row Col
     | TTupleIndentTypeN Row Col
     | TTupleIndentEnd Row Col
@@ -525,7 +851,19 @@ type TTuple
 -- ====== LITERALS ======
 
 
-{-| Errors specific to character literal parsing, including escape sequences and delimiters.
+{-| An error in a character literal.
+
+This type, like `String_`, `Number` and `Escape`, carries no position: the
+nearest enclosing constructor that has a `Row` and `Col` does, and the report's
+highlight starts there. For an `Escape` that is the constructor around its
+`CharEscape` or `StringEscape`.
+
+`CharEndless` is a literal whose closing `'` is not found on its line.
+`CharEscape` carries an error in an escape sequence. `CharNotString` is a
+literal that does not hold exactly one character, which the report takes for a
+string written in single quotes. Its `Int` is the width in columns that the
+report highlights.
+
 -}
 type Char
     = CharEndless
@@ -533,7 +871,12 @@ type Char
     | CharNotString Int
 
 
-{-| Errors specific to string literal parsing, including unterminated strings and escape sequences.
+{-| An error in a string literal.
+
+`StringEndless_Single` is a `"` string whose closing quote is not found on its
+line, and `StringEndless_Multi` a `"""` string whose closing `"""` is never
+found. `StringEscape` carries an error in an escape sequence.
+
 -}
 type String_
     = StringEndless_Single
@@ -541,7 +884,19 @@ type String_
     | StringEscape Escape
 
 
-{-| Errors in escape sequence parsing, including invalid unicode escapes and unknown sequences.
+{-| An error in an escape sequence in a character or string literal.
+
+`EscapeUnknown` is a backslash followed by a character that starts no escape.
+`BadUnicodeFormat` is a `\u` not followed by hexadecimal digits in curly braces.
+`BadUnicodeCode` is a code point above `10FFFF`. `BadUnicodeLength` is a code
+point written with fewer than four or more than six digits, and carries, after
+the width, the number of digits and the code point.
+
+The first `Int` of each of the last three is the number of columns the report
+highlights from the backslash: 2 plus the number of hexadecimal digits for
+`BadUnicodeFormat`, and 3 plus that number for the other two. It does not cover
+a closing `}`.
+
 -}
 type Escape
     = EscapeUnknown
@@ -550,7 +905,20 @@ type Escape
     | BadUnicodeLength Int Int Int
 
 
-{-| Errors in numeric literal parsing, including invalid formats, digits, and underscore placement.
+{-| An error in a number literal.
+
+`NumberEnd` is a number that does not end cleanly, such as one followed directly
+by a letter. `NumberDot` carries the integer written before a `.` that no digit
+follows. `NumberHexDigit` and `NumberBinDigit` are a bad digit in a hexadecimal
+or a binary literal, and `NumberNoLeadingZero` a `0` followed by another digit.
+`NumberNoLeadingOrTrailingUnderscores`, `NumberNoConsecutiveUnderscores`,
+`NumberNoUnderscoresAdjacentToDecimalOrExponent`,
+`NumberNoUnderscoresAdjacentToHexadecimalPreFix` and
+`NumberNoUnderscoresAdjacentToBinaryPreFix` each name a place an underscore may
+not go.
+
+Every report of a `Number` error highlights the single column at its position.
+
 -}
 type Number
     = NumberEnd
@@ -569,7 +937,11 @@ type Number
 -- ====== MISC ======
 
 
-{-| Errors related to whitespace and comments, such as tabs or unterminated multi-line comments.
+{-| A problem in the whitespace between tokens, which includes comments.
+
+`HasTab` is a tab character found while reading whitespace.
+`EndlessMultiComment` is a multi-line comment whose end is never found.
+
 -}
 type Space
     = HasTab
@@ -580,8 +952,14 @@ type Space
 -- ====== TO REPORT ======
 
 
-{-| Convert a syntax error into a user-friendly error report with source code
-snippets and suggestions for fixing parsing problems.
+{-| Builds the report for `err`. `source` is the text of the module, from which
+the report draws its excerpt and reads the text at the point of failure, as the
+module docstring describes.
+
+A `ModuleNameUnspecified` report has row 1, column 1 as its region and no
+excerpt. A `ModuleNameMismatch` report highlights the declared name, and its
+list of suggestions holds the expected name.
+
 -}
 toReport : Code.Source -> Error -> Report.Report
 toReport source err =
@@ -726,6 +1104,9 @@ toReport source err =
             toParseErrorReport source modul
 
 
+{-| The note explaining why packages may not declare ports, which ends both
+reports of a port in a package.
+-}
 noteForPortsInPackage : D.Doc
 noteForPortsInPackage =
     D.stack
@@ -748,6 +1129,18 @@ noteForPortsInPackage =
         ]
 
 
+{-| Builds the report for a failed parse, following `modul` down to its
+innermost error.
+
+A `ModuleBadEnd` at column 1 is reported as a line that does not start a
+declaration, by `toDeclStartReport`, and at any other column by the text found
+there, by `toWeirdEndReport`. A `FreshLine` is reported as too much
+indentation when `Code.whatIsNext` reads the keyword `module`, `import`, `type`
+or `port` there. `whatIsNext` keeps the identifier characters of the whole rest
+of the line, so this happens only when no other identifier character follows
+the keyword on its line.
+
+-}
 toParseErrorReport : Code.Source -> Module -> Report.Report
 toParseErrorReport source modul =
     case modul of
@@ -1116,6 +1509,17 @@ toParseErrorReport source modul =
 -- ====== WEIRD END ======
 
 
+{-| Builds the report for a parse that stopped partway along a line, at `row`
+and `col`, choosing the advice by what `Code.whatIsNext` finds there: a reserved
+word, an operator, an unmatched closing bracket, a name, or one of a few
+characters such as `;`, `,` and `$`. Anything else gets
+`toWeirdEndSyntaxProblemReport`.
+
+A word or operator is highlighted for the length of the text `whatIsNext`
+returns for it, one column more for a lower-case name. That text can be longer
+than the token at the position.
+
+-}
 toWeirdEndReport : Code.Source -> Row -> Col -> Report.Report
 toWeirdEndReport source row col =
     case Code.whatIsNext source row col of
@@ -1262,6 +1666,9 @@ toWeirdEndReport source row col =
                     toWeirdEndSyntaxProblemReport source region
 
 
+{-| Builds the report for a parse that stopped at `region` on text that none of
+the more specific reports recognises.
+-}
 toWeirdEndSyntaxProblemReport : Code.Source -> A.Region -> Report.Report
 toWeirdEndSyntaxProblemReport source region =
     ( D.reflow "I got stuck here:"
@@ -1275,6 +1682,9 @@ toWeirdEndSyntaxProblemReport source region =
 -- ====== IMPORTS ======
 
 
+{-| Builds the report for an import that could not be finished, stopped at `row`
+and `col`, showing examples of valid imports.
+-}
 toImportReport : Code.Source -> Row -> Col -> Report.Report
 toImportReport source row col =
     let
@@ -1324,6 +1734,13 @@ toImportReport source row col =
 -- ====== EXPOSING ======
 
 
+{-| Builds the report for an error in an exposing list, of a module declaration
+or of an import, that starts at `startRow` and `startCol`.
+
+An entry that is a reserved word, or an operator not in parentheses, gets advice
+of its own.
+
+-}
 toExposingReport : Code.Source -> Exposing -> Row -> Col -> Report.Report
 toExposingReport source exposing_ startRow startCol =
     case exposing_ of
@@ -1707,8 +2124,12 @@ toExposingReport source exposing_ startRow startCol =
 -- ====== SPACES ======
 
 
-{-| Convert a whitespace-related syntax error into a user-friendly error report,
-handling issues with tabs, spaces, and indentation.
+{-| Builds the report for a whitespace error at `row` and `col`: a tab, or a
+multi-line comment with no end.
+
+The tab report highlights the single column at the position, and the comment
+report the two columns starting there.
+
 -}
 toSpaceReport : Code.Source -> Space -> Row -> Col -> Report.Report
 toSpaceReport source space row col =
@@ -1735,7 +2156,6 @@ toSpaceReport source space row col =
                 Code.toSnippet source region Nothing <|
                     ( D.reflow "I cannot find the end of this multi-line comment:"
                     , D.stack
-                        -- "{-"
                         [ D.reflow "Add a -} somewhere after this to end the comment."
                         , D.toSimpleHint <|
                             "Multi-line comments can be nested in Elm, so {- {- -} -} is a comment that happens to contain another comment. "
@@ -1745,9 +2165,12 @@ toSpaceReport source space row col =
 
 
 
--- ====== DECLARATIONS ======
+-- ====== REGIONS ======
 
 
+{-| Returns the empty region at `row` and `col`, which an excerpt marks as the
+one column there.
+-}
 toRegion : Row -> Col -> A.Region
 toRegion row col =
     let
@@ -1758,6 +2181,8 @@ toRegion row col =
     A.Region pos pos
 
 
+{-| Returns the region on `row` from `col` to `extra` columns further on.
+-}
 toWiderRegion : Row -> Col -> Int -> A.Region
 toWiderRegion row col extra =
     A.Region
@@ -1765,6 +2190,9 @@ toWiderRegion row col extra =
         (A.Position row (col + extra))
 
 
+{-| Returns the region on `row` from `col` as many columns wide as `keyword` has
+characters.
+-}
 toKeywordRegion : Row -> Col -> String -> A.Region
 toKeywordRegion row col keyword =
     A.Region
@@ -1772,6 +2200,13 @@ toKeywordRegion row col keyword =
         (A.Position row (col + String.length keyword))
 
 
+
+-- ====== DECLARATIONS ======
+
+
+{-| Builds the report for an error in the top-level declarations, following
+`decl` down to its innermost error.
+-}
 toDeclarationsReport : Code.Source -> Decl -> Report.Report
 toDeclarationsReport source decl =
     case decl of
@@ -1803,6 +2238,15 @@ toDeclarationsReport source decl =
                 |> Report.report "EXPECTING DECLARATION" region []
 
 
+{-| Builds the report for a point at `row` and `col` where a declaration should
+start and does not, choosing the advice by what `Code.whatIsNext` finds there:
+an unmatched closing bracket, a reserved word, a capitalised name, or one of a
+fixed set of symbols. A `case` or `if` keyword gets an example of that
+expression written inside a definition. `whatIsNext` keeps the identifier
+characters of the whole rest of the line, so a keyword is recognised only when
+no other identifier character follows it on its line. Anything else gets
+`toDeclStartWeirdDeclarationReport`.
+-}
 toDeclStartReport : Code.Source -> Row -> Col -> Report.Report
 toDeclStartReport source row col =
     case Code.whatIsNext source row col of
@@ -1945,6 +2389,10 @@ toDeclStartReport source row col =
             toDeclStartWeirdDeclarationReport source (toRegion row col)
 
 
+{-| Builds the report for a declaration that starts at `region` with text none
+of `toDeclStartReport`'s cases recognises, showing a valid definition and a
+valid type declaration.
+-}
 toDeclStartWeirdDeclarationReport : Code.Source -> A.Region -> Report.Report
 toDeclStartWeirdDeclarationReport source region =
     ( D.reflow "I am trying to parse a declaration, but I am getting stuck here:"
@@ -1972,6 +2420,10 @@ toDeclStartWeirdDeclarationReport source region =
 -- ====== PORT ======
 
 
+{-| Builds the report for an error in a port declaration whose parse began at
+`startRow` and `startCol`. A reserved word where the name should be gets advice
+of its own.
+-}
 toPortReport : Code.Source -> Port -> Row -> Col -> Report.Report
 toPortReport source port_ startRow startCol =
     case port_ of
@@ -2154,6 +2606,10 @@ toPortReport source port_ startRow startCol =
                 |> Report.report "UNFINISHED PORT" region []
 
 
+{-| The note showing an outgoing and an incoming example port declaration, which
+ends the reports of a missing port name (other than a reserved word) or a
+missing colon.
+-}
 portNote : D.Doc
 portNote =
     D.stack
@@ -2185,6 +2641,10 @@ portNote =
 -- ====== DECL TYPE ======
 
 
+{-| Builds the report for an error in a declaration starting with `type` whose
+parse began at `startRow` and `startCol`, passing an error inside a type alias
+or custom type to `toTypeAliasReport` or `toCustomTypeReport`.
+-}
 toDeclTypeReport : Code.Source -> DeclType -> Row -> Col -> Report.Report
 toDeclTypeReport source declType startRow startCol =
     case declType of
@@ -2284,6 +2744,10 @@ toDeclTypeReport source declType startRow startCol =
                 |> Report.report "EXPECTING TYPE NAME" region []
 
 
+{-| Builds the report for an error in a type alias whose parse began at
+`startRow` and `startCol`. A reserved word where a type variable could be gets
+advice of its own.
+-}
 toTypeAliasReport : Code.Source -> TypeAlias -> Row -> Col -> Report.Report
 toTypeAliasReport source typeAlias startRow startCol =
     case typeAlias of
@@ -2437,6 +2901,9 @@ toTypeAliasReport source typeAlias startRow startCol =
                 |> Report.report "UNFINISHED TYPE ALIAS" region []
 
 
+{-| The note showing an example `type alias` of a record, which ends each report
+`toTypeAliasReport` builds itself.
+-}
 typeAliasNote : D.Doc
 typeAliasNote =
     D.stack
@@ -2463,6 +2930,10 @@ typeAliasNote =
         ]
 
 
+{-| Builds the report for an error in a custom type whose parse began at
+`startRow` and `startCol`. A reserved word where a type variable could be gets
+advice of its own.
+-}
 toCustomTypeReport : Code.Source -> CustomType -> Row -> Col -> Report.Report
 toCustomTypeReport source customType startRow startCol =
     case customType of
@@ -2698,6 +3169,10 @@ toCustomTypeReport source customType startRow startCol =
                 |> Report.report "UNFINISHED CUSTOM TYPE" region []
 
 
+{-| The note showing an example custom type with three variants, which ends each
+report `toCustomTypeReport` builds itself and the reports of a missing name
+after `type`.
+-}
 customTypeNote : D.Doc
 customTypeNote =
     D.stack
@@ -2719,6 +3194,15 @@ customTypeNote =
 -- ====== DECL DEF ======
 
 
+{-| Builds the report for an error in the top-level definition of `name` whose
+parse began at `startRow` and `startCol`.
+
+Where an argument or `=` was expected, a reserved word, an arrow and any other
+operator get advice of their own; an arrow is taken as a sign of a `:` missing
+earlier in a type annotation. An error in the body is reported with the
+definition as its context.
+
+-}
 toDeclDefReport : Code.Source -> Name -> DeclDef -> Row -> Col -> Report.Report
 toDeclDefReport source name declDef startRow startCol =
     case declDef of
@@ -3046,6 +3530,9 @@ toDeclDefReport source name declDef startRow startCol =
                 |> Report.report "UNFINISHED DEFINITION" region []
 
 
+{-| The note showing a valid definition with a type annotation and explaining
+that the annotation is optional.
+-}
 declDefNote : D.Doc
 declDefNote =
     D.stack
@@ -3070,12 +3557,33 @@ declDefNote =
 -- ====== CONTEXT ======
 
 
+{-| Where an expression error lies: the chain of constructs around it, from the
+innermost out to the definition it belongs to.
+
+`InNode` is one enclosing construct, of the kind its `Node` names, inside the
+rest of the chain. Its row and column are where the enclosing record, list,
+parentheses, anonymous function, `if` or `case` began; for the `if` and `case`
+nodes that is the start of the whole expression. `InDef` is the
+definition of the given name, and `InDestruct` a destructuring definition in a
+`let`, which has no single name; each carries the position its parse began at.
+Every chain ends in one of these two.
+
+-}
 type Context
     = InNode Node Row Col Context
     | InDef Name Row Col
     | InDestruct Row Col
 
 
+{-| The kind of construct an `InNode` context names.
+
+`NRecord` is a record expression and `NList` a list. `NParens` is a
+parenthesised expression or a tuple, and `NFunc` an anonymous function.
+`NCond`, `NThen` and `NElse` are the condition and the two branches of an
+`if`. `NCase` is the expression a `case` inspects, and `NBranch` one of its
+branches.
+
+-}
 type Node
     = NRecord
     | NParens
@@ -3088,6 +3596,9 @@ type Node
     | NBranch
 
 
+{-| Returns the name of the definition `context` lies in, or `Nothing` when it
+lies in a destructuring definition.
+-}
 getDefName : Context -> Maybe Name
 getDefName context =
     case context of
@@ -3101,6 +3612,12 @@ getDefName context =
             getDefName c
 
 
+{-| Returns whether the innermost construct of `context` is a `desiredNode`.
+
+Only the innermost construct is checked, so an error in a list inside a `case`
+branch is not within `NBranch`.
+
+-}
 isWithin : Node -> Context -> Bool
 isWithin desiredNode context =
     case context of
@@ -3118,6 +3635,19 @@ isWithin desiredNode context =
 -- ====== EXPR REPORTS ======
 
 
+{-| Builds the report for an error in an expression, where `context` is the
+chain of constructs the expression lies in and `startRow` and `startCol` are
+where the parse of the expression began.
+
+The reports of the constructs that contain expressions pass an error in one of
+them on with the construct added to the context, except that a `let` body keeps
+the context it had, and the body of a `let` definition or destructuring starts
+a new context, `InDef` or `InDestruct`, in place of the enclosing one. That
+is how `Start`, an expression missing, can name what was being parsed and show
+it from its start. An operator with no expression after it gets advice suited
+to the operator.
+
+-}
 toExprReport : Code.Source -> Context -> Expr -> Row -> Col -> Report.Report
 toExprReport source context expr startRow startCol =
     case expr of
@@ -3457,6 +3987,8 @@ toExprReport source context expr startRow startCol =
 -- ====== CHAR ======
 
 
+{-| Builds the report for an error in a character literal at `row` and `col`.
+-}
 toCharReport : Code.Source -> Char -> Row -> Col -> Report.Report
 toCharReport source char row col =
     case char of
@@ -3503,6 +4035,9 @@ toCharReport source char row col =
 -- ====== STRING ======
 
 
+{-| Builds the report for an error in a string literal at `row` and `col`. An
+unfinished `"""` string is highlighted for three columns from the position.
+-}
 toStringReport : Code.Source -> String_ -> Row -> Col -> Report.Report
 toStringReport source string row col =
     case string of
@@ -3591,6 +4126,14 @@ toStringReport source string row col =
 -- ====== ESCAPES ======
 
 
+{-| Builds the report for an error in an escape sequence at `row` and `col`.
+
+When a code point is written with fewer than four digits, the report suggests
+`4 - digits written` zeros followed by the code point in upper-case
+hexadecimal. Leading zeros the user wrote are counted but not kept, so the
+suggestion can still have fewer than four digits.
+
+-}
 toEscapeReport : Code.Source -> Escape -> Row -> Col -> Report.Report
 toEscapeReport source escape row col =
     case escape of
@@ -3719,6 +4262,10 @@ toEscapeReport source escape row col =
 -- ====== NUMBERS ======
 
 
+{-| Builds the report for an error in a number literal at `row` and `col`. A
+`NumberDot` report offers the integer before the dot, and the same integer
+followed by `.0`, as replacements.
+-}
 toNumberReport : Code.Source -> Number -> Row -> Col -> Report.Report
 toNumberReport source number row col =
     let
@@ -3868,6 +4415,17 @@ toNumberReport source number row col =
 -- ====== OPERATORS ======
 
 
+{-| Builds the report for a symbol at `row` and `col` that cannot be an
+operator, found where an operator could follow an expression.
+
+The advice for some symbols depends on `context`. An arrow is explained one way
+when the innermost construct is the expression a `case` inspects, another when
+it is a `case` branch, and a third way otherwise. An equals sign gets a note
+about records when the innermost construct is a record, and otherwise one about
+the indentation of definitions, naming the definition when there is one. A `:`
+gets notes naming the definition when there is one.
+
+-}
 toOperatorReport : Code.Source -> Context -> BadOperator -> Row -> Col -> Report.Report
 toOperatorReport source context operator row col =
     case operator of
@@ -4024,9 +4582,18 @@ toOperatorReport source context operator row col =
 
 
 
--- ====== CASE ======
+-- ====== LET ======
 
 
+{-| Builds the report for an error in a `let` expression whose parse began at
+`startRow` and `startCol`, where `context` is the chain of constructs the `let`
+lies in.
+
+An error in the body keeps `context` unchanged, while an error in a definition
+is reported in a context of its own. A `LetDefAlignment` is reported exactly as
+a missing `in` is.
+
+-}
 toLetReport : Code.Source -> Context -> Let -> Row -> Col -> Report.Report
 toLetReport source context let_ startRow startCol =
     case let_ of
@@ -4180,6 +4747,10 @@ toLetReport source context let_ startRow startCol =
                     "I was expecting an expression next. Tell me what should happen with the value you just defined!"
 
 
+{-| Builds the report for a `let` expression whose parse began at `startRow` and
+`startCol` and stopped at `row` and `col`, where `message` says what was
+expected next. The report ends with an example `let` expression.
+-}
 toUnfinishLetReport : Code.Source -> Row -> Col -> Row -> Col -> D.Doc -> Report.Report
 toUnfinishLetReport source row col startRow startCol message =
     let
@@ -4235,6 +4806,15 @@ toUnfinishLetReport source row col startRow startCol message =
         |> Report.report "UNFINISHED LET" region []
 
 
+{-| Builds the report for an error in the definition of `name` inside a `let`
+expression, whose parse began at `startRow` and `startCol`.
+
+Its reports mirror those of `toDeclDefReport`, with small differences in
+wording. A `DefAlignment` report gives its column as the number of spaces of
+indentation the annotation has, and the difference between that column and `col`
+as the number of spaces the definition needs.
+
+-}
 toLetDefReport : Code.Source -> Name -> Def -> Row -> Col -> Report.Report
 toLetDefReport source name def startRow startCol =
     case def of
@@ -4569,6 +5149,9 @@ toLetDefReport source name def startRow startCol =
                 |> Report.report "PROBLEM IN DEFINITION" region []
 
 
+{-| The note showing a valid definition with a type annotation and explaining
+that the annotation is optional, used in some reports of definitions in a `let`.
+-}
 defNote : D.Doc
 defNote =
     D.stack
@@ -4589,6 +5172,11 @@ defNote =
         ]
 
 
+{-| Builds the report for an error in a destructuring definition in a `let`
+expression whose parse began at `startRow` and `startCol`. A `:` where the `=`
+should be gets a note that a destructuring definition cannot have a type
+annotation.
+-}
 toLetDestructReport : Code.Source -> Destruct -> Row -> Col -> Report.Report
 toLetDestructReport source destruct startRow startCol =
     case destruct of
@@ -4665,6 +5253,15 @@ toLetDestructReport source destruct startRow startCol =
 -- ====== CASE ======
 
 
+{-| Builds the report for an error in a `case` expression whose parse began at
+`startRow` and `startCol`, where `context` is the chain of constructs the `case`
+lies in.
+
+Where an arrow was expected, a reserved word, a `:` and an `=` get advice of
+their own. A `CasePatternAlignment` report gives its column as a number of
+spaces.
+
+-}
 toCaseReport : Code.Source -> Context -> Case -> Row -> Col -> Report.Report
 toCaseReport source context case_ startRow startCol =
     case case_ of
@@ -4875,6 +5472,10 @@ toCaseReport source context case_ startRow startCol =
                 (D.reflow ("I suspect this is a pattern that is not indented far enough? (" ++ String.fromInt indent ++ " spaces)"))
 
 
+{-| Builds the report for a `case` expression whose parse began at `startRow`
+and `startCol` and stopped at `row` and `col`, where `message` says what was
+expected next. The report ends with `noteForCaseError`.
+-}
 toUnfinishCaseReport : Code.Source -> Int -> Int -> Int -> Int -> D.Doc -> Report.Report
 toUnfinishCaseReport source row col startRow startCol message =
     let
@@ -4896,6 +5497,9 @@ toUnfinishCaseReport source row col startRow startCol message =
         |> Report.report "UNFINISHED CASE" region []
 
 
+{-| The note showing a valid `case` expression and pointing out how its patterns
+and branches are indented.
+-}
 noteForCaseError : D.Doc
 noteForCaseError =
     D.stack
@@ -4912,6 +5516,9 @@ noteForCaseError =
         ]
 
 
+{-| The note showing a valid `case` expression, worded for an error that may
+come from indentation.
+-}
 noteForCaseIndentError : D.Doc
 noteForCaseIndentError =
     D.stack
@@ -4932,6 +5539,16 @@ noteForCaseIndentError =
 -- ====== IF ======
 
 
+{-| Builds the report for an error in an `if` expression whose parse began at
+`startRow` and `startCol`, where `context` is the chain of constructs the `if`
+lies in.
+
+For `IfIndentElse`, when the line after `row` starts with `else`, the report
+says that `else` needs more indentation and highlights four columns from the
+position `Code.nextLineStartsWithKeyword` returns. That position is not in
+general the column of the `else`.
+
+-}
 toIfReport : Code.Source -> Context -> If -> Row -> Col -> Report.Report
 toIfReport source context if_ startRow startCol =
     case if_ of
@@ -5201,6 +5818,17 @@ toIfReport source context if_ startRow startCol =
 -- ====== RECORD ======
 
 
+{-| Builds the report for an error in a record expression whose parse began at
+`startRow` and `startCol`, where `context` is the chain of constructs the record
+lies in.
+
+Where a field name was expected, a reserved word, a second comma and a closing
+brace after a trailing comma get advice of their own. For `RecordIndentEnd`,
+when the line after `row` starts with `}`, the report says that brace needs more
+indentation, placed at the position `Code.nextLineStartsWithCloseCurly` returns,
+which is not in general the column of the brace.
+
+-}
 toRecordReport : Code.Source -> Context -> Record -> Row -> Col -> Report.Report
 toRecordReport source context record startRow startCol =
     case record of
@@ -5628,6 +6256,9 @@ toRecordReport source context record startRow startCol =
                 |> Report.report "UNFINISHED RECORD" region []
 
 
+{-| The note showing the recommended layout of a record written across several
+lines.
+-}
 noteForRecordError : D.Doc
 noteForRecordError =
     D.stack
@@ -5643,6 +6274,9 @@ noteForRecordError =
         ]
 
 
+{-| The note showing the recommended layout of a record written across several
+lines, worded for an error that may come from indentation.
+-}
 noteForRecordIndentError : D.Doc
 noteForRecordIndentError =
     D.stack
@@ -5659,9 +6293,13 @@ noteForRecordIndentError =
 
 
 
--- ====== TUPLE ======
+-- ====== TUPLES, LISTS AND ANONYMOUS FUNCTIONS ======
 
 
+{-| Builds the report for an error in parentheses (a parenthesised expression, a
+tuple or an operator function) whose parse began at `startRow` and `startCol`,
+where `context` is the chain of constructs they lie in.
+-}
 toTupleReport : Code.Source -> Context -> Tuple -> Row -> Col -> Report.Report
 toTupleReport source context tuple startRow startCol =
     case tuple of
@@ -5916,6 +6554,14 @@ toTupleReport source context tuple startRow startCol =
                 |> Report.report "UNFINISHED PARENTHESES" region []
 
 
+{-| Builds the report for an error in a list expression whose parse began at
+`startRow` and `startCol`, where `context` is the chain of constructs the list
+lies in.
+
+A `ListExpr` whose error is `Start`, an entry missing, is reported as a trailing
+comma instead of being passed on.
+
+-}
 toListReport : Code.Source -> Context -> List_ -> Row -> Col -> Report.Report
 toListReport source context list startRow startCol =
     case list of
@@ -6173,6 +6819,10 @@ toListReport source context list startRow startCol =
                 |> Report.report "UNFINISHED LIST" region []
 
 
+{-| Builds the report for an error in an anonymous function whose parse began at
+`startRow` and `startCol`, where `context` is the chain of constructs the
+function lies in.
+-}
 toFuncReport : Code.Source -> Context -> Func -> Row -> Col -> Report.Report
 toFuncReport source context func startRow startCol =
     case func of
@@ -6363,12 +7013,30 @@ toFuncReport source context func startRow startCol =
 -- ====== PATTERN ======
 
 
+{-| Where a pattern occurs: `PCase` in a branch of a `case` expression, `PArg`
+as an argument of a definition or an anonymous function, and `PLet` in a
+destructuring `let` definition.
+
+It changes only the wording of the report for a reserved word at the start of a
+pattern.
+
+-}
 type PContext
     = PCase
     | PArg
     | PLet
 
 
+{-| Builds the report for an error in a pattern whose parse began at `startRow`
+and `startCol`. `context` changes only the wording for a reserved word at the
+start of a pattern, and is passed on to tuple and list patterns but not to
+record patterns.
+
+A `-` at the start of a pattern gets a note that negative numbers cannot be
+matched on. A `PWildcardNotVar` report suggests the name without its underscores
+and with its first letter in lower case, or `x` and `age` when nothing is left.
+
+-}
 toPatternReport : Code.Source -> PContext -> Pattern -> Row -> Col -> Report.Report
 toPatternReport source context pattern startRow startCol =
     case pattern of
@@ -6758,6 +7426,9 @@ toPatternReport source context pattern startRow startCol =
                 |> Report.report "UNFINISHED PATTERN" region []
 
 
+{-| Builds the report for an error in a record pattern whose parse began at
+`startRow` and `startCol`.
+-}
 toPRecordReport : Code.Source -> PRecord -> Row -> Col -> Report.Report
 toPRecordReport source record startRow startCol =
     case record of
@@ -6838,6 +7509,11 @@ toPRecordReport source record startRow startCol =
             D.reflow "I was expecting to see a field name next." |> toUnfinishRecordPatternReport source row col startRow startCol
 
 
+{-| Builds the report for a record pattern whose parse began at `startRow` and
+`startCol` and stopped at `row` and `col`, where `message` says what was
+expected next. The report ends with a hint showing what a record pattern looks
+like.
+-}
 toUnfinishRecordPatternReport : Code.Source -> Row -> Col -> Row -> Col -> D.Doc -> Report.Report
 toUnfinishRecordPatternReport source row col startRow startCol message =
     let
@@ -6878,6 +7554,11 @@ toUnfinishRecordPatternReport source row col startRow startCol message =
         |> Report.report "UNFINISHED RECORD PATTERN" region []
 
 
+{-| Builds the report for an error in a parenthesised or tuple pattern whose
+parse began at `startRow` and `startCol`. Where a comma or `)` was expected, a
+reserved word, an operator and an unmatched closing bracket get advice of their
+own.
+-}
 toPTupleReport : Code.Source -> PContext -> PTuple -> Row -> Col -> Report.Report
 toPTupleReport source context tuple startRow startCol =
     case tuple of
@@ -7154,6 +7835,9 @@ toPTupleReport source context tuple startRow startCol =
                 |> Report.report "UNFINISHED TUPLE PATTERN" region []
 
 
+{-| Builds the report for an error in a list pattern whose parse began at
+`startRow` and `startCol`.
+-}
 toPListReport : Code.Source -> PContext -> PList -> Row -> Col -> Report.Report
 toPListReport source context list startRow startCol =
     case list of
@@ -7315,6 +7999,10 @@ toPListReport source context list startRow startCol =
 -- ====== TYPES ======
 
 
+{-| What a type belongs to, which the report names: `TC_Annotation` the type
+annotation of the named definition, `TC_CustomType` a custom type's variant,
+`TC_TypeAlias` the body of a type alias, and `TC_Port` a port declaration.
+-}
 type TContext
     = TC_Annotation Name
     | TC_CustomType
@@ -7322,6 +8010,11 @@ type TContext
     | TC_Port
 
 
+{-| Builds the report for an error in a type whose parse began at `startRow` and
+`startCol`, where `context` says what the type belongs to. The titles of the
+reports for a missing type name the context, as in "PROBLEM IN TYPE ANNOTATION",
+except when a reserved word is found where the type should be.
+-}
 toTypeReport : Code.Source -> TContext -> Type -> Row -> Col -> Report.Report
 toTypeReport source context tipe startRow startCol =
     case tipe of
@@ -7465,6 +8158,16 @@ toTypeReport source context tipe startRow startCol =
                 |> Report.report ("UNFINISHED " ++ String.toUpper thing) region []
 
 
+{-| Builds the report for an error in a record type whose parse began at
+`startRow` and `startCol`.
+
+Where a field name was expected, a reserved word, a second comma and a closing
+brace after a trailing comma get advice of their own. For `TRecordIndentEnd`,
+when the line after `row` starts with `}`, the report says that brace needs more
+indentation, placed at the position `Code.nextLineStartsWithCloseCurly` returns,
+which is not in general the column of the brace.
+
+-}
 toTRecordReport : Code.Source -> TContext -> TRecord -> Row -> Col -> Report.Report
 toTRecordReport source context record startRow startCol =
     case record of
@@ -7879,6 +8582,9 @@ toTRecordReport source context record startRow startCol =
                 |> Report.report "UNFINISHED RECORD TYPE" region []
 
 
+{-| The note showing the recommended layout of a record type written across
+several lines.
+-}
 noteForRecordTypeError : D.Doc
 noteForRecordTypeError =
     D.stack
@@ -7896,6 +8602,9 @@ noteForRecordTypeError =
         ]
 
 
+{-| The note showing the recommended layout of a record type written across
+several lines, worded for an error that may come from indentation.
+-}
 noteForRecordTypeIndentError : D.Doc
 noteForRecordTypeIndentError =
     D.stack
@@ -7913,6 +8622,9 @@ noteForRecordTypeIndentError =
         ]
 
 
+{-| Builds the report for an error in a parenthesised or tuple type whose parse
+began at `startRow` and `startCol`.
+-}
 toTTupleReport : Code.Source -> TContext -> TTuple -> Row -> Col -> Report.Report
 toTTupleReport source context tuple startRow startCol =
     case tuple of
@@ -8117,7 +8829,8 @@ toTTupleReport source context tuple startRow startCol =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Serialize a syntax error to bytes for caching or transmission.
+{-| Encodes `error` in the format the module docstring describes: a tag byte for
+each constructor, followed by its fields.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
@@ -8172,7 +8885,8 @@ errorEncoder error =
                 ]
 
 
-{-| Deserialize a syntax error from bytes.
+{-| A decoder for what `errorEncoder` writes. It fails on a tag past the last
+constructor of whichever type it is reading.
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
@@ -8211,7 +8925,8 @@ errorDecoder =
             )
 
 
-{-| Serialize a whitespace error to bytes.
+{-| Encodes `space` as a single tag byte: 0 for `HasTab`, 1 for
+`EndlessMultiComment`.
 -}
 spaceEncoder : Space -> Bytes.Encode.Encoder
 spaceEncoder space =
@@ -8225,7 +8940,7 @@ spaceEncoder space =
         )
 
 
-{-| Deserialize a whitespace error from bytes.
+{-| A decoder for what `spaceEncoder` writes, which fails on any other byte.
 -}
 spaceDecoder : Bytes.Decode.Decoder Space
 spaceDecoder =
@@ -8244,6 +8959,8 @@ spaceDecoder =
             )
 
 
+{-| Encodes a `Module` error: a tag byte for its constructor, then its fields.
+-}
 moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder modul =
     case modul of
@@ -8407,6 +9124,8 @@ moduleEncoder modul =
                 ]
 
 
+{-| A decoder for what `moduleEncoder` writes.
+-}
 moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
     Bytes.Decode.unsignedInt8
@@ -8533,6 +9252,9 @@ moduleDecoder =
             )
 
 
+{-| Encodes an `Exposing` error: a tag byte for its constructor, then its
+fields.
+-}
 exposingEncoder : Exposing -> Bytes.Encode.Encoder
 exposingEncoder exposing_ =
     case exposing_ of
@@ -8609,6 +9331,8 @@ exposingEncoder exposing_ =
                 ]
 
 
+{-| A decoder for what `exposingEncoder` writes.
+-}
 exposingDecoder : Bytes.Decode.Decoder Exposing
 exposingDecoder =
     Bytes.Decode.unsignedInt8
@@ -8672,6 +9396,8 @@ exposingDecoder =
             )
 
 
+{-| Encodes a `Decl` error: a tag byte for its constructor, then its fields.
+-}
 declEncoder : Decl -> Bytes.Encode.Encoder
 declEncoder decl =
     case decl of
@@ -8723,6 +9449,8 @@ declEncoder decl =
                 ]
 
 
+{-| A decoder for what `declEncoder` writes.
+-}
 declDecoder : Bytes.Decode.Decoder Decl
 declDecoder =
     Bytes.Decode.unsignedInt8
@@ -8769,6 +9497,8 @@ declDecoder =
             )
 
 
+{-| Encodes a `Port` error: a tag byte for its constructor, then its fields.
+-}
 portEncoder : Port -> Bytes.Encode.Encoder
 portEncoder port_ =
     case port_ of
@@ -8824,6 +9554,8 @@ portEncoder port_ =
                 ]
 
 
+{-| A decoder for what `portEncoder` writes.
+-}
 portDecoder : Bytes.Decode.Decoder Port
 portDecoder =
     Bytes.Decode.unsignedInt8
@@ -8872,6 +9604,8 @@ portDecoder =
             )
 
 
+{-| Encodes a `DeclType` error: a tag byte for its constructor, then its fields.
+-}
 declTypeEncoder : DeclType -> Bytes.Encode.Encoder
 declTypeEncoder declType =
     case declType of
@@ -8914,6 +9648,8 @@ declTypeEncoder declType =
                 ]
 
 
+{-| A decoder for what `declTypeEncoder` writes.
+-}
 declTypeDecoder : Bytes.Decode.Decoder DeclType
 declTypeDecoder =
     Bytes.Decode.unsignedInt8
@@ -8953,6 +9689,8 @@ declTypeDecoder =
             )
 
 
+{-| Encodes a `DeclDef` error: a tag byte for its constructor, then its fields.
+-}
 declDefEncoder : DeclDef -> Bytes.Encode.Encoder
 declDefEncoder declDef =
     case declDef of
@@ -9032,6 +9770,8 @@ declDefEncoder declDef =
                 ]
 
 
+{-| A decoder for what `declDefEncoder` writes.
+-}
 declDefDecoder : Bytes.Decode.Decoder DeclDef
 declDefDecoder =
     Bytes.Decode.unsignedInt8
@@ -9098,6 +9838,8 @@ declDefDecoder =
             )
 
 
+{-| Encodes a `Type` error: a tag byte for its constructor, then its fields.
+-}
 typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder type_ =
     case type_ of
@@ -9140,6 +9882,8 @@ typeEncoder type_ =
                 ]
 
 
+{-| A decoder for what `typeEncoder` writes.
+-}
 typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
     Bytes.Decode.unsignedInt8
@@ -9179,6 +9923,8 @@ typeDecoder =
             )
 
 
+{-| Encodes a `Pattern` error: a tag byte for its constructor, then its fields.
+-}
 patternEncoder : Pattern -> Bytes.Encode.Encoder
 patternEncoder pattern =
     case pattern of
@@ -9293,6 +10039,8 @@ patternEncoder pattern =
                 ]
 
 
+{-| A decoder for what `patternEncoder` writes.
+-}
 patternDecoder : Bytes.Decode.Decoder Pattern
 patternDecoder =
     Bytes.Decode.unsignedInt8
@@ -9386,6 +10134,8 @@ patternDecoder =
             )
 
 
+{-| Encodes an `Expr` error: a tag byte for its constructor, then its fields.
+-}
 exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder expr =
     case expr of
@@ -9538,6 +10288,8 @@ exprEncoder expr =
                 ]
 
 
+{-| A decoder for what `exprEncoder` writes.
+-}
 exprDecoder : Bytes.Decode.Decoder Expr
 exprDecoder =
     Bytes.Decode.unsignedInt8
@@ -9659,6 +10411,8 @@ exprDecoder =
             )
 
 
+{-| Encodes a `Let` error: a tag byte for its constructor, then its fields.
+-}
 letEncoder : Let -> Bytes.Encode.Encoder
 letEncoder let_ =
     case let_ of
@@ -9739,6 +10493,8 @@ letEncoder let_ =
                 ]
 
 
+{-| A decoder for what `letEncoder` writes.
+-}
 letDecoder : Bytes.Decode.Decoder Let
 letDecoder =
     Bytes.Decode.unsignedInt8
@@ -9806,6 +10562,8 @@ letDecoder =
             )
 
 
+{-| Encodes a `Case` error: a tag byte for its constructor, then its fields.
+-}
 caseEncoder : Case -> Bytes.Encode.Encoder
 caseEncoder case_ =
     case case_ of
@@ -9899,6 +10657,8 @@ caseEncoder case_ =
                 ]
 
 
+{-| A decoder for what `caseEncoder` writes.
+-}
 caseDecoder : Bytes.Decode.Decoder Case
 caseDecoder =
     Bytes.Decode.unsignedInt8
@@ -9975,6 +10735,8 @@ caseDecoder =
             )
 
 
+{-| Encodes an `If` error: a tag byte for its constructor, then its fields.
+-}
 ifEncoder : If -> Bytes.Encode.Encoder
 ifEncoder if_ =
     case if_ of
@@ -10067,6 +10829,8 @@ ifEncoder if_ =
                 ]
 
 
+{-| A decoder for what `ifEncoder` writes.
+-}
 ifDecoder : Bytes.Decode.Decoder If
 ifDecoder =
     Bytes.Decode.unsignedInt8
@@ -10142,6 +10906,8 @@ ifDecoder =
             )
 
 
+{-| Encodes a `List_` error: a tag byte for its constructor, then its fields.
+-}
 listEncoder : List_ -> Bytes.Encode.Encoder
 listEncoder list_ =
     case list_ of
@@ -10197,6 +10963,8 @@ listEncoder list_ =
                 ]
 
 
+{-| A decoder for what `listEncoder` writes.
+-}
 listDecoder : Bytes.Decode.Decoder List_
 listDecoder =
     Bytes.Decode.unsignedInt8
@@ -10245,6 +11013,8 @@ listDecoder =
             )
 
 
+{-| Encodes a `Record` error: a tag byte for its constructor, then its fields.
+-}
 recordEncoder : Record -> Bytes.Encode.Encoder
 recordEncoder record =
     case record of
@@ -10328,6 +11098,8 @@ recordEncoder record =
                 ]
 
 
+{-| A decoder for what `recordEncoder` writes.
+-}
 recordDecoder : Bytes.Decode.Decoder Record
 recordDecoder =
     Bytes.Decode.unsignedInt8
@@ -10396,6 +11168,8 @@ recordDecoder =
             )
 
 
+{-| Encodes a `Tuple` error: a tag byte for its constructor, then its fields.
+-}
 tupleEncoder : Tuple -> Bytes.Encode.Encoder
 tupleEncoder tuple =
     case tuple of
@@ -10459,6 +11233,8 @@ tupleEncoder tuple =
                 ]
 
 
+{-| A decoder for what `tupleEncoder` writes.
+-}
 tupleDecoder : Bytes.Decode.Decoder Tuple
 tupleDecoder =
     Bytes.Decode.unsignedInt8
@@ -10513,6 +11289,8 @@ tupleDecoder =
             )
 
 
+{-| Encodes a `Func` error: a tag byte for its constructor, then its fields.
+-}
 funcEncoder : Func -> Bytes.Encode.Encoder
 funcEncoder func =
     case func of
@@ -10569,6 +11347,8 @@ funcEncoder func =
                 ]
 
 
+{-| A decoder for what `funcEncoder` writes.
+-}
 funcDecoder : Bytes.Decode.Decoder Func
 funcDecoder =
     Bytes.Decode.unsignedInt8
@@ -10618,6 +11398,8 @@ funcDecoder =
             )
 
 
+{-| Encodes a `Char` error: a tag byte for its constructor, then its fields.
+-}
 charEncoder : Char -> Bytes.Encode.Encoder
 charEncoder char =
     case char of
@@ -10637,6 +11419,8 @@ charEncoder char =
                 ]
 
 
+{-| A decoder for what `charEncoder` writes.
+-}
 charDecoder : Bytes.Decode.Decoder Char
 charDecoder =
     Bytes.Decode.unsignedInt8
@@ -10657,6 +11441,8 @@ charDecoder =
             )
 
 
+{-| Encodes a `String_` error: a tag byte for its constructor, then its fields.
+-}
 stringEncoder : String_ -> Bytes.Encode.Encoder
 stringEncoder string_ =
     case string_ of
@@ -10673,6 +11459,8 @@ stringEncoder string_ =
                 ]
 
 
+{-| A decoder for what `stringEncoder` writes.
+-}
 stringDecoder : Bytes.Decode.Decoder String_
 stringDecoder =
     Bytes.Decode.unsignedInt8
@@ -10693,6 +11481,8 @@ stringDecoder =
             )
 
 
+{-| Encodes a `Number` error: a tag byte for its constructor, then its fields.
+-}
 numberEncoder : Number -> Bytes.Encode.Encoder
 numberEncoder number =
     case number of
@@ -10730,6 +11520,8 @@ numberEncoder number =
             Bytes.Encode.unsignedInt8 9
 
 
+{-| A decoder for what `numberEncoder` writes.
+-}
 numberDecoder : Bytes.Decode.Decoder Number
 numberDecoder =
     Bytes.Decode.unsignedInt8
@@ -10771,6 +11563,8 @@ numberDecoder =
             )
 
 
+{-| Encodes an `Escape` error: a tag byte for its constructor, then its fields.
+-}
 escapeEncoder : Escape -> Bytes.Encode.Encoder
 escapeEncoder escape =
     case escape of
@@ -10798,6 +11592,8 @@ escapeEncoder escape =
                 ]
 
 
+{-| A decoder for what `escapeEncoder` writes.
+-}
 escapeDecoder : Bytes.Decode.Decoder Escape
 escapeDecoder =
     Bytes.Decode.unsignedInt8
@@ -10824,6 +11620,8 @@ escapeDecoder =
             )
 
 
+{-| Encodes a `Def` error: a tag byte for its constructor, then its fields.
+-}
 defEncoder : Def -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
@@ -10911,6 +11709,8 @@ defEncoder def =
                 ]
 
 
+{-| A decoder for what `defEncoder` writes.
+-}
 defDecoder : Bytes.Decode.Decoder Def
 defDecoder =
     Bytes.Decode.unsignedInt8
@@ -10983,6 +11783,8 @@ defDecoder =
             )
 
 
+{-| Encodes a `Destruct` error: a tag byte for its constructor, then its fields.
+-}
 destructEncoder : Destruct -> Bytes.Encode.Encoder
 destructEncoder destruct =
     case destruct of
@@ -11032,6 +11834,8 @@ destructEncoder destruct =
                 ]
 
 
+{-| A decoder for what `destructEncoder` writes.
+-}
 destructDecoder : Bytes.Decode.Decoder Destruct
 destructDecoder =
     Bytes.Decode.unsignedInt8
@@ -11076,6 +11880,8 @@ destructDecoder =
             )
 
 
+{-| Encodes a `PRecord` error: a tag byte for its constructor, then its fields.
+-}
 pRecordEncoder : PRecord -> Bytes.Encode.Encoder
 pRecordEncoder pRecord =
     case pRecord of
@@ -11130,6 +11936,8 @@ pRecordEncoder pRecord =
                 ]
 
 
+{-| A decoder for what `pRecordEncoder` writes.
+-}
 pRecordDecoder : Bytes.Decode.Decoder PRecord
 pRecordDecoder =
     Bytes.Decode.unsignedInt8
@@ -11177,6 +11985,8 @@ pRecordDecoder =
             )
 
 
+{-| Encodes a `PTuple` error: a tag byte for its constructor, then its fields.
+-}
 pTupleEncoder : PTuple -> Bytes.Encode.Encoder
 pTupleEncoder pTuple =
     case pTuple of
@@ -11232,6 +12042,8 @@ pTupleEncoder pTuple =
                 ]
 
 
+{-| A decoder for what `pTupleEncoder` writes.
+-}
 pTupleDecoder : Bytes.Decode.Decoder PTuple
 pTupleDecoder =
     Bytes.Decode.unsignedInt8
@@ -11280,6 +12092,8 @@ pTupleDecoder =
             )
 
 
+{-| Encodes a `PList` error: a tag byte for its constructor, then its fields.
+-}
 pListEncoder : PList -> Bytes.Encode.Encoder
 pListEncoder pList =
     case pList of
@@ -11335,6 +12149,8 @@ pListEncoder pList =
                 ]
 
 
+{-| A decoder for what `pListEncoder` writes.
+-}
 pListDecoder : Bytes.Decode.Decoder PList
 pListDecoder =
     Bytes.Decode.unsignedInt8
@@ -11383,6 +12199,8 @@ pListDecoder =
             )
 
 
+{-| Encodes a `TRecord` error: a tag byte for its constructor, then its fields.
+-}
 tRecordEncoder : TRecord -> Bytes.Encode.Encoder
 tRecordEncoder tRecord =
     case tRecord of
@@ -11466,6 +12284,8 @@ tRecordEncoder tRecord =
                 ]
 
 
+{-| A decoder for what `tRecordEncoder` writes.
+-}
 tRecordDecoder : Bytes.Decode.Decoder TRecord
 tRecordDecoder =
     Bytes.Decode.unsignedInt8
@@ -11534,6 +12354,8 @@ tRecordDecoder =
             )
 
 
+{-| Encodes a `TTuple` error: a tag byte for its constructor, then its fields.
+-}
 tTupleEncoder : TTuple -> Bytes.Encode.Encoder
 tTupleEncoder tTuple =
     case tTuple of
@@ -11589,6 +12411,8 @@ tTupleEncoder tTuple =
                 ]
 
 
+{-| A decoder for what `tTupleEncoder` writes.
+-}
 tTupleDecoder : Bytes.Decode.Decoder TTuple
 tTupleDecoder =
     Bytes.Decode.unsignedInt8
@@ -11637,6 +12461,9 @@ tTupleDecoder =
             )
 
 
+{-| Encodes a `CustomType` error: a tag byte for its constructor, then its
+fields.
+-}
 customTypeEncoder : CustomType -> Bytes.Encode.Encoder
 customTypeEncoder customType =
     case customType of
@@ -11713,6 +12540,8 @@ customTypeEncoder customType =
                 ]
 
 
+{-| A decoder for what `customTypeEncoder` writes.
+-}
 customTypeDecoder : Bytes.Decode.Decoder CustomType
 customTypeDecoder =
     Bytes.Decode.unsignedInt8
@@ -11776,6 +12605,9 @@ customTypeDecoder =
             )
 
 
+{-| Encodes a `TypeAlias` error: a tag byte for its constructor, then its
+fields.
+-}
 typeAliasEncoder : TypeAlias -> Bytes.Encode.Encoder
 typeAliasEncoder typeAlias =
     case typeAlias of
@@ -11824,6 +12656,8 @@ typeAliasEncoder typeAlias =
                 ]
 
 
+{-| A decoder for what `typeAliasEncoder` writes.
+-}
 typeAliasDecoder : Bytes.Decode.Decoder TypeAlias
 typeAliasDecoder =
     Bytes.Decode.unsignedInt8

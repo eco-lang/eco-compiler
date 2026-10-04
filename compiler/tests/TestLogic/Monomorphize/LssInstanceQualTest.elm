@@ -1,23 +1,58 @@
 module TestLogic.Monomorphize.LssInstanceQualTest exposing (suite)
 
-{-| INSTANCE-QUALIFIED LAMBDA MEMBERS
-(`plans/lss-instance-qualified-members.md`).
+{-| Tests that a source lambda inside a let-bound function gets a separate
+member id in each instance of that function.
 
-Local-multi instance keying is annotation-SENSITIVE
-(`Engine.recordMultiInstance`): a let-bound function applied at two types that
-differ only in a lambda set mints `f` and `f$1`, and `buildLocalDefs`
-re-translates its RHS once per instance. Lambda member qualification was NOT
-instance-aware: both re-translations happen inside ONE spec of the enclosing
-global, so a lambda in that RHS minted the SAME member id in both.
+Under lambda-set specialization (LSS), the solver engine annotates a function
+type with a _lambda set_. An `LSet` annotation lists, each by an interned
+integer _member id_, the functions a value of that type may be. If the
+instances shared one id, a call through that lambda would see a singleton set
+`LSet [m]` standing for closures with different bodies, and
+`Compiler.GlobalOpt.AbiCloning`, whose fingerprint check declines a set whose
+closures differ, would leave the call as a generic dispatch.
 
-The consumer then sees a singleton `LSet [m]` indexing two behaviourally
-different bodies. AbiCloning refuses to stamp it (LSS\_024's fingerprint fence,
-`declinedBodyMismatch`) — correctly, because stamping would be the E11
-representative hijack — and the call stays a generic dispatch.
+A let-bound function that the solver engine meets at more than one type is
+split into _local-multi instances_, `fold` and `fold$1`, numbered by an
+ordinal from 0 (`Engine.recordLocalInstance`). Two types that differ only in a
+lambda set give two instances. The body of each instance is translated again,
+and with LSS on, as in each pipeline run here, under an _instance tag_ from
+`Engine.localInstanceTagFor`: ordinal 0, and any ordinal at or past the
+_instance cap_ `stamp.maxInstances` (where a cap of 0 means none), keeps the
+tag of the enclosing instance, and any other ordinal gets that tag composed
+with the ordinal by `Engine.mixTag`. Tag 0 means no instance. Where
+`Engine.lambdaInstanceMemberId` interns a key for a lambda's member id, a
+non-zero current tag is part of that key unless the lambda is folded onto its
+global's own member id, so the copies of one source lambda in differently
+tagged instances can get different ids.
 
-These pins are a DIFFERENTIAL: the same fixture flag-off and flag-on. Flag-off
-pins today's collapse (so the differential is real, not a tautology), flag-on
-pins the split and the keyed spec fan-out it unlocks.
+The fixture, `foldShapeModule`, is a let-bound `fold` whose body passes a
+lambda to the top-level `apply`, called once with `hashA` and once with
+`hashB`. Tests 1 to 4 run the pipeline through `TestLogic.TestPipeline`'s
+solver engine with LSS on and no global optimization. Tests 2 to 4 run it
+twice, once with an instance cap of 1, which tags no instance, and once with
+the default cap from `Compiler.Eco.Config.defaultLss`; test 1 runs only the
+cap-1 arm. Member ids are interned integers whose values depend on the order
+of interning, so the tests compare how many there are, not which they are.
+
+The tests are numbered 1 to 4, 6 and 7; there is no test 5.
+
+  - Test 1: at cap 1, the fixture's graph holds at least two closures that
+    carry a member id, and at least two of those ids are equal.
+  - Test 2: the fixture's graph has more distinct closure member ids at the
+    default cap than at cap 1.
+  - Test 3: the fixture's registry has more entries for a global named
+    `apply` at the default cap than at cap 1.
+  - Test 4: for `plainModule`, which has no let-bound function, the sorted
+    closure member ids are the same at both caps.
+  - Test 6: `mixTag` gives ordinal 1 different tags under the outer tags
+    `mixTag 0 0` and `mixTag 0 1`.
+  - Test 7: `mixTag 0 o` is not 0 for any `o` from 0 to 64.
+
+Among what is not tested: whether `Compiler.GlobalOpt.AbiCloning` stamps the
+calls once the ids are split; which closure carries the shared or split id;
+caps other than 1 and the default; let-bound functions nested inside one
+another, except through `mixTag` alone; and a lambda that is refused a tag
+because it is folded onto its global's own member id.
 
 -}
 
@@ -46,16 +81,16 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The instance-qualification tests, described one by one in the module
+docstring.
+-}
 suite : Test
 suite =
     Test.describe "instance-qualified lambda members"
         [ Test.test "1. CAP=1: one source lambda in two local-multi instances shares ONE member id" <|
             \() ->
-                -- Pins the collapsed arm, so test 2's differential is not
-                -- vacuous. `maxInstances = 1` tags nothing (ordinal 0 is never
-                -- tagged and ordinals at or past the cap take today's key), so
-                -- it reproduces exactly what `lss.stamp.enabled = False` used
-                -- to produce before that flag was removed (2026-09-18).
+                -- Without a shared id at cap 1, test 2's comparison would show
+                -- nothing about the tags.
                 case runCollapsed foldShapeModule of
                     Err e ->
                         Expect.fail e
@@ -81,9 +116,8 @@ suite =
                                 )
         , Test.test "2. the shared pair splits — one more DISTINCT member id" <|
             \() ->
-                -- Id-count, not id-identity: interning is order-dependent, so
-                -- the integers themselves move between arms. What is stable is
-                -- that one member id becomes two. Measured 5 -> 6 distinct.
+                -- Counts, not ids: the integers depend on interning order and
+                -- may differ between the two runs.
                 case ( runCollapsed foldShapeModule, runWith foldShapeModule ) of
                     ( Ok offG, Ok onG ) ->
                         let
@@ -116,10 +150,9 @@ suite =
                         Expect.fail e
         , Test.test "3. THE PAYOFF: distinct ids split the HOF's keyed specializations" <|
             \() ->
-                -- §1.2's chain, end to end: distinct members => distinct
-                -- annotations at the callback position => different specHashOf
-                -- => `keyed` splits the consumer. Without this step the id
-                -- split buys nothing.
+                -- Distinct member ids give `apply`'s function argument
+                -- different lambda sets, and the spec key tells lambda sets
+                -- apart, so `apply` can gain specializations.
                 case ( runCollapsed foldShapeModule, runWith foldShapeModule ) of
                     ( Ok offG, Ok onG ) ->
                         let
@@ -147,8 +180,6 @@ suite =
                         Expect.fail e
         , Test.test "4. NO LOCAL-MULTI, NO CHANGE: a plain module is cap-identical" <|
             \() ->
-                -- The mechanism must be inert where nothing splits — otherwise
-                -- the corpus-wide fan-out cost is paid for nothing.
                 case ( runCollapsed plainModule, runWith plainModule ) of
                     ( Ok offG, Ok onG ) ->
                         Expect.equal (List.sort (closureMembers offG)) (List.sort (closureMembers onG))
@@ -160,8 +191,6 @@ suite =
                         Expect.fail e
         , Test.test "6. mixTag composes rather than overwrites" <|
             \() ->
-                -- §3.2: inner ordinal 1 under outer 0 must not collide with
-                -- inner ordinal 1 under outer 1.
                 Expect.notEqual
                     (Engine.mixTag (Engine.mixTag 0 0) 1)
                     (Engine.mixTag (Engine.mixTag 0 1) 1)
@@ -175,16 +204,24 @@ suite =
 -- ====== FIXTURES ======
 
 
+{-| The type `Int -> Int`, of the two hash functions and of `apply`'s function
+parameter.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
-{-| `Compiler/AST/Monomorphized.elm`'s `mRecord`, reduced: ONE source lambda,
-inside a LET-bound helper parameterised by a function, applied twice with
-different functions. The two applications have the same type modulo the lambda
-set of `hashOf`, which is exactly what local-multi splits on and what member
-qualification did not.
+{-| A module holding one source lambda inside a let-bound function that is
+used at two instances.
+
+Its `testValue` is `fold hashA + fold hashB`, where the unannotated
+`fold hashOf = apply (\t -> hashOf t) 3` is let-bound, `hashA` and `hashB` are
+two different `Int -> Int` functions, and `apply f n = f n`. Both uses of
+`fold` have the type `(Int -> Int) -> Int`, and differ only in the lambda set
+of `hashOf`, so `fold` has two local-multi instances, and each of them passes
+its own copy of the lambda to `apply`.
+
 -}
 foldShapeModule : Src.Module
 foldShapeModule =
@@ -225,7 +262,8 @@ foldShapeModule =
         ]
 
 
-{-| No let-bound function, so nothing to instance-qualify.
+{-| A module that passes a lambda to `apply` with no let-bound function, so it
+has no local-multi instance and nothing for an instance tag to split.
 -}
 plainModule : Src.Module
 plainModule =
@@ -251,20 +289,26 @@ plainModule =
 -- ====== HARNESS ======
 
 
+{-| Monomorphizes `srcModule` as `runWithMax` does, at the default instance
+cap.
+-}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
     runWithMax Config.defaultLss.stamp.maxInstances srcModule
 
 
-{-| The COLLAPSED arm: `maxInstances = 1` tags nothing, which is what
-`lss.stamp.enabled = False` produced before that flag was fixed at its default
-and removed (2026-09-18).
+{-| Monomorphizes `srcModule` as `runWithMax` does, at an instance cap of 1,
+under which no local-multi instance is tagged.
 -}
 runCollapsed : Src.Module -> Result String Mono.MonoGraph
 runCollapsed srcModule =
     runWithMax 1 srcModule
 
 
+{-| Monomorphizes `srcModule` with the solver engine, the default limits and
+the default LSS settings except for the instance cap `maxInstances`, and
+returns the graph without global optimization, or the pipeline's error.
+-}
 runWithMax : Int -> Src.Module -> Result String Mono.MonoGraph
 runWithMax maxInstances srcModule =
     let
@@ -278,9 +322,6 @@ runWithMax maxInstances srcModule =
         { defaults
             | enabled = True
             , stamp =
-                -- Record UPDATE, not a literal: a literal breaks the moment
-                -- `LssStampConfig` gains a field, and nothing here would say so
-                -- until a self-build.
                 { stampDefaults | maxInstances = maxInstances }
         }
         srcModule
@@ -290,7 +331,8 @@ runWithMax maxInstances srcModule =
 -- ====== READERS ======
 
 
-{-| Every `MonoClosure`'s `lssMember`, over the whole graph.
+{-| Returns the member id of every closure in the graph that carries one,
+nested closures included, with repeats and in no particular order.
 -}
 closureMembers : Mono.MonoGraph -> List Int
 closureMembers (Mono.MonoGraph g) =
@@ -307,6 +349,9 @@ closureMembers (Mono.MonoGraph g) =
         g.nodes
 
 
+{-| Returns the expression a node holds: the body of a definition or a tail
+function, or the expression of a port. Other kinds of node give none.
+-}
 nodeExprsOf : Mono.MonoNode -> List Mono.MonoExpr
 nodeExprsOf node =
     case node of
@@ -326,6 +371,9 @@ nodeExprsOf node =
             []
 
 
+{-| Returns `acc` with the member id of every closure in `expr` that carries
+one added to the front, nested closures included.
+-}
 collectMembers : Mono.MonoExpr -> List Int -> List Int
 collectMembers expr acc =
     MonoTraverse.foldExpr
@@ -346,6 +394,9 @@ collectMembers expr acc =
         expr
 
 
+{-| Counts the registry entries still present whose global is named `target`,
+in any module. Accessor entries are never counted.
+-}
 specCount : String -> Mono.MonoGraph -> Int
 specCount target (Mono.MonoGraph g) =
     Array.foldl
@@ -365,6 +416,8 @@ specCount target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns the list with repeats removed, in no particular order.
+-}
 distinct : List Int -> List Int
 distinct =
     List.foldl
@@ -378,6 +431,8 @@ distinct =
         []
 
 
+{-| Renders `xs` as a bracketed, comma-separated list for a failure message.
+-}
 describeInts : List Int -> String
 describeInts xs =
     "[" ++ String.join "," (List.map String.fromInt xs) ++ "]"

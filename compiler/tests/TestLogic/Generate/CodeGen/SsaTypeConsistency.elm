@@ -1,13 +1,31 @@
 module TestLogic.Generate.CodeGen.SsaTypeConsistency exposing (expectSsaTypeConsistency)
 
-{-| Test logic for CGEN\_0B1: SSA Type Consistency invariant.
+{-| Checks that generated MLIR never gives one SSA name two different types
+within a function.
 
-Within each function, an SSA name must never be assigned different types.
-This catches the "use of value '%X' expects different type than prior uses"
-runtime error.
+An SSA value is a named value that is defined once and then read by name; in
+MLIR each one has a single type. A value is defined either as a block argument
+or as the result of an operation. A `func.func` is a scope of its own for SSA
+names, so two functions may use the same names, and the check is made one
+function at a time.
 
-Note: SSA names like %0 are routinely reused across functions, so checking
-must be per-function, not module-wide.
+`expectSsaTypeConsistency` compiles a source module to MLIR and walks each
+top-level `func.func` of the in-memory module; the MLIR text is not read.
+Every block argument and operation result inside it, at any depth of nesting,
+is recorded under its name. Two definitions of the same name with the same type
+pass; two with different types are a violation. The scope is the whole
+function, so a name defined in two sibling regions of it must also have one
+type in both. MLIR allows sibling regions to reuse a name with another type,
+so this check is stricter than MLIR requires.
+
+Among what is not checked:
+
+  - The types at which values are read. Only definitions are compared, so an
+    operand is never looked up.
+  - Whether a name is defined more than once. A repeated definition with the
+    same type passes.
+  - Any conflict after the first in a function. Each function gives at most one
+    violation.
 
 @docs expectSsaTypeConsistency
 
@@ -28,7 +46,14 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that SSA type consistency invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR with
+`TestLogic.TestPipeline.runToMlir` and passes when no SSA name has two types
+within one `func.func`.
+
+It fails if compilation fails. When there are violations, the failure shows
+the first, as `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation`
+describes.
+
 -}
 expectSsaTypeConsistency : Src.Module -> Expectation
 expectSsaTypeConsistency srcModule =
@@ -40,16 +65,16 @@ expectSsaTypeConsistency srcModule =
             violationsToExpectation (checkSsaTypeConsistency mlirModule)
 
 
-{-| Result of building a type environment - either success or a conflict.
+{-| The state of a walk over one function: either the type recorded so far for
+each SSA name, or the first conflict found, after which the walk records
+nothing more.
 -}
 type alias TypeEnvResult =
     Result Violation (Dict String MlirType)
 
 
-{-| Check that all SSA values have consistent types within each function.
-
-This processes each function separately since SSA names are function-scoped.
-
+{-| Returns one violation for each top-level `func.func` of `mlirModule` in
+which some SSA name is defined with two different types.
 -}
 checkSsaTypeConsistency : MlirModule -> List Violation
 checkSsaTypeConsistency mlirModule =
@@ -60,8 +85,9 @@ checkSsaTypeConsistency mlirModule =
     List.filterMap checkFunction funcOps
 
 
-{-| Check a single function for SSA type consistency.
-Returns Just violation if a type conflict is found.
+{-| Returns the first type conflict in `funcOp`, or `Nothing` if it has none.
+The function is named in the message by its `sym_name` attribute, or as
+`<unknown>` when that is missing.
 -}
 checkFunction : MlirOp -> Maybe Violation
 checkFunction funcOp =
@@ -81,8 +107,9 @@ checkFunction funcOp =
             Just violation
 
 
-{-| Build a type environment while checking for conflicts.
-Returns Err with violation if the same SSA name is assigned different types.
+{-| Returns the type of every SSA name defined in the regions of `op`, or the
+first name found with two different types. `op`'s own results are not
+included. `funcName` is used only in the violation's message.
 -}
 buildTypeEnvWithConflictCheck : String -> MlirOp -> TypeEnvResult
 buildTypeEnvWithConflictCheck funcName op =
@@ -93,7 +120,13 @@ buildTypeEnvWithConflictCheck funcName op =
     List.foldl (collectFromRegionChecked funcName) initial op.regions
 
 
-{-| Record an SSA name and type, checking for conflicts.
+{-| Records that `name` is defined with `newType`.
+
+A name not yet seen is added, and one already seen with the same type leaves
+`result` unchanged. One already seen with another type gives a violation whose
+`opId` is the SSA name, not an operation's id, and whose message shows the
+type recorded first, then `newType`. An `Err` is passed on unchanged.
+
 -}
 recordSsa : String -> String -> MlirType -> TypeEnvResult -> TypeEnvResult
 recordSsa funcName name newType result =
@@ -126,6 +159,9 @@ recordSsa funcName name newType result =
                             }
 
 
+{-| Records every SSA name defined in a region: the entry block's arguments,
+operations and terminator, then each further block in order.
+-}
 collectFromRegionChecked : String -> MlirRegion -> TypeEnvResult -> TypeEnvResult
 collectFromRegionChecked funcName (MlirRegion { entry, blocks }) result =
     let
@@ -144,6 +180,9 @@ collectFromRegionChecked funcName (MlirRegion { entry, blocks }) result =
     List.foldl (collectFromBlockChecked funcName) withEntryTerm (OrderedDict.values blocks)
 
 
+{-| Records every SSA name defined in `block`: its arguments, then the names
+defined by its operations and its terminator.
+-}
 collectFromBlockChecked : String -> MlirBlock -> TypeEnvResult -> TypeEnvResult
 collectFromBlockChecked funcName block result =
     let
@@ -159,6 +198,8 @@ collectFromBlockChecked funcName block result =
     collectFromOpChecked funcName block.terminator withBody
 
 
+{-| Records the results of `op`, then every SSA name defined in its regions.
+-}
 collectFromOpChecked : String -> MlirOp -> TypeEnvResult -> TypeEnvResult
 collectFromOpChecked funcName op result =
     let
@@ -171,6 +212,9 @@ collectFromOpChecked funcName op result =
     List.foldl (collectFromRegionChecked funcName) withResults op.regions
 
 
+{-| Returns a short name for `t` for a violation message. Every function type
+is shown as `function`, without its inputs or results.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

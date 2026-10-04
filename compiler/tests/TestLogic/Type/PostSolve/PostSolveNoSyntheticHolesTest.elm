@@ -1,15 +1,36 @@
 module TestLogic.Type.PostSolve.PostSolveNoSyntheticHolesTest exposing (suite)
 
-{-| Test suite for invariant POST\_003.
+{-| Tests invariant POST\_003: once `Compiler.Type.PostSolve` has run, no type
+variable that stood in for a synthetic placeholder is left anywhere in a node's
+type. It is meant to catch a placeholder that PostSolve leaves unreplaced.
 
-POST\_003: After PostSolve, no unresolved synthetic placeholders remain in any
-non-kernel expression type anywhere in the type tree. This directly targets
-the MONO\_018 "polymorphic remnant" class of bugs.
+Constraint generation gives some expressions, such as string, character, float
+and unit literals, a _synthetic placeholder_ as their type: a fresh variable
+recorded for that expression alone.
+`TestLogic.Type.PostSolve.CompileThroughPostSolve.compileToPostSolveDetailed`
+returns the ids of those expressions along with the node types from before and
+after PostSolve. A _hole var_, in this module, is the name of a type variable
+that was the whole pre-PostSolve type of a synthetic expression, when that name
+starts with a digit.
 
-The test:
+The fixture is the standard catalogue of programs in
+`SourceIR.Suite.StandardTestSuites`. For each program, the check:
 
-1.  Identifies "hole var names" - TVar names from pre-types of synthetic expressions
-2.  Checks that no non-kernel expression's post-type contains any hole var names
+  - fails with the compiler's message if the program does not compile through
+    PostSolve;
+  - otherwise collects the hole vars, then looks at every node that has a
+    post-PostSolve type, pattern nodes included, except kernel references
+    (`VarKernel`), and fails, listing every offending node, if any of those
+    types mentions a hole var anywhere inside it.
+
+The names the solver gives variables in node types all start with a letter
+(`Compiler.Data.Name.fromTypeVariableScheme` gives `a` to `z`, then `a26` and
+so on), and so do type variable names written in source. So no program yields
+a hole var, and the check passes whenever the program compiles.
+
+Among what is not tested: a placeholder whose variable has a name starting
+with a letter, a synthetic expression whose pre-PostSolve type is not a bare
+variable, and the types of kernel references.
 
 -}
 
@@ -26,7 +47,12 @@ import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
-{-| A violation of POST\_003.
+{-| One node whose post-PostSolve type mentions a hole var.
+
+`exprKind` names the node's expression form, or is `"Unknown"` when the id is
+not an expression's, as for a pattern node. `holeVarsFound` lists the hole
+vars in sorted order, and `details` repeats them as a sentence.
+
 -}
 type alias Violation =
     { nodeId : Int
@@ -37,6 +63,9 @@ type alias Violation =
     }
 
 
+{-| The POST\_003 suite: `expectNoSyntheticHoles` applied to every program in
+the standard catalogue.
+-}
 suite : Test
 suite =
     Test.describe "POST_003: No Synthetic Holes"
@@ -44,7 +73,14 @@ suite =
         ]
 
 
-{-| Check that a module passes POST\_003.
+{-| Compiles `srcModule` through PostSolve and expects no node's post-PostSolve
+type to mention a hole var.
+
+It fails with the compiler's message when compilation fails, and otherwise with
+every violation found. The ids of kernel references are not checked. Each node
+id is the index of its type in the post-PostSolve array, so pattern nodes are
+checked along with expressions.
+
 -}
 expectNoSyntheticHoles : Src.Module -> Expect.Expectation
 expectNoSyntheticHoles srcModule =
@@ -54,21 +90,19 @@ expectNoSyntheticHoles srcModule =
 
         Ok artifacts ->
             let
-                -- Step 1: Compute hole var names from synthetic expression pre-types
                 holeVarNames =
                     computeHoleVarNames artifacts
 
-                -- Step 2: Collect kernel expression IDs (exempt from check)
                 kernelExprIds =
                     Helpers.collectKernelExprIds artifacts.canonical
 
-                -- Step 3: Build expression node map for kind reporting
+                -- Used only to name each offending node's form in the message.
                 exprNodes =
                     Helpers.walkExprs artifacts.canonical
                         |> List.map (\n -> ( n.id, n ))
                         |> DataMap.fromList identity
 
-                -- Step 4: Check all non-kernel expressions
+                -- The counter starts at 0 and counts array slots, so it is the node id.
                 violations =
                     Array.foldl
                         (\maybePostType ( nodeId, acc ) ->
@@ -78,11 +112,9 @@ expectNoSyntheticHoles srcModule =
 
                                 Just postType ->
                                     if nodeId < 0 then
-                                        -- Skip negative IDs
                                         ( nodeId + 1, acc )
 
                                     else if EverySet.member identity nodeId kernelExprIds then
-                                        -- Kernel expressions are exempt
                                         ( nodeId + 1, acc )
 
                                     else
@@ -105,18 +137,13 @@ expectNoSyntheticHoles srcModule =
                     Expect.fail (formatViolations vs)
 
 
-{-| Compute the set of "hole var names" from synthetic expression pre-types.
+{-| Returns the hole var names of a compiled program: for each synthetic
+expression whose pre-PostSolve type is a bare `TVar` with a name starting with a
+digit, that name.
 
-These are TVar names that were left unresolved by the solver at synthetic
-remaining Group B expression sites (Str, Chr, Float, Unit). PostSolve should fill these.
-
-We only consider numeric TVar names as "holes" because:
-
-  - Solver-generated placeholder TVars use numeric names (e.g., "0", "1", "23")
-  - PostSolve uses alphabetic names (e.g., "a", "ext")
-  - Legitimate polymorphic TVars from user annotations use alphabetic names
-
-This avoids false positives where legitimate polymorphism would be flagged.
+A synthetic expression with no pre-PostSolve type, or with any other type,
+contributes nothing. As the module docstring explains, no name the solver gives
+starts with a digit, so the result is empty.
 
 -}
 computeHoleVarNames : Compile.DetailedArtifacts -> EverySet String String
@@ -127,7 +154,6 @@ computeHoleVarNames artifacts =
             (\exprId ->
                 case Array.get exprId artifacts.nodeTypesPre |> Maybe.andThen identity of
                     Just (Can.TVar name) ->
-                        -- Only consider numeric names as holes (solver-generated placeholders)
                         if isSolverGeneratedVarName name then
                             Just name
 
@@ -140,10 +166,10 @@ computeHoleVarNames artifacts =
         |> EverySet.fromList identity
 
 
-{-| Check if a TVar name is solver-generated (numeric).
+{-| Returns whether `name` starts with a digit.
 
-Solver-generated placeholder TVars use numeric names like "0", "1", "23".
-User-defined polymorphic TVars and PostSolve-generated TVars use alphabetic names.
+Despite this function's name, no type variable the solver names starts with a
+digit, so this is false for every one of them.
 
 -}
 isSolverGeneratedVarName : String -> Bool
@@ -156,7 +182,9 @@ isSolverGeneratedVarName name =
             False
 
 
-{-| Check that a post-type contains no hole var names.
+{-| Returns a `Violation` for node `nodeId` when `postType` mentions any of
+`holeVarNames` anywhere inside it, and `Nothing` when it mentions none.
+`exprNodes` supplies the node's expression form for the report.
 -}
 checkNoHoleVars :
     Int
@@ -169,7 +197,6 @@ checkNoHoleVars nodeId postType holeVarNames exprNodes =
         freeVars =
             Helpers.freeTypeVars postType
 
-        -- Compute intersection by filtering freeVars to only those in holeVarNames
         foundHoles =
             freeVars
                 |> EverySet.toList compare
@@ -191,7 +218,8 @@ checkNoHoleVars nodeId postType holeVarNames exprNodes =
             }
 
 
-{-| Get the expression kind for an ID.
+{-| Returns the name of the expression form of node `nodeId` in `exprNodes`, or
+`"Unknown"` when `exprNodes` has no entry for it.
 -}
 getExprKind : Int -> DataMap.Dict Int Int Helpers.ExprNode -> String
 getExprKind nodeId exprNodes =
@@ -203,6 +231,9 @@ getExprKind nodeId exprNodes =
             "Unknown"
 
 
+{-| Returns the name of an expression form's constructor, such as `"VarLocal"`
+or `"Call"`.
+-}
 exprKindToString : Can.Expr_ -> String
 exprKindToString expr =
     case expr of
@@ -297,6 +328,9 @@ exprKindToString expr =
 -- ============================================================================
 
 
+{-| Builds the failure message for `violations`: a line giving their count, then
+each one as `formatViolation` lays it out, separated by blank lines.
+-}
 formatViolations : List Violation -> String
 formatViolations violations =
     let
@@ -308,6 +342,9 @@ formatViolations violations =
     header ++ (violations |> List.map formatViolation |> String.join "\n\n")
 
 
+{-| Renders one violation as a line naming its node id and expression form,
+followed by indented lines for its post-type, hole vars and details.
+-}
 formatViolation : Violation -> String
 formatViolation v =
     "POST_003 violation at nodeId "
@@ -322,6 +359,13 @@ formatViolation v =
         ++ v.details
 
 
+{-| Renders a type on one line for a failure message.
+
+The rendering is a summary, not the full type. A named type shows its name and
+arguments but not its module, a record shows only its extension variable, if
+any, and not its fields, and an alias shows only its name.
+
+-}
 typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of

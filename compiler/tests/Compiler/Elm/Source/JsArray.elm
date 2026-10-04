@@ -1,14 +1,24 @@
 module Compiler.Elm.Source.JsArray exposing (source)
 
-{-| Full source code of elm/core Elm.JsArray module for compilation testing.
+{-| Compilation tests need a real elm/core module to compile, and holding its
+source text as a string lets them do that without reading any file.
 
-This module contains the exact source code from elm/core 1.0.5 Elm/JsArray.elm
-as an Elm string, enabling IO-free compilation tests.
+This module is that string for `Elm.JsArray`, elm/core's module of immutable
+JavaScript arrays. The embedded module exposes the type `JsArray` and fourteen
+functions, and imports only `Int` from `Basics` and `Elm.Kernel.JsArray`. Each
+function is defined as the same-named value of `Elm.Kernel.JsArray`, so the
+module holds type annotations and kernel references but no logic of its own.
+
+Everything between the triple quotes is data. The doc comments inside it belong
+to the embedded module, not to this one, and are part of the compiled input.
+Among them are `@docs` lines naming `listInitialize` and `merge`, which the
+embedded module does not define.
 
 -}
 
 
-{-| The complete source code of Elm.JsArray module.
+{-| The source text of the module `Elm.JsArray`, from its `module` line to the
+end of its last definition.
 -}
 source : String
 source =

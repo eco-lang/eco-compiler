@@ -3,20 +3,16 @@ module Compiler.Elm.String exposing
     , fromChunks
     )
 
-{-| String escape sequence handling for Elm source code.
+{-| A string or char literal can be recorded as a list of pieces, some copied
+from the source text and some standing for an escape, and this module turns such
+a list into the text of the literal.
 
-Processes string chunks with escape sequences and unicode code points,
-converting them into properly escaped JavaScript string literals.
+That text is escaped, not decoded. A piece copied from the source is copied
+unchanged, escapes and all, and the pieces that stand for escapes are written as
+backslash escapes in the forms a JavaScript string literal uses, `\n` or
+`\u00E9`. So the result is the body of a literal, not the value it denotes.
 
-
-# Types
-
-@docs Chunk
-
-
-# Operations
-
-@docs fromChunks
+Each piece is a `Chunk`, and `fromChunks` joins a list of them in order.
 
 -}
 
@@ -24,12 +20,20 @@ import Hex
 import Numeric.Integer as NI
 
 
+{-| One piece of a string or char literal.
 
--- ====== FROM CHUNKS ======
+`Slice` carries an offset and a length into the source text, and stands for
+that stretch of it, copied unchanged.
 
+`Escape` carries the character written after a backslash, so `Escape 'n'` is
+the two characters `\n`.
 
-{-| Represents a portion of a string literal: a slice of the original source,
-an escape sequence, or a unicode code point.
+`CodePoint` carries a Unicode code point, written as `\uXXXX` with four
+uppercase hex digits. A code point above `0xFFFF` is written as a UTF-16
+surrogate pair, two such escapes. The test is `code < 0xFFFF`, so `0xFFFF`
+itself also takes that path and comes out as `\uD7FF\uDFFF`, which is not a
+valid pair.
+
 -}
 type Chunk
     = Slice Int Int
@@ -37,23 +41,17 @@ type Chunk
     | CodePoint Int
 
 
-{-| Converts a list of string chunks into a properly escaped JavaScript string literal.
-Handles unicode code points and escape sequences.
+{-| Returns the escaped text of a literal made of `chunks`, in order, where
+`src` is the source text that `Slice` offsets point into.
 -}
 fromChunks : String -> List Chunk -> String
 fromChunks src chunks =
-    -- Collect the pieces in order and join once with `String.concat`, rather
-    -- than a left-to-right `mba ++ chunk` fold. The fold had two encoding-
-    -- independent costs: after the first non-ASCII chunk every later append
-    -- widened the (now UTF-16) accumulator, and because each append is below
-    -- the 32 KiB flatten limit it memcpied the whole accumulator — O(n²) for a
-    -- literal assembled a couple of characters at a time. `String.concat` has
-    -- all-UTF-8 and rope arms, so it pays neither. (`writeChunks` accumulates
-    -- reversed and is tail-recursive; the former `offset` was dead — only
-    -- threaded, never read — so it is gone.)
     String.concat (List.reverse (writeChunks src [] chunks))
 
 
+{-| Returns `acc` with the text of each of `chunks` pushed onto its front, so
+the result holds the pieces in reverse order.
+-}
 writeChunks : String -> List String -> List Chunk -> List String
 writeChunks src acc chunks =
     case chunks of
@@ -88,6 +86,9 @@ writeChunks src acc chunks =
                         writeChunks src (lowCode :: hiCode :: acc) otherChunks
 
 
+{-| Returns `code` as a `\uXXXX` escape, in uppercase hex padded with zeros to
+four digits.
+-}
 writeCode : Int -> String
 writeCode code =
     "\\u" ++ String.padLeft 4 '0' (String.toUpper (Hex.toString code))

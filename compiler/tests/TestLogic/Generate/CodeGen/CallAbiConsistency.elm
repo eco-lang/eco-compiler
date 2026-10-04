@@ -1,14 +1,33 @@
 module TestLogic.Generate.CodeGen.CallAbiConsistency exposing (expectCallAbiConsistency)
 
-{-| Test logic for Call ABI Consistency invariant.
+{-| Checks that each `eco.call` in generated MLIR passes its arguments in the
+types the called function declares, so that no value crosses a call boundary in
+a representation the callee does not expect, such as a Bool passed as `i1` to a
+parameter of type `!eco.value`. Nothing in `Mlir.Mlir` ties a call's operand
+types to its callee's signature, so this is checked here.
 
-For every `eco.call`, the operand types must match the target function's
-declared parameter types. This catches cases where a value is passed as
-a different type than the function expects (e.g., i1 passed to a function
-expecting !eco.value).
+`expectCallAbiConsistency` compiles a source module with
+`TestLogic.TestPipeline.runToMlir` and, for each `eco.call` in the result,
+compares two lists of types:
 
-This invariant is derived from REP\_ABI\_001 which requires consistent
-representation at function call boundaries.
+  - The callee's parameter types: the inputs of the `function_type` attribute
+    of the module's top-level `func.func` whose `sym_name` is the call's
+    `callee`, with any leading `@` removed.
+  - The call's operand types: its `_operand_types` attribute, less any GC-root
+    hints. A GC-root hint is an operand appended after the arguments that the
+    garbage collector treats as a root rather than an argument; the call's
+    `eco.gc_roots_count` attribute says how many there are.
+
+The two lists must have the same length and hold equal types, position by
+position. A call that fails gets one violation, for the count if the lengths
+differ and otherwise for its first mismatched operand.
+
+Among what is not checked:
+
+  - a call whose callee has no top-level `func.func` with a `function_type` in
+    the module;
+  - an `eco.call` with no `callee` or no `_operand_types` attribute;
+  - the types of a call's results.
 
 @docs expectCallAbiConsistency
 
@@ -32,7 +51,14 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that call ABI consistency invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR and checks each
+`eco.call` in it against its callee's parameter types, as the module
+documentation describes.
+
+It fails if compilation fails, and otherwise if any checked call has the wrong
+number of operands or an operand of the wrong type. Only the first such
+violation is reported.
+
 -}
 expectCallAbiConsistency : Src.Module -> Expectation
 expectCallAbiConsistency srcModule =
@@ -44,23 +70,23 @@ expectCallAbiConsistency srcModule =
             violationsToExpectation (checkCallAbiConsistency mlirModule)
 
 
-{-| Check that all eco.call operand types match target function parameter types.
+{-| Returns a violation for each `eco.call` in `mlirModule` whose operands do
+not match its callee's parameter types, at most one per call.
 -}
 checkCallAbiConsistency : MlirModule -> List Violation
 checkCallAbiConsistency mlirModule =
     let
-        -- Build a map of function names to their parameter types
         funcParamTypes =
             buildFuncParamTypesMap mlirModule
 
-        -- Find all eco.call ops
         callOps =
             findOpsNamed "eco.call" mlirModule
     in
     List.filterMap (checkCallOp funcParamTypes) callOps
 
 
-{-| Build a map from function symbol names to their parameter types.
+{-| Returns the parameter types of each top-level `func.func` in `mlirModule`,
+keyed by its `sym_name`. A function lacking either attribute is left out.
 -}
 buildFuncParamTypesMap : MlirModule -> Dict String (List MlirType)
 buildFuncParamTypesMap mlirModule =
@@ -71,6 +97,10 @@ buildFuncParamTypesMap mlirModule =
     List.foldl addFuncToMap Dict.empty funcOps
 
 
+{-| Adds `funcOp`'s parameter types to `dict` under its `sym_name`, or returns
+`dict` unchanged if `funcOp` has no `sym_name` or no `function_type` holding a
+function type.
+-}
 addFuncToMap : MlirOp -> Dict String (List MlirType) -> Dict String (List MlirType)
 addFuncToMap funcOp dict =
     case getStringAttr "sym_name" funcOp of
@@ -91,7 +121,8 @@ addFuncToMap funcOp dict =
                             Dict.insert name paramTypes dict
 
 
-{-| Extract parameter types from a function type.
+{-| Returns the input types of a function type, or `Nothing` for any other
+type.
 -}
 extractParamTypes : MlirType -> Maybe (List MlirType)
 extractParamTypes mlirType =
@@ -103,7 +134,14 @@ extractParamTypes mlirType =
             Nothing
 
 
-{-| Check a single eco.call for ABI consistency.
+{-| Returns the violation, if any, of one `eco.call`, given the parameter types
+of the module's functions by name.
+
+The call is not checked, and `Nothing` is returned, when it has no `callee`,
+when the callee is not in `funcParamTypes`, or when it has no `_operand_types`.
+Otherwise the last `eco.gc_roots_count` operand types, the GC-root hints, are
+dropped before the comparison.
+
 -}
 checkCallOp : Dict String (List MlirType) -> MlirOp -> Maybe Violation
 checkCallOp funcParamTypes op =
@@ -113,7 +151,6 @@ checkCallOp funcParamTypes op =
 
         Just callee ->
             let
-                -- Remove leading @ if present
                 calleeName =
                     if String.startsWith "@" callee then
                         String.dropLeft 1 callee
@@ -123,7 +160,6 @@ checkCallOp funcParamTypes op =
             in
             case Dict.get calleeName funcParamTypes of
                 Nothing ->
-                    -- Function not found in module (might be external)
                     Nothing
 
                 Just expectedParamTypes ->
@@ -133,8 +169,6 @@ checkCallOp funcParamTypes op =
 
                         Just allOperandTypes ->
                             let
-                                -- Drop trailing GC root hints (per eco.gc_roots_count)
-                                -- before comparing against the callee's ABI parameter list.
                                 rootCount =
                                     Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
 
@@ -144,7 +178,9 @@ checkCallOp funcParamTypes op =
                             checkTypesMatch op calleeName expectedParamTypes actualOperandTypes
 
 
-{-| Check if operand types match parameter types.
+{-| Returns a violation for `op`'s call to `calleeName` if `actualTypes`
+differs in length from `expectedTypes`, or else if any position holds different
+types, in which case it names the first such operand.
 -}
 checkTypesMatch : MlirOp -> String -> List MlirType -> List MlirType -> Maybe Violation
 checkTypesMatch op calleeName expectedTypes actualTypes =
@@ -170,13 +206,15 @@ checkTypesMatch op calleeName expectedTypes actualTypes =
             }
 
     else
-        -- Check each operand against expected parameter type
         List.map2 Tuple.pair expectedTypes actualTypes
             |> List.indexedMap (checkSingleType op calleeName)
             |> List.filterMap identity
             |> List.head
 
 
+{-| Returns a violation naming operand `index`, counted from 0, if `actual` is
+not equal to `expected`.
+-}
 checkSingleType : MlirOp -> String -> Int -> ( MlirType, MlirType ) -> Maybe Violation
 checkSingleType op calleeName index ( expected, actual ) =
     if typesMatch expected actual then
@@ -198,13 +236,17 @@ checkSingleType op calleeName index ( expected, actual ) =
             }
 
 
-{-| Check if two types match.
+{-| Returns whether two types are equal. There is no normalization: the types
+must be identical.
 -}
 typesMatch : MlirType -> MlirType -> Bool
 typesMatch t1 t2 =
     t1 == t2
 
 
+{-| Returns a type's MLIR spelling for a violation message, except that every
+function type is written `function`.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

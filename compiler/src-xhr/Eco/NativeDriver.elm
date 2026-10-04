@@ -1,13 +1,20 @@
 module Eco.NativeDriver exposing (lowerAndLink, lowerAndLinkBytes)
 
-{-| XHR-bootstrap stub for `Eco.NativeDriver`.
+{-| Turning MLIR into a native executable can only be done by the native build
+of the compiler, and this module stands in for that step in the stock-Elm build,
+so that the same source tree compiles in both.
 
-The native-driver kernel intrinsic is only meaningful in the unified `eco`
-binary (which statically links `EcoNativeDriverStatic`). The XHR-based
-Stage 1 compiler (`guida.js`) never reaches `Terminal.Make.handleElfOutput`
-because it is only invoked with `--output=*.mlir` / `--output=*.js`. These
-stubs exist so the front-end source tree compiles uniformly under both
-bootstrap paths, and they surface a Task failure if ever invoked.
+The stock-Elm build, also called the XHR or bootstrap build, takes this module
+in place of a module of the same name that the native build gets from outside
+this source tree, its kernel twin. The two twins expose the same names and
+signatures, so code that imports `Eco.NativeDriver` compiles against either.
+
+In a native build that links the native driver, these functions lower an MLIR
+program and link the result into a native executable. This twin does none of
+that work. Both functions ignore their arguments and return a task that fails
+with a message naming the function and saying that it is not available under
+the XHR bootstrap path, so asking this build for a native executable fails
+visibly instead of appearing to succeed.
 
 
 # Lowering
@@ -20,29 +27,24 @@ import Bytes exposing (Bytes)
 import Task exposing (Task)
 
 
-{-| Lower an `.mlir` file at the first path and link the result into the ELF
-binary at the second path. The third argument is the program's root module
-name (baked into `.node` outputs as `__eco_root_module`; unused here).
+{-| Returns a task that always fails, with a message naming `lowerAndLink`.
 
-Only meaningful in the unified `eco` binary; the XHR-bootstrap variant always
-returns a `Task.fail` so that any accidental invocation (e.g. via
-`Terminal.Make.handleElfOutput` under `guida.js`) surfaces immediately.
+In the native build the arguments are the path of an MLIR file, the path of the
+executable to write, and the program's root module name. Here all three are
+ignored and nothing is read or written.
 
 -}
 lowerAndLink : String -> String -> String -> Task String ()
 lowerAndLink _ _ _ =
-    -- Should never be reached under the XHR bootstrap path. If it is, we
-    -- surface a typed Task failure rather than silently succeeding so a
-    -- regression (e.g. Terminal.Make.handleElfOutput firing under guida.js)
-    -- is immediately visible.
     Task.fail
         "Eco.NativeDriver.lowerAndLink: not available under the XHR bootstrap path"
 
 
-{-| Same as [`lowerAndLink`](#lowerAndLink) but takes the MLIR module as an
-in-memory `Bytes` value rather than reading it from disk.
+{-| Returns a task that always fails, with a message naming `lowerAndLinkBytes`.
 
-The XHR-bootstrap stub always fails for the same reason as `lowerAndLink`.
+In the native build this does the work of [`lowerAndLink`](#lowerAndLink) with
+the MLIR program given as bytes in memory instead of as a file, and no root
+module name. Here both arguments are ignored and nothing is written.
 
 -}
 lowerAndLinkBytes : Bytes -> String -> Task String ()

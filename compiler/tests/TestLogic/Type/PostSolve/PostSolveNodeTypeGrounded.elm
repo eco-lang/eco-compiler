@@ -4,17 +4,52 @@ module TestLogic.Type.PostSolve.PostSolveNodeTypeGrounded exposing
     , formatViolations
     )
 
-{-| Test logic for invariant POST\_010: All node type TVars come from enclosing
-type schemes.
+{-| Checks that, after PostSolve, an expression's type mentions no type variable
+that nothing in scope accounts for.
 
-For every non-kernel expression node, every Can.TVar in its post-PostSolve
-type must be traceable to one of three legitimate sources:
+Such a variable is quantified by no type scheme enclosing the expression. The
+test suite treats any such variable as a defect in PostSolve, and this module
+finds the nodes where one occurs.
 
-1.  Annotation binders (Forall freeVars from TypedDef or annotations dict)
-2.  Inferred body TVars from unannotated let-bound defs (FreeTVars of their
-    pre-PostSolve body type, representing solver let-generalization)
-3.  Type-class variables (number, comparable, appendable, compappend with
-    optional digit suffixes) which are internal solver constraints
+A node type is the type recorded for one expression or pattern, held in an
+array indexed by the node's id. `check` takes two such arrays for one module:
+`nodeTypesPre`, the node types before PostSolve, and `nodeTypesPost`, the node
+types after it. Only the post-PostSolve types are checked. The pre-PostSolve
+types are used only to find binders: those of a definition that has no scheme,
+and those of a `LetDestruct` pattern. A node whose id is negative, or that has
+no post-PostSolve type, is not checked.
+
+The check rests on an environment: the set of type-variable names in scope at a
+node. Each top-level declaration starts from an empty environment, and a
+definition adds its binders for its own body and, in a `let`, for the `let`
+body. A definition's binders are:
+
+  - for a `TypedDef`, the variables of its annotation;
+  - for a `Def` whose name has an entry in `annotations`, the variables that
+    scheme quantifies over;
+  - for any other `Def`, the free variables of the pre-PostSolve types of its
+    argument patterns and of its body.
+
+Every member of a recursive group (`DeclareRec` or `LetRec`) sees the binders
+of all the members. A `LetDestruct` adds the free variables of its pattern's
+pre-PostSolve type, for both the destructured expression and the body. Lambda
+arguments and case patterns add nothing.
+
+A checked node fails, and becomes a `Violation`, when its post-PostSolve type
+mentions a variable that is neither in the environment nor a type-class
+variable. A type-class variable is any name that starts with `number`,
+`comparable`, `appendable` or `compappend`. This is a prefix match, so a
+variable named `numberOfX` is exempt too.
+
+Some kinds of node are not checked themselves, although the nodes inside them
+are: kernel, local, top-level, foreign, operator, debug and constructor
+variables; accessors; list, record and tuple literals; lambdas; and calls whose
+function is a kernel, top-level, foreign, operator or constructor variable. A
+call through any other function, such as a local variable, is checked.
+
+The variables of a type are collected from its `TVar`s only. A record's
+extension variable is never collected, and an alias contributes the variables
+of its body, not those of its arguments.
 
 -}
 
@@ -27,6 +62,15 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
+{-| One checked expression whose post-PostSolve type mentions type variables
+that are neither in the environment nor type-class variables.
+
+`orphanVars` are those variables, in ascending order, and `envTVars` is the
+environment at the node. `functionName` is the top-level definition the node is
+in, even when the node is inside a `let`-bound definition. `exprKind` is the
+name of the node's `Can.Expr_` constructor, such as `"Case"`.
+
+-}
 type alias Violation =
     { nodeId : Int
     , exprKind : String
@@ -36,7 +80,9 @@ type alias Violation =
     }
 
 
-{-| Check POST\_010 across all declarations in a module.
+{-| Returns a `Violation` for each checked node in the module that fails, given
+the module's `annotations` and its node types before and after PostSolve. An
+empty list means the module passes.
 -}
 check :
     Can.Module
@@ -48,6 +94,10 @@ check (Can.Module modData) annotations nodeTypesPre nodeTypesPost =
     checkDecls modData.decls annotations nodeTypesPre nodeTypesPost Set.empty
 
 
+{-| Returns the violations in a chain of top-level declarations. Each
+declaration is checked under `outerEnv` extended by its own binders, or, for a
+recursive group, by the binders of every member.
+-}
 checkDecls :
     Can.Decls
     -> Dict Name.Name (Can.Annotation Name)
@@ -89,13 +139,13 @@ checkDecls decls annotations nodeTypesPre nodeTypesPost outerEnv =
             []
 
 
-{-| Extract type scheme binders from a definition.
+{-| Returns the names of the type variables a definition binds.
 
-For TypedDef: use the explicit FreeVars from the annotation.
-For Def with annotations dict entry: use the Forall binders (solver-inferred scheme).
-For Def without annotations dict entry: infer binders from the full inferred
-function type — argument pattern types + body result type from pre-PostSolve
-nodeTypes. This captures solver let-generalization including parameter TVars.
+A `TypedDef` binds the variables of its annotation. A `Def` whose name has an
+entry in `annotations` binds the variables that scheme quantifies over. Any
+other `Def` binds the free variables of the pre-PostSolve types of its argument
+patterns and its body; an argument or body with no pre-PostSolve type
+contributes nothing.
 
 -}
 getBinders : Can.Def -> Dict Name.Name (Can.Annotation Name) -> Array (Maybe (Can.Type Name)) -> Set String
@@ -110,8 +160,6 @@ getBinders def annotations nodeTypesPre =
                     Dict.keys freeVars |> Set.fromList
 
                 Nothing ->
-                    -- Infer binders from the full inferred function type:
-                    -- argument pattern types + body result type.
                     let
                         bodyId =
                             getExprId body
@@ -144,21 +192,21 @@ getBinders def annotations nodeTypesPre =
                     Set.union bodyTVars argTVars
 
 
-{-| Get the expression ID from a canonical expression.
+{-| Returns an expression's node id.
 -}
 getExprId : Can.Expr -> Int
 getExprId (A.At _ info) =
     info.id
 
 
-{-| Get the pattern ID from a canonical pattern.
+{-| Returns a pattern's node id.
 -}
 getPatternId : Can.Pattern -> Int
 getPatternId (A.At _ patInfo) =
     patInfo.id
 
 
-{-| Get the name from a definition.
+{-| Returns the name a definition defines.
 -}
 defName : Can.Def -> Name.Name
 defName def =
@@ -170,7 +218,9 @@ defName def =
             name
 
 
-{-| Walk a definition's body expression.
+{-| Returns the violations in a definition's body, checked under `env` and
+attributed to the top-level definition `funcName`. The argument patterns are
+not walked.
 -}
 checkDefBody :
     Name.Name
@@ -189,11 +239,9 @@ checkDefBody funcName def annotations nodeTypesPre nodeTypesPost env =
             walkExpr funcName annotations nodeTypesPre nodeTypesPost env body
 
 
-{-| Is this TVar name a type-class variable?
-
-Elm's solver produces constrained type variables for numeric/comparison type
-classes. These never appear in Forall binders. Recognise by name prefix.
-
+{-| Returns `True` for a type-variable name that starts with `number`,
+`comparable`, `appendable` or `compappend`. It is a prefix match, so `number2`
+and `numberOfX` both count.
 -}
 isTypeClassVar : String -> Bool
 isTypeClassVar name =
@@ -203,7 +251,10 @@ isTypeClassVar name =
         || String.startsWith "compappend" name
 
 
-{-| Walk an expression, checking each node's type and recursing into children.
+{-| Returns the violations in an expression under `env`: one for the expression
+itself if it is checked and fails, followed by those of the expressions inside
+it. The expressions inside are walked whether or not the expression itself is
+checked.
 -}
 walkExpr :
     Name.Name
@@ -254,30 +305,21 @@ walkExpr funcName annotations nodeTypesPre nodeTypesPost env (A.At _ exprInfo) =
     thisViolations ++ childViolations
 
 
-{-| Should this node be skipped by POST\_010?
+{-| Returns `True` for a node whose own type is not checked.
 
-We skip:
-
-  - Kernel primitives and accessors (governed by kernel/layout invariants).
-  - Leaf variables whose types are just scheme uses (local/top-level/foreign/operators).
-  - Constructors (their TVars belong to the type's scheme, not the local def).
-  - Container literals (List/Record/Tuple) whose internal polymorphism is harmless.
-  - Lambdas whose types are entirely determined by surrounding schemes
-    (dedicated lambda invariants POST\_007/008/009 check them).
-  - Calls whose callee is a simple Var\* head (polymorphic scheme instantiation).
-
-POST\_010 still checks result-producing nodes like If/Case/Let/LetRec/LetDestruct,
-Binop, Negate, Access, Update, and Calls with non-trivial callees.
+These are kernel, local, top-level, foreign, operator, debug and constructor
+variables; accessors; list, record and tuple literals; lambdas; and calls whose
+function is a kernel, top-level, foreign, operator or constructor variable. A
+call through anything else, such as a local variable, a lambda or another call,
+is not skipped, and neither is any other kind of node.
 
 -}
 isSkippable : Can.Expr_ -> Bool
 isSkippable node =
     case node of
-        -- Kernel primitives: handled by kernel-specific invariants.
         Can.VarKernel _ _ _ ->
             True
 
-        -- Leaf vars: their TVars come from their own scheme, not this def's.
         Can.VarLocal _ ->
             True
 
@@ -293,16 +335,12 @@ isSkippable node =
         Can.VarDebug _ _ _ ->
             True
 
-        -- Accessor combinators: polymorphism lives in their scheme.
         Can.Accessor _ ->
             True
 
-        -- Constructors: polymorphism belongs to the ADT's scheme.
         Can.VarCtor _ _ _ _ _ ->
             True
 
-        -- Container literals often carry harmless internal polymorphism,
-        -- e.g. [] : List a where 'a' never escapes.
         Can.List _ ->
             True
 
@@ -312,15 +350,9 @@ isSkippable node =
         Can.Tuple _ _ _ ->
             True
 
-        -- Lambda node types are checked by POST_007/008/009; POST_010
-        -- does not need to re-verify their TVars against EnvTVars.
         Can.Lambda _ _ ->
             True
 
-        -- Calls whose callee is a simple Var* head: the result type is
-        -- just an instantiation of that scheme (top-level, foreign,
-        -- kernel, operator, or ctor). Any TVars not in EnvTVars are
-        -- still legitimate, because they belong to the callee's scheme.
         Can.Call fn _ ->
             case fn of
                 A.At _ fnInfo ->
@@ -340,9 +372,9 @@ isSkippable node =
                         Can.VarCtor _ _ _ _ _ ->
                             True
 
-                        -- Calls through a local variable (e.g. higher-order
-                        -- args, combinators) we still check, because that
-                        -- result type is part of the current def's behavior.
+                        -- A call through a local or debug variable is
+                        -- checked, although those variables standing alone
+                        -- are not.
                         _ ->
                             False
 
@@ -350,7 +382,7 @@ isSkippable node =
             False
 
 
-{-| Get a human-readable name for the expression kind.
+{-| Returns the name of a node's `Can.Expr_` constructor, for reports.
 -}
 exprKindName : Can.Expr_ -> String
 exprKindName node =
@@ -440,7 +472,10 @@ exprKindName node =
             "Accessor"
 
 
-{-| Recurse into child expressions, extending env for let bindings.
+{-| Returns the violations in the expressions directly inside a node, including
+the bodies of its `let`-bound definitions. For a `let`, `env` is extended by
+the binders of its definitions or destructured pattern; every other node's
+children are checked under `env` unchanged.
 -}
 walkChildren :
     Name.Name
@@ -535,7 +570,6 @@ walkChildren funcName annotations nodeTypesPre nodeTypesPost env node =
         Can.Tuple a b extras ->
             go a ++ go b ++ List.concatMap go extras
 
-        -- Leaf nodes
         Can.VarLocal _ ->
             []
 
@@ -579,7 +613,9 @@ walkChildren funcName annotations nodeTypesPre nodeTypesPost env node =
             []
 
 
-{-| Collect all free TVar names from a canonical type.
+{-| Returns the names of the `TVar`s in a type. A record's extension variable is
+not included, and an alias contributes the variables of its body, not those of
+its arguments.
 -}
 collectFreeVars : Can.Type Name -> Set String
 collectFreeVars tipe =
@@ -611,7 +647,10 @@ collectFreeVars tipe =
             collectFreeVars aliased
 
 
-{-| Format violations for test output.
+{-| Returns a failure message for `violations`: a header line giving their
+count, then one line per violation, separated by blank lines. Each line names
+the expression kind, node id and enclosing top-level definition, then lists
+the orphan variables and the environment.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
@@ -621,6 +660,9 @@ formatViolations violations =
         ++ String.join "\n\n" (List.map formatOne violations)
 
 
+{-| Returns the one-line description of a violation that `formatViolations`
+uses.
+-}
 formatOne : Violation -> String
 formatOne v =
     "  "

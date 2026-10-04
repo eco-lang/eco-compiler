@@ -1,9 +1,7 @@
 module TestLogic.TestPipeline exposing
-    ( -- Cumulative artifact types
-      CanonicalArtifacts
+    ( CanonicalArtifacts
     , GlobalOptArtifacts
     , MlirArtifacts
-      -- Pipeline entry points (each runs full pipeline to that stage)
     , MonoArtifacts
     , PostSolveArtifacts
     , TypeCheckArtifacts
@@ -21,27 +19,63 @@ module TestLogic.TestPipeline exposing
     , runToGlobalOptLssOn
     , runToGlobalOptLssOnStats
     , runToMlir
-      -- Low-level helpers (for tests needing fine-grained control)
     , runToMono
     , runToPostSolve
     , runToTypeCheck
     , runToTypedOpt
     )
 
-{-| Unified test pipeline for the Eco compiler.
+{-| Drives one test program through the compiler to a chosen stage, so that
+every pipeline test builds its input the same way instead of assembling the
+stages itself.
 
-This module provides a single source of truth for running the compilation
-pipeline in tests. Each stage returns cumulative artifacts - all outputs
-from that stage and all previous stages.
+A test program is a `Src.Module`, and it is compiled against a mock
+environment instead of real packages. It is canonicalized as a module of the
+package `eco/example` against `Compiler.Elm.Interface.Basic.testIfaces`, the
+hand-written interfaces of 18 modules (`Basics`, `List`, `Maybe`, `Html` and
+others). Because `eco` is a kernel-package author, an `Elm.Kernel.*` reference
+in a test program canonicalizes to a kernel reference. Where a build would
+merge the compiled graphs of the dependencies, this module synthesizes what
+monomorphization needs from the interfaces: an annotation for every interface
+value, operator and constructor, and a real node only for the kernel aliases
+listed in `aliasedKernels`. Any other dependency global has an annotation and
+no node.
 
-Pipeline stages:
+`runToCanonical`, `runToTypeCheck`, `runToPostSolve`, `runToTypedOpt`,
+`runToMono`, `runToGlobalOpt`, `runToMlir` and `runToGlobalOptLssOn` (with its
+aliases) return the _cumulative artifacts_ of their stage: one record holding
+that stage's output together with the outputs of the earlier stages it ran,
+so that a test can inspect any of them. `runToAssigned`,
+`runToGlobalOptLssOnStats` and the three `run*MonoWith*` functions return only
+their own stage's result. A stage that fails gives `Err` with a message; for
+canonicalization and type checking it carries only a count of errors, and for
+typed optimization nothing about the error. A stage that crashes is not
+caught.
 
-1.  Canonicalization: Source AST -> Canonical AST
-2.  Type Checking: Canonical -> annotations + nodeTypes (pre-PostSolve)
-3.  PostSolve: Fix remaining Group B types (Str, Chr, Float, Unit), compute kernel env
-4.  Typed Optimization: TypedCanonical -> LocalGraph
-5.  Monomorphization: LocalGraph -> GlobalGraph -> MonoGraph
-6.  MLIR Generation: MonoGraph -> MlirModule
+From `runToTypedOpt` on, the program is first given a _synthetic main_:
+`wrapWithMain` appends a `main` that binds `testValue` in a `let` and returns
+`Html.text "test main"`. That `main` is a valid entry point for the typed
+optimizer, and it makes `testValue` reachable from the entry point that
+monomorphization starts at. A program run through these stages must define
+`testValue`, or the test run crashes. `runToCanonical`, `runToTypeCheck` and
+`runToPostSolve` do not add a `main`.
+
+Two monomorphizer engines are used. `runToMono`, `runToGlobalOpt`,
+`runToMlir`, `runSubstMonoWithLimits` and `expectCoverageRun` use the
+substitution engine, `Compiler.Monomorphize.Monomorphize`.
+`runToGlobalOptLssOn` and its two aliases, `runToGlobalOptLssOnStats`,
+`runSolverMonoWithLimits` and `runSolverMonoWithReport` use the solver engine,
+`Compiler.MonoSolver.Monomorphize`, which is the default engine of a build
+(`Compiler.Eco.Config`).
+
+The stages follow `Compiler.Compile` and `Builder.Generate`. Among the
+differences a test can observe: the typed optimizer is given no scheme roots,
+the pattern match checker is not run, neither alias forwarding nor
+eta-expansion is run before monomorphization, no pruning follows the
+post-monomorphization inliner, global optimization runs with the default
+configuration, and MLIR comes from
+`Compiler.Generate.MLIR.Backend.generateMlirModule`, not from the streaming
+writers a build uses.
 
 -}
 
@@ -92,32 +126,42 @@ import System.TypeCheck.IO as IO
 -- ============================================================================
 
 
-{-| Stage 1: Canonicalization artifacts.
+{-| The cumulative artifacts of canonicalization: the canonical module.
 -}
 type alias CanonicalArtifacts =
     { canonical : Can.Module
     }
 
 
-{-| Stage 2: Type checking artifacts (includes Stage 1).
+{-| The cumulative artifacts of type checking with node ids: the canonical
+module and what `Compiler.Type.Solve.runWithIds` returns for it.
+
+`annotations` and `annotationVars` have no entries for let-bound names.
+`nodeTypes` and `nodeVars` are indexed by node id, and `nodeTypes` is as the
+solver left it, before PostSolve. `solverState` is a snapshot of the solver's
+point store, taken when solving finished; it is what later resolves a
+variable in `nodeVars` or `annotationVars` to its union-find root.
+
 -}
 type alias TypeCheckArtifacts =
     { canonical : Can.Module
     , annotations : Dict Name.Name (Can.Annotation Name)
-    , nodeTypes : Array (Maybe (Can.Type Name)) -- Pre-PostSolve
+    , nodeTypes : Array (Maybe (Can.Type Name))
     , nodeVars : Array (Maybe Vars.Variable)
     , solverState : { cells : Array Vars.PointCell }
     , annotationVars : Dict Name.Name Vars.Variable
     }
 
 
-{-| Stage 3: PostSolve artifacts (includes Stages 1-2).
+{-| The cumulative artifacts of PostSolve: the type checking artifacts, with the
+node types both before and after `Compiler.Type.PostSolve.postSolve` and the
+kernel type environment it builds.
 -}
 type alias PostSolveArtifacts =
     { canonical : Can.Module
     , annotations : Dict Name.Name (Can.Annotation Name)
-    , nodeTypesPre : PostSolve.NodeTypes -- Before PostSolve
-    , nodeTypesPost : PostSolve.NodeTypes -- After PostSolve
+    , nodeTypesPre : PostSolve.NodeTypes
+    , nodeTypesPost : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , nodeVars : Array (Maybe Vars.Variable)
     , solverState : { cells : Array Vars.PointCell }
@@ -125,7 +169,16 @@ type alias PostSolveArtifacts =
     }
 
 
-{-| Stage 4: Typed optimization artifacts (includes Stages 1-3).
+{-| The cumulative artifacts of typed optimization: the module's typed local
+graph, with the canonical module, annotations, node types and kernel type
+environment it was built from.
+
+These are artifacts of the program with the synthetic `main` added, so
+`canonical` and `annotations` include `main`. `annotations` and `nodeTypes`
+are the `annotations` and `nodeTypesPost` of the PostSolve artifacts with
+solver roots stamped into their arrows, so they can differ from those fields
+of `PostSolveArtifacts`. The solver variables are not carried on.
+
 -}
 type alias TypedOptArtifacts =
     { canonical : Can.Module
@@ -136,7 +189,15 @@ type alias TypedOptArtifacts =
     }
 
 
-{-| Stage 5: Monomorphization artifacts (includes Stages 1-4).
+{-| The cumulative artifacts of monomorphization: the typed optimization
+artifacts, the global graph and global type environment built from them and
+the mock interfaces, and the monomorphized graph.
+
+`globalGraph` is the input monomorphization was given: the program's local
+graph plus an annotation for every mock-interface value, operator and
+constructor and a node for each kernel alias in `aliasedKernels`. `runToMono`
+fills `monoGraph` from the substitution engine.
+
 -}
 type alias MonoArtifacts =
     { canonical : Can.Module
@@ -150,11 +211,14 @@ type alias MonoArtifacts =
     }
 
 
-{-| Stage 5.5: Global optimization artifacts (includes Stages 1-5).
+{-| The cumulative artifacts of global optimization: the monomorphization
+artifacts plus `optimizedMonoGraph`, the result of running the
+post-monomorphization inliner and then
+`Compiler.GlobalOpt.MonoGlobalOptimize.globalOptimize` on `monoGraph`.
 
-This stage runs GlobalOpt on the MonoGraph, which canonicalizes staging
-and enforces GOPT\_001 (closure params == stage arity) and GOPT\_003
-(case branch types match).
+`monoGraph` is the graph before both passes. It comes from the substitution
+engine when `runToGlobalOpt` builds the record and from the solver engine when
+`runToGlobalOptLssOn` does.
 
 -}
 type alias GlobalOptArtifacts =
@@ -170,7 +234,15 @@ type alias GlobalOptArtifacts =
     }
 
 
-{-| Stage 6: MLIR generation artifacts (includes Stages 1-5.5).
+{-| The cumulative artifacts of MLIR generation: the global optimization
+artifacts, without the unoptimized graph, plus the generated MLIR module and
+its text.
+
+`monoGraph` here holds the graph after global optimization, the one MLIR was
+generated from, unlike the field of the same name in `MonoArtifacts` and
+`GlobalOptArtifacts`. `mlirOutput` is the same graph generated again and
+printed as text.
+
 -}
 type alias MlirArtifacts =
     { canonical : Can.Module
@@ -192,7 +264,8 @@ type alias MlirArtifacts =
 -- ============================================================================
 
 
-{-| Run pipeline through canonicalization.
+{-| Canonicalizes `srcModule` as a module of the package `eco/example`
+against the mock interfaces. An `Err` gives only the number of errors.
 -}
 runToCanonical : Src.Module -> Result String CanonicalArtifacts
 runToCanonical srcModule =
@@ -212,7 +285,9 @@ runToCanonical srcModule =
             Ok { canonical = canonical }
 
 
-{-| Run pipeline through type checking.
+{-| Canonicalizes `srcModule` and type checks it with node ids recorded, as
+the typed path does. An `Err` from type checking gives only the number of
+errors.
 -}
 runToTypeCheck : Src.Module -> Result String TypeCheckArtifacts
 runToTypeCheck srcModule =
@@ -236,7 +311,8 @@ runToTypeCheck srcModule =
                         }
 
 
-{-| Run pipeline through PostSolve.
+{-| Runs `runToTypeCheck` on `srcModule` and then PostSolve on its node types,
+keeping the node types from both before and after.
 -}
 runToPostSolve : Src.Module -> Result String PostSolveArtifacts
 runToPostSolve srcModule =
@@ -264,11 +340,19 @@ runToPostSolve srcModule =
                 }
 
 
-{-| Run pipeline through typed optimization.
+{-| Adds the synthetic `main` to `srcModule` with `wrapWithMain`, runs it
+through PostSolve, and builds its typed local graph.
 
-Wraps the source module with a synthetic `main` entry point so the typed
-optimizer's main-type validation succeeds and downstream monomorphization
-has a concrete entry point.
+Between PostSolve and the typed optimizer it does what `Compiler.Compile`
+does at that point: it resolves the node and annotation variables to their
+union-find roots and stamps solver roots into the arrows of the node types
+and annotations. Without this step every arrow in a test program would carry
+`NoArrow`, and the solver engine, which gives arrows that share a solver root
+one identity, would find none to share. The typed optimizer is given an empty
+scheme-roots table, where `Compiler.Compile` passes the roots of the solver's
+scheme variables.
+
+Any error from the typed optimizer gives the same `Err` message.
 
 -}
 runToTypedOpt : Src.Module -> Result String TypedOptArtifacts
@@ -279,17 +363,6 @@ runToTypedOpt srcModule =
 
         Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars } ->
             let
-                -- ARROW SOLVER ROOTS — mirror `Compiler.Compile`, which stamps
-                -- them here while the solver state is still live. Without this
-                -- the harness produced types whose arrows all carried
-                -- `NoArrow`, so every root-identity feature
-                -- (`lss.arrowSolverRoots`, Phase 2b)
-                -- was STRUCTURALLY INERT in every pipeline test — a test could
-                -- turn the flag on, pass, and have verified nothing.
-                --
-                -- Behaviour-neutral at default flags: `AssignMVarIds` mints a
-                -- fresh occurrence id and stamps `Arrow` for `SolverRoot` and
-                -- `NoArrow` alike unless a root-identity flag is on.
                 rootedNodeVars =
                     SolverRoots.normalizeNodeVars solverState nodeVars
 
@@ -337,7 +410,8 @@ runToTypedOpt srcModule =
                     Err "Typed optimization produced an error"
 
 
-{-| Run pipeline through monomorphization.
+{-| Runs `runToTypedOpt` on `srcModule` and monomorphizes the result with the
+substitution engine, starting from `main`.
 -}
 runToMono : Src.Module -> Result String MonoArtifacts
 runToMono srcModule =
@@ -370,16 +444,14 @@ runToMono srcModule =
                         }
 
 
-{-| `runToMono`'s graph after `AssignMVarIds` — the shape the PRE-MONO passes
-operate on since
-`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`.
+{-| Returns the global graph of `runToMono` for `srcModule` after
+`Compiler.Monomorphize.EntryPrep.assign` has given it its ids, which is the
+kind of graph the pre-monomorphization passes work on in a build.
 
-`Builder.Generate.runMonoOptPipeline` calls `EntryPrep.assign` and hands the
-result to `InlineSimplify.optimize`; a test that wants to exercise a pre-mono
-pass must do the same, because the passes are no longer Name-typed.
-
-The `( False, False )` assignment flags match the subst engine and the test
-harness's own `monomorphizeAny`; a solver-flag test would pass its own.
+It uses the assignment flags of the substitution engine, `( False, False )`,
+so arrows that share a solver root are not given a shared identity. It runs
+the whole of `runToMono`, monomorphization included, so it fails whenever
+`runToMono` does.
 
 -}
 runToAssigned : Src.Module -> Result String EntryPrep.Assigned
@@ -389,14 +461,11 @@ runToAssigned srcModule =
         (runToMono srcModule)
 
 
-{-| Run pipeline through global optimization.
-
-This stage applies MonoGlobalOptimize.globalOptimize which:
-
-  - Canonicalizes staging (GOPT\_001: closure params == stage arity)
-  - Normalizes case branch types (GOPT\_003)
-  - Computes returned closure arity annotations
-
+{-| Runs `runToMono` on `srcModule`, then the post-monomorphization inliner
+(`Compiler.GlobalOpt.MonoInlineSimplify.optimize`) and
+`Compiler.GlobalOpt.MonoGlobalOptimize.globalOptimize`, both with the default
+configuration. What the global optimizer does is described in
+`Compiler.GlobalOpt.MonoGlobalOptimize`.
 -}
 runToGlobalOpt : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOpt srcModule =
@@ -425,45 +494,38 @@ runToGlobalOpt srcModule =
                 }
 
 
-{-| Run pipeline through global optimization on the SOLVER engine with LSS
-enabled — the shipping configuration. For LSS\_00x invariant checkers, which
-need real lambda-set annotations to inspect.
+{-| Runs `runToTypedOpt` on `srcModule`, monomorphizes with the solver engine
+and the default lambda-set specialization configuration, which has
+lambda-set specialization on, and then runs the inliner and global optimizer
+as `runToGlobalOpt` does.
 
-This used to take `keyed` and `arrowIdentity` as parameters; both flags were
-fixed at their defaults and removed 2026-09-18, so the three former entry
-points (`runToGlobalOptLssOn`, `runToGlobalOptLssArrowIdOn`,
-`runToGlobalOptLssAllKeyedOn`) are one configuration now.
+This is the engine and lambda-set configuration of a default build.
+`runToGlobalOptLssArrowIdOn` and `runToGlobalOptLssAllKeyedOn` are the same
+function under other names.
+
 -}
 runToGlobalOptLssOn : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOptLssOn =
     runToGlobalOptLssKeyedWith
 
 
-{-| Was `runToGlobalOptLssOn` with **Phase 2a arrow identity ON**
-(`plans/lss-unknown-elimination.md` §4) — LSS\_002 totality, the best
-whole-pipeline check that SLOT SHARING has not lost a member. Arrow identity
-is unconditional since 2026-09-18, so this is now an alias kept for its
-callers.
+{-| Runs `runToGlobalOptLssOn`; it is the same function under another name.
 -}
 runToGlobalOptLssArrowIdOn : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOptLssArrowIdOn =
     runToGlobalOptLssKeyedWith
 
 
-{-| Like `runToGlobalOptLssOn` — ALL-GLOBALS keying, which is unconditional
-under LSS since `lss.keyed` was fixed at its default and removed 2026-09-18.
-Annotated demands key the registry, so one spec is minted per call-site lambda
-set and a single-member set can stamp.
-
-(Before that it was E5 SELECTIVE keying, `lss.keyedGlobals`, which named the
-globals to key while `keyed` stayed False; that flag went the same day.)
-
+{-| Runs `runToGlobalOptLssOn`; it is the same function under another name.
 -}
 runToGlobalOptLssAllKeyedOn : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOptLssAllKeyedOn =
     runToGlobalOptLssKeyedWith
 
 
+{-| Runs the pipeline `runToGlobalOptLssOn` describes; `runToGlobalOptLssOn`
+and its two aliases are bound to this function.
+-}
 runToGlobalOptLssKeyedWith : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOptLssKeyedWith srcModule =
     case runToTypedOpt srcModule of
@@ -509,9 +571,13 @@ runToGlobalOptLssKeyedWith srcModule =
                         }
 
 
-{-| MONO\_030 (watchdog tests): run the SOLVER monomorphizer with explicit
-spec limits. The watchdog tests feed the plan §1.1 poly-rec cycle with tiny
-limits and assert the clean `LimitExceeded` failure instead of divergence.
+{-| Runs `runToTypedOpt` on `srcModule` and monomorphizes the result with the
+solver engine under the given `limits` and `lssConfig`, returning the graph
+without global optimization.
+
+The limits are the specialization watchdog's, so a test can give small ones
+and check that a program whose specializations keep growing ends in `Err`.
+
 -}
 runSolverMonoWithLimits : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String Mono.MonoGraph
 runSolverMonoWithLimits limits lssConfig srcModule =
@@ -531,10 +597,11 @@ runSolverMonoWithLimits limits lssConfig srcModule =
                 (MonoSolver.monomorphizeWithReport lssConfig limits "main" globalTypeEnv globalGraph)
 
 
-{-| LSS\_020 (plan lss-fidelity-3 §B.6): `runSolverMonoWithLimits` with the
-LSS census forced on, returning the rendered report alongside the graph so
-tests can assert on counter lines (e.g. `bySigSize=`). Report-gated bumps
-(`widenedByCf`, `kernelFactHits`) are live under this entry point.
+{-| Does what `runSolverMonoWithLimits` does with `report` set in `lssConfig`,
+and returns the rendered lambda-set specialization report alongside the
+graph, so that a test can check the report's counter lines.
+`Compiler.MonoSolver.Monomorphize` gives the report as `Just` whenever
+`report` is set.
 -}
 runSolverMonoWithReport : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String ( Mono.MonoGraph, Maybe String )
 runSolverMonoWithReport limits lssConfig srcModule =
@@ -553,8 +620,9 @@ runSolverMonoWithReport limits lssConfig srcModule =
             MonoSolver.monomorphizeWithReport { lssConfig | report = True } limits "main" globalTypeEnv globalGraph
 
 
-{-| MONO\_030 (watchdog tests): the SUBST-engine twin of
-`runSolverMonoWithLimits` (drain-level per-item checks).
+{-| Runs `runToTypedOpt` on `srcModule` and monomorphizes the result with the
+substitution engine under the given watchdog `limits`, as
+`runSolverMonoWithLimits` does for the solver engine.
 -}
 runSubstMonoWithLimits : Config.SpecLimits -> Src.Module -> Result String Mono.MonoGraph
 runSubstMonoWithLimits limits srcModule =
@@ -573,9 +641,14 @@ runSubstMonoWithLimits limits srcModule =
             Monomorphize.monomorphizeWithLimits limits "main" globalTypeEnv globalGraph
 
 
-{-| Solver+LSS through GlobalOpt, returning the GlobalOpt STATS (AbiCloning
-dispatch/decline counters) — for activation/decline assertions that the
-graph-only `runToGlobalOptLssOn` cannot see.
+{-| Runs what `runToGlobalOptLssOn` runs and returns only the global
+optimizer's statistics, such as how many calls ABI cloning stamped or
+declined, which the graph alone does not show.
+
+The global optimizer runs with its census on, which the default
+configuration has off. Per `Compiler.GlobalOpt.MonoGlobalOptimize`, the
+census changes what is counted, not the graph.
+
 -}
 runToGlobalOptLssOnStats : Src.Module -> Result String MonoGlobalOptimize.GlobalOptStats
 runToGlobalOptLssOnStats srcModule =
@@ -612,7 +685,13 @@ runToGlobalOptLssOnStats srcModule =
                     Ok stats
 
 
-{-| Run pipeline through MLIR generation.
+{-| Runs `runToGlobalOpt` on `srcModule` and generates MLIR from the optimized
+graph in development mode.
+
+The text in `mlirOutput` comes from a second generation of the same graph.
+That generation always succeeds, so `runToMlir` fails only when an earlier
+stage does.
+
 -}
 runToMlir : Src.Module -> Result String MlirArtifacts
 runToMlir srcModule =
@@ -653,7 +732,9 @@ runToMlir srcModule =
 -- ============================================================================
 
 
-{-| Run type checking with expression ID tracking.
+{-| Builds the IO action that generates `modul`'s constraints with node ids
+recorded and solves them, giving the solver's results or the number of type
+errors.
 -}
 runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe Vars.Variable), solverState : { cells : Array Vars.PointCell }, annotationVars : Dict Name.Name Vars.Variable })
 runWithIdsTypeCheck modul =
@@ -679,13 +760,17 @@ runWithIdsTypeCheck modul =
             )
 
 
-{-| Convert a LocalGraph to a GlobalGraph for monomorphization.
+{-| Builds the global graph that monomorphization is given for a program whose
+typed local graph is `localGraph`.
 
-Mirrors the production build by also assembling annotations from cross-module
-dependencies (test interfaces). In production, each dependency module's
-LocalGraph is merged via addTypedLocalGraph, bringing its function annotations
-and constructor annotations into the GlobalGraph. Here we synthesize equivalent
-annotations directly from the mock interfaces.
+In a build, each dependency's own typed graph is merged in, bringing its nodes
+and annotations. Here the dependencies are the mock interfaces, which have no
+code, so the graph is the program's own local graph, merged in as
+`Builder.GraphAssembly.addTypedLocalGraph` merges any local graph, plus an
+annotation for every interface value, operator and constructor, and a node
+for each kernel alias in `aliasedKernels`. Where a synthesized entry and a
+program entry have the same global, the synthesized one is kept. Fields,
+scheme roots and variable supers come from the program alone.
 
 -}
 localGraphToGlobalGraph : TOpt.LocalGraph Name -> TOpt.GlobalGraph Name
@@ -700,20 +785,19 @@ localGraphToGlobalGraph localGraph =
     TOpt.GlobalGraph (Data.Map.union (kernelAliasNodes Basic.testIfaces) nodes) fields (Data.Map.union crossModuleAnnotations annotations) roots varSupers
 
 
-{-| E9.2 unit-env fidelity: production dependency graphs carry real TOpt
-nodes; this mock env synthesizes annotations only, so node-less dependency
-globals become `MonoExtern` specs. Kernel-identity recognition (LSS\_016 —
-`(::)`-as-value resolving through `List.cons`'s eta-free kernel alias
-`cons = Elm.Kernel.List.cons`) needs the node, so synthesize exactly the
-node production builds for it: `Define (VarKernel "Elm" "List" "cons")`.
+{-| The dependency values, as (module, value) pairs, that get a real node in
+the mock global graph: each is an eta-free alias of a kernel function, such as
+`cons = Elm.Kernel.List.cons`.
 
-LSS\_022 (`plans/kernel-parametricity-license.md`) needs the same for a
-kernel that carries ARROWS in its type, otherwise no unit test can reach a
-licensed kernel boundary at all. `aliasedKernels` is therefore a list, not a
-singleton — but it may only ever name kernels that REALLY are eta-free
-aliases in the package source, or the mock env stops mirroring production.
-Both entries below are verified against elm/core 1.0.5 `src/List.elm`
-(`cons` :108, `map2` :439).
+A dependency global with no node is not specialized from code; the
+substitution engine makes it a `MonoExtern`. The solver engine recognizes a
+global as a kernel alias only from such a node
+(`Compiler.MonoSolver.LssInfer.kernelAliasOf`), so these values get the node
+a build would have. `List.map2` gives tests a kernel alias one of whose
+arguments is a function.
+
+The list should name only values that elm/core's own source defines as such
+an alias, or the mock graph stops matching a build. Nothing checks this.
 
 -}
 aliasedKernels : List ( Name, Name )
@@ -723,6 +807,11 @@ aliasedKernels =
     ]
 
 
+{-| Builds a node for each `aliasedKernels` entry found in `ifaces`, keyed by
+its global: a definition whose body is a reference to the `Elm` kernel of the
+same module and name, typed with the body of the value's annotation, with no
+dependencies. An entry whose module or value is not in `ifaces` is skipped.
+-}
 kernelAliasNodes : Dict Name I.Interface -> Data.Map.Dict String TOpt.Global (TOpt.Node Name)
 kernelAliasNodes ifaces =
     List.foldl
@@ -750,17 +839,9 @@ kernelAliasNodes ifaces =
         aliasedKernels
 
 
-{-| Build AnnotationsByGlobal from test interfaces.
-
-For each interface module, extracts annotations for:
-
-  - Function values (from interface.values)
-  - Union constructors (synthesized from interface.unions, matching
-    the logic in LocalOpt.Typed.Module.addCtorNode)
-
-This mirrors what the production build does when each dependency module's
-LocalGraph is assembled via addTypedLocalGraph.
-
+{-| Returns an annotation, keyed by global, for every value, every union
+constructor and every operator's function in `ifaces`. Each interface module's
+globals are homed in the package its interface names.
 -}
 interfaceAnnotations : Dict Name I.Interface -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 interfaceAnnotations ifaces =
@@ -779,7 +860,8 @@ interfaceAnnotations ifaces =
         ifaces
 
 
-{-| Add annotations for interface function values.
+{-| Adds the annotation of each of `values` to `acc`, keyed by its global in
+`home`.
 -}
 addValueAnnotations : ModuleName.Canonical -> Dict Name (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addValueAnnotations home values acc =
@@ -791,10 +873,8 @@ addValueAnnotations home values acc =
         values
 
 
-{-| Add annotations for binary operators.
-
-Binops have a function name (e.g. "add" for +) and an annotation.
-
+{-| Adds the annotation of each of `binops` to `acc`, keyed by the global of
+the function the operator names (such as `add` for `+`), not by the operator.
 -}
 addBinopAnnotations : ModuleName.Canonical -> Dict Name I.Binop -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addBinopAnnotations home binops acc =
@@ -806,12 +886,8 @@ addBinopAnnotations home binops acc =
         binops
 
 
-{-| Add annotations for union constructors.
-
-Mirrors LocalOpt.Typed.Module.addCtorNode: builds the constructor's function
-type from its args and the result type, then wraps it in Can.Forall with the
-union's type variables as free vars.
-
+{-| Adds an annotation for every constructor of each of `unions` to `acc`,
+whether the interface exposes the union open, closed or privately.
 -}
 addUnionAnnotations : ModuleName.Canonical -> Dict Name I.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addUnionAnnotations home unions acc =
@@ -835,7 +911,13 @@ addUnionAnnotations home unions acc =
         unions
 
 
-{-| Add annotations for each constructor in a union type.
+{-| Adds an annotation for each constructor of the union `typeName` to `acc`.
+
+A constructor's type is the function from its arguments to the union type
+applied to the union's type variables, quantified over those variables. It is
+built the way `Compiler.LocalOpt.Typed.Module` types the constructor nodes of
+a compiled module.
+
 -}
 addCtorAnnotations : ModuleName.Canonical -> Name -> Can.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addCtorAnnotations home typeName (Can.Union unionData) acc =
@@ -860,7 +942,9 @@ addCtorAnnotations home typeName (Can.Union unionData) acc =
         unionData.alts
 
 
-{-| Build a GlobalTypeEnv from a canonical module and test interfaces.
+{-| Builds the global type environment for monomorphizing `canModule`: the
+type environment of every mock interface module plus that of `canModule`.
+Where both have an entry for one module, the interface's is kept.
 -}
 buildGlobalTypeEnv : Can.Module -> TypeEnv.GlobalTypeEnv
 buildGlobalTypeEnv canModule =
@@ -876,37 +960,36 @@ buildGlobalTypeEnv canModule =
         (Data.Map.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv)
 
 
-{-| Monomorphize using `main` as the entry point.
-
-All test modules are wrapped with a synthetic `main` by `wrapWithMain`,
-so this always succeeds.
-
+{-| Monomorphizes `globalGraph` with the substitution engine and its default
+limits, starting from `main`. Monomorphization can still fail; the `Err`
+carries the engine's message.
 -}
 monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphizeAny globalTypeEnv globalGraph =
     Monomorphize.monomorphize "main" globalTypeEnv globalGraph
 
 
-{-| Wrap a source module with a synthetic `main` entry point.
-
-Generates:
+{-| Returns the module with the synthetic `main` appended to its values:
 
     main =
         let
-            _tv = <entryDef>
+            _tv =
+                testValue
         in
         Html.text "test main"
 
-where `<entryDef>` is `testValue` if it exists, otherwise the first definition.
-This ensures monomorphization starts from a concrete `Html msg` entry point
-that references the intended test definition, making it and its dependencies
-reachable.
+It also appends `import Html exposing (text)` unless the module already has an
+import of `Html`. The `main` has no annotation; its type is that of the mock
+`Html.text`'s result, a `VirtualDom.Node`, which the typed optimizer accepts as
+a static `main`.
+
+A module with no `testValue` crashes the test run (`Debug.todo`). A module
+that already defines `main` gets a second one, so canonicalization fails.
 
 -}
 wrapWithMain : Src.Module -> Src.Module
 wrapWithMain (Src.Module data) =
     let
-        -- Extract names of all existing top-level values
         valueNames =
             List.filterMap
                 (\(A.At _ (Src.Value vdata)) ->
@@ -922,7 +1005,6 @@ wrapWithMain (Src.Module data) =
                 )
                 data.values
 
-        -- testValue is required — every SourceIR test module must define it
         defs =
             if List.member "testValue" valueNames then
                 [ Src.Define
@@ -935,7 +1017,6 @@ wrapWithMain (Src.Module data) =
             else
                 Debug.todo "Test module must define 'testValue' — see SourceIR test standard"
 
-        -- Body: Html.text "test main"
         body =
             A.At A.zero
                 (Src.Call
@@ -943,7 +1024,6 @@ wrapWithMain (Src.Module data) =
                     [ ( [], A.At A.zero (Src.Str "test main" False) ) ]
                 )
 
-        -- main = let _tv = <entry> in Html.text "test main"
         mainExpr =
             case defs of
                 [] ->
@@ -966,7 +1046,6 @@ wrapWithMain (Src.Module data) =
                 , tipe = Nothing
                 }
 
-        -- Add Html import if not already present
         hasHtmlImport =
             List.any
                 (\(Src.Import ( _, A.At _ importName ) _ _) -> importName == "Html")
@@ -995,14 +1074,16 @@ wrapWithMain (Src.Module data) =
         }
 
 
-{-| Create a variable reference expression.
+{-| Builds a reference to the unqualified lower-case variable `name`, with no
+source region.
 -}
 varRef : Name.Name -> Src.Expr
 varRef name =
     A.At A.zero (Src.Var Src.LowVar name)
 
 
-{-| Run MLIR code generation on a monomorphized graph.
+{-| Generates MLIR text for `monoGraph` through the MLIR back end's code
+generator interface, in development mode. It never returns `Err`.
 -}
 runMLIRGeneration : Mono.MonoGraph -> Result String String
 runMLIRGeneration monoGraph =
@@ -1026,13 +1107,14 @@ runMLIRGeneration monoGraph =
 -- ============================================================================
 
 
-{-| Coverage-driven test: validates the test case is valid Elm (passes through
-TypedOpt) then runs the full backend pipeline for coverage. Failures in
-Mono/GlobalOpt/MLIR are logged but do NOT fail the test — they represent
-backend bugs to investigate, not invalid test cases.
+{-| Creates an expectation that `srcModule` gets through `runToTypedOpt`, and
+then runs the rest of the substitution-engine pipeline on it (monomorphization,
+the inliner, global optimization and MLIR generation) only so that the code
+runs.
 
-The test FAILS only if canonicalization, type checking, PostSolve, or typed
-optimization fails, since that means the test case is not valid Elm.
+It fails only when a stage up to typed optimization returns `Err`. A
+monomorphization `Err` passes, and so does any outcome after it; nothing is
+recorded about them. A stage that crashes still ends the test.
 
 -}
 expectCoverageRun : Src.Module -> Expect.Expectation
@@ -1042,8 +1124,6 @@ expectCoverageRun srcModule =
             Expect.fail ("Invalid test case (frontend failure): " ++ msg)
 
         Ok typedOptArtifacts ->
-            -- Valid Elm! Now run the backend pipeline for coverage.
-            -- Failures here are expected and informative, not test failures.
             let
                 { canonical, localGraph } =
                     typedOptArtifacts
@@ -1074,7 +1154,8 @@ expectCoverageRun srcModule =
                             Expect.pass
 
 
-{-| Verify that a source module can be successfully monomorphized.
+{-| Creates an expectation that `runToMono` succeeds on `srcModule` and gives a
+graph with a `main` and a node array that is not empty.
 -}
 expectMonomorphization : Src.Module -> Expect.Expectation
 expectMonomorphization srcModule =
@@ -1086,7 +1167,8 @@ expectMonomorphization srcModule =
             verifyMonoGraph monoGraph
 
 
-{-| Verify that a source module can be successfully compiled to MLIR.
+{-| Creates an expectation that `runToMlir` succeeds on `srcModule` and gives
+MLIR text that is not empty and contains `func.func` or `eco.`.
 -}
 expectMLIRGeneration : Src.Module -> Expect.Expectation
 expectMLIRGeneration srcModule =
@@ -1098,7 +1180,8 @@ expectMLIRGeneration srcModule =
             verifyMLIROutput monoGraph mlirOutput
 
 
-{-| Verify that the monomorphized graph has the expected structure.
+{-| Creates an expectation that the graph has a `main` and a node array that is
+not empty.
 -}
 verifyMonoGraph : Mono.MonoGraph -> Expect.Expectation
 verifyMonoGraph (Mono.MonoGraph data) =
@@ -1114,7 +1197,8 @@ verifyMonoGraph (Mono.MonoGraph data) =
                 Expect.pass
 
 
-{-| Verify that the MLIR output has expected structure.
+{-| Creates an expectation that `output` is not empty and contains `func.func`
+or `eco.` somewhere. The graph argument is not used.
 -}
 verifyMLIROutput : Mono.MonoGraph -> String -> Expect.Expectation
 verifyMLIROutput _ output =

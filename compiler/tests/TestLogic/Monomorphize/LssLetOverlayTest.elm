@@ -1,24 +1,48 @@
 module TestLogic.Monomorphize.LssLetOverlayTest exposing (suite)
 
-{-| F3-b — LET / TAIL-DEF BINDING OVERLAY
-(`plans/lss-container-payload-transport.md` §12.9.5).
+{-| Tests that the solver engine of monomorphization gives a local binding the
+lambda-set annotations of what it is bound to, not the placeholder top of a
+type built from the local's type alone.
 
-A plain `let` binds its name to `classifyAs tkClassLet`'s STORELESS type — ⊤ at
-every arrow — unless a structural reason makes it take the body's type. When
-the RHS carries arrows (a tuple holding a closure, say) the translated RHS's
-set annotations never reach `varEnv`, and every use of the local enriches the
-callee's demand from ⊤: the LSS\_026 `leak|letAnno` class. A local tail-def
-binds its params the same storeless way even when a single-instance demand
-was unified into the item store one line earlier.
+Without them, a local `let` value or a local tail-recursive function's
+parameters could read ⊤ (top: no set is named, so any function may arrive at
+that arrow) at every arrow, and a function the local is passed to would then
+be specialized with ⊤ at that arrow, unnoticed, since the program still
+compiles.
 
-The fix copies the top-level `TailDef` recipe: classify for STRUCTURE, the
-translated RHS (let) or the demand-seeded var's zonk (tail-def) for
-ANNOTATIONS.
+For locals like the two in these fixtures, `Compiler.MonoSolver.Translate`
+first classifies the local's type as the type checker gives it, and every
+arrow written in that type carries `LTop tkClassLet` (`tkClassParam` for a
+tail-def's parameters). The fixtures' types have no type variables; one already bound in the solver's
+store would be read from it instead. With lambda-set specialization (LSS)
+enabled, the plain `let` value of the first fixture then takes that structure
+with the annotations of the translated right-hand side, as
+`Mono.overlayAnnotations` describes, unless the binding takes the right-hand
+side's type whole. The local tail-def of the second fixture has one instance,
+and with LSS enabled takes them from the local's type unified with that
+instance's demanded type. The lambda-set annotations themselves are described
+with `Mono.LambdaSetAnno`.
 
-These shipped as `lss.flow.letOverlay`, default-ON 2026-09-16 (`leak|letAnno`
-58 -> 0, ⊤ 698 -> 668, `var` +30), and became unconditional 2026-09-18. The
-flag-off legs of each differential went with the flag; what remains pins the
-shipping behaviour — the callee's demand reads a SET, never the classify's ⊤.
+Each test builds a one-module program with `makeModuleWithTypedDefs`, runs it
+to a monomorphized graph with LSS enabled, and reads, for every
+specialization of a named callee, the first arrow's annotation found at the
+top of that specialization's first parameter type or among its tuple
+components.
+
+  - "1. PLAIN LET" uses `tupleLet`, where a local tuple holding a closure is
+    passed to `applyPair`. Every such annotation must differ from
+    `LTop tkClassLet`. The test does not require a set: a top of any other
+    kind passes.
+  - "2. TAIL-DEF" uses `tailDef`, where a local tail-recursive `go` passes its
+    callback parameter to `apply`. Every such annotation must be an `LSet`,
+    and an empty `LSet` passes.
+
+In both, a program in which no specialization of the callee has an arrow in
+its first parameter fails as a broken fixture.
+
+Among what is not tested: which members a set holds, a local with more than
+one instance, a `let` whose right-hand side is a tuple literal or a function,
+and the substitution engine.
 
 -}
 
@@ -48,6 +72,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The two binding-overlay tests, one for a plain `let` and one for a local
+tail-def.
+-}
 suite : Test
 suite =
     Test.describe "F3-b let / tail-def binding overlay"
@@ -60,6 +87,14 @@ suite =
         ]
 
 
+{-| Runs `fixture` and passes when `ok` holds for the head annotation of every
+specialization of `callee` that has one, as `calleeArrowHeads` reads them.
+
+It fails with the pipeline's error, with a "fixture broken" message when no
+such annotation is found, or with a message naming `what` and every annotation
+read when any one of them fails `ok`.
+
+-}
 expectHead : Src.Module -> String -> (Mono.LambdaSetAnno -> Bool) -> String -> Expect.Expectation
 expectHead fixture callee ok what =
     case runWith fixture of
@@ -85,23 +120,22 @@ expectHead fixture callee ok what =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int -> Int`, the type of the function values the fixtures
+pass around.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
-{-| `let pair = mkPair 1 in applyPair pair` — a NON-function let (a tuple
-holding a function, no free vars) on the plain-let path, with a CALL as its
-RHS so the classify wins (`useBodyType` False): the `leak|letAnno` shape.
+{-| A program whose `testValue` is `let pair = mkPair 1 in applyPair pair`.
 
-What a one-module fixture CANNOT show: a SET at the tuple's arrow. Every
-route into a tuple payload arrow here crosses the E14 literal-field edge
-(F4, unbuilt): a tuple LITERAL RHS types its arrow `LVar` and takes the body
-type in both arms; a call RHS reads the callee's registered result, whose
-tuple payload arrow is a `declZonk` ⊤ manufactured inside the callee. So the
-pin is the MECHANISM — flag-on the binding carries the RHS's annotation
-(here that ⊤, kind `declZonk`), flag-off the classify's `clsLet` ⊤ — and the
-corpus A/B carries the yield.
+`mkPair n` returns `( \x -> x + n, n )`, annotated
+`Int -> ( Int -> Int, Int )`, and `applyPair` takes such a pair and returns
+`0` without reading it. So `pair` is a local value that is not a function and
+whose type has no type variables, which sends it down the plain-`let` path;
+its type holds an arrow, which is what the test reads; and its right-hand side
+is a call rather than a tuple literal.
 
 -}
 tupleLet : Src.Module
@@ -115,7 +149,7 @@ tupleLet =
         , { name = "applyPair"
           , args = [ pVar "p" ]
           , tipe = tLambda (tTuple hInt (tType "Int" [])) (tType "Int" [])
-          , body = intExpr 0 -- the pin reads the DEMAND's annotation; the body is irrelevant
+          , body = intExpr 0 -- the test reads only the parameter type of this callee's specializations
           }
         , { name = "testValue"
           , args = []
@@ -128,9 +162,13 @@ tupleLet =
         ]
 
 
-{-| `let go h n = if n > 0 then go h (n - 1) else apply h n in go inc 3` — a
-local tail-recursive function with ONE instance whose callback param `h`
-reaches `apply`.
+{-| A program whose `testValue` is
+`let go h n = if n > 0 then go h (n - 1) else apply h n in go inc 3`.
+
+`go` is a local tail-recursive function called once from the `let` body, so
+it has one instance, and its callback parameter `h` is passed to `apply`,
+annotated `(Int -> Int) -> Int -> Int`. `inc x` is `x + 1`.
+
 -}
 tailDef : Src.Module
 tailDef =
@@ -166,6 +204,10 @@ tailDef =
 -- ====== HARNESS ======
 
 
+{-| Runs `srcModule` to a monomorphized graph with the solver engine, the
+default specialization limits and the default LSS configuration with LSS
+enabled.
+-}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
     let
@@ -181,8 +223,14 @@ runWith srcModule =
 -- ====== READERS ======
 
 
-{-| The head annotation of the FIRST arrow found inside the callee's first
-parameter type (the param itself, or the first arrow-typed tuple component).
+{-| Returns, for each specialization in the graph's registry of a global named
+`target` whose type is a function, the annotation `firstArrowHead` finds in
+its first parameter type.
+
+The global is matched by name alone, in any module. A specialization
+contributes nothing when `firstArrowHead` finds no arrow in its first
+parameter, so the list can be empty.
+
 -}
 calleeArrowHeads : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 calleeArrowHeads target (Mono.MonoGraph g) =
@@ -208,6 +256,10 @@ calleeArrowHeads target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns the annotation on the outermost arrow of `t` when `t` is a
+function type, or, when `t` is a tuple, the first such annotation found
+searching its components in order, nested tuples included.
+-}
 firstArrowHead : Mono.MonoType -> Maybe Mono.LambdaSetAnno
 firstArrowHead t =
     case t of
@@ -221,6 +273,9 @@ firstArrowHead t =
             Nothing
 
 
+{-| Reports whether `anno` is an `LSet`, whatever its members, the empty list
+included.
+-}
 isSet : Mono.LambdaSetAnno -> Bool
 isSet anno =
     case anno of
@@ -231,6 +286,9 @@ isSet anno =
             False
 
 
+{-| Renders `anno` for a failure message, with its member ids, variable number
+or top kind code.
+-}
 describeAnno : Mono.LambdaSetAnno -> String
 describeAnno anno =
     case anno of

@@ -7,13 +7,33 @@ module Data.Map exposing
     , union, diff
     )
 
-{-| A dictionary implementation backed by association lists, supporting keys of any type with custom comparison functions.
+{-| Elm's core `Dict` accepts only `comparable` keys, which rules out custom
+types and records; this module is a dictionary whose keys can be of any type.
 
-This module wraps Elm's standard Dict to provide a dictionary where keys don't need to be comparable types.
-Instead, you provide a function to convert keys to comparable values or to compare keys directly.
-Initial implementation from `pzp1997/assoc-list/1.0.0`.
+The caller supplies a _key projection_: a function `k -> comparable` that turns
+a key into a value core `Dict` can order. The dictionary files each entry under
+the projection of its key, and keeps the original key with the value so that
+it can hand the key back. The dictionary's first type parameter is the
+comparable type the projection produces.
 
-All functions in this module are stack safe and won't crash from recursing over large dictionaries.
+Three facts follow from that.
+
+Two keys are the same key exactly when their projections are equal. A
+projection that gives two different keys the same value makes them collide,
+and the later insert replaces the earlier one.
+
+Entries are ordered by their projected keys: `keys`, `values`, `toList` and
+`foldl` go lowest first, `foldr` highest first. That is neither the order of
+insertion nor the order of any `k -> k -> Order` function: all five take such a
+function and ignore it.
+
+Nothing records which projection a dictionary was built with. Every call on
+one dictionary must pass the same projection; a different one files and looks
+up entries under different keys, and no error is reported.
+
+`memberKeyed` and `insertKeyed` take a key that the caller has already
+projected, so that testing for a key and then inserting it projects the key
+once rather than twice.
 
 
 # Dictionaries
@@ -50,62 +70,28 @@ All functions in this module are stack safe and won't crash from recursing over 
 import Dict
 
 
-{-| A dictionary of keys and values. So a `Dict String User` is a dictionary
-that lets you look up a `String` (such as user names) and find the associated
-`User`.
+{-| A dictionary from keys of type `k` to values of type `v`, where `c` is the
+comparable type that the key projection produces.
 
-    import Data.Map as Dict exposing (Dict)
-
-    users : Dict String User
-    users =
-        Dict.fromList
-            [ ( "Alice", User "Alice" 28 1.65 )
-            , ( "Bob", User "Bob" 19 1.82 )
-            , ( "Chuck", User "Chuck" 33 1.75 )
-            ]
-
-    type alias User =
-        { name : String
-        , age : Int
-        , height : Float
-        }
+It holds at most one entry for each projected key. A dictionary is made with
+`empty`, `singleton` or `fromList`. Adding an entry under a projected key that
+already has one replaces it, except in `union`, which keeps the first
+dictionary's entry.
 
 -}
 type Dict c k v
     = D (Dict.Dict c ( k, v ))
 
 
-{-| Create an empty dictionary.
-
-    isEmpty empty
-    --> True
-
+{-| The dictionary with no entries.
 -}
 empty : Dict c k v
 empty =
     D Dict.empty
 
 
-{-| Get the value associated with a key. If the key is not found, return
-`Nothing`. This is useful when you are not sure if a key will be in the
-dictionary.
-
-    type Animal
-        = Cat
-        | Mouse
-
-    animals : Dict String Animal
-    animals = fromList [ ("Tom", Cat), ("Jerry", Mouse) ]
-
-    get "Tom" animals
-    --> Just Cat
-
-    get "Jerry" animals
-    --> Just Mouse
-
-    get "Spike" animals
-    --> Nothing
-
+{-| Returns the value of the entry filed under the projection of `targetKey`,
+or `Nothing` if there is none.
 -}
 get : (k -> comparable) -> k -> Dict comparable k v -> Maybe v
 get toComparable targetKey (D dict) =
@@ -113,46 +99,34 @@ get toComparable targetKey (D dict) =
         |> Maybe.map Tuple.second
 
 
-{-| Determine if a key is in a dictionary.
+{-| Returns whether an entry is filed under the projection of `targetKey`.
 -}
 member : (k -> comparable) -> k -> Dict comparable k v -> Bool
 member toComparable targetKey (D dict) =
     Dict.member (toComparable targetKey) dict
 
 
-{-| Determine the number of key-value pairs in the dictionary.
-
-    size (fromList [ ( "a", 1 ), ( "b", 2 ), ( "c", 3 ) ])
-    --> 3
-
-    size (insert 1 "b" (singleton 1 "a"))
-    --> 1
-
+{-| Returns the number of entries, which is the number of distinct projected
+keys.
 -}
 size : Dict c k v -> Int
 size (D dict) =
     Dict.size dict
 
 
-{-| Determine if a dictionary is empty.
-
-    isEmpty empty
-    --> True
-
+{-| Returns whether the dictionary has no entries.
 -}
 isEmpty : Dict c k v -> Bool
 isEmpty (D dict) =
     Dict.isEmpty dict
 
 
-{-| Membership test against a comparable key the caller has ALREADY built.
+{-| Returns whether an entry is filed under `comparableKey`, a key the caller
+has already projected.
 
-`member`/`insert` take the key-derivation function and apply it on every
-operation, so the idiomatic probe-then-insert pair derives the identical key
-twice. For keys derived by walking a whole `MonoType` that is a full tree
-re-walk plus its allocation, per probe — build the key once in a `let` and
-pass it to these instead (K1.2 of
-`plans/mono-comparable-key-optimization.md`).
+Paired with `insertKeyed`, this lets a caller test for a key and then insert it
+while projecting the key only once, which matters when the projection is
+costly to compute.
 
 -}
 memberKeyed : comparable -> Dict comparable k v -> Bool
@@ -160,27 +134,30 @@ memberKeyed comparableKey (D dict) =
     Dict.member comparableKey dict
 
 
-{-| Insert using a comparable key the caller has already built. See `memberKeyed`.
+{-| Inserts `key` and `value` under `comparableKey`, a key the caller has
+already projected, replacing any entry filed there.
+
+Nothing checks that `comparableKey` is the projection of `key`. If it is not,
+a later lookup of `key` through the projection will not find the entry.
+
 -}
 insertKeyed : comparable -> k -> v -> Dict comparable k v -> Dict comparable k v
 insertKeyed comparableKey key value (D dict) =
     D (Dict.insert comparableKey ( key, value ) dict)
 
 
-{-| Insert a key-value pair into a dictionary. Replaces value when there is
-a collision.
+{-| Inserts `key` and `value` under the projection of `key`.
+
+An entry already filed there is replaced, its key as well as its value, so the
+stored key becomes `key` even when it differs from the one it replaces.
+
 -}
 insert : (k -> comparable) -> k -> v -> Dict comparable k v -> Dict comparable k v
 insert toComparable key value (D dict) =
     D (Dict.insert (toComparable key) ( key, value ) dict)
 
 
-{-| Create a dictionary with one key-value pair.
-
-    singleton identity "key" 42
-        |> get identity "key"
-    --> Just 42
-
+{-| Creates a dictionary holding one entry.
 -}
 singleton : (k -> comparable) -> k -> v -> Dict comparable k v
 singleton toComparable key value =
@@ -191,21 +168,16 @@ singleton toComparable key value =
 -- ====== COMBINE ======
 
 
-{-| Combine two dictionaries. If there is a collision, preference is given
-to the first dictionary.
-
-If you are using this module as an ordered dictionary, the ordering of the
-output dictionary will be all the entries of the first dictionary (from most
-recently inserted to least recently inserted) followed by all the entries of
-the second dictionary (from most recently inserted to least recently inserted).
-
+{-| Returns every entry of both dictionaries. Where both hold an entry under the
+same projected key, the first dictionary's entry is kept, key and value.
 -}
 union : Dict comparable k v -> Dict comparable k v -> Dict comparable k v
 union (D leftDict) (D rightDict) =
     D (Dict.union leftDict rightDict)
 
 
-{-| Keep a key-value pair when its key does not appear in the second dictionary.
+{-| Returns the entries of the first dictionary whose projected key has no
+entry in the second.
 -}
 diff : Dict comparable k a -> Dict comparable k b -> Dict comparable k a
 diff (D leftDict) (D rightDict) =
@@ -216,52 +188,32 @@ diff (D leftDict) (D rightDict) =
 -- ====== TRANSFORM ======
 
 
-{-| Apply a function to all values in a dictionary.
+{-| Returns the dictionary with each value replaced by `alter` applied to the
+entry's key and value. The keys are unchanged.
 -}
 map : (k -> a -> b) -> Dict c k a -> Dict c k b
 map alter (D dict) =
     D (Dict.map (\_ ( key, value ) -> ( key, alter key value )) dict)
 
 
-{-| Fold over the key-value pairs in a dictionary from most recently inserted
-to least recently inserted.
-
-    users : Dict String Int
-    users =
-        empty
-            |> insert "Alice" 28
-            |> insert "Bob" 19
-            |> insert "Chuck" 33
-
-    foldl (\name age result -> age :: result) [] users
-    --> [28,19,33]
-
+{-| Folds `func` over the entries in ascending order of their projected keys,
+lowest first. The ordering function is ignored.
 -}
 foldl : (k -> k -> Order) -> (k -> v -> b -> b) -> b -> Dict c k v -> b
 foldl _ func initialResult (D dict) =
     Dict.foldl (\_ ( key, value ) result -> func key value result) initialResult dict
 
 
-{-| Fold over the key-value pairs in a dictionary from least recently inserted
-to most recently insered.
-
-    users : Dict String Int
-    users =
-        empty
-            |> insert "Alice" 28
-            |> insert "Bob" 19
-            |> insert "Chuck" 33
-
-    foldr (\name age result -> age :: result) [] users
-    --> [33,19,28]
-
+{-| Folds `func` over the entries in descending order of their projected keys,
+highest first. The ordering function is ignored.
 -}
 foldr : (k -> k -> Order) -> (k -> v -> b -> b) -> b -> Dict c k v -> b
 foldr _ func initialResult (D dict) =
     Dict.foldr (\_ ( key, value ) result -> func key value result) initialResult dict
 
 
-{-| Keep only the key-value pairs that pass the given test.
+{-| Keeps only the entries for which `isGood`, given the entry's key and value,
+returns `True`.
 -}
 filter : (k -> v -> Bool) -> Dict comparable k v -> Dict comparable k v
 filter isGood (D dict) =
@@ -272,12 +224,8 @@ filter isGood (D dict) =
 -- ====== LISTS ======
 
 
-{-| Get all of the keys in a dictionary, in the order that they were inserted
-with the most recently inserted key at the head of the list.
-
-    keys (fromList [ ( 0, "Alice" ), ( 1, "Bob" ) ])
-    --> [ 1, 0 ]
-
+{-| Returns the stored keys in ascending order of their projections. The
+ordering function is ignored.
 -}
 keys : (k -> k -> Order) -> Dict c k v -> List k
 keys _ (D dict) =
@@ -285,12 +233,8 @@ keys _ (D dict) =
         |> List.map Tuple.first
 
 
-{-| Get all of the values in a dictionary, in the order that they were inserted
-with the most recently inserted value at the head of the list.
-
-    values (fromList [ ( 0, "Alice" ), ( 1, "Bob" ) ])
-    --> [ "Bob", "Alice" ]
-
+{-| Returns the values in ascending order of their entries' projected keys. The
+ordering function is ignored.
 -}
 values : (k -> k -> Order) -> Dict c k v -> List v
 values _ (D dict) =
@@ -298,18 +242,17 @@ values _ (D dict) =
         |> List.map Tuple.second
 
 
-{-| Convert a dictionary into an association list of key-value pairs, in the
-order that they were inserted with the most recently inserted entry at the
-head of the list.
+{-| Returns the entries as key-value pairs in ascending order of their projected
+keys. The ordering function is ignored.
 -}
 toList : (k -> k -> Order) -> Dict c k v -> List ( k, v )
 toList _ (D dict) =
     Dict.values dict
 
 
-{-| Convert an association list into a dictionary. The elements are inserted
-from left to right. (If you want to insert the elements from right to left, you
-can simply call `List.reverse` on the input before passing it to `fromList`.)
+{-| Creates a dictionary from key-value pairs, inserting them from left to
+right. Where two pairs have the same projected key, the later pair is kept, key
+and value.
 -}
 fromList : (k -> comparable) -> List ( k, v ) -> Dict comparable k v
 fromList toComparable =

@@ -1,17 +1,35 @@
 module TestLogic.LocalOpt.Typed.TypeEq exposing (alphaEqStrict)
 
-{-| Strict alpha-equivalence for Can.Type Name values.
+{-| Two canonical types that differ only in the names of their type variables
+describe the same thing, so `==` is too strict a test of whether two types
+agree, while a comparison that lets a type variable match anything is too
+loose. This module provides the comparison in between, `alphaEqStrict`.
 
-This module provides a type comparator that enforces consistent TVar renaming,
-unlike the permissive alphaEq in TypePreservation.elm which treats TVar as wildcard.
+Two types are _alpha-equivalent_ when one becomes the other by renaming its
+type variables, so `a -> b` and `x -> y` are, but `a -> a` and `x -> y` are not.
+The renaming must be one-to-one within each kind of variable: each type
+variable on the left stands for one type variable on the right throughout the
+parts of the types that are compared, and the reverse. A type variable matches
+only another type variable, never a concrete type. That is what lets a check
+catch a case expression typed `List Int` with a branch typed `List a`, which a
+comparison where a variable matches anything would accept.
 
-Key property: TVar only matches TVar via a consistent bidirectional mapping.
-TVar does NOT match a concrete type.
+The comparison walks both types together, carrying the renaming found so far
+from one part of the type to the next. Record extension variables, such as
+the `r` in `{ r | x : Int }`, have a renaming of their own, kept apart from
+that of ordinary type variables. So a name used both as an extension variable
+and as a type variable may be paired with different variables in each role.
 
-This is critical for catching MONO\_018-class bugs where:
-
-    case : List Int
-    branch expression has type : List a  ← Would fail strict check
+Some differences are not seen at all. The arrow slot a function type carries
+and the indices on record fields are ignored. A named type is identified by
+its package and name, not its module. An alias is compared by its body, with
+its arguments substituted for the body's type variables, so its own name does
+not count; the exception is an alias set against a bare type variable, which
+never matches, whatever the alias's body. An argument is not substituted for a
+record extension variable in the body, so an alias whose parameter is used as
+one, such as `type alias R a = { a | x : Int }`, is compared with that
+parameter's name left in place. An alias argument that the body does not use is
+not compared at all.
 
 -}
 
@@ -27,7 +45,12 @@ import Dict exposing (Dict)
 -- ============================================================================
 
 
-{-| State for tracking consistent TVar and extension var mappings.
+{-| The renaming found so far between the variables of the left type and those
+of the right, kept in both directions so that it stays one-to-one.
+
+`tvarsL2R` and `tvarsR2L` are for ordinary type variables, and `extL2R` and
+`extR2L` for record extension variables.
+
 -}
 type alias AlphaState =
     { tvarsL2R : Dict Name.Name Name.Name
@@ -37,6 +60,8 @@ type alias AlphaState =
     }
 
 
+{-| The renaming before any variable has been paired.
+-}
 emptyState : AlphaState
 emptyState =
     { tvarsL2R = Dict.empty
@@ -52,10 +77,19 @@ emptyState =
 -- ============================================================================
 
 
-{-| Strict alpha-equivalence with consistent TVar renaming.
+{-| Returns whether `t1` and `t2` are alpha-equivalent: whether a one-to-one
+renaming of type variables, held across every part of the types that is
+compared, turns one into the other. Record extension variables are renamed
+separately from ordinary type variables, so the renaming is one-to-one within
+each kind, not across them.
 
-TVar only matches TVar via a consistent bidirectional mapping.
-TVar does NOT match a concrete type.
+A type variable never matches a concrete type. Its name is not inspected, so a
+constrained variable such as `number` can be paired with an unconstrained one
+such as `a`. Arrow slots, record field indices, the module of a named type and
+the name of an alias are ignored. An alias is compared by its body, except
+that an alias against a bare type variable is never a match. Alias arguments
+are not substituted into record extension variables in the body. An alias
+argument its body does not use is ignored.
 
 -}
 alphaEqStrict : Can.Type Name -> Can.Type Name -> Bool
@@ -74,15 +108,21 @@ alphaEqStrict t1 t2 =
 -- ============================================================================
 
 
+{-| Returns the renaming `state` extended by what makes `t1` and `t2`
+alpha-equivalent, or `Nothing` if no extension does.
+
+The type-variable cases come before the alias cases, so an alias against a
+bare type variable fails without its body being looked at. Two non-alias
+types with different outer shapes, such as a tuple against a record, fail.
+
+-}
 alphaEqStrictHelp : AlphaState -> Can.Type Name -> Can.Type Name -> Maybe AlphaState
 alphaEqStrictHelp state t1 t2 =
     case ( t1, t2 ) of
         ( Can.TVar a, Can.TVar b ) ->
-            -- Check/extend consistent mapping
             matchTVars state a b
 
         ( Can.TVar _, _ ) ->
-            -- TVar does NOT match non-TVar in strict mode
             Nothing
 
         ( _, Can.TVar _ ) ->
@@ -115,7 +155,6 @@ alphaEqStrictHelp state t1 t2 =
                 Nothing
 
         ( Can.TAlias _ _ args1 at1, Can.TAlias _ _ args2 at2 ) ->
-            -- Unwrap with substitution and compare underlying types
             let
                 body1 =
                     unwrapAliasWithSubst args1 at1
@@ -141,13 +180,14 @@ alphaEqStrictHelp state t1 t2 =
 -- ============================================================================
 
 
-{-| Match two TVars with consistent bidirectional mapping.
+{-| Pairs type variable `a` on the left with `b` on the right, returning the
+extended renaming, or `Nothing` if either is already paired with a different
+variable.
 -}
 matchTVars : AlphaState -> Name.Name -> Name.Name -> Maybe AlphaState
 matchTVars state a b =
     case ( Dict.get a state.tvarsL2R, Dict.get b state.tvarsR2L ) of
         ( Just mappedB, Just mappedA ) ->
-            -- Both already mapped; must be consistent
             if mappedB == b && mappedA == a then
                 Just state
 
@@ -155,7 +195,6 @@ matchTVars state a b =
                 Nothing
 
         ( Just mappedB, Nothing ) ->
-            -- a is mapped but b is not reverse-mapped
             if mappedB == b then
                 Just { state | tvarsR2L = Dict.insert b a state.tvarsR2L }
 
@@ -163,7 +202,6 @@ matchTVars state a b =
                 Nothing
 
         ( Nothing, Just mappedA ) ->
-            -- b is reverse-mapped but a is not mapped
             if mappedA == a then
                 Just { state | tvarsL2R = Dict.insert a b state.tvarsL2R }
 
@@ -171,7 +209,6 @@ matchTVars state a b =
                 Nothing
 
         ( Nothing, Nothing ) ->
-            -- Neither mapped; create new mapping
             Just
                 { state
                     | tvarsL2R = Dict.insert a b state.tvarsL2R
@@ -185,6 +222,9 @@ matchTVars state a b =
 -- ============================================================================
 
 
+{-| Returns `state` extended by pairing `ts1` with `ts2` element by element, or
+`Nothing` if any pair fails or the lengths differ.
+-}
 alphaEqStrictList : AlphaState -> List (Can.Type Name) -> List (Can.Type Name) -> Maybe AlphaState
 alphaEqStrictList state ts1 ts2 =
     case ( ts1, ts2 ) of
@@ -205,6 +245,15 @@ alphaEqStrictList state ts1 ts2 =
 -- ============================================================================
 
 
+{-| Returns `state` extended by what makes two record types, given as their
+fields and extension variables, alpha-equivalent, or `Nothing` if no extension
+does.
+
+They must have the same field names and both be open or both closed. The
+extension variables are paired first, then the field types are compared in
+field-name order. Field indices are ignored.
+
+-}
 alphaEqStrictRecord :
     AlphaState
     -> Dict Name.Name (Can.FieldType Name)
@@ -224,11 +273,15 @@ alphaEqStrictRecord state fields1 ext1 fields2 ext2 =
         Nothing
 
     else
-        -- Compare extension variables using separate ext-var mapping
         matchExtVars state ext1 ext2
             |> Maybe.andThen (\s -> alphaEqStrictFields s keys1 fields1 fields2)
 
 
+{-| Pairs the extension variables of two records as `matchTVars` pairs type
+variables, but in the renaming kept for extension variables. Two closed
+records match with the renaming unchanged; an open record never matches a
+closed one.
+-}
 matchExtVars : AlphaState -> Maybe Name.Name -> Maybe Name.Name -> Maybe AlphaState
 matchExtVars state ext1 ext2 =
     case ( ext1, ext2 ) of
@@ -236,7 +289,6 @@ matchExtVars state ext1 ext2 =
             Just state
 
         ( Just a, Just b ) ->
-            -- Use same logic as TVars but with ext mappings
             case ( Dict.get a state.extL2R, Dict.get b state.extR2L ) of
                 ( Just mappedB, Just mappedA ) ->
                     if mappedB == b && mappedA == a then
@@ -270,6 +322,10 @@ matchExtVars state ext1 ext2 =
             Nothing
 
 
+{-| Returns `state` extended by comparing the types of the fields named in
+`keys` in `fields1` and `fields2`, in the order of `keys`, or `Nothing` if any
+comparison fails or a key is missing from either record.
+-}
 alphaEqStrictFields :
     AlphaState
     -> List Name.Name
@@ -301,10 +357,11 @@ alphaEqStrictFields state keys fields1 fields2 =
 -- ============================================================================
 
 
-{-| Unwrap alias, applying argument substitutions to the body.
+{-| Returns the body of an alias with each of its parameters replaced by the
+argument `args` pairs it with.
 
-Critical: Canonical aliases have argument bindings that must be substituted
-into the alias body before comparison.
+The substitution is applied to a `Filled` body as well as a `Holey` one. It
+does not reach a record's extension variable.
 
 -}
 unwrapAliasWithSubst : List ( Name.Name, Can.Type Name ) -> Can.AliasType Name -> Can.Type Name
@@ -324,6 +381,15 @@ unwrapAliasWithSubst args aliasType =
     applySubst subst body
 
 
+{-| Returns `tipe` with every type variable named in `subst` replaced by the
+type it maps to, in one pass, so a replacement is not itself substituted
+into.
+
+A record's extension variable is left as it is. A function type is rebuilt
+with no arrow slot, and an alias keeps its body untouched while its arguments
+are substituted.
+
+-}
 applySubst : Dict Name.Name (Can.Type Name) -> Can.Type Name -> Can.Type Name
 applySubst subst tipe =
     case tipe of
@@ -353,7 +419,6 @@ applySubst subst tipe =
             Can.TTuple (applySubst subst a) (applySubst subst b) (List.map (applySubst subst) cs)
 
         Can.TAlias home name args at ->
-            -- Recursively apply to alias args
             Can.TAlias home
                 name
                 (List.map (\( n, t ) -> ( n, applySubst subst t )) args)
@@ -362,14 +427,15 @@ applySubst subst tipe =
 
 
 -- ============================================================================
--- CANONICAL TYPE EQUALITY (RE-EXPORT HANDLING)
+-- CANONICAL TYPE EQUALITY
 -- ============================================================================
 
 
-{-| Check if two canonical type references are equal, handling re-exports.
+{-| Returns whether two named types, each given as its home module and name,
+are the same for this comparison: same package and same name.
 
-In Elm, types like String can appear as both Basics.String and String.String
-within the same package. For type checking, these are equivalent.
+The module within the package is ignored, so two different types that share a
+name in two modules of one package compare equal.
 
 -}
 canonicalTypesEqual : ModuleName.Canonical -> String -> ModuleName.Canonical -> String -> Bool

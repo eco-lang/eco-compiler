@@ -1,25 +1,60 @@
 module TestLogic.GlobalOpt.MonoInlineSimplifyPreserveSetsTest exposing (suite)
 
-{-| `inline.preserveSets` — the post-mono inliner with no set-clearing site
-(`plans/pre-mono-lss-transforms-02-inline-preserve-sets.md` §7.1).
+{-| Tests that `inline.preserveSets` stops the post-monomorphization inliner,
+`Compiler.GlobalOpt.MonoInlineSimplify`, from replacing a partial call with a
+new closure, and that the inliner counts each call it declines because of the
+option. Without them the option could stop working, or the count could stop
+counting.
 
-The pass has exactly ONE reshape that clears an LSS member identity:
-`tryInlineCall`'s strictly-partial arm, which mints a residual `MonoClosure`
-with `lssMember = Nothing` and a `topSynth` type. With the flag on that arm
-DECLINES, leaving the callee's PAP — a stampable `p|<global>|k` member — in
-place.
+A _strictly partial_ call passes at least one argument but fewer than the
+callee has parameters. When the inliner inlines one, it _reshapes_ it: the call
+becomes a new closure over the remaining parameters, with no lambda-set member,
+so whatever member the callee's partial application would have carried is gone.
+With `preserveSets` on, the inliner instead _declines_: it keeps the call, so
+the partial application of the callee survives. Two counters in
+`MonoInlineSimplify.Metrics` record this. `clearedMembers` is filled only when
+`report` is on; its `RESHAPES|<site>` keys count reshapes per site (`tryInline`
+for an inlined global, `beta` for an applied lambda literal), and its other keys
+count reshapes whose callee carried a member. `declinedPreserveSets` counts
+declines, and is counted whether or not `report` is on.
 
-These tests pin the instrument as well as the behaviour: a `cleared=0` is only
-meaningful next to a `declinedPreserveSets` that says the arm WAS reached, so
-T1 establishes the denominator and T2 asserts the exchange.
+Every test runs `TestLogic.TestPipeline.runToMono` and then the inliner, with
+`report` on, a size budget of 50 instead of the default 10, and one fixpoint
+iteration. A declined call is still there for any later iteration to visit and
+count again, while a reshaped call is gone after the first, so the single
+iteration is what lets a decline count be compared with a reshape count.
+`runToMono` uses the substitution engine, which gives no closure a lambda-set
+member, so no member-keyed entry of `clearedMembers` is ever recorded here: the
+tests rest on the `RESHAPES|` totals and on `declinedPreserveSets`.
 
-**Every arm runs at `postMonoFixpointIterations = 1`,** which is what makes the counts
-comparable. A reshape CONSUMES its call site, so it is counted once however many
-iterations run; a decline LEAVES the site in place, so the fixpoint re-visits it
-and `declinedPreserveSets` counts it again (measured on the q2probe fixture:
-1 / 2 / 2 declines at FPI 1 / 2 / 3 against a flag-off `cleared` of 1). The
-plan's §3.3 equality therefore holds per ITERATION, not per run — the general
-relation is `declinedPreserveSets >= cleared(flag off)`.
+There are two fixtures. `globalPartialModule` binds `g = add3 1 k`, two of
+`add3`'s three arguments, and passes `g` to `List.map`. `localPartialModule`
+passes `h 3`, where `h` is a let-bound two-parameter lambda, to `List.map`.
+
+The tests establish:
+
+  - T1, with the option off on `globalPartialModule`: at least one reshape, a
+    `RESHAPES|tryInline` entry, and no declines.
+  - T2, first test: with the option on, no member-keyed entries, no reshapes at
+    any site, and a decline count equal to the reshape total of the run with
+    the option off.
+  - T2, second test: the option on gives a strictly lower `inlineCount` than
+    the option off.
+  - T3, with `partialHof` also on: with `preserveSets` off there is at least one
+    reshape; with it on there are no member-keyed entries, no reshapes and at
+    least one decline.
+  - T4, on `localPartialModule`: `declinedPreserveSets` is zero with the option
+    off and with it on. With it off the count is zero whatever the input, so
+    only the run with the option on says anything: neither guarded site, the
+    one in `tryInlineCall` nor the one before `betaReduce`, declined.
+
+Among what is not tested: that a declined call keeps a lambda-set member, or
+that a reshape loses one, since no member exists under this pipeline; a
+decline at the guard before `betaReduce`, which no fixture produces; the effect
+of `partialHof` at all, since with a size budget of 50, above the default
+`hofThreshold` of 25, no candidate is admitted by the higher-order budget alone,
+which is the only case `partialHof` changes; runs of more than one iteration;
+and the code generated afterwards.
 
 -}
 
@@ -49,6 +84,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The four groups of tests described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "MonoInlineSimplify preserveSets"
@@ -89,10 +126,6 @@ suite =
                                         [ \_ -> Expect.equal 0 (clearedCount on)
                                         , \_ -> Expect.equal 0 (reshapesTotal on)
                                         , \_ -> Expect.equal "" (bySite on)
-
-                                        -- The exchange, per iteration: every
-                                        -- reshape the flag-off arm performed is
-                                        -- a decline in the flag-on arm.
                                         , \_ -> Expect.equal (reshapesTotal off) on.declinedPreserveSets
                                         ]
                                         ()
@@ -106,8 +139,6 @@ suite =
                             withMetrics (partialConfig True)
                                 globalPartialModule
                                 (\on ->
-                                    -- Fewer inlines, and strictly fewer: the
-                                    -- flag only ever removes work from the pass.
                                     if on.inlineCount < off.inlineCount then
                                         Expect.pass
 
@@ -154,10 +185,6 @@ suite =
         , Test.describe "T4 — the betaReduce partial arm is not reached"
             [ Test.test "a partially applied LAMBDA LITERAL declines nothing in either arm" <|
                 \_ ->
-                    -- Documents the measured fact behind guarding that arm
-                    -- anyway: `bySite` never names `beta` on the self-compile
-                    -- or here. If a future change makes it reachable, this test
-                    -- is what says so.
                     withMetrics (partialConfig False)
                         localPartialModule
                         (\off ->
@@ -177,7 +204,9 @@ suite =
 -- ============================================================================
 
 
-{-| Sum of the per-reshape entries (the members actually lost).
+{-| Returns the total of the member-keyed entries of `clearedMembers`, which
+count reshapes whose callee carried a lambda-set member. The `RESHAPES|` totals
+are left out.
 -}
 clearedCount : MonoInlineSimplify.Metrics -> Int
 clearedCount m =
@@ -193,8 +222,9 @@ clearedCount m =
         m.clearedMembers
 
 
-{-| Sum of the `RESHAPES|<site>` totals — every reshape, member-bearing or not.
-This is the arm's own fire count, so it is the denominator T1 establishes.
+{-| Returns the total of the `RESHAPES|<site>` entries of `clearedMembers`: the
+number of reshapes at every site, whether or not the callee carried a member.
+It is zero when `report` is off, because the entries are then not recorded.
 -}
 reshapesTotal : MonoInlineSimplify.Metrics -> Int
 reshapesTotal m =
@@ -210,6 +240,9 @@ reshapesTotal m =
         m.clearedMembers
 
 
+{-| Returns the `RESHAPES|<site>` entries of `clearedMembers` as `site:count`
+pairs joined by commas, in key order, or the empty string when there are none.
+-}
 bySite : MonoInlineSimplify.Metrics -> String
 bySite m =
     Dict.toList m.clearedMembers
@@ -218,10 +251,9 @@ bySite m =
         |> String.join ","
 
 
-{-| `postMonoThreshold = 50` so the three-parameter global is a candidate at all (it
-costs more than the default budget), `report = True` so the reshape census
-collects, and `postMonoFixpointIterations = 1` so decline counts are per-iteration
-exact (see the module doc).
+{-| Returns the default inline configuration with `preserveSets` as given, a
+`postMonoThreshold` of 50 so that `add3` is within the size budget, `report` on
+so that `clearedMembers` is filled, and one fixpoint iteration.
 -}
 partialConfig : Bool -> Config.InlineConfig
 partialConfig preserveSets =
@@ -237,7 +269,13 @@ partialConfig preserveSets =
     }
 
 
-{-| T3: `partialHof` exists to FORCE the clearing arm; `preserveSets` must win.
+{-| Returns `partialConfig preserveSets` with `partialHof` also on.
+
+`partialHof` lets a candidate admitted only by the higher-order budget inline at
+a strictly partial call. With a `postMonoThreshold` of 50, above the default
+`hofThreshold` of 25, no candidate is admitted that way, so here the setting
+changes nothing.
+
 -}
 partialHofConfig : Bool -> Config.InlineConfig
 partialHofConfig preserveSets =
@@ -248,6 +286,10 @@ partialHofConfig preserveSets =
     { base | partialHof = True }
 
 
+{-| Runs `srcModule` through `runToMono`, inlines the resulting graph with
+`inlineConfig`, and returns `check` applied to the inliner's metrics. If
+`runToMono` returns an error, the test fails with its message.
+-}
 withMetrics : Config.InlineConfig -> Src.Module -> (MonoInlineSimplify.Metrics -> Expect.Expectation) -> Expect.Expectation
 withMetrics inlineConfig srcModule check =
     case Pipeline.runToMono srcModule of
@@ -264,17 +306,22 @@ withMetrics inlineConfig srcModule check =
 -- ============================================================================
 
 
+{-| The source type `Int`.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| The source type `List Int`.
+-}
 tIntList : Src.Type
 tIntList =
     tType "List" [ tInt ]
 
 
-{-| `add3 a b c = a + b + c` — the partial-inline candidate.
+{-| The definition `add3 a b c = a + b + c`, the global whose partial call
+`globalPartialModule` makes.
 -}
 add3Def : TypedDef
 add3Def =
@@ -285,9 +332,9 @@ add3Def =
     }
 
 
-{-| The clearing shape: a partial application of a GLOBAL (2 of 3) escaping into
-a HOF, so it must survive as a value rather than being merged into a saturated
-call. This is `plans/…-02` §5's shape (a).
+{-| A module named `Test` holding `add3`, a `partialShape k xs` that binds
+`g = add3 1 k` and returns `List.map g xs`, and a `testValue` of
+`partialShape 4 [ 1, 2, 3 ]`.
 -}
 globalPartialModule : Src.Module
 globalPartialModule =
@@ -311,8 +358,14 @@ globalPartialModule =
         []
 
 
-{-| T4's shape (c): a partially applied LAMBDA LITERAL, which is what would
-reach `betaReduce`'s partial arm if anything did.
+{-| A module named `Test` holding a `localPartial k xs` that binds `h` to
+`\a b -> a * b + k` and returns `List.map (h 3) xs`, and a `testValue` of
+`localPartial 7 [ 1, 2 ]`.
+
+The call `h 3` would be a strictly partial application of a lambda literal if
+the lambda were substituted for `h`, but the inliner substitutes a let-bound
+lambda only at a call with at least as many arguments as it has parameters.
+
 -}
 localPartialModule : Src.Module
 localPartialModule =

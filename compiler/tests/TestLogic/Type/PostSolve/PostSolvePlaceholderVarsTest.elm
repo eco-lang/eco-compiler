@@ -1,19 +1,52 @@
 module TestLogic.Type.PostSolve.PostSolvePlaceholderVarsTest exposing (suite)
 
-{-| Test suite for invariant POST\_009.
+{-| Catches a `Compiler.Type.PostSolve` that writes a type variable of its own
+into a function type, one taken neither from the solver's result nor from an
+annotation. Such a variable is called a _placeholder_ here, and the rule that
+no node other than a kernel reference may have one is invariant POST\_009.
 
-POST\_009: PostSolve-generated placeholder TVars used for structural repair of
-remaining Group B expressions (Str, Chr, Float, Unit) must not appear in
-function positions in the fixed NodeTypes map for non-kernel expressions so
-that all function types visible to TypedCanonical TypedOptimized and
-monomorphization are expressed solely in terms of solver- or annotation-derived
-type variables. Most expressions are now Group A (solver-owned) and do not
-receive PostSolve placeholders.
+The solver records an optional type for each node id of a module, expressions
+and patterns alike, and PostSolve rewrites some of those entries, as the
+`Compiler.Type.PostSolve` docstring describes. A node's _pre-type_ is its entry
+before PostSolve and its _post-type_ the entry after. A type variable is in
+_function position_ when it occurs anywhere inside a `Can.TLambda`: in the
+argument or the result, at any depth. A bare variable, or one inside type
+constructor arguments, record fields or tuple elements with no function type
+around it, is not.
 
-Detection strategy: For each non-kernel node, TVars in function positions
-(TLambda components) in the post type are checked against that node's own
-pre-type vars. For nodes with no pre-type (remaining Group B), the enclosing
-definition's annotation vars serve as the legitimate set.
+A variable is _legitimate_ for a node when it occurs anywhere in the node's
+pre-type. For a node with no pre-type, the legitimate variables are those
+quantified by the annotation of the definition that
+`PostSolveInvariantHelpers.walkExprs` says the node sits in, looked up by name
+with `PostSolveInvariantHelpers.enclosingAnnotationVars`. The solver's
+annotations have no entry for a let-bound definition, so inside one that set is
+empty, and it is empty for a pattern with no pre-type too. POST\_009 holds when,
+for every node with a post-type except a kernel reference (a `Can.VarKernel`),
+every variable in function position in its post-type is legitimate.
+
+Every variable in function position in a type also occurs in that type, so a
+node with a pre-type that PostSolve leaves unchanged cannot break POST\_009. The
+non-kernel nodes PostSolve changes are string, character and float literals and
+unit, and the types it gives them contain no variables. Against the present
+PostSolve, then, a program fails here only if it fails to compile.
+
+The fixture is the standard catalogue of test programs that
+`SourceIR.Suite.StandardTestSuites.expectSuite` supplies, each compiled as far
+as PostSolve by `CompileThroughPostSolve.compileToPostSolve`.
+
+  - `suite` checks, for each program, that it compiles through PostSolve and
+    that POST\_009 holds for it. A failure lists each offending node with its
+    id, expression form, post-type and placeholder variables.
+
+Among what is not tested:
+
+  - A variable PostSolve invents outside function position, such as a whole
+    node type that is a new variable.
+  - The types of kernel references.
+  - Where a legitimate variable appears: one that occurs anywhere in the
+    pre-type is accepted anywhere in the function types of the post-type.
+  - A function type inside the arguments of an alias that is not itself
+    inside a function type: only the alias's body is searched.
 
 -}
 
@@ -33,7 +66,14 @@ import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 import TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants as Invariants
 
 
-{-| A violation of POST\_009.
+{-| One node that breaks POST\_009, with what the failure message reports about
+it.
+
+`kind` is the name of the node's expression form, or `"Unknown"` for an id that
+is not an expression, such as a pattern's. `placeholderVars` are the variables
+that are not legitimate for the node, in ascending order, and `details` is a
+sentence that lists them again.
+
 -}
 type alias Violation =
     { nodeId : Int
@@ -44,6 +84,9 @@ type alias Violation =
     }
 
 
+{-| The test group that checks POST\_009 for each program of the standard
+catalogue.
+-}
 suite : Test
 suite =
     Test.describe "POST_009: No Placeholder Vars in Function Positions"
@@ -51,7 +94,14 @@ suite =
         ]
 
 
-{-| Check that a module passes POST\_009.
+{-| Compiles `srcModule` through PostSolve and passes when POST\_009 holds for
+it.
+
+A compilation failure fails with the test pipeline's error message. Otherwise
+each node with a post-type, except a kernel reference, is checked by
+`checkNoPlaceholdersInFuncPositions`, and the failure message lists the
+violations, highest node id first.
+
 -}
 expectNoPlaceholderVars : Src.Module -> Expect.Expectation
 expectNoPlaceholderVars srcModule =
@@ -61,17 +111,14 @@ expectNoPlaceholderVars srcModule =
 
         Ok artifacts ->
             let
-                -- Classify node kinds (to exempt VarKernel nodes)
                 nodeKinds =
                     Invariants.collectNodeKinds artifacts.canonical
 
-                -- Build expression node map for kind reporting and scope lookup
                 exprNodes =
                     Helpers.walkExprs artifacts.canonical
                         |> List.map (\n -> ( n.id, n ))
                         |> Data.Map.fromList identity
 
-                -- Check all non-kernel post types for placeholder TVars in function positions
                 violations =
                     Array.foldl
                         (\maybePostType ( nodeId, acc ) ->
@@ -86,7 +133,6 @@ expectNoPlaceholderVars srcModule =
                                     else
                                         case Data.Map.get identity nodeId nodeKinds of
                                             Just Invariants.KVarKernel ->
-                                                -- Kernel nodes are exempt
                                                 ( nodeId + 1, acc )
 
                                             _ ->
@@ -109,17 +155,15 @@ expectNoPlaceholderVars srcModule =
                     Expect.fail (formatViolations vs)
 
 
-{-| Check that a post type has no placeholder TVars in function positions.
+{-| Returns a violation for node `nodeId` when `postType`, its post-type, has a
+variable in function position that is not legitimate for it, and `Nothing`
+otherwise.
 
-A "placeholder in function position" is a TVar within a TLambda that was
-introduced by PostSolve (not present in the node's own pre-type or the
-enclosing definition's annotation).
-
-Per-node check:
-
-  - If the node has a pre-type, its free vars are the legitimate set.
-  - If the node has no pre-type (remaining Group B), use the enclosing definition's
-    annotation vars as the legitimate set.
+The legitimate variables are every variable name in the node's entry in
+`nodeTypesPre`, as `PostSolveInvariantHelpers.freeTypeVars` counts them. When
+that entry is missing, they are the variables quantified by the annotation in
+`annotations` of the definition that `exprNodes` places the node in, and none
+when `exprNodes` has no entry for `nodeId`.
 
 -}
 checkNoPlaceholdersInFuncPositions :
@@ -131,19 +175,15 @@ checkNoPlaceholdersInFuncPositions :
     -> Maybe Violation
 checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annotations =
     let
-        -- Collect TVars that appear in function positions in the post type
         funcPositionVars =
             collectFuncPositionVars postType
 
-        -- Compute legitimate vars for THIS node (not global)
         legitimateVars =
             case Array.get nodeId nodeTypesPre |> Maybe.andThen identity of
                 Just preType ->
-                    -- Node has a pre-type: its free vars are legitimate
                     Helpers.freeTypeVars preType
 
                 Nothing ->
-                    -- No pre-type (remaining Group B): use enclosing def's annotation vars
                     case Data.Map.get identity nodeId exprNodes of
                         Just exprNode ->
                             Helpers.enclosingAnnotationVars
@@ -153,7 +193,6 @@ checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annota
                         Nothing ->
                             EverySet.empty
 
-        -- Filter to only those that are NOT in the legitimate set
         placeholders =
             funcPositionVars
                 |> EverySet.toList compare
@@ -175,24 +214,24 @@ checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annota
             }
 
 
-{-| Collect all TVar names that appear in function positions (within TLambda).
+{-| Returns the names of the type variables in function position in `tipe`.
 
-"Function position" means any TVar that is part of a TLambda argument or result,
-including nested TLambdas.
+Inside a `TLambda`, every variable name counts, as
+`PostSolveInvariantHelpers.freeTypeVars` counts them, record extension variables
+and alias arguments included. A `TLambda` is found among type constructor
+arguments, record fields, tuple elements and alias bodies. Outside a `TLambda`,
+the arguments of an alias are not searched.
 
 -}
 collectFuncPositionVars : Can.Type Name -> EverySet String String
 collectFuncPositionVars tipe =
     case tipe of
         Can.TLambda _ arg result ->
-            -- Both arg and result are in function position
             EverySet.union
                 (Helpers.freeTypeVars arg)
                 (Helpers.freeTypeVars result)
 
         Can.TType _ _ args ->
-            -- TVars inside type constructors are not in function position,
-            -- but nested TLambdas inside type args may contain function positions
             List.foldl
                 (\t acc -> EverySet.union acc (collectFuncPositionVars t))
                 EverySet.empty
@@ -221,14 +260,14 @@ collectFuncPositionVars tipe =
                     collectFuncPositionVars t
 
         Can.TVar _ ->
-            -- A bare TVar at top level is NOT in function position
             EverySet.empty
 
         Can.TUnit ->
             EverySet.empty
 
 
-{-| Get the expression kind for an ID.
+{-| Returns the name of the expression form of node `nodeId`, or `"Unknown"`
+when `exprNodes` has no expression with that id, as for a pattern.
 -}
 getExprKind : Int -> Data.Map.Dict Int Int Helpers.ExprNode -> String
 getExprKind nodeId exprNodes =
@@ -240,6 +279,8 @@ getExprKind nodeId exprNodes =
             "Unknown"
 
 
+{-| Returns the name of an expression form's constructor.
+-}
 exprKindToString : Can.Expr_ -> String
 exprKindToString expr =
     case expr of
@@ -334,6 +375,10 @@ exprKindToString expr =
 -- ============================================================================
 
 
+{-| Builds the failure message for `violations`: a header with their count,
+then each violation as `formatViolation` renders it, in the order given,
+separated by blank lines.
+-}
 formatViolations : List Violation -> String
 formatViolations violations =
     let
@@ -345,6 +390,10 @@ formatViolations violations =
     header ++ (violations |> List.map formatViolation |> String.join "\n\n")
 
 
+{-| Renders one violation as a line naming its node id and expression form,
+followed by indented lines for its post-type, its placeholder variables and its
+details.
+-}
 formatViolation : Violation -> String
 formatViolation v =
     "POST_009 violation at nodeId "
@@ -359,6 +408,13 @@ formatViolation v =
         ++ v.details
 
 
+{-| Renders a type for a failure message, naming the `Can.Type` constructors.
+
+The rendering is abbreviated. A type constructor shows its name without its
+home module, a record shows only its extension variable, if any, and an alias
+shows only its name.
+
+-}
 typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of

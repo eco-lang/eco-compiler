@@ -1,7 +1,51 @@
 module Utils.VarintCodecTest exposing (suite)
 
-{-| Cache-serialization plan S10: LEB128 `uintV` / zigzag `sintV` and the
-varint region codec round-trip, and small values stay small.
+{-| Checks that the compact integer codecs of `Utils.Bytes.Encode` and
+`Utils.Bytes.Decode` read back exactly what they write, and that the
+variable-width ones keep small numbers small. A codec that does not read back
+what it wrote corrupts whatever is stored with it.
+
+Three integer codecs are tested. `uintV` writes a non-negative Int as a
+_varint_: seven bits per byte, low bits first, with the top bit of a byte set
+when another byte follows. `sintV` writes a possibly negative Int by first
+mapping it to a non-negative one by _zigzag_ (0, -1, 1, -2, ... become 0, 1, 2,
+3, ...) and then writing that with `uintV`, so a number of small magnitude is
+short whatever its sign. `int64` writes any Int in a fixed eight bytes. A fourth
+pair, `regionEncoderV` and `regionDecoderV` of `Compiler.Reporting.Annotation`,
+writes a source region as four of these varints: the start row, start column
+and end column with `uintV`, and the end row as a `sintV` difference from the
+start row.
+
+There is no fixture: the tests use literal values and fuzzed ranges. They
+establish:
+
+  - `uintV` round-trips 0, 1, 255, 2^32 - 1, and 2^k - 1 and 2^k for k = 7,
+    14, 21 and 28, where its width grows by a byte.
+  - `uintV` writes 0 and 127 in one byte, 128 and 16383 in two, 16384 in three
+    and 2^32 - 1 in five.
+  - `uintV` round-trips fuzzed values from 0 to 2^32 - 1.
+  - `sintV` round-trips fuzzed values from -2^31 to 2^31 - 1.
+  - `sintV` writes -1 in one byte.
+  - `uintV` decoding fails on five bytes of 0xFF followed by 0x01. The decoder
+    rejects the fifth byte, because its continuation bit is still set.
+  - `int64` round-trips 0, 1, -1, the signed 32-bit extremes 2^31 - 1 and
+    -2^31, 2^32 - 1 and 2^32, -2^32 and -2^32 - 1, and 2^53 - 1 and
+    -(2^53 - 1), the ends of the range in which a JavaScript number represents
+    every integer exactly.
+  - `int64` round-trips fuzzed values from -(2^53 - 1) to 2^53 - 1.
+  - `int64` writes -5 in eight bytes.
+  - `regionDecoderV` reads back what `regionEncoderV` writes for fuzzed regions
+    with rows from 0 to 100000 and columns from 0 to 5000, all four chosen
+    independently, so the end row may come before the start row.
+
+The `uintV` tests, both literal and fuzzed, and the `sintV` fuzz range go
+beyond the preconditions that `Utils.Bytes.Encode` states for those encoders,
+`0 <= n < 2^31` and `|n| < 2^30`.
+
+Among what is not tested: the bytes themselves, which no test compares with
+expected values; `uintV` on values above 2^32 - 1 or below 0; the width of
+`sintV` on any value but -1; and the fixed-width `regionEncoder`.
+
 -}
 
 import Bytes
@@ -15,21 +59,32 @@ import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
 
+{-| Returns what `BD.uintV` reads back from the bytes `BE.uintV` writes for
+`n`, or `Nothing` if decoding fails.
+-}
 roundTripU : Int -> Maybe Int
 roundTripU n =
     Bytes.Decode.decode BD.uintV (Bytes.Encode.encode (BE.uintV n))
 
 
+{-| Returns what `BD.sintV` reads back from the bytes `BE.sintV` writes for
+`n`, or `Nothing` if decoding fails.
+-}
 roundTripS : Int -> Maybe Int
 roundTripS n =
     Bytes.Decode.decode BD.sintV (Bytes.Encode.encode (BE.sintV n))
 
 
+{-| Returns the number of bytes `BE.uintV` writes for `n`.
+-}
 widthU : Int -> Int
 widthU n =
     Bytes.width (Bytes.Encode.encode (BE.uintV n))
 
 
+{-| The `uintV`, `sintV`, `int64` and region codec tests listed in the module
+docstring.
+-}
 suite : Test
 suite =
     Test.describe "varint codecs (cache-serialization S10)"

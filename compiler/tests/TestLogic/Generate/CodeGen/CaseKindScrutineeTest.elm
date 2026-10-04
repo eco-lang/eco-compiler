@@ -1,14 +1,30 @@
 module TestLogic.Generate.CodeGen.CaseKindScrutineeTest exposing (suite)
 
-{-| Test suite for CGEN\_043: Case Kind Scrutinee Type Agreement invariant.
+{-| An `eco.case` op is given its case kind (the `case_kind` attribute, saying
+what sort of value it branches on) and the type of its scrutinee (the value it
+branches on) separately, and nothing in the Elm types of `Mlir.Mlir` makes the
+two agree. These tests look for generated MLIR in which they disagree, over the
+whole standard catalogue of test programs rather than a hand-picked few.
 
-`eco.case` scrutinee representation and `case_kind` must agree:
+The fixture is the set of Elm source programs that
+`SourceIR.Suite.StandardTestSuites.expectSuite` gathers from the `SourceIR` case
+modules it includes.
 
-  - `case_kind="bool"` requires `i1` scrutinee
-  - `case_kind="int"` requires `i64` scrutinee
-  - `case_kind="chr"` requires `i16` (ECO char) scrutinee
-  - `case_kind="ctor"` requires `!eco.value` scrutinee
-  - `case_kind="str"` requires `!eco.value` scrutinee
+What the tests establish, for each program in the catalogue, through
+`TestLogic.Generate.CodeGen.CaseKindScrutinee.expectCaseKindScrutinee`:
+
+  - The program compiles to MLIR through `TestLogic.TestPipeline.runToMlir`
+    without an error.
+  - Every `eco.case` in the generated module, at any depth, whose `case_kind`
+    is a string or a symbol reference and whose `_operand_types` holds a type
+    names a case kind the checker knows, and the first type in its
+    `_operand_types` is exactly the one that case kind requires, by the table in
+    `TestLogic.Generate.CodeGen.CaseKindScrutinee`.
+
+Among what is not tested: an `eco.case` that the checker skips, having no
+`case_kind` that is a string or a symbol reference, or no type in
+`_operand_types`; any operand type after the first; and the programs of the
+`SourceIR` case modules that `expectSuite` leaves out.
 
 -}
 
@@ -17,6 +33,9 @@ import Test exposing (Test)
 import TestLogic.Generate.CodeGen.CaseKindScrutinee exposing (expectCaseKindScrutinee)
 
 
+{-| The standard catalogue's tests, each checking its program with
+`expectCaseKindScrutinee`, gathered into one group.
+-}
 suite : Test
 suite =
     Test.describe "CGEN_043: Case Kind Scrutinee Type Agreement"

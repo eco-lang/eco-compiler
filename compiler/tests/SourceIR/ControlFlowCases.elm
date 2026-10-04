@@ -1,15 +1,54 @@
 module SourceIR.ControlFlowCases exposing (expectSuite, suite)
 
-{-| Test cases for control flow in MLIR codegen.
+{-| Small programs built around `if` chains, the `&&` and `||` operators and
+`not`, for the pipeline-stage tests to compile. In each one, conditionals and
+boolean operators are most of the code.
 
-These tests cover:
+The module asserts nothing itself. `expectSuite` takes an expectation function,
+which decides how far each program is compiled and what counts as passing, and
+puts all seventeen cases in one test with `Compiler.BulkCheck.bulkCheck`, so a
+failure names the first failing case and the cases after it are not run. A
+case that crashes, rather than failing, ends the test without being named.
+`suite` runs that test with `TestLogic.TestPipeline.expectMonomorphization` as
+the expectation: `runToMono` must succeed and give a graph with a `main` and at
+least one node.
 
-  - MLIR.Expr.findBoolBranches (0% coverage)
-  - MLIR.Expr.isBoolFanOut (50% coverage)
-  - Multi-way if expressions
-  - Boolean short-circuit evaluation
-  - Complex boolean expressions
-  - Nested conditionals
+Each program is a module named `Test`, made by
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefsUnionsAliases`, so it imports
+`Basics`, `Maybe`, `List`, `Elm.JsArray as JsArray`, `String` and `Char`, and it
+declares no custom types or aliases. Every top-level definition is annotated,
+and the annotations fix every integer literal to `Int`. Each program defines a
+`testValue` that applies the function under test to fixed arguments, which
+`TestLogic.TestPipeline` needs from typed optimization onwards.
+
+Each case's docstring sketches its program as Elm source. Apart from source
+positions, the tree differs from what the parser would give for that source in
+three ways. An `else if` is a separate `if` nested in the `else` branch, where
+the parser builds one `if` holding every condition. An operator chain used as
+an operand or as a call argument is a nested chain with no `Parens` node. A
+negative number such as `-1` is a negative literal, where the parser builds a
+negation.
+
+The cases fall into four groups:
+
+  - Multi-way `if`: chains with three, four and five outcomes; two nested
+    `if`s whose conditions call other top-level functions; and an `if`
+    choosing between two lists.
+  - Short-circuit operators: one `&&`; one `||`; an `&&` inside an `||`; and an
+    `&&` of two function calls.
+  - Compound boolean expressions: three-operand `&&` and `||` chains; two `&&`
+    expressions joined by `||`; and `not` applied to a comparison.
+  - Nested conditionals: an `if` in the `then` branch, in the `else` branch, in
+    both, and five `if`s, each but the first nested in the `else` branch of the
+    one before.
+
+Among what is not tested:
+
+  - The value any program computes, or whether `&&` and `||` skip their right
+    operand: nothing here evaluates a program, and `suite`'s expectation stops
+    at monomorphization.
+  - `&&`, `||` or `not` passed as a function value rather than applied.
+  - `case` expressions: no program has one.
 
 -}
 
@@ -36,6 +75,11 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| A test that checks the cases in order with
+`TestLogic.TestPipeline.expectMonomorphization`, stopping at the first that
+fails. That expectation requires `runToMono` to succeed and give a graph with a
+`main` and at least one node.
+-}
 suite : Test
 suite =
     Test.describe "Control flow coverage"
@@ -43,12 +87,19 @@ suite =
         ]
 
 
+{-| Creates one test, named `"Control flow "` followed by `condStr`, that
+applies `expectFn` to each case's program in turn and passes when every case
+passes. The first failing case ends the test, and the failure names it.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Control flow " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the seventeen cases of the four groups, in group order, each
+applying `expectFn` to its program.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -65,6 +116,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the five cases of the multi-way `if` group, each applying
+`expectFn` to its program.
+-}
 multiWayIfCases : (Src.Module -> Expectation) -> List TestCase
 multiWayIfCases expectFn =
     [ { label = "Three-way if", run = threeWayIfTest expectFn }
@@ -75,16 +129,24 @@ multiWayIfCases expectFn =
     ]
 
 
-{-| Test three-way if expression.
+{-| Applies `expectFn` to a program whose `sign` chooses among three results
+with two `if`s, and whose `testValue` is `sign 42`:
+
+    sign : Int -> Int
+    sign n =
+        if n < 0 then
+            -1
+
+        else if n > 0 then
+            1
+
+        else
+            0
+
 -}
 threeWayIfTest : (Src.Module -> Expectation) -> (() -> Expectation)
 threeWayIfTest expectFn _ =
     let
-        -- sign : Int -> Int
-        -- sign n =
-        --     if n < 0 then -1
-        --     else if n > 0 then 1
-        --     else 0
         signDef : TypedDef
         signDef =
             { name = "sign"
@@ -118,17 +180,27 @@ threeWayIfTest expectFn _ =
     expectFn modul
 
 
-{-| Test four-way if expression.
+{-| Applies `expectFn` to a program whose `classify` chooses among four results
+with three `if`s, and whose `testValue` is `classify 50`:
+
+    classify : Int -> String
+    classify n =
+        if n < 0 then
+            "negative"
+
+        else if n == 0 then
+            "zero"
+
+        else if n < 10 then
+            "small"
+
+        else
+            "large"
+
 -}
 fourWayIfTest : (Src.Module -> Expectation) -> (() -> Expectation)
 fourWayIfTest expectFn _ =
     let
-        -- classify : Int -> String
-        -- classify n =
-        --     if n < 0 then "negative"
-        --     else if n == 0 then "zero"
-        --     else if n < 10 then "small"
-        --     else "large"
         classifyDef : TypedDef
         classifyDef =
             { name = "classify"
@@ -166,18 +238,30 @@ fourWayIfTest expectFn _ =
     expectFn modul
 
 
-{-| Test five-way if expression.
+{-| Applies `expectFn` to a program whose `grade` chooses among five results
+with four `if`s, and whose `testValue` is `grade 75`:
+
+    grade : Int -> String
+    grade score =
+        if score >= 90 then
+            "A"
+
+        else if score >= 80 then
+            "B"
+
+        else if score >= 70 then
+            "C"
+
+        else if score >= 60 then
+            "D"
+
+        else
+            "F"
+
 -}
 fiveWayIfTest : (Src.Module -> Expectation) -> (() -> Expectation)
 fiveWayIfTest expectFn _ =
     let
-        -- grade : Int -> String
-        -- grade score =
-        --     if score >= 90 then "A"
-        --     else if score >= 80 then "B"
-        --     else if score >= 70 then "C"
-        --     else if score >= 60 then "D"
-        --     else "F"
         gradeDef : TypedDef
         gradeDef =
             { name = "grade"
@@ -219,12 +303,33 @@ fiveWayIfTest expectFn _ =
     expectFn modul
 
 
-{-| Test if with function calls in conditions.
+{-| Applies `expectFn` to a program whose `if` conditions are calls to other
+top-level functions, and whose `testValue` is `categorize 4`:
+
+    isPositive : Int -> Bool
+    isPositive n =
+        n > 0
+
+    isEven : Int -> Bool
+    isEven n =
+        n // 2 * 2 == n
+
+    categorize : Int -> String
+    categorize n =
+        if isPositive n then
+            if isEven n then
+                "positive even"
+
+            else
+                "positive odd"
+
+        else
+            "non-positive"
+
 -}
 ifWithFunctionCallsTest : (Src.Module -> Expectation) -> (() -> Expectation)
 ifWithFunctionCallsTest expectFn _ =
     let
-        -- isPositive : Int -> Bool
         isPositiveDef : TypedDef
         isPositiveDef =
             { name = "isPositive"
@@ -233,7 +338,6 @@ ifWithFunctionCallsTest expectFn _ =
             , body = binopsExpr [ ( varExpr "n", ">" ) ] (intExpr 0)
             }
 
-        -- isEven : Int -> Bool
         isEvenDef : TypedDef
         isEvenDef =
             { name = "isEven"
@@ -247,7 +351,6 @@ ifWithFunctionCallsTest expectFn _ =
                     (varExpr "n")
             }
 
-        -- categorize : Int -> String
         categorizeDef : TypedDef
         categorizeDef =
             { name = "categorize"
@@ -281,12 +384,23 @@ ifWithFunctionCallsTest expectFn _ =
     expectFn modul
 
 
-{-| Test if returning different types of expressions.
+{-| Applies `expectFn` to a program whose `if` chooses between a three-element
+list and an empty one, and whose `testValue` is `selectList Basics.True`:
+
+    selectList : Bool -> List Int
+    selectList flag =
+        if flag then
+            [ 1, 2, 3 ]
+
+        else
+            []
+
+Despite the case's label, both branches have the type `List Int`.
+
 -}
 ifReturningExpressionsTest : (Src.Module -> Expectation) -> (() -> Expectation)
 ifReturningExpressionsTest expectFn _ =
     let
-        -- selectList : Bool -> List Int
         selectListDef : TypedDef
         selectListDef =
             { name = "selectList"
@@ -322,6 +436,9 @@ ifReturningExpressionsTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the four cases built around one or two `&&` and `||` operators,
+each applying `expectFn` to its program.
+-}
 booleanShortCircuitCases : (Src.Module -> Expectation) -> List TestCase
 booleanShortCircuitCases expectFn =
     [ { label = "And short-circuit", run = andShortCircuitTest expectFn }
@@ -331,13 +448,18 @@ booleanShortCircuitCases expectFn =
     ]
 
 
-{-| Test && short-circuit evaluation.
+{-| Applies `expectFn` to a program whose `safeDivide` is one `&&` of two
+comparisons, the second containing a division, and whose `testValue` is
+`safeDivide 10 2`:
+
+    safeDivide : Int -> Int -> Bool
+    safeDivide a b =
+        b /= 0 && a // b > 0
+
 -}
 andShortCircuitTest : (Src.Module -> Expectation) -> (() -> Expectation)
 andShortCircuitTest expectFn _ =
     let
-        -- safeDivide : Int -> Int -> Bool
-        -- safeDivide a b = b /= 0 && (a // b > 0)
         safeDivideDef : TypedDef
         safeDivideDef =
             { name = "safeDivide"
@@ -369,13 +491,17 @@ andShortCircuitTest expectFn _ =
     expectFn modul
 
 
-{-| Test || short-circuit evaluation.
+{-| Applies `expectFn` to a program whose `isZeroOrPositive` is one `||` of two
+comparisons, and whose `testValue` is `isZeroOrPositive 0`:
+
+    isZeroOrPositive : Int -> Bool
+    isZeroOrPositive n =
+        n == 0 || n > 0
+
 -}
 orShortCircuitTest : (Src.Module -> Expectation) -> (() -> Expectation)
 orShortCircuitTest expectFn _ =
     let
-        -- isZeroOrPositive : Int -> Bool
-        -- isZeroOrPositive n = n == 0 || n > 0
         isZeroOrPositiveDef : TypedDef
         isZeroOrPositiveDef =
             { name = "isZeroOrPositive"
@@ -404,13 +530,17 @@ orShortCircuitTest expectFn _ =
     expectFn modul
 
 
-{-| Test mixed && and || operators.
+{-| Applies `expectFn` to a program whose `inRange` has an `&&` as the left
+operand of an `||`, and whose `testValue` is `inRange 1 10 5`:
+
+    inRange : Int -> Int -> Int -> Bool
+    inRange lo hi x =
+        (x >= lo && x <= hi) || x == 0
+
 -}
 mixedAndOrTest : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedAndOrTest expectFn _ =
     let
-        -- inRange : Int -> Int -> Int -> Bool
-        -- inRange lo hi x = (x >= lo && x <= hi) || x == 0
         inRangeDef : TypedDef
         inRangeDef =
             { name = "inRange"
@@ -448,12 +578,25 @@ mixedAndOrTest expectFn _ =
     expectFn modul
 
 
-{-| Test short-circuit with function calls.
+{-| Applies `expectFn` to a program whose `checkBoth` is an `&&` of two calls to
+other top-level functions, and whose `testValue` is `checkBoth 50`:
+
+    isValid : Int -> Bool
+    isValid n =
+        n > 0
+
+    isSmall : Int -> Bool
+    isSmall n =
+        n < 100
+
+    checkBoth : Int -> Bool
+    checkBoth n =
+        isValid n && isSmall n
+
 -}
 shortCircuitWithFunctionCallsTest : (Src.Module -> Expectation) -> (() -> Expectation)
 shortCircuitWithFunctionCallsTest expectFn _ =
     let
-        -- isValid : Int -> Bool
         isValidDef : TypedDef
         isValidDef =
             { name = "isValid"
@@ -462,7 +605,6 @@ shortCircuitWithFunctionCallsTest expectFn _ =
             , body = binopsExpr [ ( varExpr "n", ">" ) ] (intExpr 0)
             }
 
-        -- isSmall : Int -> Bool
         isSmallDef : TypedDef
         isSmallDef =
             { name = "isSmall"
@@ -471,7 +613,6 @@ shortCircuitWithFunctionCallsTest expectFn _ =
             , body = binopsExpr [ ( varExpr "n", "<" ) ] (intExpr 100)
             }
 
-        -- checkBoth : Int -> Bool
         checkBothDef : TypedDef
         checkBothDef =
             { name = "checkBoth"
@@ -506,6 +647,9 @@ shortCircuitWithFunctionCallsTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the four compound boolean cases, each applying `expectFn` to its
+program.
+-}
 complexBooleanCases : (Src.Module -> Expectation) -> List TestCase
 complexBooleanCases expectFn =
     [ { label = "Triple and", run = tripleAndTest expectFn }
@@ -515,13 +659,17 @@ complexBooleanCases expectFn =
     ]
 
 
-{-| Test triple && expression.
+{-| Applies `expectFn` to a program whose `allPositive` is one chain of two
+`&&`s over three comparisons, and whose `testValue` is `allPositive 1 2 3`:
+
+    allPositive : Int -> Int -> Int -> Bool
+    allPositive a b c =
+        a > 0 && b > 0 && c > 0
+
 -}
 tripleAndTest : (Src.Module -> Expectation) -> (() -> Expectation)
 tripleAndTest expectFn _ =
     let
-        -- allPositive : Int -> Int -> Int -> Bool
-        -- allPositive a b c = a > 0 && b > 0 && c > 0
         allPositiveDef : TypedDef
         allPositiveDef =
             { name = "allPositive"
@@ -556,13 +704,17 @@ tripleAndTest expectFn _ =
     expectFn modul
 
 
-{-| Test triple || expression.
+{-| Applies `expectFn` to a program whose `anyZero` is one chain of two `||`s
+over three comparisons, and whose `testValue` is `anyZero 1 0 3`:
+
+    anyZero : Int -> Int -> Int -> Bool
+    anyZero a b c =
+        a == 0 || b == 0 || c == 0
+
 -}
 tripleOrTest : (Src.Module -> Expectation) -> (() -> Expectation)
 tripleOrTest expectFn _ =
     let
-        -- anyZero : Int -> Int -> Int -> Bool
-        -- anyZero a b c = a == 0 || b == 0 || c == 0
         anyZeroDef : TypedDef
         anyZeroDef =
             { name = "anyZero"
@@ -597,13 +749,17 @@ tripleOrTest expectFn _ =
     expectFn modul
 
 
-{-| Test nested boolean expressions.
+{-| Applies `expectFn` to a program whose `complexCheck` joins two `&&`
+expressions with `||`, and whose `testValue` is `complexCheck -1 -2`:
+
+    complexCheck : Int -> Int -> Bool
+    complexCheck a b =
+        (a > 0 && b > 0) || (a < 0 && b < 0)
+
 -}
 nestedBooleanExpressionsTest : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedBooleanExpressionsTest expectFn _ =
     let
-        -- complexCheck : Int -> Int -> Bool
-        -- complexCheck a b = (a > 0 && b > 0) || (a < 0 && b < 0)
         complexCheckDef : TypedDef
         complexCheckDef =
             { name = "complexCheck"
@@ -640,12 +796,17 @@ nestedBooleanExpressionsTest expectFn _ =
     expectFn modul
 
 
-{-| Test boolean with not operator.
+{-| Applies `expectFn` to a program whose `notPositive` calls `not` on a
+comparison, and whose `testValue` is `notPositive -5`:
+
+    notPositive : Int -> Bool
+    notPositive n =
+        not (n > 0)
+
 -}
 booleanWithNotTest : (Src.Module -> Expectation) -> (() -> Expectation)
 booleanWithNotTest expectFn _ =
     let
-        -- notPositive : Int -> Bool
         notPositiveDef : TypedDef
         notPositiveDef =
             { name = "notPositive"
@@ -677,6 +838,8 @@ booleanWithNotTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the four nested `if` cases, each applying `expectFn` to its program.
+-}
 nestedConditionalCases : (Src.Module -> Expectation) -> List TestCase
 nestedConditionalCases expectFn =
     [ { label = "If in if branch", run = ifInIfBranchTest expectFn }
@@ -686,12 +849,25 @@ nestedConditionalCases expectFn =
     ]
 
 
-{-| Test if in if branch.
+{-| Applies `expectFn` to a program whose `nestedIf` has an `if` in its `then`
+branch, and whose `testValue` is `nestedIf 5 10`:
+
+    nestedIf : Int -> Int -> Int
+    nestedIf a b =
+        if a > 0 then
+            if b > 0 then
+                1
+
+            else
+                2
+
+        else
+            3
+
 -}
 ifInIfBranchTest : (Src.Module -> Expectation) -> (() -> Expectation)
 ifInIfBranchTest expectFn _ =
     let
-        -- nestedIf : Int -> Int -> Int
         nestedIfDef : TypedDef
         nestedIfDef =
             { name = "nestedIf"
@@ -725,12 +901,24 @@ ifInIfBranchTest expectFn _ =
     expectFn modul
 
 
-{-| Test if in else branch.
+{-| Applies `expectFn` to a program whose `elseNested` has an `if` in its `else`
+branch, and whose `testValue` is `elseNested -1 10`:
+
+    elseNested : Int -> Int -> Int
+    elseNested a b =
+        if a > 0 then
+            1
+
+        else if b > 0 then
+            2
+
+        else
+            3
+
 -}
 ifInElseBranchTest : (Src.Module -> Expectation) -> (() -> Expectation)
 ifInElseBranchTest expectFn _ =
     let
-        -- elseNested : Int -> Int -> Int
         elseNestedDef : TypedDef
         elseNestedDef =
             { name = "elseNested"
@@ -764,12 +952,28 @@ ifInElseBranchTest expectFn _ =
     expectFn modul
 
 
-{-| Test if in both branches.
+{-| Applies `expectFn` to a program whose `bothNested` has an `if` in each
+branch, both testing `b`, and whose `testValue` is `bothNested -1 -2`:
+
+    bothNested : Int -> Int -> Int
+    bothNested a b =
+        if a > 0 then
+            if b > 0 then
+                1
+
+            else
+                2
+
+        else if b > 0 then
+            3
+
+        else
+            4
+
 -}
 ifInBothBranchesTest : (Src.Module -> Expectation) -> (() -> Expectation)
 ifInBothBranchesTest expectFn _ =
     let
-        -- bothNested : Int -> Int -> Int
         bothNestedDef : TypedDef
         bothNestedDef =
             { name = "bothNested"
@@ -807,12 +1011,34 @@ ifInBothBranchesTest expectFn _ =
     expectFn modul
 
 
-{-| Test deep nesting of conditionals.
+{-| Applies `expectFn` to a program whose `deepNest` has five `if`s, each but
+the first in the `else` branch of the one before, and whose `testValue` is
+`deepNest 30`:
+
+    deepNest : Int -> Int
+    deepNest n =
+        if n > 100 then
+            5
+
+        else if n > 50 then
+            4
+
+        else if n > 25 then
+            3
+
+        else if n > 10 then
+            2
+
+        else if n > 0 then
+            1
+
+        else
+            0
+
 -}
 deepNestingTest : (Src.Module -> Expectation) -> (() -> Expectation)
 deepNestingTest expectFn _ =
     let
-        -- deepNest : Int -> Int
         deepNestDef : TypedDef
         deepNestDef =
             { name = "deepNest"

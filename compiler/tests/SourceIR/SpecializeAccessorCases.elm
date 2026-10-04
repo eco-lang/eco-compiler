@@ -1,13 +1,56 @@
 module SourceIR.SpecializeAccessorCases exposing (expectSuite, suite)
 
-{-| Test cases for accessor specialization in Specialize.elm.
+{-| Programs in which a record accessor function such as `.name` is used as a
+value, for checking whatever property the caller's expectation tests.
 
-These tests cover:
+An accessor `.field` has the type `{ r | field : a } -> a`: it works on any
+record that has `field`, and the extension variable `r` stands for whatever
+other fields the record has. To specialise an accessor, monomorphization needs
+the full record type it is applied to, so at each use that type has to be
+found. In the substitution engine (`Compiler.Monomorphize.Specialize`) an
+accessor passed as a call argument takes its record type from the parameter it
+is passed for. A standalone accessor, such as one in a tuple or a `case` branch,
+is specialised from its own type, or, when that type is not yet a closed record
+or the field it reads holds a function, left for
+`Compiler.Monomorphize.ResolveAccessorValues`. An accessor specialised by either
+of the first two routes becomes a reference to the global `Mono.Accessor field`
+at one record type. The programs here put accessors in several of these
+positions.
 
-  - MONO\_015: Accessor extension variable unification at call sites
-  - Accessors passed to higher-order functions (List.map, List.filter, etc.)
-  - Accessor specialization for different record types
-  - Virtual global generation for accessors
+Every program is a module named `Test` built with
+`makeModuleWithTypedDefsUnionsAliases`, so every top-level value has an
+annotation, and each defines an annotated `testValue`. Every record type named
+in an annotation is closed, and no alias or custom type has a type parameter.
+Field values are string and integer literals, `Basics.True` in one program,
+and in another an accessor; an integer literal is an `Int` only where
+something, such as an annotation, fixes it.
+
+`expectSuite expectFn condStr` is a single elm-test test, named
+"Accessor specialization " followed by `condStr`, that gives fifteen programs
+in turn to `expectFn` and fails with the first it rejects (`Compiler.BulkCheck`).
+`expectFn` decides what is checked. `suite` runs the same programs against
+`TestLogic.TestPipeline.expectMonomorphization`. The programs, by group:
+
+  - `.name` or `.value` passed to `List.map` inside an annotated function, and
+    `.name` and `.age` passed to `List.map` over one let-bound list.
+  - One accessor, or two, bound to `let` variables and applied to a record.
+  - A field access (`item.amount`, not an accessor) in a lambda passed to
+    `List.foldl`.
+  - `.name` passed to `List.map` for a record type with four fields, and for
+    two record types that both have `name`.
+  - `.id` passed to `List.map` whose result is passed to `List.length`.
+  - Accessors in `case` branches: returned as a pair that a `let`
+    destructures; applied to a record in the branch; returned from a function
+    whose partial application is passed to `List.map`, or let-bound and
+    applied; and chosen by nested `case`s. Also `.a` stored in a record field
+    and called through it.
+
+Among what is not tested: an accessor passed to `List.filter` or any function
+other than `List.map`; an accessor in a function annotated with an extensible
+record or a type variable; a record type with a type parameter; a record type,
+named in an annotation, with a function-typed field. `suite` checks only that
+`runToMono` succeeds and gives a graph with a `main` and some nodes; it does not
+look at how any accessor was specialised, and it evaluates no program's result.
 
 -}
 
@@ -50,6 +93,10 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| Runs the programs against `TestLogic.TestPipeline.expectMonomorphization`,
+which passes when the substitution engine monomorphizes a program to a graph
+with a `main` and some nodes.
+-}
 suite : Test
 suite =
     Test.describe "Accessor specialization coverage"
@@ -57,7 +104,9 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Builds one test, named "Accessor specialization " followed by `condStr`,
+that applies `expectFn` to each program in turn and fails with the label of the
+first program it rejects.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -65,6 +114,8 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every labelled case, each applying `expectFn` to its program.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -79,10 +130,12 @@ testCases expectFn =
 
 
 -- ============================================================================
--- ACCESSOR TO LIST.MAP TESTS
+-- ACCESSORS PASSED TO LIST.MAP
 -- ============================================================================
 
 
+{-| Returns the cases that pass an accessor to `List.map`.
+-}
 accessorToMapCases : (Src.Module -> Expectation) -> List TestCase
 accessorToMapCases expectFn =
     [ { label = "List.map .name records", run = mapAccessorOnRecords expectFn }
@@ -91,8 +144,20 @@ accessorToMapCases expectFn =
     ]
 
 
-{-| List.map .name records - basic accessor as function.
-Tests MONO\_015: Accessor extension variable unification.
+{-| Applies `expectFn` to a program that maps `.name` over a list of records,
+inside a function annotated with the record's alias:
+
+    type alias Person =
+        { name : String, age : Int }
+
+    getNames : List Person -> List String
+    getNames people =
+        List.map .name people
+
+    testValue : List String
+    testValue =
+        getNames [ { name = "Alice", age = 30 }, { name = "Bob", age = 25 } ]
+
 -}
 mapAccessorOnRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 mapAccessorOnRecords expectFn _ =
@@ -104,7 +169,6 @@ mapAccessorOnRecords expectFn _ =
             , tipe = tRecord [ ( "name", tType "String" [] ), ( "age", tType "Int" [] ) ]
             }
 
-        -- getNames : List Person -> List String
         getNamesDef : TypedDef
         getNamesDef =
             { name = "getNames"
@@ -136,7 +200,20 @@ mapAccessorOnRecords expectFn _ =
     expectFn modul
 
 
-{-| List.map .value where value has a different type (Int).
+{-| Applies `expectFn` to a program that maps `.value`, an `Int` field, over a
+list of records:
+
+    type alias Item =
+        { id : Int, value : Int }
+
+    getValues : List Item -> List Int
+    getValues items =
+        List.map .value items
+
+    testValue : List Int
+    testValue =
+        getValues [ { id = 1, value = 100 }, { id = 2, value = 200 } ]
+
 -}
 mapAccessorDifferentFieldType : (Src.Module -> Expectation) -> (() -> Expectation)
 mapAccessorDifferentFieldType expectFn _ =
@@ -148,7 +225,6 @@ mapAccessorDifferentFieldType expectFn _ =
             , tipe = tRecord [ ( "id", tType "Int" [] ), ( "value", tType "Int" [] ) ]
             }
 
-        -- getValues : List Item -> List Int
         getValuesDef : TypedDef
         getValuesDef =
             { name = "getValues"
@@ -180,8 +256,29 @@ mapAccessorDifferentFieldType expectFn _ =
     expectFn modul
 
 
-{-| Multiple List.map calls with different accessors on same type.
-Tests that each accessor gets its own virtual global.
+{-| Applies `expectFn` to a program that maps two accessors over the same
+let-bound list:
+
+    type alias Person =
+        { name : String, age : Int }
+
+    testValue : Int
+    testValue =
+        let
+            people =
+                [ { name = "Alice", age = 30 }, { name = "Bob", age = 25 } ]
+
+            names =
+                List.map .name people
+
+            ages =
+                List.map .age people
+        in
+        List.length ages
+
+`names` is not used, and no annotation names `Person`, so nothing fixes the
+`age` literals to `Int`.
+
 -}
 multipleMapWithDifferentAccessors : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleMapWithDifferentAccessors expectFn _ =
@@ -193,7 +290,6 @@ multipleMapWithDifferentAccessors expectFn _ =
             , tipe = tRecord [ ( "name", tType "String" [] ), ( "age", tType "Int" [] ) ]
             }
 
-        -- Both accessors applied to same list
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -215,7 +311,6 @@ multipleMapWithDifferentAccessors expectFn _ =
                         []
                         (callExpr (qualVarExpr "List" "map") [ accessorExpr "age", varExpr "people" ])
                     ]
-                    -- Return something based on both
                     (callExpr (qualVarExpr "List" "length") [ varExpr "ages" ])
             }
 
@@ -230,10 +325,13 @@ multipleMapWithDifferentAccessors expectFn _ =
 
 
 -- ============================================================================
--- ACCESSOR TO LIST.FILTER TESTS
+-- ACCESSORS BOUND IN LET
 -- ============================================================================
 
 
+{-| Returns the cases that bind an accessor to a `let` variable and apply the
+variable to a record.
+-}
 accessorToFilterCases : (Src.Module -> Expectation) -> List TestCase
 accessorToFilterCases expectFn =
     [ { label = "Accessor assigned to variable", run = accessorAssignedToVariable expectFn }
@@ -241,7 +339,24 @@ accessorToFilterCases expectFn =
     ]
 
 
-{-| Accessor assigned to a variable and then used.
+{-| Applies `expectFn` to a program that binds `.value` to a local variable and
+applies it:
+
+    type alias Item =
+        { value : Int, label : String }
+
+    getValue : Item -> Int
+    getValue item =
+        let
+            accessor =
+                .value
+        in
+        accessor item
+
+    testValue : Int
+    testValue =
+        getValue { value = 42, label = "test" }
+
 -}
 accessorAssignedToVariable : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorAssignedToVariable expectFn _ =
@@ -253,7 +368,6 @@ accessorAssignedToVariable expectFn _ =
             , tipe = tRecord [ ( "value", tType "Int" [] ), ( "label", tType "String" [] ) ]
             }
 
-        -- getValue : Item -> Int
         getValueDef : TypedDef
         getValueDef =
             { name = "getValue"
@@ -286,7 +400,27 @@ accessorAssignedToVariable expectFn _ =
     expectFn modul
 
 
-{-| Accessor used in nested let binding.
+{-| Applies `expectFn` to a program that binds two accessors in one `let` and
+adds their results. The `let` is not nested, whatever the case's label says:
+
+    type alias Item =
+        { x : Int, y : Int }
+
+    sumXY : Item -> Int
+    sumXY item =
+        let
+            getX =
+                .x
+
+            getY =
+                .y
+        in
+        getX item + getY item
+
+    testValue : Int
+    testValue =
+        sumXY { x = 10, y = 20 }
+
 -}
 accessorInNestedLet : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorInNestedLet expectFn _ =
@@ -298,7 +432,6 @@ accessorInNestedLet expectFn _ =
             , tipe = tRecord [ ( "x", tType "Int" [] ), ( "y", tType "Int" [] ) ]
             }
 
-        -- sumXY : Item -> Int
         sumXYDef : TypedDef
         sumXYDef =
             { name = "sumXY"
@@ -337,17 +470,32 @@ accessorInNestedLet expectFn _ =
 
 
 -- ============================================================================
--- ACCESSOR TO FOLD TESTS
+-- FIELD ACCESS IN A FOLD
 -- ============================================================================
 
 
+{-| Returns the case that reads a field inside a lambda passed to `List.foldl`.
+-}
 accessorToFoldCases : (Src.Module -> Expectation) -> List TestCase
 accessorToFoldCases expectFn =
     [ { label = "Accessor in foldl accumulator", run = accessorInFoldAccumulator expectFn }
     ]
 
 
-{-| Using accessor in a fold to sum a field.
+{-| Applies `expectFn` to a program that sums a field with `List.foldl`. It
+reads the field with `item.amount` and has no accessor function:
+
+    type alias Item =
+        { amount : Int }
+
+    sumAmounts : List Item -> Int
+    sumAmounts items =
+        List.foldl (\item acc -> item.amount + acc) 0 items
+
+    testValue : Int
+    testValue =
+        sumAmounts [ { amount = 10 }, { amount = 20 }, { amount = 30 } ]
+
 -}
 accessorInFoldAccumulator : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorInFoldAccumulator expectFn _ =
@@ -359,7 +507,6 @@ accessorInFoldAccumulator expectFn _ =
             , tipe = tRecord [ ( "amount", tType "Int" [] ) ]
             }
 
-        -- sumAmounts : List Item -> Int
         sumAmountsDef : TypedDef
         sumAmountsDef =
             { name = "sumAmounts"
@@ -400,10 +547,14 @@ accessorInFoldAccumulator expectFn _ =
 
 
 -- ============================================================================
--- ACCESSOR EXTENSION VARIABLE TESTS
+-- ONE ACCESSOR, LARGER OR SEVERAL RECORD TYPES
 -- ============================================================================
 
 
+{-| Returns the cases in which `.name`'s extension variable must stand for
+fields besides `name`: three more fields in one record type, or different
+fields in two.
+-}
 accessorExtensionVariableCases : (Src.Module -> Expectation) -> List TestCase
 accessorExtensionVariableCases expectFn =
     [ { label = "Accessor on record with extra fields", run = accessorOnRecordWithExtraFields expectFn }
@@ -411,13 +562,30 @@ accessorExtensionVariableCases expectFn =
     ]
 
 
-{-| Accessor applied to record with more fields than accessor needs.
-Tests extension variable unification.
+{-| Applies `expectFn` to a program that maps `.name` over records with three
+other fields:
+
+    type alias BigRecord =
+        { name : String, age : Int, email : String, active : Bool }
+
+    getName : BigRecord -> String
+    getName rec =
+        rec.name
+
+    getNames : List BigRecord -> List String
+    getNames recs =
+        List.map .name recs
+
+    testValue : List String
+    testValue =
+        getNames [ { name = "Alice", age = 30, email = "alice@example.com", active = True } ]
+
+`getName` uses field access, not an accessor, and `testValue` does not use it.
+
 -}
 accessorOnRecordWithExtraFields : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorOnRecordWithExtraFields expectFn _ =
     let
-        -- bigRecord has many fields, accessor only needs one
         bigRecordAlias : AliasDef
         bigRecordAlias =
             { name = "BigRecord"
@@ -431,7 +599,6 @@ accessorOnRecordWithExtraFields expectFn _ =
                     ]
             }
 
-        -- getName : BigRecord -> String (using .name accessor)
         getNameDef : TypedDef
         getNameDef =
             { name = "getName"
@@ -440,7 +607,6 @@ accessorOnRecordWithExtraFields expectFn _ =
             , body = accessExpr (varExpr "rec") "name"
             }
 
-        -- getNames using accessor function
         getNamesDef : TypedDef
         getNamesDef =
             { name = "getNames"
@@ -476,8 +642,34 @@ accessorOnRecordWithExtraFields expectFn _ =
     expectFn modul
 
 
-{-| Same accessor (.name) applied to different record types.
-Tests that separate specializations are created.
+{-| Applies `expectFn` to a program that maps `.name` over lists of two
+different record types:
+
+    type alias Person =
+        { name : String, age : Int }
+
+    type alias Company =
+        { name : String, employees : Int }
+
+    getPersonNames : List Person -> List String
+    getPersonNames people =
+        List.map .name people
+
+    getCompanyNames : List Company -> List String
+    getCompanyNames companies =
+        List.map .name companies
+
+    testValue : Int
+    testValue =
+        let
+            personNames =
+                getPersonNames [ { name = "Alice", age = 30 } ]
+
+            companyNames =
+                getCompanyNames [ { name = "ACME", employees = 100 } ]
+        in
+        List.length personNames + List.length companyNames
+
 -}
 sameAccessorDifferentRecordTypes : (Src.Module -> Expectation) -> (() -> Expectation)
 sameAccessorDifferentRecordTypes expectFn _ =
@@ -496,7 +688,6 @@ sameAccessorDifferentRecordTypes expectFn _ =
             , tipe = tRecord [ ( "name", tType "String" [] ), ( "employees", tType "Int" [] ) ]
             }
 
-        -- getPersonNames : List Person -> List String
         getPersonNamesDef : TypedDef
         getPersonNamesDef =
             { name = "getPersonNames"
@@ -505,7 +696,6 @@ sameAccessorDifferentRecordTypes expectFn _ =
             , body = callExpr (qualVarExpr "List" "map") [ accessorExpr "name", varExpr "people" ]
             }
 
-        -- getCompanyNames : List Company -> List String
         getCompanyNamesDef : TypedDef
         getCompanyNamesDef =
             { name = "getCompanyNames"
@@ -549,18 +739,34 @@ sameAccessorDifferentRecordTypes expectFn _ =
 
 
 -- ============================================================================
--- POLYMORPHIC ACCESSOR TESTS
+-- MAPPED ACCESSOR UNDER ANOTHER CALL
 -- ============================================================================
 
 
+{-| Returns the case whose mapped accessor result is passed to `List.length`.
+Despite the group's name, its function is not polymorphic.
+-}
 accessorPolymorphicCases : (Src.Module -> Expectation) -> List TestCase
 accessorPolymorphicCases expectFn =
     [ { label = "Generic function using accessor", run = genericFunctionUsingAccessor expectFn }
     ]
 
 
-{-| Generic function that uses an accessor.
-Tests polymorphic accessor instantiation.
+{-| Applies `expectFn` to a program that counts the result of mapping `.id`.
+`countIds` is annotated with a closed record alias, so `countIds` itself is
+not polymorphic, whatever the case's label says:
+
+    type alias Item =
+        { id : Int, label : String }
+
+    countIds : List Item -> Int
+    countIds items =
+        List.length (List.map .id items)
+
+    testValue : Int
+    testValue =
+        countIds [ { id = 1, label = "A" }, { id = 2, label = "B" } ]
+
 -}
 genericFunctionUsingAccessor : (Src.Module -> Expectation) -> (() -> Expectation)
 genericFunctionUsingAccessor expectFn _ =
@@ -572,7 +778,6 @@ genericFunctionUsingAccessor expectFn _ =
             , tipe = tRecord [ ( "id", tType "Int" [] ), ( "label", tType "String" [] ) ]
             }
 
-        -- countIds : List Item -> Int
         countIdsDef : TypedDef
         countIdsDef =
             { name = "countIds"
@@ -609,10 +814,13 @@ genericFunctionUsingAccessor expectFn _ =
 
 
 -- ============================================================================
--- ACCESSOR VIA CASE EXPRESSION TESTS
+-- ACCESSORS CHOSEN BY CASE OR STORED IN A RECORD
 -- ============================================================================
 
 
+{-| Returns the cases in which an accessor appears in a `case` branch, or in a
+field of a record, rather than as an argument to a call.
+-}
 accessorViaCaseCases : (Src.Module -> Expectation) -> List TestCase
 accessorViaCaseCases expectFn =
     [ { label = "Accessor selected via case, stored in tuple", run = accessorCaseTuple expectFn }
@@ -624,9 +832,34 @@ accessorViaCaseCases expectFn =
     ]
 
 
-{-| Accessor selected via case expression, stored in a tuple.
-Derived from LetDestructFuncTupleTest. Tests MONO\_015: the accessor .a must be
-specialized knowing the full record type { a : Int, b : Int } so field a is Int.
+{-| Applies `expectFn` to a program in which a `case` returns a pair of
+accessors, the pair is destructured in a `let`, and each accessor is then
+applied to a record:
+
+    type Loc
+        = First
+        | Second
+
+    choose : Loc -> { a : Int, b : Int } -> ( Int, Int )
+    choose loc rec =
+        let
+            ( getter, setter ) =
+                case loc of
+                    First ->
+                        ( .a, .b )
+
+                    Second ->
+                        ( .b, .a )
+        in
+        ( getter rec, setter rec )
+
+    testValue : ( Int, Int )
+    testValue =
+        choose First { a = 10, b = 20 }
+
+No accessor here is a call argument, so none takes its record type from a
+parameter; each is an element of a tuple.
+
 -}
 accessorCaseTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorCaseTuple expectFn _ =
@@ -641,7 +874,6 @@ accessorCaseTuple expectFn _ =
                 ]
             }
 
-        -- choose : Loc -> { a : Int, b : Int } -> ( Int, Int )
         chooseDef : TypedDef
         chooseDef =
             { name = "choose"
@@ -687,7 +919,26 @@ accessorCaseTuple expectFn _ =
     expectFn modul
 
 
-{-| Accessor selected via case, applied immediately (no intermediate storage).
+{-| Applies `expectFn` to a program in which each branch of a `case` calls an
+accessor directly on a record:
+
+    type Which
+        = UseA
+        | UseB
+
+    getField : Which -> { a : Int, b : Int } -> Int
+    getField which rec =
+        case which of
+            UseA ->
+                .a rec
+
+            UseB ->
+                .b rec
+
+    testValue : Int
+    testValue =
+        getField UseA { a = 42, b = 0 }
+
 -}
 accessorCaseApplied : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorCaseApplied expectFn _ =
@@ -702,7 +953,6 @@ accessorCaseApplied expectFn _ =
                 ]
             }
 
-        -- getField : Which -> { a : Int, b : Int } -> Int
         getFieldDef : TypedDef
         getFieldDef =
             { name = "getField"
@@ -740,7 +990,32 @@ accessorCaseApplied expectFn _ =
     expectFn modul
 
 
-{-| Accessor returned from case, then passed to List.map.
+{-| Applies `expectFn` to a program in which a function returns an accessor
+from a `case`, and its result is passed to `List.map`:
+
+    type SortBy
+        = ByName
+        | ByAge
+
+    type alias Person =
+        { name : String, age : Int }
+
+    sortKey : SortBy -> Person -> String
+    sortKey sortBy =
+        case sortBy of
+            ByName ->
+                .name
+
+            ByAge ->
+                .name
+
+    testValue : List String
+    testValue =
+        List.map (sortKey ByName) [ { name = "Alice", age = 30 } ]
+
+Both branches return `.name`; `.age` would not fit the annotation's `String`
+result.
+
 -}
 accessorCaseToHof : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorCaseToHof expectFn _ =
@@ -762,8 +1037,6 @@ accessorCaseToHof expectFn _ =
             , tipe = tRecord [ ( "name", tType "String" [] ), ( "age", tType "Int" [] ) ]
             }
 
-        -- sortKey : SortBy -> Person -> String
-        -- (both branches return String accessor for type consistency)
         sortKeyDef : TypedDef
         sortKeyDef =
             { name = "sortKey"
@@ -800,8 +1073,33 @@ accessorCaseToHof expectFn _ =
     expectFn modul
 
 
-{-| Accessor in case with mixed field types (Int and String).
-The case branches return accessors with different concrete return types.
+{-| Applies `expectFn` to a program in which a function returns an accessor
+from a `case`, and the result is let-bound and applied to a record:
+
+    type Field
+        = IntField
+        | StrField
+
+    pickAccessor : Field -> { count : Int, label : String } -> Int
+    pickAccessor field =
+        case field of
+            IntField ->
+                .count
+
+            StrField ->
+                .count
+
+    testValue : Int
+    testValue =
+        let
+            f =
+                pickAccessor IntField
+        in
+        f { count = 5, label = "hello" }
+
+The record has an `Int` and a `String` field, but both branches return
+`.count`, so every accessor here has an `Int` result.
+
 -}
 accessorCaseMixedTypes : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorCaseMixedTypes expectFn _ =
@@ -816,7 +1114,6 @@ accessorCaseMixedTypes expectFn _ =
                 ]
             }
 
-        -- pickAccessor : Field -> { count : Int, label : String } -> Int
         pickAccessorDef : TypedDef
         pickAccessorDef =
             { name = "pickAccessor"
@@ -853,7 +1150,19 @@ accessorCaseMixedTypes expectFn _ =
     expectFn modul
 
 
-{-| Accessor stored in a record field (not a tuple).
+{-| Applies `expectFn` to a program that stores `.a` in a field of a let-bound
+record and calls it through that field:
+
+    testValue : Int
+    testValue =
+        let
+            ops =
+                { getter = .a }
+        in
+        ops.getter { a = 10, b = 20 }
+
+No annotation names either record type.
+
 -}
 accessorInRecordField : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorInRecordField expectFn _ =
@@ -886,7 +1195,36 @@ accessorInRecordField expectFn _ =
     expectFn modul
 
 
-{-| Accessor selected via nested case expressions.
+{-| Applies `expectFn` to a program in which nested `case`s choose one of three
+accessors, and the function returning it is called with the record as an extra
+argument:
+
+    type Outer
+        = OutA
+        | OutB
+
+    type Inner
+        = InX
+        | InY
+
+    pickAccessor : Outer -> Inner -> { x : Int, y : Int, z : Int } -> Int
+    pickAccessor outer inner =
+        case outer of
+            OutA ->
+                case inner of
+                    InX ->
+                        .x
+
+                    InY ->
+                        .y
+
+            OutB ->
+                .z
+
+    testValue : Int
+    testValue =
+        pickAccessor OutA InX { x = 1, y = 2, z = 3 }
+
 -}
 accessorNestedCase : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorNestedCase expectFn _ =
@@ -911,7 +1249,6 @@ accessorNestedCase expectFn _ =
                 ]
             }
 
-        -- pickAccessor : Outer -> Inner -> { x : Int, y : Int, z : Int } -> Int
         pickAccessorDef : TypedDef
         pickAccessorDef =
             { name = "pickAccessor"

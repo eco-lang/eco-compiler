@@ -5,16 +5,40 @@ module TestLogic.Generate.MonoGraphIntegrity exposing
     , expectSpecRegistryComplete
     )
 
-{-| Test logic for invariants:
+{-| Structural checks on the monomorphized program graph, written as
+expectations over a source module. They exist so that a graph with a dangling
+reference, or with a function-typed definition that is not callable, fails a
+test of its own.
 
-  - MONO\_004: All functions are callable MonoNodes
-  - MONO\_010: MonoGraph is type complete
-  - MONO\_011: MonoGraph is closed and hygienic
-  - MONO\_005: Specialization registry is complete and consistent
+Each exposed function compiles a `Src.Module` with `TestLogic.TestPipeline`
+and, if the pipeline returns an error, fails with that error's message.
+Otherwise it walks the resulting `Mono.MonoGraph` and fails if a check finds a
+problem. The graph's `nodes` array holds one optional node per _SpecId_, the
+number of a specialization (one definition at one concrete type); an index
+holding `Nothing` has no node. Three of the checks read the graph that
+`Pipeline.runToMono` builds, and the callability check reads the one
+`Pipeline.runToGlobalOpt` returns after global optimization.
 
-This module reuses the existing typed optimization pipeline to verify
-MonoGraph integrity. Successful monomorphization implies all these
-invariants are satisfied.
+What the checks establish:
+
+  - `expectCallableMonoNodes`: in the globally optimized graph, a `MonoDefine`
+    with a function type has an expression the check counts as callable, and
+    a `MonoTailFunc` has a function type.
+  - `expectSpecRegistryComplete`: every SpecId that has an entry in the
+    registry's `reverseMapping` has a node.
+  - `expectMonoGraphClosed`: every SpecId named by a `MonoVarGlobal` in a node
+    body has a node, and every `MonoVarLocal` is in scope where it occurs,
+    under the scope rules that function's docstring gives.
+  - `expectMonoGraphComplete`: nothing beyond the pipeline reaching a
+    monomorphized graph; its list of checks is always empty.
+
+The failures a check finds are combined with `Expect.all`, so a failing test
+reports only the first of them.
+
+Among what is not checked: that every node has a registry entry; SpecIds named
+by the graph's `main`, `flagsDecoder` or `ports` fields, or from the leaves a
+case's decision tree holds inline; a case's root variable and the paths in its
+decision tree; and that a closure body names only its parameters and captures.
 
 -}
 
@@ -26,10 +50,19 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| MONO\_004: Verify that all function-typed nodes are callable.
+{-| Runs `srcModule` through global optimization and checks that each
+function-typed `MonoDefine` of the optimized graph has a callable expression
+and that each `MonoTailFunc` has a function type.
 
-Note: This invariant only applies AFTER GlobalOpt, which is responsible for
-wrapping non-closure function expressions in closures via ensureCallableForNode.
+A `MonoDefine` whose type is a function passes when its expression is
+callable: a closure; a local, global or kernel variable whose type is a
+function; a call whose result type is a function; a `let` or destructuring
+whose body is callable; an `if` whose `else` branch is callable; or a `case`
+whose first jump branch is callable. A jump branch is one the case's decision
+tree reaches by `Jump` instead of holding it inline. Only that one branch of
+an `if` or `case` is looked at, and a `case` with no jump branches counts as
+not callable. A `MonoTailFunc` passes when its type is a function. Every other
+node passes, as does a `MonoDefine` whose type is not a function.
 
 -}
 expectCallableMonoNodes : Src.Module -> Expect.Expectation
@@ -44,6 +77,7 @@ expectCallableMonoNodes srcModule =
                     collectCallabilityChecks optimizedMonoGraph
             in
             case checks of
+                -- `Expect.all` fails when it is given no checks.
                 [] ->
                     Expect.pass
 
@@ -51,7 +85,9 @@ expectCallableMonoNodes srcModule =
                     Expect.all checks ()
 
 
-{-| MONO\_010: Verify MonoGraph is type complete.
+{-| Runs `srcModule` through monomorphization and passes whenever that
+succeeds. It is named for the type completeness of the graph, but it checks
+nothing in the graph: its list of checks is always empty.
 -}
 expectMonoGraphComplete : Src.Module -> Expect.Expectation
 expectMonoGraphComplete srcModule =
@@ -65,6 +101,7 @@ expectMonoGraphComplete srcModule =
                     collectCompletenessChecks monoGraph
             in
             case checks of
+                -- `Expect.all` fails when it is given no checks.
                 [] ->
                     Expect.pass
 
@@ -72,7 +109,25 @@ expectMonoGraphComplete srcModule =
                     Expect.all checks ()
 
 
-{-| MONO\_011: Verify MonoGraph is closed and hygienic.
+{-| Runs `srcModule` through monomorphization and checks the graph for
+dangling references: every SpecId named by a `MonoVarGlobal` in a node body
+must have a node, and every `MonoVarLocal` must be in scope where it occurs.
+
+A `MonoTailFunc` node's body starts with its parameters in scope, and a
+`MonoDefine` or port body with nothing. A name comes into scope from a closure's
+parameters and captures, a tail-recursive local definition's parameters, a
+destructuring's bound name, and a case's label (the first `Name` of
+`MonoCase`, not the second, which names the variable the case matches on). The
+definitions of a chain of directly nested `let`s are all in scope throughout
+the chain, so a definition may name a later one in the same chain. A
+destructuring's path must start from a name in scope. A closure body also sees
+every name in scope around the closure, so a body that names an enclosing
+variable it does not capture passes.
+
+SpecIds are not collected from the leaves a case's decision tree holds inline,
+and neither a case's root variable nor the paths in its decision tree are
+checked.
+
 -}
 expectMonoGraphClosed : Src.Module -> Expect.Expectation
 expectMonoGraphClosed srcModule =
@@ -86,6 +141,7 @@ expectMonoGraphClosed srcModule =
                     collectClosureChecks monoGraph
             in
             case checks of
+                -- `Expect.all` fails when it is given no checks.
                 [] ->
                     Expect.pass
 
@@ -93,7 +149,10 @@ expectMonoGraphClosed srcModule =
                     Expect.all checks ()
 
 
-{-| MONO\_005: Verify specialization registry is complete.
+{-| Runs `srcModule` through monomorphization and checks that every SpecId
+with an entry in the registry's `reverseMapping` has a node. A node with no
+registry entry is not looked for, and the registry's forward `mapping` is not
+read.
 -}
 expectSpecRegistryComplete : Src.Module -> Expect.Expectation
 expectSpecRegistryComplete srcModule =
@@ -107,6 +166,7 @@ expectSpecRegistryComplete srcModule =
                     collectRegistryChecks monoGraph
             in
             case checks of
+                -- `Expect.all` fails when it is given no checks.
                 [] ->
                     Expect.pass
 
@@ -116,11 +176,12 @@ expectSpecRegistryComplete srcModule =
 
 
 -- ============================================================================
--- MONO_004: CALLABILITY CHECKING
+-- CALLABILITY
 -- ============================================================================
 
 
-{-| Collect callability checks for function-typed nodes.
+{-| Returns the failing checks `checkNodeCallability` gives for every node of
+the graph, each labelled with the node's SpecId.
 -}
 collectCallabilityChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCallabilityChecks (Mono.MonoGraph data) =
@@ -138,16 +199,10 @@ collectCallabilityChecks (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Check if a function-typed node is properly callable.
-
-Function-typed MonoDefine nodes are callable if their expression is one of:
-
-1.  MonoClosure: Direct closure definition
-2.  MonoVarGlobal: Reference to another function-typed node (creates papCreate)
-3.  MonoCall: Partial application that returns a function (creates papExtend)
-
-Cases 2 and 3 are handled by codegen as thunks that return callable PAPs.
-
+{-| Returns one failing check, labelled with `specId`, when `node` is a
+`MonoDefine` of function type whose expression `isCallableExpression` rejects,
+or a `MonoTailFunc` whose type is not a function. Returns no checks for any
+other node.
 -}
 checkNodeCallability : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeCallability specId node =
@@ -159,11 +214,6 @@ checkNodeCallability specId node =
         Mono.MonoDefine expr monoType ->
             case monoType of
                 Mono.MFunction _ _ _ _ ->
-                    -- Function-typed define is callable if the expression:
-                    -- 1. Is a MonoClosure (direct closure)
-                    -- 2. Is a MonoVarGlobal to a function (creates papCreate in codegen)
-                    -- 3. Is a MonoCall returning a function (partial application, creates papExtend)
-                    -- 4. Any other expression that has a function type (thunk returning callable)
                     if isCallableExpression expr then
                         []
 
@@ -171,11 +221,9 @@ checkNodeCallability specId node =
                         [ \() -> Expect.fail (context ++ ": Function-typed MonoDefine has non-callable expression") ]
 
                 _ ->
-                    -- Non-function types are fine
                     []
 
         Mono.MonoTailFunc _ _ monoType ->
-            -- TailFunc is always callable (it's explicitly a function)
             case monoType of
                 Mono.MFunction _ _ _ _ ->
                     []
@@ -184,78 +232,59 @@ checkNodeCallability specId node =
                     [ \() -> Expect.fail (context ++ ": MonoTailFunc has non-function type") ]
 
         Mono.MonoCtor _ _ ->
-            -- Constructors are callable by definition
             []
 
         Mono.MonoEnum _ _ ->
-            -- Enum constructors are callable
             []
 
         Mono.MonoExtern _ ->
-            -- Externs with function types are callable (FFI)
             []
 
         Mono.MonoManagerLeaf _ _ ->
-            -- Manager leaves are callable
             []
 
         Mono.MonoPortIncoming _ _ ->
-            -- Ports are callable
             []
 
         Mono.MonoPortOutgoing _ _ ->
-            -- Ports are callable
             []
 
 
-{-| Check if an expression is callable (can produce a function value).
+{-| Returns whether `expr` counts as producing a callable function value.
 
-Callable expressions include:
-
-  - MonoClosure: Direct closure definition
-  - MonoVarGlobal with function type: Reference to function (codegen creates papCreate)
-  - MonoVarKernel with function type: Kernel function reference
-  - MonoCall with function result type: Partial application (codegen creates papExtend)
-  - MonoLet/MonoIf/MonoCase with function result: Control flow returning callable
-  - MonoDestruct with function result: Destructuring returning callable
+It does when `expr` is a closure; a local, global or kernel variable whose own
+type is a function; or a call whose result type is a function. A `let` or
+destructuring counts when its body does, an `if` when its `else` branch does,
+and a `case` when the first of its jump branches does, so a `case` whose
+branches are all held inline in its decision tree does not count. No other
+expression counts, whatever its type.
 
 -}
 isCallableExpression : Mono.MonoExpr -> Bool
 isCallableExpression expr =
     case expr of
         Mono.MonoClosure _ _ _ ->
-            -- Direct closure - always callable
             True
 
         Mono.MonoVarLocal _ monoType ->
-            -- Local variable reference - callable if function-typed
-            -- The variable holds a callable value
             isFunctionType monoType
 
         Mono.MonoVarGlobal _ _ monoType ->
-            -- Reference to a global - callable if function-typed
-            -- Codegen generates papCreate for function-typed globals
             isFunctionType monoType
 
         Mono.MonoVarKernel _ _ _ _ monoType ->
-            -- Kernel reference - callable if function-typed
             isFunctionType monoType
 
         Mono.MonoCall _ _ _ resultType _ ->
-            -- Call expression - callable if result is function-typed
-            -- This handles partial applications (codegen generates papExtend)
             isFunctionType resultType
 
         Mono.MonoLet _ body _ ->
-            -- Let expression - callable if body is callable
             isCallableExpression body
 
         Mono.MonoIf _ final _ ->
-            -- If expression - callable if branches are callable (check final branch)
             isCallableExpression final
 
         Mono.MonoCase _ _ _ branches _ ->
-            -- Case expression - callable if branches are callable (check first branch)
             case branches of
                 ( _, branchExpr ) :: _ ->
                     isCallableExpression branchExpr
@@ -264,15 +293,13 @@ isCallableExpression expr =
                     False
 
         Mono.MonoDestruct _ inner _ ->
-            -- Destruct - callable if inner is callable
             isCallableExpression inner
 
         _ ->
-            -- Other expressions (literals, records, tuples, etc.) are not callable
             False
 
 
-{-| Check if a MonoType is a function type.
+{-| Returns whether `monoType` is a function type (`MFunction`).
 -}
 isFunctionType : Mono.MonoType -> Bool
 isFunctionType monoType =
@@ -286,25 +313,28 @@ isFunctionType monoType =
 
 
 -- ============================================================================
--- MONO_010: TYPE COMPLETENESS CHECKING
+-- TYPE COMPLETENESS
 -- ============================================================================
 
 
-{-| Collect type completeness checks.
+{-| Returns no checks, whatever the graph. This is the whole of the type
+completeness check.
 -}
 collectCompletenessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCompletenessChecks (Mono.MonoGraph _) =
     []
 
 
-{-| Collect custom type references from a MonoType.
+{-| Returns the custom type references found in `monoType`, which is always
+the empty list. It walks into custom type arguments, list elements, and
+function parameters and results, but contributes nothing for a custom type
+itself, and it does not look inside tuples or records. No check in this module
+uses it.
 -}
 collectCustomTypeRefsFromType : Mono.MonoType -> List ( List String, String )
 collectCustomTypeRefsFromType monoType =
     case monoType of
         Mono.MCustom _ _ _ typeArgs ->
-            -- Note: canonical is IO.Canonical, we'd need to extract its comparable form
-            -- For now, skip the lookup check since we can't easily compare
             List.concatMap collectCustomTypeRefsFromType typeArgs
 
         Mono.MList _ elemType ->
@@ -318,7 +348,9 @@ collectCustomTypeRefsFromType monoType =
             []
 
 
-{-| Collect custom type references from a MonoExpr.
+{-| Returns the custom type references found in the types of `expr` and its
+subexpressions with `collectCustomTypeRefsFromType`, which is always the empty
+list. No check in this module uses it.
 -}
 collectCustomTypeRefsFromExpr : Mono.MonoExpr -> List ( List String, String )
 collectCustomTypeRefsFromExpr expr =
@@ -396,7 +428,8 @@ collectCustomTypeRefsFromExpr expr =
             []
 
 
-{-| Collect custom type references from a MonoDef.
+{-| Returns the custom type references found in `def`'s parameter types and
+body, which is always the empty list. No check in this module uses it.
 -}
 collectCustomTypeRefsFromDef : Mono.MonoDef -> List ( List String, String )
 collectCustomTypeRefsFromDef def =
@@ -411,22 +444,17 @@ collectCustomTypeRefsFromDef def =
 
 
 -- ============================================================================
--- MONO_011: CLOSURE AND HYGIENE CHECKING
+-- CLOSEDNESS
 -- ============================================================================
 
 
-{-| Collect closure checks (no dangling references).
-
-Checks both:
-
-1.  All referenced SpecIds are defined in nodes
-2.  All MonoVarLocal references have corresponding binders in scope
-
+{-| Returns one failing check for each SpecId that a node body names with
+`MonoVarGlobal` but that has no node, in ascending order, followed by the
+local variable failures `checkNodeLocalVarScoping` gives for every node.
 -}
 collectClosureChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectClosureChecks (Mono.MonoGraph data) =
     let
-        -- Get all defined SpecIds
         definedSpecIds =
             Array.foldl
                 (\maybeNode ( idx, acc ) ->
@@ -441,7 +469,6 @@ collectClosureChecks (Mono.MonoGraph data) =
                 data.nodes
                 |> Tuple.second
 
-        -- Collect all referenced SpecIds
         referencedSpecIds =
             Array.foldl
                 (\maybeNode acc ->
@@ -455,7 +482,6 @@ collectClosureChecks (Mono.MonoGraph data) =
                 Set.empty
                 data.nodes
 
-        -- Find undefined SpecId references
         undefinedRefs =
             Set.diff referencedSpecIds definedSpecIds
                 |> Set.toList compare
@@ -465,7 +491,6 @@ collectClosureChecks (Mono.MonoGraph data) =
                 (\specId -> \() -> Expect.fail ("MONO_011: Referenced SpecId " ++ String.fromInt specId ++ " is not defined in nodes"))
                 undefinedRefs
 
-        -- Check MonoVarLocal scoping for all nodes
         localVarIssues =
             Array.foldl
                 (\maybeNode ( specId, acc ) ->
@@ -483,7 +508,10 @@ collectClosureChecks (Mono.MonoGraph data) =
     specIdIssues ++ localVarIssues
 
 
-{-| Check that all MonoVarLocal references in a node are in scope.
+{-| Returns one failing check, labelled with `specId`, for each `MonoVarLocal`
+in `node` that is out of scope. A `MonoTailFunc` body starts with its
+parameters in scope, and a `MonoDefine` or port body with nothing. Other nodes
+have no body and give no checks.
 -}
 checkNodeLocalVarScoping : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeLocalVarScoping specId node =
@@ -513,7 +541,19 @@ checkNodeLocalVarScoping specId node =
             []
 
 
-{-| Check that all MonoVarLocal references in an expression are in scope.
+{-| Returns one failing check for each `MonoVarLocal` in `expr` that is
+neither in `inScope` nor bound around it inside `expr`, and for each
+destructuring path whose root is out of scope. `context` names the node in the
+failure messages.
+
+A closure body sees `inScope` together with the closure's parameters and
+captures, while the capture expressions themselves are checked against
+`inScope`. The definitions of a chain of directly nested `let`s, gathered by
+`collectLetChain`, are in scope in every definition of the chain and in its
+final body. A destructuring's name is in scope in its body. A case's label, the
+first `Name` of `MonoCase`, is in scope in its decision tree and its jump
+branches; the case's root variable is not checked.
+
 -}
 checkExprLocalVarScoping : String -> Set.EverySet String String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 checkExprLocalVarScoping context inScope expr =
@@ -529,7 +569,6 @@ checkExprLocalVarScoping context inScope expr =
             List.concatMap (checkExprLocalVarScoping context inScope) exprs
 
         Mono.MonoClosure closureInfo bodyExpr _ ->
-            -- Add params and captures to scope
             let
                 paramNames =
                     List.map (\( name, _ ) -> name) closureInfo.params
@@ -542,7 +581,6 @@ checkExprLocalVarScoping context inScope expr =
                 bodyScope =
                     Set.union inScope (Set.union paramNames captureNames)
 
-                -- Check capture expressions in outer scope
                 captureIssues =
                     List.concatMap (\( _, e, _ ) -> checkExprLocalVarScoping context inScope e) closureInfo.captures
             in
@@ -560,9 +598,6 @@ checkExprLocalVarScoping context inScope expr =
                 ++ checkExprLocalVarScoping context inScope elseExpr
 
         Mono.MonoLet def bodyExpr _ ->
-            -- Treat any contiguous chain of MonoLet as a single
-            -- mutually recursive scope. This handles let-rec groups
-            -- which are encoded as nested MonoLet expressions.
             let
                 ( defs, finalBody ) =
                     collectLetChain def bodyExpr
@@ -579,7 +614,6 @@ checkExprLocalVarScoping context inScope expr =
 
                 defViolations : List (() -> Expect.Expectation)
                 defViolations =
-                    -- Pass groupScope so each def body sees all names in chain
                     defs
                         |> List.concatMap (checkDefLocalVarScoping context groupScope)
 
@@ -590,21 +624,16 @@ checkExprLocalVarScoping context inScope expr =
             defViolations ++ bodyViolations
 
         Mono.MonoDestruct (Mono.MonoDestructor name path _) bodyExpr _ ->
-            -- MonoDestruct binds 'name' by extracting a value via 'path' from an existing variable.
-            -- The path's root variable must be in scope; 'name' becomes in scope for bodyExpr.
             let
-                -- Check that the path's root variable is in scope
                 pathRootIssues =
                     checkPathRootInScope context inScope path
 
-                -- The body is checked with name in scope
                 destructScope =
                     Set.insert identity name inScope
             in
             pathRootIssues ++ checkExprLocalVarScoping context destructScope bodyExpr
 
         Mono.MonoCase scrutName _ decider branches _ ->
-            -- scrutName is bound in the case branches
             let
                 caseScope =
                     Set.insert identity scrutName inScope
@@ -629,7 +658,8 @@ checkExprLocalVarScoping context inScope expr =
             []
 
 
-{-| Check that the root variable of a MonoPath is in scope.
+{-| Returns one failing check, mentioning `context`, when the variable `path`
+starts from is not in `inScope`, and no checks otherwise.
 -}
 checkPathRootInScope : String -> Set.EverySet String String -> Mono.MonoPath -> List (() -> Expect.Expectation)
 checkPathRootInScope context inScope path =
@@ -644,7 +674,7 @@ checkPathRootInScope context inScope path =
         [ \() -> Expect.fail ("MONO_011: MonoPath root variable '" ++ rootName ++ "' is not in scope at " ++ context) ]
 
 
-{-| Extract the root variable name from a MonoPath.
+{-| Returns the name of the variable `path` starts from.
 -}
 getPathRootName : Mono.MonoPath -> String
 getPathRootName path =
@@ -662,7 +692,7 @@ getPathRootName path =
             getPathRootName subPath
 
 
-{-| Get the name from a MonoDef.
+{-| Returns the name `def` binds.
 -}
 getDefName : Mono.MonoDef -> String
 getDefName def =
@@ -674,15 +704,13 @@ getDefName def =
             name
 
 
-{-| Collect a contiguous chain of nested MonoLet expressions.
+{-| Returns the definitions of the chain of `let`s that starts with
+`firstDef` and continues through every `MonoLet` found directly in body
+position, outermost first, together with the body the chain ends in.
 
-Starting from the first `def` and `body`, walks down
-`MonoLet nextDef nextBody _` as long as they occur directly in the body
-position. Returns the full list of defs (in order) and the final body
-expression after the chain.
-
-This is used to handle mutually recursive let-bindings, which are encoded
-as nested MonoLet expressions but should be treated as a single scope.
+The typed optimizer turns a group of mutually recursive local definitions
+into directly nested `let`s, so the chain is treated as one scope. A chain of
+lets that are not mutually recursive is treated as one scope too.
 
 -}
 collectLetChain :
@@ -702,13 +730,14 @@ collectLetChain firstDef firstBody =
     go [ firstDef ] firstBody
 
 
-{-| Check local var scoping in a MonoDef.
+{-| Returns the out-of-scope failures `checkExprLocalVarScoping` gives for
+the body of `def`, with the name `def` binds, and for a tail-recursive
+definition its parameters, added to `inScope`.
 -}
 checkDefLocalVarScoping : String -> Set.EverySet String String -> Mono.MonoDef -> List (() -> Expect.Expectation)
 checkDefLocalVarScoping context inScope def =
     case def of
         Mono.MonoDef name expr ->
-            -- Name is in scope for recursive references
             let
                 defScope =
                     Set.insert identity name inScope
@@ -716,7 +745,6 @@ checkDefLocalVarScoping context inScope def =
             checkExprLocalVarScoping context defScope expr
 
         Mono.MonoTailDef name params expr ->
-            -- Name and params are in scope
             let
                 paramNames =
                     List.map (\( n, _ ) -> n) params
@@ -728,7 +756,9 @@ checkDefLocalVarScoping context inScope def =
             checkExprLocalVarScoping context defScope expr
 
 
-{-| Check local var scoping in a Decider tree.
+{-| Returns the out-of-scope failures of the expressions `decider` holds
+inline in its leaves. `Jump` leaves and the paths the tree tests are not
+checked.
 -}
 checkDeciderLocalVarScoping : String -> Set.EverySet String String -> Mono.Decider Mono.MonoChoice -> List (() -> Expect.Expectation)
 checkDeciderLocalVarScoping context inScope decider =
@@ -750,7 +780,8 @@ checkDeciderLocalVarScoping context inScope decider =
                 ++ checkDeciderLocalVarScoping context inScope fallback
 
 
-{-| Collect SpecId references from a node.
+{-| Returns the SpecIds named by `MonoVarGlobal` in `node`'s body. Nodes
+without a body name none.
 -}
 collectSpecIdRefsFromNode : Mono.MonoNode -> EverySet Int Int
 collectSpecIdRefsFromNode node =
@@ -780,7 +811,9 @@ collectSpecIdRefsFromNode node =
             collectSpecIdRefsFromExpr expr
 
 
-{-| Collect SpecId references from a MonoExpr.
+{-| Returns the SpecIds named by `MonoVarGlobal` in `expr` and its
+subexpressions. A case contributes only its jump branches: the expressions its
+decision tree holds inline are not searched.
 -}
 collectSpecIdRefsFromExpr : Mono.MonoExpr -> EverySet Int Int
 collectSpecIdRefsFromExpr expr =
@@ -860,7 +893,7 @@ collectSpecIdRefsFromExpr expr =
             Set.empty
 
 
-{-| Collect SpecId references from a MonoDef.
+{-| Returns the SpecIds named by `MonoVarGlobal` in the body of `def`.
 -}
 collectSpecIdRefsFromDef : Mono.MonoDef -> EverySet Int Int
 collectSpecIdRefsFromDef def =
@@ -874,16 +907,16 @@ collectSpecIdRefsFromDef def =
 
 
 -- ============================================================================
--- MONO_005: REGISTRY COMPLETENESS CHECKING
+-- REGISTRY COMPLETENESS
 -- ============================================================================
 
 
-{-| Collect specialization registry checks.
+{-| Returns one failing check for each SpecId with an entry in the registry's
+`reverseMapping` that has no node, in ascending order.
 -}
 collectRegistryChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectRegistryChecks (Mono.MonoGraph data) =
     let
-        -- Get all defined SpecIds
         definedSpecIds =
             Array.foldl
                 (\maybeNode ( idx, acc ) ->
@@ -898,11 +931,9 @@ collectRegistryChecks (Mono.MonoGraph data) =
                 data.nodes
                 |> Tuple.second
 
-        -- Get all SpecIds from registry
         registrySpecIds =
             collectRegistrySpecIds data.registry
 
-        -- Check that all registry SpecIds are defined
         undefinedRegistrySpecIds =
             Set.diff registrySpecIds definedSpecIds
                 |> Set.toList compare
@@ -912,12 +943,11 @@ collectRegistryChecks (Mono.MonoGraph data) =
         undefinedRegistrySpecIds
 
 
-{-| Collect all SpecIds from the specialization registry.
+{-| Returns the SpecIds that have an entry in `registry`'s `reverseMapping`,
+which is indexed by SpecId and holds `Nothing` where a SpecId has no entry.
 -}
 collectRegistrySpecIds : Mono.SpecializationRegistry -> EverySet Int Int
 collectRegistrySpecIds registry =
-    -- SpecializationRegistry has reverseMapping : Array (Maybe (Global, MonoType, Maybe LambdaId))
-    -- where the index is SpecId, so we collect indices of non-Nothing entries
     Array.toIndexedList registry.reverseMapping
         |> List.filterMap
             (\( idx, maybeEntry ) ->

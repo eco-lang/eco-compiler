@@ -10,10 +10,35 @@ module Compiler.Data.Name exposing
     , negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replModule, replValueToPrint
     )
 
-{-| String-based names used throughout the compiler for identifiers, module names, and type names.
+{-| Every identifier the compiler handles is a `Name`, and this module holds the
+rules that are carried in how a name is spelled.
 
-This module provides utilities for working with names including creating them from various sources,
-checking for special prefixes like kernel modules, and providing constants for common Elm types and modules.
+A `Name` is the text of an identifier: a value, type, constructor, record
+field, type variable or module, spelled as in source or as the compiler makes
+it up. A module name keeps its dots, as in `Elm.Kernel.List`.
+
+Three spelling rules matter outside this module.
+
+A _kernel module_ is one whose name starts with `Elm.Kernel.` or `Eco.Kernel.`
+and whose implementation is not written in Elm. The part before `.Kernel.`,
+`Elm` or `Eco`, is its _kernel prefix_. `isKernel` recognises these names and
+`getKernel` splits one into its prefix and the rest.
+
+A type variable's constraint is written in its name. A variable whose name
+starts with `number`, `comparable`, `appendable` or `compappend` is
+_super-constrained_: it can stand only for a type of that class. The test is a
+prefix match, so `number2` and `comparableKey` are constrained too.
+
+A name the compiler makes up must not clash with one from source. The parser
+never starts an identifier or an operator with `_`, so `fromVarIndex` and
+`fromManyNames` start their names with it. `fromTypeVariable` and
+`fromTypeVariableScheme` make ordinary-looking names, and nothing here checks
+them against names already in use.
+
+Besides a few conversion and splitting helpers, the rest of the module is
+constants for names the compiler has to recognise or produce. Each is only
+text, so one constant can name several things: `maybe` is both the module
+`Maybe` and its type.
 
 
 # Core Type
@@ -46,12 +71,12 @@ checking for special prefixes like kernel modules, and providing constants for c
 @docs isNumberType, isComparableType, isAppendableType, isCompappendType
 
 
-# Common Type Names
+# Names of Common Types and Modules
 
 @docs int, float, bool, char, string, maybe, result, list, array, dict, bytes, tuple, jsArray, json, task, router, cmd, sub
 
 
-# Module Names
+# Names of Other Modules, Kernel Modules and Types
 
 @docs platform, virtualDom, shader, debug, debugger, bitwise, basics, utils
 
@@ -69,8 +94,13 @@ import Utils.Crash exposing (crash)
 -- ====== NAME ======
 
 
-{-| A string-based name used throughout the compiler for identifiers, module names, and type names.
-This is a simple type alias to String for clarity and type safety.
+{-| The text of an identifier, spelled as in source or as the compiler makes it
+up.
+
+This is a name for `String`, not a new type. Any `String` is accepted where a
+`Name` is expected, so the compiler cannot tell a value name from a module
+name, or a qualified name from a bare one.
+
 -}
 type alias Name =
     String
@@ -80,14 +110,14 @@ type alias Name =
 -- ====== TO ======
 
 
-{-| Convert a Name to a list of characters.
+{-| Returns the characters of a name, first to last.
 -}
 toChars : Name -> List Char
 toChars =
     String.toList
 
 
-{-| Convert a Name to an Elm String (identity function since Name is a String alias).
+{-| Returns the name unchanged, since a `Name` already is a `String`.
 -}
 toElmString : Name -> String
 toElmString =
@@ -98,7 +128,8 @@ toElmString =
 -- ====== FROM ======
 
 
-{-| Extract a Name from a source string using start and end indices (substring extraction).
+{-| Returns the part of `src` from index `start` up to, but not including, index
+`end`, counted as `String.slice` counts them.
 -}
 fromPtr : String -> Int -> Int -> Name
 fromPtr src start end =
@@ -109,14 +140,16 @@ fromPtr src start end =
 -- ====== HAS DOT ======
 
 
-{-| Check if a Name contains a dot character (used for qualified names like "List.map").
+{-| Tells whether the name contains a `.`, as a qualified name or a dotted module
+name does.
 -}
 hasDot : Name -> Bool
 hasDot =
     String.contains "."
 
 
-{-| Split a Name by dot characters into a list of segments.
+{-| Splits a name at every `.`, so `Elm.Kernel.List` gives
+`[ "Elm", "Kernel", "List" ]`. A name with no dot gives a list of itself alone.
 -}
 splitDots : Name -> List String
 splitDots =
@@ -127,9 +160,13 @@ splitDots =
 -- ====== GET KERNEL ======
 
 
-{-| Strip the "Elm.Kernel." or "Eco.Kernel." prefix from a kernel module name
-and return the prefix kind ("Elm" or "Eco") along with the stripped module name.
-Crashes if the name is not a kernel module.
+{-| Splits the name of a kernel module into its kernel prefix, `Elm` or `Eco`, and
+the rest of the name, so `Elm.Kernel.List` gives `( "Elm", "List" )`.
+
+It crashes, with the message `AssertionFailed`, on a name that starts with
+neither `Elm.Kernel.` nor `Eco.Kernel.`; `isKernel` accepts exactly the names it
+can split.
+
 -}
 getKernel : Name -> ( Name, Name )
 getKernel name =
@@ -147,66 +184,87 @@ getKernel name =
 -- ====== STARTS WITH ======
 
 
-{-| Check if a Name starts with "Elm.Kernel." or "Eco.Kernel." prefix (identifies kernel modules).
+{-| Tells whether the name is that of a kernel module: one that starts with
+`Elm.Kernel.` or `Eco.Kernel.`.
 -}
 isKernel : Name -> Bool
 isKernel name =
     String.startsWith prefixKernel name || String.startsWith prefixEcoKernel name
 
 
-{-| Check if a Name starts with "number" prefix (identifies number type constraint variables).
+{-| Tells whether a type variable with this name is constrained to numbers, which
+it is whenever the name starts with `number`.
 -}
 isNumberType : Name -> Bool
 isNumberType =
     String.startsWith prefixNumber
 
 
-{-| Check if a Name starts with "comparable" prefix (identifies comparable type constraint variables).
+{-| Tells whether a type variable with this name is constrained to comparable
+types, which it is whenever the name starts with `comparable`.
 -}
 isComparableType : Name -> Bool
 isComparableType =
     String.startsWith prefixComparable
 
 
-{-| Check if a Name starts with "appendable" prefix (identifies appendable type constraint variables).
+{-| Tells whether a type variable with this name is constrained to appendable
+types, which it is whenever the name starts with `appendable`.
 -}
 isAppendableType : Name -> Bool
 isAppendableType =
     String.startsWith prefixAppendable
 
 
-{-| Check if a Name starts with "compappend" prefix (identifies compappend type constraint variables).
+{-| Tells whether a type variable with this name is constrained to types that are
+both comparable and appendable, which it is whenever the name starts with
+`compappend`.
 -}
 isCompappendType : Name -> Bool
 isCompappendType =
     String.startsWith prefixCompappend
 
 
+{-| The start of the name of every kernel module whose kernel prefix is `Elm`.
+-}
 prefixKernel : Name
 prefixKernel =
     "Elm.Kernel."
 
 
+{-| The start of the name of every kernel module whose kernel prefix is `Eco`.
+-}
 prefixEcoKernel : Name
 prefixEcoKernel =
     "Eco.Kernel."
 
 
+{-| The start of the name of every type variable constrained to numbers.
+-}
 prefixNumber : Name
 prefixNumber =
     "number"
 
 
+{-| The start of the name of every type variable constrained to comparable
+types.
+-}
 prefixComparable : Name
 prefixComparable =
     "comparable"
 
 
+{-| The start of the name of every type variable constrained to appendable
+types.
+-}
 prefixAppendable : Name
 prefixAppendable =
     "appendable"
 
 
+{-| The start of the name of every type variable constrained to types that are
+both comparable and appendable.
+-}
 prefixCompappend : Name
 prefixCompappend =
     "compappend"
@@ -216,13 +274,17 @@ prefixCompappend =
 -- ====== FROM VAR INDEX ======
 
 
-{-| Generate a variable name from an index (e.g., 0 -> "_v0", 1 -> "_v1").
+{-| Returns the generated variable name for index `n`: `_v` followed by the
+index, so 0 gives `_v0`. It cannot clash with a name from source, but it is
+only as unique as the index.
 -}
 fromVarIndex : Int -> Name
 fromVarIndex n =
     writeDigitsAtEnd "_v" n
 
 
+{-| Returns `prefix` followed by the decimal digits of `n`.
+-}
 writeDigitsAtEnd : String -> Int -> String
 writeDigitsAtEnd prefix n =
     prefix ++ String.fromInt n
@@ -232,8 +294,14 @@ writeDigitsAtEnd prefix n =
 -- ====== FROM TYPE VARIABLE ======
 
 
-{-| Create a type variable name with an index suffix. If index is 0, returns the name unchanged.
-If the name ends with a digit, adds an underscore before the index (e.g., "a2" + 3 -> "a2\_3").
+{-| Returns `name` numbered with `index`, for telling apart type variables that
+share a name.
+
+An `index` of zero or less leaves the name unchanged, and so does an empty
+name. Otherwise the digits of `index` are appended, after an underscore when
+the name already ends in a digit: `a` with 3 gives `a3`, and `a2` with 3 gives
+`a2_3`, which keeps it apart from `a` with 23.
+
 -}
 fromTypeVariable : Name -> Int -> Name
 fromTypeVariable name index =
@@ -260,8 +328,13 @@ fromTypeVariable name index =
 -- ====== FROM TYPE VARIABLE SCHEME ======
 
 
-{-| Generate a type variable name from a scheme index (0 -> "a", 1 -> "b", ..., 26 -> "a26", etc.).
-Uses lowercase letters with numeric suffixes for indices beyond 25.
+{-| Returns the name for the type variable numbered `scheme`, counting from 0.
+
+The first 26 are the letters `a` to `z`. From 26 on, the letter is the one for
+`scheme` modulo 26, and the number after it is `scheme` less that remainder: 26
+gives `a26`, 27 gives `b26` and 52 gives `a52`. Different non-negative numbers
+give different names.
+
 -}
 fromTypeVariableScheme : Int -> Name
 fromTypeVariableScheme scheme =
@@ -271,13 +344,6 @@ fromTypeVariableScheme scheme =
             |> String.fromChar
 
     else
-        -- do
-        --     let (extra, letter) = List.quotRem scheme 26
-        --     let size = 1 + getIndexSize extra
-        --     mba <- newByteArray size
-        --     writeWord8 mba 0 (0x61 + Word.fromInt letter)
-        --     writeDigitsAtEnd mba size extra
-        --     freeze mba
         let
             letter : Int
             letter =
@@ -297,19 +363,15 @@ fromTypeVariableScheme scheme =
 
 
 -- ====== FROM MANY NAMES ======
---
--- Creating a unique name by combining all the subnames can create names
--- longer than 256 bytes relatively easily. So instead, the first given name
--- (e.g. foo) is prefixed chars that are valid in JS but not Elm (e.g. _M$foo)
---
--- This should be a unique name since 0.19 disallows shadowing. It would not
--- be possible for multiple top-level cycles to include values with the same
--- name, so the important thing is to make the cycle name distinct from the
--- normal name. Same logic for destructuring patterns like (x,y)
 
 
-{-| Create a unique name from multiple names by prefixing the first name with "\_M$".
-This creates names valid in JavaScript but not in Elm, avoiding conflicts.
+{-| Returns one name standing for a group of names: `_M$` followed by the first
+of them, so `[ "x", "y" ]` gives `_M$x`.
+
+Only the first name is used, so the result is as unique as that name: two
+groups with the same first name get the same name. It never equals a name from
+source, including the first name itself. An empty list gives `_M$` alone.
+
 -}
 fromManyNames : List Name -> Name
 fromManyNames names =
@@ -317,12 +379,13 @@ fromManyNames names =
         [] ->
             blank
 
-        -- NOTE: this case is needed for (let _ = Debug.log "x" x in ...)
-        -- but maybe unused patterns should be stripped out instead
         firstName :: _ ->
             blank ++ firstName
 
 
+{-| The start of every name `fromManyNames` makes. The parser never starts a name
+with `_`, so no name from source begins this way.
+-}
 blank : Name
 blank =
     "_M$"
@@ -332,7 +395,7 @@ blank =
 -- ====== FROM WORDS ======
 
 
-{-| Construct a Name from a list of characters.
+{-| Returns the name spelled by the characters, in order.
 -}
 fromWords : List Char -> Name
 fromWords words =
@@ -340,19 +403,11 @@ fromWords words =
 
 
 
--- writeWords : MBA s -> Int -> List Word.Word8 -> ST s ()
--- writeWords !mba !i words =
---     case words of
---         [] ->
---             ()
---         w :: ws ->
---             do
---                 writeWord8 mba i w
---                 writeWords mba (i + 1) ws
 -- ====== SEP BY ======
 
 
-{-| Join two Names with a separator character between them.
+{-| Returns `ba1` and `ba2` joined by `sep`, so `sepBy '.' "List" "map"` gives
+`List.map`.
 -}
 sepBy : Char -> Name -> Name -> Name
 sepBy sep ba1 ba2 =
@@ -363,266 +418,280 @@ sepBy sep ba1 ba2 =
 -- ====== COMMON NAMES ======
 
 
-{-| The "Int" type name.
+{-| The name of the type `Int`.
 -}
 int : Name
 int =
     "Int"
 
 
-{-| The "Float" type name.
+{-| The name of the type `Float`.
 -}
 float : Name
 float =
     "Float"
 
 
-{-| The "Bool" type name.
+{-| The name of the type `Bool`.
 -}
 bool : Name
 bool =
     "Bool"
 
 
-{-| The "Char" type name.
+{-| The name `Char`, of both the module and its type.
 -}
 char : Name
 char =
     "Char"
 
 
-{-| The "String" type name.
+{-| The name `String`, of both the module and its type.
 -}
 string : Name
 string =
     "String"
 
 
-{-| The "Maybe" type name.
+{-| The name `Maybe`, of both the module and its type.
 -}
 maybe : Name
 maybe =
     "Maybe"
 
 
-{-| The "Result" type name.
+{-| The name `Result`, of both the module and its type.
 -}
 result : Name
 result =
     "Result"
 
 
-{-| The "List" type name.
+{-| The name `List`: of the module and its type, and of the kernel module
+`Elm.Kernel.List` without its `Elm.Kernel.` part.
 -}
 list : Name
 list =
     "List"
 
 
-{-| The "Array" type name.
+{-| The name `Array`, of both the module and its type.
 -}
 array : Name
 array =
     "Array"
 
 
-{-| The "Dict" type name.
+{-| The name of the module `Dict`.
 -}
 dict : Name
 dict =
     "Dict"
 
 
-{-| The "Bytes" type name.
+{-| The name of the type `Bytes`.
 -}
 bytes : Name
 bytes =
     "Bytes"
 
 
-{-| The "Tuple" type name.
+{-| The name of the module `Tuple`.
 -}
 tuple : Name
 tuple =
     "Tuple"
 
 
-{-| The "JsArray" type name for JavaScript arrays.
+{-| The text `JsArray`: the name of the type `Elm.JsArray.JsArray`, and the
+kernel module `Elm.Kernel.JsArray` without its `Elm.Kernel.` part. elm/core
+has no module named `JsArray`.
 -}
 jsArray : Name
 jsArray =
     "JsArray"
 
 
-{-| The "Json" type name.
+{-| The name of the kernel module `Elm.Kernel.Json`, without its `Elm.Kernel.`
+part.
 -}
 json : Name
 json =
     "Json"
 
 
-{-| The "Task" type name.
+{-| The name of the type `Task`.
 -}
 task : Name
 task =
     "Task"
 
 
-{-| The "Router" type name for platform routing.
+{-| The name of the type `Router`.
 -}
 router : Name
 router =
     "Router"
 
 
-{-| The "Cmd" type name for commands.
+{-| The name `Cmd`, of the type and of the alias `Platform.Cmd` is imported under
+by default.
 -}
 cmd : Name
 cmd =
     "Cmd"
 
 
-{-| The "Sub" type name for subscriptions.
+{-| The name `Sub`, of the type and of the alias `Platform.Sub` is imported under
+by default.
 -}
 sub : Name
 sub =
     "Sub"
 
 
-{-| The "Platform" module name.
+{-| The name `Platform`: of the module, and of the kernel module
+`Elm.Kernel.Platform` without its `Elm.Kernel.` part.
 -}
 platform : Name
 platform =
     "Platform"
 
 
-{-| The "VirtualDom" module name.
+{-| The name `VirtualDom`: of the module, and of the kernel module
+`Elm.Kernel.VirtualDom` without its `Elm.Kernel.` part.
 -}
 virtualDom : Name
 virtualDom =
     "VirtualDom"
 
 
-{-| The "Shader" type name for WebGL shaders.
+{-| The name of the type `Shader`, the type of a GLSL shader literal.
 -}
 shader : Name
 shader =
     "Shader"
 
 
-{-| The "Debug" module name.
+{-| The name `Debug`: of the module, and of the kernel module `Elm.Kernel.Debug`
+without its `Elm.Kernel.` part.
 -}
 debug : Name
 debug =
     "Debug"
 
 
-{-| The "Debugger" module name.
+{-| The name of the kernel module `Elm.Kernel.Debugger`, without its
+`Elm.Kernel.` part.
 -}
 debugger : Name
 debugger =
     "Debugger"
 
 
-{-| The "Bitwise" module name.
+{-| The name of the module `Bitwise`.
 -}
 bitwise : Name
 bitwise =
     "Bitwise"
 
 
-{-| The "Basics" module name.
+{-| The name of the module `Basics`.
 -}
 basics : Name
 basics =
     "Basics"
 
 
-{-| The "Utils" module name.
+{-| The name of the kernel module `Elm.Kernel.Utils`, without its `Elm.Kernel.`
+part.
 -}
 utils : Name
 utils =
     "Utils"
 
 
-{-| The "negate" function name.
+{-| The name of the function `negate`.
 -}
 negate : Name
 negate =
     "negate"
 
 
-{-| The "True" boolean constructor name.
+{-| The name of the constructor `True`.
 -}
 true : Name
 true =
     "True"
 
 
-{-| The "False" boolean constructor name.
+{-| The name of the constructor `False`.
 -}
 false : Name
 false =
     "False"
 
 
-{-| The "Value" type name (used in Json.Decode).
+{-| The name of the type `Value`, as in `Json.Encode.Value`.
 -}
 value : Name
 value =
     "Value"
 
 
-{-| The "Node" type name (used in Html).
+{-| The name of the type `Node`, as in `VirtualDom.Node`.
 -}
 node : Name
 node =
     "Node"
 
 
-{-| The "Program" type name for Elm applications.
+{-| The name of the type `Program`.
 -}
 program : Name
 program =
     "Program"
 
 
-{-| The "main" function name for program entry points.
+{-| The name `main`, of the value a program starts from.
 -}
 main_ : Name
 main_ =
     "main"
 
 
-{-| The "Main" module name for program entry modules.
+{-| The name `Main`, given to a module whose source has no `module` line.
 -}
 mainModule : Name
 mainModule =
     "Main"
 
 
-{-| The "$" operator name for function application.
+{-| The name `$`, which the parser never reads as a name of its own. The compiler
+gives it to values it makes up, among them the argument of a port encoder or
+decoder it builds and the value name of a kernel module's global.
 -}
 dollar : Name
 dollar =
     "$"
 
 
-{-| The "identity" function name.
+{-| The name of the function `identity`.
 -}
 identity_ : Name
 identity_ =
     "identity"
 
 
-{-| The "Elm\_Repl" module name for REPL sessions.
+{-| The name `Elm_Repl`, of the module the REPL compiles its input in.
 -}
 replModule : Name
 replModule =
     "Elm_Repl"
 
 
-{-| The "repl\_input\_value\_" variable name for REPL value printing.
+{-| The name the REPL declares an entered expression under, so that its value
+can be printed.
 -}
 replValueToPrint : Name
 replValueToPrint =

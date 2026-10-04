@@ -1,10 +1,61 @@
 module SourceIR.ClosureCaptureBoolCases exposing (expectSuite)
 
-{-| Test cases for Bool in tail-recursive carry variables, Bool captured in
-closures via partial application, and heterogeneous closure ABI with mixed
-capture types.
+{-| Builds programs that pass a `Bool` across a function or closure boundary,
+and programs that choose between two closures at one call site.
 
-Covers gaps 4, 5, 14 from e2e-to-elmtest.md.
+In the native back end a `Bool` has two forms: `i1` as an SSA operand, and
+`!eco.value`, a boxed value, at function and closure boundaries, as
+`Compiler.Generate.MLIR.Types` describes. A `Bool` parameter of a
+tail-recursive function and a `Bool` captured by a closure are both at such a
+boundary, and inside the function each is the condition of an `if`, where the
+`Bool` is an operand. These programs give a pipeline stage those shapes,
+together with closures that capture different values and are called from the
+same place.
+
+Nothing here asserts anything. `expectSuite` runs the cases in order inside one
+test through `Compiler.BulkCheck.bulkCheck`, handing each built module to the
+caller's `expectFn` and stopping at the first case that fails, and `expectFn`
+decides which stage the module goes through and what passes.
+
+Every program is built by `makeModule "testValue"`: a module named `Test` that
+imports only `Basics` and `List` and has one top-level value, `testValue`.
+Every function is a `let` definition inside `testValue`. A closure is made by
+partial application, giving a function fewer arguments than it takes, either as
+a definition with no arguments such as `trueF = boolToInt True` or, in
+`heteroClosureIntFloat`, as a branch of an `if`.
+
+A _carry variable_ is a parameter that a tail-recursive function passes,
+possibly changed, to its own next call; in both loops here every self-call is
+in tail position.
+
+The cases, in the order `testCases` lists them:
+
+  - `tailRecBoolCarry` carries a `Bool` that a branch sets to `True`.
+  - `tailRecBoolFlag` carries a `Bool`, recomputed from each element while it
+    is `True` and kept `False` once it is not, that decides whether the next
+    element is added.
+  - `closureCaptureBoolTrue` and `closureCaptureBoolFalse` each make a closure
+    that captures only a `Bool`, one `True` and one `False`, and apply it.
+  - `closureCaptureBoolAndInt` makes a closure that captures a `Bool` and an
+    integer, and applies it.
+  - `heteroClosureIntFloat` picks one of two closures of the same function,
+    capturing different integers, with an `if` on the constant `True`, and
+    applies it.
+  - `heteroClosureDynamicInt` does the same with closures bound to names and
+    an `if` on a `let`-bound comparison.
+  - `heteroClosureMixedOps` picks between closures of two different
+    functions, each capturing an integer.
+
+Two labels in `testCases` speak of a `Float` capture, but no case builds a
+`Float`.
+
+Among what is not tested:
+
+  - a closure that captures a `Float`, or two closures with captures of
+    different types at one call site;
+  - a `Bool` captured by a lambda rather than by partial application;
+  - a `let`-bound function whose result is a `Bool`;
+  - a top-level function: every function is `let`-bound.
 
 -}
 
@@ -31,15 +82,22 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named `"Closure capture Bool and heterogeneous ABI "`
+followed by `condStr`, that hands the cases' modules to `expectFn` in order and
+stops at the first case that fails, failing with that case's label.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Closure capture Bool and heterogeneous ABI " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the eight cases, each a label paired with its program builder
+applied to `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
-    [ -- Gap 4: Bool as tail-recursive carry variable
+    [ -- Bool as a tail-recursive carry variable
       { label = "Bool as tail-rec carry: searchList toggles Bool through loop"
       , run = tailRecBoolCarry expectFn
       }
@@ -47,7 +105,7 @@ testCases expectFn =
       , run = tailRecBoolFlag expectFn
       }
 
-    -- Gap 5: Bool captured in closure via partial application
+    -- Bool captured in a closure by partial application
     , { label = "Bool captured in closure: boolToInt True partially applied"
       , run = closureCaptureBoolTrue expectFn
       }
@@ -58,7 +116,7 @@ testCases expectFn =
       , run = closureCaptureBoolAndInt expectFn
       }
 
-    -- Gap 14: Heterogeneous closure ABI (Int vs Float captures)
+    -- Closures with different captures, called from one place
     , { label = "Heterogeneous closure: Int capture vs Float capture in if branches"
       , run = heteroClosureIntFloat expectFn
       }
@@ -73,20 +131,35 @@ testCases expectFn =
 
 
 -- ============================================================================
--- GAP 4: BOOL AS TAIL-RECURSIVE CARRY VARIABLE
+-- BOOL AS A TAIL-RECURSIVE CARRY VARIABLE
 -- ============================================================================
 
 
-{-| searchList : Bool -> Int -> List Int -> Int
-searchList found target list =
-case list of
-[] -> if found then 1 else 0
-x :: xs -> if x == target then searchList True target xs else searchList found target xs
+{-| Returns `expectFn` applied to the module whose `testValue` is:
 
-testValue = searchList False 5 [1, 5, 3]
+    testValue =
+        let
+            searchList found target list =
+                case list of
+                    [] ->
+                        if found then
+                            1
 
-Bool parameter is carried through the tail-rec loop and toggled in a branch.
-Tests SSA-to-ABI conversion for Bool carry type.
+                        else
+                            0
+
+                    x :: xs ->
+                        if x == target then
+                            searchList True target xs
+
+                        else
+                            searchList found target xs
+        in
+        searchList False 5 [ 1, 5, 3 ]
+
+`found` is the carry variable. It starts `False`, the branch for an element
+equal to `target` passes `True` in its place, and the other branch passes it on
+unchanged. `testValue` evaluates to 1.
 
 -}
 tailRecBoolCarry : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -126,19 +199,30 @@ tailRecBoolCarry expectFn _ =
     expectFn modul
 
 
-{-| countWhile : Bool -> Int -> List Int -> Int
-countWhile active acc list =
-case list of
-[] -> acc
-x :: xs ->
-if active then
-countWhile (x > 0) (acc + x) xs
-else
-countWhile active acc xs
+{-| Returns `expectFn` applied to the module whose `testValue` is:
 
-testValue = countWhile True 0 [3, -1, 5, 2]
+    testValue =
+        let
+            countWhile active acc list =
+                case list of
+                    [] ->
+                        acc
 
-Bool flag controls accumulation and is updated based on element value.
+                    x :: xs ->
+                        if active then
+                            countWhile (x > 0) (acc + x) xs
+
+                        else
+                            countWhile active acc xs
+        in
+        countWhile True 0 [ 3, -1, 5, 2 ]
+
+`active` is the carry variable: while it holds, an element is added to `acc`
+and the next `active` is whether that element was positive, and once it is
+`False` it stays `False`. So `-1` is still added, and `testValue` evaluates
+to 2. The `-1` is built directly as a negative integer literal (`Src.Int`),
+which the expression parser does not produce; it parses `-1` as the negation
+of `1`.
 
 -}
 tailRecBoolFlag : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -183,19 +267,28 @@ tailRecBoolFlag expectFn _ =
 
 
 -- ============================================================================
--- GAP 5: BOOL CAPTURED IN CLOSURE VIA PARTIAL APPLICATION
+-- BOOL CAPTURED IN A CLOSURE BY PARTIAL APPLICATION
 -- ============================================================================
 
 
-{-| boolToInt : Bool -> Int -> Int
-boolToInt flag x = if flag then x else 0
+{-| Returns `expectFn` applied to the module whose `testValue` is:
 
-trueF = boolToInt True
-testValue = trueF 42
+    testValue =
+        let
+            boolToInt flag x =
+                if flag then
+                    x
 
-Per REP\_CLOSURE\_001 and FORBID\_CLOSURE\_001, Bool in closures must be
-!eco.value, not bare i1. Partially applying with True creates a closure
-capturing the Bool.
+                else
+                    0
+
+            trueF =
+                boolToInt True
+        in
+        trueF 42
+
+`trueF` is a closure whose one capture is the `Bool` `True`. `testValue`
+evaluates to 42.
 
 -}
 closureCaptureBoolTrue : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -220,10 +313,24 @@ closureCaptureBoolTrue expectFn _ =
     expectFn modul
 
 
-{-| Same as above but with False capture.
+{-| Returns `expectFn` applied to the module of `closureCaptureBoolTrue` with
+`False` captured instead, whose `testValue` is:
 
-falseF = boolToInt False
-testValue = falseF 42
+    testValue =
+        let
+            boolToInt flag x =
+                if flag then
+                    x
+
+                else
+                    0
+
+            falseF =
+                boolToInt False
+        in
+        falseF 42
+
+`testValue` evaluates to 0.
 
 -}
 closureCaptureBoolFalse : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -248,14 +355,24 @@ closureCaptureBoolFalse expectFn _ =
     expectFn modul
 
 
-{-| chooseAndApply : Bool -> Int -> Int -> Int
-chooseAndApply flag offset x = if flag then x + offset else x - offset
+{-| Returns `expectFn` applied to the module whose `testValue` is:
 
-testValue =
-let f = chooseAndApply True 10
-in f 5
+    testValue =
+        let
+            chooseAndApply flag offset x =
+                if flag then
+                    x + offset
 
-Captures both Bool and Int in the same closure.
+                else
+                    x - offset
+
+            f =
+                chooseAndApply True 10
+        in
+        f 5
+
+`f` is a closure that captures a `Bool` and an integer. `testValue` evaluates
+to 15.
 
 -}
 closureCaptureBoolAndInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -285,22 +402,30 @@ closureCaptureBoolAndInt expectFn _ =
 
 
 -- ============================================================================
--- GAP 14: HETEROGENEOUS CLOSURE ABI (INT VS FLOAT CAPTURES)
+-- CLOSURES WITH DIFFERENT CAPTURES, CALLED FROM ONE PLACE
 -- ============================================================================
 
 
-{-| addN : Int -> Int -> Int
-addN n x = n + x
+{-| Returns `expectFn` applied to the module whose `testValue` is:
 
-mulF : Float -> Int -> Float
-mulF factor x = factor \* toFloat x
+    testValue =
+        let
+            addN n x =
+                n + x
+        in
+        let
+            f =
+                if True then
+                    addN 10
 
-testValue =
-let
-f = if True then addN 10 else addN 20
-in f 3
+                else
+                    addN 20
+        in
+        f 3
 
-Tests two closures with different Int captures at the same call site.
+The two closures of `addN` capture different integers and meet in `f`, which
+is called once. `testValue` evaluates to 13. The case's label speaks of a
+`Float` capture, but both captures are integer literals.
 
 -}
 heteroClosureIntFloat : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -329,11 +454,34 @@ heteroClosureIntFloat expectFn _ =
     expectFn modul
 
 
-{-| Tests dynamically chosen closures with different Int captures.
+{-| Returns `expectFn` applied to the module whose `testValue` is:
 
-add5 = addN 5
-add10 = addN 10
-let g = if cond then add5 else add10 in g 7
+    testValue =
+        let
+            addN n x =
+                n + x
+
+            add5 =
+                addN 5
+
+            add10 =
+                addN 10
+
+            cond =
+                1 > 0
+
+            g =
+                if cond then
+                    add5
+
+                else
+                    add10
+        in
+        g 7
+
+Unlike `heteroClosureIntFloat`, the closures are bound to names before the
+choice, and the condition is a `let`-bound comparison rather than the
+constant `True`. `testValue` evaluates to 12.
 
 -}
 heteroClosureDynamicInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -370,25 +518,36 @@ heteroClosureDynamicInt expectFn _ =
     expectFn modul
 
 
-{-| Tests closures with Float capture vs Int capture at the same call site.
+{-| Returns `expectFn` applied to the module whose `testValue` is:
 
-scaleFloat : Float -> Int -> Int
-scaleFloat factor x =
-let scaled = factor \* toFloat x
-in truncate scaled
+    testValue =
+        let
+            addInt n x =
+                n + x
 
-addInt : Int -> Int -> Int
-addInt n x = n + x
+            mulInt factor x =
+                factor * x
+        in
+        let
+            useAdd =
+                addInt 10
 
-testValue =
-let
-useFloat = scaleFloat 2.5
-useInt = addInt 10
-f = if True then useInt else useInt
-in f 4
+            useMul =
+                mulInt 3
 
-Exercises heterogeneous capture types (Float vs Int) requiring compatible
-closure calling convention.
+            f =
+                if True then
+                    useAdd
+
+                else
+                    useMul
+        in
+        f 4
+
+Unlike the other two cases in this group, the closures that meet in `f` are of
+two different functions, each capturing an integer, and `testValue`
+evaluates to 14. The case's label speaks of a `Float` capture, but no `Float`
+appears.
 
 -}
 heteroClosureMixedOps : (Src.Module -> Expectation) -> (() -> Expectation)

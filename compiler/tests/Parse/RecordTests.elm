@@ -1,5 +1,39 @@
 module Parse.RecordTests exposing (suite)
 
+{-| Without these tests, a change could go unnoticed in the regions the
+expression parser records for the empty record `{}` and for a one-field record
+update, or in the error it gives when the target of an update starts with an
+upper-case letter.
+
+A record update is written `{ target | field = value }`. After the `{` and any
+whitespace, the parser accepts either `}` or a lower-case variable name, so a
+target that starts with an upper-case letter is rejected at its first
+character. That failure is an `E.RecordOpen` error at the target's position,
+wrapped in `E.Record`, whose own row and column are where the record began, at
+the `{`.
+
+The fixture is six one-line source strings, each parsed as a whole expression
+by `record`. The tests establish:
+
+  - `{}` parses to an empty `Src.Record` with no comments, whose region runs
+    from row 1, column 1 to row 1, column 3. A region's end is the position
+    just after its last character.
+  - `{ a | x = 2 }` parses to a `Src.Update` with no comments anywhere. Its
+    region runs from column 1 to column 14 of row 1, its target is the
+    variable `a` at columns 3 to 4, and its one field is `x` at columns 7 to
+    8, set to the integer `2` at columns 11 to 12.
+  - `{ A.b | x = 2 }`, `{ A.B.c | x = 2 }`, `{ A | x = 2 }` and
+    `{ A.B | x = 2 }` each fail with `E.RecordOpen` at row 1, column 3,
+    inside `E.Record` at row 1, column 1. All four fail at the upper-case
+    first letter, so these tests do not tell a qualified target apart from
+    any other target that starts with an upper-case letter.
+
+Among what is not tested: record literals with fields, updates of more than one
+field, a qualified lower-case target such as `{ a.b | x = 2 }`, record field
+access, comments inside the braces, and indentation errors.
+
+-}
+
 import Compiler.AST.Source as Src
 import Compiler.Parse.Expression exposing (expression)
 import Compiler.Parse.Primitives as P
@@ -9,6 +43,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The record parser tests, grouped under "Parse.Record".
+-}
 suite : Test
 suite =
     Test.describe "Parse.Record"
@@ -58,6 +94,14 @@ suite =
         ]
 
 
+{-| Parses `str` as one complete expression and returns the expression alone,
+dropping the comments and end position the expression parser returns with it.
+
+On failure it returns the parser's error. If the parse succeeds but stops
+before the end of `str`, the error is `E.Start` at the position where it
+stopped.
+
+-}
 record : String -> Result E.Expr Src.Expr
 record str =
     P.fromByteString expression E.Start str

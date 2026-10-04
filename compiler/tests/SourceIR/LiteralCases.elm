@@ -1,7 +1,36 @@
 module SourceIR.LiteralCases exposing (expectSuite)
 
-{-| Tests for literal expressions: Int, Float, String, Char, Unit, Bool.
-These tests verify that the canonicalizer assigns unique IDs to literal expressions.
+{-| A catalogue of minimal programs, each a module whose one value is a single
+literal, or `True` or `False`. It exists to run a caller's check against each
+of these forms on its own, in a program that holds nothing else.
+
+This module checks nothing itself. `expectSuite` takes an expectation function
+and applies it to each program, so what is established depends entirely on the
+function passed in.
+
+Every program is built with `Compiler.AST.SourceBuilder.makeModule`: a module
+named `Test` that imports `Basics` and `List` and defines one value,
+`testValue`, with no arguments and no annotation. The cases differ only in
+`testValue`'s body:
+
+  - `Int` literals `0`, `42` and `-42`.
+  - `Float` literals `0` (built from `0.0`), `0.001` and `-3.14`.
+  - String literals: the empty string; `hello\nworld\ttab`, whose text holds
+    the two-character escapes `\n` and `\t` as they are written in source;
+    and `hello 世界`, which holds two non-ASCII characters.
+  - The `Char` literal `a`.
+  - The unit value `()`.
+  - `True` and `False`, each a reference to the constructor `Basics.True` or
+    `Basics.False` rather than a literal.
+
+The negative numbers are built directly as negative literals. The parser never
+produces one: it reads `-42` as a negation applied to the literal `42`.
+
+Among what is not tested: character escapes and non-ASCII characters in a
+`Char`, multi-line strings, hexadecimal integers, floats written with an
+exponent, and literals anywhere other than as the whole body of a top-level
+value.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -20,12 +49,22 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named `"Literal expressions "` followed by `condStr`,
+that passes when `expectFn` passes for every program in this module.
+
+The cases run as one `Compiler.BulkCheck.bulkCheck`, so a failure names only
+the first failing case, and the cases after it do not run.
+
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Literal expressions " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case, each checked by `expectFn`: the `Int` cases, then
+`Float`, string, `Char`, unit and `Bool`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -44,6 +83,8 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the three `Int` literal cases, checked by `expectFn`.
+-}
 intLiteralCases : (Src.Module -> Expectation) -> List TestCase
 intLiteralCases expectFn =
     [ { label = "Zero", run = zeroInt expectFn }
@@ -52,6 +93,9 @@ intLiteralCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program whose `testValue` is the `Int` literal
+`0`.
+-}
 zeroInt : (Src.Module -> Expectation) -> (() -> Expectation)
 zeroInt expectFn _ =
     let
@@ -61,6 +105,9 @@ zeroInt expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program whose `testValue` is the `Int` literal
+`42`.
+-}
 positiveInt : (Src.Module -> Expectation) -> (() -> Expectation)
 positiveInt expectFn _ =
     let
@@ -70,6 +117,9 @@ positiveInt expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program whose `testValue` is a single negative
+`Int` literal, `-42`, rather than a negation of `42`.
+-}
 negativeInt : (Src.Module -> Expectation) -> (() -> Expectation)
 negativeInt expectFn _ =
     let
@@ -85,6 +135,8 @@ negativeInt expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the three `Float` literal cases, checked by `expectFn`.
+-}
 floatLiteralCases : (Src.Module -> Expectation) -> List TestCase
 floatLiteralCases expectFn =
     [ { label = "Zero float", run = zeroFloat expectFn }
@@ -93,6 +145,9 @@ floatLiteralCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program whose `testValue` is the `Float` literal
+zero, whose source text is `0` with no decimal point.
+-}
 zeroFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 zeroFloat expectFn _ =
     let
@@ -102,6 +157,9 @@ zeroFloat expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program whose `testValue` is the `Float` literal
+`0.001`.
+-}
 smallPositiveFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 smallPositiveFloat expectFn _ =
     let
@@ -111,6 +169,9 @@ smallPositiveFloat expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program whose `testValue` is a single negative
+`Float` literal, `-3.14`, rather than a negation of `3.14`.
+-}
 negativeFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 negativeFloat expectFn _ =
     let
@@ -126,6 +187,8 @@ negativeFloat expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the three string literal cases, checked by `expectFn`.
+-}
 stringLiteralCases : (Src.Module -> Expectation) -> List TestCase
 stringLiteralCases expectFn =
     [ { label = "Empty string", run = emptyString expectFn }
@@ -134,6 +197,8 @@ stringLiteralCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program whose `testValue` is the empty string.
+-}
 emptyString : (Src.Module -> Expectation) -> (() -> Expectation)
 emptyString expectFn _ =
     let
@@ -143,6 +208,10 @@ emptyString expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program whose `testValue` is a string literal
+holding the escapes `\n` and `\t`, each kept as a backslash and a letter, as
+the parser keeps them.
+-}
 stringWithEscapes : (Src.Module -> Expectation) -> (() -> Expectation)
 stringWithEscapes expectFn _ =
     let
@@ -152,6 +221,9 @@ stringWithEscapes expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program whose `testValue` is the string
+`hello 世界`, which ends in two non-ASCII characters.
+-}
 unicodeString : (Src.Module -> Expectation) -> (() -> Expectation)
 unicodeString expectFn _ =
     let
@@ -167,12 +239,17 @@ unicodeString expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the one `Char` literal case, checked by `expectFn`.
+-}
 charLiteralCases : (Src.Module -> Expectation) -> List TestCase
 charLiteralCases expectFn =
     [ { label = "Letter char", run = letterChar expectFn }
     ]
 
 
+{-| Applies `expectFn` to the program whose `testValue` is the `Char` literal
+`'a'`.
+-}
 letterChar : (Src.Module -> Expectation) -> (() -> Expectation)
 letterChar expectFn _ =
     let
@@ -188,12 +265,16 @@ letterChar expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the one unit case, checked by `expectFn`.
+-}
 unitCases : (Src.Module -> Expectation) -> List TestCase
 unitCases expectFn =
     [ { label = "Unit expression", run = unitExpression expectFn }
     ]
 
 
+{-| Applies `expectFn` to the program whose `testValue` is `()`.
+-}
 unitExpression : (Src.Module -> Expectation) -> (() -> Expectation)
 unitExpression expectFn _ =
     let
@@ -209,6 +290,8 @@ unitExpression expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the `True` and `False` cases, checked by `expectFn`.
+-}
 boolCases : (Src.Module -> Expectation) -> List TestCase
 boolCases expectFn =
     [ { label = "True", run = trueExpr expectFn }
@@ -216,6 +299,8 @@ boolCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program whose `testValue` is `Basics.True`.
+-}
 trueExpr : (Src.Module -> Expectation) -> (() -> Expectation)
 trueExpr expectFn _ =
     let
@@ -225,6 +310,8 @@ trueExpr expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program whose `testValue` is `Basics.False`.
+-}
 falseExpr : (Src.Module -> Expectation) -> (() -> Expectation)
 falseExpr expectFn _ =
     let

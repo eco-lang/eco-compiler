@@ -1,13 +1,14 @@
 module Prelude exposing (head, init, last)
 
-{-| Unsafe list operations that crash on empty lists, providing Haskell Prelude-style behavior.
+{-| Gives code that knows a list is non-empty a way to take it apart without
+handling a `Maybe` case that cannot occur.
 
-This module provides partial functions that mirror Haskell's Prelude for list operations.
-These functions are intentionally unsafe and will crash with descriptive error messages
-when given empty lists, making them suitable for cases where the list is guaranteed to be non-empty.
-
-
-# List Operations
+`head`, `init` and `last` are partial functions named after those in Haskell's
+`Prelude`: each is defined only on a non-empty list. On an empty list each
+aborts through `Utils.Crash.crash`, with a message of the form
+`*** Exception: Prelude.<name>: empty list`, instead of returning. Nothing
+here checks the non-emptiness in advance; it is the caller's promise, and a
+broken promise is a crash, not an error the caller can handle.
 
 @docs head, init, last
 
@@ -17,7 +18,7 @@ import List.Extra as List
 import Utils.Crash exposing (crash)
 
 
-{-| Returns the first element of a list, crashing if the list is empty.
+{-| Returns the first element of `items`, aborting if `items` is empty.
 -}
 head : List a -> a
 head items =
@@ -29,7 +30,8 @@ head items =
             crash "*** Exception: Prelude.head: empty list"
 
 
-{-| Returns all elements except the last one, crashing if the list is empty.
+{-| Returns every element of `items` except the last, in order, aborting if
+`items` is empty. A list of one element gives the empty list.
 -}
 init : List a -> List a
 init items =
@@ -41,7 +43,7 @@ init items =
             crash "*** Exception: Prelude.init: empty list"
 
 
-{-| Returns the last element of a list, crashing if the list is empty.
+{-| Returns the last element of `items`, aborting if `items` is empty.
 -}
 last : List a -> a
 last items =

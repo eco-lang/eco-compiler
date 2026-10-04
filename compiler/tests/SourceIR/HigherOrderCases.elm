@@ -1,6 +1,70 @@
 module SourceIR.HigherOrderCases exposing (expectSuite)
 
-{-| Tests for higher-order function expressions.
+{-| Source programs that treat functions as values: functions passed as
+arguments, returned from other functions, applied partially, and chosen by a
+`case`. A compiler stage that mishandled closures or curried calls could pass
+every check run on simpler programs, and these give such a check something to
+fail on.
+
+This module asserts nothing itself. `expectSuite` hands the programs, in
+order, to the expectation function it is given, and stops at the first one that
+fails, as `Compiler.BulkCheck` describes. What is checked, and after which
+stage, depends on that function.
+
+Each case builds one `Src.Module` with `Compiler.AST.SourceBuilder`, so no
+source text is parsed. The cases of the first six groups use `makeModule`: a
+module `Test` importing `Basics` and `List`, whose only top-level value is an
+unannotated `testValue`. Its body is a `let` that defines the helper
+functions, none of them annotated, and then uses them. Several helpers whose
+names suggest arithmetic (`makeAdder`, `add`, `mult`, and the `double` of
+`functionFactory`) build tuples instead. The three cases of the last group use
+`makeModuleWithTypedDefsUnionsAliases`: a module `Test` importing `Basics`,
+`Maybe`, `List`, `Elm.JsArray`, `String` and `Char`, with one custom type whose
+constructors take no arguments and with annotated top-level definitions, among
+them `testValue : Int`.
+
+The docstrings below write each program as Elm source, but the built trees
+contain no parentheses. Where the source has a parenthesised lambda or call,
+such as the argument in `apply (\n -> n) 42` or the function in
+`(makeAdder 5) 3`, the tree has the bare expression where the parser would
+give a `Src.Parens` node. Likewise the `h :: t` argument of `mapHead` and the
+`x as original` argument of `withOriginal` are bare patterns, where the parser
+would give `Src.PParens`. In `caseReturnsDifferentlyStagedLambdas` each
+`a + b + c` is an operator chain whose first operand is the chain `a + b`,
+where the parser would give one flat chain.
+
+The cases, group by group:
+
+  - Function as argument (5 cases): a lambda and a let-bound function each
+    passed to `apply f x = f x`; a lambda passed to `myMap` and one to
+    `myFilter`, list functions that do not recurse and so handle only the head;
+    and the accessor `.name` passed to `apply` with a record.
+  - Function returning function (6 cases): definitions that return a lambda,
+    called either with all their arguments at once (`add 1 2`,
+    `triple 1 2 3`, `makeClosure 1 2 3 4`) or in two calls
+    (`(makeAdder 5) 3`, `(choose True) 42`), and a zero-argument definition
+    that holds a returned closure (`double = makeTransform 2`).
+  - Composition (5 cases): the combinators `compose` (in two cases), `flip`,
+    `const` and `pipe`, each defined in the `let` and then applied.
+  - Partial application (4 cases): a two-parameter function applied to one
+    argument and stored, a three-parameter function applied one argument at a
+    time through two stored partial applications, and partial applications
+    that are never applied further, as the elements of a list and as the
+    fields of a record.
+  - Polymorphic higher-order (3 cases): one let-bound function used at a
+    number and at a `String` within one tuple.
+  - Higher-order with patterns (4 cases): a function whose first parameter is
+    the function it applies and whose second is a tuple, record, `::` or `as`
+    pattern.
+  - Case returning function (3 cases): typed modules in which each branch of
+    a `case` returns a lambda, so that a definition takes fewer arguments than
+    its type has.
+
+Among what is not tested: a recursive higher-order function, a fold (the
+fold-like case is in `SourceIR.TypeCheckFailsCases`), an operator or a
+constructor passed as a function value, and an annotated helper in the cases
+built with `makeModule`.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -42,12 +106,19 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Higher-order function tests " followed by
+`condStr`, that runs `expectFn` on the programs of this module in order. It
+stops at the first program `expectFn` rejects and fails under that program's
+label.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Higher-order function tests " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Lists every case of this module, group by group, each with its label.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     functionAsArgumentCases expectFn
@@ -61,22 +132,24 @@ testCases expectFn =
 
 
 -- ============================================================================
--- FUNCTION AS ARGUMENT (6 tests)
+-- FUNCTION AS ARGUMENT
 -- ============================================================================
 
 
+{-| Lists the cases that pass a function as an argument.
+-}
 functionAsArgumentCases : (Src.Module -> Expectation) -> List TestCase
 functionAsArgumentCases expectFn =
     [ { label = "Pass lambda to function", run = passLambdaToFunction expectFn }
     , { label = "Pass named function to higher-order", run = passNamedFunctionToHigherOrder expectFn }
     , { label = "Map-like function", run = mapLikeFunction expectFn }
     , { label = "Filter-like function", run = filterLikeFunction expectFn }
-
-    -- Moved to TypeCheckFails.elm: , { label = "Fold-like function", run = foldLikeFunction expectFn }
     , { label = "Pass accessor function", run = passAccessorFunction expectFn }
     ]
 
 
+{-| Applies `expectFn` to `apply (\n -> n) 42`, where `apply f x = f x`.
+-}
 passLambdaToFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 passLambdaToFunction expectFn _ =
     let
@@ -95,6 +168,9 @@ passLambdaToFunction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `apply identity 42`, where `identity x = x` and
+`apply f x = f x` are both let-bound.
+-}
 passNamedFunctionToHigherOrder : (Src.Module -> Expectation) -> (() -> Expectation)
 passNamedFunctionToHigherOrder expectFn _ =
     let
@@ -113,6 +189,9 @@ passNamedFunctionToHigherOrder expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `myMap (\x -> ( x, x )) [ 1, 2 ]`. `myMap` gives `[]`
+for the empty list and `[ f h ]` for `h :: t`, so only the head is mapped.
+-}
 mapLikeFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 mapLikeFunction expectFn _ =
     let
@@ -141,6 +220,10 @@ mapLikeFunction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `myFilter (\_ -> True) [ 1 ]`. `myFilter` gives `[]`
+for the empty list and, for `h :: t`, `[ h ]` when `pred h` holds and `[]`
+otherwise, so the tail is dropped.
+-}
 filterLikeFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 filterLikeFunction expectFn _ =
     let
@@ -170,6 +253,9 @@ filterLikeFunction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `apply .name { name = "test" }`, where
+`apply f x = f x`.
+-}
 passAccessorFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 passAccessorFunction expectFn _ =
     let
@@ -190,10 +276,12 @@ passAccessorFunction expectFn _ =
 
 
 -- ============================================================================
--- FUNCTION RETURNING FUNCTION (6 tests)
+-- FUNCTION RETURNING FUNCTION
 -- ============================================================================
 
 
+{-| Lists the cases whose functions return functions.
+-}
 functionReturningFunctionCases : (Src.Module -> Expectation) -> List TestCase
 functionReturningFunctionCases expectFn =
     [ { label = "Function returning lambda", run = functionReturningLambda expectFn }
@@ -205,6 +293,10 @@ functionReturningFunctionCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to `(makeAdder 5) 3`, where
+`makeAdder n = \x -> ( n, x )`: the lambda it returns is applied in a second
+call.
+-}
 functionReturningLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 functionReturningLambda expectFn _ =
     let
@@ -222,6 +314,9 @@ functionReturningLambda expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `add 1 2`, one call with two arguments to
+`add a = \b -> ( a, b )`, which takes one.
+-}
 curriedFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 curriedFunction expectFn _ =
     let
@@ -239,6 +334,9 @@ curriedFunction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `triple 1 2 3`, one call with three arguments to
+`triple a = \b -> \c -> [ a, b, c ]`, which takes one.
+-}
 tripleNestedFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 tripleNestedFunction expectFn _ =
     let
@@ -260,6 +358,10 @@ tripleNestedFunction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `double 5`, where `double = makeTransform 2` is a
+let-bound value holding the closure that
+`makeTransform factor = \x -> ( x, factor )` returns.
+-}
 functionFactory : (Src.Module -> Expectation) -> (() -> Expectation)
 functionFactory expectFn _ =
     let
@@ -280,6 +382,9 @@ functionFactory expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `(choose True) 42`, where
+`choose flag = if flag then \x -> x else \_ -> 0`.
+-}
 returnLambdaBasedOnCondition : (Src.Module -> Expectation) -> (() -> Expectation)
 returnLambdaBasedOnCondition expectFn _ =
     let
@@ -300,6 +405,10 @@ returnLambdaBasedOnCondition expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `makeClosure 1 2 3 4`, one call with four arguments
+to `makeClosure a b c = \x -> [ a, b, c, x ]`, whose lambda captures all three
+parameters.
+-}
 closureOverMultipleVariables : (Src.Module -> Expectation) -> (() -> Expectation)
 closureOverMultipleVariables expectFn _ =
     let
@@ -321,10 +430,12 @@ closureOverMultipleVariables expectFn _ =
 
 
 -- ============================================================================
--- COMPOSITION (6 tests)
+-- COMPOSITION
 -- ============================================================================
 
 
+{-| Lists the cases that combine functions with other functions.
+-}
 compositionCases : (Src.Module -> Expectation) -> List TestCase
 compositionCases expectFn =
     [ { label = "Compose two functions", run = composeTwoFunctions expectFn }
@@ -335,6 +446,9 @@ compositionCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to `(compose (\n -> ( n, 0 )) (\n -> n)) 42`, where
+`compose f g = \x -> f (g x)`.
+-}
 composeTwoFunctions : (Src.Module -> Expectation) -> (() -> Expectation)
 composeTwoFunctions expectFn _ =
     let
@@ -363,6 +477,9 @@ composeTwoFunctions expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `(flip (\x y -> ( x, y ))) 1 2`, where
+`flip f = \a b -> f b a`.
+-}
 flipFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 flipFunction expectFn _ =
     let
@@ -385,6 +502,8 @@ flipFunction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `(const 42) "ignored"`, where `const a = \_ -> a`.
+-}
 constFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 constFunction expectFn _ =
     let
@@ -402,6 +521,9 @@ constFunction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `(compose identity identity) 1`, where
+`identity x = x` and `compose f g = \x -> f (g x)`.
+-}
 identityComposition : (Src.Module -> Expectation) -> (() -> Expectation)
 identityComposition expectFn _ =
     let
@@ -424,6 +546,8 @@ identityComposition expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `pipe 5 (\n -> ( n, n ))`, where `pipe x f = f x`.
+-}
 pipeLikeApply : (Src.Module -> Expectation) -> (() -> Expectation)
 pipeLikeApply expectFn _ =
     let
@@ -446,10 +570,12 @@ pipeLikeApply expectFn _ =
 
 
 -- ============================================================================
--- PARTIAL APPLICATION (4 tests)
+-- PARTIAL APPLICATION
 -- ============================================================================
 
 
+{-| Lists the cases that apply a function to fewer arguments than it takes.
+-}
 partialApplicationCases : (Src.Module -> Expectation) -> List TestCase
 partialApplicationCases expectFn =
     [ { label = "Partially applied function stored", run = partiallyAppliedFunctionStored expectFn }
@@ -459,6 +585,9 @@ partialApplicationCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to `add5 3`, where `add a b = ( a, b )` and
+`add5 = add 5`.
+-}
 partiallyAppliedFunctionStored : (Src.Module -> Expectation) -> (() -> Expectation)
 partiallyAppliedFunctionStored expectFn _ =
     let
@@ -477,6 +606,9 @@ partiallyAppliedFunctionStored expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `p2 3`, where `fn a b c = [ a, b, c ]`,
+`p1 = fn 1` and `p2 = p1 2`.
+-}
 multiplePartialApplications : (Src.Module -> Expectation) -> (() -> Expectation)
 multiplePartialApplications expectFn _ =
     let
@@ -500,6 +632,9 @@ multiplePartialApplications expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `[ add 1, add 2, add 3 ]`, a list of partial
+applications of `add a b = ( a, b )` that are never applied further.
+-}
 partialApplicationInList : (Src.Module -> Expectation) -> (() -> Expectation)
 partialApplicationInList expectFn _ =
     let
@@ -520,6 +655,9 @@ partialApplicationInList expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `{ double = mult 2, triple = mult 3 }`, a record of
+partial applications of `mult a b = ( a, b )` that are never applied further.
+-}
 partialApplicationInRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 partialApplicationInRecord expectFn _ =
     let
@@ -541,10 +679,12 @@ partialApplicationInRecord expectFn _ =
 
 
 -- ============================================================================
--- POLYMORPHIC HIGHER-ORDER (3 tests)
+-- POLYMORPHIC HIGHER-ORDER
 -- ============================================================================
 
 
+{-| Lists the cases that use one let-bound function at two different types.
+-}
 polymorphicHigherOrderCases : (Src.Module -> Expectation) -> List TestCase
 polymorphicHigherOrderCases expectFn =
     [ { label = "Identity used with different types", run = identityUsedWithDifferentTypes expectFn }
@@ -553,10 +693,12 @@ polymorphicHigherOrderCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to `( id 1, id "hello" )`, where `id x = x`, so `id` is
+used at a number and at a `String`.
+-}
 identityUsedWithDifferentTypes : (Src.Module -> Expectation) -> (() -> Expectation)
 identityUsedWithDifferentTypes expectFn _ =
     let
-        -- let id x = x in (id 1, id "hello")
         idFn =
             define "id" [ pVar "x" ] (varExpr "x")
 
@@ -572,13 +714,14 @@ identityUsedWithDifferentTypes expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `( apply intId 1, apply strId "hi" )`, where
+`apply f x = f x`, and `intId n = n` and `strId s = s` are unannotated
+identity functions, each used once: `intId` with a number and `strId` with a
+`String`.
+-}
 applyUsedWithDifferentFunctionTypes : (Src.Module -> Expectation) -> (() -> Expectation)
 applyUsedWithDifferentFunctionTypes expectFn _ =
     let
-        -- let apply f x = f x in
-        -- let intId n = n in
-        -- let strId s = s in
-        -- (apply intId 1, apply strId "hi")
         applyFn =
             define "apply"
                 [ pVar "f", pVar "x" ]
@@ -602,12 +745,12 @@ applyUsedWithDifferentFunctionTypes expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `( twice id 1, twice id "hi" )`, where
+`twice f x = f (f x)` and `id y = y`.
+-}
 higherOrderPreservingPolymorphism : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderPreservingPolymorphism expectFn _ =
     let
-        -- let twice f x = f (f x) in
-        -- let id x = x in
-        -- (twice id 1, twice id "hi")
         twiceFn =
             define "twice"
                 [ pVar "f", pVar "x" ]
@@ -632,10 +775,13 @@ higherOrderPreservingPolymorphism expectFn _ =
 
 
 -- ============================================================================
--- HIGHER-ORDER WITH PATTERNS (4 tests)
+-- HIGHER-ORDER WITH PATTERNS
 -- ============================================================================
 
 
+{-| Lists the cases in which a function that takes a function also takes a
+pattern argument.
+-}
 higherOrderWithPatternsCases : (Src.Module -> Expectation) -> List TestCase
 higherOrderWithPatternsCases expectFn =
     [ { label = "Higher-order with tuple pattern", run = higherOrderWithTuplePattern expectFn }
@@ -645,6 +791,9 @@ higherOrderWithPatternsCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to `applyToPair (\x y -> ( x, y )) ( 1, 2 )`, where
+`applyToPair f ( a, b ) = f a b`.
+-}
 higherOrderWithTuplePattern : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderWithTuplePattern expectFn _ =
     let
@@ -665,6 +814,9 @@ higherOrderWithTuplePattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `transformRecord (\x -> ( x, x )) { value = 21 }`,
+where `transformRecord f { value } = { value = f value }`.
+-}
 higherOrderWithRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderWithRecordPattern expectFn _ =
     let
@@ -685,6 +837,10 @@ higherOrderWithRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `mapHead (\x -> x) [ 1, 2 ]`, where
+`mapHead f (h :: t) = [ f h ]`. The argument pattern does not match the empty
+list.
+-}
 higherOrderWithListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderWithListPattern expectFn _ =
     let
@@ -705,6 +861,9 @@ higherOrderWithListPattern expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to `withOriginal (\n -> n) 42`, where
+`withOriginal f (x as original) = ( f x, original )`.
+-}
 higherOrderWithAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderWithAliasPattern expectFn _ =
     let
@@ -727,10 +886,12 @@ higherOrderWithAliasPattern expectFn _ =
 
 
 -- ============================================================================
--- CASE RETURNING FUNCTION (GOPT_001) (2 tests)
+-- CASE RETURNING FUNCTION
 -- ============================================================================
 
 
+{-| Lists the typed cases in which the branches of a `case` return lambdas.
+-}
 caseReturningFunctionCases : (Src.Module -> Expectation) -> List TestCase
 caseReturningFunctionCases expectFn =
     [ { label = "Case returns curried binary operator", run = caseReturnsCurriedBinaryOp expectFn }
@@ -739,33 +900,42 @@ caseReturningFunctionCases expectFn =
     ]
 
 
-{-| Tests MONO\_016: Wrapper closures must generate curried calls.
+{-| Applies `expectFn` to a module in which a function whose `case` returns
+lambdas is passed where a function of three arguments is expected:
 
-This test creates a function that returns a curried function based on
-case matching on a custom type. When a higher-order function receives
-this function as an argument, the wrapper closure must generate nested
-MonoCall expressions respecting the curried structure.
-
-    type Op = Add | Sub | Mul
+    type Op
+        = Add
+        | Sub
+        | Mul
 
     getOp : Op -> Int -> Int -> Int
     getOp op =
         case op of
-            Add -> \a b -> a + b
-            Sub -> \a b -> a - b
-            Mul -> \a b -> a \* b
+            Add ->
+                \a b -> a + b
 
-    -- This forces wrapper closure creation for getOp
+            Sub ->
+                \a b -> a - b
+
+            Mul ->
+                \a b -> a * b
+
     applyOp : (Op -> Int -> Int -> Int) -> Op -> Int -> Int -> Int
-    applyOp f op a b = f op a b
+    applyOp f op a b =
+        f op a b
 
-    testValue = applyOp getOp Add 3 4
+    testValue : Int
+    testValue =
+        applyOp getOp Add 3 4
+
+`getOp` takes one argument and the lambdas it returns take the other two, so
+the call `f op a b` in `applyOp` is evaluated as a call of `getOp` with `op`
+followed by a call of the lambda it returns with `a` and `b`.
 
 -}
 caseReturnsCurriedBinaryOp : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturnsCurriedBinaryOp expectFn _ =
     let
-        -- Define the Op union type
         opUnion : UnionDef
         opUnion =
             { name = "Op"
@@ -777,7 +947,6 @@ caseReturnsCurriedBinaryOp expectFn _ =
                 ]
             }
 
-        -- Define getOp : Op -> Int -> Int -> Int
         getOpFn : TypedDef
         getOpFn =
             { name = "getOp"
@@ -800,8 +969,6 @@ caseReturnsCurriedBinaryOp expectFn _ =
                     ]
             }
 
-        -- applyOp : (Op -> Int -> Int -> Int) -> Op -> Int -> Int -> Int
-        -- applyOp f op a b = f op a b
         applyOpFn : TypedDef
         applyOpFn =
             { name = "applyOp"
@@ -819,7 +986,6 @@ caseReturnsCurriedBinaryOp expectFn _ =
                     [ varExpr "op", varExpr "a", varExpr "b" ]
             }
 
-        -- testValue = applyOp getOp Add 3 4
         testValueFn : TypedDef
         testValueFn =
             { name = "testValue"
@@ -836,7 +1002,8 @@ caseReturnsCurriedBinaryOp expectFn _ =
     expectFn modul
 
 
-{-| Tests MONO\_016 with a ternary curried function passed to a higher-order function.
+{-| Applies `expectFn` to a module like the one `caseReturnsCurriedBinaryOp`
+builds, with a function of four arguments in place of three:
 
     type Mode
         = First
@@ -855,19 +1022,20 @@ caseReturnsCurriedBinaryOp expectFn _ =
             Third ->
                 \a b c -> c
 
-    -- Forces wrapper closure creation for choose
     applyChoice : (Mode -> Int -> Int -> Int -> Int) -> Mode -> Int -> Int -> Int -> Int
     applyChoice f mode a b c =
         f mode a b c
 
+    testValue : Int
     testValue =
         applyChoice choose First 10 20 30
+
+`choose` takes one argument and the lambdas it returns take the other three.
 
 -}
 caseReturnsCurriedTernaryFn : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturnsCurriedTernaryFn expectFn _ =
     let
-        -- Define the Mode union type
         modeUnion : UnionDef
         modeUnion =
             { name = "Mode"
@@ -879,7 +1047,6 @@ caseReturnsCurriedTernaryFn expectFn _ =
                 ]
             }
 
-        -- Define choose : Mode -> Int -> Int -> Int -> Int
         chooseFn : TypedDef
         chooseFn =
             { name = "choose"
@@ -905,8 +1072,6 @@ caseReturnsCurriedTernaryFn expectFn _ =
                     ]
             }
 
-        -- applyChoice : (Mode -> Int -> Int -> Int -> Int) -> Mode -> Int -> Int -> Int -> Int
-        -- applyChoice f mode a b c = f mode a b c
         applyChoiceFn : TypedDef
         applyChoiceFn =
             { name = "applyChoice"
@@ -932,7 +1097,6 @@ caseReturnsCurriedTernaryFn expectFn _ =
                     [ varExpr "mode", varExpr "a", varExpr "b", varExpr "c" ]
             }
 
-        -- testValue = applyChoice choose First 10 20 30
         testValueFn : TypedDef
         testValueFn =
             { name = "testValue"
@@ -949,10 +1113,8 @@ caseReturnsCurriedTernaryFn expectFn _ =
     expectFn modul
 
 
-{-| Tests MONO\_018: MonoCase branch result types must match MonoCase resultType.
-
-This test creates different syntactic lambda nestings across branches that have
-the same Elm type but potentially different staging boundaries in Mono IR:
+{-| Applies `expectFn` to a module in which the two branches of a `case` return
+functions of the same type written with different nestings of lambdas:
 
     type Selector
         = UseFlat
@@ -964,22 +1126,23 @@ the same Elm type but potentially different staging boundaries in Mono IR:
             UseFlat ->
                 \b c -> a + b + c
 
-            -- single 2-arg lambda
             UseNested ->
                 \b -> \c -> a + b + c
 
-    -- nested single-arg lambdas
+    testValue : Int
     testValue =
         selectFn UseFlat 1 2 3
 
-If monomorphization doesn't normalize these to the same MFunction shape, the
-branches would have different MonoTypes, violating MONO\_018.
+Both branches have the type `Int -> Int -> Int`, but one is a lambda of two
+parameters and the other a lambda of one parameter that returns another, so a
+caller of the `case`'s result cannot tell from its type whether `b` and `c` are
+taken in one call or in two. Each `a + b + c` is built with the chain `a + b` as its first operand,
+not as the flat chain the parser would give.
 
 -}
 caseReturnsDifferentlyStagedLambdas : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturnsDifferentlyStagedLambdas expectFn _ =
     let
-        -- Define the Selector union type
         selectorUnion : UnionDef
         selectorUnion =
             { name = "Selector"
@@ -990,11 +1153,6 @@ caseReturnsDifferentlyStagedLambdas expectFn _ =
                 ]
             }
 
-        -- selectFn : Selector -> Int -> Int -> Int -> Int
-        -- selectFn sel a =
-        --     case sel of
-        --         UseFlat -> \b c -> a + b + c
-        --         UseNested -> \b -> \c -> a + b + c
         selectFn : TypedDef
         selectFn =
             { name = "selectFn"
@@ -1027,7 +1185,6 @@ caseReturnsDifferentlyStagedLambdas expectFn _ =
                     ]
             }
 
-        -- testValue = selectFn UseFlat 1 2 3
         testValueFn : TypedDef
         testValueFn =
             { name = "testValue"

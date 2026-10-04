@@ -1,10 +1,54 @@
 module Common.Format.Cheapskate.Inlines exposing (pHtmlTag, pLinkLabel, pReference, parseInlines)
 
-{-| Markdown inline element parsing.
+{-| The formatter re-prints the Markdown in doc comments, and this module reads
+the text of a Markdown block, such as a paragraph or a heading, into the inline
+elements of `Common.Format.Cheapskate.Types`: text, spaces and line breaks,
+emphasis, code spans, links, images, entities and raw HTML. It also exposes three of its
+parsers on their own: for a link label, a link reference definition and an HTML
+tag.
 
-This module provides parsers for inline Markdown elements such as emphasis, links,
-code spans, images, HTML tags, and entities. It handles the complex precedence rules
-between different inline constructs (e.g., code backticks take precedence over emphasis).
+`parseInlines` never fails. At each point in the text it tries a fixed list of
+alternatives, and the first that succeeds wins, so the order of the list is the
+precedence between constructs:
+
+1.  a run of ASCII letters and digits, which starts a bare URI instead when it
+    is a known scheme name followed by `:`;
+2.  a run of whitespace;
+3.  emphasis with `*`, then emphasis with `_`, the latter only when the
+    character before it is not an ASCII letter or digit;
+4.  a code span;
+5.  a link, then an image;
+6.  an HTML tag or comment, then an autolink in angle brackets;
+7.  an entity;
+8.  any one character, as text.
+
+A failed alternative is undone, as `Common.Format.Cheapskate.ParserCombinators`
+describes for `oneOf`, so a code span, link label or HTML tag left unclosed
+falls through to the next alternative. Emphasis is different: once its run of
+markers is read it does not fail, and emphasis left unclosed comes back as its
+markers as text, followed by the inlines read after them.
+
+A link written with a label, `[text][label]` or `[text]`, keeps the label as
+its `Ref` target and is not looked up: the `ReferenceMap` given to
+`parseInlines` is passed along but never read. Every bracketed label that
+`pLinkLabel` can read becomes a link, whether or not a definition exists for
+it.
+
+Outside code spans, bare URIs, autolinks and raw HTML, a backslash before an
+escapable character, as `Common.Format.Cheapskate.Util.isEscapable` defines
+them, is dropped and the character kept. The text of a link is the exception:
+`pLinkLabel` drops such backslashes and the result is then read again as
+inlines, so in `[a\*b*](u)` the escaped `*` opens emphasis, and in
+`[a\\*b](u)` both backslashes are lost. In text, a backslash before a line
+feed is a hard line break.
+
+Some input is read differently from common Markdown. An HTML tag is recognised
+only when no space comes between its `<` and its `>` outside a quoted value,
+so `<a href="x">` and `<br />` are text. A bare URI that ends in `.`, `;`, `?`,
+`!`, `:` or `,` keeps that character in the link and also has it again as text
+after the link. An inline link fails when a space comes between its URL or
+title and its closing `)`, and a link title ends at its first closing quote
+even when a letter follows, so `'don't'` cannot be a title.
 
 @docs pHtmlTag, pLinkLabel, pReference, parseInlines
 
@@ -47,15 +91,28 @@ import Set exposing (Set)
 import Utils.Crash exposing (crash)
 
 
-{-| Parse an HTML tag and return its type and full text representation.
-Returns a tuple of the tag type (Opening, Closing, or SelfClosing) and the complete tag string.
+{-| A parser for one HTML tag, returning its kind and its text exactly as
+written.
+
+A tag is `<`, an optional `/`, a name made of ASCII letters, digits, `?` and
+`!`, any attributes, then any tabs, carriage returns, line feeds and `/`s, and
+`>`. Each attribute may be preceded by tabs, carriage returns or line feeds,
+but not by spaces, and is a name starting with an ASCII letter, then `=`, then
+a value: a quoted string, a run of ASCII letters and digits, or nothing. So a
+tag with a space before an attribute or before `/>`, such as `<a href="x">` or
+`<br />`, is not read as a tag. A `>` inside a quoted value does not end the
+tag.
+
+The kind is `Closing` when the tag starts with `</`. Otherwise it is
+`SelfClosing` when the characters just before `>` end with `/`, and `Opening`
+when they do not. The kind carries the name in lower case.
+
 -}
 pHtmlTag : Parser ( HtmlTagType, String )
 pHtmlTag =
     char '<'
         |> andThen
             (\_ ->
-                -- do not end the tag with a > character in a quoted attribute.
                 oneOf (char '/' |> map (\_ -> True)) (return False)
                     |> andThen
                         (\closing ->
@@ -136,11 +193,18 @@ pHtmlTag =
             )
 
 
+{-| Tests whether `c` is a tab, a line feed or a carriage return. The space
+character is not included, which is why `pHtmlTag` accepts no space between
+attributes.
+-}
 isSpace : Char -> Bool
 isSpace c =
     c == '\t' || c == '\n' || c == '\u{000D}'
 
 
+{-| Returns `t` without the suffix `p` when `t` ends with `p`, and `Nothing`
+when it does not.
+-}
 stringStripSuffix : String -> String -> Maybe String
 stringStripSuffix p t =
     if String.endsWith p t then
@@ -150,7 +214,9 @@ stringStripSuffix p t =
         Nothing
 
 
-{-| Parses a quoted attribute value.
+{-| Produces a parser for a value enclosed in the quote character `c`,
+returning the value with its quotes. Everything up to the next `c`, line
+breaks included, is part of the value; there is no escaping.
 -}
 pQuoted : Char -> Parser String
 pQuoted c =
@@ -163,9 +229,9 @@ pQuoted c =
             )
 
 
-{-| Parse an HTML comment.
-Matches comments starting with <!-- and ending with -->.
-Note: This is a simplified implementation that may not handle all edge cases.
+{-| A parser for an HTML comment, from `<!--` to the first `-->`, returning its
+text exactly as written. Anything may come between the two, `--` and line
+breaks included. Without a `-->` it fails.
 -}
 pHtmlComment : Parser String
 pHtmlComment =
@@ -174,12 +240,17 @@ pHtmlComment =
         |> andThen (\rest -> return ("<!--" ++ String.fromList rest ++ "-->"))
 
 
-{-| Parse a link label enclosed in square brackets.
-Handles nested structures respecting precedence: code backticks have precedence over
-brackets, which have precedence over emphasis markers. For example:
+{-| A parser for a link label in square brackets, returning the text between
+the brackets.
 
-  - [a link `with a ](/url)` character - does NOT contain a link
-  - [a link \*with emphasized ](/url) text\* - contains a link
+A code span inside the label is read whole, backticks included, so a `]`
+within it does not end the label. A bracketed part is read as a nested label
+and kept with its brackets. Emphasis markers are ordinary characters here, so
+in `[a *b](/url) c*` the label is `a *b`.
+
+A backslash before an escapable character is dropped and the character kept;
+before any other character it makes the parse fail. The parse also fails when
+the label, a bracketed part of it or a code span in it is not closed.
 
 -}
 pLinkLabel : Parser String
@@ -210,9 +281,20 @@ pLinkLabel =
             )
 
 
-{-| Parse a URL in a link or reference.
-The URL may optionally be enclosed in angle brackets <...>. Without angle brackets,
-whitespace and unbalanced right parentheses are not allowed. Newlines are never allowed.
+{-| A parser for the URL of an inline link or a reference definition, returning
+it without any angle brackets.
+
+A URL that starts with `<` runs to the next unescaped `>` and may contain
+spaces but no line break. Without the `>` the parse fails, as it does at a
+backslash before a character that cannot be escaped.
+
+Any other URL is the longest run that contains no space or line feed and in
+which unescaped parentheses are balanced, so it stops before a `)` with no `(`
+to close and before a `(` that is never closed. It may be empty, and a
+backslash before a character that cannot be escaped ends it.
+
+In both forms a backslash before an escapable character is dropped.
+
 -}
 pLinkUrl : Parser String
 pLinkUrl =
@@ -243,9 +325,18 @@ pLinkUrl =
             )
 
 
-{-| Parse a link title enclosed in quotes or parentheses.
-Accepts single quotes, double quotes, or parentheses as delimiters.
-Unlike Markdown.pl, allows parenthesized titles in both inline links and references.
+{-| A parser for a link title in double quotes, single quotes or parentheses,
+returning the text between the delimiters.
+
+The character after the opening delimiter must be present and must not be
+whitespace or `)`. The title ends at the first closing delimiter, whatever
+follows it, so it can contain its own closing delimiter only escaped. A
+backslash before an escapable character is dropped, and before any other
+character it makes the parse fail.
+
+`pEnder` tests that the delimiter itself, not the character after it, is not a
+letter or digit, so the test always passes, and `nestedChunk` never succeeds.
+
 -}
 pLinkTitle : Parser String
 pLinkTitle =
@@ -298,9 +389,16 @@ pLinkTitle =
             )
 
 
-{-| Parse a link reference definition.
-Format: [label]: url "optional title"
-Returns a tuple of (label, url, title). Assumes input has no leading/trailing spaces.
+{-| A parser for a link reference definition, `[label]: url "title"`, returning
+the label, the URL and the title, which is `""` when there is none.
+
+The whole input must be the definition: it must start with `[`, and nothing may
+follow the definition, not even a space. Spaces and at most one line break may
+come between the `:` and the URL, and between the URL and the title. The URL
+may be empty, and may be written in angle brackets, which are not kept. A
+backslash before an escapable character is dropped from all three parts, as in
+`pLinkLabel`.
+
 -}
 pReference : Parser ( String, String, String )
 pReference =
@@ -322,16 +420,19 @@ pReference =
             )
 
 
-{-| Parse an escaped character following a backslash.
-Returns the character as a string without the backslash.
+{-| A parser for a backslash followed by an escapable character, returning the
+character without the backslash. It fails when the character after the
+backslash cannot be escaped.
 -}
 pEscaped : Parser String
 pEscaped =
     map String.fromChar (skip ((==) '\\') |> andThen (\_ -> satisfy isEscapable))
 
 
-{-| Parse a character satisfying the predicate, handling backslash escapes.
-Accepts either an unescaped character or an escaped escapable character.
+{-| Produces a parser for one character that satisfies `p`, written either as
+itself or after a backslash, and returns the character. A backslash is
+accepted only before an escapable character that satisfies `p`, and is not
+kept.
 -}
 pSatisfy : (Char -> Bool) -> Parser Char
 pSatisfy p =
@@ -339,25 +440,35 @@ pSatisfy p =
         (char '\\' |> andThen (\_ -> satisfy (\c -> isEscapable c && p c)))
 
 
-{-| Parse a text string into a list of inline elements.
-Resolves link references using the provided reference map.
+{-| Returns the inline elements of the text `t`.
+
+Any text can be read, so this never fails. `remap` is not consulted: a
+reference link keeps its label as its target.
+
 -}
 parseInlines : ReferenceMap -> String -> Inlines
 parseInlines remap t =
     case parse (map List.concat (leftSequence (many (pInline remap)) endOfInput)) t of
         Err e ->
-            -- should not happen
+            -- Unreachable: pInline fails only at the end of the input.
             crash ("parseInlines: " ++ showParseError e)
 
         Ok r ->
             r
 
 
+{-| Produces a parser for the inline elements at the current point: one
+construct, or a piece of text. It tries the alternatives in the order the module
+docstring lists, and takes the first that succeeds.
+
+The last alternative accepts any character, so this fails only at the end of
+the input, and when it succeeds it has consumed something.
+
+-}
 pInline : ReferenceMap -> Parser Inlines
 pInline remap =
     oneOf pAsciiStr
         (oneOf pSpace
-            -- strong/emph
             (oneOf (pEnclosure '*' remap)
                 (oneOf (notAfter Char.isAlphaNum |> andThen (\_ -> pEnclosure '_' remap))
                     (oneOf pCode
@@ -376,10 +487,9 @@ pInline remap =
         )
 
 
-{-| Parse spaces or newlines, and determine whether
-we have a regular space, a line break (two spaces before
-a newline), or a soft break (newline without two spaces
-before).
+{-| A parser for a run of whitespace, returning one inline for the whole run:
+`Space` when the run holds no line feed, `LineBreak` when it holds one and
+starts with two spaces, and `SoftBreak` otherwise.
 -}
 pSpace : Parser Inlines
 pSpace =
@@ -402,6 +512,8 @@ pSpace =
             )
 
 
+{-| Tests whether `c` is an ASCII letter or digit.
+-}
 isAsciiAlphaNum : Char -> Bool
 isAsciiAlphaNum c =
     (c >= 'a' && c <= 'z')
@@ -409,6 +521,16 @@ isAsciiAlphaNum c =
         || (c >= '0' && c <= '9')
 
 
+{-| A parser for a run of ASCII letters and digits, returned as text, unless
+the run is a name in `schemeSet` followed by `:`, in which case it reads the
+rest of a bare URI as `pUri` does.
+
+Only scheme names made of letters and digits can match, since the run stops
+at any other character. When the `:` is not followed by anything a URI may
+contain, the whole parse fails and the run is left to the other alternatives,
+which read it as text.
+
+-}
 pAsciiStr : Parser Inlines
 pAsciiStr =
     takeWhile1 isAsciiAlphaNum
@@ -431,8 +553,12 @@ pAsciiStr =
             )
 
 
-{-| Catch all -- parse an escaped character, an escaped
-newline, or any remaining symbol character.
+{-| A parser for any one character as text, the alternative of last resort.
+
+A backslash before an escapable character gives that character without the
+backslash, and a backslash before a line feed gives `LineBreak`, consuming
+both. Any other backslash is text. It fails only at the end of the input.
+
 -}
 pSym : Parser Inlines
 pSym =
@@ -455,8 +581,9 @@ pSym =
             )
 
 
-{-| <http://www.iana.org/assignments/uri-schemes.html> plus
-the unofficial schemes coap, doi, javascript.
+{-| The URI scheme names this module recognises at the start of an autolink
+and, when made only of letters and digits, at the start of a bare URI, all in
+lower case.
 -}
 schemes : List String
 schemes =
@@ -632,14 +759,23 @@ schemes =
     ]
 
 
-{-| Make them a set for more efficient lookup.
+{-| The names in `schemes`, each both as listed and wholly in upper case. A
+name in mixed case, such as `Http`, is not in the set.
 -}
 schemeSet : Set String
 schemeSet =
     Set.fromList (schemes ++ List.map String.toUpper schemes)
 
 
-{-| Parse a URI, using heuristics to avoid capturing final punctuation.
+{-| Produces a parser for the rest of a bare URI whose scheme name `scheme` has
+already been read, starting at its `:`. It returns a link to the whole URI with
+the URI as its text, as `autoLink` builds it.
+
+The URI runs until whitespace or a `)` that closes no `(` opened within it, and
+must have at least one character after the `:`. When its last character is one
+of `.`, `;`, `?`, `!`, `:` and `,`, that character stays in the link and is also
+returned as text after it.
+
 -}
 pUri : String -> Parser Inlines
 pUri scheme =
@@ -668,19 +804,22 @@ pUri scheme =
             )
 
 
-{-| Scan non-ascii characters and ascii characters allowed in a URI.
-We allow punctuation except when followed by a space, since
-we don't want the trailing '.' in '<http://google.com.'>
-We want to allow
-<http://en.wikipedia.org/wiki/State_of_emergency_(disambiguation)>
-as a URL, while NOT picking up the closing paren in
-(<http://wikipedia.org>)
-So we include balanced parens in the URL.
+{-| The state of the scan over a bare URI: how many `(` the URI has opened and
+not yet closed.
+
+It lets a URI include balanced parentheses, as in
+`http://example.com/Foo_(bar)`, while a `)` with no `(` to close, as in
+`(see http://example.com)`, ends the URI.
+
 -}
 type OpenParens
     = OpenParens Int
 
 
+{-| Returns the scan state after accepting `c` into a bare URI, or `Nothing`
+when `c` ends the URI: a space, tab, carriage return or line feed, or a `)`
+with no open `(` to close.
+-}
 uriScanner : OpenParens -> Char -> Maybe OpenParens
 uriScanner st c =
     case ( st, c ) of
@@ -714,8 +853,15 @@ uriScanner st c =
                 Just st
 
 
-{-| Parses material enclosed in \*s, \*\*s, \_s, or \_\_s.
-Designed to avoid backtracking.
+{-| Produces a parser for text that starts with a run of the emphasis character
+`c`, returning emphasis or text.
+
+A run followed by whitespace is returned as text, followed by the whitespace.
+Otherwise a run of one opens emphasis, two open strong emphasis and three open
+both, as `pOne`, `pTwo` and `pThree` describe, and a run of four or more is
+text. Once the run is read this never fails: emphasis that is not closed comes
+back as its markers as text, followed by the inlines read after them.
+
 -}
 pEnclosure : Char -> ReferenceMap -> Parser Inlines
 pEnclosure c remap =
@@ -740,7 +886,8 @@ pEnclosure c remap =
             )
 
 
-{-| singleton sequence or empty if contents are empty
+{-| Returns `constructor ils` as a one-element list, or `[]` when `ils` is
+empty.
 -}
 single : (Inlines -> Inline) -> Inlines -> Inlines
 single constructor ils =
@@ -751,8 +898,14 @@ single constructor ils =
         List.singleton (constructor ils)
 
 
-{-| parse inlines til you hit a c, and emit Emph.
-if you never hit a c, emit '\*' + inlines parsed.
+{-| Produces a parser for the rest of an emphasis opened by one `c`, where
+`prefix` holds inlines already read inside it.
+
+It reads inlines until it reaches a `c`, except that `cc` not followed by a
+third `c` starts strong emphasis nested inside, read as `pTwo` reads it. At a
+closing `c` the result is `Emph` holding `prefix` and what was read. With no
+closing `c` it is `c` as text, followed by `prefix` and what was read.
+
 -}
 pOne : Char -> ReferenceMap -> Inlines -> Parser Inlines
 pOne c remap prefix =
@@ -772,8 +925,14 @@ pOne c remap prefix =
             )
 
 
-{-| parse inlines til you hit two c's, and emit Strong.
-if you never do hit two c's, emit '\*\*' plus + inlines parsed.
+{-| Produces a parser for the rest of a strong emphasis opened by `cc`, where
+`prefix` holds inlines already read inside it.
+
+It reads inlines until it reaches `cc`; a single `c` before that can open
+emphasis nested inside. At `cc` the result is `Strong` holding `prefix` and
+what was read. With no `cc` it is `cc` as text, followed by `prefix` and what
+was read.
+
 -}
 pTwo : Char -> ReferenceMap -> Inlines -> Parser Inlines
 pTwo c remap prefix =
@@ -790,9 +949,14 @@ pTwo c remap prefix =
             )
 
 
-{-| parse inlines til you hit one c or a sequence of two c's.
-If one c, emit Emph and then parse pTwo.
-if two c's, emit Strong and then parse pOne.
+{-| Produces a parser for the rest of text opened by `ccc`, which closes as
+emphasis inside strong emphasis or the other way round.
+
+It reads inlines until it reaches a `c`. At `cc`, what was read becomes
+`Strong` and reading goes on as `pOne`, which puts `Emph` around it; at a
+single `c`, what was read becomes `Emph` and reading goes on as `pTwo`. With
+no `c` the result is `ccc` as text, followed by what was read.
+
 -}
 pThree : Char -> ReferenceMap -> Parser Inlines
 pThree c remap =
@@ -806,14 +970,22 @@ pThree c remap =
             )
 
 
-{-| Inline code span.
+{-| A parser for a code span, returning its `Code` inline.
 -}
 pCode : Parser Inlines
 pCode =
     map Tuple.first pCode_
 
 
-{-| this is factored out because it needed in pLinkLabel.
+{-| A parser for a code span, returning both its `Code` inline and its text
+exactly as written, backticks included, which is what `pLinkLabel` keeps.
+
+A span opens with a run of backticks and closes at the next run of exactly the
+same length. The `Code` holds what lies between, with whitespace trimmed from
+both ends. With no closing run the parse fails. In inline text the first
+backtick of the run is then read as text, and the rest of the run can open a
+shorter span, so ``` ``a` ``` gives a backtick as text and then `Code "a"`.
+
 -}
 pCode_ : Parser ( Inlines, String )
 pCode_ =
@@ -842,6 +1014,16 @@ pCode_ =
             )
 
 
+{-| Produces a parser for a link, starting at its bracketed label, returning
+one `Link`.
+
+The label's text, parsed into inlines, is the link's text. When an inline
+target `(url "title")` follows, the link points to that URL; otherwise it is a
+reference link, as `pReferenceLink` builds it. Since `pReferenceLink` never
+fails, every label that `pLinkLabel` reads becomes a link here, and the
+fallback to plain text is never used.
+
+-}
 pLink : ReferenceMap -> Parser Inlines
 pLink remap =
     pLinkLabel
@@ -853,12 +1035,17 @@ pLink remap =
                         parseInlines remap lab
                 in
                 oneOf (oneOf (pInlineLink lab_) (pReferenceLink remap lab lab_))
-                    -- fallback without backtracking if it's not a link:
                     (return (Str "[" :: lab_ ++ [ Str "]" ]))
             )
 
 
-{-| An inline link: [label](/url "optional title")
+{-| Produces a parser for the target of an inline link, `(url "title")`,
+returning the link with `lab` as its text.
+
+Spaces may follow the `(`, and spaces with at most one line break may come
+before the title, which is optional and `""` when absent. Nothing may come
+between the URL or the title and the `)`: a space there makes the parse fail.
+
 -}
 pInlineLink : Inlines -> Parser Inlines
 pInlineLink lab =
@@ -869,7 +1056,6 @@ pInlineLink lab =
                     |> andThen (\_ -> pLinkUrl)
                     |> andThen
                         (\url ->
-                            -- tit <- option "" $ scanSpnl *> pLinkTitle <* scanSpaces
                             option "" (scanSpnl |> andThen (\_ -> andThen (\_ -> pLinkTitle) scanSpaces))
                                 |> andThen
                                     (\tit ->
@@ -880,7 +1066,14 @@ pInlineLink lab =
             )
 
 
-{-| A reference link: [label], [foo][label], or [label].
+{-| Produces a parser for the rest of a reference link whose label `rawlab` has
+been read, returning the link with `lab` as its text and a `Ref` target.
+
+When a second label follows, after spaces and at most one line break, as in
+`[text][label]` or `[text] [label]`, the target is that label, and it is `""`
+for `[text][]`. Otherwise the target is `rawlab`. It never fails, and the
+reference map is ignored.
+
 -}
 pReferenceLink : ReferenceMap -> String -> Inlines -> Parser Inlines
 pReferenceLink _ rawlab lab =
@@ -888,7 +1081,10 @@ pReferenceLink _ rawlab lab =
         |> map (\ref -> [ Link lab (Ref ref) "" ])
 
 
-{-| An image: ! followed by a link.
+{-| Produces a parser for text starting with `!`. Followed by a link with an
+inline target, the `!` makes it an `Image`. Otherwise the `!` is text, followed
+by any link that comes after it, so `![text][label]` is text and a reference
+link, not an image.
 -}
 pImage : ReferenceMap -> Parser Inlines
 pImage remap =
@@ -899,6 +1095,9 @@ pImage remap =
             )
 
 
+{-| Returns the image made from `ils` when it is a single link with a URL
+target, and otherwise `ils` with `!` as text in front of it.
+-}
 linkToImage : Inlines -> Inlines
 linkToImage ils =
     case ils of
@@ -909,10 +1108,13 @@ linkToImage ils =
             Str "!" :: ils
 
 
-{-| An entity. We store these in a special inline element.
-This ensures that entities in the input come out as
-entities in the output. Alternatively we could simply
-convert them to characters and store them as Str inlines.
+{-| A parser for an HTML entity, `&name;`, `&#digits;` or `&#xhex;`, returning
+it as an `Entity` holding its text as written.
+
+A name is not checked against any list of entities, so `&foo;` is accepted,
+but it must be made of ASCII letters only, so `&frac12;` is not. A `&` that
+begins none of these forms makes the parse fail.
+
 -}
 pEntity : Parser Inlines
 pEntity =
@@ -925,11 +1127,16 @@ pEntity =
             )
 
 
+{-| A parser for the name of a named entity: one or more ASCII letters.
+-}
 pCharEntity : Parser String
 pCharEntity =
     takeWhile1 (\c -> Char.isAlpha c)
 
 
+{-| A parser for the `#` and the decimal digits of a numeric character
+reference, returned as written.
+-}
 pDecEntity : Parser String
 pDecEntity =
     char '#'
@@ -937,6 +1144,9 @@ pDecEntity =
         |> andThen (\res -> return ("#" ++ res))
 
 
+{-| A parser for the `#`, the `x` or `X` and the hexadecimal digits of a
+hexadecimal character reference, returned as written.
+-}
 pHexEntity : Parser String
 pHexEntity =
     char '#'
@@ -951,17 +1161,26 @@ pHexEntity =
             )
 
 
-
--- Raw HTML tag or comment.
-
-
+{-| A parser for an HTML tag, as `pHtmlTag` reads one, or an HTML comment,
+returned as `RawHtml` holding its text as written.
+-}
 pRawHtml : Parser Inlines
 pRawHtml =
     map (List.singleton << RawHtml) (oneOf (map Tuple.second pHtmlTag) pHtmlComment)
 
 
-{-| A link like this: <http://whatever.com> or [me@mydomain.edu](mailto:me@mydomain.edu).
-Markdown.pl does email obfuscation; we don't bother with that here.
+{-| A parser for an autolink in angle brackets, returning a link whose text is
+what lies between the brackets.
+
+The text after the `<` is split at its first `:` or `@`, which must not be its
+first character. The part before it may contain spaces and even a `>`, so
+`<x y> a@b>` is one e-mail link. At an `@` it is an e-mail address, whatever
+comes before, and the link points to `mailto:` followed by the address. At a
+`:` the part before must be a name in `schemeSet`, and the link points to the
+whole text. The part
+from the `:` or `@` to the closing `>` may not contain a space. Anything else
+in angle brackets makes the parse fail.
+
 -}
 pAutolink : Parser Inlines
 pAutolink =
@@ -988,6 +1207,9 @@ pAutolink =
             )
 
 
+{-| Returns a link to the URL `t` whose text is `t`, with each entity in `t`,
+such as `&amp;`, kept as an `Entity` and the rest as text.
+-}
 autoLink : String -> Inlines
 autoLink t =
     let
@@ -1012,6 +1234,9 @@ autoLink t =
     Link (toInlines t) (Url t) "" |> List.singleton
 
 
+{-| Returns a link to `mailto:` followed by the address `t`, with `t` as its
+text.
+-}
 emailLink : String -> Inlines
 emailLink t =
     [ Link [ Str t ] (Url ("mailto:" ++ t)) "" ]

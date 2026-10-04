@@ -5,10 +5,30 @@ module TestLogic.Type.PostSolve.CompileThroughPostSolve exposing
     , compileToPostSolveDetailed
     )
 
-{-| Compile helper for POST\_005/POST\_006 invariants.
+{-| Compiles a test program as far as PostSolve and keeps its node types from
+both sides of it, so that a check on PostSolve can compare what the solver
+produced with what PostSolve made of it.
 
-This module provides a compilation helper that captures both pre-PostSolve
-and post-PostSolve NodeTypes snapshots for non-regression testing.
+The solver returns its _node types_, the types of the program's expressions
+and patterns, as an array indexed by node id.
+`Compiler.Type.PostSolve.postSolve` then rewrites some of those types.
+`compileToPostSolve` returns the array from before and from after, taking both
+from `TestLogic.TestPipeline.runToPostSolve`.
+
+Some checks also need to know which nodes were typed through a _synthetic
+placeholder_. That is a fresh type variable which constraint generation
+allocates for an expression with no result variable of its own, records as
+that expression's type, and constrains to equal the type its context expects.
+String, character, float and unit literals are such expressions.
+`runToPostSolve` does not keep the ids of those expressions, so
+`compileToPostSolveDetailed` runs the same stages itself, with
+`Compiler.Type.Constrain.Typed.Module.constrainWithIdsDetailed`, and returns
+the ids as well.
+
+Both canonicalize the program as a module of the package `eco/example`
+against `Compiler.Elm.Interface.Basic.testIfaces`, and neither adds a synthetic
+`main`. A canonicalization or type error gives `Err` with a message that
+carries only the number of errors.
 
 -}
 
@@ -30,7 +50,14 @@ import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Artifacts from running through PostSolve, including both pre and post snapshots.
+{-| What compiling one test program through PostSolve leaves behind: its
+canonical module, the annotations the solver gives its top-level values, its
+node types from before and after PostSolve, and the kernel type environment
+PostSolve builds.
+
+`nodeTypesPre` is the array as the solver left it and `nodeTypesPost` the one
+PostSolve returned; both are indexed by node id.
+
 -}
 type alias Artifacts =
     { annotations : Dict.Dict Name.Name (Can.Annotation Name)
@@ -41,7 +68,8 @@ type alias Artifacts =
     }
 
 
-{-| Detailed artifacts including synthetic expression IDs for POST\_001/POST\_003 tests.
+{-| The same as `Artifacts`, with `syntheticExprIds` added: the ids of the
+expressions that constraint generation typed through a synthetic placeholder.
 -}
 type alias DetailedArtifacts =
     { annotations : Dict.Dict Name.Name (Can.Annotation Name)
@@ -53,11 +81,12 @@ type alias DetailedArtifacts =
     }
 
 
-{-| Run the pipeline through PostSolve and capture both pre and post NodeTypes.
+{-| Compiles `srcModule` through PostSolve with
+`TestLogic.TestPipeline.runToPostSolve` and returns its artifacts, or that
+function's error message.
 -}
 compileToPostSolve : Src.Module -> Result String Artifacts
 compileToPostSolve srcModule =
-    -- Delegate to shared pipeline
     Pipeline.runToPostSolve srcModule
         |> Result.map
             (\pipelineResult ->
@@ -70,10 +99,12 @@ compileToPostSolve srcModule =
             )
 
 
-{-| Run the pipeline through PostSolve with detailed synthetic expression tracking.
+{-| Compiles `srcModule` through PostSolve and returns its artifacts together
+with the ids of the expressions typed through a synthetic placeholder.
 
-This version uses `constrainWithIdsDetailed` to capture which expression IDs
-had synthetic placeholder variables allocated during constraint generation.
+It canonicalizes, generates constraints with node ids recorded, solves them and
+runs PostSolve, the stages `compileToPostSolve` runs, and gives the same error
+messages.
 
 -}
 compileToPostSolveDetailed : Src.Module -> Result String DetailedArtifacts
@@ -114,7 +145,9 @@ compileToPostSolveDetailed srcModule =
                         }
 
 
-{-| Run type checking with detailed ID tracking, including synthetic expression IDs.
+{-| Builds the IO action that generates `canModule`'s constraints with node ids
+recorded and solves them, giving the solver's annotations and node types with
+the synthetic placeholder ids, or the number of type errors.
 -}
 runWithIdsTypeCheckDetailed :
     Can.Module

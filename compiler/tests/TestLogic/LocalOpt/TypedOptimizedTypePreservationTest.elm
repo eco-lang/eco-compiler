@@ -1,22 +1,33 @@
 module TestLogic.LocalOpt.TypedOptimizedTypePreservationTest exposing (suite)
 
-{-| Test suite for invariant TOPT\_004: Typed optimization is type preserving.
+{-| Typed optimization stores a type on every expression it produces, and the
+monomorphizer reads those stored types when it specializes the program. These
+tests check the stored types of every program in the standard test suite.
 
-TOPT\_004: The (Can.Type Name) attached to each TOpt.Expr must match the expected type
-derived via local typing rules.
+The programs are those that `SourceIR.Suite.StandardTestSuites.expectSuite`
+gathers from the `SourceIR` case modules. Each one is given to
+`TestLogic.LocalOpt.TypePreservation.expectTypePreservation`, which runs it
+through typed optimization in the test pipeline and compares types in the
+resulting local graph. That module's docstring states the comparison in full.
+Most case modules run their programs through `Compiler.BulkCheck.bulkCheck`,
+which stops at the first failing program, so a failure hides any later one in
+the same case module.
 
-Key checks:
+What `suite` establishes, for each program it reaches:
 
-  - Literals have expected primitive types (Bool, Int, Float, Char, String, Unit)
-  - VarLocal matches type from binding site
-  - VarKernel matches type from KernelTypeEnv
-  - VarGlobal is an instance of the annotation scheme
-  - Function type is curried chain of param types → body type
-  - Call/TailCall type is result of applying args to function type
-  - Let type matches body type
-  - If branches and else all match If type
-  - Destruct type matches body type
-  - Case has all Inline expressions and Jump targets matching result type
+  - Typed optimization completes.
+  - In the expressions the check visits, every local variable use has the type
+    recorded where the name is bound.
+  - Every kernel reference it visits has the type of that kernel's entry in
+    the kernel type environment.
+  - Every case branch it visits, whether held inline in the decision tree or
+    reached by a jump, has the type of the case.
+  - Every unit literal it visits has type `()`; one typed by a type variable
+    also passes.
+
+Among what is not tested: the types of literals other than unit, of global
+references, of functions, calls, `let`, `if` and destructuring. A local
+variable or kernel reference with no entry in the check's environment passes.
 
 -}
 
@@ -25,6 +36,9 @@ import Test exposing (Test)
 import TestLogic.LocalOpt.TypePreservation exposing (expectTypePreservation)
 
 
+{-| The test group that applies `expectTypePreservation` to every program of
+the standard test suite.
+-}
 suite : Test
 suite =
     Test.describe "TypedOptimized type preservation (TOPT_004)"

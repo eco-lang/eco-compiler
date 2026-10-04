@@ -1,12 +1,28 @@
 module TestLogic.Generate.CodeGen.PapCreateArity exposing (expectPapCreateArity)
 
-{-| Test logic for CGEN\_033: PapCreate Arity Constraints invariant.
+{-| The code generator builds closures with `eco.papCreate` ops, and nothing in
+`Mlir.Mlir` stops one from being built with attributes that do not describe a
+partial application. This module checks those attributes.
 
-`eco.papCreate` requires:
+An `eco.papCreate` builds a partial application object (PAP): a closure over
+the function named by its `function` attribute. Its `arity` attribute records
+the total number of arguments the closure stands for, captured values plus those
+still to be supplied, and `num_captured` how many of them the closure already
+holds. The captured values are the op's operands.
 
-  - `arity > 0`
-  - `num_captured == operand count`
-  - `num_captured < arity`
+`expectPapCreateArity` compiles a program to MLIR and, for each
+`eco.papCreate` in the result, checks that:
+
+  - `arity` is present as an integer and is greater than zero;
+  - `num_captured` is present as an integer and equals the number of operands;
+  - `num_captured` is less than `arity`, since holding every argument would
+    make a full application rather than a partial one;
+  - `function` is present as a string or a symbol reference.
+
+Among what is not tested: whether `function` names a function that exists,
+whether `arity` is consistent with the function `function` names, whether the
+operand types match its parameters, and closures built by `eco.papCreateGroup`,
+which this check does not look at.
 
 @docs expectPapCreateArity
 
@@ -26,7 +42,13 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that papCreate arity constraint invariants hold for a source module.
+{-| Returns an expectation that passes when `srcModule` compiles to MLIR with
+`runToMlir` and every `eco.papCreate` in the result has the attributes the
+module docstring lists.
+
+A failed compilation fails with its error. Otherwise only the first violation
+found is reported, as `violationsToExpectation` describes.
+
 -}
 expectPapCreateArity : Src.Module -> Expectation
 expectPapCreateArity srcModule =
@@ -38,7 +60,8 @@ expectPapCreateArity srcModule =
             violationsToExpectation (checkPapCreateArity mlirModule)
 
 
-{-| Check papCreate arity constraint invariants.
+{-| Returns the violations of every `eco.papCreate` op in `mlirModule`, at any
+depth.
 -}
 checkPapCreateArity : MlirModule -> List Violation
 checkPapCreateArity mlirModule =
@@ -49,6 +72,15 @@ checkPapCreateArity mlirModule =
     List.concatMap checkPapCreateOp papCreateOps
 
 
+{-| Returns the violations of one `eco.papCreate` op, in a fixed order: a
+missing or non-positive `arity`, a missing `num_captured` or one that differs
+from the operand count, `num_captured` not less than `arity`, and a missing
+`function`.
+
+An attribute of another kind than the one expected counts as missing. The
+comparison of `num_captured` with `arity` is made only when both are present.
+
+-}
 checkPapCreateOp : MlirOp -> List Violation
 checkPapCreateOp op =
     let

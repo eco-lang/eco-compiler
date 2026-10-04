@@ -3,14 +3,46 @@ module TestLogic.Generate.MonoNumericResolution exposing
     , expectNumericTypesResolved
     )
 
-{-| Test logic for invariants:
+{-| A `number` type variable stands for either `Int` or `Float`, and the two
+are represented differently in generated code. `Compiler.AST.Monomorphized`
+treats such a variable, an `MVar _ CNumber`, as a compiler bug if it reaches
+MLIR code generation. The checks here look for one in a monomorphized program.
+Any other type variable is an `MVar _ CEcoValue`, a variable whose values are
+always boxed, and which may remain; both checks pass it, as they pass every
+concrete type.
 
-  - MONO\_002: No CNumber MVar at MLIR codegen entry
-  - MONO\_008: Primitive numeric types are fixed in calls
+Each check runs one source module through `TestLogic.TestPipeline.runToMono`,
+which needs the module to define `testValue`. The graph checked is the output
+of the substitution engine, which is not the engine a default build uses, and
+it is taken before any global optimization or MLIR generation. A pipeline
+failure fails the check with the pipeline's message.
 
-This module reuses the existing typed optimization pipeline to verify numeric type resolution.
-The key verification is that monomorphization succeeds - which validates that all numeric
-polymorphism is properly resolved before code generation.
+The substitution engine already enforces the rule. It finishes with
+`Compiler.Monomorphize.Prune.pruneUnreachableSpecs`, which rewrites every
+`MVar _ CNumber` in the types of the nodes it keeps to `MInt`, and crashes if
+one survives. Every type these checks inspect is among those, so on a graph
+`runToMono` returns they find nothing, and they pass whenever `runToMono`
+succeeds.
+
+  - `expectNoNumericPolymorphism` inspects the type of every node, of the
+    expressions in it, of the parameters of tail functions, closures and tail
+    definitions, and of each `let` definition. It skips expressions held inline
+    in a case's decision tree and the type of an accessor value, except as a
+    `let` definition's body.
+  - `expectNumericTypesResolved` inspects only the type of each argument of
+    each call and tail call.
+
+Inside a type, both look through list element types, custom type arguments,
+and function parameter and result types. A failing check reports one variable,
+with the SpecId of the node it was found in, not every variable found.
+
+Among what is not tested: a variable inside a tuple or record type, the field
+types of a constructor node, the types in a case's decision tree, case branch
+bodies held inline in the decision tree and the calls in them, the types in a
+destructuring path or in a call's metadata, an accessor value's type except as
+a `let` definition's body in the first check or as a call argument in the
+second, the graph after global optimization, the generated MLIR, and the
+solver engine.
 
 -}
 
@@ -22,7 +54,13 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| MONO\_002: Verify no CNumber MVars remain at MLIR codegen entry.
+{-| Checks that the monomorphized graph of `srcModule` holds no
+`MVar _ CNumber` in the type of any node or expression, in any tail function,
+closure or tail definition parameter type, or in the type of any `let`
+definition. A variable inside a tuple or record type, or inside a case branch
+body held inline in the decision tree, is not reported, nor is one in an
+accessor value's type unless the accessor is a `let` definition's body. It
+fails with the pipeline's message when `runToMono` fails.
 -}
 expectNoNumericPolymorphism : Src.Module -> Expect.Expectation
 expectNoNumericPolymorphism srcModule =
@@ -43,7 +81,11 @@ expectNoNumericPolymorphism srcModule =
                     Expect.all checks ()
 
 
-{-| MONO\_008: Verify primitive numeric types are fixed in all calls.
+{-| Checks that the monomorphized graph of `srcModule` holds no
+`MVar _ CNumber` in the type of any argument of a call or tail call. Calls in
+case branch bodies held inline in the decision tree are not searched, and tuple
+and record types are not looked into. It fails with the pipeline's message when
+`runToMono` fails.
 -}
 expectNumericTypesResolved : Src.Module -> Expect.Expectation
 expectNumericTypesResolved srcModule =
@@ -66,11 +108,13 @@ expectNumericTypesResolved srcModule =
 
 
 -- ============================================================================
--- CNUMBER ISSUE COLLECTION (MONO_002)
+-- CHECKS OVER NODE AND EXPRESSION TYPES
 -- ============================================================================
 
 
-{-| Collect all CNumber constraint checks in the graph.
+{-| Returns a failing check for each `MVar _ CNumber` found in the graph's
+nodes, labelled with the SpecId of its node, which is the node's index in
+`nodes`.
 -}
 collectCNumberChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCNumberChecks (Mono.MonoGraph data) =
@@ -88,7 +132,10 @@ collectCNumberChecks (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Collect CNumber checks from a single MonoNode.
+{-| Returns a failing check for each `MVar _ CNumber` in `node`'s own type, in
+a tail function's parameter types, and in the node's body as
+`collectExprCNumberChecks` walks it.
+`specId` only labels the failures.
 -}
 collectNodeCNumberChecks : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 collectNodeCNumberChecks specId node =
@@ -127,7 +174,13 @@ collectNodeCNumberChecks specId node =
                 ++ collectExprCNumberChecks context expr
 
 
-{-| Collect CNumber checks from a MonoExpr.
+{-| Returns a failing check for each `MVar _ CNumber` in the type of `expr` or
+of any expression inside it, in closure parameter types, and in `let`
+definitions. A case is followed only into the branch bodies in its jump list;
+bodies held inline in its decision tree are not visited. The types in a
+case's decision tree, a destructuring path or a call's metadata, and an
+accessor value's type unless it is a `let` definition's body, are not
+inspected.
 -}
 collectExprCNumberChecks : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprCNumberChecks context expr =
@@ -205,7 +258,14 @@ collectExprCNumberChecks context expr =
             []
 
 
-{-| Collect CNumber checks from a MonoDef.
+{-| Returns a failing check for each `MVar _ CNumber` in a `let` definition's
+type, in a tail definition's parameter types, and in its body.
+
+The definition's type is taken to be its body's type, which
+`collectExprCNumberChecks` also inspects, so a variable there is reported
+twice, except when the body is an accessor value, whose type only this function
+checks.
+
 -}
 collectDefCNumberChecks : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
 collectDefCNumberChecks context def =
@@ -220,7 +280,10 @@ collectDefCNumberChecks context def =
                 ++ collectExprCNumberChecks context expr
 
 
-{-| Check a MonoType for CNumber constraints.
+{-| Returns one failing check, labelled with `context` and the variable's id,
+for each `MVar _ CNumber` in `monoType`. It looks through list element types,
+custom type arguments, and function parameter and result types, but not into
+tuple or record types.
 -}
 checkForCNumber : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkForCNumber context monoType =
@@ -247,11 +310,14 @@ checkForCNumber context monoType =
 
 
 -- ============================================================================
--- CALL SITE NUMERIC ISSUE COLLECTION (MONO_008)
+-- CHECKS OVER CALL ARGUMENT TYPES
 -- ============================================================================
 
 
-{-| Collect numeric type checks at call sites in the graph.
+{-| Returns a failing check for each `MVar _ CNumber` in the type of a call or
+tail-call argument in the graph's nodes, except calls in case bodies held
+inline in a decision tree, labelled with the SpecId of its node, which is the
+node's index in `nodes`.
 -}
 collectCallSiteNumericChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCallSiteNumericChecks (Mono.MonoGraph data) =
@@ -269,7 +335,9 @@ collectCallSiteNumericChecks (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Collect call site checks from a single MonoNode.
+{-| Returns the failing call-argument checks for the body of `node`. A
+constructor, enum, extern or manager-leaf node has no body and gives none.
+`specId` only labels the failures.
 -}
 collectNodeCallSiteChecks : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 collectNodeCallSiteChecks specId node =
@@ -303,13 +371,18 @@ collectNodeCallSiteChecks specId node =
             collectExprCallSiteChecks context expr
 
 
-{-| Collect call site checks from a MonoExpr, focusing on MonoCall and MonoTailCall.
+{-| Returns a failing check for each `MVar _ CNumber` in the type of an
+argument of a call or tail call within `expr`. Each failure names the argument
+by its position in the call or, for a tail call, by its parameter name. The
+search for calls goes into closures, `if`s, `let`s, destructuring, the case
+branch bodies in a case's jump list (not those inline in its decision tree),
+records, tuples and lists, into the function and arguments of a call, and into
+tail-call arguments.
 -}
 collectExprCallSiteChecks : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprCallSiteChecks context expr =
     case expr of
         Mono.MonoCall _ fnExpr argExprs _ _ ->
-            -- Check that all numeric arguments are concrete MInt or MFloat
             let
                 argChecks =
                     List.indexedMap
@@ -328,7 +401,6 @@ collectExprCallSiteChecks context expr =
                 ++ List.concatMap (collectExprCallSiteChecks context) argExprs
 
         Mono.MonoTailCall _ args _ ->
-            -- Check that all arguments to tail calls have resolved numeric types
             let
                 argChecks =
                     List.concatMap
@@ -382,7 +454,8 @@ collectExprCallSiteChecks context expr =
             []
 
 
-{-| Collect call site checks from a MonoDef.
+{-| Returns the failing call-argument checks for the body of a `let`
+definition.
 -}
 collectDefCallSiteChecks : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
 collectDefCallSiteChecks context def =
@@ -394,11 +467,10 @@ collectDefCallSiteChecks context def =
             collectExprCallSiteChecks context expr
 
 
-{-| Check if a type that appears in a numeric context is properly resolved.
-
-For MONO\_008, numeric types at call sites must be concrete MInt or MFloat,
-not polymorphic MVar CNumber.
-
+{-| Returns one failing check, labelled with `context` and the variable's id,
+for each `MVar _ CNumber` in `monoType`. It looks into types exactly as
+`checkForCNumber` does, not into tuple or record types, and differs from it
+only in the failure message.
 -}
 checkNumericTypeResolved : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkNumericTypeResolved context monoType =
@@ -407,7 +479,6 @@ checkNumericTypeResolved context monoType =
             [ \() -> Expect.fail (context ++ ": Numeric type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' not resolved to MInt or MFloat") ]
 
         Mono.MVar _ Mono.CEcoValue ->
-            -- CEcoValue is fine - it's not a numeric constraint
             []
 
         Mono.MList _ elemType ->
@@ -421,5 +492,4 @@ checkNumericTypeResolved context monoType =
                 ++ checkNumericTypeResolved context returnType
 
         _ ->
-            -- MInt, MFloat, MBool, MChar, MString, MUnit, MTuple, MRecord are all fine
             []

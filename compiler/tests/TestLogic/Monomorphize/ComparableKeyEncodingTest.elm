@@ -1,24 +1,78 @@
 module TestLogic.Monomorphize.ComparableKeyEncodingTest exposing (suite)
 
-{-| Encoding gate for `toComparableMonoType`, and for the LAYOUT-flavour
-contracts (`eqKeyLayout` / `layoutHashOf`) whose shipping string encoder was
-deleted as dead code — `referenceKey False` below is now their sole oracle.
+{-| A change to the string keys that identify a `MonoType`, to the hashes and
+key equalities that must agree with them, or to the hash-consing table built on
+the hashes, can change which types the compiler treats as the same, and so
+which specializations it creates, without a compile error. These tests pin all
+four. The hash-consing table is `Compiler.AST.Intern`: when it already holds a
+composite type `==` to the one given, `Intern.hashCons` hands back that stored
+copy, so that equal types can share one object.
 
-Those two strings are specialization identity (MONO\_005/017/024) and the key
-of every layout-intent dictionary in codegen, so a change to _how_ a key is
-built must leave the emitted bytes untouched. This suite pins that two ways:
+Each function arrow in a `MonoType` carries a lambda-set annotation, a
+`LambdaSetAnno`. Among its forms, `LSet` lists the functions a value of that
+arrow type may be, `LVar` is a variable standing for such a set, and `LTop`
+marks an arrow widened past any set.
 
-  - **Differential.** `referenceKey` below is the previous explicit-work-stack
-    encoder, kept verbatim as an oracle. Every type in a deterministic corpus
-    must key identically under the oracle and the shipping implementation, in
-    both flavours.
-  - **Golden.** A handful of literal expected strings, so the oracle cannot
-    drift silently alongside the implementation it is meant to check.
+A `MonoType` has two keys. Its _specialization key_ is the string
+`Mono.toComparableMonoType` builds, which writes each arrow's lambda-set
+annotation. Its _layout key_ is the same string with every arrow written `A(`,
+whatever its annotation. The rules of the encoding belong to
+`Compiler.AST.Monomorphized`. That module builds only the specialization key as
+a string; `eqKeyLayout` and `layoutHashOf` work on the type directly. So this
+module carries its own encoder, `referenceKey`, written with an explicit work
+stack rather than the recursion `toComparableMonoType` uses: `referenceKey True`
+builds the specialization key and `referenceKey False` the layout key. The
+tests check `toComparableMonoType` against `referenceKey True`, and take every
+layout key from `referenceKey False`.
 
-Both flavours are exercised on purpose. Flag-off graphs are all-`LTop`, where
-the two functions agree byte-for-byte, so an `annoSensitive` regression is
-invisible unless a lambda-set-bearing type is tested (§6 of
-`plans/mono-comparable-key-optimization.md`).
+The fixture is a _corpus_ of 435 types: the 23 types of `goldens`, 12 more
+`handwritten` types, and 400 `generated` from fixed seeds. The pair tests use
+`pairs`, every ordered pair of the first 90 corpus types. The corpus holds no
+`LPartial` annotation.
+
+What the tests establish:
+
+  - `toComparableMonoType` equals `referenceKey True` on every corpus type.
+  - `toComparableMonoType` gives the literal string `goldens` lists for each of
+    its 23 types, so a change made to both `toComparableMonoType` and
+    `referenceKey` that alters any of those 23 keys still fails.
+  - For one function type annotated `LSet [ 2, 5 ]`, the specialization key is
+    `A[2,5](I->S)` and `referenceKey False` gives `A(I->S)`.
+  - For one type whose only arrow is `LTop`, `toComparableMonoType` equals
+    `referenceKey False`.
+  - On every pair, `eqKeySpec` is true exactly when the specialization keys are
+    equal, and `eqKeyLayout` exactly when the `referenceKey False` keys are.
+  - On every pair, equal specialization keys give equal `specHashOf` and equal
+    layout keys give equal `layoutHashOf`.
+  - On every corpus type, `specHashOf` and `layoutHashOf` lie in [0, 2^26).
+  - Over the corpus, the number of distinct `specHashOf` values is at least
+    90 % of the number of distinct specialization keys.
+  - On every corpus type, `Intern.widenSets` with an empty table gives a type
+    `eqKeySpec`-equal to `Mono.widenSets`'s.
+  - Each corpus type hash-consed into an empty table comes back `==` to itself.
+  - After hash-consing the whole corpus into one table, hash-consing the
+    results again leaves its `size` unchanged, and a `disabled` table returns
+    every corpus type `==` to itself.
+  - With a read-only view of a table holding the first half of the corpus,
+    every corpus type comes back `==` to itself, and the table's `size` is
+    unchanged by each probe and by hash-consing the whole corpus through it.
+  - `readOnly disabled` has `size` 0 and returns every corpus type `==` to
+    itself; `readOnly` applied twice to a populated table keeps its `size`.
+  - Each of fifteen marker fragments occurs somewhere in the concatenated
+    specialization and layout keys of the corpus: one per primitive, the
+    `CEcoValue` variable's, and `L(`, `T2(`, `T4(`, `R(`, `X`, `A(`, `A[` and
+    `->`. A fragment counts if it occurs anywhere in that text, so finding one
+    does not show that the encoder arm which writes it ran: `S` can also come
+    from a module name such as `Some.Nested.Module`, and every arrow of a
+    layout key is written `A(`. There is no marker for `Av`.
+  - On every pair, `Intern.eqExact` agrees with `==`, and on the record pairs
+    of `recordProbeCases` both give the expected answer.
+
+Among what is not tested: `LPartial` annotations, including the `LPartial` arm
+of `referenceKey`; how well `layoutHashOf` discriminates; whether a hit returns
+the stored object rather than an equal one, which Elm cannot observe; a memo
+hit carried over from an earlier `Intern.widenSets` call, and
+`Intern.widenSets` on a read-only or disabled table; `Intern.entries`.
 
 -}
 
@@ -33,6 +87,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| All the tests of this module, in the order the module docstring lists them.
+-}
 suite : Test
 suite =
     Test.describe "MonoType comparable-key encoding"
@@ -120,8 +176,8 @@ suite =
                     distinctSpecKeys =
                         List.length (dedupe (List.sort (List.map Mono.toComparableMonoType corpus)))
                 in
-                -- Collisions are legal, but the hash must recover most of the
-                -- key's discrimination or every bucket degenerates to a scan.
+                -- Collisions are allowed; the threshold rules out a hash so
+                -- coarse that hash-keyed lookups degenerate into scans.
                 if distinctSpecHashes * 10 >= distinctSpecKeys * 9 then
                     Expect.pass
 
@@ -134,15 +190,11 @@ suite =
                             ++ " distinct keys"
                         )
         , Test.test "K6: Intern.widenSets keys identically to Mono.widenSets over the corpus" <|
-            -- The interned twin is a hand-copy of `Mono.widenSets` living in
-            -- `Compiler.AST.Intern` (that module cannot be imported by
-            -- `Monomorphized`, which it imports). An arm-for-arm divergence would
-            -- silently change the SPEC-REGISTRY KEY and therefore specialization
-            -- identity, with no compile error — this is the gate for that.
-            -- Key equality, not `==`: the threaded form rebuilds a record's field
-            -- dict by ascending insert where `Dict.map` preserves the input tree
-            -- shape, a difference `==` sees and `eqKeySpec` (which compares
-            -- `Dict.toList`) correctly does not.
+            -- `Intern.widenSets` is a hand copy of `Mono.widenSets` (Intern
+            -- imports Monomorphized, so the copy cannot live there), and
+            -- `Mono.widenSets`'s docstring requires the two to compute the
+            -- same type. The comparison is `eqKeySpec`, which is coarser than
+            -- `==`.
             \_ ->
                 corpus
                     |> List.filter
@@ -176,7 +228,7 @@ suite =
                             ( [], Intern.empty )
                             corpus
 
-                    -- Re-consing an already-canonical corpus must add nothing.
+                    -- Hash-consing the canonical copies again must add no entry.
                     sizeAfterReplay =
                         Intern.size (List.foldl (\t i -> Tuple.second (Intern.hashCons t i)) table built)
                 in
@@ -187,19 +239,10 @@ suite =
                     , List.all (\t -> Tuple.first (Intern.hashCons t Intern.disabled) == t) corpus
                     )
         , Test.test "K7: a read-only table is transparent on both hit and miss, and never grows" <|
-            -- The two properties `TypeSubst.applySubstPureRO` relies on:
-            -- whatever comes back is EQUAL to what went in (so substituting the
-            -- canonical object for a fresh one cannot change emitted code), and
-            -- the table is returned unchanged whether the probe hit or missed.
-            -- The second is what removes the need for state threading at any
-            -- call site, and what keeps `Engine.withIntern`'s did-the-table-grow
-            -- guard from ever firing for a read-only probe.
-            --
-            -- Physical sharing itself is deliberately NOT asserted here: Elm has
-            -- no way to observe object identity, so the hit case and the miss
-            -- case are indistinguishable from inside the language. The
-            -- registered half and the unregistered half are exercised separately
-            -- so both code paths run.
+            -- Elm cannot observe object identity, so a hit and a miss look the
+            -- same from here: both give back an equal type and a table of the
+            -- same size. The two halves are probed separately so that both the
+            -- hit path and the miss path run.
             \_ ->
                 let
                     ( half, rest ) =
@@ -213,7 +256,7 @@ suite =
                     ro =
                         Intern.readOnly populated
 
-                    -- The registered half: every probe HITS.
+                    -- Every composite here is in the table, so its probe hits.
                     hitsAreTransparent =
                         List.all
                             (\t ->
@@ -225,7 +268,7 @@ suite =
                             )
                             half
 
-                    -- The unregistered half: every probe MISSES.
+                    -- Composites here miss unless an equal one is in `half`.
                     missesArePreserved =
                         List.all
                             (\t ->
@@ -287,11 +330,13 @@ suite =
         ]
 
 
-{-| Record pairs whose answer must not depend on the red-black SHAPE of the
-`Dict`, only on its content. The interesting ones are the two that a shallow
-compare could get wrong: fields inserted in opposite orders (equal content,
-different tree shape) and two names of equal length that collide on the packed
-hash.
+{-| Labelled pairs of record types, each with whether the two are equal.
+
+Two of them target a comparison that looks only at hashes or at how the field
+`Dict`s were built. Records with the same fields inserted in opposite orders
+are equal. The single-field records `ab` and `ba` are not equal but carry the
+same packed hash, because `mRecord` hashes a field name by its length only.
+
 -}
 recordProbeCases : List ( String, ( MonoType, MonoType ), Bool )
 recordProbeCases =
@@ -338,9 +383,10 @@ recordProbeCases =
     ]
 
 
-{-| All ordered pairs over a prefix of the corpus, plus every pair drawn from
-the handwritten shapes (where near-misses — same shape, different lambda set or
-`MVar` constraint — are concentrated).
+{-| Ordered pairs of corpus types for the equality and hash tests: every
+ordered pair, each type with itself included, of the first 90 corpus types,
+followed by every ordered pair of the `handwritten` types. The handwritten types
+open the corpus, so the second block repeats pairs already in the first.
 -}
 pairs : List ( MonoType, MonoType )
 pairs =
@@ -352,11 +398,17 @@ pairs =
         ++ List.concatMap (\a -> List.map (\b -> ( a, b )) handwritten) handwritten
 
 
+{-| Renders a pair as the two types' debug strings separated by `VS`, for
+failure messages.
+-}
 describePair : ( MonoType, MonoType ) -> String
 describePair ( a, b ) =
     Mono.monoTypeToDebugString a ++ "  VS  " ++ Mono.monoTypeToDebugString b
 
 
+{-| Returns `sorted` with each run of equal adjacent values reduced to one,
+which leaves one copy of each value when the list is sorted.
+-}
 dedupeInt : List Int -> List Int
 dedupeInt sorted =
     case sorted of
@@ -371,6 +423,9 @@ dedupeInt sorted =
             other
 
 
+{-| Returns `sorted` with each run of equal adjacent strings reduced to one,
+which leaves one copy of each string when the list is sorted.
+-}
 dedupe : List String -> List String
 dedupe sorted =
     case sorted of
@@ -389,6 +444,17 @@ dedupe sorted =
 -- ====== GOLDENS ======
 
 
+{-| Types paired with the exact specialization key `toComparableMonoType` must
+give them.
+
+Between them the strings pin these parts of the encoding: a `CEcoValue`
+variable with id 3 keys as `V0\u{0000}ecovalue`, and a `CNumber` variable as
+`I`, like `MInt`; tuple elements and custom-type arguments are written last
+to first, and record fields in descending name order; an `LTop` arrow is `A(`,
+an `LVar n` arrow `Av<n>(`, so `LVar 0` and `LVar 1` key apart, and an `LSet`
+arrow lists its members in brackets, `A[](` when there are none.
+
+-}
 goldens : List ( MonoType, String )
 goldens =
     [ ( MInt, "I" )
@@ -401,12 +467,8 @@ goldens =
     , ( MVar (mvarId 3) CNumber, "I" )
     , ( Mono.mList MInt, "L(I)" )
     , ( Mono.mList (Mono.mList MString), "L(L(S))" )
-
-    -- Children are emitted LAST-TO-FIRST (the work stack popped them reversed).
     , ( Mono.mTuple [ MInt, MFloat ], "T2(FI)" )
     , ( Mono.mTuple [ MInt, MFloat, MString ], "T3(SFI)" )
-
-    -- Record fields likewise, in DESCENDING field-name order.
     , ( Mono.mRecord (Dict.fromList [ ( "a", MInt ), ( "b", MString ) ]), "R(bSaI)" )
     , ( Mono.mRecord Dict.empty, "R()" )
     , ( Mono.mCustom (ModuleName.Canonical ( "elm", "core" ) "Maybe") "Maybe" [ MInt ]
@@ -416,12 +478,6 @@ goldens =
       , "Xelm\u{0000}core\u{0000}Result\u{0000}Result(IS)"
       )
     , ( Mono.mFunction (LTop 7) [ MInt ] MString, "A(I->S)" )
-
-    -- Phase 3: a set VARIABLE gets its OWN fragment carrying the canonical
-    -- number, and that literal string IS the assertion. `LVar` must NOT key as
-    -- `LTop` (they encode differently — a flex slot versus poison, so merging
-    -- them would let a stored ⊤ poison a variable demand), and two variables
-    -- must key apart, which is what makes `(α → α)` and `(α → β)` distinct.
     , ( Mono.mFunction (LVar 0) [ MInt ] MString, "Av0(I->S)" )
     , ( Mono.mFunction (LVar 1) [ MInt ] MString, "Av1(I->S)" )
     , ( Mono.mFunction (LTop 7) [ MInt, MFloat ] MUnit, "A(FI->U)" )
@@ -435,11 +491,29 @@ goldens =
 -- ====== CORPUS ======
 
 
+{-| The types every corpus-wide test runs over: the handwritten types followed
+by the generated ones.
+-}
 corpus : List MonoType
 corpus =
     handwritten ++ generated
 
 
+{-| The handwritten part of the corpus: the 23 `goldens` types, then twelve
+more.
+
+The first seven add deep list nesting, a six-element tuple, a four-field
+record, a record whose one field is itself a record, a custom type applied to
+itself, and two function types with `LSet` annotations, one of them on a
+function inside a record field.
+
+The last five are function types that differ from one of those two, or from
+each other, only in their annotations: an `LVar` head against an `LSet` head,
+an `LVar` against an `LTop` on an inner arrow, inner arrows `LVar 0` against
+`LVar 1`, and the record-argument type with `LVar 0` in place of its `LTop`
+and `LSet`.
+
+-}
 handwritten : List MonoType
 handwritten =
     List.map Tuple.first goldens
@@ -450,12 +524,6 @@ handwritten =
            , Mono.mCustom (ModuleName.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ Mono.mCustom (ModuleName.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ MInt ] ]
            , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction (LTop 7) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction (LTop 7) [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LSet [ 3, 4, 5 ]) [ MChar ] MBool ) ]) ] MUnit
-
-           -- Phase 1a near-misses: the `handwritten x handwritten` block in
-           -- `pairs` is where same-shape/different-annotation pairs are
-           -- concentrated, so these put LVar-vs-LTop, LVar-vs-LSet AND
-           -- LVar-vs-a-DIFFERENT-LVar in front of both K4 differential tests.
-           -- The last pair is the Phase 3 one: `(α → α)` versus `(α → β)`.
            , Mono.mFunction (LVar 0) [ Mono.mFunction (LTop 7) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction (LVar 0) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction (LVar 0) [ Mono.mFunction (LVar 0) [ MChar ] MBool ] MUnit
@@ -464,10 +532,9 @@ handwritten =
            ]
 
 
-{-| A deterministic pseudo-random corpus: enough structural variety (nesting,
-breadth, both constraints, both annotations, record field orders that differ
-from insertion order) that an ordering slip in any arm shows up. Deterministic
-rather than fuzzed because the suite runs at `--fuzz 1`.
+{-| The 400 generated corpus types, each from `genTypeWith True 4` on its own
+fixed seed, so every one is a composite with at most four levels of composites.
+The seeds are fixed, so every run tests the same types.
 -}
 generated : List MonoType
 generated =
@@ -475,14 +542,25 @@ generated =
         |> List.map (\i -> Tuple.first (genTypeWith True 4 (nextSeed (i * 7919))))
 
 
+{-| Generates a type from `seed` as `genTypeWith` does with `compositeOnly`
+off, so it may be a leaf at any depth.
+-}
 genType : Int -> Int -> ( MonoType, Int )
 genType depth seed =
     genTypeWith False depth seed
 
 
-{-| `compositeOnly` forces a container arm, which is what the roots want: a
-corpus dominated by bare `MInt`s would spend its 400 entries comparing the
-seven trivial leaf keys.
+{-| Generates a pseudo-random type from `seed0`, and returns it with the seed
+to continue from.
+
+At `depth` 0 or below the type is a leaf: one of the six primitives, or a
+`CEcoValue` or `CNumber` variable with one of three ids. Above that,
+`compositeOnly` restricts the choice to the five composites, and without it
+leaves are possible too. The composites are a list, a tuple of one to four
+elements, a record of one to four fields named from `fieldNames`, a custom type
+of up to two arguments, and a function of up to two arguments. Children are
+generated one level shallower with `compositeOnly` off.
+
 -}
 genTypeWith : Bool -> Int -> Int -> ( MonoType, Int )
 genTypeWith compositeOnly depth seed0 =
@@ -564,6 +642,9 @@ genTypeWith compositeOnly depth seed0 =
             ( Mono.mFunction (annoAt seed) args ret, s2 )
 
 
+{-| Generates `n` types at `depth` with `genType`, passing the seed from each to
+the next, and returns them with the last seed; `[]` when `n` is 0 or less.
+-}
 genTypes : Int -> Int -> Int -> ( List MonoType, Int )
 genTypes n depth seed =
     if n <= 0 then
@@ -580,11 +661,13 @@ genTypes n depth seed =
         ( t :: rest, s2 )
 
 
-{-| A xorshift-flavoured mix, NOT a plain LCG. An LCG is affine, so it maps the
-arithmetic progression of starting seeds below onto another arithmetic
-progression, and `modBy <arms>` of that is periodic — the first cut of this
-generator built 428 types holding only 156 distinct keys. The shifts break the
-affinity. Products stay under 2^53 so the arithmetic is exact.
+{-| Returns the pseudo-random value that follows `seed`, in [0, 2^31 - 2].
+
+Two multiply-and-reduce steps are interleaved with xor-shifts. Without the
+shifts the step would be affine, and would turn the evenly spaced seeds
+`generated` starts from into evenly spaced values. For a seed below 2^31 in
+magnitude every product stays below 2^53, so the arithmetic is exact.
+
 -}
 nextSeed : Int -> Int
 nextSeed seed =
@@ -601,14 +684,18 @@ nextSeed seed =
     modBy 2147483647 (c * 48271 + 2654435)
 
 
-{-| Deliberately NOT in sorted order: a record built from these has an
-insertion order different from its `Dict` order.
+{-| The field names generated records use, in the order they are inserted.
+They are not in ascending order, so a record with two or more of them is
+inserted out of `Dict` order.
 -}
 fieldNames : List String
 fieldNames =
     [ "b", "a", "d", "c" ]
 
 
+{-| Picks one of three modules from `seed`: `elm/core` `Maybe`,
+`author/project` `Some.Nested.Module`, or `eco/kernel` `Eco.Kernel`.
+-}
 canonicalAt : Int -> ModuleName.Canonical
 canonicalAt seed =
     case modBy 3 seed of
@@ -622,6 +709,11 @@ canonicalAt seed =
             ModuleName.Canonical ( "eco", "kernel" ) "Eco.Kernel"
 
 
+{-| Picks one of three type names from `seed`: `Maybe`, `Tree` or `Wrapper`.
+It chooses by `modBy 3 seed`, as `canonicalAt` does, so for one seed the two
+give `Maybe` in `Maybe`, `Tree` in `Some.Nested.Module`, or `Wrapper` in
+`Eco.Kernel`.
+-}
 nameAt : Int -> String
 nameAt seed =
     case modBy 3 seed of
@@ -635,18 +727,20 @@ nameAt seed =
             "Wrapper"
 
 
-{-| Phase 1a/3: a set VARIABLE is drawn here on purpose. This is a CONSTRUCTOR site,
-so the Elm compiler will never force it — and without it the K4 differential
-tests (`eqKeySpec` vs the key encoder, and equal-keys-imply-equal-hashes) pass
-VACUOUSLY with a broken `Mono.annoHash` or a broken `Mono.annoKeyEq`, both of
-which compile cleanly when wrong.
+{-| Picks an arrow annotation from `seed`: `LTop` with a provenance code from 0
+to 7, `LSet []`, `LSet [ 7 ]`, `LSet [ 1, 2, 3 ]`, or `LVar` 0, 1 or 2. It never
+gives `LPartial`.
+
+The provenance code is taken from the seed, so generated `LTop` arrows can
+differ in it; the keys and hashes ignore it. `LVar` is included so that
+generated types, and not only the handwritten ones, carry set variables into
+the key, equality and hash tests.
+
 -}
 annoAt : Int -> LambdaSetAnno
 annoAt seed =
     case modBy 5 seed of
         0 ->
-            -- §4.9: vary the kind with the seed — the key/hash laws must
-            -- hold ACROSS provenance kinds (kind-blind by construction).
             LTop (modBy 8 seed)
 
         1 ->
@@ -662,20 +756,33 @@ annoAt seed =
             LSet [ 1, 2, 3 ]
 
 
+{-| Returns the `MVarId` `n` steps after `TypeIds.firstMVarId`, or
+`firstMVarId` itself when `n` is 0 or less.
+-}
 mvarId : Int -> MVarId
 mvarId n =
     List.foldl (\_ id -> Id.succ id) TypeIds.firstMVarId (List.range 1 n)
 
 
 
--- ====== REFERENCE ORACLE (the previous explicit-work-stack encoder) ======
+-- ====== REFERENCE ENCODER ======
 
 
+{-| One entry on the reference encoder's work stack.
+
+`WorkType` is a type still to be encoded. `WorkMarker` is a fragment written
+out unchanged when it is popped: a closing bracket, the `->` between a
+function's arguments and its result, or a record field name.
+
+-}
 type WorkItem
     = WorkType MonoType
     | WorkMarker String
 
 
+{-| Builds the specialization key of `monoType` when `annoSensitive` is `True`,
+and its layout key, with every arrow written `A(`, when it is `False`.
+-}
 referenceKey : Bool -> MonoType -> String
 referenceKey annoSensitive monoType =
     referenceHelper annoSensitive [ WorkType monoType ] []
@@ -683,6 +790,18 @@ referenceKey annoSensitive monoType =
         |> String.concat
 
 
+{-| Runs the work stack `work` until it is empty, and returns `acc` with every
+fragment written consed on, newest first.
+
+A leaf writes its fragment at once. A composite writes its opening fragment
+and pushes its children and its other markers: the closing `)`, a function's
+`->` and a record's field names. Children are pushed with
+`List.foldl`, so they are popped, and written, last to first; a record's fields
+come out in descending name order, each name just before its type. With
+`annoSensitive` an `LPartial` arrow is written exactly as an `LSet` with the
+same members.
+
+-}
 referenceHelper : Bool -> List WorkItem -> List String -> List String
 referenceHelper annoSensitive work acc =
     case work of
@@ -769,7 +888,6 @@ referenceHelper annoSensitive work acc =
                                         "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
 
                                     LPartial members ->
-                                        -- identity-blind with LSet (lss-lpartial §2)
                                         "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
 
                             else

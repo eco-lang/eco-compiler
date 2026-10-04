@@ -1,14 +1,66 @@
 module TestLogic.Generate.AggPromoteTest exposing (suite)
 
-{-| U-T1.3.1 aggregate promotion (`plans/opt-tier1-aggregate-promotion.md`):
-unit gate for the per-def escape walk `Expr.tupleBinderPromotable`.
+{-| Pins the verdicts of the escape walk, one of the checks that decide
+whether a tuple or custom-type value bound in a `let` may be promoted, on ten
+small functions, so that a change to the walk that turns one of those verdicts
+fails here.
 
-Source-first fixtures (SourceBuilder → full pipeline → GlobalOpt): a def
-with a promotable let-bound tuple (only destructured), one whose tuple
-escapes via return, and one whose tuple escapes into a call. The verdicts
-are checked on the real post-GlobalOpt AST — the same shapes emission sees.
-No `main`: all defs stay roots (BorrowTailCallEscapeTest idiom), so the
-inliner cannot dissolve the fixtures.
+An _aggregate_ is a tuple or a value of a custom type. _Aggregate promotion_
+is MLIR generation building a `let`-bound aggregate as a value
+(`eco.make.tuple2`, `eco.make.tuple3` or `eco.make.custom`) instead of
+allocating it on the heap. It is allowed only when the binder does not
+_escape_: every use reads a field of the value rather than the value itself.
+Returning the value, passing it to a call or capturing it in a closure are
+escapes. The full rule, with its exceptions, belongs to
+`Compiler.Generate.MLIR.Expr.tupleBinderPromotable` and
+`Compiler.Generate.MLIR.Expr.aggBinderPromotableWith`, which these tests call.
+
+The fixture is one source module, `fixtureModule`, with one function per
+scenario. Every test runs it through `TestLogic.TestPipeline.runToGlobalOpt`
+(monomorphization with the substitution engine, then the inliner and the
+global optimizer) and asks for a verdict on the optimized graph. A function is
+found as the first specialization, in SpecId order, whose comparable global
+name contains the function's name and which yields a verdict, so no scenario
+name may occur inside another; matching is case-sensitive, so `good` does not
+match `caseGood`. Each test expects `Just True` (promotable) or `Just False`
+(escapes); `Nothing`, meaning the function or its `let` was not found, fails.
+
+The tuple tests take the function's first `let` whose value is a tuple and ask
+`tupleBinderPromotable`. Every such tuple is `(a * 2, b * 3)`, bound to `t`.
+
+  - `good` destructures `t` with a `let` pattern `(x, y)`: promotable. The
+    typed optimizer lowers that pattern to a `let` binding a fresh name to
+    `t`, whose fields are then read from that name, so `good` also exercises
+    the walk's admission of an alias of the binder.
+  - `bad` returns `t`: escapes.
+  - `passed` passes `t` to `useTuple`: escapes.
+  - `caseGood` matches `t` against `(x, y)` in a `case`: promotable.
+  - `caseNested` matches `t` against `(0, y)` and then `(x, _)`, so the
+    `case` tests the first element: promotable.
+  - `caseAndPass` matches `t` in a `case` and also passes it to `useTuple`:
+    escapes.
+
+The constructor tests take the function's first `let` whose value is a call to
+a constructor, and ask `aggBinderPromotableWith` with that constructor's
+`CustomContainer` as the kind of container a field read must go through.
+
+  - `ctorGood` binds `p = MkPair a b` and matches it against `MkPair x y`:
+    promotable.
+  - `ctorBad` passes `p` to `usePair`: escapes.
+  - `ctorMulti` binds `m = Yes a` and matches it against `Yes x` and `No y`.
+    Its type has two constructors, so the `case` tests which constructor `m`
+    is, which reads `m` itself: escapes.
+  - `ctorCap` returns a lambda that captures `p` and passes it to `usePair`:
+    escapes.
+
+Among what is not tested: the walk is always given empty tables of split
+parameters, of argument positions of calls to functions whose aggregate
+parameter has been split into its fields, and of forward-referenced names, so
+the allowances and the guard that depend on them are not exercised; the
+constructor tests bypass `promotableCtorCall`, so its configuration flag,
+saturation and arity conditions are not checked; no fixture has a 3-tuple or
+a tail-recursive function; the solver engine is not used; and no MLIR is
+generated.
 
 -}
 
@@ -23,6 +75,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The ten verdict tests, one per scenario function in `fixtureModule`.
+-}
 suite : Test
 suite =
     Test.describe "U-T1.3.1 tupleBinderPromotable"
@@ -59,9 +113,16 @@ suite =
         ]
 
 
-{-| T1.3.2: find the def's first `MonoLet x (MonoCall ctor ...)` where the
-callee resolves to a `MonoCtor` node, and run the kind-generic walker with
-`CustomContainer <ctor>` (the same check `promotableCtorCall` performs).
+{-| Runs `fixtureModule` to global optimization and expects `expected` to be
+the constructor verdict for the function named by `defName`: the verdict of
+`Expr.aggBinderPromotableWith` on that function's first `let` whose value is a
+call to a constructor, with the constructor's `CustomContainer` as the kind.
+
+The function is the first specialization, in SpecId order, whose comparable
+global name contains `defName` and for which `nodeCtorVerdict` gives a
+verdict. If `Pipeline.runToGlobalOpt` returns an error, the test fails with
+its message.
+
 -}
 expectCtorVerdict : String -> Maybe Bool -> Expect.Expectation
 expectCtorVerdict defName expected =
@@ -107,6 +168,10 @@ expectCtorVerdict defName expected =
             verdict |> Expect.equal expected
 
 
+{-| Returns the constructor verdict for the body of `node`, as `findCtorLet`
+finds it, or `Nothing` when `node` is neither a `MonoDefine` nor a
+`MonoTailFunc`.
+-}
 nodeCtorVerdict : (Int -> Maybe Mono.CtorShape) -> Mono.MonoNode -> Maybe Bool
 nodeCtorVerdict ctorShapeOf node =
     case node of
@@ -120,6 +185,15 @@ nodeCtorVerdict ctorShapeOf node =
             Nothing
 
 
+{-| Returns the escape walk's verdict on the first `let` in `expr` that binds a
+call to a global which `ctorShapeOf` maps to a constructor shape, with that
+constructor's `CustomContainer` as the kind, or `Nothing` if there is none.
+
+The search goes down through closures and through the bodies of `let`s and
+destructures, and nowhere else, so a `let` inside a `case` branch, an `if`, a
+call argument or another `let`'s value is not found.
+
+-}
 findCtorLet : (Int -> Maybe Mono.CtorShape) -> Mono.MonoExpr -> Maybe Bool
 findCtorLet ctorShapeOf expr =
     case expr of
@@ -144,6 +218,16 @@ findCtorLet ctorShapeOf expr =
             Nothing
 
 
+{-| Runs `fixtureModule` to global optimization and expects `expected` to be
+the tuple verdict for the function named by `defName`: the verdict of
+`Expr.tupleBinderPromotable` on that function's first `let` whose value is a
+tuple, as `findTupleLet` finds it.
+
+The function is the first specialization, in SpecId order, whose comparable
+global name contains `defName` and for which `nodeVerdict` gives a verdict.
+If `Pipeline.runToGlobalOpt` returns an error, the test fails with its message.
+
+-}
 expectVerdict : String -> Maybe Bool -> Expect.Expectation
 expectVerdict defName expected =
     case Pipeline.runToGlobalOpt fixtureModule of
@@ -155,7 +239,6 @@ expectVerdict defName expected =
                 (Mono.MonoGraph { nodes, registry }) =
                     optimizedMonoGraph
 
-                -- specId → comparable global name (registry order = node order)
                 verdict =
                     Array.foldl
                         (\( maybeName, maybeNode ) acc ->
@@ -181,6 +264,10 @@ expectVerdict defName expected =
             verdict |> Expect.equal expected
 
 
+{-| Returns the pairs of elements of `xs` and `ys` at the same index, as long
+as the shorter array. The tests use it to pair each specialization's registry
+entry with its node, since both arrays are indexed by SpecId.
+-}
 zipArrays : Array.Array a -> Array.Array b -> Array.Array ( a, b )
 zipArrays xs ys =
     Array.indexedMap
@@ -206,6 +293,9 @@ zipArrays xs ys =
         |> Array.fromList
 
 
+{-| Returns the tuple verdict for the body of `node`, as `findTupleLet` finds
+it, or `Nothing` when `node` is neither a `MonoDefine` nor a `MonoTailFunc`.
+-}
 nodeVerdict : Mono.MonoNode -> Maybe Bool
 nodeVerdict node =
     case node of
@@ -219,9 +309,14 @@ nodeVerdict node =
             Nothing
 
 
-{-| First `MonoLet (MonoDef x (MonoTupleCreate ...)) body` in the def
-(searching through the closure wrapper and let/destruct spine) → the
-checker's verdict on it.
+{-| Returns the verdict of `Expr.tupleBinderPromotable` on the first `let` in
+`expr` whose value is a tuple, or `Nothing` if there is none.
+
+The walk is given empty tables of split parameters, of argument positions of
+calls to functions whose aggregate parameter has been split into its fields,
+and of forward-referenced names. The search goes down through closures and
+through the bodies of `let`s and destructures, and nowhere else.
+
 -}
 findTupleLet : Mono.MonoExpr -> Maybe Bool
 findTupleLet expr =
@@ -242,10 +337,18 @@ findTupleLet expr =
             Nothing
 
 
-{-| good a b = let t = (a\_2, b\_3); (x, y) = t in x + y
-bad a b = let t = (a\_2, b\_3) in t -- escapes via return
-passed a b = let t = (a\_2, b\_3) in useTuple t -- escapes into a call
-useTuple p = case p of (x, y) -> x + y
+{-| The source module `Test` that every test compiles: one function per
+scenario, as the module docstring lists them, with the helpers they use and
+the custom types `Pair`, whose one constructor is `MkPair Int Int`, and `MB`,
+whose constructors are `Yes Int` and `No Int`.
+
+`useTuple` and `usePair` return the sum of the two fields of the value they
+are given. `passed` and `caseAndPass` pass their tuple to `useTuple`, and
+`ctorBad` and `ctorCap` pass their `Pair` to `usePair`. `testValue` calls
+every scenario function, `bad` through `useTuple`, so that each one is
+reached from the `main` that `TestLogic.TestPipeline` adds and is specialized
+by monomorphization.
+
 -}
 fixtureModule =
     let

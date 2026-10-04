@@ -4,10 +4,36 @@ module Compiler.Elm.Interface.Bytes exposing
     , bytesInterface
     )
 
-{-| Interfaces for elm/bytes modules used in tests.
+{-| Hand-built interfaces for the three modules of the elm/bytes package, so
+that a test program can import `Bytes`, `Bytes.Encode` and `Bytes.Decode`
+without that package being compiled. `Compiler.Elm.Interface.Basic` adds all
+three to the interfaces that test programs are canonicalized against.
 
-Provides Bytes, Bytes.Encode, and Bytes.Decode module interfaces
-to enable testing of bytes fusion codegen paths.
+An interface is what a compiled module offers the modules that import it: an
+annotation for each exported value, and its exported types, as
+`Compiler.Elm.Interface` describes. Each interface here is assembled directly
+from canonical types, with elm/bytes as its home package. A type whose
+constructors elm/bytes keeps hidden (`Bytes`, `Encoder`, `Decoder`) is a closed
+union with no constructors. `Endianness` and `Step` are open unions, so a test
+program can use their constructors.
+
+Only part of elm/bytes is present, and a test program can use nothing else from
+it:
+
+  - `Bytes`: the types `Bytes` and `Endianness`, and no values.
+  - `Bytes.Encode`: the type `Encoder`, `encode`, the signed and unsigned 8-,
+    16- and 32-bit integer encoders, `float32`, `float64`, `bytes`, `string`
+    and `sequence`.
+  - `Bytes.Decode`: the types `Decoder` and `Step`, `decode`, the integer and
+    float decoders matching those encoders, `bytes`, `string`, `succeed`,
+    `fail`, `map` to `map4`, `andThen` and `loop`.
+
+Three things differ from elm/bytes itself. `loop` takes the step function first
+and the initial state second, where elm/bytes takes the state first.
+`Endianness` declares `BE` before `LE`, the reverse of elm/bytes, so the two
+constructor indices are swapped. And `Endianness` is given the `Normal`
+constructor representation, where canonicalizing a declaration whose
+constructors are all nullary chooses `Enum`.
 
 -}
 
@@ -26,6 +52,10 @@ import Dict exposing (Dict)
 -- ============================================================================
 
 
+{-| Returns the names of the type variables that occur anywhere in `tipe`,
+including a record's extension variable. For an alias it collects from the
+argument types and from the alias body, whether `Holey` or `Filled`.
+-}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
@@ -71,21 +101,29 @@ collectFreeVars tipe =
                     Dict.union argVars (collectFreeVars t)
 
 
+{-| Builds the annotation of `tipe`, quantified over every type variable in it.
+-}
 mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
 
+{-| The canonical name of the `Bytes` module of elm/bytes.
+-}
 bytesHome : ModuleName.Canonical
 bytesHome =
     ModuleName.Canonical Pkg.bytes "Bytes"
 
 
+{-| The canonical name of the `Bytes.Encode` module of elm/bytes.
+-}
 bytesEncodeHome : ModuleName.Canonical
 bytesEncodeHome =
     ModuleName.Canonical Pkg.bytes "Bytes.Encode"
 
 
+{-| The canonical name of the `Bytes.Decode` module of elm/bytes.
+-}
 bytesDecodeHome : ModuleName.Canonical
 bytesDecodeHome =
     ModuleName.Canonical Pkg.bytes "Bytes.Decode"
@@ -97,36 +135,51 @@ bytesDecodeHome =
 -- ============================================================================
 
 
+{-| The type `Bytes`, from the `Bytes` module.
+-}
 bytesType : Can.Type Name
 bytesType =
     Can.TType bytesHome "Bytes" []
 
 
+{-| The type `Encoder`, from the `Bytes.Encode` module.
+-}
 encoderType : Can.Type Name
 encoderType =
     Can.TType bytesEncodeHome "Encoder" []
 
 
+{-| Returns the type `Decoder a` of the `Bytes.Decode` module, for the result
+type `a`.
+-}
 decoderType : Can.Type Name -> Can.Type Name
 decoderType a =
     Can.TType bytesDecodeHome "Decoder" [ a ]
 
 
+{-| The type `Endianness`, from the `Bytes` module.
+-}
 endiannessType : Can.Type Name
 endiannessType =
     Can.TType bytesHome "Endianness" []
 
 
+{-| The type `Int`, from `Basics`.
+-}
 intType : Can.Type Name
 intType =
     Can.TType ModuleName.basics "Int" []
 
 
+{-| The type `Float`, from `Basics`.
+-}
 floatType : Can.Type Name
 floatType =
     Can.TType ModuleName.basics "Float" []
 
 
+{-| The type `String`, from the `String` module.
+-}
 stringType : Can.Type Name
 stringType =
     Can.TType ModuleName.string "String" []
@@ -138,7 +191,8 @@ stringType =
 -- ============================================================================
 
 
-{-| The Bytes module interface: Bytes opaque type and Endianness union.
+{-| The interface of the `Bytes` module: the closed type `Bytes`, the open type
+`Endianness` with constructors `BE` and `LE`, and no values.
 -}
 bytesInterface : I.Interface
 bytesInterface =
@@ -151,10 +205,13 @@ bytesInterface =
         }
 
 
+{-| The union types of the `Bytes` module, keyed by name. `Bytes` is closed and
+has no constructors. `Endianness` is open, with `BE` at index 0 and `LE` at
+index 1.
+-}
 bytesUnions : Dict Name I.Union
 bytesUnions =
     let
-        -- type Bytes (opaque)
         bytesUnion =
             Can.Union
                 { vars = []
@@ -163,7 +220,6 @@ bytesUnions =
                 , opts = Can.Normal
                 }
 
-        -- type Endianness = BE | LE
         beC =
             Can.Ctor { name = "BE", index = Index.first, numArgs = 0, args = [] }
 
@@ -190,7 +246,10 @@ bytesUnions =
 -- ============================================================================
 
 
-{-| The Bytes.Encode module interface: Encoder type and encoder functions.
+{-| The interface of the `Bytes.Encode` module: the closed type `Encoder`, and
+annotations for `encode`, `signedInt8`, `unsignedInt8`, the signed and unsigned
+16- and 32-bit encoders, `float32`, `float64`, `bytes`, `string` and
+`sequence`. Every annotation has the same type as in elm/bytes.
 -}
 bytesEncodeInterface : I.Interface
 bytesEncodeInterface =
@@ -203,10 +262,12 @@ bytesEncodeInterface =
         }
 
 
+{-| The union types of the `Bytes.Encode` module: `Encoder` alone, closed and
+without constructors.
+-}
 bytesEncodeUnions : Dict Name I.Union
 bytesEncodeUnions =
     let
-        -- type Encoder (opaque)
         encoderUnion =
             Can.Union
                 { vars = []
@@ -218,54 +279,45 @@ bytesEncodeUnions =
     Dict.singleton "Encoder" (I.ClosedUnion encoderUnion)
 
 
+{-| The annotations of the `Bytes.Encode` values, keyed by name. Each has the
+same type as in elm/bytes.
+-}
 bytesEncodeValues : Dict Name (Can.Annotation Name)
 bytesEncodeValues =
     let
-        -- encode : Encoder -> Bytes
         encodeType =
             Can.tLambda encoderType bytesType
 
-        -- unsignedInt8 : Int -> Encoder
         u8Type =
             Can.tLambda intType encoderType
 
-        -- signedInt8 : Int -> Encoder
         i8Type =
             Can.tLambda intType encoderType
 
-        -- unsignedInt16 : Endianness -> Int -> Encoder
         u16Type =
             Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
-        -- signedInt16 : Endianness -> Int -> Encoder
         i16Type =
             Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
-        -- unsignedInt32 : Endianness -> Int -> Encoder
         u32Type =
             Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
-        -- signedInt32 : Endianness -> Int -> Encoder
         i32Type =
             Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
-        -- float32 : Endianness -> Float -> Encoder
         f32Type =
             Can.tLambda endiannessType (Can.tLambda floatType encoderType)
 
-        -- float64 : Endianness -> Float -> Encoder
         f64Type =
             Can.tLambda endiannessType (Can.tLambda floatType encoderType)
 
-        -- bytes : Bytes -> Encoder
         bytesEncType =
             Can.tLambda bytesType encoderType
 
-        -- string : String -> Encoder
         stringEncType =
             Can.tLambda stringType encoderType
 
-        -- sequence : List Encoder -> Encoder
         listEncoder =
             Can.TType ModuleName.list "List" [ encoderType ]
 
@@ -294,7 +346,15 @@ bytesEncodeValues =
 -- ============================================================================
 
 
-{-| The Bytes.Decode module interface: Decoder type and decoder functions.
+{-| The interface of the `Bytes.Decode` module: the closed type `Decoder a`, the
+open type `Step state a` with constructors `Loop` and `Done`, and annotations
+for `decode`, the integer and float decoders matching those of `Bytes.Encode`,
+`bytes`, `string`, `succeed`, `fail`, `map` to `map4`, `andThen` and `loop`.
+
+Every annotation has the same type as in elm/bytes except `loop`, whose two
+arguments are the other way round:
+`(state -> Decoder (Step state a)) -> state -> Decoder a`.
+
 -}
 bytesDecodeInterface : I.Interface
 bytesDecodeInterface =
@@ -307,13 +367,16 @@ bytesDecodeInterface =
         }
 
 
+{-| The union types of the `Bytes.Decode` module, keyed by name. `Decoder a` is
+closed and has no constructors. `Step state a` is open: `Loop`, at index 0,
+carries a state, and `Done`, at index 1, carries the result.
+-}
 bytesDecodeUnions : Dict Name I.Union
 bytesDecodeUnions =
     let
         aVar =
             Can.TVar "a"
 
-        -- type Decoder a (opaque)
         decoderUnion =
             Can.Union
                 { vars = [ "a" ]
@@ -322,7 +385,6 @@ bytesDecodeUnions =
                 , opts = Can.Normal
                 }
 
-        -- type Step state a = Loop state | Done a
         stateVar =
             Can.TVar "state"
 
@@ -346,6 +408,10 @@ bytesDecodeUnions =
         ]
 
 
+{-| The annotations of the `Bytes.Decode` values, keyed by name. Each has the
+same type as in elm/bytes except `loop`, which takes the step function before
+the initial state.
+-}
 bytesDecodeValues : Dict Name (Can.Annotation Name)
 bytesDecodeValues =
     let
@@ -373,15 +439,12 @@ bytesDecodeValues =
         decoderC =
             decoderType cVar
 
-        -- decode : Decoder a -> Bytes -> Maybe a
         maybeA =
             Can.TType ModuleName.maybe "Maybe" [ aVar ]
 
         decodeType =
             Can.tLambda decoderA (Can.tLambda bytesType maybeA)
 
-        -- unsignedInt8 : Decoder Int
-        -- (zero-arg decoder values)
         decoderInt =
             decoderType intType
 
@@ -394,40 +457,31 @@ bytesDecodeValues =
         decoderString =
             decoderType stringType
 
-        -- unsignedInt16 : Endianness -> Decoder Int
         endianDecoderInt =
             Can.tLambda endiannessType decoderInt
 
-        -- float32 : Endianness -> Decoder Float
         endianDecoderFloat =
             Can.tLambda endiannessType decoderFloat
 
-        -- bytes : Int -> Decoder Bytes
         intToDecoderBytes =
             Can.tLambda intType decoderBytes
 
-        -- string : Int -> Decoder String
         intToDecoderString =
             Can.tLambda intType decoderString
 
-        -- succeed : a -> Decoder a
         succeedType =
             Can.tLambda aVar decoderA
 
-        -- fail : Decoder a
         failType =
             decoderA
 
-        -- map : (a -> b) -> Decoder a -> Decoder b
         mapType =
             Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda decoderA decoderB)
 
-        -- map2 : (a -> b -> c) -> Decoder a -> Decoder b -> Decoder c
         map2Type =
             Can.tLambda (Can.tLambda aVar (Can.tLambda bVar cVar))
                 (Can.tLambda decoderA (Can.tLambda decoderB decoderC))
 
-        -- map3 : (a -> b -> c -> d) -> Decoder a -> Decoder b -> Decoder c -> Decoder d
         decoderD =
             decoderType dVar
 
@@ -435,7 +489,6 @@ bytesDecodeValues =
             Can.tLambda (Can.tLambda aVar (Can.tLambda bVar (Can.tLambda cVar dVar)))
                 (Can.tLambda decoderA (Can.tLambda decoderB (Can.tLambda decoderC decoderD)))
 
-        -- map4 : (a -> b -> c -> d -> e) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e
         decoderE =
             decoderType eVar
 
@@ -443,11 +496,9 @@ bytesDecodeValues =
             Can.tLambda (Can.tLambda aVar (Can.tLambda bVar (Can.tLambda cVar (Can.tLambda dVar eVar))))
                 (Can.tLambda decoderA (Can.tLambda decoderB (Can.tLambda decoderC (Can.tLambda decoderD decoderE))))
 
-        -- andThen : (a -> Decoder b) -> Decoder a -> Decoder b
         andThenType =
             Can.tLambda (Can.tLambda aVar decoderB) (Can.tLambda decoderA decoderB)
 
-        -- loop : (state -> Decoder (Step state a)) -> state -> Decoder a
         stateVar_ =
             Can.TVar "state"
 

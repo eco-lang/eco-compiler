@@ -13,74 +13,62 @@ module System.IO exposing
     , ReplSettings(..)
     )
 
-{-| Centralized IO operations for the Elm compiler.
+{-| The compiler is a headless Elm program whose every effect is a `Task`, and
+this module turns such a task into a program that can be run. It also gives the
+rest of the compiler a few console and file operations, built on the `Eco.*`
+modules that do the IO, and defines some types that other modules share.
 
-This is the single IO routing layer for the compiler. All IO operations go
-through this module — callers import `System.IO as IO` and call `IO.<name>`.
+`run` builds the program. Its model holds nothing and each of its messages is a
+task to perform. Once the task it was given completes, the program goes on
+performing the empty task `Task.succeed ()` without end, so completing the task
+does not end the program.
 
-The implementation delegates to the `Eco.*` modules (Eco.File, Eco.Console,
-Eco.Env, Eco.MVar, Eco.Process, Eco.Runtime) which are backed by either XHR
-(bootstrap build) or kernel calls (native build).
+A _handle_ is a number naming a stream or an open file. Writing to a handle goes
+through `Eco.Console.write`, and closing one through `Eco.File.close`, with the
+number passed on as it is. `stdout` and `stderr` are the two handles defined
+here.
 
-Function names follow the `guida-io-ops.csv` naming conventions.
+Console output is best-effort. `write`, `writeLn`, `print` and `printLn` cannot
+fail: an error from the write is discarded and the task succeeds. `readLine`,
+`close` and `writeString` fail with an `IOError`, as `Eco.IO.Error` describes,
+and `crashOnError` turns such a failure into a crash. `flush` and `isTerminal`
+ask the host nothing: `flush` does nothing, and `isTerminal` answers `True`.
+
+`LockSharedExclusive`, `MVar`, `ChItem`, `Stream`, `ReplState` and
+`ReplSettings` are defined here, but this module has no operations on them,
+apart from the constant `initialReplState`. The operations on MVars, channels
+and file locks are in `Utils.Main`. A _channel_ is a queue of values passed
+between concurrent tasks, built from MVars by `Utils.Main`.
 
 
-# Program
+# Running a program
 
 @docs Program, Model, Msg, run
 
 
-# Files and handles
+# Handles and files
 
 @docs FilePath, Handle
-
-
-# Standard handles
-
 @docs stdout, stderr
-
-
-# File operations
-
 @docs writeString
-
-
-# File and directory queries
-
-
-# File locking
-
 @docs LockSharedExclusive
 
 
-# Console I/O
+# Console
 
 @docs write
 @docs writeLn, print, printLn, readLine, close, flush, isTerminal
+
+
+# Failures
+
 @docs crashOnError
 
 
-# Environment and process
-
-
-# MVars (concurrency primitives)
+# Shared types
 
 @docs MVar
-
-
-# Channels (built on MVars)
-
 @docs Stream, ChItem
-
-
-# Concurrency
-
-
-# Runtime
-
-
-# REPL support
-
 @docs ReplState, initialReplState
 @docs ReplSettings
 
@@ -98,13 +86,17 @@ import Utils.Crash exposing (crash)
 -- ====== PROGRAM ======
 
 
-{-| Type alias for an IO program that runs impure tasks.
+{-| A headless program built by `run`, which takes no flags.
 -}
 type alias Program =
     Platform.Program () Model Msg
 
 
-{-| Create and run an IO program from a task.
+{-| Creates a headless program that performs `app`.
+
+Completing `app` does not end the program. It then performs
+`Task.succeed ()`, and again each time that completes, without end.
+
 -}
 run : Task Never () -> Program
 run app =
@@ -115,18 +107,23 @@ run app =
         }
 
 
-{-| The program's model state (unit type as we use tasks for state management).
+{-| The state of a program built by `run`, which holds nothing: all of the
+program's work is in the tasks it performs.
 -}
 type alias Model =
     ()
 
 
-{-| Messages are tasks to be executed.
+{-| A message of a program built by `run`: a task for the program to perform.
 -}
 type alias Msg =
     Task Never ()
 
 
+{-| Performs `msg`, and answers its completion with the message
+`Task.succeed ()`, which is performed in turn. `run` also uses this as the
+program's `init`, which is how the task it is given comes to be performed.
+-}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg () =
     ( (), Task.perform Task.succeed msg )
@@ -136,26 +133,36 @@ update msg () =
 -- ====== FILES AND HANDLES ======
 
 
-{-| Type alias for file paths represented as strings.
+{-| A path in the file system, as text.
+
+This is a name for `String`, not a new type. Any `String` is accepted where a
+`FilePath` is expected, and nothing checks that it is a path.
+
 -}
 type alias FilePath =
     String
 
 
-{-| Opaque handle to an open file or stream, wrapping a file descriptor integer.
+{-| A stream or open file, named by a number.
+
+The constructor is exposed, so a handle can be made from any `Int`, and nothing
+here checks that the number names anything. `write` passes the number to
+`Eco.Console.write` and `close` passes it to `Eco.File.close`, so what a number
+names is decided by the host behind those modules.
+
 -}
 type Handle
     = Handle Int
 
 
-{-| Handle to the standard output stream.
+{-| The handle of standard output.
 -}
 stdout : Handle
 stdout =
     Handle 1
 
 
-{-| Handle to the standard error stream.
+{-| The handle of standard error.
 -}
 stderr : Handle
 stderr =
@@ -166,14 +173,16 @@ stderr =
 -- ====== FILE OPERATIONS ======
 
 
-{-| Close an open file handle.
+{-| Closes the stream or file the handle names, as `Eco.File.close` does for
+the same number.
 -}
 close : Handle -> Task IOError ()
 close (Handle handle) =
     Eco.File.close (Eco.File.Handle handle)
 
 
-{-| Write a UTF-8 string to a file.
+{-| Writes `content` as text to the file at `path`, as `Eco.File.writeString`
+does.
 -}
 writeString : FilePath -> String -> Task IOError ()
 writeString path content =
@@ -181,11 +190,14 @@ writeString path content =
 
 
 
--- ====== FILE AND DIRECTORY QUERIES ======
 -- ====== FILE LOCKING ======
 
 
-{-| Lock mode. Currently only exclusive is supported.
+{-| The kind of lock to take on a file.
+
+`LockExclusive` is the only constructor, so there is no way to ask for a shared
+lock.
+
 -}
 type LockSharedExclusive
     = LockExclusive
@@ -195,12 +207,11 @@ type LockSharedExclusive
 -- ====== CONSOLE I/O ======
 
 
-{-| Write a string to the specified handle without adding a newline.
+{-| Writes `content` to the stream the handle names, with no newline added.
 
-Console output is best-effort: a write error (e.g. EPIPE when the downstream
-reader closed the pipe, as in `eco ... | head`) is swallowed here rather than
-surfaced, matching the kernel's historical behaviour of ignoring the write
-return value. This is the IO\_ERR\_001 clause (a) "handle locally" case.
+The write cannot fail. Any error from `Eco.Console.write`, a broken pipe
+included, is discarded and the task succeeds, so a caller cannot learn that
+the output was lost.
 
 -}
 write : Handle -> String -> Task Never ()
@@ -209,53 +220,60 @@ write (Handle fd) content =
         |> Task.onError (\_ -> Task.succeed ())
 
 
-{-| Write a string to the specified handle followed by a newline.
+{-| Writes `content` followed by a newline to the stream the handle names. Like
+`write`, it cannot fail, and any error is discarded.
 -}
 writeLn : Handle -> String -> Task Never ()
 writeLn handle content =
     write handle (content ++ "\n")
 
 
-{-| Write a string to stdout without adding a newline.
+{-| Writes the text to standard output with no newline added. Like `write`, it
+cannot fail, and any error is discarded.
 -}
 print : String -> Task Never ()
 print =
     write stdout
 
 
-{-| Write a string to stdout followed by a newline.
+{-| Writes `s` followed by a newline to standard output. Like `write`, it
+cannot fail, and any error is discarded.
 -}
 printLn : String -> Task Never ()
 printLn s =
     print (s ++ "\n")
 
 
-{-| Read a line of input from stdin.
+{-| Reads the next line of standard input, as `Eco.Console.readLine` does.
+There is no separate value for the end of input.
 -}
 readLine : Task IOError String
 readLine =
     Eco.Console.readLine
 
 
-{-| Flush any buffered output on the handle (currently a no-op).
+{-| Does nothing and succeeds, whatever the handle. Nothing in this module
+holds output back, so it has nothing of its own to flush.
 -}
 flush : Handle -> Task Never ()
 flush _ =
     Task.succeed ()
 
 
-{-| Check if the handle is connected to a terminal (currently always True).
+{-| Answers `True` for every handle, without asking the host whether the handle
+is a terminal.
 -}
 isTerminal : Handle -> Task Never Bool
 isTerminal _ =
     Task.succeed True
 
 
-{-| Handle a fallible IO task locally by crashing with a diagnostic when it
-fails (IO\_ERR\_001 clause (a)). Used for build-internal artifact/cache IO where
-the surrounding code is `Task Never` and threading an `IOError` through the
-MVar-concurrent build pipeline would be unbounded; a failure here indicates a
-corrupt or unwritable build cache and is reported clearly rather than dropped.
+{-| Turns a task that can fail with an `IOError` into one that cannot, by
+crashing the program when it fails.
+
+The crash message is `"IO error: "` followed by the error as
+`Eco.IO.Error.toString` renders it, and the crash is `Utils.Crash.crash`.
+
 -}
 crashOnError : Task IOError a -> Task Never a
 crashOnError =
@@ -263,11 +281,16 @@ crashOnError =
 
 
 
--- ====== ENVIRONMENT AND PROCESS ======
 -- ====== MVARS ======
 
 
-{-| A mutable variable for communication between threads, identified by an integer reference.
+{-| A reference to an MVar, a cell held by the host through which concurrent
+tasks hand values to one another, as `Eco.MVar` describes.
+
+The `Int` is the number the host gave the MVar. The type parameter says what
+the MVar holds, but nothing checks it: the constructor is exposed, so an `MVar`
+can be made from any `Int`, for any `a`.
+
 -}
 type MVar a
     = MVar Int
@@ -277,38 +300,48 @@ type MVar a
 -- ====== CHANNELS ======
 
 
-{-| An item in a channel stream.
+{-| One link of a channel: a value, and the stream from which the value after
+it will be read.
 -}
 type ChItem a
     = ChItem a (Stream a)
 
 
-{-| A stream of values backed by an MVar chain.
+{-| A channel's chain of items from some point on: an MVar that, once filled,
+holds the next `ChItem`. While it is empty it is the hole that the next value
+written to the channel fills.
+
+This is a name for `MVar (ChItem a)`, not a new type.
+
 -}
 type alias Stream a =
     MVar (ChItem a)
 
 
 
--- ====== CONCURRENCY ======
--- ====== RUNTIME ======
 -- ====== REPL STATE ======
 
 
-{-| State maintained by the REPL.
+{-| The source text a REPL session holds.
+
+The three dictionaries are, in order, its imports, its type declarations and
+its value declarations, each mapping a name to the source text that defines it.
+
 -}
 type ReplState
     = ReplState (Dict String String) (Dict String String) (Dict String String)
 
 
-{-| Initial empty REPL state.
+{-| The state of a REPL session that holds nothing: no imports and no
+declarations.
 -}
 initialReplState : ReplState
 initialReplState =
     ReplState Dict.empty Dict.empty Dict.empty
 
 
-{-| REPL settings type (no-op placeholder).
+{-| The settings for a REPL session. The one constructor carries nothing, so
+there is nothing to set.
 -}
 type ReplSettings
     = ReplSettings

@@ -1,9 +1,26 @@
 module Mlir.Bytecode.StringTable exposing (StringTable, collect, indexOf, encode, addString, empty, collectOp)
 
-{-| String table for MLIR bytecode.
+{-| MLIR bytecode refers to many of its strings, such as dialect names,
+operation names and the text of string attributes, by their index in one string
+section, and this module builds that section and writes it.
 
-Collects all unique strings from an MlirModule and assigns sequential indices.
-Encodes as: numStrings varint, reverse string lengths as varints, concatenated data.
+A `StringTable` gives each distinct string an index. Indices are handed out
+from 0 in the order strings are first added, and adding a string that is
+already there changes nothing. `encode` writes the strings in that same order,
+so a string's index is its position in the section. An index never changes once
+given, so it can be written before the table is complete.
+
+`collect` and `collectOp` walk operations and add the strings found in them.
+Nothing checks that a string being looked up was added: `indexOf` then returns
+-1, which `Mlir.Bytecode.VarInt.encodeVarInt` writes like any other number, so
+a missed string makes a corrupt file rather than an error.
+
+The text of a `StringAttr` keeps its escape sequences written out, as
+`Mlir.Mlir.MlirAttr` describes. The table stores and looks up strings as they
+are given, and `encode` replaces the escapes with the characters they stand for
+only as it writes each string. It does this to every string in the table,
+whatever it came from. Two escaped spellings of the same text are therefore two
+entries.
 
 @docs StringTable, collect, indexOf, encode, addString, empty, collectOp
 
@@ -25,17 +42,23 @@ import Mlir.Mlir
 import OrderedDict
 
 
-{-| An indexed string table mapping strings to sequential indices.
+{-| A set of distinct strings, each with the index it has in the bytecode string
+section.
+
+The indices run from 0 with no gaps, in the order the strings were first
+added, and a string's index never changes once given. A table is made by
+`empty` or `collect`, and grows through `addString` and `collectOp`.
+
 -}
 type StringTable
     = StringTable
         { strings : Dict String Int
-        , ordered : List String
+        , ordered : List String -- most recently added first
         , nextIndex : Int
         }
 
 
-{-| Create an empty string table.
+{-| The table with no strings in it.
 -}
 empty : StringTable
 empty =
@@ -46,8 +69,8 @@ empty =
         }
 
 
-{-| Add a string to the table, returning the updated table.
-If the string already exists, the table is unchanged.
+{-| Adds `s` to the table with the next free index, or returns the table
+unchanged if `s` is already in it.
 -}
 addString : String -> StringTable -> StringTable
 addString s (StringTable st) =
@@ -63,7 +86,11 @@ addString s (StringTable st) =
                 }
 
 
-{-| Get the index of a string in the table.
+{-| Returns the index of `s` in the table, or -1 if `s` was never added.
+
+`Mlir.Bytecode.VarInt.encodeVarInt` does not reject a -1; it writes it in the
+9-byte form, so an index taken for a missing string corrupts the file.
+
 -}
 indexOf : String -> StringTable -> Int
 indexOf s (StringTable st) =
@@ -72,48 +99,68 @@ indexOf s (StringTable st) =
             idx
 
         Nothing ->
-            -- Should not happen if collection was complete
             -1
 
 
-{-| Collect all strings from an MlirModule into a StringTable.
+{-| Builds the table for a whole module.
+
+It starts with `builtin` and `module`, the dialect and name of MLIR's module
+operation, and then adds what `collectOp` adds for each operation of
+`mod.body`, in order. The module's own location is not visited.
+
 -}
 collect : MlirModule -> StringTable
 collect mod =
     let
         st0 =
             empty
-                -- Pre-add the "builtin" dialect for the module op
                 |> addString "builtin"
                 |> addString "module"
     in
     List.foldl collectOp st0 mod.body
 
 
-{-| Collect all strings from an MLIR operation into the string table.
+{-| Adds the strings of `op` and of every operation nested in its regions.
+
+For each operation these are, in order: the part of its name before the first
+`.`, which is its dialect, and the rest of its name (a name with no `.` is
+added whole, together with the empty string); each attribute's name and the
+strings in its value; the strings in its result types; and the file name of its
+location, which for `Mlir.Loc.unknown` is `"unknown"`. Its regions follow,
+each entry block first and then the other blocks in their stored order, and in
+each block the argument types, the body operations and the terminator.
+
+An attribute value contributes the text of a `StringAttr` or `SymbolRefAttr`,
+`"private"` for a `VisibilityAttr`, the strings in the type of a `TypeAttr` or
+`TypedFloatAttr`, and those of every element of an `ArrayAttr`. The type an
+`IntAttr` or `ArrayAttr` carries is not visited. A type contributes strings
+only through a `NamedStruct`, which adds its dialect, the text before the
+first `.`, and its full name. Operand names and successor labels are not
+added.
+
 -}
 collectOp : MlirOp -> StringTable -> StringTable
 collectOp op st =
     let
-        -- Add operation name parts (dialect.opname)
         st1 =
             addOpName op.name st
 
-        -- Add attribute keys and values
         st2 =
             Dict.foldl collectAttrEntry st1 op.attrs
 
-        -- Add result types
         st3 =
             List.foldl (\( _, t ) acc -> collectType t acc) st2 op.results
 
-        -- Add location strings
         st4 =
             collectLoc op.loc st3
     in
     List.foldl collectRegion st4 op.regions
 
 
+{-| Adds the two parts of an operation name: the dialect before the first `.`,
+and everything after it. A name with no `.` is added whole as the dialect,
+together with the empty string as the rest.
+-}
 addOpName : String -> StringTable -> StringTable
 addOpName name st =
     case String.split "." name of
@@ -130,6 +177,8 @@ addOpName name st =
             addString name st
 
 
+{-| Adds an attribute's name `key` and the strings in its value.
+-}
 collectAttrEntry : String -> MlirAttr -> StringTable -> StringTable
 collectAttrEntry key attr st =
     st
@@ -137,6 +186,11 @@ collectAttrEntry key attr st =
         |> collectAttr attr
 
 
+{-| Adds the strings in an attribute value: the text of a `StringAttr` or
+`SymbolRefAttr`, `"private"` for a `VisibilityAttr`, the strings in the type of
+a `TypeAttr` or `TypedFloatAttr`, and those of every element of an
+`ArrayAttr`. The type an `IntAttr` or `ArrayAttr` carries is not visited.
+-}
 collectAttr : MlirAttr -> StringTable -> StringTable
 collectAttr attr st =
     case attr of
@@ -168,6 +222,10 @@ collectAttr attr st =
             st
 
 
+{-| Adds the strings in a type. Only a `NamedStruct` has any: its dialect, the
+text before the first `.`, and its full name. A `FunctionType` adds those of
+its input and result types.
+-}
 collectType : MlirType -> StringTable -> StringTable
 collectType ty st =
     case ty of
@@ -190,7 +248,6 @@ collectType ty st =
             st
 
         NamedStruct s ->
-            -- "!eco.value" -> need both dialect ("eco") and the full struct name
             case String.split "." s of
                 dialect :: _ ->
                     st |> addString dialect |> addString s
@@ -206,11 +263,17 @@ collectType ty st =
             List.foldl collectType st1 sig.results
 
 
+{-| Adds the file name of a location. `Mlir.Loc.unknown` is not skipped: its
+name, `"unknown"`, is added like any other.
+-}
 collectLoc : Loc -> StringTable -> StringTable
 collectLoc (Loc loc) st =
     addString loc.name st
 
 
+{-| Adds the strings of a region's entry block, then of its other blocks in
+their stored order.
+-}
 collectRegion : MlirRegion -> StringTable -> StringTable
 collectRegion (MlirRegion r) st =
     let
@@ -220,24 +283,37 @@ collectRegion (MlirRegion r) st =
     OrderedDict.foldl (\_ blk acc -> collectBlock blk acc) st1 r.blocks
 
 
+{-| Adds the strings of a block's argument types, its body operations and its
+terminator.
+-}
 collectBlock : MlirBlock -> StringTable -> StringTable
 collectBlock blk st =
     let
-        -- Block argument types
         st1 =
             List.foldl (\( _, t ) acc -> collectType t acc) st blk.args
 
-        -- Body ops
         st2 =
             List.foldl collectOp st1 blk.body
     in
     collectOp blk.terminator st2
 
 
-{-| Encode the string table as a bytecode section body.
-Format: numStrings varint, reverse string lengths varints, concatenated string data.
-Strings are unescaped before encoding — the Elm AST stores escape sequences
-like \\n as two characters, but bytecode needs the actual bytes.
+{-| Creates an encoder for the contents of the string section, without the
+section's own header.
+
+It writes the number of strings, then each string's length in bytes, last
+string first, then the strings themselves in index order, each followed by a
+zero byte. Each length counts that zero byte. The numbers are PrefixVarInts
+(see `Mlir.Bytecode.VarInt`).
+
+Each string is written with its escape sequences replaced by the characters
+they stand for: `\n`, `\t`, `\\`, `\"` and `\'`; `\u` and four hex digits,
+which becomes the character with that code; and `\0` and two hex digits,
+likewise. A backslash that starts anything else, such as `\r`, is written as it
+is. The lengths are measured on the strings as written, with
+`Bytes.Encode.getStringWidth`, the function `Bytes.Encode.string` sizes its own
+output with, so each length matches the bytes that follow.
+
 -}
 encode : StringTable -> BE.Encoder
 encode (StringTable st) =
@@ -245,7 +321,6 @@ encode (StringTable st) =
         orderedStrings =
             List.reverse st.ordered
 
-        -- Unescape strings for bytecode encoding
         unescapedStrings =
             List.map unescapeString orderedStrings
 
@@ -268,18 +343,11 @@ encode (StringTable st) =
         )
 
 
-{-| Unescape a string for bytecode storage.
-Converts escape sequences to actual bytes:
-\\n → newline, \\t → tab, \\\\ → backslash, \\" → quote
-Also handles \\xNN hex escapes and \\uXXXX unicode escapes.
+{-| Returns `s` with its escape sequences replaced by the characters they stand
+for, as `unescapeStringSlow` describes.
 
-The vast majority of table strings (symbol names, dedup keys, op names) contain
-no backslash at all, so short-circuit those: it skips a pointless per-Char
-toList/fromList rebuild of every string, and — on the native runtime — keeps
-the original zero-copy UTF-8 representation alive into BE.string's memcpy path
-(the rebuild used to convert the whole string section to UTF-16; see
-design\_docs/utf8-widen-attribution.md). Content is identical either way: the
-loop is an identity copy for backslash-free input.
+A string with no backslash is returned as it is, without being rebuilt
+character by character, which would give the same string.
 
 -}
 unescapeString : String -> String
@@ -291,6 +359,20 @@ unescapeString s =
         unescapeStringSlow s
 
 
+{-| Returns `s` with each escape sequence replaced by the character it stands
+for.
+
+`\n`, `\t`, `\\`, `\"` and `\'` become a newline, a tab, a backslash, a double
+quote and a single quote. `\u` followed by four hex digits becomes the
+character with that code. Each such escape is converted on its own; a
+character above U+FFFF arrives as two escapes, one for each half of a UTF-16
+surrogate pair, and the two halves end up next to each other in the result.
+`\0` followed by two hex digits becomes the character with that code.
+
+A backslash that starts anything else, including `\u` or `\0` without enough
+hex digits after it, is kept, and the text after it is read as usual.
+
+-}
 unescapeStringSlow : String -> String
 unescapeStringSlow s =
     let
@@ -316,7 +398,6 @@ unescapeStringSlow s =
                     go ('\'' :: acc) rest
 
                 '\\' :: '0' :: h1 :: rest ->
-                    -- Hex escape \0XY
                     case parseHexByte h1 rest of
                         Just ( code, remaining ) ->
                             go (Char.fromCode code :: acc) remaining
@@ -325,7 +406,6 @@ unescapeStringSlow s =
                             go ('0' :: '\\' :: acc) (h1 :: rest)
 
                 '\\' :: 'u' :: h1 :: h2 :: h3 :: h4 :: rest ->
-                    -- Unicode escape \uXXXX
                     case parseHex4 h1 h2 h3 h4 of
                         Just code ->
                             go (Char.fromCode code :: acc) rest
@@ -339,6 +419,10 @@ unescapeStringSlow s =
     go [] (String.toList s)
 
 
+{-| Reads `h1` and the first character of `rest` as two hex digits. Returns the
+number they spell and the characters after them, or `Nothing` if `rest` is
+empty or either character is not a hex digit.
+-}
 parseHexByte : Char -> List Char -> Maybe ( Int, List Char )
 parseHexByte h1 rest =
     case rest of
@@ -354,6 +438,9 @@ parseHexByte h1 rest =
             Nothing
 
 
+{-| Returns the number four hex digits spell, most significant first, or
+`Nothing` if any of them is not a hex digit.
+-}
 parseHex4 : Char -> Char -> Char -> Char -> Maybe Int
 parseHex4 h1 h2 h3 h4 =
     case ( hexDigit h1, hexDigit h2 ) of
@@ -369,6 +456,9 @@ parseHex4 h1 h2 h3 h4 =
             Nothing
 
 
+{-| Returns the value of a hex digit, `0` to `9`, `A` to `F` or `a` to `f`, or
+`Nothing` for any other character.
+-}
 hexDigit : Char -> Maybe Int
 hexDigit c =
     let
@@ -388,21 +478,11 @@ hexDigit c =
         Nothing
 
 
-{-| Get the UTF-8 byte length of a string, as `Bytes.Encode.string` will
-produce it.
+{-| Returns the number of bytes `BE.string` writes for `s`.
 
-This must agree byte-for-byte with the data emitted by `BE.string`, or the
-string-section size varints diverge from the string data and MLIR's bytecode
-reader rejects the whole file ("unexpected trailing data between the offsets
-for strings and their data").
-
-`BE.getStringWidth` is that agreement by construction: it is the same kernel
-function `BE.string` itself uses to size its output, on both the native and
-JS runtimes (native: O(1) header read for UTF-8 heap forms; a hand-rolled
-`String.foldl` here would widen every UTF-8 table string and — worse — count
-a _lone_ surrogate half as 2 bytes where `BE.string` writes 3 WTF-8 bytes,
-silently corrupting the section). Paired astral surrogates need no special
-casing: width and data come from the same codec.
+The string section records each string's length separately from its bytes, so
+the two must agree exactly. This uses `BE.getStringWidth`, the function
+`BE.string` itself sizes its output with, so they agree by construction.
 
 -}
 stringByteLength : String -> Int

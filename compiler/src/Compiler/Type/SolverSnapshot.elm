@@ -3,11 +3,20 @@ module Compiler.Type.SolverSnapshot exposing
     , resolveVariable
     )
 
-{-| Snapshot of solver union-find state for post-inference queries.
+{-| The solver's union-find store lives in the state that the
+`System.TypeCheck.IO` monad threads, and is freed when the run ends. This module
+lets code outside that monad find the root of a type variable's class, by
+reading a copy of the store taken before then.
 
-This module captures the HM solver's union-find state (descriptors, point info,
-weights) after constraint solving completes, enabling type queries outside the
-IO monad.
+The store and its terms, _point_, _class_, _root_ and the `Root` and `Chain`
+cells, are described in `Compiler.Type.Vars`. A _snapshot_ is an array of every
+cell of one store. `Compiler.Type.Solve.runWithIds` returns one, taken after
+solving, when solving succeeds. Finding a root is then a matter of following
+`Chain` cells through the array.
+
+A store numbers its points from 0, so a snapshot answers only for the variables
+of the solve it was taken from. Resolving a variable against a snapshot of a
+different store gives a meaningless answer, and no error.
 
 @docs SolverState, TypeVar
 @docs resolveVariable
@@ -18,19 +27,32 @@ import Array exposing (Array)
 import Compiler.Type.Vars as Vars
 
 
-{-| A type variable from the solver's union-find.
+{-| A type variable of the solver, which is a point of its union-find store.
+
+This is a name for `Compiler.Type.Vars.Variable`, not a new type, and the two
+are interchangeable.
+
 -}
 type alias TypeVar =
     Vars.Variable
 
 
-{-| Snapshot of the solver's mutable arrays at the time of capture.
+{-| A snapshot of one solver's union-find store.
+
+`cells` holds the cell of each point at the index the point carries. This is a
+record alias, so any array of cells is accepted, and nothing checks that it was
+taken from the store a variable belongs to.
+
 -}
 type alias SolverState =
     { cells : Array Vars.PointCell
     }
 
 
+{-| Returns the root of the class that `var` belongs to in `cells`, following
+`Chain` cells until it reaches a point whose cell is a `Root`. A point whose
+index has no cell in `cells` is returned as it is, as though it were a root.
+-}
 resolveVariableHelp : Array Vars.PointCell -> TypeVar -> TypeVar
 resolveVariableHelp cells var =
     case var of
@@ -40,11 +62,12 @@ resolveVariableHelp cells var =
                     resolveVariableHelp cells parent
 
                 _ ->
-                    -- Root or out of bounds: this is the root
                     var
 
 
-{-| Resolve a variable to its union-find root using a SolverState snapshot.
+{-| Returns the root of the class that `var` belongs to, as recorded in
+`state`. A root is returned unchanged. So is a variable whose index is outside
+`state`, as though it were a root, rather than being reported.
 -}
 resolveVariable : SolverState -> TypeVar -> TypeVar
 resolveVariable state var =

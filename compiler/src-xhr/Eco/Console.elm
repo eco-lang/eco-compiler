@@ -4,11 +4,25 @@ module Eco.Console exposing
     , log
     )
 
-{-| Console IO operations via XHR: write to handles, read from stdin.
+{-| A program running on stock Elm cannot write to the terminal or read standard
+input itself, and this module does both for it by asking _eco-io_, the HTTP
+server that `Eco.XHR` sends IO requests to.
 
-This is the XHR-based bootstrap implementation. The kernel variant
-(in eco-kernel-cpp) has identical type signatures but delegates to
-Eco.Kernel.Console directly.
+Each operation here is sent to eco-io as an _op_, a string naming the
+operation, as `Eco.XHR` describes: `write` sends `"Console.write"`, `readLine`
+sends `"Console.readLine"` and `readAll` sends `"Console.readAll"`. The native
+build compiles a twin of this module with the same exposed names and signatures
+in its place.
+
+Output goes to a _handle_, a number naming a stream to write to. `stdout` and
+`stderr` are the two the module defines.
+
+The three operations fail with an `IOError`, decoded from the failure tuple by
+`Eco.IO.Error.ofKernelTuple`. A failure to reach eco-io at all is therefore an
+`OtherIOError` with tag 0. A reply to `readLine` or `readAll` that succeeds but
+carries no string `value` crashes the program instead.
+
+`log` is the exception: it sends nothing and prints nothing in this build.
 
 
 # Handles
@@ -33,27 +47,33 @@ import Json.Encode as Encode
 import Task exposing (Task)
 
 
-{-| A console handle identifying an output stream.
+{-| A stream that `write` can send text to, named by a number.
+
+The constructor is exposed, so any `Int` can be made into a `Handle`, and
+nothing in this module checks that the number names a stream. Which numbers do
+is decided by eco-io, not here.
+
 -}
 type Handle
     = Handle Int
 
 
-{-| Standard output handle.
+{-| The handle of standard output.
 -}
 stdout : Handle
 stdout =
     Handle 1
 
 
-{-| Standard error handle.
+{-| The handle of standard error.
 -}
 stderr : Handle
 stderr =
     Handle 2
 
 
-{-| Write a string to a console handle (stdout or stderr).
+{-| Writes `content` to the stream the handle names, exactly as given: no
+newline is added.
 -}
 write : Handle -> String -> Task IOError ()
 write (Handle h) content =
@@ -66,7 +86,11 @@ write (Handle h) content =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Read one line from stdin.
+{-| Reads the next line of standard input.
+
+The result is a plain `String`, so there is no separate value for the end of
+input; what comes back then is whatever eco-io sends.
+
 -}
 readLine : Task IOError String
 readLine =
@@ -74,7 +98,7 @@ readLine =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Read all of stdin as a string.
+{-| Reads the rest of standard input as one string.
 -}
 readAll : Task IOError String
 readAll =
@@ -82,9 +106,11 @@ readAll =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Debug-style trace function. XHR variant is a pure no-op (identity);
-the kernel variants (JS and C++) write `tag` to stderr and return `value`.
-Allowed under `--optimize` because it is not a `Debug.*` function.
+{-| Returns `value` unchanged and ignores the tag, the first argument.
+
+It has the shape of `Debug.log`, but in this build it prints nothing. The
+native build's twin of this module does print the tag.
+
 -}
 log : String -> a -> a
 log _ value =

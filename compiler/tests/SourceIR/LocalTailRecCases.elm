@@ -1,12 +1,43 @@
 module SourceIR.LocalTailRecCases exposing (expectSuite)
 
-{-| Test cases for local tail-recursive functions (MonoTailDef in let bindings).
+{-| Programs with tail-recursive functions defined inside a `let`, so that a
+pipeline-stage check can be run against them.
 
-These cases exercise monomorphization of tail-recursive functions defined in
-let bindings, which must be fully specialized just like top-level functions.
-They target the bug exposed by MONO\_021 where local tail-recursive functions
-retain CEcoValue MVar in their parameter types instead of being specialized
-to concrete types like MInt.
+A function defined in a `let` whose body calls itself in tail position is kept
+by the typed optimizer as a tail definition rather than an ordinary one, and it
+reaches monomorphization as a `MonoTailDef`, whose parameters each carry their
+own type. That is a different shape from a top-level tail-recursive function
+(`MonoTailFunc`), so a stage can handle one correctly and the other not. These
+programs put local tail definitions in four positions: alone, beside another,
+capturing a variable from the enclosing function, and inside another recursive
+function.
+
+This module asserts nothing itself. `expectSuite` hands each program, as a
+`Src.Module`, to the expectation function its caller supplies, and that function
+decides what is checked.
+
+No local function in these programs is annotated. Three programs are built with
+`makeModule`, which annotates nothing, so their integer literals and arithmetic
+have the type `number`, not `Int`. The other two are built with
+`makeModuleWithTypedDefs`, and their top-level functions have annotations built
+from `Int`.
+
+The cases, in the order they run:
+
+  - A single local tail-recursive `sumUpTo` summing the integers from 10 down to
+    1, in an unannotated `testValue`.
+  - The same local `sumUpTo` inside `outerLoop : Int -> Int -> Int`, which is
+    itself tail-recursive.
+  - A local tail-recursive `loop` inside `process : Int -> Int` that captures
+    `process`'s argument `x`.
+  - Two local tail-recursive functions, `countDown` and `sumUp`, in one `let`,
+    both called in its body.
+  - A local tail-recursive `inner` inside a local `outer` that calls itself, but
+    not in tail position, so `outer` is not a tail definition.
+
+Among what is not tested: a local tail-recursive function whose parameters or
+result are anything other than numbers, a local tail-recursive function that is
+passed as a value rather than called, and mutually recursive local functions.
 
 -}
 
@@ -34,12 +65,25 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named `"Local tail-recursive functions "` followed by
+`condStr`, that passes each program described above to `expectFn`.
+
+The cases run under `Compiler.BulkCheck.bulkCheck`, so the test fails with the
+label of the first case that fails, and the cases after it do not run.
+
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Local tail-recursive functions " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Builds the five labelled cases, each passing its program to `expectFn`.
+
+The label of the last case says the inner function is tail-recursive inside a
+tail-recursive body, but its `outer` is not tail-recursive.
+
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Simple local tail-rec sumUpTo (LocalTailRecSimpleTest)", run = localTailRecSimple expectFn }
@@ -50,20 +94,20 @@ testCases expectFn =
     ]
 
 
-{-| Mirror of test/elm/src/LocalTailRecSimpleTest.elm:
+{-| Builds and checks a module `Test` whose `testValue` is
 
-    let
-        sumUpTo i s =
-            if i <= 0 then
-                s
+    testValue =
+        let
+            sumUpTo i s =
+                if i <= 0 then
+                    s
 
-            else
-                sumUpTo (i - 1) (s + i)
-    in
-    sumUpTo 10 0
+                else
+                    sumUpTo (i - 1) (s + i)
+        in
+        sumUpTo 10 0
 
-This creates a MonoTailDef in a let binding. The parameters i and s must be
-specialized to MInt, not left as MVar \_ CEcoValue.
+Nothing is annotated, so `i` and `s` have the type `number`, not `Int`.
 
 -}
 localTailRecSimple : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -89,23 +133,32 @@ localTailRecSimple expectFn _ =
     expectFn modul
 
 
-{-| Mirror of test/elm/src/TailRecWithLocalTailDefTest.elm:
+{-| Builds and checks a module `Test` holding a local tail-recursive function
+inside a top-level one that is also tail-recursive:
 
     outerLoop : Int -> Int -> Int
     outerLoop n acc =
         let
             sumUpTo i s =
-                if i <= 0 then s else sumUpTo (i - 1) (s + i)
+                if i <= 0 then
+                    s
 
-            localResult = sumUpTo n 0
+                else
+                    sumUpTo (i - 1) (s + i)
+
+            localResult =
+                sumUpTo n 0
         in
         case localResult of
-            0 -> acc
-            \_ -> outerLoop (n - 1) (acc + localResult)
+            0 ->
+                acc
 
-This creates a MonoTailDef inside the body of another tail-recursive function.
-Both the outer MonoTailFunc and the inner MonoTailDef must have fully specialized
-parameter types.
+            _ ->
+                outerLoop (n - 1) (acc + localResult)
+
+    testValue : Int
+    testValue =
+        outerLoop 10 0
 
 -}
 tailRecWithLocalTailDef : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -157,8 +210,8 @@ tailRecWithLocalTailDef expectFn _ =
     expectFn modul
 
 
-{-| Local tail-rec function that captures an outer variable, ensuring the
-specialization propagates through the capture context.
+{-| Builds and checks a module `Test` holding a local tail-recursive function
+that captures an argument of the function it is defined in:
 
     process : Int -> Int
     process x =
@@ -171,6 +224,10 @@ specialization propagates through the capture context.
                     loop (i - 1) (acc + x)
         in
         loop x 0
+
+    testValue : Int
+    testValue =
+        process 5
 
 -}
 localTailRecPolyOuter : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -209,24 +266,28 @@ localTailRecPolyOuter expectFn _ =
     expectFn modul
 
 
-{-| Two local tail-rec functions in the same let block.
+{-| Builds and checks a module `Test` whose `testValue` defines two local
+tail-recursive functions in one `let` and adds their results:
 
-    let
-        countDown i =
-            if i <= 0 then
-                0
+    testValue =
+        let
+            countDown i =
+                if i <= 0 then
+                    0
 
-            else
-                countDown (i - 1)
+                else
+                    countDown (i - 1)
 
-        sumUp i acc =
-            if i <= 0 then
-                acc
+            sumUp i acc =
+                if i <= 0 then
+                    acc
 
-            else
-                sumUp (i - 1) (acc + i)
-    in
-    countDown 5 + sumUp 5 0
+                else
+                    sumUp (i - 1) (acc + i)
+        in
+        countDown 5 + sumUp 5 0
+
+Nothing is annotated.
 
 -}
 multipleLocalTailRecs : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -265,26 +326,31 @@ multipleLocalTailRecs expectFn _ =
     expectFn modul
 
 
-{-| Nested tail-rec: a tail-rec function whose body contains another let with
-a tail-rec definition.
+{-| Builds and checks a module `Test` whose `testValue` defines a local
+recursive function `outer` with a local tail-recursive function `inner` in its
+body:
 
-    let
-        outer n =
-            let
-                inner i acc =
-                    if i <= 0 then
-                        acc
+    testValue =
+        let
+            outer n =
+                let
+                    inner i acc =
+                        if i <= 0 then
+                            acc
 
-                    else
-                        inner (i - 1) (acc + 1)
-            in
-            if n <= 0 then
-                0
+                        else
+                            inner (i - 1) (acc + 1)
+                in
+                if n <= 0 then
+                    0
 
-            else
-                inner n 0 + outer (n - 1)
-    in
-    outer 5
+                else
+                    inner n 0 + outer (n - 1)
+        in
+        outer 5
+
+`outer`'s call to itself is an operand of `+`, not a tail call, so only `inner`
+is a tail definition. Nothing is annotated.
 
 -}
 nestedLocalTailRec : (Src.Module -> Expectation) -> (() -> Expectation)

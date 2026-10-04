@@ -1,15 +1,55 @@
 module Compiler.AST.TypedOptimizedCodecTest exposing (suite)
 
-{-| Cache-serialization plan S3 gate G5: the `.ecot` v2 graph codecs
-(string table + type table, ECOT\_002/003) round-trip every standard test
-module.
+{-| The build writes typed-optimized graphs to disk as bytes and reads them
+back (`Builder.Build` a module's local graph, `Builder.Elm.Details` a package's
+global graph), so a decoder that does not read back what its encoder wrote
+would give a later build something other than the graph that was saved. These
+tests run the graph codecs of `Compiler.AST.TypedOptimized` over many small
+programs to check for that.
 
-  - re-encode idempotence: `encode (decode (encode g)) == encode g`, for the
-    local graph and for its global-graph assembly;
-  - annotations survive unchanged (no erasure applies to them);
-  - determinism: encoding twice gives the same bytes;
-  - varSupers completeness: every `TVar` in the decoded TYPE TABLE whose name
-    carries a super prefix is a key of `computeVarSupers g`.
+An encoded graph begins with a format-version byte, then a _string table_, the
+distinct strings the rest of the encoding refers to by index (see
+`Compiler.AST.StringTable`), then a _type table_, the distinct types it refers
+to by id (see `Compiler.AST.TypeTable`), and then the graph itself. A type
+variable is _constrained_ when its name starts with `number`, `comparable`,
+`appendable` or `compappend`, as `Compiler.Data.Name` tests it.
+`TOpt.computeVarSupers` maps every name collected from a local graph that starts
+with one of those words, type variable or not, to its constraint.
+
+The fixture is the programs that `SourceIR.Suite.StandardTestSuites` hands to
+the check it is given. Each is compiled by `TestLogic.TestPipeline.runToTypedOpt`
+to a typed local graph, and its global graph is that local graph added to an
+empty global graph by `Builder.GraphAssembly.addTypedLocalGraph`. A program the
+pipeline rejects fails with the pipeline's message, and a graph that does not
+decode fails too.
+
+For each program the test checks that:
+
+  - re-encoding the decoded local graph gives the same bytes as encoding the
+    original;
+  - re-encoding the decoded global graph gives the same bytes as encoding the
+    original;
+  - encoding the local graph a second time gives the same bytes as the first;
+  - the decoded local graph's annotations equal the original's;
+  - the string table and type table at the start of the local encoding decode
+    on their own;
+  - every constrained name among the type-variable names, record extension
+    names and alias parameter names in the types of that table is a key of
+    `TOpt.computeVarSupers` of the original local graph.
+
+Among what is not tested:
+
+  - that the decoded graph equals the original apart from its annotations. The
+    decoder fills some parts with fixed values, the local graph's `main` and
+    `fields` among them, and a part the encoder does not write passes the
+    re-encoding checks;
+  - that encoding the global graph twice gives the same bytes, or that its
+    annotations survive;
+  - a global graph built from more than one module;
+  - the `varSupers` stored in the graph, as distinct from what
+    `computeVarSupers` returns, and whether `computeVarSupers` returns names
+    that are not constrained;
+  - that an encoding with the wrong format-version byte is rejected.
 
 -}
 
@@ -31,6 +71,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| Returns the bytes of `b` as a list of numbers from 0 to 255, in order.
+-}
 toList : Bytes -> List Int
 toList b =
     BD.decode
@@ -47,6 +89,11 @@ toList b =
         |> Maybe.withDefault []
 
 
+{-| Returns `acc` with the type-variable names of `t` added: each `TVar`, each
+record's extension variable, and each alias's parameter names, together with
+those inside the alias's arguments and its body. A name is added once for
+every place it occurs.
+-}
 tvars : Can.Type Name -> List Name -> List Name
 tvars t acc =
     case t of
@@ -81,7 +128,10 @@ tvars t acc =
             List.foldl (\( n, x ) a -> tvars x (n :: a)) (tvars body acc) args
 
 
-{-| The decoded type table of a v2 local-graph encoding (prefix only).
+{-| Returns the types in the type table of `bytes`, an encoding written by
+`TOpt.localGraphEncoder`, or `Nothing` if its string table or type table does
+not decode. It skips the format-version byte without checking it and reads
+nothing after the type table.
 -}
 tableTypes : Bytes -> Maybe (List (Can.Type Name))
 tableTypes bytes =
@@ -94,11 +144,22 @@ tableTypes bytes =
         bytes
 
 
+{-| Tells whether `n` is a constrained name, one that starts with `number`,
+`comparable`, `appendable` or `compappend`.
+-}
 isSuper : Name -> Bool
 isSuper n =
     N.isNumberType n || N.isComparableType n || N.isAppendableType n || N.isCompappendType n
 
 
+{-| Compiles `srcModule` to a typed local graph and checks it, and the global
+graph made from it, with the six assertions the module docstring lists.
+
+It fails with the pipeline's message if compilation fails, and with a message
+naming the local or the global graph if that graph does not decode; when
+neither decodes, the message names the local graph.
+
+-}
 expectCodec : Src.Module -> Expectation
 expectCodec srcModule =
     case Pipeline.runToTypedOpt srcModule of
@@ -154,6 +215,9 @@ expectCodec srcModule =
                     Expect.fail "global graph decode failed"
 
 
+{-| The codec round-trip tests: `expectCodec` applied to the programs of
+`SourceIR.Suite.StandardTestSuites`.
+-}
 suite : Test
 suite =
     Test.describe "TypedOptimized .ecot v2 codec (cache-serialization S3, G5)"

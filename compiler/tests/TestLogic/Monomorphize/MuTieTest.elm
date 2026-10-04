@@ -1,11 +1,30 @@
 module TestLogic.Monomorphize.MuTieTest exposing (suite)
 
-{-| LSS\_018 — the μ-tie that closes the qualification spiral
-(`plans/lss-fidelity-1-watchdogs-budget-accounting.md` §2).
+{-| Checks that the solver engine, with lambda-set specialization on, makes a
+bounded number of specializations of a recursive function that passes a new
+closure to itself on every call. It guards against a change to how lambda
+members are identified letting such a function fan out into specializations
+without end.
 
-**Why this fixture exists.** The self-compile census measured the eligible
-population at ZERO (Run J: `muTied=0`), so no production workload in the
-tree exercises the tie. This module builds the spiral deliberately:
+With lambda-set specialization on, every function type carries a lambda set,
+which names, where they are known, the function values (_members_) that can flow
+through it. A lambda translated inside a specialization gets a member id
+qualified by the type that specialization was created for, with its lambda sets
+widened, or by the specialization's numeric id when that widened type was not
+captured at its creation. When the specialization passes that lambda to a
+recursive call, the qualified member is part of the type the call demands, so
+the call can key a new specialization of the same function. If translating that
+one minted the lambda under a different qualifier, that member could key a
+third, and so on. The Elm type stays `Int -> Int` throughout; only the member
+ids differ. This cycle is the _qualification spiral_. Two things in
+`Compiler.MonoSolver.Engine` stop it. Two specializations that differ only in
+their lambda sets, with both widened types recorded, give the lambda the same
+id. And where the id the specialization's demand already carries for the same
+lambda differs from the one the mint would give, the _μ-tie_ reuses the
+demand-carried id instead. Member ids reused by a μ-tie are listed in the
+graph's `lssBlockedMembers`.
+
+The fixture is one module, `Test`:
 
     loop : Int -> (Int -> Int) -> Int
     loop n f =
@@ -15,31 +34,23 @@ tree exercises the tie. This module builds the spiral deliberately:
         else
             1 + loop (n - 1) (\x -> f x + 1)
 
-The `1 +` is load-bearing: it keeps the self-call OUT of tail position. A
-tail-recursive self-call is TCO'd into a loop and never enqueues a
-specialization at all, so the spiral cannot form (measured: the tail-call
-form yields exactly 1 spec of `loop`, flag either way).
+    testValue =
+        loop 3 (\x -> x)
 
-Under all-globals keying, spec S1 of `loop` mints the wrapper lambda `L` as
-the fork-qualified member `Q(L,S1)` (LSS\_017). That member rides the
-recursive call's demand, so the callee keys a NEW spec S2 whose stored
-demand carries `Q(L,S1)`; translating S2 re-mints the SAME source lambda,
-and without the tie it becomes `Q(L,S2)` — which keys S3, and so on. The
-TYPE never changes (`Int -> Int` throughout): the fan-out is driven purely
-by member identity, which is precisely the specs→qualified-members→keys
-spiral of the fork plan §6.5.
+It is monomorphized with the default watchdog limits and with
+`Config.defaultLss`, except that the per-global specialization budget is
+pinned at 64 and the largest lambda set at 8 members. Both default to 0,
+meaning no limit. Past the budget, a new demand is keyed by its type with the
+lambda sets widened, and since the type of `loop` never changes, that bounds
+the number of its specializations even if the spiral does not close.
 
-Flag-off, only `maxSpecsPerGlobal` stops it — so this harness PINS
-`maxSpecsPerGlobal = 64` (and `maxSetSize = 8`): the shipping defaults became
-0 = UNLIMITED on 2026-08-29, under which the flag-off arm has no terminator
-at all (the 6th overlapping-flag-pin occurrence). Flag-on, S2 reuses `Q(L,S1)`,
-its outgoing demand equals its incoming one, the registry probe hits, and
-the family closes at its second member — the termination property LSS\_018
-claims, with the budget demoted to fan-out policy.
+The one test, "the fan-out closes at the family's second member", checks that
+the pipeline succeeds and that at most three specializations of `loop`
+survive pruning in the graph's registry.
 
-The assertions are on OBSERVABLE graph state: `lssBlockedMembers` (the
-exported tied set, which AbiCloning force-blocks so a tied member can never
-rep-stamp — plan §2.4) and the per-global spec count in the registry.
+Among what is not tested: which of the two mechanisms closed the spiral, the
+contents of `lssBlockedMembers` (counted in `Facts` but never asserted), a run
+with the default unlimited budget, and the substitution engine.
 
 -}
 
@@ -67,6 +78,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The suite: one test that `run` succeeds and leaves at most three
+specializations of `loop`.
+-}
 suite : Test
 suite =
     Test.describe "LSS_018 μ-tie (qualification spiral)"
@@ -79,11 +93,6 @@ suite =
                     Ok facts ->
                         Expect.all
                             [ \f ->
-                                -- Measured 2: the family closes at its
-                                -- SECOND member (S2 reuses Q(L,S1), so its
-                                -- outgoing demand equals its incoming one
-                                -- and the registry probe hits) — termination
-                                -- independent of maxSpecsPerGlobal.
                                 if f.loopSpecs <= 3 then
                                     Expect.pass
 
@@ -101,20 +110,33 @@ suite =
 -- ====== HARNESS ======
 
 
+{-| What the test reads off the monomorphized graph.
+
+`blockedCount` is the number of member ids in `lssBlockedMembers`; no
+assertion checks it. `loopSpecs` counts the registry entries for a global
+named `loop` that survive pruning.
+
+-}
 type alias Facts =
     { blockedCount : Int
     , loopSpecs : Int
     }
 
 
-{-| The flag-off arm's terminator. Pinned in-harness because the shipping
-default budget is 0 = UNLIMITED since 2026-08-29.
+{-| The number of specializations of one global past which new demands are
+keyed with widened lambda sets, pinned so that the number of `loop`
+specializations stays bounded even if the spiral does not close. The default
+is 0, meaning no budget.
 -}
 pinnedBudget : Int
 pinnedBudget =
     64
 
 
+{-| The `Facts` of `spiralModule` monomorphized by the solver engine with
+lambda-set specialization on, `pinnedBudget` as the per-global budget and at
+most 8 members in a lambda set, or the message of the stage that failed.
+-}
 run : Result String Facts
 run =
     let
@@ -123,23 +145,14 @@ run =
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        -- All-globals keying (unconditional under LSS since 2026-09-18)
-        -- is what routes the mints through fork qualification at all.
-        --
-        -- THE ISOLATION IS GONE (2026-09-18). This fixture used to pin
-        -- `layoutQualMembers` and `arrowSolverRoots` OFF so the spiral's
-        -- closure was attributable to LSS_018's tie ALONE — under LSS_024,
-        -- C alone closes it, and under solver-root arrow ids one shared slot
-        -- per unified arrow closes it too. Both flags were fixed at their
-        -- defaults and removed, so what survives is the TERMINATION property
-        -- at shipping defaults, no longer attributed to one mechanism. The
-        -- flag-off arm it was measured against (fan-out to the pinned budget
-        -- of 64, nothing tied) is recorded here and is no longer runnable.
         { defaults | enabled = True, maxSpecsPerGlobal = pinnedBudget, maxSetSize = 8 }
         spiralModule
         |> Result.map factsOf
 
 
+{-| Reads the `Facts` from a monomorphized graph. A registry entry counts
+toward `loopSpecs` when its global is named `loop`, whatever its module.
+-}
 factsOf : Mono.MonoGraph -> Facts
 factsOf (Mono.MonoGraph g) =
     { blockedCount = Dict.size g.lssBlockedMembers
@@ -166,16 +179,21 @@ factsOf (Mono.MonoGraph g) =
 -- ====== FIXTURE ======
 
 
-{-| See the module doc: a NON-tail-recursive HOF that passes a NEW closure
-over its own function parameter on every recursive call. The type is
-invariant (`Int -> Int`); only the lambda-set member changes, so any
-fan-out here is pure qualification spiral.
+{-| The test program: module `Test`, holding `loop` and `testValue`.
 -}
 spiralModule : Src.Module
 spiralModule =
     makeModuleWithTypedDefs "Test" [ loopDef, testValueDef ]
 
 
+{-| The definition of `loop`, which calls itself with a new lambda wrapping
+its own function argument.
+
+The `1 +` keeps the recursive call out of tail position. A tail call is
+translated as a jump within the current specialization and asks for no new
+one, so the spiral could not start.
+
+-}
 loopDef : TypedDef
 loopDef =
     { name = "loop"
@@ -189,9 +207,6 @@ loopDef =
         ifExpr
             (binopsExpr [ ( varExpr "n", "<=" ) ] (intExpr 0))
             (callExpr (varExpr "f") [ intExpr 0 ])
-            -- `1 + …` keeps the self-call out of TAIL position: a tail
-            -- self-call is TCO'd to a loop and enqueues no spec, so the
-            -- spiral would never form (verified: 1 spec, both flag states).
             (binopsExpr [ ( intExpr 1, "+" ) ]
                 (callExpr (varExpr "loop")
                     [ binopsExpr [ ( varExpr "n", "-" ) ] (intExpr 1)
@@ -206,6 +221,9 @@ loopDef =
     }
 
 
+{-| The definition of `testValue`, `loop 3 (\x -> x)`. The test pipeline's
+synthetic `main` refers to `testValue`, which is what makes `loop` reachable.
+-}
 testValueDef : TypedDef
 testValueDef =
     { name = "testValue"

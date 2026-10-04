@@ -1,11 +1,49 @@
 module SourceIR.PolyEscapeCases exposing (expectSuite)
 
-{-| Tests for polymorphic TVar escape through monomorphization (MONO\_021).
+{-| Programs in which a polymorphic function reaches the place where it is
+applied by an indirect route, for checking that the concrete type it is used
+at is carried along that route.
 
-These tests are designed to expose cases where polymorphic type variables
-might escape through monomorphization. They cover scenarios where polymorphic
-functions are stored in data structures, passed through nested closures with
-different types, or used through higher-order combinators with mixed types.
+Monomorphization makes a separate copy, a _specialization_, of a polymorphic
+function for each concrete type it is used at. When the function is not called
+directly but stored in a record or tuple, returned from another function as a
+closure, or passed to another function first, the type it is finally used at
+has to be traced back through that route. Where it is not, a type variable can
+be left in a specialization that should have been concrete. Each program here
+builds one such route.
+
+The module asserts nothing itself. `expectSuite` passes each program to the
+expectation function its caller supplies, and that function decides what is
+checked.
+
+Every program defines a top-level `testValue` and is built with
+`Compiler.AST.SourceBuilder`. Five of them are built with `makeModule`, so they
+carry no type annotation, and their integer literals have the type `number`
+until something later fixes it. The other is a module with annotations, in
+which `testValue` is an `Int`.
+
+The cases, in the order they run:
+
+  - "Polymorphic identity in record field" stores an identity lambda in a
+    record field, reads it back and applies it to an integer literal.
+  - "Polymorphic lambda in local Maybe.map" declares its own `Maybe` type and
+    an annotated `maybeMap`, and passes an identity lambda to `maybeMap` with
+    `Just 1`.
+  - "Nested polymorphic closures with different types" has an inner function
+    that captures its outer function's argument and pairs it with its own, so
+    that the two components of the pair get different types.
+  - "Polymorphic flip with mixed types" defines a local `flip` and calls it
+    with a two-argument lambda, an integer literal and a string, so that all
+    three of `flip`'s type variables are instantiated.
+  - "Record update narrowing polymorphic field" replaces a record's identity
+    field by an update, so that the identity is used at the type of the new
+    function.
+  - "Polymorphic function extracted from tuple" stores a local identity
+    function in a pair, takes it out with a local `first` and applies it.
+
+Among what is not tested: a polymorphic function stored in a list or in a
+custom type's constructor, and one polymorphic function used at two different
+types in the same program.
 
 -}
 
@@ -43,12 +81,22 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Polymorphic TVar escape " followed by `condStr`,
+that passes each program in this module to `expectFn` in turn.
+
+The cases are run by `Compiler.BulkCheck.bulkCheck`, so the test fails with the
+label of the first case that fails, and the cases after it do not run.
+
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Polymorphic TVar escape " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the six cases, each pairing a label with its program passed to
+`expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Polymorphic identity in record field", run = polyIdentityInRecordField expectFn }
@@ -60,14 +108,9 @@ testCases expectFn =
     ]
 
 
-
--- ============================================================================
--- 1. Polymorphic identity in record field
--- ============================================================================
-
-
-{-| A polymorphic identity lambda stored in a record field must be specialized
-to Int -> Int when the field is accessed and applied to an Int.
+{-| Applies `expectFn` to a program that stores an identity lambda in a record
+field, then reads the field and applies it to an integer literal, so the
+identity is used at `number -> number`. The program is:
 
     testValue =
         let
@@ -95,14 +138,12 @@ polyIdentityInRecordField expectFn _ =
     expectFn modul
 
 
-
--- ============================================================================
--- 2. Polymorphic lambda in local Maybe.map
--- ============================================================================
-
-
-{-| A polymorphic identity lambda passed to a locally-defined Maybe.map
-must be specialized to Int -> Int when applied to Just 1.
+{-| Applies `expectFn` to a module named `Test` that declares its own `Maybe`
+type and a `maybeMap` over it, and passes an identity lambda to `maybeMap`
+together with `Just 1`. The annotation `testValue : Int` makes the lambda's type
+`Int -> Int`. The module also imports the `Maybe` module, which
+`makeModuleWithTypedDefsUnionsAliases` adds with everything exposed. It
+declares:
 
     type Maybe a
         = Just a
@@ -187,14 +228,10 @@ lambdaInMaybeMap expectFn _ =
     expectFn modul
 
 
-
--- ============================================================================
--- 3. Nested polymorphic closures with different types
--- ============================================================================
-
-
-{-| Inner closure g captures x from outer f. When f 1 "a" is called,
-x is Int and y is String, so g must be specialized to String -> (Int, String).
+{-| Applies `expectFn` to a program in which a local `f` returns an inner
+function `g` that captures `f`'s argument `x` and pairs it with its own argument
+`y`. The call `f 1 "a"` makes `x` an integer literal and `y` a `String`, so `g`
+is used at `String -> ( number, String )`. The program is:
 
     testValue =
         let
@@ -233,15 +270,11 @@ nestedPolymorphicClosures expectFn _ =
     expectFn modul
 
 
-
--- ============================================================================
--- 4. Polymorphic flip with mixed types
--- ============================================================================
-
-
-{-| flip has type (a -> b -> c) -> b -> a -> c. When called with
-(\\x y -> x), 1, and "a", all three type vars must specialize:
-a=String, b=Int, c=String.
+{-| Applies `expectFn` to a program that defines a local `flip` and calls it
+with a lambda returning its first argument, an integer literal and a string.
+`flip` passes its last two arguments to the lambda in reverse order, so the
+lambda is used at `String -> number -> String` and the result is the string.
+The program is:
 
     testValue =
         let
@@ -272,15 +305,11 @@ polyFlipMixedTypes expectFn _ =
     expectFn modul
 
 
-
--- ============================================================================
--- 5. Record update narrowing polymorphic field
--- ============================================================================
-
-
-{-| Record r has polymorphic field f = \\x -> x. A record update replaces f
-with the concrete \\y -> y + 1, forcing the polymorphic TVar to specialize
-to Int through the record update unification.
+{-| Applies `expectFn` to a program in which a record `r` holds an identity
+function in field `f`, and `r2` is `r` with `f` replaced by a function that
+adds 1. A record update gives its result the same type as the record it
+updates, so `r`'s field `f` takes the replacement's type, `number -> number`,
+although the identity itself is never called. The program is:
 
     testValue =
         let
@@ -322,15 +351,10 @@ recordUpdatePolyNarrowing expectFn _ =
     expectFn modul
 
 
-
--- ============================================================================
--- 6. Polymorphic function extracted from tuple
--- ============================================================================
-
-
-{-| A polymorphic identity function is stored in a tuple alongside an Int,
-extracted via a local first function, then applied. The monomorphizer must
-specialize id through the tuple storage to Int -> Int.
+{-| Applies `expectFn` to a program that pairs a local identity function `id`
+with an integer literal, takes it out of the pair with a local `first` and
+applies it to another integer literal, so `id` is used at `number -> number`.
+The program is:
 
     testValue =
         let
@@ -339,8 +363,8 @@ specialize id through the tuple storage to Int -> Int.
 
             first t =
                 case t of
-                    ( a, b ) ->
-                        a
+                    ( fst, _ ) ->
+                        fst
         in
         first ( id, 0 ) 42
 

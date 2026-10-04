@@ -1,19 +1,58 @@
 module SourceIR.Fuzz.TypedExpr exposing
     ( Scope
-      -- Scope operations
-    , -- Types
-      SimpleType(..)
+    , SimpleType(..)
     , decrementDepth
-      -- Expression fuzzers
     , emptyScope
     , exprFuzzerForType
     , intExprFuzzer
     )
 
-{-| Type-indexed expression and pattern fuzzers.
+{-| Fuzz tests that build programs as Source AST values need random expressions
+that are well typed. This module generates an expression of a requested type
+that uses each variable only where a value of that variable's type is
+expected, so the expression is well typed wherever the variables its `Scope`
+lists are bound at the types the `Scope` gives them.
 
-These fuzzers generate syntactically valid, type-correct Elm expressions
-and patterns. Each fuzzer is parameterized by the type it produces.
+A `SimpleType` names the type wanted. A `Scope` lists the variables an
+expression may refer to, the names it must not bind again (Elm rejects a local
+binding that shadows a name already in scope), and the depth budget.
+
+The depth budget bounds nesting. Given a budget of 0 or less, each expression
+fuzzer produces only a leaf. Above that it picks, with equal chance, a leaf or
+one of the compound forms its type allows, and generates that form's parts with
+the budget one less:
+
+  - `Int`: `let`, `if`, negation, and a `case` with a single branch that binds
+    the subject to a fresh name.
+  - `Float`: `let`, `if` and negation.
+  - `String`, `Bool`, lists, pairs and records: `let` and `if`.
+
+A leaf of type `Int`, `Float`, `String` or `Bool` is a literal or, with equal
+chance when the scope has one, a variable of that type. A leaf of a list, pair
+or record type is a literal whose elements are generated with the budget one
+less: a list of 0 to 4 elements, a pair, or a record with exactly the requested
+fields. Such a leaf is never itself a variable, so a `let` of a list, pair or
+record binds a name that nothing uses. Every `let` and `case` binder is a name
+the scope does not hold, and every `if` condition is a generated `Bool`
+expression.
+
+Each choice among a type's forms is wrapped in `Fuzz.andThen`, so only the
+fuzzer of the form chosen is built, not the fuzzers of every form down to the
+end of the budget.
+
+The expressions are built with `Compiler.AST.SourceBuilder`, and some are
+shapes the parser never produces: an `Int` literal can be negative, a negation
+can wrap a `let`, `if`, `case` or another negation, a `Float` literal can be
+infinite or NaN (`Fuzz.float` produces both), and a `String` literal holds the
+text `Fuzz.string` gave without escaping, so it can contain a raw `"`, `\` or
+newline. `Bool` literals are the qualified constructors `Basics.True` and
+`Basics.False`.
+
+The module also holds fuzzers for a pattern of each type, paired with the names
+and types the pattern binds. They are not exposed and nothing outside them calls
+them. A record pattern binds the record's field names; every other variable in
+a pattern is named from a fixed list, with no check against the scope or the
+pattern's other variables, so one pattern can bind a name twice.
 
 -}
 
@@ -29,7 +68,14 @@ import Fuzz exposing (Fuzzer)
 -- =============================================================================
 
 
-{-| Simple type representation for tracking types during generation.
+{-| A type this module can generate an expression of.
+
+`TList` is a list of its element type. `TTuple` is a pair; no larger tuple can
+be asked for. `TRecord` is a closed record with the given fields, which a
+record literal writes in the order listed.
+
+There is no `Char`, unit, function or custom type.
+
 -}
 type SimpleType
     = TInt
@@ -41,11 +87,19 @@ type SimpleType
     | TRecord (List ( Name, SimpleType ))
 
 
-{-| Scope tracks variables in scope and remaining depth budget.
+{-| The context an expression is generated in: the variables it may refer
+to, the names it must not bind, and how much nesting it may still use.
 
-  - `vars`: Variables available for reference
-  - `usedNames`: Names that are taken (for shadowing prevention) but not yet available
-  - `depth`: Remaining recursion depth budget
+`vars` are the variables an expression may refer to, each with its type.
+`usedNames` are names a new binding must not take. `addVar` puts a variable in
+both lists, while a name whose definition is still being generated is in
+`usedNames` alone. A fresh name is checked against both lists, so a `Scope`
+built by hand need not repeat its `vars` in `usedNames`. A name in scope that
+neither list holds is not avoided.
+
+`depth` is the depth budget. Each compound form, and each list, pair or record
+literal, generates its parts with one less, and at 0 or less only leaves are
+generated. Nothing stops it going negative.
 
 -}
 type alias Scope =
@@ -61,14 +115,16 @@ type alias Scope =
 -- =============================================================================
 
 
-{-| Create an empty scope with a given depth budget.
+{-| Creates a scope with no variables and no reserved names, with a depth
+budget of `maxDepth`.
 -}
 emptyScope : Int -> Scope
 emptyScope maxDepth =
     { vars = [], usedNames = [], depth = maxDepth }
 
 
-{-| Add a variable to scope (both available for reference and reserved).
+{-| Returns `scope` with `name` added as a variable of type `tipe`, which an
+expression may refer to and no later binding may take.
 -}
 addVar : Name -> SimpleType -> Scope -> Scope
 addVar name tipe scope =
@@ -78,22 +134,24 @@ addVar name tipe scope =
     }
 
 
-{-| Reserve a name (prevents shadowing) without making it available for reference.
-Use this when generating a binding value before the binding is complete.
+{-| Returns `scope` with `name` barred from new bindings but not available to
+refer to. A `let` generates its definition's value in such a scope, so the value
+cannot bind the name being defined.
 -}
 reserveName : Name -> Scope -> Scope
 reserveName name scope =
     { scope | usedNames = name :: scope.usedNames }
 
 
-{-| Decrement the depth budget.
+{-| Returns `scope` with its depth budget one less.
 -}
 decrementDepth : Scope -> Scope
 decrementDepth scope =
     { scope | depth = scope.depth - 1 }
 
 
-{-| Get all variable names of a given type.
+{-| Returns the names of the variables in `scope` whose type is `tipe`, in
+the order of `scope.vars`.
 -}
 varsOfType : SimpleType -> Scope -> List Name
 varsOfType tipe scope =
@@ -114,7 +172,8 @@ varsOfType tipe scope =
 -- =============================================================================
 
 
-{-| Fuzzer for valid Elm identifiers.
+{-| A fuzzer for one of fourteen fixed lower-case names, with no check against
+any scope. Only the pattern fuzzers use it.
 -}
 nameFuzzer : Fuzzer Name
 nameFuzzer =
@@ -136,12 +195,15 @@ nameFuzzer =
         ]
 
 
-{-| Generate a name not already in scope or reserved.
+{-| Produces a fuzzer for a name that `scope` neither lists as a variable nor
+reserves. It is a single lower-case letter, chosen with equal chance from those
+still free, or, once all 26 are taken, `var` followed by a number from 1 to
+1000, drawn again until the result is free.
 -}
 uniqueNameFuzzer : Scope -> Fuzzer Name
 uniqueNameFuzzer scope =
     let
-        -- Check both vars and usedNames to prevent shadowing
+        -- vars is read too, because a Scope built by hand may not repeat them.
         takenNames =
             scope.usedNames ++ List.map Tuple.first scope.vars
 
@@ -191,7 +253,6 @@ uniqueNameFuzzer scope =
     in
     case available allNames of
         [] ->
-            -- Fallback with suffix
             genNotTaken ()
 
         avail ->
@@ -204,7 +265,15 @@ uniqueNameFuzzer scope =
 -- =============================================================================
 
 
-{-| Generate an expression of type Int.
+{-| Produces a fuzzer for an expression of type `Int` whose free variables are
+variables of `scope`, each used at its own type, and which binds no name `scope`
+holds.
+
+With a depth budget of 0 or less it is a leaf: any `Int` literal, negative ones
+included, or an `Int` variable of `scope`. Above that it is, with equal chance,
+a leaf, a `let`, an `if`, a negation, or a `case` whose single branch binds the
+subject to a fresh name, with the parts generated at the budget one less.
+
 -}
 intExprFuzzer : Scope -> Fuzzer Src.Expr
 intExprFuzzer scope =
@@ -221,6 +290,9 @@ intExprFuzzer scope =
             ]
 
 
+{-| Produces a fuzzer for an `Int` literal or, with equal chance when `scope`
+has one, an `Int` variable of `scope`.
+-}
 intLeafFuzzer : Scope -> Fuzzer Src.Expr
 intLeafFuzzer scope =
     let
@@ -238,6 +310,10 @@ intLeafFuzzer scope =
                 ]
 
 
+{-| Produces a fuzzer for `let name = value in body`, where `name` is one
+`scope` does not hold and `value` and `body` are `Int` expressions one level
+lower; `name` is an `Int` variable in `body` only.
+-}
 intLetFuzzer : Scope -> Fuzzer Src.Expr
 intLetFuzzer scope =
     let
@@ -248,7 +324,6 @@ intLetFuzzer scope =
         |> Fuzz.andThen
             (\bindingName ->
                 let
-                    -- Reserve name for binding value to prevent shadowing
                     reservedScope =
                         reserveName bindingName innerScope
                 in
@@ -263,6 +338,10 @@ intLetFuzzer scope =
             )
 
 
+{-| Produces a fuzzer for an `if` whose condition is a `Bool` expression and
+whose branches are `Int` expressions, all one level lower and generated
+independently.
+-}
 intIfFuzzer : Scope -> Fuzzer Src.Expr
 intIfFuzzer scope =
     let
@@ -275,11 +354,18 @@ intIfFuzzer scope =
         (intExprFuzzer innerScope)
 
 
+{-| Produces a fuzzer for the negation of an `Int` expression one level lower.
+-}
 intNegateFuzzer : Scope -> Fuzzer Src.Expr
 intNegateFuzzer scope =
     Fuzz.map B.negateExpr (intExprFuzzer (decrementDepth scope))
 
 
+{-| Produces a fuzzer for `case subject of name -> body`, where `name` is one
+`scope` does not hold and `subject` and `body` are `Int` expressions one level
+lower; `name` is an `Int` variable in `body` only. The one branch matches every
+value.
+-}
 intCaseFuzzer : Scope -> Fuzzer Src.Expr
 intCaseFuzzer scope =
     let
@@ -306,7 +392,8 @@ intCaseFuzzer scope =
 -- =============================================================================
 
 
-{-| Generate an expression of type Float.
+{-| Produces a fuzzer for an expression of type `Float`, chosen as
+`intExprFuzzer` chooses but with no `case`.
 -}
 floatExprFuzzer : Scope -> Fuzzer Src.Expr
 floatExprFuzzer scope =
@@ -322,6 +409,10 @@ floatExprFuzzer scope =
             ]
 
 
+{-| Produces a fuzzer for a `Float` literal from `Fuzz.float`, which includes
+infinities and NaN, or, with equal chance when `scope` has one, a `Float`
+variable of `scope`.
+-}
 floatLeafFuzzer : Scope -> Fuzzer Src.Expr
 floatLeafFuzzer scope =
     let
@@ -339,6 +430,8 @@ floatLeafFuzzer scope =
                 ]
 
 
+{-| Produces a fuzzer for a `let` as `intLetFuzzer` does, for `Float`.
+-}
 floatLetFuzzer : Scope -> Fuzzer Src.Expr
 floatLetFuzzer scope =
     let
@@ -363,6 +456,9 @@ floatLetFuzzer scope =
             )
 
 
+{-| Produces a fuzzer for an `if` as `intIfFuzzer` does, with `Float`
+branches.
+-}
 floatIfFuzzer : Scope -> Fuzzer Src.Expr
 floatIfFuzzer scope =
     let
@@ -375,6 +471,8 @@ floatIfFuzzer scope =
         (floatExprFuzzer innerScope)
 
 
+{-| Produces a fuzzer for the negation of a `Float` expression one level lower.
+-}
 floatNegateFuzzer : Scope -> Fuzzer Src.Expr
 floatNegateFuzzer scope =
     Fuzz.map B.negateExpr (floatExprFuzzer (decrementDepth scope))
@@ -386,7 +484,8 @@ floatNegateFuzzer scope =
 -- =============================================================================
 
 
-{-| Generate an expression of type String.
+{-| Produces a fuzzer for an expression of type `String`: a leaf, a `let` or
+an `if`, chosen as `intExprFuzzer` chooses.
 -}
 stringExprFuzzer : Scope -> Fuzzer Src.Expr
 stringExprFuzzer scope =
@@ -401,6 +500,10 @@ stringExprFuzzer scope =
             ]
 
 
+{-| Produces a fuzzer for a `String` literal holding `Fuzz.string`'s text
+unescaped or, with equal chance when `scope` has one, a `String` variable of
+`scope`.
+-}
 stringLeafFuzzer : Scope -> Fuzzer Src.Expr
 stringLeafFuzzer scope =
     let
@@ -418,6 +521,8 @@ stringLeafFuzzer scope =
                 ]
 
 
+{-| Produces a fuzzer for a `let` as `intLetFuzzer` does, for `String`.
+-}
 stringLetFuzzer : Scope -> Fuzzer Src.Expr
 stringLetFuzzer scope =
     let
@@ -442,6 +547,9 @@ stringLetFuzzer scope =
             )
 
 
+{-| Produces a fuzzer for an `if` as `intIfFuzzer` does, with `String`
+branches.
+-}
 stringIfFuzzer : Scope -> Fuzzer Src.Expr
 stringIfFuzzer scope =
     let
@@ -460,7 +568,8 @@ stringIfFuzzer scope =
 -- =============================================================================
 
 
-{-| Generate an expression of type Bool.
+{-| Produces a fuzzer for an expression of type `Bool`: a leaf, a `let` or an
+`if`, chosen as `intExprFuzzer` chooses.
 -}
 boolExprFuzzer : Scope -> Fuzzer Src.Expr
 boolExprFuzzer scope =
@@ -475,6 +584,9 @@ boolExprFuzzer scope =
             ]
 
 
+{-| Produces a fuzzer for `Basics.True` or `Basics.False` or, with equal chance
+when `scope` has one, a `Bool` variable of `scope`.
+-}
 boolLeafFuzzer : Scope -> Fuzzer Src.Expr
 boolLeafFuzzer scope =
     let
@@ -492,6 +604,8 @@ boolLeafFuzzer scope =
                 ]
 
 
+{-| Produces a fuzzer for a `let` as `intLetFuzzer` does, for `Bool`.
+-}
 boolLetFuzzer : Scope -> Fuzzer Src.Expr
 boolLetFuzzer scope =
     let
@@ -516,6 +630,9 @@ boolLetFuzzer scope =
             )
 
 
+{-| Produces a fuzzer for an `if` as `intIfFuzzer` does, with `Bool`
+branches.
+-}
 boolIfFuzzer : Scope -> Fuzzer Src.Expr
 boolIfFuzzer scope =
     let
@@ -530,14 +647,12 @@ boolIfFuzzer scope =
 
 
 -- =============================================================================
--- UNIT EXPRESSION FUZZER
--- =============================================================================
--- =============================================================================
 -- LIST EXPRESSION FUZZER
 -- =============================================================================
 
 
-{-| Generate an expression of type List a.
+{-| Produces a fuzzer for an expression of type `List` of `elemType`: a leaf,
+a `let` or an `if`, chosen as `intExprFuzzer` chooses.
 -}
 listExprFuzzer : Scope -> SimpleType -> Fuzzer Src.Expr
 listExprFuzzer scope elemType =
@@ -552,6 +667,9 @@ listExprFuzzer scope elemType =
             ]
 
 
+{-| Produces a fuzzer for a list literal of 0 to 4 elements, each an expression
+of type `elemType` one level lower. It never refers to a list variable.
+-}
 listLeafFuzzer : Scope -> SimpleType -> Fuzzer Src.Expr
 listLeafFuzzer scope elemType =
     Fuzz.intRange 0 4
@@ -562,6 +680,10 @@ listLeafFuzzer scope elemType =
             )
 
 
+{-| Produces a fuzzer for a `let` as `intLetFuzzer` does, for a list of
+`elemType`. The list variable it binds is never referred to, because no list
+leaf is a variable.
+-}
 listLetFuzzer : Scope -> SimpleType -> Fuzzer Src.Expr
 listLetFuzzer scope elemType =
     let
@@ -586,6 +708,9 @@ listLetFuzzer scope elemType =
             )
 
 
+{-| Produces a fuzzer for an `if` as `intIfFuzzer` does, with branches that are
+lists of `elemType`.
+-}
 listIfFuzzer : Scope -> SimpleType -> Fuzzer Src.Expr
 listIfFuzzer scope elemType =
     let
@@ -604,7 +729,8 @@ listIfFuzzer scope elemType =
 -- =============================================================================
 
 
-{-| Generate an expression of type (a, b).
+{-| Produces a fuzzer for an expression of type `( typeA, typeB )`: a leaf, a
+`let` or an `if`, chosen as `intExprFuzzer` chooses.
 -}
 tupleExprFuzzer : Scope -> SimpleType -> SimpleType -> Fuzzer Src.Expr
 tupleExprFuzzer scope typeA typeB =
@@ -619,6 +745,9 @@ tupleExprFuzzer scope typeA typeB =
             ]
 
 
+{-| Produces a fuzzer for a pair literal whose elements are expressions of type
+`typeA` and `typeB`, one level lower. It never refers to a pair variable.
+-}
 tupleLeafFuzzer : Scope -> SimpleType -> SimpleType -> Fuzzer Src.Expr
 tupleLeafFuzzer scope typeA typeB =
     let
@@ -630,6 +759,10 @@ tupleLeafFuzzer scope typeA typeB =
         (exprFuzzerForType innerScope typeB)
 
 
+{-| Produces a fuzzer for a `let` as `intLetFuzzer` does, for a pair of
+`typeA` and `typeB`. The pair variable it binds is never referred to, because
+no pair leaf is a variable.
+-}
 tupleLetFuzzer : Scope -> SimpleType -> SimpleType -> Fuzzer Src.Expr
 tupleLetFuzzer scope typeA typeB =
     let
@@ -654,6 +787,9 @@ tupleLetFuzzer scope typeA typeB =
             )
 
 
+{-| Produces a fuzzer for an `if` as `intIfFuzzer` does, with branches that are
+pairs of `typeA` and `typeB`.
+-}
 tupleIfFuzzer : Scope -> SimpleType -> SimpleType -> Fuzzer Src.Expr
 tupleIfFuzzer scope typeA typeB =
     let
@@ -672,7 +808,8 @@ tupleIfFuzzer scope typeA typeB =
 -- =============================================================================
 
 
-{-| Generate an expression of type { field1 : a, field2 : b, ... }.
+{-| Produces a fuzzer for an expression of the closed record type with
+`fields`: a leaf, a `let` or an `if`, chosen as `intExprFuzzer` chooses.
 -}
 recordExprFuzzer : Scope -> List ( Name, SimpleType ) -> Fuzzer Src.Expr
 recordExprFuzzer scope fields =
@@ -687,6 +824,10 @@ recordExprFuzzer scope fields =
             ]
 
 
+{-| Produces a fuzzer for a record literal with exactly `fields`, in the order
+given, each value an expression of the field's type one level lower. It never
+refers to a record variable.
+-}
 recordLeafFuzzer : Scope -> List ( Name, SimpleType ) -> Fuzzer Src.Expr
 recordLeafFuzzer scope fields =
     let
@@ -703,6 +844,10 @@ recordLeafFuzzer scope fields =
         |> Fuzz.map B.recordExpr
 
 
+{-| Produces a fuzzer for a `let` as `intLetFuzzer` does, for the record type
+with `fields`. The record variable it binds is never referred to, because no
+record leaf is a variable.
+-}
 recordLetFuzzer : Scope -> List ( Name, SimpleType ) -> Fuzzer Src.Expr
 recordLetFuzzer scope fields =
     let
@@ -727,6 +872,9 @@ recordLetFuzzer scope fields =
             )
 
 
+{-| Produces a fuzzer for an `if` as `intIfFuzzer` does, with branches of the
+record type with `fields`.
+-}
 recordIfFuzzer : Scope -> List ( Name, SimpleType ) -> Fuzzer Src.Expr
 recordIfFuzzer scope fields =
     let
@@ -745,7 +893,8 @@ recordIfFuzzer scope fields =
 -- =============================================================================
 
 
-{-| Generate an expression of the given type.
+{-| Produces a fuzzer for an expression of type `tipe` in `scope`, by the rules
+the module documentation sets out for that type.
 -}
 exprFuzzerForType : Scope -> SimpleType -> Fuzzer Src.Expr
 exprFuzzerForType scope tipe =
@@ -778,7 +927,9 @@ exprFuzzerForType scope tipe =
 -- =============================================================================
 
 
-{-| Generate an Int pattern with bindings.
+{-| A fuzzer for an `Int` pattern, paired with what it binds: an integer
+literal, which binds nothing and can be negative, a variable from `nameFuzzer`,
+or `_`.
 -}
 intPatternFuzzer : Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
 intPatternFuzzer =
@@ -789,7 +940,8 @@ intPatternFuzzer =
         ]
 
 
-{-| Generate a String pattern with bindings.
+{-| A fuzzer for a `String` pattern, paired with what it binds: one of four
+fixed string literals, a variable from `nameFuzzer`, or `_`.
 -}
 stringPatternFuzzer : Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
 stringPatternFuzzer =
@@ -800,34 +952,35 @@ stringPatternFuzzer =
         ]
 
 
-{-| Generate a tuple pattern with bindings.
+{-| Produces a fuzzer for a pattern of the pair type of `typeA` and `typeB`,
+paired with what it binds: a pair of patterns for the two element types, a
+variable, or `_`. The bindings of a pair pattern are the first element's then
+the second's, and nothing stops the two binding the same name.
 -}
 tuplePatternFuzzer : SimpleType -> SimpleType -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
 tuplePatternFuzzer typeA typeB =
     Fuzz.oneOf
-        [ -- Full destructure
-          Fuzz.map2
+        [ Fuzz.map2
             (\( patA, bindingsA ) ( patB, bindingsB ) ->
                 ( B.pTuple patA patB, bindingsA ++ bindingsB )
             )
             (patternFuzzerForType typeA)
             (patternFuzzerForType typeB)
-        , -- Variable binding
-          Fuzz.map (\name -> ( B.pVar name, [ ( name, TTuple typeA typeB ) ] )) nameFuzzer
-        , -- Wildcard
-          Fuzz.constant ( B.pAnything, [] )
+        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TTuple typeA typeB ) ] )) nameFuzzer
+        , Fuzz.constant ( B.pAnything, [] )
         ]
 
 
-{-| Generate a list pattern with bindings.
+{-| Produces a fuzzer for a pattern of a list of `elemType`, paired with what
+it binds: `[]`, `head :: tail` with a pattern of `elemType` for the head and a
+variable for the tail, a variable, or `_`. Nothing stops the head and the tail
+binding the same name.
 -}
 listPatternFuzzer : SimpleType -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
 listPatternFuzzer elemType =
     Fuzz.oneOf
-        [ -- Empty list
-          Fuzz.constant ( B.pList [], [] )
-        , -- Cons pattern
-          Fuzz.map2
+        [ Fuzz.constant ( B.pList [], [] )
+        , Fuzz.map2
             (\( headPat, headBindings ) tailName ->
                 ( B.pCons headPat (B.pVar tailName)
                 , headBindings ++ [ ( tailName, TList elemType ) ]
@@ -835,14 +988,14 @@ listPatternFuzzer elemType =
             )
             (patternFuzzerForType elemType)
             nameFuzzer
-        , -- Variable
-          Fuzz.map (\name -> ( B.pVar name, [ ( name, TList elemType ) ] )) nameFuzzer
-        , -- Wildcard
-          Fuzz.constant ( B.pAnything, [] )
+        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TList elemType ) ] )) nameFuzzer
+        , Fuzz.constant ( B.pAnything, [] )
         ]
 
 
-{-| Generate a record pattern with bindings.
+{-| Produces a fuzzer for a pattern of the record type with `fields`, paired
+with what it binds: a record pattern binding every field under its own name, a
+variable, or `_`.
 -}
 recordPatternFuzzer : List ( Name, SimpleType ) -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
 recordPatternFuzzer fields =
@@ -851,16 +1004,16 @@ recordPatternFuzzer fields =
             List.map Tuple.first fields
     in
     Fuzz.oneOf
-        [ -- Record pattern with all fields
-          Fuzz.constant ( B.pRecord fieldNames, fields )
-        , -- Variable
-          Fuzz.map (\name -> ( B.pVar name, [ ( name, TRecord fields ) ] )) nameFuzzer
-        , -- Wildcard
-          Fuzz.constant ( B.pAnything, [] )
+        [ Fuzz.constant ( B.pRecord fieldNames, fields )
+        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TRecord fields ) ] )) nameFuzzer
+        , Fuzz.constant ( B.pAnything, [] )
         ]
 
 
-{-| Generate a pattern for any type.
+{-| Produces a fuzzer for a pattern of type `tipe`, paired with the names and
+types it binds. A `Bool` or `Float` pattern is only a variable or `_`. Variable
+names other than a record pattern's field names come from `nameFuzzer`, with no
+check against any scope.
 -}
 patternFuzzerForType : SimpleType -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
 patternFuzzerForType tipe =
@@ -872,7 +1025,6 @@ patternFuzzerForType tipe =
             stringPatternFuzzer
 
         TBool ->
-            -- Bool patterns: just use variable or wildcard
             Fuzz.oneOf
                 [ Fuzz.map (\name -> ( B.pVar name, [ ( name, TBool ) ] )) nameFuzzer
                 , Fuzz.constant ( B.pAnything, [] )
@@ -888,7 +1040,7 @@ patternFuzzerForType tipe =
             recordPatternFuzzer fields
 
         _ ->
-            -- Fallback
+            -- Only TFloat reaches here.
             Fuzz.oneOf
                 [ Fuzz.map (\name -> ( B.pVar name, [ ( name, tipe ) ] )) nameFuzzer
                 , Fuzz.constant ( B.pAnything, [] )
@@ -901,7 +1053,8 @@ patternFuzzerForType tipe =
 -- =============================================================================
 
 
-{-| Sequence a list of fuzzers into a fuzzer of lists.
+{-| Produces a fuzzer for a list holding one value from each of `fuzzers`, in
+the same order.
 -}
 fuzzSequence : List (Fuzzer a) -> Fuzzer (List a)
 fuzzSequence fuzzers =

@@ -1,9 +1,39 @@
 module SourceIR.EqualityPapCases exposing (expectSuite)
 
-{-| Test cases for equality as first-class function value / PAP, List.any/all
-with Bool elements, compare on Char/Float/String, and List.map producing Bool.
+{-| Supplies programs built around equality used as a function value, lists of
+`Bool`, and `compare`, so that a test of a compiler stage can be run against
+these shapes and a failure names the case it came from.
 
-Covers gaps 3, 15, 16, 26 from e2e-to-elmtest.md.
+A partial application (PAP) is a function applied to fewer arguments than it
+takes, which leaves a function value waiting for the rest. The equality cases
+make one by applying a local function such as `eq a b = a == b` to a single
+argument. None of them uses the operator `(==)` itself as a value.
+
+Each case builds, with `Compiler.AST.SourceBuilder.makeModule`, a module named
+`Test` that imports `Basics` and `List` and whose one top-level value,
+`testValue`, is the case's expression. This module asserts nothing:
+`expectSuite` hands the programs in turn to the caller's expectation function,
+so what is checked, and after which stage, is the caller's choice. The cases run
+through `Compiler.BulkCheck.bulkCheck` as one test, which stops at the first
+case that fails.
+
+The programs, in four groups:
+
+  - Equality partially applied: `List.filter` with `eq` applied to an `Int`, a
+    `Float`, a `Char` and a `String`, one case each, and one case with two
+    such functions, one applied to an `Int` and one to a `String`.
+  - `List.any` and `List.all` over a `Bool` list, with `Basics.identity` and
+    with `Basics.not` as the predicate.
+  - `Basics.compare` on two `Char`s, two `Float`s and two `String`s, and a
+    `case` on the `Order` that `compare 1 2` returns.
+  - `List.map` producing a `Bool` list: `Basics.not` and `Basics.identity` over
+    a `Bool` list, and the anonymous function `\x -> x == 5` over an `Int`
+    list.
+
+Among what is not tested: `(==)` passed directly as a value; one equality
+function used at two types, since the two-type case defines a separate function
+for each type and its value uses only the `Int` one; and the values the
+programs compute, which only a caller's expectation function could check.
 
 -}
 
@@ -33,15 +63,26 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named `"Equality PAP and Bool list operations "` followed
+by `condStr`, that applies `expectFn` to the sixteen programs in turn through
+`bulkCheck`, stopping at the first that fails, and fails with that case's label
+followed by the description of its failure.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Equality PAP and Bool list operations " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the sixteen labelled cases, each applying `expectFn` to one program.
+
+The labels of the `Float`, `Char` and `String` equality cases list fewer
+elements than the programs' lists hold.
+
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
-    [ -- Gap 3: Equality (==) as first-class function value / PAP
+    [ -- A local equality function, partially applied
       { label = "Equality PAP on Int: List.filter (eq 5) [1,2,5,3,5]"
       , run = equalityPapInt expectFn
       }
@@ -58,7 +99,7 @@ testCases expectFn =
       , run = equalityPapMultiType expectFn
       }
 
-    -- Gap 15: List.any / List.all with Bool elements
+    -- List.any and List.all over Bool lists
     , { label = "List.any identity [False, True, False]"
       , run = listAnyIdentityBool expectFn
       }
@@ -72,7 +113,7 @@ testCases expectFn =
       , run = listAllNotBool expectFn
       }
 
-    -- Gap 16: Compare on Char/Float/String producing Order values
+    -- compare producing Order values
     , { label = "compare on Char: compare 'a' 'b'"
       , run = compareChar expectFn
       }
@@ -86,7 +127,7 @@ testCases expectFn =
       , run = caseOnCompareResult expectFn
       }
 
-    -- Gap 26: List.map producing Bool results
+    -- List.map producing Bool lists
     , { label = "List.map not [True, False, True]"
       , run = listMapNot expectFn
       }
@@ -101,12 +142,12 @@ testCases expectFn =
 
 
 -- ============================================================================
--- GAP 3: EQUALITY (==) AS FIRST-CLASS FUNCTION VALUE / PAP
+-- A LOCAL EQUALITY FUNCTION, PARTIALLY APPLIED
 -- ============================================================================
 
 
-{-| let eq a b = a == b in List.filter (eq 5) [1, 2, 5, 3, 5]
-Tests (==) as a PAP for Int.
+{-| Applies `expectFn` to the program
+`let eq a b = a == b in List.filter (eq 5) [ 1, 2, 5, 3, 5 ]`.
 -}
 equalityPapInt : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapInt expectFn _ =
@@ -129,8 +170,8 @@ equalityPapInt expectFn _ =
     expectFn modul
 
 
-{-| let eq a b = a == b in List.filter (eq 2.5) [1.0, 2.5, 3.0, 2.5]
-Tests (==) as a PAP for Float.
+{-| Applies `expectFn` to the program
+`let eq a b = a == b in List.filter (eq 2.5) [ 1.0, 2.5, 3.0, 2.5 ]`.
 -}
 equalityPapFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapFloat expectFn _ =
@@ -153,8 +194,8 @@ equalityPapFloat expectFn _ =
     expectFn modul
 
 
-{-| let eq a b = a == b in List.filter (eq 'a') ['a', 'b', 'a', 'c']
-Tests (==) as a PAP for Char.
+{-| Applies `expectFn` to the program
+`let eq a b = a == b in List.filter (eq 'a') [ 'a', 'b', 'a', 'c' ]`.
 -}
 equalityPapChar : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapChar expectFn _ =
@@ -177,8 +218,8 @@ equalityPapChar expectFn _ =
     expectFn modul
 
 
-{-| let eq a b = a == b in List.filter (eq "hello") ["hi", "hello", "world", "hello"]
-Tests (==) as a PAP for String.
+{-| Applies `expectFn` to the program
+`let eq a b = a == b in List.filter (eq "hello") [ "hi", "hello", "world", "hello" ]`.
 -}
 equalityPapString : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapString expectFn _ =
@@ -201,12 +242,13 @@ equalityPapString expectFn _ =
     expectFn modul
 
 
-{-| Tests (==) PAP used at both Int and String types in the same module.
-let eqI a b = a == b
-eqS a b = a == b
-ints = List.filter (eqI 5) [1, 5, 3]
-strs = List.filter (eqS "x") ["x", "y"]
-in (ints, strs)
+{-| Applies `expectFn` to a program with two equality functions in one `let`:
+`ints` is `List.filter (eqI 5) [ 1, 5, 3 ]` and `strs` is
+`List.filter (eqS "x") [ "x", "y" ]`, where `eqI a b` and `eqS a b` are each
+`a == b`.
+
+The program's value is `ints` alone; `strs` is defined but not used.
+
 -}
 equalityPapMultiType : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapMultiType expectFn _ =
@@ -249,12 +291,12 @@ equalityPapMultiType expectFn _ =
 
 
 -- ============================================================================
--- GAP 15: LIST.ANY / LIST.ALL WITH BOOL ELEMENTS
+-- LIST.ANY AND LIST.ALL OVER BOOL LISTS
 -- ============================================================================
 
 
-{-| List.any identity [False, True, False]
-Exercises papExtend with Bool elements and identity as predicate on Bool list.
+{-| Applies `expectFn` to the program
+`List.any Basics.identity [ False, True, False ]`.
 -}
 listAnyIdentityBool : (Src.Module -> Expectation) -> (() -> Expectation)
 listAnyIdentityBool expectFn _ =
@@ -268,7 +310,8 @@ listAnyIdentityBool expectFn _ =
         )
 
 
-{-| List.all identity [True, True, True]
+{-| Applies `expectFn` to the program
+`List.all Basics.identity [ True, True, True ]`.
 -}
 listAllIdentityBool : (Src.Module -> Expectation) -> (() -> Expectation)
 listAllIdentityBool expectFn _ =
@@ -282,8 +325,7 @@ listAllIdentityBool expectFn _ =
         )
 
 
-{-| List.any not [True, False]
-Tests Basics.not as predicate on a Bool list.
+{-| Applies `expectFn` to the program `List.any Basics.not [ True, False ]`.
 -}
 listAnyNotBool : (Src.Module -> Expectation) -> (() -> Expectation)
 listAnyNotBool expectFn _ =
@@ -297,7 +339,7 @@ listAnyNotBool expectFn _ =
         )
 
 
-{-| List.all not [False, False]
+{-| Applies `expectFn` to the program `List.all Basics.not [ False, False ]`.
 -}
 listAllNotBool : (Src.Module -> Expectation) -> (() -> Expectation)
 listAllNotBool expectFn _ =
@@ -313,12 +355,11 @@ listAllNotBool expectFn _ =
 
 
 -- ============================================================================
--- GAP 16: COMPARE ON CHAR/FLOAT/STRING PRODUCING ORDER VALUES
+-- COMPARE PRODUCING ORDER VALUES
 -- ============================================================================
 
 
-{-| compare 'a' 'b' -- should produce LT
-Tests the polymorphic compare function on Char type.
+{-| Applies `expectFn` to the program `Basics.compare 'a' 'b'`.
 -}
 compareChar : (Src.Module -> Expectation) -> (() -> Expectation)
 compareChar expectFn _ =
@@ -330,8 +371,7 @@ compareChar expectFn _ =
         )
 
 
-{-| compare 1.5 2.5 -- should produce LT
-Tests the polymorphic compare function on Float type.
+{-| Applies `expectFn` to the program `Basics.compare 1.5 2.5`.
 -}
 compareFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 compareFloat expectFn _ =
@@ -343,8 +383,7 @@ compareFloat expectFn _ =
         )
 
 
-{-| compare "apple" "banana" -- should produce LT
-Tests the polymorphic compare function on String type.
+{-| Applies `expectFn` to the program `Basics.compare "apple" "banana"`.
 -}
 compareString : (Src.Module -> Expectation) -> (() -> Expectation)
 compareString expectFn _ =
@@ -356,9 +395,9 @@ compareString expectFn _ =
         )
 
 
-{-| Case on the result of compare to exercise Order pattern matching:
-let result = compare 1 2
-in case result of LT -> "less"; EQ -> "equal"; GT -> "greater"
+{-| Applies `expectFn` to a program that binds `result = Basics.compare 1 2`
+in a `let` and matches it with one branch per `Order` constructor, giving
+`"less"` for `LT`, `"equal"` for `EQ` and `"greater"` for `GT`.
 -}
 caseOnCompareResult : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnCompareResult expectFn _ =
@@ -386,12 +425,12 @@ caseOnCompareResult expectFn _ =
 
 
 -- ============================================================================
--- GAP 26: LIST.MAP PRODUCING BOOL RESULTS
+-- LIST.MAP PRODUCING BOOL LISTS
 -- ============================================================================
 
 
-{-| List.map not [True, False, True] -> [False, True, False]
-Exercises Bool as the mapped result type in list operations.
+{-| Applies `expectFn` to the program
+`List.map Basics.not [ True, False, True ]`.
 -}
 listMapNot : (Src.Module -> Expectation) -> (() -> Expectation)
 listMapNot expectFn _ =
@@ -405,8 +444,8 @@ listMapNot expectFn _ =
         )
 
 
-{-| List.map identity [True, False, True] -> [True, False, True]
-Exercises Bool identity through list mapping.
+{-| Applies `expectFn` to the program
+`List.map Basics.identity [ True, False, True ]`.
 -}
 listMapIdentityBool : (Src.Module -> Expectation) -> (() -> Expectation)
 listMapIdentityBool expectFn _ =
@@ -420,8 +459,9 @@ listMapIdentityBool expectFn _ =
         )
 
 
-{-| List.map (\\x -> x == 5) [1, 5, 3, 5, 2] -> [False, True, False, True, False]
-Exercises an equality predicate producing a Bool list from an Int list.
+{-| Applies `expectFn` to the program
+`List.map (\x -> x == 5) [ 1, 5, 3, 5, 2 ]`, whose function is an anonymous
+one rather than a partial application.
 -}
 listMapEqualityPredicate : (Src.Module -> Expectation) -> (() -> Expectation)
 listMapEqualityPredicate expectFn _ =

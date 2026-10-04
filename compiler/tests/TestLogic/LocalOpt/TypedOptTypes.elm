@@ -1,15 +1,36 @@
 module TestLogic.LocalOpt.TypedOptTypes exposing (expectAllExprsHaveTypes)
 
-{-| Test logic for invariant TOPT\_001: TypedOptimized expressions always carry types.
+{-| A check that every expression the typed optimizer produces carries a type,
+which in practice passes for any program that reaches typed optimization:
+the walk visits the expressions, but the test it applies to each type reports
+nothing.
 
-For each TypedOptimized.Expr variant:
+The subject is the _typed local graph_, the `TOpt.LocalGraph` that
+`TestLogic.TestPipeline.runToTypedOpt` builds for one test program: a map
+from global to node, in which the nodes for its definitions hold
+`Compiler.AST.TypedOptimized` expressions. Every such expression carries its
+type in its `Meta`, as a `Can.Type` rather than a `Maybe`, so a missing type
+cannot be built at all. What a check could still find is a malformed type,
+and nothing here tests a type's shape.
 
-  - Assert the last constructor argument is a Can.Type Name.
-  - Verify that typeOf returns that last field for all expressions.
-  - Ensure no expression has a malformed or missing type.
+`expectAllExprsHaveTypes` runs the program to typed optimization and walks the
+graph. For each expression it reaches it takes `TOpt.typeOf` and hands it,
+labelled with the node it came from, to `checkTypeNotEmpty`, which returns no
+issues for any type. So the expectation fails only when `runToTypedOpt`
+returns `Err`.
 
-This module reuses the existing typed optimization pipeline to verify
-all expressions carry types.
+Among what is not walked, should the per-type test ever report anything:
+
+  - the value expressions of a `Cycle` node (only its definitions are walked);
+  - `Ctor`, `Enum`, `Box`, `Link`, `Manager` and `Kernel` nodes;
+  - branch bodies inlined into a `case`'s decision tree (only the bodies its
+    jumps target are walked);
+  - the graph's `main`, and the types a `Destruct` stores in its destructor.
+
+The second half of the file, from `checkDefTypeWellFormedness` on, is a second
+walk, starting from one definition, that follows the same expressions as the
+first and also recurses into each type it reaches. Nothing outside that walk
+calls it, and it too reports no issues for any input.
 
 -}
 
@@ -25,7 +46,14 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| TOPT\_001: Verify all expressions have types.
+{-| Runs `srcModule` to typed optimization and passes if no expression in its
+typed local graph is reported for its type.
+
+No expression ever is, so this passes exactly when
+`TestLogic.TestPipeline.runToTypedOpt` gives `Ok`, and otherwise fails with
+that function's message. The program must define `testValue`, as
+`TestLogic.TestPipeline` describes.
+
 -}
 expectAllExprsHaveTypes : Src.Module -> Expect.Expectation
 expectAllExprsHaveTypes srcModule =
@@ -51,7 +79,8 @@ expectAllExprsHaveTypes srcModule =
 -- ============================================================================
 
 
-{-| Collect issues where expressions don't have types or typeOf fails.
+{-| Returns the issues reported for the nodes of a typed local graph, each node
+labelled by its global as `Module.name`. The list is always empty.
 -}
 collectExprTypeIssues : TOpt.LocalGraph Name -> List String
 collectExprTypeIssues (TOpt.LocalGraph data) =
@@ -67,7 +96,7 @@ collectExprTypeIssues (TOpt.LocalGraph data) =
         data.nodes
 
 
-{-| Convert a Global to a string for context messages.
+{-| Returns a global as `Module.name`, leaving out the package.
 -}
 globalToString : TOpt.Global -> String
 globalToString (TOpt.Global home name) =
@@ -76,13 +105,16 @@ globalToString (TOpt.Global home name) =
             moduleName ++ "." ++ name
 
 
-{-| Check that all expressions in a node have types.
+{-| Returns the issues for the expressions of one node: the body of a `Define`,
+`TrackedDefine`, `PortIncoming` or `PortOutgoing` node with the expressions
+nested in it that `collectExprNestedTypeIssues` follows, or the definitions of
+a `Cycle`. A `Cycle`'s value expressions and every other kind of node give no
+issues without being looked at.
 -}
 checkNodeExprsHaveTypes : String -> TOpt.Node Name -> List String
 checkNodeExprsHaveTypes context node =
     case node of
         TOpt.Define expr _ _ ->
-            -- The expression should have a type that matches the node's type
             let
                 exprType =
                     TOpt.typeOf expr
@@ -113,7 +145,9 @@ checkNodeExprsHaveTypes context node =
             []
 
 
-{-| Check that a Def has types on all expressions.
+{-| Returns the issues for one local or cycle definition: the type of its body,
+the types of a `TailDef`'s parameters, and the expressions in the body that
+`collectExprNestedTypeIssues` follows.
 -}
 checkDefExprsHaveTypes : String -> TOpt.Def Name -> List String
 checkDefExprsHaveTypes context def =
@@ -128,7 +162,12 @@ checkDefExprsHaveTypes context def =
                 ++ collectExprNestedTypeIssues context expr
 
 
-{-| Collect type issues from nested expressions.
+{-| Returns the issues for the type of `expr` and of every expression nested in
+it, and for the parameter types of any function inside it.
+
+A `case` is followed only into the branch bodies its jumps target, not into
+bodies inlined in its decision tree, and a `Destruct` only into its body.
+
 -}
 collectExprNestedTypeIssues : String -> TOpt.Expr Name -> List String
 collectExprNestedTypeIssues context expr =
@@ -196,17 +235,11 @@ collectExprNestedTypeIssues context expr =
            )
 
 
-{-| Check that a type is not empty/malformed.
-
-For now, we just verify the type exists. More sophisticated checks could
-verify no dangling type variables, etc.
-
+{-| Returns no issues for any type: both the context label and the type are
+ignored.
 -}
 checkTypeNotEmpty : String -> Can.Type Name -> List String
 checkTypeNotEmpty _ _ =
-    -- All TypedOptimized expressions carry a Can.Type Name by construction.
-    -- If the expression type-checks and we can call typeOf, it has a type.
-    -- More sophisticated checks would verify the type is well-formed.
     []
 
 
@@ -216,7 +249,9 @@ checkTypeNotEmpty _ _ =
 -- ============================================================================
 
 
-{-| Check Def type well-formedness.
+{-| Returns the well-formedness issues for one definition: its declared type,
+the types of a `TailDef`'s parameters, and the expressions in its body that
+`collectExprTypeWellFormedness` follows. The result is always empty.
 -}
 checkDefTypeWellFormedness : String -> TOpt.Def Name -> List String
 checkDefTypeWellFormedness context def =
@@ -231,7 +266,12 @@ checkDefTypeWellFormedness context def =
                 ++ collectExprTypeWellFormedness context expr
 
 
-{-| Collect type well-formedness issues from expressions.
+{-| Returns the well-formedness issues for the type of `expr` and of the
+nested expressions it follows, and for the parameter types of the functions
+among them. A `case` is followed only into the branch bodies its jumps target,
+not into bodies inlined in its decision tree, and a `Destruct` only into its
+body. It follows the same parts of an expression as
+`collectExprNestedTypeIssues`, and is always empty.
 -}
 collectExprTypeWellFormedness : String -> TOpt.Expr Name -> List String
 collectExprTypeWellFormedness context expr =
@@ -299,15 +339,13 @@ collectExprTypeWellFormedness context expr =
            )
 
 
-{-| Check if a Can.Type Name is well-formed.
+{-| Returns the well-formedness issues for a type and every type inside it:
+function argument and result, type arguments, record field types, tuple
+elements, and an alias's arguments and body.
 
-Well-formed types:
-
-  - Have no dangling type variable references
-  - All type constructors refer to defined types
-  - Type arities match definitions
-
-For now, we perform basic structural checks.
+Every leaf gives no issues, so the result is always empty. Nothing checks
+that a type variable is bound, that a type constructor exists or that it has
+the right number of arguments. A record's extension variable is not looked at.
 
 -}
 checkTypeWellFormed : String -> Can.Type Name -> List String
@@ -318,15 +356,12 @@ checkTypeWellFormed context canType =
                 ++ checkTypeWellFormed context resultType
 
         Can.TVar _ ->
-            -- Type variables are valid in polymorphic types
             []
 
         Can.TType _ _ args ->
-            -- Recursively check type arguments
             List.concatMap (checkTypeWellFormed context) args
 
         Can.TRecord fields _ ->
-            -- Check record field types
             Dict.foldl (\_ fieldType acc -> checkFieldTypeWellFormed context fieldType ++ acc) [] fields
 
         Can.TUnit ->
@@ -342,7 +377,8 @@ checkTypeWellFormed context canType =
                 ++ checkAliasedTypeWellFormed context aliasedType
 
 
-{-| Check aliased type well-formedness.
+{-| Returns the well-formedness issues for an alias's body, `Holey` or
+`Filled` alike.
 -}
 checkAliasedTypeWellFormed : String -> Can.AliasType Name -> List String
 checkAliasedTypeWellFormed context aliasType =
@@ -354,7 +390,8 @@ checkAliasedTypeWellFormed context aliasType =
             checkTypeWellFormed context canType
 
 
-{-| Check field type well-formedness.
+{-| Returns the well-formedness issues for a record field's type, ignoring the
+field's index.
 -}
 checkFieldTypeWellFormed : String -> Can.FieldType Name -> List String
 checkFieldTypeWellFormed context (Can.FieldType _ canType) =

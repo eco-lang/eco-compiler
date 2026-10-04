@@ -8,13 +8,25 @@ module Compiler.GlobalOpt.Borrow.Rty exposing
     , zipRTy
     )
 
-{-| Resource-typed skeleton of a `MonoType` (borrow inference, design §7.3).
+{-| Borrow inference reasons about the heap objects a value owns, and this module
+says where those objects are in a value of a given type.
 
-Each heap position (§7.2 resource) carries one `ResVar` (dense `Int`, minted
-from 0 per def-analysis). Scalars carry none (BORROW\_001). The ResVar supply
-is a bare `Int` counter threaded through `freshRTy` — NOT the `Gen` record —
-so `Rty` imports nothing from `Constrain` (breaking a `Rty → Constrain → Rty`
-cycle). The walker (`Constrain`) lifts the counter through `Gen.next`.
+A _resource_ is one place in a type that is a heap object: a string, a list
+cell, a tuple, a record, a custom-type value, a closure's environment, or an
+erased value (`MVar _ CEcoValue`) whose contents the analysis cannot see. Ints,
+floats, booleans, characters and unit are scalars and hold no resource. A
+`ResVar` names one resource.
+
+An `RTy` is the resource skeleton of a `MonoType`: the same shape, with a
+`ResVar` at every resource. `freshRTy` builds one, numbering the resources in
+pre-order (a node before its children, children left to right), and `allRes`
+lists them back in that same order. That order is the canonical numbering of a
+type's resource positions.
+
+The counter that supplies fresh `ResVar`s is a plain `Int` passed in and handed
+back, so this module needs nothing from the modules that use it.
+
+`rcManaged` is a separate predicate on `MonoType`, not on skeletons.
 
 -}
 
@@ -23,22 +35,55 @@ import Compiler.Data.Name exposing (Name)
 import Dict
 
 
+{-| A number naming one resource in one analysis.
+
+This is a name for `Int`, not a new type: any `Int` is accepted where a
+`ResVar` is expected. Numbers are unique only among those drawn from the same
+counter.
+
+-}
 type alias ResVar =
     Int
 
 
+{-| The resource skeleton of a type: its shape, with a `ResVar` at each resource.
+
+Every constructor other than `RScalar` carries the `ResVar` of the value itself
+first, its _head_ resource.
+
+`RScalar` stands for a type that holds no resource.
+
+`ROpaque` is an erased value, `MVar _ CEcoValue`, whose contents are not
+followed.
+
+`RList` carries the skeleton of its element type, so one skeleton stands for
+every element of the list.
+
+`RRecord` carries one skeleton per field, in ascending order of field name.
+
+`RCustom` carries one skeleton per type argument. The fields of the
+constructors are not represented.
+
+`RClosure`'s resource is the closure's environment; its argument and result
+types are not followed.
+
+-}
 type RTy
     = RScalar
     | RString ResVar
-    | ROpaque ResVar -- MVar _ CEcoValue (erased eco.value; poisoned)
+    | ROpaque ResVar
     | RList ResVar RTy
     | RTuple ResVar (List RTy)
-    | RRecord ResVar (List ( Name, RTy )) -- ascending field order (Dict.toList)
-    | RCustom ResVar (List RTy) -- type-arg positions only
-    | RClosure ResVar -- env resource
+    | RRecord ResVar (List ( Name, RTy ))
+    | RCustom ResVar (List RTy)
+    | RClosure ResVar
 
 
-{-| One `ResVar` per heap row, per the §7.2 table. Bare `Int` counter in/out.
+{-| Builds the resource skeleton of `ty`, numbering its resources from `n` in
+pre-order, and returns it with the next unused number.
+
+`MVar _ CNumber` is treated as a scalar and gets no resource.
+
 -}
 freshRTy : Mono.MonoType -> Int -> ( RTy, Int )
 freshRTy ty n =
@@ -65,8 +110,7 @@ freshRTy ty n =
             ( ROpaque n, n + 1 )
 
         Mono.MVar _ Mono.CNumber ->
-            -- Defensive (fact 1): MVar _ CNumber at Phase 6 is a compiler bug;
-            -- treat as a scalar rather than mint a resource.
+            -- Not expected this late in compilation; treated as a scalar.
             ( RScalar, n )
 
         Mono.MList _ elemT ->
@@ -101,6 +145,9 @@ freshRTy ty n =
             ( RClosure n, n + 1 )
 
 
+{-| Builds the skeletons of `tys` in order, numbering from `n`, and returns them
+with the next unused number.
+-}
 freshRTyList : List Mono.MonoType -> Int -> ( List RTy, Int )
 freshRTyList tys n =
     case tys of
@@ -118,6 +165,10 @@ freshRTyList tys n =
             ( rty :: rtys, n2 )
 
 
+{-| Builds the skeleton of each field's type in list order, numbering from `n`,
+and returns them, still paired with the field names, with the next unused
+number.
+-}
 freshRTyFields : List ( Name, Mono.MonoType ) -> Int -> ( List ( Name, RTy ), Int )
 freshRTyFields fields n =
     case fields of
@@ -135,7 +186,7 @@ freshRTyFields fields n =
             ( ( name, rty ) :: rtys, n2 )
 
 
-{-| The head ResVar of a row; `Nothing` for a scalar.
+{-| Returns the head resource of a skeleton, or `Nothing` for `RScalar`.
 -}
 topRes : RTy -> Maybe ResVar
 topRes rty =
@@ -165,8 +216,9 @@ topRes rty =
             Just r
 
 
-{-| Pre-order ResVars (head then children left-to-right) — the canonical
-`ResPos` ordering `freshRTy` minted in, which Phase-3 `SigTy` relies on.
+{-| Returns every resource in a skeleton in pre-order: the head, then each
+child's resources from left to right. This is the order `freshRTy` numbers them
+in.
 -}
 allRes : RTy -> List ResVar
 allRes rty =
@@ -196,9 +248,13 @@ allRes rty =
             r :: List.concatMap allRes args
 
 
-{-| Structurally pair two aligned ground RTys pre-order. Mismatched shapes are
-unreachable (ground+equal by construction, §7.3); return `[]` (total; a dropped
-flow only shortens a lifetime).
+{-| Returns the corresponding resources of two skeletons of the same shape, as
+pairs in pre-order, the first of each pair from `a`.
+
+Where the shapes differ, nothing below that point is paired: two different
+constructors give `[]`, and of two lists of children only as many as the
+shorter holds are paired. Record fields are paired by position, not by name.
+
 -}
 zipRTy : RTy -> RTy -> List ( ResVar, ResVar )
 zipRTy a b =
@@ -231,6 +287,9 @@ zipRTy a b =
             []
 
 
+{-| Pairs the resources of two lists of skeletons element by element, stopping at
+the end of the shorter.
+-}
 zipRTyList : List RTy -> List RTy -> List ( ResVar, ResVar )
 zipRTyList a b =
     case ( a, b ) of
@@ -241,6 +300,9 @@ zipRTyList a b =
             []
 
 
+{-| Pairs the resources of two lists of fields by position, ignoring their names
+and stopping at the end of the shorter.
+-}
 zipRTyFields : List ( Name, RTy ) -> List ( Name, RTy ) -> List ( ResVar, ResVar )
 zipRTyFields a b =
     case ( a, b ) of
@@ -251,9 +313,8 @@ zipRTyFields a b =
             []
 
 
-{-| The B0-report v1 rcManaged set: `MString` only (the pointer-free flat
-buffer family; §16.1). Everything else False until B4. Used for census
-bucketing (`wouldFree` / RC sizing) this phase; no reify consumer yet.
+{-| Returns whether a type is reference-count managed, which is true of
+`MString` alone.
 -}
 rcManaged : Mono.MonoType -> Bool
 rcManaged ty =

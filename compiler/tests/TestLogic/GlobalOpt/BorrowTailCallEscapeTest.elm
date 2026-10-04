@@ -1,14 +1,44 @@
 module TestLogic.GlobalOpt.BorrowTailCallEscapeTest exposing (suite)
 
-{-| BORROW\_005 scaffold (borrow-inference Phase 3, §U3.3): a `MonoTailCall`'s
-heap-typed args must be escape-seeded so their approximate lifetime never ends
-at or before the tail call — the analysis fact Phase 5 relies on to never
-place a drop after a tail call.
+{-| Borrow inference decides where a heap value is dead from how long it is
+live, and the arguments of a tail call are values the function's next
+iteration still uses. Without this test, a change to the analysis could let a
+tail-call argument be reported dead before the function body ends, which would
+allow it to be released while still in use.
 
-Fixture (source-first, via `SourceBuilder`): a top-level tail-recursive
-`loop : Int -> List Int -> List Int` whose accumulator `acc` is heap-typed.
-After GlobalOpt it becomes a `MonoTailFunc` with a `MonoTailCall`; the borrow
-analysis must seed the tail args to escape.
+The analysis tracks _resources_: one per heap position of a value's type,
+numbered from 0 within each definition. A scalar such as an `Int` has none, and
+a `List Int` has one. For each resource, `Compiler.GlobalOpt.Borrow.Solve`
+computes an approximate lifetime, `ltA`, the latest point at which the resource
+is live, as `Compiler.GlobalOpt.Borrow.Lifetime` describes. The point this test
+asks about is the empty path, which is the end of the whole function body.
+`Compiler.GlobalOpt.Borrow.Constrain` seeds every resource of a `MonoTailCall`
+argument at that point (in the test's own messages, it is _escape-seeded_), so
+its `ltA` should reach the end of the body.
+
+The fixture, `fixtureModule`, is one tail-recursive function `loop` whose
+accumulator is a `List Int`, plus a `testValue` that calls it. It is compiled
+through `TestLogic.TestPipeline.runToGlobalOpt`, and `loop` is expected to come
+out as a `MonoTailFunc` whose body holds a `MonoTailCall`.
+
+The one test, `suite`, takes one `MonoTailFunc` whose tail calls have argument
+resources, analyses it with `Compiler.GlobalOpt.Borrow.analyzeDefForTest`, and
+checks:
+
+  - that every tail-call argument resource has an `ltA` that is not `LEmpty`
+    and that `Lifetime.endsBefore` does not report dead at the end of the body;
+  - that at least one resource of the same definition does have an `ltA` that
+    `endsBefore` reports dead there, so the first check is not passing because
+    `endsBefore` answers `False` for everything.
+
+It fails if the pipeline fails or if no `MonoTailFunc` with tail-call argument
+resources is found.
+
+Among what is not tested: any `MonoTailFunc` other than the one taken, the
+precise lifetimes `ltP`, access modes, the escape analysis that the borrow
+census starts from the tail-call resources, which resource satisfies the
+second check (an `LEmpty` resource would), and whether any later stage places
+or omits a release after a tail call.
 
 -}
 
@@ -23,6 +53,10 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The single test: compiles `fixtureModule` with
+`TestLogic.TestPipeline.runToGlobalOpt` and checks the optimized graph with
+`checkGraph`. A pipeline failure fails the test with the pipeline's message.
+-}
 suite : Test
 suite =
     Test.test "BORROW_005: MonoTailCall heap args are escape-seeded (never dead at/before the tail call)" <|
@@ -35,7 +69,25 @@ suite =
                     checkGraph optimizedMonoGraph
 
 
-{-| loop n acc = if n <= 0 then acc else loop (n - 1) (n :: acc)
+{-| The source module `Test`, with two annotated definitions. Written as Elm,
+they are:
+
+    loop : Int -> List Int -> List Int
+    loop n acc =
+        if n <= 0 then
+            acc
+
+        else
+            loop (n - 1) (n :: acc)
+
+    testValue : List Int
+    testValue =
+        loop 10 []
+
+The self-call in the `else` branch is the tail call. Of its two arguments, only
+`n :: acc` has a resource. `testValue` is there so that the test pipeline's
+generated `main` reaches `loop`.
+
 -}
 fixtureModule =
     let
@@ -69,13 +121,26 @@ fixtureModule =
         ]
 
 
+{-| Returns the test's expectation for the optimized graph `graph`.
+
+It collects the `MonoTailFunc` nodes, analyses each with
+`Compiler.GlobalOpt.Borrow.analyzeDefForTest`, and keeps those whose tail-call
+argument resources are not empty. Of those, it checks only the one with the
+highest `SpecId`, and fails if there is none. For that one, it expects both
+that no tail-call argument resource has an `ltA` that is `LEmpty` or that
+`Lifetime.endsBefore` reports dead at the empty path, and that some resource of
+the definition, any number below its resource count, does have an `ltA`
+that `endsBefore` reports dead there.
+
+-}
 checkGraph : Mono.MonoGraph -> Expect.Expectation
 checkGraph graph =
     let
         (Mono.MonoGraph { nodes }) =
             graph
 
-        -- SpecIds of MonoTailFunc nodes.
+        -- A node's SpecId is its index in `nodes`. Consing makes the list
+        -- descending, so the highest SpecId is checked below.
         tailFuncSpecIds =
             Array.foldl
                 (\maybeNode ( specId, acc ) ->
@@ -90,7 +155,6 @@ checkGraph graph =
                 nodes
                 |> Tuple.second
 
-        -- Analyze each; keep those with escape-seeded tail args.
         analyses =
             List.filterMap (\sid -> Borrow.analyzeDefForTest graph sid) tailFuncSpecIds
 
@@ -103,8 +167,8 @@ checkGraph graph =
 
         ( solved, tailArgRes, nRes ) :: _ ->
             let
-                -- Positive: every tail-call arg resource is live at the tail
-                -- call (ltA non-empty and not dead before the body completion).
+                -- At the empty path, endsBefore is False only for `LLocal Star`
+                -- and `LParams`, so it already rules out `LEmpty`.
                 escapeOk =
                     List.all
                         (\r ->
@@ -113,8 +177,6 @@ checkGraph graph =
                         )
                         tailArgRes
 
-                -- Negative control: some resource in the same def IS dead before
-                -- the body completes (proves endsBefore isn't vacuously False).
                 someDies =
                     List.any
                         (\r -> L.endsBefore (Solve.ltAOf r solved) [])
@@ -123,6 +185,9 @@ checkGraph graph =
             Expect.equal ( True, True ) ( escapeOk, someDies )
 
 
+{-| Returns whether `lt` is anything other than `LEmpty`, the lifetime of a
+resource that is never live.
+-}
 ltaNonEmpty : Lifetime -> Bool
 ltaNonEmpty lt =
     case lt of

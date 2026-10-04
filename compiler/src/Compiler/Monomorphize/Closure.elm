@@ -4,17 +4,29 @@ module Compiler.Monomorphize.Closure exposing
     , flattenFunctionType
     )
 
-{-| Closure utilities for monomorphization and GlobalOpt.
+{-| A closure has to carry the values of the local variables its body uses but
+does not bind, and this module works out what those are.
 
-This module provides staging-neutral utilities for working with closures:
+A _free local_ of an expression is a local variable it reads without binding
+it. A _capture_ is one entry of `ClosureInfo.captures` in
+`Compiler.AST.Monomorphized`: a name, the expression whose value is stored in the
+closure under that name, and a flag that code generation reads as whether the
+value is stored unboxed. `computeClosureCaptures` turns the free locals of a
+closure body into captures, each a `MonoVarLocal` of the free name, with the flag
+always `False`.
 
-  - Computing closure captures (free variables)
-  - Generating fresh parameter names
-  - Extracting source regions from expressions
-  - Flattening curried function types
+A name counts as a reference wherever the Mono AST reads a local variable: a
+`MonoVarLocal`, the root variable of a `MonoCase`, and the variable at the start
+of a destructuring path or a decision-tree path. A variable that a closure uses
+only as a `case` scrutinee therefore still counts as free.
 
-Note: Staging-aware wrapper creation (ensureCallableTopLevel, buildNestedCalls)
-has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidation.
+A capture needs a `MonoType`, and most of this file is the search for one. A
+`MonoCase` names its root variable without a type, so a variable that occurs only
+as a case root has no type of its own to give.
+
+The module also has three small helpers for code that builds closures: naming
+fresh parameters, reading an expression's source region, and flattening a curried
+function type. None of them changes how a function type is curried.
 
 
 # Parameters and Regions
@@ -45,7 +57,11 @@ import Utils.Crash
 -- ========== TYPE UTILITIES ==========
 
 
-{-| Flatten a curried function type into a list of argument types and a final return type.
+{-| Returns every argument type of a chain of nested function types, in order,
+together with the result type at the end of the chain.
+
+A type that is not a function gives no arguments and itself as the result.
+
 -}
 flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 flattenFunctionType monoType =
@@ -65,7 +81,13 @@ flattenFunctionType monoType =
 -- ========== PARAMETERS AND REGIONS ==========
 
 
-{-| Generate fresh parameter names for a list of types.
+{-| Pairs each of `argTypes` with a parameter name, `arg0`, `arg1` and so on by
+position.
+
+The names are fresh only in the sense that nothing else in this module produces
+them: nothing checks that the expression they are used in does not already bind
+`arg0`.
+
 -}
 freshParams : List Mono.MonoType -> List ( Name, Mono.MonoType )
 freshParams argTypes =
@@ -74,7 +96,13 @@ freshParams argTypes =
         argTypes
 
 
-{-| Extract the source region from a monomorphic expression.
+{-| Returns the source region of an expression.
+
+Only a global or kernel variable, a list, a call, a tuple and an accessor carry a
+region. A record access or update takes the region of the record expression.
+Every other kind of expression gives `A.zero`, the region that stands for no
+location in the source.
+
 -}
 extractRegion : Mono.MonoExpr -> A.Region
 extractRegion expr =
@@ -138,7 +166,19 @@ extractRegion expr =
 -- ========== CLOSURE CAPTURE ANALYSIS ==========
 
 
-{-| Compute the free variables that need to be captured by a closure.
+{-| Returns the captures for a closure with parameters `params` and body `body`:
+one per distinct free local of `body`, each a `MonoVarLocal` of the name with the
+unboxed flag `False`. The order is deterministic but is not guaranteed to be
+source order.
+
+A free local is what `findFreeLocals` finds, with every name in `params` bound.
+
+The type of a capture is looked up by name, not by scope. It is the type of the
+first `MonoVarLocal` of that name, or destructuring or decision-tree path
+starting at it, found anywhere in `body`, nested closures included. Failing
+that, for a name that is the root of a `MonoCase` outside any nested closure, it
+is `MUnit`. A free name with none of these crashes.
+
 -}
 computeClosureCaptures :
     List ( Name, Mono.MonoType )
@@ -158,15 +198,10 @@ computeClosureCaptures params body =
             findFreeLocals boundInitial body
                 |> dedupeNames
 
-        -- Collect a mapping from variable names to their actual types from the body.
-        -- This allows us to use the correct type for each captured variable instead
-        -- of a placeholder MUnit.
         varTypeMap : Dict String Mono.MonoType
         varTypeMap =
             collectVarTypes body
 
-        -- Collect types for MonoCase root variables that don't appear as MonoVarLocal
-        -- in the body. The root variable's type is inferred from the decider tests.
         caseRootTypeMap : Dict String Mono.MonoType
         caseRootTypeMap =
             collectCaseRootTypes body
@@ -191,7 +226,18 @@ computeClosureCaptures params body =
     List.map captureFor freeNames
 
 
-{-| Find free local variable names in an expression.
+{-| Returns the names `expr` reads as local variables that are neither in
+`bound` nor bound inside `expr`. A name read more than once can appear more than
+once, and the order is not the order of occurrence.
+
+A reference is a `MonoVarLocal`, a `MonoCase` root, or the variable at the start
+of a destructuring path or a decision-tree path. The names bound inside `expr`
+are a nested closure's parameters, a `MonoDestruct`'s name, a local tail
+function's parameters, and every name defined by a chain of directly nested
+`MonoLet`s. A name defined anywhere in such a chain is bound throughout it, in
+every definition and in the final body, so definitions that refer to each other
+are not free. A nested closure's free locals are free here too, unless bound.
+
 -}
 findFreeLocals :
     Set String
@@ -201,6 +247,9 @@ findFreeLocals bound expr =
     findFreeLocalsAcc bound expr []
 
 
+{-| Returns `acc` with the free locals of `expr` added in front, as `findFreeLocals`
+describes them.
+-}
 findFreeLocalsAcc :
     Set String
     -> Mono.MonoExpr
@@ -216,8 +265,7 @@ findFreeLocalsAcc bound expr acc =
                 name :: acc
 
         Mono.MonoClosure closureInfo body _ ->
-            -- Descend into nested closures with their params added to bound.
-            -- This ensures outer closures capture all variables needed by inner closures.
+            -- Not stopped at the closure: what an inner closure captures, the outer one must too.
             let
                 closureParams =
                     List.map Tuple.first closureInfo.params
@@ -228,15 +276,10 @@ findFreeLocalsAcc bound expr acc =
             findFreeLocalsAcc newBound body acc
 
         Mono.MonoLet _ _ _ ->
-            -- For mutually recursive let-bindings, we need to collect ALL names
-            -- from the entire let-chain first, add them all to bound, and only
-            -- THEN analyze each definition. This ensures that when inner1's
-            -- definition references inner2, inner2 is already in bound.
             let
                 ( allDefs, finalBody ) =
                     collectLetChain expr
 
-                -- Extract name from a MonoDef
                 defName def =
                     case def of
                         Mono.MonoDef n _ ->
@@ -245,23 +288,19 @@ findFreeLocalsAcc bound expr acc =
                         Mono.MonoTailDef n _ _ ->
                             n
 
-                -- Add all names from the let-chain to bound BEFORE analyzing definitions
+                -- Every name of the chain is bound before any definition is read.
                 allNames =
                     List.map defName allDefs
 
                 boundWithAllNames =
                     List.foldl (\name a -> Set.insert name a) bound allNames
 
-                -- Analyze a definition's expression, adding MonoTailDef params to bound
                 analyzeDefAcc def a =
                     case def of
                         Mono.MonoDef _ defExpr ->
                             findFreeLocalsAcc boundWithAllNames defExpr a
 
                         Mono.MonoTailDef _ params defExpr ->
-                            -- For tail-recursive functions, add the function's params to bound
-                            -- before analyzing the body. This prevents params from being
-                            -- incorrectly identified as free variables.
                             let
                                 paramNames =
                                     List.map Tuple.first params
@@ -271,7 +310,6 @@ findFreeLocalsAcc bound expr acc =
                             in
                             findFreeLocalsAcc boundWithParams defExpr a
 
-                -- Thread accumulator through body, then through each def
                 accWithBody =
                     findFreeLocalsAcc boundWithAllNames finalBody acc
             in
@@ -291,8 +329,7 @@ findFreeLocalsAcc bound expr acc =
 
         Mono.MonoCase _ root decider jumps _ ->
             let
-                -- The root (second Name field) is the scrutinee variable.
-                -- It must be tracked as a free variable reference.
+                -- The second Name is the variable matched; the first is only a label.
                 accWithRoot =
                     if Set.member root bound then
                         acc
@@ -348,6 +385,9 @@ findFreeLocalsAcc bound expr acc =
             acc
 
 
+{-| Returns `acc` with the variable a destructuring path starts from added in
+front, unless it is in `bound`.
+-}
 findPathFreeLocalsAcc : Set String -> Mono.MonoPath -> List Name -> List Name
 findPathFreeLocalsAcc bound path acc =
     case path of
@@ -368,16 +408,11 @@ findPathFreeLocalsAcc bound path acc =
             findPathFreeLocalsAcc bound inner acc
 
 
-{-| Collect all definitions from a let-chain, returning them along with the final body.
+{-| Returns the definitions of a chain of directly nested `MonoLet`s, outermost
+first, and the first expression in the chain that is not a `MonoLet`.
 
-For example, given:
-MonoLet (def1) (MonoLet (def2) (MonoLet (def3) finalBody))
-
-Returns:
-( [ def1, def2, def3 ], finalBody )
-
-This is used by findFreeLocals to handle mutually recursive let-bindings correctly.
-The full MonoDef is returned so that MonoTailDef params can be properly handled.
+For `MonoLet def1 (MonoLet def2 body)` that is `( [ def1, def2 ], body )`. An
+expression that is not a `MonoLet` gives no definitions and itself.
 
 -}
 collectLetChain : Mono.MonoExpr -> ( List Mono.MonoDef, Mono.MonoExpr )
@@ -394,6 +429,10 @@ collectLetChain expr =
             ( [], expr )
 
 
+{-| Returns `acc` with the free locals of a `case`'s decision tree added in front:
+those of the path roots its tests read, and those of the branch bodies held
+inline at its leaves. A leaf that jumps to a numbered branch adds nothing.
+-}
 collectDeciderFreeLocalsAcc :
     Set String
     -> Mono.Decider Mono.MonoChoice
@@ -430,6 +469,9 @@ collectDeciderFreeLocalsAcc bound decider acc =
             collectDeciderFreeLocalsAcc bound fallback accWithEdges
 
 
+{-| Returns `acc` with the variable a decision-tree path starts from added in
+front, unless it is in `bound`.
+-}
 findDtPathFreeLocalsAcc : Set String -> Mono.MonoDtPath -> List Name -> List Name
 findDtPathFreeLocalsAcc bound dtPath acc =
     case dtPath of
@@ -447,7 +489,8 @@ findDtPathFreeLocalsAcc bound dtPath acc =
             findDtPathFreeLocalsAcc bound inner acc
 
 
-{-| Remove duplicate names from a list while preserving order.
+{-| Returns `names` with every repeat of a name removed, keeping each name's
+first position.
 -}
 dedupeNames : List Name -> List Name
 dedupeNames names =
@@ -465,19 +508,26 @@ dedupeNames names =
         |> List.reverse
 
 
-{-| Collect a mapping from variable names to their types from an expression.
-This walks the expression tree and records the type of each MonoVarLocal encountered.
+{-| Returns the type of each local variable name read in `expr`, as given by
+the first `MonoVarLocal` of it or destructuring or decision-tree path starting
+at it, found anywhere in `expr`, nested closures included.
+
+Names are not scoped: where two variables share a name, the first occurrence
+found gives the type for both.
+
 -}
 collectVarTypes : Mono.MonoExpr -> Dict String Mono.MonoType
 collectVarTypes expr =
     collectVarTypesHelper expr Dict.empty
 
 
+{-| Returns `acc` with the types `collectVarTypes` describes for `expr` added,
+keeping any name already in `acc`.
+-}
 collectVarTypesHelper : Mono.MonoExpr -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectVarTypesHelper expr acc =
     case expr of
         Mono.MonoVarLocal name monoType ->
-            -- Only insert if not already present (keep first occurrence)
             if Dict.member name acc then
                 acc
 
@@ -550,6 +600,9 @@ collectVarTypesHelper expr acc =
             acc
 
 
+{-| Returns `acc` with the variable a destructuring path starts from and its
+type added, unless the name is already in `acc`.
+-}
 collectPathVarTypes : Mono.MonoPath -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectPathVarTypes path acc =
     case path of
@@ -570,6 +623,10 @@ collectPathVarTypes path acc =
             collectPathVarTypes inner acc
 
 
+{-| Returns `acc` with the types `collectVarTypes` describes for a decision
+tree added: from the paths its tests read and the bodies held inline at its
+leaves.
+-}
 collectDeciderVarTypes : Mono.Decider Mono.MonoChoice -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectDeciderVarTypes decider acc =
     case decider of
@@ -599,7 +656,8 @@ collectDeciderVarTypes decider acc =
             collectDeciderVarTypes fallback accAfterEdges
 
 
-{-| Collect variable-to-type mappings from a MonoDtPath (decision tree path).
+{-| Returns `acc` with the variable a decision-tree path starts from and its type
+added, unless the name is already in `acc`.
 -}
 collectDtPathVarTypes : Mono.MonoDtPath -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectDtPathVarTypes dtPath acc =
@@ -618,12 +676,16 @@ collectDtPathVarTypes dtPath acc =
             collectDtPathVarTypes inner acc
 
 
-{-| Collect types for MonoCase root variables by inferring from decider tests.
+{-| Returns a type for each variable that is the root of a `MonoCase` in `expr`,
+for the case roots `collectVarTypes` may not see.
 
-MonoCase stores the scrutinee variable by name but not by type. When a variable
-is only referenced as a MonoCase root (and never as a MonoVarLocal), collectVarTypes
-won't find its type. This function fills that gap by inferring the root type from
-the decision tree tests.
+A `MonoCase` names its root without a type. The type given is the one on the
+first decision-tree path found that starts at a variable of that name, and
+`MUnit` when there is none, as in a case whose decision tree makes no test.
+The variables at the start of the decision-tree paths of each case are included
+too, whether roots or not.
+
+Nested closures are not searched.
 
 -}
 collectCaseRootTypes : Mono.MonoExpr -> Dict String Mono.MonoType
@@ -631,18 +693,15 @@ collectCaseRootTypes expr =
     collectCaseRootTypesHelper expr Dict.empty
 
 
+{-| Returns `acc` with the types `collectCaseRootTypes` describes for `expr`
+added, keeping any name already in `acc`.
+-}
 collectCaseRootTypesHelper : Mono.MonoExpr -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectCaseRootTypesHelper expr acc =
     case expr of
         Mono.MonoCase _ root decider jumps _ ->
             let
-                -- Prefer the REAL scrutinee type carried by the decider's `DtRoot`
-                -- paths (collectCaseRootTypesFromDecider). Only when the decider has
-                -- no typed root for `root` — a test-less Leaf-only decider — fall
-                -- back to MUnit (→ !eco.value at ABI). The previous order guessed the
-                -- type from the decider TESTS first (collapsing customs/Bool/List/
-                -- Tuple to MUnit) and the real DtRoot type, inserted with a
-                -- first-wins `if not member`, could never override that wrong guess.
+                -- The decider's typed path roots go in first, so MUnit is only a fallback.
                 accAfterDecider =
                     collectCaseRootTypesFromDecider decider acc
 
@@ -656,7 +715,6 @@ collectCaseRootTypesHelper expr acc =
             List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) accWithRoot jumps
 
         Mono.MonoClosure _ _ _ ->
-            -- Don't recurse into closure bodies — independent scope
             acc
 
         Mono.MonoLet def body _ ->
@@ -711,6 +769,10 @@ collectCaseRootTypesHelper expr acc =
             acc
 
 
+{-| Returns `acc` with the variables at the start of a decision tree's paths and
+their types added, then the case-root types `collectCaseRootTypes` describes for
+the bodies held inline at its leaves.
+-}
 collectCaseRootTypesFromDecider : Mono.Decider Mono.MonoChoice -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectCaseRootTypesFromDecider decider acc =
     case decider of
@@ -740,7 +802,8 @@ collectCaseRootTypesFromDecider decider acc =
             collectCaseRootTypesFromDecider fallback accAfterEdges
 
 
-{-| Collect root variable types from a MonoDtPath (decision tree path).
+{-| Returns `acc` with the variable a decision-tree path starts from and its type
+added, unless the name is already in `acc`.
 -}
 collectDtPathCaseRootTypes : Mono.MonoDtPath -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectDtPathCaseRootTypes dtPath acc =

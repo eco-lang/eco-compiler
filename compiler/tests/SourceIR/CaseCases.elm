@@ -1,6 +1,62 @@
 module SourceIR.CaseCases exposing (expectSuite)
 
-{-| Tests for case expressions and pattern matching.
+{-| Elm programs built around `case` expressions, for a test to put through a
+compiler stage. Without them, a stage could mishandle a kind of pattern that no
+other test program happens to use.
+
+This module asserts nothing itself. `expectSuite` gives each program, as a
+`Src.Module`, to the expectation function its caller passes, and that function
+decides which stage the program goes through and what counts as passing. All
+the cases run inside one elm-test test, through `Compiler.BulkCheck.bulkCheck`,
+which stops at the first failing case and reports it under its label.
+
+Every program is built with `Compiler.AST.SourceBuilder`, and each defines a
+top-level `testValue`. Most are built with `makeModule`, which makes a module
+`Test` holding `testValue` alone and importing only `Basics` and `List`. The
+custom type and single-constructor cases use
+`makeModuleWithTypedDefsUnionsAliases`, which annotates every value and also
+imports `Maybe`, `Elm.JsArray`, `String` and `Char`. The string comparison case
+uses `makeModuleWithDefs`, which annotates nothing and imports `Basics` and
+`List`.
+
+The cases, in the order they run:
+
+  - Five cases on a let-bound `Int`: a single wildcard branch, a single
+    variable branch, two and three branches of `Int` literals ending in a
+    wildcard, and a variable branch whose body is a tuple holding a list.
+  - Five cases on literal patterns: `Int` literals, string literals, ten `Int`
+    literals and a wildcard, the empty string and a variable, and negative
+    `Int` literals.
+  - Three cases on tuples: variable patterns, literal patterns mixed with
+    variables, and a pair nested in a pair.
+  - Four cases on lists: the empty list, a cons, a fixed-length list, and a
+    cons nested in a cons.
+  - Three cases on record patterns: one field, two fields, and two of a
+    record's three fields.
+  - Three cases on `as` patterns, around a variable, a tuple and a cons.
+  - Two cases with a `case` inside a branch of another.
+  - Two cases on custom types: a two-constructor type whose constructors carry
+    one and two fields, and a one-constructor type.
+  - One case that compares strings in one function both through string
+    patterns and through `==`.
+  - Nine cases on pairs of single-constructor types, described below.
+
+Each of the nine single-constructor cases declares two custom types, each with
+one constructor of one field, named after the field's type (`WrapBool`,
+`WrapInt`, `WrapChar`, `WrapFloat`, `WrapString`), and a function matching on
+each. A pattern on a one-constructor type is matched without a tag test: the
+typed optimizer reaches the field through a `TypedPath.Unbox` step
+(`Compiler.LocalOpt.Typed.DecisionTree`). Code generation stores such a field
+unboxed when it is an `Int`, `Float` or `Char`, and boxed otherwise, `Bool` and
+`String` included (`Compiler.Generate.MLIR.Types`). Each pair puts two such
+types with different field types in one module: in five pairs one field is
+stored unboxed and the other boxed, in three both are unboxed, and in the
+`String`/`Bool` pair both are boxed. Only one of the two functions is called
+from `testValue`; the other is defined and never called.
+
+Among what is not tested: `Char` patterns, the unit pattern, three-element
+tuple patterns, and constructor patterns on a custom type with type parameters.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -44,11 +100,17 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named `"Case expressions "` followed by `condStr`, that
+runs every case in this module through `bulkCheck`, giving each program to
+`expectFn`.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Case expressions " ++ condStr) (\() -> bulkCheck (testCases expectFn))
 
 
+{-| Returns every case in this module, group by group, in the order they run.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     simpleCaseCases expectFn
@@ -65,22 +127,26 @@ testCases expectFn =
 
 
 -- ============================================================================
--- SIMPLE CASE (6 tests)
+-- SIMPLE CASE
 -- ============================================================================
 
 
+{-| Returns the cases that match a let-bound `Int` with wildcard, variable and
+`Int` literal patterns.
+-}
 simpleCaseCases : (Src.Module -> Expectation) -> List TestCase
 simpleCaseCases expectFn =
     [ { label = "Case on variable with wildcard", run = caseOnVariableWithWildcard expectFn }
     , { label = "Case with single variable pattern", run = caseWithSingleVarPattern expectFn }
     , { label = "Case with two branches", run = caseWithTwoBranches expectFn }
     , { label = "Case with three branches", run = caseWithThreeBranches expectFn }
-
-    -- Moved to TypeCheckFails.elm: , { label = "Case on unit", run = caseOnUnit expectFn }
     , { label = "Case returning complex expression", run = caseReturningComplexExpr expectFn }
     ]
 
 
+{-| Gives `expectFn` a module whose `testValue` binds `x = 42` in a `let` and
+matches `x` against a single wildcard.
+-}
 caseOnVariableWithWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnVariableWithWildcard expectFn _ =
     let
@@ -99,6 +165,9 @@ caseOnVariableWithWildcard expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` binds `x = 42` in a `let` and
+matches `x` against a single variable pattern `y`, returning `y`.
+-}
 caseWithSingleVarPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithSingleVarPattern expectFn _ =
     let
@@ -117,6 +186,9 @@ caseWithSingleVarPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` binds `x = 1` in a `let` and
+matches `x` against `0` and a wildcard.
+-}
 caseWithTwoBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithTwoBranches expectFn _ =
     let
@@ -138,6 +210,9 @@ caseWithTwoBranches expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` binds `x = 1` in a `let` and
+matches `x` against `0`, `1` and a wildcard.
+-}
 caseWithThreeBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithThreeBranches expectFn _ =
     let
@@ -160,6 +235,9 @@ caseWithThreeBranches expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` binds `x = 1` in a `let` and
+matches `x` against a single variable `n`, returning `( n, [ n ] )`.
+-}
 caseReturningComplexExpr : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturningComplexExpr expectFn _ =
     let
@@ -182,22 +260,25 @@ caseReturningComplexExpr expectFn _ =
 
 
 -- ============================================================================
--- LITERAL PATTERNS (6 tests)
+-- LITERAL PATTERNS
 -- ============================================================================
 
 
+{-| Returns the cases that match `Int` and string literal patterns.
+-}
 literalPatternCases : (Src.Module -> Expectation) -> List TestCase
 literalPatternCases expectFn =
     [ { label = "Case on int literals", run = caseOnIntLiterals expectFn }
     , { label = "Case on string literals", run = caseOnStringLiterals expectFn }
-
-    -- Moved to TypeCheckFails.elm: , { label = "Case on fuzzed int", run = caseOnFuzzedInt expectFn }
     , { label = "Case with many int branches", run = caseWithManyIntBranches expectFn }
     , { label = "Case on string", run = caseOnString expectFn }
     , { label = "Case with negative int patterns", run = caseWithNegativeIntPatterns expectFn }
     ]
 
 
+{-| Gives `expectFn` a module whose `testValue` matches the literal `5` against
+`0`, `1`, `5` and a wildcard.
+-}
 caseOnIntLiterals : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnIntLiterals expectFn _ =
     let
@@ -214,6 +295,9 @@ caseOnIntLiterals expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches the literal `"hello"`
+against `"hello"`, `"world"` and a wildcard.
+-}
 caseOnStringLiterals : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnStringLiterals expectFn _ =
     let
@@ -229,6 +313,10 @@ caseOnStringLiterals expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches the literal `5` against
+the ten literals `0` to `9`, each returning ten times itself, and a wildcard
+returning `-1`.
+-}
 caseWithManyIntBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithManyIntBranches expectFn _ =
     let
@@ -242,6 +330,9 @@ caseWithManyIntBranches expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches the literal `"hello"`
+against the empty string and a variable.
+-}
 caseOnString : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnString expectFn _ =
     let
@@ -256,6 +347,10 @@ caseOnString expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `-5` against `-1`, `0`,
+`1` and a wildcard. The subject and the pattern `-1` are built as negative
+`Int` literals, not as negations.
+-}
 caseWithNegativeIntPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithNegativeIntPatterns expectFn _ =
     let
@@ -274,10 +369,12 @@ caseWithNegativeIntPatterns expectFn _ =
 
 
 -- ============================================================================
--- TUPLE PATTERNS (4 tests)
+-- TUPLE PATTERNS
 -- ============================================================================
 
 
+{-| Returns the cases that match pairs.
+-}
 tuplePatternCases : (Src.Module -> Expectation) -> List TestCase
 tuplePatternCases expectFn =
     [ { label = "Case on tuple with var patterns", run = caseOnTupleWithVarPatterns expectFn }
@@ -286,6 +383,9 @@ tuplePatternCases expectFn =
     ]
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `( 1, 2 )` against
+`( a, b )` and returns `( b, a )`.
+-}
 caseOnTupleWithVarPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnTupleWithVarPatterns expectFn _ =
     let
@@ -303,6 +403,9 @@ caseOnTupleWithVarPatterns expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `( 0, 1 )` against
+`( 0, 0 )`, `( 0, y )`, `( x, 0 )` and a wildcard.
+-}
 caseOnTupleWithLiteralPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnTupleWithLiteralPatterns expectFn _ =
     let
@@ -323,6 +426,9 @@ caseOnTupleWithLiteralPatterns expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `( ( 1, 2 ), 3 )`
+against `( ( a, b ), c )` and returns `a`.
+-}
 caseOnNestedTuples : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnNestedTuples expectFn _ =
     let
@@ -342,10 +448,12 @@ caseOnNestedTuples expectFn _ =
 
 
 -- ============================================================================
--- LIST PATTERNS (4 tests)
+-- LIST PATTERNS
 -- ============================================================================
 
 
+{-| Returns the cases that match list patterns.
+-}
 listPatternCases : (Src.Module -> Expectation) -> List TestCase
 listPatternCases expectFn =
     [ { label = "Case on empty list pattern", run = caseOnEmptyListPattern expectFn }
@@ -355,6 +463,9 @@ listPatternCases expectFn =
     ]
 
 
+{-| Gives `expectFn` a module whose `testValue` matches the empty list against
+`[]` and a wildcard.
+-}
 caseOnEmptyListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnEmptyListPattern expectFn _ =
     let
@@ -373,6 +484,9 @@ caseOnEmptyListPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `[ 1, 2 ]` against
+`head :: tail`, returning `head`, and `[]`.
+-}
 caseOnConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnConsPattern expectFn _ =
     let
@@ -391,6 +505,9 @@ caseOnConsPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `[ 1, 2, 3 ]` against
+`[ a, b, c ]`, returning `b`, and a wildcard.
+-}
 caseOnFixedLengthListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnFixedLengthListPattern expectFn _ =
     let
@@ -409,6 +526,9 @@ caseOnFixedLengthListPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `[ 1, 2, 3 ]` against
+`a :: b :: rest`, returning `b`, and a wildcard.
+-}
 caseWithNestedConsPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithNestedConsPatterns expectFn _ =
     let
@@ -429,10 +549,12 @@ caseWithNestedConsPatterns expectFn _ =
 
 
 -- ============================================================================
--- RECORD PATTERNS (4 tests)
+-- RECORD PATTERNS
 -- ============================================================================
 
 
+{-| Returns the cases that match record patterns.
+-}
 recordPatternCases : (Src.Module -> Expectation) -> List TestCase
 recordPatternCases expectFn =
     [ { label = "Case on single-field record pattern", run = caseOnSingleFieldRecordPattern expectFn }
@@ -441,6 +563,9 @@ recordPatternCases expectFn =
     ]
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `{ x = 10 }` against
+`{ x }` and returns `x`.
+-}
 caseOnSingleFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnSingleFieldRecordPattern expectFn _ =
     let
@@ -458,6 +583,9 @@ caseOnSingleFieldRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `{ x = 10, y = 20 }`
+against `{ x, y }` and returns `( x, y )`.
+-}
 caseOnMultiFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnMultiFieldRecordPattern expectFn _ =
     let
@@ -475,6 +603,10 @@ caseOnMultiFieldRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches
+`{ a = 1, b = 2, c = 3 }` against `{ a, c }`, which leaves `b` out, and
+returns `( a, c )`.
+-}
 caseOnPartialRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnPartialRecordPattern expectFn _ =
     let
@@ -494,10 +626,12 @@ caseOnPartialRecordPattern expectFn _ =
 
 
 -- ============================================================================
--- ALIAS PATTERNS (4 tests)
+-- ALIAS PATTERNS
 -- ============================================================================
 
 
+{-| Returns the cases that match `as` patterns.
+-}
 aliasPatternCases : (Src.Module -> Expectation) -> List TestCase
 aliasPatternCases expectFn =
     [ { label = "Case with simple alias pattern", run = caseWithSimpleAliasPattern expectFn }
@@ -506,6 +640,9 @@ aliasPatternCases expectFn =
     ]
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `42` against
+`x as whole` and returns `( x, whole )`.
+-}
 caseWithSimpleAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithSimpleAliasPattern expectFn _ =
     let
@@ -523,6 +660,9 @@ caseWithSimpleAliasPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `( 1, 2 )` against
+`( a, b ) as pair` and returns `pair`.
+-}
 caseWithTupleAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithTupleAliasPattern expectFn _ =
     let
@@ -540,6 +680,9 @@ caseWithTupleAliasPattern expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `[ 1, 2 ]` against
+`(h :: t) as list`, returning `list`, and `[]`.
+-}
 caseWithListAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithListAliasPattern expectFn _ =
     let
@@ -560,10 +703,12 @@ caseWithListAliasPattern expectFn _ =
 
 
 -- ============================================================================
--- NESTED CASE (2 tests)
+-- NESTED CASE
 -- ============================================================================
 
 
+{-| Returns the cases with a `case` inside a branch of another.
+-}
 nestedCaseCases : (Src.Module -> Expectation) -> List TestCase
 nestedCaseCases expectFn =
     [ { label = "Case inside case", run = caseInsideCase expectFn }
@@ -571,6 +716,9 @@ nestedCaseCases expectFn =
     ]
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `2` against `0` and a
+wildcard, and in the wildcard branch matches `1` against `0` and a wildcard.
+-}
 caseInsideCase : (Src.Module -> Expectation) -> (() -> Expectation)
 caseInsideCase expectFn _ =
     let
@@ -592,6 +740,10 @@ caseInsideCase expectFn _ =
     expectFn modul
 
 
+{-| Gives `expectFn` a module whose `testValue` matches `( 1, 2 )` against
+`( a, b )`, and in that branch matches `a` against `0`, returning `b`, and a
+wildcard, returning `a`.
+-}
 caseInBranchBody : (Src.Module -> Expectation) -> (() -> Expectation)
 caseInBranchBody expectFn _ =
     let
@@ -613,10 +765,13 @@ caseInBranchBody expectFn _ =
 
 
 -- ============================================================================
--- CUSTOM TYPE PATTERNS (2 tests)
+-- CUSTOM TYPE PATTERNS
 -- ============================================================================
 
 
+{-| Returns the cases that match constructors of custom types declared in the
+built module.
+-}
 customTypePatternCases : (Src.Module -> Expectation) -> List TestCase
 customTypePatternCases expectFn =
     [ { label = "Case on custom type with multiple constructors", run = caseOnCustomTypeMultipleConstructors expectFn }
@@ -624,13 +779,14 @@ customTypePatternCases expectFn =
     ]
 
 
-{-| Tests case expression on a custom type with multiple constructors.
-Corresponds to E2E test: CaseCustomTypeTest.elm
+{-| Gives `expectFn` a module that declares a two-constructor type and
+matches on it, with every value annotated:
 
     type Shape
         = Circle Int
         | Rectangle Int Int
 
+    area : Shape -> Int
     area shape =
         case shape of
             Circle r ->
@@ -639,11 +795,14 @@ Corresponds to E2E test: CaseCustomTypeTest.elm
             Rectangle w h ->
                 w * h
 
+    testValue : Int
+    testValue =
+        area (Circle 5)
+
 -}
 caseOnCustomTypeMultipleConstructors : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnCustomTypeMultipleConstructors expectFn _ =
     let
-        -- Define the Shape union type
         shapeUnion : UnionDef
         shapeUnion =
             { name = "Shape"
@@ -654,9 +813,6 @@ caseOnCustomTypeMultipleConstructors expectFn _ =
                 ]
             }
 
-        -- Define the area function
-        -- area : Shape -> Int
-        -- area shape = case shape of ...
         areaFn : TypedDef
         areaFn =
             { name = "area"
@@ -673,8 +829,6 @@ caseOnCustomTypeMultipleConstructors expectFn _ =
                     ]
             }
 
-        -- testValue : Int
-        -- testValue = area (Circle 5)
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -689,13 +843,26 @@ caseOnCustomTypeMultipleConstructors expectFn _ =
     expectFn modul
 
 
-{-| Tests case expression that extracts values from a custom type.
-Similar to the area function but focused on extraction.
+{-| Gives `expectFn` a module that declares a one-constructor type and takes
+its field out with a `case`, with every value annotated:
+
+    type Wrapper
+        = Wrap Int
+
+    unwrap : Wrapper -> Int
+    unwrap w =
+        case w of
+            Wrap x ->
+                x
+
+    testValue : Int
+    testValue =
+        unwrap (Wrap 99)
+
 -}
 caseOnCustomTypePayloadExtraction : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnCustomTypePayloadExtraction expectFn _ =
     let
-        -- Define a simple wrapper type
         wrapperUnion : UnionDef
         wrapperUnion =
             { name = "Wrapper"
@@ -705,9 +872,6 @@ caseOnCustomTypePayloadExtraction expectFn _ =
                 ]
             }
 
-        -- Define the unwrap function
-        -- unwrap : Wrapper -> Int
-        -- unwrap w = case w of Wrap x -> x
         unwrapFn : TypedDef
         unwrapFn =
             { name = "unwrap"
@@ -719,8 +883,6 @@ caseOnCustomTypePayloadExtraction expectFn _ =
                     ]
             }
 
-        -- testValue : Int
-        -- testValue = unwrap (Wrap 99)
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -737,35 +899,47 @@ caseOnCustomTypePayloadExtraction expectFn _ =
 
 
 -- ============================================================================
--- STRING CHAIN + KERNEL ABI (CGEN_038 regression)
+-- STRING PATTERNS WITH STRING EQUALITY
 -- ============================================================================
 
 
+{-| Returns the one case that compares strings both with `==` and with string
+patterns.
+-}
 stringChainKernelAbiCases : (Src.Module -> Expectation) -> List TestCase
 stringChainKernelAbiCases expectFn =
     [ { label = "String chain in tuple case with string equality (CGEN_038)", run = stringChainWithStringEquality expectFn }
     ]
 
 
-{-| Regression test for CGEN\_038 / KERN\_006: Kernel ABI consistency.
+{-| Gives `expectFn` a module whose function `testFn` compares its string
+argument both with `==` and with string patterns, the patterns sitting in a
+tuple beside a `Bool`. No value is annotated:
 
-When a case on (String, Bool) matches string+bool patterns, the decision tree
-produces a Chain with IsStr test that calls Patterns.generateTest, which
-calls Utils\_equal with i1 return. If the same module also uses (==) on
-strings/lists, that registers Utils\_equal with eco.value return via the
-AllBoxed kernel ABI path. The two registrations must not conflict.
-
-Elm equivalent:
-
-    testValue x =
+    testFn x =
         let
-            eq = x == "world"
-            r = case ( x, True ) of
-                    ( "foo", True ) -> 1
-                    ( "bar", False ) -> 2
-                    \_ -> 0
+            eq =
+                x == "world"
+
+            r =
+                case ( x, Basics.True ) of
+                    ( "foo", True ) ->
+                        1
+
+                    ( "bar", False ) ->
+                        2
+
+                    _ ->
+                        0
         in
-        if eq then r else 0
+        if eq then
+            r
+
+        else
+            0
+
+    testValue =
+        testFn "hello"
 
 -}
 stringChainWithStringEquality : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -807,12 +981,12 @@ stringChainWithStringEquality expectFn _ =
 
 -- ============================================================================
 -- SINGLE-CONSTRUCTOR TYPE PAIR CASES
--- Tests for findSingleCtorUnboxedField ambiguity: when two single-constructor
--- types exist with different field types, the codegen must not mix up their
--- layouts during TypedPath.Unbox projection.
 -- ============================================================================
 
 
+{-| Returns the nine cases that each declare two single-constructor types with
+fields of different types, as the module docstring describes.
+-}
 singleCtorPairCases : (Src.Module -> Expectation) -> List TestCase
 singleCtorPairCases expectFn =
     [ { label = "Single-ctor pair: Bool/Int (Bool matched, Int pollutant)", run = singleCtorPairBoolInt expectFn }
@@ -827,8 +1001,11 @@ singleCtorPairCases expectFn =
     ]
 
 
-{-| WrapBool (Bool, boxed) + WrapInt (Int, i64 unboxed).
-Case-matching on WrapBool should not use WrapInt's i64 layout.
+{-| Gives `expectFn` a module that declares `WrapBool`, holding a `Bool`, and
+`WrapInt`, holding an `Int`. `matchBool b` wraps `b` in a `WrapBool` and matches
+it against `WrapBool True` and `WrapBool False`, and `unwrapInt` takes the `Int`
+out of a `WrapInt`. `testValue` is `matchBool True`, so `unwrapInt` is never
+called.
 -}
 singleCtorPairBoolInt : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairBoolInt expectFn _ =
@@ -881,8 +1058,11 @@ singleCtorPairBoolInt expectFn _ =
     expectFn modul
 
 
-{-| WrapBool (Bool, boxed) + WrapChar (Char, i16 unboxed).
-Case-matching on WrapBool should not use WrapChar's i16 layout.
+{-| Gives `expectFn` a module that declares `WrapBool`, holding a `Bool`, and
+`WrapChar`, holding a `Char`. `matchBool b` wraps `b` in a `WrapBool` and
+matches it against `WrapBool True` and `WrapBool False`, and `unwrapChar` takes
+the `Char` out of a `WrapChar`. `testValue` is `matchBool True`, so `unwrapChar`
+is never called.
 -}
 singleCtorPairBoolChar : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairBoolChar expectFn _ =
@@ -935,8 +1115,11 @@ singleCtorPairBoolChar expectFn _ =
     expectFn modul
 
 
-{-| WrapBool (Bool, boxed) + WrapFloat (Float, f64 unboxed).
-Case-matching on WrapBool should not use WrapFloat's f64 layout.
+{-| Gives `expectFn` a module that declares `WrapBool`, holding a `Bool`, and
+`WrapFloat`, holding a `Float`. `matchBool b` wraps `b` in a `WrapBool` and
+matches it against `WrapBool True` and `WrapBool False`, and `unwrapFloat` takes
+the `Float` out of a `WrapFloat`. `testValue` is `matchBool True`, so
+`unwrapFloat` is never called.
 -}
 singleCtorPairBoolFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairBoolFloat expectFn _ =
@@ -989,8 +1172,10 @@ singleCtorPairBoolFloat expectFn _ =
     expectFn modul
 
 
-{-| WrapInt (Int, i64 unboxed) + WrapFloat (Float, f64 unboxed).
-Both unboxed but different types. Could silently misinterpret bits.
+{-| Gives `expectFn` a module that declares `WrapInt`, holding an `Int`, and
+`WrapFloat`, holding a `Float`, with `unwrapInt` and `unwrapFloat` taking each
+field out. `testValue` is `unwrapInt (WrapInt 42)`, so `unwrapFloat` is never
+called.
 -}
 singleCtorPairIntFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairIntFloat expectFn _ =
@@ -1038,8 +1223,10 @@ singleCtorPairIntFloat expectFn _ =
     expectFn modul
 
 
-{-| WrapString (String, boxed) + WrapInt (Int, i64 unboxed).
-Case-matching on WrapString should not use WrapInt's i64 layout.
+{-| Gives `expectFn` a module that declares `WrapString`, holding a `String`,
+and `WrapInt`, holding an `Int`, with `unwrapString` and `unwrapInt` taking
+each field out. `testValue` is `unwrapString (WrapString "hello")`, so
+`unwrapInt` is never called.
 -}
 singleCtorPairStringInt : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairStringInt expectFn _ =
@@ -1087,8 +1274,11 @@ singleCtorPairStringInt expectFn _ =
     expectFn modul
 
 
-{-| WrapString (String, boxed) + WrapBool (Bool, boxed).
-Both boxed. findSingleCtorUnboxedField should return Nothing for both.
+{-| Gives `expectFn` a module that declares `WrapString`, holding a `String`,
+and `WrapBool`, holding a `Bool`. `unwrapString` takes the `String` out of a
+`WrapString`, and `matchBool b` wraps `b` in a `WrapBool` and matches it
+against `WrapBool True` and `WrapBool False`. `testValue` is `matchBool True`,
+so `unwrapString` is never called.
 -}
 singleCtorPairStringBool : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairStringBool expectFn _ =
@@ -1141,8 +1331,10 @@ singleCtorPairStringBool expectFn _ =
     expectFn modul
 
 
-{-| WrapChar (Char, i16 unboxed) + WrapInt (Int, i64 unboxed).
-Both unboxed but different widths. Could cause truncation or garbage.
+{-| Gives `expectFn` a module that declares `WrapChar`, holding a `Char`, and
+`WrapInt`, holding an `Int`, with `unwrapChar` and `unwrapInt` taking each
+field out. `testValue` is `unwrapChar (WrapChar 'A')`, so `unwrapInt` is never
+called.
 -}
 singleCtorPairCharInt : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairCharInt expectFn _ =
@@ -1190,8 +1382,10 @@ singleCtorPairCharInt expectFn _ =
     expectFn modul
 
 
-{-| WrapChar (Char, i16 unboxed) + WrapFloat (Float, f64 unboxed).
-Both unboxed but completely different types.
+{-| Gives `expectFn` a module that declares `WrapChar`, holding a `Char`, and
+`WrapFloat`, holding a `Float`, with `unwrapChar` and `unwrapFloat` taking each
+field out. `testValue` is `unwrapChar (WrapChar 'Z')`, so `unwrapFloat` is
+never called.
 -}
 singleCtorPairCharFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairCharFloat expectFn _ =
@@ -1239,8 +1433,11 @@ singleCtorPairCharFloat expectFn _ =
     expectFn modul
 
 
-{-| WrapFloat (Float, f64 unboxed) + WrapBool (Bool, boxed).
-Tests both directions: Float should project as f64, Bool should project as eco.value.
+{-| Gives `expectFn` a module that declares `WrapFloat`, holding a `Float`,
+and `WrapBool`, holding a `Bool`. `unwrapFloat` takes the `Float` out of a
+`WrapFloat`, and `matchBool b` wraps `b` in a `WrapBool` and matches it
+against `WrapBool True` and `WrapBool False`. `testValue` is
+`matchBool False`, so `unwrapFloat` is never called.
 -}
 singleCtorPairFloatBool : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairFloatBool expectFn _ =

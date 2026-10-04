@@ -1,22 +1,71 @@
 module Common.Format.Cheapskate.Parse exposing (markdown)
 
-{-| Markdown parsing implementation based on the Cheapskate algorithm.
+{-| The formatter re-prints the Markdown inside doc comments, and this module
+reads the text of a doc comment into the `Common.Format.Cheapskate.Types` tree
+it is printed from. It finds the blocks of the text, such as paragraphs,
+headings, lists, block quotes and code blocks, and hands the text inside
+paragraphs and headings to `Common.Format.Cheapskate.Inlines`. One block is
+particular to Elm: a line that starts with `@docs` becomes an `ElmDocs` block.
 
-This module provides a two-phase Markdown parser that converts input text into a structured
-document representation. The parser handles CommonMark-style Markdown with extensions for
-Elm documentation features.
+The text is read in two phases. The first builds a tree of containers from the
+lines, and the second turns that tree into blocks.
 
-Phase 1 (processLines): Builds a container stack by processing input line-by-line, opening
-and closing containers (blockquotes, lists, code blocks) as appropriate. This phase produces
-a tree of containers with leaf nodes representing individual lines.
+A _container_ is a block that holds other blocks or lines: the document
+itself, a block quote, a list item, a code block, a block of raw HTML, or a link
+reference definition. A _leaf_ is what one line adds to a container: a line of
+text, a blank line, a heading or a horizontal rule. Code blocks, HTML blocks and
+reference definitions are _verbatim_ containers: a line added straight to one on
+top of the stack is kept as text.
 
-Phase 2 (processDocument): Transforms the container tree into a proper AST, grouping text
-lines into paragraphs, consecutive list items into lists, and parsing inline content within
-text blocks.
+While the lines are read, the containers still open form a stack with the
+document at the bottom. The start of each line is matched against each open
+container's _continuation_ in turn, from the bottom up: the `>` that continues a
+block quote, for instance, or the indentation that continues a list item.
+Matching stops at the first continuation that fails, and as a rule that
+container and every one above it are closed, which makes each a child of the
+container beneath it. Then the containers that the rest of the line starts are
+opened, and the line's leaf is added to the container on top. A fenced code
+block on top of the stack is an exception, staying open until a closing fence.
+So is a reference definition on top of the stack: the next line closes it
+whatever that line matches, and leaves the containers beneath it open. So too is
+a _lazy continuation_: a line of text that opens nothing is added to the top
+container, closing nothing, when that container is not indented code, a fenced
+code block or a reference definition, and its oldest child is a line of text
+(see below).
 
-The parser supports standard Markdown features including headers, lists, code blocks, block
-quotes, horizontal rules, HTML blocks, and link references. It also recognizes Elm-specific
-constructs like documentation directives for referencing exposed values.
+During the first phase, closing a reference definition reads it and, when it
+can be read, logs it in a map keyed by
+`Common.Format.Cheapskate.Util.normalizeReference` of its label, and otherwise
+discards it. The map is passed to `parseInlines`, which does not consult it, so
+it has no effect on the result; the definitions reach the document as a
+`ReferencesBlock`.
+
+In the second phase consecutive lines of text become a paragraph, consecutive
+list items of one kind become a list, and the lines of a code block are joined.
+
+The result departs from the source in several ways:
+
+  - The lines are processed last first, because they are visited with
+    `Common.Format.RWS.mapM_`, which runs on the last element first. So the
+    document is built back to front: `"a\n\nb"` gives the paragraph `b` before
+    the paragraph `a`, `"a\nb"` gives one paragraph with `b` on its first line,
+    and the items of `"1. a\n2. b"` come out `b` first.
+  - Containers as a rule keep their children newest first, and the tests that
+    are meant to look at the line before the current one look at the top
+    container's oldest child instead. These tests decide whether an underline of
+    `=` or `-` makes a heading, whether a line may open an indented code block,
+    an HTML block or a reference definition, and whether a line is a lazy
+    continuation. So `"Title\n====="` is a paragraph while `"=====\nTitle"` is
+    a heading, and `"    code\n\ntext"` is two paragraphs.
+  - When one line opens several containers they are also pushed with
+    `RWS.mapM_`, so the last one found ends up outermost: `"> 1. a"` gives a
+    list whose item holds a block quote, and `"> <div>"` gives an HTML block
+    holding a block quote, to which a later line can add a heading or a rule.
+  - A bullet followed by text is never read as a list item, while a line holding
+    only a bullet is an empty one; numbered items are read. A line of as few as
+    two `*`, `_` or `-`, spaces aside, is a horizontal rule, unless a line of
+    `-` is taken as a setext underline.
+  - The `Options` given to `markdown` are ignored.
 
 @docs markdown
 
@@ -93,63 +142,82 @@ import Utils.Crash exposing (crash)
 -- ====== PARSE ======
 
 
-{-| Parse a Markdown document with the given rendering options.
-Converts the input string into a structured Doc representation.
+{-| Reads the Markdown text of a doc comment into a document.
+
+The options are ignored. The document departs from the source in the ways the
+module documentation lists; most visibly, its blocks come out in reverse source
+order.
+
 -}
 markdown : Options -> String -> Doc
 markdown _ =
     processLines >> processDocument >> Doc
 
 
-
-{- General parsing strategy:
-
-   Step 1: processLines
-
-   We process the input line by line. Each line modifies the
-   container stack, by adding a leaf to the current open container,
-   sometimes after closing old containers and/or opening new ones.
-
-   To open a container is to add it to the top of the container stack,
-   so that new content will be added under this container.
-   To close a container is to remove it from the container stack and
-   make it a child of the container above it on the container stack.
-
-   When all the input has been processed, we close all open containers
-   except the root (Document) container. At this point we should also
-   have a ReferenceMap containing any defined link references.
-
-   Step 2: processDocument
-
-   We then convert this container structure into an AST. This principally
-   involves (a) gathering consecutive ListItem containers into lists, (b)
-   gathering TextLine nodes that don't belong to verbatim containers into
-   paragraphs, and (c) parsing the inline contents of non-verbatim TextLines.
-
--}
-
-
-{-| Container stack definitions:
+{-| The containers open while the lines are read: first the innermost, which
+the next line's content goes into, then the containers that enclose it,
+innermost first, ending with the document.
 -}
 type ContainerStack
-    = ContainerStack {- top -} Container {- rest -} (List Container)
+    = ContainerStack Container (List Container)
 
 
+{-| The number of a line of the input, counting from 1.
+
+This is a name for `Int`, not a new type. `processLines` numbers the lines, and
+`processLine` does not use the number.
+
+-}
 type alias LineNumber =
     Int
 
 
-{-| Generic type for a container or a leaf.
+{-| One child of a container. `C` is a container nested in it and `L` is a
+leaf.
 -}
 type Elt
     = C Container
     | L Leaf
 
 
+{-| A container: its kind and its children.
+
+The children are kept newest first: each leaf added to the container, and each
+container closed inside it, goes on the front of the list. The exception is a
+list item that `closeContainer` closes after removing its oldest child, a blank
+line, which keeps its other children oldest first.
+
+-}
 type Container
     = Container ContainerType (List Elt)
 
 
+{-| The kind of a container, with what is needed to tell whether a later line
+continues it.
+
+`Document` is the whole text. It is at the bottom of the stack and is never
+closed.
+
+`BlockQuote` is a block quote.
+
+`ListItem` is one item of a list. `markerColumn` is the column at which the
+item's marker starts, and `padding` is how many columns after it the item's text
+starts: the marker's width plus the spaces after it, or plus one when the marker
+is followed by a blank rest of the line or by indented code.
+
+`FencedCode` is a code block between fences. `startColumn` is the column at
+which the fence that opened it starts, `fence` is that fence's run of backticks
+or tildes, and `info` is the rest of its line.
+
+`IndentedCode` is a code block indented by four spaces.
+
+`RawHtmlBlock` is a block of HTML.
+
+`Reference` is a link reference definition, `[label]: url "title"`.
+
+The last four are the verbatim containers.
+
+-}
 type ContainerType
     = Document
     | BlockQuote
@@ -168,8 +236,18 @@ type ContainerType
     | Reference
 
 
-{-| Scanners that must be satisfied if the current open container
-is to be continued on a new line (ignoring lazy continuations).
+{-| Returns the scanner that the start of a line must match to continue the
+container, lazy continuations aside.
+
+A block quote needs up to three spaces and a `>`, and takes one space after it
+if there is one. Indented code needs four spaces. Fenced code needs the spaces
+that bring the line to the fence's column. An HTML block needs a line that is
+not blank. A reference definition needs a line that is not blank and does not
+start, after up to three spaces, a link label followed by `:`. A list item needs
+a blank line, or the spaces that reach the column after its marker's column,
+after which up to `padding - 1` more spaces are taken. The document matches
+every line.
+
 -}
 containerContinue : Container -> Scanner
 containerContinue (Container containerType _) =
@@ -201,10 +279,10 @@ containerContinue (Container containerType _) =
             return ()
 
 
-
--- Defines parsers that open new containers.
-
-
+{-| Produces a parser that reads, after up to three spaces, the marker that opens
+a block quote or a list item, and returns the kind of container. The `Bool` is
+ignored.
+-}
 containerStart : Bool -> Parser ContainerType
 containerStart _ =
     scanNonindentSpace
@@ -215,11 +293,17 @@ containerStart _ =
             )
 
 
+{-| Produces a parser that reads, after up to three spaces, the start of a
+verbatim container, and returns its kind.
 
--- Defines parsers that open new verbatim containers (containers
--- that take only TextLine and BlankLine as children).
+A code fence is accepted whatever `lastLineIsText` is, and the rest of its line
+is consumed. The others are accepted only when `lastLineIsText` is `False`: a
+fourth space followed by something that is not blank opens indented code, and
+the fourth space is consumed; the start of an HTML block, as
+`parseHtmlBlockStart` reads it, opens an HTML block; and a link label followed
+by `:` opens a reference definition. Neither of the last two consumes anything.
 
-
+-}
 verbatimContainerStart : Bool -> Parser ContainerType
 verbatimContainerStart lastLineIsText =
     scanNonindentSpace
@@ -242,10 +326,27 @@ verbatimContainerStart lastLineIsText =
             )
 
 
+{-| What one line adds to a container.
 
--- Leaves of the container structure (they don't take children).
+`TextLine` holds the rest of the line after its containers' markers. Up to
+three spaces of indentation are removed as well, except from a line that
+`processLine` adds straight to an open verbatim container: an HTML or indented
+code block when every continuation matched, or a fenced code block on top of
+the stack. A lazy continuation is read by `leaf` and loses them.
 
+`BlankLine` holds a rest of the line, taken the same way, that is empty or only
+whitespace.
 
+`ATXHeader` is a heading written with leading `#`s. It holds the level, which is
+the number of `#`s, and the text.
+
+`SetextHeader` is a heading made by a line of `=`, level 1, or of `-`, level 2.
+It holds the level and the text of the top container's oldest child, a text
+line, which `processLine` replaces with it.
+
+`Rule` is a horizontal rule.
+
+-}
 type Leaf
     = TextLine String
     | BlankLine String
@@ -254,14 +355,20 @@ type Leaf
     | Rule
 
 
+{-| A step of the first phase. It reads and replaces the stack of open
+containers, and logs the reference definitions it closes, keyed by
+`normalizeReference` of the label, to URL and title.
+
+This is a name for an `RWS` with no environment, not a new type.
+
+-}
 type alias ContainerM a =
     RWS () ContainerStack a
 
 
-
--- Close the whole container stack, leaving only the root Document container.
-
-
+{-| Closes every open container except the one at the bottom of the stack, the
+document, and returns that container.
+-}
 closeStack : ContainerM Container
 closeStack =
     RWS.get
@@ -275,13 +382,23 @@ closeStack =
             )
 
 
+{-| Closes the container on top of the stack, making it the newest child of the
+container beneath it. When the stack holds only one container, the stack is
+left as it is.
 
--- Close the top container on the stack.  If the container is a Reference
--- container, attempt to parse the reference and update the reference map.
--- If it is a list item container, move a final BlankLine outside the list
--- item.
+Two kinds of container are treated differently:
 
+  - A reference definition is read with `pReference` from the text of its
+    children, joined with newlines and trimmed. When that succeeds, the
+    definition is logged, keyed by `normalizeReference` of its label, and the
+    container is closed as usual. When it fails, the container is discarded with
+    everything in it.
+  - A list item whose oldest child is a blank line loses that line, which
+    becomes the parent's next child after the item, or is dropped when it was
+    the item's only child. The item keeps its other children, but oldest first,
+    the reverse of the order every other container keeps.
 
+-}
 closeContainer : ContainerM ()
 closeContainer =
     RWS.get
@@ -303,7 +420,6 @@ closeContainer =
                                         )
 
                             Err _ ->
-                                -- pass over in silence if ref doesn't parse?
                                 case rest of
                                     c :: cs ->
                                         RWS.put (ContainerStack c cs)
@@ -313,7 +429,6 @@ closeContainer =
 
                     Container ((ListItem _) as li) cs__ ->
                         case rest of
-                            -- move final BlankLine outside of list item
                             (Container ct_ cs_) :: rs ->
                                 case List.reverse cs__ of
                                     ((L (BlankLine _)) as b) :: zs ->
@@ -344,10 +459,12 @@ closeContainer =
             )
 
 
+{-| Adds `lf` as the newest child of the container on top of the stack.
 
--- Add a leaf to the top container.
+A blank line meant for a list item whose oldest child is a blank line closes the
+item instead, and is then added to the container beneath by the same rule.
 
-
+-}
 addLeaf : Leaf -> ContainerM ()
 addLeaf lf =
     RWS.get
@@ -357,7 +474,6 @@ addLeaf lf =
                     ( Container ((ListItem _) as ct) cs, BlankLine _ ) ->
                         case List.reverse cs of
                             (L (BlankLine _)) :: _ ->
-                                -- two blanks break out of list item:
                                 closeContainer
                                     |> RWS.andThen (\_ -> addLeaf lf)
 
@@ -369,10 +485,8 @@ addLeaf lf =
             )
 
 
-
--- Add a container to the container stack.
-
-
+{-| Opens an empty container of kind `ct` on top of the stack.
+-}
 addContainer : ContainerType -> ContainerM ()
 addContainer ct =
     RWS.modify
@@ -382,10 +496,13 @@ addContainer ct =
 
 
 
--- Step 2
+-- ====== SECOND PHASE: CONTAINERS TO BLOCKS ======
 
 
-{-| Convert Document container and reference map into an AST.
+{-| Returns the blocks of the document container that `processLines` built,
+reading its children oldest first with `processElts`, to which the reference map
+is passed on. It crashes when the container is not a `Document`, which
+`processLines` never returns.
 -}
 processDocument : ( Container, ReferenceMap ) -> Blocks
 processDocument ( Container ct cs, remap ) =
@@ -397,10 +514,46 @@ processDocument ( Container ct cs, remap ) =
             crash "top level container is not Document"
 
 
-{-| Turn the result of `processLines` into a proper AST.
-This requires grouping text lines into paragraphs
-and list items into lists, handling blank lines,
-parsing inline contents of texts and resolving referencess.
+{-| Returns the blocks that the elements `elts` stand for. The text of
+paragraphs and headings is read with `parseInlines`, which is given `remap`.
+
+The elements are taken from the front, and each one either starts a block or is
+skipped:
+
+  - A text line that starts with `@docs` starts an `ElmDocs` block, which also
+    takes every text line directly after it, with any `@docs` at their start
+    removed. Each line is split at its commas into trimmed names. Empty names,
+    and lines left with no names, are dropped.
+  - Any other text line starts a paragraph, which also takes the text lines
+    directly after it up to one that starts with `@docs`. Each line loses its
+    leading whitespace, and the joined text its trailing whitespace.
+  - A blank line is skipped. A heading becomes a `Header` and a rule an `HRule`.
+  - A block quote becomes a `Blockquote` of its children's blocks.
+  - A list item starts a list, which also takes the list items after it that
+    have the same bullet character, or the same punctuation after the number,
+    with at most one blank line before each. The list takes the first item's
+    list type. It is tight when no blank line comes between the items and none
+    is a direct child of an item.
+  - A fenced code block becomes a `CodeBlock` of its lines, with its `info`
+    split at the first space into the language and the rest, trimmed.
+  - An indented code block takes the indented code blocks and blank lines after
+    it, and they become one `CodeBlock`, with trailing lines of only spaces
+    removed.
+  - An HTML block becomes an `HtmlBlock` of its lines.
+  - A reference definition takes the reference definitions directly after it,
+    and they become one `ReferencesBlock`, each line read again with
+    `pReference`. A line that cannot be read gives `( "??", "??", "??" )`, but
+    `closeContainer` has already discarded any reference container whose text
+    could not be read.
+
+Containers as a rule keep their children newest first (see `Container`), and a
+container's children are reversed here before they are read, with three
+exceptions. The first item of a list has its children reversed twice, so they
+are read in the order the item keeps them, while the other items' children are
+reversed once. Every indented code block but the first, and every reference
+definition but the first, gives its lines unreversed. A `Document` among the
+elements crashes.
+
 -}
 processElts : ReferenceMap -> List Elt -> Blocks
 processElts remap elts =
@@ -410,7 +563,6 @@ processElts remap elts =
 
         (L lf) :: rest ->
             case lf of
-                -- Special handling of @docs lines in Elm:
                 TextLine t ->
                     case stripPrefix "@docs" t of
                         Just terms1 ->
@@ -444,7 +596,6 @@ processElts remap elts =
                                 :: processElts remap rest_
 
                         Nothing ->
-                            -- Gobble text lines and make them into a Para:
                             let
                                 txt : String
                                 txt =
@@ -468,11 +619,9 @@ processElts remap elts =
                             Para (parseInlines remap txt)
                                 :: processElts remap rest_
 
-                -- Blanks at outer level are ignored:
                 BlankLine _ ->
                     processElts remap rest
 
-                -- Headers:
                 ATXHeader lvl t ->
                     (parseInlines remap t |> Header lvl)
                         :: processElts remap rest
@@ -481,7 +630,6 @@ processElts remap elts =
                     (parseInlines remap t |> Header lvl)
                         :: processElts remap rest
 
-                -- Horizontal rule:
                 Rule ->
                     HRule :: processElts remap rest
 
@@ -516,9 +664,6 @@ processElts remap elts =
                     (processElts remap cs |> Blockquote)
                         :: processElts remap rest
 
-                -- List item?  Gobble up following list items of the same type
-                -- (skipping blank lines), determine whether the list is tight or
-                -- loose, and generate a List.
                 ListItem { listType } ->
                     let
                         xs : List Elt
@@ -529,8 +674,6 @@ processElts remap elts =
                         rest_ =
                             List.drop (List.length xs) rest
 
-                        -- take list items as long as list type matches and we
-                        -- don't hit two blank lines:
                         takeListItems : List Elt -> List Elt
                         takeListItems ys =
                             case ys of
@@ -624,11 +767,7 @@ processElts remap elts =
                         stripTrailingEmpties =
                             List.reverse >> List.dropWhile (String.all ((==) ' ')) >> List.reverse
 
-                        -- explanation for next line:  when we parsed
-                        -- the blank line, we dropped 0-3 spaces.
-                        -- but for this, code block context, we want
-                        -- to have dropped 4 spaces. we simply drop
-                        -- one more:
+                        -- A blank line has already lost up to three leading spaces; drop one more.
                         extractCode : Elt -> List String
                         extractCode elt =
                             case elt of
@@ -668,8 +807,6 @@ processElts remap elts =
                     in
                     HtmlBlock txt :: processElts remap rest
 
-                -- References have already been taken into account in the reference map,
-                -- so we just skip.
                 Reference ->
                     let
                         refs : List Elt -> List ( String, String, String )
@@ -698,6 +835,8 @@ processElts remap elts =
                     processElts_ [] (C (Container ct cs) :: rest)
 
 
+{-| Returns the text of a text line, and `""` for any other element.
+-}
 extractText : Elt -> String
 extractText elt =
     case elt of
@@ -709,9 +848,19 @@ extractText elt =
 
 
 
--- Step 1
+-- ====== FIRST PHASE: LINES TO CONTAINERS ======
 
 
+{-| Reads `t` into a tree of containers, and returns the document container
+together with the map of reference definitions logged while closing them.
+
+The text is split into lines with `String.lines`, and each line has its tabs
+expanded with `tabFilter`. The lines are handed to `processLine` through
+`RWS.mapM_`, so the last line is processed first and the first line last. Every
+container still open above the document is then closed, and the document is
+returned.
+
+-}
 processLines : String -> ( Container, ReferenceMap )
 processLines t =
     let
@@ -726,25 +875,46 @@ processLines t =
     RWS.evalRWS (RWS.mapM_ processLine lns |> RWS.andThen (\_ -> closeStack)) () startState
 
 
+{-| Adds one line to the stack of open containers, closing and opening
+containers as the line requires.
 
--- The main block-parsing function.
--- We analyze a line of text and modify the container stack accordingly,
--- adding a new leaf, or closing or opening containers.
+The continuations of the open containers are matched first, giving the rest of
+the line and how many containers at the top of the stack were left unmatched:
+the first whose continuation failed and all those above it. What happens next
+depends on the container on top:
 
+  - In an HTML block or an indented code block, when every continuation matched,
+    the rest is added as a text line.
+  - In a fenced code block, matched or not, a rest that starts with the fence
+    closes the block and is not added; any other rest is added as a text line.
+  - A reference definition on top is closed whatever matched, and the rest is
+    read for the containers it opens and its leaf, which are added. The other
+    containers that did not match stay open.
+  - Otherwise the rest is read for the containers it opens and its leaf. A text
+    line that opens nothing is a lazy continuation, added to the top container
+    without closing anything, when some continuation did not match, the top
+    container is not indented code, and its oldest child is a text line. A
+    setext underline, which is read only when every continuation matched,
+    replaces the top container's oldest child, a text line, with a heading of
+    that text. In every other case the containers that did not match are closed,
+    the new ones are opened, and the leaf is added to the top one.
 
+The rest of the line is read by `tryNewContainers`, whose `lastLineIsText` is
+whether every continuation matched and the top container's oldest child is a
+text line. The new containers are opened through `RWS.mapM_`, so the last one
+found is opened first and ends up outermost. The blank rest of a line that opens
+a fenced code block is not added. The `LineNumber` is not used.
+
+-}
 processLine : ( LineNumber, String ) -> ContainerM ()
 processLine ( _, txt ) =
     RWS.get
         |> RWS.andThen
             (\(ContainerStack ((Container ct cs) as top) rest) ->
-                -- Apply the line-start scanners appropriate for each nested container.
-                -- Return the remainder of the string, and the number of unmatched
-                -- containers.
                 let
                     ( t_, numUnmatched ) =
                         tryOpenContainers (List.reverse (top :: rest)) txt
 
-                    -- Some new containers can be started only after a blank.
                     lastLineIsText : Bool
                     lastLineIsText =
                         (numUnmatched == 0)
@@ -762,7 +932,7 @@ processLine ( _, txt ) =
                             |> RWS.andThen
                                 (\_ ->
                                     case ( List.reverse ns, lf ) of
-                                        -- don't add extra blank at beginning of fenced code block
+                                        -- A fence line leaves nothing to add to the block it opens.
                                         ( (FencedCode _) :: _, BlankLine _ ) ->
                                             RWS.return ()
 
@@ -770,10 +940,7 @@ processLine ( _, txt ) =
                                             addLeaf lf
                                 )
                 in
-                -- Process the rest of the line in a way that makes sense given
-                -- the container type at the top of the stack (ct):
                 case ( ct, numUnmatched == 0 ) of
-                    -- If it's a verbatim line container, add the line.
                     ( RawHtmlBlock, True ) ->
                         addLeaf (TextLine t_)
 
@@ -781,10 +948,9 @@ processLine ( _, txt ) =
                         addLeaf (TextLine t_)
 
                     ( FencedCode { fence }, _ ) ->
-                        -- here we don't check numUnmatched because we allow laziness
                         if
                             String.startsWith fence t_
-                            -- closing code fence
+                            -- On top of the stack, matched or not, a fenced block stays open until a fence closes it.
                         then
                             closeContainer
 
@@ -799,11 +965,8 @@ processLine ( _, txt ) =
                         closeContainer
                             |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
-                    -- otherwise, parse the remainder to see if we have new container starts:
                     _ ->
                         case tryNewContainers lastLineIsText (String.length txt - String.length t_) t_ of
-                            -- lazy continuation: text line, last line was text, no new containers,
-                            -- some unmatched containers:
                             ( [] as ns, (TextLine t) as lf ) ->
                                 if
                                     numUnmatched
@@ -821,17 +984,13 @@ processLine ( _, txt ) =
                                     addLeaf (TextLine t)
 
                                 else
-                                    -- close unmatched containers, add new ones
                                     RWS.replicateM numUnmatched closeContainer
                                         |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
-                            -- if it's a setext header line and the top container has a textline
-                            -- as last child, add a setext header:
                             ( [] as ns, (SetextHeader lev _) as lf ) ->
                                 if numUnmatched == 0 then
                                     case List.reverse cs of
                                         (L (TextLine t)) :: cs_ ->
-                                            -- replace last text line with setext header
                                             RWS.put
                                                 (ContainerStack
                                                     (Container ct
@@ -840,32 +999,26 @@ processLine ( _, txt ) =
                                                     rest
                                                 )
 
-                                        -- Note: the following case should not occur, since
-                                        -- we don't add a SetextHeader leaf unless lastLineIsText.
+                                        -- Unreachable: a setext underline is read only when this child is a text line.
                                         _ ->
                                             RWS.error "setext header line without preceding text line"
 
                                 else
-                                    -- close unmatched containers, add new ones
                                     RWS.replicateM numUnmatched closeContainer
                                         |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
-                            -- otherwise, close all the unmatched containers, add the new
-                            -- containers, and finally add the new leaf:
                             ( ns, lf ) ->
-                                -- close unmatched containers, add new ones
                                 RWS.replicateM numUnmatched closeContainer
                                     |> RWS.andThen (\_ -> addNew ( ns, lf ))
             )
 
 
-
--- Try to match the scanners corresponding to any currently open containers.
--- Return remaining text after matching scanners, plus the number of open
--- containers whose scanners did not match.  (These will be closed unless
--- we have a lazy text line.)
-
-
+{-| Returns the rest of `t` after the continuations of the containers `cs`,
+matched in order, and the number of containers from the first whose
+continuation did not match to the end of `cs`, which is zero when all matched.
+Matching stops at the first continuation that does not match. The crash is
+unreachable, since the parser falls back to the rest of `t` instead of failing.
+-}
 tryOpenContainers : List Container -> String -> ( String, Int )
 tryOpenContainers cs t =
     let
@@ -890,11 +1043,18 @@ tryOpenContainers cs t =
                     ++ showParseError e
 
 
+{-| Reads the rest of a line, `t`, for the containers it opens and the leaf it
+adds, and returns both, the containers in the order they were found.
 
--- Try to match parsers for new containers.  Return list of new
--- container types, and the leaf to add inside the new containers.
+`offset` is the length of the part of the line before `t`, so that columns are
+counted from the start of the whole line. Any number of block quote and list
+item markers are read first, then at most one start of a verbatim container.
+With no verbatim container the leaf is read by `leaf`; after one, the rest of
+the line is a text line or a blank line. `lastLineIsText` is passed to the
+parsers that depend on it. The crash is unreachable, since none of these
+parsers fails.
 
-
+-}
 tryNewContainers : Bool -> Int -> String -> ( List ContainerType, Leaf )
 tryNewContainers lastLineIsText offset t =
     let
@@ -930,6 +1090,10 @@ tryNewContainers lastLineIsText offset t =
             crash (showParseError err)
 
 
+{-| A parser that consumes the rest of the input and returns it as a blank line
+when it is empty or all whitespace, as `isWhitespace` defines it, and as a text
+line otherwise.
+-}
 textLineOrBlank : Parser Leaf
 textLineOrBlank =
     let
@@ -944,10 +1108,15 @@ textLineOrBlank =
     map consolidate takeText
 
 
+{-| Produces a parser for the leaf of a line that opens no verbatim container.
 
--- Parse a leaf node.
+After up to three spaces it tries, in order: an ATX heading, whose text loses
+its trailing `#`s and spaces, though when what is left ends in a backslash a
+`#` is added after it; a setext underline, only when `lastLineIsText` is
+`True`, giving a heading with no text yet; a horizontal rule; and otherwise the
+rest of the line, as a text line or a blank line.
 
-
+-}
 leaf : Bool -> Parser Leaf
 leaf lastLineIsText =
     scanNonindentSpace
@@ -991,45 +1160,43 @@ leaf lastLineIsText =
 -- ====== SCANNERS ======
 
 
+{-| A scanner that matches, without consuming anything, a link label followed by
+`:`, which is how a reference definition starts.
+-}
 scanReference : Scanner
 scanReference =
     map (\_ -> ()) (lookAhead (pLinkLabel |> andThen (\_ -> scanChar ':')))
 
 
-
--- Scan the beginning of a blockquote:  up to three
--- spaces indent, the `>` character, and an optional space.
-
-
+{-| A scanner for the marker of a block quote: `>`, and one space after it if
+there is one. Indentation before it is left to the caller.
+-}
 scanBlockquoteStart : Scanner
 scanBlockquoteStart =
     scanChar '>'
         |> andThen (\_ -> option () (scanChar ' '))
 
 
-
--- Parse the sequence of `#` characters that begins an ATX
--- header, and return the number of characters.  We require
--- a space after the initial string of `#`s, as not all markdown
--- implementations do. This is because (a) the ATX reference
--- implementation requires a space, and (b) since we're allowing
--- headers without preceding blank lines, requiring the space
--- avoids accidentally capturing a line like `#8 toggle bolt` as
--- a header.
-
-
+{-| A parser for the one to six `#`s that open an ATX heading, returning how many
+there are. They must be followed by a space or the end of the line, and the
+space is not consumed. Requiring the space keeps a line such as `#8 toggle bolt`
+from becoming a heading.
+-}
 parseAtxHeaderStart : Parser Int
 parseAtxHeaderStart =
     char '#'
         |> andThen (\_ -> upToCountChars 5 ((==) '#'))
         |> andThen
             (\hashes ->
-                -- hashes must be followed by space unless empty header:
                 notFollowedBy (skip ((/=) ' '))
                     |> map (\_ -> String.length hashes + 1)
             )
 
 
+{-| A parser for the underline of a setext heading, a run of `=` or of `-` with
+nothing after it but spaces, returning the heading's level: 1 for `=` and 2 for
+`-`. One character is enough.
+-}
 parseSetextHeaderLine : Parser Int
 parseSetextHeaderLine =
     satisfy (\c -> c == '-' || c == '=')
@@ -1050,12 +1217,10 @@ parseSetextHeaderLine =
             )
 
 
-
--- Scan a horizontal rule line: "...three or more hyphens, asterisks,
--- or underscores on a line by themselves. If you wish, you may use
--- spaces between the hyphens or asterisks."
-
-
+{-| A scanner for a horizontal rule: two or more of one character, `*`, `_` or
+`-`, with spaces allowed between and after them and nothing else to the end of
+the line. Two are enough, so `--` matches.
+-}
 scanHRuleLine : Scanner
 scanHRuleLine =
     satisfy (\c -> c == '*' || c == '_' || c == '-')
@@ -1068,11 +1233,11 @@ scanHRuleLine =
             )
 
 
-
--- Parse an initial code fence line, returning
--- the fence part and the rest (after any spaces).
-
-
+{-| A parser for a line that opens a fenced code block: three or more backticks,
+or three or more tildes, then spaces, then an information string that runs to
+the end of the line and holds neither a backtick nor a tilde. It returns the
+container, with the column at which the fence starts.
+-}
 parseCodeFence : Parser ContainerType
 parseCodeFence =
     getPosition
@@ -1100,7 +1265,9 @@ parseCodeFence =
             )
 
 
-{-| Parse the start of an HTML block: either an HTML tag or an HTML comment, with no indentation.
+{-| A parser that matches, without consuming anything, the start of an HTML
+block: a tag, as `pHtmlTag` reads tags, whose name is in `blockHtmlTags`, or
+the text `<!--` or `-->`. Indentation before it is left to the caller.
 -}
 parseHtmlBlockStart : Parser ()
 parseHtmlBlockStart =
@@ -1117,7 +1284,6 @@ parseHtmlBlockStart =
                 Closing name ->
                     Set.member name blockHtmlTags
     in
-    -- () <$
     lookAhead
         (oneOf
             (pHtmlTag
@@ -1132,10 +1298,9 @@ parseHtmlBlockStart =
         |> map (\_ -> ())
 
 
-
--- List of block level tags for HTML 5.
-
-
+{-| The names of the HTML tags whose opening, closing or self-closing tag can
+start an HTML block.
+-}
 blockHtmlTags : Set String
 blockHtmlTags =
     Set.fromList
@@ -1189,10 +1354,16 @@ blockHtmlTags =
         ]
 
 
+{-| A parser for a list marker and the spaces after it, returning a list item
+container that records the column at which the marker starts.
 
--- Parse a list marker and return the list type.
+The marker is a bullet or a number, and must be followed by a space or by the
+end of the line. The item's `padding` is the marker's width plus the spaces
+after it, which are consumed, with two exceptions that count one instead of the
+spaces: a rest of the line that is blank, which is consumed, and a space
+followed by four more, of which only the first is consumed.
 
-
+-}
 parseListMarker : Parser ContainerType
 parseListMarker =
     getPosition
@@ -1201,16 +1372,12 @@ parseListMarker =
                 oneOf parseBullet parseListNumber
                     |> andThen
                         (\ty ->
-                            -- padding is 1 if list marker followed by a blank line
-                            -- or indented code.  otherwise it's the length of the
-                            -- whitespace between the list marker and the following text:
                             oneOf (map (\_ -> 1) scanBlankline)
                                 (oneOf (map (\_ -> 1) (skip ((==) ' ') |> andThen (\_ -> lookAhead (count 4 (char ' ')))))
                                     (map String.length (takeWhile ((==) ' ')))
                                 )
                                 |> andThen
                                     (\padding_ ->
-                                        -- text can't immediately follow the list marker:
                                         guard (padding_ > 0)
                                             |> andThen
                                                 (\() ->
@@ -1227,6 +1394,11 @@ parseListMarker =
             )
 
 
+{-| Returns the width in characters of a list marker: 1 for a bullet, and for a
+number its count of digits plus one for the `.` or `)`. The digits are counted
+from the number's value, so leading zeros are not counted and any number from
+1000 up counts as four digits.
+-}
 listMarkerWidth : ListType -> Int
 listMarkerWidth listType =
     case listType of
@@ -1247,10 +1419,15 @@ listMarkerWidth listType =
                 5
 
 
+{-| A parser for a bullet, `+`, `*` or `-`, returning its list type.
 
--- Parse a bullet and return list type.
+It succeeds only when nothing but spaces and the bullet character follow to the
+end of the line, so a bullet followed by text is never read as one: `- a` is a
+paragraph, and a line holding only `-` is an empty list item. For `*` and `-` it
+also fails when the same character comes again after any spaces, which lets a
+line such as `- -` be read as a horizontal rule instead; `+` has no such check.
 
-
+-}
 parseBullet : Parser ListType
 parseBullet =
     satisfy (\c -> c == '+' || c == '*' || c == '-')
@@ -1259,17 +1436,16 @@ parseBullet =
                 unless (c == '+') (nfb (count 2 scanSpaces |> andThen (\_ -> skip ((==) c))))
                     |> andThen
                         (\_ ->
-                            -- hrule
                             skipWhile (\x -> x == ' ' || x == c) |> andThen (\_ -> endOfInput)
                         )
                     |> andThen (\_ -> return (Bullet c))
             )
 
 
-
--- Parse a list number marker and return list type.
-
-
+{-| A parser for the marker of a numbered list item, ASCII digits followed by `.`
+or `)`, returning the list type with the number. It crashes if `String.toInt`
+rejects the digits.
+-}
 parseListNumber : Parser ListType
 parseListNumber =
     takeWhile1 Char.isDigit
@@ -1285,10 +1461,9 @@ parseListNumber =
             )
 
 
-
--- ...
-
-
+{-| Returns the rest of `t` after the prefix `p`, or `Nothing` when `t` does not
+start with `p`.
+-}
 stripPrefix : String -> String -> Maybe String
 stripPrefix p t =
     if String.startsWith p t then
@@ -1298,6 +1473,10 @@ stripPrefix p t =
         Nothing
 
 
+{-| Splits `t` before its first character that satisfies `p`, returning the part
+before it and the part from it on, or `t` and `""` when no character satisfies
+`p`.
+-}
 stringBreak : (Char -> Bool) -> String -> ( String, String )
 stringBreak p t =
     List.splitWhen p (String.toList t)
@@ -1305,6 +1484,8 @@ stringBreak p t =
         |> Maybe.withDefault ( t, "" )
 
 
+{-| Returns the string without its trailing characters that satisfy `f`.
+-}
 stringDropWhileEnd : (Char -> Bool) -> String -> String
 stringDropWhileEnd f =
     String.reverse
@@ -1312,6 +1493,8 @@ stringDropWhileEnd f =
         >> String.reverse
 
 
+{-| Returns `str` without its leading characters that satisfy `f`.
+-}
 stringDropWhile : (Char -> Bool) -> String -> String
 stringDropWhile f str =
     case String.uncons str of

@@ -6,32 +6,34 @@ module Data.HashMap exposing
     , foldl, map, toList, values, fromList
     )
 
-{-| A dictionary for keys that carry their own structural hash.
+{-| A dictionary for keys that are costly to turn into a comparable value.
 
-`Data.Map` takes a key-derivation function and applies it on EVERY operation,
-so a key that must be built (rather than read) is rebuilt per `get`, per
-`member`, per `insert`. For `MonoType` keys that means walking the whole type
-and allocating a comparable string, per lookup — the cost this structure
-exists to remove (K4 of `plans/mono-comparable-key-optimization.md`).
+`Data.Map` files each entry under a comparable value it derives from the key
+with the caller's key projection, and its `get` and `insert` apply that
+projection to the key they are given. For a key whose comparable form has to
+be built, rather than read off the key, that build is repeated at every call.
+This module asks for two other functions instead, passed at every keyed
+operation: `hash`, which gives an `Int`, and `eq`, which decides whether two
+keys are the same key. No comparable form of the key is built.
 
-Here the caller supplies a `hash` that is expected to be CHEAP — read out of
-the key, not computed from it — plus an `eq` that decides true key equality.
-Entries live in per-hash buckets, so **collisions are resolved, not assumed
-away**: `hash` need only satisfy "equal keys have equal hashes", and `eq` does
-the deciding. A degenerate `hash` costs performance, never correctness.
+The hash only chooses a bucket. Entries whose keys hash alike share a bucket,
+and `eq` decides between them, so a hash that gives many keys the same value
+costs time but never gives a wrong answer. Among what the map relies on are
+that keys equal under `eq` have equal hashes, and that every call on one map
+passes the same `hash` and `eq`. The map does not store either function and
+nothing checks this: a different pair on the same map can treat as one key two
+keys that the first pair kept apart, or miss a key that the first pair stored.
 
-`hash` and `eq` must agree with each other and be the same at every call on a
-given map, exactly as `Data.Map`'s `toComparable` must be. Passing the
-annotation-sensitive pair to a map built with the annotation-erased pair (or
-vice versa) silently merges distinct keys — see the flavour warning on
-`Compiler.AST.Monomorphized.layoutMapGet`.
+Iteration (`foldl`, `toList`, `values`) is in insertion order. An entry's
+place in that order is fixed when its key is inserted while absent; replacing
+the value of a key that is present leaves the stored key and its place
+unchanged, and a key that is removed and inserted again goes last. This is not
+the comparable-key order in which `Data.Map` iterates. Each entry carries a
+sequence number, taken from a counter that advances for every new key, and
+every iteration sorts all the entries on it.
 
-**Iteration is INSERTION-ORDERED**, not hash-ordered. Hash order is an
-implementation detail that would leak into anything downstream of a fold —
-and emission paths do fold these maps — so entries carry a sequence number and
-iteration sorts on it. Replacing an existing key keeps its original position,
-matching `Dict.insert`. This is still not the LEXICOGRAPHIC order of the string
-keys these maps replace, so output that depends on traversal order does change.
+`getHashed` and `insertNew` take a hash the caller has already computed, so
+that a lookup that misses followed by an insert of the same key hashes it once.
 
 @docs HashMap
 @docs empty, insert, get, getBy, member, remove
@@ -44,23 +46,32 @@ keys these maps replace, so output that depends on traversal order does change.
 import Dict
 
 
-{-| A hash-bucketed map: entry count, next sequence number, and buckets by
-hash. Each entry carries the sequence number it was first inserted at, which
-is what makes iteration insertion-ordered.
+{-| A map from keys of type `k` to values of type `v`, in which keys are told
+apart by the `hash` and `eq` the caller passes to each keyed operation.
+
+A map is made with `empty` or `fromList`. It holds at most one entry for each
+key, as long as every call passes the same `hash` and `eq`, keys equal under
+`eq` have equal hashes, and `insertNew` is given only absent keys, each with
+its own hash. It iterates in insertion order.
+
 -}
 type HashMap k v
     = HashMap Int Int (Dict.Dict Int (List ( Int, k, v )))
 
 
-{-| The empty map.
+{-| The map with no entries.
 -}
 empty : HashMap k v
 empty =
     HashMap 0 0 Dict.empty
 
 
-{-| `get` with a precomputed hash, so a miss followed by `insertNew` hashes
-once (TypeTable, cache-serialization plan S3).
+{-| Returns the value stored under `key`, as `get` does, but takes the hash
+`h` of `key` instead of a hash function.
+
+`h` must be what the map's `hash` gives for `key`; any other value looks in the
+wrong bucket.
+
 -}
 getHashed : Int -> (k -> k -> Bool) -> k -> HashMap k v -> Maybe v
 getHashed h eq key (HashMap _ _ buckets) =
@@ -72,8 +83,14 @@ getHashed h eq key (HashMap _ _ buckets) =
             scanBucketBy eq key bucket
 
 
-{-| Insert a key known to be ABSENT (the caller just missed with
-`getHashed h`). It skips the replace scan `insert` does.
+{-| Inserts `value` under `key`, where `h` is the hash of `key`, without
+checking whether `key` is already present. It is for a key that the caller has
+just looked up with `getHashed h` and not found.
+
+If `key` is in fact present, the map ends up with two entries for it: `size`
+counts both, iteration visits both, lookups return the newer value, and
+`remove` drops both while `size` falls by one.
+
 -}
 insertNew : Int -> k -> v -> HashMap k v -> HashMap k v
 insertNew h key value (HashMap count nextSeq buckets) =
@@ -82,23 +99,24 @@ insertNew h key value (HashMap count nextSeq buckets) =
         (Dict.insert h (( nextSeq, key, value ) :: Maybe.withDefault [] (Dict.get h buckets)) buckets)
 
 
-{-| Look up a key.
+{-| Returns the value stored under `key`, or `Nothing` if no stored key is
+equal to it under `eq`.
 -}
 get : (k -> Int) -> (k -> k -> Bool) -> k -> HashMap k v -> Maybe v
 get hash eq key m =
     getBy hash eq key m
 
 
-{-| `get` with a PROBE whose type differs from the stored keys. `hash` is applied
-to the probe; `eq probe storedKey` decides the match. The pair must agree with the
-`hash`/`eq` the map was built with, exactly as `get`'s must — i.e. a probe and the
-key it should find must hash equal and compare equal.
+{-| Returns the value stored under the key that `probe` matches, where `probe`
+need not be of the key type.
 
-This exists so a caller can look up a stored key that carries precomputed
-auxiliary data (a canonical form, a sorted field list) without having to build
-that data for the probe on every lookup. `Compiler.AST.Intern` is the caller:
-building it per probe would allocate on the 99 %-hit path, which is the whole
-cost the table exists to avoid.
+`hash` is applied to `probe`, and `eq probe storedKey` decides the match. A
+probe and the stored key it should find must hash equal, under this `hash` and
+under the `hash` the map's keys were inserted with, and must match under `eq`.
+
+This lets a caller look up a key without first building a value of the key
+type. Where the stored keys carry data computed from the rest of the key, the
+probe does not have to have that data computed for it.
 
 -}
 getBy : (q -> Int) -> (q -> k -> Bool) -> q -> HashMap k v -> Maybe v
@@ -111,6 +129,9 @@ getBy hash eq probe (HashMap _ _ buckets) =
             scanBucketBy eq probe bucket
 
 
+{-| Returns the value of the first entry in `bucket` whose key `eq probe`
+accepts, or `Nothing` if there is none.
+-}
 scanBucketBy : (q -> k -> Bool) -> q -> List ( Int, k, v ) -> Maybe v
 scanBucketBy eq probe bucket =
     case bucket of
@@ -125,7 +146,7 @@ scanBucketBy eq probe bucket =
                 scanBucketBy eq probe rest
 
 
-{-| Membership test, without materializing the value.
+{-| Reports whether a key equal to `key` under `eq` is stored.
 -}
 member : (k -> Int) -> (k -> k -> Bool) -> k -> HashMap k v -> Bool
 member hash eq key (HashMap _ _ buckets) =
@@ -137,6 +158,8 @@ member hash eq key (HashMap _ _ buckets) =
             bucketMember eq key bucket
 
 
+{-| Reports whether any entry in `bucket` has a key equal to `key` under `eq`.
+-}
 bucketMember : (k -> k -> Bool) -> k -> List ( Int, k, v ) -> Bool
 bucketMember eq key bucket =
     case bucket of
@@ -147,9 +170,9 @@ bucketMember eq key bucket =
             eq key k || bucketMember eq key rest
 
 
-{-| Insert, replacing any entry whose key is equal under `eq`. The stored key
-of a replaced entry is kept, matching `Dict.insert`'s behaviour of keeping the
-first-inserted key.
+{-| Inserts `value` under `key`. If a key equal to `key` under `eq` is already
+stored, only its value is replaced: the stored key, and its place in iteration
+order, stay as they were.
 -}
 insert : (k -> Int) -> (k -> k -> Bool) -> k -> v -> HashMap k v -> HashMap k v
 insert hash eq key value (HashMap count nextSeq buckets) =
@@ -161,21 +184,21 @@ insert hash eq key value (HashMap count nextSeq buckets) =
             Maybe.withDefault [] (Dict.get h buckets)
     in
     if bucketMember eq key bucket then
-        -- Replacing keeps the original sequence number, so the entry keeps its
-        -- iteration position exactly as `Dict.insert` would.
         HashMap count nextSeq (Dict.insert h (replaceInBucket eq key value bucket) buckets)
 
     else
-        -- New key: prepend. Bucket order is irrelevant — iteration sorts on the
-        -- sequence number.
+        -- Prepending is safe for iteration, which sorts on the sequence number.
         HashMap (count + 1) (nextSeq + 1) (Dict.insert h (( nextSeq, key, value ) :: bucket) buckets)
 
 
-{-| Deliberately returns the bucket ALONE rather than a `( bucket, added )`
-pair: it is called once per insert, and a pair per recursion step was a
-measurable allocation pool of its own (Run C: `Tuple2 +93.8M`). The membership
-question is answered by `bucketMember` before we get here, and buckets are
-almost always a single entry, so the extra scan costs nothing.
+{-| Returns `bucket` with the value of the first entry whose key equals `key`
+under `eq` replaced by `value`, keeping that entry's stored key and sequence
+number. A bucket with no such entry comes back unchanged.
+
+It returns the bucket alone rather than also reporting whether it found a
+match, which would take a pair at every step; `insert` asks `bucketMember`
+first instead, at the cost of scanning the bucket twice.
+
 -}
 replaceInBucket : (k -> k -> Bool) -> k -> v -> List ( Int, k, v ) -> List ( Int, k, v )
 replaceInBucket eq key value bucket =
@@ -191,7 +214,8 @@ replaceInBucket eq key value bucket =
                 entry :: replaceInBucket eq key value rest
 
 
-{-| Remove a key, if present.
+{-| Removes the entry whose key is equal to `key` under `eq`, and returns the
+map unchanged if there is none.
 -}
 remove : (k -> Int) -> (k -> k -> Bool) -> k -> HashMap k v -> HashMap k v
 remove hash eq key (HashMap count nextSeq buckets) =
@@ -204,10 +228,7 @@ remove hash eq key (HashMap count nextSeq buckets) =
             HashMap count nextSeq buckets
 
         Just bucket ->
-            -- Probe before filtering. Measuring `kept` against `bucket` to find
-            -- out whether anything was dropped walked both lists AFTER building
-            -- `kept`; a miss now costs one short-circuiting scan and allocates
-            -- nothing.
+            -- Checked first, so that an absent key does not rebuild the bucket.
             if not (List.any (\( _, k, _ ) -> eq key k) bucket) then
                 HashMap count nextSeq buckets
 
@@ -226,24 +247,27 @@ remove hash eq key (HashMap count nextSeq buckets) =
                     )
 
 
-{-| Number of entries.
+{-| Returns the number of entries.
 -}
 size : HashMap k v -> Int
 size (HashMap count _ _) =
     count
 
 
-{-| True when there are no entries.
+{-| Reports whether the map has no entries.
 -}
 isEmpty : HashMap k v -> Bool
 isEmpty (HashMap count _ _) =
     count == 0
 
 
-{-| Every entry with its sequence number, oldest insertion first. The single
-ordered walk that `foldl`, `toList` and `values` all share — none of them
-materialise an intermediate `( k, v )` pair, because folds over these maps run
-on hot paths (a whole-map scan per pattern, in one codegen case).
+{-| Returns every entry with its sequence number, in insertion order, by
+gathering the entries of all the buckets and sorting them on the sequence
+number.
+
+`foldl`, `toList` and `values` all read the map through this. It hands them the
+entries as they are stored, so `foldl` and `values` build no `( k, v )` pair.
+
 -}
 orderedEntries : HashMap k v -> List ( Int, k, v )
 orderedEntries (HashMap _ _ buckets) =
@@ -251,14 +275,16 @@ orderedEntries (HashMap _ _ buckets) =
         |> List.sortBy (\( seq, _, _ ) -> seq)
 
 
-{-| Fold over every entry, oldest insertion first.
+{-| Folds `step` over every entry in insertion order, so the entry inserted
+earliest is folded in first.
 -}
 foldl : (k -> v -> b -> b) -> b -> HashMap k v -> b
 foldl step init m =
     List.foldl (\( _, k, v ) acc -> step k v acc) init (orderedEntries m)
 
 
-{-| Map the values. Keys are untouched, so the buckets need no rehash.
+{-| Applies `f` to every value, with its key. Keys and their order are
+unchanged.
 -}
 map : (k -> a -> b) -> HashMap k a -> HashMap k b
 map f (HashMap count nextSeq buckets) =
@@ -267,22 +293,24 @@ map f (HashMap count nextSeq buckets) =
         (Dict.map (\_ bucket -> List.map (\( seq, k, v ) -> ( seq, k, f k v )) bucket) buckets)
 
 
-{-| Every entry, oldest insertion first. This is the one iteration form that
-must build pairs — its result type demands them; prefer `foldl` or `values`.
+{-| Returns every entry as a key and value pair, in insertion order. It builds
+one pair per entry, which `foldl` and `values` do not.
 -}
 toList : HashMap k v -> List ( k, v )
 toList m =
     List.map (\( _, k, v ) -> ( k, v )) (orderedEntries m)
 
 
-{-| Every value, oldest insertion first.
+{-| Returns every value, in insertion order.
 -}
 values : HashMap k v -> List v
 values m =
     List.map (\( _, _, v ) -> v) (orderedEntries m)
 
 
-{-| Build a map from entries.
+{-| Builds a map from `entries`, inserting them in list order. Where two
+entries have equal keys under `eq`, the later value is kept, under the earlier
+key and in the earlier key's place.
 -}
 fromList : (k -> Int) -> (k -> k -> Bool) -> List ( k, v ) -> HashMap k v
 fromList hash eq entries =

@@ -3,11 +3,18 @@ module Compiler.AST.Snippet exposing
     , encoder, decoder
     )
 
-{-| Source code snippet type for preserving position information.
+{-| Some pieces of a source text are found during one pass and read again later,
+either by slicing them out or by running a parser over them. This module is how
+such a piece is carried until then.
 
-This module defines the `Snippet` type used to represent a substring of source
-code with its original file position. It is used by the Source AST for comments
-and other position-sensitive constructs.
+A _snippet_ names the piece by where it lies rather than by copying it. It
+holds the whole text the piece belongs to, where in that text the piece starts
+and how long it is, and the row and column at which it starts. The row and
+column are what let a parser run over the piece report positions in the whole
+file rather than positions within the piece.
+
+Because a snippet holds the whole text, encoding one writes the whole text too:
+every serialised snippet carries a full copy of the source it was taken from.
 
 @docs Snippet, Row, Col
 @docs encoder, decoder
@@ -20,29 +27,38 @@ import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
 
-{-| Row (line) number type alias for position tracking (1-indexed).
+{-| A line number in a source text, counted from 1 as the parser counts lines.
+
+This is a name for `Int`, not a new type, and the compiler checks nothing about
+the values given where a `Row` is expected.
+
 -}
 type alias Row =
     Int
 
 
-{-| Column number type alias for position tracking (1-indexed).
+{-| A column number within a line of source text, counted from 1 as the parser
+counts columns.
+
+This is a name for `Int`, not a new type, and the compiler checks nothing about
+the values given where a `Col` is expected.
+
 -}
 type alias Col =
     Int
 
 
-{-| A snippet of source code with its position in the original file.
+{-| A piece of a source text, given by its position in the whole text.
 
-This allows parsing a substring of a file while maintaining accurate row/column
-positions relative to the original file. Useful for incremental parsing or
-parsing embedded code fragments.
+`fptr` is the whole text, not a pointer and not only the piece. `offset` and
+`length` are counted in the units `String.slice` uses on `fptr`, not in bytes,
+so the piece is `String.slice offset (offset + length) fptr`. `offRow` and
+`offCol` are the row and column, in the whole text, of the piece's first
+character.
 
-  - `fptr`: The source string (file pointer/content)
-  - `offset`: Starting byte position in the source
-  - `length`: Number of bytes in the snippet
-  - `offRow`: Starting row number in the original file
-  - `offCol`: Starting column number in the original file
+The constructor is exposed, and nothing checks that the fields agree with one
+another: that the piece lies within `fptr`, or that `offRow` and `offCol` are
+where `offset` falls.
 
 -}
 type Snippet
@@ -55,11 +71,8 @@ type Snippet
         }
 
 
-{-| Encode a Snippet to bytes for serialization.
-
-Encodes all fields (fptr, offset, length, offRow, offCol) in sequence for
-storage or transmission.
-
+{-| Encodes a snippet for `decoder` to read back. All of `fptr` is written, not
+only the piece the snippet names.
 -}
 encoder : Snippet -> Bytes.Encode.Encoder
 encoder (Snippet { fptr, offset, length, offRow, offCol }) =
@@ -72,11 +85,7 @@ encoder (Snippet { fptr, offset, length, offRow, offCol }) =
         ]
 
 
-{-| Decode a Snippet from bytes.
-
-Decodes the fields in the same order as `encoder` (fptr, offset, length,
-offRow, offCol) to reconstruct the Snippet.
-
+{-| A decoder for a snippet written by `encoder`.
 -}
 decoder : Bytes.Decode.Decoder Snippet
 decoder =

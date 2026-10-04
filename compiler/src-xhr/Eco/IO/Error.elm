@@ -5,15 +5,22 @@ module Eco.IO.Error exposing
     , toString
     )
 
-{-| Structured IO error types shared by Eco.File, Eco.Console, parts of
-Eco.Process, Eco.Runtime, and Eco.MVar.
+{-| Code that reports a failed IO operation needs to tell the common kinds of
+failure apart, and this module turns what an IO backend reports into an
+`IOError` that can be matched on.
 
-Kernel IO primitives fail with a neutral fixed-layout tuple
-`( classificationTag, path, message )` (see IO\_ERR\_002). The `Raw*` record is
-the Elm-facing neutral representation assembled from that tuple; `decodeIOError`
-maps it into the typed `IOError` ADT. The classification tag is computed at each
-kernel (native C++ maps `errno`; JS/XHR map `err.code`) so this single decode
-covers all backends.
+An IO operation that fails reports a _failure tuple_, `( tag, path, message )`.
+The _tag_ is a small integer classifying the failure, the path is the file the
+failure concerns, and the message is text describing it. The tag numbering is
+set out under `IOError`. A backend that computes tags itself must number them
+the same way, and nothing here can check that it does: a tag numbered
+differently is decoded as the wrong kind of error.
+
+`fromKernel` holds the tuple as a `RawIOError` record, `decodeIOError`
+classifies the record, and `ofKernelTuple` does both. `tagFromCode` computes the
+tag from an error code string such as `"ENOENT"`, for a backend that reports a
+failure by its code rather than by tag. `toString` renders an `IOError` as a
+short message.
 
 @docs IOError, RawIOError
 @docs fromKernel, decodeIOError, ofKernelTuple
@@ -23,8 +30,25 @@ covers all backends.
 -}
 
 
-{-| A structured IO error. Each constructor corresponds to a stable
-classification tag emitted by the kernels.
+{-| A failed IO operation, classified by the kind of failure.
+
+Tags 1 to 9 decode, in order, to `FileNotFound`, `PermissionDenied`,
+`NotADirectory`, `IsADirectory`, `AlreadyExists`, `NoSpaceLeft`,
+`TooManyOpenFiles`, `BrokenPipe` and `BadFileDescriptor`. Any other tag, 0
+included, decodes to `OtherIOError`, which keeps the tag.
+
+`FileNotFound`, `PermissionDenied`, `NotADirectory`, `IsADirectory` and
+`AlreadyExists` carry the path exactly as reported, so a failure reported with
+no path carries `""`.
+
+`NoSpaceLeft` and `BrokenPipe` carry the path as a `Maybe`, which is `Nothing`
+when the reported path is `""`.
+
+`TooManyOpenFiles` and `BadFileDescriptor` carry no path.
+
+`OtherIOError` carries its path as a `Maybe` in the same way, and is the only
+constructor that keeps the backend's message. The others drop it.
+
 -}
 type IOError
     = FileNotFound String
@@ -39,7 +63,10 @@ type IOError
     | OtherIOError { tag : Int, path : Maybe String, message : String }
 
 
-{-| The neutral record assembled from the kernel failure tuple.
+{-| A failure tuple held as a record, before its tag is classified.
+
+Any `Int` is accepted as `tag`; one outside 1 to 9 decodes to `OtherIOError`.
+
 -}
 type alias RawIOError =
     { tag : Int
@@ -48,16 +75,16 @@ type alias RawIOError =
     }
 
 
-{-| Assemble the neutral record from a kernel failure tuple
-`( classificationTag, path, message )`.
+{-| Returns the failure tuple `( tag, path, message )` as a `RawIOError`, field
+for field.
 -}
 fromKernel : ( Int, String, String ) -> RawIOError
 fromKernel ( tag, path, message ) =
     { tag = tag, path = path, message = message }
 
 
-{-| Map the neutral record into the typed `IOError`. The tag values are the
-stable contract shared with the kernels (see IO\_ERR\_002).
+{-| Classifies `raw` by its tag, using the tag numbering and the treatment of
+paths and messages that `IOError` describes.
 -}
 decodeIOError : RawIOError -> IOError
 decodeIOError raw =
@@ -97,17 +124,21 @@ decodeIOError raw =
                 }
 
 
-{-| Convenience: decode straight from the kernel failure tuple.
+{-| Classifies a failure tuple `( tag, path, message )` as `decodeIOError` does.
 -}
 ofKernelTuple : ( Int, String, String ) -> IOError
 ofKernelTuple =
     fromKernel >> decodeIOError
 
 
-{-| Map a Node/libuv-style errno code string (e.g. "ENOENT") to the stable
-classification tag. Used by the XHR path, where the eco-io server forwards the
-error `code` string rather than a numeric errno. Keep in sync with the C++ and
-JS kernel errno classification (see IO\_ERR\_002).
+{-| Returns the tag for an error code string of the kind Node reports, such as
+`"ENOENT"`.
+
+`"ENOENT"` gives 1; `"EACCES"` and `"EPERM"` give 2; `"ENOTDIR"` gives 3;
+`"EISDIR"` gives 4; `"EEXIST"` gives 5; `"ENOSPC"` gives 6; `"EMFILE"` and
+`"ENFILE"` give 7; `"EPIPE"` gives 8; and `"EBADF"` gives 9. Any other string,
+`""` included, gives 0, which decodes to `OtherIOError`.
+
 -}
 tagFromCode : String -> Int
 tagFromCode code =
@@ -149,6 +180,9 @@ tagFromCode code =
             0
 
 
+{-| Returns `Nothing` for the empty string and `Just s` for any other, including
+one of only whitespace.
+-}
 nonEmpty : String -> Maybe String
 nonEmpty s =
     if s == "" then
@@ -158,7 +192,14 @@ nonEmpty s =
         Just s
 
 
-{-| A short human-readable description, for embedding in larger messages.
+{-| Returns a short description of `err`.
+
+The named kinds give fixed English text. The five that carry a plain path add
+it after a colon, so an empty path leaves the text ending in `": "`.
+`NoSpaceLeft` and `BrokenPipe` add their path in parentheses when they have one.
+`OtherIOError` gives the backend's message, with its path in parentheses when it
+has one; its tag is not shown.
+
 -}
 toString : IOError -> String
 toString err =
@@ -194,6 +235,8 @@ toString err =
             r.message ++ pathSuffix r.path
 
 
+{-| Returns the path after a space and in parentheses, or `""` for `Nothing`.
+-}
 pathSuffix : Maybe String -> String
 pathSuffix maybePath =
     case maybePath of

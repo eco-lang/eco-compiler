@@ -1,15 +1,36 @@
 module TestLogic.Generate.CodeGen.ProjectionContainerType exposing (expectProjectionContainerType)
 
-{-| Test logic for CGEN\_0E1: Projection Container Type invariant.
+{-| A projection op reads one field out of its container, so a container that
+is really a primitive, such as the `i64` an `eco.unbox` produces, would be read
+as a pointer. This module checks the generated MLIR for projections whose
+container has the wrong type.
 
-All projection operations (eco.project.record, eco.project.custom, etc.)
-must have !eco.value — or, for the dual-form ops under the U-T1.3
-value-aggregate promotions, the op's matching `!eco.tuple2/3<...>` /
-`!eco.custom<...>` aggregate — as their container operand type. This
-prevents segfaults from treating primitives as heap pointers.
+A _projection op_ is one of `eco.project.record`, `eco.project.custom`,
+`eco.project.tuple2`, `eco.project.tuple3`, `eco.project.list_head` and
+`eco.project.list_tail`. Its one operand is the _container_. Every projection
+accepts a container of type `!eco.value`, a boxed heap value. Three of them also
+accept a _promoted aggregate_, a tuple or custom value held as an SSA struct
+value rather than on the heap, but only the matching kind: a type named
+`eco.tuple2<...>` for `eco.project.tuple2`, `eco.tuple3<...>` for
+`eco.project.tuple3`, and `eco.custom<...>` for `eco.project.custom`. Record and
+list projections have no promoted form.
 
-The dangerous pattern is: project -> eco.unbox -> project
-where eco.unbox produces a primitive that is incorrectly used as a container.
+`expectProjectionContainerType` compiles a source module with
+`TestLogic.TestPipeline.runToMlir` and examines the `mlirModule` it returns, one
+top-level `func.func` at a time. For each function it collects the type of
+every SSA value defined inside it, from op results and block arguments at any
+depth. Each projection op in the function is then a violation if it does not
+have exactly one operand, or if its container's type is not one the op accepts.
+The container's type is looked up by name in that map, not read from the op's
+`_operand_types` attribute.
+
+Among what is not checked:
+
+  - a projection whose container is not defined inside the same function, which
+    is skipped;
+  - projection ops outside a top-level `func.func`;
+  - the projection's result type, and whether its field index fits the
+    container.
 
 @docs expectProjectionContainerType
 
@@ -32,7 +53,10 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that projection container type invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR and passes when no
+projection op in it has the wrong number of operands or a container of a type
+it does not accept. When `runToMlir` returns an error it fails with that error
+prefixed by `Compilation failed:`, and otherwise with the first violation found.
 -}
 expectProjectionContainerType : Src.Module -> Expectation
 expectProjectionContainerType srcModule =
@@ -44,6 +68,9 @@ expectProjectionContainerType srcModule =
             violationsToExpectation (checkProjectionContainerTypes mlirModule)
 
 
+{-| The names of the ops this module treats as projections, the ops that read a
+field out of a container.
+-}
 projectionOpNames : List String
 projectionOpNames =
     [ "eco.project.record"
@@ -55,15 +82,16 @@ projectionOpNames =
     ]
 
 
+{-| Returns whether `op` is one of the projection ops in `projectionOpNames`.
+-}
 isProjectionOp : MlirOp -> Bool
 isProjectionOp op =
     List.member op.name projectionOpNames
 
 
-{-| Check that all projection ops have eco.value as container type.
-
-This checks each function separately with its own scoped TypeEnv.
-
+{-| Returns the violations found in each top-level `func.func` of the module,
+in function order. Each function is checked against the types of its own SSA
+values only.
 -}
 checkProjectionContainerTypes : MlirModule -> List Violation
 checkProjectionContainerTypes mlirModule =
@@ -74,6 +102,10 @@ checkProjectionContainerTypes mlirModule =
     List.concatMap checkFunction funcOps
 
 
+{-| Returns a violation for each projection op nested in `funcOp` whose operand
+count or container type is wrong, checked against the types of the SSA values
+`funcOp` defines.
+-}
 checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
     let
@@ -89,6 +121,10 @@ checkFunction funcOp =
     List.filterMap (checkProjectionOp typeEnv) projectionOps
 
 
+{-| Returns a violation if the projection `op` does not have exactly one
+operand, or if its container's type in `typeEnv` is not one `op` accepts.
+Returns `Nothing` when the container is not in `typeEnv`.
+-}
 checkProjectionOp : TypeEnv -> MlirOp -> Maybe Violation
 checkProjectionOp typeEnv op =
     case op.operands of
@@ -122,15 +158,14 @@ checkProjectionOp typeEnv op =
                 }
 
 
-{-| A projection container must be `!eco.value` (the boxed heap form) or —
-since the U-T1.3.1/T1.3.2c value-aggregate promotions (default-on
-2026-08-04) — the MATCHING promoted aggregate form for the dual-form ops:
-`!eco.tuple2<...>` for `eco.project.tuple2`, `!eco.tuple3<...>` for
-`eco.project.tuple3`, `!eco.custom<...>` for `eco.project.custom`.
-Anything else — in particular a primitive produced by `eco.unbox` — is
-exactly the treat-a-primitive-as-a-heap-pointer class this invariant
-exists to catch. Record and list projections have no promoted form and
-stay `!eco.value`-only.
+{-| Returns whether the op named `opName` accepts a container of type
+`containerType`.
+
+`!eco.value` is accepted for every op. A named struct type whose name starts
+with `eco.tuple2<`, `eco.tuple3<` or `eco.custom<` is accepted only for
+`eco.project.tuple2`, `eco.project.tuple3` or `eco.project.custom`
+respectively. Every other type, including every primitive, is rejected.
+
 -}
 containerTypeOk : String -> MlirType -> Bool
 containerTypeOk opName containerType =
@@ -157,6 +192,10 @@ containerTypeOk opName containerType =
                 False
 
 
+{-| Returns the types of the SSA values `op` defines: its own results, and the
+arguments of every block and the results of every op in its regions, at any
+depth.
+-}
 buildTypeEnvFromOp : MlirOp -> TypeEnv
 buildTypeEnvFromOp op =
     let
@@ -169,6 +208,10 @@ buildTypeEnvFromOp op =
     List.foldl collectFromRegion withResults op.regions
 
 
+{-| Returns `env` extended with the types of the SSA values the region defines:
+the arguments, op results and nested definitions of its entry block, then of
+each of its other blocks.
+-}
 collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
 collectFromRegion (MlirRegion { entry, blocks }) env =
     let
@@ -187,6 +230,9 @@ collectFromRegion (MlirRegion { entry, blocks }) env =
     List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
 
 
+{-| Returns `env` extended with the types of the block's arguments and of the
+SSA values defined by its body ops and terminator, at any depth.
+-}
 collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
 collectFromBlock block env =
     let
@@ -202,11 +248,17 @@ collectFromBlock block env =
     collectFromOp block.terminator withBody
 
 
+{-| Returns `env` extended with the types of the SSA values each of `ops`
+defines, at any depth.
+-}
 collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
 collectFromOps ops env =
     List.foldl collectFromOp env ops
 
 
+{-| Returns `env` extended with the types of `op`'s results and of the SSA
+values defined in its regions, at any depth.
+-}
 collectFromOp : MlirOp -> TypeEnv -> TypeEnv
 collectFromOp op env =
     let
@@ -219,11 +271,18 @@ collectFromOp op env =
     List.foldl collectFromRegion withResults op.regions
 
 
+{-| Returns every op nested in `op`'s regions, at any depth, without `op`
+itself.
+-}
 walkOpsInOp : MlirOp -> List MlirOp
 walkOpsInOp op =
     List.concatMap walkOpsInRegion op.regions
 
 
+{-| Returns a short text form of `t` for a failure message. A named struct is
+written with a leading `!`, and a function type is written only as
+`function`.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

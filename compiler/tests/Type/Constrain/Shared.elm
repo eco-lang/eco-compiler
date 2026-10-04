@@ -1,10 +1,36 @@
 module Type.Constrain.Shared exposing (expectEquivalentTypeChecking)
 
-{-| Shared test infrastructure for constraint equivalence testing.
+{-| A single expectation for constraint tests: the two type-checking paths agree
+on a canonical module, and the typed path gives a type to each of its
+expressions.
 
-This module provides test runners that compare `constrain` and `constrainWithIds` paths.
+The compiler type-checks a module in one of two ways. The _erased path_
+generates constraints with `Compiler.Type.Constrain.Erased.Module.constrain` and
+solves them with `Compiler.Type.Solve.run`, which yields only the top-level
+annotations. The _typed path_ generates them with
+`Compiler.Type.Constrain.Typed.Module.constrainWithIds` and solves them with
+`Compiler.Type.Solve.runWithIds`, which also yields a _node type_ for each
+recorded node: an array indexed by the node's id, holding `Just` the solved type
+where one was recorded. Every canonical expression carries such an id, its
+_expression id_. Without this check, the two paths could disagree about whether
+a module type-checks, or the typed path could leave an expression untyped,
+without either path reporting anything.
 
-For Canonical AST builders, use Compiler.AST.CanonicalBuilder.
+`expectEquivalentTypeChecking` checks:
+
+  - that the two paths agree on success or failure. When both fail it passes;
+    the errors, and their number, are not compared. When exactly one fails it
+    fails, reporting that path's error count.
+  - that, when both succeed, each expression id found in the module's
+    declarations has a `Just` node type. The ids are collected by walking every
+    definition, including its argument patterns, and every nested expression.
+
+Among what is not checked: the annotations of the two paths are not compared,
+so agreement on success says nothing about the types inferred; pattern ids are
+not collected, so a pattern without a node type is not caught; and no node type
+is compared with any expected type.
+
+Most of this module is the expression-id walk over the canonical AST.
 
 -}
 
@@ -30,15 +56,15 @@ import System.TypeCheck.IO as IO
 -- ============================================================================
 
 
-{-| Run both constraint paths and verify they produce equivalent results.
+{-| Returns an expectation that type-checks `modul` on both the erased and the
+typed path and requires them to agree.
 
-Both paths should either:
-
-  - Both succeed (annotations may differ in internal details but should be equivalent)
-  - Both fail with errors
-
-Additionally, when WithIds path succeeds, we verify that ALL expression IDs
-from the original module are present in the nodeTypes map.
+It passes when both paths fail, whatever their errors. It fails when exactly one
+path fails, naming that path and its error count. When both succeed, it passes
+only if each expression id in the module's declarations has a `Just` node type
+on the typed path, and otherwise fails listing the missing ids, the expected
+ids and the ids that have a type. The annotations of the two paths are not
+compared.
 
 -}
 expectEquivalentTypeChecking : Can.Module -> Expect.Expectation
@@ -50,14 +76,13 @@ expectEquivalentTypeChecking modul =
         withIdsResult =
             IO.unsafePerformIO (runWithIdsPath modul)
 
-        -- Extract all expression IDs from the module
         allExprIds =
             extractModuleExprIds modul
     in
     case ( standardResult, withIdsResult ) of
         ( Ok _, Ok { nodeTypes } ) ->
-            -- Both succeeded - now check that all IDs are in nodeTypes
             let
+                -- An index of nodeTypes is a node id.
                 nodeTypeIds =
                     Array.foldl
                         (\maybeType ( idx, acc ) ->
@@ -89,7 +114,6 @@ expectEquivalentTypeChecking modul =
                     )
 
         ( Err _, Err _ ) ->
-            -- Both failed - this is acceptable (they agree)
             Expect.pass
 
         ( Ok _, Err errorCount ) ->
@@ -107,7 +131,8 @@ expectEquivalentTypeChecking modul =
                 )
 
 
-{-| Run the standard constraint generation and solving path.
+{-| Type-checks `modul` on the erased path, giving its top-level annotations or
+the number of type errors.
 -}
 runStandardPath : Can.Module -> IO.IO (Result Int (Dict Name.Name (Can.Annotation Name)))
 runStandardPath modul =
@@ -124,8 +149,9 @@ runStandardPath modul =
             )
 
 
-{-| Run the WithIds constraint generation and solving path.
-Returns both annotations and the nodeTypes map.
+{-| Type-checks `modul` on the typed path, giving everything
+`Compiler.Type.Solve.runWithIds` returns, including the node types, or the
+number of type errors.
 -}
 runWithIdsPath :
     Can.Module
@@ -159,14 +185,16 @@ runWithIdsPath modul =
             )
 
 
-{-| Extract all expression IDs from a module.
+{-| Returns the expression ids of every expression in the module's
+declarations.
 -}
 extractModuleExprIds : Can.Module -> Set Int
 extractModuleExprIds (Can.Module { decls }) =
     extractDeclsExprIds decls
 
 
-{-| Extract expression IDs from declarations.
+{-| Returns the expression ids in every definition of a chain of declarations,
+recursive groups included.
 -}
 extractDeclsExprIds : Can.Decls -> Set Int
 extractDeclsExprIds decls =
@@ -184,7 +212,7 @@ extractDeclsExprIds decls =
             Set.empty
 
 
-{-| Extract expression IDs from a definition.
+{-| Returns the expression ids in a definition's body and argument patterns.
 -}
 extractDefExprIds : Can.Def -> Set Int
 extractDefExprIds def =
@@ -200,14 +228,17 @@ extractDefExprIds def =
                 (extractAllExprIds expr)
 
 
-{-| Extract all expression IDs from an expression (recursively).
+{-| Returns the id of an expression together with the ids of every expression
+nested inside it.
 -}
 extractAllExprIds : Can.Expr -> Set Int
 extractAllExprIds (A.At _ { id, node }) =
     Set.insert id (extractExprNodeIds node)
 
 
-{-| Extract expression IDs from an expression node.
+{-| Returns the ids of every expression nested inside an expression node, not
+counting the node's own id, which `extractAllExprIds` adds. Patterns within the
+node are walked too.
 -}
 extractExprNodeIds : Can.Expr_ -> Set Int
 extractExprNodeIds node =
@@ -323,8 +354,9 @@ extractExprNodeIds node =
             Set.empty
 
 
-{-| Extract expression IDs from a pattern (patterns don't have expression IDs,
-but they may contain nested patterns that we need to traverse).
+{-| Returns the expression ids inside a pattern, which is always the empty set:
+a canonical pattern contains no expressions. The nested patterns are walked all
+the same. The pattern's own id is not collected.
 -}
 extractPatternExprIds : Can.Pattern -> Set Int
 extractPatternExprIds (A.At _ { node }) =

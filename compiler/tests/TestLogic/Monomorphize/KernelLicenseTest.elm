@@ -1,34 +1,87 @@
 module TestLogic.Monomorphize.KernelLicenseTest exposing (suite)
 
-{-| LSS\_022 — the kernel parametricity license
-(`plans/kernel-parametricity-license.md`).
+{-| Tests for the kernel license table in `Compiler.MonoSolver.KernelSetFacts`,
+where a wrong entry can miscompile a program. They check that a licensed call to
+`List.cons` can leave a function-typed position with a single known function,
+that the table refuses the kernels it must refuse, that every row carries its
+evidence, and that `licenseApplies` refuses an occurrence whose type the license
+does not fit.
 
-A `TypeFaithful` row asserts that a kernel's set flow is exactly its Elm
-type's variable-sharing graph, and on the strength of that assertion BOTH
-consumers skip the LSS\_004 poison. The failure asymmetry is brutal and
-one-directional: a missing license costs precision, a wrong one licenses a
-false singleton and therefore a wrong direct-call stamp — a miscompile. So
-these tests come in two kinds, and the second kind is the important one:
+The solver's lambda-set specialization (LSS) records, for each function-typed
+position, the set of functions that can reach it, its _members_. A position
+whose set has exactly one member can be called directly. In the monomorphized
+graph each function type carries an annotation for its set: among other forms,
+an `LSet` lists known members and an `LTop` stands for unknown ones. A kernel is
+a runtime function written outside Elm, so the solver cannot see how function
+values pass through one. A _license_ is a `TypeFaithful` row in
+`KernelSetFacts`: the claim that function values pass through the kernel only
+along the type variables its Elm type shares, so that members may be carried
+across the call. The rules for rows and their scopes are stated in
+`KernelSetFacts`. What matters here is that a missing license costs precision,
+while a wrong one can produce a one-member set naming the wrong function, and so
+a direct call to it.
 
-**Transport pins** (tests 1-2) — the license actually does something. A
-licensed kernel's arrow positions carry the caller's members through the
-boundary instead of reading ⊤. Pinned through observable graph state: the
-annotations of the stored (keyed) demand types in the registry, the same
-observation surface `LssSigFlowTest` and `MuTieTest` use.
+Tests 1 and 2 compile a small program each (`partialKernelModule`,
+`consFunctionModule`) with `run`, and read the lambda-set annotations on the
+types the result's registry records for the specializations of globals named
+`cons`. Both programs pass the global `inc : Int -> Int` to `List.cons`, which
+the test pipeline defines as an alias of the `List.cons` kernel. The other
+tests read the table directly, or call `licenseApplies` on canonical types
+built in this module. Except in test 11, which uses `Json.addEntry`'s own
+license, the licenses are made here with a placeholder file and empty evidence,
+and the scalar test is `noScalars` unless a test says otherwise.
 
-**Containment pins** (tests 3-7) — the license does NOT do anything it
-should not. The rejected classes stay unlicensed, unknown kernels stay
-unlicensed, and every row carries the evidence and file pins the audit
-discipline requires. A regression here is exactly how a miscompile would be
-introduced, and unlike the transport pins these cost nothing to run.
+What the tests establish:
 
-Note on the negative transport control the plan sketches (§5 test 2): the
-mock interface env only synthesizes kernel-alias nodes for kernels that are
-REALLY eta-free aliases in elm/core (`TestPipeline.aliasedKernels`), and
-every such kernel within reach of the test interfaces is licensed. Rather
-than fake an alias — which would stop the mock env mirroring production —
-the negative side is pinned at the table (tests 3-4) and behaviourally by
-the E2E fixture `test/elm/src/KernelLicenseTest.elm`.
+  - Test 1: with `consInc = List.cons inc` applying `List.cons` to one
+    argument, at least one annotation on the specialization types recorded for
+    `cons` is an `LSet` with exactly one member.
+  - Test 2: the same, for `List.cons inc []`.
+  - Test 3: no kernel in `neverLicensable` has a row.
+  - Test 4: `factFor` gives `Nothing` for a home and name that no kernel has.
+  - Test 5: every `TypeFaithful` row has a non-empty `files`.
+  - Test 6: every `TypeFaithful` row's evidence contains each of `class:`,
+    `entry:`, `type:`, `B1:`, `B2:`, `B3:` and `audited:`, and every
+    `Positional` row's contains `entry:`. Only the markers' presence is
+    checked.
+  - Test 7: a `TypeFaithful` row's scope is `Inert` exactly when its evidence
+    contains `class: vacuous`.
+  - Test 8: `licensedFiles` is non-empty and sorted, has no duplicates, and
+    every path in it contains a `/` and does not start with one.
+  - Test 9: an `Inert` license is accepted for `String -> Int` and for
+    `String -> Task Never ()`, and refused when an argument or the final result
+    is or contains a type variable (`String -> a`, `String -> Task x ()`) or an
+    arrow (`(Int -> Int) -> Int`, `String -> List (Int -> Int)`).
+  - Test 9b: with `comparable` and `number` treated as scalars, an `Inert`
+    license is accepted for `comparable -> comparable -> Order` and
+    `number -> number`, and refused for `a -> a` and `List a -> Int`.
+  - Test 9c: an `Inert` license is accepted for an alias `Task Never String`
+    whose `Holey` body is `Task x a`, refused when an alias argument is an
+    arrow or a type variable, and refused for an alias whose body is an arrow.
+  - Test 10: a `TransportsAs` license with the shape `Array a -> List a`
+    accepts `Array String -> List String` and
+    `Array (Int -> Int) -> List (Int -> Int)`, and refuses different element
+    types on the two sides, the constructors swapped, `Set` for `Array`, and
+    `String`.
+  - Test 11: `Json.addEntry` has a `TypeFaithful` row, and its license accepts
+    `(String -> Value) -> String -> Value -> Value` and the same with
+    `Int -> Int` for `String`, and refuses a different type for the encoder's
+    argument and the element, an `Int` accumulator, and a first parameter that
+    is not an arrow.
+  - Test 12: every `TransportsAs` shape is a function shape.
+  - Test 13: every `TransportsAs` shape equals the shape of the kernel's
+    annotation in `Compiler.Type.KernelIntrinsics`, where `intrinsicShapeFor`
+    finds one.
+  - Test 14: a `TransportsAs` license with the shape `a -> a` accepts `p -> p`
+    and refuses `p -> q`.
+
+Among what is not tested: that the one-member set in tests 1 and 2 holds
+`inc`'s member, or which arrow carries it; the transport of a kernel with no
+license, since the test pipeline builds alias nodes only for `List.cons` and
+`List.map2`, and both are licensed; a `Transports` license, which
+`licenseApplies` accepts at any occurrence; whether any row's evidence is true;
+and a `TransportsAs` row whose intrinsic annotation `shapeOfAnnotation` cannot
+express, which test 13 skips.
 
 -}
 
@@ -60,17 +113,15 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The kernel license tests, as the module docstring lists them.
+-}
 suite : Test
 suite =
     Test.describe "LSS_022 kernel parametricity license"
         [ Test.test "1. transport pin: a PARTIALLY applied licensed kernel still transports (no arity rule)" <|
             \() ->
-                -- `consInc = List.cons inc` applies 1 of `cons`'s 2 params.
-                -- An arity-aligned POSITIONAL row would bail to LSS_004 full
-                -- poison here and the element arrow would read `LTop`; a
-                -- license has no positions to align, so `g|inc` survives
-                -- (plan §1, "partial kernel application: no arity rule needed
-                -- at all").
+                -- A license has no per-parameter positions to align with the
+                -- call's arity, so it applies to this partial application too.
                 case run partialKernelModule of
                     Err msg ->
                         Expect.fail msg
@@ -191,12 +242,8 @@ suite =
                     Expect.fail ("rows with malformed evidence: " ++ String.join "; " bad)
         , Test.test "7. discipline: `scope` agrees with the evidence's class token" <|
             \() ->
-                -- `Inert` is the structural form of "this row is vacuous", and
-                -- it is what makes the inference side skip the boundary
-                -- outright. A row marked `Inert` whose audit actually found a
-                -- function-capable position would skip transport that should
-                -- have happened — precision loss, not unsoundness, but the two
-                -- fields must not be allowed to drift apart silently.
+                -- `Inert` is the scope for the audit class `vacuous`, and the
+                -- two are written separately in each row.
                 let
                     disagreeing =
                         List.filterMap
@@ -254,36 +301,26 @@ suite =
                     ()
         , Test.test "9. verification: an Inert license is REFUSED at a function-capable occurrence" <|
             \() ->
-                -- The drift guard. An `Inert` row asserts "this kernel's type
-                -- has no function-capable position" — a claim about the ELM
-                -- ANNOTATION, which the rot manifest cannot see because it
-                -- hashes C++ only. If the annotation later grows an arrow or a
-                -- type variable, `licenseApplies` must refuse and the consumer
-                -- must fall back to LSS_004 poison rather than silently apply a
-                -- claim nobody re-checked.
+                -- An `Inert` row claims that the kernel's type has no position
+                -- able to hold a function. `licenseApplies` checks that claim
+                -- again against each occurrence's type.
                 Expect.all
                     [ \() -> Expect.equal True (KernelSetFacts.licenseApplies noScalars inertLicense (cFun cString cInt))
                     , \() -> Expect.equal True (KernelSetFacts.licenseApplies noScalars inertLicense (cFun cString (cCon "Task" [ cCon "Never" [], cUnit ])))
 
-                    -- a bare variable anywhere — including a PHANTOM one, which
-                    -- is exactly the nullary-carrier case
+                    -- A type variable, bare or as a type argument, is refused.
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars inertLicense (cFun cString (cVar "a")))
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars inertLicense (cFun cString (cCon "Task" [ cVar "x", cUnit ])))
 
-                    -- an arrow in a non-spine position
+                    -- So is an arrow off the top-level spine.
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars inertLicense (cFun (cFun cInt cInt) cInt))
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars inertLicense (cFun cString (cCon "List" [ cFun cInt cInt ])))
                     ]
                     ()
         , Test.test "9b. verification: a SCALAR-constrained variable is not function-capable (ruling R1)" <|
             \() ->
-                -- `Utils.compare : comparable -> comparable -> Order` and
-                -- `Basics.add : number -> number -> number` have no
-                -- function-capable position at all, but their occurrences
-                -- inside a polymorphic caller are `TVar`s. Treating every
-                -- `TVar` as function-capable refused their `Inert` licenses on
-                -- the hottest kernels in the compiler; the super table says
-                -- otherwise and is the typechecker's own truth.
+                -- `comparable` and `number` range only over types that cannot
+                -- hold a function.
                 let
                     scalars name =
                         name == "comparable" || name == "number"
@@ -292,23 +329,17 @@ suite =
                     [ \() -> Expect.equal True (KernelSetFacts.licenseApplies scalars inertLicense (cFun (cVar "comparable") (cFun (cVar "comparable") (cCon "Order" []))))
                     , \() -> Expect.equal True (KernelSetFacts.licenseApplies scalars inertLicense (cFun (cVar "number") (cVar "number")))
 
-                    -- an ordinary variable stays function-capable
+                    -- An ordinary variable stays function-capable.
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies scalars inertLicense (cFun (cVar "a") (cVar "a")))
 
-                    -- and so does one reached through a container
+                    -- So does one reached through a container.
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies scalars inertLicense (cFun (cCon "List" [ cVar "a" ]) cInt))
                     ]
                     ()
         , Test.test "9c. verification: a parameterised ALIAS is judged by its ARGS, not by its Holey body" <|
             \() ->
-                -- Regression pin. `Task Never String` canonicalizes to a
-                -- `Holey` alias whose body is `Platform.Task x a` — and `x`/`a`
-                -- there are the alias's PARAMETERS, not free variables: their
-                -- real content is the args. Counting them as function-capable
-                -- refused every parameterised alias, which is how five eco IO
-                -- kernels with entirely concrete types (`Task Never String`,
-                -- `Task IOError String`) were being denied their Inert
-                -- licenses.
+                -- In the `Holey` body `Task x a`, `x` and `a` are the alias's
+                -- parameters, standing for its arguments, not free variables.
                 let
                     taskAlias err ok =
                         Can.TAlias testHome
@@ -319,12 +350,11 @@ suite =
                 Expect.all
                     [ \() -> Expect.equal True (KernelSetFacts.licenseApplies noScalars inertLicense (taskAlias (cCon "Never" []) cString))
 
-                    -- a function-capable ARG is still caught
+                    -- An argument that can hold a function is refused.
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars inertLicense (taskAlias (cCon "Never" []) (cFun cInt cInt)))
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars inertLicense (taskAlias (cVar "e") cString))
 
-                    -- and an arrow in the BODY is still caught, since it is not
-                    -- a parameter placeholder
+                    -- So is an arrow in the alias's body.
                     , \() ->
                         Expect.equal False
                             (KernelSetFacts.licenseApplies noScalars
@@ -336,23 +366,21 @@ suite =
         , Test.test "10. verification: a declared shape matches only its instances" <|
             \() ->
                 let
-                    -- `List.fromArray : Array a -> List a`
                     tunnel =
                         shapeLicense (KernelSetFacts.TsFun (KernelSetFacts.TsCon "Array" [ KernelSetFacts.TsVar "a" ]) (KernelSetFacts.TsCon "List" [ KernelSetFacts.TsVar "a" ]))
                 in
                 Expect.all
-                    [ -- the real occurrence in elm/core's String.split
+                    [ -- An instance of the shape matches.
                       \() -> Expect.equal True (KernelSetFacts.licenseApplies noScalars tunnel (cFun (cCon "Array" [ cString ]) (cCon "List" [ cString ])))
 
-                    -- still an instance at a functional element
+                    -- So does an instance whose element is a function.
                     , \() -> Expect.equal True (KernelSetFacts.licenseApplies noScalars tunnel (cFun (cCon "Array" [ cFun cInt cInt ]) (cCon "List" [ cFun cInt cInt ])))
 
-                    -- TsVar CONSISTENCY is the whole point: the element must be
-                    -- the SAME type on both sides, because that shared variable
-                    -- IS the flow edge the license claims.
+                    -- `a` must be the same type on both sides: the shared
+                    -- variable is the path the license claims a value takes.
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars tunnel (cFun (cCon "Array" [ cString ]) (cCon "List" [ cInt ])))
 
-                    -- wrong direction / wrong constructor / wrong arity
+                    -- Swapped constructors, a wrong constructor and a non-function type do not match.
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars tunnel (cFun (cCon "List" [ cString ]) (cCon "Array" [ cString ])))
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars tunnel (cFun (cCon "Set" [ cString ]) (cCon "List" [ cString ])))
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars tunnel cString)
@@ -367,23 +395,20 @@ suite =
                                 cCon "Value" []
                         in
                         Expect.all
-                            [ -- `Json.Encode.list toStr xs` at a = String, the
-                              -- shape the intrinsic annotation now pins.
+                            [ -- The row's shape is `(a -> Value) -> a -> Value -> Value`;
+                              -- here `a` is `String`.
                               \() -> Expect.equal True (KernelSetFacts.licenseApplies noScalars license (cFun (cFun cString value) (cFun cString (cFun value value))))
 
-                            -- a = a function: still an instance, still licensed
+                            -- Here `a` is a function type.
                             , \() -> Expect.equal True (KernelSetFacts.licenseApplies noScalars license (cFun (cFun (cFun cInt cInt) value) (cFun (cFun cInt cInt) (cFun value value))))
 
-                            -- SHARING is now load-bearing: the encoder's
-                            -- argument and the folded element must be the SAME
-                            -- `a`. Before the annotations solved these
-                            -- positions this could not be asserted at all.
+                            -- Refused: the encoder's argument and the element differ.
                             , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars license (cFun (cFun cString value) (cFun cInt (cFun value value))))
 
-                            -- accumulator not a Value
+                            -- Refused: the accumulator is not a `Value`.
                             , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars license (cFun (cFun cString value) (cFun cString (cFun cInt cInt))))
 
-                            -- first parameter not an arrow
+                            -- Refused: the first parameter is not an arrow.
                             , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars license (cFun cString (cFun cString (cFun value value))))
                             ]
                             ()
@@ -392,8 +417,6 @@ suite =
                         Expect.fail "Json.addEntry should carry a TypeFaithful row with a declared shape"
         , Test.test "12. discipline: every TransportsAs row's shape is a function type" <|
             \() ->
-                -- A declared shape that is not an arrow could never match a
-                -- kernel occurrence, so the row would be silently dead.
                 let
                     bad =
                         List.filterMap
@@ -418,10 +441,9 @@ suite =
                 Expect.equal [] bad
         , Test.test "13. sync: every declared shape EQUALS the kernel's intrinsic annotation" <|
             \() ->
-                -- The two tables live in different subsystems (`MonoSolver` and
-                -- `Type`) and would otherwise drift silently — the failure mode
-                -- being a license that quietly stops applying, which no gate
-                -- would catch. Pin them equal instead of syncing by hand.
+                -- The two tables are written separately, and a shape that
+                -- differs from the annotation can stop the license applying at
+                -- the kernel's occurrences.
                 let
                     mismatched =
                         List.filterMap
@@ -432,10 +454,7 @@ suite =
                                             KernelSetFacts.TransportsAs shape ->
                                                 case intrinsicShapeFor home name of
                                                     Nothing ->
-                                                        -- No intrinsic row: the
-                                                        -- shape is this table's
-                                                        -- own claim, nothing to
-                                                        -- sync against.
+                                                        -- No annotation, or one shapes cannot express.
                                                         Nothing
 
                                                     Just annotationShape ->
@@ -456,9 +475,8 @@ suite =
                 Expect.equal [] mismatched
         , Test.test "14. a TsVar claim is load-bearing: two DIFFERENT variables do not satisfy it" <|
             \() ->
-                -- `sameType` used to treat any two `TVar`s as equal, which made
-                -- every repeated-variable claim vacuous. Occurrences are solved
-                -- now, so identity is both checkable and required.
+                -- Two type variables are the same type only when they are the
+                -- same variable.
                 let
                     tunnel =
                         shapeLicense (KernelSetFacts.TsFun (KernelSetFacts.TsVar "a") (KernelSetFacts.TsVar "a"))
@@ -471,7 +489,10 @@ suite =
         ]
 
 
-{-| The shape denoted by a kernel's INTRINSIC annotation, if it has one.
+{-| Returns the shape of the annotation `Compiler.Type.KernelIntrinsics` holds
+for the kernel `home`.`name`, looking under the `Elm` prefix and then under
+`Eco`. It is `Nothing` when neither has a row, and also when the annotation has
+a form `shapeOfAnnotation` cannot express.
 -}
 intrinsicShapeFor : String -> String -> Maybe KernelSetFacts.TypeShape
 intrinsicShapeFor home name =
@@ -481,6 +502,9 @@ intrinsicShapeFor home name =
         |> Maybe.andThen (\row -> KernelSetFacts.shapeOfAnnotation (annotationType row.annotation))
 
 
+{-| Returns the type inside an annotation, without its set of quantified
+variables.
+-}
 annotationType : Can.Annotation String -> Can.Type String
 annotationType (Can.Forall _ tipe) =
     tipe
@@ -490,55 +514,78 @@ annotationType (Can.Forall _ tipe) =
 -- ====== Can.Type FIXTURES (for the pure verification tests) ======
 
 
+{-| The module, `Test` in the package `elm/core`, given as the home of every
+type `cCon` builds and of the aliases in test 9c. `licenseApplies` compares
+type constructors by name alone, so the home does not affect any result.
+-}
 testHome : ModuleName.Canonical
 testHome =
     ModuleName.Canonical ( "elm", "core" ) "Test"
 
 
+{-| Builds the type variable with the given name.
+-}
 cVar : String -> Can.Type String
 cVar =
     Can.TVar
 
 
+{-| Builds a type constructor, homed in `testHome`, applied to the given
+arguments.
+-}
 cCon : String -> List (Can.Type String) -> Can.Type String
 cCon =
     Can.TType testHome
 
 
+{-| Builds the function type from an argument type to a result type.
+-}
 cFun : Can.Type String -> Can.Type String -> Can.Type String
 cFun =
     Can.tLambda
 
 
+{-| The unit type.
+-}
 cUnit : Can.Type String
 cUnit =
     Can.TUnit
 
 
+{-| The type `Int`, homed in `testHome`.
+-}
 cInt : Can.Type String
 cInt =
     cCon "Int" []
 
 
+{-| The type `String`, homed in `testHome`.
+-}
 cString : Can.Type String
 cString =
     cCon "String" []
 
 
-{-| Conservative default for the pure tests: no variable is known scalar, so
-every `TVar` counts as function-capable. The production consumers read the
-solver's super table instead (`Engine.isScalarVar`).
+{-| Answers `False` for every type variable, so that `licenseApplies` treats
+every variable as able to hold a function. The solver's own calls pass
+`Compiler.MonoSolver.Engine.isScalarVar` instead, which answers `True` for a
+`number` or `comparable` variable.
 -}
 noScalars : String -> Bool
 noScalars _ =
     False
 
 
+{-| An `Inert` license with a placeholder file and empty evidence.
+-}
 inertLicense : KernelSetFacts.License
 inertLicense =
     { scope = KernelSetFacts.Inert, files = [ "x.cpp" ], evidence = "" }
 
 
+{-| Builds a `TransportsAs` license for `shape`, with a placeholder file and
+empty evidence.
+-}
 shapeLicense : KernelSetFacts.TypeShape -> KernelSetFacts.License
 shapeLicense shape =
     { scope = KernelSetFacts.TransportsAs shape, files = [ "x.cpp" ], evidence = "" }
@@ -548,71 +595,37 @@ shapeLicense shape =
 -- ====== THE NEVER-LICENSE LIST ======
 
 
-{-| Kernels whose functional payload lands in a type-opaque position or in
-runtime storage. The plan's §1 floor, made executable: if any of these ever
-acquires a row, the audit discipline has failed and this test is the
-tripwire. Each entry is a REJECTED verdict from the 2026-08-20 survey.
+{-| Kernels, as home and name, that must have no row in `KernelSetFacts`. Test
+3 fails if any of them has one. The comment above each group gives the reason
+that group is refused.
 -}
 neverLicensable : List ( String, String )
 neverLicensable =
-    [ -- Task / Process / effect managers.
-      --
-      -- NARROWED 2026-08-25. This list used to read "the callback lands in
-      -- the Task object (Scheduler.cpp allocTask)" and included
-      -- `succeed`/`fail`/`andThen`/`onError`. That reasoning was wrong:
-      -- storing into the Task you RETURN is not retention the set analysis
-      -- cares about — the scheduler reads the value back out of THAT SAME
-      -- Task, and the type's shared variables describe the edge exactly
-      -- (`a -> Task x a`, `(a -> Task x b) -> Task x a -> Task x b`). It is
-      -- `JsArray.singleton`, which has been licensed since the first audit.
-      -- Those four now carry `Transports` rows; see the CROSS-CALL predicate
-      -- in `KernelSetFacts`'s REJECTED section.
-      --
-      -- What stays here stays for a REASON, not by inertia:
-      --   binding/spawn  — mint a C++ closure through TaskBinding.hpp
-      --                    `makeBinding`. OPEN, not decided: the minted
-      --                    closure lands where no type variable names it, so
-      --                    predicate 3 fires mechanically rather than on a
-      --                    demonstrated hazard. Audit before licensing.
-      --   sendToApp/Self — genuinely CROSS-CALL: `rawSend` pushes the message
-      --                    into a process mailbox (Scheduler.cpp:476-484) and
-      --                    a DIFFERENT call's `update`/`onSelfMsg` receives
-      --                    it. `msg` does not appear in the result type at
-      --                    all. `sendToApp` also fails A3 (declared `void`).
-      --   Process.sleep  — unaudited.
-      -- NARROWED AGAIN 2026-08-25 (Groups 1-4). `Scheduler.spawn` came off:
-      -- its `a` is ABSENT from the result (`Task x a -> Task y Id`), so the
-      -- type's flow obligation is EMPTY and there is nothing a licence can get
-      -- wrong. `Process.sleep` came off: it captures a BOXED FLOAT, not a
-      -- closure. `Scheduler.binding` stays — it is not a `TOpt.VarKernel` on
-      -- any reachable Elm surface, so it is a guard against a future row
-      -- rather than a live refusal.
+    [ -- `Scheduler.binding` builds a runtime closure that lands where no type
+      -- variable names it; it has not been audited. `Platform.sendToApp` and
+      -- `sendToSelf` push a message into a process mailbox, and a different
+      -- call receives it.
       ( "Scheduler", "binding" )
     , ( "Platform", "sendToApp" )
     , ( "Platform", "sendToSelf" )
 
-    -- `Platform.map` STORES A TAGGER in a Sub that the effect manager applies
-    -- at a later, unconnected call; `Time.setInterval` does the same. Both are
-    -- cross-call. `Platform.batch` is NOT here: it only collects, so it is
-    -- List.cons-shaped and is licensed.
+    -- Each stores a tagger or callback that is applied at a later, unconnected
+    -- call.
     , ( "Platform", "map" )
     , ( "Time", "setInterval" )
 
-    -- `Time.now`'s C++ takes `millisToPosix` — a FUNCTION — and applies it at
-    -- scheduler-step time, but its Elm annotation is `Task x Posix`, arity 0.
-    -- A3 arity mismatch: a function argument the type does not mention.
+    -- The kernel's implementation takes a function argument that its Elm type,
+    -- `Task x Posix`, does not mention.
     , ( "Time", "now" )
 
-    -- MVar carries values ACROSS CALLS and the Bytes codec does NOT launder
-    -- them: `read decoder (MVar id) = Eco.Kernel.MVar.read id` — the decoder
-    -- is IGNORED and the raw value is returned from the store, so a function
-    -- put in by one call is handed back by another with no type edge.
-    -- `MVar.new`/`drop` are licensed: neither carries a value.
+    -- A value one call puts into an MVar is handed back by a different call,
+    -- with no type variable joining the two.
     , ( "MVar", "put" )
     , ( "MVar", "read" )
     , ( "MVar", "take" )
 
-    -- The embedding / host boundary.
+    -- The boundary with the embedding host. VirtualDom keeps its nodes, and
+    -- the taggers `map` is given, in runtime storage.
     , ( "Browser", "application" )
     , ( "Browser", "element" )
     , ( "VirtualDom", "node" )
@@ -620,19 +633,13 @@ neverLicensable =
     , ( "VirtualDom", "map" )
     , ( "VirtualDom", "lazy" )
 
-    -- Phantom / opaque type parameters: `type Decoder a = Decoder` has no
-    -- field backing `a`, so a stored callback is invisible to the type.
-    -- Json NARROWED 2026-08-25: the combinators store their callback verbatim
-    -- into a Decoder that `Json.run`/`runOnString` then consume AS AN ARGUMENT,
-    -- driving the decode in that same call — argument-threaded, no cross-call
-    -- edge. `wrap` is the one that stays: it retypes an arbitrary value into
-    -- the opaque `Value`, which is type ERASURE, not transport.
+    -- Retypes an arbitrary value as the opaque `Value`.
     , ( "Json", "wrap" )
 
-    -- Inexpressible by construction: `a -> b` with unshared variables.
+    -- `a -> b` with the two variables unshared, so no flow can be stated.
     , ( "Debugger", "unsafeCoerce" )
 
-    -- Compiler-injected type descriptor + bespoke lowering.
+    -- The compiler supplies a type descriptor and lowers these specially.
     , ( "Debug", "toString" )
     , ( "Debug", "log" )
     ]
@@ -642,6 +649,11 @@ neverLicensable =
 -- ====== HARNESS ======
 
 
+{-| Monomorphizes `srcModule` through the test pipeline with the solver engine,
+the default specialization limits and the default LSS configuration, without
+global optimization. The update `enabled = True` changes nothing, since
+`Config.defaultLss` already has it.
+-}
 run : Src.Module -> Result String Mono.MonoGraph
 run srcModule =
     let
@@ -650,20 +662,20 @@ run srcModule =
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        -- The license is DEFAULT-PATH behaviour: no flag arm exists. `keyed`
-        -- is what stores annotated demands in the registry at all.
-        -- sigFlow PINNED OFF: LSS_021/022 kernel-boundary pins in isolation —
-        -- the LSS_023 tunnel selector changes boundary behavior under sigFlow
-        -- (default-on since 2026-08-21).
         { defaults | enabled = True }
         srcModule
 
 
+{-| Renders a row's key as `Home.name`, for failure messages.
+-}
 keyName : ( String, String ) -> String
 keyName ( home, name ) =
     home ++ "." ++ name
 
 
+{-| Returns `xs` with each run of equal adjacent elements cut to one, which
+removes every duplicate from a sorted list.
+-}
 dedupe : List String -> List String
 dedupe xs =
     case xs of
@@ -678,8 +690,8 @@ dedupe xs =
             xs
 
 
-{-| Every stored (keyed) demand type for the named global, from the
-registry's reverse mapping (the `LssSigFlowTest`/`MuTieTest` precedent).
+{-| Returns the type of every specialization the graph's registry records for a
+global named `target`, in any module, as its reverse mapping holds it.
 -}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
@@ -700,6 +712,10 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns the lambda-set annotation of every function type within `t`,
+looking inside function arguments and results, list elements, tuple elements,
+record fields and custom-type arguments. Any other type contributes none.
+-}
 annosOf : Mono.MonoType -> List Mono.LambdaSetAnno
 annosOf t =
     case t of
@@ -722,11 +738,17 @@ annosOf t =
             []
 
 
+{-| Returns every lambda-set annotation within the specialization types the
+graph's registry records for globals named `target`.
+-}
 allAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 allAnnos target graph =
     List.concatMap annosOf (demandsOf target graph)
 
 
+{-| Tells whether `anno` is an `LSet` with exactly `n` members. An `LTop`, an
+`LVar` or an `LPartial` never is.
+-}
 annoHasSize : Int -> Mono.LambdaSetAnno -> Bool
 annoHasSize n anno =
     case anno of
@@ -743,6 +765,9 @@ annoHasSize n anno =
             False
 
 
+{-| Renders annotations as a comma-separated list, such as `LTop, LSet[3,7]`, for
+failure messages.
+-}
 describeAnnos : List Mono.LambdaSetAnno -> String
 describeAnnos annos =
     String.join ", "
@@ -769,30 +794,35 @@ describeAnnos annos =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int`.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| The source type `Int -> Int`, the type of `inc` in both programs.
+-}
 hInt : Src.Type
 hInt =
     tLambda tInt tInt
 
 
+{-| Builds the source type `List el`.
+-}
 tListOf : Src.Type -> Src.Type
 tListOf el =
     tType "List" [ el ]
 
 
-{-| Test 1: `consInc = List.cons inc` applies ONE of `cons`'s two params.
-Positional rows are arity-aligned, so a boundary in this shape falls back to
-LSS\_004 full poison; a license has no positions to align, so unification
-against however many args are present carries `g|inc` through anyway.
+{-| The program for test 1. `inc` adds one to an `Int`, `consInc` is
+`List.cons inc`, which applies `List.cons` to one of its two arguments, and
+`testValue` is `consInc []`.
 
-`inc` is a NAMED GLOBAL in direct argument position on purpose. Members are
-injected per argument EXPRESSION (`Translate.injectArgLambdaMember` via
-`argUnifyVar`), so a global nested inside a list literal contributes nothing
-and could not pin anything.
+`inc` is the call's argument itself, not an element of a list literal.
+`Compiler.MonoSolver.Translate.injectArgLambdaMember`, which gives a call's
+parameter the member of the function passed to it, adds a global's member when
+the argument expression is that global, and adds nothing for a list literal.
 
 -}
 partialKernelModule : Src.Module
@@ -816,9 +846,9 @@ partialKernelModule =
         ]
 
 
-{-| Test 2: the cheap class — `List.cons : a -> List a -> List a` at
-`a = Int -> Int`. Nothing is applied; the license rests entirely on "the
-element moves along the shared `a`".
+{-| The program for test 2. `inc` adds one to an `Int`, and `testValue` is
+`List.cons inc []`, which applies `List.cons` to both of its arguments with
+`Int -> Int` as the element type.
 -}
 consFunctionModule : Src.Module
 consFunctionModule =

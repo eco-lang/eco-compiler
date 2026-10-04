@@ -1,15 +1,39 @@
 module TestLogic.Canonicalize.DependencySCC exposing (expectValidSCCs)
 
-{-| Test logic for invariant CANON\_005: Dependency SCCs are correctly computed.
+{-| A checker for how canonicalization groups a module's top-level
+definitions, meant to catch a canonicalizer that groups them wrongly. What it
+actually checks is much narrower, as set out below.
 
-For the SCC analysis of value definitions:
+The canonicalizer sorts a module's top-level definitions into the strongly
+connected components (SCCs) of their dependency graph, and gives the module
+its declarations as a chain of them. A definition in a component of its own
+that does not depend on itself is a `Can.Declare`. A group of definitions that
+depend on each other, or a single definition that depends on itself, is one
+`Can.DeclareRec`. `Compiler.Canonicalize.Module` owns this grouping, and the
+rule that decides which cycles among definitions with no arguments are
+errors.
 
-  - Verify all definitions in an SCC have mutual dependencies.
-  - Verify definitions in different SCCs have acyclic dependencies.
-  - Verify topological ordering respects dependency order.
+`expectValidSCCs` runs a source module through
+`TestLogic.TestPipeline.runToPostSolve` and walks the canonical declarations.
+It reports two things:
 
-This module reuses the existing typed optimization pipeline to verify
-SCC computation works correctly.
+  - a `Declare`d definition whose body names the definition as a local
+    variable (`Can.VarLocal`);
+  - a `DeclareRec` group with no definitions.
+
+Neither arises from a module that canonicalizes. A body cannot name its own
+definition as a local variable, because a local binding that reuses a
+top-level name is a `Shadowing` error, and a reference to a top-level
+definition is a `Can.VarTopLevel`, which the walk does not collect. A
+`DeclareRec` always carries at least one definition. So the expectation
+passes when the pipeline succeeds. A pipeline failure passes only if its
+message contains "recursive", and the messages `TestLogic.TestPipeline` gives
+for a canonicalization or type checking failure carry only a count of
+errors, so such a failure fails the expectation.
+
+Among what is not checked: that the definitions of a `DeclareRec` group
+depend on each other, that there is no cycle between definitions in
+different groups, and the order of the groups.
 
 -}
 
@@ -22,15 +46,21 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that SCCs are correctly computed.
+{-| Runs `srcModule` through `TestLogic.TestPipeline.runToPostSolve` and
+checks its canonical declarations.
+
+The expectation fails, with one line per problem, if a `Can.Declare`d
+definition's body names the definition as a local variable or a
+`Can.DeclareRec` group is empty; otherwise it passes. If the pipeline fails,
+the expectation passes when the failure message contains "recursive", in any
+letter case, and fails with the message otherwise.
+
 -}
 expectValidSCCs : Src.Module -> Expect.Expectation
 expectValidSCCs srcModule =
     case Pipeline.runToPostSolve srcModule of
         Err msg ->
-            -- Check if this is a recursion error
             if String.contains "recursive" (String.toLower msg) then
-                -- This could be expected for invalid recursion tests
                 Expect.pass
 
             else
@@ -54,37 +84,26 @@ expectValidSCCs srcModule =
 -- ============================================================================
 
 
-{-| Collect SCC-related issues from the canonical module.
-
-After canonicalization, the declarations are organized into:
-
-  - Single declarations (Declare) for non-recursive definitions
-  - Recursive declaration groups (DeclareRec) for mutually recursive definitions
-
+{-| Returns one message for each problem `collectDeclsSCCIssues` finds in the
+declarations of a canonical module.
 -}
 collectSCCIssues : Can.Module -> List String
 collectSCCIssues (Can.Module moduleData) =
     collectDeclsSCCIssues moduleData.decls
 
 
-{-| Collect SCC issues from declarations.
-
-Verify that:
-
-  - Non-recursive declarations don't reference themselves
-  - Recursive declarations actually have mutual dependencies
-
+{-| Returns a message for each `Can.Declare`d definition in `decls` whose
+body names the definition as a local variable, and for each empty
+`Can.DeclareRec` group.
 -}
 collectDeclsSCCIssues : Can.Decls -> List String
 collectDeclsSCCIssues decls =
     case decls of
         Can.Declare def rest ->
-            -- Single declaration - should not be self-recursive
             checkNonRecursiveDef def
                 ++ collectDeclsSCCIssues rest
 
         Can.DeclareRec def defs rest ->
-            -- Recursive group - should have mutual dependencies
             checkRecursiveGroup (def :: defs)
                 ++ collectDeclsSCCIssues rest
 
@@ -92,7 +111,12 @@ collectDeclsSCCIssues decls =
             []
 
 
-{-| Check that a non-recursive definition doesn't reference itself.
+{-| Returns a message if the body of `def` names the definition as a local
+variable, and no message otherwise.
+
+Only `Can.VarLocal` names are looked for. A reference to a top-level
+definition, its own included, is a `Can.VarTopLevel` and is not seen.
+
 -}
 checkNonRecursiveDef : Can.Def -> List String
 checkNonRecursiveDef def =
@@ -115,11 +139,8 @@ checkNonRecursiveDef def =
         []
 
 
-{-| Check that a recursive group has valid mutual dependencies.
-
-All definitions in a recursive group should be reachable from each other
-through the dependency graph.
-
+{-| Returns a message if `defs` is empty, and no message otherwise. The
+dependencies between the definitions are not examined.
 -}
 checkRecursiveGroup : List Can.Def -> List String
 checkRecursiveGroup defs =
@@ -130,7 +151,13 @@ checkRecursiveGroup defs =
         []
 
 
-{-| Collect local variable references from an expression.
+{-| Returns the names of the local variables (`Can.VarLocal`) that an
+expression references.
+
+Every node with sub-expressions is descended into, including the bodies of
+`let` definitions. Patterns are not looked at, and every other leaf, such as
+`Can.VarTopLevel` or `Can.VarForeign`, contributes nothing.
+
 -}
 collectLocalReferences : Can.Expr -> EverySet String String
 collectLocalReferences (A.At _ exprInfo) =
@@ -202,7 +229,8 @@ collectLocalReferences (A.At _ exprInfo) =
             Set.empty
 
 
-{-| Collect local references from a definition body.
+{-| Returns the names of the local variables referenced in the body of
+`def`. Its argument patterns are not looked at.
 -}
 collectDefReferences : Can.Def -> EverySet String String
 collectDefReferences def =

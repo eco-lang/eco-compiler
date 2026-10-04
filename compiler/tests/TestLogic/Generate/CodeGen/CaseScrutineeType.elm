@@ -1,8 +1,22 @@
 module TestLogic.Generate.CodeGen.CaseScrutineeType exposing (expectCaseScrutineeType)
 
-{-| Test logic for CGEN\_037: Case Scrutinee Type Agreement invariant.
+{-| The code generator gives each `eco.case` a `case_kind` attribute saying what
+kind of value it branches on, and nothing in `Mlir.Mlir` ties that kind to the
+type of the value. This module checks, in the MLIR generated for a program,
+that the two agree.
 
-`eco.case` scrutinee is `i1` only for boolean cases; otherwise `!eco.value`.
+The _scrutinee_ of an `eco.case` is the value it branches on, its first
+operand. Its type is read from the op's `_operand_types` attribute, as
+`TestLogic.Generate.CodeGen.Invariants` describes, so an `eco.case` without
+that attribute, or with an empty one, is not checked. The type each kind calls
+for is:
+
+  - `int`: `i64`.
+  - `chr`: `i16`.
+  - `bool`: `i1`.
+  - `ctor` and `str`: `!eco.value`.
+
+An `eco.case` with any other `case_kind`, or with none, is not checked.
 
 @docs expectCaseScrutineeType
 
@@ -23,7 +37,15 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that case scrutinee type invariants hold for a source module.
+{-| Compiles `srcModule` to MLIR with `runToMlir` and returns an expectation that
+passes when every `eco.case` in the result whose `case_kind` is `int`, `chr`,
+`bool`, `ctor` or `str` has a scrutinee of the type that kind calls for: `i64`,
+`i16`, `i1`, or `!eco.value` for the last two. An `eco.case` without recorded
+operand types is skipped.
+
+It fails with the compilation error when `runToMlir` fails. Otherwise it fails
+with the first violation only, as `violationsToExpectation` describes.
+
 -}
 expectCaseScrutineeType : Src.Module -> Expectation
 expectCaseScrutineeType srcModule =
@@ -35,7 +57,8 @@ expectCaseScrutineeType srcModule =
             violationsToExpectation (checkCaseScrutineeType mlirModule)
 
 
-{-| Check case scrutinee type invariants.
+{-| Returns a violation for each `eco.case` in `mlirModule`, at any depth, whose
+scrutinee type does not match its `case_kind`.
 -}
 checkCaseScrutineeType : MlirModule -> List Violation
 checkCaseScrutineeType mlirModule =
@@ -46,6 +69,11 @@ checkCaseScrutineeType mlirModule =
     List.filterMap checkCaseScrutinee caseOps
 
 
+{-| Returns a violation when the scrutinee type of `op` does not match its
+`case_kind`. Returns `Nothing` when it matches, when `op` has no recorded
+operand types, and when `case_kind` is missing or not one of the kinds checked.
+The name of `op` is not checked.
+-}
 checkCaseScrutinee : MlirOp -> Maybe Violation
 checkCaseScrutinee op =
     let
@@ -65,7 +93,6 @@ checkCaseScrutinee op =
         Just (scrutineeType :: _) ->
             case maybeCaseKind of
                 Just "int" ->
-                    -- Int cases require i64 scrutinee
                     if scrutineeType /= I64 then
                         Just
                             { opId = op.id
@@ -79,7 +106,6 @@ checkCaseScrutinee op =
                         Nothing
 
                 Just "chr" ->
-                    -- Char cases require i16 scrutinee (eco.char)
                     if scrutineeType /= I16 then
                         Just
                             { opId = op.id
@@ -93,7 +119,6 @@ checkCaseScrutinee op =
                         Nothing
 
                 Just "ctor" ->
-                    -- Constructor cases require eco.value scrutinee
                     if not (isEcoValueType scrutineeType) then
                         Just
                             { opId = op.id
@@ -107,7 +132,6 @@ checkCaseScrutinee op =
                         Nothing
 
                 Just "str" ->
-                    -- String cases require eco.value scrutinee
                     if not (isEcoValueType scrutineeType) then
                         Just
                             { opId = op.id
@@ -121,7 +145,6 @@ checkCaseScrutinee op =
                         Nothing
 
                 Just "bool" ->
-                    -- Boolean cases require i1 scrutinee
                     if scrutineeType /= I1 then
                         Just
                             { opId = op.id
@@ -135,10 +158,13 @@ checkCaseScrutinee op =
                         Nothing
 
                 _ ->
-                    -- Unknown case_kind, no validation
                     Nothing
 
 
+{-| Returns how `t` is written in a violation message: an integer or float type
+as in MLIR, a dialect type by its name without the leading `!` (so `eco.value`),
+and any function type as `function`.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

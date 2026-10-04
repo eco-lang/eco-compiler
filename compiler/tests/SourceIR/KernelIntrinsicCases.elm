@@ -1,11 +1,77 @@
 module SourceIR.KernelIntrinsicCases exposing (expectSuite)
 
-{-| Direct Elm.Kernel.\* VarKernel intrinsic tests.
+{-| Programs that refer to `Elm.Kernel.*` names directly, most of them in a
+call, so that a compiler stage given them meets each kernel reference with no
+elm/core wrapper in between.
 
-Each test calls a single kernel function directly via qualVarExpr "Elm.Kernel.X" "name"
-to exercise specific MLIR intrinsic code generation paths.
+A kernel function is one the runtime implements rather than Elm code. A program
+names it by a qualified name whose module is a kernel module, such as
+`Elm.Kernel.Basics.add`. Canonicalization turns such a name into a kernel
+reference only in a module of a kernel package, one authored by `elm`,
+`elm-explorations` or `eco`; anywhere else the name is reported as not found.
+It does not check that the name exists (`findVarQual`), and for some names
+used here `elm-kernel-cpp` exports no function and there is no intrinsic:
+`Basics.fadd`, `fsub`, `fmul`, `fpow`, `identity`, `always` and `clamp`;
+`List.map`, `foldl`, `foldr`, `singleton`, `length` and `range`; and every
+`Tuple` name. Their cases exercise only the compiler's handling of the
+reference.
 
-Grouped by kernel module: Basics, Utils, Bitwise, JsArray, List, Tuple, String, Bytes.
+For the kernel modules `Basics`, `Bitwise`, `Utils`, `JsArray`, `List`, `Char`
+and `String`, the MLIR back end may emit a call as an inline operation, an
+_intrinsic_, instead of a call into the kernel, choosing by the argument and
+result types (`Compiler.Generate.MLIR.Intrinsics.kernelIntrinsic`). Because the
+choice depends on those types, many functions here are called once with `Int`
+and once with `Float` arguments.
+
+Each case is a module built by `makeKernelModule`: a module named `Test` whose
+one top-level value, `testValue`, has no annotation and is defined as the kernel
+reference or call. The type checker leaves a kernel reference unconstrained
+unless it has a row in `Compiler.Type.KernelIntrinsics`, and none of the kernels
+called here has one, so the type checker does not check the arguments against
+the kernel's real type. Some arguments would be wrong in a running program:
+`JsArray.unsafeSet` writes index 0 of the empty array, and the `Bytes.encode`
+and `Bytes.decode` cases pass `Int` literals where the kernels take an encoder,
+a decoder and bytes.
+
+This module asserts nothing itself. Each case passes its program to the
+expectation function the caller supplies, and passes or fails as that does. The
+cases, by group:
+
+  - `Basics` on `Int`: `add`, `sub`, `mul`, `idiv`, `remainderBy`, `negate`,
+    `abs`, `pow`, `min` and `max`.
+  - `Basics` on `Float`: `fadd`, `fsub`, `fmul`, `fdiv`, `fpow`, `sqrt`, `log`
+    and `logBase`, and `negate`, `abs`, `min`, `max` and `pow`.
+  - `Basics` comparisons `eq`, `neq`, `lt`, `le`, `gt` and `ge`, each on two
+    `Int`s and on two `Float`s.
+  - `Basics` `not`, `and`, `or` and `xor` on `True` and `False`.
+  - `Basics` `sin`, `cos`, `tan`, `asin`, `acos`, `atan` and `atan2`.
+  - `Basics` `toFloat`, `round`, `floor`, `ceiling` and `truncate`.
+  - `Basics` `pi` and `e`, used as values rather than called.
+  - `Basics` `identity` and `always`, `isNaN` and `isInfinite` on a `Float`,
+    and `clamp` on three `Int`s.
+  - `Utils` `equal`, `notEqual`, `compare`, `lt`, `le`, `gt` and `ge`, each on
+    two `Int`s and on two `Float`s, and `append` on two lists of `Int`.
+  - `Bitwise` `and`, `or`, `xor`, `complement`, `shiftLeftBy`, `shiftRightBy`
+    and `shiftRightZfBy`.
+  - `JsArray` `empty` used as a value; `push`, `length`, `unsafeSet`, `slice`
+    and `initializeFromList`; `unsafeGet` on an array built by
+    `initializeFromList`; and `map`, `foldl` and `foldr` with a lambda that
+    calls `Basics.add`.
+  - `List` `cons`, `singleton`, `reverse`, `length`, `concat`, `range` and
+    `drop`; `map`, `map2` and `foldr` with a lambda that calls `Basics.add`;
+    and `foldl` with `Basics.add` passed unapplied.
+  - `Tuple` `pair`, `first` and `second`, and `mapFirst` and `mapSecond` with
+    a lambda.
+  - `String.fromNumber` on two `Int` literals and on a `Float`, `Char.fromCode`,
+    and `Char.toCode` applied to the result of `Char.fromCode`.
+  - `Bytes.encode` and `Bytes.decode` on `Int` literals.
+  - `Basics.identity` applied to a pair of `Int`s and to an application of
+    `Tuple.pair`, `Debug.log` on a `String` and an `Int`, and `Debug.todo` on a
+    `String`.
+
+Among what is not tested: a kernel module outside these, such as `Json`, and
+arguments of a unit or record type, or of a custom type other than `Bool`,
+which no case passes.
 
 -}
 
@@ -30,12 +96,20 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named "Kernel intrinsics " followed by `condStr`, that
+passes every program in this module to `expectFn` and fails under the label of
+the first case that fails. The cases after it are not run, as
+`Compiler.BulkCheck.bulkCheck` describes.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Kernel intrinsics " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the cases of every group in this module, in the order the groups
+appear in the file.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -65,6 +139,10 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that apply the `Elm.Kernel.Basics` names `add`, `sub`,
+`mul`, `idiv`, `remainderBy`, `negate`, `abs`, `pow`, `min` and `max` to `Int`
+literals.
+-}
 basicsIntArithCases : (Src.Module -> Expectation) -> List TestCase
 basicsIntArithCases expectFn =
     [ { label = "K Basics.add Int", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 3, intExpr 4 ])) }
@@ -86,6 +164,10 @@ basicsIntArithCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that apply the `Elm.Kernel.Basics` names `fadd`, `fsub`,
+`fmul`, `fdiv`, `fpow`, `sqrt`, `log` and `logBase`, and `negate`, `abs`, `min`,
+`max` and `pow`, to `Float` literals.
+-}
 basicsFloatArithCases : (Src.Module -> Expectation) -> List TestCase
 basicsFloatArithCases expectFn =
     [ { label = "K Basics.fadd", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "fadd") [ floatExpr 1.5, floatExpr 2.5 ])) }
@@ -110,6 +192,10 @@ basicsFloatArithCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that apply the `Elm.Kernel.Basics` names `eq`, `neq`,
+`lt`, `le`, `gt` and `ge`, each once to two `Int` literals and once to two
+`Float` literals.
+-}
 basicsComparisonCases : (Src.Module -> Expectation) -> List TestCase
 basicsComparisonCases expectFn =
     [ { label = "K Basics.eq Int", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "eq") [ intExpr 1, intExpr 1 ])) }
@@ -133,6 +219,9 @@ basicsComparisonCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that call the `Basics` kernels `not`, `and`, `or` and
+`xor` on `True` and `False`.
+-}
 basicsBoolCases : (Src.Module -> Expectation) -> List TestCase
 basicsBoolCases expectFn =
     [ { label = "K Basics.not", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "not") [ boolExpr True ])) }
@@ -148,6 +237,9 @@ basicsBoolCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that call the `Basics` trigonometric kernels on `Float`
+literals.
+-}
 basicsTrigCases : (Src.Module -> Expectation) -> List TestCase
 basicsTrigCases expectFn =
     [ { label = "K Basics.sin", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "sin") [ floatExpr 0.0 ])) }
@@ -166,6 +258,9 @@ basicsTrigCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that call the `Basics` conversion kernels: `toFloat` on an
+`Int`, and `round`, `floor`, `ceiling` and `truncate` on a `Float`.
+-}
 basicsConversionCases : (Src.Module -> Expectation) -> List TestCase
 basicsConversionCases expectFn =
     [ { label = "K Basics.toFloat", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "toFloat") [ intExpr 42 ])) }
@@ -182,6 +277,9 @@ basicsConversionCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases whose program is the kernel value `Basics.pi` or
+`Basics.e` on its own, with no call.
+-}
 basicsConstantCases : (Src.Module -> Expectation) -> List TestCase
 basicsConstantCases expectFn =
     [ { label = "K Basics.pi", run = \_ -> expectFn (makeKernelModule "testValue" (qualVarExpr "Elm.Kernel.Basics" "pi")) }
@@ -195,6 +293,10 @@ basicsConstantCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that apply the `Elm.Kernel.Basics` names `identity`,
+`always` (to two arguments), `isNaN`, `isInfinite`, and `clamp` (to three `Int`
+literals).
+-}
 basicsMiscCases : (Src.Module -> Expectation) -> List TestCase
 basicsMiscCases expectFn =
     [ { label = "K Basics.identity", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity") [ intExpr 99 ])) }
@@ -207,10 +309,14 @@ basicsMiscCases expectFn =
 
 
 -- ============================================================================
--- UTILS: INT COMPARISONS
+-- UTILS: INT COMPARISONS AND APPEND
 -- ============================================================================
 
 
+{-| Returns the cases that call the `Utils` comparison kernels `equal`,
+`notEqual`, `compare`, `lt`, `le`, `gt` and `ge` on two `Int` literals, and
+`Utils.append` on two one-element lists of `Int`.
+-}
 utilsIntCases : (Src.Module -> Expectation) -> List TestCase
 utilsIntCases expectFn =
     [ { label = "K Utils.equal Int", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Utils" "equal") [ intExpr 1, intExpr 2 ])) }
@@ -230,6 +336,9 @@ utilsIntCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that call the `Utils` comparison kernels `equal`,
+`notEqual`, `compare`, `lt`, `le`, `gt` and `ge` on two `Float` literals.
+-}
 utilsFloatCases : (Src.Module -> Expectation) -> List TestCase
 utilsFloatCases expectFn =
     [ { label = "K Utils.equal Float", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Utils" "equal") [ floatExpr 1.5, floatExpr 2.5 ])) }
@@ -248,6 +357,10 @@ utilsFloatCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that call the `Bitwise` kernels `and`, `or`, `xor`,
+`complement`, `shiftLeftBy`, `shiftRightBy` and `shiftRightZfBy` on `Int`
+literals.
+-}
 bitwiseCases : (Src.Module -> Expectation) -> List TestCase
 bitwiseCases expectFn =
     [ { label = "K Bitwise.and", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Bitwise" "and") [ intExpr 255, intExpr 15 ])) }
@@ -266,6 +379,11 @@ bitwiseCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases that use the `JsArray` kernels: `empty` on its own, and
+calls of the rest. Apart from `initializeFromList` and `unsafeGet`, each of the
+other calls takes `JsArray.empty` as its array, including `unsafeSet` at index 0
+and `slice` from 0 to 2.
+-}
 jsArrayCases : (Src.Module -> Expectation) -> List TestCase
 jsArrayCases expectFn =
     [ { label = "K JsArray.empty", run = \_ -> expectFn (makeKernelModule "testValue" (qualVarExpr "Elm.Kernel.JsArray" "empty")) }
@@ -281,6 +399,9 @@ jsArrayCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a program that calls `JsArray.unsafeGet` at index 0
+of the array `JsArray.initializeFromList` builds from `[ 10, 20, 30 ]`.
+-}
 jsArrayUnsafeGet : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayUnsafeGet expectFn _ =
     expectFn
@@ -293,6 +414,9 @@ jsArrayUnsafeGet expectFn _ =
         )
 
 
+{-| Applies `expectFn` to a program that maps a lambda adding 1 over
+`JsArray.empty`.
+-}
 jsArrayMap : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayMap expectFn _ =
     expectFn
@@ -305,6 +429,9 @@ jsArrayMap expectFn _ =
         )
 
 
+{-| Applies `expectFn` to a program that folds a lambda adding its two
+arguments over `JsArray.empty` from the left, starting at 0.
+-}
 jsArrayFoldl : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayFoldl expectFn _ =
     expectFn
@@ -318,6 +445,9 @@ jsArrayFoldl expectFn _ =
         )
 
 
+{-| Applies `expectFn` to a program that folds a lambda adding its two
+arguments over `JsArray.empty` from the right, starting at 0.
+-}
 jsArrayFoldr : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayFoldr expectFn _ =
     expectFn
@@ -337,6 +467,9 @@ jsArrayFoldr expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that apply the `Elm.Kernel.List` names to `Int` literals
+and lists, with a function as well for `map`, `map2`, `foldl` and `foldr`.
+-}
 listCases : (Src.Module -> Expectation) -> List TestCase
 listCases expectFn =
     [ { label = "K List.cons", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.List" "cons") [ intExpr 1, listExpr [ intExpr 2 ] ])) }
@@ -353,6 +486,9 @@ listCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a program that applies `Elm.Kernel.List.map` to a
+lambda adding 1 and `[ 1, 2, 3 ]`.
+-}
 listMapK : (Src.Module -> Expectation) -> (() -> Expectation)
 listMapK expectFn _ =
     expectFn
@@ -365,6 +501,9 @@ listMapK expectFn _ =
         )
 
 
+{-| Applies `expectFn` to a program that applies `Elm.Kernel.List.map2` to a
+lambda adding its two arguments, `[ 1, 2 ]` and `[ 10, 20 ]`.
+-}
 listMap2K : (Src.Module -> Expectation) -> (() -> Expectation)
 listMap2K expectFn _ =
     expectFn
@@ -378,6 +517,9 @@ listMap2K expectFn _ =
         )
 
 
+{-| Applies `expectFn` to a program that applies `Elm.Kernel.List.foldl` to the
+kernel `Elm.Kernel.Basics.add`, unapplied, 0 and `[ 1, 2, 3 ]`.
+-}
 listFoldlK : (Src.Module -> Expectation) -> (() -> Expectation)
 listFoldlK expectFn _ =
     expectFn
@@ -388,6 +530,9 @@ listFoldlK expectFn _ =
         )
 
 
+{-| Applies `expectFn` to a program that applies `Elm.Kernel.List.foldr` to a
+lambda adding its two arguments, 0 and `[ 1, 2, 3 ]`.
+-}
 listFoldrK : (Src.Module -> Expectation) -> (() -> Expectation)
 listFoldrK expectFn _ =
     expectFn
@@ -407,6 +552,10 @@ listFoldrK expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that apply the `Elm.Kernel.Tuple` names `pair`, `first`,
+`second`, `mapFirst` and `mapSecond`, each with an `Int` and a `String`, alone
+or as a pair.
+-}
 tupleCases : (Src.Module -> Expectation) -> List TestCase
 tupleCases expectFn =
     [ { label = "K Tuple.pair", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Tuple" "pair") [ intExpr 1, strExpr "hello" ])) }
@@ -417,6 +566,9 @@ tupleCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a program that applies `Elm.Kernel.Tuple.mapFirst` to
+a lambda adding 1 and the pair `( 5, "hi" )`.
+-}
 tupleMapFirstK : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleMapFirstK expectFn _ =
     expectFn
@@ -429,6 +581,9 @@ tupleMapFirstK expectFn _ =
         )
 
 
+{-| Applies `expectFn` to a program that applies `Elm.Kernel.Tuple.mapSecond`
+to a lambda adding 1 and the pair `( "hi", 5 )`.
+-}
 tupleMapSecondK : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleMapSecondK expectFn _ =
     expectFn
@@ -443,10 +598,14 @@ tupleMapSecondK expectFn _ =
 
 
 -- ============================================================================
--- STRING
+-- STRING AND CHAR
 -- ============================================================================
 
 
+{-| Returns the cases that call `String.fromNumber` on the `Int` literals 42
+and 12345 and on a `Float` literal, `Char.fromCode` on an `Int`, and
+`Char.toCode` on the result of `Char.fromCode`.
+-}
 stringCases : (Src.Module -> Expectation) -> List TestCase
 stringCases expectFn =
     [ { label = "K String.fromNumber", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.String" "fromNumber") [ intExpr 42 ])) }
@@ -459,10 +618,16 @@ stringCases expectFn =
 
 
 -- ============================================================================
--- BYTES (fusion detection)
+-- BYTES
 -- ============================================================================
 
 
+{-| Returns the cases that call the `Bytes` kernels `encode` and `decode`. Their
+arguments are `Int` literals, not the encoder, decoder and bytes the real
+kernels take. The MLIR back end gives a call of either kernel with these
+argument counts a path of its own, where it may attempt bytes fusion
+(`Compiler.Generate.MLIR.Expr`).
+-}
 bytesCases : (Src.Module -> Expectation) -> List TestCase
 bytesCases expectFn =
     [ { label = "K Bytes.encode", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode") [ intExpr 0 ])) }
@@ -473,11 +638,18 @@ bytesCases expectFn =
 
 -- ============================================================================
 -- KERNEL ABI TYPE PATTERNS
--- Exercises canTypeToMonoType_preserveVars with different type shapes:
--- record, tuple, unit, char, custom types
 -- ============================================================================
 
 
+{-| Returns the cases that apply `Elm.Kernel.Basics.identity` to a pair of
+`Int`s and to an application of `Elm.Kernel.Tuple.pair`, and call
+`Elm.Kernel.Debug.log` on a `String` and an `Int` and `Elm.Kernel.Debug.todo`
+on a `String`.
+
+The labels of the first two speak of a unit result and a record, but neither
+program contains a unit or a record value.
+
+-}
 kernelAbiTypeCases : (Src.Module -> Expectation) -> List TestCase
 kernelAbiTypeCases expectFn =
     [ { label = "K kernel with unit result", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity") [ tupleExpr (intExpr 1) (intExpr 2) ])) }
@@ -487,9 +659,11 @@ kernelAbiTypeCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a program that applies `Elm.Kernel.Basics.identity`
+to an application of `Elm.Kernel.Tuple.pair` to 1 and "hi", not to a record.
+-}
 kernelReturningRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelReturningRecord expectFn _ =
-    -- identity applied to a record — forces kernel ABI to handle record type
     expectFn
         (makeKernelModule "testValue"
             (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")

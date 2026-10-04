@@ -6,12 +6,43 @@ module Compiler.Parse.Variable exposing
     , getInnerWidth, getInnerWidthHelp, getUpperWidth
     )
 
-{-| Parser for variable names and identifiers in Elm.
+{-| This module decides what counts as a name in Elm source, and holds the
+parsers that read one.
 
-This module handles parsing of lower-case variables, upper-case type names,
-qualified names (with module prefixes), and module names. It properly handles
-Unicode characters and enforces Elm's naming rules including reserved word
-checking.
+An _identifier_ is a first character followed by any number of _inner
+characters_. The first character is a lower-case letter for the name of a
+value, and an upper-case letter for the name of a type, a constructor or one
+part of a module name. An inner character is a letter, a digit or `_`. A
+_qualified_ name is preceded by its _home_, the name of a module, written as
+upper-case identifiers each followed by a dot, as in `List.map` or
+`Json.Decode.Decoder`. The parsers with `foreign` in their names read a name
+that may be qualified.
+
+A lower-case identifier may not be a _reserved word_: `if`, `then`, `else`,
+`case`, `of`, `let`, `in`, `type`, `module`, `where`, `import`, `exposing`, `as`
+or `port`. Only an unqualified name is checked against them.
+
+Each parser is written directly as a function on the parser state, with
+positions and columns as `Compiler.Parse.Primitives` describes them. Every
+failure is reported with `Eerr`, as having consumed nothing, except a dot in a
+module name that is not followed by an upper-case identifier, which is `Cerr`.
+
+Most of the file is the character tests, which give a character's _width_: how
+many units of the position it takes as part of an identifier, or 0 when it
+cannot be one. An ASCII character is tested directly, and has a width of 1 when
+it is allowed in that place. Any other character is tested as though the text
+were UTF-8 bytes, which it is not. A character with a code from 0xC0 to 0xF7 is
+taken together with the one, two or three characters after it, and the group is
+decoded as the bytes of one UTF-8 character. The group has a width of 2, 3 or 4
+when the decoded character is an ASCII letter of the case required, since
+elm/core's `Char.isUpper`, `Char.isLower` and `Char.isAlpha` accept only ASCII
+letters. Any other character has a width of 0. So a non-ASCII letter is accepted
+only as part of a group that decodes to an ASCII letter, as in `Âb`, and such a
+group can put characters that are not letters into a name: `xÃ$` is one
+identifier. Whatever its width, an identifier character advances the column by
+one. The characters after the first in a group are read without checking them
+against the end of the input, and one past the end of the whole text is a crash
+in `unsafeIndex`.
 
 
 # Variable Types
@@ -47,7 +78,9 @@ import Data.Set as EverySet exposing (EverySet)
 -- ====== LOCAL UPPER ======
 
 
-{-| Parses an upper-case identifier (type name or constructor) that starts with A-Z.
+{-| Produces a parser for an unqualified upper-case identifier. It stops before
+a dot, so on `Maybe.Just` it reads `Maybe`. When no upper-case identifier starts
+at its position, it fails with `Eerr` there.
 -}
 upper : (Row -> Col -> x) -> P.Parser x Name
 upper toError =
@@ -73,8 +106,9 @@ upper toError =
 -- ====== LOCAL LOWER ======
 
 
-{-| Parses a lower-case identifier (variable or function name) that starts with a-z.
-Rejects reserved keywords like 'if', 'then', 'case', etc.
+{-| Produces a parser for an unqualified lower-case identifier that is not a
+reserved word. It fails with `Eerr` at its starting position when no lower-case
+identifier starts there, and also when the identifier it reads is reserved.
 -}
 lower : (Row -> Col -> x) -> P.Parser x Name
 lower toError =
@@ -105,13 +139,16 @@ lower toError =
                     P.Cok name newState
 
 
-{-| Checks whether a name is a reserved keyword that cannot be used as a variable name.
+{-| Returns whether `name` is one of the reserved words, which `lower` refuses
+as an identifier.
 -}
 isReservedWord : Name.Name -> Bool
 isReservedWord name =
     EverySet.member identity name reservedWords
 
 
+{-| The reserved words: the lower-case identifiers that `lower` refuses.
+-}
 reservedWords : EverySet String Name
 reservedWords =
     EverySet.fromList identity
@@ -136,8 +173,15 @@ reservedWords =
 -- ====== MODULE NAME ======
 
 
-{-| Parses a module name like 'Html', 'Json.Decode', or 'Data.Map.Internal'.
-Module names consist of one or more upper-case identifiers separated by dots.
+{-| Produces a parser for a module name: one or more upper-case identifiers
+joined by dots, such as `Html` or `Json.Decode`, read as one `Name` that keeps
+its dots.
+
+It fails with `Eerr` at its starting position when no upper-case identifier
+starts there. A dot that is not followed by an upper-case identifier, as in
+`Json.decode` or `Json.` followed by a space, is a failure with `Cerr` at the
+column just after the dot.
+
 -}
 moduleName : (Row -> Col -> x) -> P.Parser x Name
 moduleName toError =
@@ -172,11 +216,20 @@ moduleName toError =
                         P.Cerr st.row newCol toError
 
 
+{-| How the scan of the dotted parts of a module name ended. `Good` means it
+stopped where there is no dot, either at a character that is not a dot or at
+the end of the input. `Bad` means it found a dot with no upper-case identifier
+after it.
+-}
 type ModuleNameStatus
     = Good
     | Bad
 
 
+{-| Returns how the scan of the rest of a module name ends, starting from `pos`
+just after an upper-case identifier, with the position and column where it
+stopped: the end of the name for `Good`, or just after the dot for `Bad`.
+-}
 moduleNameHelp : String -> Int -> Int -> Col -> ( ModuleNameStatus, Int, Col )
 moduleNameHelp src pos end col =
     if isDot src pos end then
@@ -202,15 +255,27 @@ moduleNameHelp src pos end col =
 -- ====== FOREIGN UPPER ======
 
 
-{-| Represents an upper-case name that may be qualified with a module prefix.
+{-| An upper-case name as written in source, with or without its home.
+
+`Unqualified` carries the name alone. `Qualified` carries the home, without its
+final dot, and then the name, so `Json.Decode.Decoder` is
+`Qualified "Json.Decode" "Decoder"`.
+
 -}
 type Upper
     = Unqualified Name
     | Qualified Name Name
 
 
-{-| Parses an upper-case identifier that may be qualified with a module prefix.
-Examples: 'Just', 'Maybe.Just', 'Html.Attributes.class'.
+{-| Produces a parser for an upper-case name with or without its home, such as
+`Just` or `Maybe.Just`.
+
+A dot after an upper-case identifier is always read as part of the name, so
+every part must be upper-case. Where a dot is not followed by an upper-case
+identifier, as in `Maybe.withDefault`, the parser fails with `Eerr` at the
+column just after that dot. It also fails with `Eerr` at its starting position
+when no upper-case identifier starts there.
+
 -}
 foreignUpper : (Row -> Col -> x) -> P.Parser x Upper
 foreignUpper toError =
@@ -249,6 +314,11 @@ foreignUpper toError =
                 P.Cok upperName newState
 
 
+{-| Returns where the last part of a possibly qualified upper-case name starting
+at `pos` begins and ends, and the column at its end; the home runs from `pos` to
+the dot before that last part. When a part is missing, the begin and end are
+equal, at the position where an upper-case identifier was expected.
+-}
 foreignUpperHelp : String -> Int -> Int -> Col -> ( Int, Int, Col )
 foreignUpperHelp src pos end col =
     let
@@ -269,8 +339,18 @@ foreignUpperHelp src pos end col =
 -- ====== FOREIGN ALPHA ======
 
 
-{-| Parses a qualified or unqualified variable reference (upper or lower case).
-Returns a Var or VarQual expression node. Examples: 'x', 'map', 'List.map', 'Maybe.Just'.
+{-| Produces a parser for a reference to a value or constructor, with or
+without its home, read as an expression: `Src.Var` for `x` or `Just`, and
+`Src.VarQual` with the home for `List.map` or `Maybe.Just`. The variable type is
+`LowVar` when the last part is lower-case and `CapVar` when it is upper-case.
+
+Upper-case parts followed by a dot are read as the home, and the first
+lower-case part ends the name, so on `List.map.x` it reads `List.map`. Only an
+unqualified name is checked against the reserved words, and one that is
+reserved fails with `Eerr` at the starting position. When no part starts at the
+position, or none follows a dot, the parser fails with `Eerr` at the column
+where a part was expected.
+
 -}
 foreignAlpha : (Row -> Col -> x) -> P.Parser x Src.Expr_
 foreignAlpha toError =
@@ -309,6 +389,11 @@ foreignAlpha toError =
                     P.Cok (Src.VarQual varType home name) newState
 
 
+{-| Returns where the last part of a possibly qualified name starting at `pos`
+begins and ends, the column at its end, and whether that part is lower-case or
+upper-case. When a part is missing, the begin and end are equal, at the
+position where a part was expected, and the variable type is `CapVar`.
+-}
 foreignAlphaHelp : String -> Int -> Int -> Col -> ( ( Int, Int ), ( Col, Src.VarType ) )
 foreignAlphaHelp src pos end col =
     let
@@ -338,7 +423,7 @@ foreignAlphaHelp src pos end col =
 -- ====== DOTS ======
 
 
-{-| Checks if the character at the given position is a dot (.).
+{-| Returns whether `pos` is before `end` and the character there is a dot.
 -}
 isDot : String -> Int -> Int -> Bool
 isDot src pos end =
@@ -349,8 +434,8 @@ isDot src pos end =
 -- ====== UPPER CHARS ======
 
 
-{-| Consumes an upper-case identifier including any trailing inner characters (letters, digits, underscores).
-Returns the new position and column after consuming the identifier.
+{-| Returns the position and column just after the upper-case identifier that
+starts at `pos`, or `pos` and `col` themselves when none starts there.
 -}
 chompUpper : String -> Int -> Int -> Col -> ( Int, Col )
 chompUpper src pos end col =
@@ -366,8 +451,10 @@ chompUpper src pos end col =
         chompInnerChars src (pos + width) end (col + 1)
 
 
-{-| Returns the byte width of an upper-case starting character (1-4 bytes for UTF-8).
-Returns 0 if the character is not upper-case.
+{-| Returns the width of the first character of an upper-case identifier at
+`pos`: 1 for `A` to `Z`, 2 to 4 for a group of characters accepted as the
+module docstring describes, and 0 when there is none, including at or past
+`end`.
 -}
 getUpperWidth : String -> Int -> Int -> Int
 getUpperWidth src pos end =
@@ -378,8 +465,10 @@ getUpperWidth src pos end =
         0
 
 
-{-| Helper for getUpperWidth that determines byte width based on the first character.
-Handles ASCII upper-case letters and multi-byte UTF-8 upper-case characters.
+{-| Returns the width `getUpperWidth` gives, where `word` is the character at
+`pos` in `src`. The third argument, the end of the input, is ignored, so a
+group is decoded from the characters after `pos` without checking them against
+the end; past the end of `src`, `unsafeIndex` crashes.
 -}
 getUpperWidthHelp : String -> Int -> Int -> Char -> Int
 getUpperWidthHelp src pos _ word =
@@ -423,8 +512,9 @@ getUpperWidthHelp src pos _ word =
 -- ====== LOWER CHARS ======
 
 
-{-| Consumes a lower-case identifier including any trailing inner characters (letters, digits, underscores).
-Returns the new position and column after consuming the identifier.
+{-| Returns the position and column just after the lower-case identifier that
+starts at `pos`, or `pos` and `col` themselves when none starts there. It does
+not check for reserved words.
 -}
 chompLower : String -> Int -> Int -> Col -> ( Int, Col )
 chompLower src pos end col =
@@ -440,6 +530,10 @@ chompLower src pos end col =
         chompInnerChars src (pos + width) end (col + 1)
 
 
+{-| Returns the width of the first character of a lower-case identifier at
+`pos`: 1 for `a` to `z`, 2 to 4 for an accepted group of characters, and 0 when
+there is none, including at or past `end`.
+-}
 getLowerWidth : String -> Int -> Int -> Int
 getLowerWidth src pos end =
     if pos < end then
@@ -449,6 +543,10 @@ getLowerWidth src pos end =
         0
 
 
+{-| Returns the width `getLowerWidth` gives, where `word` is the character at
+`pos` in `src`. Like `getUpperWidthHelp`, it ignores its third argument and
+reads a group without checking it against the end of the input.
+-}
 getLowerWidthHelp : String -> Int -> Int -> Char -> Int
 getLowerWidthHelp src pos _ word =
     let
@@ -491,8 +589,8 @@ getLowerWidthHelp src pos _ word =
 -- ====== INNER CHARS ======
 
 
-{-| Consumes the inner characters of an identifier (letters, digits, underscores).
-Used after consuming the initial character of a variable name.
+{-| Returns the position and column just after the run of inner characters that
+starts at `pos`, which is `pos` and `col` themselves when the run is empty.
 -}
 chompInnerChars : String -> Int -> Int -> Col -> ( Int, Col )
 chompInnerChars src pos end col =
@@ -508,8 +606,9 @@ chompInnerChars src pos end col =
         chompInnerChars src (pos + width) end (col + 1)
 
 
-{-| Returns the byte width of an inner identifier character (letter, digit, or underscore).
-Returns 0 if the character is not a valid inner character.
+{-| Returns the width of the inner character at `pos`: 1 for an ASCII letter, a
+digit or `_`, 2 to 4 for a group of characters accepted as the module docstring
+describes, and 0 when there is none, including at or past `end`.
 -}
 getInnerWidth : String -> Int -> Int -> Int
 getInnerWidth src pos end =
@@ -520,8 +619,14 @@ getInnerWidth src pos end =
         0
 
 
-{-| Helper for getInnerWidth that determines byte width based on the character.
-Handles ASCII alphanumeric characters, underscores, and multi-byte UTF-8 letters.
+{-| Returns the width of an inner character, where `word` must be the character
+at `pos` in `src`: 1 for an ASCII letter, a digit or `_`, 2 to 4 for a group of
+characters accepted as the module docstring describes, and 0 otherwise.
+
+The third argument, the end of the input, is ignored. For a character with a
+code from 0xC0 to 0xF7, the one to three characters after `pos` are read
+whatever the end, and reading past the end of `src` crashes in `unsafeIndex`.
+
 -}
 getInnerWidthHelp : String -> Int -> Int -> Char -> Int
 getInnerWidthHelp src pos _ word =
@@ -574,6 +679,10 @@ getInnerWidthHelp src pos _ word =
 -- ====== EXTRACT CHARACTERS ======
 
 
+{-| Returns the character that `firstWord` and the character after `pos` would
+encode if they were the two bytes of a UTF-8 sequence. Nothing checks that
+either is in the range of such a byte.
+-}
 chr2 : String -> Int -> Char -> Char
 chr2 src pos firstWord =
     let
@@ -596,6 +705,10 @@ chr2 src pos firstWord =
     Char.fromCode (c1 + c2)
 
 
+{-| Returns the character that `firstWord` and the two characters after `pos`
+would encode if they were the three bytes of a UTF-8 sequence, without checking
+that any of them is in the range of such a byte.
+-}
 chr3 : String -> Int -> Char -> Char
 chr3 src pos firstWord =
     let
@@ -626,6 +739,10 @@ chr3 src pos firstWord =
     Char.fromCode (c1 + c2 + c3)
 
 
+{-| Returns the character that `firstWord` and the three characters after `pos`
+would encode if they were the four bytes of a UTF-8 sequence, without checking
+that any of them is in the range of such a byte.
+-}
 chr4 : String -> Int -> Char -> Char
 chr4 src pos firstWord =
     let
@@ -664,6 +781,8 @@ chr4 src pos firstWord =
     Char.fromCode (c1 + c2 + c3 + c4)
 
 
+{-| Returns the code of a character, as `Char.toCode` does.
+-}
 unpack : Char -> Int
 unpack =
     Char.toCode

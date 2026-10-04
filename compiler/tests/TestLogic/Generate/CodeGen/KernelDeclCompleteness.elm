@@ -1,12 +1,25 @@
 module TestLogic.Generate.CodeGen.KernelDeclCompleteness exposing (expectKernelDeclCompleteness)
 
-{-| Test logic for CGEN\_057: Kernel Declaration Completeness invariant.
+{-| Checks that the MLIR generated for a module declares the kernel functions
+it refers to by `Elm_Kernel_` symbols. A kernel function is one implemented by
+the runtime rather than compiled from Elm. Its implementation is not in the
+generated module, which instead holds a top-level `func.func` stub for it
+carrying the attribute `is_kernel = true`.
 
-Every kernel function symbol (Elm\_Kernel\_\*) that appears in a papCreate,
-papExtend, or eco.call operation must have a corresponding func.func
-declaration with is\_kernel=true.
+The check compiles a source module to an in-memory MLIR module, collects the
+names of its top-level `func.func` ops that begin `Elm_Kernel_` and have
+`is_kernel` true, and then looks at every op at any depth. One violation is
+found for each of these ops that names an `Elm_Kernel_` symbol missing from
+that set, and a failing test shows the first of them:
 
-@docs expectKernelDeclCompleteness
+  - an `eco.papCreate` or `eco.papExtend`, by its `function` attribute;
+  - an `eco.call`, by its `callee` attribute, with a leading `@` removed.
+
+Among what is not checked: symbols with any other prefix, such as
+`Eco_Kernel_`; references held in any other attribute or by any other op; and
+whether a declaration's type agrees with the references to it. Generated
+`eco.papExtend` ops carry no `function` attribute, so in practice only
+`eco.papCreate` and `eco.call` references are checked.
 
 -}
 
@@ -26,7 +39,11 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that kernel declaration completeness invariants hold for a source module.
+{-| Compiles `srcModule` to MLIR and passes when every `Elm_Kernel_` symbol
+named by its `eco.papCreate`, `eco.papExtend` and `eco.call` ops is declared as
+a kernel, as the module docstring describes. Fails with the message for the
+first undeclared reference, or with the test pipeline's error message if
+compilation fails.
 -}
 expectKernelDeclCompleteness : Src.Module -> Expectation
 expectKernelDeclCompleteness srcModule =
@@ -38,12 +55,9 @@ expectKernelDeclCompleteness srcModule =
             violationsToExpectation (checkKernelDeclCompleteness mlirModule)
 
 
-{-| Check kernel declaration completeness invariants.
-
-Builds a set of func.func declarations marked is\_kernel=true, then checks
-every papCreate, papExtend, and eco.call that references an Elm\_Kernel\_\*
-symbol has a matching declaration.
-
+{-| Returns one violation for each `eco.papCreate`, `eco.papExtend` or
+`eco.call` in `mlirModule`, at any depth, that names an `Elm_Kernel_` symbol the
+module does not declare as a kernel.
 -}
 checkKernelDeclCompleteness : MlirModule -> List Violation
 checkKernelDeclCompleteness mlirModule =
@@ -57,10 +71,8 @@ checkKernelDeclCompleteness mlirModule =
     List.filterMap (checkOp kernelDecls) allOps
 
 
-{-| Build a set of kernel function names that have func.func declarations.
-
-Only includes functions with is\_kernel=true attribute.
-
+{-| Returns the names of the top-level `func.func` ops in `mlirModule` that begin
+`Elm_Kernel_` and have `is_kernel` true, as a set.
 -}
 buildKernelDeclSet : MlirModule -> Dict String ()
 buildKernelDeclSet mlirModule =
@@ -85,7 +97,9 @@ buildKernelDeclSet mlirModule =
         funcOps
 
 
-{-| Check a single op for kernel declaration completeness.
+{-| Returns a violation if `op` is an `eco.papCreate`, `eco.papExtend` or
+`eco.call` that refers to an `Elm_Kernel_` symbol missing from `kernelDecls`.
+Any other op gives `Nothing`.
 -}
 checkOp : Dict String () -> MlirOp -> Maybe Violation
 checkOp kernelDecls op =
@@ -102,7 +116,9 @@ checkOp kernelDecls op =
         Nothing
 
 
-{-| Check a papCreate op: its "function" attr must reference a declared kernel.
+{-| Returns a violation if the `function` attribute of an `eco.papCreate` names
+an `Elm_Kernel_` symbol missing from `kernelDecls`. An op with no `function`
+attribute gives `Nothing`.
 -}
 checkPapCreateOp : Dict String () -> MlirOp -> Maybe Violation
 checkPapCreateOp kernelDecls op =
@@ -125,12 +141,10 @@ checkPapCreateOp kernelDecls op =
                 Nothing
 
 
-{-| Check a papExtend op: its "function" attr (if present) must reference a declared kernel.
-
-Note: papExtend may not always have a direct function attr if extending from a
-papCreate chain, but when it does reference a kernel directly, the declaration
-must exist.
-
+{-| Returns a violation if the `function` attribute of an `eco.papExtend` names
+an `Elm_Kernel_` symbol missing from `kernelDecls`. An op with no `function`
+attribute gives `Nothing`. Generated `eco.papExtend` ops carry no `function`
+attribute, so on them this always gives `Nothing`.
 -}
 checkPapExtendOp : Dict String () -> MlirOp -> Maybe Violation
 checkPapExtendOp kernelDecls op =
@@ -153,7 +167,9 @@ checkPapExtendOp kernelDecls op =
                 Nothing
 
 
-{-| Check an eco.call op: its "callee" attr must reference a declared kernel.
+{-| Returns a violation if the `callee` attribute of an `eco.call`, with a
+leading `@` removed, names an `Elm_Kernel_` symbol missing from `kernelDecls`.
+An op with no `callee` attribute gives `Nothing`.
 -}
 checkCallOp : Dict String () -> MlirOp -> Maybe Violation
 checkCallOp kernelDecls op =
@@ -184,7 +200,8 @@ checkCallOp kernelDecls op =
                 Nothing
 
 
-{-| Check if a function name is an Elm kernel function.
+{-| Tells whether `name` begins `Elm_Kernel_`, which is what this module takes
+to mark a kernel symbol.
 -}
 isKernelName : String -> Bool
 isKernelName name =

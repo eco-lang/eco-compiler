@@ -1,9 +1,52 @@
 module Compiler.GlobalOpt.KernelFactsTest exposing (suite)
 
-{-| kernel-opt-07: the KernelFacts table is data, so its consistency is a unit
-test rather than a type. Suites 3 and 4 are the load-bearing pair — together
-they pin the borrow axis to EXACTLY the 33 legacy KernelSigs rows, which is what
-makes this change inert.
+{-| `Compiler.GlobalOpt.KernelFacts` is a hand-written table of facts about the
+kernel functions it lists, and it is plain data: no type stops a row from
+contradicting itself, and no type notices when an edit to a row changes an
+answer that an optimiser reads. These tests catch a row that fails the table's
+own consistency checks, and an edit that changes one of the answers pinned
+below.
+
+A _gc-leaf_ kernel is one for which `KernelFacts.gcLeafEligible` holds: its row
+says it neither allocates on the Eco heap nor can call back into Elm. The
+_borrow shim_ is `Compiler.GlobalOpt.Borrow.KernelSigs.lookup`, which gives the
+borrow analysis its per-kernel signatures by reading the table, and which
+answers nothing for a row whose `params` list is empty.
+
+The fixture is the table itself, `KernelFacts.rows`, and three lists written out
+by hand in this module: `stampable`, `legacyBorrowGolden` and
+`wave3BorrowAdditions`. They are independent copies, not computed from the
+table, so an edit to the table that changes one of these answers fails here
+instead of moving the expectation with it.
+
+The tests establish:
+
+  - Test 1: `KernelFacts.validationErrors` is empty, so every row passes the
+    table's own consistency checks and no key appears twice.
+  - Test 2: the keys of the rows for which `gcLeafEligible` holds, sorted, equal
+    `stampable`, sorted.
+  - Test 3: for each key in `legacyBorrowGolden`, the shim returns exactly the
+    signature written there.
+  - Test 4: of the keys in the table, the ones the shim answers for are exactly
+    the keys of `legacyBorrowGolden` together with `wave3BorrowAdditions`.
+  - Test 5: `lookupSymbol` maps `Elm_Kernel_Utils_compare` and
+    `Elm_Kernel_Utils_compare_Float` to the `( "Utils", "compare" )` row,
+    `Eco_Kernel_MVar_put_Int` to the `( "MVar", "put" )` row, and
+    `Elm_Kernel_Bytes_read_u32`, whose name itself contains an underscore, to
+    the `( "Bytes", "read_u32" )` row; it returns `Nothing` for
+    `eco_gc_alloc_region_fast`, which has neither kernel prefix.
+  - Test 6: `gcLeafEligibleFor` is True for `( "String", "length" )` and False
+    for `( "List", "cons" )`, which is listed but allocates, and for
+    `( "Platform", "sendToApp" )`, which is not listed; `droppableFor` is False
+    for `( "Debug", "log" )`. The expected values are written out, not computed
+    from the record forms.
+  - Test 7: the table has 57 rows and 57 distinct keys.
+
+Among what is not tested: `hoistable`, `hoistableFor`, `costClass` and
+`devirtOf`; the `_Char` suffix in `lookupSymbol`; a key form answering True for
+`droppableFor`; the signatures the shim returns for `wave3BorrowAdditions`; and
+whether any row is true of the C++ kernel it describes.
+
 -}
 
 import Compiler.GlobalOpt.Borrow.KernelSigs as KernelSigs
@@ -12,6 +55,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The seven checks on the `KernelFacts` table listed in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "GlobalOpt.KernelFacts"
@@ -30,13 +75,6 @@ suite =
                     |> List.map (\( k, sig ) -> ( k, Just sig ))
                     |> Expect.equal (List.map (\( k, _ ) -> ( k, KernelSigs.lookup k )) legacyBorrowGolden)
         , Test.test "4. NO key outside the audited borrow set answers the shim" <|
-            -- The set was EXACTLY the 34 legacy KernelSigs rows, which is what
-            -- made kernel-opt-07's migration inert. LSS_016 wave 3 audited five
-            -- more kernels end-to-end in order to register them for devirt, and
-            -- filling their `params` necessarily extends the borrow shim too --
-            -- a row is read by five consumers, so it cannot be added for one
-            -- axis alone. The five are listed separately from the legacy golden
-            -- so the original inertness claim stays legible.
             \_ ->
                 KF.rows
                     |> List.filter (\( k, _ ) -> KernelSigs.lookup k /= Nothing)
@@ -58,8 +96,8 @@ suite =
                 Expect.equal
                     [ True, False, False, False ]
                     [ KF.gcLeafEligibleFor ( "String", "length" )
-                    , KF.gcLeafEligibleFor ( "List", "cons" ) -- listed but allocating
-                    , KF.gcLeafEligibleFor ( "Platform", "sendToApp" ) -- unlisted
+                    , KF.gcLeafEligibleFor ( "List", "cons" )
+                    , KF.gcLeafEligibleFor ( "Platform", "sendToApp" )
                     , KF.droppableFor ( "Debug", "log" )
                     ]
         , Test.test "7. the table has the expected size and no duplicate keys" <|
@@ -67,11 +105,16 @@ suite =
         ]
 
 
+{-| Returns the distinct keys of a list of keyed entries, in ascending order.
+-}
 uniqueKeys : List ( ( String, String ), a ) -> List ( String, String )
 uniqueKeys =
     List.map Tuple.first >> List.sort >> dedupeSorted
 
 
+{-| Returns `xs` with each run of equal adjacent elements cut down to one, so a
+sorted list comes back with every value once.
+-}
 dedupeSorted : List a -> List a
 dedupeSorted xs =
     case xs of
@@ -86,19 +129,16 @@ dedupeSorted xs =
             xs
 
 
-{-| The 14 keys whose C++ bodies were audited to allocate nothing on the Eco
-heap and never to call back into Elm — i.e. exactly the set kernel-opt-08 may
-stamp with `eco.gc_leaf`. Written out by hand: this is a golden, not a
-projection of the table.
+{-| The 16 kernel keys whose rows are expected to be gc-leaf, written out by
+hand rather than computed from the table.
+
+It includes `( "Basics", "not" )` and `( "Basics", "round" )`. Their rows record
+that `not` returns one of the embedded `True` and `False` constants and that
+`round`'s only export takes and returns unboxed numbers, so neither allocates.
+
 -}
 stampable : List ( String, String )
 stampable =
-    -- LSS_016 wave 3 (plans/kernel-devirt-arity-table.md) added two rows that
-    -- are genuinely gc-leaf, so the stampable set legitimately grew. Both were
-    -- audited to register for kernel devirtualization and turned out to
-    -- allocate nothing at all: `Basics.not` returns the EMBEDDED True/False
-    -- constants (ExportHelpers.hpp:80-82) and `Basics.round` never touches an
-    -- Elm heap value (its only export is `int64_t (double)`).
     [ ( "Basics", "not" )
     , ( "Basics", "round" )
     , ( "Utils", "equal" )
@@ -118,9 +158,14 @@ stampable =
     ]
 
 
-{-| Keys the borrow shim answers because LSS\_016 wave 3 audited them, over and
-above the 34 legacy rows. Each was read end-to-end for the devirt registration;
-filling `params` is what brings them into the borrow axis.
+{-| The keys the borrow shim answers for beyond those in `legacyBorrowGolden`.
+
+Each of these rows carries a devirtualization registration, which lets a call
+site call the kernel directly rather than through a closure, and a filled-in
+`params` list. The shim answers for any row whose `params` is non-empty, so
+these kernels are among its answers. Test 4 checks only that the shim answers
+for them; test 3 does not check their signatures.
+
 -}
 wave3BorrowAdditions : List ( String, String )
 wave3BorrowAdditions =
@@ -132,12 +177,17 @@ wave3BorrowAdditions =
     ]
 
 
-{-| Transcribed by hand from the PRE-CHANGE Borrow/KernelSigs.elm:51-167, before
-Phase 2 rewrote that file into a shim. The original 33 rows, with `bb1`/`bb2`
-expanded inline, PLUS the 34th that kernel-opt-05 added when it audited
-`(Utils, append)`'s borrow axes (OWNER over both string and list). Do NOT
-regenerate from KernelFacts and do NOT import the shim's helpers — the whole
-point is that this is an independent copy.
+{-| The borrow signatures the shim must return, one for each of 34 kernel keys,
+written out by hand.
+
+In a signature, `resultAliases` lists the 0-based indices of the parameters the
+result may share. Every parameter here is borrowed except the two of
+`( "Utils", "append" )`, which are owned.
+
+This list must stay an independent copy, built neither from `KernelFacts` nor
+by the shim, so that test 3 compares two separate statements of the same
+signatures.
+
 -}
 legacyBorrowGolden : List ( ( String, String ), KernelSigs.KernelSig )
 legacyBorrowGolden =
@@ -174,7 +224,5 @@ legacyBorrowGolden =
     , ( ( "String", "toLower" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
     , ( ( "String", "toUpper" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
     , ( ( "String", "all" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-
-    -- kernel-opt-05: the 34th audited borrow row.
     , ( ( "Utils", "append" ), { params = [ KernelSigs.POwned, KernelSigs.POwned ], resultAliases = [ 0, 1 ] } )
     ]

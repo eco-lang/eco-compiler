@@ -1,15 +1,37 @@
 module TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency, Violation)
 
-{-| Test logic for MONO\_017: Registry type matches node type.
+{-| Checks that the specialization registry and the graph's nodes agree on the
+type of every specialization, so that code reading a specialization's type
+from the registry sees the type its node was built with.
 
-For every SpecId in SpecializationRegistry.reverseMapping, the stored
-MonoType must equal the type of the corresponding MonoNode.
+A _specialization_ is one definition at one `MonoType`, numbered by a
+`SpecId`. A monomorphized `MonoGraph` holds each specialization in two places,
+both indexed by that `SpecId`: its node in `nodes`, which carries the node's
+own `MonoType`, and its entry in the registry's `reverseMapping`, which pairs
+the specialized global with a separately stored `MonoType`. Monomorphization
+writes and updates the two at different points, and nothing in their types
+keeps them equal.
 
-This invariant catches the "two type shapes floating around" bug where:
+`expectRegistryNodeTypeConsistency` runs a source module through
+`TestLogic.TestPipeline.runToMono` and checks the graph it returns:
 
-  - Call sites create SpecIds using one MonoType shape
-  - Node bodies are recorded with a different shape
-  - Registry type diverges from actual node type
+  - A module that fails to compile fails the check, with the pipeline's
+    message.
+  - Each `reverseMapping` entry that holds a specialization must have a node
+    at the same `SpecId`. A missing node is reported.
+  - Where both exist, the registry's type must be `==` to the node's type.
+    This is plain structural equality, so any difference counts, including
+    ones the types printed in the failure message do not show, such as in
+    lambda-set annotations, a type variable's constraint, or a custom type's
+    arguments. The two printed types can therefore look the same.
+
+Empty `reverseMapping` slots, which pruning leaves for removed
+specializations, are skipped. Every violation found is reported in one
+failure, in `SpecId` order.
+
+Among what is not checked: a node with no registry entry; the graph the
+solver engine produces, which is the compiler's default (`runToMono` uses the
+substitution engine); and the graph after global optimization.
 
 @docs expectRegistryNodeTypeConsistency, Violation
 
@@ -24,7 +46,8 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Violation record for reporting issues.
+{-| One disagreement found by the check. `context` names the specialization,
+as `SpecId` followed by its number, and `message` says what is wrong with it.
 -}
 type alias Violation =
     { context : String
@@ -32,7 +55,10 @@ type alias Violation =
     }
 
 
-{-| MONO\_017: Verify registry type matches node type.
+{-| Compiles `srcModule` to a monomorphized graph and passes if every
+specialization in the registry has a node whose type is `==` to the registry's
+type for it. Otherwise it fails, with every violation found, or with the
+pipeline's message if the module does not compile.
 -}
 expectRegistryNodeTypeConsistency : Src.Module -> Expectation
 expectRegistryNodeTypeConsistency srcModule =
@@ -52,7 +78,9 @@ expectRegistryNodeTypeConsistency srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check registry type consistency for all entries in the MonoGraph.
+{-| Returns one violation for each registry entry that has no node at its
+`SpecId`, or whose type is not `==` to its node's type, in `SpecId` order.
+Empty registry slots are skipped.
 -}
 checkRegistryNodeTypeConsistency : Mono.MonoGraph -> List Violation
 checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
@@ -97,7 +125,8 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
             []
 
 
-{-| Extract the MonoType from any MonoNode variant.
+{-| Returns the `MonoType` a node carries. It gives the same result as
+`Mono.nodeType`.
 -}
 nodeType : Mono.MonoNode -> Mono.MonoType
 nodeType node =
@@ -127,7 +156,8 @@ nodeType node =
             t
 
 
-{-| Format violations as a readable string.
+{-| Builds the failure message: each violation as its context, a colon and its
+message, separated by blank lines.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
@@ -142,7 +172,15 @@ formatViolations violations =
 -- ============================================================================
 
 
-{-| Convert a MonoType to a string for error messages.
+{-| Renders a `MonoType` as Elm-like text for a failure message.
+
+The rendering loses information, so two different types can print the same.
+Lambda-set annotations and stored hashes are left out. A custom type shows
+only its name, without its module or type arguments, and a type variable
+shows only its id number. Record fields come out in reverse order of their
+names, compared as strings. A function's single parameter is not
+parenthesised, even when it is itself a function.
+
 -}
 monoTypeToString : Mono.MonoType -> String
 monoTypeToString monoType =

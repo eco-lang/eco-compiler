@@ -7,20 +7,45 @@ module Compiler.PackageCompilation exposing
     , TypeCheckTypedResult, generateMLIRFromResult
     )
 
-{-| Infrastructure for compiling multiple Elm modules from source strings
-without any IO/Task overhead.
+{-| Lets a test compile the source of a package module, such as elm/core's
+`Elm.JsArray` or `Array`, from a string, with no files and no build, and see
+whether the compiler's two pipelines agree on it.
 
-This module provides direct access to the compilation pipeline, enabling
-tests to compile elm/\* package modules (like Array.elm) that contain
-kernel references, exactly as they would be compiled as project dependencies.
+The compiler type-checks and optimizes a module in one of two ways, called
+_pathways_ here. The _erased_ pathway type-checks with
+`Compiler.Type.Solve.run`, which yields only the annotations of top-level
+values, and optimizes with `Compiler.LocalOpt.Erased.Module` into the graph the
+JavaScript back end uses. The _typed_ pathway generates constraints that record
+a solver variable for every expression and pattern, solves them with
+`Compiler.Type.Solve.runWithIds`, completes the per-node types with
+`Compiler.Type.PostSolve`, and optimizes with `Compiler.LocalOpt.Typed.Module`
+into the typed graph that monomorphization starts from. Parsing,
+canonicalization and the pattern-match check are run once and shared.
 
-**IMPORTANT**: This module runs BOTH compilation pathways (erased and typed)
-and compares their results. It reports when:
+A module is compiled as a module of a given package, and the package decides
+what the module may do. In a kernel package (one whose author is `elm`,
+`elm-explorations` or `eco`) a module may declare infix operators and refer to
+kernel modules such as `Elm.Kernel.JsArray`, which is what elm/core's own
+source does; a module of elm/core itself also gets no default imports.
 
-  - One pathway fails while the other succeeds
-  - Both pathways fail but with different errors
+Comparing the pathways means comparing whether each succeeded and how many
+errors each reported, once after type checking and once after optimization. If
+one pathway fails and the other succeeds, or both fail with different numbers
+of errors, the result is a `PathwayMismatch`. If both fail with the same number
+of errors, the erased pathway's errors are reported as an ordinary
+`TypeError` or `OptimizeError`, whatever either pathway's errors say. If both
+succeed, nothing is compared: the typed annotations are not checked against
+the erased ones, and the annotations and interface in a `CompileResult` are the
+erased pathway's.
 
-This ensures the standard JS pathway and the MLIR pathway behave consistently.
+A compiled module's typed graph can then be carried on through
+monomorphization and MLIR generation. That path differs from the compiler's:
+it uses the substitution monomorphizer
+(`Compiler.Monomorphize.Monomorphize`), starts from one defined value chosen by
+name order rather than from a `main`, takes its type information from
+`Compiler.Elm.Interface.Basic.testIfaces` rather than from the interfaces the
+module was compiled against, and hands the result to the MLIR back end without
+the global optimization passes.
 
 
 # Results
@@ -38,7 +63,7 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 @docs compileModule, compileModulesInOrder
 
 
-# Typed Pathway - Monomorphization and MLIR
+# Typed Pathway - Monomorphization
 
 @docs monomorphize
 
@@ -48,7 +73,7 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 @docs errorToString
 
 
-# Typed Compilation Results
+# Typed Pathway - Type-Check Result and MLIR
 
 @docs TypeCheckTypedResult, generateMLIRFromResult
 
@@ -103,9 +128,10 @@ import System.TypeCheck.IO as TypeCheck
 -- ============================================================================
 
 
-{-| Result of successfully compiling a module.
+{-| Everything produced by compiling one module through both pathways.
 
-Includes both erased optimization (for JS) and typed optimization (for MLIR).
+`objects` is the erased pathway's optimized graph and `typedObjects` the typed
+pathway's. `annotations` and `interface` come from the erased pathway.
 
 -}
 type alias CompileResult =
@@ -119,7 +145,21 @@ type alias CompileResult =
     }
 
 
-{-| Errors that can occur during compilation.
+{-| What stopped a module from compiling, named by the phase that failed.
+
+`ParseError`, `CanonicalizeError` and `PatternError` carry the errors of the
+shared parse, canonicalization and pattern-match check. The pattern-match
+check runs only once both pathways have type-checked.
+
+`TypeError` and `OptimizeError` carry the erased pathway's errors, and occur
+only when both pathways failed in that phase with the same number of errors.
+
+`MonomorphizeError` carries a message. Only `monomorphize` and
+`generateMLIRFromResult` produce it.
+
+`PathwayMismatch` means the two pathways disagreed, as `PathwayDiscrepancy`
+describes.
+
 -}
 type CompileError
     = ParseError Syntax.Error
@@ -131,7 +171,16 @@ type CompileError
     | PathwayMismatch PathwayDiscrepancy
 
 
-{-| Describes a discrepancy between the erased and typed compilation pathways.
+{-| A phase in which the erased and typed pathways disagreed, with both
+pathways' results for that phase. Disagreeing means that one pathway failed
+while the other succeeded, or that both failed with different numbers of
+errors.
+
+`TypeCheckMismatch` carries the two type-checking results.
+
+`OptimizeMismatch` carries the two optimization results. It occurs only when
+both pathways type-checked and the pattern-match check passed.
+
 -}
 type PathwayDiscrepancy
     = TypeCheckMismatch
@@ -144,7 +193,14 @@ type PathwayDiscrepancy
         }
 
 
-{-| Internal result from typed type checking.
+{-| What type checking on the typed pathway produces for one module, which is
+what its optimizer needs.
+
+`nodeTypes` are the per-node types after `Compiler.Type.PostSolve` has
+completed them, and `typedCanonical` is built from those. `nodeVars` and
+`annotationVars` are the solver variables recorded for each node and for each
+top-level annotation.
+
 -}
 type alias TypeCheckTypedResult =
     { annotations : Dict Name.Name (Can.Annotation Name)
@@ -162,10 +218,13 @@ type alias TypeCheckTypedResult =
 -- ============================================================================
 
 
-{-| Parse a source string as a package module.
+{-| Parses `source` as a module of the package `pkg`.
 
-Using `Parse.Package pkg` enables kernel reference parsing for kernel packages
-like elm/core.
+The package decides what is accepted. A module of a kernel package may declare
+infix operators and be an effect module, and a module of elm/core gets no
+default imports. Kernel references such as `Elm.Kernel.JsArray.empty` parse as
+ordinary qualified names in any package; it is canonicalization that accepts
+them.
 
 -}
 parseModule : Pkg.Name -> String -> Result Syntax.Error Src.Module
@@ -179,17 +238,17 @@ parseModule pkg source =
 -- ============================================================================
 
 
-{-| Compile a single parsed module with the given interfaces.
+{-| Compiles a parsed module of the package `pkg` through both pathways,
+against `ifaces`, the interfaces of the modules it may import, keyed by the
+name an import uses.
 
-This runs BOTH compilation pathways and compares their results:
-
-1.  **Erased pathway** (for JS): constrain → run → optimize
-2.  **Typed pathway** (for MLIR): constrainWithIds → runWithIds → PostSolve → optimizeTyped
-
-The function reports a PathwayMismatch error if:
-
-  - One pathway succeeds while the other fails
-  - Both fail but with different error counts/types
+The module is canonicalized, type-checked on both pathways, checked for
+pattern-match errors, and optimized on both pathways. The first phase to fail
+gives the error. After type checking and again after optimization, one pathway
+failing while the other succeeds, or both failing with different numbers of
+errors, gives a `PathwayMismatch`; both failing with the same number gives the
+erased pathway's errors. When everything succeeds nothing is compared, and the
+result's annotations and interface are the erased pathway's.
 
 -}
 compileModule :
@@ -198,11 +257,9 @@ compileModule :
     -> Src.Module
     -> Result CompileError CompileResult
 compileModule pkg ifaces srcModule =
-    -- Step 1: Canonicalize (shared between both pathways)
     canonicalize pkg ifaces srcModule
         |> Result.andThen
             (\canonical ->
-                -- Step 2: Run BOTH type checking pathways
                 let
                     erasedTypeCheckResult =
                         typeCheckErased canonical
@@ -210,15 +267,11 @@ compileModule pkg ifaces srcModule =
                     typedTypeCheckResult =
                         typeCheckTyped canonical
                 in
-                -- Compare type checking results
                 case ( erasedTypeCheckResult, typedTypeCheckResult ) of
                     ( Ok erasedAnnotations, Ok typedResult ) ->
-                        -- Both type checks passed, verify annotations match then continue
-                        -- Step 3: Pattern match check (shared)
                         nitpick canonical
                             |> Result.andThen
                                 (\() ->
-                                    -- Step 4: Run BOTH optimization pathways
                                     let
                                         erasedOptResult =
                                             optimizeErased erasedAnnotations canonical
@@ -226,10 +279,8 @@ compileModule pkg ifaces srcModule =
                                         typedOptResult =
                                             optimizeTyped typedResult.annotations typedResult.nodeTypes typedResult.nodeVars typedResult.kernelEnv typedResult.annotationVars typedResult.typedCanonical
                                     in
-                                    -- Compare optimization results
                                     case ( erasedOptResult, typedOptResult ) of
                                         ( Ok objects, Ok typedObjects ) ->
-                                            -- Both optimizations passed
                                             Ok
                                                 { moduleName = Src.getName srcModule
                                                 , source = srcModule
@@ -241,7 +292,6 @@ compileModule pkg ifaces srcModule =
                                                 }
 
                                         ( Err erasedErr, Err typedErr ) ->
-                                            -- Both failed - report as mismatch if different error counts
                                             let
                                                 erasedCount =
                                                     List.length (OneOrMore.destruct (::) erasedErr)
@@ -250,11 +300,9 @@ compileModule pkg ifaces srcModule =
                                                     List.length (OneOrMore.destruct (::) typedErr)
                                             in
                                             if erasedCount == typedCount then
-                                                -- Same error count, report erased error
                                                 Err (OptimizeError erasedErr)
 
                                             else
-                                                -- Different error counts - pathway mismatch
                                                 Err
                                                     (PathwayMismatch
                                                         (OptimizeMismatch
@@ -265,7 +313,6 @@ compileModule pkg ifaces srcModule =
                                                     )
 
                                         _ ->
-                                            -- One passed, one failed - pathway mismatch
                                             Err
                                                 (PathwayMismatch
                                                     (OptimizeMismatch
@@ -277,7 +324,6 @@ compileModule pkg ifaces srcModule =
                                 )
 
                     ( Err erasedErr, Err typedErr ) ->
-                        -- Both type checks failed - check if same error count
                         let
                             (NE.Nonempty _ erasedRest) =
                                 erasedErr
@@ -292,11 +338,9 @@ compileModule pkg ifaces srcModule =
                                 1 + List.length typedRest
                         in
                         if erasedCount == typedCount then
-                            -- Same error count, report erased error
                             Err (TypeError erasedErr)
 
                         else
-                            -- Different error counts - pathway mismatch
                             Err
                                 (PathwayMismatch
                                     (TypeCheckMismatch
@@ -307,7 +351,6 @@ compileModule pkg ifaces srcModule =
                                 )
 
                     _ ->
-                        -- One passed, one failed - pathway mismatch
                         Err
                             (PathwayMismatch
                                 (TypeCheckMismatch
@@ -325,13 +368,15 @@ compileModule pkg ifaces srcModule =
 -- ============================================================================
 
 
-{-| Compile multiple modules in dependency order.
+{-| Parses and compiles each of `sources` in turn as a module of the package
+`pkg`, as `compileModule` does, starting from the interfaces `baseIfaces`.
 
-Each module's interface is added to the environment before compiling the next.
-This enables testing of module chains like JsArray -> Array where Array
-depends on JsArray.
-
-Returns either all compiled results or the first error with its module name.
+Each compiled module's interface is added to the interfaces the next module is
+compiled against, replacing any base interface of the same name, so `sources`
+must list a module after the modules it imports. Returns the results in the
+order of `sources`, or the first failure with the name of the module that
+failed. A source that does not parse has no name yet and is reported as
+`"unknown"`.
 
 -}
 compileModulesInOrder :
@@ -343,6 +388,9 @@ compileModulesInOrder pkg baseIfaces sources =
     compileModulesHelper pkg baseIfaces sources []
 
 
+{-| Compiles `sources` as `compileModulesInOrder` does, against `ifaces`, with
+`results` holding the modules already compiled, most recent first.
+-}
 compileModulesHelper :
     Pkg.Name
     -> Dict ModuleName.Raw I.Interface
@@ -382,6 +430,9 @@ compileModulesHelper pkg ifaces sources results =
 -- ============================================================================
 
 
+{-| Canonicalizes a module of the package `pkg` against `ifaces`, discarding
+any warnings.
+-}
 canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> Result CompileError Can.Module
 canonicalize pkg ifaces modul =
     case Tuple.second (RResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
@@ -392,10 +443,8 @@ canonicalize pkg ifaces modul =
             Err (CanonicalizeError errors)
 
 
-{-| Standard (erased) type checking using constrain + run.
-
-This is the JS backend pathway.
-
+{-| Type-checks a canonical module on the erased pathway, returning the
+annotations of its top-level values or the solver's errors.
 -}
 typeCheckErased : Can.Module -> Result (NE.Nonempty TypeError.Error) (Dict Name.Name (Can.Annotation Name))
 typeCheckErased canonical =
@@ -404,10 +453,12 @@ typeCheckErased canonical =
         |> TypeCheck.unsafePerformIO
 
 
-{-| Typed type checking using constrainWithIds + runWithIds.
+{-| Type-checks a canonical module on the typed pathway, returning everything
+the typed optimizer needs, or the solver's errors.
 
-This produces per-expression type information needed for typed optimization.
-Also runs PostSolve to fix remaining Group B types (Str, Chr, Float, Unit) and compute kernel type environment.
+The solver's per-node types are passed through `Compiler.Type.PostSolve`, which
+completes them and computes the kernel type environment, before the typed
+canonical module is built from them.
 
 -}
 typeCheckTyped : Can.Module -> Result (NE.Nonempty TypeError.Error) TypeCheckTypedResult
@@ -427,8 +478,6 @@ typeCheckTyped canonical =
 
         Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
             let
-                -- Run PostSolve to fix remaining Group B types and compute kernel env
-                -- annotations and nodeTypes are core Dict from Solve.runWithIds
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
 
@@ -448,6 +497,9 @@ typeCheckTyped canonical =
                 }
 
 
+{-| Runs the pattern-match check of `Compiler.Nitpick.PatternMatches` on a
+canonical module.
+-}
 nitpick : Can.Module -> Result CompileError ()
 nitpick canonical =
     case PatternMatches.check canonical of
@@ -458,16 +510,21 @@ nitpick canonical =
             Err (PatternError errors)
 
 
-{-| Standard (erased) optimization for JS backend.
+{-| Optimizes a type-checked module on the erased pathway, using its erased
+`annotations`, discarding any warnings.
 -}
 optimizeErased : Dict Name.Name (Can.Annotation Name) -> Can.Module -> Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
 optimizeErased annotations canonical =
     Tuple.second (RResult.run (Optimize.optimize annotations canonical))
 
 
-{-| Typed optimization for MLIR backend.
+{-| Optimizes a typed canonical module on the typed pathway, discarding any
+warnings.
 
-Preserves full type information throughout the optimization process.
+The optimizer is given an empty map of scheme roots. `Compiler.Compile`
+instead stamps solver roots onto the node types and annotations and passes the
+solver's scheme roots, so the typed graph built here can differ from the
+compiler's.
 
 -}
 optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
@@ -481,12 +538,22 @@ optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule
 -- ============================================================================
 
 
-{-| Monomorphize the typed compilation result.
+{-| Monomorphizes the typed graph of `result` with the substitution engine,
+`Compiler.Monomorphize.Monomorphize`, or gives a `MonomorphizeError` with its
+message.
 
-This takes a CompileResult and runs the typed pathway through monomorphization,
-producing a MonoGraph that can be used for MLIR code generation.
+The graph holds only this module's definitions. The candidates for the entry
+point are the module's top-level values and the constructors of its closed
+record aliases, and the one chosen is the candidate whose name sorts first as
+a string. Capitals sort before lower case, so a record alias constructor wins
+over any value, and the choice need not be a function. A recursive function,
+whether it calls itself or belongs to a mutually recursive group, is not a
+candidate. A module with no candidate fails.
 
-Uses extendedTestIfaces to provide type information for dependencies like JsArray.
+Type information comes from the module's own types together with the
+interfaces of `Compiler.Elm.Interface.Basic.testIfaces`, which include mocks of
+`Elm.JsArray` and `Array`, whatever interfaces the module was compiled
+against. The module's own types replace any interface's for the same module.
 
 -}
 monomorphize : CompileResult -> Result CompileError Mono.MonoGraph
@@ -494,11 +561,8 @@ monomorphize result =
     monomorphizeWithIfaces extendedTestIfaces result
 
 
-{-| Monomorphize the typed compilation result with explicit interfaces.
-
-This takes a CompileResult and interfaces, and runs the typed pathway through
-monomorphization, producing a MonoGraph that can be used for MLIR code generation.
-
+{-| Monomorphizes the typed graph of `result` as `monomorphize` does, taking
+type information from `ifaces` and the module's own types.
 -}
 monomorphizeWithIfaces : Dict ModuleName.Raw I.Interface -> CompileResult -> Result CompileError Mono.MonoGraph
 monomorphizeWithIfaces ifaces result =
@@ -506,7 +570,6 @@ monomorphizeWithIfaces ifaces result =
         globalGraph =
             GA.addTypedLocalGraph result.typedObjects TOpt.emptyGlobalGraph
 
-        -- Build GlobalTypeEnv from both the canonical module and the interfaces
         globalTypeEnv =
             buildGlobalTypeEnvWithIfaces ifaces result.canonical
     in
@@ -518,42 +581,35 @@ monomorphizeWithIfaces ifaces result =
             Err (MonomorphizeError errMsg)
 
 
-{-| Build a GlobalTypeEnv from both a canonical module and interfaces.
-
-This merges type information from interfaces (like JsArray) with the current
-module's type definitions, enabling monomorphization to look up constructor
-layouts for all referenced types.
-
+{-| Returns the unions and aliases of every module in `ifaces` together with
+those of `canModule`, which replace any interface's entry for the same module.
 -}
 buildGlobalTypeEnvWithIfaces : Dict ModuleName.Raw I.Interface -> Can.Module -> TypeEnv.GlobalTypeEnv
 buildGlobalTypeEnvWithIfaces ifaces canModule =
     let
-        -- Build from interfaces first
         ifaceTypeEnv =
             TypeEnv.fromInterfaces ifaces
 
-        -- Build from current module
         moduleTypeEnv =
             TypeEnv.fromCanonical canModule
     in
-    -- Module takes precedence over interfaces
     Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv ifaceTypeEnv
 
 
-{-| Extended test interfaces including all modules needed for package compilation tests.
-
-This includes Basics, List, Maybe, JsArray, Bitwise, Tuple, String, and Char.
-
+{-| The interfaces `monomorphize` takes type information from. They are exactly
+`Compiler.Elm.Interface.Basic.testIfaces`.
 -}
 extendedTestIfaces : Dict ModuleName.Raw I.Interface
 extendedTestIfaces =
     Basic.testIfaces
 
 
-{-| Monomorphize using the first defined function as entry point.
+{-| Monomorphizes a typed global graph from the entry point that
+`findAnyEntryPoint` chooses. With no entry point the error is
+`"No function found in graph"`; any other error is the monomorphizer's.
 
-This is useful for testing when the entry point name is not known in advance.
-Test modules use various names like "testValue", etc.
+The graph's field counts and annotations are emptied before it is handed to
+the monomorphizer; its nodes, scheme roots and super-types are kept.
 
 -}
 monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
@@ -566,7 +622,16 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _ schemeRoots varSupers)
             Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Data.Map.empty schemeRoots varSupers)
 
 
-{-| Find any entry point in the global graph (the first defined function).
+{-| Returns the global name and type of the first `Define` or `TrackedDefine`
+node of `nodes`, in the order of the nodes' keys.
+
+A key is the home module followed by the name, compared as a string; the
+`TOpt.compareGlobal` passed to the fold is ignored. Within one module that
+makes it the definition whose name sorts first, and since a closed record
+alias's constructor is a `Define` and capitals sort first, such a constructor
+is chosen over any value. Recursive definitions are `Cycle` nodes and are
+never chosen.
+
 -}
 findAnyEntryPoint : Data.Map.Dict String TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
 findAnyEntryPoint nodes =
@@ -591,9 +656,11 @@ findAnyEntryPoint nodes =
         nodes
 
 
-{-| Generate MLIR code from a monomorphized graph.
+{-| Returns the MLIR text the MLIR back end generates for `monoGraph` in
+development mode, without source maps.
 
-Returns the MLIR output as a string.
+The graph goes to the back end as monomorphization left it, without the global
+optimization passes the compiler runs first.
 
 -}
 generateMLIR : Mono.MonoGraph -> String
@@ -612,10 +679,12 @@ generateMLIR monoGraph =
     CodeGen.outputToString output
 
 
-{-| Convenience function to generate MLIR from a CompileResult.
+{-| Monomorphizes the typed graph of `result` as `monomorphize` does and returns
+the MLIR text the MLIR back end generates for it, in development mode.
 
-This handles building the GlobalTypeEnv and running monomorphization internally.
-Uses extendedTestIfaces to provide type information for dependencies like JsArray.
+The monomorphized graph goes to the back end without the global optimization
+passes the compiler runs first. The result is an `Err` only when
+monomorphization fails.
 
 -}
 generateMLIRFromResult : CompileResult -> Result CompileError String
@@ -634,7 +703,16 @@ generateMLIRFromResult result =
 -- ============================================================================
 
 
-{-| Convert a CompileError to a human-readable string with full details.
+{-| Returns a short description of a `CompileError` for a test failure message.
+
+The detail varies by phase. A parse error names its kind, or is just
+`"Syntax error"` when the parser itself failed. Canonicalization errors are
+counted and listed one phrase each, and type errors counted and listed one
+line each with the row and column where each starts. Pattern-match and
+optimization errors give only a count, and a monomorphization error gives its
+message. A pathway mismatch gives each pathway's outcome and,
+for type checking, the type errors of each pathway that failed.
+
 -}
 errorToString : CompileError -> String
 errorToString error =
@@ -689,7 +767,9 @@ errorToString error =
             "PATHWAY MISMATCH: " ++ discrepancyToString discrepancy
 
 
-{-| Convert a PathwayDiscrepancy to a human-readable string.
+{-| Returns a description of a `PathwayDiscrepancy`: whether each pathway passed
+or failed, with its error count, and for a type-checking mismatch the type
+errors of each pathway that failed.
 -}
 discrepancyToString : PathwayDiscrepancy -> String
 discrepancyToString discrepancy =
@@ -779,10 +859,12 @@ discrepancyToString discrepancy =
             "Optimization mismatch!\n  Erased pathway: " ++ erasedStatus ++ "\n  Typed pathway: " ++ typedStatus
 
 
+{-| Returns a phrase naming the kind of a syntax error. The two module-name
+errors also give a module name. An error from the parser itself is only
+`"Syntax error"`, with no position or detail.
+-}
 syntaxErrorToString : Syntax.Error -> String
 syntaxErrorToString error =
-    -- Simplified error handling - just indicate it's a syntax error
-    -- Full details would require matching many internal types
     case error of
         Syntax.ModuleNameUnspecified name ->
             "Module name unspecified: " ++ name
@@ -809,6 +891,8 @@ syntaxErrorToString error =
             "Syntax error"
 
 
+{-| Returns one line per type error, as `typeErrorToString` describes it.
+-}
 typeErrorsToString : List TypeError.Error -> String
 typeErrorsToString errors =
     errors
@@ -816,6 +900,10 @@ typeErrorsToString errors =
         |> String.join "\n"
 
 
+{-| Returns a one-line description of a type error: its kind and the row and
+column where its region starts, plus the category of a mismatched expression
+or the variable name of an infinite type.
+-}
 typeErrorToString : TypeError.Error -> String
 typeErrorToString error =
     case error of
@@ -829,6 +917,9 @@ typeErrorToString error =
             "  - InfiniteType at " ++ String.fromInt row ++ ":" ++ String.fromInt col ++ " for '" ++ name ++ "'"
 
 
+{-| Returns the name of an expression category, without any name or detail the
+category carries.
+-}
 categoryToString : TypeError.Category -> String
 categoryToString category =
     case category of
@@ -887,6 +978,9 @@ categoryToString category =
             "Foreign"
 
 
+{-| Returns the canonicalization errors described as `canonicalizeErrorToString`
+does, separated by semicolons.
+-}
 canonicalizeErrorsToString : List CanonicalizeError.Error -> String
 canonicalizeErrorsToString errors =
     errors
@@ -894,6 +988,9 @@ canonicalizeErrorsToString errors =
         |> String.join "; "
 
 
+{-| Returns a short phrase naming the kind of a canonicalization error and,
+for most kinds, the name it concerns. No positions are given.
+-}
 canonicalizeErrorToString : CanonicalizeError.Error -> String
 canonicalizeErrorToString error =
     case error of

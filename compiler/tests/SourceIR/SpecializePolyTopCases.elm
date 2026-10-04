@@ -1,10 +1,69 @@
 module SourceIR.SpecializePolyTopCases exposing (expectSuite)
 
-{-| Tests for top-level polymorphic functions specialized at multiple types.
+{-| Programs in which `testValue` uses an annotated, polymorphic top-level
+function twice, in all but one case at two different types, for checking what a
+compiler stage does with such a function.
 
-Each test defines a polymorphic top-level function via makeModuleWithTypedDefs,
-then calls it from testValue at two or more concrete types, forcing the
-monomorphizer to create multiple specializations via the worklist.
+Monomorphization makes a separate copy of a polymorphic function, a
+_specialization_, for each type the function is used at. A program that
+uses each function at one type only never needs more than one specialization of
+it, so an error in keeping two specializations of one function apart would go
+unnoticed there. These cases supply the programs; this module checks nothing
+itself. `expectSuite` runs the expectation function it is given on the cases in
+turn, stopping at the first that fails, and that function decides what is
+checked.
+
+Every case builds a module named `Test` with
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefs`, so every top-level
+definition carries a type annotation. Each module has a `testValue` whose
+annotation is a pair type and whose body is a pair of two uses of the
+polymorphic function (in one case, two `let` definitions partially apply it and
+the pair calls those). Five cases also define `addOne : Int -> Int`, to pass as
+a function argument.
+
+An integer literal has type `number` until something fixes it; here the
+annotations of `testValue` and `addOne` fix most of them to `Int`, but in two
+places they stay `number`: the `1` in `const "hi" 1`, and both elements of
+`length [ 1, 2 ]`.
+
+The cases, in the order they run, by label:
+
+  - "identity at Int and String": `identity : a -> a` at `Int` and `String`.
+  - "const at two type combos": `const : a -> b -> a` with its arguments of
+    types `Int`, `String` and then `String`, `number`.
+  - "apply higher-order at two types": `apply : (a -> b) -> a -> b` with
+    `a` and `b` both `Int`, then both `String`.
+  - "compose at two type combos": `compose : (b -> c) -> (a -> b) -> a -> c`
+    called twice with every type `Int`.
+  - "recursive length at two list types": a non-tail-recursive
+    `length : List a -> Int` on a list of integer literals and a list of
+    strings.
+  - "tail-recursive foldl at two types": a self-tail-recursive
+    `foldl : (a -> b -> b) -> b -> List a -> b` with `a` `Int`, then `String`,
+    and `b` `Int` both times.
+  - "recursive map at two types": a non-tail-recursive
+    `map : (a -> b) -> List a -> List b` at `Int` and at `String`.
+  - "partial application of map": the same `map`, partially applied in two
+    `let` definitions inside `testValue`, at `Int` and at `String`.
+  - "pair constructor at two type combos": `pair : a -> b -> ( a, b )`, a
+    function rather than a constructor, at `Int`, `String` and at `String`,
+    `Int`.
+  - "tail-recursive reverse at two types": `reverse : List a -> List a`, which
+    is not itself recursive and calls the self-tail-recursive `reverseHelper`,
+    at `List Int` and `List String`.
+  - "twice higher-order at two types": `twice : (a -> a) -> a -> a` at `Int`
+    and `String`.
+  - "singleton at two types": `singleton : a -> List a` at `Int` and `String`.
+
+Among what is not tested:
+
+  - `compose` at two different types: both of its uses are at `Int`, although
+    the case's label says "two type combos".
+  - A function used at three or more types.
+  - A polymorphic top-level function passed as a value: each one is only ever
+    called, though `map` is called with too few arguments in one case.
+  - Records, custom types declared in the program, or a constrained type
+    variable such as `number` in an annotation.
 
 -}
 
@@ -38,12 +97,20 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Poly top-level multi-specialization " followed by
+`condStr`, that runs `expectFn` on each case's module in turn with
+`Compiler.BulkCheck.bulkCheck`. As `bulkCheck` describes, the test fails with
+the label of the first failing case, and the cases after it do not run.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Poly top-level multi-specialization " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the twelve cases, each a label paired with a check that runs
+`expectFn` on that case's module.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "identity at Int and String", run = identityMulti expectFn }
@@ -61,12 +128,18 @@ testCases expectFn =
     ]
 
 
+{-| Runs `expectFn` on a program that applies one identity function to an
+`Int` and to a `String`. In Elm source:
 
--- ============================================================================
--- 1. identity : a -> a  called at Int and String
--- ============================================================================
+    identity : a -> a
+    identity x =
+        x
 
+    testValue : ( Int, String )
+    testValue =
+        ( identity 1, identity "hello" )
 
+-}
 identityMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 identityMulti expectFn _ =
     let
@@ -95,12 +168,21 @@ identityMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that uses `const` with its two arguments in
+both orders. In Elm source:
 
--- ============================================================================
--- 2. const : a -> b -> a  called at (Int,String) and (String,Int)
--- ============================================================================
+    const : a -> b -> a
+    const a b =
+        a
 
+    testValue : ( Int, String )
+    testValue =
+        ( const 1 "hi", const "hi" 1 )
 
+The annotation fixes the first `1` to `Int`. The second `1` is the discarded
+argument, so nothing fixes it and its type stays `number`.
+
+-}
 constMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 constMulti expectFn _ =
     let
@@ -129,12 +211,22 @@ constMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that uses `apply` once with `addOne` on an
+`Int` and once with an identity lambda on a `String`. In Elm source:
 
--- ============================================================================
--- 3. apply : (a -> b) -> a -> b  called at two type combos
--- ============================================================================
+    apply : (a -> b) -> a -> b
+    apply f x =
+        f x
 
+    addOne : Int -> Int
+    addOne n =
+        n + 1
 
+    testValue : ( Int, String )
+    testValue =
+        ( apply addOne 1, apply (\s -> s) "hi" )
+
+-}
 applyMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 applyMulti expectFn _ =
     let
@@ -148,7 +240,6 @@ applyMulti expectFn _ =
             , body = callExpr (varExpr "f") [ varExpr "x" ]
             }
 
-        -- addOne : Int -> Int
         addOneDef : TypedDef
         addOneDef =
             { name = "addOne"
@@ -179,12 +270,25 @@ applyMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that calls `compose` twice, both times at the
+same types. In Elm source:
 
--- ============================================================================
--- 4. compose : (b -> c) -> (a -> b) -> a -> c  at two type combos
--- ============================================================================
+    compose : (b -> c) -> (a -> b) -> a -> c
+    compose f g x =
+        f (g x)
 
+    addOne : Int -> Int
+    addOne n =
+        n + 1
 
+    testValue : ( Int, Int )
+    testValue =
+        ( compose addOne addOne 1, compose addOne addOne 2 )
+
+Every type variable is `Int` in both calls, which differ only in the last
+argument, so `compose` is used at one type here, not two.
+
+-}
 composeMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 composeMulti expectFn _ =
     let
@@ -215,11 +319,9 @@ composeMulti expectFn _ =
             , tipe = tTuple (tType "Int" []) (tType "Int" [])
             , body =
                 tupleExpr
-                    -- compose addOne addOne 1  (Int -> Int -> Int)
                     (callExpr (varExpr "compose")
                         [ varExpr "addOne", varExpr "addOne", intExpr 1 ]
                     )
-                    -- compose addOne addOne 2  (same types, different args)
                     (callExpr (varExpr "compose")
                         [ varExpr "addOne", varExpr "addOne", intExpr 2 ]
                     )
@@ -232,16 +334,30 @@ composeMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that applies a recursive `length` to a list
+of integer literals and to a list of strings. In Elm source:
 
--- ============================================================================
--- 5. length : List a -> Int  called on List Int and List String
--- ============================================================================
+    length : List a -> Int
+    length xs =
+        case xs of
+            [] ->
+                0
 
+            _ :: rest ->
+                1 + length rest
 
+    testValue : ( Int, Int )
+    testValue =
+        ( length [ 1, 2 ], length [ "a", "b" ] )
+
+The recursive call is an operand of `+`, so `length` is not tail-recursive.
+Nothing fixes the type of the integer literals, so the first list is a
+`List number`, not a `List Int`.
+
+-}
 lengthMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 lengthMulti expectFn _ =
     let
-        -- length xs = case xs of [] -> 0; _ :: rest -> 1 + length rest
         lengthDef : TypedDef
         lengthDef =
             { name = "length"
@@ -276,16 +392,28 @@ lengthMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that uses a self-tail-recursive `foldl` once
+to sum a list of integers and once to count a list of strings. In Elm source:
 
--- ============================================================================
--- 6. foldl : (a -> b -> b) -> b -> List a -> b  (tail-recursive) at two types
--- ============================================================================
+    foldl : (a -> b -> b) -> b -> List a -> b
+    foldl f acc xs =
+        case xs of
+            [] ->
+                acc
 
+            x :: rest ->
+                foldl f (f x acc) rest
 
+    testValue : ( Int, Int )
+    testValue =
+        ( foldl (\x acc -> x + acc) 0 [ 1, 2, 3 ]
+        , foldl (\x acc -> acc + 1) 0 [ "a", "b" ]
+        )
+
+-}
 foldlMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlMulti expectFn _ =
     let
-        -- foldl f acc xs = case xs of [] -> acc; x :: rest -> foldl f (f x acc) rest
         foldlDef : TypedDef
         foldlDef =
             { name = "foldl"
@@ -315,7 +443,6 @@ foldlMulti expectFn _ =
             , tipe = tTuple (tType "Int" []) (tType "Int" [])
             , body =
                 tupleExpr
-                    -- foldl (\x acc -> x + acc) 0 [1, 2, 3]
                     (callExpr (varExpr "foldl")
                         [ lambdaExpr [ pVar "x", pVar "acc" ]
                             (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "acc"))
@@ -323,7 +450,6 @@ foldlMulti expectFn _ =
                         , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
                         ]
                     )
-                    -- foldl (\x acc -> acc + 1) 0 ["a", "b"]  (count strings)
                     (callExpr (varExpr "foldl")
                         [ lambdaExpr [ pVar "x", pVar "acc" ]
                             (binopsExpr [ ( varExpr "acc", "+" ) ] (intExpr 1))
@@ -339,16 +465,33 @@ foldlMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that uses a recursive `map` once with
+`addOne` on a list of `Int` and once with an identity lambda on a list of
+`String`. In Elm source:
 
--- ============================================================================
--- 7. map : (a -> b) -> List a -> List b  (recursive) at two types
--- ============================================================================
+    map : (a -> b) -> List a -> List b
+    map f xs =
+        case xs of
+            [] ->
+                []
 
+            x :: rest ->
+                f x :: map f rest
 
+    addOne : Int -> Int
+    addOne n =
+        n + 1
+
+    testValue : ( List Int, List String )
+    testValue =
+        ( map addOne [ 1, 2 ], map (\s -> s) [ "a", "b" ] )
+
+The recursive call is an operand of `::`, so `map` is not tail-recursive.
+
+-}
 mapMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 mapMulti expectFn _ =
     let
-        -- map f xs = case xs of [] -> []; x :: rest -> f x :: map f rest
         mapDef : TypedDef
         mapDef =
             { name = "map"
@@ -385,9 +528,7 @@ mapMulti expectFn _ =
                     (tType "List" [ tType "String" [] ])
             , body =
                 tupleExpr
-                    -- map addOne [1, 2]
                     (callExpr (varExpr "map") [ varExpr "addOne", listExpr [ intExpr 1, intExpr 2 ] ])
-                    -- map (\s -> s) ["a", "b"]
                     (callExpr (varExpr "map")
                         [ lambdaExpr [ pVar "s" ] (varExpr "s")
                         , listExpr [ strExpr "a", strExpr "b" ]
@@ -401,12 +542,22 @@ mapMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that partially applies `map`, binding each
+partial application to a name in a `let` and then applying it to a list. In Elm
+source, with `map` and `addOne` defined as in `mapMulti`:
 
--- ============================================================================
--- 8. Partial application of polymorphic map
--- ============================================================================
+    testValue : ( List Int, List String )
+    testValue =
+        let
+            mapAddOne =
+                map addOne
 
+            mapId =
+                map (\s -> s)
+        in
+        ( mapAddOne [ 1, 2 ], mapId [ "a", "b" ] )
 
+-}
 mapPartialMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 mapPartialMulti expectFn _ =
     let
@@ -446,12 +597,10 @@ mapPartialMulti expectFn _ =
                     (tType "List" [ tType "String" [] ])
             , body =
                 letExpr
-                    [ -- mapAddOne = map addOne  (partially applied)
-                      define "mapAddOne"
+                    [ define "mapAddOne"
                         []
                         (callExpr (varExpr "map") [ varExpr "addOne" ])
-                    , -- mapId = map (\s -> s)  (partially applied)
-                      define "mapId"
+                    , define "mapId"
                         []
                         (callExpr (varExpr "map")
                             [ lambdaExpr [ pVar "s" ] (varExpr "s") ]
@@ -469,12 +618,18 @@ mapPartialMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that uses `pair` with its two arguments in
+both orders. In Elm source:
 
--- ============================================================================
--- 9. pair : a -> b -> (a, b)  at two type combos
--- ============================================================================
+    pair : a -> b -> ( a, b )
+    pair a b =
+        ( a, b )
 
+    testValue : ( ( Int, String ), ( String, Int ) )
+    testValue =
+        ( pair 1 "hi", pair "hi" 1 )
 
+-}
 pairMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 pairMulti expectFn _ =
     let
@@ -508,16 +663,34 @@ pairMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that reverses a list of `Int` and a list of
+`String` with a `reverse` that hands the work to a self-tail-recursive helper.
+In Elm source:
 
--- ============================================================================
--- 10. reverse via tail-recursive helper, at two list types
--- ============================================================================
+    reverseHelper : List a -> List a -> List a
+    reverseHelper acc xs =
+        case xs of
+            [] ->
+                acc
 
+            x :: rest ->
+                reverseHelper (x :: acc) rest
 
+    reverse : List a -> List a
+    reverse xs =
+        reverseHelper [] xs
+
+    testValue : ( List Int, List String )
+    testValue =
+        ( reverse [ 1, 2 ], reverse [ "a", "b" ] )
+
+`testValue` never names `reverseHelper`, which is used only in its own
+recursive call and inside `reverse`.
+
+-}
 reverseMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 reverseMulti expectFn _ =
     let
-        -- reverseHelper acc xs = case xs of [] -> acc; x :: rest -> reverseHelper (x :: acc) rest
         reverseHelperDef : TypedDef
         reverseHelperDef =
             { name = "reverseHelper"
@@ -537,7 +710,6 @@ reverseMulti expectFn _ =
                     ]
             }
 
-        -- reverse xs = reverseHelper [] xs
         reverseDef : TypedDef
         reverseDef =
             { name = "reverse"
@@ -569,12 +741,22 @@ reverseMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that uses `twice` once with `addOne` on an
+`Int` and once with an identity lambda on a `String`. In Elm source:
 
--- ============================================================================
--- 11. twice : (a -> a) -> a -> a  at two types
--- ============================================================================
+    twice : (a -> a) -> a -> a
+    twice f x =
+        f (f x)
 
+    addOne : Int -> Int
+    addOne n =
+        n + 1
 
+    testValue : ( Int, String )
+    testValue =
+        ( twice addOne 0, twice (\s -> s) "hi" )
+
+-}
 twiceMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 twiceMulti expectFn _ =
     let
@@ -605,9 +787,7 @@ twiceMulti expectFn _ =
             , tipe = tTuple (tType "Int" []) (tType "String" [])
             , body =
                 tupleExpr
-                    -- twice addOne 0
                     (callExpr (varExpr "twice") [ varExpr "addOne", intExpr 0 ])
-                    -- twice (\s -> s) "hi"
                     (callExpr (varExpr "twice")
                         [ lambdaExpr [ pVar "s" ] (varExpr "s")
                         , strExpr "hi"
@@ -622,12 +802,18 @@ twiceMulti expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a program that makes a one-element list of an `Int` and
+of a `String`. In Elm source:
 
--- ============================================================================
--- 12. singleton : a -> List a  at two types
--- ============================================================================
+    singleton : a -> List a
+    singleton x =
+        [ x ]
 
+    testValue : ( List Int, List String )
+    testValue =
+        ( singleton 42, singleton "hi" )
 
+-}
 singletonMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 singletonMulti expectFn _ =
     let

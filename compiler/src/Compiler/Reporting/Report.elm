@@ -3,20 +3,16 @@ module Compiler.Reporting.Report exposing
     , report
     )
 
-{-| Core data structure for compiler error and warning reports.
+{-| Each error the compiler finds in a module, of whatever kind, is described as
+a report, so that showing it to a person, or encoding it as JSON, does not
+depend on which phase of the compiler found it. This module defines that shape.
 
-A Report packages together all the information needed to display a helpful
-compiler diagnostic message: a title, source location, suggested fixes, and
-formatted documentation describing the issue.
-
-
-# Types
+A _report_ is one error, described by a short title naming the kind of problem,
+the region of the source it concerns, a list of suggested alternatives, and the
+message itself. The message is a `Doc`, the document type of
+`Compiler.Reporting.Doc`, so it is laid out only when it is rendered.
 
 @docs Report, ReportProps
-
-
-# Construction
-
 @docs report
 
 -}
@@ -25,19 +21,20 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
 
 
-
--- ====== BUILD REPORTS ======
-
-
-{-| A compiler diagnostic report containing all information needed to display
-a helpful error or warning message to the user.
+{-| One error report, as the module docstring describes.
 -}
 type Report
     = Report ReportProps
 
 
-{-| The properties that make up a compiler report: a title summarizing the issue,
-the source region where it occurred, suggested fixes, and detailed documentation.
+{-| The contents of a report.
+
+`suggestions` holds alternatives the producer of the report offers, such as
+known names close to one that could not be found. It may be empty. No renderer
+shows them; any suggestion the user sees is written into `doc` by the producer.
+`doc` is the whole message, and nothing in this module adds the title or the
+region to it.
+
 -}
 type alias ReportProps =
     { title : String
@@ -47,9 +44,8 @@ type alias ReportProps =
     }
 
 
-{-| Helper constructor for backward compatibility.
-Allows existing code to continue using positional arguments:
-`Report.report "title" region suggestions doc`
+{-| Builds a `Report` from its title, region, suggestions and message, in that
+order.
 -}
 report : String -> A.Region -> List String -> D.Doc -> Report
 report title region suggestions doc =

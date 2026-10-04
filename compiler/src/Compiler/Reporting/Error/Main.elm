@@ -4,10 +4,18 @@ module Compiler.Reporting.Error.Main exposing
     , errorEncoder, errorDecoder
     )
 
-{-| Error reporting for the main entry point of Elm programs.
+{-| A module's `main` value is where a program starts, and not every value can
+be one. This module names the ways a `main` can be unusable and turns each into
+a report for the user.
 
-This module handles errors related to the `main` value in an Elm program,
-including type compatibility, recursive definitions, and invalid flags.
+A `main` must be a plain value, not part of a cycle of definitions, and its type
+must be a virtual DOM node or a `Platform.Program`. A program's flags are the
+value it is given by JavaScript when it starts, so the flags type must be one
+that can cross from JavaScript into Elm. Which types can cross is decided by the
+checks that raise these errors; the reasons a type cannot are the
+`InvalidPayload` of `Compiler.Reporting.Error.Canonicalize`, shared with ports.
+
+Errors can also be written to and read from bytes.
 
 
 # Errors
@@ -45,7 +53,20 @@ import Utils.Bytes.Encode as BE
 -- ====== ERROR ======
 
 
-{-| Represents errors that can occur with the main entry point of an Elm program.
+{-| A reason a module's `main` cannot be the entry point of a program. Each
+carries the region of the name `main` where it is defined.
+
+`BadType` carries the type of `main`, which is neither a virtual DOM node nor a
+`Platform.Program`.
+
+`BadCycle` is a `main` defined in terms of itself. It carries the name of one
+definition in the cycle and the names of the others, in the order the report
+draws them.
+
+`BadFlags` is a `Program` whose flags type cannot come from JavaScript. It
+carries the part of the flags type that was rejected and why it was rejected.
+The report shows only the reason, not the type.
+
 -}
 type Error
     = BadType A.Region (Can.Type Name)
@@ -57,8 +78,13 @@ type Error
 -- ====== TO REPORT ======
 
 
-{-| Convert a main entry point error into a user-friendly error report,
-explaining type compatibility issues, recursion problems, or invalid flags.
+{-| Builds the report for an error about `main`, showing the source lines of
+its region from `source`. `localizer` decides how type names are qualified when
+a `BadType` report prints the type.
+
+A `BadFlags` report gives its own wording for each `InvalidPayload`, phrased
+for flags rather than ports.
+
 -}
 toReport : L.Localizer -> Code.Source -> Error -> Report.Report
 toReport localizer source err =
@@ -131,7 +157,8 @@ toReport localizer source err =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Serialize a main entry point error to bytes for caching or transmission.
+{-| Builds an encoder that writes `error` as a one-byte tag, 0 to 2 in
+constructor order, followed by its fields. `errorDecoder` reads it back.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
@@ -160,7 +187,7 @@ errorEncoder error =
                 ]
 
 
-{-| Deserialize a main entry point error from bytes.
+{-| A decoder for an `Error` as `errorEncoder` writes it. An unknown tag fails.
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =

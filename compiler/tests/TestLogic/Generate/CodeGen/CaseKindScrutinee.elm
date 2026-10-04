@@ -1,14 +1,36 @@
 module TestLogic.Generate.CodeGen.CaseKindScrutinee exposing (expectCaseKindScrutinee)
 
-{-| Test logic for CGEN\_043: Case Kind Scrutinee Type Agreement invariant.
+{-| An `eco.case` op's kind of dispatch and the type of the value it dispatches
+on are given to it separately, and nothing in `Mlir.Mlir` makes them agree. This
+module checks that they do in the MLIR the code generator produces.
 
-`eco.case` scrutinee representation and `case_kind` must agree:
+An `eco.case` branches on its operand, the _scrutinee_. Its `case_kind` string
+attribute, the _case kind_, says what sort of value the scrutinee is. The
+scrutinee's type is read from the first type in the op's `_operand_types`
+attribute, as `TestLogic.Generate.CodeGen.Invariants` describes. The two agree
+when the type is exactly the one the case kind requires:
 
-  - `case_kind="bool"` requires `i1` scrutinee
-  - `case_kind="int"` requires `i64` scrutinee
-  - `case_kind="chr"` requires `i16` (ECO char) scrutinee
-  - `case_kind="ctor"` requires `!eco.value` scrutinee
-  - `case_kind="str"` requires `!eco.value` scrutinee
+  - `bool` requires `i1`.
+  - `int` requires `i64`.
+  - `chr` requires `i16`, the type of an unboxed Char.
+  - `ctor` and `str` require `!eco.value`, the type of a boxed value.
+
+A case kind outside this list is itself a violation.
+
+`expectCaseKindScrutinee` takes the program to check from its caller and
+compiles it with `TestLogic.TestPipeline.runToMlir`, so the program must be one
+that function accepts. The expectation it returns establishes:
+
+  - The program compiles through `runToMlir` without an error.
+  - Every `eco.case` in the generated module, at any depth, whose `case_kind`
+    is a string or a symbol reference and whose `_operand_types` holds at least
+    one type names a case kind in the list above and has a scrutinee of exactly
+    the type that case kind requires.
+
+Among what is not tested: an `eco.case` whose `case_kind` is missing or is
+neither a string nor a symbol reference, or whose `_operand_types` holds no
+type, which is skipped; any operand type after the first; the case's tags and
+the types of its results.
 
 @docs expectCaseKindScrutinee
 
@@ -29,7 +51,17 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that case kind scrutinee type invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR with
+`TestLogic.TestPipeline.runToMlir` and passes when every `eco.case` in the
+result has a scrutinee of the type its case kind requires: `i1` for `bool`,
+`i64` for `int`, `i16` for `chr`, and `!eco.value` for `ctor` and `str`.
+
+An `eco.case` naming any other case kind is a violation. One whose `case_kind`
+is missing or is neither a string nor a symbol reference, or whose
+`_operand_types` holds no type, is not checked. The expectation fails with a
+message starting `Compilation failed:` if `runToMlir` returns an error, and
+otherwise as `violationsToExpectation` describes.
+
 -}
 expectCaseKindScrutinee : Src.Module -> Expectation
 expectCaseKindScrutinee srcModule =
@@ -41,7 +73,9 @@ expectCaseKindScrutinee srcModule =
             violationsToExpectation (checkCaseKindScrutinee mlirModule)
 
 
-{-| Check case kind scrutinee type invariants.
+{-| Returns one violation for each `eco.case` in `mlirModule`, at any depth,
+whose case kind and scrutinee type disagree, in the order the module's ops are
+walked.
 -}
 checkCaseKindScrutinee : MlirModule -> List Violation
 checkCaseKindScrutinee mlirModule =
@@ -52,6 +86,11 @@ checkCaseKindScrutinee mlirModule =
     List.filterMap checkCaseOp caseOps
 
 
+{-| Returns the violation `op` commits, if any. An op whose `case_kind` is
+missing or is neither a string nor a symbol reference, or whose
+`_operand_types` holds no type, is not checked and gives `Nothing`; otherwise
+the first type in `_operand_types` is taken as the scrutinee's.
+-}
 checkCaseOp : MlirOp -> Maybe Violation
 checkCaseOp op =
     let
@@ -75,6 +114,11 @@ checkCaseOp op =
             validateCaseKind caseKind scrutineeType op
 
 
+{-| Returns a violation against `op` when `scrutineeType` is not exactly the type
+`caseKind` requires, with a message naming both types, or when `caseKind` is
+not one of `bool`, `int`, `chr`, `ctor` and `str`. Returns `Nothing` when they
+agree.
+-}
 validateCaseKind : String -> MlirType -> MlirOp -> Maybe Violation
 validateCaseKind caseKind scrutineeType op =
     let
@@ -124,6 +168,10 @@ validateCaseKind caseKind scrutineeType op =
                     }
 
 
+{-| Returns the name a violation message gives `t`: the MLIR spelling of an
+integer or float type, a named struct's name without the leading `!` (so
+`eco.value`), and `function` for any function type.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

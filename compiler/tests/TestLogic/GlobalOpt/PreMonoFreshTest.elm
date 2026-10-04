@@ -1,21 +1,58 @@
 module TestLogic.GlobalOpt.PreMonoFreshTest exposing (suite)
 
-{-| `Compiler.GlobalOpt.PreMono.Fresh` — the one place a pre-monomorphization
-pass mints identity (`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`
-§6).
+{-| Tests for `Compiler.GlobalOpt.PreMono.Fresh`, which gives identity to the
+code a pre-monomorphization pass copies or creates.
 
-What is pinned here is the property the whole item rests on: after
-`AssignMVarIds` moved in front of the pre-mono passes, identity EXISTS while
-those passes run, so a copy that keeps its ids puts two bodies under one member
-— LSS\_009 impersonation, a silent wrong answer rather than a crash. These tests
-assert that a copy shares NO lambda id and NO arrow id with its original, that
-an unsubstituted type variable is re-minted WITH its supertype constraint, that
-a substituted one is spliced verbatim, and that `assertMinted` rejects both an
-unminted node and a REPEATED id.
+When those passes run, every lambda already carries a source-lambda id
+(`SrcLambdaId`), every function arrow in a type an arrow id (`ArrowId`), and
+every type variable a program-wide id (`MVarId`), all handed out from the
+supplies of an `AssignMVarIds.GlobalMVarState`, the _allocator_. Taking the
+next id from a supply is called _minting_. A copy that keeps its original's
+ids, or a copied type variable that loses its `number` constraint, raises no
+error where it happens; `Compiler.GlobalOpt.PreMono.Fresh` states what a kept
+id leads to.
 
-The fixtures are built directly rather than through the source pipeline: this
-module is about the id allocator, and a hand-built graph is the only way to
-construct the duplicate-id case that `assertMinted` exists to catch.
+The fixtures are typed-optimized expressions built by hand, not compiled from
+source. The allocator the `freshenCopy` and `mintNewNode` tests start from,
+`state0` (the `number` test through `numberVarState`), has its lambda and arrow
+supplies moved on to 10, past the fixtures' hand-picked lambda ids 0 and 1 and
+arrow ids 0 to 2, so a correctly minted id cannot coincide with an original
+one. Its type variable supply stands at 1, because one variable was assigned
+the first `MVarId`, which is the id the fixtures' type variables use. The ids
+are read back by walkers written in this module, which descend only into
+functions, calls and lists. The arrow id and type variable walkers read only
+each expression's own type, not parameter types.
+
+What the tests establish:
+
+  - A copy of `\x -> \y -> x` has two lambda ids, neither of them one of the
+    original's.
+  - The original has at least one arrow id, and the copy has none of them.
+  - Of two copies made one after the other, threading the allocator, the
+    second has no lambda id of the first. Their arrow ids are not compared.
+  - A copied type variable with no substitution is one variable with a new id,
+    recorded in the returned allocator's `superVars` as `Vars.Number`, as the
+    original was.
+  - A type variable the substitution maps to `Int -> Int` with arrow id 99
+    leaves the copy with no type variable and with arrow id 99 as its only
+    arrow id.
+  - `mintNewNode` gives a lambda that has no lambda id and no arrow id one of
+    each. The test counts them and does not check their values.
+  - Running `mintNewNode` again on its own result leaves the lambda ids and
+    arrow ids as they were.
+  - `assertMinted` returns `Ok` for a graph whose one definition is a lambda
+    with lambda id 0 and arrow id 0.
+  - `assertMinted` returns an `Err` for a lambda with no lambda id and no arrow
+    id.
+  - `assertMinted` returns an `Err` for a call of one lambda on another, both
+    with lambda id 0 and arrow id 0. Only the `Err` is checked, so the test
+    does not show which of the two repeats is caught.
+
+Among what is not tested: `freshenType`; copying a `TrackedFunction`, a record,
+an alias, a tuple or a record extension variable; the types of parameters and
+`let` definitions, which the walkers do not read; `mintNewNode` on a
+`SolverRoot` arrow; a repeated arrow id on its own; and any graph node other
+than a single `Define`.
 
 -}
 
@@ -36,6 +73,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The `freshenCopy`, `mintNewNode` and `assertMinted` tests, as one suite.
+-}
 suite : Test
 suite =
     Test.describe "PreMono.Fresh"
@@ -51,6 +90,10 @@ suite =
 -- ============================================================================
 
 
+{-| The tests of `freshenCopy`: lambda and arrow ids in a copy, lambda ids in a
+second copy, and what becomes of a type variable with and without a
+substitution.
+-}
 freshenCopySuite : Test
 freshenCopySuite =
     Test.describe "freshenCopy"
@@ -100,10 +143,6 @@ freshenCopySuite =
                     (List.filter (\i -> List.member i (lamIds copyA)) (lamIds copyB))
         , Test.test "an unsubstituted variable is re-minted WITH its super" <|
             \_ ->
-                -- `withRenamedSupers` used to re-key `varSupers` by NAME; the
-                -- copy now carries the constraint by ID. Losing it would let a
-                -- `number` default differently in the copy — silent, not a type
-                -- error.
                 let
                     ( copy, state1 ) =
                         Fresh.freshenCopy Dict.empty numberVarState numberVarBody
@@ -140,6 +179,9 @@ freshenCopySuite =
 -- ============================================================================
 
 
+{-| The tests of `mintNewNode`: that it gives an unminted lambda its ids, and
+that a second run leaves its lambda and arrow ids as they were.
+-}
 mintNewNodeSuite : Test
 mintNewNodeSuite =
     Test.describe "mintNewNode"
@@ -171,6 +213,9 @@ mintNewNodeSuite =
 -- ============================================================================
 
 
+{-| The tests of `assertMinted`, each on a graph built by `graphOf`: one
+minted lambda passes, and a lambda with no ids and a repeated lambda both fail.
+-}
 assertMintedSuite : Test
 assertMintedSuite =
     Test.describe "assertMinted"
@@ -182,13 +227,12 @@ assertMintedSuite =
                 expectErr (Fresh.assertMinted (graphOf unmintedLambda))
         , Test.test "rejects a REPEATED lambda id — the copy-without-mint case" <|
             \_ ->
-                -- The check that earns its keep. A missing id declines visibly
-                -- as `g1absentl`; a repeated one is two bodies under one member
-                -- and no presence check can see it.
                 expectErr (Fresh.assertMinted (graphOf duplicatedLambda))
         ]
 
 
+{-| Passes when `r` is `Ok`, and otherwise fails with the error message.
+-}
 expectOk : Result String () -> Expect.Expectation
 expectOk r =
     case r of
@@ -199,6 +243,8 @@ expectOk r =
             Expect.fail ("expected Ok, got: " ++ e)
 
 
+{-| Passes when `r` is an `Err`, whatever its message, and fails on `Ok`.
+-}
 expectErr : Result String () -> Expect.Expectation
 expectErr r =
     case r of
@@ -215,14 +261,15 @@ expectErr r =
 -- ============================================================================
 
 
-{-| An allocator whose supplies START PAST the ids the fixtures hand-pick.
+{-| The allocator the `freshenCopy` and `mintNewNode` tests start from (the
+`number` test through `numberVarState`), with its lambda and arrow supplies
+past the ids the fixtures pick by hand.
 
-Without this the test is vacuous in the worst way: `assignIdsToType` leaves
-`nextLam`/`nextArrow` at `first*`, the fixtures use ids 0..2, and a genuinely
-fresh mint hands back exactly those — so a copy that minted correctly would
-still "share ids with its original" and the test would fail while the module is
-right. Advancing the supplies makes original and copy ranges disjoint, which is
-what the assertions are actually about.
+It is the state `assignIdsToType` leaves after assigning one type variable,
+which takes the first `MVarId`, so the next type variable minted is not the
+fixtures' one. That state's lambda and arrow supplies are still at their first
+ids, which the fixtures also use, so a correctly minted copy would share ids
+with its original. Both supplies are moved on to 10.
 
 -}
 state0 : AssignMVarIds.GlobalMVarState
@@ -234,7 +281,8 @@ state0 =
     { seeded | nextLam = nthLam 10, nextArrow = nthArrow 10 }
 
 
-{-| A state whose `superVars` marks `originalNumberVar` as a `number`.
+{-| `state0` with `originalNumberVar` recorded in `superVars` as a `number`
+variable.
 -}
 numberVarState : AssignMVarIds.GlobalMVarState
 numberVarState =
@@ -248,42 +296,60 @@ numberVarState =
     }
 
 
+{-| The type variable the substitution test replaces. It is the first `MVarId`.
+-}
 originalVar : TypeIds.MVarId
 originalVar =
     TypeIds.firstMVarId
 
 
+{-| The type variable the `number` test copies. It is the first `MVarId`, the
+same id as `originalVar`.
+-}
 originalNumberVar : TypeIds.MVarId
 originalNumberVar =
     TypeIds.firstMVarId
 
 
+{-| The type `Int` from `Basics`.
+-}
 intType : Can.Type TypeIds.MVarId
 intType =
     Can.TType ModuleName.basics "Int" []
 
 
+{-| Builds the function type `from -> to` with the arrow id `nthArrow n`.
+-}
 arrow : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Int -> Can.Type TypeIds.MVarId
 arrow from to n =
     Can.TLambda (TypeIds.Arrow (nthArrow n)) from to
 
 
+{-| Returns the arrow id `n` steps after the first, so `nthArrow 0` is the
+first.
+-}
 nthArrow : Int -> TypeIds.ArrowId
 nthArrow n =
     List.foldl (\_ a -> Id.succ a) TypeIds.firstArrowId (List.range 1 n)
 
 
+{-| Returns the lambda id `n` steps after the first, so `nthLam 0` is the first.
+-}
 nthLam : Int -> TypeIds.SrcLambdaId
 nthLam n =
     List.foldl (\_ a -> Id.succ a) TypeIds.firstSrcLambdaId (List.range 1 n)
 
 
+{-| Builds expression metadata of type `t` with no solver variable.
+-}
 meta : Can.Type TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId
 meta t =
     { tipe = t, tvar = Nothing }
 
 
-{-| `\x -> \y -> x` — two lambdas, three arrows.
+{-| `\x -> \y -> x` at type `Int -> Int -> Int`, with lambda ids 0 and 1. The
+outer lambda's type carries arrow ids 0 and 2, and the inner lambda's type
+arrow id 1.
 -}
 twoLambdaBody : TOpt.Expr TypeIds.MVarId
 twoLambdaBody =
@@ -297,31 +363,39 @@ twoLambdaBody =
         (meta (arrow intType (arrow intType intType 2) 0))
 
 
-{-| A body whose only type is the variable under test.
+{-| A local variable `n` whose type is the type variable `originalNumberVar`.
 -}
 numberVarBody : TOpt.Expr TypeIds.MVarId
 numberVarBody =
     TOpt.VarLocal "n" (meta (Can.TVar originalNumberVar))
 
 
+{-| A local variable `v` whose type is the type variable `originalVar`.
+-}
 varTypedBody : TOpt.Expr TypeIds.MVarId
 varTypedBody =
     TOpt.VarLocal "v" (meta (Can.TVar originalVar))
 
 
-{-| The call site's type for the substitution test: an arrow with ids that must
-survive the splice untouched.
+{-| The type the substitution test puts in place of `originalVar`: `Int -> Int`
+with arrow id 99, which the test expects to find unchanged in the copy.
 -}
 callSiteArrowType : Can.Type TypeIds.MVarId
 callSiteArrowType =
     arrow intType intType 99
 
 
+{-| A local variable of type `callSiteArrowType`, from which the substitution
+test reads the arrow ids it expects.
+-}
 callSiteArrowType_asExpr : TOpt.Expr TypeIds.MVarId
 callSiteArrowType_asExpr =
     TOpt.VarLocal "v" (meta callSiteArrowType)
 
 
+{-| `\x -> x` at type `Int -> Int` with no lambda id, and with an arrow that has
+no arrow id (`NoArrow`, from `Can.tLambda`).
+-}
 unmintedLambda : TOpt.Expr TypeIds.MVarId
 unmintedLambda =
     TOpt.Function Nothing
@@ -330,6 +404,8 @@ unmintedLambda =
         (meta (Can.tLambda intType intType))
 
 
+{-| Builds `\x -> x` at type `Int -> Int` with lambda id 0 and arrow id 0.
+-}
 mintedLambda : () -> TOpt.Expr TypeIds.MVarId
 mintedLambda () =
     TOpt.Function (Just (nthLam 0))
@@ -338,7 +414,9 @@ mintedLambda () =
         (meta (arrow intType intType 0))
 
 
-{-| Two lambdas carrying the SAME id — what a copy that forgot to mint produces.
+{-| A call of `mintedLambda` on a second `mintedLambda`: two lambdas that share
+lambda id 0 and also share arrow id 0, as a copy that kept its original's ids
+would.
 -}
 duplicatedLambda : TOpt.Expr TypeIds.MVarId
 duplicatedLambda =
@@ -348,6 +426,9 @@ duplicatedLambda =
         (meta intType)
 
 
+{-| Builds a global graph whose one node defines `Basics.probe` as `expr`, with
+every other table of the graph empty.
+-}
 graphOf : TOpt.Expr TypeIds.MVarId -> TOpt.GlobalGraph TypeIds.MVarId
 graphOf expr =
     TOpt.GlobalGraph
@@ -367,6 +448,10 @@ graphOf expr =
 -- ============================================================================
 
 
+{-| Returns the lambda ids, as `Id.toComparable` keys, of `expr` and of every
+sub-expression `kids` reaches, outermost first. A lambda with no id adds
+nothing.
+-}
 lamIds : TOpt.Expr TypeIds.MVarId -> List Int
 lamIds expr =
     (case expr of
@@ -382,11 +467,18 @@ lamIds expr =
         ++ List.concatMap lamIds (kids expr)
 
 
+{-| Returns the arrow ids found by `arrowIdsOfType` in the type of `expr` and of
+every sub-expression `kids` reaches. Parameter types are not read.
+-}
 arrowIds : TOpt.Expr TypeIds.MVarId -> List Int
 arrowIds expr =
     arrowIdsOfType (TOpt.typeOf expr) ++ List.concatMap arrowIds (kids expr)
 
 
+{-| Returns the arrow ids in `t`, as `Id.toComparable` keys, looking inside
+arrows, type arguments and tuples. An arrow with no id adds nothing of its own,
+and records and aliases add nothing at all.
+-}
 arrowIdsOfType : Can.Type TypeIds.MVarId -> List Int
 arrowIdsOfType t =
     case t of
@@ -406,11 +498,17 @@ arrowIdsOfType t =
             []
 
 
+{-| Returns the type variable ids found by `typeVarsOfType` in the type of
+`expr` and of every sub-expression `kids` reaches, with repeats kept.
+-}
 typeVarsOf : TOpt.Expr TypeIds.MVarId -> List Int
 typeVarsOf expr =
     typeVarsOfType (TOpt.typeOf expr) ++ List.concatMap typeVarsOf (kids expr)
 
 
+{-| Returns the type variable ids in `t`, as `Id.toComparable` keys, looking
+inside arrows, type arguments and tuples. Records and aliases add nothing.
+-}
 typeVarsOfType : Can.Type TypeIds.MVarId -> List Int
 typeVarsOfType t =
     case t of
@@ -430,6 +528,10 @@ typeVarsOfType t =
             []
 
 
+{-| Returns the sub-expressions the walkers descend into: a function's body, a
+call's function and arguments, and a list's items. Any other expression is
+treated as having none, which holds for every fixture in this module.
+-}
 kids : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 kids expr =
     case expr of

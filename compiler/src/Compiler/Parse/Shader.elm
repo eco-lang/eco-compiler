@@ -1,13 +1,25 @@
 module Compiler.Parse.Shader exposing (shader)
 
-{-| Parser for GLSL shader blocks in Elm.
+{-| An Elm expression can embed a WebGL shader as a GLSL literal, written
+`[glsl| ... |]`, and this module parses one.
 
-This module handles parsing of shader literals marked with [glsl|...|] syntax.
-It extracts the GLSL source code, parses it to identify shader inputs
-(attributes, uniforms, varyings), and validates the shader syntax.
+The type checker gives a shader an Elm type built from its inputs, so the
+parser has to look inside the GLSL rather than carry it as opaque text. The
+literal is read in two steps. First the text between `[glsl|` and the first
+`|]` after it is cut out as it stands, so a `|]` anywhere in the GLSL, even in a
+GLSL comment, ends the literal. Then that text is handed to the GLSL parser
+of `Language.GLSL.Parser`, and the inputs are picked out of the declarations it
+returns.
 
+An input is recorded only when it is a top-level declaration of a single
+name, qualified `attribute`, `uniform` or `varying`, with one of the types
+`vec2`, `vec3`, `vec4`, `mat4`, `int`, `float`, `sampler2D` or `bool`. Every
+other declaration is ignored, without error. What the three kinds of input
+mean is stated in `Compiler.AST.Utils.Shader`.
 
-# Shader Parsing
+A GLSL syntax error is reported as an Elm syntax error. The GLSL parser gives
+only a character offset into the cut-out text, so this module turns that offset
+back into a row and column in the Elm file.
 
 @docs shader
 
@@ -28,8 +40,17 @@ import Utils.Crash as Crash
 -- ====== SHADER ======
 
 
-{-| Parses a GLSL shader block enclosed in [glsl|...|].
-Extracts shader types (attributes, uniforms, varyings) from the GLSL source.
+{-| Parses a GLSL literal that begins at the current position, given that
+position as `start`, and returns a `Src.Shader` expression located from `start`
+to just after the closing `|]`.
+
+The expression holds the text between the delimiters, escaped by
+`Shader.fromString`, and the inputs found in it. Input that does not begin with
+`[glsl|` fails without consuming anything, with `E.Start`. A literal with no
+closing `|]` fails with `E.EndlessShader` at the opening `[`, and one whose
+GLSL does not parse fails with `E.ShaderProblem`. When the same name is
+declared twice with the same qualifier, the first declaration's type is kept.
+
 -}
 shader : A.Position -> Parser E.Expr Src.Expr
 shader ((A.Position row col) as start) =
@@ -52,6 +73,9 @@ shader ((A.Position row col) as start) =
 -- ====== BLOCK ======
 
 
+{-| A parser for the delimiters of a GLSL literal, producing the raw text
+between `[glsl|` and the first `|]`, which is consumed too.
+-}
 parseBlock : Parser E.Expr String
 parseBlock =
     P.Parser <|
@@ -102,11 +126,19 @@ parseBlock =
                 P.Eerr st.row st.col E.Start
 
 
+{-| Whether `eatShader` found the end of a GLSL literal: `Good` when it reached
+a `|]`, and `Unending` when the input ran out first.
+-}
 type Status
     = Good
     | Unending
 
 
+{-| Scans the source from `pos` for the first `|]`, tracking the row and
+column as it goes, and returns whether one was found, the position where
+the scan stopped (the `|` of the `|]` when one was found), and the row and
+column of that point.
+-}
 eatShader : String -> Int -> Int -> Row -> Col -> ( ( Status, Int ), ( Row, Col ) )
 eatShader src pos end row col =
     if pos >= end then
@@ -137,6 +169,17 @@ eatShader src pos end row col =
 -- ====== GLSL ======
 
 
+{-| Produces a parser that returns the inputs declared in `src`, the GLSL text
+of a literal whose `[glsl|` opener starts at `startRow` and `startCol`.
+
+When `src` does not parse, the parser fails with `E.ShaderProblem` carrying the
+GLSL parser's messages. The GLSL parser reports the failure as a character
+offset into `src`, which is turned here into a position in the Elm file: on the
+literal's first line the column is counted from just after `[glsl|`, and on a
+later line it is the `String.length` (UTF-16 units) of the text before the
+offset on that line.
+
+-}
 parseGlsl : Row -> Col -> String -> Parser E.Expr Shader.Types
 parseGlsl startRow startCol src =
     case GLP.parse src of
@@ -144,7 +187,6 @@ parseGlsl startRow startCol src =
             P.pure (List.foldr addInput emptyTypes (List.concatMap extractInputs decls))
 
         Err { position, messages } ->
-            -- FIXME this should be moved into guida-lang/glsl
             let
                 lines : List String
                 lines =
@@ -175,6 +217,9 @@ parseGlsl startRow startCol src =
                 failure (startRow + row - 1) col msg
 
 
+{-| Joins the GLSL parser's messages into one, one per line, or returns
+`"unknown parse error"` when there are none.
+-}
 showErrorMessages : List String -> String
 showErrorMessages msgs =
     if List.isEmpty msgs then
@@ -184,6 +229,9 @@ showErrorMessages msgs =
         String.join "\n" msgs
 
 
+{-| Produces a parser that always fails with `E.ShaderProblem msg` at `row`
+and `col`, as an error after consuming input.
+-}
 failure : Row -> Col -> String -> Parser E.Expr a
 failure row col msg =
     P.Parser <|
@@ -195,11 +243,20 @@ failure row col msg =
 -- ====== INPUTS ======
 
 
+{-| The inputs of a shader that declares none.
+-}
 emptyTypes : Shader.Types
 emptyTypes =
     Shader.Types Dict.empty Dict.empty Dict.empty
 
 
+{-| Adds one input to the inputs of its kind, replacing an earlier entry of
+the same name and kind.
+
+It crashes for a qualifier other than `attribute`, `uniform` or `varying`,
+which `extractInputs` never returns.
+
+-}
 addInput : ( GLS.StorageQualifier, Shader.Type, String ) -> Shader.Types -> Shader.Types
 addInput ( qual, tipe, name ) (Shader.Types attribute uniform varying) =
     case qual of
@@ -216,6 +273,10 @@ addInput ( qual, tipe, name ) (Shader.Types attribute uniform varying) =
             Crash.crash "Should never happen due to `extractInputs` function"
 
 
+{-| Returns the input that a top-level GLSL declaration declares, as its
+qualifier, type and name, or an empty list when the declaration is not an
+input this module records.
+-}
 extractInputs : GLS.ExternalDeclaration -> List ( GLS.StorageQualifier, Shader.Type, String )
 extractInputs decl =
     case decl of

@@ -7,14 +7,40 @@ module Compiler.Generate.JavaScript.Builder exposing
     , addKernel
     )
 
-{-| JavaScript AST and pretty-printer builder for the Elm compiler.
+{-| The JavaScript back end has to print the program it generates and, for a
+source map, know where in the printed text each piece of Elm source ended up.
+This module does both: it is a syntax tree for the JavaScript the back end
+writes, and the printer that turns a tree into indented text while recording
+those positions.
 
-This module provides a typed representation of JavaScript expressions and statements,
-along with a builder that converts them to formatted JavaScript source code. It tracks
-source positions for source map generation and handles proper indentation, operator
-precedence, and line wrapping.
+The tree has expressions (`Expr`), assignment targets (`LValue`), statements
+(`Stmt`) and switch clauses (`Case`), with the operators in `InfixOp` and
+`PrefixOp`. It has only the forms the back end writes, not the whole of
+JavaScript. Names and string contents are printed exactly as given: nothing is
+mangled or escaped here, so the caller supplies valid identifiers and string
+text that is already escaped.
 
-Based on the language-ecmascript package structure for correct JavaScript syntax modeling.
+Some forms are _tracked_. A tracked form carries the Elm module it was generated
+from and positions or regions in that module's source, and printing it can
+record _mappings_: a mapping is a position in the printed text paired with the
+Elm position it came from, and sometimes a name to report for it. An untracked
+form records nothing.
+
+A `Builder` holds the text printed so far, the line and column the next
+character will go at, and the mappings recorded so far. `stmtToBuilder` and
+`exprToBuilder` print onto the end of one. Printed columns count from 1 on each
+line, and printed lines count from the number given to `emptyBuilder`.
+
+Printing makes two layout decisions. No operator precedence is computed:
+instead an operator expression, conditional or assignment is put in
+parentheses wherever it is an operand of an operator, a part of a conditional,
+the callee of a call (for a call through an application helper, the helper),
+or the object of a property access or index. And an array, an object or a
+call's arguments go one element to a line when any element may span lines (an
+array, object, call, function or conditional, or an expression containing one),
+and on one line otherwise; a call through an application helper decides this
+from the arguments after the function only. Indentation is one tab per level
+of nesting.
 
 
 # Builder
@@ -42,7 +68,7 @@ Based on the language-ecmascript package structure for correct JavaScript syntax
 @docs Mapping, MappingData
 
 
-# Internal Helpers
+# Kernel Code
 
 @docs addKernel
 
@@ -64,12 +90,49 @@ import Maybe.Extra as Maybe
 -- ====== EXPRESSIONS ======
 
 
-{-| JavaScript expression AST node.
+{-| A JavaScript expression. The `ExprTracked...` forms also carry an Elm
+module and positions or regions in its source, from which printing can record
+mappings, as described below.
 
-Represents all JavaScript expression forms including literals (strings, numbers, booleans),
-arrays, objects, function calls, property access, operators, and function expressions.
-Includes both tracked variants (with source positions for source map generation) and
-untracked variants for performance.
+`ExprString` prints its text between single quotes without escaping it, so the
+text must already be escaped for a single-quoted literal. `ExprTrackedString`
+does the same. `ExprTrackedFloat` carries its number already written as text.
+`ExprInt` and `ExprBool` print a number and `true` or `false`. Each tracked
+literal maps its first printed character to the position it carries.
+
+`ExprJson` prints a JSON value compactly, with `Compiler.Json.Encode.encodeUgly`,
+as a JavaScript literal.
+
+`ExprArray` and `ExprObject` print an array and an object literal.
+`ExprTrackedArray` and `ExprTrackedObject` carry the region of the Elm literal:
+the opening bracket is mapped to the region's start, and the closing bracket to
+the column before the region's end, which is the region's last character. The
+fields of `ExprTrackedObject` carry the region of their names: each name is
+mapped to the start of its region, reporting itself as its name, and the `:`
+after it to the end of that region.
+
+`ExprRef` prints a name. `ExprTrackedRef` carries two names: the first is the
+name its mapping reports and the second is the one printed.
+
+`ExprAccess` is a property access, `object.name`, and `ExprIndex` is
+`object[index]`. `ExprTrackedAccess` maps the property name to the position it
+carries, reporting the name, and the dot to the column before it.
+
+`ExprPrefix` and `ExprInfix` apply a `PrefixOp` or an `InfixOp` to their
+operands.
+
+`ExprIf` is the conditional operator, `condition ? then : else`. `ExprAssign`
+is an assignment used as an expression.
+
+`ExprCall` is a call. `ExprTrackedNormalCall` is a call through an application
+helper such as `A2`: given a helper, a function and arguments, it prints
+`helper(function, arguments...)`. When the function is an `ExprTrackedRef` and
+the helper an `ExprRef`, the helper's name is mapped to the call's position and
+reports the function's name; otherwise the helper is printed as it is.
+
+`ExprFunction` is a function expression, with an optional name, its parameters
+and its body. `ExprTrackedFunction` has no name; each parameter is mapped to the
+start of its region and reports the name it is printed as.
 
 -}
 type Expr
@@ -100,10 +163,8 @@ type Expr
     | ExprTrackedFunction ModuleName.Canonical (List (A.Located Name.Name)) (List Stmt)
 
 
-{-| Left-hand side value in an assignment expression.
-
-Can be either a simple variable reference or an array/object index expression.
-
+{-| The target of an `ExprAssign`: a name, or `LBracket object index`, printed
+as `object[index]`.
 -}
 type LValue
     = LRef Name.Name
@@ -114,10 +175,35 @@ type LValue
 -- ====== STATEMENTS ======
 
 
-{-| JavaScript statement AST node.
+{-| A JavaScript statement. Each is printed on its own lines at the current
+indentation, with anything inside it indented further, and ends its last line,
+except where this says otherwise.
 
-Represents all JavaScript statement forms including blocks, control flow (if, switch, while,
-try-catch), variable declarations, function declarations, and expression statements.
+`Block` is a sequence of statements, printed one after another with no braces
+and no extra indentation; it is not a JavaScript block. `EmptyStmt` prints
+nothing.
+
+`IfStmt` always prints an `else` branch, which is empty when its statement is
+`EmptyStmt`.
+
+`Break` and `Continue` take an optional label. Without one they are printed
+with no indentation.
+
+`Labelled` prints the label on a line of its own, followed by the statement at
+the same indentation.
+
+`Try` is `try { ... } catch (name) { ... }`, with the name of the caught value
+between its two statements.
+
+`Throw` does not end its line, so whatever is printed next continues on the
+same line.
+
+`Var` declares one name. `TrackedVar` carries two names, the first reported by
+its mapping and the second printed, and maps the printed name to its position.
+`Vars` declares several names in one `var`, one to a line, and prints nothing
+for an empty list.
+
+`FunctionStmt` is a function declaration: name, parameters and body.
 
 -}
 type Stmt
@@ -139,10 +225,11 @@ type Stmt
     | FunctionStmt Name.Name (List Name.Name) (List Stmt)
 
 
-{-| Switch statement case or default clause.
+{-| One clause of a `Switch`: `case value:` or `default:`, followed by its
+statements.
 
-Represents a single case in a switch statement, with an expression to match
-or a default case that handles all other values.
+Nothing is added after the statements, not even a `break`, so control falls
+through into the next clause unless the statements leave the switch.
 
 -}
 type Case
@@ -154,9 +241,10 @@ type Case
 -- ====== OPERATORS ======
 
 
-{-| JavaScript infix (binary) operators.
+{-| A JavaScript binary operator, printed with a space on each side.
 
-Includes arithmetic, comparison, logical, and bitwise operators.
+`OpEq` and `OpNe` are the strict `===` and `!==`. `OpLShift` is `<<`,
+`OpSpRShift` the sign-propagating `>>` and `OpZfRShift` the zero-filling `>>>`.
 
 -}
 type InfixOp
@@ -181,10 +269,8 @@ type InfixOp
     | OpZfRShift
 
 
-{-| JavaScript prefix (unary) operators.
-
-Includes logical not, arithmetic negation, and bitwise complement.
-
+{-| A JavaScript prefix operator: `!`, `-` or `~`, in the order of the
+constructors.
 -}
 type PrefixOp
     = PrefixNot
@@ -196,22 +282,17 @@ type PrefixOp
 -- ====== BUILDER CONVERSION ======
 
 
-{-| Convert a JavaScript statement to builder output.
-
-Takes a statement AST node and appends its formatted JavaScript representation
-to the builder, handling indentation and line breaks.
-
+{-| Prints a statement onto the end of `builder`, starting at the outermost
+level of indentation, and records the mappings of the tracked forms in it.
 -}
 stmtToBuilder : Stmt -> Builder -> Builder
 stmtToBuilder stmts builder =
     fromStmt levelZero stmts builder
 
 
-{-| Convert a JavaScript expression to builder output.
-
-Takes an expression AST node and appends its formatted JavaScript representation
-to the builder, handling operator precedence and parenthesization.
-
+{-| Prints an expression onto the end of `builder`, at the outermost level of
+indentation and with no enclosing parentheses, and records the mappings of the
+tracked forms in it. The current line is not ended.
 -}
 exprToBuilder : Expr -> Builder -> Builder
 exprToBuilder expr builder =
@@ -222,15 +303,25 @@ exprToBuilder expr builder =
 -- ====== INDENT LEVEL ======
 
 
+{-| One depth of indentation: the tabs that start a line at that depth, and
+a way to get the next depth in. The next depth is a function so that it is made
+only when it is needed.
+-}
 type Level
     = Level String (() -> Level)
 
 
+{-| The outermost level of indentation, which has no tabs.
+-}
 levelZero : Level
 levelZero =
     Level "" (\_ -> makeLevel 1 (String.repeat 16 "\t"))
 
 
+{-| Makes the level `level` tabs deep, taking its tabs from `oldTabs`, which
+is first doubled if it is shorter than `level`. The levels after it are made
+from the same tab string.
+-}
 makeLevel : Int -> String -> Level
 makeLevel level oldTabs =
     let
@@ -249,6 +340,9 @@ makeLevel level oldTabs =
 -- ====== HELPERS ======
 
 
+{-| Prints each element of the list with `fn`, separated by a comma and a
+space. It adds no line break between elements.
+-}
 commaSep : (a -> Builder -> Builder) -> List a -> Builder -> Builder
 commaSep fn exprs builder =
     case exprs of
@@ -262,6 +356,13 @@ commaSep fn exprs builder =
             commaSep fn rest (addAscii ", " (fn first builder))
 
 
+{-| Prints each element of the list with `fn`, separated by a comma, a newline
+and the indentation one level deeper than `level`.
+
+Nothing is printed before the first element or after the last, so the caller
+starts the first line and closes the last.
+
+-}
 commaNewlineSep : Level -> (a -> Builder -> Builder) -> List a -> Builder -> Builder
 commaNewlineSep ((Level _ nextLevel) as level) fn exprs builder =
     case exprs of
@@ -283,11 +384,15 @@ commaNewlineSep ((Level _ nextLevel) as level) fn exprs builder =
 -- ====== STATEMENTS ======
 
 
+{-| Prints the statements one after another at `level`.
+-}
 fromStmtBlock : Level -> List Stmt -> Builder -> Builder
 fromStmtBlock level stmts builder =
     List.foldl (fromStmt level) builder stmts
 
 
+{-| Prints one statement at indentation `level`, laid out as `Stmt` describes.
+-}
 fromStmt : Level -> Stmt -> Builder -> Builder
 fromStmt ((Level indent nextLevel) as level) statement builder =
     case statement of
@@ -459,6 +564,8 @@ fromStmt ((Level indent nextLevel) as level) statement builder =
 -- ====== SWITCH CLAUSES ======
 
 
+{-| Prints one switch clause at `level`, with its statements one level deeper.
+-}
 fromClause : Level -> Case -> Builder -> Builder
 fromClause ((Level indent nextLevel) as level) clause builder =
     case clause of
@@ -479,6 +586,8 @@ fromClause ((Level indent nextLevel) as level) clause builder =
                 |> fromStmtBlock (nextLevel ()) stmts
 
 
+{-| Prints the switch clauses in order, each at `level`.
+-}
 fromClauses : Level -> List Case -> Builder -> Builder
 fromClauses level clauses builder =
     case clauses of
@@ -493,6 +602,9 @@ fromClauses level clauses builder =
 -- ====== VAR DECLS ======
 
 
+{-| Prints one `name = value` of a `var` declaration, with no indentation of
+its own.
+-}
 varToBuilder : Level -> ( Name.Name, Expr ) -> Builder -> Builder
 varToBuilder level ( name, expr ) builder =
     builder
@@ -505,11 +617,17 @@ varToBuilder level ( name, expr ) builder =
 -- ====== EXPRESSIONS ======
 
 
+{-| Whether an expression is laid out as a single line (`One`) or may span
+several (`Many`), as `fromExprLines` decides. `Many` says the expression may
+span lines, not that it does: a call with no arguments is `Many`.
+-}
 type Lines
     = One
     | Many
 
 
+{-| Returns `Many` if either argument is `Many`, and `One` otherwise.
+-}
 merge : Lines -> Lines -> Lines
 merge a b =
     if a == Many || b == Many then
@@ -519,11 +637,15 @@ merge a b =
         One
 
 
+{-| Returns whether `func` finds any element of `xs` to be `Many`.
+-}
 linesMap : (a -> Lines) -> List a -> Bool
 linesMap func xs =
     linesMapHelp func xs
 
 
+{-| Does the work of `linesMap`, stopping at the first `Many`.
+-}
 linesMapHelp : (a -> Lines) -> List a -> Bool
 linesMapHelp func xs =
     case xs of
@@ -539,11 +661,21 @@ linesMapHelp func xs =
                     linesMapHelp func rest
 
 
+{-| What the place an expression is printed in needs of it.
+
+`Atomic` is an operand position, where an operator expression, a conditional
+or an assignment must be put in parentheses to be read as one unit. `Whatever`
+needs no parentheses. Every other expression is printed the same in both.
+
+-}
 type Grouping
     = Atomic
     | Whatever
 
 
+{-| Prints `fillContent` onto `builder`, inside parentheses when `grouping` is
+`Atomic`.
+-}
 parensFor : Grouping -> Builder -> (Builder -> Builder) -> Builder
 parensFor grouping builder fillContent =
     case grouping of
@@ -557,6 +689,10 @@ parensFor grouping builder fillContent =
             fillContent builder
 
 
+{-| Prints an expression at indentation `level`, laid out as `Expr` and the
+module docstring describe. `grouping` matters only for an operator expression,
+a conditional or an assignment, which it puts in parentheses when `Atomic`.
+-}
 fromExpr : Level -> Grouping -> Expr -> Builder -> Builder
 fromExpr ((Level indent nextLevel) as level) grouping expression builder =
     let
@@ -818,6 +954,9 @@ fromExpr ((Level indent nextLevel) as level) grouping expression builder =
                 |> addAscii "}"
 
 
+{-| Returns the name an `ExprTrackedRef` reports, or `Nothing` for any other
+expression.
+-}
 trackedNameFromExpr : Expr -> Maybe Name.Name
 trackedNameFromExpr expr =
     case expr of
@@ -828,6 +967,14 @@ trackedNameFromExpr expr =
             Nothing
 
 
+{-| Decides whether an expression may span lines.
+
+Arrays, objects, calls, functions and conditionals are `Many` whatever they
+contain, and literals and names are `One`. A property access, index, operator
+expression or assignment is `Many` when any part of it is. `level` plays no
+part in the answer.
+
+-}
 fromExprLines : Level -> Expr -> Lines
 fromExprLines level expression =
     case expression of
@@ -911,6 +1058,8 @@ fromExprLines level expression =
 -- ====== FIELDS ======
 
 
+{-| Prints one `name: value` field of an object, the value at `level`.
+-}
 fromField : Level -> ( Name.Name, Expr ) -> Builder -> Builder
 fromField level ( field, expr ) builder =
     builder
@@ -919,11 +1068,17 @@ fromField level ( field, expr ) builder =
         |> fromExpr level Whatever expr
 
 
+{-| Decides whether an object field may span lines, which is whether its
+value may.
+-}
 fromFieldLines : Level -> ( Name.Name, Expr ) -> Lines
 fromFieldLines level ( _, expr ) =
     fromExprLines level expr
 
 
+{-| Prints one field of an `ExprTrackedObject`, mapping the name to the start
+of its region and the `:` after it to the end of that region.
+-}
 trackedFromField : Level -> ModuleName.Canonical -> ( A.Located Name.Name, Expr ) -> Builder -> Builder
 trackedFromField level moduleName ( A.At (A.Region start end) field, expr ) builder =
     builder
@@ -932,6 +1087,9 @@ trackedFromField level moduleName ( A.At (A.Region start end) field, expr ) buil
         |> fromExpr level Whatever expr
 
 
+{-| Decides whether a field of an `ExprTrackedObject` may span lines, which is
+whether its value may.
+-}
 trackedFromFieldLines : Level -> ( A.Located Name.Name, Expr ) -> Lines
 trackedFromFieldLines level ( _, expr ) =
     fromExprLines level expr
@@ -941,6 +1099,8 @@ trackedFromFieldLines level ( _, expr ) =
 -- ====== VALUES ======
 
 
+{-| Prints the target of an assignment.
+-}
 fromLValue : Level -> LValue -> Builder -> Builder
 fromLValue level lValue builder =
     case lValue of
@@ -951,6 +1111,8 @@ fromLValue level lValue builder =
             makeBracketed level expr bracketedExpr builder
 
 
+{-| Decides whether the target of an assignment may span lines.
+-}
 fromLValueLines : Level -> LValue -> Lines
 fromLValueLines level lValue =
     case lValue of
@@ -961,6 +1123,8 @@ fromLValueLines level lValue =
             makeBracketedLines level expr bracketedExpr
 
 
+{-| Prints `expr.field`, with `expr` in an operand position.
+-}
 makeDot : Level -> Expr -> Name.Name -> Builder -> Builder
 makeDot level expr field builder =
     builder
@@ -969,11 +1133,15 @@ makeDot level expr field builder =
         |> addByteString field
 
 
+{-| Decides whether `expr.field` may span lines, which is whether `expr` may.
+-}
 makeDotLines : Level -> Expr -> Lines
 makeDotLines level expr =
     fromExprLines level expr
 
 
+{-| Prints `expr[bracketedExpr]`, with `expr` in an operand position.
+-}
 makeBracketed : Level -> Expr -> Expr -> Builder -> Builder
 makeBracketed level expr bracketedExpr builder =
     fromExpr level Atomic expr builder
@@ -982,6 +1150,9 @@ makeBracketed level expr bracketedExpr builder =
         |> addAscii "]"
 
 
+{-| Decides whether `expr[bracketedExpr]` may span lines, which is whether
+either expression may.
+-}
 makeBracketedLines : Level -> Expr -> Expr -> Lines
 makeBracketedLines level expr bracketedExpr =
     merge (fromExprLines level expr) (fromExprLines level bracketedExpr)
@@ -991,6 +1162,8 @@ makeBracketedLines level expr bracketedExpr =
 -- ====== OPERATORS ======
 
 
+{-| Prints the symbol of a prefix operator.
+-}
 fromPrefix : PrefixOp -> Builder -> Builder
 fromPrefix op =
     addAscii
@@ -1006,6 +1179,8 @@ fromPrefix op =
         )
 
 
+{-| Prints the symbol of a binary operator, with a space on each side.
+-}
 fromInfix : InfixOp -> Builder -> Builder
 fromInfix op =
     addAscii
@@ -1073,10 +1248,12 @@ fromInfix op =
 -- ====== BUILDER ======
 
 
-{-| Internal state for the JavaScript code builder.
+{-| The state of a print in progress: the text printed so far, the line and
+column the next character will go at, the mappings recorded, and the kernel
+code stored by `addKernel`.
 
-Tracks the generated JavaScript output, current line and column position for
-source map generation, and accumulated kernel dependencies.
+`revBuilders` is the printed text in order, despite its name. `revKernels` and
+`mappings` are newest first. `currentCol` counts from 1 on each line.
 
 -}
 type alias BuilderData =
@@ -1088,21 +1265,21 @@ type alias BuilderData =
     }
 
 
-{-| Opaque builder type for accumulating JavaScript output.
-
-Wraps BuilderData to provide an opaque interface for building JavaScript code
-with source map support.
-
+{-| A print in progress, holding what `BuilderData` describes. The constructor
+is exposed, so the data can be read, and written, directly.
 -}
 type Builder
     = Builder BuilderData
 
 
-{-| Source map mapping entry data.
+{-| One mapping: a position in the printed text, and the Elm module and source
+position it came from.
 
-Records a correspondence between a location in the generated JavaScript and
-a location in the original Elm source, optionally including the original name
-before mangling.
+`genLine` and `genCol` are the printed position, with lines counted from the
+builder's starting line and columns from 1. `srcLine` and `srcCol` are the Elm
+source position, as the row and column of an `A.Position`. `srcName` is
+the name the mapping reports, which can differ from the printed text, and is
+`Nothing` for literals and punctuation.
 
 -}
 type alias MappingData =
@@ -1115,52 +1292,42 @@ type alias MappingData =
     }
 
 
-{-| Source map mapping entry.
-
-Wraps MappingData to provide an opaque type for source map entries.
-
+{-| A mapping, holding what `MappingData` describes. The constructor is
+exposed, so the data can be read, and written, directly.
 -}
 type Mapping
     = Mapping MappingData
 
 
-{-| Create an empty builder starting at the specified line number.
-
-Used to initialize a builder for generating JavaScript code, typically starting
-at line 1 unless prepending to existing output.
-
+{-| Creates a builder with no text, kernel code or mappings, whose next
+character goes at column 1 of line `startLine`.
 -}
 emptyBuilder : Int -> Builder
 emptyBuilder startLine =
     Builder { revKernels = [], revBuilders = "", currentLine = startLine, currentCol = 1, mappings = [] }
 
 
-{-| Add ASCII string to builder without source map tracking.
-
-For adding JavaScript syntax elements (operators, punctuation) that don't
-correspond to specific source locations. Updates column position.
-
+{-| Appends text with no mapping, advancing the column by the text's length.
+The line is not advanced, so the text must not contain a newline.
 -}
 addAscii : String -> Builder -> Builder
 addAscii ascii (Builder b) =
     Builder { b | revBuilders = b.revBuilders ++ ascii, currentCol = b.currentCol + String.length ascii }
 
 
-{-| Register a kernel module dependency.
-
-Tracks kernel modules that need to be included in the generated output.
-Kernel dependencies are accumulated and can be retrieved later.
-
+{-| Stores a piece of kernel JavaScript in the builder's `revKernels`, apart
+from the printed text. The line, the column and the mappings do not change.
 -}
 addKernel : String -> Builder -> Builder
 addKernel kernel (Builder b) =
     Builder { b | revKernels = kernel :: b.revKernels }
 
 
-{-| Add string to builder without source map tracking.
+{-| Appends text with no mapping.
 
-For adding generated code that doesn't correspond to a specific source location.
-Handles multi-line strings by tracking line breaks and updating position accordingly.
+Text without a line break advances the column by its length. Text with line
+breaks advances the line by their number and sets the column to 1, which is
+right only when the text ends with a line break.
 
 -}
 addByteString : String -> Builder -> Builder
@@ -1182,6 +1349,9 @@ addByteString str (Builder b) =
         Builder { b | revBuilders = b.revBuilders ++ str, currentLine = b.currentLine + bsLines, currentCol = 1 }
 
 
+{-| Appends text as `addByteString` does, and records a mapping from where the
+text starts to the given position in `moduleName`, with no name.
+-}
 addTrackedByteString : ModuleName.Canonical -> A.Position -> String -> Builder -> Builder
 addTrackedByteString moduleName (A.Position line col) str (Builder b) =
     let
@@ -1206,6 +1376,10 @@ addTrackedByteString moduleName (A.Position line col) str (Builder b) =
         Builder { b | revBuilders = b.revBuilders ++ str, currentLine = b.currentLine + bsLines, currentCol = 1, mappings = newMappings }
 
 
+{-| Appends `genName` and records a mapping from where it starts to the given
+position, reporting `name`. The column advances by the length of `genName`,
+so it must not contain a newline.
+-}
 addName : ModuleName.Canonical -> A.Position -> Name.Name -> Name.Name -> Builder -> Builder
 addName moduleName (A.Position line col) name genName (Builder b) =
     let
@@ -1223,6 +1397,8 @@ addName moduleName (A.Position line col) name genName (Builder b) =
         }
 
 
+{-| Appends a `.` and records a mapping from it to the given position.
+-}
 addTrackedDot : ModuleName.Canonical -> A.Position -> Builder -> Builder
 addTrackedDot moduleName (A.Position line col) (Builder b) =
     Builder
@@ -1235,6 +1411,9 @@ addTrackedDot moduleName (A.Position line col) (Builder b) =
         }
 
 
+{-| Ends the current line, so the next character goes at column 1 of the
+next line.
+-}
 addLine : Builder -> Builder
 addLine (Builder b) =
     Builder { b | revBuilders = b.revBuilders ++ "\n", currentLine = b.currentLine + 1, currentCol = 1 }

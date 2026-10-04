@@ -1,24 +1,84 @@
 module TestLogic.Monomorphize.LayoutQualTest exposing (suite)
 
-{-| LSS\_024 — layout-qualified lambda-instance members
-(`plans/lss-layout-qualified-members.md` §5.1/§5.2 pins).
+{-| Checks how the solver engine names the lambdas it meets while translating
+a specialization, because a wrong name either multiplies specializations or
+merges values that must stay apart, and neither is a compile error.
 
-Three groups:
+Under lambda-set specialization every function arrow in a `MonoType` carries
+an annotation saying which function values can flow through it. Each such
+value is a _member_, named by an interned integer id. A _specialization_
+(spec) is one instantiation of a definition at a `MonoType`, numbered by a
+`SpecId`. When a spec's body is translated, each lambda in it, other than the
+definition's own root lambda, is keyed by a _layout-qualified key_, which
+`Engine.layoutQualKey` builds as `l|<raw lambda id>|<widened key>`. The
+_widened key_ is the `toComparableMonoType` string of the spec's type with
+every arrow annotation replaced by top (`LTop`), the widened annotation that
+does not restrict which function values flow, as `Mono.widenSets` does,
+recorded when the spec is created. Two specs whose types differ only in
+annotations therefore have equal widened keys, and the same lambda minted in
+either is keyed alike, while specs whose types differ in layout key it
+differently. The exception is a spec whose demand already carries a different
+id for that lambda: that id is reused and recorded as tied, which blocks it.
+A spec with no recorded widened key has its `SpecId` in that position
+instead, which the solver counts as a _fallback_. A non-zero _instance tag_,
+which distinguishes the instances of a let-bound function translated more
+than once, adds `|#<tag>` to the end of the key.
 
-1.  PURE pins on the key machinery: annotation-only differences erase under
-    `widenSets` (equal widened keys) while layout differences survive;
-    `layoutQualKey`'s captured-vs-fallback split; `internMemberKey`
-    idempotence (the re-mint pin).
-2.  SPIRAL pin on the MuTieTest fixture: the qualification spiral closes at
-    its second member WITHOUT recording any μ-tie (the §2.3 equal-id bypass:
-    `tieBypass` counts, `muTied`/`lssBlockedMembers` stay empty). Any
-    `lssBlockedMembers` shrink is the bypass and nothing else.
-3.  SPLIT-COLLAPSE pin: a two-caller family forcing an annotation-only
-    same-layout key split of `mid` whose per-spec inner lambda feeds a
-    shared HOF. Both mid specs mint ONE id (`shared` counts) and the HOF
-    collapses to 1 spec — the §0 `UnionFind.get/modify`-class propagated
-    split, reproduced in miniature. The deleted flag-off arm had the
-    propagated ids splitting the HOF's key into 2 specs.
+Two pipeline fixtures run the solver engine with its lambda-set report on,
+through `TestLogic.TestPipeline.runSolverMonoWithReport`, and read three
+counters from the report's `layoutQual` line: `shared`, mints whose id was
+first minted under a different spec; `fallback`, mints keyed by a `SpecId`;
+and `tieBypass`, mints where the id carried in by the spec's demand equals
+the id the mint interns, so that nothing is recorded as tied. The tests
+read `shared` only as at least one, so it does not show which lambda's id
+was shared.
+
+The _spiral_ fixture is `loop n f`, which calls itself, outside tail
+position, with a new lambda wrapping `f`, and `testValue`, which calls
+`loop 3` with an identity lambda. Each recursive call demands `loop` at a
+type whose callback annotation names the lambda minted by the caller's spec.
+Because those specs differ only in annotations, they mint that lambda under
+one key; had they minted different ids, the solver would close the spiral by
+recording the member as tied, which blocks it.
+`TestLogic.Monomorphize.MuTieTest` builds the same `loop`.
+
+The _split_ fixture is `mid f x = applyHof (\v -> f (v + x)) x` with
+`applyHof g y = g y`, and `testValue` calls `mid inc 1` and `mid dec 2`.
+The two calls give `mid` types that differ only in the annotation on `f`,
+so `mid` has two specs, and each mints its own copy of the inner lambda and
+passes it to `applyHof`.
+
+The tests establish:
+
+  - Widening gives equal keys for two arrows whose callback slots carry
+    different member sets, and for a callback slot carrying top and one
+    carrying a set variable, but different keys when the callback's argument
+    type differs (`Int` against `Float`).
+  - One widened key, of an arrow type, does not start with a digit, so it
+    cannot equal a `SpecId` written in the same position.
+  - `layoutQualKey` gives `l|42|A(I->I)` and `False` when spec 7's widened
+    key is recorded, and `l|42|8` and `True` for spec 8, which has none. A
+    second test makes the same call as the first, for instance tag 0.
+  - With instance tag 513 the key ends in `|#513`, and tags 0, 1, 2 and 513
+    give four different keys.
+  - `Engine.mixTag (mixTag 0 0) 1` differs from `mixTag (mixTag 0 1) 1`:
+    ordinal 1 under these two enclosing tags gives two tags. `mixTag 0 0`
+    is not 0, the tag that means no instance.
+  - Interning one key twice with `Engine.internMemberKey` gives the same id
+    and leaves the next free id unchanged.
+  - The spiral fixture finishes with no blocked members, at most three specs
+    of `loop`, `tieBypass` and `shared` at least one, and `fallback` zero.
+  - The split fixture gives two specs of `mid` and one of `applyHof`, with
+    `shared` at least one and `fallback` zero.
+  - The split fixture with a budget of one spec per global
+    (`maxSpecsPerGlobal = 1`), past which a global's new specs are keyed by
+    their widened type, gives `shared` at least one, `fallback` zero and two
+    specs of `applyHof`.
+
+Among what is not tested: a tie to a different id, which records the member
+as blocked; the folding of a definition's own root lambda into its global's
+`g|` key; instance tags produced by translating a real let-bound function;
+which ids the split fixture's lambdas actually get; and the generated code.
 
 -}
 
@@ -47,6 +107,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The tests of layout-qualified member keys: the pure key functions, the
+spiral fixture and the split fixture.
+-}
 suite : Test
 suite =
     Test.describe "LSS_024 layout-qualified members"
@@ -60,18 +123,25 @@ suite =
 -- ====== 1. PURE PINS ======
 
 
-{-| An `(Int -> Int) -> Int` arrow whose callback slot carries `anno`.
+{-| Builds the type `(Int -> Int) -> Int` with `anno` on the callback's
+arrow and top on the outer arrow.
 -}
 arrowWith : Mono.LambdaSetAnno -> Mono.MonoType
 arrowWith anno =
     Mono.mFunction Mono.topLegacy [ Mono.mFunction anno [ Mono.MInt ] Mono.MInt ] Mono.MInt
 
 
+{-| Returns the widened key of `t`: its comparable string after every arrow
+annotation has been replaced by top.
+-}
 widenedKey : Mono.MonoType -> String
 widenedKey t =
     Mono.toComparableMonoType (Mono.widenSets t)
 
 
+{-| The tests of widened keys, `Engine.layoutQualKey`, `Engine.mixTag` and
+`Engine.internMemberKey`, which run no pipeline.
+-}
 purePins : List Test
 purePins =
     [ Test.test "annotation-only differences erase: equal widened keys" <|
@@ -81,12 +151,6 @@ purePins =
                 (widenedKey (arrowWith (Mono.LSet [ 202, 303 ])))
     , Test.test "Phase 1a/3: a set VARIABLE widens to the SAME key as LTop (1a-T7 direct pin)" <|
         \() ->
-            -- `Mono.widenSets` stamps LTop, never LVar, and that is what
-            -- keeps the five widened-string-key derivations byte-identical
-            -- across the label split (LSS_024 specWidenedKeys, LSS_019 ground
-            -- member ids, the LSS_024 F-fence fingerprint, the keyed=False
-            -- widened registry key, and the budget-widened key). A drift here
-            -- produces a different registry key with NO compile error.
             Expect.equal
                 (widenedKey (arrowWith Mono.topLegacy))
                 (widenedKey (arrowWith (Mono.LVar 0)))
@@ -105,8 +169,6 @@ purePins =
                 (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 0 8)
     , Test.test "layoutQualKey: instance tag 0 reproduces the pre-instanceQual string byte for byte" <|
         \() ->
-            -- the flag-off byte-identity rail
-            -- (plans/lss-instance-qualified-members.md §3.4)
             Expect.equal ( "l|42|A(I->I)", False )
                 (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 0 7)
     , Test.test "layoutQualKey: a non-zero instance tag appends an unambiguous #-marked component" <|
@@ -135,17 +197,12 @@ purePins =
                 )
     , Test.test "mixTag: composition, not overwrite — the same ordinal under different outer tags differs" <|
         \() ->
-            -- plans/lss-instance-qualified-members.md §3.2: an inner
-            -- let-function's instance 1 inside outer instance 0 must not
-            -- collide with the same ordinal inside outer instance 1.
             Expect.notEqual (Engine.mixTag (Engine.mixTag 0 0) 1) (Engine.mixTag (Engine.mixTag 0 1) 1)
     , Test.test "mixTag: a leading ordinal 0 is not absorbed into the no-instance sentinel" <|
         \() ->
             Expect.notEqual 0 (Engine.mixTag 0 0)
     , Test.test "fallback-vs-widened collisions impossible: widened keys never start with a digit" <|
         \() ->
-            -- every toComparableMonoType rendering starts with a letter code;
-            -- a bare-integer SpecId suffix can never equal one.
             case String.uncons (widenedKey (arrowWith Mono.topLegacy)) of
                 Just ( c, _ ) ->
                     Expect.equal False (Char.isDigit c)
@@ -166,9 +223,13 @@ purePins =
 
 
 
--- ====== 2. SPIRAL PINS (MuTieTest fixture, C arm) ======
+-- ====== 2. SPIRAL PINS (MuTieTest fixture) ======
 
 
+{-| What the spiral test reads from one run of the spiral fixture: how many
+members the solver recorded as blocked, how many specs `loop` has, and the
+text of the lambda-set report, empty when the solver returned none.
+-}
 type alias Facts =
     { blockedCount : Int
     , loopSpecs : Int
@@ -176,13 +237,10 @@ type alias Facts =
     }
 
 
-{-| `muTie`, `layoutQualMembers` and `sigFlow` were fixed at their defaults
-and removed 2026-09-18, so only the (muTie ON, layoutQual ON) arm survives.
-The deleted arms recorded: with muTie OFF and layoutQual ON, C alone closes
-the spiral and nothing is blocked; with muTie ON and layoutQual OFF, the tie
-itself fires and blocks (LSS_018 unchanged) with tieBypass 0. The `sigFlow`
-pin isolated LSS_024's C mechanism from signature facts on these tiny
-fixtures.
+{-| The facts of the spiral fixture monomorphized by the solver engine with
+the default lambda-set settings and the report on, or the pipeline's error.
+The default limits apply, and the default allows any number of specs per
+global.
 -}
 runSpiral : Result String Facts
 runSpiral =
@@ -204,6 +262,9 @@ runSpiral =
             )
 
 
+{-| Reads the blocked-member count and the number of `loop` specs from
+a monomorphized graph, leaving `report` empty.
+-}
 factsOf : Mono.MonoGraph -> Facts
 factsOf (Mono.MonoGraph g) =
     { blockedCount = Dict.size g.lssBlockedMembers
@@ -212,6 +273,9 @@ factsOf (Mono.MonoGraph g) =
     }
 
 
+{-| Counts the specs in the registry whose global is named `name`, in any
+module.
+-}
 specCount : String -> { r | registry : Mono.SpecializationRegistry } -> Int
 specCount name g =
     Array.foldl
@@ -231,8 +295,9 @@ specCount name g =
         g.registry.reverseMapping
 
 
-{-| Read a census counter (`label` includes the `=`, e.g. `"tieBypass="`).
--1 when absent.
+{-| Returns the number written straight after the first occurrence of
+`label` in `report`, where `label` includes the `=`, as in `"tieBypass="`.
+Gives -1 when `label` does not occur or is not followed by a digit.
 -}
 counterOf : String -> String -> Int
 counterOf label report =
@@ -244,6 +309,9 @@ counterOf label report =
             -1
 
 
+{-| Returns the run of decimal digits at the start of `s`, empty if `s` does
+not start with one.
+-}
 leadingDigits : String -> String
 leadingDigits s =
     case String.uncons s of
@@ -258,6 +326,8 @@ leadingDigits s =
             ""
 
 
+{-| The test of the spiral fixture.
+-}
 spiralPins : List Test
 spiralPins =
     [ Test.test "equal-id bypass — the spiral closes, nothing recorded, tieBypass counts" <|
@@ -297,15 +367,24 @@ spiralPins =
 -- ====== 3. SPLIT-COLLAPSE PINS ======
 
 
+{-| The spec counts of `mid` and `applyHof` and the report text for the
+split fixture under the default spec budget, which is unlimited, or the
+pipeline's error.
+-}
 runSplit : Result String { midSpecs : Int, hofSpecs : Int, report : String }
 runSplit =
     runSplitWithBudget Config.defaultLss.maxSpecsPerGlobal
 
 
-{-| §5.1's budget-twin pin runs this with `maxSpecsPerGlobal = 1`: the first
-`mid` demand creates ANNOTATION-keyed (under budget), the second creates
-BUDGET-WIDENED — twins of one global whose widened creation keys must land
-EQUAL, so their lambdas SHARE one id.
+{-| Monomorphizes the split fixture with the solver engine and the report on,
+allowing `budget` specs per global, and returns the spec counts of `mid` and
+`applyHof` with the report text, or the pipeline's error.
+
+A `budget` of 0 or less is unlimited. Past the budget, a new spec of a global
+is keyed by its widened type, but it records the same widened key as a spec
+created under the budget, so with a budget of 1 the two specs of `mid` still
+mint the inner lambda under one key.
+
 -}
 runSplitWithBudget : Int -> Result String { midSpecs : Int, hofSpecs : Int, report : String }
 runSplitWithBudget budget =
@@ -326,6 +405,9 @@ runSplitWithBudget budget =
             )
 
 
+{-| The tests of the split fixture, with an unlimited budget and with a
+budget of one spec per global.
+-}
 splitPins : List Test
 splitPins =
     [ Test.test "mid's root split persists, the PROPAGATED applyHof split collapses to 1" <|
@@ -363,13 +445,9 @@ splitPins =
                                 Expect.fail ("expected shared >= 1 in: " ++ x.report)
                         , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
 
-                        -- NOT 1: at budget=1 applyHof itself keys as an
-                        -- annotated + budget-widened twin PAIR (2 specs by
-                        -- budget mechanics). The sharing pin above is the
-                        -- twin evidence — `mid` is the only lambda-minting
-                        -- global in the fixture, so shared >= 1 can only
-                        -- come from its annotation-created + budget-widened
-                        -- twins interning one id.
+                        -- Two, not one: past its budget of one spec,
+                        -- `applyHof`'s next demand is keyed by its widened
+                        -- type, which gives a second spec.
                         , \x -> Expect.equal 2 x.hofSpecs
                         ]
                         f
@@ -380,14 +458,17 @@ splitPins =
 -- ====== FIXTURES ======
 
 
-{-| The MuTieTest spiral, verbatim (see that module's doc for why the
-non-tail `1 +` is load-bearing).
+{-| The spiral fixture: `loopDef` and `testValue`, in a module named `Test`.
 -}
 spiralModule : Src.Module
 spiralModule =
     makeModuleWithTypedDefs "Test" [ loopDef, spiralValueDef ]
 
 
+{-| The definition of `loop : Int -> (Int -> Int) -> Int`, which returns `f 0`
+once `n` is at most 0 and otherwise `1 + loop (n - 1) (\x -> f x + 1)`. The
+`1 +` keeps the recursive call out of tail position.
+-}
 loopDef : TypedDef
 loopDef =
     { name = "loop"
@@ -415,6 +496,8 @@ loopDef =
     }
 
 
+{-| The spiral fixture's `testValue`, which is `loop 3 (\x -> x)`.
+-}
 spiralValueDef : TypedDef
 spiralValueDef =
     { name = "testValue"
@@ -428,14 +511,17 @@ spiralValueDef =
     }
 
 
-{-| The split family: `mid inc` / `mid dec` force an annotation-only
-same-layout key split of `mid` ({g|inc} vs {g|dec} on `f`'s arrow); each
-`mid` spec mints its own copy of the inner lambda, which flows to the
-shared `applyHof`. The inner lambdas are the same source lambda at the same
-layouts, so under LSS\_024 both specs intern ONE member id. (The clones are
-E11-DIVERGENT — they capture different `f`s — which is the consumer-side
-fence's problem, deliberately not this mono-level test's: stamping is
-AbiCloning's, exercised in the fence unit tests.)
+{-| The split fixture: `inc` and `dec` add and subtract one,
+`applyHof g y = g y`, `mid f x = applyHof (\v -> f (v + x)) x`, and
+`testValue = mid inc 1 + mid dec 2`, all annotated with `Int` types.
+
+The two calls of `mid` give its `f` arrow different member sets at the same
+layout, so `mid` has two specs, and each mints its own copy of the inner
+lambda. The two specs have equal widened keys, so the two copies are keyed
+alike, although they capture different functions `f`. Whether a call through
+the id minted under that key may be dispatched directly is left to
+`Compiler.GlobalOpt.AbiCloning`, and is not tested here.
+
 -}
 splitModule : Src.Module
 splitModule =

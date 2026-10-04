@@ -1,20 +1,19 @@
 module Builder.GcPoints exposing (preLink, render)
 
-{-| The explicit garbage collection before the native back end
-(plans/frontend-heap-release.md §6.2-6.3).
+{-| Lets the compiler release the memory its earlier phases no longer need
+before the native back end, which lowers and links the program, starts.
 
-`preLink` runs a full release (`Eco.GC.majorGC`) immediately before
-`Eco.NativeDriver.lowerAndLink`; on by default, `ECO_GC_PRE_LINK=0` opts out.
-The optional phase-boundary points were removed after measurement
-(benchmarks/fhr-gc-points.md: no peak-memory benefit, +1 to +4 s wall each).
+The one thing here is the _pre-link collection_: a single major garbage
+collection, asked for through `Eco.GC.majorGC`, that `preLink` requests when
+the `Compiler.Eco.Config.GcConfig` settings ask for it. With the `report`
+setting on, it also writes one line describing the collection to standard
+error, in the format `render` produces. The report's values are only printed
+here; what they mean, and why nothing should decide anything by them, is in
+`Eco.GC`.
 
-**The rooting rule (§10 trap 1):** a Task callback's argument stays rooted until
-the callback returns, so the collection runs in its OWN `andThen` step after
-the step that consumed the dead data.
-
-With `report` (`ECO_GC_REPORT=1`) each collection prints one `[gc-report]` line
-on stderr (`render`, §8.2). Report values are only logged: no control flow may
-depend on them (HEAP\_076).
+A collection can only release data that nothing still refers to. Data
+captured by the closure of an `andThen` step that has not yet run is still
+referred to, so a collection that `preLink` asks for does not release it.
 
 @docs preLink, render
 
@@ -27,7 +26,9 @@ import Task exposing (Task)
 import Utils.Task.Extra as Task
 
 
-{-| The mandatory full release before the native back end (unless disabled).
+{-| Returns a task that asks for the pre-link collection when `cfg.preLink` is
+on, reporting it on standard error when `cfg.report` is also on, and does
+nothing when `cfg.preLink` is off.
 -}
 preLink : Config.GcConfig -> Task x ()
 preLink cfg =
@@ -38,6 +39,10 @@ preLink cfg =
         Task.succeed ()
 
 
+{-| Returns a task that asks for a major collection through `Eco.GC.majorGC`
+and, when `report` is on, writes the collection's report line, tagged with
+`label`, to standard error.
+-}
 collect : Bool -> String -> Task x ()
 collect report label =
     Task.io
@@ -53,9 +58,17 @@ collect report label =
         )
 
 
-{-| The single-line `[gc-report]` format (§8.2): `key=value` pairs separated by
-spaces; `A>B` is before>after and `rss_mb=A>B>C` is before, after the discard,
-after the trim. Times are milliseconds and sizes MiB, both with one decimal.
+{-| Returns the one-line report of a collection, tagged with `label` as its
+`point`.
+
+The line starts with `[gc-report] v=1` and continues with `key=value` pairs
+separated by single spaces. A value written `A>B` is the report's value before
+and after the collection. `rss_mb=A>B>C` gives the resident set size before,
+after the collector discarded released pages, and at the end. Keys ending in
+`_ms` are milliseconds and keys ending in `_mb` are MiB, both with one decimal
+that is truncated, not rounded. `collected`, `minors`, `majors`, `majors_run`
+and `trim` are the report's integers as they are.
+
 -}
 render : String -> Eco.GC.GCReport -> String
 render label r =
@@ -86,20 +99,24 @@ render label r =
         ]
 
 
-{-| Nanoseconds as milliseconds with one decimal.
+{-| Returns `ns` nanoseconds as milliseconds with one decimal, truncated
+towards zero.
 -}
 ms : Int -> String
 ms ns =
     tenths (ns // 100000)
 
 
-{-| Bytes as MiB with one decimal.
+{-| Returns `bytes` as MiB with one decimal, truncated towards zero.
 -}
 mb : Int -> String
 mb bytes =
     tenths ((bytes * 10) // 1048576)
 
 
+{-| Returns a count of tenths, `t`, as a decimal with one digit after the point,
+so 37 gives `"3.7"` and -5 gives `"-0.5"`.
+-}
 tenths : Int -> String
 tenths t =
     if t < 0 then

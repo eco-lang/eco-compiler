@@ -3,23 +3,45 @@ module TestLogic.LocalOpt.TypePreservation exposing
     , expectTypePreservation
     )
 
-{-| Test logic for invariant TOPT\_004: Typed optimization is type preserving.
+{-| Every expression typed optimization produces carries a stored type, and
+the monomorphizer reads those stored types when it specializes the program.
+This module checks that the stored types of one program agree in the places
+where they can be compared without running type inference again.
 
-For each TypedOptimized expression, derive its expected type via local typing
-rules and verify that the stored Can.Type Name matches via alpha-equivalence.
+`expectTypePreservation` takes the program as a source module, runs it through
+typed optimization with `TestLogic.TestPipeline.runToTypedOpt`, and walks the
+expressions of every definition, port and recursive group in the resulting
+local graph. As it goes it keeps an environment of the local names in scope,
+each with the type recorded where it is bound: function parameters,
+tail-recursive definitions and their parameters, `let` definitions,
+destructured names, and the names a recursive group defines. Types are
+compared with `TestLogic.LocalOpt.Typed.TypeEq.alphaEqStrict`, under which a
+type variable matches only another type variable.
 
-Key checks:
+The check reports:
 
-  - Literals have expected primitive types
-  - VarLocal matches type from binding site
-  - VarKernel matches type from KernelTypeEnv
-  - VarGlobal is an instance of the annotation scheme
-  - Function type is curried chain of param types → body type
-  - Call/TailCall type is result of applying args to function type
-  - Let type matches body type
-  - If branches and else all match If type
-  - Destruct type matches body type
-  - Case has all Inline expressions and Jump targets matching result type
+  - a local variable use whose type differs from the type recorded for the
+    name in the environment;
+  - a kernel reference whose type differs from that kernel's entry in the
+    kernel type environment PostSolve built;
+  - a case branch, held inline in the decision tree or reached by a jump,
+    whose type differs from the type of the case;
+  - a unit literal whose type is not `()`. This one comparison uses the looser
+    `alphaEq` of this module, under which a type variable matches any type, so
+    a unit literal typed by a variable passes.
+
+Among what is not checked: literals other than unit, global references against
+their annotations, a function's type against its parameters and body, the
+result type of a call, and the types of `let`, `if`, destructuring and the
+remaining expressions, which are only walked into. A local variable with no
+entry in the environment, or a kernel with no entry in the kernel type
+environment, passes. A case branch whose type fails the comparison is reported
+but not walked into, so nothing inside it is reported.
+Constructor, enum, box, link, kernel and effect manager nodes are not
+visited.
+
+The file also holds `oneWayUnify` and its helpers, which match a type against a
+type scheme. Nothing outside that group calls them.
 
 -}
 
@@ -44,7 +66,18 @@ import TestLogic.TestPipeline as Pipeline
 -- ============================================================================
 
 
-{-| A violation of type preservation.
+{-| One disagreement the check found between a stored type and the type it
+should agree with.
+
+`exprKind` names what disagreed: `"VarLocal"`, `"TrackedVarLocal"`,
+`"VarKernel"`, `"Inline"` for a case branch held in the decision tree,
+`"Jump target n"` for the jump target numbered `n`, or `"Unit"`. `storedType`
+is the type on the expression and `expectedType` the type it was compared
+with; this module always fills it. `context` is the module and name of the
+global the expression is in, without the package, followed by `Def <name>` or
+`TailDef <name>` for each definition the walk entered on the way, whether in a
+`let` or in a recursive group, all separated by spaces.
+
 -}
 type alias Violation =
     { exprKind : String
@@ -55,7 +88,11 @@ type alias Violation =
     }
 
 
-{-| Context for type checking expressions.
+{-| What the walk knows at an expression.
+
+`locals` maps each local name in scope to the type recorded where it is bound.
+`annotations` holds the module's top-level annotations but is never read.
+
 -}
 type alias TypeEnv =
     { locals : Dict Name.Name (Can.Type Name)
@@ -70,7 +107,10 @@ type alias TypeEnv =
 -- ============================================================================
 
 
-{-| TOPT\_004: Verify type preservation in typed optimization.
+{-| Runs `srcModule` through typed optimization and passes when the check
+finds no violation in the local graph. It fails with the pipeline's message
+when typed optimization does not complete, and otherwise with a report listing
+every violation found.
 -}
 expectTypePreservation : Src.Module -> Expect.Expectation
 expectTypePreservation srcModule =
@@ -102,6 +142,9 @@ expectTypePreservation srcModule =
 -- ============================================================================
 
 
+{-| Returns the violations found in every node of a local graph, each labelled
+with the name of its global.
+-}
 checkLocalGraph : TypeEnv -> TOpt.LocalGraph Name -> List Violation
 checkLocalGraph env (TOpt.LocalGraph data) =
     Data.Map.foldl TOpt.compareGlobal
@@ -116,6 +159,8 @@ checkLocalGraph env (TOpt.LocalGraph data) =
         data.nodes
 
 
+{-| Returns a global's module and name joined by a dot, without the package.
+-}
 globalToString : TOpt.Global -> String
 globalToString (TOpt.Global home name) =
     case home of
@@ -123,6 +168,14 @@ globalToString (TOpt.Global home name) =
             moduleName ++ "." ++ name
 
 
+{-| Returns the violations in one node.
+
+A definition or port has its expression checked. A recursive group has each of
+its values and definitions checked with every name the group defines added to
+the environment, a value with the type of its expression and a definition with
+its declared type. Any other node has nothing to check.
+
+-}
 checkNode : TypeEnv -> String -> TOpt.Node Name -> List Violation
 checkNode env context node =
     case node of
@@ -134,7 +187,6 @@ checkNode env context node =
 
         TOpt.Cycle _ values defs _ ->
             let
-                -- Add cycle bindings to env
                 cycleEnv =
                     List.foldl
                         (\( name, valExpr ) e ->
@@ -174,13 +226,23 @@ checkNode env context node =
 -- ============================================================================
 
 
+{-| Returns the violations in `expr` and the expressions under it, with `env`
+giving the local names in scope.
+
+Four kinds of expression are compared with something: a local variable with
+its type in `env`, a kernel reference with the kernel type environment, a
+case's branches with the case's type (through `checkDecider` and
+`checkJumps`), and the unit literal with `()`. A local variable or kernel with
+no entry passes. Functions and destructuring add the names they bind to `env`
+for their bodies, and a `let` adds its name for the body that follows it.
+Every other expression is only walked into. References to globals, enums,
+boxes, cycle values and `Debug`, accessors, shaders, and literals other than
+unit, are not checked at all.
+
+-}
 checkExpr : TypeEnv -> String -> TOpt.Expr Name -> List Violation
 checkExpr env context expr =
     case expr of
-        -- Literals
-        -- Note: Int literals have type `number` (constrained TVar), not TType Int
-        -- Float literals have type `Float` or `number`
-        -- So we don't check specific primitive types here, just that they exist
         TOpt.Bool _ _ _ ->
             []
 
@@ -199,7 +261,6 @@ checkExpr env context expr =
         TOpt.Unit meta ->
             checkLiteralType context "Unit" meta.tipe Can.TUnit
 
-        -- VarLocal (STRICT: catches GOPT_003-class bugs)
         TOpt.VarLocal name meta ->
             let
                 tipe =
@@ -214,7 +275,6 @@ checkExpr env context expr =
                         [ violation context "VarLocal" tipe (Just envType) ("Variable '" ++ name ++ "' type doesn't match binding (strict)") ]
 
                 Nothing ->
-                    -- Variable not in local env - could be from outer scope
                     []
 
         TOpt.TrackedVarLocal _ name meta ->
@@ -233,7 +293,6 @@ checkExpr env context expr =
                 Nothing ->
                     []
 
-        -- VarKernel (STRICT: catches GOPT_003-class bugs)
         TOpt.VarKernel _ _ home name meta ->
             let
                 tipe =
@@ -248,19 +307,11 @@ checkExpr env context expr =
                         [ violation context "VarKernel" tipe (Just kernelType) ("Kernel '" ++ home ++ "." ++ name ++ "' type doesn't match KernelTypeEnv (strict)") ]
 
                 Nothing ->
-                    -- Kernel not in env - might be from another module
                     []
 
-        -- VarGlobal
-        -- Note: Scheme instantiation checking is complex due to polymorphism
-        -- We'll skip this check for now and focus on the critical Case/Decider checks
         TOpt.VarGlobal _ _ _ ->
             []
 
-        -- Function
-        -- Note: We don't check that function type matches param -> body type directly
-        -- because polymorphic functions may have more general return types than the body.
-        -- Instead, we just check the body with the extended environment.
         TOpt.Function _ params body _ ->
             let
                 extendedEnv =
@@ -287,19 +338,13 @@ checkExpr env context expr =
             in
             checkExpr extendedEnv context body
 
-        -- Call
-        -- Note: The result type may be more specific than the function's return type
-        -- (due to polymorphism), so we just check structure, not exact match
         TOpt.Call _ func args _ ->
             checkExpr env context func
                 ++ List.concatMap (checkExpr env context) args
 
-        -- TailCall
-        -- Just check the argument expressions
         TOpt.TailCall _ args _ ->
             List.concatMap (\( _, argExpr ) -> checkExpr env context argExpr) args
 
-        -- Let
         TOpt.Let def body _ ->
             let
                 ( defName, defType ) =
@@ -311,7 +356,6 @@ checkExpr env context expr =
             checkDef env context def
                 ++ checkExpr extendedEnv context body
 
-        -- Destruct
         TOpt.Destruct destructor body _ ->
             let
                 (TOpt.Destructor destructName _ destructMeta) =
@@ -322,9 +366,6 @@ checkExpr env context expr =
             in
             checkExpr extendedEnv context body
 
-        -- If
-        -- Check that all branches and else have consistent types
-        -- Note: The If expression type may be polymorphic while branches are concrete
         TOpt.If branches else_ _ ->
             let
                 checkBranch ( cond, body ) =
@@ -334,7 +375,6 @@ checkExpr env context expr =
             List.concatMap checkBranch branches
                 ++ checkExpr env context else_
 
-        -- Case (Critical for GOPT_003)
         TOpt.Case _ _ decider jumps meta ->
             let
                 tipe =
@@ -343,33 +383,27 @@ checkExpr env context expr =
             checkDecider env context tipe decider
                 ++ checkJumps env context tipe jumps
 
-        -- List
         TOpt.List _ items _ ->
             List.concatMap (checkExpr env context) items
 
-        -- Access
         TOpt.Access recordExpr _ _ _ ->
             checkExpr env context recordExpr
 
-        -- Update
         TOpt.Update _ recordExpr updates _ ->
             checkExpr env context recordExpr
                 ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> checkExpr env context updateExpr ++ acc) [] updates
 
-        -- Record
         TOpt.Record fields _ ->
             Dict.foldl (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
         TOpt.TrackedRecord _ fields _ ->
             Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
-        -- Tuple
         TOpt.Tuple _ e1 e2 rest _ ->
             checkExpr env context e1
                 ++ checkExpr env context e2
                 ++ List.concatMap (checkExpr env context) rest
 
-        -- Other expressions - just recurse
         TOpt.VarEnum _ _ _ _ ->
             []
 
@@ -395,20 +429,26 @@ checkExpr env context expr =
 -- ============================================================================
 
 
+{-| Returns the violations in a definition's body, with the definition's name
+added to `context`.
+
+A tail-recursive definition's body is checked with its own name and its
+parameters added to `env`. A plain definition's body is checked with `env` as
+given, which holds its own name only when the definition is in a recursive
+group, whose names `checkNode` has already added.
+
+-}
 checkDef : TypeEnv -> String -> TOpt.Def Name -> List Violation
 checkDef env context def =
     case def of
         TOpt.Def _ name expr _ ->
-            -- Just recursively check the body expression
             checkExpr env (context ++ " Def " ++ name) expr
 
         TOpt.TailDef _ name params expr defType _ ->
             let
-                -- Add the function itself to env for recursive calls
                 envWithSelf =
                     { env | locals = Dict.insert name defType env.locals }
 
-                -- Add parameters
                 extendedEnv =
                     List.foldl
                         (\( A.At _ paramName, paramType ) e ->
@@ -417,16 +457,19 @@ checkDef env context def =
                         envWithSelf
                         params
             in
-            -- Just recursively check the body expression
             checkExpr extendedEnv (context ++ " TailDef " ++ name) expr
 
 
 
 -- ============================================================================
--- DECIDER CHECKING (Critical for GOPT_003)
+-- DECIDER CHECKING
 -- ============================================================================
 
 
+{-| Returns the violations in the inline leaves of a case's decision tree,
+each checked against `expectedType`, the type of the case. Jump leaves give
+nothing here; `checkJumps` checks their targets.
+-}
 checkDecider : TypeEnv -> String -> Can.Type Name -> TOpt.Decider (TOpt.Choice Name) -> List Violation
 checkDecider env context expectedType decider =
     case decider of
@@ -442,6 +485,14 @@ checkDecider env context expectedType decider =
                 ++ checkDecider env context expectedType fallback
 
 
+{-| Returns the violations for one leaf of a decision tree.
+
+An inline branch whose type does not match `expectedType` under
+`alphaEqStrict` gives a single violation and is not looked into further. One
+that matches is checked like any other expression. A jump leaf gives nothing
+here, because the target it names is checked by `checkJumps`.
+
+-}
 checkChoice : TypeEnv -> String -> Can.Type Name -> TOpt.Choice Name -> List Violation
 checkChoice env context expectedType choice =
     case choice of
@@ -450,7 +501,6 @@ checkChoice env context expectedType choice =
                 exprType =
                     TOpt.typeOf expr
             in
-            -- STRICT: catches GOPT_003-class bugs where branch has polymorphic remnant
             if TypeEq.alphaEqStrict exprType expectedType then
                 checkExpr env context expr
 
@@ -458,10 +508,13 @@ checkChoice env context expectedType choice =
                 [ violation context "Inline" exprType (Just expectedType) "Inline expression type doesn't match Case result type (strict)" ]
 
         TOpt.Jump _ ->
-            -- Jump targets are checked via checkJumps
             []
 
 
+{-| Returns the violations in a case's jump targets, the branches its decision
+tree reaches by `Jump`, each checked against `expectedType` as `checkChoice`
+checks an inline branch.
+-}
 checkJumps : TypeEnv -> String -> Can.Type Name -> List ( Int, TOpt.Expr Name ) -> List Violation
 checkJumps env context expectedType jumps =
     List.concatMap
@@ -470,7 +523,6 @@ checkJumps env context expectedType jumps =
                 exprType =
                     TOpt.typeOf expr
             in
-            -- STRICT: catches GOPT_003-class bugs where branch has polymorphic remnant
             if TypeEq.alphaEqStrict exprType expectedType then
                 checkExpr env context expr
 
@@ -486,6 +538,8 @@ checkJumps env context expectedType jumps =
 -- ============================================================================
 
 
+{-| Returns the name a definition binds and its declared type.
+-}
 getDefNameAndType : TOpt.Def Name -> ( Name.Name, Can.Type Name )
 getDefNameAndType def =
     case def of
@@ -496,6 +550,9 @@ getDefNameAndType def =
             ( name, tipe )
 
 
+{-| Returns a violation of kind `kind` when `actual` does not match `expected`
+under the loose `alphaEq`, where a type variable on either side matches.
+-}
 checkLiteralType : String -> String -> Can.Type Name -> Can.Type Name -> List Violation
 checkLiteralType context kind actual expected =
     if alphaEq actual expected then
@@ -505,6 +562,8 @@ checkLiteralType context kind actual expected =
         [ violation context kind actual (Just expected) "Literal type mismatch" ]
 
 
+{-| Builds a `Violation` for an expression of kind `kind` found in `context`.
+-}
 violation : String -> String -> Can.Type Name -> Maybe (Can.Type Name) -> String -> Violation
 violation context kind stored expected details =
     { exprKind = kind
@@ -521,24 +580,32 @@ violation context kind stored expected details =
 -- ============================================================================
 
 
+{-| Returns whether two types agree under a loose comparison in which a type
+variable matches any type at all, so `a -> a` matches `a -> b` and `a` matches
+`Int`.
+
+Named types match when they have the same package and name, ignoring the
+module, as `canonicalTypesEqual` does, and their arguments match. Records
+match when either both or neither have an extension variable, whatever its
+name, and their fields have the same names and matching types. Two aliases
+match only when they have the same home and name, matching arguments, and
+matching bodies of the same kind. An alias set against a type that is neither
+an alias nor a variable is compared through its body. Arrow slots are ignored.
+
+-}
 alphaEq : Can.Type Name -> Can.Type Name -> Bool
 alphaEq a b =
     case ( a, b ) of
         ( Can.TVar _, Can.TVar _ ) ->
-            -- Any TVar matches any TVar (alpha equivalence)
             True
 
         ( Can.TVar _, _ ) ->
-            -- A type variable can be instantiated to any type
             True
 
         ( _, Can.TVar _ ) ->
-            -- A type variable can be instantiated to any type
             True
 
         ( Can.TType h1 n1 as1, Can.TType h2 n2 as2 ) ->
-            -- Compare type names, allowing for re-exports from different modules
-            -- within the same package (e.g., Basics.String vs String.String)
             canonicalTypesEqual h1 n1 h2 n2 && alphaEqList as1 as2
 
         ( Can.TLambda _ a1 r1, Can.TLambda _ a2 r2 ) ->
@@ -556,7 +623,6 @@ alphaEq a b =
         ( Can.TAlias h1 n1 args1 at1, Can.TAlias h2 n2 args2 at2 ) ->
             h1 == h2 && n1 == n2 && alphaEqArgs args1 args2 && alphaEqAlias at1 at2
 
-        -- Handle TAlias vs underlying type by unwrapping
         ( Can.TAlias _ _ _ at1, other ) ->
             case at1 of
                 Can.Filled t ->
@@ -577,19 +643,20 @@ alphaEq a b =
             False
 
 
-{-| Check if two canonical type references are equal, handling re-exports.
+{-| Returns whether two named types have the same package and the same name.
 
-In Elm, types like String can appear as both Basics.String and String.String
-within the same package (elm/core). For type preservation checking, these
-should be considered equivalent.
+The module is ignored, so two types of the same name defined in different
+modules of one package count as the same type.
 
 -}
 canonicalTypesEqual : ModuleName.Canonical -> String -> ModuleName.Canonical -> String -> Bool
 canonicalTypesEqual (ModuleName.Canonical pkg1 _) name1 (ModuleName.Canonical pkg2 _) name2 =
-    -- Same package and same type name (ignoring module)
     pkg1 == pkg2 && name1 == name2
 
 
+{-| Returns whether two lists of types have the same length and match pairwise
+under `alphaEq`.
+-}
 alphaEqList : List (Can.Type Name) -> List (Can.Type Name) -> Bool
 alphaEqList xs ys =
     case ( xs, ys ) of
@@ -603,6 +670,9 @@ alphaEqList xs ys =
             False
 
 
+{-| Returns whether two records agree on having an extension variable: both
+have one, whatever its name, or neither does.
+-}
 alphaEqExt : Maybe Name.Name -> Maybe Name.Name -> Bool
 alphaEqExt e1 e2 =
     case ( e1, e2 ) of
@@ -616,6 +686,9 @@ alphaEqExt e1 e2 =
             False
 
 
+{-| Returns whether two records' fields have the same names and each field's
+types match under `alphaEq`. Field indices are ignored.
+-}
 alphaEqFields : Dict Name.Name (Can.FieldType Name) -> Dict Name.Name (Can.FieldType Name) -> Bool
 alphaEqFields f1 f2 =
     let
@@ -639,6 +712,9 @@ alphaEqFields f1 f2 =
             keys1
 
 
+{-| Returns whether two aliases' argument lists have the same length and match
+pairwise under `alphaEq`. Parameter names are ignored.
+-}
 alphaEqArgs : List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Bool
 alphaEqArgs args1 args2 =
     case ( args1, args2 ) of
@@ -652,6 +728,9 @@ alphaEqArgs args1 args2 =
             False
 
 
+{-| Returns whether two alias bodies match under `alphaEq`, which needs both to
+be `Holey` or both `Filled`.
+-}
 alphaEqAlias : Can.AliasType Name -> Can.AliasType Name -> Bool
 alphaEqAlias at1 at2 =
     case ( at1, at2 ) of
@@ -667,19 +746,33 @@ alphaEqAlias at1 at2 =
 
 
 -- ============================================================================
--- SCHEME INSTANTIATION CHECK
+-- SCHEME INSTANTIATION (UNUSED)
 -- ============================================================================
 
 
+{-| Matches `instanceT` against `schemeT`, a type whose variables named in
+`schemeVars` may stand for any type. Returns `subst`, the types bound to those
+variables so far, extended with the bindings this match needs, or `Nothing`
+when `instanceT` does not fit. Nothing outside its own helpers calls it.
+
+A variable in `schemeVars` binds to whatever type stands in its place, and once
+bound it must meet a type that matches its binding under the loose `alphaEq`.
+Any other variable matches only a variable of the same name. Named types and
+aliases need the same home, including the module, the same name and the same
+number of arguments. Two such aliases then have their arguments and their
+bodies matched in turn; an alias is never unwrapped to match another kind of
+type. A record extension variable in `schemeVars` accepts any extension or
+none and is not recorded in `subst`. Arrow slots and field indices are
+ignored.
+
+-}
 oneWayUnify : EverySet.EverySet String Name.Name -> Can.Type Name -> Can.Type Name -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 oneWayUnify schemeVars schemeT instanceT subst =
     case schemeT of
         Can.TVar name ->
             if EverySet.member identity name schemeVars then
-                -- Scheme var: can bind to anything
                 case Dict.get name subst of
                     Just boundType ->
-                        -- Already bound; must match
                         if alphaEq boundType instanceT then
                             Just subst
 
@@ -690,7 +783,6 @@ oneWayUnify schemeVars schemeT instanceT subst =
                         Just (Dict.insert name instanceT subst)
 
             else
-                -- Not a scheme var; must match exactly
                 case instanceT of
                     Can.TVar name2 ->
                         if name == name2 then
@@ -726,7 +818,6 @@ oneWayUnify schemeVars schemeT instanceT subst =
         Can.TRecord fields ext ->
             case instanceT of
                 Can.TRecord fields2 ext2 ->
-                    -- Extension variable handling
                     let
                         extResult =
                             case ( ext, ext2 ) of
@@ -798,6 +889,10 @@ oneWayUnify schemeVars schemeT instanceT subst =
                     Nothing
 
 
+{-| Matches each type in `ts2` against the type at the same position in `ts1`
+with `oneWayUnify`, threading `subst` through. Returns `Nothing` if the lists
+differ in length or any pair fails.
+-}
 unifyLists : EverySet.EverySet String Name.Name -> List (Can.Type Name) -> List (Can.Type Name) -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyLists schemeVars ts1 ts2 subst =
     case ( ts1, ts2 ) of
@@ -812,6 +907,10 @@ unifyLists schemeVars ts1 ts2 subst =
             Nothing
 
 
+{-| Matches an instance record's fields, `fields2`, against a scheme record's,
+`fields1`, with `oneWayUnify`, threading `subst` through. The two must have
+the same field names.
+-}
 unifyFields : EverySet.EverySet String Name.Name -> Dict Name.Name (Can.FieldType Name) -> Dict Name.Name (Can.FieldType Name) -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyFields schemeVars fields1 fields2 subst =
     let
@@ -843,6 +942,9 @@ unifyFields schemeVars fields1 fields2 subst =
             keys1
 
 
+{-| Matches an instance alias's arguments, `args2`, against a scheme alias's,
+`args1`, position by position with `oneWayUnify`, threading `subst` through.
+-}
 unifyArgPairs : EverySet.EverySet String Name.Name -> List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyArgPairs schemeVars args1 args2 subst =
     case ( args1, args2 ) of
@@ -857,6 +959,9 @@ unifyArgPairs schemeVars args1 args2 subst =
             Nothing
 
 
+{-| Matches an instance alias body against a scheme alias body with
+`oneWayUnify`. The two must both be `Holey` or both `Filled`.
+-}
 unifyAliasTypes : EverySet.EverySet String Name.Name -> Can.AliasType Name -> Can.AliasType Name -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyAliasTypes schemeVars at1 at2 subst =
     case ( at1, at2 ) of
@@ -876,6 +981,10 @@ unifyAliasTypes schemeVars at1 at2 subst =
 -- ============================================================================
 
 
+{-| Renders `violations` as one failure message: a header giving how many
+there are, then each as `formatViolation` lays it out, separated by blank
+lines.
+-}
 formatViolations : List Violation -> String
 formatViolations violations =
     let
@@ -887,6 +996,9 @@ formatViolations violations =
     header ++ (violations |> List.map formatViolation |> String.join "\n\n")
 
 
+{-| Renders one violation: where it was found and what kind of expression it
+is, then the stored type, the expected type and the details, one per line.
+-}
 formatViolation : Violation -> String
 formatViolation v =
     "TOPT_004 violation in "
@@ -907,6 +1019,13 @@ formatViolation v =
         ++ v.details
 
 
+{-| Renders a type for a failure message.
+
+A named type is written in full as `author/package:Module.Name` followed by its
+arguments. An alias is written the same way followed by `(alias)`, without its
+arguments. A record's fields are written in name order.
+
+-}
 typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
@@ -951,6 +1070,9 @@ typeToString tipe =
             Tuple.first pkg ++ "/" ++ Tuple.second pkg ++ ":" ++ mod ++ "." ++ name ++ " (alias)"
 
 
+{-| Renders a type as `typeToString` does, in parentheses when it is a
+function type or a named type with arguments, as an argument position needs.
+-}
 typeToStringParens : Can.Type Name -> String
 typeToStringParens tipe =
     case tipe of

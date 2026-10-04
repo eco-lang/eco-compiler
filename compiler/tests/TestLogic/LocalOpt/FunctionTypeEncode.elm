@@ -1,15 +1,41 @@
 module TestLogic.LocalOpt.FunctionTypeEncode exposing (expectFunctionTypesEncoded)
 
-{-| Test logic for invariant TOPT\_005: Function expressions encode full function type.
+{-| Checks that each function expression the walk reaches in the typed
+optimizer's output has a type with an arrow for each of its parameters.
+Without the check, a function whose own type has fewer arrows than it has
+parameters would leave typed optimization unnoticed.
 
-For every function expression in TypedOptimized:
+A _function expression_ is a `Function` or `TrackedFunction` in the
+typed-optimized IR (`Compiler.AST.TypedOptimized`). It carries its parameters,
+each with its type, its body, and in its `Meta` the type of the function as a
+whole. An _arrow_ is one `Can.TLambda` layer of that type, so a function of
+two parameters needs a type of the shape `a -> (b -> r)`.
 
-  - Extract its parameter (Name, Can.Type Name) list and result Can.Type Name.
-  - Compute the corresponding curried TLambda chain.
-  - Assert that the expression's own attached Can.Type Name equals that TLambda type.
+The fixture is the source module the caller passes to
+`expectFunctionTypesEncoded`. It is run through
+`TestLogic.TestPipeline.runToTypedOpt`, which first adds a synthetic `main`,
+and the check reads the typed local graph that results. The synthetic `main`
+refers to `testValue`, so the module must define `testValue`; without it the
+run crashes. The module must not define its own `main`, which the synthetic one
+would duplicate.
 
-This module reuses the existing typed optimization pipeline to verify
-function types are properly encoded.
+What the check establishes, for that one module:
+
+  - If the pipeline reports an error, the check fails with that message.
+  - Each function expression the walk reaches has at least as many nested
+    `Can.TLambda` layers in its type as it has parameters. A failure names the
+    top-level definition it was found in and, when it lies in a let or cycle
+    def, that def's kind and name.
+
+Among what is not tested:
+
+  - Whether each parameter type equals the argument type of its arrow, or
+    whether what is left after the last parameter is the body's type. Arrows
+    are counted, not compared.
+  - Function expressions in a `Cycle` node's values, and in the branches a
+    `Case` inlines into its decision tree. The walk does not visit either.
+  - The parameters of a `TailDef` against the def's type. Only function
+    expressions in its body are checked.
 
 -}
 
@@ -25,7 +51,15 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that all function expressions have correctly encoded function types.
+{-| Runs `srcModule` to typed optimization and expects each function expression
+in its local graph to have a type with at least one `Can.TLambda` layer per
+parameter. Parameters are counted; their types are not compared with the arrows.
+
+Fails with the pipeline's message if the pipeline reports an error; a module
+that defines no `testValue` crashes the run instead. Function expressions in a
+`Cycle` node's values, or inlined into a `Case`'s decision tree, are not
+examined.
+
 -}
 expectFunctionTypesEncoded : Src.Module -> Expect.Expectation
 expectFunctionTypesEncoded srcModule =
@@ -52,7 +86,11 @@ expectFunctionTypesEncoded srcModule =
 -- ============================================================================
 
 
-{-| Collect function type checks from the local graph.
+{-| Returns one failing expectation for each function expression the walk
+reaches in the graph's nodes whose type has too few arrows. Function
+expressions in a `Cycle`'s values and in a `Case`'s inlined choices are not
+reached. A function that passes adds nothing, so an empty list means every
+function examined passed.
 -}
 collectFunctionTypeChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectFunctionTypeChecks (TOpt.LocalGraph data) =
@@ -68,7 +106,8 @@ collectFunctionTypeChecks (TOpt.LocalGraph data) =
         data.nodes
 
 
-{-| Convert a Global to a string for context messages.
+{-| Returns `Module.name` for a global, without its package, for use in failure
+messages.
 -}
 globalToString : TOpt.Global -> String
 globalToString (TOpt.Global home name) =
@@ -77,7 +116,10 @@ globalToString (TOpt.Global home name) =
             moduleName ++ "." ++ name
 
 
-{-| Check function type encoding for a node.
+{-| Returns the failures for the function expressions in one node: the body of
+a `Define`, `TrackedDefine`, `PortIncoming` or `PortOutgoing`, and the body of
+each def of a `Cycle`. A `Cycle`'s values, and every other kind of node, give
+none.
 -}
 checkNodeFunctionTypes : String -> TOpt.Node Name -> List (() -> Expect.Expectation)
 checkNodeFunctionTypes context node =
@@ -101,7 +143,8 @@ checkNodeFunctionTypes context node =
             []
 
 
-{-| Check Def function types.
+{-| Returns the failures for the function expressions in a def's body, with the
+def's kind and name added to `context`.
 -}
 checkDefFunctionTypes : String -> TOpt.Def Name -> List (() -> Expect.Expectation)
 checkDefFunctionTypes context def =
@@ -113,18 +156,21 @@ checkDefFunctionTypes context def =
             collectExprFunctionTypeChecks (context ++ " TailDef " ++ name) expr
 
 
-{-| Collect function type checks from expressions.
+{-| Returns the failures for `expr` itself and for every function expression
+nested in it, each message prefixed with `context`.
+
+A `Case` is searched only through its jump targets, not through the
+expressions inlined in its decision tree.
+
 -}
 collectExprFunctionTypeChecks : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
 collectExprFunctionTypeChecks context expr =
     case expr of
         TOpt.Function _ params bodyExpr fnMeta ->
-            -- The function's attached type should match TLambda chain of params -> body type
             let
                 paramTypes =
                     List.map Tuple.second params
 
-                -- Check that the attached type has the right structure
                 typeCheck =
                     if not (functionTypeMatches paramTypes fnMeta.tipe) then
                         [ \() -> Expect.fail (context ++ ": Function expression type does not match parameter types") ]
@@ -194,24 +240,23 @@ collectExprFunctionTypeChecks context expr =
             []
 
 
-{-| Check if a function type matches the expected parameter types.
+{-| Returns whether `fnType` has at least one nested `Can.TLambda` layer for
+each entry of `paramTypes`, following each arrow into its result.
 
-The type should be a TLambda chain where each left side matches
-the corresponding parameter type.
+The parameter types are only counted, never compared with the arrows, and
+whatever type remains after the last parameter is accepted. Where an arrow is
+still needed, any other type gives `False`, including a `TAlias` whose
+definition is a function type.
 
 -}
 functionTypeMatches : List (Can.Type Name) -> Can.Type Name -> Bool
 functionTypeMatches paramTypes fnType =
     case ( paramTypes, fnType ) of
         ( [], _ ) ->
-            -- No more params, any type is valid for the result
             True
 
         ( _ :: restParams, Can.TLambda _ _ restType ) ->
-            -- Check rest of params (we don't strictly compare types as that would
-            -- require full type equality, just verify structure)
             functionTypeMatches restParams restType
 
         _ ->
-            -- Type doesn't have enough TLambdas for the params
             False

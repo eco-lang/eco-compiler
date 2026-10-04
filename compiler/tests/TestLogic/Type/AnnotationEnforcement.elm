@@ -3,13 +3,29 @@ module TestLogic.Type.AnnotationEnforcement exposing
     , expectMatchingAnnotationSucceeds
     )
 
-{-| Test logic for invariant TYPE\_006: Annotations are enforced, not ignored.
+{-| Expectations for the tests that check the type checker enforces annotations:
+a definition whose body agrees with its annotation must type-check, and one
+whose body contradicts it must be rejected.
 
-For expressions with explicit annotations:
+Each expectation takes a source module and canonicalizes it against the test
+interfaces in `Compiler.Elm.Interface.Basic.testIfaces`. It then generates
+constraints with node ids (`Compiler.Type.Constrain.Typed.Module.constrainWithIds`)
+and solves them (`Compiler.Type.Solve.runWithIds`). Nothing after the solver
+runs.
 
-  - Generate matching and intentionally mismatched annotations.
-  - Ensure constraints require equality between annotated and inferred types.
-  - Any mismatch must produce a Type.Error (BadTypes) and not be silently coerced.
+  - `expectMatchingAnnotationSucceeds` passes when the solver reports no type
+    errors. Its failure message lists each type error by kind and start
+    position.
+  - `expectAnnotationMismatchError` passes when the solver reports at least one
+    type error.
+
+A module that fails to canonicalize fails both expectations, with a message
+naming the first canonicalization error in the list.
+
+Among what is not checked: that the error behind a passing
+`expectAnnotationMismatchError` concerns the annotation, since any type error
+passes it; which types or positions the error reports; and canonicalization
+warnings, which are discarded.
 
 -}
 
@@ -33,7 +49,10 @@ import Expect
 import System.TypeCheck.IO as IO
 
 
-{-| Expect type checking to enforce annotations (success for matching, error for mismatch).
+{-| Returns an expectation that `srcModule` type-checks when `shouldSucceed` is
+`True`, and that it fails to type-check when it is `False`. Any type error
+satisfies `False`. A module that fails to canonicalize fails the expectation
+either way.
 -}
 expectAnnotationEnforced : Src.Module -> Bool -> Expect.Expectation
 expectAnnotationEnforced srcModule shouldSucceed =
@@ -67,21 +86,25 @@ expectAnnotationEnforced srcModule shouldSucceed =
                         )
 
 
-{-| Expect type checking to fail due to annotation mismatch.
+{-| Returns an expectation that `srcModule` canonicalizes and then fails to
+type-check. Any type error passes it, whether or not it concerns an annotation.
 -}
 expectAnnotationMismatchError : Src.Module -> Expect.Expectation
 expectAnnotationMismatchError srcModule =
     expectAnnotationEnforced srcModule False
 
 
-{-| Expect type checking to succeed with matching annotation.
+{-| Returns an expectation that `srcModule` canonicalizes and type-checks with no
+errors.
 -}
 expectMatchingAnnotationSucceeds : Src.Module -> Expect.Expectation
 expectMatchingAnnotationSucceeds srcModule =
     expectAnnotationEnforced srcModule True
 
 
-{-| Canonicalize a source module.
+{-| Canonicalizes `srcModule` against `Compiler.Elm.Interface.Basic.testIfaces`,
+discarding warnings. On failure it returns a message naming only the first
+error in the list.
 -}
 canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
@@ -106,7 +129,8 @@ canonicalizeModule srcModule =
             Ok modul
 
 
-{-| Run type checking on a canonical module.
+{-| Builds the action that generates constraints for `modul` with node ids and
+solves them, giving either the solver's type errors or its result.
 -}
 runTypeCheck :
     Can.Module
@@ -131,7 +155,8 @@ runTypeCheck modul =
             )
 
 
-{-| Convert a type error to a string.
+{-| Returns a one-line description of a type error: its constructor name, the
+variable name for an infinite type, and the start of its region.
 -}
 typeErrorToString : TypeError.Error -> String
 typeErrorToString error =
@@ -146,7 +171,10 @@ typeErrorToString error =
             "InfiniteType: " ++ name ++ " at " ++ regionToString region
 
 
-{-| Convert a canonicalization error to a string.
+{-| Returns a one-line description of a canonicalization error. Eight kinds are
+described by constructor name and the name involved, with any module qualifier
+for a missing variable or type and the expected and actual counts for
+`BadArity`. Any other kind is rendered with `Debug.toString`.
 -}
 canErrorToString : CanError.Error -> String
 canErrorToString error =
@@ -183,7 +211,7 @@ canErrorToString error =
             Debug.toString error
 
 
-{-| Convert a region to a string.
+{-| Returns the start of a region as `row:column`. The end is dropped.
 -}
 regionToString : A.Region -> String
 regionToString (A.Region (A.Position startRow startCol) _) =

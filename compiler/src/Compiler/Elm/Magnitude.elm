@@ -3,11 +3,16 @@ module Compiler.Elm.Magnitude exposing
     , compare, toChars
     )
 
-{-| Semantic versioning magnitude types.
+{-| A package's version number tells its users how much its API has changed,
+and this module names those amounts.
 
-Represents the three levels of version changes in semantic versioning:
-PATCH for bug fixes, MINOR for backward-compatible additions, and MAJOR
-for breaking changes.
+Semantic versioning writes a version as `MAJOR.MINOR.PATCH` and raises one of
+the three parts at each release, according to how much the API changed. A
+_magnitude_ is the part to be raised. Which change to an API earns which
+magnitude is decided in `Builder.Deps.Diff`, not here.
+
+Magnitudes are ordered by size, by `compare`, so that the largest of several
+can be taken.
 
 
 # Types
@@ -24,7 +29,15 @@ for breaking changes.
 -- ====== MAGNITUDE ======
 
 
-{-| Represents the severity level of a version change in semantic versioning.
+{-| The size of a change to a package's API, named after the part of the
+version number it requires to be raised.
+
+`PATCH` leaves the API as it was, `MINOR` only adds to it, and `MAJOR` changes
+or removes something in it.
+
+A custom type is not `comparable` in Elm, so the order of these, from `PATCH`
+up to `MAJOR`, is given by `compare`.
+
 -}
 type Magnitude
     = PATCH
@@ -32,7 +45,8 @@ type Magnitude
     | MAJOR
 
 
-{-| Converts a magnitude value to its string representation (e.g., PATCH -> "PATCH").
+{-| Returns the name of `magnitude` in capitals, spelled as its constructor
+is: `"PATCH"`, `"MINOR"` or `"MAJOR"`.
 -}
 toChars : Magnitude -> String
 toChars magnitude =
@@ -47,7 +61,9 @@ toChars magnitude =
             "MAJOR"
 
 
-{-| Compares two magnitude values, ordering them from least severe (PATCH) to most severe (MAJOR).
+{-| Returns how `m1` compares with `m2` in size, where `PATCH` is the
+smallest and `MAJOR` the largest. It stands in for `Basics.compare`, which a
+custom type cannot be given to.
 -}
 compare : Magnitude -> Magnitude -> Order
 compare m1 m2 =

@@ -1,13 +1,38 @@
 module SourceIR.ParamArityCases exposing (expectSuite)
 
-{-| Tests for closure parameter arity propagation in GlobalOpt.
+{-| Source programs in which a function reaches a call through a variable,
+so that the number of arguments it takes cannot be read from the call itself.
 
-These test programs specifically exercise patterns where function-typed
-closure parameters must have correct source arity in varSourceArity:
+A call `f a b` where `f` is a parameter says nothing about whether `f` takes two
+arguments, or takes one and returns a function. That number is the function's
+_source arity_. A _PAP_ (partial application) is a function given fewer
+arguments than its source arity; its own source arity is what is left.
 
-  - HO parameter calls: `f a`, `f a b` where `f` is a closure parameter
-  - Captured parameter staging: captured function called in inner closure
-  - Local PAPs through parameters: `let p1 = f x in p1 y`
+This module only builds the programs and asserts nothing itself. `expectSuite`
+runs a caller's expectation over them in turn, stopping at the first that fails,
+so what is checked, and at which stage of the compiler, is up to the caller.
+
+Each program is a module `Test` (from `makeModule`) whose one top-level value,
+`testValue`, is a `let` that binds a function and calls it with integer
+literals. In all but the last program that function is a helper which is also
+given a one-parameter or two-parameter lambda; each such lambda returns its
+first argument. Every named function the programs define is `let`-bound; none
+is top-level.
+
+The programs, in the order they run:
+
+  - Calling a function parameter: `f` is applied to both of its two arguments,
+    to two arguments in the reverse order of the helper's parameters, and to its
+    one argument.
+  - Calling a parameter from a nested expression: `f` is called from inside a
+    nested function that captures it, and from inside a tuple.
+  - Partial application: a `let` binds a PAP of a parameter `f`, or of a
+    `let`-bound two-parameter function, and the PAP is then called with the
+    remaining argument.
+
+Among what is not tested: a function argument that is a top-level or kernel
+function, or itself a PAP; a parameter called with more arguments than its
+source arity; a captured function called with fewer arguments than it takes.
 
 -}
 
@@ -29,12 +54,21 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Param arity cases " followed by `condStr`, that
+applies `expectFn` to every program in this module in turn. It fails with the
+label of the first program whose expectation fails, and later programs are not
+run.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Param arity cases " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this module, each applying `expectFn` to its program:
+the parameter calls, then the calls from nested expressions, then the partial
+applications.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     hoParamCases expectFn
@@ -44,10 +78,13 @@ testCases expectFn =
 
 
 -- ============================================================================
--- HO PARAMETER CALLS
+-- CALLING A FUNCTION PARAMETER
 -- ============================================================================
 
 
+{-| Returns the cases in which a function parameter is called directly in the
+body of the function that takes it.
+-}
 hoParamCases : (Src.Module -> Expectation) -> List TestCase
 hoParamCases expectFn =
     [ { label = "HO param: apply f a b", run = hoParamApplyTwo expectFn }
@@ -56,16 +93,20 @@ hoParamCases expectFn =
     ]
 
 
-{-| applyTwo f a b = f a b
+{-| Applies `expectFn` to a program that passes a two-parameter lambda to a
+helper which calls it with both of its arguments at once:
 
-Tests that `f` as a closure parameter gets correct first-stage arity (2)
-so that `f a b` produces a single saturated call, not a PAP + extend.
+    testValue =
+        let
+            applyTwo f a b =
+                f a b
+        in
+        applyTwo (\x y -> x) 1 2
 
 -}
 hoParamApplyTwo : (Src.Module -> Expectation) -> (() -> Expectation)
 hoParamApplyTwo expectFn _ =
     let
-        -- applyTwo f a b = f a b
         applyTwoFn =
             define "applyTwo"
                 [ pVar "f", pVar "a", pVar "b" ]
@@ -83,9 +124,15 @@ hoParamApplyTwo expectFn _ =
     expectFn modul
 
 
-{-| flip f b a = f a b
+{-| Applies `expectFn` to a program that passes a two-parameter lambda to a
+helper which calls it with its own second and third parameters swapped:
 
-Tests that `f` as a closure parameter gets correct arity when args are reordered.
+    testValue =
+        let
+            flip f b a =
+                f a b
+        in
+        flip (\x y -> x) 10 3
 
 -}
 hoParamFlip : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -108,9 +155,15 @@ hoParamFlip expectFn _ =
     expectFn modul
 
 
-{-| applyOne f x = f x
+{-| Applies `expectFn` to a program that passes a one-parameter lambda to a
+helper which calls it with one argument:
 
-Tests single-arg function parameter.
+    testValue =
+        let
+            applyOne f x =
+                f x
+        in
+        applyOne (\y -> y) 42
 
 -}
 hoParamApplyOne : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -135,10 +188,13 @@ hoParamApplyOne expectFn _ =
 
 
 -- ============================================================================
--- CAPTURED PARAMETER STAGING
+-- CALLING A PARAMETER FROM A NESTED EXPRESSION
 -- ============================================================================
 
 
+{-| Returns the cases in which a function parameter is called from an
+expression nested inside the body of the function that takes it.
+-}
 capturedParamCases : (Src.Module -> Expectation) -> List TestCase
 capturedParamCases expectFn =
     [ { label = "Captured param: inner closure calls captured f", run = capturedParamInner expectFn }
@@ -146,15 +202,24 @@ capturedParamCases expectFn =
     ]
 
 
-{-| withF f x = let g y = f y in g x
+{-| Applies `expectFn` to a program in which a helper's one-parameter function
+parameter `f` is called from a nested function `g`, which captures it:
 
-Tests that `f` is correctly captured in the inner closure `g` with proper arity.
+    testValue =
+        let
+            withF f x =
+                let
+                    g y =
+                        f y
+                in
+                g x
+        in
+        withF (\z -> z) 7
 
 -}
 capturedParamInner : (Src.Module -> Expectation) -> (() -> Expectation)
 capturedParamInner expectFn _ =
     let
-        -- withF f x = let g y = f y in g x
         withFFn =
             define "withF"
                 [ pVar "f", pVar "x" ]
@@ -175,16 +240,23 @@ capturedParamInner expectFn _ =
     expectFn modul
 
 
-{-| mapPair f k v = (k, f k v)
+{-| Applies `expectFn` to a program in which a helper calls its two-parameter
+function parameter `f` with both arguments, as the second element of a tuple:
 
-Tests that captured two-arg function `f` called with both args in inner
-lambda gets correct arity so neither arg is dropped.
+    testValue =
+        let
+            mapPair f k v =
+                ( k, f k v )
+        in
+        mapPair (\a b -> a) 1 2
+
+Although the case is grouped with the captured parameters, the call is not
+inside a nested function or lambda in the source.
 
 -}
 capturedParamTwoArg : (Src.Module -> Expectation) -> (() -> Expectation)
 capturedParamTwoArg expectFn _ =
     let
-        -- mapPair f k v = (k, f k v)
         mapPairFn =
             define "mapPair"
                 [ pVar "f", pVar "k", pVar "v" ]
@@ -204,10 +276,13 @@ capturedParamTwoArg expectFn _ =
 
 
 -- ============================================================================
--- LOCAL PAPs THROUGH PARAMETERS
+-- LOCAL PARTIAL APPLICATIONS
 -- ============================================================================
 
 
+{-| Returns the cases in which a `let` binds a partial application and then
+calls it with the remaining argument.
+-}
 localPapCases : (Src.Module -> Expectation) -> List TestCase
 localPapCases expectFn =
     [ { label = "Local PAP: let p1 = f x in p1 y", run = localPapFromParam expectFn }
@@ -215,16 +290,26 @@ localPapCases expectFn =
     ]
 
 
-{-| makeP1 f x y = let p1 = f x in p1 y
+{-| Applies `expectFn` to a program in which a helper binds `p1` to its
+function parameter `f` applied to one argument, then calls `p1` with a second.
+The function passed is a two-parameter lambda, so `p1` is a PAP with one
+argument left:
 
-Tests that when a parameter `f` is partially applied to produce a local PAP `p1`,
-the PAP's remaining arity is correctly computed and stored in varSourceArity.
+    testValue =
+        let
+            makeP1 f x y =
+                let
+                    p1 =
+                        f x
+                in
+                p1 y
+        in
+        makeP1 (\a b -> a) 5 10
 
 -}
 localPapFromParam : (Src.Module -> Expectation) -> (() -> Expectation)
 localPapFromParam expectFn _ =
     let
-        -- makeP1 f x y = let p1 = f x in p1 y
         makeP1Fn =
             define "makeP1"
                 [ pVar "f", pVar "x", pVar "y" ]
@@ -245,12 +330,23 @@ localPapFromParam expectFn _ =
     expectFn modul
 
 
-{-| Tests a local PAP from a known global function:
-let add x y = x
-add5 = add 5
-in add5 10
+{-| Applies `expectFn` to a program in which a `let`-bound two-parameter
+function `add` is partially applied, in an inner `let`, to give `add5`, which
+is then called with the remaining argument:
 
-This verifies annotateDefCalls correctly propagates remaining arity.
+    testValue =
+        let
+            add x y =
+                x
+        in
+        let
+            add5 =
+                add 5
+        in
+        add5 10
+
+Although the function's name says "global", `add` is a `let`-bound function,
+not a top-level one.
 
 -}
 localPapFromGlobal : (Src.Module -> Expectation) -> (() -> Expectation)

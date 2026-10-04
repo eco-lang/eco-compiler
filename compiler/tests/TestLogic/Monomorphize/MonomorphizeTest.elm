@@ -1,21 +1,61 @@
 module TestLogic.Monomorphize.MonomorphizeTest exposing (suite)
 
-{-| Unit tests for Kernel ABI type derivation in monomorphization.
+{-| Tests of how monomorphization types a kernel function, a function the
+runtime implements rather than Elm code. They check particular cases of the two
+decisions `Compiler.Monomorphize.KernelAbi` makes about a kernel's type.
 
-These tests verify that the `deriveKernelAbiMode` function correctly classifies
-kernels into their ABI modes, and that the type converters produce the expected
-MonoTypes.
+`Compiler.Monomorphize.KernelAbi` describes the two kernel ABI modes and how
+`deriveKernelAbiMode` chooses between them. A kernel whose home is `Debug`
+gets `PreserveVars`; any other gets `UseSubstitution` when no type variable
+appears in its type and `PreserveVars` otherwise. The tests expect
+`UseSubstitution` for every kernel type here that has no type variable, and
+`PreserveVars` for every one that has. `canTypeToMonoType_preserveVars` is the
+conversion of a kernel's type for `PreserveVars` mode. It turns every type
+variable into `MVar id CEcoValue`, a value that is always boxed; it turns the
+`elm/core` types `Int`, `Float`, `Bool`, `String` and `List` into `MInt`,
+`MFloat`, `MBool`, `MString` and `mList`; and it turns each arrow into a
+function of one parameter annotated `topAbi`.
 
-The expected ABI types are derived from the actual C signatures in:
-elm-kernel-cpp/src/KernelExports.h
+The fixture is a canonical type per test, built with
+`Compiler.AST.CanonicalBuilder` with named type variables. `convertForTest`
+numbers them with `AssignMVarIds.assignIdsToType`, which gives the variables
+ids from 0 in the order it first meets them and gives a repeated name the same
+id, so `nthMVarId 0` is the first variable. That function also records a super
+constraint for each variable whose name starts with `number`, `comparable`,
+`appendable` or `compappend`, so in these tests the side table is filled from
+the names. A kernel is passed as a (home, name) pair, and the name in a test's
+label is only a label: `deriveKernelAbiMode` looks at the home and the type,
+not the name.
 
-Key mapping from C types to MLIR/MonoType:
+What the tests establish:
 
-  - uint64\_t → eco.value (MVar with CEcoValue, or boxed pointer)
-  - int64\_t → I64 (MInt)
-  - double → F64 (MFloat)
-  - bool → I1 (MBool)
-  - uint16\_t → I16 (MChar)
+  - `abiModeTests`: `Int -> Int -> Int` gives `UseSubstitution`; the types of
+    `List.cons`, of `Basics.add` (`number -> number -> number`) and of
+    `Debug.log` (`String -> a -> a`) give `PreserveVars`.
+  - `monomorphicKernelTests`: `canTypeToMonoType_preserveVars` converts three
+    types with no variable to their concrete MonoTypes, one parameter per
+    function.
+  - `polymorphicKernelTests` and `debugKernelTests`: every occurrence of the
+    variable `a` converts to `MVar 0 CEcoValue`, and `Bool` and `String` next
+    to it to `MBool` and `MString`. One test also converts `Int -> Int`, which
+    has no variable, to `MInt` types.
+  - `kernelExportsAbiTests`: the mode of seventeen kernels grouped by home
+    module, and the converted types of `List.cons` and `Utils.equal`.
+  - `kernelAbiPreservationTests`: the types of `List.cons` and `Utils.equal`
+    convert with `MVar 0 CEcoValue` for every variable; a lone variable
+    converts to `MVar 0 CEcoValue` even when it is a number variable, which
+    the side table still records; and `List.cons` has mode `PreserveVars` and
+    no `MInt` inside a function or list type of its converted type.
+  - `superConstraintExportTests`: each of the four super constraints is
+    recorded for a variable of that name, only `number` makes a number
+    variable, and a plain variable has none.
+
+Among what is not tested: a `Debug` kernel whose type has no type variable, the
+one case where the home decides the mode; any use of a kernel at concrete types,
+since every test converts the kernel's own type; how the monomorphizers turn the
+mode into a call's type; the conversion of `Char`, records, tuples, unit,
+custom types and aliases; and super constraints that come from a type
+checker's solved variables rather than from names.
 
 -}
 
@@ -44,13 +84,17 @@ import Expect
 import Test exposing (Test)
 
 
-{-| Build the nth sequential MVarId (0-indexed).
+{-| Returns the `n`th MVarId counting from 0, the id `convertForTest` gives the
+`n`th distinct type variable it meets. A negative `n` gives the first.
 -}
 nthMVarId : Int -> TypeIds.MVarId
 nthMVarId n =
     nthMVarIdHelp n Id.first
 
 
+{-| Returns `current` advanced by `remaining` ids, or `current` itself when
+`remaining` is zero or less.
+-}
 nthMVarIdHelp : Int -> TypeIds.MVarId -> TypeIds.MVarId
 nthMVarIdHelp remaining current =
     if remaining <= 0 then
@@ -60,16 +104,17 @@ nthMVarIdHelp remaining current =
         nthMVarIdHelp (remaining - 1) (Id.succ current)
 
 
-{-| Helper to construct an MVar with a specific sequential ID.
-Use id=0 for the first type variable, id=1 for the second, etc.
+{-| Returns the type variable with the `n`th MVarId and `constraint`, for
+writing an expected MonoType.
 -}
 testMVarN : Int -> Mono.Constraint -> Mono.MonoType
 testMVarN n constraint =
     Mono.MVar (nthMVarId n) constraint
 
 
-{-| Convert a Can.Type Name to Can.Type MVarId for testing.
-Returns the converted type and an MVarEnv initialized with the constraints.
+{-| Returns `canType` with its type variables numbered by
+`AssignMVarIds.assignIdsToType`, and an `MVarEnv` whose side table holds the
+super constraint that function recorded for each variable, read from its name.
 -}
 convertForTest : Can.Type Name -> ( Can.Type TypeIds.MVarId, State.MVarEnv )
 convertForTest canType =
@@ -80,23 +125,23 @@ convertForTest canType =
     ( converted, State.initMVarEnv finalState.nextId finalState.superVars )
 
 
-{-| Check if the nth MVarId has the CNumber constraint.
+{-| Reports whether `env` records the `n`th MVarId as a number variable.
 -}
 isNumberVar : Int -> State.MVarEnv -> Bool
 isNumberVar n env =
     State.isNumberVar (nthMVarId n) env
 
 
-{-| Read the full super constraint recorded for the nth MVarId. Proves that
-all super constraints (not just number) are exported from the solver into the
-side table, keyed by MVarId rather than derived from names.
+{-| Returns the super constraint `env` records for the `n`th MVarId, or
+`Nothing` when it records none.
 -}
 superOfNthVar : Int -> State.MVarEnv -> Maybe Vars.SuperType
 superOfNthVar n env =
     Dict.get (Id.toComparable (nthMVarId n)) env.superVars
 
 
-{-| Helper to call canTypeToMonoType\_preserveVars, converting from Can.Type Name.
+{-| Returns the MonoType `canTypeToMonoType_preserveVars` gives `canType` once
+`convertForTest` has numbered its type variables.
 -}
 preserveVars : Can.Type Name -> Mono.MonoType
 preserveVars canType =
@@ -110,8 +155,8 @@ preserveVars canType =
     result
 
 
-{-| Like preserveVars but also returns the MVarEnv so tests can inspect the
-constraint side table.
+{-| Returns the MonoType `preserveVars` gives `canType`, together with the
+`MVarEnv` from `convertForTest`, so that a test can read its side table.
 -}
 preserveVarsWithEnv : Can.Type Name -> ( Mono.MonoType, State.MVarEnv )
 preserveVarsWithEnv canType =
@@ -125,7 +170,9 @@ preserveVarsWithEnv canType =
     ( result, env )
 
 
-{-| Helper to derive kernel ABI mode, converting from Can.Type Name.
+{-| Returns the kernel ABI mode `deriveKernelAbiMode` chooses for the kernel
+`kernelId`, a (home, name) pair, given `canType` with its type variables
+numbered by `convertForTest`.
 -}
 testDeriveAbiMode : ( String, String ) -> Can.Type Name -> KernelAbi.KernelAbiMode
 testDeriveAbiMode kernelId canType =
@@ -136,6 +183,8 @@ testDeriveAbiMode kernelId canType =
     KernelAbi.deriveKernelAbiMode kernelId converted env
 
 
+{-| Every test in this module, in the groups the module docstring lists.
+-}
 suite : Test
 suite =
     Test.describe "Monomorphize.KernelAbi"
@@ -149,11 +198,14 @@ suite =
         ]
 
 
-{-| The full super lattice (number/comparable/appendable/compappend) is
-exported into the MVarId-keyed side table, and only `number` maps to the
-CNumber constraint mono consumes. Locks in the "pass all super constraints,
-not just number" contract (TYPE\_SUPER\_001) and confirms that plain type
-variables carry no super.
+{-| Tests of the side table `convertForTest` builds for a single type variable.
+
+For a variable named `number`, `comparable`, `appendable` and `compappend`,
+each test checks that the table records `Number`, `Comparable`, `Appendable` and
+`CompAppend` respectively, and that `isNumberVar` is true only for `number`. For
+a variable named `a` it checks that the table records nothing and `isNumberVar`
+is false.
+
 -}
 superConstraintExportTests : Test
 superConstraintExportTests =
@@ -207,6 +259,11 @@ superConstraintExportTests =
 -- ============================================================================
 
 
+{-| Tests of `deriveKernelAbiMode` on four kernels. `Basics.modBy` with
+`Int -> Int -> Int` gives `UseSubstitution`. `List.cons` with
+`a -> List a -> List a`, `Basics.add` with `number -> number -> number` and
+`Debug.log` with `String -> a -> a` give `PreserveVars`.
+-}
 abiModeTests : Test
 abiModeTests =
     Test.describe "deriveKernelAbiMode"
@@ -259,6 +316,12 @@ abiModeTests =
 -- ============================================================================
 
 
+{-| Tests of `canTypeToMonoType_preserveVars` on three types with no type
+variable. `Int -> Int -> Int` gives a function from `MInt` to a function from
+`MInt` to `MInt`, `Float -> Bool` gives a function from `MFloat` to `MBool`,
+and `String -> List String` gives a function from `MString` to a list of
+`MString`. Every function is annotated `topAbi`.
+-}
 monomorphicKernelTests : Test
 monomorphicKernelTests =
     Test.describe "Monomorphic kernels"
@@ -304,6 +367,11 @@ monomorphicKernelTests =
 -- ============================================================================
 
 
+{-| Tests of `canTypeToMonoType_preserveVars` on three types.
+`a -> List a -> List a` gives `MVar 0 CEcoValue` for every `a`, `a -> a -> Bool`
+gives `MVar 0 CEcoValue` for both arguments and `MBool` for the result, and
+`Int -> Int`, which has no variable, gives a function from `MInt` to `MInt`.
+-}
 polymorphicKernelTests : Test
 polymorphicKernelTests =
     Test.describe "Polymorphic kernels"
@@ -344,7 +412,6 @@ polymorphicKernelTests =
         , Test.test "Polymorphic preserveVars converts Int to MInt" <|
             \_ ->
                 let
-                    -- Even in preserveVars mode, concrete types should be converted
                     canType =
                         tFunc [ intType ] intType
 
@@ -362,6 +429,11 @@ polymorphicKernelTests =
 -- ============================================================================
 
 
+{-| Tests of `canTypeToMonoType_preserveVars` on the types of `Debug.log`,
+`String -> a -> a`, and `Debug.todo`, `String -> a`. `String` converts to
+`MString` and each `a` to `MVar 0 CEcoValue`. No kernel home is involved, so
+these do not test the rule for `Debug` kernels.
+-}
 debugKernelTests : Test
 debugKernelTests =
     Test.describe "Debug kernels (always polymorphic)"
@@ -402,10 +474,12 @@ debugKernelTests =
 
 -- ============================================================================
 -- KERNEL EXPORTS ABI TESTS
--- Tests derived from actual C signatures in KernelExports.h
 -- ============================================================================
 
 
+{-| Tests of the kernel ABI mode of kernels of five home modules, one group per
+home, with two tests of converted types among them.
+-}
 kernelExportsAbiTests : Test
 kernelExportsAbiTests =
     Test.describe "KernelExports.h ABI compatibility"
@@ -417,16 +491,11 @@ kernelExportsAbiTests =
         ]
 
 
-{-| Tests for Basics module kernels.
-
-From KernelExports.h:
-
-  - int64\_t Elm\_Kernel\_Basics\_modBy(int64\_t modulus, int64\_t x)
-  - int64\_t Elm\_Kernel\_Basics\_floor(double x)
-  - double Elm\_Kernel\_Basics\_toFloat(int64\_t x)
-  - uint64\_t Elm\_Kernel\_Basics\_add(uint64\_t a, uint64\_t b) -- number-boxed
-  - bool Elm\_Kernel\_Basics\_isNaN(double x)
-
+{-| Tests of the mode of seven `Basics` kernels. `modBy` (`Int -> Int -> Int`),
+`floor` (`Float -> Int`), `toFloat` (`Int -> Float`) and `isNaN`
+(`Float -> Bool`) give `UseSubstitution`. `add`, `mul` and `pow`, each
+`number -> number -> number`, give `PreserveVars`. The mode does not depend on a
+kernel's name, so those three tests differ only in names the mode ignores.
 -}
 basicsModuleTests : Test
 basicsModuleTests =
@@ -504,13 +573,8 @@ basicsModuleTests =
         ]
 
 
-{-| Tests for List module kernels.
-
-From KernelExports.h:
-
-  - uint64\_t Elm\_Kernel\_List\_cons(uint64\_t head, uint64\_t tail)
-    C ABI: (eco.value, eco.value) -> eco.value
-
+{-| Tests of `List.cons` with `a -> List a -> List a`: its mode is
+`PreserveVars`, and its converted type has `MVar 0 CEcoValue` for every `a`.
 -}
 listModuleTests : Test
 listModuleTests =
@@ -534,8 +598,6 @@ listModuleTests =
                     result =
                         preserveVars canType
                 in
-                -- Expected C ABI: uint64_t cons(uint64_t head, uint64_t tail)
-                -- All args should be eco.value (MVar with CEcoValue)
                 Expect.equal result
                     (Mono.mFunction Mono.topAbi
                         [ testMVarN 0 Mono.CEcoValue ]
@@ -547,16 +609,15 @@ listModuleTests =
         ]
 
 
-{-| Tests for Utils module kernels.
+{-| Tests of four `Utils` kernels. `equal` (`a -> a -> Bool`), `lt`
+(`comparable -> comparable -> Bool`), `compare` and `append`
+(`appendable -> appendable -> appendable`) give `PreserveVars`, and the
+converted type of `equal` has `MVar 0 CEcoValue` for both arguments and
+`MBool` for the result.
 
-From KernelExports.h:
-
-  - bool Elm\_Kernel\_Utils\_equal(uint64\_t a, uint64\_t b)
-  - bool Elm\_Kernel\_Utils\_lt(uint64\_t a, uint64\_t b)
-  - uint64\_t Elm\_Kernel\_Utils\_compare(uint64\_t a, uint64\_t b)
-  - uint64\_t Elm\_Kernel\_Utils\_append(uint64\_t a, uint64\_t b)
-
-All polymorphic - take eco.value args.
+The `compare` test's result type is a type variable named `Order`, not the
+`Order` type, so its type is `comparable -> comparable -> Order`, with two
+type variables.
 
 -}
 utilsModuleTests : Test
@@ -581,7 +642,6 @@ utilsModuleTests =
                     result =
                         preserveVars canType
                 in
-                -- Expected C ABI: bool equal(uint64_t a, uint64_t b)
                 Expect.equal result
                     (Mono.mFunction Mono.topAbi
                         [ testMVarN 0 Mono.CEcoValue ]
@@ -603,7 +663,6 @@ utilsModuleTests =
         , Test.test "compare: comparable -> comparable -> Order (polymorphic)" <|
             \_ ->
                 let
-                    -- Order is a custom type, represented as eco.value in return
                     orderType =
                         varType "Order"
 
@@ -627,15 +686,9 @@ utilsModuleTests =
         ]
 
 
-{-| Tests for String module kernels.
-
-From KernelExports.h:
-
-  - int64\_t Elm\_Kernel\_String\_length(uint64\_t str)
-  - uint64\_t Elm\_Kernel\_String\_append(uint64\_t a, uint64\_t b)
-
-String is passed as uint64\_t (eco.value pointer to String object).
-
+{-| Tests of the mode of three `String` kernels: `length` (`String -> Int`),
+`append` (`String -> String -> String`) and `lines` (`String -> List String`)
+give `UseSubstitution`.
 -}
 stringModuleTests : Test
 stringModuleTests =
@@ -673,13 +726,8 @@ stringModuleTests =
         ]
 
 
-{-| Tests for Char module kernels.
-
-From KernelExports.h:
-
-  - uint16\_t Elm\_Kernel\_Char\_fromCode(int64\_t code)
-  - int64\_t Elm\_Kernel\_Char\_toCode(uint16\_t c)
-
+{-| Tests of the mode of two `Char` kernels: `fromCode` (`Int -> Char`) and
+`toCode` (`Char -> Int`) give `UseSubstitution`.
 -}
 charModuleTests : Test
 charModuleTests =
@@ -710,33 +758,38 @@ charModuleTests =
 
 -- ============================================================================
 -- KERNEL ABI TYPE PRESERVATION TESTS
--- These tests verify that kernel ABI types are consistent regardless of
--- call-site instantiation. This catches bugs where the ABI type gets
--- incorrectly replaced with the instantiated type.
---
--- Bug that was caught: In ensureCallableTopLevel, MonoVarKernel was being
--- reconstructed with `monoType` (the instantiated type) instead of preserving
--- the original `kernelAbiType`. This caused List.cons to sometimes have
--- signature [I64, eco.value] -> eco.value instead of always having
--- [eco.value, eco.value] -> eco.value.
 -- ============================================================================
 
 
+{-| Tests that a polymorphic kernel's converted type keeps a boxed value for each
+type variable.
+
+The first two convert the types of `List.cons` and `Utils.equal` and expect
+`MVar 0 CEcoValue` for every variable. Their labels speak of uses at particular
+types, but no use is built: each converts only the kernel's own type, as
+`polymorphicKernelTests` does.
+
+The next two convert a lone variable. Named `a`, it gives `MVar 0 CEcoValue`
+and is not a number variable. Named `number`, it also gives `MVar 0 CEcoValue`,
+not a `CNumber` variable, while the side table records it as a number variable.
+
+The last checks that `List.cons` with `a -> List a -> List a` has mode
+`PreserveVars` and that its converted type has no `MInt` inside a function or
+list type.
+
+-}
 kernelAbiPreservationTests : Test
 kernelAbiPreservationTests =
     Test.describe "Kernel ABI type preservation"
         [ Test.test "List.cons ABI is same whether called with Int or String" <|
             \_ ->
                 let
-                    -- The canonical type is always polymorphic
                     canType =
                         tFunc [ varType "a", listType (varType "a") ] (listType (varType "a"))
 
-                    -- Regardless of call-site, ABI should be the same
                     abiType =
                         preserveVars canType
                 in
-                -- The ABI type should have MVar with CEcoValue, NOT MInt or MString
                 Expect.equal abiType
                     (Mono.mFunction Mono.topAbi
                         [ testMVarN 0 Mono.CEcoValue ]
@@ -754,7 +807,6 @@ kernelAbiPreservationTests =
                     abiType =
                         preserveVars canType
                 in
-                -- Should NOT have MInt even if called at Int type
                 Expect.equal abiType
                     (Mono.mFunction Mono.topAbi
                         [ testMVarN 0 Mono.CEcoValue ]
@@ -766,7 +818,6 @@ kernelAbiPreservationTests =
         , Test.test "PreserveVars mode always produces CEcoValue for type vars" <|
             \_ ->
                 let
-                    -- Even a simple type var should become CEcoValue
                     canType =
                         varType "a"
 
@@ -781,8 +832,6 @@ kernelAbiPreservationTests =
         , Test.test "PreserveVars mode produces CEcoValue even for 'number' var" <|
             \_ ->
                 let
-                    -- In preserveVars mode, even 'number' becomes CEcoValue (not CNumber)
-                    -- but the side table should record it as CNumber
                     canType =
                         varType "number"
 
@@ -797,10 +846,6 @@ kernelAbiPreservationTests =
         , Test.test "Polymorphic kernel ABI must NOT contain MInt even when used at Int type" <|
             \_ ->
                 let
-                    -- This test documents the invariant that was violated:
-                    -- When List.cons is used at type Int -> List Int -> List Int,
-                    -- the KERNEL ABI type must still be a -> List a -> List a with CEcoValue,
-                    -- NOT Int -> List Int -> List Int with MInt.
                     canType =
                         tFunc [ varType "a", listType (varType "a") ] (listType (varType "a"))
 
@@ -810,7 +855,7 @@ kernelAbiPreservationTests =
                     abiType =
                         preserveVars canType
 
-                    -- Verify the ABI type does not contain MInt anywhere
+                    -- Looks inside function and list types only.
                     containsMInt monoType =
                         case monoType of
                             Mono.MInt ->

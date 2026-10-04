@@ -12,19 +12,41 @@ module Compiler.GlobalOpt.Borrow.Lifetime exposing
     , onBoundary
     )
 
-{-| Lifetime-lattice algebra for borrow inference (design §7.4).
+{-| Borrow inference has to know whether a value is dead at a given point in a
+function, and this module is the lattice it answers that from: for each
+resource (a heap value the analysis tracks), the latest point at which the
+resource is still live.
 
-A `Lifetime` approximates, for one function-local resource, the latest
-program point at which it is still live. Points are addressed by `Path`s
-relative to a per-def skeleton (the constraint walker mints skeleton node
-ids). The lattice orders "dies earlier" ≤ "dies later"; `join` is the
-least-upper-bound (the later death). `LParams` sits above every `LLocal`
-(a resource whose lifetime reaches a caller-visible parameter position
-outlives any local point).
+**Points.** A function body is viewed as a _skeleton_, a tree whose interior
+nodes evaluate children in order (a _sequence_), or evaluate exactly one of
+them (_alternatives_, such as the arms of a `case`), or both: an `if` evaluates
+its conditions and then one branch. Each interior node has an integer id. A
+`Path` names a point by the steps taken from the root: `Seq n i` enters child
+`i` of sequence node `n`, and `Arm n i` enters arm `i` of alternatives node
+`n`. The point a path names is the moment just after the subtree at that path
+has finished evaluating, so the empty path is the end of the whole body.
 
-Constructors are exposed (house style — Phase-2 Constrain/Solve build
-these directly). NEVER compare `Lifetime`/`Life` with `(==)`: they contain
-`Dict`s and elm/core `Dict` equality via `==` is unreliable. Use `eq`.
+**Lifetimes.** A `Lifetime` is either `LEmpty` (never live), `LLocal` (ends
+somewhere inside the body, described by a `Life`), or `LParams` (reaches past
+the body, to caller-visible parameter positions). They are ordered so that a
+lifetime that ends earlier is below one that ends later, and `LParams` is above
+every `LLocal`. `join` gives the later of two lifetimes. Because only one arm of
+an alternatives node runs, a local lifetime records its end separately for each
+arm, and a join keeps the later end in each arm.
+
+**Questions.** `endsBefore` asks whether a resource is certainly dead at a
+point, and `onBoundary` whether a point is exactly where its lifetime ends.
+
+**Alignment.** Every operation here compares only the kind of each step and its
+child or arm index, never the node ids. The answers are meaningful only for
+lifetimes and paths from the same skeleton, written root-first, where two steps
+at the same position leave the same node. Even then, at a node that is both a
+sequence and alternatives, a sequence step can meet an alternatives step. There
+`join` gives `Star`, an end no earlier than either, and `leq`, `endsBefore` and
+`onBoundary` answer `False`, so `endsBefore` does not report the resource dead.
+
+Compare lifetimes with `eq`, never with `(==)`, which also compares the node ids
+that the lattice ignores.
 
 -}
 
@@ -32,27 +54,41 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
-{-| One step of a root-relative, function-local path. The first `Int` is the
-skeleton node id (minted by the Phase-2 walker); the second is the child/arm
-index. Values are only ever compared/joined at the same tree position, so the
-node ids of compared constructors are equal by construction; `join`/`leq`
-branch on the INDEX only and keep the left-hand node id.
+{-| One step of a `Path`, from a skeleton node into one of its children.
+
+`Seq n i` enters child `i` of sequence node `n`, and `Arm n i` enters arm `i` of
+alternatives node `n`. The operations in this module read only which kind of
+step it is and the index.
+
 -}
 type Step
     = Seq Int Int
     | Arm Int Int
 
 
+{-| A point in a function body: the steps from the root of its skeleton to the
+subtree that has just finished evaluating there. The first step leaves the
+root, and the empty path is the end of the whole body.
+
+This is a name for `List Step`, not a new type. Nothing checks that a list is in
+root-first order or that its steps follow a real skeleton.
+
+-}
 type alias Path =
     List Step
 
 
-{-| Where within a skeleton subtree a resource's lifetime ends.
+{-| Where a local lifetime ends, read from some position in the skeleton.
 
-  - `Star` — ends exactly at this node's completion (paper ★).
-  - `InSeq n i l` — ends within sequential child `i` of node `n`.
-  - `InAlts n d` — per-arm ends; a missing arm key means the resource is dead
-    on that arm (paper `(— ∥ ℓ)`).
+`Star` means the resource is live until the subtree at this position has
+finished evaluating.
+
+`InSeq n i l` means it ends inside child `i` of sequence node `n`, at `l` within
+that child, so it is dead in every later child.
+
+`InAlts n arms` means it ends separately in each arm of alternatives node `n`:
+`arms` maps an arm index to where it ends in that arm, and an arm with no entry
+is one on which the resource is never live.
 
 -}
 type Life
@@ -61,6 +97,18 @@ type Life
     | InAlts Int (Dict Int Life)
 
 
+{-| The latest point at which a resource is live, as an element of the lattice.
+
+`LEmpty` is the bottom: the resource is never live, so it is dead at every
+point, and it is the identity of `join`.
+
+`LLocal` ends inside the function body, at the `Life` read from the root.
+
+`LParams` reaches past the end of the body to the parameter positions in its
+set. It is above every `LLocal`, the join of two is the union of their sets,
+and it is never dead at any path or on a boundary.
+
+-}
 type Lifetime
     = LEmpty
     | LLocal Life
@@ -71,13 +119,18 @@ type Lifetime
 -- CONSTRUCTION
 
 
-{-| The lifetime ending exactly at path `p`.
+{-| Returns the lifetime that ends at `path`: live up to that point on any
+execution that reaches it, dead at every later point, and never live on an arm
+the path does not take.
 -}
 fromPath : Path -> Lifetime
 fromPath path =
     LLocal (fromPathLife path)
 
 
+{-| Returns the `Life` that ends at `path`, read from the current position: one
+`InSeq`, or one single-arm `InAlts`, for each step, ending in `Star`.
+-}
 fromPathLife : Path -> Life
 fromPathLife path =
     case path of
@@ -92,9 +145,22 @@ fromPathLife path =
 
 
 
--- JOIN (least upper bound = latest death)
+-- JOIN
 
 
+{-| Returns the later of two lifetimes: an upper bound of both in the order
+`leq` defines.
+
+`LEmpty` is the identity, `LParams` absorbs any `LLocal`, and two `LParams` give
+the union of their sets. Two local lifetimes are combined position by position.
+`Star` absorbs anything. Within a sequence, the end in the later child wins, and
+two ends in the same child are joined in turn. Within alternatives, every arm
+of either is kept, and an arm in both keeps the join of its two ends. A
+sequence end meeting an alternatives end at the same position gives `Star`.
+
+Node ids are not compared.
+
+-}
 join : Lifetime -> Lifetime -> Lifetime
 join a b =
     case ( a, b ) of
@@ -117,11 +183,17 @@ join a b =
             LLocal (joinLife x y)
 
 
+{-| Returns the join of every lifetime in the list, which is `LEmpty` for an
+empty list.
+-}
 joinAll : List Lifetime -> Lifetime
 joinAll =
     List.foldl join LEmpty
 
 
+{-| Returns the later of two local lifetimes read from the same position, as
+`join` describes for two `LLocal`s.
+-}
 joinLife : Life -> Life -> Life
 joinLife x y =
     case ( x, y ) of
@@ -153,8 +225,6 @@ joinLife x y =
                 )
 
         ( InSeq _ _ _, InAlts _ _ ) ->
-            -- Unreachable on aligned skeletons; total-function fallback,
-            -- conservative (Star = latest ⇒ fewer deadness claims).
             Star
 
         ( InAlts _ _, InSeq _ _ _ ) ->
@@ -162,9 +232,22 @@ joinLife x y =
 
 
 
--- ORDER (structural — NOT via join, so absorption is a real test)
+-- ORDER
 
 
+{-| Returns whether `a` ends no later than `b` in the lattice order.
+
+`LEmpty` is below everything, every `LLocal` is below every `LParams`, and one
+`LParams` is below another when its set is a subset of the other's. Of two local
+lifetimes, `Star` is above all the rest. Within a sequence, an end in an earlier
+child is below one in a later child, and two ends in the same child are compared
+in turn. Within alternatives, `a` is below `b` when every arm `a` is live on is
+an arm `b` is live on, with an end no later. A sequence end and an alternatives
+end at the same position are not ordered either way. Node ids are not compared.
+
+The order is computed from the structure directly, not by way of `join`.
+
+-}
 leq : Lifetime -> Lifetime -> Bool
 leq a b =
     case ( a, b ) of
@@ -190,6 +273,9 @@ leq a b =
             lifeLeq x y
 
 
+{-| Returns whether local lifetime `x` ends no later than `y`, both read from
+the same position, as `leq` describes for two `LLocal`s.
+-}
 lifeLeq : Life -> Life -> Bool
 lifeLeq x y =
     case ( x, y ) of
@@ -227,7 +313,9 @@ lifeLeq x y =
             False
 
 
-{-| Semantic equality (never structural `==` — Dict pitfall).
+{-| Returns whether two lifetimes are equal in the lattice, meaning each is
+`leq` the other. Use this rather than `(==)`, which also compares the node ids
+that the lattice ignores.
 -}
 eq : Lifetime -> Lifetime -> Bool
 eq a b =
@@ -235,10 +323,21 @@ eq a b =
 
 
 
--- PREDICATES (a path denotes the completion point of the subtree at it)
+-- PREDICATES
 
 
-{-| Paper `L ≺ p`: the resource is provably dead at path `p`.
+{-| Returns whether the resource is certainly dead at the point `path`: on every
+execution that reaches `path`, its lifetime has ended before that point.
+
+`LEmpty` is dead everywhere and `LParams` nowhere. A local lifetime is dead at
+`path` when it ends in an earlier child of a sequence that `path` passes
+through, when `path` takes an arm on which it is never live, or when `path`
+stops at a node above the place where the lifetime ends, because the point is
+after that node's subtree has finished. It is not dead where it ends, so
+`endsBefore (fromPath p) p` is `False`, nor anywhere inside a subtree it lasts
+to the end of. Where `path` takes a different kind of step from the lifetime at
+the same position, the answer is `False`.
+
 -}
 endsBefore : Lifetime -> Path -> Bool
 endsBefore lifetime path =
@@ -253,15 +352,16 @@ endsBefore lifetime path =
             endsBeforeLife l path
 
 
+{-| Returns whether local lifetime `life` has ended before the point `path`,
+both read from the current position, as `endsBefore` describes.
+-}
 endsBeforeLife : Life -> Path -> Bool
 endsBeforeLife life path =
     case ( life, path ) of
         ( Star, _ ) ->
-            -- Ends AT node completion; not before it (nor before any deeper p).
             False
 
         ( InSeq _ _ _, [] ) ->
-            -- Dies inside a child, strictly before node completion.
             True
 
         ( InSeq _ i l, (Seq _ j) :: rest ) ->
@@ -292,8 +392,14 @@ endsBeforeLife life path =
             False
 
 
-{-| Paper `L ≍ p`: `p` is a final occurrence (last use on every execution
-that reaches it).
+{-| Returns whether the lifetime ends exactly at `path`, so that on any
+execution that reaches `path`, that point is the last at which the resource is
+live.
+
+That holds when `path` follows the lifetime's own steps to its end: the same
+child at each sequence, an arm the lifetime is live on at each alternatives
+node, and no steps left over. It is always `False` for `LEmpty` and `LParams`.
+
 -}
 onBoundary : Lifetime -> Path -> Bool
 onBoundary lifetime path =
@@ -308,6 +414,9 @@ onBoundary lifetime path =
             onBoundaryLife l path
 
 
+{-| Returns whether `path`, read from the current position, follows local
+lifetime `life` exactly to its end, as `onBoundary` describes.
+-}
 onBoundaryLife : Life -> Path -> Bool
 onBoundaryLife life path =
     case ( life, path ) of

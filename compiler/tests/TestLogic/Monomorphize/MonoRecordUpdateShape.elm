@@ -1,15 +1,31 @@
 module TestLogic.Monomorphize.MonoRecordUpdateShape exposing (expectMonoRecordUpdateShape, Violation)
 
-{-| Test logic for the MonoRecordUpdate shape-subset invariant.
+{-| Checks that no record update in a monomorphized program drops a field of
+the record it updates.
 
-For every MonoRecordUpdate node, the set of fields on the input record's type
-must be a subset of the set of fields on the update node's result type. In
-other words, record update must never narrow the record layout — doing so
-would cause MLIR codegen to emit a construct.record with too few fields,
-producing out-of-bounds projections at runtime.
+A record update `{ r | f = v }` copies `r` with some fields replaced, so its
+result has every field that `r` has. In the monomorphized graph a
+`MonoRecordUpdate` carries its own result type, and nothing in the types makes
+that type agree with the type of the record being updated. Code generation
+builds the new record with the layout of the input record's type, but a field
+read on the result works out the field's position from the result's type. If
+the result type lacked one of the input's fields, the read would use a
+different layout from the one the record was built with.
 
-This directly guards the class of bugs described in
-plans/fix-record-update-source-layout.md.
+`expectMonoRecordUpdateShape` compiles one source module to the monomorphized
+graph and searches every expression of every node, including closure bodies
+and captures, let-bound definitions, case branches and expressions inlined into
+case decision trees. Each `MonoRecordUpdate` whose input record has an
+`MRecord` type gives one `Violation` when:
+
+  - the result type is a record that lacks some of the input record's field
+    names, or
+  - the result type is not a record.
+
+Among what is not checked: field types are not compared, only field names; an
+update whose input record's type is not an `MRecord`, such as a type variable,
+is skipped; and the graph is the substitution engine's output before global
+optimization, so neither the solver engine nor the optimized graph is examined.
 
 @docs expectMonoRecordUpdateShape, Violation
 
@@ -23,12 +39,32 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| One record update that drops a field of its input record.
+
+`context` names where it was found: `SpecId n` for the node at index `n` of the
+graph's nodes, followed by a space and `inline-leaf` once for each case
+decision-tree leaf the update is inlined into. `message` names the missing
+fields, or says the result is not a record, and prints both types.
+
+-}
 type alias Violation =
     { context : String
     , message : String
     }
 
 
+{-| Compiles `srcModule` to the monomorphized graph with
+`TestLogic.TestPipeline.runToMono` and passes when no record update in it drops
+a field of the record it updates.
+
+An update whose input record has an `MRecord` type fails when its result type
+is not a record or lacks one of the input's field names; field types are not
+compared, and an update whose input record's type is not an `MRecord` is not
+checked. A compilation failure fails the test with the pipeline's message.
+Otherwise the failure message lists every violation, each as its context and
+message, separated by blank lines.
+
+-}
 expectMonoRecordUpdateShape : Src.Module -> Expectation
 expectMonoRecordUpdateShape srcModule =
     case Pipeline.runToMono srcModule of
@@ -47,6 +83,9 @@ expectMonoRecordUpdateShape srcModule =
                 Expect.fail (formatViolations violations)
 
 
+{-| Returns the violations in every node of the graph, in node order. A node's
+SpecId is its index in `nodes`; empty slots are skipped but still counted.
+-}
 checkMonoRecordUpdateShape : Mono.MonoGraph -> List Violation
 checkMonoRecordUpdateShape (Mono.MonoGraph data) =
     Array.foldl
@@ -63,6 +102,10 @@ checkMonoRecordUpdateShape (Mono.MonoGraph data) =
         |> Tuple.second
 
 
+{-| Returns the violations in the expression of one node, with context
+`SpecId specId`. Constructor, enum, extern and manager-leaf nodes hold no
+expression and give none.
+-}
 checkNode : Int -> Mono.MonoNode -> List Violation
 checkNode specId node =
     let
@@ -95,6 +138,10 @@ checkNode specId node =
             []
 
 
+{-| Returns the violations in `expr` and every expression nested in it, with
+context `ctx`. A record update's own violation comes before those found in its
+record and new field values.
+-}
 checkExpr : String -> Mono.MonoExpr -> List Violation
 checkExpr ctx expr =
     case expr of
@@ -179,6 +226,15 @@ checkExpr ctx expr =
             []
 
 
+{-| Returns the violation, if any, for one record update whose input record has
+type `recordType` and whose result has type `resultType`.
+
+When both are records, it reports the input's field names that the result
+lacks. When only the input is a record, it reports the result as not a record.
+When the input is not a record there is no field list to compare, and it
+reports nothing.
+
+-}
 checkShape : String -> Mono.MonoType -> Mono.MonoType -> List Violation
 checkShape ctx recordType resultType =
     case ( recordType, resultType ) of
@@ -219,11 +275,14 @@ checkShape ctx recordType resultType =
             ]
 
         _ ->
-            -- Source record type not MRecord (e.g. MVar flowing through a
-            -- polymorphic wrapper). Shape subset is vacuous; skip.
             []
 
 
+{-| Returns the violations in the expressions inlined into the leaves of
+`decider`, with a space and `inline-leaf` appended to `ctx`. A leaf that jumps
+to a shared branch holds no expression here; `checkExpr` searches those
+branches from the case's own list.
+-}
 checkDecider : String -> Mono.Decider Mono.MonoChoice -> List Violation
 checkDecider ctx decider =
     case decider of
@@ -243,6 +302,9 @@ checkDecider ctx decider =
                 ++ checkDecider ctx fallback
 
 
+{-| Builds one failure message from `violations`, each as its context, a colon
+and its message, separated by blank lines.
+-}
 formatViolations : List Violation -> String
 formatViolations violations =
     violations

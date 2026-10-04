@@ -1,6 +1,47 @@
 module SourceIR.AsPatternCases exposing (expectSuite)
 
-{-| Tests for as-patterns (alias patterns).
+{-| Source programs that bind names with as-patterns, for a caller to run
+through whichever compiler stage it is testing.
+
+An as-pattern, `pattern as name`, matches `pattern` and also binds `name` to
+the whole of the value matched, so it introduces one more variable than the
+pattern inside it. These programs exist so that a stage under test meets that
+extra binding on each of the kinds of pattern listed below, and in a function
+argument, a lambda, a let-destructuring and a case branch.
+
+This module asserts nothing itself. `expectSuite` runs the programs in order as
+one test through `Compiler.BulkCheck.bulkCheck`, handing each to the caller's
+expectation function and stopping at the first that fails; what passing means
+is up to that function.
+
+Every program is a module named `Test` built with `Compiler.AST.SourceBuilder`,
+with no type annotations, importing only `Basics` and `List`. Most define a
+function whose arguments use the as-pattern, and a `testValue` that calls it on
+values built from integer and string literals; the rest put the pattern in a
+lambda, a `let` or a `case` inside `testValue` itself. The list and cons
+argument patterns are refutable: they do not match every list.
+
+The programs, by group:
+
+  - Simple: an alias on a variable, on a wildcard, on each of a function's two
+    arguments, and on a lambda's argument.
+  - Tuples: an alias on a pair, on a triple, on each element of a pair, and on
+    a pair whose first element is a pair.
+  - Records: an alias on a two-field record pattern, on each of two one-field
+    record arguments, and on a four-field record pattern.
+  - Lists: an alias on a cons pattern, on a two-element list pattern, on the
+    head and on the tail of a cons pattern, and on a cons pattern whose tail is
+    itself a cons pattern.
+  - Nesting: an alias on an alias, an alias on a pair nested in a pair, and an
+    alias on a pair of a record pattern and an aliased cons pattern.
+  - Definitions: an alias in a let-destructuring, and in the argument of a
+    function defined in a `let`.
+  - Case: an alias in a case branch.
+
+Among what is not tested: an alias on a constructor or literal pattern, an
+alias in an annotated definition, and an alias whose use fails to type-check
+(programs of that kind are in `SourceIR.TypeCheckFailsCases`).
+
 -}
 
 import Compiler.AST.Source as Src
@@ -35,12 +76,20 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "As-pattern tests " followed by `condStr`, that
+runs `expectFn` on the programs in this module in order and passes when all of
+them pass. It stops at the first program that fails and reports the failure
+under that case's label.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("As-pattern tests " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this module, each running `expectFn` on its
+program, group by group in the order the module docstring lists them.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -56,10 +105,13 @@ testCases expectFn =
 
 
 -- ============================================================================
--- SIMPLE ALIAS (4 tests)
+-- SIMPLE ALIAS
 -- ============================================================================
 
 
+{-| Returns the cases that alias a variable, a wildcard, each of two
+arguments, and a lambda's argument.
+-}
 simpleAliasCases : (Src.Module -> Expectation) -> List TestCase
 simpleAliasCases expectFn =
     [ { label = "Alias on variable", run = aliasOnVariable expectFn }
@@ -69,6 +121,8 @@ simpleAliasCases expectFn =
     ]
 
 
+{-| Runs `expectFn` on `dup (x as y) = ( x, y )` with `testValue = dup 1`.
+-}
 aliasOnVariable : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnVariable expectFn _ =
     let
@@ -81,6 +135,8 @@ aliasOnVariable expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `capture (_ as x) = x` with `testValue = capture 1`.
+-}
 aliasOnWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnWildcard expectFn _ =
     let
@@ -93,6 +149,9 @@ aliasOnWildcard expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `both (a as x) (b as y) = ( x, y )` with
+`testValue = both 1 "a"`.
+-}
 multipleAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleAliases expectFn _ =
     let
@@ -108,6 +167,8 @@ multipleAliases expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `testValue = (\(x as whole) -> ( x, whole )) 1`.
+-}
 aliasInLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasInLambda expectFn _ =
     let
@@ -122,10 +183,13 @@ aliasInLambda expectFn _ =
 
 
 -- ============================================================================
--- TUPLE ALIAS (4 tests)
+-- TUPLE ALIAS
 -- ============================================================================
 
 
+{-| Returns the cases that alias a pair, a triple, each element of a pair,
+and a pair holding a pair.
+-}
 tupleAliasCases : (Src.Module -> Expectation) -> List TestCase
 tupleAliasCases expectFn =
     [ { label = "Alias on 2-tuple", run = aliasOn2Tuple expectFn }
@@ -135,6 +199,9 @@ tupleAliasCases expectFn =
     ]
 
 
+{-| Runs `expectFn` on `withPair (( a, b ) as pair) = ( pair, a )` with
+`testValue = withPair ( 1, "a" )`.
+-}
 aliasOn2Tuple : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOn2Tuple expectFn _ =
     let
@@ -150,6 +217,9 @@ aliasOn2Tuple expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `withTriple (( a, b, c ) as triple) = triple` with
+`testValue = withTriple ( 1, "a", 2 )`.
+-}
 aliasOn3Tuple : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOn3Tuple expectFn _ =
     let
@@ -165,6 +235,9 @@ aliasOn3Tuple expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `parts ( x as first, y as second ) = [ first, second ]`
+with `testValue = parts ( 1, 2 )`.
+-}
 nestedAliasInTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedAliasInTuple expectFn _ =
     let
@@ -180,6 +253,9 @@ nestedAliasInTuple expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `deep (( ( a, b ), c ) as whole) = whole` with
+`testValue = deep ( ( 1, "a" ), 2 )`.
+-}
 aliasOnNestedTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnNestedTuple expectFn _ =
     let
@@ -197,10 +273,13 @@ aliasOnNestedTuple expectFn _ =
 
 
 -- ============================================================================
--- RECORD ALIAS (4 tests)
+-- RECORD ALIAS
 -- ============================================================================
 
 
+{-| Returns the cases that alias a record pattern, each of two record
+arguments, and a record pattern with four fields.
+-}
 recordAliasCases : (Src.Module -> Expectation) -> List TestCase
 recordAliasCases expectFn =
     [ { label = "Alias on record pattern", run = aliasOnRecordPattern expectFn }
@@ -209,6 +288,9 @@ recordAliasCases expectFn =
     ]
 
 
+{-| Runs `expectFn` on `withRecord ({ x, y } as point) = ( point, x )` with
+`testValue = withRecord { x = 1, y = "a" }`.
+-}
 aliasOnRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnRecordPattern expectFn _ =
     let
@@ -224,6 +306,9 @@ aliasOnRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `combine ({ a } as r1) ({ b } as r2) = ( r1, r2 )` with
+`testValue = combine { a = 1 } { b = "a" }`.
+-}
 multipleRecordAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleRecordAliases expectFn _ =
     let
@@ -239,6 +324,9 @@ multipleRecordAliases expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `allFields ({ a, b, c, d } as rec) = rec`, called on a
+record with exactly those four fields.
+-}
 aliasOnRecordWithManyFields : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnRecordWithManyFields expectFn _ =
     let
@@ -256,10 +344,14 @@ aliasOnRecordWithManyFields expectFn _ =
 
 
 -- ============================================================================
--- LIST ALIAS (4 tests)
+-- LIST ALIAS
 -- ============================================================================
 
 
+{-| Returns the cases that alias a cons pattern, a fixed-length list pattern,
+the parts of a cons pattern, and a cons pattern whose tail is itself a cons
+pattern.
+-}
 listAliasCases : (Src.Module -> Expectation) -> List TestCase
 listAliasCases expectFn =
     [ { label = "Alias on cons pattern", run = aliasOnConsPattern expectFn }
@@ -269,6 +361,9 @@ listAliasCases expectFn =
     ]
 
 
+{-| Runs `expectFn` on `withList ((h :: t) as list) = ( list, h )` with
+`testValue = withList [ 1, 2 ]`.
+-}
 aliasOnConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnConsPattern expectFn _ =
     let
@@ -284,6 +379,9 @@ aliasOnConsPattern expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `pairList ([ a, b ] as both) = both` with
+`testValue = pairList [ 1, 2 ]`.
+-}
 aliasOnFixedListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnFixedListPattern expectFn _ =
     let
@@ -299,6 +397,9 @@ aliasOnFixedListPattern expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `parts ((h as head) :: (t as tail)) = ( head, tail )`
+with `testValue = parts [ 1, 2 ]`.
+-}
 nestedAliasInList : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedAliasInList expectFn _ =
     let
@@ -314,6 +415,9 @@ nestedAliasInList expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `twoOrMore ((a :: b :: rest) as list) = list` with
+`testValue = twoOrMore [ 1, 2, 3 ]`.
+-}
 aliasOnNestedCons : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnNestedCons expectFn _ =
     let
@@ -331,20 +435,24 @@ aliasOnNestedCons expectFn _ =
 
 
 -- ============================================================================
--- NESTED ALIAS (4 tests)
+-- NESTED ALIAS
 -- ============================================================================
 
 
+{-| Returns the cases that alias an alias, a pair nested in a pair, and a
+pair of a record pattern and an aliased cons pattern.
+-}
 nestedAliasCases : (Src.Module -> Expectation) -> List TestCase
 nestedAliasCases expectFn =
     [ { label = "Multiple levels of alias", run = multipleLevelsOfAlias expectFn }
     , { label = "Alias in deeply nested structure", run = aliasInDeeplyNestedStructure expectFn }
-
-    -- Moved to TypeCheckFails.elm: , { label = "Alias everywhere", run = aliasEverywhere expectFn }
     , { label = "Mixed nested aliases", run = mixedNestedAliases expectFn }
     ]
 
 
+{-| Runs `expectFn` on `levels ((x as inner) as outer) = [ x, inner, outer ]`
+with `testValue = levels 1`.
+-}
 multipleLevelsOfAlias : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleLevelsOfAlias expectFn _ =
     let
@@ -360,6 +468,9 @@ multipleLevelsOfAlias expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `deep ( ( a, b ) as inner, c ) = ( inner, a )` with
+`testValue = deep ( ( 1, "a" ), 2 )`.
+-}
 aliasInDeeplyNestedStructure : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasInDeeplyNestedStructure expectFn _ =
     let
@@ -377,6 +488,9 @@ aliasInDeeplyNestedStructure expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on `mixed (( { x }, (h :: _) as list ) as all) = all` with
+`testValue = mixed ( { x = 1 }, [ 1, 2 ] )`.
+-}
 mixedNestedAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedNestedAliases expectFn _ =
     let
@@ -399,19 +513,23 @@ mixedNestedAliases expectFn _ =
 
 
 -- ============================================================================
--- ALIAS IN FUNCTIONS (4 tests)
+-- ALIAS IN FUNCTIONS
 -- ============================================================================
 
 
+{-| Returns the cases that put an alias in a let-destructuring and in the
+argument of a function defined in a `let`.
+-}
 aliasInFunctionsCases : (Src.Module -> Expectation) -> List TestCase
 aliasInFunctionsCases expectFn =
     [ { label = "Alias in let destruct", run = aliasInLetDestruct expectFn }
     , { label = "Alias used in function body", run = aliasUsedInFunctionBody expectFn }
-
-    -- Moved to TypeCheckFails.elm: , { label = "Multiple alias patterns in recursive function", run = multipleAliasesInRecursiveFunction expectFn }
     ]
 
 
+{-| Runs `expectFn` on a `testValue` that destructures `( 1, 2 )` with
+`(( a, b ) as pair)` in a `let` and returns `pair`.
+-}
 aliasInLetDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasInLetDestruct expectFn _ =
     let
@@ -424,6 +542,10 @@ aliasInLetDestruct expectFn _ =
     expectFn modul
 
 
+{-| Runs `expectFn` on a `testValue` that defines
+`process (x as original) = ( original, x )` in a `let` and returns
+`process 42`.
+-}
 aliasUsedInFunctionBody : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasUsedInFunctionBody expectFn _ =
     let
@@ -440,16 +562,20 @@ aliasUsedInFunctionBody expectFn _ =
 
 
 -- ============================================================================
--- ADDITIONAL ALIAS TESTS (2 tests)
+-- ALIAS IN CASE BRANCHES
 -- ============================================================================
 
 
+{-| Returns the case that puts an alias in a case branch.
+-}
 aliasAdditionalCases : (Src.Module -> Expectation) -> List TestCase
 aliasAdditionalCases expectFn =
     [ { label = "Alias with value", run = aliasWithValue expectFn }
     ]
 
 
+{-| Runs `expectFn` on `testValue = case 42 of x as val -> ( x, val )`.
+-}
 aliasWithValue : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasWithValue expectFn _ =
     let

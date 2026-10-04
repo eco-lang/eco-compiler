@@ -1,16 +1,56 @@
 module TestLogic.Monomorphize.MonoVarGlobalArityConsistency exposing (expectVarGlobalArityConsistency)
 
-{-| Test logic for invariant MONO\_027: MonoVarGlobal type arity matches node arity.
+{-| Checks that the references to a specialization in a monomorphized graph
+agree with the specialization's node about how many parameters it takes.
 
-For every MonoVarGlobal(region, specId, monoType) in the optimized MonoGraph,
-the flattened function arity of monoType must equal the flattened function arity
-of the referenced node's type at graph.nodes[specId].
+A monomorphized program is a graph of nodes indexed by SpecId, one per
+specialization of a top-level definition. An expression refers to one with a
+`MonoVarGlobal`, which carries the SpecId and its own copy of the type. Nothing
+in the graph makes that copy agree with the type stored on the node, so a
+reference can claim fewer or more parameters than the node has, and a call
+through it can supply more arguments than the node takes.
 
-A mismatch indicates that buildCurriedFuncType (or similar) produced a truncated
-function type for a partial application, losing unsupplied parameter stages.
+Monomorphization keeps currying, and global optimization regroups parameters
+into stages, so one function type may be a chain of `MFunction`s, each with its
+own parameter list. The checks here therefore count the _flattened arity_ of a
+type: the parameters of every stage of the chain added together, which is 2 for
+`a -> b -> c` however the two parameters are grouped, and 0 for a type that is
+not a function.
 
-This check runs after GlobalOpt since staging canonicalization (GOPT\_001) may
-adjust node arities.
+`expectVarGlobalArityConsistency` runs a source module through
+`TestLogic.TestPipeline.runToGlobalOpt`, which monomorphizes with the
+substitution engine and then runs the inliner and the global optimizer, and
+checks the optimized graph. Any pipeline failure fails the expectation. Three
+checks are made over the bodies of the define, tail-function and port nodes,
+visiting every subexpression, including closure captures, `let` definitions and
+the branch bodies a `case` holds in its decision tree as well as in its jump
+list:
+
+  - every `MonoVarGlobal` has the same flattened arity as its node's type;
+  - a call whose callee is itself a call, as in `(f a) b`, does not supply more
+    arguments in all, counted across every call in the chain, than the
+    flattened arity of the node of the innermost callee `f` when that is a
+    `MonoVarGlobal`. Two calls that are each within the arity can together
+    exceed it;
+  - a call whose callee is a `MonoVarGlobal` does not supply more arguments
+    than the flattened arity of the node's type.
+    `TestLogic.Generate.MonoFunctionArity` compares the same count with the type
+    the callee expression carries.
+
+The two call checks apply only when the node's flattened arity is above 0. A
+failure lists every mismatch found, one per line, each naming the SpecId of the
+node whose body it was found in.
+
+Among what is not checked:
+
+  - references to a SpecId with no node in the graph (out of range, or an
+    empty slot);
+  - references to constructor, enum, extern and manager-leaf nodes;
+  - calls with fewer arguments than the node takes, which are partial
+    applications;
+  - calls whose innermost callee is not a `MonoVarGlobal`;
+  - the graph before global optimization, and the graph the solver engine
+    produces.
 
 -}
 
@@ -21,7 +61,10 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| MONO\_027: Verify MonoVarGlobal type arity matches referenced node arity.
+{-| Creates an expectation that passes when `srcModule` compiles through global
+optimization and the optimized graph has none of the three kinds of mismatch
+the module docstring lists. On failure it lists every mismatch found, the
+reference checks first, then the call-chain checks, then the direct-call checks.
 -}
 expectVarGlobalArityConsistency : Src.Module -> Expect.Expectation
 expectVarGlobalArityConsistency srcModule =
@@ -56,7 +99,10 @@ expectVarGlobalArityConsistency srcModule =
 -- ============================================================================
 
 
-{-| Collect all VarGlobal arity mismatch issues in the graph.
+{-| Returns a message for every `MonoVarGlobal` in the bodies of `graph`'s nodes
+whose flattened arity differs from that of its node's type, when that node is
+present and accepted by `isArityCheckableNode`. Messages from higher SpecIds
+come first.
 -}
 collectVarGlobalArityIssues : Mono.MonoGraph -> List String
 collectVarGlobalArityIssues ((Mono.MonoGraph data) as graph) =
@@ -74,6 +120,10 @@ collectVarGlobalArityIssues ((Mono.MonoGraph data) as graph) =
         |> Tuple.second
 
 
+{-| Returns the reference-arity messages for the body of `node`, the node at
+`specId`, each prefixed with that SpecId. A node with no body (constructor,
+enum, extern, manager leaf) gives none.
+-}
 checkNode : Mono.MonoGraph -> Int -> Mono.MonoNode -> List String
 checkNode graph specId node =
     let
@@ -97,6 +147,10 @@ checkNode graph specId node =
             []
 
 
+{-| Returns the reference-arity messages for every `MonoVarGlobal` in `expr`, at
+any depth, each prefixed with `ctx`. A call's callee is visited as well as its
+arguments, and a `case`'s decision tree as well as its jump branches.
+-}
 collectExprIssues : Mono.MonoGraph -> String -> Mono.MonoExpr -> List String
 collectExprIssues graph ctx expr =
     case expr of
@@ -149,6 +203,8 @@ collectExprIssues graph ctx expr =
             []
 
 
+{-| Returns the reference-arity messages for the body of a `let` definition.
+-}
 collectDefIssues : Mono.MonoGraph -> String -> Mono.MonoDef -> List String
 collectDefIssues graph ctx def =
     case def of
@@ -159,6 +215,10 @@ collectDefIssues graph ctx def =
             collectExprIssues graph ctx expr
 
 
+{-| Returns the reference-arity messages for the branch bodies a decision tree
+holds inline in its leaves. A `Jump` leaf gives none: its body is in the
+`case`'s jump list.
+-}
 collectDeciderIssues : Mono.MonoGraph -> String -> Mono.Decider Mono.MonoChoice -> List String
 collectDeciderIssues graph ctx decider =
     case decider of
@@ -185,17 +245,18 @@ collectDeciderIssues graph ctx decider =
 -- ============================================================================
 
 
-{-| Check that a MonoVarGlobal's type arity matches the referenced node's arity.
+{-| Returns a message when a reference to `refSpecId` carrying `varType` has a
+different flattened arity from the node at that SpecId, and nothing otherwise.
+A SpecId with no node (out of range or an empty slot), and a node
+`isArityCheckableNode` rejects, give nothing.
 -}
 checkVarGlobalArity : Mono.MonoGraph -> String -> Mono.SpecId -> Mono.MonoType -> List String
 checkVarGlobalArity (Mono.MonoGraph data) ctx refSpecId varType =
     case Array.get refSpecId data.nodes of
         Nothing ->
-            -- Node pruned or not present; other invariants (MONO_011) handle this
             []
 
         Just Nothing ->
-            -- Slot exists but empty (pruned)
             []
 
         Just (Just node) ->
@@ -237,17 +298,19 @@ checkVarGlobalArity (Mono.MonoGraph data) ctx refSpecId varType =
 -- ============================================================================
 
 
-{-| Collect issues where nested MonoCall chains apply more args than a function's
-node type supports.
+{-| Returns a message for every call chain in the bodies of `graph`'s nodes that
+supplies more arguments than the node of its innermost callee takes, when that
+node is present, accepted by `isArityCheckableNode` and of flattened arity
+above 0.
 
-When we see `MonoCall (MonoCall (MonoVarGlobal specId type) innerArgs) outerArgs`,
-the total arguments are `innerArgs ++ outerArgs`. We verify this total does not
-exceed the flattened arity of the referenced node.
-
-This catches the case where buildCurriedFuncType truncates the type but BOTH the
-VarGlobal type and node type agree on the wrong arity — the over-application
-is detectable only by seeing that the call result (a non-function type) is used
-as a callee in another call.
+A call chain is a call whose callee is itself a call, as in `(f a) b`. When
+`f` is a `MonoVarGlobal`, the arguments of every call in the chain are added
+together and compared with the flattened arity of `f`'s node. This finds an
+over-application even when the reference and the node agree on a type with
+too few parameters, where each call alone is within the arity. A chain of
+three or more calls is checked again at each shorter chain inside it, so one
+over-application can be reported more than once. Messages from higher SpecIds
+come first.
 
 -}
 collectCallChainOverApplication : Mono.MonoGraph -> List String
@@ -266,6 +329,9 @@ collectCallChainOverApplication ((Mono.MonoGraph data) as graph) =
         |> Tuple.second
 
 
+{-| Returns the call-chain messages for the body of `node`, each prefixed with
+`ctx`. A node with no body gives none.
+-}
 checkNodeCallChains : Mono.MonoGraph -> String -> Mono.MonoNode -> List String
 checkNodeCallChains graph ctx node =
     case node of
@@ -285,11 +351,13 @@ checkNodeCallChains graph ctx node =
             []
 
 
+{-| Returns the call-chain messages for every call in `expr`, at any depth, each
+prefixed with `ctx`. It visits the same subexpressions as `collectExprIssues`.
+-}
 collectCallChainExprIssues : Mono.MonoGraph -> String -> Mono.MonoExpr -> List String
 collectCallChainExprIssues graph ctx expr =
     case expr of
         Mono.MonoCall _ funcExpr args _ _ ->
-            -- Check if this is a nested call chain
             checkCallChain graph ctx funcExpr (List.length args)
                 ++ collectCallChainExprIssues graph ctx funcExpr
                 ++ List.concatMap (collectCallChainExprIssues graph ctx) args
@@ -336,6 +404,8 @@ collectCallChainExprIssues graph ctx expr =
             []
 
 
+{-| Returns the call-chain messages for the body of a `let` definition.
+-}
 collectCallChainDefIssues : Mono.MonoGraph -> String -> Mono.MonoDef -> List String
 collectCallChainDefIssues graph ctx def =
     case def of
@@ -346,6 +416,9 @@ collectCallChainDefIssues graph ctx def =
             collectCallChainExprIssues graph ctx expr
 
 
+{-| Returns the call-chain messages for the branch bodies a decision tree holds
+inline in its leaves.
+-}
 collectCallChainDeciderIssues : Mono.MonoGraph -> String -> Mono.Decider Mono.MonoChoice -> List String
 collectCallChainDeciderIssues graph ctx decider =
     case decider of
@@ -366,10 +439,14 @@ collectCallChainDeciderIssues graph ctx decider =
                 ++ collectCallChainDeciderIssues graph ctx fallback
 
 
-{-| Check a call expression for over-application through call chains.
+{-| Returns a message when `funcExpr`, the callee of a call with
+`outerArgCount` arguments, is itself a call, possibly nested, whose innermost
+callee is a `MonoVarGlobal`, and the arguments of all the calls exceed the
+flattened arity of that global's node.
 
-Given `MonoCall funcExpr outerArgs`, check if funcExpr is itself a call
-to a known global. If so, sum all args and compare against the node's arity.
+It gives nothing when `funcExpr` is not a call, when the innermost callee is
+not a `MonoVarGlobal`, when the SpecId has no node or `isArityCheckableNode`
+rejects it, or when the node's flattened arity is 0.
 
 -}
 checkCallChain : Mono.MonoGraph -> String -> Mono.MonoExpr -> Int -> List String
@@ -413,7 +490,6 @@ checkCallChain (Mono.MonoGraph data) ctx funcExpr outerArgCount =
                         _ ->
                             []
 
-                -- Recurse deeper for longer chains: call(call(call(f, a), b), c)
                 Mono.MonoCall _ _ _ _ _ ->
                     checkCallChain (Mono.MonoGraph data) ctx innerFuncExpr totalArgs
 
@@ -430,12 +506,12 @@ checkCallChain (Mono.MonoGraph data) ctx funcExpr outerArgCount =
 -- ============================================================================
 
 
-{-| For every MonoCall whose callee is a MonoVarGlobal, verify the arg count
-does not exceed the referenced node's flattened arity.
-
-Unlike the MONO\_012 check which compares against the VarGlobal's carried type
-(which may be truncated), this compares against the actual node type in the graph.
-
+{-| Returns a message for every call in the bodies of `graph`'s nodes whose
+callee is a `MonoVarGlobal` and which supplies more arguments than the
+flattened arity of the referenced node's type, when that node is present,
+accepted by `isArityCheckableNode` and of flattened arity above 0. The count is
+compared with the node's type, not with the type the reference carries.
+Messages from higher SpecIds come first.
 -}
 collectCallArgExceedsNodeArity : Mono.MonoGraph -> List String
 collectCallArgExceedsNodeArity ((Mono.MonoGraph data) as graph) =
@@ -453,6 +529,9 @@ collectCallArgExceedsNodeArity ((Mono.MonoGraph data) as graph) =
         |> Tuple.second
 
 
+{-| Returns the direct-call messages for the body of `node`, each prefixed with
+`ctx`. A node with no body gives none.
+-}
 checkNodeCallArgs : Mono.MonoGraph -> String -> Mono.MonoNode -> List String
 checkNodeCallArgs graph ctx node =
     case node of
@@ -472,6 +551,9 @@ checkNodeCallArgs graph ctx node =
             []
 
 
+{-| Returns the direct-call messages for every call in `expr`, at any depth, each
+prefixed with `ctx`. It visits the same subexpressions as `collectExprIssues`.
+-}
 collectCallArgExprIssues : Mono.MonoGraph -> String -> Mono.MonoExpr -> List String
 collectCallArgExprIssues graph ctx expr =
     case expr of
@@ -528,6 +610,9 @@ collectCallArgExprIssues graph ctx expr =
             []
 
 
+{-| Returns the direct-call messages for the branch bodies a decision tree holds
+inline in its leaves.
+-}
 collectCallArgDeciderIssues : Mono.MonoGraph -> String -> Mono.Decider Mono.MonoChoice -> List String
 collectCallArgDeciderIssues graph ctx decider =
     case decider of
@@ -548,8 +633,10 @@ collectCallArgDeciderIssues graph ctx decider =
                 ++ collectCallArgDeciderIssues graph ctx fallback
 
 
-{-| Check a direct MonoCall: if callee is MonoVarGlobal, compare arg count
-against the actual node's arity (not the VarGlobal's carried type).
+{-| Returns a message when `funcExpr` is a `MonoVarGlobal` whose node is
+present, accepted by `isArityCheckableNode` and of flattened arity above 0, and
+`args` holds more arguments than that arity. The message also gives the
+flattened arity of the type the reference carries.
 -}
 checkDirectCallArgs : Mono.MonoGraph -> String -> Mono.MonoExpr -> List Mono.MonoExpr -> List String
 checkDirectCallArgs (Mono.MonoGraph data) ctx funcExpr args =
@@ -598,9 +685,14 @@ checkDirectCallArgs (Mono.MonoGraph data) ctx funcExpr args =
             []
 
 
-{-| Is this a node kind where VarGlobal type arity comparison is meaningful?
-Constructor, enum, extern, and manager nodes store only the result type,
-not a function type, so arity comparison is not applicable.
+{-| Tells whether references to `node` are checked at all: `False` for
+constructor, enum, extern and manager-leaf nodes, `True` for the rest.
+
+A constructor or enum node stores the type of the value it builds, not a
+function type. An extern or manager-leaf node stores the type it was requested
+at, which can be a function type; references to those nodes nevertheless go
+unchecked.
+
 -}
 isArityCheckableNode : Mono.MonoNode -> Bool
 isArityCheckableNode node =
@@ -621,7 +713,7 @@ isArityCheckableNode node =
             True
 
 
-{-| Human-readable name for a MonoNode variant.
+{-| Returns the name of `node`'s constructor, for failure messages.
 -}
 nodeKindName : Mono.MonoNode -> String
 nodeKindName node =
@@ -651,11 +743,10 @@ nodeKindName node =
             "MonoPortOutgoing"
 
 
-{-| Flatten a curried function type into total parameter count.
-
-For example, `Mono.mFunction [a] (Mono.mFunction [b] c)` has flattened arity 2.
-Non-function types have flattened arity 0.
-
+{-| Returns the flattened arity of `monoType`: the parameter counts of every
+stage of a chain of `MFunction`s added together, or 0 for a type that is not a
+function. A function of one parameter returning a function of one parameter
+gives 2, as does a function of two parameters.
 -}
 getFlattenedArity : Mono.MonoType -> Int
 getFlattenedArity monoType =

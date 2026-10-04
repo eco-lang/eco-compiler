@@ -1,14 +1,45 @@
 module TestLogic.Generate.CodeGen.DestructorTypeProjectionTest exposing (suite)
 
-{-| Test suite for CGEN\_004: Destructor Type Projection invariant.
+{-| These tests look in generated MLIR for a sign that pattern matching read a
+field out of a custom-type value at the wrong type: the field comes out boxed,
+as an `!eco.value`, and that result is then unboxed. The rule this breaks is
+called `CGEN_004` in the test names and failure messages: a field read out of a
+constructor should come out at its own specialised type, so an `Int` field
+should come out as an `i64`.
 
-generateDestruct and generateMonoPath must always use the destructor MonoType
-to determine the path target MLIR type. This ensures destruct paths yield
-their natural type and do not spuriously unbox.
+The pattern looked for is defined in
+`TestLogic.Generate.CodeGen.DestructorTypeProjection`, which calls it a
+_spurious unbox_: an `eco.unbox` to `i64`, `f64` or `i16` whose operand is
+defined by an `eco.project.custom`, the op that reads one field of a
+custom-type value, in the same function.
 
-These focused tests verify that when destructuring ADTs with unboxable fields
-(like Result Int String), the projection yields the primitive type directly
-rather than !eco.value followed by eco.unbox.
+The tests use two kinds of program. One is the standard catalogue of test
+programs that `SourceIR.Suite.StandardTestSuites` runs. The other is three
+small programs built here, each a module named `Test` that declares its own
+`Maybe` or `Result` type (`maybeUnion`, `resultUnion`), an annotated function
+that matches on values of that type and returns an `Int` read out of them, and
+a `testValue : Int` that calls the function on constructors applied to `Int`
+literals. In the program sketches given with each test, `_` is built as a
+variable pattern with that name, not as a wildcard. Each focused test compiles
+its program with `TestLogic.TestPipeline.runToMlir` and fails with a message
+starting `Compilation failed:` when compilation fails.
+
+What the tests establish:
+
+  - `standardTests`: every program in the standard catalogue compiles, and
+    its generated MLIR holds no spurious unbox.
+  - `testResultIntExtraction`: matching `Ok value` on a `Result String Int`
+    generates no spurious unbox.
+  - `testMaybeIntExtraction`: matching `Just value` on a `Maybe Int`
+    generates no spurious unbox.
+  - `testNestedResultExtraction`: a `case` on one `Result String Int` nested
+    in the `Ok` branch of a `case` on another generates no spurious unbox.
+
+Among what is not tested: that the generated MLIR of a focused program holds
+any `eco.project.custom` at all, so a program whose match leaves no projection
+passes; the result type the projection declares; `Float` and `Char` fields,
+since the focused programs read only `Int` fields; and the value `testValue`
+computes, since no program is run.
 
 -}
 
@@ -40,6 +71,8 @@ import TestLogic.Generate.CodeGen.DestructorTypeProjection
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
+{-| The whole suite: `standardTests` and `focusedTests`.
+-}
 suite : Test
 suite =
     Test.describe "CGEN_004: Destructor Type Projection"
@@ -48,11 +81,9 @@ suite =
         ]
 
 
-{-| Run standard test suites to verify no violations in general code.
-
-Note: This may find legitimate projection→unbox sequences that are NOT violations.
-The focused tests below are more precise for testing CGEN\_004 specifically.
-
+{-| The tests that run `expectDestructorTypeProjection` on every program in the
+standard catalogue. A program fails when it does not compile or when its
+generated MLIR holds any spurious unbox.
 -}
 standardTests : Test
 standardTests =
@@ -61,7 +92,8 @@ standardTests =
         ]
 
 
-{-| Focused tests for specific patterns that exercise CGEN\_004.
+{-| The three tests on small programs built here, each requiring that the
+generated MLIR holds no spurious unbox.
 -}
 focusedTests : Test
 focusedTests =
@@ -72,11 +104,8 @@ focusedTests =
         ]
 
 
-
--- Union type definitions
-
-
-{-| Maybe type: type Maybe a = Just a | Nothing
+{-| The declaration `type Maybe a = Just a | Nothing`, which
+`testMaybeIntExtraction`'s program declares for itself.
 -}
 maybeUnion : UnionDef
 maybeUnion =
@@ -89,7 +118,10 @@ maybeUnion =
     }
 
 
-{-| Result type: type Result error ok = Ok ok | Err error
+{-| The declaration `type Result error ok = Ok ok | Err error`, which the
+programs of `testResultIntExtraction` and `testNestedResultExtraction` declare
+for themselves. The error type comes first, so in `Result String Int` the `Ok`
+field is the `Int`.
 -}
 resultUnion : UnionDef
 resultUnion =
@@ -102,14 +134,23 @@ resultUnion =
     }
 
 
-{-| Test extracting Int from Result Int String via Ok pattern.
+{-| The test that reading the `Int` out of `Ok` on a `Result String Int`
+generates no spurious unbox. The test name says `Result Int String`, but the
+program's annotation is `Result String Int`. Written as Elm source, the
+program is:
 
-When we pattern match `Ok x` on `Result Int String`, the projection of
-the Ok's field should yield i64 directly (since Int is unboxable and
-stored unboxed in Ok).
+    getOkValue : Result String Int -> Int
+    getOkValue result =
+        case result of
+            Ok value ->
+                value
 
-Bug symptom: If CGEN\_004 is violated, the projection yields !eco.value
-and requires eco.unbox, resulting in spurious unboxing.
+            Err _ ->
+                0
+
+    testValue : Int
+    testValue =
+        getOkValue (Ok 42)
 
 -}
 testResultIntExtraction : Test
@@ -117,11 +158,6 @@ testResultIntExtraction =
     Test.test "Result Int String Ok extraction yields i64 directly" <|
         \_ ->
             let
-                -- getOkValue : Result String Int -> Int
-                -- getOkValue result =
-                --     case result of
-                --         Ok value -> value
-                --         Err _ -> 0
                 getOkValueDef : TypedDef
                 getOkValueDef =
                     { name = "getOkValue"
@@ -172,10 +208,21 @@ testResultIntExtraction =
                         Expect.pass
 
 
-{-| Test extracting Int from Maybe Int via Just pattern.
+{-| The test that reading the `Int` out of `Just` on a `Maybe Int` generates no
+spurious unbox. Written as Elm source, the program is:
 
-Similar to Result, extracting from `Just x` on `Maybe Int` should yield
-i64 directly.
+    getJustValue : Maybe Int -> Int
+    getJustValue maybe =
+        case maybe of
+            Just value ->
+                value
+
+            Nothing ->
+                0
+
+    testValue : Int
+    testValue =
+        getJustValue (Just 42)
 
 -}
 testMaybeIntExtraction : Test
@@ -183,11 +230,6 @@ testMaybeIntExtraction =
     Test.test "Maybe Int Just extraction yields i64 directly" <|
         \_ ->
             let
-                -- getJustValue : Maybe Int -> Int
-                -- getJustValue maybe =
-                --     case maybe of
-                --         Just value -> value
-                --         Nothing -> 0
                 getJustValueDef : TypedDef
                 getJustValueDef =
                     { name = "getJustValue"
@@ -237,9 +279,28 @@ testMaybeIntExtraction =
                         Expect.pass
 
 
-{-| Test extracting Int from nested Result structures.
+{-| The test that reading the `Int`s out of two `Result String Int` values, with
+the `case` on the second nested in the `Ok` branch of the `case` on the first,
+generates no spurious unbox. Neither `Result` holds another; only the matches
+are nested. Written as Elm source, the program is:
 
-This tests that CGEN\_004 works correctly even with nested polymorphic types.
+    addResults : Result String Int -> Result String Int -> Int
+    addResults r1 r2 =
+        case r1 of
+            Ok a ->
+                case r2 of
+                    Ok b ->
+                        a + b
+
+                    Err _ ->
+                        a
+
+            Err _ ->
+                0
+
+and `testValue : Int` is `(addResults (Ok 21)) (Ok 21)`, which applies
+`addResults` one argument at a time: it calls the partial application
+`addResults (Ok 21)` on the second `Ok 21`.
 
 -}
 testNestedResultExtraction : Test
@@ -247,14 +308,6 @@ testNestedResultExtraction =
     Test.test "Nested Result Int extraction works correctly" <|
         \_ ->
             let
-                -- addResults : Result String Int -> Result String Int -> Int
-                -- addResults r1 r2 =
-                --     case r1 of
-                --         Ok a ->
-                --             case r2 of
-                --                 Ok b -> a + b
-                --                 Err _ -> a
-                --         Err _ -> 0
                 addResultsDef : TypedDef
                 addResultsDef =
                     { name = "addResults"

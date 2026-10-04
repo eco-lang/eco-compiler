@@ -1,22 +1,53 @@
 module TestLogic.Monomorphize.LssInjTotalTest exposing (suite)
 
-{-| INJECTION-TOTALITY COMPLETION — `lss.injTotal`
-(plans/lss-coverage-four-levers.md).
+{-| Lambda-set inference should give a function value a member id at each
+arrow it can be called through. An arrow it leaves unwritten reads back as
+`LVar`, meaning not yet determined (see `Compiler.MonoSolver.Store`), and a
+singleton `LSet`, a set with exactly one member, names a single function value
+for the arrow. These tests check two kinds of position, one holding a later
+stage of a partial application and one holding an accessor passed as an
+argument. Tests 1 and 3 assert that every annotation found at their position
+is a singleton.
 
-Three levers under one flag: L1 completion-join head re-stamp, L2 deep-PAP
-successor completion, L3 the Accessor/bare-VarKernel argument arms. L1's
-sharpest differentials live at E2E scale (the kernel-ABI ⊤ needs kernel-bodied
-defs — see LssGapReturnedClosure/LssGapPapDeepArg flag-on); this suite pins
-the fixture-testable levers.
+A lambda-set annotation (`Mono.LambdaSetAnno`, described in
+`Compiler.AST.Monomorphized`) names the function values that can flow through
+an arrow, as integer member ids. A deep partial application is one that still
+needs more than one argument, such as `add3 10`: calling it with one argument
+gives another partial application, which has an arrow of its own.
 
-These were off-vs-on DIFFERENTIALS whose off arm additionally pinned
-`varSucc`/`varCtorRows` off — those settle passes write the very `/a0/r`
-position the off arm asserted as `LVar`. The settle flags were fixed at their
-defaults and removed 2026-09-18, so the off arm is no longer constructible.
-What the deleted arms pinned: without L2/L3 the deep-PAP `/a0/r` and the
-accessor argument head both zonked to `LVar`, and the beyond-arity arrow of
-an arity-1 def plus `useIt`'s own `/a0` head were arm-identical (the deep
-walk ADDS, never disturbs; LSS\_013 stops it at declaredArity).
+The tests read annotations from the demand types that the specialization
+registry records for a definition, one per row whose global has the given
+name. In a demand type, `/a0` is the head arrow of the definition's first
+parameter, when that parameter is a function, and `/a0/r` is the arrow of that
+parameter's result, when the result is itself a function. A parameter whose
+type takes two arguments at one arrow has no `/a0/r`.
+
+The fixture is one module, `fixture`, run through the solver engine with
+lambda-set specialization on. Its `testValue` adds the results of four calls:
+
+  - `useIt (add3 10) 1`, where `useIt g n = g n n` takes an
+    `Int -> Int -> Int` and `add3` adds three `Int`s;
+  - `useOne ((add3 10) 1) 2`, where `useOne g n = g n` takes an `Int -> Int`;
+  - `useMk mk 3`, where `mk x = add2 x`;
+  - `useF .name mkRec`, where `useF f r = f r` and `mkRec` is the record
+    `{ name = 5 }`.
+
+The tests:
+
+  - Test 1 asserts that at least one `useIt` row has an `/a0/r`, and that every
+    `/a0/r` found is a singleton. That arrow is the second stage of `add3 10`.
+  - Test 2 asserts that the first singleton id found at `useIt`'s `/a0/r`
+    equals the first singleton id found at `useOne`'s `/a0`, and fails if
+    either side has none. Both positions hold `add3` with two arguments
+    supplied, reached once as the second stage of `add3 10` and once built
+    directly as `(add3 10) 1`, so the assertion is that the two routes give
+    that value one member id.
+  - Test 3 asserts that at least one `useF` row has an `/a0`, and that every
+    `/a0` found is a singleton. The argument there is the accessor `.name`.
+
+Among what is not tested: which member the singletons in tests 1 and 3 hold,
+although test 3's name says the accessor's; the `mk` and `useMk` part of the
+fixture, which no test reads; and any position of `useIt` other than `/a0/r`.
 
 -}
 
@@ -42,6 +73,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The three tests on `fixture`, described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "L2 deep-PAP + L3 accessor arm"
@@ -64,9 +97,6 @@ suite =
                         Expect.fail e
         , Test.test "2. L2 PRODUCER CONVERGENCE: deep id == deeper-producer id" <|
             \() ->
-                -- useIt (add3 10): L2 writes p|add3|2 at /a0/r.
-                -- useOne ((add3 10) 1): the producer head-inject writes
-                -- p|add3|2 at /a0. Same integer id = one identity.
                 case runWith fixture of
                     Err e ->
                         Expect.fail e
@@ -116,26 +146,38 @@ suite =
 -- ====== FIXTURE ======
 
 
+{-| The source type `Int`.
+-}
 hInt : Src.Type
 hInt =
     tType "Int" []
 
 
+{-| The source type `Int -> Int -> Int`.
+-}
 int2 : Src.Type
 int2 =
     tLambda hInt (tLambda hInt hInt)
 
 
+{-| The source type `Int -> Int -> Int -> Int`.
+-}
 int3 : Src.Type
 int3 =
     tLambda hInt int2
 
 
+{-| The source record type `{ name : Int }`.
+-}
 rec : Src.Type
 rec =
     tRecord [ ( "name", hInt ) ]
 
 
+{-| The module `Test` that every test compiles, with the definitions the
+module docstring describes, a helper `mkRecHelp` that builds `mkRec`'s record,
+and the `testValue` that makes them reachable.
+-}
 fixture : Src.Module
 fixture =
     makeModuleWithTypedDefs "Test"
@@ -202,6 +244,11 @@ fixture =
 -- ====== HARNESS ======
 
 
+{-| Compiles `srcModule` through monomorphization on the solver engine, with
+the default specialization limits and the default lambda-set configuration
+with `enabled` set, and returns the graph or the pipeline's error message.
+`enabled` is already `True` in `Config.defaultLss`.
+-}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
     let
@@ -217,6 +264,10 @@ runWith srcModule =
 -- ====== READERS ======
 
 
+{-| Returns the demand type of every specialization registry row whose global
+is a definition named `target`, in any module. Accessor rows and removed rows
+are skipped.
+-}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
     Array.foldl
@@ -236,6 +287,10 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns the `/a0` annotation, the head arrow of the first parameter, from
+each demand type of `target` whose first parameter is a function. Other rows
+contribute nothing.
+-}
 a0Annos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 a0Annos target graph =
     List.filterMap
@@ -250,6 +305,10 @@ a0Annos target graph =
         (demandsOf target graph)
 
 
+{-| Returns the `/a0/r` annotation, the arrow of the first parameter's result,
+from each demand type of `target` whose first parameter is a function
+returning a function. Other rows contribute nothing.
+-}
 a0rAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 a0rAnnos target graph =
     List.filterMap
@@ -264,6 +323,9 @@ a0rAnnos target graph =
         (demandsOf target graph)
 
 
+{-| Returns the member id of each annotation that is an `LSet` with exactly one
+member, dropping the rest.
+-}
 singletonIds : List Mono.LambdaSetAnno -> List Int
 singletonIds =
     List.filterMap
@@ -277,6 +339,8 @@ singletonIds =
         )
 
 
+{-| Returns whether an annotation is an `LVar`. No test uses it.
+-}
 isVar : Mono.LambdaSetAnno -> Bool
 isVar a =
     case a of
@@ -287,6 +351,9 @@ isVar a =
             False
 
 
+{-| Returns whether an annotation is an `LSet` with exactly one member. An
+`LPartial` with one member is not a singleton.
+-}
 isSingleton : Mono.LambdaSetAnno -> Bool
 isSingleton a =
     case a of
@@ -297,6 +364,10 @@ isSingleton a =
             False
 
 
+{-| Returns the number of members of an `LSet`, and a negative code for the
+other annotations: -1 for `LVar`, -2 for `LTop` and -3 for `LPartial`,
+whatever its members. No test uses it.
+-}
 annoSize : Mono.LambdaSetAnno -> Int
 annoSize a =
     case a of
@@ -313,6 +384,10 @@ annoSize a =
             -3
 
 
+{-| Renders a list of annotations for a failure message, each as its
+constructor name with, for `LVar`, its number and, for `LSet` and `LPartial`,
+its member count.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe annos =
     "["

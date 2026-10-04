@@ -1,6 +1,22 @@
 module Compiler.Elm.Interface.List exposing (listInterface)
 
-{-| Interface for elm/core List module functions used in tests.
+{-| `TestLogic.TestPipeline` canonicalizes test programs against the hand-built
+module interfaces in `Compiler.Elm.Interface.Basic.testIfaces` rather than
+against a compiled elm/core, and this module supplies the one for `List`, which
+`testIfaces` holds under the module name `List`.
+
+An interface is what a module offers its importers: the type of each exported
+value, its union types and aliases, and its infix operators. This one belongs to
+the package elm/core. It declares one operator, `::`, which stands for the value
+`cons`, associates to the right and has precedence 5. Its values are `cons`,
+`map`, `map2`, `foldr`, `foldl`, `filter`, `any`, `all`, `reverse`, `range`,
+`length`, `concat` and `drop`, each polymorphic in every type variable its type
+mentions.
+
+Among what this interface does not contain: any other `List` function, any
+union type or alias, and so the `List` type itself, which the annotations refer
+to by name in the module `List` of elm/core without declaring it.
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -18,7 +34,9 @@ import Dict exposing (Dict)
 -- ============================================================================
 
 
-{-| The List module interface containing list functions.
+{-| The interface of elm/core's `List` module as test programs see it: the
+values of `listValues`, the `::` operator of `listBinops`, and no unions or
+aliases.
 -}
 listInterface : I.Interface
 listInterface =
@@ -31,7 +49,9 @@ listInterface =
         }
 
 
-{-| List binary operators - specifically the :: (cons) operator.
+{-| The operator table of the mock `List` interface, holding only `::`. It
+stands for the value `cons`, has type `a -> List a -> List a` quantified over
+`a`, associates to the right and has precedence 5.
 -}
 listBinops : Dict Name I.Binop
 listBinops =
@@ -59,7 +79,12 @@ listBinops =
         ]
 
 
-{-| Collect all free type variables from a canonical type.
+{-| Returns the set of every type variable named in `tipe`, including a
+record's extension variable.
+
+For an alias, the result also includes every variable named in the alias's
+argument types and in its body, whether the body is `Holey` or `Filled`.
+
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
@@ -109,19 +134,20 @@ collectFreeVars tipe =
                     Dict.union argVars (collectFreeVars t)
 
 
-{-| Helper to create a value annotation.
+{-| Returns an annotation for `tipe` that is polymorphic in every type
+variable `tipe` names.
 -}
 mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
 
-{-| List function values.
+{-| The values of the mock `List` interface, each mapped to its type
+annotation.
 -}
 listValues : Dict Name (Can.Annotation Name)
 listValues =
     let
-        -- Type variables
         aVar =
             Can.TVar "a"
 
@@ -131,7 +157,6 @@ listValues =
         cVar =
             Can.TVar "c"
 
-        -- Common types
         intType =
             Can.TType ModuleName.basics "Int" []
 
@@ -152,10 +177,10 @@ listValues =
         mapType =
             Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda listA listB)
 
-        -- map2 : (a -> b -> c) -> List a -> List b -> List c
         listC =
             Can.TType ModuleName.list "List" [ cVar ]
 
+        -- map2 : (a -> b -> c) -> List a -> List b -> List c
         map2Type =
             Can.tLambda
                 (Can.tLambda aVar (Can.tLambda bVar cVar))
@@ -177,10 +202,10 @@ listValues =
         reverseType =
             Can.tLambda listA listA
 
-        -- range : Int -> Int -> List Int
         listInt =
             Can.TType ModuleName.list "List" [ intType ]
 
+        -- range : Int -> Int -> List Int
         rangeType =
             Can.tLambda intType (Can.tLambda intType listInt)
 
@@ -196,10 +221,10 @@ listValues =
         dropType =
             Can.tLambda intType (Can.tLambda listA listA)
 
-        -- filter : (a -> Bool) -> List a -> List a
         boolType =
             Can.TType ModuleName.basics "Bool" []
 
+        -- filter : (a -> Bool) -> List a -> List a
         filterType =
             Can.tLambda (Can.tLambda aVar boolType) (Can.tLambda listA listA)
 

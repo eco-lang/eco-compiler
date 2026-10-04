@@ -1,23 +1,62 @@
 module TestLogic.Monomorphize.LssGroundingTest exposing (suite)
 
-{-| LSS\_019 — standalone-member grounding (GAP-1,
-`plans/lss-fidelity-2-standalone-member-grounding.md`).
+{-| Tests for grounding, the step of the solver engine that gives a global used
+as a function value one lambda-set member per layout it is used at.
 
-Two layers:
+A lambda set is the annotation on a function type naming the function values
+that can flow through it, its members, each numbered by an interned member id
+(`Compiler.MonoSolver.Engine` owns the numbering). A slot is the member list of
+one arrow's set. An arrow's layout is its type with the lambda-set annotations
+in it disregarded, so two arrows that differ only in their sets share a layout.
 
-1.  PURE tests against `Engine.groundSetMembers` — the zonk-time rewrite
-    itself: provisional→ground at a concrete arrow, deferral at a residual
-    arrow, idempotence (ground ids pass through untouched — the LSS\_010
-    stability property), per-arrow-layout distinctness (the LSS\_013 spine
-    reading: a PAP stage's identity is (global × stage layout)), dedup of
-    {provisional, its-own-ground}, and the no-growth property that makes
-    rewrite-before-cap safe (plan §3.2 detail 3).
-2.  PIPELINE tests through the real solver — the flag wiring end to end: a
-    polymorphic global flowing at TWO layouts into two HOFs mints, flag-on,
-    one GROUND member per layout (observable in `MonoGraph.lssMemberOrigins`
-    via the `g|<global>|<typeKey>` interns, each `SourceGlobal`-resolvable
-    through `buildMemberOrigins` with zero consumer changes), while flag-off
-    keeps exactly today's one family id.
+A top-level global or constructor used as a function value, other than a global
+that aliases a kernel function, is first given a provisional member, whose key
+names only the global, recorded in the member table's `provisionalStandalone`.
+When a set is read back at an arrow whose parameter and result types contain no
+type variable, `Engine.groundSetMembers` replaces each provisional member with
+a ground member keyed by the global and that arrow's layout, so one polymorphic
+global used at two types becomes two members. At an arrow whose type still
+holds a type variable it keeps the provisional id; this is called deferral.
+The solver applies the set-size cap to the grounded list, so grounding must
+never make a slot longer. These tests pin those rules directly, and count the
+member entries the solver pipeline records for one polymorphic global.
+
+The pure tests call `Engine.groundSetMembers` directly. Their member table
+starts empty with the next id at 100, and `mintProvisional` registers
+provisional members for the globals `fnA` and `fnB` of module `M`. The pipeline
+test runs the solver engine on `twoLayoutModule`, in which one polymorphic
+function is passed to an `Int -> Int` consumer and to a `Float -> Float` one.
+
+What the tests establish:
+
+  - Grounding one provisional member at `Int -> Int` gives exactly the next id
+    from the supply, counts one grounded and none deferred, advances the supply
+    by one, records the new id as `SourceGlobal fnA` and not as provisional, and
+    drops the provisional id.
+  - At an arrow whose parameter is a number type variable the member list is
+    unchanged, one member is counted deferred, and no id or key is added.
+  - Grounding the result of a grounding again at the same arrow returns the same
+    members, counts nothing and leaves the supply where it was.
+  - One provisional member grounded at `Int -> Int` and then at
+    `Int -> (Int -> Int)` gives two different ids, both recorded as
+    `SourceGlobal fnA`.
+  - A slot holding a provisional member and its own ground member comes back as
+    the ground member alone, with one grounded and no new id.
+  - A slot holding the non-provisional id 7 and the provisional members of
+    `fnA` and `fnB` comes back with three members, two grounded, 7 still
+    present, in ascending order.
+  - A slot with no provisional member is returned unchanged, with nothing
+    counted and the supply unchanged.
+  - The pipeline test requires at least three entries of the graph's
+    `lssMemberOrigins` to name a global called `myId`. The threshold is meant
+    as the provisional member plus one ground member per layout, but the test
+    does not tell the entries apart.
+
+Among what is not tested: constructor members, deferral when only the result
+type holds a type variable, the set-size cap itself, whether the pipeline's
+two ground members are distinct or appear in any annotation, and whether the
+`myId` entries come from grounding a reference or from the fold of `myId`'s own
+root lambda, which interns keys of the same shape.
 
 -}
 
@@ -48,6 +87,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The grounding tests: seven pure tests of `Engine.groundSetMembers` and one
+pipeline test through the solver engine.
+-}
 suite : Test
 suite =
     Test.describe "LSS_019 standalone-member grounding"
@@ -67,8 +109,8 @@ suite =
                         , \_ -> Expect.equal (n1 + 1) r.nextId
                         , \_ -> Expect.equal (Just (Engine.SourceGlobal gA)) (Dict.get n1 r.table.sources)
                         , \_ ->
-                            -- Ground ids are NEVER provisional — that is what
-                            -- makes grounding idempotent.
+                            -- A ground id is not provisional, so grounding it
+                            -- again passes it through.
                             Expect.equal Nothing (Dict.get n1 r.table.provisionalStandalone)
                         , \_ ->
                             if List.member midA r.members then
@@ -121,8 +163,7 @@ suite =
                         ( midA, ( t1, n1 ) ) =
                             mintProvisional "g|author/pkg.M.fnA" gA base
 
-                        -- add : Int -> Int -> Int. Inner (depth-2) arrow:
-                        -- Int -> Int; head arrow: Int -> (Int -> Int).
+                        -- The inner and head arrows of an `Int -> Int -> Int` function.
                         rInner =
                             Engine.groundSetMembers Mono.MInt Mono.MInt [ midA ] t1 n1
 
@@ -162,8 +203,7 @@ suite =
                                 _ ->
                                     -1
 
-                        -- midA < gid (fresh ids come from a later supply), so
-                        -- the input list is ascending as LSS_001 requires.
+                        -- midA < gid, so this input is ascending, as a stored set is.
                         r2 =
                             Engine.groundSetMembers Mono.MInt Mono.MInt [ midA, gid ] r1.table r1.nextId
                     in
@@ -190,9 +230,8 @@ suite =
                     in
                     Expect.all
                         [ \_ ->
-                            -- Per-slot size never grows from grounding alone
-                            -- (§3.2 detail 3: rewrite-then-cap never regresses
-                            -- the cap semantics).
+                            -- The cap is applied after grounding, so the count
+                            -- must not grow.
                             Expect.equal 3 (List.length r.members)
                         , \_ -> Expect.equal 2 r.grounded
                         , \_ ->
@@ -225,11 +264,8 @@ suite =
                             Expect.fail msg
 
                         Ok facts ->
-                            -- myId flows at TWO layouts (Int -> Int and
-                            -- Float -> Float): the provisional family id plus
-                            -- one ground id per layout = 3 interned ids, every
-                            -- one resolving to myId through the UNCHANGED
-                            -- buildMemberOrigins prefix dispatch.
+                            -- Meant as the provisional id plus one ground id per
+                            -- layout; the count does not tell them apart.
                             if facts.myIdOrigins >= 3 then
                                 Expect.pass
 
@@ -246,29 +282,44 @@ suite =
 -- ====== PURE FIXTURES ======
 
 
+{-| The module `M` of package `author/pkg`, home of the fixture globals.
+-}
 homeM : ModuleName.Canonical
 homeM =
     ModuleName.Canonical ( "author", "pkg" ) "M"
 
 
+{-| The global `M.fnA`, whose provisional member most pure tests ground.
+-}
 gA : TOpt.Global
 gA =
     TOpt.Global homeM "fnA"
 
 
+{-| The global `M.fnB`, whose provisional member is the second one in the
+no-growth test.
+-}
 gB : TOpt.Global
 gB =
     TOpt.Global homeM "fnB"
 
 
+{-| The starting member table and id supply: an empty table, with 100 as the
+next id to mint.
+-}
 base : ( Engine.LssMemberTable, Int )
 base =
     ( Engine.emptyMemberTable, 100 )
 
 
-{-| Test mirror of `Engine.standaloneMemberIdFor`'s table writes (that
-function is `Step`-shaped; the pure rewrite is what is under test here):
-intern the key, record `SourceGlobal` and the PROVISIONAL marker.
+{-| Mints a provisional member for global `g` under `key`, returning its id and
+the updated table and supply.
+
+It makes the same table writes as `Engine.standaloneMemberIdFor`, which needs
+the engine's full state: it interns `key`, records the id as `SourceGlobal g`,
+and marks it provisional. Unlike that function, it writes both entries even
+when the id already has a source, which that function leaves untouched.
+
 -}
 mintProvisional : String -> TOpt.Global -> ( Engine.LssMemberTable, Int ) -> ( Int, ( Engine.LssMemberTable, Int ) )
 mintProvisional key g ( table0, next0 ) =
@@ -289,11 +340,23 @@ mintProvisional key g ( table0, next0 ) =
 -- ====== PIPELINE HARNESS ======
 
 
+{-| What the pipeline test reads from the monomorphized graph.
+
+`myIdOrigins` counts the entries of `lssMemberOrigins` that resolve to a
+global called `myId`, in whatever module.
+
+-}
 type alias Facts =
     { myIdOrigins : Int
     }
 
 
+{-| The facts of `twoLayoutModule` after the solver engine has monomorphized
+it with the default limits and lambda-set settings, or the pipeline's error.
+
+Setting `enabled = True` changes nothing, because it is already the default.
+
+-}
 run : Result String Facts
 run =
     let
@@ -302,15 +365,13 @@ run =
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        -- The isolation pins (`sigFlow`/`rootFold` off, and the
-        -- `groundStandalones` arm itself) went with their flags on
-        -- 2026-09-18; this now measures the shipping pipeline. The deleted
-        -- flag-off arm pinned "exactly one family id per standalone global".
         { defaults | enabled = True }
         twoLayoutModule
         |> Result.map factsOf
 
 
+{-| Returns the facts of a monomorphized graph.
+-}
 factsOf : Mono.MonoGraph -> Facts
 factsOf (Mono.MonoGraph g) =
     { myIdOrigins =
@@ -336,16 +397,17 @@ factsOf (Mono.MonoGraph g) =
 -- ====== FIXTURE ======
 
 
-{-| ONE polymorphic global (`myId : a -> a`) flowing at TWO layouts
-(`Int -> Int`, `Float -> Float`) into two HOFs. Flag-off both flows carry
-the single family id `g|myId`; flag-on each HOF's param arrow zonk grounds
-it against that arrow's own layout — two DISTINCT ground ids.
+{-| A module in which one polymorphic function, `myId : a -> a`, is used at two
+layouts: passed to `applyI` at `Int -> Int` and to `applyF` at
+`Float -> Float`, both from `testValue`.
 -}
 twoLayoutModule : Src.Module
 twoLayoutModule =
     makeModuleWithTypedDefs "Test" [ myIdDef, applyIDef, applyFDef, testValueDef ]
 
 
+{-| The identity function `myId : a -> a`.
+-}
 myIdDef : TypedDef
 myIdDef =
     { name = "myId"
@@ -355,6 +417,8 @@ myIdDef =
     }
 
 
+{-| `applyI : (Int -> Int) -> Int`, which applies its argument to 1.
+-}
 applyIDef : TypedDef
 applyIDef =
     { name = "applyI"
@@ -364,6 +428,8 @@ applyIDef =
     }
 
 
+{-| `applyF : (Float -> Float) -> Float`, which applies its argument to 1.5.
+-}
 applyFDef : TypedDef
 applyFDef =
     { name = "applyF"
@@ -373,6 +439,9 @@ applyFDef =
     }
 
 
+{-| `testValue : Int`, defined as `applyI myId + round (applyF myId)`, the
+value the test pipeline's `main` refers to.
+-}
 testValueDef : TypedDef
 testValueDef =
     { name = "testValue"

@@ -3,53 +3,44 @@ module Compiler.Type.UnionFind exposing
     , freshS, reprS, getS, setS, modifyS, unionS, equivalentS, redundantQ
     )
 
-{-| Union-Find data structure for efficient type unification.
+{-| Type inference decides which type variables must be equal, and this module
+keeps track of those decisions: it is the union-find structure over the points
+of the type checker's store.
 
-This module implements a union-find (disjoint-set) data structure optimized for type
-inference. It allows efficient tracking of type variable equivalences and supports
-path compression for fast lookups. The implementation uses mutable references (IORef)
-to achieve efficient updates while maintaining a pure interface through the IO monad.
+A _point_ is a type variable, as `Compiler.Type.Vars` describes, and the points
+found to be equal form one _class_. Each class has one _root_, whose cell
+carries the class's descriptor and its _weight_, the number of points in the
+class. Every other point's cell is a link towards the root. Asking for a
+point's descriptor therefore means following links to the root, and the
+descriptor read or written is always the one shared by the whole class.
 
-Union-find is critical for type inference performance, allowing near-constant-time
-operations for unifying type variables and checking equivalence.
+Two techniques keep the links short. Joining two classes puts the root of the
+lighter class under the root of the heavier one, so this is union by weight;
+it is unrelated to the rank held in a descriptor. And finding a root rewrites
+each cell passed on the way to point further along, which is _path
+compression_. Compression is a write even when the caller only wanted to read,
+but it never changes a root, a descriptor or a weight, so a caller cannot see
+it.
+
+The store is an `Eco.CellStore`, used under that module's linearity contract:
+after a write, only the state the write returned may be used. On the native
+build the store is changed in place, so an older state does not keep the older
+cells, and a caller cannot undo a unification by going back to the state from
+before it. A caller that needs to undo one brackets it with
+`Compiler.MonoSolver.Engine.markStore` and `rollbackStore`.
+
+Each operation comes in two forms with the same behaviour. The plain forms are
+`IO` actions. The `S` forms take the state as an ordinary argument, which spares
+a caller the closures an `IO` action costs, and return the result before the
+state, `( result, State )`, the reverse of an `IO` action; `setS`, `modifyS`
+and `unionS` return the state alone, and `redundantQ` returns a bare `Bool`.
+The plain forms are wrappers over the `S` forms.
 
 
 # Operations
 
 @docs fresh, repr, get, set, modify, union, equivalent, redundant
 @docs freshS, reprS, getS, setS, modifyS, unionS, equivalentS, redundantQ
-
-
-**THE STORE IS MUTATED IN PLACE (2026-09-19).** `IO.State.ioRefsPoint` is an
-`Eco.CellStore`, an off-heap mutable vector, not a persistent `Array`. Every
-function here threads the state linearly, which is what makes that sound, and
-the rule for anything added here is the same one the store's own docs state:
-after a write, use ONLY the state the write returned. A read through an older
-state observes the NEW cells.
-
-Two consequences specific to this module. Path compression now persists
-wherever it runs, including inside a read whose returned state a caller drops;
-that is invisible (same roots, same descriptors, same weights) and is why
-those callers needed no change. And a caller that SPECULATES — unifies, then
-abandons the attempt on failure — can no longer recover by keeping the older
-state value: it must bracket the attempt with `Engine.markStore` and
-`Engine.rollbackStore`. There are exactly three such callers
-(`Store.unifyBestEffort`, `Translate.unifyStepBestEffort`,
-`Translate.classifyRef`) and they are all bracketed.
-
--}
-
-{- This is based on the following implementations:
-
-     - https://hackage.haskell.org/package/union-find-0.2/docs/src/Data-UnionFind-IO.html
-     - http://yann.regis-gianas.org/public/mini/code_UnionFind.html
-
-   It seems like the OCaml one came first, but I am not sure.
-
-   Compared to the Haskell implementation, the major changes here include:
-
-     1. No more reallocating PointInfo when changing the weight
-     2. Using the strict modifyIORef
 
 -}
 
@@ -60,11 +51,11 @@ import Utils.Crash exposing (crash)
 
 
 
--- ====== HELPERS ======
+-- IO ACTIONS
 
 
-{-| Create a fresh union-find point containing the given descriptor.
-This initializes a new singleton set with weight 1.
+{-| Returns an action that makes a new point in a class of its own, whose
+descriptor is `value`.
 -}
 fresh : Vars.Descriptor -> IO Vars.Point
 fresh value s =
@@ -75,6 +66,9 @@ fresh value s =
     ( s1, point )
 
 
+{-| Returns an action that finds the root of `point`'s class, compressing the
+path to it.
+-}
 repr : Vars.Point -> IO Vars.Point
 repr point s =
     let
@@ -84,7 +78,7 @@ repr point s =
     ( s1, root )
 
 
-{-| Get the descriptor stored in a union-find point.
+{-| Returns an action that reads the descriptor of `point`'s class.
 -}
 get : Vars.Point -> IO Descriptor
 get point s =
@@ -95,32 +89,35 @@ get point s =
     ( s1, desc )
 
 
-{-| Set the descriptor stored in a union-find point.
+{-| Returns an action that replaces the descriptor of `point`'s class with
+`newDesc`.
 -}
 set : Vars.Point -> Descriptor -> IO ()
 set point newDesc s =
     ( setS point newDesc s, () )
 
 
-{-| Modify the descriptor stored in a union-find point using a transformation function.
-Follows links to modify the representative element's descriptor in place.
+{-| Returns an action that applies `func` to the descriptor of `point`'s class.
 -}
 modify : Vars.Point -> (Descriptor -> Descriptor) -> IO ()
 modify point func s =
     ( modifyS point func s, () )
 
 
-{-| Unite two union-find points into the same equivalence class with a new descriptor.
-Uses weighted union to keep the tree balanced - the lighter tree becomes a child of the heavier tree.
-If the points are already equivalent, just updates the descriptor.
+{-| Returns an action that joins the classes of `p1` and `p2` into one whose
+descriptor is `newDesc`.
+
+The root of the lighter class goes under the root of the heavier, and on equal
+weights `p2`'s root goes under `p1`'s. If the two points are already in one
+class, only the descriptor is replaced and the weight is kept.
+
 -}
 union : Vars.Point -> Vars.Point -> Vars.Descriptor -> IO ()
 union p1 p2 newDesc s =
     ( unionS p1 p2 newDesc s, () )
 
 
-{-| Check if two union-find points are in the same equivalence class.
-Returns True if they share the same representative element.
+{-| Returns an action that tells whether `p1` and `p2` are in the same class.
 -}
 equivalent : Vars.Point -> Vars.Point -> IO Bool
 equivalent p1 p2 s =
@@ -131,8 +128,8 @@ equivalent p1 p2 s =
     ( s1, eq )
 
 
-{-| Check if a union-find point is redundant (i.e., it is a link to another point).
-Returns True if the point has been merged into another equivalence class.
+{-| Returns an action that tells whether `point` is not the root of its class.
+It changes nothing.
 -}
 redundant : Vars.Point -> IO Bool
 redundant point s =
@@ -140,28 +137,11 @@ redundant point s =
 
 
 
--- ====== DIRECT STATE-PASSING CORE (plans/io-monad-dispatch-reduction.md P1) ======
---
--- The union-find primitives are the compiler's hottest code: a caller-side
--- dispatch census of a self-compile put `System.TypeCheck.IO`'s andThen/map at
--- 55.3 % of ALL generic dispatch (1.41e9 of 2.56e9), and the hot `andThen`
--- specializations were called from exactly these functions. The reason is
--- visible above: `IORef.readPointCell` returns the state UNCHANGED — it is an
--- array index — yet wrapping it in `IO` cost a closure for the action, a closure
--- for the `andThen`, a continuation closure, a result tuple and two indirect
--- calls PER READ.
---
--- So the bodies below thread `State` as an ordinary parameter. `( a, State )`
--- results follow the convention already used by `MonoSolver.Store.freshVarS` and
--- friends, and Eco gives such a return a `$sret` twin (two SSA values, no heap
--- tuple). `redundantQ` needs no state result at all: it is a pure query.
---
--- Behaviour is preserved EXACTLY, path compression included — these are the same
--- reads and writes in the same order, with the monad removed. The `IO`-shaped
--- exports above are thin wrappers, so no caller had to change.
+-- STATE-PASSING FORMS
 
 
-{-| Allocate a fresh point. Writes (pushes a cell).
+{-| Returns a new point in a class of its own, with weight 1 and descriptor
+`value`, together with the new state.
 -}
 freshS : Vars.Descriptor -> IO.State -> ( Vars.Point, IO.State )
 freshS value s =
@@ -172,8 +152,11 @@ freshS value s =
     ( Vars.Pt ref, s1 )
 
 
-{-| Find the representative, compressing the path behind it (so this WRITES;
-it is not a pure query).
+{-| Returns the root of `point`'s class, together with the new state.
+
+Every point passed on the way is rewritten to link to the root, so the
+returned state may differ from `s` even though no class changes.
+
 -}
 reprS : IO.State -> Vars.Point -> ( Vars.Point, IO.State )
 reprS s ((Vars.Pt ref) as point) =
@@ -193,9 +176,11 @@ reprS s ((Vars.Pt ref) as point) =
                 ( point2, s1 )
 
 
-{-| Read a descriptor. Pure for a root or a one-link chain — the overwhelmingly
-common case — and only falls through to `reprS` (which compresses, and so
-writes) for a chain two or more deep.
+{-| Returns the descriptor of `point`'s class, together with the new state.
+
+When `point` is the root or links straight to it, the state is returned
+unchanged. Only a longer path is found with `reprS`, which compresses it.
+
 -}
 getS : IO.State -> Vars.Point -> ( Descriptor, IO.State )
 getS s ((Vars.Pt ref) as point) =
@@ -216,6 +201,10 @@ getS s ((Vars.Pt ref) as point) =
                     getS s1 newPoint
 
 
+{-| Returns the state with the descriptor of `point`'s class replaced by
+`newDesc`. The class's weight is kept, and a path longer than one link is
+compressed as in `reprS`.
+-}
 setS : Vars.Point -> Descriptor -> IO.State -> IO.State
 setS ((Vars.Pt ref) as point) newDesc s =
     case IORef.readPointCellS s ref of
@@ -235,6 +224,10 @@ setS ((Vars.Pt ref) as point) newDesc s =
                     setS newPoint newDesc s1
 
 
+{-| Returns the state with `func` applied to the descriptor of `point`'s class.
+The class's weight is kept, and a path longer than one link is compressed as in
+`reprS`.
+-}
 modifyS : Vars.Point -> (Descriptor -> Descriptor) -> IO.State -> IO.State
 modifyS ((Vars.Pt ref) as point) func s =
     case IORef.readPointCellS s ref of
@@ -254,6 +247,15 @@ modifyS ((Vars.Pt ref) as point) func s =
                     modifyS newPoint func s1
 
 
+{-| Returns the state with the classes of `p1` and `p2` joined into one whose
+descriptor is `newDesc`.
+
+The root of the lighter class goes under the root of the heavier and the
+survivor carries the summed weight; on equal weights `p2`'s root goes under
+`p1`'s. If the two points are already in one class, only the descriptor is
+replaced and the weight is kept.
+
+-}
 unionS : Vars.Point -> Vars.Point -> Vars.Descriptor -> IO.State -> IO.State
 unionS p1 p2 newDesc s =
     let
@@ -266,10 +268,8 @@ unionS p1 p2 newDesc s =
     case ( IORef.readPointCellS s2 ref1, IORef.readPointCellS s2 ref2 ) of
         ( Vars.Root weight1 _, Vars.Root weight2 _ ) ->
             if point1 == point2 then
-                -- Descriptor-only update. The whole cell is rewritten now, so it
-                -- must carry the EXISTING weight: writing newWeight here would
-                -- double a self-union's weight and change the union-by-weight
-                -- tree shape.
+                -- The whole cell is rewritten, so it must carry the existing
+                -- weight, not the sum, which would double it.
                 IORef.writePointCellS ref1 (Vars.Root weight1 newDesc) s2
 
             else
@@ -292,6 +292,9 @@ unionS p1 p2 newDesc s =
             crash "Unexpected pattern"
 
 
+{-| Returns whether `p1` and `p2` have the same root, together with the new
+state, in which both paths are compressed.
+-}
 equivalentS : IO.State -> Vars.Point -> Vars.Point -> ( Bool, IO.State )
 equivalentS s p1 p2 =
     let
@@ -304,8 +307,8 @@ equivalentS s p1 p2 =
     ( v1 == v2, s2 )
 
 
-{-| A genuine query: reads one cell and changes nothing, so it takes no state
-result at all.
+{-| Returns whether `point` is not the root of its class. It reads one cell and
+changes nothing, so no state is returned.
 -}
 redundantQ : IO.State -> Vars.Point -> Bool
 redundantQ s (Vars.Pt ref) =

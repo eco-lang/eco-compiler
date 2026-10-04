@@ -1,11 +1,13 @@
 module Utils.Crash exposing (crash)
 
-{-| Provides a crash function for unrecoverable errors in the compiler.
-Delegates to Eco.Crash which has platform-specific implementations
-(XHR variant and kernel variant).
+{-| Gives the compiler a single name for aborting on a state it cannot recover
+from, whichever build it is compiled in.
 
-
-# Crash Function
+There are two modules named `Eco.Crash`: one for the build that runs on stock
+Elm and one for the native kernel build. The source directories of the build
+decide which is compiled, and `Eco.Crash` describes why a build that uses the
+stock-Elm one cannot be optimized. This module adds nothing of its own; `crash`
+forwards to `Eco.Crash.crash`.
 
 @docs crash
 
@@ -14,8 +16,9 @@ Delegates to Eco.Crash which has platform-specific implementations
 import Eco.Crash
 
 
-{-| Crash the program with the given error message. Never returns.
-This function has a polymorphic return type, allowing it to be used anywhere a value is expected.
+{-| Aborts the program with `str` as the error message, by way of
+`Eco.Crash.crash`. It does not return, which is why its result can stand in for
+a value of any type.
 -}
 crash : String -> a
 crash str =

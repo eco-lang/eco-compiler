@@ -1,59 +1,53 @@
 module TestLogic.Monomorphize.LssFlowEdgeLossTest exposing (suite)
 
-{-| FLOW EDGE LOSS — the pinned examples for the flow-repair arc
-(plans/lss-var-chain-roots.md §9), settled by MEASUREMENT (three scratch
-probes, 2026-09-01), not by the design narrative — which the probes partly
-falsified, recorded here honestly.
+{-| Checks that when a curried function is passed by bare reference to a
+higher-order function, lambda-set specialization leaves known members on the
+inner arrow of its type where it is consumed, and no set variable there where
+it is defined.
 
-ONE consumer, two producers. The measurements below were taken with every
-settle repair OFF — what INFERENCE alone delivers. The settle flags were
-fixed at their defaults and removed 2026-09-18, so that arm can no longer be
-built in-tree: tests 1 and 2 went with it and their findings are recorded
-here instead. Test 3, the shipped-defaults pin, is what remains executable.
+Lambda-set specialization annotates each arrow of a monomorphized function
+type with what is known about which functions a value on that arrow can be.
+An `LSet` lists those functions, its members; an `LVar` is a set variable,
+which names no members. A call through an arrow that names no members cannot
+be turned into a direct call. The arrow this test is about is an inner one:
+the type of what a two-stage function returns once it has its first argument.
+Without this test, such an inner arrow could be left as a variable with
+nothing failing.
 
-    useStep f seed = (f seed) 2        -- consumes a 2-stage function
+The fixture is the module `fixtureRef`:
 
-    -- producer C (1 declared param, nested body lambdas):
-    mkAdderC u = \a -> \b -> a + b + u
-    useStep (mkAdderC 1) 5             -- CALL-RESULT argument
+    mkAdder =
+        \a -> \b -> a + b
 
-    -- producer V (0 declared params — a VALUE whose body is the lambdas):
-    mkAdder = \a -> \b -> a + b
-    useStep mkAdder 5                  -- BARE-REFERENCE argument
+    useStep f seed =
+        f seed 2
 
-MEASURED (probe rows, settle off):
+    testValue =
+        useStep mkAdder 5
 
-    mkAdderC :: (.)-{5}->(.)-{1}->(.)-{2}->.      full spine of members
-    useStep  :: ((.)-{1}->(.)-{2}->.)-...          ARRIVES INTACT (test 1)
+`mkAdder` is a value with no declared parameters whose body is two nested
+lambdas, and it reaches `useStep` as a bare reference, not as the result of a
+call. `useStep` applies its parameter `f` to one argument and the result to a
+second, so both arrows of `f`'s type are used. The module is compiled with the
+solver engine at the default lambda-set configuration and the default
+specialization limits, and the annotations are read from the specialization
+registry, one row per specialization.
 
-    mkAdder  :: (.)-{4}->(.)-VAR->.                the PRODUCER'S OWN ROW
-    useStep  :: ((.)-{4}->(.)-VAR->.)-...          shares the same var (test 2)
+What the test establishes:
 
-The falsified narrative: this is NOT a transport loss and NOT an
-α-instantiation loss (the mono consumer loses it identically). Flow
-delivered perfectly — there was NOTHING TO DELIVER: producer V's nested
-lambdas are collapsed by mono-uncurry into ONE two-arg closure, and the
-intermediate stage value (that closure with one argument supplied — a
-LAMBDA-PAP) has no member identity in the l|/p|g| algebra. The paper never
-meets this: it does not uncurry, so every λ keeps its own label. Eco's
-missing piece at this fixture is a PRODUCER-SIDE identity for lambda-PAP
-stages, not an edge.
+  - The one test passes when at least one `useStep` row has a non-empty `LSet`
+    both on the arrow of its function parameter and on the arrow of that
+    parameter's result, and no `mkAdder` row has an `LVar` on the arrow of the
+    function it returns. It does not compare the members of the two rows, and
+    any other annotation on `mkAdder`'s inner arrow, such as `LTop` (widened,
+    naming no members) or `LPartial` (some members, possibly more), also
+    passes. If `mkAdder` has no row whose type has a nested arrow, the second
+    half passes without checking anything.
 
-What the deleted arm pinned: with settle off, producer C's CALL-RESULT
-argument arrived all-set (test 1), while producer V's BARE-REFERENCE
-argument arrived (set head, VAR interior) and the producer's own row carried
-the same var (test 2) — the §9.1 point that the missing piece is a
-PRODUCER-SIDE identity for lambda-PAP stages, not an edge.
-
-The surviving test pins today's compensation: at shipped defaults the settle
-machinery heals both rows consistently (the folded root head is pap-able, so
-`varSucc` mints the successor member and writes it in every row).
-
-POSTSCRIPT (2026-09-01): `lss.flowConnect` (LPartial + deTop,
-lss-lpartial-asymmetric-join.md) flipped default-on and test 2's lost edge
-healed at INFERENCE, exactly as this suite was built to detect. flowConnect
-went default-OFF again on the 2026-09-18 solo census (byte-identical
-artifact, −32.6 M dispatches) and was deleted with its flag the same day.
+Among what is not tested: the same consumer given a function produced by a
+call (`fixtureCall`, with `useStep (mkAdderC 1) 5`, is built but no test uses
+it), which of the solver's passes fills the inner arrows, and what members
+they hold.
 
 -}
 
@@ -78,6 +72,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The lambda-set test for a curried function passed by bare reference,
+described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "flow edge loss — the §9 pinned examples"
@@ -109,11 +106,16 @@ suite =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int`, used in every fixture annotation.
+-}
 hInt : Src.Type
 hInt =
     tType "Int" []
 
 
+{-| The consumer shared by both fixtures, `useStep f seed = (f seed) 2`,
+annotated `(Int -> Int -> Int) -> Int -> Int`.
+-}
 useStepDef : { name : String, args : List Src.Pattern, tipe : Src.Type, body : Src.Expr }
 useStepDef =
     { name = "useStep"
@@ -123,6 +125,10 @@ useStepDef =
     }
 
 
+{-| A module in which `useStep` is given the result of a call: `mkAdderC u`
+returns the nested lambdas `\a -> \b -> a + b + u`, and `testValue` is
+`useStep (mkAdderC 1) 5`. No test uses it.
+-}
 fixtureCall : Src.Module
 fixtureCall =
     makeModuleWithTypedDefsUnionsAliases "Test"
@@ -146,6 +152,10 @@ fixtureCall =
         []
 
 
+{-| The module the test compiles, in which `useStep` is given the value
+`mkAdder = \a -> \b -> a + b` by bare reference: `testValue` is
+`useStep mkAdder 5`.
+-}
 fixtureRef : Src.Module
 fixtureRef =
     makeModuleWithTypedDefsUnionsAliases "Test"
@@ -171,6 +181,14 @@ fixtureRef =
 -- ====== HARNESS ======
 
 
+{-| Compiles `srcModule` and monomorphizes it with the solver engine, the
+default lambda-set configuration and the default specialization limits,
+returning the graph or the message of the first stage that failed.
+
+Setting `enabled` changes nothing, since it is already `True` in
+`Config.defaultLss`.
+
+-}
 runDefaults : Src.Module -> Result String Mono.MonoGraph
 runDefaults srcModule =
     let
@@ -186,6 +204,11 @@ runDefaults srcModule =
 -- ====== READERS ======
 
 
+{-| Returns, for each registry row of `useStep` whose first parameter is a
+function returning a function, the annotations on that parameter's own arrow
+and on the arrow of its result, in that order. Rows of any other shape are
+skipped.
+-}
 useStepAnnos : Mono.MonoGraph -> List ( Mono.LambdaSetAnno, Mono.LambdaSetAnno )
 useStepAnnos (Mono.MonoGraph g) =
     Array.foldl
@@ -210,7 +233,9 @@ useStepAnnos (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| The producer's OWN inner-arrow annos (`mkAdder : Int -{outer}-> Int -{HERE}-> Int`).
+{-| Returns, for each registry row of `mkAdder` whose type returns a function,
+the annotation on the arrow of the function it returns: the second arrow of
+`Int -> Int -> Int`. Rows of any other shape are skipped.
 -}
 mkAdderInner : Mono.MonoGraph -> List Mono.LambdaSetAnno
 mkAdderInner (Mono.MonoGraph g) =
@@ -236,6 +261,8 @@ mkAdderInner (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Tells whether an annotation is a set variable, `LVar`.
+-}
 isVar : Mono.LambdaSetAnno -> Bool
 isVar a =
     case a of
@@ -246,6 +273,8 @@ isVar a =
             False
 
 
+{-| Tells whether an annotation is an `LSet` with at least one member.
+-}
 isSet : Mono.LambdaSetAnno -> Bool
 isSet a =
     case a of
@@ -256,16 +285,23 @@ isSet a =
             False
 
 
+{-| Renders the pairs `useStepAnnos` returns, for a failure message.
+-}
 describePairs : List ( Mono.LambdaSetAnno, Mono.LambdaSetAnno ) -> String
 describePairs pairs =
     "[" ++ String.join ", " (List.map (\( h, r ) -> "(" ++ one h ++ " -> " ++ one r ++ ")") pairs) ++ "]"
 
 
+{-| Renders a list of annotations, for a failure message.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe xs =
     "[" ++ String.join ", " (List.map one xs) ++ "]"
 
 
+{-| Renders one annotation as its constructor name followed by its top kind
+label, its variable number or its member count.
+-}
 one : Mono.LambdaSetAnno -> String
 one a =
     case a of

@@ -7,12 +7,29 @@ module Compiler.Json.Encode exposing
     , write, writeUgly
     )
 
-{-| JSON encoding utilities for the Elm compiler.
+{-| The compiler writes JSON of its own, and this module builds that JSON and
+prints it as text.
 
-This module provides a custom JSON value representation and encoding functions
-tailored for compiler data structures. It supports encoding compiler-specific types
-like associative-list-backed dictionaries, EverySet, NonEmptyList, and OneOrMore,
-as well as pretty-printed and compact JSON output.
+A `Value` is a JSON document held as a tree. Its only numbers are integers.
+
+Printing adds no escaping. A string is written between quotes exactly as the
+`Value` holds it, and so is every object key. Whether a string is escaped is
+therefore decided when its `Value` is made: `string` and `chars` escape their
+argument, and `name` takes its argument as already safe to print. Escaping
+covers only carriage return, newline, double quote and backslash. A tab or any
+other character below U+0020 is written as it is, which is not valid JSON, and
+object keys are never escaped at all.
+
+Text that `Compiler.Json.Decode.string` returns still has its escapes in it, as
+that module describes, so it goes back out through `name`. Passing it to
+`string` escapes it a second time.
+
+A `Value` prints in one of two layouts. The compact layout, from `encodeUgly`
+and `writeUgly`, has no whitespace between tokens. The pretty layout, from
+`write`, puts each array element and object field on a line of its own,
+indented four spaces deeper than the line that opens its array or object, and
+writes a space after each key's colon. An empty array or object prints as `[]`
+or `{}` in both layouts.
 
 
 # Value Type
@@ -30,7 +47,7 @@ as well as pretty-printed and compact JSON output.
 @docs array, list, object
 
 
-# Compiler Type Encoders
+# Dictionaries
 
 @docs stdDict
 
@@ -44,9 +61,6 @@ as well as pretty-printed and compact JSON output.
 
 @docs write, writeUgly
 
-
-# Conversion
-
 -}
 
 import Dict
@@ -55,11 +69,24 @@ import Task exposing (Task)
 
 
 
--- ====== CORE HELPERS ======
 -- ====== VALUES ======
 
 
-{-| Custom JSON value representation for the compiler's encoding needs.
+{-| A JSON document, as a tree of arrays, objects, strings, booleans, integers
+and nulls.
+
+`Array` holds its elements in order.
+
+`Object` holds its fields in order, and that is the order they are printed in.
+Nothing removes a repeated key, so a key given twice is printed twice.
+
+`StringVal` holds text exactly as it will appear between the quotes, so it must
+already be escaped. Building one directly skips escaping, as `name` does;
+`string` and `chars` escape their argument first.
+
+`Boolean` and `Integer` print as the JSON literal for their payload, and `Null`
+as `null`.
+
 -}
 type Value
     = Array (List Value)
@@ -70,56 +97,63 @@ type Value
     | Null
 
 
-{-| Create a JSON array value.
+{-| Returns a JSON array of the given elements, in order.
 -}
 array : List Value -> Value
 array =
     Array
 
 
-{-| Create a JSON object value from key-value pairs.
+{-| Returns a JSON object with the given fields, in order. The keys are printed
+as given, without escaping, and a repeated key is kept.
 -}
 object : List ( String, Value ) -> Value
 object =
     Object
 
 
-{-| Create a JSON string value, automatically escaping special characters.
+{-| Returns a JSON string holding `str`, with carriage returns, newlines, double
+quotes and backslashes escaped. No other character is escaped.
 -}
 string : String -> Value
 string str =
     StringVal (escape str)
 
 
-{-| Create a JSON string value from a name without escaping.
+{-| Returns a JSON string holding `nm` exactly as given, without escaping. It is
+for text that is already safe to print between quotes, such as an identifier or
+text that is still escaped.
 -}
 name : String -> Value
 name nm =
     StringVal nm
 
 
-{-| Create a JSON boolean value.
+{-| Returns a JSON boolean.
 -}
 bool : Bool -> Value
 bool =
     Boolean
 
 
-{-| Create a JSON integer value.
+{-| Returns a JSON integer.
 -}
 int : Int -> Value
 int =
     Integer
 
 
-{-| Create a JSON null value.
+{-| The JSON `null`.
 -}
 null : Value
 null =
     Null
 
 
-{-| Encode a stdlib Dict as a JSON object.
+{-| Returns a JSON object with one field per entry of `pairs`, in ascending
+order of the dictionary's keys (not of the text `encodeKey` turns them into).
+Each key is turned into text by `encodeKey`, which is printed without escaping,
+and each value by `encodeValue`.
 -}
 stdDict : (comparable -> String) -> (v -> Value) -> Dict.Dict comparable v -> Value
 stdDict encodeKey encodeValue pairs =
@@ -129,7 +163,8 @@ stdDict encodeKey encodeValue pairs =
         )
 
 
-{-| Encode a list as a JSON array.
+{-| Returns a JSON array with one element per entry, each encoded by
+`encodeEntry`, in order.
 -}
 list : (a -> Value) -> List a -> Value
 list encodeEntry entries =
@@ -140,13 +175,18 @@ list encodeEntry entries =
 -- ====== CHARS ======
 
 
-{-| Create a JSON string value from characters, escaping special characters.
+{-| Returns a JSON string holding `chrs`, escaped exactly as `string` escapes
+it.
 -}
 chars : String -> Value
 chars chrs =
     StringVal (escape chrs)
 
 
+{-| Returns `chrs` with each carriage return, newline, double quote and
+backslash replaced by its two-character JSON escape. Every other character,
+including a tab or another control character, is kept as it is.
+-}
 escape : String -> String
 escape chrs =
     String.toList chrs
@@ -175,21 +215,24 @@ escape chrs =
 -- ====== WRITE TO FILE ======
 
 
-{-| Write a JSON value to a file with pretty-printing and a trailing newline.
+{-| Writes `value` to the file at `path` in the pretty layout, followed by a
+newline. The program crashes if the write fails.
 -}
 write : String -> Value -> Task Never ()
 write path value =
     fileWriteBuilder path (encode value ++ "\n")
 
 
-{-| Write a JSON value to a file in compact form without extra whitespace.
+{-| Writes `value` to the file at `path` in the compact layout, with no newline
+after it. The program crashes if the write fails.
 -}
 writeUgly : String -> Value -> Task Never ()
 writeUgly path value =
     fileWriteBuilder path (encodeUgly value)
 
 
-{-| FIXME Builder.File.writeBuilder
+{-| Writes `content` to the file at `path`, crashing as `System.IO.crashOnError`
+describes if the write fails.
 -}
 fileWriteBuilder : String -> String -> Task Never ()
 fileWriteBuilder path content =
@@ -201,7 +244,8 @@ fileWriteBuilder path content =
 -- ====== ENCODE UGLY ======
 
 
-{-| Convert a JSON value to a compact string without extra whitespace.
+{-| Prints `value` in the compact layout, with no whitespace between tokens and
+no newline at the end.
 -}
 encodeUgly : Value -> String
 encodeUgly value =
@@ -235,6 +279,9 @@ encodeUgly value =
             "null"
 
 
+{-| Prints one object field in the compact layout: the quoted key, a colon and
+the value.
+-}
 encodeEntryUgly : ( String, Value ) -> String
 encodeEntryUgly ( key, entry ) =
     "\"" ++ key ++ "\":" ++ encodeUgly entry
@@ -244,11 +291,18 @@ encodeEntryUgly ( key, entry ) =
 -- ====== ENCODE ======
 
 
+{-| Prints `value` in the pretty layout, starting at no indentation and with no
+newline at the end.
+-}
 encode : Value -> String
 encode value =
     encodeHelp "" value
 
 
+{-| Prints `value` in the pretty layout, given that the line it starts on is
+indented by `indent`. The first line of the result carries no indentation of its
+own; the lines after it are indented relative to `indent`.
+-}
 encodeHelp : String -> Value -> String
 encodeHelp indent value =
     case value of
@@ -285,6 +339,10 @@ encodeHelp indent value =
 -- ====== ENCODE ARRAY ======
 
 
+{-| Prints a non-empty array, `first` followed by `rest`, in the pretty layout:
+each element on its own line indented four spaces past `indent`, and the closing
+bracket on a line indented by `indent`.
+-}
 encodeArray : String -> Value -> List Value -> String
 encodeArray indent first rest =
     let
@@ -307,6 +365,10 @@ encodeArray indent first rest =
 -- ====== ENCODE OBJECT ======
 
 
+{-| Prints a non-empty object, `first` followed by `rest`, in the pretty layout:
+each field on its own line indented four spaces past `indent`, and the closing
+brace on a line indented by `indent`.
+-}
 encodeObject : String -> ( String, Value ) -> List ( String, Value ) -> String
 encodeObject indent first rest =
     let
@@ -325,10 +387,9 @@ encodeObject indent first rest =
     "{\n" ++ newIndent ++ encodeField newIndent first ++ List.foldr addValue closer rest
 
 
+{-| Prints one object field in the pretty layout: the quoted key, a colon and a
+space, then the value printed as starting on a line indented by `indent`.
+-}
 encodeField : String -> ( String, Value ) -> String
 encodeField indent ( key, value ) =
     "\"" ++ key ++ "\": " ++ encodeHelp indent value
-
-
-
--- ====== JSON VALUE ======

@@ -3,11 +3,32 @@ module TestLogic.Type.UnificationErrors exposing
     , expectTypeMismatchError
     )
 
-{-| Test logic for invariant TYPE\_002: Unification failures become type errors.
+{-| Expectations that the type checker rejects a source module with a type
+mismatch, or accepts it with no type errors.
 
-Craft constraints with known conflicting types (e.g., unify Int and String).
-Run solver and assert a Type.Error is produced and the final result surfaces
-as BadTypes. Assert there is no path where inconsistencies are silently dropped.
+Each expectation canonicalizes its `Src.Module` as package `eco/example`
+against the mock interfaces of `Compiler.Elm.Interface.Basic.testIfaces`, then
+type checks the result with the typed pipeline's constraint generator,
+`Compiler.Type.Constrain.Typed.Module.constrainWithIds`, and solver,
+`Compiler.Type.Solve.runWithIds`. A module that fails to canonicalize fails
+either expectation. The message describes only the first canonicalization
+error, and gives detail only for a `NotFoundVar`.
+
+A _type mismatch_ is a `BadExpr` or `BadPattern` error: an expression or a
+pattern whose type conflicts with the type its context requires. The third
+kind of type error, `InfiniteType`, is not a mismatch.
+
+  - `expectTypeMismatchError` passes when type checking fails and at least one
+    of the errors is a mismatch. It fails when type checking succeeds, or when
+    every error is an `InfiniteType`. It is there to catch a solver that lets
+    a failed unification pass, and so accepts an ill-typed program.
+  - `expectNoTypeErrors` passes when type checking succeeds, and fails on any
+    type error. It is there to catch a solver that reports type errors for a
+    well-typed module.
+
+Among what is not checked: where a mismatch is or which types conflict, since
+only the error's constructor is looked at; and the steps after solving, such
+as `PostSolve` and the pattern exhaustiveness check, which are not run.
 
 -}
 
@@ -32,7 +53,10 @@ import Expect
 import System.TypeCheck.IO as IO
 
 
-{-| Expect a type mismatch error (BadExpr or BadPattern).
+{-| Passes when type checking `srcModule` fails with at least one `BadExpr` or
+`BadPattern` error among its errors. Fails when canonicalization fails, when
+type checking succeeds, or when every error is an `InfiniteType`; the last case
+lists the errors in the failure message.
 -}
 expectTypeMismatchError : Src.Module -> Expect.Expectation
 expectTypeMismatchError srcModule =
@@ -67,7 +91,9 @@ expectTypeMismatchError srcModule =
                     Expect.fail "Expected a type mismatch error but type checking succeeded"
 
 
-{-| Expect type checking to succeed without errors.
+{-| Passes when `srcModule` canonicalizes and type checks with no errors.
+Fails when canonicalization fails, or on any type error, listing every type
+error in the message.
 -}
 expectNoTypeErrors : Src.Module -> Expect.Expectation
 expectNoTypeErrors srcModule =
@@ -95,7 +121,8 @@ expectNoTypeErrors srcModule =
                     Expect.pass
 
 
-{-| Check if an error is a type mismatch.
+{-| Returns whether `error` is a type mismatch: `True` for `BadExpr` and
+`BadPattern`, `False` for `InfiniteType`.
 -}
 isMismatchError : TypeError.Error -> Bool
 isMismatchError error =
@@ -110,7 +137,9 @@ isMismatchError error =
             False
 
 
-{-| Canonicalize a source module.
+{-| Canonicalizes `srcModule` as package `eco/example` against
+`Basic.testIfaces`. Warnings are dropped. On failure the message describes
+only the first error, and gives detail only for a `NotFoundVar`.
 -}
 canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
@@ -135,7 +164,10 @@ canonicalizeModule srcModule =
             Ok modul
 
 
-{-| Run type checking on a canonical module.
+{-| Type checks `modul`: generates its constraints with
+`ConstrainTyped.constrainWithIds`, which also returns the solver variable of
+each expression and pattern id, and solves them with `Solve.runWithIds`. The
+result is the errors or the success record of `Solve.runWithIds`.
 -}
 runTypeCheck :
     Can.Module
@@ -160,7 +192,11 @@ runTypeCheck modul =
             )
 
 
-{-| Convert a type error to a string.
+{-| Renders `error` as a one-line summary: its constructor and the start of its
+region, with the actual type for a `BadExpr`, in the short form `tTypeToString`
+gives, and the name of the variable whose type is infinite for an
+`InfiniteType`. The expected type is never printed, although a `BadExpr`
+summary ends with the words "vs expected".
 -}
 typeErrorToString : TypeError.Error -> String
 typeErrorToString error =
@@ -179,7 +215,9 @@ typeErrorToString error =
             "InfiniteType: " ++ name ++ " at " ++ regionToString region
 
 
-{-| Convert a canonicalization error to a string.
+{-| Renders a canonicalization error for a failure message. Only `NotFoundVar`
+is described, as the name that was not found with its qualifier if it had one;
+every other error gives the same generic text.
 -}
 canErrorToString : CanError.Error -> String
 canErrorToString error =
@@ -193,14 +231,18 @@ canErrorToString error =
             "Other canonicalization error"
 
 
-{-| Convert a region to a string.
+{-| Renders the start of a region as `row:column`. The end is ignored.
 -}
 regionToString : A.Region -> String
 regionToString (A.Region (A.Position startRow startCol) (A.Position _ _)) =
     String.fromInt startRow ++ ":" ++ String.fromInt startCol
 
 
-{-| Convert a T.Type to a string.
+{-| Renders a short form of an error type: the bare name of a named type,
+without its module or arguments; the name of a flexible or rigid variable that
+is not constrained; or `()` for unit. Every other type, including functions,
+records, tuples, aliases and constrained variables such as `number`, renders
+as `...`.
 -}
 tTypeToString : T.Type -> String
 tTypeToString tType =

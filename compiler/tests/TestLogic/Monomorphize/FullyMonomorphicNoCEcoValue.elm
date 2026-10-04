@@ -1,23 +1,37 @@
 module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyMonomorphicNoCEcoValue, Violation)
 
-{-| Test logic for MONO\_024: Fully monomorphic specializations have no CEcoValue
-in reachable MonoTypes.
+{-| Checks a monomorphized test program for numeric type variables left
+unresolved in specializations whose key types are concrete.
 
-For every specialization entry whose key MonoType is fully monomorphic (no MVar
-with any constraint), a traversal of all MonoTypes reachable from
-its implementing MonoNode must find no remaining MVar with CEcoValue constraint.
+A _specialization_ is one copy of a definition made for one type, its _key
+type_, and the graph's specialization registry records each by its SpecId. A
+key type is _fully monomorphic_ when it holds no type variable (`MVar`) of
+either constraint. Only those specializations are checked; one whose key still
+holds a variable is skipped.
 
-This differs from MONO\_021 in two ways:
+`expectFullyMonomorphicNoCEcoValue` compiles a program with
+`TestLogic.TestPipeline.runToMono` and searches each such specialization for an
+`MVar _ CNumber`, a variable known to be a number but not yet resolved to `Int`
+or `Float`. Despite the module's name, an `MVar _ CEcoValue`, a variable whose
+values are always boxed, is accepted wherever it appears.
 
-1.  **Scope**: Only checks specializations with fully monomorphic keys (skips
-    polymorphic residuals). MONO\_021 checks all reachable user-defined functions.
-2.  **Breadth**: Checks ALL MonoType positions in the expression tree, not just
-    function parameter/result positions. This catches CEcoValue surviving in
-    intermediate expression types, let-binding types, case branch types, etc.
+Most of the module is one walk over a node and its body. It looks at the node's
+type and parameter types, and in the body at the type of each expression,
+closure and tail-recursive local parameter types, and expressions inlined into
+a case's decision tree. Each type is searched to any depth. `MonoExtern` nodes
+(what a kernel definition, among others, becomes), effect-manager leaf nodes,
+kernel variables and accessor values are exempt, and constructor and enum nodes
+have only their own type checked.
 
-Any surviving CEcoValue in a fully monomorphic specialization indicates a
-failed substitution — the monomorphization pass did not propagate the concrete
-types from the specialization key into all expression types.
+Among what is not checked: the types in destructuring paths and decision-tree
+paths, and the ABI types recorded on closures and calls.
+
+On the graph `runToMono` returns, this check finds nothing. The substitution
+engine's `Compiler.Monomorphize.Prune.pruneUnreachableSpecs` turns every
+`MVar _ CNumber` in each kept node into `MInt`, at every position this walk
+visits, and crashes if one survives. So the expectation passes whenever
+compilation succeeds, and a failed resolution shows as a crash rather than a
+test failure.
 
 @docs expectFullyMonomorphicNoCEcoValue, Violation
 
@@ -32,7 +46,15 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Violation record for reporting MONO\_024 issues.
+{-| One type found holding an `MVar _ CNumber`.
+
+`context` names the specialization by its SpecId and key type, then any
+enclosing closure, tail-recursive local definition or inlined decision-tree
+leaf, then the position the type was found in. `message` gives the position,
+the whole type and the ids of the offending variables, under a heading that
+speaks of a `CEcoValue` variable although the variables listed are `CNumber`
+ones.
+
 -}
 type alias Violation =
     { context : String
@@ -40,7 +62,12 @@ type alias Violation =
     }
 
 
-{-| MONO\_024: Verify fully monomorphic specializations have no CEcoValue.
+{-| Compiles `srcModule` with `TestLogic.TestPipeline.runToMono` and passes
+when no specialization with a fully monomorphic key type holds an
+`MVar _ CNumber` in any position checked; an `MVar _ CEcoValue` is accepted.
+If `runToMono` returns an error, it fails with that error, and otherwise with a
+count and list of the violations. As the module docstring explains, on a
+graph from `runToMono` it finds no violation.
 -}
 expectFullyMonomorphicNoCEcoValue : Src.Module -> Expectation
 expectFullyMonomorphicNoCEcoValue srcModule =
@@ -60,7 +87,9 @@ expectFullyMonomorphicNoCEcoValue srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check all fully monomorphic specializations for CEcoValue violations.
+{-| Returns the violations in every specialization of the graph whose key type is
+fully monomorphic, in SpecId order. An empty registry slot, which is a pruned
+specialization, and a SpecId with no node are skipped.
 -}
 checkFullyMonomorphicNoCEcoValue : Mono.MonoGraph -> List Violation
 checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
@@ -69,18 +98,15 @@ checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
             (\( specId, maybeEntry ) acc ->
                 case maybeEntry of
                     Nothing ->
-                        -- Pruned slot (MONO_022), skip
                         acc
 
                     Just ( _, keyMonoType ) ->
                         if not (isFullyMonomorphic keyMonoType) then
-                            -- Key is not fully monomorphic, skip (invariant doesn't apply)
                             acc
 
                         else
                             case Array.get specId data.nodes |> Maybe.andThen identity of
                                 Nothing ->
-                                    -- No node for this specId (would be caught by MONO_017)
                                     acc
 
                                 Just node ->
@@ -95,8 +121,7 @@ checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
 -- ============================================================================
 
 
-{-| A MonoType is fully monomorphic if it contains no MVar (any constraint).
-Only these specializations are subject to MONO\_024.
+{-| Returns whether `monoType` holds no type variable of either constraint.
 -}
 isFullyMonomorphic : Mono.MonoType -> Bool
 isFullyMonomorphic monoType =
@@ -109,7 +134,14 @@ isFullyMonomorphic monoType =
 -- ============================================================================
 
 
-{-| Check a MonoNode for CEcoValue in ALL MonoType positions.
+{-| Returns the violations in `node`, the node of specialization `specId` with key
+type `keyType`, each with a context naming both.
+
+A `MonoExtern` node (what a kernel definition, among others, becomes) or an
+effect-manager leaf is not checked. A constructor or enum node has only its own
+type checked. Any other node has its type, its parameter types if it is a
+tail-recursive function, and its body checked.
+
 -}
 checkNodeAllTypes : Int -> Mono.MonoType -> Mono.MonoNode -> List Violation
 checkNodeAllTypes specId keyType node =
@@ -135,14 +167,12 @@ checkNodeAllTypes specId keyType node =
             checkType ctx "node type" monoType
                 ++ checkExprAllTypes ctx expr
 
-        -- Kernel nodes: CEcoValue is allowed
         Mono.MonoExtern _ ->
             []
 
         Mono.MonoManagerLeaf _ _ ->
             []
 
-        -- Constructors and enums: check node type only (no expression bodies)
         Mono.MonoCtor _ monoType ->
             checkType ctx "ctor type" monoType
 
@@ -156,10 +186,16 @@ checkNodeAllTypes specId keyType node =
 -- ============================================================================
 
 
-{-| Recursively check ALL MonoTypes in a MonoExpr for CEcoValue.
+{-| Returns the violations in `expr` and all of its subexpressions. Their context
+is `ctx`, followed by the word `closure` inside a closure, by `taildef=` and
+the name inside a tail-recursive local definition, and by `inline-leaf` inside
+an expression inlined into a case's decision tree.
 
-Unlike MONO\_021 which only checks function positions, this checks every
-MonoType encountered in the expression tree.
+It checks each expression's own type, closure and tail-recursive parameter
+types, and expressions inlined into a case's decision tree. A kernel variable,
+an accessor value and `()` contribute nothing, and destructuring paths are not
+looked into. A let-bound value's type and a case branch's type are checked both
+as such and as the expression's own type, so one variable can be reported twice.
 
 -}
 checkExprAllTypes : String -> Mono.MonoExpr -> List Violation
@@ -250,7 +286,7 @@ checkExprAllTypes ctx expr =
             checkType ctx "global-var type" varType
 
         Mono.MonoVarKernel _ _ _ _ _ ->
-            -- Kernel vars may legitimately have CEcoValue
+            -- Exempt, unlike every other variable reference.
             []
 
         Mono.MonoUnit ->
@@ -260,7 +296,10 @@ checkExprAllTypes ctx expr =
             []
 
 
-{-| Check a decider tree for CEcoValue in MonoTypes.
+{-| Returns the violations in the expressions inlined at the leaves of `decider`,
+with the word `inline-leaf` added to `ctx`. A jump leaf contributes nothing, since
+its branch is in the case's branch list, and the paths the tree tests are not
+checked.
 -}
 checkDeciderAllTypes : String -> Mono.Decider Mono.MonoChoice -> List Violation
 checkDeciderAllTypes ctx decider =
@@ -288,7 +327,8 @@ checkDeciderAllTypes ctx decider =
 -- ============================================================================
 
 
-{-| Check a single MonoType for CEcoValue MVar.
+{-| Returns one violation if `monoType` holds an `MVar _ CNumber` at any depth,
+and none otherwise. Its context is `ctx` followed by `position`.
 -}
 checkType : String -> String -> Mono.MonoType -> List Violation
 checkType ctx position monoType =
@@ -315,7 +355,8 @@ checkType ctx position monoType =
         ]
 
 
-{-| Check parameter types for CEcoValue.
+{-| Returns the violations in the types of `params`, each with a position naming
+its parameter.
 -}
 checkParamTypes : String -> List ( String, Mono.MonoType ) -> List Violation
 checkParamTypes ctx params =
@@ -326,19 +367,22 @@ checkParamTypes ctx params =
         params
 
 
-{-| Collect problematic MVar names from a MonoType recursively.
-MVar \_ CEcoValue is always acceptable (compiles to eco.value).
-Only MVar \_ CNumber would indicate a real bug (should be resolved to MInt/MFloat).
+{-| Returns the ids of the `MVar _ CNumber` variables in `monoType`, searched
+through lists, functions, tuples, records and custom type arguments, one entry
+per occurrence.
+
+Despite the name, an `MVar _ CEcoValue` is not collected: it stands for a boxed
+value and may remain in a type. A `CNumber` variable is one that the closing in
+`Compiler.Monomorphize.Prune.pruneUnreachableSpecs` should have made `MInt`.
+
 -}
 collectCEcoValueVars : Mono.MonoType -> List String
 collectCEcoValueVars monoType =
     case monoType of
         Mono.MVar _ Mono.CEcoValue ->
-            -- CEcoValue MVars are acceptable — they compile identically to eco.value
             []
 
         Mono.MVar mvarId Mono.CNumber ->
-            -- CNumber should have been resolved by the closing pass (resolveResidualNumbers, MONO_028)
             [ String.fromInt (Id.toComparable mvarId) ]
 
         Mono.MList _ inner ->
@@ -367,7 +411,8 @@ collectCEcoValueVars monoType =
 -- ============================================================================
 
 
-{-| Format violations as a readable string.
+{-| Returns the failure message for `violations`: a heading with their count,
+then each violation's context and message, separated by blank lines.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
@@ -380,7 +425,9 @@ formatViolations violations =
            )
 
 
-{-| Convert a MonoType to a string for error messages.
+{-| Returns a short rendering of `monoType` for messages. A custom type shows
+only its name, a type variable only its id, and a function no lambda set; a
+record's fields appear in reverse alphabetical order.
 -}
 monoTypeToString : Mono.MonoType -> String
 monoTypeToString monoType =

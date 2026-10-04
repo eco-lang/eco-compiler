@@ -1,20 +1,50 @@
 module SourceIR.IfNodeTypeCases exposing (expectSuite)
 
-{-| Test cases for if-expression node types with structured annotation types.
+{-| Gives a later stage `if` nodes whose recorded type is a fresh type variable,
+so that a stage which mishandles the type recorded there has something to fail
+on.
 
-These tests exercise the constraint generation path in constrainIfWithIdsProg
-where the annotation type is a structured type (not a bare VarN). The case
-expression's constrainCaseWithIdsProg adds a CEqual constraint for the fresh
-flex var in this scenario, but the if expression path historically did not.
+On the typed path (the MLIR and native pipeline, on which the type checker runs
+with node recording on) the type checker records a type variable for each `if`
+node, and which variable depends on what the `if` is expected to be. When the
+`if` is checked against a type annotation,
+`Compiler.Type.Constrain.Typed.Expression` records the type the `if` is checked
+against if that type is a bare type variable, and otherwise a fresh variable
+constrained equal to that type. For the body of an annotated definition, that
+type is what is left of the annotation after one arrow is removed for each of
+the definition's arguments. Five of these programs give an `if` the second
+path.
 
-Tests cover:
+There are six small programs, in each of which an `if` produces a value of a
+structured type, a `List`, a `Maybe` or a function, and each is handed to a
+check the caller supplies.
 
-  - If returning List a inside a polymorphic function
-  - If returning Maybe a with constructor branches
-  - Nested if expressions with parameterized types
-  - If in a let binding with structured type annotation
-  - If returning function types (closure-producing branches)
-  - Polymorphic function with if body, specialized at concrete type (MONO\_025 trigger)
+Each program is a module named `Test`, built with
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefsUnionsAliases`, holding two
+annotated top-level values: a function containing the `if`, and `testValue`,
+which applies that function to concrete arguments.
+
+The module asserts nothing. `expectSuite` hands each program to the
+expectation function its caller supplies, so what is checked depends on the
+caller. The programs are:
+
+  - A: `identity : List a -> List a`, whose body is an `if` checked against
+    `List a`.
+  - B: `keepPositive : Maybe Int -> Maybe Int`, a `case` whose `Just` branch is
+    an `if` checked against the concrete type `Maybe Int`.
+  - C: `choose`, an `if` both of whose branches are `if`s, all three checked
+    against `Maybe t`.
+  - D: `pick : Bool -> List Int`, which binds an `if` to a `let` name with no
+    annotation, so that `if` is not checked against an annotation; this is the
+    one program whose `if` takes neither path above.
+  - E: `pickFn`, whose body is an `if` choosing between two lambdas, checked
+    against the function type `List a -> List a`.
+  - F: `transform : (a -> a) -> List a -> List a`, whose body is an `if`
+    checked against `List a`, used by `testValue` at `a = Int`.
+
+Among what is not tested: an `else if` chain, since every `if` here has one
+condition, and an `if` checked against an annotation where the type left after
+the definition's arguments is a bare type variable.
 
 -}
 
@@ -46,12 +76,21 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named `"If node type "` followed by `condStr`, that applies
+`expectFn` to the six programs in order and stops at the first whose expectation
+fails; the programs after it are not run. The test then fails with that
+program's label and the failure's description, as
+`Compiler.BulkCheck.bulkCheck` reports it.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("If node type " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Pairs each program, A to F in order, with its label, each to be checked with
+`expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "If returning List a in polymorphic fn", run = ifReturningListA expectFn }
@@ -69,38 +108,49 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| The Source type `Int`.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| The Source type `Bool`.
+-}
 tBool : Src.Type
 tBool =
     tType "Bool" []
 
 
+{-| Builds the Source type of a list whose elements have type `a`.
+-}
 tList : Src.Type -> Src.Type
 tList a =
     tType "List" [ a ]
 
 
+{-| Builds the Source type `Maybe` applied to `a`.
+-}
 tMaybe : Src.Type -> Src.Type
 tMaybe a =
     tType "Maybe" [ a ]
 
 
+{-| Applies `expectFn` to program A:
 
--- ============================================================================
--- TEST A: If returning List a inside a polymorphic function
--- ============================================================================
--- identity : List a -> List a
--- identity xs =
---     if True then xs else xs
---
--- testValue : List Int
--- testValue = identity [1, 2]
+    identity : List a -> List a
+    identity xs =
+        if True then
+            xs
 
+        else
+            xs
 
+    testValue : List Int
+    testValue =
+        identity [ 1, 2 ]
+
+-}
 ifReturningListA : (Src.Module -> Expectation) -> (() -> Expectation)
 ifReturningListA expectFn _ =
     let
@@ -132,22 +182,27 @@ ifReturningListA expectFn _ =
         )
 
 
+{-| Applies `expectFn` to program B, in which the `if` is a `case` branch and the
+type it is checked against is concrete:
 
--- ============================================================================
--- TEST B: If returning Maybe a with constructors
--- ============================================================================
--- keepPositive : Maybe Int -> Maybe Int
--- keepPositive mx =
---     case mx of
---         Just x ->
---             if x > 0 then mx else Nothing
---         Nothing ->
---             Nothing
---
--- testValue : Maybe Int
--- testValue = keepPositive (Just 42)
+    keepPositive : Maybe Int -> Maybe Int
+    keepPositive mx =
+        case mx of
+            Just x ->
+                if x > 0 then
+                    mx
 
+                else
+                    Nothing
 
+            Nothing ->
+                Nothing
+
+    testValue : Maybe Int
+    testValue =
+        keepPositive (Just 42)
+
+-}
 ifReturningMaybeA : (Src.Module -> Expectation) -> (() -> Expectation)
 ifReturningMaybeA expectFn _ =
     let
@@ -184,21 +239,32 @@ ifReturningMaybeA expectFn _ =
         )
 
 
+{-| Applies `expectFn` to program C, in which both branches of the outer `if` are
+`if`s:
 
--- ============================================================================
--- TEST C: Nested if expressions with parameterized types
--- ============================================================================
--- choose : Bool -> Bool -> Maybe a -> Maybe a -> Maybe a
--- choose x y a b =
---     if x then
---         if y then a else b
---     else
---         if y then b else a
---
--- testValue : Maybe Int
--- testValue = choose True False (Just 1) (Just 2)
+    choose : Bool -> Bool -> Maybe t -> Maybe t -> Maybe t
+    choose x y a b =
+        if x then
+            if y then
+                a
 
+            else
+                b
 
+        else if y then
+            b
+
+        else
+            a
+
+    testValue : Maybe Int
+    testValue =
+        choose True False (Just 1) (Just 2)
+
+The `else if` above is how Elm prints the built program, whose `else` branch is
+a separate `if` node; the outer `if` has one condition.
+
+-}
 nestedIfParameterized : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedIfParameterized expectFn _ =
     let
@@ -242,23 +308,26 @@ nestedIfParameterized expectFn _ =
         )
 
 
+{-| Applies `expectFn` to program D, in which the `if` is bound by a `let` with no
+type annotation:
 
--- ============================================================================
--- TEST D: If in a let binding with structured type annotation
--- ============================================================================
--- pick : Bool -> List Int
--- pick flag =
---     let
---         result : List Int
---         result =
---             if flag then [1, 2] else [3, 4]
---     in
---     result
---
--- testValue : List Int
--- testValue = pick True
+    pick : Bool -> List Int
+    pick flag =
+        let
+            result =
+                if flag then
+                    [ 1, 2 ]
 
+                else
+                    [ 3, 4 ]
+        in
+        result
 
+    testValue : List Int
+    testValue =
+        pick True
+
+-}
 ifInLetStructuredAnnotation : (Src.Module -> Expectation) -> (() -> Expectation)
 ifInLetStructuredAnnotation expectFn _ =
     let
@@ -296,21 +365,25 @@ ifInLetStructuredAnnotation expectFn _ =
         )
 
 
+{-| Applies `expectFn` to program E, in which `pickFn` takes one argument and its
+`if` returns a function:
 
--- ============================================================================
--- TEST E: If expression returning function type
--- ============================================================================
--- pickFn : Bool -> (List a -> List a)
--- pickFn flag =
---     if flag then
---         \xs -> xs
---     else
---         \xs -> xs
---
--- testValue : List Int
--- testValue = pickFn True [1, 2, 3]
+    pickFn : Bool -> List a -> List a
+    pickFn flag =
+        if flag then
+            \xs -> xs
 
+        else
+            \xs -> xs
 
+    testValue : List Int
+    testValue =
+        pickFn True [ 1, 2, 3 ]
+
+`testValue` is built as a call of the call `pickFn True`, not as one call with
+two arguments.
+
+-}
 ifReturningFunctionType : (Src.Module -> Expectation) -> (() -> Expectation)
 ifReturningFunctionType expectFn _ =
     let
@@ -345,21 +418,22 @@ ifReturningFunctionType expectFn _ =
         )
 
 
+{-| Applies `expectFn` to program F, in which `transform` ignores its function
+argument and `testValue` calls `transform` at `a = Int`:
 
--- ============================================================================
--- TEST F: Polymorphic function with if body, specialized at concrete type
--- ============================================================================
--- transform : (a -> a) -> List a -> List a
--- transform f xs =
---     if True then
---         xs
---     else
---         xs
---
--- testValue : List Int
--- testValue = transform (\x -> x + 1) [1, 2, 3]
+    transform : (a -> a) -> List a -> List a
+    transform f xs =
+        if True then
+            xs
 
+        else
+            xs
 
+    testValue : List Int
+    testValue =
+        transform (\x -> x + 1) [ 1, 2, 3 ]
+
+-}
 polyIfBodySpecialized : (Src.Module -> Expectation) -> (() -> Expectation)
 polyIfBodySpecialized expectFn _ =
     let

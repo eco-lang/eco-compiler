@@ -1,13 +1,34 @@
 module TestLogic.Generate.MonoTypeShape exposing (expectMonoTypesFullyElaborated)
 
-{-| Test logic for invariant MONO\_001: MonoTypes are fully elaborated.
+{-| Code generation cannot lay out a number whose type is still undecided, so
+monomorphization must leave behind no number variable: an `MVar` with the
+`CNumber` constraint, which stands for an `Int` or a `Float` not yet chosen.
+The `MonoType` and `Constraint` docstrings in `Compiler.AST.Monomorphized` own
+that rule. This module walks the types of a monomorphized graph looking for
+one.
 
-At all stages past monomorphization, every type has a concrete MonoType shape:
-MInt, MFloat, MBool, MChar, MString, MUnit, Mono.mList, Mono.mTuple, Mono.mRecord, Mono.mCustom,
-Mono.mFunction. MVar should only appear with constraint CEcoValue.
+`expectMonoTypesFullyElaborated` monomorphizes a program with
+`TestLogic.TestPipeline.runToMono` and walks the types in the resulting graph:
+each node's type, the types of expressions in its body, and the parameter
+types of tail-recursive functions and closures. Despite the name, the only
+type it rejects is a number variable. Every concrete type passes, and so does
+an `MVar` with the `CEcoValue` constraint, a variable whose values are always
+boxed.
 
-This module reuses the existing typed optimization pipeline to verify
-that monomorphization produces valid MonoTypes.
+The graph checked is the one `runToMono` returns, produced by the
+substitution engine before any post-monomorphization inlining or global
+optimization. The engine's final prune has already turned every number
+variable it finds in the types of the nodes it keeps into `MInt`, and crashes
+if one survives. Every type this module walks is one that prune reaches, so on
+this graph the check passes whenever `runToMono` succeeds.
+
+Among what is not checked:
+
+  - the element types of a tuple type and the field types of a record type,
+    which are accepted without being looked into;
+  - the decision tree of a `case`, including any branch expression held inline
+    in it, since only the branch bodies listed beside the tree are walked;
+  - the destructor of a destructuring and the type of an accessor value.
 
 -}
 
@@ -19,7 +40,15 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| MONO\_001: Verify all MonoTypes are fully elaborated.
+{-| Returns an expectation that passes when no number variable is found in the
+types walked in the monomorphized graph of `srcModule`. Tuple element and
+record field types are not looked into.
+
+It fails, with the pipeline's message, when `runToMono` fails. The engine has
+already closed every number variable this walk can reach, so in practice that
+is the only way it fails. A failure from the walk would list each number
+variable found, one per line, labelled with the `SpecId` of its node.
+
 -}
 expectMonoTypesFullyElaborated : Src.Module -> Expect.Expectation
 expectMonoTypesFullyElaborated srcModule =
@@ -45,11 +74,12 @@ expectMonoTypesFullyElaborated srcModule =
 -- ============================================================================
 
 
-{-| Collect all issues with MonoTypes in the graph.
+{-| Returns the issues found in every node of the graph. A node is labelled with
+its position in the node array, which is its `SpecId`; empty slots are
+skipped but still counted.
 -}
 collectMonoTypeIssues : Mono.MonoGraph -> List String
 collectMonoTypeIssues (Mono.MonoGraph data) =
-    -- Traverse all nodes and collect types from each
     Array.foldl
         (\maybeNode ( specId, acc ) ->
             case maybeNode of
@@ -64,7 +94,9 @@ collectMonoTypeIssues (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Collect type issues from a single MonoNode.
+{-| Returns the issues in one node, labelled with `specId`. Every node's own type
+is checked. A definition or port also contributes its body, and a
+tail-recursive function its body and parameter types.
 -}
 collectNodeTypeIssues : Int -> Mono.MonoNode -> List String
 collectNodeTypeIssues specId node =
@@ -103,7 +135,15 @@ collectNodeTypeIssues specId node =
                 ++ collectExprTypeIssues context expr
 
 
-{-| Collect type issues from a MonoExpr.
+{-| Returns the issues, labelled with `context`, in the type of `expr` and in the
+types of its subexpressions, including a closure's parameter types and
+captured expressions and a `let`'s definition.
+
+Among what is not walked: a `case`'s decision tree, so a branch expression
+held inline in the tree is skipped and only the branch bodies listed beside it
+are visited; a destructuring's destructor; and `MonoUnit` and
+`MonoAccessorValue`, which contribute nothing.
+
 -}
 collectExprTypeIssues : String -> Mono.MonoExpr -> List String
 collectExprTypeIssues context expr =
@@ -181,7 +221,12 @@ collectExprTypeIssues context expr =
             []
 
 
-{-| Collect type issues from a MonoDef.
+{-| Returns the issues, labelled with `context`, in a local definition's body
+and, for a tail-recursive definition, its parameter types.
+
+The body's type is checked here and again by the walk of the body, so an
+issue in it is usually reported twice.
+
 -}
 collectDefTypeIssues : String -> Mono.MonoDef -> List String
 collectDefTypeIssues context def =
@@ -196,12 +241,12 @@ collectDefTypeIssues context def =
                 ++ collectExprTypeIssues context expr
 
 
-{-| Check a MonoType for elaboration issues.
+{-| Returns one issue, labelled with `context`, for each number variable in
+`monoType`, looking through list element types, custom type arguments, and
+function parameter and result types.
 
-Returns list of issue descriptions. Empty list means the type is valid.
-
-MONO\_001 rule: MVar is only allowed with CEcoValue constraint.
-MVar with CNumber means numeric polymorphism wasn't resolved.
+A `CEcoValue` variable passes. A tuple or record type passes without its
+element or field types being looked at.
 
 -}
 checkMonoType : String -> Mono.MonoType -> List String
@@ -229,11 +274,9 @@ checkMonoType context monoType =
             checkMonoType context elemType
 
         Mono.MTuple _ _ ->
-            -- Tuple layout types are already elaborated
             []
 
         Mono.MRecord _ _ ->
-            -- Record layout types are already elaborated
             []
 
         Mono.MCustom _ _ _ typeArgs ->
@@ -246,9 +289,7 @@ checkMonoType context monoType =
         Mono.MVar mvarId constraint ->
             case constraint of
                 Mono.CEcoValue ->
-                    -- CEcoValue is allowed - it's a polymorphic type that doesn't affect layout
                     []
 
                 Mono.CNumber ->
-                    -- CNumber should be resolved to MInt or MFloat after monomorphization
                     [ context ++ ": Found unresolved numeric type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' with CNumber constraint" ]

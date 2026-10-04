@@ -1,9 +1,19 @@
 module TestLogic.Type.PostSolve.KernelTypes exposing (expectKernelTypesValid)
 
-{-| Test logic for invariant POST\_002: Kernel types are correctly resolved.
+{-| Gives tests a check on the kernel type environment that PostSolve
+produces, the table from which typed optimization later takes the types of
+kernel functions.
 
-Verify that references to kernel (built-in) types like Int, Float, String,
-List, etc. are correctly resolved and consistent throughout the module.
+A kernel function is one referenced as `Elm.Kernel.Home.name` (or with the
+`Eco` prefix). The kernel type environment is keyed by home module and
+function name; `Compiler.Type.KernelTypes` owns it and `Compiler.Type.PostSolve`
+builds it.
+
+The check is much narrower than "kernel types are valid". It walks every
+entry's type and reports each type variable whose name is the empty string,
+labelled with the entry's `Home.name`. Any other type passes, including a bare
+type variable, and a record's extension variable is not looked at. A module
+that fails to canonicalize or type check fails with the pipeline's message.
 
 -}
 
@@ -16,7 +26,12 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that kernel function types are inferred from usage.
+{-| Runs `srcModule` through PostSolve and passes when no entry of the
+resulting kernel type environment contains a type variable with an empty name.
+
+It fails with one line per such variable outside a record's extension, or
+with the pipeline's message when canonicalization or type checking fails.
+
 -}
 expectKernelTypesValid : Src.Module -> Expect.Expectation
 expectKernelTypesValid srcModule =
@@ -42,15 +57,12 @@ expectKernelTypesValid srcModule =
 -- ============================================================================
 
 
-{-| Collect issues with kernel types.
-
-Kernel types should be consistent and well-formed.
-
+{-| Returns one message for each empty-named type variable, other than a
+record's extension variable, in any entry of `kernelEnv`, each labelled with
+the entry's `Home.name`.
 -}
 collectKernelTypeIssues : KernelTypes.KernelTypeEnv -> List String
 collectKernelTypeIssues kernelEnv =
-    -- The KernelTypeEnv maps (module, name) pairs to their types
-    -- Verify all kernel types are well-formed
     Dict.foldl
         (\( moduleName, funcName ) canType acc ->
             let
@@ -63,21 +75,19 @@ collectKernelTypeIssues kernelEnv =
         kernelEnv
 
 
-{-| Check if a kernel type is well-formed.
+{-| Returns one message for each type variable with an empty name inside
+`canType`, each starting with `context`.
 
-Kernel types should be:
-
-  - Non-empty (not just a bare type variable)
-  - Have valid type constructors
-  - Have consistent function signatures
+The label gains " arg" or " result" on entering either side of a function
+type, and a dot and the field name on entering a record field; other nested
+types keep the label they were given. A record's extension variable is not
+examined. Nothing else about the type is checked.
 
 -}
 checkKernelTypeWellFormed : String -> Can.Type Name -> List String
 checkKernelTypeWellFormed context canType =
     case canType of
         Can.TVar name ->
-            -- Kernel types should generally not be bare type variables
-            -- (they should be function types or concrete types)
             if String.isEmpty name then
                 [ context ++ ": Kernel type has empty type variable name" ]
 

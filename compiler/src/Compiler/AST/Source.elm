@@ -14,18 +14,40 @@ module Compiler.AST.Source exposing
     , moduleEncoder, moduleDecoder, typeEncoder, typeDecoder
     )
 
-{-| Source AST preserving original formatting and comments.
+{-| The parsed form of an Elm module, holding enough of what was written for the
+module to be printed back as Elm source as well as compiled.
 
-This module defines the "source-faithful" AST produced by the parser. Unlike
-the Canonical AST, this representation preserves all formatting details needed
-to reproduce the original source code exactly, including:
+Besides the syntax, this tree keeps the ordinary comments found between
+tokens, the spelling of each number literal, whether a string was
+triple-quoted, the parentheses the source wrote round an expression or a
+pattern, and each doc comment as a slice of the file's text.
 
-  - Comments (block and line) attached to AST nodes
-  - End-of-line comments
-  - Multiline formatting hints
-  - Original numeric literal representations
+Comments are attached by pairing a value with the comments that sit next to it.
+The wrappers are named by how many groups of comments they hold: a `C1` holds
+one group and a `C2` two, and an `Eol` variant adds room for an end-of-line
+comment. The type does not say on which side of the value a group lies. The
+parser decides that at each place a wrapper is used, so in a top-level value
+the `C1` of the body holds the comments after the `=` but the `C1` of the name
+holds the comments just before the `=`.
 
-This is essential for elm-format and other source-to-source tools.
+Each comment between tokens is an `FComment`. Doc comments, written between
+`{-|` and `-}`, are not among them: they are `Comment` values, collected in
+the module's `Docs`.
+
+The tree does not hold enough to reproduce a file byte for byte. Whitespace is
+not kept, and the parser drops some comments, among them those between an
+operator and a `let`, `case`, `if` or lambda that follows it, those inside a
+`()` pattern, and those inside the `( .. )` of an exposed type. Several lists
+are in reverse source order: the module's declarations and their doc comments,
+as `Compiler.Parse.Module` describes, and the fields of a record pattern.
+
+The second half of the file is a binary codec for the whole tree, in the format
+of `Utils.Bytes.Encode`. A value of a type with more than one constructor is
+written as a one-byte tag followed by its parts; a type with one constructor is
+written as its parts alone. Each tag is an integer literal in the encoder's
+`case`, mapped back by the matching decoder, and a decoder fails on a tag it
+does not know. Regions are written in the fixed form of
+`Compiler.Reporting.Annotation`.
 
 
 # Comment Containers
@@ -107,13 +129,31 @@ import Utils.Bytes.Encode as BE
 -- ====== FORMAT ======
 
 
-{-| Controls whether a construct should be formatted across multiple lines.
+{-| A flag asking for a construct to be printed across several lines.
+
+The parser never builds one. Among the types of this module, only `Pair` holds
+one.
+
 -}
 type ForceMultiline
     = ForceMultiline Bool
 
 
-{-| Represents a single formatting comment from the source file.
+{-| One ordinary comment, written between tokens in the source.
+
+`BlockComment` is a `{- -}` comment. It holds the text between the delimiters,
+split into lines, with any nested comment left in the text.
+
+`LineComment` is a `--` comment. It holds the text after the `--` up to the end
+of the line.
+
+The other three are the comment trick, a way of switching code on and off by
+editing one character. `CommentTrickOpener` stands for `{--}`,
+`CommentTrickCloser` for a `--` followed by a closing brace, and
+`CommentTrickBlock` for `{--` followed by its text and `-}`. The parser never
+produces these three: it reads every ordinary comment as a `BlockComment` or
+a `LineComment`.
+
 -}
 type FComment
     = BlockComment (List String)
@@ -123,53 +163,71 @@ type FComment
     | CommentTrickBlock String
 
 
-{-| A list of formatting comments.
+{-| The ordinary comments found together at one place in the source.
 -}
 type alias FComments =
     List FComment
 
 
-{-| Value with comments before it.
+{-| A value paired with one group of comments that belongs with it.
+
+The type does not say on which side of the value the comments lie; the parser
+decides at each place a `C1` is used. For the body of a top-level value they
+are the comments after its `=`, and for its name they are the comments just
+before the `=`.
+
 -}
 type alias C1 a =
     ( FComments, a )
 
 
-{-| Map a function over the value in a C1 container, preserving comments.
+{-| Applies `f` to the value in a `C1`, keeping its comments.
 -}
 c1map : (a -> b) -> C1 a -> C1 b
 c1map f ( comments, a ) =
     ( comments, f a )
 
 
-{-| Extract the value from a C1 container, discarding comments.
+{-| Returns the value in a `C1` without its comments.
 -}
 c1Value : C1 a -> a
 c1Value ( _, a ) =
     a
 
 
-{-| Value with comments before and after it.
+{-| A value paired with two groups of comments that belong with it.
+
+The type does not say on which side of the value each group lies; the parser
+decides at each place a `C2` is used. For the expression a `case` examines they
+are the comments before it and after it. For the type in a top-level annotation
+both groups come before the type, one on each side of the `:`.
+
 -}
 type alias C2 a =
     ( ( FComments, FComments ), a )
 
 
-{-| Map a function over the value in a C2 container, preserving before and after comments.
+{-| Applies `f` to the value in a `C2`, keeping both groups of comments.
 -}
 c2map : (a -> b) -> C2 a -> C2 b
 c2map f ( ( before, after ), a ) =
     ( ( before, after ), f a )
 
 
-{-| Extract the value from a C2 container, discarding comments.
+{-| Returns the value in a `C2` without its comments.
 -}
 c2Value : C2 a -> a
 c2Value ( _, a ) =
     a
 
 
-{-| Sequence a list of C2 values, collecting all comments into a single C2.
+{-| Combines a list of `C2` values into one `C2` holding the list of values, in
+order.
+
+The first group of comments in the result is the first groups of the elements
+joined in list order, and the second group is their second groups joined the
+same way.
+
 -}
 sequenceAC2 : List (C2 a) -> C2 (List a)
 sequenceAC2 =
@@ -180,63 +238,74 @@ sequenceAC2 =
         ( ( [], [] ), [] )
 
 
-{-| Value with optional end-of-line comment after it.
+{-| A value with room for an end-of-line comment after it, and no other comments.
+
+The parser never fills an end-of-line slot: every `C0Eol`, `C1Eol` and `C2Eol`
+it builds holds `Nothing` there.
+
 -}
 type alias C0Eol a =
     ( Maybe String, a )
 
 
-{-| Map a function over the value in a C0Eol container, preserving end-of-line comment.
+{-| Applies `f` to the value in a `C0Eol`, keeping its end-of-line comment.
 -}
 c0EolMap : (a -> b) -> C0Eol a -> C0Eol b
 c0EolMap f ( eol, a ) =
     ( eol, f a )
 
 
-{-| Value with comments before it and optional end-of-line comment after it.
+{-| A value with one group of comments and room for an end-of-line comment.
 -}
 type alias C1Eol a =
     ( FComments, Maybe String, a )
 
 
-{-| Value with comments before and after it, plus optional end-of-line comment.
+{-| A value with two groups of comments and room for an end-of-line comment.
+
+As with `C2`, the parser decides at each place it is used on which side of the
+value each group lies. For an entry of a list expression both groups come
+before the entry: the comments before the comma that precedes it, and those
+after that comma (for the first entry, nothing and the comments after the
+`[`).
+
 -}
 type alias C2Eol a =
     ( ( FComments, FComments, Maybe String ), a )
 
 
-{-| Map a function over the value in a C2Eol container, preserving comments and end-of-line.
+{-| Applies `f` to the value in a `C2Eol`, keeping its comments and its
+end-of-line comment.
 -}
 c2EolMap : (a -> b) -> C2Eol a -> C2Eol b
 c2EolMap f ( ( before, after, eol ), a ) =
     ( ( before, after, eol ), f a )
 
 
-{-| Extract the value from a C2Eol container, discarding comments and end-of-line.
+{-| Returns the value in a `C2Eol` without its comments.
 -}
 c2EolValue : C2Eol a -> a
 c2EolValue ( _, a ) =
     a
 
 
-{-| This represents a list of things that have a clear start delimiter but no
-clear end delimiter.
-There must be at least one item.
-Comments can appear before the last item, or around any other item.
-An end-of-line comment can also appear after the last item.
+{-| A non-empty sequence with a delimiter before each item and nothing to close
+it, such as the constructors of a custom type, each introduced by `=` or `|`.
 
-For example:
-= a
-= a, b, c
+`OpenCommentedList rest last` keeps the last item apart from the others. Each
+earlier item carries two groups of comments and room for an end-of-line
+comment; the last carries one group and room for an end-of-line comment.
 
-TODO: this should be replaced with (Sequence a)
+No part of the parsed tree holds one: the parser keeps a custom type's
+constructors as a plain list. It is a shape for code that prints the tree.
 
 -}
 type OpenCommentedList a
     = OpenCommentedList (List (C2Eol a)) (C1Eol a)
 
 
-{-| Map a function over all elements in an OpenCommentedList.
+{-| Applies `f` to every item of an `OpenCommentedList`, keeping all of the
+comments.
 -}
 openCommentedListMap : (a -> b) -> OpenCommentedList a -> OpenCommentedList b
 openCommentedListMap f (OpenCommentedList rest ( preLst, eolLst, lst )) =
@@ -245,21 +314,20 @@ openCommentedListMap f (OpenCommentedList rest ( preLst, eolLst, lst )) =
         ( preLst, eolLst, f lst )
 
 
-{-| Represents a delimiter-separated pair.
+{-| Two things joined by a delimiter, such as a record field and its value
+either side of `=`, or a field and its type either side of `:`.
 
-Comments can appear after the key or before the value.
-
-For example:
-
-key = value
-key : value
+The delimiter itself is not stored. In `Pair key value multiline`, `key` carries
+the comments after it and `value` the comments before it, so both groups lie
+between them. Like `OpenCommentedList`, no part of the parsed tree holds one.
 
 -}
 type Pair key value
     = Pair (C1 key) (C1 value) ForceMultiline
 
 
-{-| Map functions over both the key and value in a Pair.
+{-| Applies `fa` to the key and `fb` to the value of a `Pair`, keeping the
+comments and the multiline flag.
 -}
 mapPair : (a1 -> a2) -> (b1 -> b2) -> Pair a1 b1 -> Pair a2 b2
 mapPair fa fb (Pair k v fm) =
@@ -270,13 +338,63 @@ mapPair fa fb (Pair k v fm) =
 -- ====== EXPRESSIONS ======
 
 
-{-| Expression with source location.
+{-| An expression and the region of source it was parsed from.
 -}
 type alias Expr =
     A.Located Expr_
 
 
-{-| The different kinds of expressions in Elm source code.
+{-| One expression of Elm source, in the form it was written.
+
+`Chr` and `Str` hold the literal in escaped form, as `Compiler.Parse.String`
+produces it, not the value it denotes. The `Bool` of `Str` is `True` for a
+triple-quoted string.
+
+`Int` and `Float` hold the value and the literal's spelling, such as `0xFF` or
+`1e3`.
+
+`Var` is a name without a module prefix and `VarQual` a name with one, the
+prefix first. Their `VarType` says whether the name is lower-case or
+capitalised.
+
+`List` holds its entries and then the comments just before the closing bracket.
+
+`Op` is an operator used as a value, as in `(+)`.
+
+`Negate` is a prefix minus. The parser puts it round a single term only, so
+`-f x` is not a negated call.
+
+`Binops` is a whole chain of infix operators, kept flat: each operand paired
+with the operator after it, then the last operand. Precedence and
+associativity have not been applied. A parsed chain never holds another
+`Binops` as an operand.
+
+`Lambda` holds its argument patterns and its body. `Call` is a function applied
+to arguments; the parser builds one only when there is at least one.
+
+`If` holds the first condition and branch, each `else if` condition and branch
+after it, and the final `else` branch, so a chain of `else if` is one `If`.
+
+`Let` holds its definitions, the comments between `in` and the body, and the
+body.
+
+`Case` holds the expression it examines and its branches, each a pattern and an
+expression.
+
+`Accessor` is a field accessor such as `.name`, and `Access` a field read from
+an expression, as in `r.name`.
+
+`Update` is a record update, `{ r | ... }`. The parser always makes the record
+being updated a lower-case `Var`.
+
+`Record` is a record literal, `Unit` is `()`, and `Tuple` is a tuple of two or
+more, its first two elements kept apart from the rest.
+
+`Shader` is a block of GLSL, as `Compiler.AST.Utils.Shader` describes.
+
+`Parens` is an expression the source wrapped in parentheses, kept so that they
+can be printed again.
+
 -}
 type Expr_
     = Chr String
@@ -304,7 +422,8 @@ type Expr_
     | Parens (C2 Expr)
 
 
-{-| Distinguishes lowercase variables from uppercase constructors.
+{-| Whether a variable names a lower-case value (`LowVar`) or a capitalised one,
+such as a constructor (`CapVar`).
 -}
 type VarType
     = LowVar
@@ -315,7 +434,12 @@ type VarType
 -- ====== DEFINITIONS ======
 
 
-{-| A definition in a let expression: either a function definition or destructuring assignment.
+{-| One definition inside a `let`.
+
+`Define` binds a name: it holds the name, the argument patterns, the body, and
+the type annotation if one was written. `Destruct` binds the variables of a
+pattern, as in `( a, b ) = pair`.
+
 -}
 type Def
     = Define (A.Located Name) (List (C1 Pattern)) (C1 Expr) (Maybe (C1 (C2 Type)))
@@ -326,13 +450,41 @@ type Def
 -- ====== PATTERN ======
 
 
-{-| Pattern with source location.
+{-| A pattern and the region of source it was parsed from.
 -}
 type alias Pattern =
     A.Located Pattern_
 
 
-{-| The different kinds of patterns used in destructuring and case expressions.
+{-| One pattern of Elm source, in the form it was written.
+
+`PAnything` is the wildcard `_`. The parser always gives it the empty name,
+since it rejects `_` followed by a name.
+
+`PVar` binds a variable.
+
+`PRecord` holds the names of the fields it binds, which the parser stores in
+reverse source order.
+
+`PAlias` is a pattern followed by `as` and a name.
+
+`PUnit` is `()`. The parser always gives it an empty list of comments.
+
+`PTuple` is a tuple of two or more, its first two elements kept apart from the
+rest.
+
+`PCtor` is a constructor applied to argument patterns, and `PCtorQual` the same
+with a module prefix, the prefix first. Their `A.Region` argument covers the
+constructor's name only; the pattern's own region covers the arguments too.
+
+`PList` is a list pattern and `PCons` is `head :: tail`.
+
+`PChr`, `PStr` and `PInt` are literal patterns, holding what `Chr`, `Str` and
+`Int` hold in an expression.
+
+`PParens` is a pattern the source wrapped in parentheses, kept so that they can
+be printed again.
+
 -}
 type Pattern_
     = PAnything Name
@@ -355,13 +507,33 @@ type Pattern_
 -- ====== TYPE ======
 
 
-{-| Type annotation with source location.
+{-| A type as written in the source, and the region it was parsed from.
 -}
 type alias Type =
     A.Located Type_
 
 
-{-| The different kinds of type annotations in Elm source code.
+{-| One type of Elm source, as written in an annotation or a declaration.
+
+`TLambda` is one arrow, from its argument to its result, so `a -> b -> c` is an
+arrow whose result is the arrow `b -> c`.
+
+`TVar` is a type variable.
+
+`TType` is a named type applied to its arguments, and `TTypeQual` the same with
+a module prefix, the prefix first. Their `A.Region` argument covers the type's
+name only.
+
+`TRecord` is a record type. It holds its fields, the variable it extends when
+written as `{ r | ... }`, and the comments just before the closing brace.
+
+`TUnit` is `()`, and `TTuple` is a tuple of two or more, its first two elements
+kept apart from the rest.
+
+`TParens` is a parenthesised type with comments inside its parentheses. A
+parenthesised type without such comments is stored as the bare inner type, so
+its parentheses are not kept.
+
 -}
 type Type_
     = TLambda (C0Eol Type) (C2Eol Type)
@@ -378,7 +550,18 @@ type Type_
 -- ====== MODULE ======
 
 
-{-| Data contained in a module, including all top-level declarations.
+{-| Everything parsed from one module file.
+
+`name` is `Nothing` for a file with no `module` line, and for such a file
+`exports` is an open `exposing (..)` with the region `A.one`.
+
+`values`, `unions`, `aliases` and `infixes` are in reverse source order, as
+`Compiler.Parse.Module` describes. Ports are not among them; they are in
+`effects`.
+
+`imports` starts with the default imports the parser adds, except when the
+package is `elm/core`, followed by the file's `import` lines in source order.
+
 -}
 type alias ModuleData =
     { name : Maybe (A.Located Name)
@@ -393,13 +576,14 @@ type alias ModuleData =
     }
 
 
-{-| A complete Elm module with all its declarations.
+{-| A parsed module. It wraps `ModuleData` and adds nothing to it.
 -}
 type Module
     = Module ModuleData
 
 
-{-| Extract the module name, defaulting to the main module name if unnamed.
+{-| Returns the name from the module's `module` line, or `Main`
+(`Name.mainModule`) for a file without one.
 -}
 getName : Module -> Name
 getName (Module data) =
@@ -411,20 +595,33 @@ getName (Module data) =
             Name.mainModule
 
 
-{-| Extract the imported module name from an Import.
+{-| Returns the name of the module an import brings in, as written, without any
+alias.
 -}
 getImportName : Import -> Name
 getImportName (Import ( _, A.At _ name ) _ _) =
     name
 
 
-{-| An import statement with optional alias and exposing clause.
+{-| One import: an `import` line of the file, or one of the default imports the
+parser adds. It holds the module's name, its alias if `as` gave one, and its
+`exposing` list.
+
+An import written without `exposing` gets an empty `Explicit` list whose region
+is `A.zero`. An `Import` has no region of its own; only its name does.
+
 -}
 type Import
     = Import (C1 (A.Located Name)) (Maybe (C2 Name)) (C2 Exposing)
 
 
-{-| Data for a top-level value definition.
+{-| A top-level value or function definition, with its comments.
+
+`comments` holds the ordinary comments between the definition's doc comment and
+the definition, and is empty when there is no doc comment. The doc comment
+itself is in the module's `Docs`. `tipe` is the type annotation, if one was
+written.
+
 -}
 type alias ValueData =
     { comments : FComments
@@ -435,19 +632,24 @@ type alias ValueData =
     }
 
 
-{-| A top-level value or function definition.
+{-| A top-level value or function definition. It wraps `ValueData` and adds
+nothing to it.
 -}
 type Value
     = Value ValueData
 
 
-{-| A union type declaration with type parameters and constructors.
+{-| A custom type declaration: its name, its type parameters, and its
+constructors, each a name with the types of its arguments.
 -}
 type Union
     = Union (C2 (A.Located Name)) (List (C1 (A.Located Name))) (List (C2Eol ( A.Located Name, List (C1 Type) )))
 
 
-{-| Data for a type alias declaration.
+{-| A type alias declaration, with its comments.
+
+`comments` holds the comments between the keywords `type` and `alias`.
+
 -}
 type alias AliasData =
     { comments : FComments
@@ -457,13 +659,19 @@ type alias AliasData =
     }
 
 
-{-| A type alias declaration.
+{-| A type alias declaration. It wraps `AliasData` and adds nothing to it.
 -}
 type Alias
     = Alias AliasData
 
 
-{-| Data for an infix operator declaration.
+{-| An infix declaration, which makes an operator stand for a named function and
+gives it an associativity and a precedence.
+
+`op` is the operator and `name` the function it stands for. The parser accepts
+infix declarations only in kernel projects, as `Compiler.Parse.Module`
+describes.
+
 -}
 type alias InfixData =
     { op : C2 Name
@@ -473,19 +681,32 @@ type alias InfixData =
     }
 
 
-{-| An infix operator declaration.
+{-| An infix declaration. It wraps `InfixData` and adds nothing to it.
 -}
 type Infix
     = Infix InfixData
 
 
-{-| A port declaration for JavaScript interop.
+{-| A `port` declaration: its name and its type.
+
+The `FComments` field is the comments between the `:` and the type. A `Port`
+has no region of its own; only its name does.
+
 -}
 type Port
     = Port FComments (C2 (A.Located Name)) Type
 
 
-{-| Effect declarations for a module: none, ports, or effect manager.
+{-| The kind of effects a module declares.
+
+`NoEffects` is an ordinary module. `Ports` holds a port module's port
+declarations. `Manager` is an effect module, with the region of its
+`effect module` keywords and what it manages.
+
+The parser checks these against the kind of project, as `Compiler.Parse.Module`
+describes. A file with no `module` line skips that check and keeps any ports it
+declares as `Ports`.
+
 -}
 type Effects
     = NoEffects
@@ -493,7 +714,8 @@ type Effects
     | Manager A.Region Manager
 
 
-{-| Type of effect manager: commands, subscriptions, or both.
+{-| What an effect module manages: commands, subscriptions or both. Each is given
+by the name of the type that represents it, as in `command = MyCmd`.
 -}
 type Manager
     = Cmd (C2 (C2 (A.Located Name)))
@@ -501,14 +723,28 @@ type Manager
     | Fx (C2 (C2 (A.Located Name))) (C2 (C2 (A.Located Name)))
 
 
-{-| Module documentation: either missing or present with overview comment.
+{-| The doc comments of a module: the module's own, and those of its
+declarations.
+
+`YesDocs` carries the module's doc comment. `NoDocs` is a module without one,
+and carries the region where it was looked for, which is `A.one` for a file
+with no `module` line.
+
+Both carry the declarations' doc comments, each paired with the name it
+documents, in reverse source order, as `Compiler.Parse.Module` describes. A
+declaration with no doc comment has no entry.
+
 -}
 type Docs
     = NoDocs A.Region (List ( Name, Comment ))
     | YesDocs Comment (List ( Name, Comment ))
 
 
-{-| A documentation comment containing source text.
+{-| A doc comment, held as the `Snippet` of the text between `{-|` and `-}`.
+
+A snippet holds the whole text of its file, so encoding a `Comment` writes the
+whole file.
+
 -}
 type Comment
     = Comment Snippet
@@ -518,14 +754,24 @@ type Comment
 -- ====== EXPOSING ======
 
 
-{-| The exposing clause of a module: either exposing all or an explicit list.
+{-| An `exposing` list.
+
+`Open` is `exposing (..)`, with the comments before and after the `..`.
+`Explicit` holds the items, with a region running from just after the `(` to
+just after the `)`.
+
 -}
 type Exposing
     = Open FComments FComments
     | Explicit (A.Located (List (C2 Exposed)))
 
 
-{-| An item being exposed from a module: value, type, or operator.
+{-| One item of an explicit `exposing` list.
+
+`Lower` is a value. `Upper` is a type, with whether its constructors are
+exposed. `Operator` is an operator in parentheses, with a region covering the
+parentheses and the operator.
+
 -}
 type Exposed
     = Lower (A.Located Name)
@@ -533,7 +779,11 @@ type Exposed
     | Operator A.Region Name
 
 
-{-| Privacy of a type's constructors: public (..) or private (not exposed).
+{-| Whether an exposed type exposes its constructors.
+
+`Public` is `Type(..)`, with the region of the `..` only. `Private` is a bare
+`Type`. Comments inside the parentheses are not kept.
+
 -}
 type Privacy
     = Public A.Region
@@ -544,6 +794,8 @@ type Privacy
 -- ====== ENCODERS and DECODERS ======
 
 
+{-| Encodes one comment as a tag byte followed by its text, if it has any.
+-}
 fCommentEncoder : FComment -> Bytes.Encode.Encoder
 fCommentEncoder formatComment =
     case formatComment of
@@ -572,6 +824,8 @@ fCommentEncoder formatComment =
                 ]
 
 
+{-| A decoder for one comment as `fCommentEncoder` writes it.
+-}
 fCommentDecoder : Bytes.Decode.Decoder FComment
 fCommentDecoder =
     Bytes.Decode.unsignedInt8
@@ -598,19 +852,22 @@ fCommentDecoder =
             )
 
 
+{-| Encodes a list of comments.
+-}
 fCommentsEncoder : FComments -> Bytes.Encode.Encoder
 fCommentsEncoder =
     BE.list fCommentEncoder
 
 
-{-| Decode a list of format comments from bytes.
+{-| A decoder for a list of comments as `fCommentsEncoder` writes it.
 -}
 fCommentsDecoder : Bytes.Decode.Decoder FComments
 fCommentsDecoder =
     BD.list fCommentDecoder
 
 
-{-| Encode a C0Eol value with its end-of-line comment to bytes.
+{-| Encodes a `C0Eol` as its end-of-line comment, then its value as `encoder`
+writes it.
 -}
 c0EolEncoder : (a -> Bytes.Encode.Encoder) -> C0Eol a -> Bytes.Encode.Encoder
 c0EolEncoder encoder ( eol, a ) =
@@ -620,7 +877,8 @@ c0EolEncoder encoder ( eol, a ) =
         ]
 
 
-{-| Decode a C0Eol value with its end-of-line comment from bytes.
+{-| Produces a decoder for a `C0Eol` as `c0EolEncoder` writes it, reading the
+value with `decoder`.
 -}
 c0EolDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (C0Eol a)
 c0EolDecoder decoder =
@@ -629,7 +887,7 @@ c0EolDecoder decoder =
         decoder
 
 
-{-| Encode a C1 value with its comments to bytes.
+{-| Encodes a `C1` as its comments, then its value as `encoder` writes it.
 -}
 c1Encoder : (a -> Bytes.Encode.Encoder) -> C1 a -> Bytes.Encode.Encoder
 c1Encoder encoder ( comments, a ) =
@@ -639,13 +897,17 @@ c1Encoder encoder ( comments, a ) =
         ]
 
 
-{-| Decode a C1 value with its comments from bytes.
+{-| Produces a decoder for a `C1` as `c1Encoder` writes it, reading the value with
+`decoder`.
 -}
 c1Decoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (C1 a)
 c1Decoder decoder =
     Bytes.Decode.map2 Tuple.pair fCommentsDecoder decoder
 
 
+{-| Encodes a `C2` as its first group of comments, its second, then its value as
+`encoder` writes it.
+-}
 c2Encoder : (a -> Bytes.Encode.Encoder) -> C2 a -> Bytes.Encode.Encoder
 c2Encoder encoder ( ( preComments, postComments ), a ) =
     Bytes.Encode.sequence
@@ -655,6 +917,9 @@ c2Encoder encoder ( ( preComments, postComments ), a ) =
         ]
 
 
+{-| Produces a decoder for a `C2` as `c2Encoder` writes it, reading the value with
+`decoder`.
+-}
 c2Decoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (C2 a)
 c2Decoder decoder =
     Bytes.Decode.map3
@@ -666,7 +931,8 @@ c2Decoder decoder =
         decoder
 
 
-{-| Encode a C2Eol value with its comments and end-of-line to bytes.
+{-| Encodes a `C2Eol` as its two groups of comments, its end-of-line comment, then
+its value as `encoder` writes it.
 -}
 c2EolEncoder : (a -> Bytes.Encode.Encoder) -> C2Eol a -> Bytes.Encode.Encoder
 c2EolEncoder encoder ( ( preComments, postComments, eol ), a ) =
@@ -678,7 +944,8 @@ c2EolEncoder encoder ( ( preComments, postComments, eol ), a ) =
         ]
 
 
-{-| Decode a C2Eol value with its comments and end-of-line from bytes.
+{-| Produces a decoder for a `C2Eol` as `c2EolEncoder` writes it, reading the
+value with `decoder`.
 -}
 c2EolDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (C2Eol a)
 c2EolDecoder decoder =
@@ -692,20 +959,22 @@ c2EolDecoder decoder =
         decoder
 
 
-{-| Encode a Type with its location to bytes.
+{-| Encodes a type and its region, for `typeDecoder` to read back.
 -}
 typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder =
     A.locatedEncoder internalTypeEncoder
 
 
-{-| Decode a Type with its location from bytes.
+{-| A decoder for a type that `typeEncoder` wrote.
 -}
 typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
     A.locatedDecoder internalTypeDecoder
 
 
+{-| Encodes one type, without its region, as a tag byte followed by its parts.
+-}
 internalTypeEncoder : Type_ -> Bytes.Encode.Encoder
 internalTypeEncoder type_ =
     case type_ of
@@ -765,6 +1034,8 @@ internalTypeEncoder type_ =
                 ]
 
 
+{-| A decoder for one type as `internalTypeEncoder` writes it.
+-}
 internalTypeDecoder : Bytes.Decode.Decoder Type_
 internalTypeDecoder =
     Bytes.Decode.unsignedInt8
@@ -816,7 +1087,12 @@ internalTypeDecoder =
             )
 
 
-{-| Encode a Module and all its components to bytes.
+{-| Encodes a whole module, for `moduleDecoder` to read back.
+
+Each doc comment is written with the whole text of the file it came from (see
+`Comment`), so the encoding of a documented module holds that text once per doc
+comment.
+
 -}
 moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder (Module data) =
@@ -833,7 +1109,7 @@ moduleEncoder (Module data) =
         ]
 
 
-{-| Decode a Module and all its components from bytes.
+{-| A decoder for a module that `moduleEncoder` wrote.
 -}
 moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
@@ -861,6 +1137,8 @@ moduleDecoder =
         effectsDecoder
 
 
+{-| Encodes an `exposing` list as a tag byte followed by its parts.
+-}
 exposingEncoder : Exposing -> Bytes.Encode.Encoder
 exposingEncoder exposing_ =
     case exposing_ of
@@ -878,6 +1156,8 @@ exposingEncoder exposing_ =
                 ]
 
 
+{-| A decoder for an `exposing` list as `exposingEncoder` writes it.
+-}
 exposingDecoder : Bytes.Decode.Decoder Exposing
 exposingDecoder =
     Bytes.Decode.unsignedInt8
@@ -897,6 +1177,8 @@ exposingDecoder =
             )
 
 
+{-| Encodes a module's doc comments as a tag byte followed by its parts.
+-}
 docsEncoder : Docs -> Bytes.Encode.Encoder
 docsEncoder docs =
     case docs of
@@ -915,6 +1197,8 @@ docsEncoder docs =
                 ]
 
 
+{-| A decoder for a module's doc comments as `docsEncoder` writes them.
+-}
 docsDecoder : Bytes.Decode.Decoder Docs
 docsDecoder =
     Bytes.Decode.unsignedInt8
@@ -936,6 +1220,8 @@ docsDecoder =
             )
 
 
+{-| Encodes an import as its parts in order, with no tag.
+-}
 importEncoder : Import -> Bytes.Encode.Encoder
 importEncoder (Import importName maybeAlias exposing_) =
     Bytes.Encode.sequence
@@ -945,6 +1231,8 @@ importEncoder (Import importName maybeAlias exposing_) =
         ]
 
 
+{-| A decoder for an import as `importEncoder` writes it.
+-}
 importDecoder : Bytes.Decode.Decoder Import
 importDecoder =
     Bytes.Decode.map3 Import
@@ -953,6 +1241,8 @@ importDecoder =
         (c2Decoder exposingDecoder)
 
 
+{-| Encodes a top-level definition as its fields in order, with no tag.
+-}
 valueEncoder : Value -> Bytes.Encode.Encoder
 valueEncoder (Value v) =
     Bytes.Encode.sequence
@@ -964,6 +1254,8 @@ valueEncoder (Value v) =
         ]
 
 
+{-| A decoder for a top-level definition as `valueEncoder` writes it.
+-}
 valueDecoder : Bytes.Decode.Decoder Value
 valueDecoder =
     Bytes.Decode.map5 (\comments_ name_ args_ body_ tipe_ -> Value { comments = comments_, name = name_, args = args_, body = body_, tipe = tipe_ })
@@ -974,6 +1266,8 @@ valueDecoder =
         (BD.maybe (c1Decoder (c2Decoder typeDecoder)))
 
 
+{-| Encodes a custom type declaration as its parts in order, with no tag.
+-}
 unionEncoder : Union -> Bytes.Encode.Encoder
 unionEncoder (Union name args constructors) =
     Bytes.Encode.sequence
@@ -983,6 +1277,8 @@ unionEncoder (Union name args constructors) =
         ]
 
 
+{-| A decoder for a custom type declaration as `unionEncoder` writes it.
+-}
 unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
     Bytes.Decode.map3 Union
@@ -991,6 +1287,8 @@ unionDecoder =
         (BD.list (c2EolDecoder (BD.jsonPair (A.locatedDecoder BD.string) (BD.list (c1Decoder typeDecoder)))))
 
 
+{-| Encodes a type alias declaration as its fields in order, with no tag.
+-}
 aliasEncoder : Alias -> Bytes.Encode.Encoder
 aliasEncoder (Alias data) =
     Bytes.Encode.sequence
@@ -1001,6 +1299,8 @@ aliasEncoder (Alias data) =
         ]
 
 
+{-| A decoder for a type alias declaration as `aliasEncoder` writes it.
+-}
 aliasDecoder : Bytes.Decode.Decoder Alias
 aliasDecoder =
     Bytes.Decode.map4
@@ -1013,6 +1313,8 @@ aliasDecoder =
         (c1Decoder typeDecoder)
 
 
+{-| Encodes an infix declaration as its fields in order, with no tag.
+-}
 infixEncoder : Infix -> Bytes.Encode.Encoder
 infixEncoder (Infix data) =
     Bytes.Encode.sequence
@@ -1023,6 +1325,8 @@ infixEncoder (Infix data) =
         ]
 
 
+{-| A decoder for an infix declaration as `infixEncoder` writes it.
+-}
 infixDecoder : Bytes.Decode.Decoder Infix
 infixDecoder =
     Bytes.Decode.map4
@@ -1035,6 +1339,8 @@ infixDecoder =
         (c1Decoder BD.string)
 
 
+{-| Encodes a module's effects as a tag byte followed by its parts.
+-}
 effectsEncoder : Effects -> Bytes.Encode.Encoder
 effectsEncoder effects =
     case effects of
@@ -1055,6 +1361,8 @@ effectsEncoder effects =
                 ]
 
 
+{-| A decoder for a module's effects as `effectsEncoder` writes them.
+-}
 effectsDecoder : Bytes.Decode.Decoder Effects
 effectsDecoder =
     Bytes.Decode.unsignedInt8
@@ -1077,16 +1385,23 @@ effectsDecoder =
             )
 
 
+{-| Encodes a doc comment as its `Snippet`, which includes the whole text of the
+file.
+-}
 commentEncoder : Comment -> Bytes.Encode.Encoder
 commentEncoder (Comment snippet) =
     Snippet.encoder snippet
 
 
+{-| A decoder for a doc comment as `commentEncoder` writes it.
+-}
 commentDecoder : Bytes.Decode.Decoder Comment
 commentDecoder =
     Bytes.Decode.map Comment Snippet.decoder
 
 
+{-| Encodes a port declaration as its parts in order, with no tag.
+-}
 portEncoder : Port -> Bytes.Encode.Encoder
 portEncoder (Port typeComments name tipe) =
     Bytes.Encode.sequence
@@ -1096,6 +1411,8 @@ portEncoder (Port typeComments name tipe) =
         ]
 
 
+{-| A decoder for a port declaration as `portEncoder` writes it.
+-}
 portDecoder : Bytes.Decode.Decoder Port
 portDecoder =
     Bytes.Decode.map3 Port
@@ -1104,6 +1421,8 @@ portDecoder =
         typeDecoder
 
 
+{-| Encodes what an effect module manages as a tag byte followed by its parts.
+-}
 managerEncoder : Manager -> Bytes.Encode.Encoder
 managerEncoder manager =
     case manager of
@@ -1127,6 +1446,8 @@ managerEncoder manager =
                 ]
 
 
+{-| A decoder for what an effect module manages, as `managerEncoder` writes it.
+-}
 managerDecoder : Bytes.Decode.Decoder Manager
 managerDecoder =
     Bytes.Decode.unsignedInt8
@@ -1149,6 +1470,8 @@ managerDecoder =
             )
 
 
+{-| Encodes one item of an `exposing` list as a tag byte followed by its parts.
+-}
 exposedEncoder : Exposed -> Bytes.Encode.Encoder
 exposedEncoder exposed =
     case exposed of
@@ -1173,6 +1496,8 @@ exposedEncoder exposed =
                 ]
 
 
+{-| A decoder for one item of an `exposing` list as `exposedEncoder` writes it.
+-}
 exposedDecoder : Bytes.Decode.Decoder Exposed
 exposedDecoder =
     Bytes.Decode.unsignedInt8
@@ -1197,6 +1522,9 @@ exposedDecoder =
             )
 
 
+{-| Encodes a type's privacy as a tag byte, followed by the region of the `..` for
+`Public`.
+-}
 privacyEncoder : Privacy -> Bytes.Encode.Encoder
 privacyEncoder privacy =
     case privacy of
@@ -1210,6 +1538,8 @@ privacyEncoder privacy =
             Bytes.Encode.unsignedInt8 1
 
 
+{-| A decoder for a type's privacy as `privacyEncoder` writes it.
+-}
 privacyDecoder : Bytes.Decode.Decoder Privacy
 privacyDecoder =
     Bytes.Decode.unsignedInt8
@@ -1227,16 +1557,22 @@ privacyDecoder =
             )
 
 
+{-| Encodes a pattern and its region.
+-}
 patternEncoder : Pattern -> Bytes.Encode.Encoder
 patternEncoder =
     A.locatedEncoder pattern_Encoder
 
 
+{-| A decoder for a pattern as `patternEncoder` writes it.
+-}
 patternDecoder : Bytes.Decode.Decoder Pattern
 patternDecoder =
     A.locatedDecoder pattern_Decoder
 
 
+{-| Encodes one pattern, without its region, as a tag byte followed by its parts.
+-}
 pattern_Encoder : Pattern_ -> Bytes.Encode.Encoder
 pattern_Encoder pattern_ =
     case pattern_ of
@@ -1336,6 +1672,8 @@ pattern_Encoder pattern_ =
                 ]
 
 
+{-| A decoder for one pattern as `pattern_Encoder` writes it.
+-}
 pattern_Decoder : Bytes.Decode.Decoder Pattern_
 pattern_Decoder =
     Bytes.Decode.unsignedInt8
@@ -1407,16 +1745,23 @@ pattern_Decoder =
             )
 
 
+{-| Encodes an expression and its region.
+-}
 exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder =
     A.locatedEncoder expr_Encoder
 
 
+{-| A decoder for an expression as `exprEncoder` writes it.
+-}
 exprDecoder : Bytes.Decode.Decoder Expr
 exprDecoder =
     A.locatedDecoder expr_Decoder
 
 
+{-| Encodes one expression, without its region, as a tag byte followed by its
+parts.
+-}
 expr_Encoder : Expr_ -> Bytes.Encode.Encoder
 expr_Encoder expr_ =
     case expr_ of
@@ -1576,6 +1921,8 @@ expr_Encoder expr_ =
                 ]
 
 
+{-| A decoder for one expression as `expr_Encoder` writes it.
+-}
 expr_Decoder : Bytes.Decode.Decoder Expr_
 expr_Decoder =
     Bytes.Decode.unsignedInt8
@@ -1693,6 +2040,8 @@ expr_Decoder =
             )
 
 
+{-| Encodes a `VarType` as a single tag byte.
+-}
 varTypeEncoder : VarType -> Bytes.Encode.Encoder
 varTypeEncoder varType =
     Bytes.Encode.unsignedInt8
@@ -1705,6 +2054,8 @@ varTypeEncoder varType =
         )
 
 
+{-| A decoder for a `VarType` as `varTypeEncoder` writes it.
+-}
 varTypeDecoder : Bytes.Decode.Decoder VarType
 varTypeDecoder =
     Bytes.Decode.unsignedInt8
@@ -1722,6 +2073,8 @@ varTypeDecoder =
             )
 
 
+{-| Encodes a `let` definition as a tag byte followed by its parts.
+-}
 defEncoder : Def -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
@@ -1742,6 +2095,8 @@ defEncoder def =
                 ]
 
 
+{-| A decoder for a `let` definition as `defEncoder` writes it.
+-}
 defDecoder : Bytes.Decode.Decoder Def
 defDecoder =
     Bytes.Decode.unsignedInt8

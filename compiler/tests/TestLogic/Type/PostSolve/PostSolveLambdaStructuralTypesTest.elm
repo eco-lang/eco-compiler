@@ -1,13 +1,54 @@
 module TestLogic.Type.PostSolve.PostSolveLambdaStructuralTypesTest exposing (suite)
 
-{-| Test suite for invariant POST\_007.
+{-| Without these tests, a lambda whose recorded type after PostSolve is a bare
+type variable, a non-function type, or a function type of the wrong shape would
+reach later phases unnoticed. They check invariant POST\_007: after PostSolve,
+the type recorded for every lambda is a function type that agrees with the
+lambda's parameters and body.
 
-POST\_007: The PostSolve phase guarantees that every lambda expression in the
-canonical module has a concrete structural function type. PostSolve computes
-a TLambda chain from argument pattern types and body type when the solver did
-not supply a non-TVar type. The stored type must be alpha-equivalent to the
-recomputed structural type. Lambdas are now Group A (solver-owned via
-recordNodeVar) and should never remain as bare TVars or non-function shapes.
+The solver records the types of expression and pattern nodes in a
+`NodeTypes` array indexed by node id, as `Compiler.Type.PostSolve` describes. A
+lambda is a Group A node there, which records the solver variable for its own
+result, and PostSolve keeps Group A entries as they are, so the type checked
+here is the one the solver gave the lambda.
+
+The _structural type_ of a lambda `\p1 p2 -> body` is the curried function type
+`t1 -> t2 -> tb` built from the post-PostSolve types of its parameter patterns
+and of its body. The lambda's own type must be _alpha-equivalent_ to it: the
+two types are identical except that type variables may be renamed, and the
+renaming must be one-to-one and the same throughout the type. Record extension
+variables are renamed in the same one-to-one map as ordinary type variables.
+Most of the file is this comparison, `bijectiveAlphaEq`.
+
+Apart from the renaming the comparison is exact. A named type matches only one
+with the same home module and name. An alias matches only an alias with the
+same home module and name whose arguments and body match, so an alias never
+matches its own expansion. The arrow slot of a function type and the field
+positions of a record type are ignored.
+
+The programs are the standard test catalogue of
+`SourceIR.Suite.StandardTestSuites`, each compiled through PostSolve by
+`TestLogic.Type.PostSolve.CompileThroughPostSolve.compileToPostSolve`. A
+program that fails to compile fails the check.
+
+What the tests establish:
+
+  - `suite` applies `expectLambdaStructuralTypes` to each program. For every
+    `Can.Lambda` node that `TestLogic.Type.PostSolve.PostSolveInvariantHelpers.walkExprs`
+    lists, it checks that the lambda has a post-PostSolve type; that the type
+    is a `TLambda` at the top, so a bare variable or an alias of a function
+    type fails; that every parameter pattern has a non-negative id and a type,
+    and the body has a type; and that the lambda's type is alpha-equivalent to
+    its structural type. Every violation in a program is listed in one failure
+    message.
+
+Among what is not tested:
+
+  - Functions defined with parameters, such as `f x = ...` at the top level or
+    in a `let`. These are definitions, not lambda nodes.
+  - Whether PostSolve changes a lambda's type. Only the post-PostSolve array is
+    read, and the structural type is built from that same array.
+  - Arrow slots and record field positions.
 
 -}
 
@@ -25,7 +66,12 @@ import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
-{-| A violation of POST\_007.
+{-| One lambda that fails POST\_007, with the reason in `details`.
+
+`postType` is `Nothing` when the lambda has no post-PostSolve type, and
+`expectedType` is the structural type, `Nothing` unless the failure is that
+the two types are not alpha-equivalent.
+
 -}
 type alias Violation =
     { nodeId : Int
@@ -35,6 +81,9 @@ type alias Violation =
     }
 
 
+{-| The POST\_007 check, `expectLambdaStructuralTypes`, applied to every program
+of the standard test catalogue.
+-}
 suite : Test
 suite =
     Test.describe "POST_007: Lambda Structural Types"
@@ -42,7 +91,12 @@ suite =
         ]
 
 
-{-| Check that a module passes POST\_007.
+{-| Compiles `srcModule` through PostSolve and passes when every lambda in it
+passes `checkLambdaStructuralType`.
+
+It fails with the compiler's message when the program does not compile, and
+otherwise with every violation found, listed together.
+
 -}
 expectLambdaStructuralTypes : Src.Module -> Expect.Expectation
 expectLambdaStructuralTypes srcModule =
@@ -52,7 +106,6 @@ expectLambdaStructuralTypes srcModule =
 
         Ok artifacts ->
             let
-                -- Walk AST to find all lambda expression nodes
                 lambdaNodes =
                     Helpers.walkExprs artifacts.canonical
                         |> List.filter (\n -> isLambda n.node)
@@ -70,7 +123,7 @@ expectLambdaStructuralTypes srcModule =
                     Expect.fail (formatViolations vs)
 
 
-{-| Check if an expression node is a Lambda.
+{-| Returns whether an expression is a `Can.Lambda`.
 -}
 isLambda : Can.Expr_ -> Bool
 isLambda node =
@@ -82,13 +135,12 @@ isLambda node =
             False
 
 
-{-| Check a single lambda expression for POST\_007 compliance.
+{-| Returns the violation for one lambda node, or `Nothing` when it passes or
+the node is not a lambda.
 
-A lambda must:
-
-1.  Have a post-PostSolve type (not missing)
-2.  Have a TLambda chain type (not a bare TVar or non-function shape)
-3.  Be alpha-equivalent to the recomputed structural type from arg patterns and body
+The checks stop at the first that fails, in this order: the lambda has a type
+in `nodeTypes`; that type is a `TLambda` at the top; its structural type can be
+built, as `computeExpectedLambdaType` does; and the two are alpha-equivalent.
 
 -}
 checkLambdaStructuralType : Helpers.ExprNode -> PostSolve.NodeTypes -> Maybe Violation
@@ -105,7 +157,6 @@ checkLambdaStructuralType exprNode nodeTypes =
                         }
 
                 Just postType ->
-                    -- Check 1: Must be a TLambda (not bare TVar or non-function)
                     if not (isTLambda postType) then
                         Just
                             { nodeId = exprNode.id
@@ -115,10 +166,8 @@ checkLambdaStructuralType exprNode nodeTypes =
                             }
 
                     else
-                        -- Check 2: Recompute and verify alpha-equivalence
                         case computeExpectedLambdaType exprNode.id patterns bodyInfo.id nodeTypes of
                             LambdaTypeError errorMsg ->
-                                -- Can't verify structural match, report the error
                                 Just
                                     { nodeId = exprNode.id
                                     , details = "Cannot verify structural type: " ++ errorMsg
@@ -140,11 +189,11 @@ checkLambdaStructuralType exprNode nodeTypes =
                                             }
 
         _ ->
-            -- Not a lambda, skip
             Nothing
 
 
-{-| Check if a type is a TLambda chain.
+{-| Returns whether a type is a `TLambda` at the top. An alias of a function
+type is not.
 -}
 isTLambda : Can.Type Name -> Bool
 isTLambda tipe =
@@ -156,16 +205,23 @@ isTLambda tipe =
             False
 
 
-{-| Result of computing expected lambda type.
+{-| The outcome of building a lambda's structural type.
+
+`LambdaTypeOk` carries the structural type. `LambdaTypeError` carries a message
+naming the lambda and the body or parameter at fault.
+
 -}
 type LambdaTypeResult
     = LambdaTypeOk (Can.Type Name)
     | LambdaTypeError String
 
 
-{-| Compute the expected structural type for a lambda expression.
+{-| Builds the structural type of lambda `lambdaId` from the types `nodeTypes`
+holds for its parameter `patterns` and its body `bodyId`: for `\p1 p2 -> body`,
+the type `t1 -> t2 -> tb`.
 
-Lambda `\p1 p2 -> body` has type `p1Type -> p2Type -> bodyType`.
+A missing body type, or a parameter error from `collectPatternTypes`, gives
+`LambdaTypeError`. The arrows are built with no identity in their arrow slot.
 
 -}
 computeExpectedLambdaType : Int -> List Can.Pattern -> Int -> PostSolve.NodeTypes -> LambdaTypeResult
@@ -188,7 +244,13 @@ computeExpectedLambdaType lambdaId patterns bodyId nodeTypes =
                     LambdaTypeOk (List.foldr Can.tLambda bodyType argTypes)
 
 
-{-| Collect all pattern types, failing on first error.
+{-| Returns the types `nodeTypes` holds for `patterns`, in order, or an error
+when a pattern has a negative id or no type.
+
+The patterns are folded from the last, and the first error found is kept, so
+when several patterns fail the message names the last of them. `lambdaId` is
+used only in the message.
+
 -}
 collectPatternTypes : Int -> List Can.Pattern -> PostSolve.NodeTypes -> Result String (List (Can.Type Name))
 collectPatternTypes lambdaId patterns nodeTypes =
@@ -230,8 +292,14 @@ collectPatternTypes lambdaId patterns nodeTypes =
 -- ============================================================================
 
 
-{-| A bijective renaming map: tracks both forward (left->right) and reverse
-(right->left) mappings to ensure the TVar correspondence is injective.
+{-| The pairing of type variable names built up while comparing a left type
+with a right one.
+
+It is kept in both directions so that a pairing can be refused from either
+side: a left name already paired with a different right name, or a right name
+already paired with a different left name. Record extension variables are
+paired in the same maps as ordinary type variables.
+
 -}
 type alias Renaming =
     { forward : Dict.Dict String String -- left name -> right name
@@ -239,20 +307,32 @@ type alias Renaming =
     }
 
 
+{-| The renaming with no pairs, from which a comparison starts.
+-}
 emptyRenaming : Renaming
 emptyRenaming =
     { forward = Dict.empty, reverse = Dict.empty }
 
 
-{-| Check bijective alpha-equivalence: TVars must form a consistent 1-to-1
-mapping between the two types. Returns Ok with the final renaming on success,
-or Err with a description of the inconsistency.
+{-| Returns whether `a` and `b` are alpha-equivalent, in the exact sense the
+module documentation gives: `Ok` with the pairing of their type variables, or
+`Err` describing the first difference found.
+
+A type variable matches only a type variable, never another type.
+
 -}
 bijectiveAlphaEq : Can.Type Name -> Can.Type Name -> Result String Renaming
 bijectiveAlphaEq a b =
     bijectiveAlphaEqHelp emptyRenaming a b
 
 
+{-| Compares `a` with `b` as `bijectiveAlphaEq` does, extending `renaming` with
+the type variables paired along the way.
+
+Parts are compared in turn, with the renaming from each part carried into the
+next, so a variable must be paired the same way everywhere in the type.
+
+-}
 bijectiveAlphaEqHelp : Renaming -> Can.Type Name -> Can.Type Name -> Result String Renaming
 bijectiveAlphaEqHelp renaming a b =
     case ( a, b ) of
@@ -274,7 +354,6 @@ bijectiveAlphaEqHelp renaming a b =
                             )
 
                 Nothing ->
-                    -- nameA not yet mapped; check reverse
                     case Dict.get nameB renaming.reverse of
                         Just mappedFrom ->
                             Err
@@ -288,7 +367,6 @@ bijectiveAlphaEqHelp renaming a b =
                                 )
 
                         Nothing ->
-                            -- Fresh pairing
                             Ok
                                 { forward = Dict.insert nameA nameB renaming.forward
                                 , reverse = Dict.insert nameB nameA renaming.reverse
@@ -349,6 +427,9 @@ bijectiveAlphaEqHelp renaming a b =
             Err "Type constructor mismatch"
 
 
+{-| Compares two lists of types pairwise, in order, threading the renaming. Lists
+of different lengths do not match.
+-}
 bijectiveAlphaEqList : Renaming -> List (Can.Type Name) -> List (Can.Type Name) -> Result String Renaming
 bijectiveAlphaEqList renaming xs ys =
     case ( xs, ys ) of
@@ -367,6 +448,10 @@ bijectiveAlphaEqList renaming xs ys =
             Err "Type argument list length mismatch"
 
 
+{-| Compares the extension variables of two record types. Both must be absent,
+or both present and paired as type variables in the same renaming as the rest
+of the type.
+-}
 bijectiveAlphaEqExt : Renaming -> Maybe String -> Maybe String -> Result String Renaming
 bijectiveAlphaEqExt renaming ext1 ext2 =
     case ( ext1, ext2 ) of
@@ -374,13 +459,16 @@ bijectiveAlphaEqExt renaming ext1 ext2 =
             Ok renaming
 
         ( Just e1, Just e2 ) ->
-            -- Record extension vars are type variables; check bijection
             bijectiveAlphaEqHelp renaming (Can.TVar e1) (Can.TVar e2)
 
         _ ->
             Err "Record extension mismatch"
 
 
+{-| Compares the fields of two record types. The two must have the same field
+names, and the types of same-named fields must match; each field's position is
+ignored.
+-}
 bijectiveAlphaEqFields :
     Renaming
     -> Dict.Dict String (Can.FieldType Name)
@@ -415,6 +503,10 @@ bijectiveAlphaEqFields renaming fields1 fields2 =
             (List.map2 Tuple.pair list1 list2)
 
 
+{-| Compares the arguments of two aliases pairwise, in order, by their types
+only; the parameter names they are given for are ignored. Lists of different
+lengths do not match.
+-}
 bijectiveAlphaEqArgs : Renaming -> List ( String, Can.Type Name ) -> List ( String, Can.Type Name ) -> Result String Renaming
 bijectiveAlphaEqArgs renaming args1 args2 =
     case ( args1, args2 ) of
@@ -433,6 +525,9 @@ bijectiveAlphaEqArgs renaming args1 args2 =
             Err "Alias argument list length mismatch"
 
 
+{-| Compares the bodies of two aliases. A `Holey` body matches only a `Holey`
+one and a `Filled` body only a `Filled` one.
+-}
 bijectiveAlphaEqAlias : Renaming -> Can.AliasType Name -> Can.AliasType Name -> Result String Renaming
 bijectiveAlphaEqAlias renaming at1 at2 =
     case ( at1, at2 ) of
@@ -452,6 +547,9 @@ bijectiveAlphaEqAlias renaming at1 at2 =
 -- ============================================================================
 
 
+{-| Builds the failure message for a program: a count of the violations, then
+each one as `formatViolation` gives it.
+-}
 formatViolations : List Violation -> String
 formatViolations violations =
     let
@@ -463,6 +561,9 @@ formatViolations violations =
     header ++ (violations |> List.map formatViolation |> String.join "\n\n")
 
 
+{-| Renders one violation as a few lines: its node id, the lambda's type, the
+structural type and the reason.
+-}
 formatViolation : Violation -> String
 formatViolation v =
     "POST_007 violation at nodeId "
@@ -475,6 +576,8 @@ formatViolation v =
         ++ v.details
 
 
+{-| Renders a type as `typeToString` does, or `(none)` for `Nothing`.
+-}
 maybeTypeToString : Maybe (Can.Type Name) -> String
 maybeTypeToString mt =
     case mt of
@@ -485,6 +588,13 @@ maybeTypeToString mt =
             "(none)"
 
 
+{-| Renders a type for a failure message, naming each constructor.
+
+The rendering is partial: a record shows only its extension variable, not its
+fields, and an alias only its name, not its arguments or body. Named types and
+aliases show their name without the home module.
+
+-}
 typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of

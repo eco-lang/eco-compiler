@@ -1,20 +1,59 @@
 module TestLogic.Monomorphize.LssDestrAnnoTest exposing (suite)
 
-{-| DESTRUCTOR ANNOTATIONS — `lss.destrAnno`
-(plans/lss-ctor-arrow-identity.md §9.5/§9.6).
+{-| Checks that the solver engine keeps the lambda set of a function that a
+`case` takes out of a constructor and puts back into it, instead of leaving the
+constructor's registry entries with ⊤ for that field.
 
-`specializeDestructor` classifies the bound variable's type STORELESSLY — ⊤
-at every arrow by construction — and that stamp is the manufacturer of 82 %
-of the residual decl-⊤ (§9.3) plus, via varEnv propagation, 1,012 registry
-positions. The flag repairs it two ways at the one site: FIX A merges the
-projection's type-argument-borne annotations (the paper's TIU substitution);
-FIX B merges the set-biased union of the ctor global's spec demands (the
-paper's global-store solution reassembled — union can only widen, AR-D2).
+A _lambda set_ is the annotation on the arrow of a monomorphized function type
+naming the function values that can reach it (`Mono.LambdaSetAnno`): `LSet`
+names them exactly, `LPartial` names some of them, `LVar` is not yet
+determined, and `LTop`, written ⊤, means the set was widened. Outside the
+analysis, `LVar` and `LTop` name no members, and only a one-member `LSet` is
+read as a single known callee. A _registry entry_ is one specialization of a
+global together with its type, as the monomorphized graph's
+`registry.reverseMapping` holds it.
 
-Fixture: `Box (Int -> Int)` constructed with a lambda, destructured, and the
-payload applied — the unbox class (channel A) that the P0 measured at
-`destranno top|k1`. The suite is an off-vs-on DIFFERENTIAL plus the
-`enrichAnnotations` purity pins re-landed from the argFeedback arc.
+When a `case` branch binds a constructor's function-typed field to a variable,
+the solver engine first types the variable from its canonical type alone, which
+puts ⊤ on the arrows written in that type. It then recovers sets in two places:
+from the type of the value being destructured, followed down to the field (in
+`Compiler.MonoSolver.Translate`, the private `specializeDestructor`), and, once
+every work item is done, for each constructor registry entry still carrying ⊤,
+from the union of all entries of that constructor (in
+`Compiler.MonoSolver.Monomorphize`, the private `settleCtorRows`). The first
+merge, and the building of that union, use `Mono.enrichAnnotations`; the union
+is written into each entry with `Mono.enrichAnnotationsTopOnly`, which leaves
+an `LVar` position of the entry as it is.
+
+The fixture is a module `Test` declaring `type PS x = Mk Int (Int -> x) | Nope`
+and four annotated definitions:
+
+  - `mkBox : PS Int` is `Mk 3 (\x -> x + 1)`.
+  - `useBox : PS Int -> Int` matches `Mk r f` and gives `r + f 2`, and `0` for
+    `Nope`.
+  - `rebox : PS Int -> PS Int` matches `Mk r f` and gives `Mk r f`, and its
+    argument for `Nope`. It is the definition that puts a bound field back into
+    `Mk`.
+  - `testValue : Int` is `useBox mkBox + useBox (rebox mkBox)`.
+
+What the tests establish:
+
+  - Test 1 compiles the fixture with the solver engine under the default
+    lambda-set configuration and reads the annotation on the `Int -> x` arrow
+    from every registry entry of a global named `Mk`. It requires at least one
+    such annotation, at least one `LSet` with a member among them, and no
+    `LTop`; an `LVar` or `LPartial` passes. It reads only the final registry.
+  - Test 2 checks `enrichAnnotations` on one-arrow `Int -> Int` types, through
+    the head annotation: a set is kept against `LVar` or `LTop` on the other
+    side, a set on the other side replaces `LVar` or `LTop`, and two sets give
+    their union (`[ 7 ]` and `[ 9 ]` give `[ 7, 9 ]`).
+  - Test 3 checks that `enrichAnnotations` returns its first type unchanged
+    when the second has a different number of parameters at the head arrow.
+
+Among what is not tested: which members the set holds, the annotations
+`useBox` and `rebox` themselves carry, `LPartial` in `enrichAnnotations`,
+shape mismatches other than a parameter count, a function field inside a tuple
+or record, and the substitution engine.
 
 -}
 
@@ -43,13 +82,12 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The three tests the module docstring describes.
+-}
 suite : Test
 suite =
     Test.describe "destructor-bound annotations"
-        [ -- This was a flag differential: with `lss.destrAnno` off the Box /a0
-          -- position carried a ⊤. The flag was fixed at its default and removed
-          -- 2026-09-18, so what remains is the ON leg — SETs and no ⊤.
-          Test.test "1. the destructured payload arrow carries a SET, never ⊤" <|
+        [ Test.test "1. the destructured payload arrow carries a SET, never ⊤" <|
             \() ->
                 case runWith fixture of
                     Ok onG ->
@@ -111,26 +149,37 @@ suite =
 -- ====== FIXTURE ======
 
 
+{-| The source type `Int`.
+-}
 hInt : Src.Type
 hInt =
     tType "Int" []
 
 
+{-| The source type `Int -> Int`. Nothing in this module uses it.
+-}
 int1 : Src.Type
 int1 =
     tLambda hInt hInt
 
 
+{-| The source type `PS Int`, the one instantiation of `PS` the fixture uses.
+-}
 boxOfFn : Src.Type
 boxOfFn =
     tType "PS" [ hInt ]
 
 
+{-| The source type `Int -> x`, the type of `Mk`'s second field, written with
+`PS`'s own parameter `x`.
+-}
 psFieldFn : Src.Type
 psFieldFn =
     tLambda hInt (tVar "x")
 
 
+{-| The test program the module docstring describes.
+-}
 fixture : Src.Module
 fixture =
     makeModuleWithTypedDefsUnionsAliases "Test"
@@ -139,12 +188,7 @@ fixture =
           , tipe = boxOfFn
           , body = callExpr (ctorExpr "Mk") [ intExpr 3, lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)) ]
           }
-        , -- The destructure-and-apply: the binding of `f` is the §9.3 site;
-          -- without the flag its arrow is ⊤ (a MULTI-ctor union with a
-          -- phantom var — the probe's exact PStep shape; a single-ctor
-          -- monomorphic Box canonicalizes into an already-var path and
-          -- reproduces nothing, the first fixture's mistake).
-          { name = "useBox"
+        , { name = "useBox"
           , args = [ pVar "b" ]
           , tipe = tLambda boxOfFn hInt
           , body =
@@ -155,12 +199,7 @@ fixture =
                     , ( pCtor "Nope" [], intExpr 0 )
                     ]
           }
-        , -- The REBUILD (the probe's manufacturing pattern): destructure and
-          -- reconstruct. Off-arm, `f` binds ⊤ (storeless classify) and the
-          -- rebuilt `Mk r f` writes that ⊤ into Mk's demand — the observed
-          -- registry row. On-arm, Fix B recovers `f` from the ctor-demand
-          -- union before the rebuild, so no ⊤ is ever written.
-          { name = "rebox"
+        , { name = "rebox"
           , args = [ pVar "b" ]
           , tipe = tLambda boxOfFn boxOfFn
           , body =
@@ -194,6 +233,10 @@ fixture =
 -- ====== HARNESS ======
 
 
+{-| Monomorphizes `srcModule` with the solver engine under
+`Config.defaultLimits` and the default lambda-set configuration, giving the
+graph before global optimization, or an error message.
+-}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
     let
@@ -209,9 +252,11 @@ runWith srcModule =
 -- ====== READERS ======
 
 
-{-| The `Mk` ctor's OWN registry rows at the payload position (`/a1`) —
-across ALL its specs. The rebuild spec's demand is where the off-arm ⊤ is
-written (the §9.4 propagation multiplier in miniature).
+{-| Returns the annotation on the `Int -> x` arrow of `Mk`'s second field from
+every registry entry of a global named `Mk`, in descending SpecId order.
+Entries removed by pruning, and any whose type is not a one-parameter arrow
+returning a one-parameter arrow whose parameter is itself an arrow, contribute
+nothing.
 -}
 unboxArgAnnos : Mono.MonoGraph -> List Mono.LambdaSetAnno
 unboxArgAnnos (Mono.MonoGraph g) =
@@ -221,8 +266,8 @@ unboxArgAnnos (Mono.MonoGraph g) =
                 Just ( Mono.Global _ name, monoType ) ->
                     if name == "Mk" then
                         case monoType of
-                            -- Mk : Int -> (Int -> x) -> PS x, curried: the
-                            -- payload arrow is the SECOND arrow's head arg.
+                            -- The field's arrow is the one parameter of the
+                            -- arrow that Mk's first application returns.
                             Mono.MFunction _ _ [ _ ] (Mono.MFunction _ _ [ Mono.MFunction _ anno _ _ ] _) ->
                                 anno :: acc
 
@@ -239,11 +284,15 @@ unboxArgAnnos (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Reports whether an annotation is ⊤, whatever its provenance code.
+-}
 isTop : Mono.LambdaSetAnno -> Bool
 isTop =
     Mono.isTopAnno
 
 
+{-| Reports whether an annotation is an `LSet` with at least one member.
+-}
 isSet : Mono.LambdaSetAnno -> Bool
 isSet a =
     case a of
@@ -254,6 +303,10 @@ isSet a =
             False
 
 
+{-| Renders `annos` for a failure message: `LTop` with its provenance label,
+`LVar` with its number, and `LSet` and `LPartial` with how many members they
+have, not which.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe annos =
     "["

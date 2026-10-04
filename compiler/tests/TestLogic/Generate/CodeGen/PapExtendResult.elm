@@ -1,13 +1,33 @@
 module TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResult)
 
-{-| Test logic for CGEN\_034: PapExtend Result Type invariant.
+{-| Checks that the code generator builds every `eco.papExtend` op with one
+result of a type a closure application can return and, unless it is a generic
+or segmentation-unknown application, with its arity recorded, so that an op
+built otherwise fails a test.
 
-`eco.papExtend` must produce a valid result type:
+A _partial application_ (PAP) is a function value together with the
+arguments it has been given so far. An `eco.papExtend` op gives a PAP more
+arguments. It may carry an integer `remaining_arity` attribute, whose value
+`TestLogic.Generate.CodeGen.PapExtendArity` checks where it can, and a string
+`_call_kind` attribute naming the kind of application.
 
-  - `!eco.value` (boxed result)
-  - `i1` (typed primitive result - Bool)
-  - `i64` (typed primitive result)
-  - `f64` (typed primitive result)
+`expectPapExtendResult` compiles a program with `TestPipeline.runToMlir` and
+fails if compilation fails. Otherwise it looks at every `eco.papExtend` op at
+any depth of the module and reports one with:
+
+  - a number of results other than one;
+  - a result type other than `!eco.value` (a boxed value) or one of the
+    unboxed types `i1`, `i16`, `i64` and `f64`;
+  - no integer `remaining_arity` attribute, unless its `_call_kind` is
+    `generic_apply` or `segmentation_unknown`.
+
+When there are violations the expectation reports only the first, as
+`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
+
+Among what is not tested: the value of `remaining_arity`; whether a typed
+result matches the return type of the function being applied; and whether a
+`generic_apply` or `segmentation_unknown` op that does carry `remaining_arity`
+should.
 
 @docs expectPapExtendResult
 
@@ -27,7 +47,9 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that papExtend result type invariants hold for a source module.
+{-| Compiles `srcModule` to MLIR and returns an expectation that passes when
+no `eco.papExtend` op breaks a rule listed in the module docstring. A
+compilation failure fails the expectation with its error.
 -}
 expectPapExtendResult : Src.Module -> Expectation
 expectPapExtendResult srcModule =
@@ -39,7 +61,8 @@ expectPapExtendResult srcModule =
             violationsToExpectation (checkPapExtendResult mlirModule)
 
 
-{-| Check papExtend result type invariants.
+{-| Returns a violation for each `eco.papExtend` op in `mlirModule`, at any
+depth, that breaks a rule listed in the module docstring.
 -}
 checkPapExtendResult : MlirModule -> List Violation
 checkPapExtendResult mlirModule =
@@ -50,6 +73,15 @@ checkPapExtendResult mlirModule =
     List.filterMap checkPapExtendOp papExtendOps
 
 
+{-| Returns a violation for the first rule `op` breaks, checking in order: one
+result, a valid result type, then an integer `remaining_arity` present. An op
+with no `remaining_arity` passes when its `_call_kind` is `generic_apply` or
+`segmentation_unknown`.
+
+The failure message for a bad result type lists `!eco.value`, `i1`, `i64` and
+`f64` but not `i16`, which is accepted.
+
+-}
 checkPapExtendOp : MlirOp -> Maybe Violation
 checkPapExtendOp op =
     let
@@ -82,8 +114,7 @@ checkPapExtendOp op =
                 else
                     case maybeRemainingArity of
                         Nothing ->
-                            -- Generic apply and segmentation_unknown emit papExtend without remaining_arity;
-                            -- saturation is determined at runtime. This is valid per CGEN_052/CGEN_060 exemption.
+                            -- The generator builds these two kinds without remaining_arity.
                             if getStringAttr "_call_kind" op == Just "generic_apply" || getStringAttr "_call_kind" op == Just "segmentation_unknown" then
                                 Nothing
 
@@ -98,8 +129,8 @@ checkPapExtendOp op =
                             Nothing
 
 
-{-| Check if the type is a valid result type for eco.papExtend.
-Valid types are: !eco.value, i1, i16, i64, f64
+{-| Returns whether `t` is `!eco.value`, `i1`, `i16`, `i64` or `f64`, the
+result types an `eco.papExtend` op may have.
 -}
 isValidPapExtendResultType : MlirType -> Bool
 isValidPapExtendResultType t =
@@ -123,6 +154,9 @@ isValidPapExtendResultType t =
             False
 
 
+{-| Returns a short name for `t` to use in a failure message. A named type is
+given without its leading `!`, and a function type is `function`.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

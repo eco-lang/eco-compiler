@@ -6,11 +6,30 @@ module Compiler.AST.Utils.Shader exposing
     , sourceEncoderS, sourceDecoderS, collectStringsFromSource
     )
 
-{-| Utilities for working with WebGL shader code in the Elm compiler.
+{-| An Elm program can embed a WebGL shader as a GLSL literal, written
+`[glsl| ... |]`, and this module is the form in which the compiler carries one:
+its source text, and the GLSL types of its inputs.
 
-This module handles GLSL shader source code and type information for shader inputs
-(attributes, uniforms, and varyings). It provides escaping/unescaping for embedding
-shader source in generated JavaScript, along with serialization support.
+The source text is kept escaped, in the form a JavaScript string literal needs.
+`fromString` escapes it once, when a `Source` is made, so that the text can be
+placed between the quotes of a JavaScript string literal as it is, and
+`toJsStringBuilder` hands it back in that form. Escaping removes every carriage
+return, replaces each newline with the two characters `\n`, and puts a
+backslash before each double quote, single quote and backslash; nothing else is
+changed. `unescape` turns escaped text back into the original, except that the
+removed carriage returns cannot be restored.
+
+A shader's inputs come in three kinds, named by the GLSL qualifier that
+declares them. An _attribute_ is an input to the vertex shader that can differ
+from one vertex to the next. A _uniform_ has one value for the whole of a draw.
+A _varying_ is passed from the vertex shader on to the fragment shader. `Types`
+holds the inputs of each kind with their GLSL `Type`.
+
+The rest of the module is binary codecs. The source text has a pair that takes
+a string table from `Compiler.AST.StringTable` (`sourceEncoderS`,
+`sourceDecoderS`, with `collectStringsFromSource` to gather the one string they
+write) and a pair that writes the text inline (`sourceEncoder`,
+`sourceDecoder`). The `Types` codecs always write names inline.
 
 
 # Shader Source
@@ -50,7 +69,13 @@ import Utils.Bytes.Encode as BE
 -- ====== SOURCE ======
 
 
-{-| Escaped GLSL shader source code, ready for embedding in JavaScript.
+{-| The source text of a GLSL literal, escaped as `fromString` escapes it, so
+that it can be placed between the quotes of a JavaScript string literal.
+
+The constructor is exposed, so the escaping is a convention and not a
+guarantee: a `Source` built with the constructor directly holds whatever text
+it was given.
+
 -}
 type Source
     = Source String
@@ -60,13 +85,23 @@ type Source
 -- ====== TYPES ======
 
 
-{-| Type information for shader inputs: attributes, uniforms, and varyings.
+{-| The inputs of a shader, each with its GLSL type. The first map holds
+the attributes, the second the uniforms and the third the varyings, and each
+is keyed by the input's name.
 -}
 type Types
     = Types (Dict String Name Type) (Dict String Name Type) (Dict String Name Type)
 
 
-{-| GLSL types supported in shaders.
+{-| The GLSL type of a shader input.
+
+`Int`, `Float` and `Bool` are GLSL's `int`, `float` and `bool`. `V2`, `V3` and
+`V4` are the vectors `vec2`, `vec3` and `vec4`, and `M4` is the 4×4 matrix
+`mat4`. `Texture` is a 2D texture sampler, `sampler2D`.
+
+The binary codecs write each as one byte: `Int` 0, `Float` 1, `V2` 2, `V3` 3,
+`V4` 4, `M4` 5, `Texture` 6, `Bool` 7.
+
 -}
 type Type
     = Int
@@ -83,7 +118,9 @@ type Type
 -- ====== TO BUILDER ======
 
 
-{-| Extract the escaped shader source as a string for JavaScript embedding.
+{-| Returns the escaped text of a `Source`, ready to be placed between the quotes
+of a JavaScript string literal. Despite the name, the result is the text
+itself, a plain `String`.
 -}
 toJsStringBuilder : Source -> String
 toJsStringBuilder (Source src) =
@@ -94,13 +131,18 @@ toJsStringBuilder (Source src) =
 -- ====== FROM STRING ======
 
 
-{-| Create shader source from a raw GLSL string, escaping special characters for JavaScript.
+{-| Creates a `Source` from raw GLSL text by escaping it: every carriage return
+is removed, each newline becomes the two characters `\n`, and a backslash is
+put before each double quote, single quote and backslash. Every other
+character is kept as it is.
 -}
 fromString : String -> Source
 fromString =
     escape >> Source
 
 
+{-| Escapes GLSL text as `fromString` describes.
+-}
 escape : String -> String
 escape =
     String.foldr
@@ -135,7 +177,13 @@ escape =
         ""
 
 
-{-| Reverse the escaping process, converting escaped sequences back to their original characters.
+{-| Returns the original text of escaped GLSL text. Reading from left to right,
+each `\n`, `\"`, `\'` and `\\` becomes the newline, double quote, single quote
+or backslash it stands for, and any other backslash is left as it is.
+
+This undoes the escaping `fromString` does, except that the carriage returns it
+removed are not restored.
+
 -}
 unescape : String -> String
 unescape =
@@ -166,42 +214,56 @@ unescape =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode shader source to binary format.
+{-| Encodes the escaped text of a `Source` inline, as `Utils.Bytes.Encode.string`
+writes a string. This is `sourceEncoderS` with `StringTable.disabled`.
 -}
 sourceEncoder : Source -> Bytes.Encode.Encoder
 sourceEncoder =
     sourceEncoderS StringTable.disabled
 
 
-{-| Decode shader source from binary format.
+{-| A decoder for a `Source` written by `sourceEncoder`.
 -}
 sourceDecoder : Bytes.Decode.Decoder Source
 sourceDecoder =
     sourceDecoderS StringTable.disabled
 
 
-{-| String-interned variant of `sourceEncoder`.
+{-| Encodes the escaped text of a `Source` as `StringTable.string` writes a
+string with the table `st`: as its index, or inline when `st` is
+`StringTable.disabled`.
+
+An indexed table must hold this `Source`'s escaped text, the string
+`collectStringsFromSource` gives to a collector; `Compiler.AST.StringTable`
+describes what is written for a string the table does not hold.
+
 -}
 sourceEncoderS : StringTable -> Source -> Bytes.Encode.Encoder
 sourceEncoderS st (Source src) =
     StringTable.string st src
 
 
-{-| String-interned variant of `sourceDecoder`.
+{-| Produces a decoder for a `Source` written by `sourceEncoderS` with the same
+table.
 -}
 sourceDecoderS : StringTable -> Bytes.Decode.Decoder Source
 sourceDecoderS st =
     Bytes.Decode.map Source (StringTable.stringDec st)
 
 
-{-| Add the shader source string to a collection set.
+{-| Returns `acc` after giving it the escaped text of a `Source`, which it
+keeps as `StringTable.add` describes. That text is the one string
+`sourceEncoderS` writes for it.
 -}
 collectStringsFromSource : Source -> StringTable.Collector -> StringTable.Collector
 collectStringsFromSource (Source src) acc =
     StringTable.add src acc
 
 
-{-| Encode shader type information to binary format.
+{-| Encodes a `Types` as its three maps in turn, attributes, then uniforms, then
+varyings, each as `Utils.Bytes.Encode.assocListDict` writes a map. Each name is
+written inline, as `Utils.Bytes.Encode.string` writes it, and each type as the
+one byte `Type` describes. There is no string-table variant.
 -}
 typesEncoder : Types -> Bytes.Encode.Encoder
 typesEncoder (Types attribute uniform varying) =
@@ -212,7 +274,8 @@ typesEncoder (Types attribute uniform varying) =
         ]
 
 
-{-| Decode shader type information from binary format.
+{-| A decoder for a `Types` written by `typesEncoder`, with each map keyed by
+the input's name itself. A type byte above 7 fails the decode.
 -}
 typesDecoder : Bytes.Decode.Decoder Types
 typesDecoder =
@@ -222,6 +285,9 @@ typesDecoder =
         (BD.assocListDict identity BD.string typeDecoder)
 
 
+{-| Encodes a `Type` as one byte, from 0 for `Int` to 7 for `Bool`, as listed
+in the `Type` docstring.
+-}
 typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder type_ =
     Bytes.Encode.unsignedInt8
@@ -252,6 +318,9 @@ typeEncoder type_ =
         )
 
 
+{-| A decoder for one `Type` byte written by `typeEncoder`. A byte above 7
+fails the decode.
+-}
 typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
     Bytes.Decode.unsignedInt8

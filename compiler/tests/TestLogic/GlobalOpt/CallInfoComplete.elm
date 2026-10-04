@@ -1,15 +1,47 @@
 module TestLogic.GlobalOpt.CallInfoComplete exposing (expectCallInfoComplete)
 
-{-| Test logic for CallInfo invariants GOPT\_011 through GOPT\_015.
+{-| Every `MonoCall` in a monomorphized program carries a `CallInfo` saying how
+the call is to be applied, which the global optimizer fills in, and nothing in
+the types stops the fields of one `CallInfo` from contradicting each other. This
+module holds a check that finds such a call in a program after the global
+optimizer has run, without generating any code.
 
-After GlobalOpt, every MonoCall with StageCurried callModel must have
-a CallInfo whose fields are internally consistent:
+A _staged_ call (one whose `callModel` is `StageCurried`) applies a function
+value that takes its arguments in stages, each stage a group of parameters.
+Its `CallInfo`, as `Compiler.AST.Monomorphized` defines it, records the
+callee's _stage arities_ (`stageArities`, the parameter count of each stage),
+the arity the global optimizer records for the callee value at this call
+(`initialRemaining`), which is 0 when it has found no producer for the callee,
+and whether the call supplies exactly that many arguments
+(`isSingleStageSaturated`).
 
-  - GOPT\_011: stageArities is non-empty with all positive elements
-  - GOPT\_012: sum(stageArities) == flattened arity of callee type
-  - GOPT\_013: initialRemaining <= first stage arity
-  - GOPT\_014: isSingleStageSaturated == (argCount >= initialRemaining && initialRemaining > 0)
-  - GOPT\_015: For local StageCurried callees, initialRemaining must be positive when type arity > 0
+`expectCallInfoComplete` takes a source module, runs it through
+`TestLogic.TestPipeline.runToGlobalOpt`, and fails if that run fails. Otherwise
+it checks every staged call it reaches against these rules, and fails with one
+line per broken rule, naming the `SpecId` of the node the call is in:
+
+  - When `stageArities` is empty, `initialRemaining` is 0; otherwise every
+    stage arity is positive.
+  - `initialRemaining` is at least the first stage arity. Calls whose
+    `callKind` is `CallGenericApply` or `CallSegmentationUnknown` are exempt,
+    as are calls with no stage arities.
+  - `initialRemaining` is at most the sum of the stage arities, when that sum
+    is positive.
+  - `isSingleStageSaturated` holds exactly when the call has as many arguments
+    as `initialRemaining` and `initialRemaining` is positive.
+  - When the callee is a local variable whose type's first stage has
+    parameters, `initialRemaining` is positive. The same two call kinds are
+    exempt.
+
+The calls reached are those in the bodies of `MonoDefine`, `MonoTailFunc` and
+port nodes, at any depth, including calls inside a call's function or argument
+expressions, closure captures, `let` definitions and the branch bodies a `case`
+jumps to. Calls whose `callModel` is `FlattenedExternal` are not checked, though
+the expressions inside them are walked.
+
+Among what is not checked: calls in a branch that a `case` decision tree holds
+inline (an `Inline` leaf) rather than jumps to, and the `CallInfo` fields not
+named above.
 
 -}
 
@@ -20,6 +52,11 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| Returns an expectation that runs `srcModule` through the global optimizer
+and passes when every staged call it reaches satisfies the rules in the module
+docstring. It fails with the pipeline's error if the run fails, and otherwise
+with one line per broken rule.
+-}
 expectCallInfoComplete : Src.Module -> Expect.Expectation
 expectCallInfoComplete srcModule =
     case Pipeline.runToGlobalOpt srcModule of
@@ -44,6 +81,9 @@ expectCallInfoComplete srcModule =
 -- ============================================================================
 
 
+{-| Returns the problems found in every node of the graph, each prefixed with
+`SpecId` and the index of its node in the graph's node array.
+-}
 collectAllIssues : Mono.MonoGraph -> List String
 collectAllIssues (Mono.MonoGraph data) =
     Array.foldl
@@ -60,6 +100,10 @@ collectAllIssues (Mono.MonoGraph data) =
         |> Tuple.second
 
 
+{-| Returns the problems found in the expression of one node, given its
+`SpecId`. Only `MonoDefine`, `MonoTailFunc` and port nodes hold an expression
+to walk; every other node yields none.
+-}
 checkNode : Int -> Mono.MonoNode -> List String
 checkNode specId node =
     let
@@ -83,6 +127,13 @@ checkNode specId node =
             []
 
 
+{-| Returns the problems found in every call within `expr`, at any depth, each
+prefixed with `ctx`.
+
+Within a `case`, only the branch bodies the decision tree jumps to are walked,
+because `collectDeciderIssues` returns nothing for a leaf.
+
+-}
 collectExprIssues : String -> Mono.MonoExpr -> List String
 collectExprIssues ctx expr =
     case expr of
@@ -133,6 +184,8 @@ collectExprIssues ctx expr =
             []
 
 
+{-| Returns the problems found in the body of a `let` definition.
+-}
 collectDefIssues : String -> Mono.MonoDef -> List String
 collectDefIssues ctx def =
     case def of
@@ -143,6 +196,10 @@ collectDefIssues ctx def =
             collectExprIssues ctx expr
 
 
+{-| Returns no problems for any decision tree. It recurses through the tree's
+subtrees and returns nothing at a leaf, so a call inside an `Inline` leaf is
+never examined. The context argument is ignored.
+-}
 collectDeciderIssues : String -> Mono.Decider Mono.MonoChoice -> List String
 collectDeciderIssues _ decider =
     case decider of
@@ -164,11 +221,14 @@ collectDeciderIssues _ decider =
 -- ============================================================================
 
 
+{-| Returns the broken rules for one call's `CallInfo`, given the callee
+expression and the arguments. A `FlattenedExternal` call is not checked; a
+`StageCurried` call is checked against all five rules.
+-}
 checkCallInfo : String -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.CallInfo -> List String
 checkCallInfo ctx funcExpr args callInfo =
     case callInfo.callModel of
         Mono.FlattenedExternal ->
-            -- FlattenedExternal calls don't use staged currying; skip
             []
 
         Mono.StageCurried ->
@@ -183,20 +243,14 @@ checkCallInfo ctx funcExpr args callInfo =
                 ++ checkGopt015 ctx funcExpr callInfo
 
 
-
--- Note: GOPT_012 and GOPT_015 skip CallGenericApply internally,
--- since initialRemaining is intentionally 0 and unused by codegen.
-
-
-{-| GOPT\_011: stageArities must be non-empty with all positive elements,
-unless the callee is a thunk (initialRemaining=0) that returns a non-function
-value, in which case empty stageArities is valid.
+{-| Returns a problem when `stageArities` is empty but `initialRemaining` is
+not 0, or when any stage arity is 0 or negative. An empty `stageArities` with
+an `initialRemaining` of 0 is accepted.
 -}
 checkGopt011 : String -> Mono.CallInfo -> List String
 checkGopt011 ctx callInfo =
     if List.isEmpty callInfo.stageArities then
         if callInfo.initialRemaining == 0 then
-            -- Thunk returning non-function value: empty stageArities is valid
             []
 
         else
@@ -217,25 +271,22 @@ checkGopt011 ctx callInfo =
             ]
 
 
-{-| GOPT\_012: stageArities must be consistent with initialRemaining.
+{-| Returns a problem when `initialRemaining` is less than the first stage
+arity.
 
-initialRemaining must not exceed the first element of stageArities.
-Note: stageArities is derived from the expression type, while initialRemaining
-is derived from the actual closure node. After staging canonicalization, the
-node's param count may be higher (flattened) than the first stage arity.
-So we check initialRemaining >= stageArities[0] (flattened closures have
-at least as many params as the first type stage).
+The upper bound is `checkGopt013`'s. Calls whose kind is `CallGenericApply` or
+`CallSegmentationUnknown` are exempt: a call for which the global optimizer has
+found no producer for the callee gets one of those two kinds and an
+`initialRemaining` of 0. A call with no stage arities is also exempt.
 
 -}
 checkGopt012 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
 checkGopt012 ctx _ callInfo =
     case callInfo.callKind of
         Mono.CallGenericApply ->
-            -- Generic apply ignores initialRemaining; skip this check
             []
 
         Mono.CallSegmentationUnknown ->
-            -- Segmentation unknown has untrusted staging; initialRemaining = 0 is expected
             []
 
         _ ->
@@ -256,23 +307,13 @@ checkGopt012 ctx _ callInfo =
                         []
 
                 Nothing ->
-                    -- Empty stageArities handled by GOPT_011
+                    -- An empty list is checked by checkGopt011.
                     []
 
 
-{-| GOPT\_013: initialRemaining must not exceed the total flattened arity.
-
-initialRemaining is how many args the closure accepts in its first stage
-(which may be flattened by staging). It must satisfy:
-
-  - initialRemaining <= sum(stageArities): cannot exceed total arity
-  - initialRemaining >= stageArities[0]: must be at least the first type-stage
-    (staging may flatten multiple type-stages into one closure stage)
-  - initialRemaining > 0 when stageArities is non-empty
-
-These checks ensure sourceArityForCallee returns a value consistent with
-the callee's type structure.
-
+{-| Returns a problem when `initialRemaining` is greater than the sum of the
+stage arities, the callee's parameter count over all its stages. Nothing is
+checked when that sum is 0 or less.
 -}
 checkGopt013 : String -> Mono.CallInfo -> List String
 checkGopt013 ctx callInfo =
@@ -295,8 +336,9 @@ checkGopt013 ctx callInfo =
         []
 
 
-{-| GOPT\_014: isSingleStageSaturated must be true iff
-argCount >= initialRemaining and initialRemaining > 0.
+{-| Returns a problem when `isSingleStageSaturated` differs from whether
+`argCount`, the number of arguments at the call, equals `initialRemaining` with
+`initialRemaining` positive.
 -}
 checkGopt014 : String -> Int -> Mono.CallInfo -> List String
 checkGopt014 ctx argCount callInfo =
@@ -324,24 +366,18 @@ checkGopt014 ctx argCount callInfo =
         []
 
 
-{-| GOPT\_015: For StageCurried calls where callee is a MonoVarLocal,
-initialRemaining must be positive when the callee has a function type.
-
-This catches cases where varSourceArity was not populated for a local
-variable (e.g., a closure parameter), causing sourceArityForCallee to
-fall back to a type-based heuristic that may disagree with the canonical
-staging representation.
-
+{-| Returns a problem when the callee is a local variable, the first stage of
+its type has parameters, and `initialRemaining` is 0 or less. Calls whose kind
+is `CallGenericApply` or `CallSegmentationUnknown` are exempt, as are callees
+that are not a `MonoVarLocal`.
 -}
 checkGopt015 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
 checkGopt015 ctx funcExpr callInfo =
     case callInfo.callKind of
         Mono.CallGenericApply ->
-            -- Generic apply ignores initialRemaining; skip this check
             []
 
         Mono.CallSegmentationUnknown ->
-            -- Segmentation unknown has untrusted staging; initialRemaining = 0 is expected
             []
 
         _ ->
@@ -368,8 +404,8 @@ checkGopt015 ctx funcExpr callInfo =
                     []
 
 
-{-| Compute first-stage arity from a MonoType (mirrors firstStageArityFromType
-in MonoGlobalOptimize.elm).
+{-| Returns the number of parameters in the first stage of `monoType`, or 0 when
+it is not a function type.
 -}
 firstStageArityFromMonoType : Mono.MonoType -> Int
 firstStageArityFromMonoType monoType =

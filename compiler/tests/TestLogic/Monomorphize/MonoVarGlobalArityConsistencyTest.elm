@@ -1,12 +1,39 @@
 module TestLogic.Monomorphize.MonoVarGlobalArityConsistencyTest exposing (suite)
 
-{-| Test suite for invariant MONO\_027: MonoVarGlobal type arity matches node arity.
+{-| These tests exist because, in a monomorphized graph, a `MonoVarGlobal`
+reference to a specialized top-level function carries its own copy of the
+function's type, and nothing in the graph makes that copy agree with the type
+stored on the function's node. Without a check, a reference could claim a
+different number of parameters from its node, or a call through it could
+supply more arguments than the node takes, and no test would say so. The test
+names call this property MONO\_027.
 
-Verifies that every MonoVarGlobal reference carries a MonoType whose flattened
-function arity equals the flattened arity of the referenced node's actual type.
+The check is `TestLogic.Monomorphize.MonoVarGlobalArityConsistency`'s
+`expectVarGlobalArityConsistency`, whose docstring defines the _flattened
+arity_ it compares, the three kinds of mismatch it looks for and what it leaves
+out. It runs a program through global optimization with the substitution
+engine, and a program that fails to compile fails the check.
 
-Uses both StandardTestSuites (let-binding based test cases) and targeted test cases
-with top-level definitions to exercise partial application of module-level functions.
+The programs are of two kinds. The first is the standard catalogue of
+`SourceIR` programs that `SourceIR.Suite.StandardTestSuites` assembles. The
+second is three hand-built modules in which every function is a top-level
+definition. A top-level function is specialized into a node of its own and
+referred to by a `MonoVarGlobal`, so these modules put partially applied
+references to such nodes in front of the check.
+
+The tests establish:
+
+  - "has consistent VarGlobal arities": the check passes on every program of
+    the standard catalogue.
+  - "Top-level SKI combinators (partial application)": the check passes on the
+    three hand-built modules, `bCombinatorTopLevel`, `iCombinatorTopLevel` and
+    `partialApp3TopLevel`. They run as one test with `Compiler.BulkCheck`, so a
+    failure reports only the first module that fails.
+
+Among what is not tested:
+
+  - the solver engine's graph, and the graph before global optimization;
+  - the value any program computes, since nothing is run.
 
 -}
 
@@ -28,6 +55,9 @@ import Test exposing (Test)
 import TestLogic.Monomorphize.MonoVarGlobalArityConsistency exposing (expectVarGlobalArityConsistency)
 
 
+{-| The MONO\_027 tests: the check over the standard catalogue, and the check
+over the three hand-built top-level modules as one test.
+-}
 suite : Test
 suite =
     Test.describe "MonoVarGlobal arity consistency (MONO_027)"
@@ -40,11 +70,12 @@ suite =
 
 -- ============================================================================
 -- TOP-LEVEL COMBINATOR CASES
--- These use makeModuleWithDefs to create top-level definitions (not let bindings)
--- which forces the monomorphizer to create separate specialization nodes.
 -- ============================================================================
 
 
+{-| Returns the three hand-built top-level cases, labelled, each applying
+`expectFn` to its module.
+-}
 topLevelCombinatorCases : (Src.Module -> Expectation) -> List TestCase
 topLevelCombinatorCases expectFn =
     [ { label = "B combinator: b = s (k s) k (top-level)", run = bCombinatorTopLevel expectFn }
@@ -53,7 +84,13 @@ topLevelCombinatorCases expectFn =
     ]
 
 
-{-| B combinator with top-level definitions:
+{-| Applies `expectFn` to a module in which the B combinator is defined at top
+level from S and K, and then applied to two functions and an `Int`. `s` is
+applied to two of its three arguments and `k` to one of its two, and `b` has
+no parameters of its own but a type of flattened arity three.
+
+The module is named `testValue` and has these top-level definitions, sketched
+as Elm source:
 
     k a _ =
         a
@@ -105,7 +142,12 @@ bCombinatorTopLevel expectFn _ =
     expectFn modul
 
 
-{-| I combinator with top-level definitions (should pass — no truncation):
+{-| Applies `expectFn` to a module in which the I combinator is defined at top
+level as `s k k`, which applies `s` to two of its three arguments, and then
+applied to an `Int`.
+
+The module is named `testValue` and has these top-level definitions, sketched
+as Elm source:
 
     k a _ =
         a
@@ -146,10 +188,15 @@ iCombinatorTopLevel expectFn _ =
     expectFn modul
 
 
-{-| Partial application of a 3-arg function at top level:
+{-| Applies `expectFn` to a module in which a top-level function of three
+parameters is applied to one argument, and the resulting top-level value, which
+has no parameters of its own, is applied to the other two.
+
+The module is named `testValue` and has these top-level definitions, sketched
+as Elm source:
 
     add3 a b c =
-        a + b + c
+        (a + b) + c
 
     partialAdd =
         add3 1

@@ -12,12 +12,10 @@ module Compiler.AST.CanonicalBuilder exposing
     , listType
     , makeAnnotation
     , makeDef
-    , -- ID Counter
-      makeModule
+    , makeModule
     , makeModuleWithDecls
     , makeTypedDef
     , pVar
-      -- Type builders for typed definitions
     , stringType
     , tFunc
     , tupleExpr
@@ -28,17 +26,33 @@ module Compiler.AST.CanonicalBuilder exposing
     , varType
     )
 
-{-| Builders for constructing Canonical AST values in tests.
+{-| Lets a test build Canonical AST values directly, so that a stage working on
+the Canonical AST can be given exactly the tree a test wants without running the
+parser and canonicalizer to produce it.
 
-This module provides:
+The Canonical AST is the tree `Compiler.AST.Canonical` defines: every reference
+to a top-level, imported or kernel value names the module it comes from, and
+every expression and pattern carries an integer id beside its node. This module
+builds a subset of that tree: expressions (`Int` literals, lists, pairs,
+lambdas, calls, single-definition `let`s and three kinds of variable reference),
+one pattern (`pVar`), definitions with and without annotations, whole modules,
+and the common `elm/core` types.
 
-1.  Canonical AST expression builders
-2.  Canonical AST pattern builders
-3.  Module builders for creating complete Canonical modules
-4.  Type builders for typed definitions
-5.  Fuzzers for generating random test inputs
+Four things hold for everything built here.
 
-For Source AST builders, use Compiler.AST.SourceBuilder.
+The caller chooses every id. Each expression and pattern builder takes the id of
+the node it builds as its first argument, and nothing here allocates ids or
+checks that two nodes do not share one.
+
+Nothing has a real source position. Every expression, pattern and defined name
+is placed at `A.zero`, the zero-width region at (0, 0) that no source text
+occupies.
+
+Every module built here is named `Test`, belongs to the `elm/core` package and
+exports everything.
+
+Function types are built with `Can.tLambda`, so their arrows carry no arrow
+identity, as `Compiler.AST.Canonical` describes for `tLambda`.
 
 -}
 
@@ -53,14 +67,13 @@ import Dict exposing (Dict)
 
 
 -- ============================================================================
--- ID COUNTER
--- ============================================================================
--- ============================================================================
--- MODULE BUILDERS
+-- MODULE AND DEFINITION BUILDERS
 -- ============================================================================
 
 
-{-| Create a simple module with a single definition.
+{-| Builds a module whose one declaration defines `name`, with no arguments and
+no annotation, as `expr`. The module has no docs, unions, aliases, binary
+operators or effects.
 -}
 makeModule : Name.Name -> Can.Expr -> Can.Module
 makeModule name expr =
@@ -86,7 +99,8 @@ makeModule name expr =
         }
 
 
-{-| Create a module with custom declarations.
+{-| Builds a module declaring `decls`, otherwise the same as `makeModule`: no
+docs, unions, aliases, binary operators or effects.
 -}
 makeModuleWithDecls : Can.Decls -> Can.Module
 makeModuleWithDecls decls =
@@ -106,20 +120,27 @@ makeModuleWithDecls decls =
         }
 
 
-{-| Create an untyped definition.
+{-| Builds a definition of `name` with no annotation, taking `args` and returning
+`body`.
 -}
 makeDef : Name.Name -> List Can.Pattern -> Can.Expr -> Can.Def
 makeDef name args body =
     Can.Def (A.At A.zero name) args body
 
 
-{-| Create a typed definition.
-Automatically extracts free type variables from the argument and result types.
+{-| Builds an annotated definition of `name`, whose arguments are the patterns in
+`args` each paired with its type, and which returns `body` of type `resultType`.
+
+The definition's free type variables are not passed in. They are collected from
+the argument types and `resultType`: every type variable and record extension
+variable named in them. In an alias application both the alias's arguments and
+its body are searched, so a `Holey` body contributes the alias's own parameter
+names.
+
 -}
 makeTypedDef : Name.Name -> List ( Can.Pattern, Can.Type Name ) -> Can.Expr -> Can.Type Name -> Can.Def
 makeTypedDef name args body resultType =
     let
-        -- Extract all free type variables from arg types and result type
         argTypes =
             List.map Tuple.second args
 
@@ -135,8 +156,10 @@ makeTypedDef name args body resultType =
     Can.TypedDef (A.At A.zero name) freeVars args body resultType
 
 
-{-| Extract free type variables from a Can.Type Name.
-Returns a Dict mapping variable names to ().
+{-| Returns the names of the type variables that occur in `tipe`, record
+extension variables included. An alias application is searched in both its
+arguments and its body, so a `Holey` body contributes the alias's own parameter
+names.
 -}
 extractFreeTypeVars : Can.Type Name -> Dict Name.Name ()
 extractFreeTypeVars tipe =
@@ -203,83 +226,86 @@ extractFreeTypeVars tipe =
 
 
 -- ============================================================================
--- EXPRESSION BUILDERS
+-- EXPRESSION AND ANNOTATION BUILDERS
 -- ============================================================================
 
 
-{-| Create an expression with the given ID and node.
+{-| Builds an expression with id `id` and contents `node`, placed at `A.zero`.
 -}
 makeExpr : Int -> Can.Expr_ -> Can.Expr
 makeExpr id node =
     A.At A.zero { id = id, node = node }
 
 
-{-| Create an Int literal expression.
+{-| Builds an `Int` literal of value `n`, with id `id`.
 -}
 intExpr : Int -> Int -> Can.Expr
 intExpr id n =
     makeExpr id (Can.Int n)
 
 
-{-| Create a List expression.
+{-| Builds a list literal holding `elements`.
 -}
 listExpr : Int -> List Can.Expr -> Can.Expr
 listExpr id elements =
     makeExpr id (Can.List elements)
 
 
-{-| Create a 2-tuple expression.
+{-| Builds the pair `( a, b )`.
 -}
 tupleExpr : Int -> Can.Expr -> Can.Expr -> Can.Expr
 tupleExpr id a b =
     makeExpr id (Can.Tuple a b [])
 
 
-{-| Create a Lambda expression.
+{-| Builds an anonymous function taking `args` and returning `body`.
 -}
 lambdaExpr : Int -> List Can.Pattern -> Can.Expr -> Can.Expr
 lambdaExpr id args body =
     makeExpr id (Can.Lambda args body)
 
 
-{-| Create a function Call expression.
+{-| Builds the application of `func` to `args`.
 -}
 callExpr : Int -> Can.Expr -> List Can.Expr -> Can.Expr
 callExpr id func args =
     makeExpr id (Can.Call func args)
 
 
-{-| Create a Let expression.
+{-| Builds a non-recursive `let` that defines `def` and evaluates to `body`.
 -}
 letExpr : Int -> Can.Def -> Can.Expr -> Can.Expr
 letExpr id def body =
     makeExpr id (Can.Let def body)
 
 
-{-| Create a local variable reference.
+{-| Builds a reference to the local variable `name`.
 -}
 varLocalExpr : Int -> Name.Name -> Can.Expr
 varLocalExpr id name =
     makeExpr id (Can.VarLocal name)
 
 
-{-| Create a kernel function reference (VarKernel).
-Used for kernel functions like Elm.Kernel.Platform.batch.
+{-| Builds a reference to the kernel value `name` in the kernel module `home`,
+always under the `Elm` kernel prefix: `varKernelExpr id "Platform" "batch"`
+refers to `Elm.Kernel.Platform.batch`. A reference under the `Eco` prefix cannot
+be built with this.
 -}
 varKernelExpr : Int -> Name.Name -> Name.Name -> Can.Expr
 varKernelExpr id home name =
     makeExpr id (Can.VarKernel "Elm" home name)
 
 
-{-| Create a foreign variable reference (VarForeign).
-Used for references to functions from other modules with type annotations.
+{-| Builds a reference to the value `name` defined in the module `home`, carrying
+`annotation` as its type.
 -}
 varForeignExpr : Int -> ModuleName.Canonical -> Name.Name -> Can.Annotation Name -> Can.Expr
 varForeignExpr id home name annotation =
     makeExpr id (Can.VarForeign home name annotation)
 
 
-{-| Create an annotation from free variables and a type.
+{-| Builds an annotation of `tipe` quantified over `freeVars`. The names are used
+as given and are not checked against the variables in `tipe`.
 -}
 makeAnnotation : List Name.Name -> Can.Type Name -> Can.Annotation Name
 makeAnnotation freeVars tipe =
@@ -292,14 +318,14 @@ makeAnnotation freeVars tipe =
 -- ============================================================================
 
 
-{-| Create a pattern with the given ID and node.
+{-| Builds a pattern with id `id` and contents `node`, placed at `A.zero`.
 -}
 makePattern : Int -> Can.Pattern_ -> Can.Pattern
 makePattern id node =
     A.At A.zero { id = id, node = node }
 
 
-{-| Variable pattern.
+{-| Builds a pattern that binds whatever it matches to `name`.
 -}
 pVar : Int -> Name.Name -> Can.Pattern
 pVar id name =
@@ -308,80 +334,76 @@ pVar id name =
 
 
 -- ============================================================================
--- UNION AND CUSTOM TYPE BUILDERS
--- ============================================================================
--- ============================================================================
--- FUZZERS
--- ============================================================================
--- ============================================================================
 -- TYPE BUILDERS
 -- ============================================================================
 
 
-{-| Int type.
+{-| The type `Int`, from `Basics` in `elm/core`.
 -}
 intType : Can.Type Name
 intType =
     Can.TType (ModuleName.Canonical Pkg.core "Basics") "Int" []
 
 
-{-| List type.
+{-| Returns the type of lists of `elemType`.
 -}
 listType : Can.Type Name -> Can.Type Name
 listType elemType =
     Can.TType (ModuleName.Canonical Pkg.core "List") "List" [ elemType ]
 
 
-{-| Tuple type.
+{-| Returns the tuple type whose element types are `a`, `b` and then those in
+`rest`.
 -}
 tupleType : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Can.Type Name
 tupleType a b rest =
     Can.TTuple a b rest
 
 
-{-| Function type.
+{-| Returns the type of functions from `from` to `to`, with no arrow identity.
 -}
 funType : Can.Type Name -> Can.Type Name -> Can.Type Name
 funType from to =
     Can.tLambda from to
 
 
-{-| Type variable.
+{-| Returns the type variable named `name`.
 -}
 varType : Name.Name -> Can.Type Name
 varType name =
     Can.TVar name
 
 
-{-| Float type.
+{-| The type `Float`, from `Basics` in `elm/core`.
 -}
 floatType : Can.Type Name
 floatType =
     Can.TType (ModuleName.Canonical Pkg.core "Basics") "Float" []
 
 
-{-| Bool type.
+{-| The type `Bool`, from `Basics` in `elm/core`.
 -}
 boolType : Can.Type Name
 boolType =
     Can.TType (ModuleName.Canonical Pkg.core "Basics") "Bool" []
 
 
-{-| Char type.
+{-| The type `Char`, from the `Char` module of `elm/core`.
 -}
 charType : Can.Type Name
 charType =
     Can.TType (ModuleName.Canonical Pkg.core "Char") "Char" []
 
 
-{-| String type.
+{-| The type `String`, from the `String` module of `elm/core`.
 -}
 stringType : Can.Type Name
 stringType =
     Can.TType (ModuleName.Canonical Pkg.core "String") "String" []
 
 
-{-| Create a multi-argument function type (curried).
+{-| Returns the curried function type taking `args` in order and returning
+`result`, with no arrow identity on any arrow. With no `args` it is `result`.
 
     tFunc [ intType, intType ] intType
     -- equivalent to: Int -> Int -> Int

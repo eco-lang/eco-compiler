@@ -1,6 +1,47 @@
 module SourceIR.RecordCases exposing (expectSuite)
 
-{-| Tests for record expressions: creation, access, update.
+{-| Small programs, one per way of building or using a record, for checking
+that a compiler stage handles records.
+
+A record can be written as a literal, read with `record.field`, read with an
+accessor function such as `.field`, and copied with some fields changed as
+`{ r | field = value }`. Each of these is its own Source AST node (`Record`,
+`Access`, `Accessor` and `Update`), so a stage can handle one and mishandle
+another. A program here isolates one form, or one combination such as nesting
+or chaining, so that a failure points at it.
+
+The programs are built with `Compiler.AST.SourceBuilder`, not parsed. Each is a
+module named `Test` that imports only `Basics` and `List` and carries no type
+annotations, so every record type in it comes from inference. The literals
+inside the records, lists and pairs are integer literals, which have type
+`number` until something fixes it, except a few string literals and one float
+literal. Except in "Accessor function", the module has one top-level value,
+`testValue`, and the record that a field access or update starts from is bound
+in a `let` as `r` (and `r2`).
+
+Nothing here asserts anything about the programs. `expectSuite` passes the
+cases' modules, in turn, to the caller's expectation function, stopping at the
+first that fails, so what is checked is whatever that function checks. The
+cases, by group:
+
+  - Empty record: `testValue` is `{}`.
+  - Single-field records: one field holding an integer literal, a list of
+    integer literals, or a pair.
+  - Multi-field records: two fields, five fields of integer literals, and
+    four fields holding an integer, a string, a float and `True`.
+  - Nested records: a record in a field, a record two levels deep beside a
+    string field, and a list of two records in a field.
+  - Field access: `r.x`, and the chained `r.nested.value`.
+  - Accessor functions: `.x` bound to a top-level `testFn` and applied to a
+    record, and the pair `( .x, .y )`, which is never applied.
+  - Record update: one field changed, two of three fields changed, and two
+    updates in sequence, the second applied to the result of the first.
+
+Among what is not tested: record patterns, record type annotations (extensible
+or not), an update whose record is anything but a variable, an accessor passed
+to another function, and any program that should be rejected, such as access
+to a field the record lacks.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -28,12 +69,24 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Creates one test, named `"Record expressions "` followed by `condStr`, that
+runs `expectFn` on the module of every case in this file in turn.
+
+The cases run in order and the test fails at the first case whose expectation
+fails, reporting that case's label; the cases after it are not run, as
+`Compiler.BulkCheck` describes.
+
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Record expressions " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this file, in the order they run: empty, single-field,
+multi-field and nested records, then field access, accessor functions and
+record update.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     emptyRecordCases expectFn
@@ -51,12 +104,17 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the case whose `testValue` is the empty record.
+-}
 emptyRecordCases : (Src.Module -> Expectation) -> List TestCase
 emptyRecordCases expectFn =
     [ { label = "Empty record", run = emptyRecord expectFn }
     ]
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{}`.
+-}
 emptyRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 emptyRecord expectFn _ =
     let
@@ -72,6 +130,8 @@ emptyRecord expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases whose `testValue` is a record with one field.
+-}
 singleFieldCases : (Src.Module -> Expectation) -> List TestCase
 singleFieldCases expectFn =
     [ { label = "Record with int field", run = recordWithIntField expectFn }
@@ -80,6 +140,9 @@ singleFieldCases expectFn =
     ]
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ value = 42 }`.
+-}
 recordWithIntField : (Src.Module -> Expectation) -> (() -> Expectation)
 recordWithIntField expectFn _ =
     let
@@ -89,6 +152,9 @@ recordWithIntField expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ items = [ 1, 2 ] }`.
+-}
 recordWithListField : (Src.Module -> Expectation) -> (() -> Expectation)
 recordWithListField expectFn _ =
     let
@@ -98,6 +164,9 @@ recordWithListField expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ pair = ( 1, "a" ) }`.
+-}
 recordWithTupleField : (Src.Module -> Expectation) -> (() -> Expectation)
 recordWithTupleField expectFn _ =
     let
@@ -113,6 +182,8 @@ recordWithTupleField expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases whose `testValue` is a flat record with several fields.
+-}
 multiFieldCases : (Src.Module -> Expectation) -> List TestCase
 multiFieldCases expectFn =
     [ { label = "Two-field record", run = twoFieldRecord expectFn }
@@ -121,6 +192,9 @@ multiFieldCases expectFn =
     ]
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ id = 1, name = "a" }`.
+-}
 twoFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 twoFieldRecord expectFn _ =
     let
@@ -135,6 +209,9 @@ twoFieldRecord expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is a
+record of five fields, `a` to `e`, holding the integer literals 1 to 5.
+-}
 fiveFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 fiveFieldRecord expectFn _ =
     let
@@ -152,6 +229,9 @@ fiveFieldRecord expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ count = 42, name = "test", value = 3.14, enabled = True }`.
+-}
 recordWithMixedTypes : (Src.Module -> Expectation) -> (() -> Expectation)
 recordWithMixedTypes expectFn _ =
     let
@@ -174,6 +254,8 @@ recordWithMixedTypes expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases whose `testValue` is a record with records inside it.
+-}
 nestedRecordCases : (Src.Module -> Expectation) -> List TestCase
 nestedRecordCases expectFn =
     [ { label = "Record containing record", run = recordContainingRecord expectFn }
@@ -182,6 +264,9 @@ nestedRecordCases expectFn =
     ]
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ nested = { x = 10 } }`.
+-}
 recordContainingRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 recordContainingRecord expectFn _ =
     let
@@ -194,6 +279,9 @@ recordContainingRecord expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ outer = { inner = { value = 42 } }, name = "test" }`.
+-}
 deeplyNestedRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 deeplyNestedRecord expectFn _ =
     let
@@ -214,6 +302,9 @@ deeplyNestedRecord expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is
+`{ items = [ { id = 1 }, { id = 2 } ] }`.
+-}
 recordContainingListOfRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 recordContainingListOfRecords expectFn _ =
     let
@@ -239,6 +330,8 @@ recordContainingListOfRecords expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that read a field with `record.field`.
+-}
 recordAccessCases : (Src.Module -> Expectation) -> List TestCase
 recordAccessCases expectFn =
     [ { label = "Access single field", run = accessSingleField expectFn }
@@ -246,6 +339,9 @@ recordAccessCases expectFn =
     ]
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` binds
+`r = { x = 10 }` in a `let` and returns `r.x`.
+-}
 accessSingleField : (Src.Module -> Expectation) -> (() -> Expectation)
 accessSingleField expectFn _ =
     let
@@ -264,6 +360,9 @@ accessSingleField expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` binds
+`r = { nested = { value = 42 } }` in a `let` and returns `r.nested.value`.
+-}
 chainedAccess : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedAccess expectFn _ =
     let
@@ -291,6 +390,8 @@ chainedAccess expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that use an accessor function such as `.x`.
+-}
 recordAccessorCases : (Src.Module -> Expectation) -> List TestCase
 recordAccessorCases expectFn =
     [ { label = "Accessor function", run = accessorFunction expectFn }
@@ -298,6 +399,10 @@ recordAccessorCases expectFn =
     ]
 
 
+{-| Returns the check that runs `expectFn` on a module named `Test` with two
+top-level values: `testFn`, defined as `.x`, and `testValue`, defined as
+`testFn { x = 1 }`.
+-}
 accessorFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorFunction expectFn _ =
     let
@@ -310,6 +415,10 @@ accessorFunction expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` is the
+pair `( .x, .y )`. Neither accessor is applied, so nothing fixes the record
+types they take.
+-}
 multipleAccessorFunctions : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleAccessorFunctions expectFn _ =
     let
@@ -325,6 +434,8 @@ multipleAccessorFunctions expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that copy a record with some fields changed.
+-}
 recordUpdateCases : (Src.Module -> Expectation) -> List TestCase
 recordUpdateCases expectFn =
     [ { label = "Update single field", run = updateSingleField expectFn }
@@ -333,6 +444,9 @@ recordUpdateCases expectFn =
     ]
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` binds
+`r = { x = 10, y = 20 }` in a `let` and returns `{ r | x = 100 }`.
+-}
 updateSingleField : (Src.Module -> Expectation) -> (() -> Expectation)
 updateSingleField expectFn _ =
     let
@@ -354,6 +468,10 @@ updateSingleField expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` binds
+`r = { x = 10, y = 20, z = 30 }` in a `let` and returns
+`{ r | x = 100, z = 300 }`.
+-}
 updateMultipleFields : (Src.Module -> Expectation) -> (() -> Expectation)
 updateMultipleFields expectFn _ =
     let
@@ -379,6 +497,10 @@ updateMultipleFields expectFn _ =
     expectFn modul
 
 
+{-| Returns the check that runs `expectFn` on a module whose `testValue` binds
+`r = { x = 1, y = 2 }` and `r2 = { r | x = 10 }` in one `let` and returns
+`{ r2 | y = 20 }`.
+-}
 chainedUpdates : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedUpdates expectFn _ =
     let

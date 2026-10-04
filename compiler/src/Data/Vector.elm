@@ -3,12 +3,19 @@ module Data.Vector exposing
     , forM_, imapM_
     )
 
-{-| Utilities for working with mutable vectors in the IO monad during type checking.
+{-| The type checker keeps some of its working data in _vectors_, and this
+module reads and walks them.
 
-This module provides operations on IORef-wrapped arrays used as mutable vectors in the type checker.
-The "unsafe" prefix indicates operations that assume array indices exist or that values are present,
-crashing if preconditions aren't met. This is acceptable in the type checker where these invariants
-are maintained by the algorithm.
+A vector is an array whose slots each hold either nothing or a list of type
+variables. It lives in the type checker's table of vectors, and an `IORef`
+refers to it, as `Data.IORef` describes. Reading a vector gives the array as it
+stands at that moment.
+
+The names follow Haskell's `Data.Vector`, but two of the functions do less
+than their names suggest. `unsafeInit` gives back the same reference, so it
+does not leave out the last slot, and `unsafeFreeze` copies nothing. The
+`unsafe` prefix otherwise marks a function that crashes when what it expects is
+not there.
 
 
 # Vector Operations
@@ -29,7 +36,8 @@ import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 
 
-{-| Get the last element from a mutable vector, crashing if empty or invalid.
+{-| Returns an action that gives the list in the last slot of the vector.
+Crashes if the vector has no slots or its last slot is empty.
 -}
 unsafeLast : IORef (Array (Maybe (List Variable))) -> IO (List Variable)
 unsafeLast ioRef =
@@ -48,26 +56,23 @@ unsafeLast ioRef =
             )
 
 
-{-| Return all elements except the last (identity function, preserving the reference).
+{-| Returns the reference unchanged. Unlike Haskell's `init`, it does not leave
+out the last slot: anything given the result sees the whole vector.
 -}
 unsafeInit : IORef (Array (Maybe a)) -> IORef (Array (Maybe a))
 unsafeInit =
     identity
 
 
-{-| Apply an indexed monadic action to each element in the vector, discarding results.
+{-| Returns an action that runs `action` on each filled slot of the vector, in
+index order, passing the slot's index and its list, and discards the results.
+Empty slots are skipped.
 -}
 imapM_ : (Int -> List Variable -> IO b) -> IORef (Array (Maybe (List Vars.Variable))) -> IO ()
 imapM_ action ioRef =
     IORef.readIORefMVector ioRef
         |> IO.andThen
             (\value ->
-                -- kernel-opt-02 lane A': the accumulator this fold used to build
-                -- with `Array.push (Just newX)` was discarded wholesale by the
-                -- `IO.map (\_ -> ())` below — one array copy per element, pure
-                -- waste. Threading unit instead keeps the effects and their
-                -- order identical (`action i x` is still sequenced by the same
-                -- andThen chain, in the same order) and copies nothing.
                 Array.foldl
                     (\( i, maybeX ) ioAcc ->
                         case maybeX of
@@ -84,19 +89,24 @@ imapM_ action ioRef =
             )
 
 
+{-| Returns an action that runs `action` on the list in each filled slot of the
+vector, in index order, and discards the results. Empty slots are skipped.
+-}
 mapM_ : (List Vars.Variable -> IO b) -> IORef (Array (Maybe (List Vars.Variable))) -> IO ()
 mapM_ action ioRef =
     imapM_ (\_ -> action) ioRef
 
 
-{-| Apply a monadic action to each element in the vector, discarding results (flipped argument order).
+{-| Returns an action that runs `action` on the list in each filled slot of the
+vector, in index order, and discards the results. Empty slots are skipped.
 -}
 forM_ : IORef (Array (Maybe (List Vars.Variable))) -> (List Vars.Variable -> IO b) -> IO ()
 forM_ ioRef action =
     mapM_ action ioRef
 
 
-{-| Freeze a mutable vector into an immutable one (identity function, no actual freezing).
+{-| Returns an action that gives back the same reference. Nothing is copied, so
+a later write through the reference is seen through the result as well.
 -}
 unsafeFreeze : IORef (Array (Maybe a)) -> IO (IORef (Array (Maybe a)))
 unsafeFreeze =

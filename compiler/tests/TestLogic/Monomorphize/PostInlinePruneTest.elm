@@ -1,24 +1,67 @@
 module TestLogic.Monomorphize.PostInlinePruneTest exposing (suite)
 
-{-| `Prune.pruneAfterInline` — the post-`MonoInlineSimplify` dead-spec prune
-(`plans/post-inline-dead-spec-prune.md` §7.1).
+{-| Tests for `Prune.pruneAfterInline`, the pass that removes the
+specializations `MonoInlineSimplify` leaves unreferenced, and for
+`Prune.restrictToSccEdges`, which that pass applies to the edges it keeps.
 
-The pass removes specializations the inliner orphaned: it inlines the only
-reference to a callee and leaves the callee's spec in the graph, because
-`Prune` runs at the END of monomorphization and the inliner returns
-`callEdges = Array.empty`. On the self-compile that is 6,608 unreferenced
-code-bearing functions, 4.86 % of the emitted text.
+A _specialization_ (spec) is one instantiation of a definition at a concrete
+type. It sits in the graph's `nodes` array at the index of its SpecId, and it is
+_live_ while that slot holds a node; pruning empties a slot and renumbers
+nothing. When the inliner copies a function into its only call site, the
+function's spec stays in the graph with nothing referring to it. The prune keeps
+only what is reachable from its roots (the spec of `main`, and any
+incoming-port and flags-decoder specs), as `Compiler.Monomorphize.Prune`
+describes, over references it re-collects from the rewritten bodies with
+`MonoTraverse.collectSpecEdges`, which counts every `MonoVarGlobal` as a
+reference to its spec.
 
-**The one real risk is pruning something LIVE**, so most of what is pinned here
-is what must SURVIVE. A spec is kept alive by ANY `MonoVarGlobal` occurrence —
-a direct call, a `papCreate` that names it, a bare reference stored into data —
-never only by call-shaped ones. An adjacency that misses a shape is a
-miscompile, not a missed optimization: `plans/prune-bitset-calledges-reachability.md`
-failed exactly that way across 702 tests with MONO\_011 / CGEN\_044.
+The risk is removing a spec that a live node still names, so most of these
+tests check what survives. A _dangling reference_ is a pair of a live spec and a
+spec that is not live but appears among its collected references. `danglingRefs`
+lists them, making the same check as `Builder.Generate.validatePruned`. It reads
+references with the same `collectSpecEdges` the prune uses, so a reference that
+function misses is invisible to both.
 
-T5 is that risk as a direct assertion — the same closure check
-`Generate.validatePruned` runs under `ECO_MONO_VALIDATE=1` — and it is the test
-to extend when a new cross-spec reference shape is introduced.
+Each graph test builds a module with `Compiler.AST.SourceBuilder` and runs it
+through `withGraphs`: `TestPipeline.runToMono`, which uses the substitution
+engine and adds a `main` that refers to `testValue`, then
+`MonoInlineSimplify.optimize` with the default inline configuration, then the
+prune. The three modules are:
+
+  - `inlineAwayModule`, where `testValue` makes the only call to a small
+    `addOne`;
+  - `valueRefModule`, where `testValue` passes `addOne` to `List.map` and
+    nothing calls it directly;
+  - `localPartialModule`, where a lambda partially applied to an argument of
+    `localPartial` is passed to `List.map`.
+
+What the tests establish:
+
+  - The fuzz test builds a graph of 1 to 16 vertices, in which every vertex
+    whose index is 4 more than a multiple of 5 has no edge entry, and picks a
+    random subset of its vertices. It checks that `restrictToSccEdges` leaves
+    unchanged the vertices that lie on a cycle of the subgraph induced on the
+    subset, the vertices that lie on a cycle of the whole graph, and which
+    vertices have an edge entry. This is the use the edges are kept for:
+    `MonoInlineSimplify.buildBodyLookup` decides from them whether a spec is
+    recursive, over the nodes the graph holds when it runs.
+  - T1, on `inlineAwayModule`: the prune does not increase the number of live
+    specs, it does reduce it, and it leaves no dangling reference.
+  - T2, on `valueRefModule`: the prune leaves no dangling reference and at
+    least one live spec.
+  - T3, on `inlineAwayModule`: the spec of `main` is live after the prune. A
+    graph with no `main` would pass unchecked.
+  - T4, on `inlineAwayModule`: no spec that is not live after the prune keeps
+    an entry in the registry's `reverseMapping`.
+  - T5: no dangling reference after the prune, on each of the three modules.
+  - T6, on `inlineAwayModule`: the inliner alone, without the prune, leaves the
+    number of live specs unchanged.
+
+Among what is not tested: the solver engine, which a default build uses; the
+port and flags-decoder roots; that `restrictToSccEdges` actually drops an edge
+between components, or that the pruned graph's `callEdges` are restricted; that
+any particular spec, such as `addOne`, is the one removed or kept; and that a
+live spec keeps its `reverseMapping` entry, although T4's label says so.
 
 -}
 
@@ -51,6 +94,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The post-inline prune tests: the `restrictToSccEdges` fuzz test, then T1 to
+T6.
+-}
 suite : Test
 suite =
     Test.describe "post-inline dead-spec prune"
@@ -61,8 +107,7 @@ suite =
                     withGraphs inlineAwayModule
                         (\before after ->
                             Expect.all
-                                [ -- The prune only ever removes.
-                                  \_ ->
+                                [ \_ ->
                                     if liveCount after <= liveCount before then
                                         Expect.pass
 
@@ -74,9 +119,7 @@ suite =
                                                 ++ String.fromInt (liveCount after)
                                             )
 
-                                -- And on this fixture it removes something:
-                                -- `addOne` is tiny, inlines at its only call
-                                -- site, and its spec is then unreferenced.
+                                -- And on this fixture it shrinks.
                                 , \_ ->
                                     if liveCount after < liveCount before then
                                         Expect.pass
@@ -94,11 +137,8 @@ suite =
         , Test.describe "T2 — a spec referenced as a VALUE survives"
             [ Test.test "a global passed to a HOF is kept even with no call to it" <|
                 \_ ->
-                    -- `List.map addOne xs` references `addOne` through a
-                    -- `MonoVarGlobal` in ARGUMENT position, which lowers to a
-                    -- `papCreate function=@addOne`, not a call. A collector
-                    -- that only followed call-shaped references would prune it
-                    -- and the emitted module would name a missing symbol.
+                    -- `addOne` is named only as an argument to `List.map`,
+                    -- so a prune that followed only calls would remove it.
                     withGraphs valueRefModule
                         (\_ after ->
                             Expect.all
@@ -127,20 +167,17 @@ suite =
                                         Expect.fail "the main spec was pruned"
 
                                 _ ->
-                                    -- No main: the prune keeps everything
-                                    -- (library compile), which T1 already
-                                    -- covers via the monotonicity assertion.
+                                    -- Not expected: the pipeline always
+                                    -- adds a `main`.
                                     Expect.pass
                         )
             ]
         , Test.describe "T4 — the registry is pruned with the nodes"
             [ Test.test "a pruned spec's reverseMapping entry is nulled, a kept one is not" <|
                 \_ ->
-                    -- Load-bearing, not cosmetic: E9.5 post-settle devirt picks
-                    -- its direct-call target from the registry's specs of a
-                    -- global (`specsByGlobal` folds `reverseMapping` and skips
-                    -- `Nothing`). A dead spec left there is a candidate whose
-                    -- node is gone — an `eco.call` to a missing symbol.
+                    -- AbiCloning picks direct-call targets from the specs
+                    -- `reverseMapping` lists for a global, so an entry left
+                    -- for a removed spec offers a target with no node.
                     withGraphs inlineAwayModule
                         (\(Mono.MonoGraph before) ((Mono.MonoGraph after) as afterGraph) ->
                             let
@@ -187,10 +224,9 @@ suite =
         , Test.describe "T6 — the flag is off: nothing moves"
             [ Test.test "not calling the prune leaves every spec in place" <|
                 \_ ->
-                    -- The pass is a function, so "flag off" in the pipeline is
-                    -- "do not call it". What this pins is that the INLINER
-                    -- alone never removes a spec — every difference in live
-                    -- count between the two flag states is the prune's.
+                    -- With `inline.pruneDead` off a build does not call the
+                    -- prune, so this compares the graphs either side of the
+                    -- inliner alone.
                     case Pipeline.runToMono inlineAwayModule of
                         Err msg ->
                             Expect.fail msg
@@ -211,8 +247,10 @@ suite =
 -- ============================================================================
 
 
-{-| Run the real pipeline position: monomorphize, inline, then prune. Hands the
-check the graph BEFORE and AFTER the prune so a test can assert on the delta.
+{-| Returns what `check` makes of the graph before and after the prune, where
+before is `srcModule` monomorphized by `TestPipeline.runToMono` and then
+inlined with `pruneConfig`. Fails with the pipeline's message if
+`TestPipeline.runToMono` fails.
 -}
 withGraphs : Src.Module -> (Mono.MonoGraph -> Mono.MonoGraph -> Expect.Expectation) -> Expect.Expectation
 withGraphs srcModule check =
@@ -228,8 +266,8 @@ withGraphs srcModule check =
             check inlined (Prune.pruneAfterInline inlined)
 
 
-{-| Defaults, with the report off — the census builds strings the tests do not
-read.
+{-| The inline configuration the tests run the inliner with: the default, with
+`report` set off, which it already is by default.
 -}
 pruneConfig : Config.InlineConfig
 pruneConfig =
@@ -240,6 +278,9 @@ pruneConfig =
     { base | report = False }
 
 
+{-| Returns the number of live specs in the graph, the slots of `nodes` that
+hold a node.
+-}
 liveCount : Mono.MonoGraph -> Int
 liveCount (Mono.MonoGraph record) =
     Array.foldl
@@ -255,6 +296,9 @@ liveCount (Mono.MonoGraph record) =
         record.nodes
 
 
+{-| Returns whether the spec numbered `specId` is live, which is false for an
+index outside `nodes` too.
+-}
 isLive : Mono.MonoGraph -> Int -> Bool
 isLive (Mono.MonoGraph record) specId =
     case Array.get specId record.nodes of
@@ -265,8 +309,9 @@ isLive (Mono.MonoGraph record) specId =
             False
 
 
-{-| `( from, to )` for every reference from a live node to a pruned one. The
-MONO\_011 closure check, and empty is the only acceptable answer.
+{-| Returns the dangling references of a graph as `( from, to )` SpecId pairs:
+`from` is live, and `to` is among the references `MonoTraverse.collectSpecEdges`
+finds in its node but is not live.
 -}
 danglingRefs : Mono.MonoGraph -> List ( Int, Int )
 danglingRefs ((Mono.MonoGraph record) as graph) =
@@ -310,18 +355,23 @@ danglingRefs ((Mono.MonoGraph record) as graph) =
 -- ============================================================================
 
 
+{-| The source type `Int`.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| The source type `List Int`.
+-}
 tIntList : Src.Type
 tIntList =
     tType "List" [ tInt ]
 
 
-{-| `addOne` is under the inline threshold and is called once, so the inliner
-copies it into `testValue` and orphans its spec.
+{-| A module in which `testValue` is `addOne 41`, the only call to
+`addOne n = n + 1`. T1 relies on the inliner leaving at least one spec of it
+unreferenced.
 -}
 inlineAwayModule : Src.Module
 inlineAwayModule =
@@ -341,9 +391,8 @@ inlineAwayModule =
         []
 
 
-{-| `addOne` reaches `List.map` as a VALUE. Nothing calls it directly, so a
-call-shaped reachability would prune it and the `papCreate` naming it would
-dangle.
+{-| A module in which `testValue` is `List.map addOne [ 1, 2, 3 ]`, so
+`addOne` is referred to as a value and nothing calls it directly.
 -}
 valueRefModule : Src.Module
 valueRefModule =
@@ -365,8 +414,9 @@ valueRefModule =
         []
 
 
-{-| A partially applied local lambda escaping into a HOF — the shape that keeps
-closures and PAPs alive across the pass.
+{-| A module in which `localPartial k xs` maps `(\a b -> a + b) k` over `xs`,
+passing a lambda partially applied to `k` to `List.map`, and `testValue` calls
+`localPartial 7 [ 1, 2 ]`.
 -}
 localPartialModule : Src.Module
 localPartialModule =
@@ -394,11 +444,16 @@ localPartialModule =
         []
 
 
-{-| Row 8 (plans/frontend-heap-release.md §7.4): `restrictToSccEdges` keeps
-only intra-SCC edges, and that must leave the CYCLIC vertex set of every
-induced subgraph unchanged — codegen's `buildBodyLookup` computes
-`isRecursive` over the graph induced on the codegen-time nodes, which differ
-from the prune-time ones.
+{-| A fuzz test that `Prune.restrictToSccEdges`, which keeps only the edges
+inside a strongly connected component, leaves unchanged the vertices on a cycle
+of a randomly chosen induced subgraph, the vertices on a cycle of the whole
+graph, and which vertices have an edge entry.
+
+The graph has `n` vertices, from 1 to 16; a vertex whose index is 4 more than a
+multiple of 5 has no edge entry, and a generated edge from such a vertex is
+dropped. A vertex is in the subgraph when its position in `mask` holds `True`
+or lies beyond the end of `mask`.
+
 -}
 sccRestrictionTest : Test
 sccRestrictionTest =
@@ -446,6 +501,10 @@ sccRestrictionTest =
                 ()
 
 
+{-| Returns, in ascending order, the vertices that lie on a cycle of the
+subgraph of `edges` induced on the vertices `keep` accepts. `n` is the number
+of vertices, and a missing edge entry counts as no edges.
+-}
 cyclicSet : Int -> (Int -> Bool) -> Array.Array (Maybe (List Int)) -> List Int
 cyclicSet n keep edges =
     let

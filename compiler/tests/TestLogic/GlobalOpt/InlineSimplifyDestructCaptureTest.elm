@@ -1,24 +1,42 @@
 module TestLogic.GlobalOpt.InlineSimplifyDestructCaptureTest exposing (suite)
 
-{-| Step 4's binder-capture trap, pinned
-(`plans/pre-mono-inline-simplify.md` §6).
+{-| Tests that the pre-monomorphization inliner,
+`Compiler.GlobalOpt.InlineSimplify`, renames the destructuring binders of a
+body it copies into a caller. It is there to catch an inliner that renames
+`let` binders but copies a destructuring binder unchanged, which gives the
+caller two binders of one name.
 
-The post-monomorphization inliner shipped a bug in which `MonoDestruct`
-binders were spliced through VERBATIM while `MonoDef`/`MonoTailDef` binders
-were alpha-renamed, so an inlined `let ( _, a ) = …` captured the CALLER's
-`a`. `InlineSimplify` avoids that class by suffixing every local name in a
-copied body — binders and uses alike, `Destruct` included — with one
-per-copy suffix.
+_Binder capture_ is that failure: a binder in the inlined copy has the same
+name as a binder in the caller, so inside the caller's body one shadows the
+other. `InlineSimplify` avoids it by appending one suffix, `_pi` and a number
+unique to the copy, to every local name in the copied body, binders and uses
+alike.
 
-This test builds exactly the shape that broke the mono pass: a callee whose
-body destructures a tuple into `a`, inlined into a caller that has its own
-`a` in scope with a different value. If the callee's `a` captured the
-caller's, the two names collide in one scope.
+The fixture is `captureModule`, a module `Test` with two definitions.
+`split` takes a pair `p` and returns its first component through
+`let ( a, b ) = p in a`, so its body binds `a` by destructuring. `testValue`
+binds its own `a` to `100` and returns `split ( 1, 2 ) + a`. If `split` is
+inlined into `testValue` and its `a` is not renamed, `testValue`'s body binds
+`a` twice. The module is compiled with `TestLogic.TestPipeline.runToAssigned`,
+and `InlineSimplify.optimize` is run on the resulting graph with
+`inlineConfig`.
 
-The assertion is structural rather than by evaluation: after the pass, no
-name bound by the inlined copy may equal a name bound by the caller. That is
-the invariant capture violates, and it holds whether or not the fixture's
-arithmetic would happen to agree.
+The test establishes:
+
+  - "an inlined Destruct binder does not shadow a caller binder": after the
+    pass, no `Define` or `TrackedDefine` body in the graph binds any name more
+    than once, as `binders` counts binders. The check reads the names bound,
+    not the value `testValue` computes.
+
+Among what is not tested:
+
+  - That `split` is inlined at all. If the pass left the call in place, no
+    body would bind a name twice and the test would pass.
+  - The value `testValue` computes after the pass.
+  - Binders inside a `case`, a record, a record update or a tail call, which
+    `binders` does not look at, and the bodies of `Cycle` nodes. The fixture
+    has none of these.
+  - One function inlined twice into the same caller.
 
 -}
 
@@ -53,6 +71,10 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The one test described in the module docstring. It fails with the
+pipeline's message if `runToAssigned` fails, and otherwise names each
+top-level body that binds a name more than once, with the repeated names.
+-}
 suite : Test
 suite =
     Test.describe "InlineSimplify destructure-binder capture"
@@ -81,6 +103,14 @@ suite =
         ]
 
 
+{-| The default inline configuration with `preMono` switched on.
+
+`InlineSimplify.optimize` does not read `preMono`; `Builder.Generate` checks it
+before calling the pass. The pass reads its inlining threshold (`preMonoThreshold`),
+its round limit (`preMonoFixpointIterations`) and `report` from this record,
+and those are the defaults.
+
+-}
 inlineConfig : Config.InlineConfig
 inlineConfig =
     let
@@ -90,8 +120,10 @@ inlineConfig =
     { base | preMono = True }
 
 
-{-| Names bound more than once inside a single top-level body. A correct
-copy-and-rename never produces one; capture always does.
+{-| Returns one entry for each `Define` or `TrackedDefine` node in the graph
+whose body binds a name more than once, as `binders` counts binders. The
+entry is the node's global followed by its repeated names. Nodes of other
+kinds, `Cycle` included, are not checked.
 -}
 duplicateBinders : TOpt.GlobalGraph TypeIds.MVarId -> List String
 duplicateBinders (TOpt.GlobalGraph nodes _ _ _ _) =
@@ -113,6 +145,9 @@ duplicateBinders (TOpt.GlobalGraph nodes _ _ _ _) =
         nodes
 
 
+{-| Returns the body of a `Define` or `TrackedDefine` node, and `Nothing` for
+any other kind of node.
+-}
 bodyExpr : TOpt.Node TypeIds.MVarId -> Maybe (TOpt.Expr TypeIds.MVarId)
 bodyExpr node =
     case node of
@@ -126,6 +161,10 @@ bodyExpr node =
             Nothing
 
 
+{-| Returns every occurrence in `names` of a name already seen earlier in the
+list, so a name that appears three times is returned twice. The result is
+empty when the names are all different.
+-}
 repeated : List String -> List String
 repeated names =
     List.foldl
@@ -141,10 +180,16 @@ repeated names =
         |> Tuple.second
 
 
-{-| Every name introduced by a binder in an expression: `Let` definitions,
-`Destruct` binders and lambda parameters. Deliberately does NOT descend into
-`Case` deciders — the fixture has none, and a decider's jump targets legally
-reuse names.
+{-| Returns the names bound in `expr` outside any `Case`, record, record update
+or tail call: the names of `Let` definitions and the parameters of a `TailDef`,
+`Destruct` binders, and `Function` and `TrackedFunction` parameters.
+
+It descends through calls, `If` conditions and branches, tuples, lists and
+field access, and it collects from sibling branches alike, so two `If`
+branches that each bind `x` count as binding `x` twice. It does not look
+inside a `Case`, whose separate branches may each bind the same name, nor
+inside a record, a record update or a tail call.
+
 -}
 binders : TOpt.Expr TypeIds.MVarId -> List String
 binders expr =
@@ -180,6 +225,9 @@ binders expr =
             []
 
 
+{-| Returns the names a `let` definition binds: its own name, the parameters
+of a `TailDef`, and the names `binders` finds in its bound expression or body.
+-}
 defBinders : TOpt.Def TypeIds.MVarId -> List String
 defBinders def =
     case def of
@@ -190,6 +238,8 @@ defBinders def =
             (n :: List.map (\( ln, _ ) -> located ln) args) ++ binders body
 
 
+{-| Returns the name in a located name, without its region.
+-}
 located : A.Located Name -> String
 located =
     A.toValue
@@ -201,14 +251,22 @@ located =
 -- ============================================================================
 
 
+{-| Builds the source expression `a + b`.
+-}
 plus : Src.Expr -> Src.Expr -> Src.Expr
 plus a b =
     binopsExpr [ ( a, "+" ) ] b
 
 
-{-| split : ( Int, Int ) -> Int
-split p =
-let ( a, b ) = p in a
+{-| The fixture module `Test`, which is this Elm source:
+
+    split : ( Int, Int ) -> Int
+    split p =
+        let
+            ( a, b ) =
+                p
+        in
+        a
 
     testValue : Int
     testValue =
@@ -218,8 +276,9 @@ let ( a, b ) = p in a
         in
         split ( 1, 2 ) + a
 
-`split`'s body binds `a`; the caller binds `a` too. Inlining `split` puts both
-in one body.
+`split`'s body binds `a` by destructuring, and `testValue` binds its own `a`
+and calls `split`, so inlining `split` into `testValue` puts both binders in
+one body.
 
 -}
 captureModule : Src.Module

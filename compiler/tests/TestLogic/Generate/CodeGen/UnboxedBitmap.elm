@@ -1,27 +1,46 @@
 module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap)
 
-{-| Test logic for heap and closure boundary representation (CGEN\_026, CGEN\_027, CGEN\_003, CGEN\_049).
+{-| Checks that the unboxed bitmaps in generated MLIR agree with the operand
+types of the ops that carry them, so that a heap object or closure whose bitmap
+misdescribes the values stored in it is caught in the MLIR the code generator
+produces.
 
-This tests the HEAP and CLOSURE boundaries, NOT the ABI boundary.
-ABI boundary testing (function parameters/returns) is separate.
+The tuple, record and custom construct ops and the closure ops `eco.papCreate`
+and `eco.papExtend` record which of their operands are stored unboxed in an
+integer attribute, their _unboxed bitmap_. The bitmap holds one 2-bit
+_slot kind_ per operand position, slot N in bits 2N and 2N+1: 0 for a boxed
+value (`!eco.value`), 1 for an Int (`i64`), 2 for a Float (`f64`) and 3 for a
+Char (`i16`). The operand types compared against it are the ones the op records
+in its `_operand_types` attribute, read with
+`TestLogic.Generate.CodeGen.Invariants.extractOperandTypes`.
 
-Per REP\_CLOSURE\_001 and CGEN\_026, at heap/closure boundaries:
+A Bool is `!eco.value` when it is stored in a heap object or captured by a
+closure, so an `i1` in any operand position that is compared (for a list cons,
+the head) is a violation whatever the bitmap or flag says.
 
-  - Only Int (i64), Float (f64), and Char (i16) may be unboxed
-  - Bool must be !eco.value (i1 is a violation)
-  - All other types must be !eco.value
+`expectUnboxedBitmap` compiles the given module to MLIR and checks, at any
+nesting depth:
 
-CGEN\_026: For container construct ops, bit N of `unboxed_bitmap` must be set
-iff operand N is unboxable (Int, Float, Char). Bool operands must be !eco.value.
+  - `eco.construct.tuple2`, `eco.construct.tuple3`, `eco.construct.record` and
+    `eco.construct.custom`: slot N of `unboxed_bitmap` holds the kind of
+    operand N, for every recorded operand, trailing GC root hints included.
+  - `eco.papCreate`: the same, over its captured operands.
+  - `eco.papExtend`: slot N of `newargs_unboxed_bitmap` holds the kind of
+    operand N+1. Operand 0 is the closure being extended, and the trailing
+    operands that `eco.gc_roots_count` counts are GC root hints, so neither is
+    compared.
+  - `eco.construct.list`: the boolean `head_unboxed` is true exactly when the
+    head operand is `i64`, `f64` or `i16`.
 
-CGEN\_027: For `eco.construct.list`, `head_unboxed` must be true iff head
-operand is unboxable.
+A missing bitmap reads as 0 (every slot boxed) and a missing `head_unboxed` as
+false. An op with no `_operand_types` attribute is not checked. On the
+JavaScript back end, where `Bitwise` is 32-bit, only slots 0 to 15 are read
+correctly; a slot N past 15 is read as slot N modulo 16.
 
-CGEN\_003: For `eco.papCreate`, bit N of `unboxed_bitmap` must be set iff
-captured operand N is unboxable.
-
-CGEN\_049: For `eco.papExtend`, bit N of `newargs_unboxed_bitmap` must be set
-iff new argument operand N is unboxable.
+Among what is not tested: the `head_kind` attribute of `eco.construct.list`,
+`eco.papCreateGroup` ops, the types of function parameters and results, and
+whether a recorded operand type matches the type of the SSA value actually
+passed.
 
 @docs expectUnboxedBitmap
 
@@ -44,7 +63,15 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that unboxed bitmap invariants hold for a source module.
+{-| Returns an expectation that passes when `srcModule` compiles to MLIR and
+every op the module docstring lists has an unboxed bitmap, or for a list cons a
+`head_unboxed` flag, that agrees with its operand types under the rules set out
+there.
+
+A compilation failure fails with its message. Otherwise the expectation fails
+with the first violation found, as
+`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
+
 -}
 expectUnboxedBitmap : Src.Module -> Expectation
 expectUnboxedBitmap srcModule =
@@ -56,12 +83,13 @@ expectUnboxedBitmap srcModule =
             violationsToExpectation (checkUnboxedBitmap mlirModule)
 
 
-{-| Check unboxed bitmap consistency for containers and PAP ops (CGEN\_026/027/003/049).
+{-| Returns every violation in `mlirModule`: those of the tuple, record and
+custom construct ops, then of the list cons ops, then of `eco.papCreate`, then
+of `eco.papExtend`.
 -}
 checkUnboxedBitmap : MlirModule -> List Violation
 checkUnboxedBitmap mlirModule =
     let
-        -- Container construct ops (CGEN_026)
         tuple2Ops =
             findOpsNamed "eco.construct.tuple2" mlirModule
 
@@ -80,21 +108,18 @@ checkUnboxedBitmap mlirModule =
         containerViolations =
             List.concatMap checkContainerBitmap targetOps
 
-        -- List construct ops (CGEN_027)
         listOps =
             findOpsNamed "eco.construct.list" mlirModule
 
         listViolations =
             List.filterMap checkListHeadUnboxed listOps
 
-        -- PAP create ops (CGEN_003)
         papCreateOps =
             findOpsNamed "eco.papCreate" mlirModule
 
         papCreateViolations =
             List.concatMap checkPapCreateBitmap papCreateOps
 
-        -- PAP extend ops (CGEN_049)
         papExtendOps =
             findOpsNamed "eco.papExtend" mlirModule
 
@@ -104,6 +129,10 @@ checkUnboxedBitmap mlirModule =
     containerViolations ++ listViolations ++ papCreateViolations ++ papExtendViolations
 
 
+{-| Returns the violations in the `unboxed_bitmap` of a tuple, record or custom
+construct op, comparing slot N with operand N. A missing bitmap reads as 0, and
+an op with no recorded operand types gives none.
+-}
 checkContainerBitmap : MlirOp -> List Violation
 checkContainerBitmap op =
     let
@@ -122,20 +151,28 @@ checkContainerBitmap op =
                 |> List.filterMap identity
 
 
+{-| Returns the violation, if any, for operand `index` of a construct op, as
+`checkBitmapKind` decides it.
+-}
 checkBitmapBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
 checkBitmapBit op bitmap index operandType =
     checkBitmapKind op bitmap index operandType "unboxed_bitmap" "operand"
 
 
-{-| 2-bit kind decode at slot `index` from a bitmap.
+{-| Returns the slot kind held in slot `index` of `bitmap`.
+
+On the JavaScript back end, `Bitwise` works on 32-bit values and wraps shift
+counts at 32, so only slots 0 to 15 are read correctly there. For a higher
+`index` it returns the kind in slot `index` modulo 16.
+
 -}
 slotKind : Int -> Int -> Int
 slotKind bitmap index =
     Bitwise.and (Bitwise.shiftRightZfBy (2 * index) bitmap) 3
 
 
-{-| Expected 2-bit kind for an MLIR operand SSA type:
-0 = boxed (!eco.value or i1), 1 = Int (i64), 2 = Float (f64), 3 = Char (i16).
+{-| Returns the slot kind an operand of type `ty` requires: 1 for `i64`, 2 for
+`f64`, 3 for `i16`, and 0 for every other type, `i1` included.
 -}
 typeToKind : MlirType -> Int
 typeToKind ty =
@@ -153,6 +190,14 @@ typeToKind ty =
             0
 
 
+{-| Returns the violation, if any, for operand `index` of `op`, whose type is
+`operandType`, against slot `index` of `bitmap`.
+
+An `i1` operand is reported whatever the slot holds. Otherwise the operand is
+reported when the slot's kind differs from the kind its type requires.
+`bitmapName` and `operandLabel` only word the message.
+
+-}
 checkBitmapKind : MlirOp -> Int -> Int -> MlirType -> String -> String -> Maybe Violation
 checkBitmapKind op bitmap index operandType bitmapName operandLabel =
     let
@@ -162,7 +207,6 @@ checkBitmapKind op bitmap index operandType bitmapName operandLabel =
         kindFromType =
             typeToKind operandType
     in
-    -- Bool (i1) is always a violation at heap/closure boundaries.
     if operandType == I1 then
         Just
             { opId = op.id
@@ -196,6 +240,14 @@ checkBitmapKind op bitmap index operandType bitmapName operandLabel =
         Nothing
 
 
+{-| Returns the violation, if any, in the `head_unboxed` flag of a list cons op.
+
+The head is the first recorded operand. An `i1` head is reported, and so is a
+flag that is true for a head that is not `i64`, `f64` or `i16`, or false for
+one that is. A missing flag reads as false. An op with no recorded operand
+types gives none.
+
+-}
 checkListHeadUnboxed : MlirOp -> Maybe Violation
 checkListHeadUnboxed op =
     let
@@ -217,7 +269,6 @@ checkListHeadUnboxed op =
                 headIsUnboxable =
                     isUnboxable headType
             in
-            -- Bool (i1) is always a violation at heap/closure boundaries
             if headType == I1 then
                 Just
                     { opId = op.id
@@ -250,10 +301,9 @@ checkListHeadUnboxed op =
                 Nothing
 
 
-{-| Check eco.papCreate unboxed\_bitmap against captured operand types (CGEN\_003).
-
-For papCreate, all operands are captured values and unboxed\_bitmap applies to all of them.
-
+{-| Returns the violations in the `unboxed_bitmap` of an `eco.papCreate`,
+comparing slot N with operand N. Every operand is a captured value. A missing
+bitmap reads as 0, and an op with no recorded operand types gives none.
 -}
 checkPapCreateBitmap : MlirOp -> List Violation
 checkPapCreateBitmap op =
@@ -273,15 +323,21 @@ checkPapCreateBitmap op =
                 |> List.filterMap identity
 
 
+{-| Returns the violation, if any, for captured operand `index` of an
+`eco.papCreate`, as `checkBitmapKind` decides it.
+-}
 checkPapCreateBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
 checkPapCreateBit op bitmap index operandType =
     checkBitmapKind op bitmap index operandType "unboxed_bitmap" "captured operand"
 
 
-{-| Check eco.papExtend newargs\_unboxed\_bitmap against new argument operand types (CGEN\_049).
+{-| Returns the violations in the `newargs_unboxed_bitmap` of an
+`eco.papExtend`, comparing slot N with operand N+1.
 
-For papExtend, operand 0 is the PAP being extended, and operands 1+ are the new arguments.
-The newargs\_unboxed\_bitmap applies to operands starting at index 1.
+Operand 0 is the closure being extended and is not compared. The last
+`eco.gc_roots_count` operands are GC root hints and are dropped first; a
+missing count drops none. A missing bitmap reads as 0, and an op with no
+recorded operand types gives none.
 
 -}
 checkPapExtendBitmap : MlirOp -> List Violation
@@ -293,8 +349,6 @@ checkPapExtendBitmap op =
         maybeOperandTypes =
             extractOperandTypes op
 
-        -- Trailing operands are GC root hints, not new args, so trim them
-        -- before applying the bitmap check.
         rootCount =
             Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
     in
@@ -307,7 +361,6 @@ checkPapExtendBitmap op =
                 operandTypes =
                     List.take (List.length allOperandTypes - rootCount) allOperandTypes
             in
-            -- Skip operand 0 (the PAP), check operands 1+ as new args
             case List.tail operandTypes of
                 Nothing ->
                     []
@@ -317,11 +370,18 @@ checkPapExtendBitmap op =
                         |> List.filterMap identity
 
 
+{-| Returns the violation, if any, for new argument `index` of an
+`eco.papExtend`, as `checkBitmapKind` decides it.
+-}
 checkPapExtendBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
 checkPapExtendBit op bitmap index operandType =
     checkBitmapKind op bitmap index operandType "newargs_unboxed_bitmap" "new arg operand"
 
 
+{-| Returns how `t` is written in a violation message. A named struct gives its
+bare name, so `!eco.value` reads as `eco.value`, and any function type reads as
+`function`.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

@@ -1,10 +1,14 @@
 module Compiler.GlobalOpt.MonoReturnArity exposing (collectStageArities)
 
-{-| Compute stage arities for multi-stage closures.
+{-| The passes after monomorphization need one agreed reading of a function
+type as a list of stage arities, and this module supplies it.
 
-For multi-stage closures (closures that return closures), we track
-the sequence of stage arities so applyByStages can correctly handle each
-stage boundary.
+A function type is a chain of `MFunction` stages, each taking one or more
+arguments at once, as `Compiler.AST.Monomorphized` describes. The _stage
+arity_ of a stage is how many arguments it takes, and the list of stage
+arities, outermost first, is what that module calls the type's
+segmentation. Code that applies a function stage by stage uses this list to
+decide where the arguments of one stage end and the next begin.
 
 @docs collectStageArities
 
@@ -13,20 +17,13 @@ stage boundary.
 import Compiler.AST.Monomorphized as Mono
 
 
-{-| Compute the sequence of stage arities for a function type.
+{-| Returns the stage arities of `monoType`, outermost stage first, or `[]` when
+it is not a function type.
 
-For a type like Int -> Int -> Int:
-
-  - First stage takes 1 arg (returns Int -> Int)
-  - Second stage takes 1 arg (returns Int)
-  - Result: [1, 1]
-
-For a type like Int -> Int:
-
-  - Single stage takes 1 arg (returns Int)
-  - Result: [1]
-
-For a non-function type, returns [].
+The type's stages are read as they stand, without regrouping. So
+`MFunction [ a, b ] (MFunction [ c ] r)` gives `[ 2, 1 ]`, while a curried
+`Int -> Int -> Int` gives `[ 1, 1 ]` only while it is still one argument per
+stage; once regrouped into `MFunction [ Int, Int ] Int` it gives `[ 2 ]`.
 
 -}
 collectStageArities : Mono.MonoType -> List Int

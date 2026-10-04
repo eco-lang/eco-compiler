@@ -1,28 +1,88 @@
 module TestLogic.Generate.CodeGen.SpinePapDispatchTest exposing (suite)
 
-{-| LSS\_013 spine injection + E4a local-multi use transport — activation pins.
+{-| Checks, on one compiled program, that a lambda's identity survives being
+partially applied, so that a later call through the partial application is
+stamped for fast dispatch. The identity reaches that call in three steps, and
+a step that drops it leaves the call unstamped; these tests look for the
+evidence of each step in the optimized graph.
 
-Fixture (mirrors `test/elm/src/HofPapPrefixDispatchTest.elm` in the SourceIR
-DSL): a capture-carrying 2-param lambda literal flows into a recursion-
-protected HOF `applyPartial` (never inlined — SCC recursion guard). Inside,
-`let g = f 10` is a PARTIAL application of that lambda.
+A _lambda set_ is the annotation on each arrow of a monomorphized function
+type that says which functions a value at that arrow can be;
+`Mono.LambdaSetAnno` owns its meaning. Here a _singleton_ set, an `LSet` with
+one member, says the value is known to be that one function. The _head_ set of
+a function type is the one on its outermost arrow.
 
-The transport chain (plan §S.9) has three links, each pinned here:
+The fixture, written as Elm source:
 
-1.  SPINE (LSS\_013): the lambda's member lands on the INNER arrow of its type,
-    so the call `f 10` peels one arrow and its result — the let-binding `g` —
-    carries `LSet [m]`. Pinned by the letdef assertion (RED under head-only
-    injection).
-2.  INDIRECT-CALL-RESULT transport (`Translate.indirectResultAnno`): part of
-    the same letdef assertion (the set must survive the `f 10` call boundary).
-3.  E4a local-multi USE transport (`Translate.enrichLocalMultiUses`, plan
-    §9.1): `g` is a function-typed (local-multi) let, whose use sites are
-    emitted from fresh all-`LTop` instantiations; E4a overlays the instance
-    def's annos back onto them. Pinned by the use-site assertion (a call whose
-    CALLEE `MonoVarLocal` carries a singleton `LSet` head) and by the STAMP
-    assertion (`callInfo.fastPapPrefix == Just 1` — the E2 StampPap fired on
-    `g acc`/`g 1`; the pipeline output is post-AbiCloning so stamps are
-    visible). Both RED without E4a, GREEN with it.
+    applyPartial : (Int -> Int -> Int) -> Int -> Int -> Int
+    applyPartial f n acc =
+        if n <= 0 then
+            acc
+
+        else
+            let
+                g =
+                    f 10
+            in
+            applyPartial f (n - 1) (g acc + g 1)
+
+    testValue : Int
+    testValue =
+        let
+            step =
+                7
+        in
+        applyPartial (\a b -> a * 100 + b * 10 + step) 2 3
+
+`applyPartial` calls itself, and the post-monomorphization inliner
+(`Compiler.GlobalOpt.MonoInlineSimplify`) does not inline a recursive
+specialization. Nor does it copy `applyPartial`'s body into the caller
+(loopification), because the only call of `f` in that body is the partial
+application `f 10`. So `f` stays a parameter that receives the lambda. The
+lambda takes two parameters and refers to `step`, which is bound outside it.
+`g` is a partial application of `f` to one argument, and is called twice.
+
+The three steps are rules of `Compiler.MonoSolver`:
+
+1.  _Spine injection_ puts a lambda literal's member on as many arrows of its
+    type as it has parameters, not only on the head: here on both arrows of
+    `Int -> Int -> Int`.
+2.  _Call-result transport_ gives the result of a call through a function
+    value the lambda sets of the callee's type left after peeling one parameter
+    per argument. With step 1, this puts the lambda's member on the head of `g`,
+    the result of `f 10`.
+3.  _Local-multi use transport_ applies to a `let` that binds a
+    non-tail-recursive function, such as `g`. Such a `let` is specialized once
+    for each type it is used at, and its uses are translated before those
+    specializations exist; afterwards the lambda sets of the specialized
+    definition are copied onto the uses. This gives the callee `g` in `g acc`
+    and `g 1` its singleton head.
+
+The stamp is set by `Compiler.GlobalOpt.AbiCloning`, which can stamp a call
+whose callee it identifies as a partial application holding `k` arguments
+with `fastPapPrefix = Just k` in its `Mono.CallInfo`, whose docstring owns the
+field's meaning. For `g acc` and `g 1`, `k` is 1.
+
+The tests run the fixture through `Pipeline.runToGlobalOptLssOn` and inspect
+its `optimizedMonoGraph`, which has been through `AbiCloning`. Each assertion
+asks whether any expression anywhere in the graph matches, not whether a
+particular call does.
+
+  - The let-binding test checks that some `let` (not a tail-recursive local
+    definition) has a right-hand side whose type is a function with a
+    singleton head set. The only function-typed `let` the fixture writes is
+    `g`, so this is the evidence of steps 1 and 2.
+  - The use-site test checks that some call's callee is a local variable whose
+    type is a function with a singleton head set and a result type that is not
+    a function. It is aimed at step 3: the result condition is there to leave
+    out `f 10`, whose result is a function while `f`'s type keeps its curried
+    form.
+  - The stamp test checks that some call carries `fastPapPrefix == Just 1`.
+
+Among what is not tested: which expression satisfies each assertion, or that
+it is the same call for the second and third; that the singleton's member is the
+lambda's, since any one-member set passes; the stamp's other fields; the MLIR
+generated for the call; and the value `testValue` computes.
 
 -}
 
@@ -51,6 +111,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The three tests, one per assertion on the optimized graph of the fixture.
+-}
 suite : Test
 suite =
     Test.describe "LSS_013 spine + E4a use transport activate PAP fast dispatch"
@@ -69,6 +131,11 @@ suite =
         ]
 
 
+{-| Runs the fixture through `Pipeline.runToGlobalOptLssOn` and passes when
+`predicate` holds of the optimized graph. It fails with `failureMsg` when the
+predicate does not hold. When `Pipeline.runToGlobalOptLssOn` returns an error,
+it fails with that error's text, prefixed by `solver+LSS pipeline failed:` and a space.
+-}
 expectOnGraph : (Mono.MonoGraph -> Bool) -> String -> Expect.Expectation
 expectOnGraph predicate failureMsg =
     case Pipeline.runToGlobalOptLssOn fixtureModule of
@@ -87,29 +154,38 @@ expectOnGraph predicate failureMsg =
 -- FIXTURE (DSL) -------------------------------------------------------------
 
 
+{-| The source type `Int`.
+-}
 intT : Src.Type
 intT =
     tType "Int" []
 
 
+{-| The source type `Int -> Int`, the type of `g`.
+-}
 int1T : Src.Type
 int1T =
     tLambda intT intT
 
 
+{-| The source type `Int -> Int -> Int`, the type of the lambda and of `f`.
+-}
 int2T : Src.Type
 int2T =
     tLambda intT int1T
 
 
+{-| The fixture: a module named `Test` holding `applyPartial` and `testValue`,
+as the module docstring writes them.
+-}
 fixtureModule : Src.Module
 fixtureModule =
     makeModuleWithTypedDefs "Test" [ applyPartialDef, testValueDef ]
 
 
-{-| applyPartial f n acc =
-if n <= 0 then acc
-else let g = f 10 in applyPartial f (n - 1) (g acc + g 1)
+{-| The definition of `applyPartial`, annotated
+`(Int -> Int -> Int) -> Int -> Int -> Int`. It counts `n` down to 0, and on
+each step binds `g = f 10` and passes `g acc + g 1` as the new `acc`.
 -}
 applyPartialDef : TypedDef
 applyPartialDef =
@@ -134,7 +210,9 @@ applyPartialDef =
     }
 
 
-{-| testValue = let step = 7 in applyPartial (\\a b -> a\_100 + b\_10 + step) 2 3
+{-| The definition of `testValue : Int`, which binds `step` to 7 and calls
+`applyPartial` with a two-parameter lambda that adds `a * 100`, `b * 10` and
+`step`, with `n` 2 and `acc` 3.
 -}
 testValueDef : TypedDef
 testValueDef =
@@ -163,6 +241,9 @@ testValueDef =
 -- GRAPH WALKS ---------------------------------------------------------------
 
 
+{-| Returns whether `predicate` holds of some expression, at any depth, in the
+body of some node of the graph.
+-}
 anyGraphExpr : (Mono.MonoExpr -> Bool) -> Mono.MonoGraph -> Bool
 anyGraphExpr predicate (Mono.MonoGraph data) =
     Array.foldl
@@ -176,6 +257,9 @@ anyGraphExpr predicate (Mono.MonoGraph data) =
         data.nodes
 
 
+{-| Returns the body of a node that has one: a define, a tail-recursive
+function or a port. Other nodes, and an empty slot, give no expressions.
+-}
 nodeExprs : Maybe Mono.MonoNode -> List Mono.MonoExpr
 nodeExprs maybeNode =
     case maybeNode of
@@ -195,6 +279,9 @@ nodeExprs maybeNode =
             []
 
 
+{-| Returns whether some `let` in the graph binds, with a non-tail definition,
+a right-hand side whose type is a function with a singleton head set.
+-}
 hasSingletonFnLetDef : Mono.MonoGraph -> Bool
 hasSingletonFnLetDef =
     anyGraphExpr
@@ -208,12 +295,17 @@ hasSingletonFnLetDef =
         )
 
 
+{-| Returns whether some call in the graph has as its callee a local variable
+whose type is a function with a singleton head set and a result that is not a
+function.
+
+The result condition leaves out a call such as `f 10`, whose callee's result is
+itself a function while the callee's type is curried, so that, in this
+fixture, the match is a use of `g` rather than the call that defines it.
+
+-}
 hasSingletonCalleeUse : Mono.MonoGraph -> Bool
 hasSingletonCalleeUse =
-    -- Specifically the PAP-CONSUMING shape (`g acc`): singleton callee whose
-    -- result is GROUND. The `f 10` site also has a singleton callee (M3 arg
-    -- transport, pre-E4a) but its result is a function — excluded here so this
-    -- pin is RED without E4a.
     anyGraphExpr
         (\e ->
             case e of
@@ -230,6 +322,9 @@ hasSingletonCalleeUse =
         )
 
 
+{-| Returns whether some call in the graph carries `fastPapPrefix = Just 1`,
+the stamp for a callee known to be a partial application holding one argument.
+-}
 hasPapPrefixStamp : Mono.MonoGraph -> Bool
 hasPapPrefixStamp =
     anyGraphExpr
@@ -243,6 +338,9 @@ hasPapPrefixStamp =
         )
 
 
+{-| Returns whether a type is a function whose head lambda set has exactly one
+member.
+-}
 isSingletonFn : Mono.MonoType -> Bool
 isSingletonFn t =
     case t of
@@ -253,6 +351,8 @@ isSingletonFn t =
             False
 
 
+{-| Returns whether a type is a function type.
+-}
 isFn : Mono.MonoType -> Bool
 isFn t =
     case t of

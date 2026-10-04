@@ -1,15 +1,43 @@
 module TestLogic.LocalOpt.Typed.TailDefTypesTest exposing (suite)
 
-{-| Test suite for invariant TOPT\_TAILDEF\_001: TailDef argument and return types match annotation.
+{-| Tests that the typed optimizer gives a tail-recursive function's `TailDef`
+the parameter types that the function's annotation declares. The substitution
+monomorphizer gives a tail-recursive function's parameters the types stored in
+its `TailDef`, so without these tests a parameter could carry a wrong type, or
+a type variable the solver left unconstrained, into monomorphization
+unnoticed.
 
-This test verifies that for tail-recursive functions with type annotations:
+A `TailDef` is the typed optimizer's form of a definition that calls itself in
+tail position. It holds each parameter with the type of its pattern, and the
+type of the whole definition. A recursive top-level `TailDef` sits among the
+functions of a `Cycle` node, the node that holds a group of mutually recursive
+top-level definitions, which may be one definition that refers to itself.
 
-1.  Each argument's `Can.Type Name` in `TailDef` equals the corresponding
-    parameter type from the annotation.
-2.  The "return type" field is the **result type** of the annotation, not the whole function type.
+The fixture, `sumHelperModule`, defines the annotated, self-recursive
+`sumHelper : Int -> Int -> Int`, whose two parameters are plain variables, and
+a `testValue` that calls it. It is compiled with
+`TestLogic.TestPipeline.runToTypedOpt`, which requires `testValue` because the
+synthetic `main` it adds to the module refers to it.
 
-These invariants are critical for correct monomorphization, which builds function types
-from argument types and return type.
+Types are compared with `typesMatch`, which is not equality. A type
+constructor matches on its home module, its name and its number of arguments,
+without comparing the arguments, and a type variable on the optimizer's side
+never matches.
+
+The one test finds the `TailDef` named `sumHelper` in a `Cycle` node of the
+typed local graph and checks:
+
+  - that the `TailDef` exists, and that `sumHelper` has an annotation;
+  - that the `TailDef` has as many parameters as the annotation has arrows;
+  - that each parameter's type matches the annotation's type at that position;
+  - that the result type left after every arrow of the `TailDef`'s stored type
+    matches what is left of the annotation after every arrow. The stored type
+    is the annotation itself, taken from the same table of annotations, so
+    this comparison cannot fail for this fixture.
+
+Among what is not tested: parameters bound by destructuring patterns, type
+variables or aliases in the annotation, a `TailDef` local to a `let`, a cycle
+of more than one definition, and the erased optimizer.
 
 -}
 
@@ -36,6 +64,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| A suite of one test, which checks the `TailDef` of `sumHelper` against its
+annotation.
+-}
 suite : Test
 suite =
     Test.describe "TailDef type invariants (TOPT_TAILDEF_001)"
@@ -50,7 +81,8 @@ suite =
 -- ============================================================================
 
 
-{-| Create a tail-recursive sumHelper function with explicit type annotation.
+{-| A module with an annotated, tail-recursive `sumHelper` and a `testValue`
+that calls it. As Elm source:
 
     sumHelper : Int -> Int -> Int
     sumHelper acc n =
@@ -60,11 +92,14 @@ suite =
         else
             sumHelper (acc + n) (n - 1)
 
+    testValue : Int
+    testValue =
+        sumHelper 0 10
+
 -}
 sumHelperModule : Src.Module
 sumHelperModule =
     let
-        -- Type: Int -> Int -> Int
         intType =
             tType "Int" []
 
@@ -93,7 +128,10 @@ sumHelperModule =
         ]
 
 
-{-| Check that TailDef in the typed optimized graph has correct types.
+{-| The expectation of the one test: `sumHelperModule` compiles to a typed
+local graph whose `TailDef` for `sumHelper` agrees with its annotation, as
+`checkTailDefTypes` decides. A pipeline failure fails the test with the
+pipeline's message.
 -}
 checkSumHelper : Expectation
 checkSumHelper =
@@ -111,12 +149,20 @@ checkSumHelper =
 -- ============================================================================
 
 
-{-| Check TailDef types in Cycle nodes against annotation.
+{-| Checks the `TailDef` named `funcName` in the `Cycle` nodes of a typed local
+graph against the annotation for `funcName` in `annotations`.
+
+It fails if no such `TailDef` or annotation exists, if the parameter count
+differs from the annotation's arrow count, or if a parameter type or the
+result type does not match by `typesMatch`. The result type compared is what
+is left of the `TailDef`'s stored type, the type of the whole definition,
+after every arrow. A count mismatch is reported alone; the type mismatches
+are reported together.
+
 -}
 checkTailDefTypes : String -> TOpt.LocalGraph Name -> Dict Name.Name (Can.Annotation Name) -> Expectation
 checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
     let
-        -- Find TailDef in Cycle nodes
         maybeTailDef =
             Data.Map.toList TOpt.compareGlobal data.nodes
                 |> List.filterMap
@@ -144,7 +190,6 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                     )
                 |> List.head
 
-        -- Get annotation
         maybeAnnotation =
             Dict.get funcName annotations
     in
@@ -157,7 +202,6 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                 ( expectedArgTypes, expectedReturnType ) =
                     splitFunctionType annType
 
-                -- TailDef stores the full function type, extract return type from it
                 ( _, actualReturnType ) =
                     splitFunctionType defType
 
@@ -167,7 +211,6 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                 argTypesMatch =
                     List.length actualArgTypes == List.length expectedArgTypes
 
-                -- Check each argument type
                 argTypeErrors =
                     List.map2
                         (\actual expected ->
@@ -186,7 +229,6 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                         expectedArgTypes
                         |> List.filterMap identity
 
-                -- Check return type (extracted from the stored function type)
                 returnTypeError =
                     if typesMatch actualReturnType expectedReturnType then
                         Nothing
@@ -226,7 +268,9 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
 -- ============================================================================
 
 
-{-| Split a function type into parameter types and result type.
+{-| Splits a type into the parameter types of all its arrows and the result
+type after the last one. A type that is not a function gives no parameters
+and itself as the result. An alias is not looked through.
 -}
 splitFunctionType : Can.Type Name -> ( List (Can.Type Name), Can.Type Name )
 splitFunctionType tipe =
@@ -242,10 +286,15 @@ splitFunctionType tipe =
             ( [], tipe )
 
 
-{-| Check if two canonical types match (structurally).
+{-| Returns whether the optimizer's type `actual` matches the annotation's type
+`expected`. This is a loose structural comparison, sufficient for `Int`.
 
-For this test, we're checking concrete types like Int, so we do a simple
-structural comparison. TVar indicates Bug 1 (unconstrained pattern types).
+Two type constructors match when their home modules, names and numbers of
+arguments agree; the arguments themselves are not compared. Two functions
+match when their parameter and result types match, whatever their arrow
+slots. A `Filled` alias on either side is replaced by its expansion. Unit
+matches unit. Everything else fails, including a type variable in `actual`,
+a `Holey` alias, and any record or tuple, even an identical one.
 
 -}
 typesMatch : Can.Type Name -> Can.Type Name -> Bool
@@ -258,7 +307,6 @@ typesMatch actual expected =
             typesMatch from1 from2 && typesMatch to1 to2
 
         ( Can.TVar _, _ ) ->
-            -- TVar in actual means Bug 1: pattern type is unconstrained
             False
 
         ( Can.TUnit, Can.TUnit ) ->
@@ -274,7 +322,8 @@ typesMatch actual expected =
             False
 
 
-{-| Convert a type to a debug string.
+{-| Renders a type for a failure message. Records render as `{...}`, an alias
+as its name alone, and type arguments without parentheses.
 -}
 typeToString : Can.Type Name -> String
 typeToString tipe =

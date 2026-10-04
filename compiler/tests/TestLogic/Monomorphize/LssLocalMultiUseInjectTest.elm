@@ -1,21 +1,56 @@
 module TestLogic.Monomorphize.LssLocalMultiUseInjectTest exposing (suite)
 
-{-| F2 — local-multi USE-SITE MEMBER INJECTION
-(`plans/lss-container-payload-transport.md` §12.9.4, `lss.stamp.useInject`).
+{-| Checks that when a let-bound function is passed as an argument to a
+global, the global's specialization records exactly which function it
+receives.
 
-A let-bound function passed as an ARGUMENT takes the `StashLocalMulti` path:
-its type is fresh-instantiated into the callee's param slot and the instance
-is recorded, but no member was ever written (GAP-9b: "no member, no stamp"),
-so every HOF fed a let-function saw an unwritten var at the callback — 866
-argument positions on the self-compile, 99 % of them flex, the largest single
-class after the `papSuccWrite` fix.
+Unless the solver writes the passed function's member id at the call, the
+callee's parameter carries an unwritten lambda set. That set names no
+function, so a call through the parameter cannot be made direct and goes
+through generic dispatch.
 
-The fix mints, at the use site, the id the instance's RHS re-translation will
-mint for its lambda (same source lambda, same instance tag, same spec — a
-deterministic get-or-create), and writes it into the stashed var before the
-callee is zonked. THE PIN is the join: every callee spec's callback annotation
-is a singleton EQUAL to the `lssMember` of the instance closure it names.
-Flag-off pins the defect, so the differential is not vacuous.
+A few terms. With lambda-set specialization (LSS) on, each arrow in a
+monomorphized type carries a `Mono.LambdaSetAnno`, and `LSet ms` lists the
+_member ids_ of the function values that can reach it. The solver engine
+gives a let-bound function that is not tail-recursive one _instance_ per
+distinct type it is used at: a separate binding named `f`, `f$1`, `f$2` and so
+on. A tail-recursive one is translated only once. When the binding's
+right-hand side is a lambda, the instance's closure holds its member id in
+`lssMember`; when it is a partial application of a global, the member is a
+PAP member that `lssMemberOrigins` records as `OriginPap`. A _registry row_ is
+one specialization of a global: an entry of the graph registry's
+`reverseMapping`, holding the global and its specialized type. The _callback
+annotation_ of a callee is the annotation on the head arrow of its first
+parameter's type, read from each of its registry rows. Callback annotations
+_match_ a function's instances when there is at least one annotation, every
+annotation is a singleton `LSet [m]` whose `m` is the member id of one of the
+instances, and every instance's member id is named by some annotation.
+
+Each fixture is compiled with `runWith` or `runWithPap`: the solver engine
+with LSS enabled and default specialization limits, stopping at the
+monomorphized graph. Three fixtures are used. In `twoInstances`, `ident x = x`
+is passed to `applyI` with an `Int` and to `applyS` with a `String`. In
+`selfReference`, `go` passes itself to `applyI` both from its own body and from
+the let body. In `papRhs`, `h = apply2 inc` is a partial application, and `h`
+is passed to `useF`, which passes it on to `applyI`.
+
+The tests are numbered 2, 3, 4 and 7 in their names. They establish:
+
+  - Test 2: `twoInstances` yields exactly two instances of `ident`, and the
+    callback annotations of every `applyI` and `applyS` row match them.
+  - Test 3: the member ids of the instances of `ident` in `twoInstances`
+    include exactly two distinct values.
+  - Test 4: `selfReference` yields at least one instance of `go`, and the
+    callback annotations of every `applyI` row match them.
+  - Test 7: `papRhs` yields exactly one `useF` row, its callback annotation is
+    a singleton, and `lssMemberOrigins` records that member as `OriginPap` of
+    a global named `apply2` with one argument supplied.
+
+Among what is not tested: annotations on any arrow other than the head of the
+first parameter; a local function whose binding is a tail-recursive definition
+or is not bound directly to a closure, which `instanceMembers` does not find;
+the module of the callee or of `apply2`, since rows are matched by name only;
+and anything after monomorphization, such as whether a call is devirtualized.
 
 -}
 
@@ -47,6 +82,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The four tests described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "F2 local-multi use-site member injection"
@@ -87,12 +124,6 @@ suite =
                             Expect.fail ("expected 2 distinct instance ids, got " ++ describeInts ids)
         , Test.test "4. F2.b: a self-reference inside the instance RHS names the instance too" <|
             \() ->
-                -- `go` passes ITSELF to `applyI` from inside its own body; that
-                -- reference is translated during the instance re-translation,
-                -- where the stack entry is popped and `varEnv` unbound. Every
-                -- `applyI` spec (outer use AND inner use) must read the same
-                -- singleton — otherwise the inner demand carries a var and the
-                -- keyed callee splits or joins to a partial.
                 case runWith selfReference of
                     Err e ->
                         Expect.fail e
@@ -112,11 +143,6 @@ suite =
                             expectJoin heads instances
         , Test.test "7. F2.c: a local whose RHS is a PARTIAL APPLICATION names the PAP member at its use" <|
             \() ->
-                -- `let h = apply2 inc in useF h`: `h` is function-typed (a
-                -- local-multi) with no lambda id — F2's `noLam` residual and
-                -- the compileExpr chain root on the self-compile. The use site
-                -- mints `p|apply2|1`, the same key the RHS re-translation's
-                -- `injectPapMember` mints, and writes it head-only.
                 case runWithPap papRhs of
                     Err e ->
                         Expect.fail e
@@ -140,8 +166,13 @@ suite =
         ]
 
 
-{-| Every callee spec's callback head is `LSet [m]` with `m` the member of one
-of the given instance closures, and every instance is named by some callee.
+{-| Passes when `heads` is not empty, every annotation in `heads` is a
+singleton `LSet [m]` whose `m` is the member id of one of `instances`, and every
+member id in `instances` is named by some annotation in `heads`.
+
+An empty `heads` fails as a broken fixture. An `LSet` with no members or with
+more than one fails like any other annotation that is not a singleton.
+
 -}
 expectJoin : List ( String, Mono.LambdaSetAnno ) -> List ( String, Int ) -> Expect.Expectation
 expectJoin heads instances =
@@ -190,18 +221,24 @@ expectJoin heads instances =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int -> Int`.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
+{-| The source type `String -> String`.
+-}
 hStr : Src.Type
 hStr =
     tLambda (tType "String" []) (tType "String" [])
 
 
-{-| One let-bound polymorphic function, passed to two HOFs at two types: two
-instances (`ident`, `ident$1`), two callee specs, one join each.
+{-| A program in which `testValue` binds `ident x = x` in a `let` and passes it
+to `applyI` with `3` and to `applyS` with `"a"`, so `ident` is used at
+`Int -> Int` and at `String -> String`. `applyI` and `applyS` apply their first
+argument to their second.
 -}
 twoInstances : Src.Module
 twoInstances =
@@ -230,7 +267,10 @@ twoInstances =
         ]
 
 
-{-| `go` hands ITSELF to the HOF from inside its own body.
+{-| A program in which `testValue` binds
+`go n = if n > 0 then applyI go (n - 1) else n` in a `let` and evaluates
+`applyI go 3`, so `go` is passed to `applyI` from inside its own body as well
+as from the `let` body. `applyI` applies its first argument to its second.
 -}
 selfReference : Src.Module
 selfReference =
@@ -257,7 +297,10 @@ selfReference =
         ]
 
 
-{-| F2.c: `h = apply2 inc` is a partial application of a 2-ary global.
+{-| A program in which `testValue` binds `h = apply2 inc` in a `let` and
+evaluates `useF h`. `apply2` takes two arguments, so `h` is a partial
+application of it. `useF g` evaluates `applyI g 3`, and `apply2` and `applyI`
+both apply their first argument to their second.
 -}
 papRhs : Src.Module
 papRhs =
@@ -281,6 +324,10 @@ papRhs =
 -- ====== HARNESS ======
 
 
+{-| Compiles a fixture with the solver engine, lambda-set specialization
+enabled and default specialization limits, and returns the monomorphized graph
+or the error message the pipeline returns. It does exactly what `runWith` does.
+-}
 runWithPap : Src.Module -> Result String Mono.MonoGraph
 runWithPap srcModule =
     let
@@ -292,11 +339,9 @@ runWithPap srcModule =
         srcModule
 
 
-{-| `lss.stamp.useInject` / `useInjectPap` were fixed at their defaults and
-removed 2026-09-18. The deleted flag-off pins recorded the defect each one
-closed: the callee's callback annotation was NOT a set (test 1), the PAP-RHS
-local was unwritten at its use (test 8), and a self-reference inside the
-instance RHS was unwritten (test 5).
+{-| Compiles a fixture with the solver engine, lambda-set specialization
+enabled and default specialization limits, and returns the monomorphized graph
+or the error message the pipeline returns.
 -}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
@@ -313,8 +358,13 @@ runWith srcModule =
 -- ====== READERS ======
 
 
-{-| (callee name, head annotation of its FIRST parameter) for every registry
-spec of the named globals.
+{-| Returns the name and callback annotation of every registry row whose
+global is named in `targets`: the annotation on the head arrow of the row's
+first parameter type.
+
+Globals are matched by name alone, whatever their module. A row with no
+parameters, or whose type is not a function, is left out.
+
 -}
 calleeHeads : List String -> Mono.MonoGraph -> List ( String, Mono.LambdaSetAnno )
 calleeHeads targets (Mono.MonoGraph g) =
@@ -335,8 +385,13 @@ calleeHeads targets (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| (binding name, `lssMember`) of every `MonoDef`-bound closure whose name is
-the def or one of its `$N` instances.
+{-| Returns the binding name and member id of every instance of the let-bound
+function `defName` found in the bodies of the graph's nodes.
+
+An instance is found only where a `MonoDef` binds a closure directly, under
+`defName` or a name starting with `defName` followed by `$`, and the closure
+has an `lssMember`. Only `MonoDefine` and `MonoTailFunc` nodes are searched.
+
 -}
 instanceMembers : String -> Mono.MonoGraph -> List ( String, Int )
 instanceMembers defName (Mono.MonoGraph g) =
@@ -353,6 +408,9 @@ instanceMembers defName (Mono.MonoGraph g) =
         g.nodes
 
 
+{-| Adds to `acc` the binding name and member id of every instance of `defName`
+in `expr`, as `instanceMembers` defines an instance.
+-}
 collectInstances : String -> Mono.MonoExpr -> List ( String, Int ) -> List ( String, Int )
 collectInstances defName expr acc =
     MonoTraverse.foldExpr
@@ -377,6 +435,9 @@ collectInstances defName expr acc =
         expr
 
 
+{-| Returns the body of a `MonoDefine` or `MonoTailFunc` node, and nothing for
+any other kind of node.
+-}
 nodeExprsOf : Mono.MonoNode -> List Mono.MonoExpr
 nodeExprsOf node =
     case node of
@@ -390,6 +451,9 @@ nodeExprsOf node =
             []
 
 
+{-| Tells whether an annotation is an `LSet`, including one with no members.
+Nothing in this module calls it.
+-}
 isSet : Mono.LambdaSetAnno -> Bool
 isSet anno =
     case anno of
@@ -400,6 +464,8 @@ isSet anno =
             False
 
 
+{-| Returns each value of a list once, in reverse order of first occurrence.
+-}
 distinct : List Int -> List Int
 distinct =
     List.foldl
@@ -413,21 +479,31 @@ distinct =
         []
 
 
+{-| Renders a list of numbers as `[1,2]`, for failure messages.
+-}
 describeInts : List Int -> String
 describeInts xs =
     "[" ++ String.join "," (List.map String.fromInt xs) ++ "]"
 
 
+{-| Renders instances as `[name=member, ...]`, for failure messages.
+-}
 describeInstances : List ( String, Int ) -> String
 describeInstances xs =
     "[" ++ String.join ", " (List.map (\( n, m ) -> n ++ "=" ++ String.fromInt m) xs) ++ "]"
 
 
+{-| Renders callback annotations as `[callee:annotation, ...]`, for failure
+messages.
+-}
 describeHeads : List ( String, Mono.LambdaSetAnno ) -> String
 describeHeads xs =
     "[" ++ String.join ", " (List.map (\( n, a ) -> n ++ ":" ++ describeAnno a) xs) ++ "]"
 
 
+{-| Renders an annotation as its constructor name followed by its payload, for
+failure messages.
+-}
 describeAnno : Mono.LambdaSetAnno -> String
 describeAnno anno =
     case anno of

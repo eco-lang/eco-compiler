@@ -1,6 +1,66 @@
 module SourceIR.PatternArgCases exposing (expectSuite)
 
-{-| Tests for function arguments with various patterns.
+{-| Supplies programs whose function arguments are patterns of each shape
+listed below, so that a stage's checks are run on arguments of each shape.
+
+An Elm function argument can be any pattern: a wildcard, a tuple, a record, a
+list, a literal, a constructor, or one of these nested in another. A stage that
+handles a function has to bind the names inside such a pattern, and it can get
+one shape right and another wrong. This module builds small programs, several
+per shape, and asserts nothing itself. `expectSuite` makes one elm-test test,
+in which `Compiler.BulkCheck.bulkCheck` runs the programs in order through the
+caller's expectation. The first program that fails ends the test and is
+reported under its label, and the programs after it are not checked.
+
+Every program is a module named `Test` that defines `testValue`. Most declare
+one unannotated top-level function with `makeModuleWithDefs`, which imports
+only `Basics` and `List`, and make `testValue` an unannotated call of it.
+The four "in lambda" cases instead make `testValue` itself a one-argument
+lambda, with `makeModule`, and never apply it. The two custom-type cases declare
+a type with one constructor, annotate every definition, and use
+`makeModuleWithTypedDefsUnionsAliases`, which imports `Basics`, `Maybe`,
+`List`, `Elm.JsArray as JsArray`, `String` and `Char`.
+
+In nine of the programs an argument pattern, such as `h :: t`, `[ a, b ]`,
+`0` or `"hello"`, does not match every value of its type, and
+`Compiler.Nitpick.PatternMatches` reports such an argument as an incomplete
+pattern. These are the cases labelled "Cons pattern", "Fixed list pattern",
+"Nested cons pattern", "List pattern in lambda", "Int literal pattern", "String
+literal pattern", "Multiple literal patterns", "Mixed nested patterns" and
+"Triple nested patterns". An expectation that runs the pattern checker rejects
+them.
+
+The programs, group by group, in the order they run:
+
+  - Variable patterns: `identity x = x`, a two-argument and a three-argument
+    function that each return one argument, `swap x y = ( y, x )`, and
+    `toList x = [ x ]`.
+  - Wildcard patterns: `const _ = 42`, `const x _ = x`, a function of three
+    `_` arguments, and the lambda `\_ -> 0`.
+  - Tuple patterns: a pair, a triple, a pair with a `_` element, a pair nested
+    in a pair, the lambda `\( x, y ) -> x`, and a function of two pairs.
+  - Record patterns: `{ x }`, `{ x, y }`, the lambda `\{ name } -> name`, a
+    five-field pattern, a function of two records, and a record followed by a
+    plain name.
+  - List patterns: `h :: t`, `[ a, b ]`, `_ :: x :: _`, and the lambda
+    `\(x :: _) -> x`.
+  - Literal patterns: `0`, `"hello"`, `()`, and `0` followed by `""`. Of
+    these only `()` matches every value of its type.
+  - Nested patterns: a pair of pairs; a pair of `{ x }` and `h :: _`; a triple
+    of a pair, `{ x, y }` and `h :: t`; and a pair of pairs with `_` in
+    opposite corners.
+  - Multi-argument patterns: five arguments mixing names, a pair, a record and
+    `_`; three pairs; and names alternating with `_`.
+  - Custom type patterns: `getId (Person id _)` and `getAge (Person _ age)` on
+    `type Person = Person Int Int`, and `unbox (Box x)` on `type Box = Box Int`.
+    `Box` has one constructor with one argument, the shape that
+    `Compiler.Canonicalize.Environment.Local` gives the `Unbox` representation;
+    `Person` has two arguments and does not get it.
+
+Among what is not tested: `as` patterns, character patterns, a constructor of
+a type with more than one constructor, a type with type parameters, and the
+arguments of `let`-bound functions.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -43,12 +103,20 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named "Pattern argument tests " followed by `condStr`,
+that passes when `expectFn` passes on every program in this module and
+otherwise fails under the label of the first program it fails on, as
+`Compiler.BulkCheck.bulkCheck` describes.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Pattern argument tests " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case of this module, group by group in the order the module
+docstring lists them, each applying `expectFn` to its own program.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     variablePatternCases expectFn
@@ -64,10 +132,12 @@ testCases expectFn =
 
 
 -- ============================================================================
--- VARIABLE PATTERNS (6 tests)
+-- VARIABLE PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled variable-pattern cases for `expectFn`.
+-}
 variablePatternCases : (Src.Module -> Expectation) -> List TestCase
 variablePatternCases expectFn =
     [ { label = "Single variable pattern", run = singleVariablePattern expectFn }
@@ -78,6 +148,9 @@ variablePatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining `identity x = x` and
+`testValue = identity 1`.
+-}
 singleVariablePattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singleVariablePattern expectFn _ =
     let
@@ -90,6 +163,9 @@ singleVariablePattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `first x y = x` and
+`testValue = first 1 "hello"`.
+-}
 twoVariablePatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 twoVariablePatterns expectFn _ =
     let
@@ -102,6 +178,9 @@ twoVariablePatterns expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `second a b c = b` and
+`testValue = second 1 "hello" 3.14`.
+-}
 threeVariablePatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 threeVariablePatterns expectFn _ =
     let
@@ -114,6 +193,9 @@ threeVariablePatterns expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `swap x y = ( y, x )` and
+`testValue = swap 1 "hello"`.
+-}
 variablePatternReturningTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 variablePatternReturningTuple expectFn _ =
     let
@@ -126,6 +208,9 @@ variablePatternReturningTuple expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `toList x = [ x ]` and
+`testValue = toList 1`.
+-}
 variablePatternReturningList : (Src.Module -> Expectation) -> (() -> Expectation)
 variablePatternReturningList expectFn _ =
     let
@@ -140,10 +225,12 @@ variablePatternReturningList expectFn _ =
 
 
 -- ============================================================================
--- WILDCARD PATTERNS (4 tests)
+-- WILDCARD PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled wildcard-pattern cases for `expectFn`.
+-}
 wildcardPatternCases : (Src.Module -> Expectation) -> List TestCase
 wildcardPatternCases expectFn =
     [ { label = "Single wildcard pattern", run = singleWildcardPattern expectFn }
@@ -153,6 +240,9 @@ wildcardPatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining `const _ = 42` and
+`testValue = const 1`.
+-}
 singleWildcardPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singleWildcardPattern expectFn _ =
     let
@@ -165,6 +255,9 @@ singleWildcardPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `const x _ = x` and
+`testValue = const 1 "hello"`.
+-}
 wildcardWithVariable : (Src.Module -> Expectation) -> (() -> Expectation)
 wildcardWithVariable expectFn _ =
     let
@@ -177,6 +270,9 @@ wildcardWithVariable expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `zero _ _ _ = 0` and
+`testValue = zero 1 "hello" 3.14`.
+-}
 multipleWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleWildcards expectFn _ =
     let
@@ -189,6 +285,9 @@ multipleWildcards expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module whose one value is
+`testValue = \_ -> 0`.
+-}
 wildcardInLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 wildcardInLambda expectFn _ =
     let
@@ -203,10 +302,12 @@ wildcardInLambda expectFn _ =
 
 
 -- ============================================================================
--- TUPLE PATTERNS (6 tests)
+-- TUPLE PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled tuple-pattern cases for `expectFn`.
+-}
 tuplePatternCases : (Src.Module -> Expectation) -> List TestCase
 tuplePatternCases expectFn =
     [ { label = "2-tuple pattern", run = tuple2Pattern expectFn }
@@ -218,6 +319,9 @@ tuplePatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining `fst ( x, y ) = x` and
+`testValue = fst ( 1, "hello" )`.
+-}
 tuple2Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple2Pattern expectFn _ =
     let
@@ -230,6 +334,9 @@ tuple2Pattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `snd3 ( a, b, c ) = b` and
+`testValue = snd3 ( 1, "hello", 3.14 )`.
+-}
 tuple3Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple3Pattern expectFn _ =
     let
@@ -242,6 +349,9 @@ tuple3Pattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `snd ( _, y ) = y` and
+`testValue = snd ( 1, "hello" )`.
+-}
 tuplePatternWithWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
 tuplePatternWithWildcard expectFn _ =
     let
@@ -254,6 +364,9 @@ tuplePatternWithWildcard expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `deep ( ( a, b ), c ) = a`
+and `testValue = deep ( ( 1, "hello" ), 3.14 )`.
+-}
 nestedTuplePattern : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedTuplePattern expectFn _ =
     let
@@ -266,6 +379,9 @@ nestedTuplePattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module whose one value is
+`testValue = \( x, y ) -> x`.
+-}
 tuplePatternInLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 tuplePatternInLambda expectFn _ =
     let
@@ -278,6 +394,10 @@ tuplePatternInLambda expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`addPairs ( a, b ) ( c, d ) = ( a, c )` and
+`testValue = addPairs ( 1, "hello" ) ( 3.14, 2 )`.
+-}
 multipleTuplePatternArgs : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleTuplePatternArgs expectFn _ =
     let
@@ -295,10 +415,12 @@ multipleTuplePatternArgs expectFn _ =
 
 
 -- ============================================================================
--- RECORD PATTERNS (6 tests)
+-- RECORD PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled record-pattern cases for `expectFn`.
+-}
 recordPatternCases : (Src.Module -> Expectation) -> List TestCase
 recordPatternCases expectFn =
     [ { label = "Single field record pattern", run = singleFieldRecordPattern expectFn }
@@ -310,6 +432,9 @@ recordPatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining `getX { x } = x` and
+`testValue = getX { x = 1 }`.
+-}
 singleFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singleFieldRecordPattern expectFn _ =
     let
@@ -322,6 +447,9 @@ singleFieldRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`getXY { x, y } = ( x, y )` and `testValue = getXY { x = 1, y = "hello" }`.
+-}
 multiFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 multiFieldRecordPattern expectFn _ =
     let
@@ -334,6 +462,9 @@ multiFieldRecordPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module whose one value is
+`testValue = \{ name } -> name`.
+-}
 recordPatternInLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternInLambda expectFn _ =
     let
@@ -346,6 +477,10 @@ recordPatternInLambda expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`getAll { a, b, c, d, e } = a` and
+`testValue = getAll { a = 1, b = 2, c = 3, d = 4, e = 5 }`.
+-}
 recordPatternWithManyFields : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternWithManyFields expectFn _ =
     let
@@ -358,6 +493,10 @@ recordPatternWithManyFields expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`combine { x } { y } = ( x, y )` and
+`testValue = combine { x = 1 } { y = "hello" }`.
+-}
 multipleRecordPatternArgs : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleRecordPatternArgs expectFn _ =
     let
@@ -373,6 +512,10 @@ multipleRecordPatternArgs expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`extract { value } default = value` and
+`testValue = extract { value = 1 } "default"`.
+-}
 recordPatternWithVariable : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternWithVariable expectFn _ =
     let
@@ -387,10 +530,12 @@ recordPatternWithVariable expectFn _ =
 
 
 -- ============================================================================
--- LIST PATTERNS (4 tests)
+-- LIST PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled list-pattern cases for `expectFn`.
+-}
 listPatternCases : (Src.Module -> Expectation) -> List TestCase
 listPatternCases expectFn =
     [ { label = "Cons pattern", run = consPattern expectFn }
@@ -400,6 +545,9 @@ listPatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining `head (h :: t) = h` and
+`testValue = head [ 1, 2 ]`. The argument pattern does not match `[]`.
+-}
 consPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 consPattern expectFn _ =
     let
@@ -412,6 +560,10 @@ consPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`firstTwo [ a, b ] = ( a, b )` and `testValue = firstTwo [ 1, 2 ]`. The
+argument pattern matches only a list of exactly two elements.
+-}
 fixedListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 fixedListPattern expectFn _ =
     let
@@ -424,6 +576,10 @@ fixedListPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`secondElem (_ :: x :: _) = x` and `testValue = secondElem [ 1, 2, 3 ]`. The
+argument pattern does not match a list shorter than two.
+-}
 nestedConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedConsPattern expectFn _ =
     let
@@ -436,6 +592,9 @@ nestedConsPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module whose one value is
+`testValue = \(x :: _) -> x`. The argument pattern does not match `[]`.
+-}
 listPatternInLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 listPatternInLambda expectFn _ =
     let
@@ -450,10 +609,12 @@ listPatternInLambda expectFn _ =
 
 
 -- ============================================================================
--- LITERAL PATTERNS (4 tests)
+-- LITERAL PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled literal-pattern cases for `expectFn`.
+-}
 literalPatternCases : (Src.Module -> Expectation) -> List TestCase
 literalPatternCases expectFn =
     [ { label = "Int literal pattern", run = intLiteralPattern expectFn }
@@ -463,6 +624,9 @@ literalPatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining `isZero 0 = "zero"` and
+`testValue = isZero 0`. The argument pattern matches only `0`.
+-}
 intLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 intLiteralPattern expectFn _ =
     let
@@ -475,6 +639,10 @@ intLiteralPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `greet "hello" = "hi"`
+and `testValue = greet "hello"`. The argument pattern matches only
+`"hello"`.
+-}
 stringLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 stringLiteralPattern expectFn _ =
     let
@@ -487,6 +655,9 @@ stringLiteralPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `unit () = 0` and
+`testValue = unit ()`.
+-}
 unitPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 unitPattern expectFn _ =
     let
@@ -499,6 +670,9 @@ unitPattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining `match 0 "" = 0` and
+`testValue = match 0 ""`. Both argument patterns match only one value.
+-}
 multipleLiteralPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleLiteralPatterns expectFn _ =
     let
@@ -513,10 +687,12 @@ multipleLiteralPatterns expectFn _ =
 
 
 -- ============================================================================
--- NESTED PATTERNS (4 tests)
+-- NESTED PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled nested-pattern cases for `expectFn`.
+-}
 nestedPatternCases : (Src.Module -> Expectation) -> List TestCase
 nestedPatternCases expectFn =
     [ { label = "Deeply nested tuple", run = deeplyNestedTuplePattern expectFn }
@@ -526,6 +702,10 @@ nestedPatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining
+`extract ( ( a, b ), ( c, d ) ) = a` and
+`testValue = extract ( ( 1, "hello" ), ( 3.14, 2 ) )`.
+-}
 deeplyNestedTuplePattern : (Src.Module -> Expectation) -> (() -> Expectation)
 deeplyNestedTuplePattern expectFn _ =
     let
@@ -543,6 +723,11 @@ deeplyNestedTuplePattern expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`mixed ( { x }, h :: _ ) = ( x, h )` and
+`testValue = mixed ( { x = 1 }, [ "hello", "world" ] )`. The argument
+pattern does not match a pair whose list is empty.
+-}
 mixedNestedPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedNestedPatterns expectFn _ =
     let
@@ -558,6 +743,11 @@ mixedNestedPatterns expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`complex ( ( a, b ), { x, y }, h :: t ) = a` and
+`testValue = complex ( ( 1, "hello" ), { x = 3.14, y = 2 }, [ 3, 4 ] )`.
+The argument pattern does not match a triple whose list is empty.
+-}
 tripleNestedPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 tripleNestedPatterns expectFn _ =
     let
@@ -576,6 +766,10 @@ tripleNestedPatterns expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`corners ( ( x, _ ), ( _, y ) ) = ( x, y )` and
+`testValue = corners ( ( 1, "hello" ), ( 3.14, 2 ) )`.
+-}
 nestedWithWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedWithWildcards expectFn _ =
     let
@@ -595,10 +789,12 @@ nestedWithWildcards expectFn _ =
 
 
 -- ============================================================================
--- MULTI-ARG PATTERNS (4 tests)
+-- MULTI-ARG PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled multi-argument cases for `expectFn`.
+-}
 multiArgPatternCases : (Src.Module -> Expectation) -> List TestCase
 multiArgPatternCases expectFn =
     [ { label = "Five args with mixed patterns", run = fiveArgsWithMixedPatterns expectFn }
@@ -607,6 +803,10 @@ multiArgPatternCases expectFn =
     ]
 
 
+{-| Returns `expectFn` applied to a module defining
+`fiveArgs a ( b, c ) { d } _ e = a` and
+`testValue = fiveArgs 1 ( "hello", 3.14 ) { d = 2 } 3 "world"`.
+-}
 fiveArgsWithMixedPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 fiveArgsWithMixedPatterns expectFn _ =
     let
@@ -622,6 +822,10 @@ fiveArgsWithMixedPatterns expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`allTuples ( a, b ) ( c, d ) ( e, f ) = a` and
+`testValue = allTuples ( 1, "hello" ) ( 3.14, 2 ) ( "world", 3 )`.
+-}
 allSamePatternType : (Src.Module -> Expectation) -> (() -> Expectation)
 allSamePatternType expectFn _ =
     let
@@ -640,6 +844,10 @@ allSamePatternType expectFn _ =
     expectFn modul
 
 
+{-| Returns `expectFn` applied to a module defining
+`alternate a _ b _ c = [ a, b, c ]` and
+`testValue = alternate 1 "hello" 2 3.14 3`.
+-}
 alternatingPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 alternatingPatterns expectFn _ =
     let
@@ -657,10 +865,12 @@ alternatingPatterns expectFn _ =
 
 
 -- ============================================================================
--- CUSTOM TYPE PATTERNS (2 tests)
+-- CUSTOM TYPE PATTERNS
 -- ============================================================================
 
 
+{-| Returns the labelled custom-type cases for `expectFn`.
+-}
 customTypePatternCases : (Src.Module -> Expectation) -> List TestCase
 customTypePatternCases expectFn =
     [ { label = "Custom type pattern in function argument", run = customTypePatternInFunctionArg expectFn }
@@ -668,25 +878,27 @@ customTypePatternCases expectFn =
     ]
 
 
-{-| Tests pattern matching on custom types in function arguments.
-Corresponds to E2E test: CustomTypePatternTest.elm
+{-| Returns `expectFn` applied to a module containing
 
     type Person
         = Person Int Int
 
+    getId : Person -> Int
     getId (Person id _) =
         id
 
+    getAge : Person -> Int
     getAge (Person _ age) =
         age
 
-Note: Using Int instead of String to match what the compiler currently supports.
+    testValue : ( Int, Int )
+    testValue =
+        ( getId (Person 30 25), getAge (Person 30 25) )
 
 -}
 customTypePatternInFunctionArg : (Src.Module -> Expectation) -> (() -> Expectation)
 customTypePatternInFunctionArg expectFn _ =
     let
-        -- Define the Person union type
         personUnion : UnionDef
         personUnion =
             { name = "Person"
@@ -696,9 +908,6 @@ customTypePatternInFunctionArg expectFn _ =
                 ]
             }
 
-        -- Define the getId function
-        -- getId : Person -> Int
-        -- getId (Person id _) = id
         getIdFn : TypedDef
         getIdFn =
             { name = "getId"
@@ -707,9 +916,6 @@ customTypePatternInFunctionArg expectFn _ =
             , body = varExpr "id"
             }
 
-        -- Define the getAge function
-        -- getAge : Person -> Int
-        -- getAge (Person _ age) = age
         getAgeFn : TypedDef
         getAgeFn =
             { name = "getAge"
@@ -735,12 +941,23 @@ customTypePatternInFunctionArg expectFn _ =
     expectFn modul
 
 
-{-| Tests pattern matching on custom types with multiple constructors in function arguments.
+{-| Returns `expectFn` applied to a module containing
+
+    type Box
+        = Box Int
+
+    unbox : Box -> Int
+    unbox (Box x) =
+        x
+
+    testValue : Int
+    testValue =
+        unbox (Box 42)
+
 -}
 customTypePatternMultipleExtractors : (Src.Module -> Expectation) -> (() -> Expectation)
 customTypePatternMultipleExtractors expectFn _ =
     let
-        -- Define a Box type with a single field
         boxUnion : UnionDef
         boxUnion =
             { name = "Box"
@@ -750,9 +967,6 @@ customTypePatternMultipleExtractors expectFn _ =
                 ]
             }
 
-        -- Define the unbox function
-        -- unbox : Box -> Int
-        -- unbox (Box x) = x
         unboxFn : TypedDef
         unboxFn =
             { name = "unbox"

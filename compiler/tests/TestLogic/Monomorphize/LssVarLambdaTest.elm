@@ -1,19 +1,62 @@
 module TestLogic.Monomorphize.LssVarLambdaTest exposing (suite)
 
-{-| LAMBDA-HOME VAR WRITES — `lss.varLambda`
-(plans/lss-var-chain-roots.md §8.2 Phase 4v2).
+{-| Checks that, when a lambda that returns a function is passed as an
+argument, the solver engine resolves the lambda sets on that argument's
+arrows. Without the first test, a change that left such a position
+unresolved or unknown in this fixture's registry rows would go unnoticed.
 
-A lambda's result set lives only in its BODY's type, in the item that
-translated it; it never reaches a registry row. The flag reads it off the
-closure NODES (`ClosureInfo.lssMember` + `typeOf body`) and enriches
-`l|`-headed var positions from that table, under strict cells, an
-all-`l|`-members rule, and an ARITY guard.
+A lambda-set annotation (`Mono.LambdaSetAnno`, owned by
+`Compiler.AST.Monomorphized`) on an arrow says which function values can flow
+through it: `LSet` exactly the listed members, `LPartial` at least them,
+`LVar` not yet determined, `LTop` unknown. A registry row holds the type of
+one specialization of a global; a lambda has no row of its own, so the set of
+the function it returns is recorded with its closure node, in the type of its
+body. The settle pass `settleVarLambda` of `Compiler.MonoSolver.Monomorphize`
+copies such sets from closure nodes into `LVar` positions of registry rows. It
+writes a position only when the merged evidence for it holds no `LTop` or
+`LVar`, every member of the enclosing set has a recorded closure, and those
+closures take as many parameters as the arrow at the use site; closures that
+share a member but differ in parameter count make the member unusable.
 
-Per §5.1, one-module fixtures generally cannot manufacture this plan's var
-classes, so these are invariance and guard pins rather than a corpus-scale
-differential (the battery's `varlam|wrote` counter and the var delta are
-that). The guard pins matter most: they are the difference between a
-sound write and a silently misaligned one.
+The fixture is one module, written here as Elm source:
+
+    mkAdder : Int -> Int -> Int
+    mkAdder =
+        \a -> \b -> a + b
+
+    applyTwice : (x -> Int -> Int) -> x -> Int
+    applyTwice f seed =
+        f seed 2
+
+    testValue : Int
+    testValue =
+        applyTwice mkAdder 5
+
+Despite its name, `applyTwice` applies `f` once and applies the result to `2`;
+its body is built as a call whose function is the call `f seed`.
+The function its parameter `f` returns is `mkAdder`'s inner lambda, so the set
+on that result arrow is found in the type of the outer lambda's body.
+
+The tests establish:
+
+  - Test 1 monomorphizes the fixture with the solver engine and takes, from
+    every registry row named `applyTwice` whose first parameter is a function
+    returning a function, the annotations on that parameter's arrow and on the
+    arrow of the function it returns. It passes only when at least one was
+    found and every one is an `LSet` with at least one member; an `LTop`,
+    `LVar`, `LPartial` or empty `LSet` fails it.
+  - Test 2 merges two records built in the test, a cell with a set and a cell
+    marked `var`, by or-ing their `top` and `var` flags and keeping the first
+    cell's members, and checks that the result has `var` set, `top` clear and
+    those members. No compiler code runs: it repeats by hand the flag merge
+    `varCellMerge` performs, without calling it.
+  - Test 3 checks a merge function defined in the test, which keeps two equal
+    parameter counts and gives `Nothing` otherwise, on three pairs. No
+    compiler code runs.
+
+Among what is not tested: any of the write conditions above as the compiler
+applies them, which members the sets of test 1 hold, which stage wrote them,
+and the graph after global optimization.
 
 -}
 
@@ -39,16 +82,12 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The three tests the module docstring lists.
+-}
 suite : Test
 suite =
     Test.describe "lambda-home var writes"
-        [ -- A REAL differential, unlike the successor and ctor-row classes:
-          -- this class IS reproducible in one module (§5.1's finding does not
-          -- extend to it). `applyTwice`'s parameter is a lambda whose own
-          -- result is a function; the result arrow's set lives only in
-          -- `mkAdder`'s body, so without this pass it stayed flex. The flag
-          -- (`lss.settle.varLambda`) was fixed at its default and removed
-          -- 2026-09-18, so what remains is the ON leg.
+        [ -- The only test that runs the compiler.
           Test.test "1. the lambda's result arrow is a set, never var or ⊤" <|
             \() ->
                 case runWith fixture of
@@ -76,10 +115,6 @@ suite =
                         Expect.fail e
         , Test.test "2. GUARD: a var cell never becomes a set (strict-cell rule)" <|
             \() ->
-                -- The write rule must refuse any cell carrying var or ⊤. A
-                -- fixture cannot easily manufacture one, so this pins the
-                -- rule at the data level: merging a var cell into a set cell
-                -- keeps `var` set, and the pass reads `var` as a block.
                 let
                     setCell =
                         { top = False, var = False, sets = Just [ 7 ] }
@@ -96,11 +131,6 @@ suite =
                 Expect.equal ( merged.var, merged.top, merged.sets ) ( True, False, Just [ 7 ] )
         , Test.test "3. GUARD: arity disagreement makes a mid unusable" <|
             \() ->
-                -- Mono can re-arity a value (staged vs flat), and then the
-                -- same relative path denotes different nodes on the two
-                -- sides. Two closures sharing a mid with different param
-                -- counts must collapse `arity` to Nothing, which the write
-                -- rule treats as "never applicable".
                 let
                     merge a b =
                         if a == b then
@@ -119,17 +149,21 @@ suite =
 -- ====== FIXTURE ======
 
 
+{-| The source type `Int`, as the fixture's annotations write it.
+-}
 hInt : Src.Type
 hInt =
     tType "Int" []
 
 
+{-| The test program the module docstring shows: module `Test` with the
+annotated definitions `mkAdder`, `applyTwice` and `testValue`, and no unions or
+aliases.
+-}
 fixture : Src.Module
 fixture =
     makeModuleWithTypedDefsUnionsAliases "Test"
-        [ -- a lambda whose RESULT is itself a function: the shape whose
-          -- result set only its body knows.
-          { name = "mkAdder"
+        [ { name = "mkAdder"
           , args = []
           , tipe = tLambda hInt (tLambda hInt hInt)
           , body =
@@ -155,6 +189,11 @@ fixture =
 -- ====== HARNESS ======
 
 
+{-| Monomorphizes `srcModule` with the solver engine, under the default
+specialization limits and the default lambda-set configuration, and returns
+the graph without global optimization. Lambda-set specialization is already
+enabled in that configuration, so setting `enabled` changes nothing.
+-}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
     let
@@ -170,8 +209,11 @@ runWith srcModule =
 -- ====== READERS ======
 
 
-{-| applyTwice's `/a0` head plus its result-arrow head — the lambda-headed
-positions the flag targets.
+{-| Returns two annotations for every registry row of `g` named `applyTwice`,
+in any module: the one on the arrow of the row's first parameter, and the one
+on the arrow of the function that parameter returns. A row whose first
+parameter is not a function returning a function contributes nothing, so the
+list can be empty.
 -}
 annos : Mono.MonoGraph -> List Mono.LambdaSetAnno
 annos (Mono.MonoGraph g) =
@@ -197,11 +239,15 @@ annos (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Reports whether an annotation is `LTop`, whatever its provenance code.
+-}
 isTop : Mono.LambdaSetAnno -> Bool
 isTop =
     Mono.isTopAnno
 
 
+{-| Reports whether an annotation is `LVar`.
+-}
 isVar : Mono.LambdaSetAnno -> Bool
 isVar a =
     case a of
@@ -212,6 +258,9 @@ isVar a =
             False
 
 
+{-| Reports whether an annotation is an `LSet` with at least one member. An
+empty `LSet` and an `LPartial` are not.
+-}
 isSet : Mono.LambdaSetAnno -> Bool
 isSet a =
     case a of
@@ -222,6 +271,10 @@ isSet a =
             False
 
 
+{-| Renders annotations for a failure message: each `LTop` with its provenance
+label, each `LVar` with its number, and each `LSet` and `LPartial` with its
+member count, not its members.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe xs =
     "["

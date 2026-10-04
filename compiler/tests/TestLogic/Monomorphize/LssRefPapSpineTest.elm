@@ -1,25 +1,53 @@
 module TestLogic.Monomorphize.LssRefPapSpineTest exposing (suite)
 
-{-| REFERENCE-SPINE PAP SUCCESSORS — `lss.refPapSpine`
-(plans/lss-ref-pap-spine.md).
+{-| Checks that a global passed by reference and the same global partially
+applied are given the same lambda-set member where both stand for the global
+applied to one argument, when the solver monomorphizer runs with lambda-set
+specialization on. If the two gave different ids, one partial application would
+be named by two members, and a set that receives it both ways would hold two
+members where one is meant.
 
-A standalone reference's injection is head-only, so a multi-arg global passed
-as a function argument leaves the callee's `/a0/r` arrow (the value after ONE
-application) unwritten — it zonks to `LVar`, the largest surviving var
-population (58 % of all var, census 2026-08-28). Under the flag the reference
-also writes the PAP successors `p|<g>|<d>` down the loaded spine — the same
-ids `injectPapMember` (producer partial applications) mints, so the paths
-converge on one identity.
+A lambda set is the set of functions an arrow in a monomorphic type may hold at
+run time, written on each `Mono.MFunction` as a `Mono.LambdaSetAnno`. A
+singleton set, `LSet [ m ]`, names exactly one member `m`, an interned integer
+id. Positions in a parameter's type are written as paths: `/a0` is the arrow of
+a function's first parameter, and `/a0/r` is the arrow of that parameter's
+result type. The solver engine builds function types with one parameter per
+arrow, so `/a0/r` is the value left after applying the argument once.
 
-These pins were off-vs-on DIFFERENTIALS, and their off arm additionally
-pinned `varSucc`/`varCtorRows` off — those settle passes write the very
-`/a0/r` position the off arm asserted as `LVar`. The settle flags were fixed
-at their defaults and removed 2026-09-18, so the off arm is no longer
-constructible. What the deleted arms pinned: with the successor walk off,
-`/a0/r` zonked to `LVar`; the beyond-arity arrow of an arity-1 def and the
-`/a0` head itself were arm-identical (the walk ADDS, never disturbs, and
-LSS\_013 stops it at declaredArity). What remains asserts the shipping
-result at the same positions.
+Passing a two-argument global `g` by reference writes `g`'s own member on the
+head arrow of the reference's type, which is the argument passed at `/a0`. The
+reference-spine walk (`injectPapSuccessors` in `Compiler.MonoSolver.LssInfer`)
+also writes, at each depth `d` from 1 up to one less than `g`'s declared arity,
+the number of parameters its definition names, the member keyed `p|g|d`, which
+names `g` applied to `d` arguments. The partial application `g 1` is given the member
+keyed `p|g|1` by a different path, which writes it on the head arrow of the
+value it produces. Both paths take the id from
+`Compiler.MonoSolver.Engine.papMemberIdFor`, which interns the key, so the same
+key gives the same id.
+
+The fixture defines `plus2 : Int -> Int -> Int` and three callers that take a
+two-argument function, or a one-argument one, as their first parameter.
+`testValue` calls `useIt plus2 1`, `useIt2 (plus2 1) 2` and `useIt3 mk 3`, which
+makes all of them reachable from the `main` that `TestLogic.TestPipeline` adds.
+`mk` has an `Int -> Int -> Int` annotation but one parameter, so its declared
+arity is less than its type's arrow count; no test reads `useIt3` or `mk`. The
+readers find a global's specializations by unqualified name in the graph's
+registry.
+
+The tests establish:
+
+  - Test 1: at least one specialization of `useIt` has a `/a0/r` position, and
+    at every one that has, the annotation is a singleton `LSet`.
+  - Test 2: the member of the first singleton found at `useIt`'s `/a0/r` equals
+    the member of the first singleton found at `useIt2`'s `/a0`, and both
+    positions hold at least one singleton among `useIt`'s and `useIt2`'s
+    specializations.
+  - Test 3: the same assertion as test 1.
+
+Among what is not tested: that the singleton's member is the `p|plus2|1` key
+rather than some other single member, what `/a0` of `useIt` holds, anything
+about `useIt3` or `mk`, and the graph after global optimization.
 
 -}
 
@@ -43,6 +71,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The reference-spine identity tests, run on the fixture.
+-}
 suite : Test
 suite =
     Test.describe "PAP successors on reference spines"
@@ -65,9 +95,6 @@ suite =
                         Expect.fail e
         , Test.test "2. PRODUCER CONVERGENCE: reference-spine id == partial-application id" <|
             \() ->
-                -- `useIt plus2` puts p|plus2|1 at useIt's /a0/r via the NEW
-                -- path; `useIt2 (plus2 1)` puts p|plus2|1 at useIt2's /a0 via
-                -- papMembers' PRODUCER path. Same integer id = one identity.
                 case runWith fixture of
                     Err e ->
                         Expect.fail e
@@ -118,17 +145,23 @@ suite =
 -- ====== FIXTURE ======
 
 
+{-| The source type `Int`.
+-}
 hInt : Src.Type
 hInt =
     tType "Int" []
 
 
+{-| The source type `Int -> Int -> Int`, of a two-argument integer function.
+-}
 int2 : Src.Type
 int2 =
-    -- Int -> Int -> Int
     tLambda hInt (tLambda hInt hInt)
 
 
+{-| The test program, a module named `Test` whose definitions are described in
+the module docstring.
+-}
 fixture : Src.Module
 fixture =
     makeModuleWithTypedDefs "Test"
@@ -150,8 +183,8 @@ fixture =
         , { name = "mk"
           , args = [ pVar "x" ]
 
-          -- declaredArity 1, 2-arrow type: `mk x = plus2 x` (eta-reduced
-          -- partial application) — the second arrow is the BODY's value.
+          -- One parameter under a two-arrow type: the second arrow is the
+          -- type of the body, the partial application `plus2 x`.
           , tipe = int2
           , body = callExpr (varExpr "plus2") [ varExpr "x" ]
           }
@@ -177,6 +210,10 @@ fixture =
 -- ====== HARNESS ======
 
 
+{-| Monomorphizes `srcModule` with the solver engine, the default
+specialization limits, and the default lambda-set configuration with `enabled`
+set, returning the graph before global optimization.
+-}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
     let
@@ -192,6 +229,9 @@ runWith srcModule =
 -- ====== READERS ======
 
 
+{-| Returns the type of every specialization in the graph's registry whose
+global's unqualified name is `target`, from any module.
+-}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
     Array.foldl
@@ -211,7 +251,8 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| The first argument's own head annotation (/a0).
+{-| Returns the `/a0` annotation, on the first parameter's own arrow, of each
+specialization of `target` whose first parameter is a function.
 -}
 a0Annos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 a0Annos target graph =
@@ -227,8 +268,8 @@ a0Annos target graph =
         (demandsOf target graph)
 
 
-{-| The first argument's RESULT arrow annotation (/a0/r) — the value after
-applying the argument once.
+{-| Returns the `/a0/r` annotation, on the arrow of the first parameter's
+result, of each specialization of `target` where that result is a function.
 -}
 a0rAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 a0rAnnos target graph =
@@ -244,6 +285,9 @@ a0rAnnos target graph =
         (demandsOf target graph)
 
 
+{-| Returns the member of each annotation that is a one-member `LSet`, dropping
+every other annotation.
+-}
 singletonIds : List Mono.LambdaSetAnno -> List Int
 singletonIds =
     List.filterMap
@@ -257,6 +301,9 @@ singletonIds =
         )
 
 
+{-| Tells whether an annotation is an `LVar`, a set left unconstrained. No test
+uses it.
+-}
 isVar : Mono.LambdaSetAnno -> Bool
 isVar a =
     case a of
@@ -267,6 +314,8 @@ isVar a =
             False
 
 
+{-| Tells whether an annotation is an `LSet` of exactly one member.
+-}
 isSingleton : Mono.LambdaSetAnno -> Bool
 isSingleton a =
     case a of
@@ -277,6 +326,10 @@ isSingleton a =
             False
 
 
+{-| Returns the number of members of an `LSet`, and a negative code for the
+other annotations: -1 for `LVar`, -2 for `LTop`, -3 for `LPartial`. No test
+uses it.
+-}
 annoSize : Mono.LambdaSetAnno -> Int
 annoSize a =
     case a of
@@ -293,6 +346,10 @@ annoSize a =
             -3
 
 
+{-| Renders annotations for a failure message, each as its constructor name,
+followed by the variable number for an `LVar` and the member count for an
+`LSet` or `LPartial`.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe annos =
     "["

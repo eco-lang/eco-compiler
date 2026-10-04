@@ -1,43 +1,73 @@
 module TestLogic.Monomorphize.ArrowIdentityTest exposing (suite)
 
-{-| Phase 2a — per-occurrence arrow identity
-(`plans/lss-unknown-elimination.md` §4).
+{-| Tests of when two function arrows loaded into the solver's store share one
+lambda-set slot. Getting this wrong changes the lambda sets the solver
+computes: the sets of function values that can flow through each arrow.
 
-Three properties, none of which had a test before this phase: **nothing in the
-suite pinned arrow ordinals by name or number, nothing pinned `lssRootAnn`, and
-nothing pinned signature triviality**, which is why the plan calls these
-mandatory rather than nice-to-have.
+When lambda sets are on, `Compiler.MonoSolver.Store.loadTypeC` gives each
+`TLambda` it loads a _slot_, a store Point that will hold the set of function
+values that can flow through that arrow. A `TLambda` carries an _ArrowId_, an
+identity stamped on it before monomorphization, or `Can.noArrow` when it is
+unstamped. The _arrow memo_ maps an ArrowId to the slot already minted for it,
+so a second arrow with the same ArrowId can reuse that slot. Each load also
+records its slots, and once that list is reversed (as `loadInto` does) each
+arrow in the type has one _ordinal position_, in load order. How loads share
+Points, and which per-item state is cleared around a scratch store, is stated in
+`Compiler.MonoSolver.Store` and `Compiler.MonoSolver.Engine`. Three facts matter
+here.
 
-1.  **The ordinal contract (§4.3).** Two `TLambda` occurrences sharing one
-    `ArrowId` must produce TWO ordinal positions holding ONE slot — pushed
-    twice, minted once. A hit that skipped `arrowSlots` would shorten the array
-    and `LssInfer.applyFacts` poisons the whole instantiation on a length
-    mismatch, SILENTLY (`censusLenGuard` is report-gated). A hit that bumped
-    `slotsMinted` would corrupt the dead-slot census.
+1.  A memo hit still adds an ordinal position, so the positions count arrows,
+    not distinct slots, and it does not add to the count of minted slots. If
+    the positions fell short, `LssInfer.applyFacts` would find a non-trivial
+    signature's arrow count different from the slot count and set every lambda
+    set of that instantiation to unknown, recording it only under
+    `lss.report`.
 
-2.  **The isolation asymmetry (§4.4).** A load seeded with an EMPTY arrow memo
-    must never reuse another load's slot. This is the H1 collapse hazard:
-    `LssInfer.sigSourceTypeFor` and the call path read the SAME annotation
-    value out of `s.env.annotations`, so if the two isolated entry points
-    (`loadTypeIsolated`, `loadTypeIsolatedWithArrows`) threaded the item's
-    arrow memo, every call site of an annotated `f` would unify into ONE lambda
-    set — monomorphic set analysis and maximal imprecision.
+2.  The isolated loads, `Store.loadTypeIsolated` and
+    `Store.loadTypeIsolatedWithArrows`, start from an empty arrow memo and do
+    not write theirs back. Two isolated loads of the same annotation would
+    otherwise meet the same ArrowIds and share their slots, merging the lambda
+    sets of separate call sites.
 
-3.  **Scratch-store isolation (§4.5).** `arrowMemo` holds Points, and Point
-    indices are dense from 0 in EVERY store, so it must be cleared entering a
-    scratch store and restored leaving one. Leaking it aliases low outer Point
-    indices and `zonkSigGo` then bakes garbage into a memoised `LssSignature`,
-    which is GLOBAL and survives the whole run — a silent miscompile, not a
-    crash.
+3.  The arrow memo holds Points, and the Points of every store are numbered
+    from 0, so a memo carried into a _scratch store_ (a fresh store a pass runs
+    in and then discards) names unrelated Points there. `Engine.clearedAux`
+    empties it on entry and `Engine.restoredAux` puts back the outer one on
+    exit.
 
-**Deviation from the plan's sketch, recorded** (the `LssDirectedFlowTest`
-precedent): properties 1 and 2 are driven through `Store.loadTypeC` against a
-hand-built `LoadCtx` rather than through the four `Step`-typed entry points,
-which would need a full `Engine.S`. What that leaves unpinned is one line per
-entry point — which seed each passes and whether it writes back — and those
-lines are `sharedLoadCtx` / `isolatedLoadCtx` / `writeBackShared` /
-`writeBackIsolated` in `Store.elm`. Property 3 IS pinned exactly, because
-`Engine.clearedAux` / `restoredAux` are pure `ItemAux` functions.
+The fixture types are built from `Int -> Int` arrows: one arrow alone, a pair
+whose two arrows carry the same `ArrowSlot` (an ArrowId, or `Can.noArrow` on
+both), and a pair with two different ArrowIds. Each load runs `loadTypeC` on
+`Store.testLoadCtx` with lambda sets on, an empty variable memo and a given
+arrow-memo seed, into a fresh store unless a test says otherwise. The tests
+establish:
+
+  - Two arrows sharing an ArrowId give two positions, one mint, and the same
+    slot at both.
+  - Two arrows with different ArrowIds give two positions, two mints, and
+    different slots.
+  - Two `Can.noArrow` arrows give two positions, two mints, different slots,
+    and leave the arrow memo empty.
+  - Loading one stamped arrow leaves one memo entry, and loading it again into
+    another fresh store seeded with that memo records the same Point index as
+    the first load and mints no slot, which shows the memo hit. The two stores
+    differ, so this is not a shared slot.
+  - Two loads of one stamped arrow into the same store, each seeded with an
+    empty memo, give different slots.
+  - The same two loads, the second seeded with the first's memo, give the same
+    slot, and the second mints no slot.
+  - `clearedAux` empties an arrow memo that held one entry.
+  - `restoredAux` gives back the outer arrow memo, without the inner memo's
+    entry.
+  - `Engine.emptyItemAux` has an empty arrow memo.
+
+Among what is not tested: which seed the four `Step`-typed load functions in
+`Store` pass and whether they write the memo back (`sharedLoadCtx`,
+`isolatedLoadCtx`, `writeBackShared`, `writeBackIsolated`); whether
+`Engine.withScratchStore` and the re-translation in
+`Compiler.MonoSolver.Translate` call `clearedAux` and `restoredAux`; that
+`Engine.resetItem` installs `emptyItemAux`; the other store-scoped fields of
+`Engine.ItemAux`; and loads with lambda sets off.
 
 -}
 
@@ -55,6 +85,10 @@ import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
+{-| The tests, in three groups: the ordinal contract, an empty arrow-memo seed
+against a shared one, and `clearedAux`, `restoredAux` and `emptyItemAux` on the
+arrow memo.
+-}
 suite : Test
 suite =
     Test.describe "Phase 2a arrow identity"
@@ -68,55 +102,67 @@ suite =
 -- ====== FIXTURES ======
 
 
+{-| The type `Int` from `elm/core`'s `Basics`, the argument and result of every
+fixture arrow.
+-}
 intType : Can.Type TypeIds.MVarId
 intType =
     Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Int" []
 
 
-{-| `arrowWith aid` is `Int -> Int` stamped with `aid`.
+{-| Returns the type `Int -> Int` with `aid` as its `ArrowSlot`.
 -}
 arrowWith : TypeIds.ArrowSlot -> Can.Type TypeIds.MVarId
 arrowWith aid =
     Can.TLambda aid intType intType
 
 
-{-| `( Int -> Int, Int -> Int )` where BOTH arrows carry the same `ArrowId` —
-the shape a repeated load of one stamped type object produces.
+{-| Returns the type `( Int -> Int, Int -> Int )` with `aid` as the `ArrowSlot`
+of both arrows.
 -}
 twinArrows : TypeIds.ArrowSlot -> Can.Type TypeIds.MVarId
 twinArrows aid =
     Can.TTuple (arrowWith aid) (arrowWith aid) []
 
 
-{-| The two arrows carry DIFFERENT ids: the ordinary case.
+{-| The type `( Int -> Int, Int -> Int )` with `firstId` on the first arrow and
+`secondId` on the second.
 -}
 distinctArrows : Can.Type TypeIds.MVarId
 distinctArrows =
     Can.TTuple (arrowWith firstId) (arrowWith secondId) []
 
 
+{-| The `ArrowSlot` stamped with the first ArrowId.
+-}
 firstId : TypeIds.ArrowSlot
 firstId =
     TypeIds.Arrow TypeIds.firstArrowId
 
 
+{-| The `ArrowSlot` stamped with the ArrowId after `firstId`'s.
+-}
 secondId : TypeIds.ArrowSlot
 secondId =
     TypeIds.Arrow (Id.succ TypeIds.firstArrowId)
 
 
-{-| One load's observable result. A record rather than a tuple because Elm caps
-tuples at three.
+{-| What one load leaves behind that the tests look at: its slots by ordinal
+position, how many it minted, its arrow memo afterwards, and its store.
 -}
 type alias Loaded =
-    { keys : List Int -- ordinal slot Points, by `Engine.pointKey`
+    { keys : List Int -- the `slots`, as `Engine.pointKey`s
     , minted : Int
-    , memo : Dict.Dict Int Vars.Variable
+    , memo : Dict.Dict Int Vars.Variable -- the arrow memo, not the variable memo
     , slots : Array.Array Vars.Variable
     , store : IO.State
     }
 
 
+{-| Loads `canType` into `store` with lambda sets on, starting from the arrow
+memo `seedMemo` and an empty variable memo, and returns what the load left
+behind.
+-}
 loadInto : Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> IO.State -> Loaded
 loadInto seedMemo canType store =
     let
@@ -126,8 +172,8 @@ loadInto seedMemo canType store =
         slots =
             Array.fromList (List.reverse c.arrowSlots)
     in
-    -- The slots are freshly minted here and nothing has been unified, so
-    -- `pointKey` equality is exactly UF equivalence.
+    -- Nothing in a load is unified, so within one store different `pointKey`s
+    -- mean different slots.
     { keys = List.map Engine.pointKey (Array.toList slots)
     , minted = c.slotsMinted
     , memo = c.arrowMemo
@@ -136,12 +182,15 @@ loadInto seedMemo canType store =
     }
 
 
+{-| Loads `canType` as `loadInto` does, into a new empty store.
+-}
 loadFresh : Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> Loaded
 loadFresh seedMemo canType =
     loadInto seedMemo canType (Engine.freshStore ())
 
 
-{-| `( positions, mints, bothOrdinalsShareOneSlot )`.
+{-| Returns a load's number of ordinal positions, its number of mints, and
+whether it has exactly two positions holding the same slot.
 -}
 shape : Loaded -> ( Int, Int, Bool )
 shape r =
@@ -160,6 +209,9 @@ shape r =
 -- ====== 1. ORDINAL CONTRACT ======
 
 
+{-| The tests of the ordinal contract: positions and mints for shared, distinct
+and unstamped ArrowIds, and the arrow memo a load leaves behind.
+-}
 ordinalPins : List Test
 ordinalPins =
     [ Test.test "two arrows sharing one ArrowId: 2 positions, 1 mint, both the same slot" <|
@@ -192,14 +244,13 @@ ordinalPins =
 -- ====== 2. ISOLATION ASYMMETRY ======
 
 
+{-| The tests that an empty arrow-memo seed never reuses another load's slot,
+while a seed holding that load's memo does.
+-}
 isolationPins : List Test
 isolationPins =
     [ Test.test "an EMPTY seed never reuses another load's slot (H1: the isolated entries)" <|
         \() ->
-            -- What `loadTypeIsolatedWithArrows` does: seed `Dict.empty`, and
-            -- never write the resulting memo back. Two such loads of the SAME
-            -- annotation value must land on DISJOINT slots — otherwise every
-            -- call site of an annotated `f` unifies into one lambda set.
             let
                 a =
                     loadInto Dict.empty (arrowWith firstId) (Engine.freshStore ())
@@ -225,10 +276,9 @@ isolationPins =
 -- ====== 3. SCRATCH-STORE ISOLATION ======
 
 
-{-| Two independently-minted slot Points, standing in for "an outer item's
-arrow memo" and "a slot the scratch pass minted against ITS OWN store". The
-Points are opaque here — the property under test is about the DICT, not about
-what it names.
+{-| The two slots minted by loading `distinctArrows`, used as memo values in the
+scratch-store tests. Those tests check which memo entries survive, not what the
+Points are.
 -}
 samplePoints : Maybe ( Vars.Variable, Vars.Variable )
 samplePoints =
@@ -239,6 +289,9 @@ samplePoints =
     Maybe.map2 Tuple.pair (Array.get 0 r.slots) (Array.get 1 r.slots)
 
 
+{-| Returns `k` applied to the two `samplePoints`, or a failure if the load
+recorded fewer than two slots.
+-}
 withSamples : (Vars.Variable -> Vars.Variable -> Expect.Expectation) -> Expect.Expectation
 withSamples k =
     case samplePoints of
@@ -249,6 +302,8 @@ withSamples k =
             Expect.fail "fixture broken: the two-arrow load did not mint two slots"
 
 
+{-| Returns `Engine.emptyItemAux` with `memo` as its arrow memo.
+-}
 auxWith : Dict.Dict Int Vars.Variable -> Engine.ItemAux
 auxWith memo =
     let
@@ -258,6 +313,9 @@ auxWith memo =
     { aux | arrowMemo = memo }
 
 
+{-| The tests of the arrow-memo field of `ItemAux`: `clearedAux` empties it,
+`restoredAux` takes the outer one, and `emptyItemAux` starts with it empty.
+-}
 scratchPins : List Test
 scratchPins =
     [ Test.test "clearedAux DROPS the arrow memo entering a scratch store" <|
@@ -281,8 +339,7 @@ scratchPins =
                         outer =
                             auxWith (Dict.singleton 1 outerPt)
 
-                        -- The scratch pass minted its own entry against ITS
-                        -- store; those Points are meaningless outside it.
+                        -- Stands for a memo the pass grew inside the scratch store.
                         innerGrown =
                             auxWith (Dict.singleton 99 innerPt)
 

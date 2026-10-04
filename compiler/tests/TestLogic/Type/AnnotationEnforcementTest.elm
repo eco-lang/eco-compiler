@@ -1,6 +1,44 @@
 module TestLogic.Type.AnnotationEnforcementTest exposing (suite)
 
-{-| Test suite for invariant TYPE\_006: Annotations are enforced, not ignored.
+{-| Tests that the type checker holds a definition to its type annotation.
+Without them, a checker that ignored annotations and kept only the types it
+inferred would go unnoticed, and a wrong annotation would be accepted.
+
+Each test builds a module holding one annotated top-level definition with
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefs`, and hands it to an
+expectation from `TestLogic.Type.AnnotationEnforcement`, which canonicalizes
+the module and runs constraint generation and the solver, and nothing after.
+The numeric bodies are integer literals, whose own type is the constrained
+`number`; an `Int` annotation fixes it, and a `String` annotation contradicts
+it.
+
+The matching tests each hand their module to
+`expectMatchingAnnotationSucceeds`, which requires no type error:
+
+  - `x : Int` with body `42`.
+  - `s : String` with body `"hello"`.
+  - `f : Int -> Int` with `f x = x`, an annotation more specific than the body
+    requires.
+  - `xs : List Int` with body `[ 1, 2 ]`.
+  - `pair : ( Int, String )` with body `( 1, "a" )`.
+
+The mismatch tests each hand their module to `expectAnnotationMismatchError`,
+which requires at least one type error of any kind:
+
+  - `x : Int` with body `"hello"`.
+  - `x : String` with body `42`.
+  - `f : Int -> String` with `f x = x`, which returns its `Int` argument.
+  - `xs : List String` with body `[ 1 ]`.
+  - `pair : ( String, Int )` with body `( 1, "a" )`, the element types the
+    other way round.
+
+A mismatch test therefore shows that the module canonicalizes and then fails to
+type-check, not that the error it produces concerns the annotation.
+
+Among what is not tested: type variables in annotations, records and custom
+types, annotations on let-bound definitions, modules with more than one
+definition, and what a mismatch error reports.
+
 -}
 
 import Compiler.AST.SourceBuilder as SB
@@ -12,6 +50,9 @@ import TestLogic.Type.AnnotationEnforcement
         )
 
 
+{-| The tests that annotations are enforced: the matching-annotation tests, then
+the mismatched-annotation tests.
+-}
 suite : Test
 suite =
     Test.describe "Annotations are enforced, not ignored (TYPE_006)"
@@ -20,6 +61,9 @@ suite =
         ]
 
 
+{-| Five tests, each giving one definition an annotation its body agrees with
+and expecting the module to type-check with no errors.
+-}
 matchingAnnotationTests : Test
 matchingAnnotationTests =
     Test.describe "Matching annotations succeed"
@@ -99,6 +143,9 @@ matchingAnnotationTests =
         ]
 
 
+{-| Five tests, each giving one definition an annotation its body contradicts
+and expecting the module to fail to type-check, with any type error.
+-}
 mismatchedAnnotationTests : Test
 mismatchedAnnotationTests =
     Test.describe "Mismatched annotations produce errors"
@@ -154,7 +201,7 @@ mismatchedAnnotationTests =
                               , tipe =
                                     SB.tType "List"
                                         [ SB.tType "String" [] ]
-                              , body = SB.listExpr [ SB.intExpr 1 ] -- List Int, not List String
+                              , body = SB.listExpr [ SB.intExpr 1 ] -- integer literals, not strings
                               }
                             ]
                 in
@@ -170,7 +217,7 @@ mismatchedAnnotationTests =
                                     SB.tTuple
                                         (SB.tType "String" [])
                                         (SB.tType "Int" [])
-                              , body = SB.tupleExpr (SB.intExpr 1) (SB.strExpr "a") -- Swapped
+                              , body = SB.tupleExpr (SB.intExpr 1) (SB.strExpr "a") -- element types swapped
                               }
                             ]
                 in

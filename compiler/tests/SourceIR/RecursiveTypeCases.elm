@@ -1,13 +1,53 @@
 module SourceIR.RecursiveTypeCases exposing (expectSuite, suite)
 
-{-| Test cases for recursive and mutually recursive data types in monomorphization.
+{-| Source programs whose custom types refer to themselves, so that a compiler
+stage which follows a type into its constructors' arguments is run on a type
+where that walk comes back to where it started.
 
-These tests cover resolveMonoVars cycle detection for:
+A recursive type is one that is reached again by following its constructors'
+arguments: directly (`Tree a` inside `Tree a`), from inside another type such
+as a `List`, a `Maybe` or a record, or by way of a second declared type. Two
+declared types that each refer to the other, such as `Forest a` and
+`RoseTree a`, are called mutually recursive. A stage that expanded such a
+type without noticing the cycle would never finish.
 
-  - Direct recursive types (e.g. type Tree a = Leaf a | Branch (Tree a) (Tree a))
-  - Mutually recursive types (e.g. Node/Tree like Elm's Array internals)
-  - Recursive types nested inside tuples, records, and lists
-  - Deep nesting where the recursive step is buried in complex type structure
+Each case builds one module, `TestMod`, with
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefsUnionsAliases`: the custom
+types it declares, one annotated function taking a value of the recursive type
+and returning an `Int`, and an annotated `testValue : Int` that applies that
+function to a value built with one of the type's constructors. None of these
+functions recurses, and none looks inside its argument beyond a `case` whose
+patterns are plain variables, so the recursion is in the types alone. The
+module is handed to the caller's expectation function, which decides what is
+checked; the cases are run with `Compiler.BulkCheck.bulkCheck`.
+
+The cases, by the module each builds:
+
+  - `directBinaryTree`: `Tree a`, with a `Branch` holding two `Tree a`.
+  - `directLinkedList`: `LinkedList a`, with a `Cons` holding an `a` and a
+    `LinkedList a`.
+  - `mutualForestTree`: `Forest a` holding a `List (RoseTree a)`, and
+    `RoseTree a` holding a `Forest a`.
+  - `recursiveInTuple`: `Crumb a` holding a `List (Pair a)`, and `Pair a`
+    holding a `Crumb a`, so these two are mutually recursive too. Its label
+    says "tuple", but `Pair` is a custom type and no tuple is built.
+  - `recursiveInRecord`: `Expr a`, whose `Compound` holds a record with a
+    `List (Expr a)` field.
+  - `recursiveViaAlias`: `Container a`, whose `Box` holds a record with a
+    `Maybe (Container a)` field, `Maybe` being a union the module declares
+    itself. Its label says "type alias", but no alias is declared; the record
+    is written out in the constructor.
+
+`suite` runs the six cases in order against
+`TestLogic.TestPipeline.expectMonomorphization`, stopping at the first failure.
+Its title names `resolveMonoVars` (in `Compiler.Monomorphize.TypeSubst`), but
+nothing here observes which functions of the monomorphizer run. For each case,
+`expectMonomorphization` passes when monomorphization succeeds and the
+resulting graph has a `main` and at least one node.
+
+Among what is not tested: any recursive function over these types, a `case`
+with constructor patterns, a value that holds another value of its own type, a
+type alias in the recursive path, and a tuple in the recursive path.
 
 -}
 
@@ -36,6 +76,10 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| The six cases checked in order against
+`TestLogic.TestPipeline.expectMonomorphization` as one test, which stops at the
+first failing case.
+-}
 suite : Test
 suite =
     Test.describe "Recursive type resolveMonoVars cycle detection"
@@ -43,12 +87,21 @@ suite =
         ]
 
 
+{-| Builds one test, named "Recursive types " followed by `condStr`, that
+applies `expectFn` to the six modules in order, stops at the first whose
+expectation fails, and fails with that case's label followed by its failure
+description.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Recursive types " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case, each applying `expectFn` to its module: the
+`directRecursionCases`, then `mutualRecursionTypeCases`, then
+`nestedRecursionCases`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -64,11 +117,15 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| The type `Int`.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| Builds the type `List a`.
+-}
 tList : Src.Type -> Src.Type
 tList a =
     tType "List" [ a ]
@@ -80,6 +137,9 @@ tList a =
 -- ============================================================================
 
 
+{-| Returns the two cases whose type is recursive directly: the binary tree
+and the linked list.
+-}
 directRecursionCases : (Src.Module -> Expectation) -> List TestCase
 directRecursionCases expectFn =
     [ { label = "Direct recursive type: binary tree", run = directBinaryTree expectFn }
@@ -87,10 +147,29 @@ directRecursionCases expectFn =
     ]
 
 
-{-| type Tree a = Leaf a | Branch (Tree a) (Tree a)
+{-| Applies `expectFn` to a module declaring a binary tree, written here as
+Elm source:
 
-A function that pattern matches on this type forces resolveMonoVars
-to traverse MCustom args containing the same type variable.
+    type Tree a
+        = Leaf a
+        | Branch (Tree a) (Tree a)
+
+    depth : Tree a -> Int
+    depth t =
+        case t of
+            leaf ->
+                0
+
+            branch ->
+                1
+
+    testValue : Int
+    testValue =
+        depth (Leaf 42)
+
+The `case` patterns are variables, not constructors, so the second branch can
+never be taken. `Compiler.Nitpick.PatternMatches` reports such a branch as
+`Redundant`; `TestLogic.TestPipeline` does not run that check.
 
 -}
 directBinaryTree : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -109,10 +188,6 @@ directBinaryTree expectFn _ =
                 ]
             }
 
-        -- depth : Tree a -> Int
-        -- depth t = case t of
-        --     Leaf _ -> 0
-        --     Branch l r -> 1 + depth l
         depthDef : TypedDef
         depthDef =
             { name = "depth"
@@ -144,10 +219,29 @@ directBinaryTree expectFn _ =
     expectFn modul
 
 
-{-| type LinkedList a = Nil | Cons a (LinkedList a)
+{-| Applies `expectFn` to a module declaring a linked list whose recursive
+reference is the second argument of `Cons`, written here as Elm source:
 
-Direct recursive custom type where the recursive reference is the second
-constructor argument.
+    type LinkedList a
+        = Empty
+        | Cons a (LinkedList a)
+
+    len : LinkedList a -> Int
+    len xs =
+        case xs of
+            nil ->
+                0
+
+            cons ->
+                1
+
+    testValue : Int
+    testValue =
+        len Empty
+
+As in `directBinaryTree`, the `case` patterns are variables and the second
+branch is unreachable. The argument `Empty` is built as a call with no
+arguments, which source text cannot express.
 
 -}
 directLinkedList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -166,8 +260,6 @@ directLinkedList expectFn _ =
                 ]
             }
 
-        -- len : LinkedList a -> Int
-        -- len xs = case xs of Nil -> 0; Cons _ rest -> 1
         lenDef : TypedDef
         lenDef =
             { name = "len"
@@ -205,17 +297,31 @@ directLinkedList expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the case built around the mutually recursive types `Forest` and
+`RoseTree`.
+-}
 mutualRecursionTypeCases : (Src.Module -> Expectation) -> List TestCase
 mutualRecursionTypeCases expectFn =
     [ { label = "Mutually recursive types: Forest/Tree", run = mutualForestTree expectFn }
     ]
 
 
-{-| type Forest a = Forest (List (RoseTree a))
-type RoseTree a = RoseNode a (Forest a)
+{-| Applies `expectFn` to a module declaring two types that each refer to the
+other, the cycle passing through a `List`, written here as Elm source:
 
-Mutually recursive types where Forest references RoseTree and vice versa.
-This mirrors the Array/Node/Tree pattern that causes the original stack overflow.
+    type Forest a
+        = Forest (List (RoseTree a))
+
+    type RoseTree a
+        = RoseNode a (Forest a)
+
+    countNodes : Forest a -> Int
+    countNodes f =
+        0
+
+    testValue : Int
+    testValue =
+        countNodes (Forest [])
 
 -}
 mutualForestTree : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -245,7 +351,6 @@ mutualForestTree expectFn _ =
                 ]
             }
 
-        -- countNodes : Forest a -> Int
         countNodesDef : TypedDef
         countNodesDef =
             { name = "countNodes"
@@ -279,6 +384,12 @@ mutualForestTree expectFn _ =
 -- ============================================================================
 
 
+{-| Returns three cases: one whose type holds a `List` of a second custom type
+that refers back to it (so the two are mutually recursive), one whose recursive
+reference is in a `List` in a record field, and one whose recursive reference
+is in a `Maybe` in a record field. The labels of the first and third name a
+tuple and a type alias, neither of which those cases build.
+-}
 nestedRecursionCases : (Src.Module -> Expectation) -> List TestCase
 nestedRecursionCases expectFn =
     [ { label = "Recursive type nested in tuple", run = recursiveInTuple expectFn }
@@ -287,11 +398,25 @@ nestedRecursionCases expectFn =
     ]
 
 
-{-| type Crumb a = Crumb a (List (Pair a))
-type Pair a = MkPair (Crumb a) Int
+{-| Applies `expectFn` to a module whose recursion passes through a list of a
+second custom type, written here as Elm source:
 
-The recursive step goes through a second custom type (Pair) which wraps
-Crumb back. This tests cycle detection through nested custom type references.
+    type Crumb a
+        = Crumb a (List (Pair a))
+
+    type Pair a
+        = MkPair (Crumb a) Int
+
+    size : Crumb a -> Int
+    size c =
+        0
+
+    testValue : Int
+    testValue =
+        size (Crumb 1 [])
+
+The case is labelled "Recursive type nested in tuple", but `Pair` is a custom
+type; no tuple type or tuple value appears.
 
 -}
 recursiveInTuple : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -325,7 +450,6 @@ recursiveInTuple expectFn _ =
                 ]
             }
 
-        -- size : Crumb a -> Int
         sizeDef : TypedDef
         sizeDef =
             { name = "size"
@@ -353,10 +477,28 @@ recursiveInTuple expectFn _ =
     expectFn modul
 
 
-{-| type Expr a = Lit a | Compound { tag : Int, children : List (Expr a) }
+{-| Applies `expectFn` to a module whose recursion passes through a field of a
+record that is a constructor's argument, written here as Elm source:
 
-The recursive step is inside a record inside a constructor argument.
-Tests cycle detection through record field types.
+    type Expr a
+        = Lit a
+        | Compound { tag : Int, children : List (Expr a) }
+
+    eval : Expr a -> Int
+    eval e =
+        case e of
+            lit ->
+                0
+
+            compound ->
+                1
+
+    testValue : Int
+    testValue =
+        eval (Lit 42)
+
+As in `directBinaryTree`, the `case` patterns are variables and the second
+branch is unreachable.
 
 -}
 recursiveInRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -382,7 +524,6 @@ recursiveInRecord expectFn _ =
                 ]
             }
 
-        -- eval : Expr a -> Int
         evalDef : TypedDef
         evalDef =
             { name = "eval"
@@ -414,11 +555,28 @@ recursiveInRecord expectFn _ =
     expectFn modul
 
 
-{-| type alias Wrapper a = { value : a, next : Maybe (Container a) }
-type Container a = Box (Wrapper a)
+{-| Applies `expectFn` to a module whose recursion passes through a `Maybe`
+inside a record that is a constructor's argument, written here as Elm source:
 
-The recursive step goes through a type alias, which should be expanded
-before resolveMonoVars encounters it.
+    type Container a
+        = Box { value : a, next : Maybe (Container a) }
+
+    type Maybe a
+        = Just a
+        | Nothing
+
+    depth : Container a -> Int
+    depth c =
+        0
+
+    testValue : Int
+    testValue =
+        depth (Box { value = 1, next = Nothing })
+
+`Nothing` is built as a call with no arguments, which source text cannot
+express. The module declares its own `Maybe` alongside the imported one. The
+case is labelled "Recursive type nested in type alias", but the module declares
+no alias; the record type is written out as `Box`'s argument.
 
 -}
 recursiveViaAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -456,7 +614,6 @@ recursiveViaAlias expectFn _ =
                 ]
             }
 
-        -- depth : Container a -> Int
         depthDef : TypedDef
         depthDef =
             { name = "depth"

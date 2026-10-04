@@ -1,19 +1,57 @@
 module SourceIR.SpecializeRecordCtorCases exposing (expectSuite, suite)
 
-{-| Test cases for specialization of constructors containing record types.
+{-| Programs in which a `case` matches a constructor whose argument is a
+record, so that the pipeline stage a caller checks, monomorphization in
+particular, meets records as constructor arguments.
 
-These tests cover the interaction between custom type constructors and
-record types during monomorphization, specifically:
+When a pattern takes an argument out of a constructor, monomorphization types
+that argument from the type of the value being matched. The substitution
+engine, in `Compiler.Monomorphize.Specialize`, requires that type to be a custom
+type and crashes on any other. In six of the eight programs the record a
+constructor takes has a field holding a custom-type value, which is matched in
+turn, so the patterns alternate between custom types and records on the way
+down.
 
-  - Constructor with a record-typed field
-  - Single-constructor wrapper over a record alias with a union field
-  - Multi-constructor union with record-typed fields
-  - Nested record-through-union patterns
-  - Polymorphic wrapper over record alias with union field
+Each case builds one module named `Test` with
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefsUnionsAliases`. It declares
+its own custom types and, in most cases, record aliases, one function that
+pattern matches, and `testValue : Int`, which applies that function to a value
+built from constructors and record literals. The function and `testValue` are
+both annotated, and their annotations name only concrete types. The sketches in
+the case docstrings are written as Elm source, not as the tree the builders
+make.
 
-The bootstrap crash in Specialize.computeCustomFieldType ("Expected MCustom
-but got MRecord") is triggered when pattern matching traverses through a
-single-constructor wrapper into a record alias and then into a union field.
+Most shapes come in two forms. In the _access_ form the constructor pattern
+binds the record to a variable and the body reads a field with `.field`. In
+the _destruct_ form the constructor pattern holds a record pattern such as
+`{ tag, count }`, and the body reads fields through the names the pattern
+binds rather than with `.field`.
+
+The module asserts nothing itself. `expectSuite` applies the caller's
+expectation to the programs in turn, stopping at the first that fails, and
+`suite` applies `TestLogic.TestPipeline.expectMonomorphization`. The cases are:
+
+  - A constructor whose argument is an inline record type, matched in access
+    form (`ctorWithRecordField`).
+  - A single-constructor type wrapping a record alias whose `tag` field is a
+    custom type, matched in access form and in destruct form, followed by a
+    `case` on `tag` (`wrapperOverRecordAliasAccess`,
+    `wrapperOverRecordAliasDestruct`).
+  - A two-constructor type, one of whose constructors takes an inline record
+    type, matched in access form (`multiCtorWithRecord`).
+  - A wrapper over a record alias whose field is a custom type, one of whose
+    constructors wraps a second record alias, matched in access form and in
+    destruct form at both levels (`nestedRecordUnionAccess`,
+    `nestedRecordUnionDestruct`).
+  - A wrapper with a type parameter over a record alias with the same
+    parameter, used at a concrete custom type, matched in access form and in
+    destruct form (`polyWrapperRecordAccess`, `polyWrapperRecordDestruct`).
+
+Among what is not tested by `suite`: the solver engine
+(`Compiler.MonoSolver`), since `expectMonomorphization` monomorphizes with the
+substitution engine only; the value `testValue` computes; a function that is
+itself polymorphic, since every annotation is concrete; extensible records; and
+a record reached through a constructor of a type from another module.
 
 -}
 
@@ -45,6 +83,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| The cases of this module, checked with
+`TestLogic.TestPipeline.expectMonomorphization`.
+-}
 suite : Test
 suite =
     Test.describe "Specialize.elm record+constructor coverage"
@@ -52,7 +93,10 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Builds one test, named "Record+constructor specialization " followed by
+`condStr`, that checks the cases of this module in order with `expectFn`
+through `Compiler.BulkCheck.bulkCheck`. It stops at the first case that fails
+and reports only that one.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -60,6 +104,9 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns all eight cases, in the order of the sections below, each checking
+its program with `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -77,23 +124,30 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the case of a constructor with an inline record argument, checked
+with `expectFn`.
+-}
 ctorWithRecordFieldCases : (Src.Module -> Expectation) -> List TestCase
 ctorWithRecordFieldCases expectFn =
     [ { label = "Constructor with record field", run = ctorWithRecordField expectFn }
     ]
 
 
-{-| A union constructor whose argument is a record type.
-Pattern match extracts a field from the record via access.
+{-| Applies `expectFn` to a program whose constructor takes an inline record
+type, matched in access form:
 
     type Wrapper
-        = Wrap { name : String, value : Int }
+        = Wrap { value : Int }
 
     getValue : Wrapper -> Int
     getValue w =
         case w of
             Wrap r ->
                 r.value
+
+    testValue : Int
+    testValue =
+        getValue (Wrap { value = 42 })
 
 -}
 ctorWithRecordField : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -110,7 +164,6 @@ ctorWithRecordField expectFn _ =
                 ]
             }
 
-        -- getValue : Wrapper -> Int
         getValueDef : TypedDef
         getValueDef =
             { name = "getValue"
@@ -124,7 +177,6 @@ ctorWithRecordField expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -152,6 +204,9 @@ ctorWithRecordField expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the access-form and destruct-form cases of a single-constructor
+wrapper over a record alias with a custom-typed field, checked with `expectFn`.
+-}
 wrapperOverRecordAliasCases : (Src.Module -> Expectation) -> List TestCase
 wrapperOverRecordAliasCases expectFn =
     [ { label = "Wrapper over record alias with union field (access)", run = wrapperOverRecordAliasAccess expectFn }
@@ -159,13 +214,33 @@ wrapperOverRecordAliasCases expectFn =
     ]
 
 
-{-| Wrapper over record alias: access pattern.
+{-| Applies `expectFn` to a program in which a single-constructor type wraps a
+record alias whose `tag` field is a custom type, matched in access form:
 
-    type alias Props = { tag : Kind, count : Int }
-    type Error = Error Props
-    type Kind = A | B Int
+    type Kind
+        = A
+        | B Int
 
-    getTag e = case e of Error props -> case props.tag of A -> 0 ; B n -> n
+    type alias Props =
+        { tag : Kind, count : Int }
+
+    type Error
+        = Error Props
+
+    getTag : Error -> Int
+    getTag e =
+        case e of
+            Error props ->
+                case props.tag of
+                    A ->
+                        0
+
+                    B n ->
+                        n
+
+    testValue : Int
+    testValue =
+        getTag (Error { tag = B 7, count = 1 })
 
 -}
 wrapperOverRecordAliasAccess : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -196,7 +271,6 @@ wrapperOverRecordAliasAccess expectFn _ =
                 [ { name = "Error", args = [ tType "Props" [] ] } ]
             }
 
-        -- getTag : Error -> Int
         getTagDef : TypedDef
         getTagDef =
             { name = "getTag"
@@ -213,7 +287,6 @@ wrapperOverRecordAliasAccess expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -239,18 +312,20 @@ wrapperOverRecordAliasAccess expectFn _ =
     expectFn modul
 
 
-{-| Direct reproduction of the bootstrap crash pattern.
-Record destructuring inside constructor pattern, then case on the bound variable.
+{-| Applies `expectFn` to the program of `wrapperOverRecordAliasAccess` with
+`getTag` in destruct form: the record pattern binds both fields, and the
+`case` is on the bound `tag`.
 
-    type alias Props = { tag : Kind, count : Int }
-    type Error = Error Props
-    type Kind = A | B Int
+    getTag : Error -> Int
+    getTag e =
+        case e of
+            Error { tag, count } ->
+                case tag of
+                    A ->
+                        0
 
-    getTag e = case e of Error { tag } -> case tag of A -> 0 ; B n -> n
-
-This mirrors the pattern in Import.elm:
-toReport source (Error { region, name, unimportedModules, problem }) =
-case problem of AmbiguousLocal path1 path2 paths -> ...
+                    B n ->
+                        n
 
 -}
 wrapperOverRecordAliasDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -281,8 +356,6 @@ wrapperOverRecordAliasDestruct expectFn _ =
                 [ { name = "Error", args = [ tType "Props" [] ] } ]
             }
 
-        -- getTag : Error -> Int
-        -- Uses record destructuring inside constructor pattern
         getTagDef : TypedDef
         getTagDef =
             { name = "getTag"
@@ -299,7 +372,6 @@ wrapperOverRecordAliasDestruct expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -331,19 +403,34 @@ wrapperOverRecordAliasDestruct expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the case of a two-constructor type with an inline record argument,
+checked with `expectFn`.
+-}
 multiCtorRecordCases : (Src.Module -> Expectation) -> List TestCase
 multiCtorRecordCases expectFn =
     [ { label = "Multi-constructor union with record field", run = multiCtorWithRecord expectFn }
     ]
 
 
-{-| Multiple constructors where one holds a record.
+{-| Applies `expectFn` to a program with a two-constructor type of its own,
+named `Result`, whose `Ok` takes an inline record type, matched in access form:
 
     type Result
         = Ok { value : Int }
         | Err Int
 
     extract : Result -> Int
+    extract r =
+        case r of
+            Ok rec ->
+                rec.value
+
+            Err code ->
+                code
+
+    testValue : Int
+    testValue =
+        extract (Ok { value = 99 })
 
 -}
 multiCtorWithRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -361,7 +448,6 @@ multiCtorWithRecord expectFn _ =
                 ]
             }
 
-        -- extract : Result -> Int
         extractDef : TypedDef
         extractDef =
             { name = "extract"
@@ -376,7 +462,6 @@ multiCtorWithRecord expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -404,6 +489,9 @@ multiCtorWithRecord expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the access-form and destruct-form cases of two levels of a record
+inside a constructor, checked with `expectFn`.
+-}
 nestedRecordUnionCases : (Src.Module -> Expectation) -> List TestCase
 nestedRecordUnionCases expectFn =
     [ { label = "Nested record-through-union (access)", run = nestedRecordUnionAccess expectFn }
@@ -411,14 +499,38 @@ nestedRecordUnionCases expectFn =
     ]
 
 
-{-| Two levels of record-through-union nesting, access pattern.
+{-| Applies `expectFn` to a program with two levels of a record inside
+a constructor, matched in access form: `Box` wraps the record alias `Container`,
+whose `item` field is an `Outer`, and `Outer`'s `Node` wraps the record alias
+`Inner`.
 
-    type alias Inner = { x : Int }
-    type Outer = Leaf | Node Inner
-    type alias Container = { item : Outer }
-    type Box = Box Container
+    type alias Inner =
+        { x : Int }
 
-    unbox box = case box of Box c -> case c.item of Node inner -> inner.x ; Leaf -> 0
+    type Outer
+        = Leaf
+        | Node Inner
+
+    type alias Container =
+        { item : Outer }
+
+    type Box
+        = Box Container
+
+    unbox : Box -> Int
+    unbox box =
+        case box of
+            Box c ->
+                case c.item of
+                    Node inner ->
+                        inner.x
+
+                    Leaf ->
+                        0
+
+    testValue : Int
+    testValue =
+        unbox (Box { item = Node { x = 55 } })
 
 -}
 nestedRecordUnionAccess : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -456,7 +568,6 @@ nestedRecordUnionAccess expectFn _ =
                 [ { name = "Box", args = [ tType "Container" [] ] } ]
             }
 
-        -- unbox : Box -> Int
         unboxDef : TypedDef
         unboxDef =
             { name = "unbox"
@@ -475,7 +586,6 @@ nestedRecordUnionAccess expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -503,9 +613,19 @@ nestedRecordUnionAccess expectFn _ =
     expectFn modul
 
 
-{-| Same pattern but with record destructuring inside the constructor pattern.
+{-| Applies `expectFn` to the program of `nestedRecordUnionAccess` with `unbox`
+in destruct form at both levels:
 
-    unbox box = case box of Box { item } -> case item of Node { x } -> x ; Leaf -> 0
+    unbox : Box -> Int
+    unbox box =
+        case box of
+            Box { item } ->
+                case item of
+                    Node { x } ->
+                        x
+
+                    Leaf ->
+                        0
 
 -}
 nestedRecordUnionDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -543,8 +663,6 @@ nestedRecordUnionDestruct expectFn _ =
                 [ { name = "Box", args = [ tType "Container" [] ] } ]
             }
 
-        -- unbox : Box -> Int
-        -- Uses record destructuring inside constructor patterns
         unboxDef : TypedDef
         unboxDef =
             { name = "unbox"
@@ -563,7 +681,6 @@ nestedRecordUnionDestruct expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -597,6 +714,9 @@ nestedRecordUnionDestruct expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the access-form and destruct-form cases of a wrapper with a type
+parameter over a record alias, checked with `expectFn`.
+-}
 polyWrapperRecordCases : (Src.Module -> Expectation) -> List TestCase
 polyWrapperRecordCases expectFn =
     [ { label = "Poly wrapper over record alias with union field (access)", run = polyWrapperRecordAccess expectFn }
@@ -604,13 +724,34 @@ polyWrapperRecordCases expectFn =
     ]
 
 
-{-| Polymorphic wrapper: access pattern.
+{-| Applies `expectFn` to a program in which a wrapper with a type parameter
+holds a record alias with the same parameter, used at the custom type `Kind`
+and matched in access form:
 
-    type alias Pair a = { first : a, second : Int }
-    type Kind = A | B
-    type Wrap a = Wrap (Pair a)
+    type Kind
+        = A
+        | B
 
-    unwrap w = case w of Wrap p -> case p.first of A -> p.second ; B -> 0
+    type alias Pair a =
+        { first : a, second : Int }
+
+    type Wrap a
+        = Wrap (Pair a)
+
+    unwrap : Wrap Kind -> Int
+    unwrap w =
+        case w of
+            Wrap p ->
+                case p.first of
+                    A ->
+                        p.second
+
+                    B ->
+                        0
+
+    testValue : Int
+    testValue =
+        unwrap (Wrap { first = A, second = 42 })
 
 -}
 polyWrapperRecordAccess : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -641,7 +782,6 @@ polyWrapperRecordAccess expectFn _ =
                 [ { name = "Wrap", args = [ tType "Pair" [ tVar "a" ] ] } ]
             }
 
-        -- unwrap : Wrap Kind -> Int
         unwrapDef : TypedDef
         unwrapDef =
             { name = "unwrap"
@@ -658,7 +798,6 @@ polyWrapperRecordAccess expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -684,9 +823,19 @@ polyWrapperRecordAccess expectFn _ =
     expectFn modul
 
 
-{-| Polymorphic wrapper: record destructuring pattern.
+{-| Applies `expectFn` to the program of `polyWrapperRecordAccess` with `unwrap`
+in destruct form:
 
-    unwrap w = case w of Wrap { first, second } -> case first of A -> second ; B -> 0
+    unwrap : Wrap Kind -> Int
+    unwrap w =
+        case w of
+            Wrap { first, second } ->
+                case first of
+                    A ->
+                        second
+
+                    B ->
+                        0
 
 -}
 polyWrapperRecordDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -717,8 +866,6 @@ polyWrapperRecordDestruct expectFn _ =
                 [ { name = "Wrap", args = [ tType "Pair" [ tVar "a" ] ] } ]
             }
 
-        -- unwrap : Wrap Kind -> Int
-        -- Uses record destructuring inside constructor pattern
         unwrapDef : TypedDef
         unwrapDef =
             { name = "unwrap"
@@ -735,7 +882,6 @@ polyWrapperRecordDestruct expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"

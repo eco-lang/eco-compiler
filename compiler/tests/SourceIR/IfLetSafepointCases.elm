@@ -1,14 +1,41 @@
 module SourceIR.IfLetSafepointCases exposing (expectSuite)
 
-{-| Tests for sequential let bindings with if-then-else expressions followed
-by allocation. These exercise the generateIf code path where varMappings
-from inside if-branch regions can leak into the parent scope, causing
-safepoints to reference cross-region SSA values.
+{-| Source programs in which a variable bound inside one branch of an `if` must
+not be treated as in scope after the `if`, for a caller to compile and check.
 
-The key pattern: the else branch must contain a pattern match that binds
-an Elm variable to an !eco.value-typed value (String, List, custom type).
-That binding leaks via varMappings into the parent scope. A subsequent
-allocation triggers a safepoint that picks up the leaked binding.
+In the MLIR the code generator emits, the branches of an `if` are separate
+regions, and an SSA value defined inside a region cannot be named outside it.
+The code generator keeps a mapping from Elm variable names to SSA values. If a
+name bound in a branch stayed in that mapping after the `if`, a later operation
+could be given an operand that is out of scope, and the MLIR would be invalid.
+One place such a name could surface is the list of GC-root hints the code
+generator can attach to a call or an allocation: the values of type
+`!eco.value` (a boxed heap value, such as a `String`, a `List` or a custom
+type) that it treats as live there. What goes into that hint list is decided
+in `Compiler.Generate.MLIR.Context`, whose `liveEcoValueVars` at present
+returns no values.
+
+Each case is a module named `Test` with two annotated top-level values. The
+first is a function whose body is a `let` binding a name (two names in the last
+case) to an `if`. The `then` branch binds nothing; the `else` branch is a
+`case` whose pattern binds a variable to a `String` taken from its subject. The
+second, `testValue`, applies that function to literal arguments.
+
+This module asserts nothing itself. `expectSuite` applies the expectation
+function its caller passes to each case in order, stopping at the first that
+fails, so what is checked depends on that function. The cases are:
+
+  - `ifElseListDestructure`: the `else` branch takes the head of a
+    `List String`.
+  - `ifElseCustomDestructure`: the `else` branch takes the first `String` field
+    of a single-constructor custom type.
+  - `twoSequentialIfLet`: two `let` bindings in a row, each an `if` whose
+    `else` branch takes the `String` field of a single-constructor custom type,
+    followed by one list built from both.
+
+Among what is not tested: a variable bound in a `then` branch, an `if` with
+`else if` branches, a variable bound by a `let` inside a branch rather than by
+a `case` pattern, and a bound value that is not a `String`.
 
 -}
 
@@ -41,12 +68,19 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named "If-let-safepoint cases " followed by `condStr`,
+that applies `expectFn` to each case in turn until one fails. A failure is
+reported as `Compiler.BulkCheck.bulkCheck` describes.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("If-let-safepoint cases " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the three cases, each labelled and applying `expectFn` to its
+module.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "If-else with list destructure leaks !eco.value binding", run = ifElseListDestructure expectFn }
@@ -55,9 +89,8 @@ testCases expectFn =
     ]
 
 
-{-| If-else where the else branch destructures a list, binding the head
-(a String = !eco.value). Followed by list cons allocation.
-
+{-| Applies `expectFn` to a module equivalent to the following, in which the
+`else` branch binds `x` to the head of `items`.
 
     f : Bool -> List String -> String -> List String
     f flag items fallback =
@@ -71,13 +104,14 @@ testCases expectFn =
                         x :: _ ->
                             x
 
-                        -- x is String = !eco.value
                         [] ->
                             fallback
         in
         val :: []
 
-    -- safepoint before cons; leaked x would appear here
+    testValue : List String
+    testValue =
+        f False ("hello" :: []) "default"
 
 -}
 ifElseListDestructure : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -132,8 +166,8 @@ ifElseListDestructure expectFn _ =
         )
 
 
-{-| If-else where the else branch destructures a custom type with String
-fields. The destructured field (name : String = !eco.value) leaks.
+{-| Applies `expectFn` to a module equivalent to the following, in which the
+`else` branch binds `name` to a field of a custom type.
 
     type Pair
         = MkPair String String
@@ -149,10 +183,12 @@ fields. The destructured field (name : String = !eco.value) leaks.
                     case pair of
                         MkPair name _ ->
                             name
-
-            -- name is String = !eco.value
         in
         val :: []
+
+    testValue : List String
+    testValue =
+        g True (MkPair "hello" "world") "default"
 
 -}
 ifElseCustomDestructure : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -216,8 +252,9 @@ ifElseCustomDestructure expectFn _ =
         )
 
 
-{-| Two sequential if-let bindings where BOTH else branches destructure
-!eco.value fields. The second safepoint sees leaked bindings from both.
+{-| Applies `expectFn` to a module equivalent to the following, in which each
+of two `let` bindings in a row is an `if` whose `else` branch binds a variable,
+`s1` and then `s2`.
 
     type Box
         = Box String
@@ -244,6 +281,10 @@ ifElseCustomDestructure expectFn _ =
                             s2
         in
         x :: y :: []
+
+    testValue : List String
+    testValue =
+        h True (Box "hello") (Box "world")
 
 -}
 twoSequentialIfLet : (Src.Module -> Expectation) -> (() -> Expectation)

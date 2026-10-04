@@ -1,15 +1,76 @@
 module SourceIR.ClosureCases exposing (expectSuite, suite)
 
-{-| Test cases for closure handling in Monomorphize.
+{-| Programs in which a function refers to local variables bound outside it, so
+that the compiler's handling of closures meets a range of capture shapes.
 
-These tests cover:
+A closure is a function value together with the variables it refers to but does
+not bind, its _captures_. During monomorphization `Compiler.Monomorphize.Closure`
+finds each closure's free variables and a type for each one. A variable it
+misses is not carried by the closure, and one it finds but cannot type makes
+`computeClosureCaptures` crash. The shapes below vary where a captured variable
+is referenced, how deeply closures nest, and what type a capture has.
 
-  - Monomorphize.Closure.extractRegion (12% coverage)
-  - Monomorphize.Closure.findFreeLocals (85% coverage)
-  - Simple closures capturing local variables
-  - Nested closures
-  - Closures in case expressions
-  - Closures capturing records and tuples
+This module only builds programs; what is checked is decided by the
+expectation function each program is given. `expectSuite` gives every program
+to the caller's `expectFn`, and `suite` gives every program to
+`TestLogic.TestPipeline.expectMonomorphization`. Either way the 28 cases run as
+one test through `Compiler.BulkCheck.bulkCheck`, which reports the first
+failing case by its label and does not run the cases after it. A case that
+crashes, as `computeClosureCaptures` does, ends the test without its label
+being reported.
+
+Each program is a module named `Test`, built with
+`makeModuleWithTypedDefsUnionsAliases` and so importing that builder's standard
+set. Every top-level definition carries an annotation with no type variable
+in it, mostly in terms of `Int`. Each program defines `testValue`, which uses
+the function under test on fixed arguments. Programs that match on `Maybe`
+declare their own `Maybe` type.
+
+The cases, by group:
+
+  - Simple closures: a returned lambda capturing one argument
+    (`makeAdder`) or two (`makeCombiner`); a lambda bound in a `let` and
+    capturing the enclosing argument; a returned lambda passed to a function
+    that applies it twice; and a lambda capturing an argument and applied where
+    it is written.
+  - Nested closures: lambdas nested two and three deep, the innermost
+    combining the variables bound at every enclosing level; and a let-bound
+    lambda whose own let-bound lambda captures both the outer lambda's
+    parameter and the function's argument.
+  - Closures in case expressions: a lambda in a `Just` branch capturing the
+    pattern variable; three lambdas chosen by an `if` chain inside a
+    single-branch case, none of which captures anything; a lambda in a `::`
+    branch capturing the list head; and lambdas in both branches of a `Maybe`
+    case, one capturing the pattern variable and the other the function's
+    other argument.
+  - Captured types: a record, whose fields the lambda reads; the two
+    components of a tuple, bound by a case pattern; a list head; and an `Int`
+    argument captured together with a list head.
+  - Recursion: a capturing lambda passed to a recursive `mapList`; a
+    recursive let-bound `go` that refers only to its own parameters and
+    itself, capturing nothing; and a recursive let-bound `go` that captures
+    the enclosing `factor`.
+  - Captures of different representations at one call site: a let-bound `f`
+    chosen by `if True` between two partial applications, then applied to 3.
+    One pair captures an `Int` against a `Float`, the other a value of a
+    declared custom type against an `Int`. At closure boundaries the MLIR back
+    end gives an `Int` the type `i64`, a `Float` `f64`, and a custom type
+    `!eco.value`.
+  - A capture referenced only by destructuring: inside the lambda, the
+    captured variable is the scrutinee of a case that binds its contents, of
+    the single-constructor type `Wrapper Int` in one case and `Maybe String`
+    in the other. After monomorphization such a variable appears as the root
+    of the case and of a destructuring path, not as a local variable
+    reference.
+  - A capture referenced only as a case scrutinee: a let-bound function
+    whose sole use of a captured variable is as the scrutinee of a case. The
+    scrutinee is a declared enumeration, an `Int` matched against a literal,
+    and a `Bool`; in the fourth case it is used by a function defined inside
+    another let-bound function, two levels below the argument it refers to.
+
+Among what is not tested: a polymorphic top-level function, a captured
+variable of a function type, mutually recursive let-bound closures, and
+captures of `Char`.
 
 -}
 
@@ -55,13 +116,17 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| A test that gives every program here to
+`TestLogic.TestPipeline.expectMonomorphization`.
+-}
 suite : Test
 suite =
     Test.test "Closure handling coverage monomorphizes closures" <|
         \_ -> bulkCheck (testCases expectMonomorphization)
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Creates one test that gives every program here to `expectFn`, named
+"Closure handling " followed by `condStr`.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -69,6 +134,9 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case of every group, in the order the module docstring lists
+the groups, each checked with `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -89,6 +157,8 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the simple-closure cases, each checked with `expectFn`.
+-}
 simpleClosureCases : (Src.Module -> Expectation) -> List TestCase
 simpleClosureCases expectFn =
     [ { label = "Closure over single local", run = closureOverSingleLocal expectFn }
@@ -99,7 +169,8 @@ simpleClosureCases expectFn =
     ]
 
 
-{-| Test closure capturing a single local variable.
+{-| Builds a program in which `makeAdder x` returns a lambda capturing `x`,
+and gives it to `expectFn`.
 -}
 closureOverSingleLocal : (Src.Module -> Expectation) -> (() -> Expectation)
 closureOverSingleLocal expectFn _ =
@@ -133,7 +204,8 @@ closureOverSingleLocal expectFn _ =
     expectFn modul
 
 
-{-| Test closure capturing two local variables.
+{-| Builds a program in which `makeCombiner a b` returns a lambda capturing
+both `a` and `b`, and gives it to `expectFn`.
 -}
 closureOverTwoLocals : (Src.Module -> Expectation) -> (() -> Expectation)
 closureOverTwoLocals expectFn _ =
@@ -176,7 +248,9 @@ closureOverTwoLocals expectFn _ =
     expectFn modul
 
 
-{-| Test closure defined in let binding.
+{-| Builds a program in which a lambda bound by a `let` captures the enclosing
+function's argument and is called inside that `let`, and gives it to
+`expectFn`.
 -}
 closureInLetBinding : (Src.Module -> Expectation) -> (() -> Expectation)
 closureInLetBinding expectFn _ =
@@ -213,7 +287,8 @@ closureInLetBinding expectFn _ =
     expectFn modul
 
 
-{-| Test function returning a closure.
+{-| Builds a program in which the lambda returned by `makeMultiplier 2`,
+capturing its argument, is passed to `applyTwice`, and gives it to `expectFn`.
 -}
 closureAsReturnValue : (Src.Module -> Expectation) -> (() -> Expectation)
 closureAsReturnValue expectFn _ =
@@ -265,7 +340,8 @@ closureAsReturnValue expectFn _ =
     expectFn modul
 
 
-{-| Test closure applied immediately.
+{-| Builds a program in which a lambda capturing the enclosing argument is
+applied where it is written, and gives it to `expectFn`.
 -}
 closureAppliedImmediately : (Src.Module -> Expectation) -> (() -> Expectation)
 closureAppliedImmediately expectFn _ =
@@ -308,6 +384,8 @@ closureAppliedImmediately expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the nested-closure cases, each checked with `expectFn`.
+-}
 nestedClosureCases : (Src.Module -> Expectation) -> List TestCase
 nestedClosureCases expectFn =
     [ { label = "Double nested closure", run = doubleNestedClosure expectFn }
@@ -317,7 +395,9 @@ nestedClosureCases expectFn =
     ]
 
 
-{-| Test double nested closure.
+{-| Builds a program in which a function returns a lambda that returns a
+second lambda, the second capturing the function's argument and the first
+lambda's parameter, and gives it to `expectFn`.
 -}
 doubleNestedClosure : (Src.Module -> Expectation) -> (() -> Expectation)
 doubleNestedClosure expectFn _ =
@@ -368,7 +448,9 @@ doubleNestedClosure expectFn _ =
     expectFn modul
 
 
-{-| Test closure returning another closure.
+{-| Builds a program in which `makeClosureFactory base` returns a lambda that
+returns a second lambda, the second capturing `base` and the first lambda's
+`multiplier`, and gives it to `expectFn`.
 -}
 closureReturningClosure : (Src.Module -> Expectation) -> (() -> Expectation)
 closureReturningClosure expectFn _ =
@@ -419,7 +501,9 @@ closureReturningClosure expectFn _ =
     expectFn modul
 
 
-{-| Test nested let bindings with closures.
+{-| Builds a program in which a let-bound lambda `outer` defines its own
+let-bound lambda `inner`, which captures `outer`'s parameter and the enclosing
+function's argument, and gives it to `expectFn`.
 -}
 nestedLetClosures : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedLetClosures expectFn _ =
@@ -476,7 +560,9 @@ nestedLetClosures expectFn _ =
     expectFn modul
 
 
-{-| Test triple nested closure.
+{-| Builds a program in which lambdas are nested three deep below a function,
+the innermost capturing the function's argument and both enclosing lambdas'
+parameters, and gives it to `expectFn`.
 -}
 tripleNestedClosure : (Src.Module -> Expectation) -> (() -> Expectation)
 tripleNestedClosure expectFn _ =
@@ -541,6 +627,9 @@ tripleNestedClosure expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases with closures inside case expressions, each checked with
+`expectFn`.
+-}
 closureInCaseCases : (Src.Module -> Expectation) -> List TestCase
 closureInCaseCases expectFn =
     [ { label = "Closure in case branch", run = closureInCaseBranch expectFn }
@@ -550,7 +639,10 @@ closureInCaseCases expectFn =
     ]
 
 
-{-| Test closure defined in case branch.
+{-| Builds a program in which the `Just` branch of a case on a `Maybe Int`
+returns a lambda capturing the pattern variable, while the `Nothing` branch
+returns one capturing nothing, and gives it to `expectFn`. The program declares
+its own `Maybe`.
 -}
 closureInCaseBranch : (Src.Module -> Expectation) -> (() -> Expectation)
 closureInCaseBranch expectFn _ =
@@ -611,7 +703,9 @@ closureInCaseBranch expectFn _ =
     expectFn modul
 
 
-{-| Test different closures in different branches.
+{-| Builds a program in which a case with a single variable branch chooses,
+through an `if` chain on that variable, one of three lambdas, and gives it to
+`expectFn`. None of the three lambdas captures anything.
 -}
 differentClosuresPerBranch : (Src.Module -> Expectation) -> (() -> Expectation)
 differentClosuresPerBranch expectFn _ =
@@ -619,9 +713,10 @@ differentClosuresPerBranch expectFn _ =
         -- opClosure : Int -> (Int -> Int)
         -- opClosure op =
         --     case op of
-        --         0 -> \x -> x + 1
-        --         1 -> \x -> x * 2
-        --         _ -> \x -> x
+        --         n ->
+        --             if n == 0 then \x -> x + 1
+        --             else if n == 1 then \x -> x * 2
+        --             else \x -> x
         opClosureDef : TypedDef
         opClosureDef =
             { name = "opClosure"
@@ -666,7 +761,9 @@ differentClosuresPerBranch expectFn _ =
     expectFn modul
 
 
-{-| Test closure capturing value from scrutinee binding.
+{-| Builds a program in which the `::` branch of a case on a list returns a
+lambda capturing the head bound by the pattern, and gives it to `expectFn`.
+The lambda captures the head, not the scrutinee itself.
 -}
 closureCapturingScrutinee : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCapturingScrutinee expectFn _ =
@@ -676,6 +773,7 @@ closureCapturingScrutinee expectFn _ =
         --     case xs of
         --         [] -> \x -> x
         --         h :: _ -> \x -> x + h
+        -- (the tail is built as pVar "_", a variable named `_`)
         captureScrutineeDef : TypedDef
         captureScrutineeDef =
             { name = "captureScrutinee"
@@ -717,7 +815,11 @@ closureCapturingScrutinee expectFn _ =
     expectFn modul
 
 
-{-| Test closure in Maybe case with both branches.
+{-| Builds a program in which both branches of a case on a `Maybe Int` return
+a capturing lambda, and gives it to `expectFn`. The `Just` branch's lambda
+captures the pattern variable and the `Nothing` branch's captures the
+function's other argument. The program declares its own `Maybe`, and
+`testValue` passes `Nothing`.
 -}
 closureInMaybeCase : (Src.Module -> Expectation) -> (() -> Expectation)
 closureInMaybeCase expectFn _ =
@@ -789,6 +891,9 @@ closureInMaybeCase expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that vary the type of what is captured, each checked
+with `expectFn`.
+-}
 closureCapturingTypesCases : (Src.Module -> Expectation) -> List TestCase
 closureCapturingTypesCases expectFn =
     [ { label = "Closure capturing record", run = closureCapturingRecord expectFn }
@@ -798,7 +903,8 @@ closureCapturingTypesCases expectFn =
     ]
 
 
-{-| Test closure capturing a record.
+{-| Builds a program in which a lambda captures a record argument and reads
+two of its fields, and gives it to `expectFn`.
 -}
 closureCapturingRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCapturingRecord expectFn _ =
@@ -844,7 +950,9 @@ closureCapturingRecord expectFn _ =
     expectFn modul
 
 
-{-| Test closure capturing a tuple.
+{-| Builds a program in which a case destructures a tuple argument and a
+lambda captures both components, and gives it to `expectFn`. The tuple itself
+is not referenced inside the lambda.
 -}
 closureCapturingTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCapturingTuple expectFn _ =
@@ -896,7 +1004,8 @@ closureCapturingTuple expectFn _ =
     expectFn modul
 
 
-{-| Test closure capturing list head.
+{-| Builds a program in which the `::` branch of a case on a list returns a
+lambda capturing the head, and gives it to `expectFn`.
 -}
 closureCapturingListHead : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCapturingListHead expectFn _ =
@@ -906,6 +1015,7 @@ closureCapturingListHead expectFn _ =
         --     case xs of
         --         [] -> \x -> x
         --         h :: _ -> \x -> x * h
+        -- (the tail is built as pVar "_", a variable named `_`)
         closureFromListDef : TypedDef
         closureFromListDef =
             { name = "closureFromList"
@@ -947,7 +1057,10 @@ closureCapturingListHead expectFn _ =
     expectFn modul
 
 
-{-| Test closure capturing multiple different types.
+{-| Builds a program in which lambdas in both branches of a case on a list
+capture an `Int` argument, the one in the `::` branch also capturing the list
+head, and gives it to `expectFn`. Both captures are `Int`s, from an argument
+and from a pattern.
 -}
 closureCapturingMultipleTypes : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCapturingMultipleTypes expectFn _ =
@@ -957,6 +1070,7 @@ closureCapturingMultipleTypes expectFn _ =
         --     case xs of
         --         [] -> \x -> x + base
         --         h :: _ -> \x -> x + base + h
+        -- (the tail is built as pVar "_", a variable named `_`)
         multiCaptureDef : TypedDef
         multiCaptureDef =
             { name = "multiCapture"
@@ -1014,6 +1128,9 @@ closureCapturingMultipleTypes expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases combining closures with recursion, each checked with
+`expectFn`.
+-}
 closureWithRecursionCases : (Src.Module -> Expectation) -> List TestCase
 closureWithRecursionCases expectFn =
     [ { label = "Closure in recursive function", run = closureInRecursiveFunction expectFn }
@@ -1022,7 +1139,8 @@ closureWithRecursionCases expectFn =
     ]
 
 
-{-| Test closure used in recursive function.
+{-| Builds a program in which a lambda capturing `n` is passed to a recursive,
+not tail-recursive, `mapList`, and gives it to `expectFn`.
 -}
 closureInRecursiveFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 closureInRecursiveFunction expectFn _ =
@@ -1092,7 +1210,9 @@ closureInRecursiveFunction expectFn _ =
     expectFn modul
 
 
-{-| Test recursive closure.
+{-| Builds a program in which a recursive let-bound `go` refers only to its
+own parameters and itself, and gives it to `expectFn`. Nothing from the
+enclosing function is captured.
 -}
 recursiveClosure : (Src.Module -> Expectation) -> (() -> Expectation)
 recursiveClosure expectFn _ =
@@ -1140,7 +1260,8 @@ recursiveClosure expectFn _ =
     expectFn modul
 
 
-{-| Test closure with tail recursion.
+{-| Builds a program in which a tail-recursive let-bound `go` captures the
+enclosing function's `factor`, and gives it to `expectFn`.
 -}
 closureWithTailRecursion : (Src.Module -> Expectation) -> (() -> Expectation)
 closureWithTailRecursion expectFn _ =
@@ -1196,6 +1317,9 @@ closureWithTailRecursion expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases in which one call site receives closures whose captures
+differ in representation, each checked with `expectFn`.
+-}
 heteroClosureCases : (Src.Module -> Expectation) -> List TestCase
 heteroClosureCases expectFn =
     [ { label = "Hetero closure: Int vs Float capture", run = heteroClosureIntFloat expectFn }
@@ -1203,9 +1327,10 @@ heteroClosureCases expectFn =
     ]
 
 
-{-| Two functions with different unboxed capture types (Int=i64 vs Float=f64),
-partially applied, chosen with if, then called. Exercises heterogeneous
-closure ABI through a single call site.
+{-| Builds the program below and gives it to `expectFn`. The two branches of
+the `if` partially apply different functions, one to an `Int` and one to a
+`Float`, and the result is called at one call site. At closure boundaries the
+MLIR back end gives an `Int` the type `i64` and a `Float` `f64`.
 
     addN : Int -> Int -> Int
     addN n x =
@@ -1290,9 +1415,11 @@ heteroClosureIntFloat expectFn _ =
     expectFn modul
 
 
-{-| One function captures a boxed custom type (!eco.value), another captures
-an unboxed Int (i64). Chosen with if, then called. Exercises mixed
-boxed/unboxed capture ABI through a single call site.
+{-| Builds the program below and gives it to `expectFn`. The two branches of
+the `if` partially apply different functions, one to a value of the declared
+type `Shape` and one to an `Int`, and the result is called at one call site.
+At closure boundaries the MLIR back end gives a custom type the type
+`!eco.value` and an `Int` `i64`.
 
     type Shape
         = Circle
@@ -1403,12 +1530,14 @@ heteroClosureBoxedUnboxed expectFn _ =
 -- ============================================================================
 -- CLOSURE CAPTURE WITH DESTRUCTURING TESTS
 -- ============================================================================
--- Tests for the bug where computeClosureCaptures crashes when a captured
--- variable appears only as a MonoRoot in a MonoDestruct path, not as a
--- MonoVarLocal. findFreeLocals finds the variable (via findPathFreeLocals)
--- but collectVarTypes misses it (only recurses into body, not path).
+-- A captured variable here is used in the lambda body only as the scrutinee
+-- of a case that binds its contents, so after monomorphization it is the
+-- case's root and the root of a MonoDestruct path, never a MonoVarLocal.
 
 
+{-| Returns the cases in which a captured variable is referenced only by
+destructuring, each checked with `expectFn`.
+-}
 closureDestructCaptureCases : (Src.Module -> Expectation) -> List TestCase
 closureDestructCaptureCases expectFn =
     [ { label = "Closure captures variable used only in single-ctor destruct"
@@ -1420,25 +1549,24 @@ closureDestructCaptureCases expectFn =
     ]
 
 
-{-| A closure captures a variable of a single-constructor type, and the only
-reference to that variable is as the root of a MonoDestruct path.
+{-| Builds the program below and gives it to `expectFn`. Inside the lambda,
+`w` is used only as the scrutinee of a case that unwraps it, so after
+monomorphization it appears only as the root of the case and of the
+`MonoDestruct` path binding `x`.
 
     type Wrapper a
         = Wrap a
 
     unwrapLater : Wrapper Int -> Int -> Int
-    unwrapLater w dummy =
-        case w of
-            Wrap x ->
-                x
+    unwrapLater w =
+        \dummy ->
+            case w of
+                Wrap x ->
+                    x
 
     testValue : Int
     testValue =
         unwrapLater (Wrap 42) 0
-
-After monomorphization, the inner lambda body (from currying) contains:
-MonoDestruct (MonoDestructor "x" (MonoIndex 0 ... (MonoRoot "w" ...))) bodyUsingX
-where "w" is free but only appears as MonoRoot, not as MonoVarLocal.
 
 -}
 closureCapturesDestructRoot : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1454,7 +1582,7 @@ closureCapturesDestructRoot expectFn _ =
             }
 
         -- unwrapLater : Wrapper Int -> Int -> Int
-        -- unwrapLater w dummy = case w of Wrap x -> x
+        -- unwrapLater w = \dummy -> case w of Wrap x -> x
         unwrapLaterDef : TypedDef
         unwrapLaterDef =
             { name = "unwrapLater"
@@ -1494,17 +1622,20 @@ closureCapturesDestructRoot expectFn _ =
     expectFn modul
 
 
-{-| A closure captures a Maybe variable where the case expression destructures it.
-The Just branch's MonoDestruct has "m" as MonoRoot in the path.
+{-| Builds the program below and gives it to `expectFn`. Inside the lambda,
+`m` is used only as the scrutinee of a case whose `Just` branch binds `s`, so
+`m` appears as the root of the case and of the `MonoDestruct` path binding
+`s`. The program declares its own `Maybe`.
 
     toLabel : Maybe String -> Int -> String
-    toLabel m dummy =
-        case m of
-            Just s ->
-                s
+    toLabel m =
+        \dummy ->
+            case m of
+                Just s ->
+                    s
 
-            Nothing ->
-                "none"
+                Nothing ->
+                    "none"
 
     testValue : String
     testValue =
@@ -1525,7 +1656,7 @@ closureCaptureMaybeCaseDestruct expectFn _ =
             }
 
         -- toLabel : Maybe String -> Int -> String
-        -- toLabel m dummy = case m of Just s -> s; Nothing -> "none"
+        -- toLabel m = \dummy -> case m of Just s -> s; Nothing -> "none"
         toLabelDef : TypedDef
         toLabelDef =
             { name = "toLabel"
@@ -1572,12 +1703,14 @@ closureCaptureMaybeCaseDestruct expectFn _ =
 -- ============================================================================
 -- CLOSURE CAPTURING CASE SCRUTINEE ROOT TESTS
 -- ============================================================================
--- Tests for the bug where findFreeLocals ignores the root Name in MonoCase.
--- When a closure body contains `case outerVar of ...` and `outerVar` is only
--- referenced as the case scrutinee (not as MonoVarLocal elsewhere), it was
--- not reported as free, never captured, and lookupVar crashed during MLIR gen.
+-- A captured variable here is used in the closure body only as the scrutinee
+-- of a case. In the Int case the fallback branch is built with pVar "_", a
+-- variable named `_` rather than a wildcard, so that case also binds it.
 
 
+{-| Returns the cases in which a captured variable is referenced only as a case
+scrutinee, each checked with `expectFn`.
+-}
 closureCaseScrutineeCases : (Src.Module -> Expectation) -> List TestCase
 closureCaseScrutineeCases expectFn =
     [ { label = "Closure captures variable used only as case scrutinee (custom type)"
@@ -1595,9 +1728,9 @@ closureCaseScrutineeCases expectFn =
     ]
 
 
-{-| This is the core bug pattern from Compiler.Reporting.Doc.toColor:
-A lambda captures a variable from outer scope, and the ONLY reference to
-that variable inside the lambda body is as the scrutinee of a case expression.
+{-| Builds the program below and gives it to `expectFn`. The let-bound `pick`
+refers to the enclosing `intensity`, a value of a declared enumeration, only as
+the scrutinee of its case.
 
     type Intensity
         = Dull
@@ -1615,8 +1748,6 @@ that variable inside the lambda body is as the scrutinee of a case expression.
                         b
         in
         pick dullVal vividVal
-
-Here `intensity` is free in the lambda `pick`, but only used as case scrutinee.
 
 -}
 closureCapturesCaseScrutineeCustom : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1677,8 +1808,8 @@ closureCapturesCaseScrutineeCustom expectFn _ =
     expectFn modul
 
 
-{-| Same bug pattern but with Int scrutinee. The variable `n` is only
-referenced as case scrutinee inside the lambda.
+{-| Builds the program below and gives it to `expectFn`. The let-bound `pick`
+refers to the enclosing `n`, an `Int`, only as the scrutinee of its case.
 
     chooseByN : Int -> Int -> Int -> Int
     chooseByN n a b =
@@ -1692,6 +1823,9 @@ referenced as case scrutinee inside the lambda.
                         y
         in
         pick a b
+
+The fallback is built with `pVar "_"`, a variable named `_` rather than a
+wildcard, so it binds the value of `n`.
 
 -}
 closureCapturesCaseScrutineeInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1742,7 +1876,8 @@ closureCapturesCaseScrutineeInt expectFn _ =
     expectFn modul
 
 
-{-| Same bug pattern but with Bool scrutinee.
+{-| Builds the program below and gives it to `expectFn`. The let-bound `pick`
+refers to the enclosing `flag`, a `Bool`, only as the scrutinee of its case.
 
     pickByBool : Bool -> Int -> Int -> Int
     pickByBool flag a b =
@@ -1806,8 +1941,9 @@ closureCapturesCaseScrutineeBool expectFn _ =
     expectFn modul
 
 
-{-| Nested closure where the inner closure captures a variable from the
-outermost scope, used only as a case scrutinee.
+{-| Builds the program below and gives it to `expectFn`. `inner`, defined
+inside the let-bound `outer`, refers to `nestedPick`'s argument `dir` only as
+the scrutinee of its case, and `outer` does not refer to `dir` itself.
 
     type Dir
         = Left

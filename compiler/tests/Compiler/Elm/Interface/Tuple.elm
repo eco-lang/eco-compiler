@@ -1,6 +1,20 @@
 module Compiler.Elm.Interface.Tuple exposing (tupleInterface)
 
-{-| Interface for elm/core Tuple module functions used in tests.
+{-| A hand-built stand-in for the interface of elm/core's `Tuple` module, so
+that test programs calling tuple functions can be canonicalized and type
+checked without elm/core's `Tuple` module being compiled.
+
+An interface is what a compiled module offers to the modules that import it, as
+`Compiler.Elm.Interface` describes. This one is homed in elm/core and declares
+six values, `pair`, `first`, `second`, `mapFirst`, `mapSecond` and `mapBoth`,
+all on two-element tuples. It declares no union types, aliases or operators.
+
+Each value's annotation quantifies over every type variable that occurs in its
+type, which is how a polymorphic function's annotation is written in the
+canonical AST. None of the variables used here is super-constrained, that is,
+none starts with `number`, `comparable`, `appendable` or `compappend`. The
+arrows are built with `Can.tLambda`, so each is built with a `NoArrow` slot.
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -16,7 +30,8 @@ import Dict exposing (Dict)
 -- ============================================================================
 
 
-{-| The Tuple module interface containing tuple manipulation functions.
+{-| The interface of the `Tuple` stand-in: the six tuple functions, homed in
+elm/core, with no unions, aliases or binary operators.
 -}
 tupleInterface : I.Interface
 tupleInterface =
@@ -29,7 +44,12 @@ tupleInterface =
         }
 
 
-{-| Collect all free type variables from a canonical type.
+{-| Returns the names of the type variables that occur in `tipe`, including
+the extension variable of an extensible record.
+
+For an alias it collects from both the alias's arguments and its body, so the
+body of a `Holey` alias contributes the alias's own parameter names as well.
+
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
@@ -79,7 +99,8 @@ collectFreeVars tipe =
                     Dict.union argVars (collectFreeVars t)
 
 
-{-| Helper to create a value annotation.
+{-| Builds the annotation of a value of type `tipe`, quantified over every type
+variable that `collectFreeVars` finds in it.
 -}
 mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
@@ -92,48 +113,59 @@ mkAnnotation tipe =
 -- ============================================================================
 
 
+{-| The type variable `a`, the type of a tuple's first element before any
+mapping.
+-}
 aVar : Can.Type Name
 aVar =
     Can.TVar "a"
 
 
+{-| The type variable `b`, the type of a tuple's second element before any
+mapping.
+-}
 bVar : Can.Type Name
 bVar =
     Can.TVar "b"
 
 
+{-| The type variable `x`, the type the first element is mapped to.
+-}
 xVar : Can.Type Name
 xVar =
     Can.TVar "x"
 
 
+{-| The type variable `y`, the type the second element is mapped to.
+-}
 yVar : Can.Type Name
 yVar =
     Can.TVar "y"
 
 
-{-| ( a, b )
+{-| The tuple type `( a, b )`: the result of `pair`, and the tuple taken by
+the other five functions.
 -}
 tupleAB : Can.Type Name
 tupleAB =
     Can.TTuple aVar bVar []
 
 
-{-| ( x, b )
+{-| The tuple type `( x, b )`, the result of `mapFirst`.
 -}
 tupleXB : Can.Type Name
 tupleXB =
     Can.TTuple xVar bVar []
 
 
-{-| ( a, y )
+{-| The tuple type `( a, y )`, the result of `mapSecond`.
 -}
 tupleAY : Can.Type Name
 tupleAY =
     Can.TTuple aVar yVar []
 
 
-{-| ( x, y )
+{-| The tuple type `( x, y )`, the result of `mapBoth`.
 -}
 tupleXY : Can.Type Name
 tupleXY =
@@ -146,7 +178,8 @@ tupleXY =
 -- ============================================================================
 
 
-{-| Tuple function values.
+{-| The annotations of the six tuple functions, keyed by function name. The
+comment above each entry gives its type in Elm syntax.
 -}
 tupleValues : Dict Name (Can.Annotation Name)
 tupleValues =

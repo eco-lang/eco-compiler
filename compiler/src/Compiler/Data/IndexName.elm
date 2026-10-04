@@ -1,10 +1,11 @@
 module Compiler.Data.IndexName exposing (fromIndex)
 
-{-| Generate short alphabetic names from indices.
+{-| Gives each position in a sequence a short name, for use as the name of a
+local variable.
 
-This module provides functions to convert numeric indices to short alphabetic
-names suitable for variable naming. It is placed in the Data layer to be
-accessible from both LocalOpt and Generate layers.
+The first 52 positions are named by single letters. The docstring of
+`fromIndex` sets out the whole scheme, including where it breaks down for later
+positions.
 
 @docs fromIndex
 
@@ -14,7 +15,14 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 
 
-{-| Convert a zero-based index to a short alphabetic name.
+{-| Returns the short name for `index`.
+
+Counting from zero, positions 0 to 25 are named `a` to `z` and positions 26 to
+51 `A` to `Z`. From position 52 on a name has two characters, and the scheme
+does not hold up there: positions 52 to 77 are `a0` to `z0`, the names of
+positions 78 to 103 end in `0` but start with a character that is not a letter
+(`{` for 78), and from 104 on different positions can share a name (104 and
+130 are both `a1`).
 
     fromIndex Index.first == "a"
 
@@ -28,14 +36,8 @@ fromIndex index =
     fromInt (Index.toMachine index)
 
 
-{-| Convert an integer to a short alphabetic name.
-
-Uses a simple scheme:
-
-  - 0-25: lowercase letters a-z
-  - 26-51: uppercase letters A-Z
-  - 52+: extends with multi-character names
-
+{-| Returns the name for the count from zero `n`, by the scheme `fromIndex`
+describes.
 -}
 fromInt : Int -> Name.Name
 fromInt n =
@@ -48,8 +50,6 @@ fromInt n =
         Name.fromWords [ Char.fromCode (65 + n - 26) ]
 
     else
-        -- For larger indices, use multi-character names
-        -- This is a simplified version - full version is in Generate.JavaScript.Name
         let
             base =
                 n - 52

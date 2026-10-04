@@ -3,254 +3,117 @@ module Compiler.MonoSolver.KernelSetFacts exposing
     , factFor, licenseApplies, shapeOfAnnotation, licensedFiles, rows
     )
 
-{-| LSS\_021/LSS\_022 — per-kernel SET-FLOW facts (GAP-4,
-`plans/lss-fidelity-3-signature-flow-completion.md` Phase F for the
-positional v1, `plans/kernel-parametricity-license.md` for the license
-tier).
+{-| The solver's lambda-set analysis cannot see inside a kernel, and this module
+is the audited table that says, kernel by kernel, how function values move
+through one.
 
-**Three tiers, strongest first.**
+A kernel is a runtime function written in C++ rather than Elm, referred to in
+Elm as `Elm.Kernel.Home.name` or `Eco.Kernel.Home.name`. Lambda-set
+specialization (LSS) records, for each function-typed position in the program,
+the set of function values that can reach it, its _members_. A position whose
+set has exactly one member can be called directly. Because a kernel's body is
+invisible to the analysis, the default treatment of a kernel call is to
+_poison_ it: the lambda set of every function-typed position of the call is set
+to ⊤, meaning unknown. Poison is always sound. This table says where it can be
+skipped or narrowed.
 
-1.  `TypeFaithful` (LSS\_022, the _parametricity license_): an audit has
-    established that every function value entering or leaving this kernel
-    flows only along the paths its Elm TYPE's variable-sharing graph
-    describes, that the kernel retains nothing across the call, and that it
-    introduces no function-valued inhabitants of its own. Both consumers
-    then skip the LSS\_004 poison ENTIRELY and let ordinary instantiation +
-    unification do all the transport — the shared `a`/`b`/`c` Points in
-    `(a -> b -> c) -> List a -> List b -> List c` ARE the flow edges. No
-    positions, so no arity rule: a partial kernel application unifies
-    against however many args are present and is shape-correct by
-    construction.
+A _function-capable_ position is one that could hold a function value: an
+arrow, an extensible record, or a type variable, except one constrained to
+`number` or `comparable`, whose values never contain a function.
 
-2.  `Positional` (LSS\_021, v1): a per-parameter, arity-aligned row saying
-    which functional params the kernel merely APPLIES (`PSFApplies` — their
-    arrow slots need no poison), which TUNNEL to the result (`PSFTunnels`),
-    and which stay OPAQUE (`PSFOpaque` — poison). Used where the license
-    could not be granted for the whole surface but some positions are
-    certifiable.
+`factFor` looks a kernel up by its home module and name, and the answer is one
+of three:
 
-3.  No row at all ⇒ LSS\_004 full poison. That is the default for every
-    unaudited kernel, every arity-mismatched or early-spine boundary, and
-    every REJECTED kernel below.
+  - A `TypeFaithful` row carries a _license_: an audited claim that function
+    values cross the kernel only along the type variables its Elm type shares,
+    that the kernel keeps nothing from one call for a later one, and that it
+    creates no function values of its own. Under a license nothing is
+    poisoned. Instantiating the kernel's type and unifying it with the call
+    carries the members, because the shared type variables are the paths they
+    take. A license names no positions, so partial and over-applied calls need
+    no special treatment. Its `LicenseScope` says what must still be checked
+    about the type at each occurrence, and `licenseApplies` checks it.
+  - A `Positional` row gives, for a kernel that holds no license, a
+    `ParamSetFlow` for each parameter and for the result. `Bytes.decode` is
+    the only one.
+  - No row means a call to the kernel is fully poisoned.
 
-**Why removing poison is the safe direction.** An unconstrained FunL slot
-reads back `LTop` at zonk (`Store.zonkSetSlot`'s FlexVar arm), so a licensed
-position that receives no flow still reads ⊤ — never a false empty set. The
-only hazard is a _populated-but-incomplete_ set: caller knowledge flows in,
-the kernel secretly adds or reroutes an inhabitant the type does not account
-for, and a downstream singleton consumer stamps the wrong function. That is
-exactly what the §2 checklist excludes.
-
-Deliberately parallel to `Compiler.GlobalOpt.KernelFacts` (same audit
-discipline: `( Name, Name )` keys, MANDATORY C++ evidence anchors,
-unknown ⇒ consumer keeps its own default) but a SEPARATE table — each audit
-stands alone; this one is the set-flow axis, that one the borrow axis.
-
-Both consumers — `LssInfer.kernelCallBoundary` (inference side) and
-`Translate.poisonKernelArrowsThen` (translation side) — consult THIS module
-through the single entry point `factFor`: the LSS\_006-style two-sided
-discipline; the sides must never disagree about which arrows poison.
+Removing poison is the safe direction. A lambda-set slot that nothing writes
+reads back as an unresolved set variable, never as an empty set
+(`Compiler.MonoSolver.Store` states the read-back rules), so a licensed
+position that receives no flow loses nothing. The one hazard is a set that is
+populated but incomplete: members flow in from the caller, the kernel adds or
+reroutes a function value its type does not account for, and a one-member set
+then names the wrong function, which becomes a wrong direct call. A wrong
+license therefore miscompiles, while a missing one only costs precision, and an
+audit in doubt gives the kernel a `Positional` row or none.
 
 
-## Evidence format (mandatory, plan §2.6)
+## What rules a license out
 
-    <class: vacuous|cheap|full> | entry: <file>:<fn>:<lines>
-    | helpers: <file>:<fn>[, ...] | type: <file>:<line>
-    | B1: <decisive lines> | B2: <scan result> | B3: <scan result>
-    | audited: <date>
+Three properties of a kernel refuse it a license.
 
-`class` records how much of the checklist was live:
+1.  **Retention across calls.** A value stored by one call is read by a
+    different call, so no type variable of either call names the path it
+    takes. `Platform.sendToApp` and `sendToSelf` put a message in a mailbox
+    that a later call delivers, and `MVar.read` and `take` return what an
+    earlier `put` stored. Storing a value in the result the same call returns
+    is not retention: `Scheduler.succeed f` returns a task holding `f`, the
+    scheduler reads it back out of that task, and `a` in `a -> Task x a`
+    carries the flow just as it does for `JsArray.singleton`.
 
-  - `vacuous` — the whole Elm type has NO function-capable position (no
-    arrows, no type variables anywhere: `String.length : String -> Int`).
-    B1/B3/B4/B5/C1 are vacuous and the audit reduces to "the annotation is
-    the real type" (A2 + A3).
-  - `cheap` — type variables but no arrow parameters (`Utils.equal :
-    a -> a -> Bool`). The `a` positions CAN hold closures, so B1/B2/B3 are
-    live; C1 is usually vacuous ("result inert").
-  - `full` — arrows in the type. The whole checklist runs.
+2.  **Erasure into an opaque type with no parameters.** `Json.wrap` retypes
+    any value as `Value`, and `Debugger.unsafeCoerce : a -> b` relates two
+    unshared variables, so no type describes where their argument goes.
 
-**Soundness rule (unchanged from LSS\_021, widened by LSS\_022):** a wrong
-license is a false-singleton miscompile — the same failure class as a wrong
-`PSFApplies`, widened to every position at once. A missing license costs only
-precision. Any checklist doubt ⇒ `Positional` or no row at all.
+3.  **Function values the kernel creates.** A closure the kernel builds and
+    hands back at a position its type can see has no member the analysis
+    knows of.
 
-**License rot.** A license is a contract on C++ that this module cannot see.
-Each licensed row lists the C++ files its grant depends on (`files`), and
-`compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt` pins their
-sha256; `test/scripts/check-kernel-license-manifest.sh` fails the build when
-a listed body changes without a re-audit. Bumping a manifest hash without
-advancing the row's `audited:` date is the violation reviewers must catch.
+None of `VirtualDom`, `Browser` or `Debug` has a row: `VirtualDom` keeps
+nodes and taggers in runtime storage, and `Debug` is lowered specially by the
+compiler.
 
-
-## REJECTED — never license these
-
-The 2026-08-20 survey covered all 338 kernel entry points across
-`elm-kernel-cpp/` and `eco-kernel-cpp/`. Three predicates account for nearly
-every refusal, and they are worth applying MECHANICALLY, before any prose
-reasoning:
-
-**1. CROSS-CALL retention — a value one call stores that a DIFFERENT call
-reads.** This is the predicate; fieldless-ness is not.
-
-CORRECTED 2026-08-25. This rule previously read "nullary-constructor
-carriers: `type Task err ok = Task` (Platform.elm:83), `Cmd msg`, `Sub msg`,
-`Decoder a`, `Expect msg`, `Resolver x a` … declare NO fields, so their type
-parameters are PHANTOM while the C++ fills them with payload — refuse."
-**That over-refuses, and it is why `Scheduler.succeed/fail/andThen/onError`
-sat on the REJECTED list until 2026-08-25 with no soundness fact behind
-them.** Passing a value THROUGH an opaque carrier is not retention in any
-sense the analysis cares about: `Task.succeed f` hands back exactly `f`, and
-`a` is the SAME type variable in the parameter and in `Task x a`, so ordinary
-unification carries the set across. It is structurally
-`JsArray.singleton : a -> JsArray a`, which has been licensed `Transports`
-since the original audit. The two differ only in whether the Elm declaration
-happens to name a field (`type JsArray a = JsArray a` does,
-`type Task err ok = Task` does not) — a syntactic difference with no
-consequence for set flow, because nothing in Elm can construct or match a
-bare `Task` (`Platform` exposes `Task`, NOT `Task(..)`) and mono therefore
-never forms a representation for it at all.
-
-What actually disqualifies is an edge the TYPE cannot name, and the sharp
-form of that is CROSS-CALL: the value goes into runtime storage on call A and
-comes back out at a position reached by call B, so no amount of variable
-sharing in A's type describes where it went.
-
-  - **Refuse:** `Platform.sendToApp`/`sendToSelf` — `rawSend`
-    (`Scheduler.cpp:476-484`) does `mailboxPushBack` + `enqueue`, and the
-    message re-emerges at a DIFFERENT call's `update`/`onSelfMsg`.
-    (`sendToApp` independently fails A3: declared `void` in
-    `PlatformExports.cpp:44` against `Router msg a -> msg -> Task x ()`.)
-
-  - **Refuse:** `MVar.read`/`take` — the canonical case; their result comes
-    from a different call's `put`, so C1 has no incoming edge at all.
-
-  - **Refuse:** effect managers, ports, TSFN/JS registration, VirtualDom's
-    `static vnodeRegistry` — all the same shape.
-
-  - **License:** `Scheduler.succeed`/`fail`/`andThen`/`onError` — the only
-    store is into the Task THIS call returns, and the scheduler reads it back
-    out of THAT SAME Task. Same rule that licenses `List.cons` and
-    `JsArray.push`, whose B2 wording has always been "no store OUTSIDE
-    RESULT", not "no store".
-
-    E2E-gated by `test/elm/src/KernelLicenseTaskTest.elm`: two distinct
-    functions stored in a Task's `a` and taken back out through `andThen`,
-    both meeting at one shared call site, plus `onError`'s success and failure
-    edges — each CHECK chosen so a false singleton prints a DIFFERENT NUMBER.
-    Landing it first required fixing an unrelated `Platform.worker` defect it
-    tripped over (`plans/task-perform-value-msg-segfault.md`).
-
-The genuinely fieldless-driven refusals stand on their own evidence and are
-NOT re-opened by this correction — but they must now cite the real reason:
-`Http.expect` puts two closures into a `Resolver x a` that the HTTP runtime
-retrieves on a LATER callback; every `Json.Decode` combinator's callback is
-re-entered by a decode driver walking a value the type does not relate to the
-combinator's own arguments.
-
-**2. Type erasure into an opaque parameterless type.** `Json.wrap`'s identity
-fall-through (`JsonExports.cpp:1683`) retypes an arbitrary argument as the
-opaque `Value`; `Debugger.unsafeCoerce : a -> b` relates two UNSHARED
-variables, so its honest flow is inexpressible in its type by construction —
-the exact inverse of what `TypeFaithful` asserts. No body, however pure,
-could make either licensable.
-
-**3. Kernel-authored closure allocation reaching a type-visible position.**
-Transient PAPs built INSIDE `eco_apply_closure_eval` under
-under/over-saturation are sanctioned (they are the LSS\_013-covered
-inhabitants); a kernel minting its own closure launders an identity the
-analysis has no member id for. The audited fabrication surface is wider than
-earlier drafts of the plan recorded, and a grep must cover `runtime/` too:
-`core/TaskEffectManager.cpp`, `http/HttpExports.cpp`,
-`http/HttpEffectManager.cpp`, `time/TimeExports.cpp`,
-`time/TimeEffectManager.cpp`, `virtual-dom/VirtualDom.cpp`,
-`eco-kernel-cpp/src/eco/MVar.cpp`, `runtime/src/platform/TaskBinding.hpp`
-(`makeBinding` :152, `makeAsyncBinding` :173 — reached by 41 of 47 eco
-kernels), `runtime/src/platform/PlatformRuntime.cpp` (:80, :826),
-`runtime/src/platform/Scheduler.cpp` (:849) and `PortRuntime.cpp`.
-**`core/Utils.cpp` is NOT one of them** — its single `Tag_Closure` hit is a
-read-only `case` label in `eqHelp` (:713, "functions cannot be compared").
-That false positive had been blocking `List.sortBy`, whose grant reaches
-`Utils::compare`.
-
-Named classes that follow from the above:
-
-  - **Task / Process / effect managers.** NARROWED 2026-08-25 — see the
-    CROSS-CALL correction above. `Scheduler.succeed/fail/andThen/onError` are
-    now LICENSED (`Transports`): storing into the Task you return is not
-    retention, and the scheduler reads the value back out of that same Task.
-    What remains refused here is the mailbox/router surface
-    (`sendToApp`/`sendToSelf`/effect managers), which IS cross-call, and
-    `spawn`/`kill`, which route through `TaskBinding.hpp` `makeBinding` and
-    mint a C++ closure — OPEN, not decided: the minted closure lands in
-    `t->callback` where no type variable names it, and `spawn`'s `a` does not
-    appear in its result at all, so predicate 3 fires here mechanically
-    rather than on a demonstrated hazard. Audit them properly before either
-    licensing or citing them. The callback lands in the returned
-    Task — stored through `Elm::alloc::allocTask`
-    (`runtime/src/allocator/HeapHelpers.hpp:2047-2069`, the write at :2065),
-    called from `Scheduler.cpp:123-162`: `taskSucceed` :123-126, `taskFail`
-    :139-142, then the four callback-storing constructors `taskBinding`
-    :144-147, `taskAndThen` :149-152, `taskOnError` :154-157, `taskReceive`
-    :159-162. (`Scheduler::allocTask` does not exist as a member — earlier
-    drafts cited it; the free `alloc::allocTask` above is the real store.)
-  - **Ports and the embedding boundary.** `specializePort` poison is separate
-    LSS\_004 territory; TSFN/JS registration retains callbacks off-heap.
-  - **VirtualDom and Browser, wholesale.** Not merely event handlers:
-    `VirtualDom.cpp:390` holds a never-freed `static std::vector<VNodePtr>
-    vnodeRegistry` and EVERY VNode-producing kernel returns a `Custom` holding
-    only an INDEX into it, so a `Node msg` value is a handle into runtime
-    storage; `map` stores its tagger in a `std::function` (:160) and
-    `lazy`–`lazy8` build capturing C++ lambdas over Elm closures (:193-285).
-    `elm/browser` is not even installed, so its 30 kernels have no type source
-    to audit against either.
-  - **`Debug`.** Refused on LOWERING SHAPE, not on C++ soundness (the three
-    bodies are clean). `Debug` is special-cased in four places —
-    `KernelAbi.alwaysPolymorphicModules`, `Translate`'s `remapWanted` (Debug
-    alone is excluded from per-reference var freshening, so the §1 argument's
-    assumption of ordinary instantiation does not hold), `Expr.elm`'s bespoke
-    `eco.dbg` lowering, and `Monomorphize`/`CsePurity`/`CafHoist` guards. On
-    top of that `Debug.toString` fails A3 outright: its export is arity 2
-    (`HPtr value, int64_t type_id`) against an Elm arity of 1, and it ROUTES
-    on that compiler-injected type id through the global type graph. A
-    compiler-injected type descriptor is a hidden state argument and
-    disqualifies a kernel by itself.
-  - **`MVar`.** `MVar.put` wraps its `a`-typed argument in a hand-rolled
-    closure (`MVar.cpp:295-300`) and fulfilment writes it into the
-    process-global `static s_mvars` (:56, :103) or parks it (:241); the
-    runtime's own `registerGcRootScanner` (:343-365) certifies that both
-    outlive the call. `read`/`take` take their result from a DIFFERENT call's
-    `put`, so C1 has no incoming edge at all.
-
-The storage-rejection precedents in `KernelFacts.elm` (Console.write,
-File.fileExists/dirExists, Env.lookup, Scheduler.spawn) are the BORROW axis
-and are never themselves evidence — re-verified here, they turn out NOT to
-transfer: those Tasks capture `String`s, so nothing function-capable is
-retained and the kernels are licensable on this axis under the `Inert` rule.
+`Compiler.GlobalOpt.KernelFacts` is a separate table about the same kernels,
+recording effects, allocation and borrow modes. Neither table is evidence for
+the other.
 
 
-## Two hazards this table cannot detect by itself
+## Audit records
 
-  - **Elm-annotation drift.** A row is a claim about the C++ _and_ the type.
-    The rot manifest hashes C++ only, so an `Inert` row whose Elm annotation
-    later gains an arrow or a type variable becomes a claim nobody re-checked.
-    Treat an annotation change to a licensed kernel as a re-audit trigger.
-  - **One name, several types.** `factFor` is keyed by `(home, name)`, but a
-    kernel can be reached through several aliasing annotations —
-    `String.fromNumber` through both `fromInt` and `fromFloat`, `Http.pair`
-    through five. A row is therefore a claim about EVERY type the name can
-    carry, not just the one its evidence quotes. (The consumers read the
-    occurrence's own solver-inferred type, so the multiplicity is handled
-    correctly at the boundary; it is the AUDIT that must cover all of them.)
-  - **The key drops the kernel PREFIX.** `TOpt.VarKernel` carries
-    `Elm`/`Eco`, but both consumers pass only `(home, name)` on, so
-    `Elm.Kernel.File.size` and `Eco.Kernel.File.size` are ONE row — and a
-    second row would have been silently swallowed by `Dict.fromList`. That
-    single collision is real today and its row covers both types explicitly;
-    it was the only one across the two kernel packages as of 2026-08-20
-    (`comm` over the two export name sets). Adding a kernel whose
-    `(home, name)` already exists in the other package REQUIRES auditing both
-    bodies under one row — or widening the key first.
+Every row carries an `evidence` string recording its audit as fields separated
+by `|`. A license's record includes `class`, `entry` (the C++ entry point),
+`type` (the Elm type audited), `B1` (how function values move through the
+kernel), `B2` (what it stores outside its result), `B3` (whether it allocates
+a closure) and `audited` (when the audit was done). The class is `vacuous` when
+the type has no function-capable position. `cheap` and `full` are the
+auditor's recorded judgement of the rest, and do not follow from the arrows in
+the type. A license is `Inert` exactly when its class is `vacuous`.
+
+A license also lists the C++ files its audit read.
+`kernel-license-manifest.txt`, beside this module, pins a SHA-256 hash of each,
+and `test/scripts/check-kernel-license-manifest.sh` compares the two, so an
+edit to an audited C++ file is caught. That script reads this file as text,
+not through `licensedFiles`: it finds each row by its opening line and takes
+the quoted strings of the license's file list, so the table's layout is part
+of the check.
+
+
+## What the table cannot detect
+
+  - **A change to a kernel's Elm type.** The manifest hashes C++ only. An
+    `Inert` license is re-checked at every occurrence and a `TransportsAs`
+    license is matched against its declared shape, but a `Transports` license
+    is not checked at all, so a change to such a kernel's type needs a new
+    audit.
+  - **One kernel at several types.** A kernel can be reached through several
+    annotated definitions, as `String.fromNumber` is through both
+    `String.fromInt` and `String.fromFloat`, so a row is a claim about every
+    type the kernel can be used at, not only the one its evidence quotes.
+  - **The prefix is not part of the key.** `Elm.Kernel.File.size` and
+    `Eco.Kernel.File.size` share one row, whose audit covers both bodies. Two
+    rows with the same home and name do not fail: `Dict.fromList` keeps the
+    later one.
 
 @docs ParamSetFlow, KernelPlan, LicenseScope, TypeShape, License, KernelSetFact
 @docs factFor, licenseApplies, shapeOfAnnotation, licensedFiles, rows
@@ -262,7 +125,18 @@ import Compiler.Data.Name exposing (Name)
 import Dict
 
 
-{-| Per-position set flow (the `Positional` tier only).
+{-| What a `Positional` row says about one parameter of a kernel, or about its
+result.
+
+`PSFOpaque` means the kernel's handling of the value is not accounted for, so
+the arrows in its type are poisoned.
+
+`PSFApplies` means the kernel only applies the function it is given, so its
+arrows need no poison.
+
+`PSFTunnels` means the function values of the argument flow to the kernel's
+result, whose lambda sets receive the argument's members. No row uses it.
+
 -}
 type ParamSetFlow
     = PSFOpaque
@@ -270,63 +144,44 @@ type ParamSetFlow
     | PSFTunnels
 
 
-{-| An arity-aligned per-position plan.
+{-| The per-position row of a kernel that holds no license: a `ParamSetFlow`
+for each parameter, in order, and one for the result. `evidence` is the audit
+record described in the module docstring. A call whose parameters cannot be
+aligned with `params` is fully poisoned instead.
 -}
 type alias KernelPlan =
     { params : List ParamSetFlow
 
-    -- The RESULT row: PSFOpaque = poison the result's arrows (today);
-    -- PSFApplies = leave them unconstrained (the consumer then treats the
-    -- result value as untracked — sound, empty-slot reads default to ⊤).
+    -- PSFOpaque poisons the result's arrows; the other two leave them alone.
     , result : ParamSetFlow
     , evidence : String
     }
 
 
-{-| How much set flow a license admits — and, inseparably, what must be
-verified about an OCCURRENCE before the license may be applied to it.
+{-| What must be checked about a kernel's type at an occurrence before its
+license may be used there.
 
-The two are one decision, not two, because a license is a claim about a TYPE
-and the consumers see a different type at every occurrence
-(`funcMeta.tipe`/`canFuncType`, the solver-inferred type at that site). What
-binds those occurrence types to the type the audit examined differs per
-constructor, so each carries its own obligation:
+A license is a claim about the type the audit examined, but each occurrence of
+the kernel is seen at its own inferred type, and what ties the two together
+differs per scope.
 
-  - **`Inert`** — the `vacuous` class: the audit found NO function-capable
-    position at all, so the loaded scheme has zero FunL slots and both the
-    poison and the transport are provable no-ops. `licenseApplies` re-derives
-    exactly that property from the occurrence type, which is why an `Inert`
-    row is safe for a kernel that would otherwise be unlicensable (a
-    concrete `Task`-returning one). It is also the ONLY guard against
-    Elm-annotation drift: the rot manifest hashes C++ and cannot see a
-    signature growing an arrow, but this check can, and turns it back into
-    LSS\_004 poison instead of a silent wrong claim.
+`Inert` is for a kernel whose type has no function-capable position in any
+argument or in its final result, so no function value crosses the call and the
+license has nothing to transport. `licenseApplies` derives that property again
+from the occurrence type, so if the kernel's Elm type gains such a position
+the occurrence is refused rather than wrongly licensed. A row is `Inert`
+exactly when its audit class is `vacuous`.
 
-  - **`Transports`** — real function values cross the boundary and the type's
-    shared variables are the edges. Used where the kernel HAS an aliasing
-    annotation in package source, so the typechecker already bounds every
-    occurrence to an instance of the audited type; there is nothing left for
-    a runtime check to add. No obligation.
+`Transports` is for a kernel that function values can cross, along the shared
+variables of its type, and that has an annotated definition in package source
+whose annotation is the type the audit examined. Nothing is checked at the
+occurrence.
 
-  - **`TransportsAs shape`** — the same, for a kernel with NO aliasing
-    annotation. `Can.VarKernel` generates `CTrue`
-    (`Type/Constrain/Typed/Expression.elm`), i.e. no constraint whatsoever, so
-    an unannotated kernel is typed entirely by its context and nothing bounds
-    it. Its "inferred" type is first-usage-wins bookkeeping, not a property of
-    the kernel. Here the audit DECLARES the general type and
-    `licenseApplies` enforces that the occurrence is an instance of it —
-    turning an unenforceable assertion into a checked one. A non-instance
-    occurrence falls back to poison; it never fails the build.
-
-Ruling on constrained variables, since it decides `Inert` vs the rest: a
-constrained variable is function-capable only if what it ranges over can
-itself contain a function. `number` (Int | Float) and `comparable` (scalars,
-and lists/tuples that bottom out in scalars) cannot; `appendable` and
-`compappend` reach a bare element variable through their `List a` arm.
-
-Roughly five in six licensed kernels are `Inert`, so the inference side must
-not pay a scheme instantiation for them — that would be a fixed cost on a hot
-path buying exactly nothing.
+`TransportsAs` is the same for a kernel with no annotated definition, and
+carries the audited type as a `TypeShape`. No annotation in package source
+fixes such a kernel's occurrence type (`Compiler.Type.PostSolve` describes how
+a kernel occurrence is typed), so `licenseApplies` checks that the occurrence
+is an instance of the shape.
 
 -}
 type LicenseScope
@@ -335,18 +190,14 @@ type LicenseScope
     | TransportsAs TypeShape
 
 
-{-| A declared kernel type, in the only detail the license needs: which
-positions are arrows, which are shared variables, and what the constructors
-are. Matching is one-way — the shape is the PATTERN and the occurrence type
-is matched against it — with `TsVar` bound consistently, because it is
-exactly the repeated variables that carry the flow the license is claiming.
+{-| A kernel's audited type, as a pattern that occurrence types are matched
+against: arrows, named type constructors and type variables.
 
-Constructors are compared by NAME, not by canonical home. That is a
-deliberate looseness: writing full `IO.Canonical` homes would make the table
-unreadable, and kernel references are legal only inside kernel-package source,
-so the names in play are unambiguous. It costs nothing in soundness that
-matters — a same-named type from another module would still have to be an
-opaque box to the C++, which is the only property the audits rely on.
+A `TsVar` matches any type, but every repeat of the same variable must match
+the same type, because the repeated variables are the paths the license says
+function values take. A `TsCon` matches a type constructor by name and
+arguments, not by home module, and the unit type is a `TsCon` named `()` with
+no arguments.
 
 -}
 type TypeShape
@@ -355,14 +206,9 @@ type TypeShape
     | TsCon String (List TypeShape)
 
 
-{-| A granted parametricity license.
-
-`files` is the repo-relative KERNEL-source C++ paths whose bodies the grant
-depends on — what the rot manifest pins. Globally-sanctioned runtime
-machinery is deliberately absent (see the module doc). An empty `files` list
-is a bug: it means the row claims an audit of nothing, and a unit test fails
-on it.
-
+{-| A kernel's license: its `LicenseScope`, the repository-relative paths of
+the C++ files its audit read, which the license manifest pins, and the audit
+record `evidence`.
 -}
 type alias License =
     { scope : LicenseScope
@@ -371,9 +217,20 @@ type alias License =
     }
 
 
-{-| May this license be applied to THIS occurrence? `False` ⇒ the consumer
-falls back to LSS\_004 full poison — fail-safe, never fail-stop: a kernel used
-at a type the audit never examined is simply treated as unaudited.
+{-| Tells whether `license` may be used at an occurrence of its kernel whose
+type is `occurrence`. `False` means the kernel is to be treated there as if it
+had no row, which is full poison.
+
+An `Inert` license applies when no argument and no final result of the
+occurrence type has a function-capable position, a `TransportsAs` license when
+the occurrence is an instance of its shape, and a `Transports` license always.
+
+`isScalarVar` says whether a type variable is constrained to `number` or
+`comparable`, whose values cannot contain a function, so that it does not
+count as function-capable. It must answer `False` for a variable it does not
+recognise, so that the failure is a missing license and not a wrong one, and
+for `appendable`, which ranges over lists that can hold functions.
+
 -}
 licenseApplies : (id -> Bool) -> License -> Can.Type id -> Bool
 licenseApplies isScalarVar license occurrence =
@@ -388,28 +245,10 @@ licenseApplies isScalarVar license occurrence =
             matchesShape shape occurrence
 
 
-{-| Does this type have NO function-capable position — no function-capable type
-variable anywhere, and no arrow other than the kernel's own top-level spine?
-
-`isScalarVar` answers "can NO function ever occur inside this type variable?",
-which is ruling R1 made operational. It is not a nicety: `number` and
-`comparable` bottom out in scalars, so `Utils.compare : comparable ->
-comparable -> Order` and `Basics.add : number -> number -> number` have no
-function-capable position at all — but their occurrences inside a polymorphic
-caller are `TVar`s, and treating every `TVar` as function-capable refused their
-licenses on the hottest kernels in the compiler. `appendable`/`compappend`
-reach a bare element variable through their `List a` arm and must stay
-function-capable. A lookup miss must answer `False` (conservative): an
-unrecognised variable is treated as function-capable, so the failure direction
-is a missing license, never a wrong one.
-
-The spine is walked separately because a kernel IS a function: its own
-`String -> Int` arrow is the callee position, not a place a caller's value can
-inhabit. Everything reachable from an argument or from the final result is
-checked with `hasFunctionCapable`, which is deliberately blunt — ANY variable
-counts, including a phantom parameter of a nullary-constructor carrier, since
-that is precisely the case where the type cannot describe what the C++ stores.
-
+{-| Tells whether `tipe`, read as a kernel's type, has no function-capable
+position in any argument or in its final result. The arrows of its spine are
+the kernel itself, not places a caller's value can sit, so they are walked
+rather than counted.
 -}
 isInertType : (id -> Bool) -> Can.Type id -> Bool
 isInertType isScalarVar tipe =
@@ -421,6 +260,11 @@ isInertType isScalarVar tipe =
             not (hasFunctionCapable isScalarVar tipe)
 
 
+{-| Tells whether `tipe` has a function-capable position anywhere: an arrow, an
+extensible record, or a type variable for which `isScalarVar` is `False`. An
+alias counts if any of its arguments does, or if its body does with the
+alias's own parameters left out.
+-}
 hasFunctionCapable : (id -> Bool) -> Can.Type id -> Bool
 hasFunctionCapable isScalarVar tipe =
     case tipe of
@@ -440,17 +284,10 @@ hasFunctionCapable isScalarVar tipe =
             ext /= Nothing || List.any (\(Can.FieldType _ ft) -> hasFunctionCapable isScalarVar ft) (Dict.values fields)
 
         Can.TAlias _ _ args real ->
-            -- An alias APPLICATION is its body with `args` substituted, so the
-            -- two halves must be counted differently. The args are real types
-            -- and are checked as such. The body, when `Holey`, still contains
-            -- the alias's own PARAMETER variables — those are placeholders for
-            -- the args, NOT free variables, so counting them as
-            -- function-capable rejects every parameterised alias out of hand.
-            -- `Task Never String` is exactly that shape (`Holey (Platform.Task
-            -- x a)`), and it refused five eco kernels whose types are entirely
-            -- concrete until this was fixed. So the body is walked with the
-            -- parameters treated as non-capable, their real content having
-            -- already been counted through `args`.
+            -- A Holey body still mentions the alias's parameters, which stand
+            -- for `args` and are checked through them. Counting them again
+            -- would refuse a parameterised alias such as `Task Never String`,
+            -- whose body is `Task x a`.
             let
                 paramIds =
                     List.map Tuple.first args
@@ -465,6 +302,9 @@ hasFunctionCapable isScalarVar tipe =
             False
 
 
+{-| Returns the body of an alias, whether or not its parameters have been
+substituted into it.
+-}
 aliasBody : Can.AliasType id -> Can.Type id
 aliasBody real =
     case real of
@@ -475,15 +315,10 @@ aliasBody real =
             t
 
 
-{-| The `TypeShape` a `Can.Type` denotes, or `Nothing` for a form shapes cannot
-express (records, tuples, aliases with arguments).
-
-This exists so a `TransportsAs` shape and the intrinsic ANNOTATION for the same
-kernel can be pinned equal by a test rather than kept in sync by hand — the two
-tables live in different subsystems (`MonoSolver` and `Type`) and would
-otherwise drift silently, with the failure mode being a license that quietly
-stops applying.
-
+{-| Returns the `TypeShape` of an annotation, or `Nothing` when it contains a
+record, a tuple or an alias, which a shape cannot express. It exists so that a
+test can compare a `TransportsAs` row's shape with the kernel's annotation in
+`Compiler.Type.KernelIntrinsics`.
 -}
 shapeOfAnnotation : Can.Type Name -> Maybe TypeShape
 shapeOfAnnotation tipe =
@@ -504,6 +339,9 @@ shapeOfAnnotation tipe =
             Nothing
 
 
+{-| Returns the shapes of `types` in order, or `Nothing` if any of them has
+none.
+-}
 traverseShapes : List (Can.Type Name) -> Maybe (List TypeShape)
 traverseShapes types =
     case types of
@@ -514,17 +352,20 @@ traverseShapes types =
             Maybe.map2 (::) (shapeOfAnnotation t) (traverseShapes rest)
 
 
-{-| One-way match: is `occurrence` an instance of `shape`? A `TsVar` matches
-any type but must match the SAME type everywhere it recurs — that consistency
-is the whole point, since repeated variables are the flow edges the license
-claims. Aliases are chased on the occurrence side so a declared `Value`
-matches an occurrence that arrived through an alias.
+{-| Tells whether `occurrence` is an instance of `shape`. Each `TsVar` is bound
+to the type at its first position, and every later position of the same
+variable must hold a type that `sameType` judges equal to it. Aliases in the
+occurrence are expanded before matching, arrow ids are ignored, and a record or
+a tuple in the occurrence matches only a `TsVar`.
 -}
 matchesShape : TypeShape -> Can.Type id -> Bool
 matchesShape shape occurrence =
     matchShapeGo [ ( shape, occurrence ) ] []
 
 
+{-| Matches each pending pair of a shape and a type in turn, adding to
+`bindings` as it binds a `TsVar`, and returns `False` at the first mismatch.
+-}
 matchShapeGo : List ( TypeShape, Can.Type id ) -> List ( String, Can.Type id ) -> Bool
 matchShapeGo pending bindings =
     case pending of
@@ -562,6 +403,8 @@ matchShapeGo pending bindings =
                     False
 
 
+{-| Expands aliases at the head of `tipe` until it is not an alias.
+-}
 chaseAlias : Can.Type id -> Can.Type id
 chaseAlias tipe =
     case tipe of
@@ -572,6 +415,9 @@ chaseAlias tipe =
             tipe
 
 
+{-| Returns the type bound to the variable `name` by the first matching entry
+in `bindings`, if there is one.
+-}
 lookupBinding : String -> List ( String, Can.Type id ) -> Maybe (Can.Type id)
 lookupBinding name bindings =
     case bindings of
@@ -586,30 +432,22 @@ lookupBinding name bindings =
                 lookupBinding name rest
 
 
-{-| Structural equality, backing the `TsVar` consistency check: two occurrences
-of a declared variable must be the same type. Compared through alias chasing so
-`Value` and its alias agree.
+{-| Tells whether two types are the same, for the check that every repeat of a
+`TsVar` is bound to one type. Aliases are expanded at every level.
 
-**Type VARIABLES compare by IDENTITY, not by "both are variables".** The loose
-rule (any `TVar` equals any `TVar`) makes every repeated-variable claim in a
-shape VACUOUS — `(a -> b) -> a -> ...` would accept an occurrence whose two `a`
-positions are unrelated variables, i.e. it would assert sharing while checking
-none. That was tolerable only while occurrence types were unsolved mush; with
-intrinsic annotations (TYPE\_KERNEL\_001) the positions ARE solved, so the
-identity comparison is both meaningful and satisfiable. Sound in either
-direction — matching only GATES a license, it never creates sharing — but the
-strict rule is the one that makes a declared shape mean what it says.
+Type variables are equal only when they are the same variable. If any two
+variables were taken as equal, a shape such as `(a -> b) -> a -> b` would
+accept an occurrence whose two `a` positions are unrelated, and the check would
+pass on a sharing it never tested.
 
-**ARROW ids are bound to `_` and MUST STAY THAT WAY (Phase 2a §4.6b).** The
-strict-identity rule above is about `TVar` — SOLVER identity — and it does NOT
-transfer to arrows, which carry per-OCCURRENCE identity. This function is
-called from `matchShapeGo` with `id = MVarId` in production, where two
-occurrence types legitimately carry DIFFERENT arrow ids for the same shape.
-Anyone who "fixes" a compile error here by _comparing_ the ids silently kills
-the `TsVar` consistency check for every function-typed binding and un-licenses
-every `TypeFaithful` kernel row — with no test failure loud enough to say so.
-The function is already structural (destructure and recurse, never `==` on a
-node), so binding them to `_` preserves behaviour exactly.
+Arrow ids are ignored, and must stay ignored. Two positions bound to the same
+`TsVar` normally carry different arrow ids even when their types agree, so
+comparing the ids would refuse the license wherever a repeated variable is
+bound to a function type.
+
+Type constructors are compared by name and arguments, not home module. Records
+compare unequal even to themselves, so a repeated variable bound to a record
+type fails the match.
 
 -}
 sameType : Can.Type id -> Can.Type id -> Bool
@@ -634,23 +472,22 @@ sameType a b =
             False
 
 
-{-| One audited row. `Nothing` from `factFor` is the third, unrepresented
-tier: LSS\_004 full poison.
+{-| The audited fact about one kernel: a license, or a per-position row for a
+kernel that holds none. A kernel with no fact is fully poisoned.
 -}
 type KernelSetFact
     = TypeFaithful License
     | Positional KernelPlan
 
 
-{-| The audited fact for a kernel, or `Nothing` = unlicensed ⇒ LSS\_004 full
-poison.
+{-| Returns the fact for the kernel `name` in module `home`, or `Nothing` when
+it has no row and every function-typed position of a call to it is to be
+poisoned. The `Elm` or `Eco` kernel prefix is not part of the key.
 
-Note the tiers differ in how the CONSUMER must qualify the answer.
-`TypeFaithful` needs no qualification at all — there are no positions to
-align, so partial and over-application are handled by ordinary unification.
-`Positional` is arity-aligned and the consumer must fall back to full poison
-when the call arity (inference side) or the loaded scheme's spine
-(translation side) does not match `List.length plan.params`.
+A `TypeFaithful` fact needs no alignment with the call, because partial and
+over-application are handled by unification, but `licenseApplies` must accept
+the occurrence. A `Positional` fact applies only to a call whose parameters
+can be aligned with the row's `params`, and any other call is fully poisoned.
 
 -}
 factFor : Name -> Name -> Maybe KernelSetFact
@@ -658,11 +495,8 @@ factFor home name =
     Dict.get ( home, name ) facts
 
 
-{-| Every C++ path any licensed row depends on, deduplicated and sorted —
-the source of truth the license-rot manifest is generated from and checked
-against. Positional rows are deliberately excluded: they carry no license,
-only a per-position refinement, and their evidence is re-read whenever the
-row is touched.
+{-| The C++ files that any license depends on, sorted and without duplicates.
+`Positional` rows contribute nothing, since they carry no license.
 -}
 licensedFiles : List String
 licensedFiles =
@@ -681,6 +515,9 @@ licensedFiles =
         |> dedupeSorted
 
 
+{-| Removes adjacent duplicates from `xs`, so that a sorted list keeps each
+element once.
+-}
 dedupeSorted : List String -> List String
 dedupeSorted xs =
     case xs of
@@ -695,23 +532,15 @@ dedupeSorted xs =
             xs
 
 
-{-| Every row, for tests and tooling.
+{-| Every row of the table, ordered by home module and then by name.
 -}
 rows : List ( ( Name, Name ), KernelSetFact )
 rows =
     Dict.toList facts
 
 
-{-| v1 rows (2026-08-20 C++ audit). Shared driver for map2-5 is
-`kernelListMapN` (ListExports.cpp:432-590): the callback is rooted and
-APPLIED via `eco_apply_closure_eval` (:567-569); the result list is built
-from the callback's RETURNS only. map2-5 result rows ship `PSFOpaque`: when
-the Elm `result` tvar instantiates to a function, a stored return can be a
-PAP OF THE CALLBACK (`eco_apply_closure_eval` PAP chaining,
-RuntimeExports.cpp:1987-2145) — result-element arrows are the callback's
-inner arrows, not expressible as a v1 fact. sortBy/sortWith list-param →
-result is a permutation (`listFromPermutation`) — `PSFTunnels` is the
-recorded refinement; opaque is sound and ships first.
+{-| The table, keyed by home module and name. Each row's evidence is its audit
+record, with the C++ line numbers and dates the audit used.
 -}
 facts : Dict.Dict ( Name, Name ) KernelSetFact
 facts =
@@ -1573,16 +1402,10 @@ facts =
         , ( ( "Json", "addEntry" )
           , TypeFaithful
                 { scope =
-                    -- UPGRADED once the occurrence became SOLVED. This shape
-                    -- previously asserted only arity plus first-param-is-an-
-                    -- arrow, because `emptyArray`/`wrap` are `CTrue` and left
-                    -- the accumulator and result as unsolved flex vars, so a
-                    -- shape naming `Value` matched nothing and the row silently
-                    -- never applied. The intrinsic annotation (TYPE_KERNEL_001)
-                    -- now pins those positions, so the full claim is both
-                    -- checkable and true: the encoder consumes exactly the
+                    -- The same type as the kernel's annotation in
+                    -- Compiler.Type.KernelIntrinsics: the encoder takes the
                     -- folded element, and the accumulator, the encoder's result
-                    -- and the kernel's result are all the same `Value`.
+                    -- and the kernel's result are all one Value.
                     TransportsAs
                         (TsFun (TsFun (TsVar "a") tsValue)
                             (TsFun (TsVar "a") (TsFun tsValue tsValue))
@@ -2385,14 +2208,15 @@ facts =
         ]
 
 
-{-| `List a` / `Value` as shapes. Named so the rows read like the types they
-mean, and so a change lands in one place.
+{-| Returns the shape of a `List` of `el`.
 -}
 tsList : TypeShape -> TypeShape
 tsList el =
     TsCon "List" [ el ]
 
 
+{-| The shape of the JSON `Value` type.
+-}
 tsValue : TypeShape
 tsValue =
     TsCon "Value" []

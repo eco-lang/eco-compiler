@@ -1,8 +1,27 @@
 module TestLogic.Generate.CodeGen.OperandTypesAttr exposing (expectOperandTypesAttr)
 
-{-| Test logic for CGEN\_032: Operand Types Attribute invariant.
+{-| Catches the code generator leaving out, or miscounting, the operand types
+it records on certain eco ops.
 
-`_operand_types` is required when an op has operands and must have correct length.
+An `MlirOp` holds its operands as SSA names, without their types. The code
+generator records the types in the op's `_operand_types` attribute, an array
+with one entry per operand, and several of the other MLIR checkers read operand
+types only from there and skip an op that has none (see
+`TestLogic.Generate.CodeGen.Invariants`). This module makes a missing or
+miscounted attribute a failure, for the ops it names.
+
+`expectOperandTypesAttr` compiles one source module to MLIR with
+`TestLogic.TestPipeline.runToMlir`. For every op, at any depth, named in
+`requiredOps` (the `eco.construct` ops for lists, two- and three-element tuples,
+records and custom types, and `eco.call`, `eco.papCreate`, `eco.papExtend`,
+`eco.return`, `eco.box` and `eco.unbox`) that has at least one operand, it
+fails if `_operand_types` is absent or is not an array, or if the array's
+length differs from the number of operands.
+
+Among what is not tested: ops not named in `requiredOps`; whether each entry is
+a type, or the right type for its operand; and MLIR produced by the solver
+monomorphization engine, since `runToMlir` monomorphizes with the substitution
+engine.
 
 @docs expectOperandTypesAttr
 
@@ -21,7 +40,13 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that operand types attribute invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR and passes when
+every op named in `requiredOps` that has operands carries an `_operand_types`
+array with one entry per operand.
+
+It fails with the pipeline's error message when compilation fails, and
+otherwise with a message naming the first op that breaks the rule.
+
 -}
 expectOperandTypesAttr : Src.Module -> Expectation
 expectOperandTypesAttr srcModule =
@@ -33,7 +58,8 @@ expectOperandTypesAttr srcModule =
             violationsToExpectation (checkOperandTypesAttr mlirModule)
 
 
-{-| Ops that require _operand_types when they have operands.
+{-| The names of the ops that must carry `_operand_types` whenever they have
+at least one operand.
 -}
 requiredOps : List String
 requiredOps =
@@ -51,7 +77,8 @@ requiredOps =
     ]
 
 
-{-| Check operand types attribute invariants.
+{-| Returns one violation for each op in `mlirModule`, at any depth, that is
+named in `requiredOps` and fails `checkOperandTypesOp`.
 -}
 checkOperandTypesAttr : MlirModule -> List Violation
 checkOperandTypesAttr mlirModule =
@@ -65,6 +92,10 @@ checkOperandTypesAttr mlirModule =
     List.filterMap checkOperandTypesOp targetOps
 
 
+{-| Returns a violation when `op` has operands and its `_operand_types` array
+is absent or has a different number of entries, and `Nothing` otherwise. An
+`_operand_types` attribute that is not an array counts as absent.
+-}
 checkOperandTypesOp : MlirOp -> Maybe Violation
 checkOperandTypesOp op =
     let

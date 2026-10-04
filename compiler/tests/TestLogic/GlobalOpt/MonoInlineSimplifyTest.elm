@@ -1,13 +1,43 @@
 module TestLogic.GlobalOpt.MonoInlineSimplifyTest exposing (suite)
 
-{-| Test suite for MonoInlineSimplify optimization pass.
+{-| Smoke tests for the post-monomorphization inliner,
+`Compiler.GlobalOpt.MonoInlineSimplify.optimize`. They run the inliner on its
+own, outside a build, so that a crash in it on an ordinary program shows up as
+a failing test. They check nothing about what the inliner did to a program.
 
-This tests that:
+The programs are turned into a monomorphized graph by
+`TestLogic.TestPipeline.runToMono`, which uses the substitution engine rather
+than the solver engine a default build uses, and runs none of the
+pre-monomorphization passes. The inliner is then called with
+`Config.default.inline`. The optimized graph is not pruned afterwards, whereas
+a default build prunes it.
 
-  - The optimizer compiles and runs without errors
-  - Basic optimizations (let elimination, beta reduction) work correctly
-  - The optimizer preserves program semantics (via monomorphization pipeline)
-  - Metrics are collected properly
+The fixtures are four modules named `Test`, each with one annotated
+`testValue : Int`: an `identity` function applied to 42, a `let` that binds 42
+and returns it, the lambda `\x -> x` applied to 42, and two nested `let`s that
+bind 1 and 2 and return the first. The last group uses every program in the
+`SourceIR.Suite.StandardTestSuites` catalogue instead.
+
+What the tests establish:
+
+  - "Optimizer compiles and runs": for each of the four fixtures, that
+    `runToMono` returns a graph. These tests do not call the inliner.
+  - "metrics are non-negative": on the single-`let` fixture, that `optimize`
+    returns and its `inlineCount`, `betaReductions` and `letEliminations` are
+    each at least 0.
+  - "closure count is collected": on the applied-lambda fixture, that
+    `optimize` returns and its `inlineCount` is at least 0. No metric about
+    closures is read.
+  - "optimizes without errors", over the standard catalogue: that `optimize`
+    returns on each program's graph. A program whose `runToMono` returns an
+    error passes.
+
+A `runToMono` error fails the tests of the first two groups with its message.
+
+Among what is not tested: that anything is inlined, beta-reduced or
+eliminated; that the optimized graph is well formed or computes the same
+values; and any metric's value, since the three counters start at zero and are
+only ever increased, so "at least 0" holds whenever `optimize` returns.
 
 -}
 
@@ -35,6 +65,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| All the tests of this module, in three groups.
+-}
 suite : Test
 suite =
     Test.describe "MonoInlineSimplify"
@@ -46,10 +78,13 @@ suite =
 
 
 -- ============================================================================
--- OPTIMIZER COMPILES AND RUNS
+-- FIXTURES, AND THE TESTS THAT THEY MONOMORPHIZE
 -- ============================================================================
 
 
+{-| The tests that each of the four fixtures reaches a monomorphized graph.
+Despite the group's name, the inliner is not run.
+-}
 optimizerCompilesSuite : Test
 optimizerCompilesSuite =
     Test.describe "Optimizer compiles and runs"
@@ -68,6 +103,9 @@ optimizerCompilesSuite =
         ]
 
 
+{-| Passes when `runToMono` returns a graph for `srcModule`, and fails with the
+pipeline's message when it returns an error. It does not call the inliner.
+-}
 expectOptimizationSucceeds : Src.Module -> Expect.Expectation
 expectOptimizationSucceeds srcModule =
     case Pipeline.runToMono srcModule of
@@ -78,11 +116,15 @@ expectOptimizationSucceeds srcModule =
             Expect.pass
 
 
-{-| identity : Int -> Int
-identity x = x
+{-| A module whose `testValue` calls an annotated identity function:
 
-testValue : Int
-testValue = identity 42
+    identity : Int -> Int
+    identity x =
+        x
+
+    testValue : Int
+    testValue =
+        identity 42
 
 -}
 simpleIdentityModule : Src.Module
@@ -110,9 +152,16 @@ simpleIdentityModule =
         []
 
 
-{-| testValue : Int
-testValue =
-let x = 42 in x
+{-| A module whose `testValue` binds 42 in a `let` and returns it:
+
+    testValue : Int
+    testValue =
+        let
+            x =
+                42
+        in
+        x
+
 -}
 simpleLetModule : Src.Module
 simpleLetModule =
@@ -131,8 +180,12 @@ simpleLetModule =
         []
 
 
-{-| testValue : Int
-testValue = (\\x -> x) 42
+{-| A module whose `testValue` applies a lambda directly to an argument:
+
+    testValue : Int
+    testValue =
+        (\x -> x) 42
+
 -}
 lambdaApplicationModule : Src.Module
 lambdaApplicationModule =
@@ -154,11 +207,21 @@ lambdaApplicationModule =
         []
 
 
-{-| testValue : Int
-testValue =
-let x = 1 in
-let y = 2 in
-x
+{-| A module whose `testValue` nests one `let` inside another and returns the
+outer binding; the inner binding `y` is never used:
+
+    testValue : Int
+    testValue =
+        let
+            x =
+                1
+        in
+        let
+            y =
+                2
+        in
+        x
+
 -}
 nestedLetModule : Src.Module
 nestedLetModule =
@@ -187,6 +250,8 @@ nestedLetModule =
 -- ============================================================================
 
 
+{-| The two tests that run the inliner on a fixture and look at its metrics.
+-}
 metricsCollectionSuite : Test
 metricsCollectionSuite =
     Test.describe "Metrics collection"
@@ -199,6 +264,11 @@ metricsCollectionSuite =
         ]
 
 
+{-| Runs the inliner on the graph `runToMono` makes from `srcModule`, and
+passes when its `inlineCount`, `betaReductions` and `letEliminations` are each
+at least 0. Fails with the pipeline's message when `runToMono` returns an
+error.
+-}
 expectMetricsNonNegative : Src.Module -> Expect.Expectation
 expectMetricsNonNegative srcModule =
     case Pipeline.runToMono srcModule of
@@ -218,6 +288,11 @@ expectMetricsNonNegative srcModule =
                 ()
 
 
+{-| Runs the inliner on the graph `runToMono` makes from `srcModule`, and
+passes when its `inlineCount` is at least 0. Despite the name, no metric about
+closures is read. Fails with the pipeline's message when `runToMono` returns an
+error.
+-}
 expectClosureCountCollected : Src.Module -> Expect.Expectation
 expectClosureCountCollected srcModule =
     case Pipeline.runToMono srcModule of
@@ -229,8 +304,6 @@ expectClosureCountCollected srcModule =
                 ( _, metrics ) =
                     MonoInlineSimplify.optimize Config.default.inline monoGraph
             in
-            -- optimize returns well-formed metrics (closure counts were removed as dead
-            -- debug-only walks; inlineCount is the surviving non-negative metric)
             Expect.atLeast 0 metrics.inlineCount
 
 
@@ -240,16 +313,23 @@ expectClosureCountCollected srcModule =
 -- ============================================================================
 
 
+{-| The test, over every program in the standard catalogue, that the inliner
+returns on that program's monomorphized graph.
+-}
 standardTestSuite : Test
 standardTestSuite =
     StandardTestSuites.expectSuite expectOptimizationPreservesValidity "optimizes without errors"
 
 
+{-| Runs the inliner on the graph `runToMono` makes from `srcModule`, and
+passes once it returns. Nothing about the optimized graph is checked, despite
+the name. When `runToMono` returns an error the expectation also passes, since
+there is no graph to run the inliner on.
+-}
 expectOptimizationPreservesValidity : Src.Module -> Expect.Expectation
 expectOptimizationPreservesValidity srcModule =
     case Pipeline.runToMono srcModule of
         Err _ ->
-            -- If monomorphization fails, that's not the optimizer's fault
             Expect.pass
 
         Ok { monoGraph } ->
@@ -257,12 +337,11 @@ expectOptimizationPreservesValidity srcModule =
                 ( optimizedGraph, _ ) =
                     MonoInlineSimplify.optimize Config.default.inline monoGraph
             in
-            -- Verify the optimized graph is still valid
             expectGraphValid optimizedGraph
 
 
+{-| Always passes. Despite its name, it checks nothing about the graph.
+-}
 expectGraphValid : Mono.MonoGraph -> Expect.Expectation
 expectGraphValid (Mono.MonoGraph _) =
-    -- Basic validity check: nodes dict is not corrupted
-    -- More sophisticated checks could be added later
     Expect.pass

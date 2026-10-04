@@ -4,8 +4,22 @@ module Utils.Task.Extra exposing
     , apply, mapM
     )
 
-{-| Additional utilities for working with Elm tasks, providing common patterns for error handling
-and task composition.
+{-| Tasks come in two kinds that do not combine directly, and this module
+supplies the few combinators for moving between them and for chaining them.
+
+An _infallible_ task has the type `Task Never a`. No value of type `Never`
+exists, so such a task cannot fail, and anything that goes wrong can only be
+reported in its result, for instance as a `Maybe` or a `Result`. A _fallible_
+task has the type `Task x a` for an error type `x` other than `Never`, and
+fails with a value of that type.
+
+`run` turns a fallible task into an infallible one whose result is a `Result`.
+`io`, `mio` and `eio` go the other way: `io` gives an infallible task any error
+type, and `mio` and `eio` also turn a `Nothing` or an `Err` in its result into a
+failure. `throw` makes a task that fails straight away.
+
+`apply` and `mapM` combine several tasks into one. Both perform their tasks one
+after another, and both stop at the first failure.
 
 
 # Task Execution
@@ -31,8 +45,9 @@ import Task exposing (Task)
 -- ====== TASKS ======
 
 
-{-| Converts a fallible task into an infallible task that returns a Result.
-Captures both success and failure cases as Result values.
+{-| Returns a task that performs `task` and never fails: it succeeds with `Ok`
+and the value when `task` succeeds, and with `Err` and the error when `task`
+fails.
 -}
 run : Task x a -> Task Never (Result x a)
 run task =
@@ -41,8 +56,8 @@ run task =
         |> Task.onError (Err >> Task.succeed)
 
 
-{-| Creates a task that immediately fails with the given error value.
-Alias for Task.fail that provides clearer intent for exception-like error handling.
+{-| Returns a task that fails with the given error without doing anything else.
+It is `Task.fail` under another name.
 -}
 throw : x -> Task x a
 throw =
@@ -53,16 +68,16 @@ throw =
 -- ====== IO ======
 
 
-{-| Converts an infallible task to a task with any error type.
-Useful when an infallible IO operation needs to be used in a context expecting a fallible task.
+{-| Returns `work` with its error type changed to whatever the caller needs.
+The result still never fails.
 -}
 io : Task Never a -> Task x a
 io work =
     Task.mapError never work
 
 
-{-| Converts an infallible task returning Maybe into a fallible task.
-If the task produces Nothing, fails with the provided error value.
+{-| Returns a task that performs `work` and succeeds with the value inside its
+`Just`, or fails with `x` when `work` produces `Nothing`.
 -}
 mio : x -> Task Never (Maybe a) -> Task x a
 mio x work =
@@ -79,8 +94,8 @@ mio x work =
             )
 
 
-{-| Converts an infallible task returning Result into a fallible task.
-Maps the error value using the provided function before failing the task.
+{-| Returns a task that performs `work` and succeeds with the value inside its
+`Ok`, or fails with `func` applied to the error when `work` produces `Err`.
 -}
 eio : (x -> y) -> Task Never (Result x a) -> Task y a
 eio func work =
@@ -98,19 +113,31 @@ eio func work =
 
 
 
--- ====== INSTANCES ======
+-- ====== COMBINATORS ======
 
 
-{-| Applies a task containing a function to a task containing a value.
-This is the applicative apply operation for tasks, enabling applicative-style composition.
+{-| Returns a task that performs `mf`, then `ma`, and succeeds with the
+function from `mf` applied to the value from `ma`.
+
+The value task comes first in the argument list so that a pipeline reads in
+order: `Task.succeed f |> apply a |> apply b` performs `a`, then `b`, and
+succeeds with `f` applied to both results. The function task is performed
+first, so if it fails, `ma` is never performed.
+
 -}
 apply : Task x a -> Task x (a -> b) -> Task x b
 apply ma mf =
     Task.andThen (\f -> Task.map f ma) mf
 
 
-{-| Maps a task-returning function over a list and sequences the results.
-Executes each task in sequence and collects the results into a list.
+{-| Returns a task that performs the task `f` gives for each element of the
+list, first to last, and succeeds with the list of their results in the same
+order.
+
+It stops at the first task that fails and fails with its error, so the tasks
+for later elements are never performed. An empty list gives a task that
+succeeds with an empty list.
+
 -}
 mapM : (a -> Task x b) -> List a -> Task x (List b)
 mapM f =

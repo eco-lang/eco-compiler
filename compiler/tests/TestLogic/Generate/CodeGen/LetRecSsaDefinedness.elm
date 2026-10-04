@@ -1,18 +1,31 @@
 module TestLogic.Generate.CodeGen.LetRecSsaDefinedness exposing (expectLetRecSsaDefinedness)
 
-{-| Test logic for SSA Definedness in let-rec codegen.
+{-| Generated MLIR in which a function uses a value it never defines is
+invalid, and this module checks a compiled program for that.
 
-Every SSA value (%name) used as an operand within a function must be defined
-somewhere in that function — either as an op result, a block argument, or a
-function parameter. This catches the "undeclared SSA value" bug that the
-forceResultVar mechanism in Expr.elm is designed to prevent.
+In MLIR an SSA value is a name beginning with `%` that one place defines and
+any number of operands use. Inside a function a value is defined either as the
+result of an op or as an argument of a block; the function's parameters are the
+arguments of its first region's entry block.
 
-For recursive let bindings, placeholder SSA vars (e.g. %helper) are captured
-by sibling closures as operands. The forceResultVar mechanism must ensure that
-the closure-construction op defines that same placeholder var in its results,
-so every use has a corresponding definition.
+The check is aimed at recursive `let` groups. When the code generator
+(`Compiler.Generate.MLIR.Expr`) compiles one, it gives each bound name a
+placeholder SSA name before compiling the definitions, so that a closure built
+for one binding can capture a sibling by that name. Ordinarily, when the op
+that produces a binding's value is among the ops compiled for that binding,
+Expr's private `forceResultVar` renames it so that it defines the placeholder.
+A binding whose value is an existing SSA value, such as a plain variable reference, is
+mapped to that value instead of defining the placeholder. Where a sibling
+closure uses a placeholder that nothing defines, this check fails.
 
-@docs expectLetRecSsaDefinedness
+The check itself knows nothing of `let`. For each top-level `func.func` it
+collects every SSA name defined anywhere in the function's regions, nested
+regions included, and every operand beginning with `%`, and reports each
+operand name that is not among the definitions.
+
+Among what is not checked: that a definition comes before its uses or is in a
+scope they can see, since both sets are gathered from the whole function; that
+a name is defined only once; and any op outside a top-level `func.func`.
 
 -}
 
@@ -31,7 +44,15 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that SSA definedness holds for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR with
+`TestLogic.TestPipeline.runToMlir` and passes when every top-level function
+defines each SSA name its operands use.
+
+When compilation fails it fails with `Compilation failed:` followed by the
+pipeline's message. Otherwise a failure reports one undefined name only: in the
+first function, in module order, that has any, the name that sorts first as a
+string.
+
 -}
 expectLetRecSsaDefinedness : Src.Module -> Expectation
 expectLetRecSsaDefinedness srcModule =
@@ -43,12 +64,9 @@ expectLetRecSsaDefinedness srcModule =
             violationsToExpectation (checkLetRecSsaDefinedness mlirModule)
 
 
-{-| Check that all SSA operands within each function have definitions.
-
-For each function in the module, collects all SSA definitions (from op results
-and block arguments) and all SSA uses (from op operands starting with "%").
-Reports any use that has no corresponding definition.
-
+{-| Returns one violation for each SSA name that a top-level `func.func` of
+`mlirModule` uses as an operand without defining, function by function in
+module order.
 -}
 checkLetRecSsaDefinedness : MlirModule -> List Violation
 checkLetRecSsaDefinedness mlirModule =
@@ -59,7 +77,14 @@ checkLetRecSsaDefinedness mlirModule =
     List.concatMap checkFunction funcOps
 
 
-{-| Check a single function for SSA definedness.
+{-| Returns one violation for each SSA name that `funcOp` uses as an operand
+anywhere in its regions but defines nowhere in them, sorted as strings.
+
+Each violation's `opId` is the undefined name itself rather than an op id, and
+its `opName` is `func.func @` followed by the function's `sym_name`, or
+`<unknown>` when its `sym_name` attribute is missing or is neither a string nor
+a symbol reference.
+
 -}
 checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
@@ -93,13 +118,17 @@ checkFunction funcOp =
             )
 
 
-{-| Collect all SSA definitions in a function (from op results and block args).
+{-| Returns every SSA name defined in `funcOp`'s regions, at any depth, as an
+op result or a block argument.
 -}
 collectAllDefs : MlirOp -> Set String
 collectAllDefs funcOp =
     List.foldl collectDefsFromRegion Set.empty funcOp.regions
 
 
+{-| Adds to `acc` every SSA name defined in the region's entry block and its
+further blocks, including those of regions nested inside them.
+-}
 collectDefsFromRegion : MlirRegion -> Set String -> Set String
 collectDefsFromRegion (MlirRegion { entry, blocks }) acc =
     let
@@ -109,37 +138,44 @@ collectDefsFromRegion (MlirRegion { entry, blocks }) acc =
     List.foldl collectDefsFromBlock withEntry (OrderedDict.values blocks)
 
 
+{-| Adds to `acc` the block's arguments and every SSA name defined by its body
+ops and its terminator, including inside their regions.
+-}
 collectDefsFromBlock : MlirBlock -> Set String -> Set String
 collectDefsFromBlock block acc =
     let
-        -- Block arguments define SSA values
         withArgs =
             List.foldl (\( name, _ ) s -> Set.insert name s) acc block.args
 
-        -- Op results define SSA values
         withBody =
             List.foldl collectDefsFromOp withArgs block.body
     in
     collectDefsFromOp block.terminator withBody
 
 
+{-| Adds to `acc` the op's result names and every SSA name defined inside its
+regions.
+-}
 collectDefsFromOp : MlirOp -> Set String -> Set String
 collectDefsFromOp op acc =
     let
-        -- Results define SSA values
         withResults =
             List.foldl (\( name, _ ) s -> Set.insert name s) acc op.results
     in
     List.foldl collectDefsFromRegion withResults op.regions
 
 
-{-| Collect all SSA uses in a function (from op operands starting with "%").
+{-| Returns every operand beginning with `%` of the ops in `funcOp`'s regions,
+at any depth. Operands not beginning with `%` are left out.
 -}
 collectAllUses : MlirOp -> Set String
 collectAllUses funcOp =
     List.foldl collectUsesFromRegion Set.empty funcOp.regions
 
 
+{-| Adds to `acc` the SSA operands used in the region's entry block and its
+further blocks, including in regions nested inside them.
+-}
 collectUsesFromRegion : MlirRegion -> Set String -> Set String
 collectUsesFromRegion (MlirRegion { entry, blocks }) acc =
     let
@@ -149,6 +185,9 @@ collectUsesFromRegion (MlirRegion { entry, blocks }) acc =
     List.foldl collectUsesFromBlock withEntry (OrderedDict.values blocks)
 
 
+{-| Adds to `acc` the SSA operands of the block's body ops and its terminator,
+including inside their regions.
+-}
 collectUsesFromBlock : MlirBlock -> Set String -> Set String
 collectUsesFromBlock block acc =
     let
@@ -158,10 +197,12 @@ collectUsesFromBlock block acc =
     collectUsesFromOp block.terminator withBody
 
 
+{-| Adds to `acc` the op's operands that begin with `%` and the SSA operands
+used inside its regions.
+-}
 collectUsesFromOp : MlirOp -> Set String -> Set String
 collectUsesFromOp op acc =
     let
-        -- Only count operands that look like SSA values (start with "%")
         ssaOperands =
             List.filter (\name -> String.startsWith "%" name) op.operands
 

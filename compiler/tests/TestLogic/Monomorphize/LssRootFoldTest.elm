@@ -1,16 +1,63 @@
 module TestLogic.Monomorphize.LssRootFoldTest exposing (suite)
 
-{-| ROOT-MEMBER FOLD — `lss.rootFold` (`plans/lss-root-member-fold.md`).
+{-| Checks the root-member fold of the solver engine's lambda-set
+specialization. Without the fold, a top-level function could reach one arrow
+under two member ids, and an annotation that should name one function would
+name two.
 
-A top-level def carries two member ids — its body-root lambda's `l|` id and
-its standalone `g|` id — and wherever both flow to one position the set is a
-sound 2-set that singleton-only consumers cannot use. Under the fold the root
-lambda interns the GROUND STANDALONE key instead, so root injection,
-reference grounding and the `regIdentity` head stamp converge on ONE id.
+Under lambda-set specialization each function arrow of a monomorphized type
+carries an annotation, a `Compiler.AST.Monomorphized.LambdaSetAnno`, saying
+which function values can arrive there. An `LSet` lists them as _member ids_,
+integers that each name one function value, and a one-member `LSet`, a
+_singleton_, is what lets a call go straight to a known function. `LTop` means
+unknown, `LVar` is an unresolved variable, and `LPartial` means "at least these
+members". The _head_ of a specialization's type is its outermost arrow, and
+_depth 1_ is the arrow of the function that is left after one argument.
 
-All pins used to set `regIdentity = True` explicitly (it is the mechanism that
-makes the pairs meet at heads; default-on today, pinned here for
-self-documentation and against future default changes).
+A top-level function such as `double` gets a member id in two ways. Its body
+is a lambda, which is given a member id when it is translated, and a reference
+to `double` used as a value is given the global's own standalone member id.
+Under the _root-member fold_ the lambda at the root of a top-level definition
+takes the global's standalone id instead of one of its own, so both ways give
+the same id. `Compiler.MonoSolver.Engine` (`lambdaInstanceMemberId`) owns the
+fold. Two of its limits matter here. A definition that is an alias of a kernel
+is not folded (`Compiler.MonoSolver.Translate`), because references to such an
+alias carry the kernel's own member id (`Compiler.MonoSolver.LssInfer`). And
+the folded id is written on the definition's head only, with
+partial-application members at the deeper arrows (`Compiler.MonoSolver.LssInfer`),
+because the folded id names the whole function, not what is left of it after
+an argument.
+
+Each fixture is a module `Test` of annotated definitions over `Int`, built with
+`makeModuleWithTypedDefs`. `TestLogic.TestPipeline` adds a `main` that uses
+`testValue`, which reaches the other definitions. `runWith` monomorphizes a
+fixture with the solver engine under the default lambda-set configuration, in
+which the fold has no switch of its own, and the readers take the types of a
+global's specializations, by name, from the graph's registry.
+
+  - Test 1 (`refModule`, where `testValue` is `useIt double 3`): the first
+    singleton among `double`'s head annotations and the first singleton among
+    the annotations of `useIt`'s function-typed parameter are the same member
+    id. It fails if either side has no singleton.
+  - Test 3 (`consModule`, where `testValue` is `double :: []`): no head
+    annotation of a specialization named `cons` is an `LSet` of more than two
+    members. `LTop`, `LVar` and `LPartial` pass, and so does finding no `cons`
+    specialization.
+  - Test 4 (`plainModule`): no member id of an `LSet` at `plus2`'s head appears
+    in an `LSet` at its depth 1. It fails if `plus2`'s head annotations hold no
+    `LSet` member. It compares ids rather than set sizes, because sets of equal
+    size do not show which member is at which depth.
+  - Test 5 (`joinModule`, where `useIt` is given
+    `if True then addTo 7 else idf`): every annotation on `useIt`'s
+    function-typed parameter is `LTop`, `LVar`, `LPartial` or an `LSet` of at
+    least two members, so the join of the partial application `addTo 7` with
+    the global `idf` does not read as a singleton. It fails if there is no such
+    annotation.
+
+Among what is not tested: the subst engine and lambda-set specialization
+switched off; let-bound functions; a definition specialized at more than one
+type; arrows deeper than depth 1; and, in test 3, an `LVar` head, which the
+check accepts.
 
 -}
 
@@ -38,15 +85,13 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The four root-member fold tests, numbered 1, 3, 4 and 5.
+-}
 suite : Test
 suite =
     Test.describe "root-member fold — one member id per (function, layout)"
         [ Test.test "1. CONVERGENCE: the stored head id IS the reference-flow id" <|
             \() ->
-                -- `useIt double 3`: the consumer's parameter carries the
-                -- member the REFERENCE path injected; the stored head carries
-                -- the member the fold + stamp minted. Same integer = the
-                -- whole point of the fold. Id-comparing, not class-guessing.
                 case runWith refModule of
                     Err e ->
                         Expect.fail e
@@ -75,10 +120,6 @@ suite =
                                     )
         , Test.test "3. KERNEL-ALIAS SKIP: no new split at a kernel-backed head" <|
             \() ->
-                -- Folding a kernel-alias root would pair g|X with the k| id
-                -- E9.2 folds references to — recreating the exact split the
-                -- fold exists to remove. The skip is pinned as: never LVar
-                -- (routing intact) and never a >2 set (no third identity).
                 case runWith consModule of
                     Err e ->
                         Expect.fail e
@@ -96,26 +137,6 @@ suite =
                                     Expect.fail ("kernel-alias head grew a new identity: " ++ describe heads)
         , Test.test "4. DEEP SPINE: the folded head id is absent from depth 1" <|
             \() ->
-                -- plans/lss-root-fold-depth-qualified-spine.md.
-                --
-                -- SUPERSEDES "4. DEEP SPINE UNCHANGED: plus2's depth-1 anno
-                -- is arm-identical" (2026-09-17). That test asserted depth-1
-                -- SET SIZES were equal across the rootFold arms, on the
-                -- premise recorded in its comment: "The fold is head-only by
-                -- design (`p|` stays the declining class at depth > 0)."
-                -- The premise was FALSE of the translation-phase writer:
-                -- `injectLambdaMemberQualified` -> `spineGoC` wrote the
-                -- folded GROUND `g|` id at EVERY depth 0..arity-1, i.e. the
-                -- STAMPABLE id landed on partial-application positions,
-                -- which `lss-root-member-fold.md` §1.5 AR-1 forbids. The old
-                -- test stayed green because it was size-based and id-blind:
-                -- OFF gave `{l|lam, p|g|1}` and ON gave `{g|G|L, p|g|1}` —
-                -- both size 2. It pinned the SYMMETRY of the defect, not the
-                -- property its comment claimed.
-                --
-                -- This asserts the property directly, which is also the only
-                -- form that distinguishes WHICH member survives: under the
-                -- repair the head's folded id must not appear at depth 1.
                 case runWith plainModule of
                     Ok g ->
                         let
@@ -171,11 +192,17 @@ suite =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int -> Int`, the type of the fixtures' one-argument
+functions and of the function that `useIt` takes.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
+{-| A fixture defining `double x = x + x` and `plus2 a b = a + b`, with a
+`testValue` that calls each with all of its arguments.
+-}
 plainModule : Src.Module
 plainModule =
     makeModuleWithTypedDefs "Test"
@@ -197,6 +224,9 @@ plainModule =
         ]
 
 
+{-| A fixture in which `testValue` is `useIt double 3`, so that `double` reaches
+`useIt`'s parameter as a value, and `useIt f n` applies `f` to `n`.
+-}
 refModule : Src.Module
 refModule =
     makeModuleWithTypedDefs "Test"
@@ -218,6 +248,10 @@ refModule =
         ]
 
 
+{-| A fixture in which `testValue` is `double :: []`, a list holding the function
+`double`. The `::` is `List.cons`, which the test pipeline gives a node that
+is an alias of the kernel.
+-}
 consModule : Src.Module
 consModule =
     makeModuleWithTypedDefs "Test"
@@ -234,6 +268,10 @@ consModule =
         ]
 
 
+{-| A fixture in which `useIt f = f 1` is given `if True then addTo 7 else idf`:
+a partial application of the two-argument `addTo` and the one-argument `idf`,
+joined into one function-typed value.
+-}
 joinModule : Src.Module
 joinModule =
     makeModuleWithTypedDefs "Test"
@@ -266,16 +304,10 @@ joinModule =
 -- ====== HARNESS ======
 
 
-{-| `lss.rootFold` and `lss.stamp.rootFoldDepth` were fixed at their defaults
-and removed 2026-09-18, so the two deleted differentials are recorded here
-instead. Test 1 pinned the plain def's stored head collapsing from the
-`{l|, g|}` 2-set to a SINGLETON under the fold. Test 4b pinned that
-`rootFoldDepth` is what removes the AR-1 leak: with it off, the head's folded
-id DID appear at depth 1.
-
-Solo census with the flags OFF: `rootFold` −> `kN` 2,586 -> 63,050 and the
-artifact +312 KB; `stamp.rootFoldDepth` −> `k1` -> 113,110, `kN` -> 34,745,
-artifact +157 KB.
+{-| Monomorphizes `srcModule` with the solver engine under the default
+lambda-set configuration and the default specialization limits, giving the
+graph before global optimization, or the pipeline's error message. Setting
+`enabled = True` restates the default.
 -}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
@@ -288,7 +320,8 @@ runWith srcModule =
         srcModule
 
 
-{-| The member ids of an annotation, or `[]` for anything that is not a set.
+{-| Returns the member ids of an `LSet`, or `[]` for any other annotation,
+`LPartial` included.
 -}
 annoMembers : Mono.LambdaSetAnno -> List Int
 annoMembers a =
@@ -304,6 +337,9 @@ annoMembers a =
 -- ====== READERS ======
 
 
+{-| Returns the type of every specialization in the registry of `graph` whose
+global is named `target`, whatever its module.
+-}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
     Array.foldl
@@ -323,6 +359,9 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns the head annotation of each function-typed specialization of
+`target`.
+-}
 headAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 headAnnos target graph =
     List.filterMap
@@ -337,6 +376,9 @@ headAnnos target graph =
         (demandsOf target graph)
 
 
+{-| Returns the depth-1 annotation of each specialization of `target` whose head
+arrow returns a function.
+-}
 depth1Annos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 depth1Annos target graph =
     List.filterMap
@@ -351,6 +393,9 @@ depth1Annos target graph =
         (demandsOf target graph)
 
 
+{-| Returns the head annotation of every function-typed parameter on the head
+arrow of each specialization of `target`.
+-}
 paramAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 paramAnnos target graph =
     List.concatMap
@@ -374,6 +419,9 @@ paramAnnos target graph =
         (demandsOf target graph)
 
 
+{-| Returns the member of each singleton `LSet` among the annotations, in order,
+skipping every other annotation.
+-}
 singletonIds : List Mono.LambdaSetAnno -> List Int
 singletonIds =
     List.filterMap
@@ -387,6 +435,9 @@ singletonIds =
         )
 
 
+{-| Tells whether an annotation is an `LSet` of exactly one member. No test uses
+it.
+-}
 isSingleton : Mono.LambdaSetAnno -> Bool
 isSingleton a =
     case a of
@@ -397,6 +448,9 @@ isSingleton a =
             False
 
 
+{-| Tells whether an annotation is an `LSet` of at least two members. No test
+uses it.
+-}
 isMulti : Mono.LambdaSetAnno -> Bool
 isMulti a =
     case a of
@@ -407,6 +461,9 @@ isMulti a =
             False
 
 
+{-| Tells whether an annotation is anything but an `LSet` of more than `n`
+members, so `LTop`, `LVar` and `LPartial` always pass.
+-}
 sizeAtMost : Int -> Mono.LambdaSetAnno -> Bool
 sizeAtMost n a =
     case a of
@@ -417,6 +474,10 @@ sizeAtMost n a =
             True
 
 
+{-| Returns the member count of an `LSet`, and a negative code for any other
+annotation: -1 for `LVar`, -2 for `LTop` and -3 for `LPartial`. No test uses
+it.
+-}
 annoSize : Mono.LambdaSetAnno -> Int
 annoSize a =
     case a of
@@ -433,6 +494,9 @@ annoSize a =
             -3
 
 
+{-| Tells whether an annotation is anything but an `LSet` of fewer than two
+members: it is `False` only for such an `LSet`.
+-}
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
     case anno of
@@ -449,6 +513,9 @@ neverFalselyComplete anno =
             List.length ms >= 2
 
 
+{-| Renders annotations for a failure message, each as its constructor name with
+the `LVar` number or the member count of an `LSet` or `LPartial`.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe annos =
     "["

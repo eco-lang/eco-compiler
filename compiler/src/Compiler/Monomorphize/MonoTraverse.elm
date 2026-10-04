@@ -6,15 +6,39 @@ module Compiler.Monomorphize.MonoTraverse exposing
     , collectSpecEdges
     )
 
-{-| Generic AST traversal abstractions for MonoExpr.
+{-| Walks over the expressions inside an expression, and over the types inside
+a node. A pass that only needs to reach the sub-expressions or the types of a
+node can use these walks instead of listing the `MonoExpr` constructors itself.
 
-This module provides two core traversal patterns:
+There are two kinds of walk, and they see different things. An expression walk
+visits sub-expressions: the callee and arguments of a call, a closure's captured
+values and its body, a let's definition and body, the conditions and branches
+of an `if`, and so on. It never looks at a type, a region, a destructuring path
+or a decision-tree path. A type walk visits every `MonoType` stored anywhere in
+a node, including those.
 
-  - **traverseExpr** - Context-threaded transformation (bottom-up)
-  - **foldExpr** - Pure fold/analysis (bottom-up)
+The expression walks run bottom-up: a node's children are visited before the
+node itself. Children are visited in a fixed order: a call's callee before its
+arguments; a closure's captures before its body; a let's definition before its
+body; each `if` condition before its branch, and the final `else` last; a
+record update's record before its fields. A `MonoCase` is visited through its
+decision tree first, then its list of jump targets. Only `Inline` leaves of the
+tree hold an expression; a `Jump` leaf holds only the number of a branch in the
+jump list, so it is visited there and not at the leaf. `traverseExpr`, `mapExpr`,
+`foldExpr`, `foldExprAccFirst` and `childrenOf` all follow this order.
 
-Each function handles structural recursion, calling the user-provided
-function on each node after processing children.
+The type walks, `mapNodeTypes` and `anyNodeType`, reach the same positions as
+each other: a node's own type and parameter types, every expression's type,
+destructuring and decision-tree paths, constructor field types, closure
+parameters, a closure's `captureAbi`, and a call's `captureAbi` and
+`evaluatorReturnType`. A caller that asks `anyNodeType` whether a node
+needs rewriting and then rewrites it with `mapNodeTypes` relies on that
+agreement.
+
+`collectSpecEdges` gives, for each specialization, the specializations its
+body names through a `MonoVarGlobal`. A **spec-reference edge** is any
+`MonoVarGlobal` in the body, wherever it occurs: as the head of a call, inside
+a partial application, or as a value stored in data.
 
 
 # Context-Threaded Traversal
@@ -53,28 +77,20 @@ import Compiler.AST.Monomorphized as Mono exposing (CallInfo, CaptureABI, Closur
 -- ============================================================================
 
 
-{-| Context-threaded transformation over expressions.
-The context is threaded through in evaluation order (left to right).
-The callback runs bottom-up (children first), EXACTLY ONCE per node.
+{-| Rewrites `expr` bottom-up with `f`, threading a context through the walk, and
+returns the rewritten expression with the final context.
 
-**The callback returns `( Maybe MonoExpr, ctx )`: `Nothing` means "I did not
-change this node".** That is what keeps the traversal from copying the tree.
-Its callers rewrite a few percent of the nodes they visit, and the walk below
-rebuilds a node only when one of its children (or the callback) actually
-returned something new — so an untouched subtree is returned as-is and costs
-zero allocation. Returning `Just expr` unchanged is legal (and is how a
-callback that only wants to update `ctx` at an untouched node says so); it
-just re-allocates the spine above it.
+`f` is called exactly once on every expression node, after its children, in
+the order the module docstring gives, and each call receives the context the
+previous call returned. It answers `Nothing` to leave the node as it is, or
+`Just` a replacement. The node it is given already holds its rewritten children.
 
-`f` is the user callback everywhere below: the children walk recurses through
-`travExpr f` as a saturated direct call, so no `travExpr f` PAP is built per
-node, and the def / decider / choice helpers apply the SAME single lift.
-(Until 2026-09-04 `traverseExprChildren` received the lifted function and
-`traverseDef`/`traverseDecider`/`traverseChoice` lifted it again, so every
-let-RHS and case-branch subtree was walked by `traverseExpr (traverseExpr f)`
-— exponential in let/case nesting, and `f` ran once per path. That was the
-Aug-26 -> Sep-3 self-compile regression: `plans/e4a-deferred-overlay.md`,
-`DEFECTS_DO_NOT_FORGET.md` §3.)
+A subtree in which `f` answered `Nothing` everywhere is returned as the same
+value that was passed in, not a copy. A `Just` answer, even one holding the
+same node, rebuilds every node above it.
+
+Calling `f` once per node matters: applying it once per path through nested
+lets and cases would multiply the work at every level of nesting.
 
 -}
 traverseExpr : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> MonoExpr -> ( MonoExpr, ctx )
@@ -91,7 +107,9 @@ traverseExpr f ctx expr =
             ( e, ctx1 )
 
 
-{-| `traverseExpr` for a callback that needs no context.
+{-| Rewrites `expr` bottom-up with `f`, as `traverseExpr` does but with no
+context: `Nothing` leaves a node as it is, and an unchanged subtree is returned
+as the same value.
 -}
 mapExpr : (MonoExpr -> Maybe MonoExpr) -> MonoExpr -> MonoExpr
 mapExpr f expr =
@@ -107,8 +125,9 @@ mapExpr f expr =
             e
 
 
-{-| The change-tracking walk. `Nothing` = this subtree is unchanged, so the
-caller keeps the node it already has and nothing is allocated on that path.
+{-| Returns the rewrite of `expr`, or `Nothing` when neither `f` nor any rewrite
+of its children changed it. The children are rewritten first and `f` is then
+called once on the node, rebuilt if a child changed.
 -}
 travExpr : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )
 travExpr f ctx expr =
@@ -133,8 +152,8 @@ travExpr f ctx expr =
                     ( mSelf, ctx2 )
 
 
-{-| Rebuild a node's direct children, keeping the node when nothing moved.
-`f` is the user callback; recursion is `travExpr f` (a direct saturated call).
+{-| Returns `expr` rebuilt around the rewrites of its direct children, or
+`Nothing` when no child changed. It does not call `f` on `expr` itself.
 -}
 travChildren : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )
 travChildren f ctx expr =
@@ -154,7 +173,6 @@ travChildren f ctx expr =
                             ( Nothing, ctx2 )
 
                         Just b ->
-                            -- body only: the ClosureInfo record is NOT copied
                             ( Just (MonoClosure info b closureType), ctx2 )
 
                 Just caps ->
@@ -332,7 +350,6 @@ travChildren f ctx expr =
                 Just e ->
                     ( Just (MonoTupleCreate region e resultType), ctx1 )
 
-        -- Leaf expressions - no children
         MonoLiteral _ _ ->
             ( Nothing, ctx )
 
@@ -352,6 +369,9 @@ travChildren f ctx expr =
             ( Nothing, ctx )
 
 
+{-| Returns a let definition with its bound expression rewritten, or `Nothing`
+when that expression did not change.
+-}
 travDef : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> MonoDef -> ( Maybe MonoDef, ctx )
 travDef f ctx def =
     case def of
@@ -380,6 +400,10 @@ travDef f ctx def =
                     ( Just (MonoTailDef name params b), ctx1 )
 
 
+{-| Returns a decision tree with the expressions of its `Inline` leaves rewritten,
+or `Nothing` when none changed. A `Chain` is walked success branch first, a
+`FanOut` its edges in order and then its fallback.
+-}
 travDecider : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> Decider MonoChoice -> ( Maybe (Decider MonoChoice), ctx )
 travDecider f ctx decider =
     case decider of
@@ -436,6 +460,9 @@ travDecider f ctx decider =
                     ( Just (FanOut path es (withDefaultDecider fallback mFallback)), ctx2 )
 
 
+{-| Returns an `Inline` leaf with its expression rewritten, or `Nothing` when it
+did not change. A `Jump` leaf has no expression and is never changed.
+-}
 travChoice : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> MonoChoice -> ( Maybe MonoChoice, ctx )
 travChoice f ctx choice =
     case choice of
@@ -455,9 +482,8 @@ travChoice f ctx choice =
             ( Nothing, ctx )
 
 
-{-| The list walks. Each recurses through `travExpr f` directly (no PAP per
-item), threads the context left to right, and returns `Nothing` — allocating
-no list at all — when no element changed.
+{-| Returns `items` with each element rewritten, left to right, or `Nothing` when
+none changed. An unchanged tail is kept as it is rather than rebuilt.
 -}
 travExprs : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> List MonoExpr -> ( Maybe (List MonoExpr), ctx )
 travExprs f ctx items =
@@ -486,6 +512,9 @@ travExprs f ctx items =
                     ( Just (x1 :: withDefaultExprs xs mxs), ctx2 )
 
 
+{-| Returns `items` with the expression of each pair rewritten, left to right, or
+`Nothing` when none changed. The keys are kept as they are.
+-}
 travKeyed : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> List ( k, MonoExpr ) -> ( Maybe (List ( k, MonoExpr )), ctx )
 travKeyed f ctx items =
     case items of
@@ -513,6 +542,10 @@ travKeyed f ctx items =
                     ( Just (( k, x1 ) :: withDefaultKeyed xs mxs), ctx2 )
 
 
+{-| Returns a closure's captures with each captured value rewritten, left to
+right, or `Nothing` when none changed. The name and flag of each capture are
+kept as they are.
+-}
 travCaptures : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> List ( n, MonoExpr, a ) -> ( Maybe (List ( n, MonoExpr, a )), ctx )
 travCaptures f ctx items =
     case items of
@@ -540,6 +573,9 @@ travCaptures f ctx items =
                     ( Just (( n, x1, t ) :: withDefaultCaptures xs mxs), ctx2 )
 
 
+{-| Returns the condition and branch pairs of an `if` with each rewritten,
+condition before branch and pair by pair, or `Nothing` when none changed.
+-}
 travBranches : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> List ( MonoExpr, MonoExpr ) -> ( Maybe (List ( MonoExpr, MonoExpr )), ctx )
 travBranches f ctx items =
     case items of
@@ -575,6 +611,9 @@ travBranches f ctx items =
                     ( Just (( c1, withDefaultExpr then_ mThen ) :: withDefaultBranches xs mxs), ctx3 )
 
 
+{-| Returns the edges of a `FanOut` with each edge's subtree rewritten, left to
+right, or `Nothing` when none changed. The tests are kept as they are.
+-}
 travEdges : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> List ( a, Decider MonoChoice ) -> ( Maybe (List ( a, Decider MonoChoice )), ctx )
 travEdges f ctx edges =
     case edges of
@@ -602,8 +641,9 @@ travEdges f ctx edges =
                     ( Just (( test, d1 ) :: withDefaultEdges rest mRest), ctx2 )
 
 
-{-| Monomorphic `Maybe.withDefault`s: they keep the hot walk free of a
-polymorphic kernel call per rebuilt node.
+{-| Returns the value in `m`, or `original` when `m` is `Nothing`. This and the
+other `withDefault*` functions are `Maybe.withDefault` written once per type,
+so that the walk makes no call to the polymorphic one.
 -}
 withDefaultExpr : MonoExpr -> Maybe MonoExpr -> MonoExpr
 withDefaultExpr original m =
@@ -615,6 +655,8 @@ withDefaultExpr original m =
             x
 
 
+{-| Returns the list in `m`, or `original` when `m` is `Nothing`.
+-}
 withDefaultExprs : List MonoExpr -> Maybe (List MonoExpr) -> List MonoExpr
 withDefaultExprs original m =
     case m of
@@ -625,6 +667,8 @@ withDefaultExprs original m =
             x
 
 
+{-| Returns the list in `m`, or `original` when `m` is `Nothing`.
+-}
 withDefaultKeyed : List ( k, MonoExpr ) -> Maybe (List ( k, MonoExpr )) -> List ( k, MonoExpr )
 withDefaultKeyed original m =
     case m of
@@ -635,6 +679,8 @@ withDefaultKeyed original m =
             x
 
 
+{-| Returns the captures in `m`, or `original` when `m` is `Nothing`.
+-}
 withDefaultCaptures : List ( n, MonoExpr, a ) -> Maybe (List ( n, MonoExpr, a )) -> List ( n, MonoExpr, a )
 withDefaultCaptures original m =
     case m of
@@ -645,6 +691,8 @@ withDefaultCaptures original m =
             x
 
 
+{-| Returns the branches in `m`, or `original` when `m` is `Nothing`.
+-}
 withDefaultBranches : List ( MonoExpr, MonoExpr ) -> Maybe (List ( MonoExpr, MonoExpr )) -> List ( MonoExpr, MonoExpr )
 withDefaultBranches original m =
     case m of
@@ -655,6 +703,8 @@ withDefaultBranches original m =
             x
 
 
+{-| Returns the decision tree in `m`, or `original` when `m` is `Nothing`.
+-}
 withDefaultDecider : Decider MonoChoice -> Maybe (Decider MonoChoice) -> Decider MonoChoice
 withDefaultDecider original m =
     case m of
@@ -665,6 +715,8 @@ withDefaultDecider original m =
             x
 
 
+{-| Returns the edges in `m`, or `original` when `m` is `Nothing`.
+-}
 withDefaultEdges : List ( a, Decider MonoChoice ) -> Maybe (List ( a, Decider MonoChoice )) -> List ( a, Decider MonoChoice )
 withDefaultEdges original m =
     case m of
@@ -681,13 +733,12 @@ withDefaultEdges original m =
 -- ============================================================================
 
 
-{-| Pure fold over expressions. Accumulates bottom-up
-(children are folded before the parent).
+{-| Folds `f` over every expression node in `expr`, starting from `acc`. A node's
+children are folded before the node, in the order the module docstring
+gives.
 
-Takes its arguments explicitly: written point-free (`foldExpr f = …`) this is
-declared arity 3 but defined with one parameter, so every one of its ~29 call
-sites paid a `papCreate` + `papExtend` and an indirect entry. Hot callers can
-skip the argument flip entirely by using `foldExprAccFirst`.
+`foldExprAccFirst` is the same fold with the callback's arguments the other
+way round, and avoids building a closure to swap them.
 
 -}
 foldExpr : (MonoExpr -> acc -> acc) -> acc -> MonoExpr -> acc
@@ -695,18 +746,16 @@ foldExpr f acc expr =
     foldExprAccFirst (\a e -> f e a) acc expr
 
 
-{-| Acc-first fold over expressions — the shape the internal loops want, so a
-caller that can supply it avoids the flip closure `foldExpr` builds.
+{-| Folds `f` over every expression node in `expr`, starting from `acc`, exactly
+as `foldExpr` does, but with a callback that takes the accumulator first.
 -}
 foldExprAccFirst : (acc -> MonoExpr -> acc) -> acc -> MonoExpr -> acc
 foldExprAccFirst f acc expr =
     f (foldChildren f acc expr) expr
 
 
-{-| Fold over direct children, recursing via `foldExprAccFirst` directly. The
-list walks are direct tail recursion rather than `List.foldl (\e a -> …)`: the
-lambda made HOF elimination leave a `papCreate` behind at every one of these
-nine sites, one per visited node with a list child.
+{-| Returns `acc` with every expression strictly below `expr` folded in, in the
+module's child order, without folding `expr` itself.
 -}
 foldChildren : (acc -> MonoExpr -> acc) -> acc -> MonoExpr -> acc
 foldChildren f acc expr =
@@ -747,7 +796,6 @@ foldChildren f acc expr =
         MonoTupleCreate _ elements _ ->
             foldExprs f acc elements
 
-        -- Leaf expressions - no children
         MonoLiteral _ _ ->
             acc
 
@@ -767,6 +815,8 @@ foldChildren f acc expr =
             acc
 
 
+{-| Returns `acc` with each expression of `items` folded in, left to right.
+-}
 foldExprs : (acc -> MonoExpr -> acc) -> acc -> List MonoExpr -> acc
 foldExprs f acc items =
     case items of
@@ -777,6 +827,9 @@ foldExprs f acc items =
             foldExprs f (foldExprAccFirst f acc x) xs
 
 
+{-| Returns `acc` with the expression of each pair in `items` folded in, left to
+right.
+-}
 foldKeyed : (acc -> MonoExpr -> acc) -> acc -> List ( k, MonoExpr ) -> acc
 foldKeyed f acc items =
     case items of
@@ -787,6 +840,8 @@ foldKeyed f acc items =
             foldKeyed f (foldExprAccFirst f acc x) xs
 
 
+{-| Returns `acc` with each captured value folded in, left to right.
+-}
 foldCaptures : (acc -> MonoExpr -> acc) -> acc -> List ( n, MonoExpr, a ) -> acc
 foldCaptures f acc items =
     case items of
@@ -797,6 +852,8 @@ foldCaptures f acc items =
             foldCaptures f (foldExprAccFirst f acc x) xs
 
 
+{-| Returns `acc` with each condition and then its branch folded in, pair by pair.
+-}
 foldBranches : (acc -> MonoExpr -> acc) -> acc -> List ( MonoExpr, MonoExpr ) -> acc
 foldBranches f acc items =
     case items of
@@ -807,6 +864,8 @@ foldBranches f acc items =
             foldBranches f (foldExprAccFirst f (foldExprAccFirst f acc cond) then_) xs
 
 
+{-| Returns `acc` with each edge's subtree folded in, left to right.
+-}
 foldEdges : (acc -> MonoExpr -> acc) -> acc -> List ( a, Decider MonoChoice ) -> acc
 foldEdges f acc edges =
     case edges of
@@ -817,6 +876,8 @@ foldEdges f acc edges =
             foldEdges f (foldDecider f acc d) rest
 
 
+{-| Returns `acc` with the bound expression of a let definition folded in.
+-}
 foldDef : (acc -> MonoExpr -> acc) -> acc -> MonoDef -> acc
 foldDef f acc def =
     case def of
@@ -827,6 +888,10 @@ foldDef f acc def =
             foldExprAccFirst f acc bound
 
 
+{-| Returns `acc` with the expressions of a decision tree's `Inline` leaves folded
+in. A `Chain` is folded success branch first, a `FanOut` its edges and then
+its fallback.
+-}
 foldDecider : (acc -> MonoExpr -> acc) -> acc -> Decider MonoChoice -> acc
 foldDecider f acc decider =
     case decider of
@@ -840,6 +905,9 @@ foldDecider f acc decider =
             foldDecider f (foldEdges f acc edges) fallback
 
 
+{-| Returns `acc` with an `Inline` leaf's expression folded in. A `Jump` leaf
+leaves it unchanged.
+-}
 foldChoice : (acc -> MonoExpr -> acc) -> acc -> MonoChoice -> acc
 foldChoice f acc choice =
     case choice of
@@ -856,13 +924,13 @@ foldChoice f acc choice =
 -- ============================================================================
 
 
-{-| The DIRECT sub-expressions of a node, in evaluation order (a `MonoDef`'s
-RHS, a decider's inline choices, jump bodies, captures...). Lets a caller
-write its own recursion — e.g. one that needs each child's SUBTREE result
-rather than a flat fold — without re-enumerating the constructors.
+{-| Returns the direct sub-expressions of `expr`, in the order the module
+docstring gives.
 
-Materialises a list, so it is for callers that want one (tests, censuses);
-anything hot should use `foldExprAccFirst`.
+It lets a caller write its own recursion, for instance one that needs a
+result per subtree rather than a single accumulator, without listing the
+constructors. It builds a list on every call, which `foldExprAccFirst` does
+not.
 
 -}
 childrenOf : MonoExpr -> List MonoExpr
@@ -923,6 +991,8 @@ childrenOf expr =
             []
 
 
+{-| Returns the bound expression of a let definition.
+-}
 defBody : MonoDef -> MonoExpr
 defBody def =
     case def of
@@ -933,7 +1003,8 @@ defBody def =
             e
 
 
-{-| Inline choice bodies of a decider, prepended (in order) to `rest`.
+{-| Returns the expressions of a decision tree's `Inline` leaves, in walk order,
+followed by `rest`.
 -}
 deciderExprs : Decider MonoChoice -> List MonoExpr -> List MonoExpr
 deciderExprs decider rest =
@@ -957,11 +1028,13 @@ deciderExprs decider rest =
 -- ============================================================================
 
 
-{-| Apply a `MonoType -> MonoType` function to EVERY MonoType embedded anywhere
-in a MonoNode. Total by construction over the AST (mirrors the shape of
-`Analysis.collectCustomTypesFrom*`): every constructor field that is, contains,
-or nests a MonoType is rewritten. Used by the quiescence closing pass to
-discharge residual number vars across the whole reachable graph.
+{-| Applies `f` to every `MonoType` stored anywhere in `node`, at the positions
+the module docstring lists, and returns the node rebuilt with the results.
+Unlike `traverseExpr`, it rebuilds the whole node even where `f` changes
+nothing.
+
+It must reach the same positions as `anyNodeType`.
+
 -}
 mapNodeTypes : (MonoType -> MonoType) -> MonoNode -> MonoNode
 mapNodeTypes f node =
@@ -991,11 +1064,17 @@ mapNodeTypes f node =
             Mono.MonoPortOutgoing (mapExprTypes f expr) (f t)
 
 
+{-| Applies `f` to each field type of a constructor shape.
+-}
 mapCtorShapeTypes : (MonoType -> MonoType) -> CtorShape -> CtorShape
 mapCtorShapeTypes f shape =
     { shape | fieldTypes = List.map f shape.fieldTypes }
 
 
+{-| Applies `f` to every type in `expr` and in each expression below it,
+including closure and call ABI records, destructuring paths and decision-tree
+paths.
+-}
 mapExprTypes : (MonoType -> MonoType) -> MonoExpr -> MonoExpr
 mapExprTypes f expr =
     case expr of
@@ -1054,6 +1133,9 @@ mapExprTypes f expr =
             Mono.MonoAccessorValue r n (f t)
 
 
+{-| Applies `f` to the types in a closure's captured values, its parameters and
+its `captureAbi`.
+-}
 mapClosureInfoTypes : (MonoType -> MonoType) -> ClosureInfo -> ClosureInfo
 mapClosureInfoTypes f info =
     { info
@@ -1063,6 +1145,9 @@ mapClosureInfoTypes f info =
     }
 
 
+{-| Applies `f` to a call's `captureAbi` and its `evaluatorReturnType`, the only
+types a `CallInfo` holds.
+-}
 mapCallInfoTypes : (MonoType -> MonoType) -> CallInfo -> CallInfo
 mapCallInfoTypes f info =
     { info
@@ -1071,6 +1156,8 @@ mapCallInfoTypes f info =
     }
 
 
+{-| Applies `f` to every capture, parameter and return type of a `CaptureABI`.
+-}
 mapCaptureAbiTypes : (MonoType -> MonoType) -> CaptureABI -> CaptureABI
 mapCaptureAbiTypes f abi =
     { abi
@@ -1080,6 +1167,9 @@ mapCaptureAbiTypes f abi =
     }
 
 
+{-| Applies `f` to the types in a let definition: a tail definition's parameter
+types and the bound expression.
+-}
 mapDefTypes : (MonoType -> MonoType) -> MonoDef -> MonoDef
 mapDefTypes f def =
     case def of
@@ -1090,11 +1180,15 @@ mapDefTypes f def =
             Mono.MonoTailDef n (List.map (\( nm, t ) -> ( nm, f t )) params) (mapExprTypes f e)
 
 
+{-| Applies `f` to a destructuring binding's type and to each step of its path.
+-}
 mapDestructorTypes : (MonoType -> MonoType) -> MonoDestructor -> MonoDestructor
 mapDestructorTypes f (Mono.MonoDestructor n path t) =
     Mono.MonoDestructor n (mapPathTypes f path) (f t)
 
 
+{-| Applies `f` to the type at every step of a destructuring path.
+-}
 mapPathTypes : (MonoType -> MonoType) -> MonoPath -> MonoPath
 mapPathTypes f path =
     case path of
@@ -1111,6 +1205,8 @@ mapPathTypes f path =
             Mono.MonoRoot n (f t)
 
 
+{-| Applies `f` to the type at every step of a decision-tree path.
+-}
 mapDtPathTypes : (MonoType -> MonoType) -> MonoDtPath -> MonoDtPath
 mapDtPathTypes f path =
     case path of
@@ -1124,6 +1220,9 @@ mapDtPathTypes f path =
             Mono.DtUnbox (f t) (mapDtPathTypes f rest)
 
 
+{-| Applies `f` to the paths of a decision tree's tests and to the expressions of
+its `Inline` leaves.
+-}
 mapDeciderTypes : (MonoType -> MonoType) -> Decider MonoChoice -> Decider MonoChoice
 mapDeciderTypes f decider =
     case decider of
@@ -1137,6 +1236,9 @@ mapDeciderTypes f decider =
             Mono.FanOut (mapDtPathTypes f p) (List.map (\( test, dec ) -> ( test, mapDeciderTypes f dec )) edges) (mapDeciderTypes f fallback)
 
 
+{-| Applies `f` to the types in an `Inline` leaf's expression. A `Jump` leaf is
+returned as it is.
+-}
 mapChoiceTypes : (MonoType -> MonoType) -> MonoChoice -> MonoChoice
 mapChoiceTypes f choice =
     case choice of
@@ -1153,15 +1255,9 @@ mapChoiceTypes f choice =
 -- ============================================================================
 
 
-{-| Does any MonoType embedded anywhere in this node satisfy `p`?
-
-Short-circuits on the first hit (`||` is lazy), and the list walks are direct
-tail recursion rather than `List.any (anyExprType p)` / `List.any (\x -> …)`,
-each of which allocated a PAP or a closure per visited node with a list child.
-The quiescence pass calls this over the whole reachable graph
-(`if anyNodeType hasResidual n then mapNodeTypes close n else n`), so it is
-the hottest member of this module.
-
+{-| Returns whether `p` holds for any `MonoType` stored in `node`, at the same
+positions `mapNodeTypes` reaches. It stops at the first type for which `p`
+holds.
 -}
 anyNodeType : (MonoType -> Bool) -> MonoNode -> Bool
 anyNodeType p node =
@@ -1191,6 +1287,9 @@ anyNodeType p node =
             p t || anyExprType p expr
 
 
+{-| Returns whether `p` holds for any type in `expr` or below it, at the same
+positions `mapExprTypes` reaches.
+-}
 anyExprType : (MonoType -> Bool) -> MonoExpr -> Bool
 anyExprType p expr =
     case expr of
@@ -1249,6 +1348,8 @@ anyExprType p expr =
             p t
 
 
+{-| Returns whether `p` holds for a type in any of `items`.
+-}
 anyExprs : (MonoType -> Bool) -> List MonoExpr -> Bool
 anyExprs p items =
     case items of
@@ -1259,6 +1360,8 @@ anyExprs p items =
             anyExprType p x || anyExprs p xs
 
 
+{-| Returns whether `p` holds for a type in the expression of any pair.
+-}
 anyKeyed : (MonoType -> Bool) -> List ( k, MonoExpr ) -> Bool
 anyKeyed p items =
     case items of
@@ -1269,6 +1372,8 @@ anyKeyed p items =
             anyExprType p x || anyKeyed p xs
 
 
+{-| Returns whether `p` holds for a type in any captured value.
+-}
 anyCaptures : (MonoType -> Bool) -> List ( n, MonoExpr, a ) -> Bool
 anyCaptures p items =
     case items of
@@ -1279,6 +1384,8 @@ anyCaptures p items =
             anyExprType p x || anyCaptures p xs
 
 
+{-| Returns whether `p` holds for a type in any condition or branch of an `if`.
+-}
 anyBranches : (MonoType -> Bool) -> List ( MonoExpr, MonoExpr ) -> Bool
 anyBranches p items =
     case items of
@@ -1289,6 +1396,8 @@ anyBranches p items =
             anyExprType p cond || anyExprType p then_ || anyBranches p xs
 
 
+{-| Returns whether `p` holds for any of `types`.
+-}
 anyType : (MonoType -> Bool) -> List MonoType -> Bool
 anyType p types =
     case types of
@@ -1299,6 +1408,8 @@ anyType p types =
             p t || anyType p rest
 
 
+{-| Returns whether `p` holds for the type of any parameter.
+-}
 anyParamType : (MonoType -> Bool) -> List ( n, MonoType ) -> Bool
 anyParamType p params =
     case params of
@@ -1309,6 +1420,9 @@ anyParamType p params =
             p t || anyParamType p rest
 
 
+{-| Returns whether `p` holds for a type in a closure's captured values,
+parameters or `captureAbi`.
+-}
 anyClosureInfoType : (MonoType -> Bool) -> ClosureInfo -> Bool
 anyClosureInfoType p info =
     anyCaptures p info.captures
@@ -1322,6 +1436,9 @@ anyClosureInfoType p info =
            )
 
 
+{-| Returns whether `p` holds for a call's `evaluatorReturnType` or a type in its
+`captureAbi`.
+-}
 anyCallInfoType : (MonoType -> Bool) -> CallInfo -> Bool
 anyCallInfoType p info =
     p info.evaluatorReturnType
@@ -1334,11 +1451,16 @@ anyCallInfoType p info =
            )
 
 
+{-| Returns whether `p` holds for any capture, parameter or return type of a
+`CaptureABI`.
+-}
 anyCaptureAbiType : (MonoType -> Bool) -> CaptureABI -> Bool
 anyCaptureAbiType p abi =
     anyType p abi.captureTypes || anyType p abi.paramTypes || p abi.returnType
 
 
+{-| Returns whether `p` holds for a type in a let definition.
+-}
 anyDefType : (MonoType -> Bool) -> MonoDef -> Bool
 anyDefType p def =
     case def of
@@ -1349,11 +1471,16 @@ anyDefType p def =
             anyParamType p params || anyExprType p e
 
 
+{-| Returns whether `p` holds for a destructuring binding's type or a type on its
+path.
+-}
 anyDestructorType : (MonoType -> Bool) -> MonoDestructor -> Bool
 anyDestructorType p (Mono.MonoDestructor _ path t) =
     p t || anyPathType p path
 
 
+{-| Returns whether `p` holds for the type at any step of a destructuring path.
+-}
 anyPathType : (MonoType -> Bool) -> MonoPath -> Bool
 anyPathType p path =
     case path of
@@ -1370,6 +1497,8 @@ anyPathType p path =
             p t
 
 
+{-| Returns whether `p` holds for the type at any step of a decision-tree path.
+-}
 anyDtPathType : (MonoType -> Bool) -> MonoDtPath -> Bool
 anyDtPathType p path =
     case path of
@@ -1383,6 +1512,9 @@ anyDtPathType p path =
             p t || anyDtPathType p rest
 
 
+{-| Returns whether `p` holds for a type on a test path or in an `Inline` leaf of
+a decision tree.
+-}
 anyDeciderType : (MonoType -> Bool) -> Decider MonoChoice -> Bool
 anyDeciderType p decider =
     case decider of
@@ -1396,6 +1528,8 @@ anyDeciderType p decider =
             anyDtPathType p pth || anyEdges p edges || anyDeciderType p fallback
 
 
+{-| Returns whether `p` holds for a type on the path of any test in a `Chain`.
+-}
 anyTests : (MonoType -> Bool) -> List ( MonoDtPath, a ) -> Bool
 anyTests p tests =
     case tests of
@@ -1406,6 +1540,8 @@ anyTests p tests =
             anyDtPathType p pth || anyTests p rest
 
 
+{-| Returns whether `p` holds for a type in any edge's subtree.
+-}
 anyEdges : (MonoType -> Bool) -> List ( a, Decider MonoChoice ) -> Bool
 anyEdges p edges =
     case edges of
@@ -1416,6 +1552,9 @@ anyEdges p edges =
             anyDeciderType p d || anyEdges p rest
 
 
+{-| Returns whether `p` holds for a type in an `Inline` leaf's expression. A
+`Jump` leaf has none.
+-}
 anyChoiceType : (MonoType -> Bool) -> MonoChoice -> Bool
 anyChoiceType p choice =
     case choice of
@@ -1431,34 +1570,28 @@ anyChoiceType p choice =
 -- ============================================================================
 
 
-{-| The spec-reference adjacency of a node array: index (= `SpecId`) to the
-`SpecId`s that node's body mentions.
+{-| Returns, for each entry of `nodes`, the SpecIds that the node's expression
+refers to through a `MonoVarGlobal`, at the same index, so the result is
+indexed by SpecId as `nodes` is. An empty entry stays `Nothing`. A SpecId
+appears once per reference, so it can be repeated, and the order is not
+meaningful.
 
-**Every `MonoVarGlobal` occurrence is an edge, whatever position it is in.** A
-spec is kept alive by a direct call, by a `papCreate` that names it, and by a
-bare reference stored into data — `plans/post-inline-dead-spec-prune.md` §3.1.
-Collecting only the shapes that "look like calls" is what broke
-`plans/prune-bitset-calledges-reachability.md`: an incomplete adjacency pruned
-live specs and 702 tests failed on MONO\_011 / CGEN\_044. So this is one
-`foldExpr` over the whole body with a single-constructor match, never a curated
-list of call forms.
+Every `MonoVarGlobal` counts, wherever it occurs: as the head of a call,
+inside a partial application, or as a value stored in data. A call's
+`fastEvaluatorSpec` is not read, so it adds no edge.
 
-`MonoGraph.callEdges` carries the same relation from monomorphization, but it
-is `Array.empty` after `MonoInlineSimplify` and stale after any rewrite, so
-both post-mono consumers (`Borrow`, the post-inline prune) re-collect with
-this.
-
-The node kinds with no expression — `MonoCtor`, `MonoEnum`, `MonoExtern`,
-`MonoManagerLeaf` — reference no spec: their payloads are a shape, an index, a
-type and a module name respectively.
+`MonoCtor`, `MonoEnum`, `MonoExtern` and `MonoManagerLeaf` nodes hold no
+expression and refer to nothing.
 
 -}
 collectSpecEdges : Array (Maybe MonoNode) -> Array (Maybe (List Mono.SpecId))
 collectSpecEdges nodes =
-    -- Array.map preserves index = SpecId, the shape both consumers expect.
     Array.map (Maybe.map specEdgesOfNode) nodes
 
 
+{-| Returns the SpecIds referred to by `MonoVarGlobal`s in `node`'s expression,
+or none for a node kind that has no expression.
+-}
 specEdgesOfNode : MonoNode -> List Mono.SpecId
 specEdgesOfNode node =
     case node of
@@ -1487,6 +1620,9 @@ specEdgesOfNode node =
             []
 
 
+{-| Returns the SpecId of every `MonoVarGlobal` in `body`, one per occurrence,
+most recently visited first.
+-}
 specEdgesOfExpr : MonoExpr -> List Mono.SpecId
 specEdgesOfExpr body =
     foldExprAccFirst

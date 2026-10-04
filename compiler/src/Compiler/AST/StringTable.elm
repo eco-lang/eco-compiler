@@ -6,31 +6,43 @@ module Compiler.AST.StringTable exposing
     , tableEncoder, tableDecoder
     )
 
-{-| Per-file string interning for `.ecot` / `typed-artifacts.dat`.
+{-| A binary encoding of compiled code repeats the same names, such as module,
+type and variable names, many times over, and this module lets an encoding
+store each distinct string once and refer to it by number, which is called
+_interning_ the strings.
 
-Every `.ecot` and `typed-artifacts.dat` artifact begins with a string-table
-preamble: one byte of index width (1 / 2 / 4 bytes per reference, chosen at
-encode time from table size), a u32 count of unique strings, and `count`
-length-prefixed UTF-8 strings (alphabetical for deterministic output). The
-body then encodes every formerly-`BE.string`-encoded field as an
-index-into-table value of the chosen width.
+A _string table_ is a list of distinct strings, each identified by its
+position, its _index_. An encoding that uses one writes the table first, as a
+_preamble_, and then writes each string field of its body as the index of that
+string rather than the string itself. The preamble is one byte giving the
+_index width_, the number of bytes each index takes in the body; an unsigned
+32-bit count of strings; and the strings in index order, each length-prefixed
+as `Utils.Bytes.Encode.string` writes it. Every number wider than a byte is
+big-endian.
 
-The same encoder primitives are used by callers that DO NOT want interning
-(e.g. legacy `.eci` / `.eco` paths): they pass the `disabled` sentinel, and
-`string`/`stringDec` fall through to the regular `BE.string` / `BD.string`
-inline encoding. This lets us keep a single set of encoder bodies for both
-interning and legacy callers.
+`build` makes a table from a set of strings. Its indices follow ascending
+`String` order, so each string's index depends only on which strings are in the
+set, not on the order they were gathered in. The width is 1, 2 or 4 bytes, the
+smallest of these that can hold every index: 1 byte for up to 256 strings,
+including none, 2 bytes for up to 65,536, and 4 bytes beyond that.
 
-Width selection:
+The table must hold every string the body will write, so the strings are
+gathered before the table is built, in a _collector_ (`collectAll`, `add`,
+`collected`), by a walk that must visit every string the encoding will write.
+A string missing from the table is not an error: `string` writes index 0 for
+it, which belongs to another string or to none, and the bytes decode, without
+error, to the wrong string.
 
-  - count ≤ 256 → width = 1 (u8)
-  - count ≤ 65,536 → width = 2 (u16, big-endian)
-  - otherwise → width = 4 (u32, big-endian)
+`disabled` is a table with index width 0, and with it `string` and
+`stringDec` write and read each string inline instead of as an index. A codec
+written against a `StringTable` therefore serves both an encoding with a
+preamble and one without.
 
-Determinism: the table is sorted alphabetically before index assignment,
-required by the bootstrap byte-equality fixed-point checks.
-
-See ECOT\_002 in design\_docs/invariants.csv.
+A collector can also be made, by `collectSupers`, to gather only the names
+that carry a _super constraint_: the restriction an Elm type variable is under
+when its name starts with `number`, `comparable`, `appendable` or
+`compappend`, as the tests in `Compiler.Data.Name` define it. Such a collector
+finds those names without building the set of every string.
 
 
 # Types
@@ -74,8 +86,13 @@ import Utils.Bytes.Encode as UBE
 -- TYPES
 
 
-{-| A built string table. `width` of 0 means "interning disabled — fall back
-to inline `BE.string` / `BD.string` encoding".
+{-| A string table: the strings an encoding refers to by index, and the index
+width it writes them with.
+
+`width` 0 means no table at all, and strings are written and read inline (see
+`disabled`). A table read by `tableDecoder` has an empty `strToIdx`, so, unless
+its width is 0, it can be used to decode but not to encode.
+
 -}
 type alias StringTable =
     { strToIdx : Dict String Int
@@ -88,16 +105,21 @@ type alias StringTable =
 -- BUILDERS
 
 
-{-| Sentinel for callers that want the encoder primitives to fall back to
-inline string encoding instead of interning.
+{-| The table that turns string interning off. Its index width is 0, so `string`
+writes each string inline, length-prefixed as `Utils.Bytes.Encode.string`
+writes it, and `stringDec` reads it back the same way.
 -}
 disabled : StringTable
 disabled =
     { strToIdx = Dict.empty, idxToStr = Array.empty, width = 0 }
 
 
-{-| Build a table from a set of unique strings. Sorted alphabetically;
-index width chosen by count.
+{-| Builds a table holding `strings`, indexed from 0 in ascending `String` order.
+
+The index width is 1 byte for up to 256 strings, 2 bytes for up to 65,536, and
+4 bytes beyond that. An empty set also gets width 1, so a built table is never
+mistaken for `disabled`.
+
 -}
 build : Set String -> StringTable
 build strings =
@@ -144,12 +166,13 @@ build strings =
 -- COLLECTION
 
 
-{-| Accumulator of the string collectors (ECOT\_002).
+{-| A set of strings being gathered, string by string, together with the rule
+for which strings it keeps.
 
-  - `CollectAll` gathers every emitted string, for the string-table build.
-  - `CollectSupers` keeps only the strings `TOpt.superOfName` maps to `Just`, so the
-    sweep that computes `varSupers` never builds the module-wide set
-    (cache-serialization plan S2).
+A collector is made by `collectAll`, which keeps every string it is given, or
+by `collectSupers`, which keeps only names that carry a super constraint. The
+rule is fixed when it is made. `add` gives it one string and `collected`
+returns what it has kept.
 
 -}
 type Collector
@@ -157,25 +180,30 @@ type Collector
     | CollectSupers (Set String)
 
 
-{-| A collector gathering every string.
+{-| An empty collector that keeps every string it is given.
 -}
 collectAll : Collector
 collectAll =
     CollectAll Set.empty
 
 
-{-| A collector keeping only super-constrained type-variable names.
+{-| An empty collector that keeps only the strings starting with `number`,
+`comparable`, `appendable` or `compappend`, the names that carry a super
+constraint.
+
+It tests the string alone, so it keeps any such string it is given, whether or
+not it names a type variable.
+
 -}
 collectSupers : Collector
 collectSupers =
     CollectSupers Set.empty
 
 
-{-| Add one emitted string.
+{-| Returns the collector `c` with `s` added, if `c` keeps strings like `s`.
 
-On a hit, return the SAME collector: no path copy and no rebalance, which
-`Set.insert` still pays for a present key. 99.9 % of collector inserts are
-repeats (plan S1).
+When `s` is already present, or is not one `c` keeps, `c` itself is returned.
+A repeated string therefore builds no new set.
 
 -}
 add : String -> Collector -> Collector
@@ -196,7 +224,7 @@ add s c =
                 c
 
 
-{-| The collected strings.
+{-| Returns the strings the collector has kept.
 -}
 collected : Collector -> Set String
 collected c =
@@ -208,8 +236,14 @@ collected c =
             set
 
 
-{-| MUST be the exact disjunction of the `Just` cases of `TOpt.superOfName`
-(pinned by `VarSupersEquivalenceTest`).
+{-| Tells whether `s` carries a super constraint, by the four prefix tests of
+`Compiler.Data.Name`.
+
+These are the same four tests for which
+`Compiler.AST.TypedOptimized.superOfName` returns `Just`, and the two must stay
+in step: a name this rejects is dropped by a `collectSupers` collector, whatever
+`superOfName` says of it.
+
 -}
 isSuperName : String -> Bool
 isSuperName s =
@@ -223,8 +257,14 @@ isSuperName s =
 -- FIELD ENCODERS
 
 
-{-| Encode a string field. With a real table, emits the index in the chosen
-width; with the disabled sentinel, falls back to inline `BE.string`.
+{-| Produces an encoder for the string `s` as `table` writes it: its index in
+the table's index width, or, with `disabled`, the string itself inline.
+
+A string that is not in the table is written as index 0, which belongs to
+another string or to none, so the bytes still decode but to the wrong string.
+A table read by `tableDecoder`, unless its width is 0, holds no index for any
+string, so it writes index 0 for all of them.
+
 -}
 string : StringTable -> String -> BE.Encoder
 string table s =
@@ -240,8 +280,6 @@ string table s =
                         i
 
                     Nothing ->
-                        -- Should not happen if collectStrings* matches the encoders.
-                        -- Emit 0 as a deterministic fallback so we don't crash mid-encode.
                         0
         in
         if table.width == 1 then
@@ -254,8 +292,13 @@ string table s =
             BE.unsignedInt32 Bytes.BE idx
 
 
-{-| Decode a string field. With a real table, reads the index and looks it
-up; with the disabled sentinel, falls back to inline `BD.string`.
+{-| Produces a decoder for a string written by `string` with the same table: an
+index in the table's index width, looked up in `table`, or, with `disabled`, a
+string read inline.
+
+An index with no string in the table decodes as the empty string, not as a
+failure.
+
 -}
 stringDec : StringTable -> BD.Decoder String
 stringDec table =
@@ -291,8 +334,9 @@ stringDec table =
 -- TABLE PREAMBLE
 
 
-{-| Encode the table preamble: width byte, u32 count, count × length-prefixed
-UTF-8 strings in alphabetical order.
+{-| Produces an encoder for the preamble of `table`: the index width as one
+byte, the number of strings as an unsigned 32-bit big-endian number, and the
+strings in index order, each length-prefixed.
 -}
 tableEncoder : StringTable -> BE.Encoder
 tableEncoder table =
@@ -308,11 +352,13 @@ tableEncoder table =
         ]
 
 
-{-| Decode the table preamble. The returned `StringTable` is ready to be
-passed through to body decoders.
+{-| A decoder for a preamble written by `tableEncoder`, giving the table that
+`stringDec` needs to read the body that follows.
 
-A decoded table is DECODE-ONLY: its `strToIdx` is left empty (the decoders read
-only `idxToStr`), so `string` on it would emit index 0 for every string.
+Unless its width is 0, the table it gives can decode but not encode: its
+`strToIdx` is empty, so `string` would write index 0 for every string. The
+width byte is taken as it is, so a preamble written from `disabled` gives a
+table that reads strings inline.
 
 -}
 tableDecoder : BD.Decoder StringTable
@@ -335,10 +381,16 @@ tableDecoder =
             )
 
 
+{-| Produces a decoder that reads `n` length-prefixed strings and returns the
+strings of `acc0`, which holds earlier ones newest first, in reverse, followed by
+the `n` new strings in the order they were read.
+
+It reads with `BD.loop` rather than one `andThen` per string, so that a long
+table does not nest one decoder call inside another for every string it holds.
+
+-}
 decodeStrings : Int -> List String -> BD.Decoder (List String)
 decodeStrings n acc0 =
-    -- BD.loop, not a recursive andThen chain: the chain overflows the JS stack
-    -- (bootstrap stages, elm-test) at tens of thousands of strings.
     BD.loop ( n, acc0 )
         (\( k, acc ) ->
             if k <= 0 then

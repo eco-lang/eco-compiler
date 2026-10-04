@@ -1,15 +1,49 @@
 module SourceIR.PhantomTypeVarCases exposing (expectSuite, suite)
 
-{-| Regression test for phantom type variable duplication in monomorphization.
+{-| Programs in which a constructor's type has a phantom type variable, and a
+check that the monomorphizer does not specialize that constructor once per
+phantom instantiation.
 
-When a constructor like `RErr (List e)` has type `List e -> RStep e a`,
-the phantom `a` can cause excess specializations if fresh MVarIds leak
-into SpecKeys. In the real compiler bootstrap, this causes OOM during
-Stage 5 as thousands of duplicate specializations accumulate.
+Monomorphization makes a separate copy, a _specialization_, of each definition
+and constructor for each concrete type it is used at. In
+`type RStep e a = ROk a | RErr (List e)`, the constructor `RErr` has type
+`List e -> RStep e a`: its argument does not mention `a`, so `a` is a _phantom_
+type variable for it. If the monomorphizer let a fresh variable standing for
+`a` into the key it files specializations under, uses of `RErr` at one concrete
+type would each get their own copy. Without `suite`'s count that would go
+unnoticed here: `expectMonomorphization` checks only that the graph has a
+`main` and at least one node.
 
-These tests verify the pattern compiles correctly. With the fix in place,
-`RErr` should have exactly 1 specialization per distinct (e) type, not
-per distinct (e, a) pair.
+The fixture is one module, `Test`, holding `RStep` and these annotated
+definitions:
+
+  - `mapStep : (a -> b) -> RStep e a -> RStep e b`, whose `RErr` branch builds
+    a new `RErr` from the old one's list, at the new phantom type `b`;
+  - `applyR : RStep e (a -> b) -> RStep e a -> RStep e b`, which, given an
+    `RErr` first argument, builds a new `RErr` from its list and otherwise
+    calls `mapStep`;
+  - `base : RStep String Int` and `idFunc : RStep String (Int -> Int)`, both
+    `ROk`;
+  - `r1 = applyR idFunc base` and `r2 = applyR idFunc r1`, both
+    `RStep String Int`;
+  - `testValue : Int`, a `case` on `r2` giving the `ROk` value or 0.
+
+Every `RErr` the program builds therefore has the one type
+`List String -> RStep String Int`.
+
+What the tests establish:
+
+  - `expectSuite` hands the module to the expectation function it is given; what
+    is checked depends on that function.
+  - `suite` runs `expectSuite` with `TestLogic.TestPipeline.expectMonomorphization`,
+    and also asserts that the monomorphized graph's registry, its table of
+    specializations, holds at most one specialization named `RErr`.
+
+Among what is not tested: a program using `RErr` at more than one error type,
+so that "one specialization per distinct `e`" is never checked beyond the
+single `String` case; that `RErr` is specialized at all, since a count of zero
+passes; and the `RErr` count under the solver engine, since `runToMono` uses
+the substitution engine.
 
 -}
 
@@ -39,6 +73,10 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization, runToMono)
 
 
+{-| The tests this module runs itself: the fixture through
+`expectMonomorphization`, and the check that `RErr` has at most one
+specialization.
+-}
 suite : Test
 suite =
     Test.describe "Phantom type variable specialization"
@@ -48,12 +86,18 @@ suite =
         ]
 
 
+{-| Creates a test, named `"Phantom type var "` followed by `condStr`, that
+passes when `expectFn` passes on the fixture module.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Phantom type var " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the one labelled case of this module, which applies `expectFn` to
+the fixture module.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Phantom type var via mapStep/applyR"
@@ -62,6 +106,8 @@ testCases expectFn =
     ]
 
 
+{-| The fixture module, `Test`, as the module docstring describes it.
+-}
 phantomTestModule : Src.Module
 phantomTestModule =
     let
@@ -75,8 +121,6 @@ phantomTestModule =
                 ]
             }
 
-        -- mapStep : (a -> b) -> RStep e a -> RStep e b
-        -- RErr branch reconstructs RErr at phantom type b
         mapStepDef : TypedDef
         mapStepDef =
             { name = "mapStep"
@@ -97,7 +141,6 @@ phantomTestModule =
                     ]
             }
 
-        -- applyR : RStep e (a -> b) -> RStep e a -> RStep e b
         applyRDef : TypedDef
         applyRDef =
             { name = "applyR"
@@ -170,10 +213,14 @@ phantomTestModule =
         []
 
 
-{-| Assert that the RErr constructor does not have more specializations
-than it should. With the phantom type var bug, RErr gets one spec per
-call site (due to distinct phantom MVarIds). Without the bug, RErr should
-have at most 1 specialization per distinct error type (just String here).
+{-| Creates an expectation that monomorphizing the fixture module with
+`TestLogic.TestPipeline.runToMono` succeeds and gives a registry in which at
+most one specialization is named `RErr`.
+
+The count covers every `Mono.Global` called `RErr`, whatever its module, and
+skips removed entries. Since every `RErr` the fixture builds has the same type,
+a count above one means `RErr` was specialized more than once for that type.
+
 -}
 assertNoPhantomDuplication : () -> Expectation
 assertNoPhantomDuplication () =
@@ -186,7 +233,6 @@ assertNoPhantomDuplication () =
                 (Mono.MonoGraph data) =
                     monoGraph
 
-                -- Count specializations of RErr by scanning registry
                 rerrCount =
                     Array.foldl
                         (\maybeEntry count ->
@@ -204,8 +250,6 @@ assertNoPhantomDuplication () =
                         0
                         data.registry.reverseMapping
             in
-            -- With only one error type (String), RErr should have at most 1 spec.
-            -- With the phantom bug, it gets one per applyR/mapStep call site.
             if rerrCount > 1 then
                 Expect.fail
                     ("RErr has "

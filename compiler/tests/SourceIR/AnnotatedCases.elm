@@ -1,9 +1,46 @@
 module SourceIR.AnnotatedCases exposing (expectSuite)
 
-{-| Tests for type-annotated definitions with polymorphic type variables.
+{-| Source programs in which every top-level definition carries a type
+annotation, for a compiler stage to be tested on. In most cases the program's
+function has type variables in its annotation, and is used by a value whose
+annotation is concrete.
 
-These tests are designed to verify that type inference works correctly
-when type annotations with polymorphic type variables are present.
+A type variable in an annotation, such as the `a` in `identity : a -> a`, is
+named by the programmer rather than invented by inference, and each use of the
+definition fills it in afresh. Here each use sits in a definition with a
+concrete annotation of its own, but that does not fix every type variable: in
+the `testValue` of the `flip`, `compose` and `on` cases, a type variable is
+filled only by an integer literal, which no annotation pins to `Int`.
+
+This module asserts nothing itself. `expectSuite` hands each program it builds
+to the caller's expectation function, which decides what the program is run
+through and what counts as passing.
+
+Each case is one module named `Test`, made with
+`Compiler.AST.SourceBuilder.makeModuleWithTypedDefs`, so it has that builder's
+imports and every one of its top-level definitions is annotated. Each ends with
+a value named `testValue`, with a concrete annotation, which applies the case's
+function; some cases also define a value named `test` that uses it at a second
+set of types. Each case's docstring gives the program it builds as Elm source.
+
+The cases, by group:
+
+  - Basic: `identity : a -> a` and `const : a -> b -> a`, each applied once,
+    and `boolIdentity : Bool -> Bool`, whose annotation has no type variable.
+  - Polymorphic functions: `apply`, used once at `Bool` and once at `String`,
+    and `flip`.
+  - Higher-order functions: `compose`, used twice at different types, and
+    `on`.
+  - Multiple type variables: functions returning pairs, `( a, b )`,
+    `( a, a )`, and `( a, a )` from two arguments where the second is unused.
+  - Records: functions returning the closed record types `{ x : a, y : b }`
+    and `{ x : a, y : a }`.
+  - Tuples: a function returning the nested pair `( ( a, b ), ( b, a ) )`.
+
+Among what is not tested: annotations naming a custom type or type alias
+declared in the program, extensible record types, annotations using
+constrained type variables such as `number` or `comparable`, annotations on
+definitions inside a `let`, and programs that should fail to type check.
 
 -}
 
@@ -32,11 +69,22 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named `"Annotated definitions "` followed by `condStr`,
+that passes each case's program to `expectFn` in turn.
+
+The cases run in the order the module docstring lists them, through
+`Compiler.BulkCheck.bulkCheck`, so the first case that fails ends the test and
+is the only one reported.
+
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Annotated definitions " ++ condStr) (\() -> bulkCheck (testCases expectFn))
 
 
+{-| Returns every case in this module, each checked by `expectFn`, group by
+group.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     basicAnnotatedCases expectFn
@@ -53,6 +101,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases for the identity and const functions and the
+`Bool -> Bool` identity, each checked by `expectFn`.
+-}
 basicAnnotatedCases : (Src.Module -> Expectation) -> List TestCase
 basicAnnotatedCases expectFn =
     [ { label = "Identity with annotation", run = identityAnnotated expectFn }
@@ -61,13 +112,20 @@ basicAnnotatedCases expectFn =
     ]
 
 
-{-| identity : a -> a
-identity x = x
+{-| Returns `expectFn`'s expectation for this program:
+
+    identity : a -> a
+    identity x =
+        x
+
+    testValue : Int
+    testValue =
+        identity 1
+
 -}
 identityAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 identityAnnotated expectFn _ =
     let
-        -- Type: a -> a
         tipe =
             tLambda (tVar "a") (tVar "a")
 
@@ -88,13 +146,20 @@ identityAnnotated expectFn _ =
     expectFn modul
 
 
-{-| const : a -> b -> a
-const x y = x
+{-| Returns `expectFn`'s expectation for this program:
+
+    const : a -> b -> a
+    const x y =
+        x
+
+    testValue : Int
+    testValue =
+        const 42 "hello"
+
 -}
 constAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 constAnnotated expectFn _ =
     let
-        -- Type: a -> b -> a
         tipe =
             tLambda (tVar "a") (tLambda (tVar "b") (tVar "a"))
 
@@ -115,13 +180,21 @@ constAnnotated expectFn _ =
     expectFn modul
 
 
-{-| boolIdentity : Bool -> Bool
-boolIdentity x = x
+{-| Returns `expectFn`'s expectation for this program, whose annotations have
+no type variables:
+
+    boolIdentity : Bool -> Bool
+    boolIdentity x =
+        x
+
+    testValue : Bool
+    testValue =
+        boolIdentity True
+
 -}
 boolIdentity : (Src.Module -> Expectation) -> (() -> Expectation)
 boolIdentity expectFn _ =
     let
-        -- Type: Bool -> Bool
         tipe =
             tLambda (tType "Bool" []) (tType "Bool" [])
 
@@ -148,6 +221,9 @@ boolIdentity expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for the apply and flip functions, each checked by
+`expectFn`.
+-}
 polymorphicCases : (Src.Module -> Expectation) -> List TestCase
 polymorphicCases expectFn =
     [ { label = "Apply with usage", run = applyWithUsage expectFn }
@@ -155,21 +231,29 @@ polymorphicCases expectFn =
     ]
 
 
-{-| apply : (a -> b) -> a -> b
-apply f x = f x
+{-| Returns `expectFn`'s expectation for this program, which uses `apply` at
+two different types:
 
-test = apply (\\n -> n) True
+    apply : (a -> b) -> a -> b
+    apply f x =
+        f x
+
+    test : Bool
+    test =
+        apply (\n -> n) True
+
+    testValue : String
+    testValue =
+        apply (\n -> n) "hello"
 
 -}
 applyWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)
 applyWithUsage expectFn _ =
     let
-        -- apply : (a -> b) -> a -> b
         applyType =
             tLambda (tLambda (tVar "a") (tVar "b"))
                 (tLambda (tVar "a") (tVar "b"))
 
-        -- test : Bool
         testType =
             tType "Bool" []
 
@@ -203,13 +287,20 @@ applyWithUsage expectFn _ =
     expectFn modul
 
 
-{-| flip : (a -> b -> c) -> b -> a -> c
-flip f y x = f x y
+{-| Returns `expectFn`'s expectation for this program:
+
+    flip : (a -> b -> c) -> b -> a -> c
+    flip f y x =
+        f x y
+
+    testValue : Float
+    testValue =
+        flip (\a b -> 3.14) "world" 7
+
 -}
 flipAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 flipAnnotated expectFn _ =
     let
-        -- Type: (a -> b -> c) -> b -> a -> c
         tipe =
             tLambda
                 (tLambda (tVar "a") (tLambda (tVar "b") (tVar "c")))
@@ -243,6 +334,9 @@ flipAnnotated expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for the compose and on functions, each checked by
+`expectFn`.
+-}
 higherOrderAnnotatedCases : (Src.Module -> Expectation) -> List TestCase
 higherOrderAnnotatedCases expectFn =
     [ { label = "Compose with usage", run = composeWithUsage expectFn }
@@ -250,23 +344,31 @@ higherOrderAnnotatedCases expectFn =
     ]
 
 
-{-| compose : (b -> c) -> (a -> b) -> a -> c
-compose f g x = f (g x)
+{-| Returns `expectFn`'s expectation for this program, which uses `compose`
+at two different sets of types:
 
-test = compose (\\x -> x) (\\y -> y) True
+    compose : (b -> c) -> (a -> b) -> a -> c
+    compose f g x =
+        f (g x)
+
+    test : Bool
+    test =
+        compose (\x -> x) (\y -> y) True
+
+    testValue : String
+    testValue =
+        compose (\x -> "result") (\y -> 1) 42
 
 -}
 composeWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)
 composeWithUsage expectFn _ =
     let
-        -- compose : (b -> c) -> (a -> b) -> a -> c
         composeType =
             tLambda (tLambda (tVar "b") (tVar "c"))
                 (tLambda (tLambda (tVar "a") (tVar "b"))
                     (tLambda (tVar "a") (tVar "c"))
                 )
 
-        -- test : Bool
         testType =
             tType "Bool" []
 
@@ -302,13 +404,23 @@ composeWithUsage expectFn _ =
     expectFn modul
 
 
-{-| on : (b -> b -> c) -> (a -> b) -> a -> a -> c
-on f g x y = f (g x) (g y)
+{-| Returns `expectFn`'s expectation for this program:
+
+    on : (b -> b -> c) -> (a -> b) -> a -> a -> c
+    on f g x y =
+        f (g x) (g y)
+
+    testValue : Float
+    testValue =
+        on (\a b -> 1.0) (\a -> "x") 1 2
+
+The `1.0` is built as a `Float` literal, though the spelling stored with it is
+`1`.
+
 -}
 onAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 onAnnotated expectFn _ =
     let
-        -- Type: (b -> b -> c) -> (a -> b) -> a -> a -> c
         tipe =
             tLambda (tLambda (tVar "b") (tLambda (tVar "b") (tVar "c")))
                 (tLambda (tLambda (tVar "a") (tVar "b"))
@@ -348,6 +460,9 @@ onAnnotated expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for functions that return pairs, each checked by
+`expectFn`.
+-}
 multipleTypeVarCases : (Src.Module -> Expectation) -> List TestCase
 multipleTypeVarCases expectFn =
     [ { label = "Pair function", run = pairAnnotated expectFn }
@@ -356,13 +471,20 @@ multipleTypeVarCases expectFn =
     ]
 
 
-{-| pair : a -> b -> ( a, b )
-pair x y = ( x, y )
+{-| Returns `expectFn`'s expectation for this program:
+
+    pair : a -> b -> ( a, b )
+    pair x y =
+        ( x, y )
+
+    testValue : ( Int, String )
+    testValue =
+        pair 1 "hello"
+
 -}
 pairAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 pairAnnotated expectFn _ =
     let
-        -- Type: a -> b -> ( a, b )
         tipe =
             tLambda (tVar "a")
                 (tLambda (tVar "b") (tTuple (tVar "a") (tVar "b")))
@@ -384,13 +506,20 @@ pairAnnotated expectFn _ =
     expectFn modul
 
 
-{-| wrapInTuple : a -> ( a, a )
-wrapInTuple x = ( x, x )
+{-| Returns `expectFn`'s expectation for this program:
+
+    wrapInTuple : a -> ( a, a )
+    wrapInTuple x =
+        ( x, x )
+
+    testValue : ( Float, Float )
+    testValue =
+        wrapInTuple 2.5
+
 -}
 wrapInTupleAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 wrapInTupleAnnotated expectFn _ =
     let
-        -- Type: a -> ( a, a )
         tipe =
             tLambda (tVar "a") (tTuple (tVar "a") (tVar "a"))
 
@@ -411,13 +540,21 @@ wrapInTupleAnnotated expectFn _ =
     expectFn modul
 
 
-{-| constTuple : a -> b -> ( a, a )
-constTuple x y = ( x, x )
+{-| Returns `expectFn`'s expectation for this program, in which the type
+variable `b` appears only in an argument the body ignores:
+
+    constTuple : a -> b -> ( a, a )
+    constTuple x y =
+        ( x, x )
+
+    testValue : ( Int, Int )
+    testValue =
+        constTuple 5 "ignored"
+
 -}
 constTupleAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 constTupleAnnotated expectFn _ =
     let
-        -- Type: a -> b -> ( a, a )
         tipe =
             tLambda (tVar "a") (tLambda (tVar "b") (tTuple (tVar "a") (tVar "a")))
 
@@ -444,6 +581,9 @@ constTupleAnnotated expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for functions that return records, each checked by
+`expectFn`.
+-}
 recordTypeCases : (Src.Module -> Expectation) -> List TestCase
 recordTypeCases expectFn =
     [ { label = "Make record", run = makeRecordAnnotated expectFn }
@@ -451,13 +591,20 @@ recordTypeCases expectFn =
     ]
 
 
-{-| makeXY : a -> b -> { x : a, y : b }
-makeXY x y = { x = x, y = y }
+{-| Returns `expectFn`'s expectation for this program:
+
+    makeXY : a -> b -> { x : a, y : b }
+    makeXY x y =
+        { x = x, y = y }
+
+    testValue : { x : Int, y : String }
+    testValue =
+        makeXY 10 "world"
+
 -}
 makeRecordAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 makeRecordAnnotated expectFn _ =
     let
-        -- Type: a -> b -> { x : a, y : b }
         tipe =
             tLambda (tVar "a")
                 (tLambda (tVar "b")
@@ -481,13 +628,20 @@ makeRecordAnnotated expectFn _ =
     expectFn modul
 
 
-{-| makeSame : a -> { x : a, y : a }
-makeSame val = { x = val, y = val }
+{-| Returns `expectFn`'s expectation for this program:
+
+    makeSame : a -> { x : a, y : a }
+    makeSame val =
+        { x = val, y = val }
+
+    testValue : { x : Float, y : Float }
+    testValue =
+        makeSame 9.9
+
 -}
 makeRecordSameTypeAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 makeRecordSameTypeAnnotated expectFn _ =
     let
-        -- Type: a -> { x : a, y : a }
         tipe =
             tLambda (tVar "a")
                 (tRecord [ ( "x", tVar "a" ), ( "y", tVar "a" ) ])
@@ -515,19 +669,29 @@ makeRecordSameTypeAnnotated expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the case for a function that returns a nested pair, checked by
+`expectFn`.
+-}
 tupleTypeCases : (Src.Module -> Expectation) -> List TestCase
 tupleTypeCases expectFn =
     [ { label = "Nest tuple", run = nestTupleAnnotated expectFn }
     ]
 
 
-{-| nest : a -> b -> ( ( a, b ), ( b, a ) )
-nest x y = ( ( x, y ), ( y, x ) )
+{-| Returns `expectFn`'s expectation for this program:
+
+    nest : a -> b -> ( ( a, b ), ( b, a ) )
+    nest x y =
+        ( ( x, y ), ( y, x ) )
+
+    testValue : ( ( Int, String ), ( String, Int ) )
+    testValue =
+        nest 3 "abc"
+
 -}
 nestTupleAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
 nestTupleAnnotated expectFn _ =
     let
-        -- Type: a -> b -> ( ( a, b ), ( b, a ) )
         tipe =
             tLambda (tVar "a")
                 (tLambda (tVar "b")

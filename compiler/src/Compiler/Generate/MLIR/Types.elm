@@ -9,55 +9,51 @@ module Compiler.Generate.MLIR.Types exposing
     , ctorSlotTypes, isAggCustomType, isAggTupleType, isAggValueType, tupleSlotTypes
     )
 
-{-| MLIR type definitions and conversions.
+{-| The MLIR back end has to decide, for every Elm value, whether it travels as
+a raw machine value or as a pointer to a heap object, and this module is where
+those decisions are made.
 
-This module provides:
+A value that travels as a machine value is _unboxed_: an Int is an `i64`, a
+Float an `f64`, a Char an `i16`. Any other value is _boxed_: it is a
+`!eco.value`, a reference to a heap object or an embedded constant. The
+decision depends on the context the value is in, and the module rests on three
+rules, one per context.
 
-  - Eco dialect primitive types (ecoValue, ecoInt, ecoFloat, ecoChar)
-  - MonoType to MlirType conversion for different contexts
-  - Function type utilities
-  - Runtime layout types and computation (for codegen)
+The _ABI type_ of a value, given by `monoTypeToAbi`, is its type at a boundary
+between pieces of code: function parameters and results, closure captures,
+and the operands of partial applications. Int, Float, Char and a number type
+variable (`MVar _ CNumber`, which is `i64`) are unboxed there, and everything
+else, Bool included, is `!eco.value`.
 
+The _operand type_ of a value, given by `monoTypeToOperand`, is its type as an
+SSA value inside a function. It is the ABI type except that a Bool is `i1`, so
+that it can drive a branch directly. A Bool read from a boundary or from the
+heap is a `!eco.value` and has to be unboxed before it can be used as an `i1`.
 
-# Eco Dialect Types
+Inside a heap object (a record, tuple or constructor) only Int, Float and Char
+fields are stored unboxed. A number type variable is boxed there, although it
+is `i64` at the ABI.
+
+The rest of the module is the heap rule worked out for each kind of object. A
+_layout_ says where each field of a record, tuple or constructor goes and
+whether it is unboxed. Each layout carries an _unboxed bitmap_, an `Int` with
+two bits per slot, slot `i` occupying bits `2i` and `2i + 1`, holding the slot
+kind: 0 boxed, 1 Int, 2 Float, 3 Char. A record field at index 26 or above,
+and a constructor field at index 24 or above, is stored boxed even when it
+could be unboxed.
+
+The module also recognises _value aggregates_: tuples and constructors held
+as SSA values, of types such as `!eco.tuple2<..>` and `!eco.custom<..>`,
+rather than as heap objects.
 
 @docs ecoValue, ecoInt, ecoFloat, ecoChar
-
-
-# Type Conversion by Context
-
-These functions implement the invariant rules for type representation in different contexts.
-See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_001, CGEN\_012.
-
 @docs monoTypeToAbi, monoTypeToOperand
-
-
-# Type String Conversion
-
 @docs mlirTypeToString
-
-
-# Function Type Utilities
-
 @docs isFunctionType, countTotalArity, isEcoValueType
-
-
-# Primitive Type Checks
-
 @docs isUnboxable, mlirTypeToKind, bitmapSetKind
-
-
-# Runtime Layouts
-
-Layout types are codegen-specific (they contain unboxing decisions).
-These are computed from MonoType shapes during code generation.
-
 @docs RecordLayout, FieldInfo, TupleLayout, CtorLayout
-
-
-# Layout Computation
-
 @docs computeRecordLayout, computeTupleLayout, computeCtorLayout
+@docs ctorSlotTypes, isAggCustomType, isAggTupleType, isAggValueType, tupleSlotTypes
 
 -}
 
@@ -68,31 +64,32 @@ import Mlir.Mlir exposing (MlirType(..))
 
 
 
--- ====== ECO DIALECT TYPES ======
+-- ECO DIALECT TYPES
 
 
-{-| eco.value - boxed runtime value
+{-| The type of a boxed value, `!eco.value`: a reference to a heap object or
+an embedded constant.
 -}
 ecoValue : MlirType
 ecoValue =
     NamedStruct "eco.value"
 
 
-{-| eco.int - unboxed 64-bit signed integer
+{-| The type of an unboxed Int, a 64-bit integer.
 -}
 ecoInt : MlirType
 ecoInt =
     I64
 
 
-{-| eco.float - unboxed 64-bit float
+{-| The type of an unboxed Float, a 64-bit float.
 -}
 ecoFloat : MlirType
 ecoFloat =
     F64
 
 
-{-| eco.char - unboxed character (i16 unicode codepoint, BMP only)
+{-| The type of an unboxed Char, a 16-bit integer.
 -}
 ecoChar : MlirType
 ecoChar =
@@ -100,30 +97,12 @@ ecoChar =
 
 
 
--- ============================================================================
--- TYPE CONVERSION BY CONTEXT (Invariant Implementation)
--- ============================================================================
---
--- These three functions implement the invariant rules for type representation:
---
---   canUnbox        : Heap/Closure boundary - which MonoTypes can be stored unboxed
---   monoTypeToAbi   : ABI/Closure boundary - function params, returns, closure captures
---   monoTypeToOperand : SSA operand context - internal operations where i1 is valid
---
--- Key rule: Only Int, Float, and Char are unboxable. Bool is NEVER unboxable.
--- Bool may be i1 in SSA operand context but must be !eco.value at ABI/Heap/Closure.
---
--- See: REP_ABI_001, REP_CLOSURE_001, REP_SSA_001, CGEN_012, CGEN_026
--- ============================================================================
+-- TYPE CONVERSION BY CONTEXT
 
 
-{-| Check if a MonoType can be stored unboxed in heap objects and closures.
-
-**Implements**: CGEN\_026, REP\_CLOSURE\_001 (Heap and Closure boundaries)
-
-Only Int, Float, and Char can be unboxed. Bool is NOT unboxable - it must be
-stored as !eco.value in heap objects and closures.
-
+{-| Returns whether a value of the given type is stored unboxed in a heap
+object: true for Int, Float and Char only. A number type variable is not
+unboxed here, although `monoTypeToAbi` makes it `i64`.
 -}
 canUnbox : Mono.MonoType -> Bool
 canUnbox monoType =
@@ -141,19 +120,12 @@ canUnbox monoType =
             False
 
 
-{-| Convert a MonoType to MLIR type for ABI and Closure boundaries.
+{-| Returns the ABI type of a value of the given type: its MLIR type as a
+function parameter or result, a closure capture, or an operand of a partial
+application.
 
-**Implements**: REP\_ABI\_001, REP\_CLOSURE\_001, CGEN\_012 (ABI and Closure boundaries)
-
-Use this for:
-
-  - Function parameter types
-  - Function return types
-  - Closure capture types
-  - papCreate/papExtend operand types
-
-At these boundaries, only Int (i64), Float (f64), and Char (i16) use primitive
-MLIR types. All other types INCLUDING Bool use !eco.value.
+Int is `i64`, Float `f64`, Char `i16`, and a number type variable `i64`.
+Every other type, Bool included, is `!eco.value`.
 
 -}
 monoTypeToAbi : Mono.MonoType -> MlirType
@@ -169,27 +141,17 @@ monoTypeToAbi monoType =
             ecoChar
 
         Mono.MVar _ Mono.CNumber ->
-            -- Constrained number variables are i64 at ABI
             I64
 
         _ ->
-            -- Everything else is !eco.value at ABI, including Bool and MVar
             ecoValue
 
 
-{-| Convert a MonoType to MLIR type for SSA operand context.
+{-| Returns the operand type of a value of the given type: its MLIR type as an
+SSA value inside a function.
 
-**Implements**: REP\_SSA\_001 (SSA operand context)
-
-Use this for internal SSA operations where Bool may be represented as i1,
-such as:
-
-  - Case scrutinee values
-  - If condition values
-  - Intermediate values in control flow
-
-In SSA context, Bool becomes i1 because it's used for control flow decisions.
-This is the ONLY context where i1 is valid for Bool.
+This is the ABI type of `monoTypeToAbi` except for Bool, which is `i1`. A
+function type is `!eco.value` whatever its lambda set.
 
 -}
 monoTypeToOperand : Mono.MonoType -> MlirType
@@ -226,8 +188,6 @@ monoTypeToOperand monoType =
             ecoValue
 
         Mono.MFunction _ _ _ _ ->
-            -- Layout ignores the lambda-set annotation: an arrow is a boxed
-            -- closure value regardless of its set (REP_* untouched).
             ecoValue
 
         Mono.MVar _ constraint_ ->
@@ -240,10 +200,10 @@ monoTypeToOperand monoType =
 
 
 
--- ====== FUNCTION TYPE UTILITIES ======
+-- FUNCTION TYPE UTILITIES
 
 
-{-| Check if a MonoType is a function type.
+{-| Returns whether the type is a function type.
 -}
 isFunctionType : Mono.MonoType -> Bool
 isFunctionType monoType =
@@ -255,7 +215,9 @@ isFunctionType monoType =
             False
 
 
-{-| Count the total number of arguments in a curried function type.
+{-| Returns the number of arguments a function type takes across all its
+stages, counting the arguments of each nested result function. A type that is
+not a function has 0.
 -}
 countTotalArity : Mono.MonoType -> Int
 countTotalArity monoType =
@@ -268,10 +230,10 @@ countTotalArity monoType =
 
 
 
--- ====== TYPE INSPECTION ======
+-- TYPE INSPECTION
 
 
-{-| Check if an MLIR type is eco.value (boxed).
+{-| Returns whether the MLIR type is `!eco.value`.
 -}
 isEcoValueType : MlirType -> Bool
 isEcoValueType ty =
@@ -283,8 +245,9 @@ isEcoValueType ty =
             False
 
 
-{-| Check if an MLIR type is a VALUE-level tuple aggregate
-(`!eco.tuple2<...>` / `!eco.tuple3<...>`, U-T1.3.1 promoted form).
+{-| Returns whether the MLIR type is a tuple value aggregate, a
+`!eco.tuple2<..>` or `!eco.tuple3<..>`. The test is on the start of the type's
+name.
 -}
 isAggTupleType : MlirType -> Bool
 isAggTupleType ty =
@@ -296,8 +259,8 @@ isAggTupleType ty =
             False
 
 
-{-| Check if an MLIR type is a VALUE-level custom aggregate
-(`!eco.custom<...>`, U-T1.3.2 promoted ctor form).
+{-| Returns whether the MLIR type is a constructor value aggregate, a
+`!eco.custom<..>`. The test is on the start of the type's name.
 -}
 isAggCustomType : MlirType -> Bool
 isAggCustomType ty =
@@ -309,15 +272,16 @@ isAggCustomType ty =
             False
 
 
-{-| Any promoted value-aggregate form (tuple or custom).
+{-| Returns whether the MLIR type is a value aggregate of either kind, tuple or
+constructor.
 -}
 isAggValueType : MlirType -> Bool
 isAggValueType ty =
     isAggTupleType ty || isAggCustomType ty
 
 
-{-| Check if an MlirType is an unboxable primitive type (i64, f64, or i16 for char).
-Primitive types are stored unboxed in the heap.
+{-| Returns whether the MLIR type is one of the unboxed primitive types,
+`i64`, `f64` or `i16`. `i1` is not among them.
 -}
 isUnboxable : MlirType -> Bool
 isUnboxable ty =
@@ -335,14 +299,9 @@ isUnboxable ty =
             False
 
 
-{-| Encode an `MlirType` as a 2-bit primitive kind matching
-`encodeUnboxedKind` for `MonoType`:
-
-  - `I64` -> 1 (Int)
-  - `F64` -> 2 (Float)
-  - `I16` -> 3 (Char)
-  - anything else -> 0 (boxed)
-
+{-| Returns the slot kind of a value of the given MLIR type, for an unboxed
+bitmap: 1 for `i64`, 2 for `f64`, 3 for `i16`, and 0 (boxed) for anything
+else. These are the kinds the layouts give Int, Float and Char.
 -}
 mlirTypeToKind : MlirType -> Int
 mlirTypeToKind ty =
@@ -360,7 +319,8 @@ mlirTypeToKind ty =
             0
 
 
-{-| Convert an MLIR type to its string representation.
+{-| Returns the MLIR type as text, for messages. A named type such as
+`eco.value` is given without MLIR's leading `!`.
 -}
 mlirTypeToString : MlirType -> String
 mlirTypeToString ty =
@@ -398,17 +358,15 @@ mlirTypeToString ty =
 
 
 
--- ============================================================================
--- ====== RUNTIME LAYOUTS ======
--- ============================================================================
---
--- These types represent codegen-specific layout information that is computed
--- from MonoType shapes. They contain unboxing decisions and field ordering
--- that depend on the target backend's representation rules.
--- ============================================================================
+-- RUNTIME LAYOUTS
 
 
-{-| Runtime layout information for records, including field order and unboxing.
+{-| Where each field of a record is stored, and which fields are unboxed.
+
+The fields are in layout order: the unboxed fields first, then the boxed ones,
+each group in order of field name by string comparison. A field's `index` is
+its position in that order, not in the source.
+
 -}
 type alias RecordLayout =
     { fieldCount : Int
@@ -418,7 +376,12 @@ type alias RecordLayout =
     }
 
 
-{-| Information about a single field in a record or constructor.
+{-| One field of a record or constructor layout: its name, its slot index, its
+type, and whether it is stored unboxed.
+
+A constructor's fields have no names in the source, so they are named
+`field0`, `field1` and so on.
+
 -}
 type alias FieldInfo =
     { name : Name
@@ -428,7 +391,9 @@ type alias FieldInfo =
     }
 
 
-{-| Runtime layout information for a single constructor variant.
+{-| Where each field of one constructor is stored, and which fields are
+unboxed, together with the constructor's name and tag. The fields are in
+declaration order.
 -}
 type alias CtorLayout =
     { name : Name
@@ -439,28 +404,22 @@ type alias CtorLayout =
     }
 
 
-{-| Runtime layout information for tuples.
+{-| Which elements of a tuple are stored unboxed. Each entry of `elements` is
+an element's type and whether it is unboxed, in element order.
 -}
 type alias TupleLayout =
     { arity : Int
     , unboxedBitmap : Int
-    , elements : List ( Mono.MonoType, Bool ) -- (type, isUnboxed)
+    , elements : List ( Mono.MonoType, Bool )
     }
 
 
 
--- ============================================================================
--- ====== LAYOUT COMPUTATION ======
--- ============================================================================
+-- LAYOUT COMPUTATION
 
 
-{-| Encodes a monotype as a 2-bit primitive kind:
-
-  - `Mono.MInt` -> 1 (i64)
-  - `Mono.MFloat` -> 2 (f64)
-  - `Mono.MChar` -> 3 (u16)
-  - anything else -> 0 (boxed HPointer)
-
+{-| Returns the slot kind of an unboxed value of the given type: 1 for Int, 2
+for Float, 3 for Char, and 0 (boxed) for anything else.
 -}
 encodeUnboxedKind : Mono.MonoType -> Int
 encodeUnboxedKind monoType =
@@ -478,33 +437,23 @@ encodeUnboxedKind monoType =
             0
 
 
-{-| Maximum number of 2-bit typed slots representable in an Elm-computed
-bitmap: 26 slots = 52 bits, within Int's exact range (2^53). This also
-equals the closure header's 52-bit unboxed field (REP\_CLOSURE\_001).
-Runtime containers allow up to 32 (Record) / 24 (Custom) typed slots; the
-effective cap per container is the minimum of this and the container's own
-capacity. Fields at or beyond the cap must be stored boxed (kind 00).
+{-| The number of slots an unboxed bitmap can describe. Twenty-six two-bit
+slots take 52 bits; a 27th would need 54, more than the 53 bits an Elm `Int`
+holds exactly. The bitmap records no kind for a slot at this index or above, so
+it reads as boxed there.
 -}
 maxTypedSlots : Int
 maxTypedSlots =
     26
 
 
-{-| Sets the 2-bit kind at slot `index` into an Int-encoded bitmap.
+{-| Returns `bitmap` with the kind of slot `index` replaced by `kind`. An
+`index` of `maxTypedSlots` (26) or above leaves the bitmap unchanged, so that
+slot reads as boxed.
 
-Implemented with exact Int arithmetic, NOT Bitwise: Elm's Bitwise operates
-on 32-bit values (JS semantics — shift counts wrap at 32), which silently
-corrupted bitmaps for containers with more than 16 slots. A slot at index
-i >= 16 wrapped onto slot (i - 16), and writing kind 00 there CLEARED the
-low slot's real kind — e.g. a 23-field record with an unboxed Int at slot
-0 emitted bitmap 0 (all boxed), so the GC scanned the raw Int as a pointer
-("Pointer below heap base" abort). Plain Int arithmetic is exact up to
-2^53, covering `maxTypedSlots` (26) two-bit slots; dividing by a power of
-two and flooring is exact in both the JS and native backends, so the two
-bootstrap pipelines compute identical bitmaps.
-
-Slots at index >= `maxTypedSlots` are left boxed (00); callers must demote
-such fields to boxed storage (see computeRecordLayout/computeCtorLayout).
+The bitmap is computed with ordinary `Int` arithmetic rather than `Bitwise`,
+whose operations are 32-bit and so could reach only 16 slots. Arithmetic is
+exact up to 2^53, which covers 26 slots.
 
 -}
 bitmapSetKind : Int -> Int -> Int -> Int
@@ -523,10 +472,11 @@ bitmapSetKind bitmap index kind =
         bitmap + (modBy 4 kind - current) * weight
 
 
-{-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
+{-| Returns the layout of a record with the given fields.
 
-This is called during code generation to compute the layout from a record's
-field dictionary (stored in Mono.mRecord MonoType).
+The unboxed fields come first, then the boxed ones, each group in order of
+field name by string comparison, and the indices follow that order. A field at
+index 26 or above is stored boxed even if its type could be unboxed.
 
 -}
 computeRecordLayout : Dict Name Mono.MonoType -> RecordLayout
@@ -547,11 +497,7 @@ computeRecordLayout fields =
         orderedFields =
             sortedUnboxed ++ sortedBoxed
 
-        -- Fields at index >= maxTypedSlots demote to boxed storage: isUnboxed
-        -- is index-capped so the projection type, the stored value (boxed by
-        -- generateRecordCreate), and the GC bitmap all agree (REP_BOUNDARY_002).
-        -- The runtime Record bitmap holds 32 slots, but Elm-side bitmap
-        -- arithmetic is exact only to 26 (see maxTypedSlots).
+        -- Capped by index so that a field the bitmap cannot describe is stored boxed.
         indexedFields =
             List.indexedMap
                 (\idx ( name, ty ) ->
@@ -589,9 +535,8 @@ computeRecordLayout fields =
     }
 
 
-{-| U-T1.3.3: the per-slot STORED MLIR types of a tuple layout — unboxed
-element ⇒ its ABI primitive, boxed ⇒ `!eco.value`. Shared by scalar-split
-loop vars, sret workers, and their call sites so the forms cannot drift.
+{-| Returns the MLIR type of each slot of a tuple layout, in element order: the
+ABI type of an unboxed element, and `!eco.value` for a boxed one.
 -}
 tupleSlotTypes : TupleLayout -> List MlirType
 tupleSlotTypes layout =
@@ -606,8 +551,8 @@ tupleSlotTypes layout =
         layout.elements
 
 
-{-| U-T1.3.5: the per-slot STORED MLIR types of a ctor layout — the
-custom-shape analog of `tupleSlotTypes`.
+{-| Returns the MLIR type of each slot of a constructor layout, in field order:
+the ABI type of an unboxed field, and `!eco.value` for a boxed one.
 -}
 ctorSlotTypes : CtorLayout -> List MlirType
 ctorSlotTypes layout =
@@ -622,11 +567,8 @@ ctorSlotTypes layout =
         layout.fields
 
 
-{-| Compute runtime layout for a tuple type.
-
-This is called during code generation to compute the layout from a tuple's
-element type list (stored in Mono.mTuple MonoType).
-
+{-| Returns the layout of a tuple with the given element types. Every Int,
+Float or Char element is unboxed; no index cap is applied.
 -}
 computeTupleLayout : List Mono.MonoType -> TupleLayout
 computeTupleLayout types =
@@ -634,7 +576,6 @@ computeTupleLayout types =
         elements =
             List.map (\t -> ( t, canUnbox t )) types
 
-        -- 2-bit kind per slot; tuples have up to 3 slots (6 bits).
         unboxedBitmap =
             List.indexedMap Tuple.pair elements
                 |> List.foldl
@@ -657,21 +598,13 @@ computeTupleLayout types =
     }
 
 
-{-| Compute runtime layout for a constructor from its shape.
-
-This is called during code generation to compute the layout from a
-constructor's CtorShape (stored in MonoGraph.ctorShapes).
-
+{-| Returns the layout of a constructor from its shape. The fields keep their
+declaration order and are named `field0`, `field1` and so on. A field at index
+24 or above is stored boxed even if its type could be unboxed.
 -}
 computeCtorLayout : Mono.CtorShape -> CtorLayout
 computeCtorLayout shape =
     let
-        -- Custom.unboxed is 48 bits wide; 2-bit kinds fit up to 24 fields.
-        -- Fields at index >= 24 demote to BOXED STORAGE (not just bitmap kind
-        -- 0): isUnboxed is index-capped so the stored value, projection type,
-        -- and GC bitmap agree (REP_BOUNDARY_002). The verifier's size <= 24
-        -- check in EcoOps.cpp catches the overflow if an overflowing
-        -- constructor is actually emitted.
         fields =
             List.indexedMap
                 (\idx ty ->

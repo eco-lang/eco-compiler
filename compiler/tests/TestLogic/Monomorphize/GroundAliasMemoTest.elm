@@ -1,33 +1,81 @@
 module TestLogic.Monomorphize.GroundAliasMemoTest exposing (suite)
 
-{-| Step 4b — the per-run classify memo for ground, arrow-free alias
-instantiations, and the eligibility predicate it is keyed on.
+{-| Tests for the predicates and the key that decide which type alias
+instantiations the monomorphization solver memoises, and for the memo that
+reuses a type's loaded store structure within one store.
 
-The memo exists because the compiler re-classifies the same alias occurrence
-thousands of times. `S`, its own 31-field state record, is re-walked node by
-node with an intern probe per node at every occurrence, and every one of those
-walks produces the same canonical `MonoType`.
+The solver memoises work on _ground, arrow-free_ alias instantiations: those
+with no free type variable, no function arrow and no open record. Inside a
+`Holey` alias body only an arrow counts: a type variable or open record there is
+allowed, and the arguments are what count. Such an instantiation has the same
+expansion at every occurrence, so `Store.loadTypeC` reuses the store structure of
+its first load in the same store (the `groundLoads` map), and classification
+caches its result for the whole run (the `aliasMemo` map). Both maps are keyed
+by the _alias key_ that `Store.aliasKeyOf` builds from the alias's home, name
+and argument types, leaving out the parameter ids paired with the arguments;
+`Engine.AliasKey` says why the key must be structural. A predicate that admits
+a type whose expansion can differ between occurrences, or a key that merges two
+instantiations, would give wrong types with no error.
 
-What has to be true for that to be sound, and is pinned below:
+The fixture is built by hand as `Can.Type MVarId` values: `Int`, `String`,
+type variables, one arrow `Int -> Int` stamped with the first `ArrowId`, closed
+records and an open record. Three aliases are built with home `Main` of
+`author/project`:
 
-1.  **The key is structural, and drops parameter ids.** Two occurrences of one
-    alias are two distinct object trees — `AssignMVarIds` rebuilds every node
-    per occurrence — so identity is useless and the key must be
-    `(home, name, args)`. The param ids paired with the args are per-def binder
-    ids, not identity, so two occurrences differing only in those ids must
-    produce EQUAL keys.
+  - `State`, a `Filled` alias of `{ a : Int, b : String }`, built as two
+    separate but equal values;
+  - `Handler`, a `Filled` alias of `{ run : Int -> Int }`;
+  - `Box`, a `Holey` alias with one parameter and the body `{ unbox : param }`,
+    built with a chosen parameter id and argument.
 
-2.  **Eligibility excludes anything an arrow or a var could reach.** A free
-    var, an arrow anywhere, or an open record disqualifies the occurrence; a
-    var inside an alias BODY does not, because there it is a parameter.
+The load tests drive `Store.loadTypeC` on a `Store.testLoadCtx` with lambda-set
+specialization on, an empty arrow memo and a fresh store.
 
-3.  **A hit is indistinguishable from a re-walk.** The stored value came out of
-    the intern table, so it is the same object a fresh probe would return, and
-    a hit must not grow the table.
+What the tests establish:
 
-4.  **A hit ignores `topKind`.** That argument is read only by the arrow arm,
-    which an eligible type never reaches — so classifying one instantiation
-    under two different kinds must give the same object.
+  - `groundNoArrow` is False for a type variable, the arrow, the open record, a
+    closed record with an arrow field and a tuple holding the arrow, and True
+    for `Int`, unit, the closed record of `State`, `State` and `Box Int`.
+  - `groundNoArrow` is False for `Handler`, whose body reaches an arrow, and
+    for `Box` applied to a type variable, and True for `Box Int` whose body
+    holds its parameter.
+  - `groundHash` is equal for the two `State` values and differs between `Int`
+    and `String`.
+  - `aliasKeyOf` gives `Box Int` the same key, under `Engine.aliasKeyEq` and
+    `Engine.aliasKeyHash`, for parameter ids 1 and 5. Its keys for `Box Int`
+    and `Box String` are not equal. Its key for argumentless `Box` differs from
+    its keys for `Crate` and for `Box` with home elm/core `Basics`. It gives no
+    key for `Box` applied to a type variable.
+  - `aliasBodyEligible` accepts a `Filled` closed record of `Int` and a `Holey`
+    body holding a type variable, and rejects either kind of body when it holds
+    the arrow.
+  - Loading `State` twice: the store holds more than three cells after the
+    first load and exactly one more after the second. The two roots have
+    different point keys and equal content, so the second root refers to the
+    first load's child Points.
+  - Loading `Handler` twice: the second load adds more than one cell, so the
+    alias's structure was not reused. After both loads `arrowSlots` has two
+    entries and `slotsMinted` is 1, because the second load finds the arrow's
+    set slot in the arrow memo under the same `ArrowId`; that is the arrow
+    memo's behaviour, not the `groundLoads` memo's.
+  - Loading `Box Int`, `Box String`, then `Box Int` with another parameter id:
+    the third load adds exactly one cell, and `groundLoads` holds two entries.
+  - After two loads of `State` the var memo's size is unchanged, `slotsMinted`
+    is 0 and `arrowSlots` is empty. `State` has no type variable and no arrow,
+    so these hold whether or not the second load reuses the first.
+  - `groundNoArrowWith` with the empty map of `Engine.emptyMonoMemo` answers
+    from the alias bodies: True for `State` and False for `Handler`. A map that
+    records `AliasIneligible` under `State`'s key makes it False for `State`,
+    and one that records `AliasGround` under `Handler`'s key makes it True for
+    `Handler`.
+
+Among what is not tested: classification itself. Nothing here classifies a
+type or inspects the intern table, so it is not checked that a classify-memo
+hit returns the interned object a fresh classification would, that it leaves
+the table unchanged, or that it gives the same result whatever kind of unknown
+lambda set the caller asks arrows to carry. Nor are a `Holey` alias with
+several parameters, loads with lambda-set specialization off, or the load entry
+points that write back into the solver state.
 
 -}
 
@@ -52,85 +100,118 @@ import Test exposing (Test)
 -- ====== FIXTURES ======
 
 
+{-| The home of the test aliases and of all but one of the test keys, `Main`
+of package `author/project`.
+-}
 home : ModuleName.Canonical
 home =
     ModuleName.Canonical ( "author", "project" ) "Main"
 
 
+{-| elm/core's `Basics`, the home of `Int`, and a second home for an alias in
+the key tests.
+-}
 core : ModuleName.Canonical
 core =
     ModuleName.Canonical ( "elm", "core" ) "Basics"
 
 
+{-| The type `Int`.
+-}
 intType : Can.Type TypeIds.MVarId
 intType =
     Can.TType core "Int" []
 
 
+{-| The type `String`.
+-}
 stringType : Can.Type TypeIds.MVarId
 stringType =
     Can.TType (ModuleName.Canonical ( "elm", "core" ) "String") "String" []
 
 
+{-| Returns the type variable id `n` steps after `TypeIds.firstMVarId`, so that
+equal `n` give equal ids.
+-}
 mvar : Int -> TypeIds.MVarId
 mvar n =
     List.foldl (\_ i -> Id.succ i) TypeIds.firstMVarId (List.range 1 n)
 
 
+{-| Returns a type variable whose id is `mvar n`.
+-}
 varType : Int -> Can.Type TypeIds.MVarId
 varType n =
     Can.TVar (mvar n)
 
 
+{-| The function type `Int -> Int`, its arrow stamped with `TypeIds.firstArrowId`.
+Every use of this value carries the same `ArrowId`, so a load's arrow memo
+treats every use as one arrow.
+-}
 arrow : Can.Type TypeIds.MVarId
 arrow =
     Can.TLambda (TypeIds.Arrow TypeIds.firstArrowId) intType intType
 
 
+{-| Returns `t` as a record field type with field index 0.
+-}
 field : Can.Type TypeIds.MVarId -> Can.FieldType TypeIds.MVarId
 field t =
     Can.FieldType 0 t
 
 
+{-| Returns the closed record type with the given fields.
+-}
 record : List ( String, Can.Type TypeIds.MVarId ) -> Can.Type TypeIds.MVarId
 record fs =
     Can.TRecord (Dict.fromList (List.map (\( k, t ) -> ( k, field t )) fs)) Nothing
 
 
+{-| The open record type `{ a : Int }` extended by the type variable `mvar 9`.
+-}
 openRecord : Can.Type TypeIds.MVarId
 openRecord =
     Can.TRecord (Dict.fromList [ ( "a", field intType ) ]) (Just (mvar 9))
 
 
-{-| A closed, ground record alias — the `S` shape in miniature.
+{-| The alias `State`, with no parameters and the `Filled` body
+`{ a : Int, b : String }`: a ground, arrow-free alias instantiation.
 -}
 groundAlias : Can.Type TypeIds.MVarId
 groundAlias =
     Can.TAlias home "State" [] (Can.Filled (record [ ( "a", intType ), ( "b", stringType ) ]))
 
 
-{-| Same alias, rebuilt as a distinct object tree — what a second occurrence is.
+{-| The same `State` instantiation as `groundAlias`, equal to it but built as a
+separate value, as a second occurrence of the alias would be.
 -}
 groundAliasAgain : Can.Type TypeIds.MVarId
 groundAliasAgain =
     Can.TAlias home "State" [] (Can.Filled (record [ ( "a", intType ), ( "b", stringType ) ]))
 
 
-{-| An alias whose body reaches an arrow: never memoisable.
+{-| The alias `Handler`, with no parameters and the `Filled` body
+`{ run : Int -> Int }`. Its body reaches an arrow, so neither its load nor its
+classification is reused.
 -}
 arrowAlias : Can.Type TypeIds.MVarId
 arrowAlias =
     Can.TAlias home "Handler" [] (Can.Filled (record [ ( "run", arrow ) ]))
 
 
-{-| `Box a` applied to a ground argument, with the param bound as a Holey body.
-`pid` is the parameter's binder id, which the key must ignore.
+{-| Returns the alias `Box argT`, whose one parameter has id `mvar pid` and whose
+`Holey` body is `{ unbox : param }`. `pid` changes the parameter id paired with
+the argument, which the alias key leaves out.
 -}
 boxOf : Int -> Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
 boxOf pid argT =
     Can.TAlias home "Box" [ ( mvar pid, argT ) ] (Can.Holey (record [ ( "unbox", varType pid ) ]))
 
 
+{-| The tests of the ground-alias predicates, the alias key, the per-store load
+memo and `groundNoArrowWith`.
+-}
 suite : Test
 suite =
     Test.describe "Step 4b — ground alias classify memo"
@@ -234,8 +315,8 @@ suite =
                         ( _, c2 ) =
                             Store.loadTypeC Dict.empty groundAliasAgain c1
                     in
-                    -- The first load mints the root plus the whole body; the
-                    -- second mints the root and nothing else.
+                    -- The first load mints the root and the whole body; the
+                    -- second mints only a root.
                     ( cellCount c2 - n1, n1 > 3 )
                         |> Expect.equal ( 1, True )
             , Test.test "the two roots are different Points over the SAME children" <|
@@ -270,12 +351,11 @@ suite =
                         ( _, c2 ) =
                             Store.loadTypeC Dict.empty arrowAlias c1
                     in
-                    -- More than one new Point: no sharing happened. Two slot
-                    -- POSITIONS and ONE mint is the pre-existing Phase-2a
-                    -- ordinal contract, not an effect of this step — both loads
-                    -- carry the same `ArrowId`, so they share the slot. The
-                    -- point of the assertion is that step 4a left those numbers
-                    -- exactly where `ArrowIdentityTest` pins them.
+                    -- More than one new Point: the alias's structure was not
+                    -- reused. The two slot positions and one mint come from
+                    -- the arrow memo, not from `groundLoads`: both loads
+                    -- carry the same `ArrowId`, so the second reuses the
+                    -- first's set slot.
                     ( cellCount c2 - n1 > 1, List.length c2.arrowSlots, c2.slotsMinted )
                         |> Expect.equal ( True, 2, 1 )
             , Test.test "instantiations are keyed apart: Box Int then Box String then Box Int" <|
@@ -329,8 +409,7 @@ suite =
 
                         Just key ->
                             let
-                                -- Deliberately contradict the walk: if the map is
-                                -- consulted, the answer flips.
+                                -- Contradicts the body, so the answer shows the map was read.
                                 poisoned =
                                     HashMap.insert Engine.aliasKeyHash
                                         Engine.aliasKeyEq
@@ -362,13 +441,16 @@ suite =
         ]
 
 
-{-| Number of cells in the load context's store — the Point count.
+{-| Returns the number of cells in `c`'s point store, which is the number of
+Points minted into it.
 -}
 cellCount : Store.LoadCtx -> Int
 cellCount c =
     CellStore.size c.store.ioRefsPoint
 
 
+{-| Returns the content of the root descriptor of `v`'s class in `c`'s store.
+-}
 contentOf : Vars.Variable -> Store.LoadCtx -> Vars.Content
 contentOf v c =
     (Tuple.second (UF.get v c.store)).content

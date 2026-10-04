@@ -1,10 +1,43 @@
 module SourceIR.MultiDefCases exposing (expectSuite)
 
-{-| Tests for modules with multiple top-level definitions.
+{-| Checks a pipeline stage on modules with several top-level definitions,
+where something meant to be numbered once per module could wrongly start again
+with each definition.
 
-These tests verify that the ID builder does not reset between top-level
-definitions, ensuring all expression and pattern IDs are unique across
-the entire module.
+The expression and pattern ids the canonicalizer assigns are the case in point:
+one counter runs through all of a module's top-level values, as
+`Compiler.Canonicalize.Ids` describes, so two definitions of the same shape must
+still get different ids. Many definitions here have the same or a similar
+shape, and several reuse the same argument names. The module asserts nothing
+itself: what is checked is decided by the expectation function passed to
+`expectSuite`, which is given each case's module in turn until one fails.
+
+Each case module is built with `makeModuleWithDefs`, is named `Test`, has no
+annotations, and ends with a definition `testValue` from which every other
+definition is reachable. The numbers are integer literals.
+
+The cases:
+
+  - Two definitions with identical bodies, `a` and `b`, both `1 + 2`.
+  - Three values `a`, `b` and `c`, bound to `1`, `2` and `3`.
+  - Two one-argument functions, `f x = x + 1` and `g y = y * 2`.
+  - A value and functions of one, two and three arguments.
+  - `f x = g x` with `g` defined after it. This is labelled as functions that
+    call each other, but `g` does not call `f`.
+  - Definitions whose bodies are each a `let`, a `case` on an integer, an
+    `if`, a lambda, a record, or a single operator application, one kind per
+    case.
+  - Fifteen definitions, `def1` to `def15`, with varied bodies.
+  - Two definitions whose bodies are a `let` nested inside a `let`.
+  - Functions taking a tuple, list or record pattern as their argument, one
+    kind per case. The list patterns `[ a ]` and `[ x, y ]` are refutable,
+    which Elm source rejects as an incomplete match, and the calls in
+    `testValue` match them.
+  - Eight definitions of different kinds of body in one module.
+
+Among what is not tested: annotated definitions, custom types, aliases and
+ports; mutual recursion; a `let` with more than one definition; and a call
+that does not match a refutable argument pattern.
 
 -}
 
@@ -15,17 +48,27 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Multiple top-level definitions " followed by
+`condStr`, that applies `expectFn` to each case's module in order through
+`bulkCheck`, stopping at the first failing case and reporting only that one.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Multiple top-level definitions " ++ condStr) (\() -> bulkCheck (testCases expectFn))
 
 
+{-| Returns every case, the basic ones then the complex ones, each applying
+`expectFn` to its module.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     basicMultiDefCases expectFn
         ++ complexMultiDefCases expectFn
 
 
+{-| Returns the twelve basic cases, from two identical definitions up to a
+module of fifteen definitions.
+-}
 basicMultiDefCases : (Src.Module -> Expectation) -> List TestCase
 basicMultiDefCases expectFn =
     [ { label = "Two identical structure definitions", run = twoIdenticalStructureDefinitions expectFn }
@@ -43,6 +86,9 @@ basicMultiDefCases expectFn =
     ]
 
 
+{-| Returns the five cases with nested `let`s, tuple, list and record argument
+patterns, and a mix of kinds of body.
+-}
 complexMultiDefCases : (Src.Module -> Expectation) -> List TestCase
 complexMultiDefCases expectFn =
     [ { label = "Definitions with nested lets", run = nestedLetsMultipleDefs expectFn }
@@ -53,11 +99,12 @@ complexMultiDefCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module defining `a = 1 + 2`, `b = 1 + 2` and
+`testValue = ( a, b )`. The two bodies are identical, so numbering that
+restarted with each definition would give them the same ids.
+-}
 twoIdenticalStructureDefinitions : (Src.Module -> Expectation) -> (() -> Expectation)
 twoIdenticalStructureDefinitions expectFn _ =
-    -- a = 1 + 2
-    -- b = 1 + 2
-    -- If IDs reset, both would have the same IDs
     let
         modul =
             makeModuleWithDefs "Test"
@@ -69,11 +116,11 @@ twoIdenticalStructureDefinitions expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `a = 1`, `b = 2`, `c = 3` and
+`testValue = ( a, b, c )`.
+-}
 threeSimpleValueDefinitions : (Src.Module -> Expectation) -> (() -> Expectation)
 threeSimpleValueDefinitions expectFn _ =
-    -- a = 1
-    -- b = 2
-    -- c = 3
     let
         modul =
             makeModuleWithDefs "Test"
@@ -86,10 +133,11 @@ threeSimpleValueDefinitions expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `f x = x + 1`, `g y = y * 2` and
+`testValue = ( f 1, g 2 )`.
+-}
 multipleFunctionsSameArity : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleFunctionsSameArity expectFn _ =
-    -- f x = x + 1
-    -- g y = y * 2
     let
         modul =
             makeModuleWithDefs "Test"
@@ -101,12 +149,12 @@ multipleFunctionsSameArity expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `a = 42`, `f x = x`,
+`g x y = x + y`, `h x y z = x + y + z` and
+`testValue = ( ( a, f 1 ), ( g 1 2, h 1 2 3 ) )`.
+-}
 multipleFunctionsDifferentArities : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleFunctionsDifferentArities expectFn _ =
-    -- a = 42
-    -- f x = x
-    -- g x y = x + y
-    -- h x y z = x + y + z
     let
         modul =
             makeModuleWithDefs "Test"
@@ -128,10 +176,12 @@ multipleFunctionsDifferentArities expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `f x = g x`, `g y = y + 1` and
+`testValue = f 1`. `f` refers to `g`, which is defined after it; `g` does not
+call `f`, so `testValue` reaches `g` only through `f`.
+-}
 functionsCallEachOther : (Src.Module -> Expectation) -> (() -> Expectation)
 functionsCallEachOther expectFn _ =
-    -- f x = g x
-    -- g y = y + 1
     let
         modul =
             makeModuleWithDefs "Test"
@@ -143,10 +193,11 @@ functionsCallEachOther expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `a = let x = 1 in x`,
+`b = let y = 2 in y` and `testValue = ( a, b )`.
+-}
 multipleDefsWithLet : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleDefsWithLet expectFn _ =
-    -- a = let x = 1 in x
-    -- b = let y = 2 in y
     let
         modul =
             makeModuleWithDefs "Test"
@@ -158,10 +209,12 @@ multipleDefsWithLet expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `f x`, a `case` on `x` giving `1`
+for `0` and `2` otherwise, `g y`, the same with `3` and `4`, and
+`testValue = ( f 1, g 2 )`.
+-}
 multipleDefsWithCase : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleDefsWithCase expectFn _ =
-    -- f x = case x of { 0 -> 1; _ -> 2 }
-    -- g y = case y of { 0 -> 3; _ -> 4 }
     let
         modul =
             makeModuleWithDefs "Test"
@@ -185,11 +238,12 @@ multipleDefsWithCase expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `a`, `b` and `c` as
+`if True then 1 else 2`, `if True then 3 else 4` and `if True then 5 else 6`,
+and `testValue = ( a, b, c )`.
+-}
 multipleDefsWithIf : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleDefsWithIf expectFn _ =
-    -- a = if True then 1 else 2
-    -- b = if True then 3 else 4
-    -- c = if True then 5 else 6
     let
         modul =
             makeModuleWithDefs "Test"
@@ -202,11 +256,12 @@ multipleDefsWithIf expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `f = \x -> x`, `g = \y -> y + 1`
+and `h = \a b -> a + b`, none taking arguments of its own, and
+`testValue = ( f 1, g 2, h 3 4 )`.
+-}
 multipleDefsWithLambdas : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleDefsWithLambdas expectFn _ =
-    -- f = \x -> x
-    -- g = \y -> y + 1
-    -- h = \a b -> a + b
     let
         modul =
             makeModuleWithDefs "Test"
@@ -219,11 +274,12 @@ multipleDefsWithLambdas expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `a = { x = 1 }`,
+`b = { y = 2, z = 3 }`, `c = { p = 4, q = 5, r = 6 }` and
+`testValue = ( a, b, c )`.
+-}
 multipleDefsWithRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleDefsWithRecords expectFn _ =
-    -- a = { x = 1 }
-    -- b = { y = 2, z = 3 }
-    -- c = { p = 4, q = 5, r = 6 }
     let
         modul =
             makeModuleWithDefs "Test"
@@ -236,12 +292,11 @@ multipleDefsWithRecords expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `a = 1 + 2`, `b = 3 * 4`,
+`c = 5 - 6`, `d = 7 / 8` and `testValue = ( ( a, b ), ( c, d ) )`.
+-}
 multipleDefsWithBinops : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleDefsWithBinops expectFn _ =
-    -- a = 1 + 2
-    -- b = 3 * 4
-    -- c = 5 - 6
-    -- d = 7 / 8
     let
         modul =
             makeModuleWithDefs "Test"
@@ -255,9 +310,14 @@ multipleDefsWithBinops expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module of fifteen definitions, `def1` to `def15`,
+whose bodies are integer and string literals, operator applications, a
+variable, a `let`, an `if`, a record, a tuple, a list and a lambda, and two of
+which are functions of one argument and one a function of two. `testValue`
+uses all fifteen in nested tuples, calling each function.
+-}
 largeModuleManyDefs : (Src.Module -> Expectation) -> (() -> Expectation)
 largeModuleManyDefs expectFn _ =
-    -- 15 definitions to stress test
     let
         modul =
             makeModuleWithDefs "Test"
@@ -297,10 +357,12 @@ largeModuleManyDefs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining
+`a = let x = (let y = 1 in y) in x`, `b` the same with `p`, `q` and `2`, and
+`testValue = ( a, b )`.
+-}
 nestedLetsMultipleDefs : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedLetsMultipleDefs expectFn _ =
-    -- a = let x = let y = 1 in y in x
-    -- b = let p = let q = 2 in q in p
     let
         modul =
             makeModuleWithDefs "Test"
@@ -320,10 +382,11 @@ nestedLetsMultipleDefs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `f ( a, b ) = a + b`,
+`g ( x, y ) = x * y` and `testValue = ( f ( 1, 2 ), g ( 3, 4 ) )`.
+-}
 tuplePatternMultipleDefs : (Src.Module -> Expectation) -> (() -> Expectation)
 tuplePatternMultipleDefs expectFn _ =
-    -- f (a, b) = a + b
-    -- g (x, y) = x * y
     let
         modul =
             makeModuleWithDefs "Test"
@@ -340,10 +403,13 @@ tuplePatternMultipleDefs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `f [ a ] = a`,
+`g [ x, y ] = x + y` and `testValue = ( f [ 1 ], g [ 2, 3 ] )`. Both argument
+patterns are refutable, which Elm source rejects as an incomplete match; the
+calls in `testValue` match them.
+-}
 listPatternMultipleDefs : (Src.Module -> Expectation) -> (() -> Expectation)
 listPatternMultipleDefs expectFn _ =
-    -- f [a] = a
-    -- g [x, y] = x + y
     let
         modul =
             makeModuleWithDefs "Test"
@@ -360,10 +426,11 @@ listPatternMultipleDefs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module defining `f { x } = x`,
+`g { a, b } = a + b` and `testValue = ( f { x = 1 }, g { a = 2, b = 3 } )`.
+-}
 recordPatternMultipleDefs : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternMultipleDefs expectFn _ =
-    -- f { x } = x
-    -- g { a, b } = a + b
     let
         modul =
             makeModuleWithDefs "Test"
@@ -380,9 +447,14 @@ recordPatternMultipleDefs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module of eight definitions with different kinds
+of body: a literal `value`; `func x = x + 1`; `withLet`; `withCase n`, a `case`
+on an integer; `withIf b`; `withLambda`, a two-argument lambda; `withRecord`;
+and `withTuple`, which takes a tuple pattern. `testValue` uses all eight, and
+the names `x`, `a` and `b` are each bound in more than one definition.
+-}
 mixedExpressionsAndPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedExpressionsAndPatterns expectFn _ =
-    -- Complex mix of all features
     let
         modul =
             makeModuleWithDefs "Test"

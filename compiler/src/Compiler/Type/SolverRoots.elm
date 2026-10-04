@@ -5,12 +5,52 @@ module Compiler.Type.SolverRoots exposing
     , stampArrowRoots, stampArrowRootsInAnnotation
     )
 
-{-| Normalize solver variables to their union-find roots after solving.
+{-| Code that runs after the type checker needs to know which type variables,
+and which function arrows, the solver proved to be the same, but the solver's
+union-find store does not outlive the type check. This module reads a snapshot
+of that store, taken after solving, and records those answers in data that
+does outlive it.
 
-After constraint solving completes, solver variables may still point through
-chains of `Link` nodes in the union-find. This module provides functions to
-resolve all variables to their canonical roots, ensuring that two variables
-that the solver proved equivalent always map to the same root index.
+The store and its terms, _point_, _class_ and _root_, are described in
+`Compiler.Type.Vars`, and the snapshot in `Compiler.Type.SolverSnapshot`. Two
+variables the solver unified are in one class and resolve to one root, so
+replacing every variable by its root gives each class one identity. A root is a
+point of the store the snapshot was taken from, and means nothing apart from
+it.
+
+The module produces three things from a snapshot.
+
+  - Variables replaced by their roots, by `normalizeNodeVars` and
+    `normalizeAnnotationVars`.
+  - _Scheme roots_: for one definition, each type variable name of its
+    annotation mapped to a `Vars.RootedVar`, which is the variable's root
+    together with the super-type read from that root's content.
+    `normalizeAllSchemeRoots` builds them from variables already known by
+    name, and `extractBinderRootsFromInferred` finds them by walking an
+    annotation's type.
+  - _Arrow root stamps_: `stampArrowRoots` writes into the slot of each
+    function arrow the lockstep walk reaches the index of the root of the
+    variable that arrow is matched with, as a `TypeIds.SolverRoot`. Arrows
+    matched with variables of the same root get the same index. An arrow
+    matched with a variable whose root holds an alias gets the alias's root,
+    not that of the function type the alias expands to, so two arrows the
+    solver unified can get different indices.
+    `Compiler.AST.TypeIds.ArrowSlot` says what the index means, and that it
+    means something only together with its module.
+
+The last two rest on a _lockstep walk_, which descends a `Can.Type` and a
+solver variable together, matching the type's children with the children of
+the structure at the variable's root. It can follow only where the type has the
+shape of the solver's structure. Where the two differ, for example because
+the kinds of type differ, a record field is missing from the structure, a
+child of the type has no counterpart among the structure's children, or the
+root holds no structure, the walk goes no further down that branch: it records no scheme
+roots there, and the stamp leaves that part of the type as it was, so its
+arrows keep the slot they had. The one exception, a `Holey` alias whose
+arguments do not match the solver's in number, is given at `stampArrowRoots`.
+A `Filled` alias is walked through with the alias's own variable. Of a `Holey`
+alias only the arguments are walked, against the arguments of the solver's
+alias.
 
 @docs AllSchemeRoots, SchemeRootsForDef
 @docs normalizeNodeVars, normalizeAnnotationVars, normalizeAllSchemeRoots
@@ -28,24 +68,31 @@ import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 
 
-{-| Per-def mapping from forall binder names to their rooted solver variables,
-each carrying the super constraint read from its root descriptor.
+{-| The scheme roots of one definition: each type variable name of its
+annotation, mapped to the root of the variable's class and that root's
+super-type.
+
+This is a name for a `Dict`, not a new type, so nothing checks that its keys are
+the variables of any annotation or that its roots come from one store.
+
 -}
 type alias SchemeRootsForDef =
     Dict Name.Name Vars.RootedVar
 
 
-{-| Mapping from definition names to their per-binder solver roots.
+{-| The scheme roots of a module's definitions, keyed by definition name.
+
+This is a name for a `Dict`, not a new type.
+
 -}
 type alias AllSchemeRoots =
     Dict Name.Name SchemeRootsForDef
 
 
-{-| Read the super constraint recorded on a solver variable's root descriptor.
-
-Returns the `SuperType` when the root is a (flex or rigid) super variable, and
-`Nothing` otherwise. This is solver truth about the ROOT — not a name lookup.
-
+{-| Returns the super-type in the content of `rootVar`'s cell when that content
+is a `FlexSuper` or a `RigidSuper`, and `Nothing` otherwise, which includes a
+`rootVar` that is not a root of `state` or is outside it. The answer is read
+from the solver, not from the name of any variable.
 -}
 superOfRoot : SolverState -> Vars.Variable -> Maybe Vars.SuperType
 superOfRoot state rootVar =
@@ -64,7 +111,8 @@ superOfRoot state rootVar =
             Nothing
 
 
-{-| Resolve a variable to its root and pair it with the root's super.
+{-| Returns the root of `var`'s class together with the super-type recorded on
+that root.
 -}
 rootedVarOf : SolverState -> Vars.Variable -> Vars.RootedVar
 rootedVarOf state var =
@@ -75,7 +123,8 @@ rootedVarOf state var =
     { var = rootVar, super = superOfRoot state rootVar }
 
 
-{-| Resolve each node variable to its union-find root.
+{-| Replaces each variable in `nodeVars` by the root of its class, and keeps
+each `Nothing`.
 -}
 normalizeNodeVars : SolverState -> Array (Maybe Vars.Variable) -> Array (Maybe Vars.Variable)
 normalizeNodeVars state nodeVars =
@@ -91,15 +140,16 @@ normalizeNodeVars state nodeVars =
         nodeVars
 
 
-{-| Resolve each annotation variable to its union-find root.
+{-| Replaces each variable in `annotationVars` by the root of its class.
 -}
 normalizeAnnotationVars : SolverState -> Dict Name.Name Vars.Variable -> Dict Name.Name Vars.Variable
 normalizeAnnotationVars state annotationVars =
     Dict.map (\_ var -> SolverSnapshot.resolveVariable state var) annotationVars
 
 
-{-| Normalize all binder variables (raw solver vars) to their union-find roots,
-attaching each root's super constraint.
+{-| Builds scheme roots from variables already known by name: for each
+definition in `allRoots`, each type variable name's variable is replaced by
+its root and that root's super-type.
 -}
 normalizeAllSchemeRoots : SolverState -> Dict Name.Name (Dict Name.Name Vars.Variable) -> AllSchemeRoots
 normalizeAllSchemeRoots state allRoots =
@@ -110,11 +160,14 @@ normalizeAllSchemeRoots state allRoots =
         allRoots
 
 
-{-| Extract binder-to-root mappings for an unannotated definition by walking
-the solver's type descriptor tree in lockstep with the inferred annotation type.
+{-| Returns the scheme roots of a definition, found by a lockstep walk of its
+annotation's type against `annotVar`, the solver variable whose structure that
+type is expected to share.
 
-For each `TVar name` in the annotation, finds the corresponding solver variable
-in the descriptor tree and resolves it to its union-find root.
+Each `TVar` the walk reaches is mapped to its root. The extension name of each
+record type it reaches is mapped to the root of the extension point of the
+solver's record structure. A variable the walk cannot reach is missing from the
+result, and the result is empty when the annotation quantifies no variables.
 
 -}
 extractBinderRootsFromInferred :
@@ -134,7 +187,13 @@ extractBinderRootsFromInferred state (Can.Forall freeVars tipe) annotVar =
         walkTypeForBinders state tipe rootVar Dict.empty
 
 
-{-| Walk a Can.Type and a solver variable in parallel, recording TVar->root mappings.
+{-| Adds to `acc` the scheme roots found by a lockstep walk of `canType`
+against `var`.
+
+A record is matched only against the fields of the `Record1` at the root, by
+name, so a field the solver holds further along the record's extension chain
+is not walked.
+
 -}
 walkTypeForBinders :
     SolverState
@@ -152,7 +211,6 @@ walkTypeForBinders state canType var acc =
     in
     case canType of
         Can.TVar name ->
-            -- Leaf: record the binder name -> rooted var (with super) mapping
             Dict.insert name { var = rootVar, super = superOfRoot state rootVar } acc
 
         Can.TLambda _ argType resType ->
@@ -215,11 +273,12 @@ walkTypeForBinders state canType var acc =
             acc
 
         Can.TAlias _ _ _ (Can.Filled innerType) ->
-            -- Aliases are transparent; walk through the filled type
+            -- The filled body is the type the alias's own variable stands for.
             walkTypeForBinders state innerType var acc
 
         Can.TAlias _ _ args (Can.Holey _) ->
-            -- For holey aliases, walk the alias args against the solver's alias args
+            -- The holey body's variables are the alias's parameters, not the
+            -- annotation's, so only the arguments are walked.
             case lookupContent state rootIdx of
                 Just (Vars.Alias _ _ solverAliasArgs _) ->
                     List.foldl
@@ -233,27 +292,23 @@ walkTypeForBinders state canType var acc =
                     acc
 
 
-{-| **Phase 2b (`plans/lss-unknown-elimination.md` §4.9): give every arrow the
-identity the type checker already computed for it.**
+{-| Returns `canType` with the slot of each function arrow that a lockstep walk
+against `var` reaches set to `TypeIds.SolverRoot` of the index of the arrow's
+root.
 
-Walks a `Can.Type` in lockstep with its solver variable — the SAME descent
-`walkTypeForBinders` uses, arm for arm — and rewrites each `Can.TLambda`'s
-arrow slot to `TypeIds.SolverRoot rootIdx`, the arrow's own union-find root
-index. Two arrows the solver UNIFIED therefore carry the same index, which is
-exactly what per-occurrence ids (Phase 2a) cannot express: EXP-2a measured that
-a def's annotation and its body node's type are structurally-equal DISTINCT
-objects 97.5% of the time.
+An arrow's index is that of the root of the variable it is matched with, so
+arrows matched with variables of the same root get the same index. Where that
+root holds an alias, the `Fun1` is found by following the alias, but the index
+is still the alias's root, so two arrows the solver unified can get different
+indices. An arrow the walk does not reach keeps the slot it had. Within a
+record, only the fields of the `Record1` at the root are matched, by name, so a
+field the solver holds further along the record's extension chain is not
+stamped. Of a `Holey` alias only the arguments are stamped, paired by position
+with the arguments of the solver's alias; if the two lists differ in length,
+the arguments beyond the shorter one are dropped from the result.
 
-**The index is MODULE-LOCAL.** Each module's solve numbers its `Pt` from zero,
-so it is only meaningful paired with the home module of the global that carries
-it. `AssignMVarIds.ensureArrowIdForRoot` does that pairing, mirroring
-`ensureMVarIdForRoot` — and that scoping is load-bearing, not hygiene: an
-unscoped raw index would FALSELY union two unrelated lambda sets.
-
-**Where the lockstep is lost, the subtree is left alone** (`NoArrow`), and
-`AssignMVarIds` falls back to a fresh occurrence id. So 2b degrades to 2a
-locally rather than failing — which is why the alias/mismatch arms below simply
-return `canType`.
+The index means something only together with the module whose solve produced
+it, as `Compiler.AST.TypeIds.ArrowSlot` describes.
 
 -}
 stampArrowRoots : SolverState -> Can.Type Name.Name -> Vars.Variable -> Can.Type Name.Name
@@ -322,7 +377,7 @@ stampArrowRoots state canType var =
             canType
 
         Can.TAlias home name args (Can.Filled innerType) ->
-            -- Aliases are transparent; the solver var is the SAME var.
+            -- The filled body is the type the alias's own variable stands for.
             Can.TAlias home name args (Can.Filled (stampArrowRoots state innerType var))
 
         Can.TAlias home name args (Can.Holey innerType) ->
@@ -341,6 +396,10 @@ stampArrowRoots state canType var =
                     canType
 
 
+{-| Stamps each type in `types` as `stampArrowRoots` does, against the variable
+at the same position in `vars`. Types beyond the end of `vars` are returned
+unstamped.
+-}
 stampArrowRootsList : SolverState -> List (Can.Type Name.Name) -> List Vars.Variable -> List (Can.Type Name.Name)
 stampArrowRootsList state types vars =
     case ( types, vars ) of
@@ -348,18 +407,19 @@ stampArrowRootsList state types vars =
             stampArrowRoots state t v :: stampArrowRootsList state ts vs
 
         _ ->
-            -- Length mismatch: the lockstep is lost, leave the rest alone.
             types
 
 
-{-| `stampArrowRoots` over a def's annotation.
+{-| Returns the annotation with its type stamped as `stampArrowRoots` stamps a
+type, against `annotVar`. The quantified names are unchanged.
 -}
 stampArrowRootsInAnnotation : SolverState -> Can.Annotation Name.Name -> Vars.Variable -> Can.Annotation Name.Name
 stampArrowRootsInAnnotation state (Can.Forall freeVars tipe) annotVar =
     Can.Forall freeVars (stampArrowRoots state tipe annotVar)
 
 
-{-| Walk parallel lists of Can.Types and solver variables.
+{-| Adds to `acc` the scheme roots found by walking each type in `types`
+against the variable at the same position in `vars`, as far as both lists go.
 -}
 walkTypeListForBinders :
     SolverState
@@ -376,7 +436,8 @@ walkTypeListForBinders state types vars acc =
             acc
 
 
-{-| Look up the Content of a solver variable by its root index.
+{-| Returns the content of the descriptor in the cell at `rootIdx`, or
+`Nothing` when that cell is a `Chain` or `rootIdx` is outside `state`.
 -}
 lookupContent : SolverState -> Int -> Maybe Vars.Content
 lookupContent state rootIdx =
@@ -385,14 +446,13 @@ lookupContent state rootIdx =
             Just props.content
 
         _ ->
-            -- Chain or out of bounds. Every caller feeds this a rootIdx that
-            -- SolverSnapshot.resolveVariable just produced, so a Chain is
-            -- unreachable; answering Nothing is strictly safer than the old
-            -- code, which could not tell a root from a merged-away slot.
             Nothing
 
 
-{-| Look up the FlatType for a solver variable, unwrapping through Alias content.
+{-| Returns the structure held at `rootIdx`, following an alias to the root of
+its expansion as many times as it takes. Returns `Nothing` when the content
+reached is neither a structure nor an alias, or when a cell reached is a
+`Chain` or outside `state`.
 -}
 lookupFlatType : SolverState -> Int -> Maybe Vars.FlatType
 lookupFlatType state rootIdx =
@@ -401,7 +461,6 @@ lookupFlatType state rootIdx =
             Just flatType
 
         Just (Vars.Alias _ _ _ innerVar) ->
-            -- Unwrap alias and look at the inner variable
             let
                 (Vars.Pt innerIdx) =
                     SolverSnapshot.resolveVariable state innerVar

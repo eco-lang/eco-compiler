@@ -1,15 +1,30 @@
 module TestLogic.Generate.CodeGen.RecordUpdateDataflow exposing (expectRecordUpdateDataflow)
 
-{-| Test logic for CGEN\_0D1: Record Update Dataflow Shape invariant.
+{-| Checks that the MLIR generated for a record update does not store the
+record being updated as one of the fields of the new record.
 
-Detects when a whole record is incorrectly stored as a field during record
-update. The bug symptom: `{ original | x = 10 }` yields a record where field
-`x` becomes the _original record_ instead of `10`.
+A record update such as `{ r | x = 10 }` is generated as one
+`eco.project.record` for each field that keeps its value, reading that field
+out of `r`, followed by one `eco.construct.record` that builds the new record
+from those projections and the new values. A fault in that code generation
+could put `r` itself where `10` should go, giving a record whose `x` is the
+whole original record.
 
-This is detected by checking that `eco.construct.record` operands don't include
-the source record itself when other operands come from projections of that record.
+`expectRecordUpdateDataflow` compiles a program to MLIR and looks for that
+symptom in each top-level `func.func`. Within one function it groups the
+results of every record projection by the record they were projected from.
+For each record construction it then picks the _source record_: the record from
+which the most of the construction's distinct field operands were projected.
+The construction is reported if the source record is also one of its field
+operands. Operands past the construction's `field_count` are GC-root hints,
+not fields, and are ignored.
 
-@docs expectRecordUpdateDataflow
+This is a heuristic. A construction that copies fields out of `r` and also
+holds `r` itself as a field, such as `{ a = r.a, orig = r }`, is reported
+although it is correct. A construction none of whose field operands is a
+projection is never reported, so the faulty form of an update to a one-field
+record goes unnoticed. Only the source record is checked; when two records
+supply equally many fields, the one whose SSA name sorts first is the source.
 
 -}
 
@@ -30,7 +45,13 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that record update dataflow invariants hold for a source module.
+{-| Compiles `srcModule` to MLIR and returns an expectation that passes when
+no record construction in any top-level function stores its source record as a
+field.
+
+It fails with the test pipeline's error message if compilation fails, and
+otherwise with the first construction reported, naming the function it is in.
+
 -}
 expectRecordUpdateDataflow : Src.Module -> Expectation
 expectRecordUpdateDataflow srcModule =
@@ -42,7 +63,8 @@ expectRecordUpdateDataflow srcModule =
             violationsToExpectation (checkRecordUpdateDataflow mlirModule)
 
 
-{-| Information about a record projection operation.
+{-| One `eco.project.record`: the SSA name of the record it reads from, and the
+SSA name of the field value it produces.
 -}
 type alias ProjInfo =
     { source : String
@@ -50,9 +72,10 @@ type alias ProjInfo =
     }
 
 
-{-| Check that record updates don't store whole record as field.
+{-| Returns a violation for each record construction, in any top-level
+`func.func` of the module, that stores its source record as a field.
 
-This checks each function separately.
+Projections are matched with constructions only within the same function.
 
 -}
 checkRecordUpdateDataflow : MlirModule -> List Violation
@@ -64,6 +87,10 @@ checkRecordUpdateDataflow mlirModule =
     List.concatMap checkFunction funcOps
 
 
+{-| Returns a violation for each record construction nested anywhere in
+`funcOp` that stores its source record as a field, judged against every record
+projection nested anywhere in the same function.
+-}
 checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
     let
@@ -86,6 +113,9 @@ checkFunction funcOp =
     List.filterMap (checkConstructOp funcName projectionsBySource) constructOps
 
 
+{-| Returns the source and result of `op` if it is an `eco.project.record` with
+exactly one operand and one result, and `Nothing` otherwise.
+-}
 getRecordProj : MlirOp -> Maybe ProjInfo
 getRecordProj op =
     if op.name /= "eco.project.record" then
@@ -100,6 +130,9 @@ getRecordProj op =
                 Nothing
 
 
+{-| Returns, for each record that some projection reads from, the set of SSA
+names that the projections of that record produce.
+-}
 groupProjectionsBySource : List ProjInfo -> Dict String (Set String)
 groupProjectionsBySource projections =
     List.foldl
@@ -119,11 +152,19 @@ groupProjectionsBySource projections =
         projections
 
 
+{-| Returns a violation if the field operands of `constructOp` include its
+source record, the record from which the most of those operands were projected
+according to `projectionsBySource`. `funcName` is used only in the message.
+
+The field operands are the first `field_count` operands, or all of them when
+the attribute is absent or not an integer. A construction none of whose field
+operands is a projection has no source record and gives `Nothing`.
+
+-}
 checkConstructOp : String -> Dict String (Set String) -> MlirOp -> Maybe Violation
 checkConstructOp funcName projectionsBySource constructOp =
     let
-        -- Field operands are the first `field_count` entries; later entries
-        -- are appended GC root hints and must not be inspected as fields.
+        -- Operands past `field_count` are GC-root hints, not fields.
         fieldCount =
             Maybe.withDefault (List.length constructOp.operands)
                 (getIntAttr "field_count" constructOp)
@@ -158,6 +199,12 @@ checkConstructOp funcName projectionsBySource constructOp =
                 Nothing
 
 
+{-| Returns the record whose projections account for the most members of
+`operandSet`, or `Nothing` if no member is a projection.
+
+A tie goes to the record whose SSA name sorts first.
+
+-}
 findMostProjectedSource : Set String -> Dict String (Set String) -> Maybe String
 findMostProjectedSource operandSet projectionsBySource =
     let
@@ -183,11 +230,17 @@ findMostProjectedSource operandSet projectionsBySource =
             Nothing
 
 
+{-| Returns every op nested in the regions of `op`, at any depth, not including
+`op` itself.
+-}
 walkOpsInOp : MlirOp -> List MlirOp
 walkOpsInOp op =
     List.concatMap walkOpsInRegionLocal op.regions
 
 
+{-| Returns every op in the region, at any depth: those of the entry block
+first, then those of each labelled block in the order the region holds them.
+-}
 walkOpsInRegionLocal : MlirRegion -> List MlirOp
 walkOpsInRegionLocal (MlirRegion { entry, blocks }) =
     let
@@ -200,6 +253,9 @@ walkOpsInRegionLocal (MlirRegion { entry, blocks }) =
     entryOps ++ blockOps
 
 
+{-| Returns every op in the block, at any depth: the body ops and then the
+terminator, each followed by the ops nested in it.
+-}
 walkOpsInBlockLocal : MlirBlock -> List MlirOp
 walkOpsInBlockLocal block =
     let
@@ -212,6 +268,8 @@ walkOpsInBlockLocal block =
     bodyOps ++ termOps
 
 
+{-| Returns `op` followed by every op nested in its regions, at any depth.
+-}
 walkOp : MlirOp -> List MlirOp
 walkOp op =
     op :: List.concatMap walkOpsInRegionLocal op.regions

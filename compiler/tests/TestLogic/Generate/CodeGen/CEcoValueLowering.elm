@@ -1,10 +1,22 @@
 module TestLogic.Generate.CodeGen.CEcoValueLowering exposing (expectCEcoValueLowering)
 
-{-| Test logic for CGEN\_013: CEcoValue MVars Always Lower to eco.value.
+{-| A type variable that monomorphization leaves with the `CEcoValue`
+constraint stands for a value that is always boxed, and code generation is
+expected to give it the MLIR type `!eco.value` (see `Constraint` in
+`Compiler.AST.Monomorphized`). The checker here is named for that rule, but
+as written it checks only that the program compiles to MLIR.
 
-MonoType variables with CEcoValue constraint must always lower to !eco.value
-in MLIR. This is tested indirectly by checking Debug.\* kernel calls, which
-are known to preserve CEcoValue polymorphism.
+The expectation compiles a program and picks out the `eco.call` ops whose
+callee name contains `Debug` or `debug`. For those whose callee name also
+contains `log`, it reads the operand types from the `_operand_types` attribute
+and passes every one after the first to `checkPolymorphicOperands`; for those
+whose callee name contains `toString` instead, it passes every one. That
+function reports no violations for any input, so nothing found along the way
+can fail the expectation.
+
+An MLIR operand type on its own does not say whether the argument's type was a
+type variable or a concrete type such as `Int`. The monomorphized graph is
+passed to `checkCEcoValueLowering`, but it is not read.
 
 @docs expectCEcoValueLowering
 
@@ -25,7 +37,13 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that CEcoValue lowering invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR with
+`TestLogic.TestPipeline.runToMlir` and applies the `Debug` call check to the
+result.
+
+The check reports no violations, so the expectation fails only when compilation
+fails, with `Compilation failed:` followed by the pipeline's message.
+
 -}
 expectCEcoValueLowering : Src.Module -> Expectation
 expectCEcoValueLowering srcModule =
@@ -37,13 +55,9 @@ expectCEcoValueLowering srcModule =
             violationsToExpectation (checkCEcoValueLowering mlirModule monoGraph)
 
 
-{-| Check that CEcoValue positions use !eco.value.
-
-CGEN\_013: CEcoValue MVars always lower to eco.value.
-
-We test this indirectly by checking Debug kernel calls, which preserve
-CEcoValue polymorphism. The polymorphic argument positions must be !eco.value.
-
+{-| Returns the violations found in the operands of the `Debug` calls in
+`mlirModule`, which is always none, because `checkPolymorphicOperands` reports
+none. The `MonoGraph` argument is not read.
 -}
 checkCEcoValueLowering : MlirModule -> Mono.MonoGraph -> List Violation
 checkCEcoValueLowering mlirModule _ =
@@ -57,7 +71,10 @@ checkCEcoValueLowering mlirModule _ =
     List.concatMap checkDebugCallOperands debugCalls
 
 
-{-| Check if an eco.call is a Debug kernel call.
+{-| Returns whether the `callee` attribute of `op` contains `Debug` or `debug`.
+This is a substring match on the callee's name, so it accepts any callee whose
+name contains either word. An op with no string or symbol `callee` is not
+accepted.
 -}
 isDebugCall : MlirOp -> Bool
 isDebugCall op =
@@ -69,14 +86,13 @@ isDebugCall op =
             False
 
 
-{-| Check that Debug call operands use appropriate types.
+{-| Returns the violations in the operands of one `Debug` call, as judged by
+`checkPolymorphicOperands`, which reports none.
 
-Debug functions like Debug.log and Debug.todo take polymorphic arguments.
-Those polymorphic positions (where the source type is a type variable) must
-be !eco.value, not primitive types.
-
-For Debug.log: first arg is String (can be !eco.value), second arg is polymorphic (must be !eco.value)
-For Debug.toString: arg is polymorphic (must be !eco.value)
+When the callee's name contains `log`, every operand type after the first is
+passed on. Otherwise, when the name contains `toString`, every operand type is
+passed on. Any other callee, and an op without an `_operand_types` attribute,
+gives no violations.
 
 -}
 checkDebugCallOperands : MlirOp -> List Violation
@@ -86,13 +102,9 @@ checkDebugCallOperands op =
             case extractOperandTypes op of
                 Just operandTypes ->
                     if String.contains "log" callee then
-                        -- Debug.log has signature: String -> a -> a
-                        -- The second and third operands are the polymorphic value
                         checkPolymorphicOperands op callee (List.drop 1 operandTypes)
 
                     else if String.contains "toString" callee then
-                        -- Debug.toString has signature: a -> String
-                        -- First operand is polymorphic
                         checkPolymorphicOperands op callee operandTypes
 
                     else
@@ -105,28 +117,9 @@ checkDebugCallOperands op =
             []
 
 
-{-| Check that polymorphic operands are !eco.value.
-
-Polymorphic operands (those with CEcoValue constraint in MonoType) must
-be !eco.value in MLIR. Primitive types (i64, f64, i16) would indicate
-incorrect lowering of a polymorphic type variable.
-
-Note: We allow primitives if they could be the actual concrete type
-(e.g., Debug.log "x" 42 where 42 is Int). This test is conservative
-and primarily catches cases where a clearly polymorphic position has
-a primitive type.
-
+{-| Returns no violations, whatever the call, its callee name and the operand
+types it is given. None of its arguments is examined.
 -}
 checkPolymorphicOperands : MlirOp -> String -> List MlirType -> List Violation
 checkPolymorphicOperands _ _ _ =
-    -- For now, we don't report violations here because:
-    -- 1. Debug.log "x" 42 legitimately has an i64 operand for Int
-    -- 2. We'd need MonoType info to know which positions are truly polymorphic vs concrete
-    --
-    -- A more thorough test would trace MonoType -> MLIR mapping, but that requires
-    -- instrumenting the codegen or preserving more type info in MLIR.
-    --
-    -- Instead, we check for obviously wrong patterns: a primitive type where
-    -- we definitely expect !eco.value (e.g., if all operands are primitives
-    -- for a function that must take at least one boxed value).
     []

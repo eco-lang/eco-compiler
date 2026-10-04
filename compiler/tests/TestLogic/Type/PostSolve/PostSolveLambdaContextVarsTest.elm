@@ -1,13 +1,46 @@
 module TestLogic.Type.PostSolve.PostSolveLambdaContextVarsTest exposing (suite)
 
-{-| Test suite for invariant POST\_008.
+{-| Tests that `Compiler.Type.PostSolve` gives no lambda a type naming a type
+variable that the solver did not already have for it. A lambda whose type
+gained such a variable would be polymorphic in a variable that no solver
+constraint governs. This is invariant POST\_008.
 
-POST\_008: For every lambda expression the set of free Can.TVar names appearing
-in its post-PostSolve type must be a subset of the type variables available in
-its surrounding solver environment (from its pre-PostSolve node type or
-enclosing annotated scheme) ensuring that PostSolve does not introduce new
-unconstrained lambda-local type variables and that all lambda polymorphism
-originates from the main solver.
+A node's _pre-type_ and _post-type_ are its entries in the node types before and
+after PostSolve, as `TestLogic.Type.PostSolve.CompileThroughPostSolve` returns
+them. A lambda's _context variables_ are the type variable names of its
+pre-type or, when it has none, the variables quantified by the annotation that
+the solver's annotations hold under the name of the definition the lambda sits
+in, as `TestLogic.Type.PostSolve.PostSolveInvariantHelpers.walkExprs` tags it.
+POST\_008 requires every type variable name in a lambda's post-type to be a
+context variable. Names are read with `PostSolveInvariantHelpers.freeTypeVars`,
+which includes record extension variables and, for an alias with a `Holey`
+body, the alias's own parameter names, and they are compared by name only.
+
+The programs are those of `SourceIR.Suite.StandardTestSuites.expectSuite`, under
+the description `"lambda-context-vars"`.
+
+The tests establish:
+
+  - For each program, `expectLambdaContextVars` fails if the program does not
+    compile through PostSolve, and otherwise fails if any lambda with a
+    post-type names a type variable that is not a context variable. The failure
+    message lists each such lambda with its pre-type, post-type and the names
+    that are not context variables.
+
+Among what is not tested:
+
+  - A lambda with no post-type is skipped.
+    `TestLogic.Type.PostSolve.PostSolveLambdaStructuralTypesTest` (POST\_007)
+    reports it.
+  - Anything about a post-type other than the names of its type variables. A
+    post-type with a different shape, or with fewer variables, passes.
+  - The enclosing definition's annotation, for a lambda that has a pre-type; only
+    the pre-type is used.
+  - A lambda with no pre-type inside a let-bound definition against the
+    annotation around it. Its context comes from an annotation under the
+    let-bound name, so it is empty unless the solver's annotations hold one,
+    and then any type variable in its post-type fails.
+  - Nodes other than lambdas.
 
 -}
 
@@ -25,7 +58,12 @@ import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
-{-| A violation of POST\_008.
+{-| One lambda that fails POST\_008, as the failure message reports it.
+
+`preType` is `Nothing` when the lambda had no pre-type and its context
+variables came from the enclosing annotation. `newVars` are the post-type's
+type variable names that are not context variables, in ascending order.
+
 -}
 type alias Violation =
     { nodeId : Int
@@ -36,6 +74,11 @@ type alias Violation =
     }
 
 
+{-| The POST\_008 test: every program of the standard `SourceIR` catalogue
+compiled through PostSolve, failing for any lambda whose post-type names a type
+variable that is not among those of its pre-type, or, when it has none, among
+those quantified by its enclosing definition's annotation.
+-}
 suite : Test
 suite =
     Test.describe "POST_008: Lambda Context Vars"
@@ -43,7 +86,10 @@ suite =
         ]
 
 
-{-| Check that a module passes POST\_008.
+{-| Compiles `srcModule` through PostSolve and passes if no lambda's post-type
+names a type variable outside its context variables. A compilation error fails
+with the compiler's message; otherwise the failure lists every lambda that
+breaks the rule.
 -}
 expectLambdaContextVars : Src.Module -> Expect.Expectation
 expectLambdaContextVars srcModule =
@@ -53,7 +99,6 @@ expectLambdaContextVars srcModule =
 
         Ok artifacts ->
             let
-                -- Walk AST to find all lambda expression nodes
                 lambdaNodes =
                     Helpers.walkExprs artifacts.canonical
                         |> List.filter (\n -> isLambda n.node)
@@ -77,7 +122,7 @@ expectLambdaContextVars srcModule =
                     Expect.fail (formatViolations vs)
 
 
-{-| Check if an expression node is a Lambda.
+{-| Returns whether an expression form is a `Lambda`.
 -}
 isLambda : Can.Expr_ -> Bool
 isLambda node =
@@ -89,18 +134,13 @@ isLambda node =
             False
 
 
-{-| Check a single lambda for POST\_008 compliance.
+{-| Returns the violation for the node `exprNode`, or `Nothing` if its type in
+`nodeTypesPost` names only context variables or it has no type there.
 
-The free type variables in the lambda's post-PostSolve type must be a subset
-of the type variables available from the surrounding solver context.
-
-Context vars are derived from:
-
-1.  The lambda's pre-PostSolve type (if present) — its free vars are the context.
-2.  The enclosing definition's annotation (if the lambda has no pre-type) —
-    the quantified vars from `Forall freeVars _` are the context.
-3.  If neither is available, flag as violation — a lambda with no pre-type and
-    no enclosing annotation scope is always suspect.
+The context variables are the type variable names of its type in
+`nodeTypesPre` if it has one, and otherwise the variables quantified by the
+annotation `annotations` holds under its `enclosingDef`. With neither, the
+context is empty, so the node fails if its post-type names any type variable.
 
 -}
 checkLambdaContextVars :
@@ -112,7 +152,6 @@ checkLambdaContextVars :
 checkLambdaContextVars exprNode nodeTypesPre nodeTypesPost annotations =
     case Array.get exprNode.id nodeTypesPost |> Maybe.andThen identity of
         Nothing ->
-            -- No post type means no violation (missing type is POST_007's concern)
             Nothing
 
         Just postType ->
@@ -120,22 +159,18 @@ checkLambdaContextVars exprNode nodeTypesPre nodeTypesPost annotations =
                 postVars =
                     Helpers.freeTypeVars postType
 
-                -- Compute context vars from pre type or enclosing annotation
                 ( contextVars, preTypeForReport ) =
                     case Array.get exprNode.id nodeTypesPre |> Maybe.andThen identity of
                         Just preType ->
-                            -- Pre type exists: its free vars are the context
                             ( computeContextVars preType, Just preType )
 
                         Nothing ->
-                            -- No pre type: use enclosing def's annotation vars
                             ( Helpers.enclosingAnnotationVars
                                 exprNode.enclosingDef
                                 annotations
                             , Nothing
                             )
 
-                -- Check: postVars ⊆ contextVars
                 newVars =
                     EverySet.diff postVars contextVars
                         |> EverySet.toList compare
@@ -163,22 +198,17 @@ checkLambdaContextVars exprNode nodeTypesPre nodeTypesPost annotations =
                     }
 
 
-{-| Compute the set of type variables available from the surrounding
-solver context for a given pre-PostSolve type.
-
-  - If the pre type is a bare TVar, the var name itself is the context.
-  - If the pre type is structured, compute all free type vars from it.
-
+{-| Returns the type variable names of a pre-type, as
+`PostSolveInvariantHelpers.freeTypeVars` reads them. The bare `TVar` case gives
+the same one-name set that `freeTypeVars` would.
 -}
 computeContextVars : Can.Type Name -> EverySet String String
 computeContextVars preType =
     case preType of
         Can.TVar name ->
-            -- A bare TVar placeholder: include the var name itself
             EverySet.insert identity name EverySet.empty
 
         _ ->
-            -- Structured type: compute all free vars
             Helpers.freeTypeVars preType
 
 
@@ -188,6 +218,9 @@ computeContextVars preType =
 -- ============================================================================
 
 
+{-| Returns the failure message for `violations`: a line counting them, then
+each one as `formatViolation` renders it, separated by blank lines.
+-}
 formatViolations : List Violation -> String
 formatViolations violations =
     let
@@ -199,6 +232,9 @@ formatViolations violations =
     header ++ (violations |> List.map formatViolation |> String.join "\n\n")
 
 
+{-| Returns a multi-line description of one violation: its node id, pre-type,
+post-type, the names that are not context variables, and its details line.
+-}
 formatViolation : Violation -> String
 formatViolation v =
     "POST_008 violation at nodeId "
@@ -213,6 +249,8 @@ formatViolation v =
         ++ v.details
 
 
+{-| Returns the type as `typeToString` renders it, or `(none)` for `Nothing`.
+-}
 maybeTypeToString : Maybe (Can.Type Name) -> String
 maybeTypeToString mt =
     case mt of
@@ -223,6 +261,10 @@ maybeTypeToString mt =
             "(none)"
 
 
+{-| Returns a one-line rendering of a type for a failure message, naming the
+constructor of each part. A record shows only its extension variable, if it
+has one, and not its fields, and an alias shows only its name.
+-}
 typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of

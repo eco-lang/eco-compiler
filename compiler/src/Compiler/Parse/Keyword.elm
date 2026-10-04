@@ -7,11 +7,26 @@ module Compiler.Parse.Keyword exposing
     , k4, k5
     )
 
-{-| Parser for Elm language keywords.
+{-| This module parses Elm's keywords, each as a whole word, so that a keyword
+is never matched at the start of a longer name such as `types` or `if_`.
 
-This module provides parsers for all reserved keywords in Elm. Each parser
-ensures that the keyword is not followed by identifier characters (to avoid
-matching prefixes like "types" when looking for "type").
+Each keyword parser takes the function that builds its error from a row and a
+column. It succeeds with `Cok ()` when the text at the current position is the
+keyword and the character after it is not an _inner character_, one that may
+continue an identifier, as `Compiler.Parse.Variable.getInnerWidth` decides: an
+ASCII letter, a digit, `_`, or one of the groups that module's docstring
+describes. The position and the column then move past the keyword. Otherwise
+the parser fails with `Eerr` where it started, having consumed nothing, so an
+enclosing `oneOf` may try its next alternative. No keyword parser reads the
+whitespace before or after its word.
+
+Having a parser here does not make a word reserved. The words that may not be
+used as names are those of `Compiler.Parse.Variable.isReservedWord`, and that
+list is shorter: `alias`, `infix`, `left`, `right`, `non`, `effect`, `command`
+and `subscription` have parsers here but are ordinary names elsewhere.
+
+`k4` and `k5` build the same kind of parser for any word of four or five
+characters, given one character at a time.
 
 
 # Declaration Keywords
@@ -24,7 +39,7 @@ matching prefixes like "types" when looking for "type").
 @docs if_, then_, else_, case_, of_, let_, in_
 
 
-# Import Keywords
+# Module Header and Import Keywords
 
 @docs module_, import_, exposing_, as_
 
@@ -39,7 +54,7 @@ matching prefixes like "types" when looking for "type").
 @docs effect_, where_, command_, subscription_
 
 
-# Keyword Helpers
+# Matchers
 
 @docs k4, k5
 
@@ -53,21 +68,21 @@ import Compiler.Parse.Variable as Var
 -- ====== DECLARATIONS ======
 
 
-{-| Parses the 'type' keyword for type declarations.
+{-| Parses the keyword `type`.
 -}
 type_ : (Row -> Col -> x) -> Parser x ()
 type_ tx =
     k4 't' 'y' 'p' 'e' tx
 
 
-{-| Parses the 'alias' keyword for type alias declarations.
+{-| Parses the keyword `alias`.
 -}
 alias_ : (Row -> Col -> x) -> Parser x ()
 alias_ tx =
     k5 'a' 'l' 'i' 'a' 's' tx
 
 
-{-| Parses the 'port' keyword for port declarations.
+{-| Parses the keyword `port`.
 -}
 port_ : (Row -> Col -> x) -> Parser x ()
 port_ tx =
@@ -78,21 +93,21 @@ port_ tx =
 -- ====== IF EXPRESSIONS ======
 
 
-{-| Parses the 'if' keyword for conditional expressions.
+{-| Parses the keyword `if`.
 -}
 if_ : (Row -> Col -> x) -> Parser x ()
 if_ tx =
     k2 'i' 'f' tx
 
 
-{-| Parses the 'then' keyword for conditional expressions.
+{-| Parses the keyword `then`.
 -}
 then_ : (Row -> Col -> x) -> Parser x ()
 then_ tx =
     k4 't' 'h' 'e' 'n' tx
 
 
-{-| Parses the 'else' keyword for conditional expressions.
+{-| Parses the keyword `else`.
 -}
 else_ : (Row -> Col -> x) -> Parser x ()
 else_ tx =
@@ -103,14 +118,14 @@ else_ tx =
 -- ====== CASE EXPRESSIONS ======
 
 
-{-| Parses the 'case' keyword for pattern matching expressions.
+{-| Parses the keyword `case`.
 -}
 case_ : (Row -> Col -> x) -> Parser x ()
 case_ tx =
     k4 'c' 'a' 's' 'e' tx
 
 
-{-| Parses the 'of' keyword for pattern matching expressions.
+{-| Parses the keyword `of`.
 -}
 of_ : (Row -> Col -> x) -> Parser x ()
 of_ tx =
@@ -121,14 +136,14 @@ of_ tx =
 -- ====== LET EXPRESSIONS ======
 
 
-{-| Parses the 'let' keyword for let expressions.
+{-| Parses the keyword `let`.
 -}
 let_ : (Row -> Col -> x) -> Parser x ()
 let_ tx =
     k3 'l' 'e' 't' tx
 
 
-{-| Parses the 'in' keyword for let expressions.
+{-| Parses the keyword `in`.
 -}
 in_ : (Row -> Col -> x) -> Parser x ()
 in_ tx =
@@ -139,28 +154,28 @@ in_ tx =
 -- ====== INFIXES ======
 
 
-{-| Parses the 'infix' keyword for infix operator declarations.
+{-| Parses the keyword `infix`.
 -}
 infix_ : (Row -> Col -> x) -> Parser x ()
 infix_ tx =
     k5 'i' 'n' 'f' 'i' 'x' tx
 
 
-{-| Parses the 'left' keyword for left-associative operators.
+{-| Parses the keyword `left`.
 -}
 left_ : (Row -> Col -> x) -> Parser x ()
 left_ tx =
     k4 'l' 'e' 'f' 't' tx
 
 
-{-| Parses the 'right' keyword for right-associative operators.
+{-| Parses the keyword `right`.
 -}
 right_ : (Row -> Col -> x) -> Parser x ()
 right_ tx =
     k5 'r' 'i' 'g' 'h' 't' tx
 
 
-{-| Parses the 'non' keyword for non-associative operators.
+{-| Parses the keyword `non`.
 -}
 non_ : (Row -> Col -> x) -> Parser x ()
 non_ tx =
@@ -168,31 +183,31 @@ non_ tx =
 
 
 
--- ====== IMPORTS ======
+-- ====== MODULE HEADER AND IMPORTS ======
 
 
-{-| Parses the 'module' keyword for module declarations.
+{-| Parses the keyword `module`.
 -}
 module_ : (Row -> Col -> x) -> Parser x ()
 module_ tx =
     k6 'm' 'o' 'd' 'u' 'l' 'e' tx
 
 
-{-| Parses the 'import' keyword for import declarations.
+{-| Parses the keyword `import`.
 -}
 import_ : (Row -> Col -> x) -> Parser x ()
 import_ tx =
     k6 'i' 'm' 'p' 'o' 'r' 't' tx
 
 
-{-| Parses the 'exposing' keyword for exposing lists in module and import declarations.
+{-| Parses the keyword `exposing`.
 -}
 exposing_ : (Row -> Col -> x) -> Parser x ()
 exposing_ tx =
     k8 'e' 'x' 'p' 'o' 's' 'i' 'n' 'g' tx
 
 
-{-| Parses the 'as' keyword for module aliasing in import declarations.
+{-| Parses the keyword `as`.
 -}
 as_ : (Row -> Col -> x) -> Parser x ()
 as_ tx =
@@ -203,28 +218,32 @@ as_ tx =
 -- ====== EFFECTS ======
 
 
-{-| Parses the 'effect' keyword for effect module declarations.
+{-| Parses the keyword `effect`.
 -}
 effect_ : (Row -> Col -> x) -> Parser x ()
 effect_ tx =
     k6 'e' 'f' 'f' 'e' 'c' 't' tx
 
 
-{-| Parses the 'where' keyword for effect module declarations.
+{-| Parses the keyword `where`.
 -}
 where_ : (Row -> Col -> x) -> Parser x ()
 where_ tx =
     k5 'w' 'h' 'e' 'r' 'e' tx
 
 
-{-| Parses the 'command' keyword for effect module declarations.
+{-| Parses the keyword `command`.
 -}
 command_ : (Row -> Col -> x) -> Parser x ()
 command_ tx =
     k7 'c' 'o' 'm' 'm' 'a' 'n' 'd' tx
 
 
-{-| Parses the 'subscription' keyword for effect module declarations.
+{-| Parses the keyword `subscription`.
+
+At twelve characters it is longer than any matcher here takes, so its
+characters are compared one by one in this function.
+
 -}
 subscription_ : (Row -> Col -> x) -> Parser x ()
 subscription_ toError =
@@ -263,10 +282,11 @@ subscription_ toError =
 
 
 
--- ====== KEYWORDS ======
+-- ====== MATCHERS ======
 
 
-{-| Helper for parsing a 2-character keyword. Ensures the keyword is not followed by identifier characters.
+{-| Produces a parser for the two-character word `w1` `w2`, matched as a whole
+word as the module docstring describes, failing with `toError`.
 -}
 k2 : Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k2 w1 w2 toError =
@@ -294,6 +314,9 @@ k2 w1 w2 toError =
                 P.Eerr st.row st.col toError
 
 
+{-| Produces a parser for the three-character word `w1` `w2` `w3`, matched as a
+whole word as the module docstring describes, failing with `toError`.
+-}
 k3 : Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k3 w1 w2 w3 toError =
     P.Parser <|
@@ -321,7 +344,14 @@ k3 w1 w2 w3 toError =
                 P.Eerr st.row st.col toError
 
 
-{-| Helper for parsing a 4-character keyword. Ensures the keyword is not followed by identifier characters.
+{-| Produces a parser for the four-character word `w1` `w2` `w3` `w4`.
+
+The parser succeeds with `Cok ()` when those are the next four characters and
+the character after them, if there is one before the end of the input, cannot
+continue an identifier. The position and the column then move on by four.
+Otherwise it fails with `Eerr` and `toError` at the row and column where it
+started, having consumed nothing. It reads no whitespace.
+
 -}
 k4 : Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k4 w1 w2 w3 w4 toError =
@@ -351,7 +381,14 @@ k4 w1 w2 w3 w4 toError =
                 P.Eerr st.row st.col toError
 
 
-{-| Helper for parsing a 5-character keyword. Ensures the keyword is not followed by identifier characters.
+{-| Produces a parser for the five-character word `w1` `w2` `w3` `w4` `w5`.
+
+The parser succeeds with `Cok ()` when those are the next five characters and
+the character after them, if there is one before the end of the input, cannot
+continue an identifier. The position and the column then move on by five.
+Otherwise it fails with `Eerr` and `toError` at the row and column where it
+started, having consumed nothing. It reads no whitespace.
+
 -}
 k5 : Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k5 w1 w2 w3 w4 w5 toError =
@@ -382,6 +419,9 @@ k5 w1 w2 w3 w4 w5 toError =
                 P.Eerr st.row st.col toError
 
 
+{-| Produces a parser for the six-character word `w1` to `w6`, matched as a
+whole word as the module docstring describes, failing with `toError`.
+-}
 k6 : Char -> Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k6 w1 w2 w3 w4 w5 w6 toError =
     P.Parser <|
@@ -412,6 +452,9 @@ k6 w1 w2 w3 w4 w5 w6 toError =
                 P.Eerr st.row st.col toError
 
 
+{-| Produces a parser for the seven-character word `w1` to `w7`, matched as a
+whole word as the module docstring describes, failing with `toError`.
+-}
 k7 : Char -> Char -> Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k7 w1 w2 w3 w4 w5 w6 w7 toError =
     P.Parser <|
@@ -443,6 +486,9 @@ k7 w1 w2 w3 w4 w5 w6 w7 toError =
                 P.Eerr st.row st.col toError
 
 
+{-| Produces a parser for the eight-character word `w1` to `w8`, matched as a
+whole word as the module docstring describes, failing with `toError`.
+-}
 k8 : Char -> Char -> Char -> Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k8 w1 w2 w3 w4 w5 w6 w7 w8 toError =
     P.Parser <|

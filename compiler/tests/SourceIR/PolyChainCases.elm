@@ -1,22 +1,65 @@
 module SourceIR.PolyChainCases exposing (expectSuite, suite)
 
-{-| Test cases for chained polymorphic function calls that trigger the
-\_\_callee rename collision bug in monomorphization type substitution.
+{-| Programs that call a polymorphic helper several times, some of them from a
+polymorphic caller written with the same type variable names, for checking that
+specialization keeps the type variables of separate calls, and of caller and
+helper, apart.
 
-The bug mechanism requires three layers:
+When a polymorphic function is specialized, each call it makes to a polymorphic
+helper needs its own copy of the helper's type variables. In the first group of
+programs, and in one other, the caller and the helper are written with the same
+type variable names (`buildTree : a -> a -> Tree a` calls
+`insertTree : a -> Tree a -> Tree a`), and the helper is called more than once,
+often with one call's result passed to the next. A specializer that mixed up
+the caller's `a` with the helper's, or carried one call's binding into the
+next, could bind `a` to a type that contains `a`, such as `Tree a`. No finite
+type solves such a binding, and detecting one is called the _occurs check_,
+after which the first group is named. The other programs call polymorphic
+helpers repeatedly from `testValue` itself. The substitution engine gives a
+helper's type variables fresh ids when it builds the helper's type scheme, and
+fresh ones again each time it reuses that scheme, as
+`Compiler.Monomorphize.TypeSubst.buildSchemeInfo` and `refreshSchemeInfo`
+describe.
 
-1.  A concrete entry point that specializes a polymorphic middle function
-2.  A polymorphic middle function (caller) whose type vars enter the substitution
-3.  A polymorphic helper (callee) with overlapping var names, called multiple times
+The module asserts nothing itself. `expectSuite` hands the programs, in order,
+to the expectation it is given, stopping at the first that fails, so what is
+checked depends on the caller.
+`SourceIR.Suite.StandardTestSuites` includes it in the standard suite, which
+stage tests run with their own expectations, and `suite` runs it with
+`TestLogic.TestPipeline.expectMonomorphization`.
 
-When the callee's type vars overlap with the caller's, buildRenameMap renames
-them with **callee suffixes. But the counter resets to 0 on each unifyFuncCall,
-so the second call reuses the same **callee names. Combined with:
+Each program is a module `TestMod` built with
+`makeModuleWithTypedDefsUnionsAliases`, so it has the standard imports. Every
+top-level definition is annotated, and the program's `testValue` is annotated
+with a type that has no type variables. Most helper bodies ignore some of their
+arguments, so what matters in a program is its types rather than what it
+computes. The sketches in the docstrings below are Elm source, not the trees
+as built: for example, a constructor with no arguments is built as a call with
+no arguments, which source text cannot express, and a parenthesised argument
+has no `Parens` node around it. The `case` in `sizeTree` and `size`, as sketched
+and as built, has two variable branches, the second of which can never match.
 
-  - normalizeMonoType not resolving inner MVars in complex types
-  - isSelfRef only catching bare MVar self-references
+The fourteen cases fall into four groups:
 
-This allows circular bindings like a\_\_callee0 = Tree (MVar "a\_\_callee0") to form.
+  - `occursCheckCases`: six programs where a polymorphic caller that shares
+    type variable names with a polymorphic helper calls it two or four times.
+    The shared variables sit inside a custom type, a tuple, or a tuple inside a
+    constructor field.
+  - `chainedInsertCases`: three programs that insert into a dictionary-like
+    custom type five or ten times in a row, from `testValue` rather than from a
+    polymorphic caller.
+  - `nestedContainerCases`: two programs that pass `( List String, Global )`
+    tuples to a polymorphic helper repeatedly: eight `singleton` calls whose
+    sets are combined by `union`, and six `lookup` calls.
+  - `multiCallSamePolyCases`: three programs that call a fold-like or
+    filter-like helper three to eight times in a chain, one of them from a
+    polymorphic caller.
+
+Among what is not tested: nothing here inspects the specializations a program
+produces, such as their types or how many there are, beyond what the given
+expectation inspects. `expectMonomorphization`, which `suite` uses, checks only
+that monomorphization with the substitution engine succeeds and gives a graph
+with a `main` and a node array that is not empty.
 
 -}
 
@@ -49,6 +92,10 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| A test that checks the cases with
+`TestLogic.TestPipeline.expectMonomorphization`, in order, stopping at the
+first that fails.
+-}
 suite : Test
 suite =
     Test.describe "Chained polymorphic calls over complex types"
@@ -56,12 +103,21 @@ suite =
         ]
 
 
+{-| Builds one test, named `Poly chain cases` followed by `condStr`, that applies
+`expectFn` to each case's program in turn until one fails. It runs the cases
+through `Compiler.BulkCheck.bulkCheck`, so a failure names only the first case
+that fails.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Poly chain cases " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the cases of `occursCheckCases`, `chainedInsertCases`,
+`nestedContainerCases` and `multiCallSamePolyCases`, in that order, each
+checking its program with `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -78,21 +134,29 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| The type `Int`, named without qualification.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| The type `String`, named without qualification.
+-}
 tString : Src.Type
 tString =
     tType "String" []
 
 
+{-| Returns the type `List a`, with `List` named without qualification.
+-}
 tList : Src.Type -> Src.Type
 tList a =
     tType "List" [ a ]
 
 
+{-| The type `Bool`, named without qualification.
+-}
 tBool : Src.Type
 tBool =
     tType "Bool" []
@@ -101,12 +165,13 @@ tBool =
 
 -- ============================================================================
 -- OCCURS CHECK CASES
--- These directly target the bug: polymorphic caller calls polymorphic callee
--- multiple times, with result feeding forward and type vars wrapped in
--- complex types. The __callee rename collision creates circular bindings.
 -- ============================================================================
 
 
+{-| Returns the six cases in which a polymorphic caller calls a polymorphic
+helper that uses the same type variable names, each checking its program with
+`expectFn`.
+-}
 occursCheckCases : (Src.Module -> Expectation) -> List TestCase
 occursCheckCases expectFn =
     [ { label = "Custom type wrapping: insertTree called twice from polymorphic caller"
@@ -130,43 +195,41 @@ occursCheckCases expectFn =
     ]
 
 
-{-| Core reproducer for the occurs check bug.
-
+{-| Applies `expectFn` to a program in which `buildTree` calls `insertTree` twice
+and passes the first result to the second call, with both functions written in
+terms of `a`. The type variable sits inside the custom type `Tree a`.
 
     type Tree a
         = Leaf
         | Node (Tree a) a (Tree a)
 
-    insertTree :
-        a
-        -> Tree a
-        -> Tree a -- callee (polymorphic)
+    insertTree : a -> Tree a -> Tree a
     insertTree val tree =
         Node tree val Leaf
 
-    buildTree :
-        a
-        -> a
-        -> Tree a -- caller (polymorphic, shares var `a`)
+    buildTree : a -> a -> Tree a
     buildTree x y =
         let
             t1 =
                 insertTree x Leaf
 
-            -- 1st call: a → a__callee0
             t2 =
                 insertTree y t1
-
-            -- 2nd call: a → a__callee0 REUSED
         in
-        -- t1's type = Tree (MVar "a__callee0")
         t2
 
-    -- isSelfRef misses it → cycle!
-    testValue =
-        buildTree 1 2
+    sizeTree : Tree a -> Int
+    sizeTree t =
+        case t of
+            leaf ->
+                0
 
-    -- concrete entry point
+            node ->
+                1
+
+    testValue : Int
+    testValue =
+        sizeTree (buildTree 1 2)
 
 -}
 treeInsertFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -187,7 +250,6 @@ treeInsertFromPolyCaller expectFn _ =
                 ]
             }
 
-        -- insertTree : a -> Tree a -> Tree a
         insertTreeDef : TypedDef
         insertTreeDef =
             { name = "insertTree"
@@ -202,8 +264,6 @@ treeInsertFromPolyCaller expectFn _ =
                     [ varExpr "tree", varExpr "val", callExpr (ctorExpr "Leaf") [] ]
             }
 
-        -- buildTree : a -> a -> Tree a
-        -- POLYMORPHIC CALLER — shares var name `a` with insertTree
         buildTreeDef : TypedDef
         buildTreeDef =
             { name = "buildTree"
@@ -229,7 +289,6 @@ treeInsertFromPolyCaller expectFn _ =
                     (varExpr "t2")
             }
 
-        -- sizeTree : Tree a -> Int
         sizeTreeDef : TypedDef
         sizeTreeDef =
             { name = "sizeTree"
@@ -242,7 +301,6 @@ treeInsertFromPolyCaller expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         mainDef : TypedDef
         mainDef =
             { name = "testValue"
@@ -262,38 +320,34 @@ treeInsertFromPolyCaller expectFn _ =
     expectFn modul
 
 
-{-| Tuple wrapping variant: the helper returns a type where `a` is inside a tuple.
-
+{-| Applies `expectFn` to a program in which `tagBoth` calls `tag` twice, with
+both functions written in terms of `a`, and `tag` returns `a` inside the tuple
+`( a, Int )`. Neither call's result is passed to the other, and the first is
+unused.
 
     tag : a -> ( a, Int )
     tag x =
         ( x, 0 )
 
-    tagBoth :
-        a
-        -> a
-        -> ( a, Int ) -- poly caller, shares `a`
+    tagBoth : a -> a -> ( a, Int )
     tagBoth x y =
         let
             r1 =
                 tag x
 
-            -- a__callee0 → MVar "a"
             r2 =
                 tag y
-
-            -- a__callee0 reused
         in
-        -- r1 type = (MVar "a__callee0", Int)
         r2
 
-    -- binding sees nested self-ref
+    testValue : ( String, Int )
+    testValue =
+        tagBoth "hello" "world"
 
 -}
 tupleWrapFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleWrapFromPolyCaller expectFn _ =
     let
-        -- tag : a -> (a, Int)
         tagDef : TypedDef
         tagDef =
             { name = "tag"
@@ -304,7 +358,6 @@ tupleWrapFromPolyCaller expectFn _ =
             , body = tupleExpr (varExpr "x") (intExpr 0)
             }
 
-        -- tagBoth : a -> a -> (a, Int)
         tagBothDef : TypedDef
         tagBothDef =
             { name = "tagBoth"
@@ -322,7 +375,6 @@ tupleWrapFromPolyCaller expectFn _ =
                     (varExpr "r2")
             }
 
-        -- testValue : (String, Int)
         mainDef : TypedDef
         mainDef =
             { name = "testValue"
@@ -342,35 +394,29 @@ tupleWrapFromPolyCaller expectFn _ =
     expectFn modul
 
 
-{-| Two type vars both collide between caller and callee.
+{-| Applies `expectFn` to a program in which `process` calls `combine` twice
+with the same arguments, with both functions written in terms of `a` and `b`, so
+that two type variables are shared. The first call's result is unused.
 
     type Pair a b
-        = Pair a b
+        = MkPair a b
 
-    combine :
-        a
-        -> b
-        -> Pair a b -- callee with vars a, b
+    combine : a -> b -> Pair a b
     combine x y =
         MkPair x y
 
-    process :
-        a
-        -> b
-        -> Pair a b -- caller with SAME var names a, b
+    process : a -> b -> Pair a b
     process x y =
         let
             r1 =
                 combine x y
 
-            -- a→a__callee0, b→b__callee1
             r2 =
                 combine x y
-
-            -- reuses a__callee0, b__callee1
         in
         r2
 
+    testValue : Pair Int String
     testValue =
         process 42 "hello"
 
@@ -390,7 +436,6 @@ twoVarCollision expectFn _ =
                 ]
             }
 
-        -- combine : a -> b -> Pair a b
         combineDef : TypedDef
         combineDef =
             { name = "combine"
@@ -403,8 +448,6 @@ twoVarCollision expectFn _ =
             , body = callExpr (ctorExpr "MkPair") [ varExpr "x", varExpr "y" ]
             }
 
-        -- process : a -> b -> Pair a b
-        -- POLYMORPHIC CALLER with same var names a, b as combine
         processDef : TypedDef
         processDef =
             { name = "process"
@@ -426,7 +469,6 @@ twoVarCollision expectFn _ =
                     (varExpr "r2")
             }
 
-        -- testValue : Pair Int String
         mainDef : TypedDef
         mainDef =
             { name = "testValue"
@@ -445,19 +487,20 @@ twoVarCollision expectFn _ =
     expectFn modul
 
 
-{-| Dict-like insert from a polymorphic caller with 3 colliding type vars.
+{-| Applies `expectFn` to a program in which `buildDict` calls `insert` twice and
+passes the first result to the second call, with both functions written in
+terms of `k` and `v`. The case's label counts three colliding type variables;
+the two functions share two.
 
     type MyDict k v
         = Empty
         | Entry k v (MyDict k v)
 
     insert : k -> v -> MyDict k v -> MyDict k v
+    insert key val dict =
+        Entry key val dict
 
-    buildDict :
-        k
-        -> v
-        -> v
-        -> MyDict k v -- poly caller, shares k, v
+    buildDict : k -> v -> v -> MyDict k v
     buildDict key v1 v2 =
         let
             d0 =
@@ -466,17 +509,23 @@ twoVarCollision expectFn _ =
             d1 =
                 insert key v1 d0
 
-            -- k→k__callee0, v→v__callee1
             d2 =
                 insert key v2 d1
-
-            -- reuses k__callee0, v__callee1
         in
-        -- d1 type has unresolved MVars
         d2
 
+    size : MyDict k v -> Int
+    size d =
+        case d of
+            empty ->
+                0
+
+            entry ->
+                1
+
+    testValue : Int
     testValue =
-        buildDict "key" 1 2
+        size (buildDict "key" 1 2)
 
 -}
 dictInsertFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -501,7 +550,6 @@ dictInsertFromPolyCaller expectFn _ =
                 ]
             }
 
-        -- insert : k -> v -> MyDict k v -> MyDict k v
         insertDef : TypedDef
         insertDef =
             { name = "insert"
@@ -518,8 +566,6 @@ dictInsertFromPolyCaller expectFn _ =
                     [ varExpr "key", varExpr "val", varExpr "dict" ]
             }
 
-        -- buildDict : k -> v -> v -> MyDict k v
-        -- POLYMORPHIC CALLER with same var names k, v
         buildDictDef : TypedDef
         buildDictDef =
             { name = "buildDict"
@@ -548,7 +594,6 @@ dictInsertFromPolyCaller expectFn _ =
                     (varExpr "d2")
             }
 
-        -- size : MyDict k v -> Int
         sizeDef : TypedDef
         sizeDef =
             { name = "size"
@@ -561,7 +606,6 @@ dictInsertFromPolyCaller expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         mainDef : TypedDef
         mainDef =
             { name = "testValue"
@@ -583,8 +627,9 @@ dictInsertFromPolyCaller expectFn _ =
     expectFn modul
 
 
-{-| Longer chain: 4 calls to the same polymorphic helper in a polymorphic
-caller, each feeding its result to the next.
+{-| Applies `expectFn` to a program in which `chain4` calls `wrap` four times,
+each call after the first taking the previous result, with both functions
+written in terms of `a`. `wrap` ignores its second argument.
 
     type Box a
         = Box a
@@ -610,6 +655,7 @@ caller, each feeding its result to the next.
         in
         r4
 
+    testValue : Box Int
     testValue =
         chain4 42 (Box 0)
 
@@ -629,7 +675,6 @@ chainedFeedForward4 expectFn _ =
                 ]
             }
 
-        -- wrap : a -> Box a -> Box a
         wrapDef : TypedDef
         wrapDef =
             { name = "wrap"
@@ -642,7 +687,6 @@ chainedFeedForward4 expectFn _ =
             , body = callExpr (ctorExpr "Box") [ varExpr "x" ]
             }
 
-        -- chain4 : a -> Box a -> Box a   (poly caller, shares `a`)
         chain4Def : TypedDef
         chain4Def =
             { name = "chain4"
@@ -670,7 +714,6 @@ chainedFeedForward4 expectFn _ =
                     (varExpr "r4")
             }
 
-        -- testValue : Box Int
         mainDef : TypedDef
         mainDef =
             { name = "testValue"
@@ -692,29 +735,30 @@ chainedFeedForward4 expectFn _ =
     expectFn modul
 
 
-{-| Nested wrapper: the type var appears inside a more complex structure.
+{-| Applies `expectFn` to a program in which `collect` calls `addEntry` twice and
+passes the first result to the second call, with both functions written in
+terms of `a`. The type variable appears on its own and inside the tuple
+`( List a, Int )`, both in fields of the one constructor.
 
     type Entry a
-        = Entry ( List a, Int ) a
+        = MkEntry ( List a, Int ) a
 
     addEntry : a -> Entry a -> Entry a
     addEntry x e =
-        Entry ( [], 0 ) x
+        MkEntry ( [], 0 ) x
 
-    collect :
-        a
-        -> a
-        -> Entry a -- poly caller
+    collect : a -> a -> Entry a
     collect x y =
         let
             e1 =
-                addEntry x (Entry ( [], 0 ) x)
+                addEntry x (MkEntry ( [], 0 ) x)
 
             e2 =
                 addEntry y e1
         in
         e2
 
+    testValue : Entry String
     testValue =
         collect "a" "b"
 
@@ -739,7 +783,6 @@ nestedWrapperFromPolyCaller expectFn _ =
                 ]
             }
 
-        -- addEntry : a -> Entry a -> Entry a
         addEntryDef : TypedDef
         addEntryDef =
             { name = "addEntry"
@@ -756,7 +799,6 @@ nestedWrapperFromPolyCaller expectFn _ =
                     ]
             }
 
-        -- collect : a -> a -> Entry a   (poly caller)
         collectDef : TypedDef
         collectDef =
             { name = "collect"
@@ -787,7 +829,6 @@ nestedWrapperFromPolyCaller expectFn _ =
                     (varExpr "e2")
             }
 
-        -- testValue : Entry String
         mainDef : TypedDef
         mainDef =
             { name = "testValue"
@@ -808,12 +849,15 @@ nestedWrapperFromPolyCaller expectFn _ =
 
 
 -- ============================================================================
--- CHAINED INSERT CASES (original tests, kept for regression coverage)
--- These call polymorphic helpers from CONCRETE contexts, so they don't
--- trigger the __callee collision. Kept as baseline regression tests.
+-- CHAINED INSERT CASES
 -- ============================================================================
 
 
+{-| Returns the three cases that insert into a `MyDict` several times in a row
+from `testValue`, each checking its program with `expectFn`. All three use keys
+of the same tuple type: the third case's label speaks of `List String` keys, but
+`dictInsertChainN` ignores the key type it is given.
+-}
 chainedInsertCases : (Src.Module -> Expectation) -> List TestCase
 chainedInsertCases expectFn =
     [ { label = "Dict-like insert chained 5 times with tuple keys (concrete caller)"
@@ -828,21 +872,54 @@ chainedInsertCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the `dictInsertChainN` program with five inserts.
+-}
 dictInsertChain5 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChain5 expectFn _ =
     dictInsertChainN 5 (tTuple tString tInt) expectFn
 
 
+{-| Applies `expectFn` to the `dictInsertChainN` program with ten inserts.
+-}
 dictInsertChain10 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChain10 expectFn _ =
     dictInsertChainN 10 (tTuple tString tInt) expectFn
 
 
+{-| Applies `expectFn` to the `dictInsertChainN` program with five inserts. The
+`List String` key type it passes is ignored, so the program is the same as the
+one `dictInsertChain5` checks.
+-}
 dictInsertChainListKey5 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChainListKey5 expectFn _ =
     dictInsertChainN 5 (tList tString) expectFn
 
 
+{-| Applies `expectFn` to a program whose `testValue` inserts `n` entries into an
+empty `MyDict`, each insert taking the previous dictionary, and returns the
+`size` of the last.
+
+The second argument, a key type, is not used. The insert numbered `i`, counting
+from 0, has the key `( "k<i>", i )` and the value `i * 10`, written as integer
+literals. `MyDict`, `insert` and `size` are as in `dictInsertFromPolyCaller`.
+
+    testValue : Int
+    testValue =
+        let
+            d0 =
+                Empty
+
+            d1 =
+                insert ( "k0", 0 ) 0 d0
+
+            d2 =
+                insert ( "k1", 1 ) 10 d1
+
+            -- and so on, up to dn
+        in
+        size dn
+
+-}
 dictInsertChainN : Int -> Src.Type -> (Src.Module -> Expectation) -> Expectation
 dictInsertChainN n _ expectFn =
     let
@@ -865,7 +942,6 @@ dictInsertChainN n _ expectFn =
                 ]
             }
 
-        -- insert : k -> v -> MyDict k v -> MyDict k v
         insertDef : TypedDef
         insertDef =
             { name = "insert"
@@ -908,7 +984,6 @@ dictInsertChainN n _ expectFn =
         lastDictName =
             "d" ++ String.fromInt n
 
-        -- size : MyDict k v -> Int
         sizeDef : TypedDef
         sizeDef =
             { name = "size"
@@ -942,10 +1017,13 @@ dictInsertChainN n _ expectFn =
 
 
 -- ============================================================================
--- NESTED CONTAINER CASES (original tests, kept)
+-- NESTED CONTAINER CASES
 -- ============================================================================
 
 
+{-| Returns the two cases that call polymorphic helpers several times with a
+`( List String, Global )` tuple, each checking its program with `expectFn`.
+-}
 nestedContainerCases : (Src.Module -> Expectation) -> List TestCase
 nestedContainerCases expectFn =
     [ { label = "Nested container: Set of (module, name) pairs with multiple ops"
@@ -957,6 +1035,40 @@ nestedContainerCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a program that makes eight one-element sets of
+`( List String, Global )` tuples with `singleton` and combines them with seven
+nested calls to `union`. `union` returns its first argument, and `count` always
+returns 0.
+
+    type MySet a
+        = MySet (List a)
+
+    type Global
+        = Global
+
+    singleton : a -> MySet a
+    singleton x =
+        MySet [ x ]
+
+    union : MySet a -> MySet a -> MySet a
+    union s1 s2 =
+        s1
+
+    count : MySet a -> Int
+    count s =
+        0
+
+    testValue : Int
+    testValue =
+        let
+            s1 =
+                singleton ( [ "0" ], Global )
+
+            -- and so on, up to s8 = singleton ( [ "7" ], Global )
+        in
+        count (union s1 (union s2 (union s3 (union s4 (union s5 (union s6 (union s7 s8)))))))
+
+-}
 setOfPairsMultiOps : (Src.Module -> Expectation) -> (() -> Expectation)
 setOfPairsMultiOps expectFn _ =
     let
@@ -981,7 +1093,6 @@ setOfPairsMultiOps expectFn _ =
                 ]
             }
 
-        -- singleton : a -> MySet a
         singletonDef : TypedDef
         singletonDef =
             { name = "singleton"
@@ -990,7 +1101,6 @@ setOfPairsMultiOps expectFn _ =
             , body = callExpr (ctorExpr "MySet") [ listExpr [ varExpr "x" ] ]
             }
 
-        -- union : MySet a -> MySet a -> MySet a
         unionDef : TypedDef
         unionDef =
             { name = "union"
@@ -1018,7 +1128,6 @@ setOfPairsMultiOps expectFn _ =
                 )
                 (List.repeat 8 ())
 
-        -- Build nested union calls: union s1 (union s2 (... (union s7 s8)))
         nestedUnion : Src.Expr
         nestedUnion =
             List.foldr
@@ -1029,7 +1138,6 @@ setOfPairsMultiOps expectFn _ =
                 (varExpr "s8")
                 (List.range 1 7)
 
-        -- count : MySet a -> Int
         countDef : TypedDef
         countDef =
             { name = "count"
@@ -1057,6 +1165,28 @@ setOfPairsMultiOps expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a program that calls `lookup` six times, each with a
+`( List String, Global )` key, an empty list and 0, and returns the first
+result. `lookup` returns its third argument.
+
+    type Global
+        = Global
+
+    lookup : k -> List ( k, v ) -> v -> v
+    lookup key pairs default =
+        default
+
+    testValue : Int
+    testValue =
+        let
+            r1 =
+                lookup ( [ "mod0" ], Global ) [] 0
+
+            -- and so on, up to r6 = lookup ( [ "mod5" ], Global ) [] 0
+        in
+        r1
+
+-}
 graphNodeComplexKey : (Src.Module -> Expectation) -> (() -> Expectation)
 graphNodeComplexKey expectFn _ =
     let
@@ -1069,7 +1199,6 @@ graphNodeComplexKey expectFn _ =
                 ]
             }
 
-        -- lookup : k -> List (k, v) -> v -> v
         lookupDef : TypedDef
         lookupDef =
             { name = "lookup"
@@ -1120,10 +1249,13 @@ graphNodeComplexKey expectFn _ =
 
 
 -- ============================================================================
--- MULTIPLE CALLS TO SAME POLYMORPHIC FUNCTION (original tests, kept)
+-- MULTIPLE CALLS TO SAME POLYMORPHIC FUNCTION
 -- ============================================================================
 
 
+{-| Returns the three cases that call one polymorphic helper repeatedly in a
+chain, each checking its program with `expectFn`.
+-}
 multiCallSamePolyCases : (Src.Module -> Expectation) -> List TestCase
 multiCallSamePolyCases expectFn =
     [ { label = "foldl-like called 8 times over tuple-keyed structure"
@@ -1138,6 +1270,40 @@ multiCallSamePolyCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a program that calls `myFoldl` eight times from
+`testValue`, the first call starting from 0 and each later call from the
+previous result, all over the same empty list. `step` fixes the element type
+to `( List String, Global )` and the accumulator to `Int`. `myFoldl` returns
+its initial value.
+
+    type Global
+        = Global
+
+    myFoldl : (a -> b -> b) -> b -> List a -> b
+    myFoldl f init xs =
+        init
+
+    step : ( List String, Global ) -> Int -> Int
+    step entry acc =
+        acc
+
+    testValue : Int
+    testValue =
+        let
+            entries =
+                []
+
+            r1 =
+                myFoldl step 0 entries
+
+            r2 =
+                myFoldl step r1 entries
+
+            -- and so on, up to r8
+        in
+        r8
+
+-}
 foldlChain8 : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlChain8 expectFn _ =
     let
@@ -1153,7 +1319,6 @@ foldlChain8 expectFn _ =
                 ]
             }
 
-        -- myFoldl : (a -> b -> b) -> b -> List a -> b
         myFoldlDef : TypedDef
         myFoldlDef =
             { name = "myFoldl"
@@ -1167,7 +1332,6 @@ foldlChain8 expectFn _ =
             , body = varExpr "init"
             }
 
-        -- step : (List String, Global) -> Int -> Int
         stepDef : TypedDef
         stepDef =
             { name = "step"
@@ -1231,6 +1395,42 @@ foldlChain8 expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a program that calls `myFilter` six times from
+`testValue`, the first call filtering the empty list `entries` and each later
+call the previous result, and then takes `myLength` of the last. Despite the
+case's label, it has no map and no fold. `isGood` fixes the element type to
+`( List String, Global )`; `myFilter` returns its list unchanged and
+`myLength` returns 0.
+
+    type Global
+        = Global
+
+    myFilter : (a -> Bool) -> List a -> List a
+    myFilter myPred xs =
+        xs
+
+    myLength : List a -> Int
+    myLength xs =
+        0
+
+    isGood : ( List String, Global ) -> Bool
+    isGood x =
+        True
+
+    testValue : Int
+    testValue =
+        let
+            entries =
+                []
+
+            r1 =
+                myFilter isGood entries
+
+            -- and so on, up to r6 = myFilter isGood r5
+        in
+        myLength r6
+
+-}
 mapFoldChain : (Src.Module -> Expectation) -> (() -> Expectation)
 mapFoldChain expectFn _ =
     let
@@ -1246,7 +1446,6 @@ mapFoldChain expectFn _ =
                 ]
             }
 
-        -- myFilter : (a -> Bool) -> List a -> List a
         myFilterDef : TypedDef
         myFilterDef =
             { name = "myFilter"
@@ -1258,7 +1457,6 @@ mapFoldChain expectFn _ =
             , body = varExpr "xs"
             }
 
-        -- myLength : List a -> Int
         myLengthDef : TypedDef
         myLengthDef =
             { name = "myLength"
@@ -1267,7 +1465,6 @@ mapFoldChain expectFn _ =
             , body = intExpr 0
             }
 
-        -- isGood : (List String, Global) -> Bool
         isGoodDef : TypedDef
         isGoodDef =
             { name = "isGood"
@@ -1276,7 +1473,6 @@ mapFoldChain expectFn _ =
             , body = callExpr (ctorExpr "True") []
             }
 
-        -- Chain 6 filter calls
         chainDefs : List Src.Def
         chainDefs =
             define "entries" [] (listExpr [])
@@ -1320,27 +1516,30 @@ mapFoldChain expectFn _ =
     expectFn modul
 
 
-{-| The real-world pattern: foldl called from a POLYMORPHIC caller.
+{-| Applies `expectFn` to a program in which `summarize`, written in terms of
+`a`, calls `myFoldl`, written in terms of `a` and `b`, three times, the first
+call starting from 0 and each later call from the previous result. Only `a` is
+shared. Each call passes a lambda that returns its accumulator.
 
     myFoldl : (a -> b -> b) -> b -> List a -> b
+    myFoldl f init xs =
+        init
 
-    summarize :
-        a
-        -> List a
-        -> Int -- poly caller, shares `a` and `b`
+    summarize : a -> List a -> Int
     summarize x xs =
         let
             r1 =
-                myFoldl (\_ acc -> acc) 0 xs
+                myFoldl (\elem acc1 -> acc1) 0 xs
 
             r2 =
-                myFoldl (\_ acc -> acc) r1 xs
+                myFoldl (\elem2 acc2 -> acc2) r1 xs
 
             r3 =
-                myFoldl (\_ acc -> acc) r2 xs
+                myFoldl (\elem3 acc3 -> acc3) r2 xs
         in
         r3
 
+    testValue : Int
     testValue =
         summarize "hello" []
 
@@ -1348,7 +1547,6 @@ mapFoldChain expectFn _ =
 foldlFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlFromPolyCaller expectFn _ =
     let
-        -- myFoldl : (a -> b -> b) -> b -> List a -> b
         myFoldlDef : TypedDef
         myFoldlDef =
             { name = "myFoldl"
@@ -1362,8 +1560,6 @@ foldlFromPolyCaller expectFn _ =
             , body = varExpr "init"
             }
 
-        -- summarize : a -> List a -> Int
-        -- POLYMORPHIC CALLER — shares var `a` with myFoldl
         summarizeDef : TypedDef
         summarizeDef =
             { name = "summarize"
@@ -1401,7 +1597,6 @@ foldlFromPolyCaller expectFn _ =
                     (varExpr "r3")
             }
 
-        -- testValue : Int
         mainDef : TypedDef
         mainDef =
             { name = "testValue"

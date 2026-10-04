@@ -4,10 +4,23 @@ module Compiler.Reporting.Error.Import exposing
     , errorEncoder, errorDecoder, problemEncoder, problemDecoder
     )
 
-{-| Error reporting for module import problems.
+{-| An `import` line names a module, and when that name cannot be resolved to
+exactly one module the user needs to be told why. This module describes those
+failures and turns each into a report.
 
-This module handles errors that occur when importing modules, including
-missing modules, ambiguous imports, and name conflicts.
+A name can fail to resolve in two ways: nothing provides it, or more than one
+thing does. Something that provides a module is either a file in the project or
+a package, so there are three kinds of ambiguity: a file and a package, two or
+more files, or two or more packages. `Problem` has one constructor for "not
+found" and one for each kind of ambiguity.
+
+An `Error` is a `Problem` together with the import it concerns: where the import
+is in the source, the module name it gives, and the module names that could be
+offered instead if the name is a typo.
+
+`toReport` renders an `Error` as a "MODULE NOT FOUND" or "AMBIGUOUS IMPORT"
+report showing the import in the source. The rest of the module is the binary
+encoders and decoders for `Error` and `Problem`.
 
 
 # Errors
@@ -45,13 +58,22 @@ import Utils.Bytes.Encode as BE
 -- ====== ERROR ======
 
 
-{-| Represents an import error with location and problem details.
+{-| An import whose module name could not be resolved to exactly one module,
+with what went wrong and what `toReport` needs to explain it.
 -}
 type Error
     = Error ErrorProps
 
 
-{-| Properties that describe an import error, including location, module name, and the specific problem.
+{-| The contents of an `Error`: the import that failed and why.
+
+`region` is the part of the source the report shows and marks. `name` is the
+module name the import gives.
+
+`unimportedModules` is the set of module names `toReport` draws typo suggestions
+from. `toReport` reads it only for `NotFound`, and nothing here checks that its
+names are in fact unimported.
+
 -}
 type alias ErrorProps =
     { region : A.Region
@@ -61,7 +83,21 @@ type alias ErrorProps =
     }
 
 
-{-| Specific import problems: module not found or ambiguous due to multiple definitions.
+{-| Why a module name did not resolve to exactly one module: it resolved to none,
+or to more than one.
+
+`NotFound` means nothing was found that provides the name.
+
+`Ambiguous` means a file in the project and a package both provide it. It
+carries the file's path, further paths, the package, and further packages.
+`toReport` names only the first path and the first package.
+
+`AmbiguousLocal` means two or more files provide it, and carries their paths:
+the first, the second, and any others.
+
+`AmbiguousForeign` means two or more packages provide it, and carries their
+names in the same way.
+
 -}
 type Problem
     = NotFound
@@ -74,8 +110,20 @@ type Problem
 -- ====== TO REPORT ======
 
 
-{-| Convert an import error into a user-friendly error report with suggestions
-for fixing module not found, ambiguous imports, or name conflict issues.
+{-| Builds the report for an `Error`, titled "MODULE NOT FOUND" for `NotFound` and
+"AMBIGUOUS IMPORT" otherwise, showing the import's region of `source`.
+
+For `NotFound` the message lists the four names in `unimportedModules` nearest
+to the imported name, or all of them if there are fewer, however distant they
+are. Nearness is as `Compiler.Reporting.Suggest.sort` measures it. If
+`Pkg.suggestions` names a package that provides the module, it ends with a hint
+to install that package; otherwise with a hint to check the "dependencies" and
+"source-directories" of elm.json.
+
+For an ambiguity the message names what provides the module: every path for
+`AmbiguousLocal`, every package for `AmbiguousForeign`, and only the first path
+and first package for `Ambiguous`.
+
 -}
 toReport : Code.Source -> Error -> Report.Report
 toReport source (Error { region, name, unimportedModules, problem }) =
@@ -208,6 +256,10 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                     )
 
 
+{-| Returns the four names in `unimportedModules` nearest to `name`, nearest
+first, or all of them if there are fewer. Nearness is as `Suggest.sort`
+measures it, and no name is left out for being too far away.
+-}
 toSuggestions : ModuleName.Raw -> EverySet String ModuleName.Raw -> List ModuleName.Raw
 toSuggestions name unimportedModules =
     Suggest.sort name identity (EverySet.toList compare unimportedModules) |> List.take 4
@@ -217,7 +269,8 @@ toSuggestions name unimportedModules =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Serialize an import problem to bytes.
+{-| Builds the binary encoding of `problem`: a tag byte, 0 to 3 in
+constructor order, followed by the constructor's fields.
 -}
 problemEncoder : Problem -> Bytes.Encode.Encoder
 problemEncoder problem =
@@ -251,7 +304,8 @@ problemEncoder problem =
                 ]
 
 
-{-| Deserialize an import problem from bytes.
+{-| A decoder for a `Problem` as `problemEncoder` writes it. It fails on a tag
+byte above 3.
 -}
 problemDecoder : Bytes.Decode.Decoder Problem
 problemDecoder =
@@ -286,7 +340,8 @@ problemDecoder =
             )
 
 
-{-| Serialize an import error to bytes for caching or transmission.
+{-| Builds the binary encoding of an `Error`: its region, name, set of unimported
+modules and problem, in that order.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder (Error { region, name, unimportedModules, problem }) =
@@ -298,7 +353,7 @@ errorEncoder (Error { region, name, unimportedModules, problem }) =
         ]
 
 
-{-| Deserialize an import error from bytes.
+{-| A decoder for an `Error` as `errorEncoder` writes it.
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =

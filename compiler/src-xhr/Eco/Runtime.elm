@@ -1,13 +1,18 @@
 module Eco.Runtime exposing (dirname, random, saveState, loadState)
 
-{-| Runtime-specific operations via XHR: script directory, random numbers, REPL state.
+{-| Gives the compiler three things it cannot compute for itself: a directory
+path from the host, a random number, and somewhere outside the program to keep
+a JSON value and read it back later.
 
-This is the XHR-based bootstrap implementation. The kernel variant
-(in eco-kernel-cpp) has identical type signatures but delegates to
-Eco.Kernel.Runtime directly.
+This is the stock-Elm twin of the kernel module of the same name that the
+native build uses, with the same exposed names and signatures. It does no work
+itself. Each function is one request to eco-io, the HTTP server that `Eco.XHR`
+describes, with the op `"Runtime."` followed by the function's name. What the
+answer means is up to eco-io; this module only reads it.
 
-
-# Operations
+None of these tasks can fail. Each is wrapped in `Eco.XHR.orCrash`, so an
+eco-io failure crashes the program, and `Eco.XHR` itself crashes on a reply it
+cannot decode.
 
 @docs dirname, random, saveState, loadState
 
@@ -19,7 +24,8 @@ import Json.Encode as Encode
 import Task exposing (Task)
 
 
-{-| Get the directory of the current script or binary.
+{-| Returns the directory path that eco-io answers the `Runtime.dirname` op
+with. Nothing here checks what directory that is or that it exists.
 -}
 dirname : Task Never String
 dirname =
@@ -27,7 +33,8 @@ dirname =
         |> Eco.XHR.orCrash
 
 
-{-| Get a random Float between 0 (inclusive) and 1 (exclusive).
+{-| Returns a random number from eco-io, which is expected to be at least 0 and
+less than 1. Nothing here checks the range.
 -}
 random : Task Never Float
 random =
@@ -37,7 +44,7 @@ random =
         |> Eco.XHR.orCrash
 
 
-{-| Persist the REPL state to runtime storage.
+{-| Sends `state` to eco-io to keep, for a later `loadState` to return.
 -}
 saveState : Encode.Value -> Task Never ()
 saveState state =
@@ -45,7 +52,9 @@ saveState state =
         |> Eco.XHR.orCrash
 
 
-{-| Load the REPL state from runtime storage.
+{-| Returns the JSON value eco-io is keeping, which is expected to be the one
+the last `saveState` sent. Any JSON value is accepted, including `null`, which
+is what eco-io is expected to answer when nothing has been saved.
 -}
 loadState : Task Never Decode.Value
 loadState =

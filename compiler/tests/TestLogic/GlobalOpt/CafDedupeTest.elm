@@ -1,9 +1,51 @@
 module TestLogic.GlobalOpt.CafDedupeTest exposing (suite)
 
-{-| Unit tests for the CAF spec-dedupe pass (Compiler.GlobalOpt.CafDedupe)
-on hand-built synthetic MonoGraphs — exact control over structural
-equality, canonical selection, reference remapping, and the fixpoint
-cascade.
+{-| Tests for `Compiler.GlobalOpt.CafDedupe`, the pass that merges top-level
+`MonoDefine` definitions whose types are equal and whose bodies are equal apart
+from source regions. Without them, a change to the pass could merge two
+definitions that differ, leave a reference pointing at a definition it has
+removed, or stop after one round when a merge has made two further definitions
+equal.
+
+A spec is one node of a `MonoGraph`, numbered by its position in the node
+array. When the pass finds a group of equal `MonoDefine` specs, it keeps the one
+with the smallest number, the canonical spec, and removes the others, the
+victims, by setting their node to `Nothing`. References to a victim written as
+`MonoVarGlobal` in expressions, and the graph's port decoders, flags decoder and
+`main`, are redirected to the canonical spec.
+
+The fixtures are small graphs built by hand with `mkGraph`. Most of their specs
+are thunks: definitions of type `String` whose body calls the kernel
+`String.repeat` with `3` and a string literal, so two thunks are equal exactly
+when their literals are. The kernel functions `String.repeat` and
+`String.append` are both given the type `String -> String`, which is the real
+type of neither, and every registry entry is typed `String` whatever its node's
+type; the tests do not depend on either.
+
+The tests establish:
+
+  - On `testGraph`, after `run`: the stats report one group, one removed spec
+    and one rewritten reference; the node array still has four entries; spec 2
+    is `Nothing`; spec 0 is still a `MonoDefine`; the closure in spec 3 now
+    refers to spec 0; and the port's `decoderSpecId` is `Just 0`. Because the
+    count of rewritten references is one, the port's decoder field is not
+    counted in it.
+  - On `distinctGraph`, two thunks with different literals, no group is found
+    and nothing is removed.
+  - On `typeSplitGraph`, two specs with the same body but different declared
+    types, no group is found and nothing is removed.
+  - Running the pass a second time on its own result for `testGraph` removes
+    nothing.
+  - On `cascadeGraph`, the stats report two groups, two removed specs and at
+    least two rounds, and specs 1 and 3 are `Nothing`.
+
+Among what is not tested: the redirection of `flagsDecoder` and `main`;
+references inside closure captures, `let`s, `case`s and other expression forms
+besides a call inside a closure body and, in the cascade test, a reference that
+is a whole definition body; a group of more than two equal specs; bodies that
+differ only in their source regions; the cap on the number of rounds and the
+exact round count; and whether the canonical spec's body is unchanged.
+
 -}
 
 import Array
@@ -17,6 +59,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The five tests of the dedupe pass described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "CafDedupe"
@@ -30,11 +74,10 @@ suite =
                     [ \_ -> Expect.equal 1 stats.groups
                     , \_ -> Expect.equal 1 stats.removed
 
-                    -- exactly the MonoVarGlobal ref in node 3 (the port
-                    -- decoder remap is a field rewrite, not an expr ref)
+                    -- Only the reference inside spec 3 is counted; the port's
+                    -- decoder is a field of the graph, not an expression.
                     , \_ -> Expect.equal 1 stats.refsRewritten
                     , \_ ->
-                        -- array length unchanged; victim (spec 2) is a gap
                         Expect.equal 4 (Array.length g1.nodes)
                     , \_ ->
                         case Array.get 2 g1.nodes of
@@ -44,7 +87,6 @@ suite =
                             _ ->
                                 Expect.fail "expected victim spec 2 nulled out"
                     , \_ ->
-                        -- canonical (spec 0) survives untouched
                         case Array.get 0 g1.nodes of
                             Just (Just (Mono.MonoDefine _ _)) ->
                                 Expect.pass
@@ -52,8 +94,6 @@ suite =
                             _ ->
                                 Expect.fail "expected canonical spec 0 intact"
                     , \_ ->
-                        -- consumer's reference redirected 2 → 0 (inside
-                        -- the closure body, like CafHoistTest's pattern)
                         case Array.get 3 g1.nodes of
                             Just (Just (Mono.MonoDefine (Mono.MonoClosure _ (Mono.MonoCall _ _ [ Mono.MonoVarGlobal _ 0 _, Mono.MonoVarLocal _ _ ] _ _) _) _)) ->
                                 Expect.pass
@@ -61,7 +101,6 @@ suite =
                             _ ->
                                 Expect.fail "expected node 3 arg remapped to MonoVarGlobal 0"
                     , \_ ->
-                        -- port decoder spec redirected 2 → 0
                         Expect.equal [ Just 0 ]
                             (List.map .decoderSpecId g1.ports)
                     ]
@@ -97,8 +136,9 @@ suite =
                         CafDedupe.run cascadeGraph
                 in
                 Expect.all
-                    [ -- round 1 merges thunks 1→0; round 2 merges the two
-                      -- aliases (now both `MonoVarGlobal 0`) 3→2
+                    [ -- Round 1 merges spec 1 into spec 0, after which
+                      -- specs 2 and 3 both refer to spec 0; round 2 merges
+                      -- spec 3 into 2.
                       \_ -> Expect.equal 2 stats.groups
                     , \_ -> Expect.equal 2 stats.removed
                     , \_ -> Expect.atLeast 2 stats.rounds
@@ -118,24 +158,34 @@ suite =
 -- ====== SYNTHETIC GRAPHS ======
 
 
+{-| The module every global and lambda in the fixtures is named in.
+-}
 home : ModuleName.Canonical
 home =
     ModuleName.Canonical ( "author", "proj" ) "M"
 
 
+{-| The `String` type, which every thunk has.
+-}
 strTy : Mono.MonoType
 strTy =
     Mono.MString
 
 
+{-| The function type from `String` to `String`, used for the kernel functions,
+for the closure in `consumerNode`, and as the declared type of the second spec
+in `typeSplitGraph`.
+-}
 fnTy : Mono.MonoType
 fnTy =
     Mono.mFunction Mono.topLegacy [ strTy ] strTy
 
 
+{-| Builds the body of a thunk: a call of the kernel `String.repeat` with `3`
+and the string literal `lit`.
+-}
 thunkBody : String -> Mono.MonoExpr
 thunkBody lit =
-    -- strRepeat 3 lit : String — a computed nullary body
     Mono.MonoCall A.zero
         (Mono.MonoVarKernel A.zero "Elm" "String" "repeat" fnTy)
         [ Mono.MonoLiteral (Mono.LInt 3) Mono.MInt
@@ -145,14 +195,19 @@ thunkBody lit =
         Mono.defaultCallInfo
 
 
+{-| Builds a thunk: a definition of type `String` whose body is `thunkBody lit`.
+-}
 thunkNode : String -> Mono.MonoNode
 thunkNode lit =
     Mono.MonoDefine (thunkBody lit) strTy
 
 
+{-| Builds a definition whose value is the closure `\x -> String.append g x`,
+where `g` is a reference to spec `refId`. The reference sits in the closure's
+body, not among its captures, which are empty.
+-}
 consumerNode : Int -> Mono.MonoNode
 consumerNode refId =
-    -- k = \x -> strApp <ref> x
     Mono.MonoDefine
         (Mono.MonoClosure
             { lambdaId = Mono.AnonymousLambda home 0
@@ -176,6 +231,10 @@ consumerNode refId =
         fnTy
 
 
+{-| Builds a registry for `n` specs, in which spec `i` is the global `g<i>` of
+`home` at type `String`. The forward mapping and the per-global counts are
+empty.
+-}
 baseRegistry : Int -> Mono.SpecializationRegistry
 baseRegistry n =
     { nextId = n
@@ -190,6 +249,10 @@ baseRegistry n =
     }
 
 
+{-| Builds a graph from its nodes and ports, with a registry from
+`baseRegistry` sized to the nodes, no `main` and no flags decoder. The other
+tables are empty, and the next lambda index is 1.
+-}
 mkGraph : List (Maybe Mono.MonoNode) -> List Mono.PortRegistration -> Mono.MonoGraph
 mkGraph nodes ports =
     Mono.MonoGraph
@@ -209,9 +272,10 @@ mkGraph nodes ports =
         }
 
 
-{-| specs 0/2 identical thunks (2 is the victim), 1 a distinct thunk,
-3 a consumer referencing the victim; a port decoder also points at the
-victim.
+{-| A graph of four specs and one port. Specs 0 and 2 are equal thunks, spec 1
+is a thunk with a different literal, and spec 3 is a closure whose body refers
+to spec 2. The port is incoming and its decoder is spec 2. The dedupe pass is
+expected to make spec 0 canonical and spec 2 its victim.
 -}
 testGraph : Mono.MonoGraph
 testGraph =
@@ -224,6 +288,9 @@ testGraph =
         [ { name = "p", key = "p", incoming = True, decoderSpecId = Just 2 } ]
 
 
+{-| A graph of two thunks with different literals, which the pass must not
+merge.
+-}
 distinctGraph : Mono.MonoGraph
 distinctGraph =
     mkGraph
@@ -233,8 +300,11 @@ distinctGraph =
         []
 
 
-{-| Equal zeroed bodies but different define types must NOT merge
-(FORBID\_OPT\_003: layouts must be identical; type equality is the proxy).
+{-| A graph of two specs with the same body, a reference to the kernel
+`String.empty`, declared at different types: one `String`, the other a
+function type. Definitions of different types may have different layouts, so
+the pass must not merge them; it uses equality of the declared type to rule
+that out.
 -}
 typeSplitGraph : Mono.MonoGraph
 typeSplitGraph =
@@ -245,9 +315,10 @@ typeSplitGraph =
         []
 
 
-{-| specs 0/1 identical thunks; specs 2/3 alias DIFFERENT members of that
-group (`MonoVarGlobal 0` vs `MonoVarGlobal 1`) so they only become equal
-after round 1 merges 1→0 — exercises the fixpoint.
+{-| A graph in which one merge makes two further specs equal. Specs 0 and 1 are
+equal thunks. Spec 2 is defined as a reference to spec 0 and spec 3 as a
+reference to spec 1, so specs 2 and 3 differ until spec 1 has been merged into
+spec 0 and the reference in spec 3 redirected.
 -}
 cascadeGraph : Mono.MonoGraph
 cascadeGraph =

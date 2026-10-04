@@ -1,37 +1,80 @@
 module TestLogic.Monomorphize.LssSigFlowTest exposing (suite)
 
-{-| LSS\_020 — signature set-flow completion (GAP-2,
-`plans/lss-fidelity-3-signature-flow-completion.md` §B).
+{-| Checks that the solver engine's signature set flow carries lambda-set
+members through a definition's signature in the right direction, and widens to
+`LTop` where it cannot see every member. Without these tests a caller could be
+handed a set that is too small, which is a miscompile once a one-member set is
+devirtualized to a direct call, or a set that mixes two parameters' members,
+which loses precision without failing anything.
 
-Under `lss.sigFlow` the inference walk connects ground-typed intra-def flow
-to signature slots, so def signatures stop being trivial and callers receive
-rep links + members. These tests pin the mechanism through OBSERVABLE graph
-state — the annotations of the stored (keyed) demand types in the registry:
+A _lambda set_ is the annotation on an arrow of a `MonoType`: the function
+values, by member id, that can reach that arrow. `Compiler.AST.Monomorphized`
+owns its meaning (`LambdaSetAnno`). What matters here is that an `LSet` lists
+its members and is read as complete, an `LTop` has been widened, and an `LVar`
+is an arrow nothing was written to. _Signature set flow_ is the part of the
+solver's signature inference (`Compiler.MonoSolver.LssInfer`) that connects the
+flow inside a definition's body to the arrows of its annotation, so that a
+caller receives the members the body contributes. Three of that module's terms
+are used below:
 
-1.  `chooseHandler b f g = if b then f else g` (ground annotation): the
-    result arrow rep-links to BOTH param arrows, so a caller passing two
-    distinct lambdas sees an honest 2-member set on the result — flag-off it
-    sees nothing (the channel is empty).
-2.  `mk2 s = if b then λ else λ`: body lambdas' members transport through
-    the signature to the caller's result arrow (member flow, not just rep).
-3.  Negative control `apply f x = f x` (polymorphic): no spurious members —
-    flag-on demands are IDENTICAL to flag-off (this also pins the B.1.f
-    self-id filter: without it every ≥1-param def goes nontrivial with its
-    own raw `l|` spine member).
-4.  HONESTY pin (§0.4(3) of the plan): `pick b g = if b then inc else g 0`
-    mixes an honest branch with an opaque one (a call result). The hub must
-    POISON — publishing the partial `{g|inc}` singleton would be the
-    false-singleton devirt miscompile. Result arrow must be `LTop`, never a
-    singleton.
-5.  TailDef pin (§0.4(1)): a self-tail-recursive `countdown n k = if n == 0
-    then k else countdown (n - 1) k` — the TailDef body is ARG-STRIPPED, so
-    the root join must peel |args| arrows (and bind them); the tail call
-    itself is `WpSelf` (contributes nothing to its own hub). Flag-on the
-    result arrow carries the caller's `k` member via rep transport; a broken
-    peel poisons the signature instead (LTop everywhere).
-6.  B.4 widening rider: with `maxSetSize = 1`, the 2-member signature arrow
-    of `mk2` widens (`top=True`) and bumps `widenedBySigSize` (asserted via
-    the report line — `runSolverMonoWithReport`).
+  - A _hub_ is the point where the branches of an `if` or `case` meet. Each
+    branch flows into the hub in one direction, so a branch keeps its own set
+    and the hub reads as the union of its branches.
+  - A hub is _poisoned_, set to `LTop`, when any branch is not known to carry
+    its complete set, such as a call result.
+  - Flow between two tuple, record or custom types is _degraded_: the whole
+    subtree is joined in both directions instead. The solver's report counts,
+    as `degraded=`, each degrade whose types contain an arrow.
+
+Each fixture is a module `Test` of annotated definitions and a `testValue : Int`
+that calls the definition under test. It is monomorphized on the solver engine
+through `TestLogic.TestPipeline`, with `Config.defaultLss` (lambda-set
+specialization enabled) and `Config.defaultLimits` except where a test below
+says otherwise, and the tests read the _demand types_ of that definition: the
+`MonoType` of each of its specializations in the output registry's
+`reverseMapping`. A demand type's _result arrow_ is the last function type on
+its return spine, and its _parameter arrows_ are the arguments down that spine
+that are functions.
+
+The numbers in the test names are labels; there are no tests 2, 3 or 5.
+
+  - 1a: `chooseHandler b f g = if b then f else g`, called with two different
+    lambdas. Some result arrow is an `LSet` of exactly two members, and exactly
+    two parameter arrows are one-member `LSet`s, with different members. A hub
+    that joined its branches in both directions would give each parameter
+    both lambdas and fail the second assertion.
+  - 4: `pick c g = if c then inc else g 0`, where `testValue` passes `mkAdd`
+    as `g`. One branch is the global `inc`, the other a call result. There is
+    at least one result arrow and every one is `LTop`. A hub that published
+    only the member it could see would claim `inc` as the only function
+    reaching the result.
+  - 6: `mk2 s` returns one of two lambdas written in its body, run with
+    `maxSetSize = 1` and the report on. The report contains `bySigSize=1`, and
+    there is at least one result arrow of `mk2` and every one is `LTop`.
+  - 7: `chain b c f g h = if b then f else (if c then g else h)`, called with
+    three different lambdas. The inner hub is a branch of the outer one.
+    Some result arrow is a three-member `LSet`, and the parameter arrows are
+    exactly three one-member `LSet`s.
+  - 8: `choosePair b p q = if b then p else q` over pairs of `Int -> Int`
+    functions, called with two tuple literals of lambdas, with the report on.
+    The result tuple has at least one function element, and the report's
+    `degraded=` count is not zero. That shows a degrade somewhere in the
+    program, not necessarily at the hub; the test does not check what the
+    elements' annotations are.
+  - 9: `useH b hof1 hof2 k = let h = if b then hof1 else hof2 in h k`, where
+    `hof1` and `hof2` each take an `Int -> Int`. Flow into a parameter runs
+    backwards: `k` flows into `h`'s parameter, and from there into the
+    parameters of `hof1` and `hof2`. Across the demand types there are exactly
+    two such inner arrows; each is an `LVar`, an `LTop`, or equal to the
+    annotation on `k`'s arrow in some demand type; and neither carries a member
+    found on the arrows of `hof1` or `hof2` themselves. Flow in the wrong
+    direction would put those members there.
+
+Among what is not tested: a `case` as a hub; degrades of record and custom
+types; which members a set holds, except in test 9; `LPartial` annotations,
+which the size checks of tests 1a and 7 do not count as a match.
+`applyModule` (a polymorphic `apply`) and `countdownModule` (a tail-recursive
+`countdown` that returns a function) are built but no test uses them.
 
 -}
 
@@ -67,19 +110,13 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The signature set-flow tests listed in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "LSS_020 signature set-flow"
         [ Test.test "1a. THE depollution pin: chooseHandler's result reads the honest 2-set AND the params keep DISTINCT singletons" <|
             \() ->
-                -- LSS_023. Under the archived SYMMETRIC arm (Run X) the hub
-                -- unified params and result into one class: the result became
-                -- honest (the win) and the params became 2-sets (the
-                -- pollution) — AbiCloning declined their formerly-stamped
-                -- dispatches, the measured 8.30% → 6.08% coverage loss that
-                -- kept sigFlow default-off. Directed edges keep the params'
-                -- own sets and the result resolves their union at read. This
-                -- assertion is what separates the two designs.
                 case run chooseHandlerModule of
                     Err msg ->
                         Expect.fail msg
@@ -189,9 +226,6 @@ suite =
                             ()
         , Test.test "7. transitive chain: three lambdas through a nested hub — result 3-set, params all singletons" <|
             \() ->
-                -- Edge depth ≥ 2: the outer hub's sources include the inner
-                -- hub, whose sources are the g/h uses. Resolution walks the
-                -- chain; the params stay unpolluted at every depth.
                 case run chainModule of
                     Err msg ->
                         Expect.fail msg
@@ -245,28 +279,13 @@ suite =
                         in
                         Expect.all
                             [ \() ->
-                                -- The plan's sketch expected symmetric 2-sets
-                                -- here; that is NOT OBSERVABLE in either
-                                -- design, because member transport into
-                                -- container LITERALS does not exist (argument
-                                -- injection is per-direct-argument —
-                                -- `injectArgLambdaMember` does not descend
-                                -- into tuples; the symmetric Run-X arm reads
-                                -- LTop here too). What the degrade guard
-                                -- protects is the JOIN DIRECTION's soundness,
-                                -- not new precision, so the observables are:
-                                -- the elements read ⊤-or-honest (never a
-                                -- wrong-direction non-⊤ set) and the degrade
-                                -- COUNTER fires.
                                 if List.isEmpty tupleElementAnnos then
                                     Expect.fail "no tuple element annos found"
 
                                 else
                                     Expect.pass
                             , \() ->
-                                -- value-pinned per test 6's precedent: the key
-                                -- prints unconditionally once §6 lands, so
-                                -- presence-checking would be vacuous.
+                                -- The report always prints `degraded=`, so the test checks its value, not its presence.
                                 if String.contains "degraded=0" report then
                                     Expect.fail ("expected a nonzero degrade count, report says: " ++ report)
 
@@ -276,12 +295,6 @@ suite =
                             ()
         , Test.test "9. contravariance pin: a HOF param's inner arrow is LTop or carries k — never a k-less non-⊤ set" <|
             \() ->
-                -- All flows through NAMED sites, observable on the def's own
-                -- demand. Edges: hub ⊇ hof-uses; the FunL ARG position FLIPS,
-                -- giving hof_i.param ⊇ h.param; joinCallArgs gives
-                -- h.param ⊇ use_k. A BACKWARDS flip yields a k-less non-⊤ set
-                -- at exactly this position — the assertion shape that catches
-                -- it.
                 case run useHModule of
                     Err msg ->
                         Expect.fail msg
@@ -292,36 +305,6 @@ suite =
                                 demandsOf "useH" graph
                                     |> List.concatMap hofParamInnerAnnos
                         in
-                        -- The hof-use edges flow through the let hub and k's
-                        -- member reaches h.param, whose set the hof-param edge
-                        -- then covers.
-                        --
-                        -- UNTIL 2026-08-25 these positions read as set
-                        -- VARIABLES, because `useH`'s own instantiation wrote
-                        -- no members into them — an absence, not a widening.
-                        -- `lss.arrowIdentity` going default-on
-                        -- (plans/lss-paper-inclusion-constraints.md §5.A3)
-                        -- closed exactly that absence: it is LSS_006 per-load
-                        -- slot minting, and with the slot shared the write is
-                        -- visible here. MEASURED at the flip: `hofInner` reads
-                        -- `LSet[6], LSet[6]` where hof1's own set is `LSet[4]`,
-                        -- hof2's is `LSet[5]` and k's own is `LSet[6]` — both
-                        -- inner arrows carry EXACTLY k's member.
-                        --
-                        -- So `List.all isVarAnno` was a PROXY that only
-                        -- discriminated while the position was unwritten. The
-                        -- claim in the title is restated directly, and the
-                        -- numbers stay out of it (canonical member numbering is
-                        -- per-type walk order, so literal ids would be a churn
-                        -- magnet):
-                        --
-                        --   POSITIVE — the inner arrow is unwritten, or it
-                        --   carries what `k` carries. That is the FORWARD flow.
-                        --
-                        --   NEGATIVE — it never carries the hof params' OWN
-                        --   members. That is the miscompile class this pin
-                        --   exists for: a BACKWARDS flip pushes `h`'s set
-                        --   ({hof1, hof2}) into the position instead of k's.
                         Expect.equal ( 2, True, True )
                             ( List.length hofInnerAnnos
                             , List.all
@@ -346,6 +329,9 @@ suite =
 -- ====== HARNESS ======
 
 
+{-| Monomorphizes `srcModule` on the solver engine with `Config.defaultLss` and
+the default limits, giving the output graph or the pipeline's error message.
+-}
 run : Src.Module -> Result String Mono.MonoGraph
 run srcModule =
     let
@@ -354,46 +340,14 @@ run srcModule =
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        -- All-globals keying (unconditional under LSS since 2026-09-18)
-        -- is what stores annotated demands in the registry at all.
-        --
-        -- THE sigFlow DIFFERENTIAL IS GONE (2026-09-18): the flag was fixed
-        -- at its default and removed, and so were every flag this harness
-        -- pinned to keep the differential honest — `layoutQualMembers`
-        -- (LSS_024's id sharing), `papMembers`, `arrowSolverRoots` and
-        -- `regIdentity`, each a second channel to the same place. The four
-        -- pure differentials (1b, 2, 3, 5) were deleted; what they pinned,
-        -- flag-off, was: `chooseHandler`'s channel empty (no multi-member
-        -- set), `mk2`'s 2-member set absent, polymorphic `apply`'s demands
-        -- identical across arms, and `countdown`'s result arrow UNWRITTEN (a
-        -- set variable, not ⊤ — nothing writes it with the signature channel
-        -- off). The absolute pins below stay, now at shipping defaults.
-        --
-        -- `papMembers` PINNED OFF for the same reason, and it is load-bearing
-        -- here rather than tidy-minded. Every test driven through this harness
-        -- is DIFFERENTIAL — it compares `sigFlow` on against off — and a
-        -- second channel to the same place collapses the differentials. The
-        -- recorded instance was `sigRootIdentity` (deleted 2026-09-17): it
-        -- tied a def's annotation arrows to its body's, so signatures
-        -- conducted members whether or not `sigFlow` was on, and inheriting it
-        -- put that channel in BOTH arms — test 1b's "the channel is empty"
-        -- absence stopped holding, test 2's 2-member set appeared flag-OFF
-        -- too, and test 3's negative control stopped being identical because
-        -- root identity made signatures non-trivial (self-compile: 9,243
-        -- trivial -> 8,386) and that control's premise is a trivial
-        -- signature.
-        --
-        -- The general rule, paid for twice now: A DIFFERENTIAL TEST MUST PIN
-        -- EVERY FLAG THAT OVERLAPS THE ONE IT TOGGLES. Tests 6 and 8 below
-        -- are deliberately NOT pinned — they assert absolute counter values
-        -- under a single config rather than a difference, so a second
-        -- channel does not invalidate them.
+        -- `enabled` is already True in `defaultLss`.
         { defaults | enabled = True }
         srcModule
 
 
-{-| Every stored (keyed) demand type for the named global, from the
-registry's reverse mapping (MuTieTest precedent).
+{-| Returns the demand type of every specialization in `graph` whose global is
+named `target`, read from the registry's `reverseMapping`. Only the name is
+compared, not the module.
 -}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
@@ -414,8 +368,8 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| Every arrow annotation anywhere in a stored demand type (one anno per
-`MFunction` node — zonk emits one arrow per node).
+{-| Returns the annotation of every arrow in `t`, including arrows inside
+lists, tuples, records and the arguments of custom types.
 -}
 annosOf : Mono.MonoType -> List Mono.LambdaSetAnno
 annosOf t =
@@ -439,14 +393,17 @@ annosOf t =
             []
 
 
+{-| Returns the annotation of every arrow in every demand type of `target`. No
+test uses it.
+-}
 allAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 allAnnos target graph =
     List.concatMap annosOf (demandsOf target graph)
 
 
-{-| The PARAM arrows' annotations: each argument position that is itself an
-`MFunction`, plus the same down the return spine (verified against
-`zonkFlatC`'s one-arg-per-arrow output).
+{-| Returns the annotations of the parameter arrows of `t`: the head annotation
+of each argument that is itself a function, at every level of the return spine.
+Arrows inside a parameter's own type are not included.
 -}
 paramArrowAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
 paramArrowAnnos t =
@@ -468,8 +425,9 @@ paramArrowAnnos t =
             []
 
 
-{-| The RESULT arrow's annotation: the deepest `MFunction` on the return
-spine (its own head anno). `Nothing` for non-function demands.
+{-| Returns the annotation of the result arrow of `t`: the head annotation of
+the last function type on its return spine, or `Nothing` when `t` is not a
+function.
 -}
 deepestRetAnno : Mono.MonoType -> Maybe Mono.LambdaSetAnno
 deepestRetAnno t =
@@ -486,7 +444,8 @@ deepestRetAnno t =
             Nothing
 
 
-{-| Test 8: the element-arrow annos of the deepest RESULT tuple.
+{-| Returns the head annotations of the function elements of the tuple at the
+end of `t`'s return spine, or `Nothing` when the spine does not end in a tuple.
 -}
 deepestRetTuple : Mono.MonoType -> Maybe (List Mono.LambdaSetAnno)
 deepestRetTuple t =
@@ -512,8 +471,10 @@ deepestRetTuple t =
             Nothing
 
 
-{-| Test 9: for each HOF-typed param `(Int -> Int) -> Int`, the INNER
-`(Int -> Int)` arrow's anno.
+{-| Returns, for each higher-order parameter of `t`, the annotation of the
+function it takes, at every level of the return spine. A higher-order parameter
+here is a function whose only argument is itself a function, such as
+`(Int -> Int) -> Int`.
 -}
 hofParamInnerAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
 hofParamInnerAnnos t =
@@ -535,15 +496,18 @@ hofParamInnerAnnos t =
             []
 
 
-{-| The annos of the def's PLAIN function params — those whose own parameter
-is not itself a function. In `useHModule` that is `k : Int -> Int`, whose set
-is what the forward flow puts at each hof param's inner arrow.
+{-| Returns the head annotations of the function parameters of `target`'s
+demand types that are not higher-order, as `hofParamInnerAnnos` uses the term.
+In `useHModule` that is `k`'s arrow.
 -}
 plainFnParamAnnosOf : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 plainFnParamAnnosOf target graph =
     List.concatMap plainFnParamAnnos (demandsOf target graph)
 
 
+{-| Returns the head annotations of the function parameters of `t` that are not
+higher-order, at every level of the return spine.
+-}
 plainFnParamAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
 plainFnParamAnnos t =
     case t of
@@ -568,8 +532,9 @@ plainFnParamAnnos t =
             []
 
 
-{-| The members a BACKWARDS flip would push into a HOF param's inner arrow:
-the hof params' OWN sets (`h`'s inhabitants).
+{-| Returns the members on the head arrows of `target`'s higher-order
+parameters, across its demand types: the members that a flow in the wrong
+direction would put on the arrows those parameters take.
 -}
 backwardsMembers : String -> Mono.MonoGraph -> List Int
 backwardsMembers target graph =
@@ -577,6 +542,9 @@ backwardsMembers target graph =
         (List.concatMap hofParamOuterAnnos (demandsOf target graph))
 
 
+{-| Returns the head annotation of each higher-order parameter of `t`, at every
+level of the return spine.
+-}
 hofParamOuterAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
 hofParamOuterAnnos t =
     case t of
@@ -597,6 +565,9 @@ hofParamOuterAnnos t =
             []
 
 
+{-| Returns the members an `LSet` lists, and nothing for any other annotation,
+an `LPartial` included.
+-}
 membersOf : Mono.LambdaSetAnno -> List Int
 membersOf anno =
     case anno of
@@ -607,6 +578,8 @@ membersOf anno =
             []
 
 
+{-| Tells whether `anno` is an `LVar`, an arrow nothing was written to.
+-}
 isVarAnno : Mono.LambdaSetAnno -> Bool
 isVarAnno anno =
     case anno of
@@ -617,6 +590,9 @@ isVarAnno anno =
             False
 
 
+{-| Tells whether `anno` is an `LSet` of exactly `n` members. An `LPartial` of
+`n` members does not count.
+-}
 annoHasSize : Int -> Mono.LambdaSetAnno -> Bool
 annoHasSize n anno =
     case anno of
@@ -633,6 +609,9 @@ annoHasSize n anno =
             False
 
 
+{-| Renders annotations for a failure message, such as `LTop, LSet[4,5]`. An
+`LTop`'s provenance code is not shown.
+-}
 describeAnnos : List Mono.LambdaSetAnno -> String
 describeAnnos annos =
     String.join ", "
@@ -659,12 +638,16 @@ describeAnnos annos =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int -> Int`, the function type the fixtures pass around.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
-{-| Test 1: params flow through an If into the result — ground annotation.
+{-| The fixture of test 1a: `chooseHandler`, annotated with a concrete type,
+returns `f` or `g`, and `testValue` calls it with `\x -> x + 1` and
+`\y -> y + 2` and applies the result to 9.
 -}
 chooseHandlerModule : Src.Module
 chooseHandlerModule =
@@ -690,7 +673,9 @@ chooseHandlerModule =
         ]
 
 
-{-| Test 2/6: body lambdas meet in the result arrow via the hub.
+{-| The fixture of test 6: `mk2 : Bool -> (Int -> Int)` returns `\x -> x + 1`
+or `\y -> y + 2`, both written in its own body, and `testValue` applies
+`mk2 True` to 4.
 -}
 mk2Module : Src.Module
 mk2Module =
@@ -711,8 +696,8 @@ mk2Module =
         ]
 
 
-{-| Test 3: polymorphic negative control — the signature must stay trivial
-(self-id filtered; the local-callee join adds nothing at TVar positions).
+{-| A polymorphic `apply : (a -> b) -> a -> b`, which `testValue` calls with
+`\y -> y + 1` and 3. No test uses it.
 -}
 applyModule : Src.Module
 applyModule =
@@ -734,8 +719,9 @@ applyModule =
         ]
 
 
-{-| Test 4: an If mixing an HONEST branch (a standalone global) with an
-OPAQUE one (a call result) — the hub must poison, not publish `{g|inc}`.
+{-| The fixture of test 4: `pick c g` returns the global `inc` or the call
+`g 0`, where `g : Int -> Int -> Int`, and `testValue` applies
+`pick True mkAdd` to 7.
 -}
 pickModule : Src.Module
 pickModule =
@@ -769,8 +755,9 @@ pickModule =
         ]
 
 
-{-| Test 5: self-tail-recursive, function-returning — the TailDef shape
-(arg-stripped body at the result type).
+{-| A self-tail-recursive `countdown : Int -> (Int -> Int) -> (Int -> Int)`
+that returns `k` once `n` reaches 0, which `testValue` calls with 3 and `inc`
+and applies to 5. No test uses it.
 -}
 countdownModule : Src.Module
 countdownModule =
@@ -803,7 +790,9 @@ countdownModule =
         ]
 
 
-{-| Test 7: transitive chain through a nested hub.
+{-| The fixture of test 7: `chain` returns `f`, `g` or `h` through two nested
+`if`s, and `testValue` calls it with three different lambdas and applies the
+result to 9.
 -}
 chainModule : Src.Module
 chainModule =
@@ -838,9 +827,9 @@ chainModule =
         ]
 
 
-{-| Test 8: a Tuple-typed hub — branches must be letEnv-bound NAMES at a
-container type (a literal branch returns WpNone and the hub poisons before
-any join runs).
+{-| The fixture of test 8: `choosePair` returns the pair `p` or the pair `q`,
+each a pair of `Int -> Int` functions, and `testValue` calls it with two tuple
+literals of lambdas and applies the first element of the result to 5.
 -}
 choosePairModule : Src.Module
 choosePairModule =
@@ -871,8 +860,9 @@ choosePairModule =
         ]
 
 
-{-| Apply the first element of an (Int -> Int, Int -> Int) pair to 5 — makes
-testValue an Int root without needing Tuple.first in the mock env.
+{-| Builds a `case` that applies the first element of `pairExpr`, a pair of
+functions, to 5. It takes the pair apart with a tuple pattern, so the program
+does not need `Tuple.first`.
 -}
 caseFirst : Src.Expr -> Src.Expr
 caseFirst pairExpr =
@@ -883,8 +873,9 @@ caseFirst pairExpr =
         ]
 
 
-{-| Test 9: contravariance — all flows through NAMED sites (params of the
-annotated def), observable on the def's own demand.
+{-| The fixture of test 9: `useH` binds `h` to `hof1` or `hof2` in a `let` and
+returns `h k`, and `testValue` calls it with `\f -> f 1`, `\g -> g 2` and
+`\x -> x * 2`.
 -}
 useHModule : Src.Module
 useHModule =

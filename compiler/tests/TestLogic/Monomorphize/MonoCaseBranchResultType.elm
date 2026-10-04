@@ -1,16 +1,30 @@
 module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, Violation)
 
-{-| Test logic for MONO\_018: MonoCase branch result types match MonoCase resultType.
+{-| Checks that every branch of every `case` in a monomorphized program has
+exactly the type the case records for itself, so that `Mono.typeOf` of a case
+expression is true of each of its branches.
 
-For every MonoCase in the MonoGraph, the types of all branch expressions (both
-in the jumps list and inline leaves in the decider) must equal the MonoCase's
-resultType.
+A `MonoCase` stores its result type in its last field, and `Mono.typeOf` of the
+case returns that stored type without looking at the branches. Anything that
+asks a case for its type therefore relies on every branch having that type. A
+branch whose type differs, for example a function whose `MFunction` type groups
+its parameters into stages differently from the stored type, makes the case's
+type wrong for that branch.
 
-This invariant catches the "different staging boundaries across branches" bug where:
+A case's branch bodies are held in two places, and both are checked. The jump
+list holds the bodies the decision tree reaches by `Jump n`; a body can instead
+sit in a leaf of the decision tree itself, as `Inline expr`. Each body's
+`Mono.typeOf` is compared with the stored type by `==`, structural equality on
+the whole `MonoType`, so the lambda-set annotations on function types and the
+ids of type variables must also agree.
 
-  - Branch expressions have structurally different MonoTypes
-  - MonoCase resultType stores one shape while branches have another
-  - Mono.typeOf would return incorrect types for the case expression
+`expectMonoCaseBranchResultTypes` checks the graph that
+`TestLogic.TestPipeline.runToMono` produces: the substitution engine's output,
+before inlining or any GlobalOpt pass has run. Every expression in every node
+that has a body is walked, so cases nested anywhere are checked too.
+
+Among what is not checked: the branches of an `if`, and the types on the
+decision tree's paths.
 
 @docs expectMonoCaseBranchResultTypes, Violation
 
@@ -23,7 +37,12 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Violation record for reporting issues.
+{-| One branch whose type differs from its case's stored result type.
+
+`context` names the node by its index in the graph's node array and ends with
+`jump=<n>` for a jump-list body or `inline-leaf` for an inline one. `message`
+gives both types as `Debug.toString` prints them.
+
 -}
 type alias Violation =
     { context : String
@@ -31,7 +50,13 @@ type alias Violation =
     }
 
 
-{-| MONO\_018: Verify MonoCase branch result types match MonoCase resultType.
+{-| Builds `srcModule` with `TestLogic.TestPipeline.runToMono` and passes when
+every case branch in the resulting graph, jump-list or inline, has a type `==`
+to its case's stored result type.
+
+It fails with the pipeline's message if the build fails, and otherwise with
+every mismatch found, one paragraph each.
+
 -}
 expectMonoCaseBranchResultTypes : Src.Module -> Expectation
 expectMonoCaseBranchResultTypes srcModule =
@@ -51,7 +76,8 @@ expectMonoCaseBranchResultTypes srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check MonoCase branch result type consistency for all expressions in the MonoGraph.
+{-| Returns the violations in every node of the graph, in node order, each
+labelled with the node's index in the node array. Empty slots are skipped.
 -}
 checkMonoCaseBranchResultTypes : Mono.MonoGraph -> List Violation
 checkMonoCaseBranchResultTypes (Mono.MonoGraph data) =
@@ -69,7 +95,9 @@ checkMonoCaseBranchResultTypes (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Check a single MonoNode for MonoCase violations.
+{-| Returns the violations in `node`'s body, labelled `SpecId <specId>`.
+Constructor, enum, extern and effect-manager-leaf nodes have no body and give
+none.
 -}
 checkNode : Int -> Mono.MonoNode -> List Violation
 checkNode specId node =
@@ -103,7 +131,9 @@ checkNode specId node =
             []
 
 
-{-| Recursively check a MonoExpr for MonoCase violations.
+{-| Returns the violations in `expr` and every expression inside it, labelled
+with `ctx`. Only a `MonoCase` is compared with anything; every other expression
+is walked through to its children.
 -}
 checkExpr : String -> Mono.MonoExpr -> List Violation
 checkExpr ctx expr =
@@ -160,7 +190,6 @@ checkExpr ctx expr =
         Mono.MonoTupleCreate _ items _ ->
             List.concatMap (checkExpr ctx) items
 
-        -- Leaf expressions - no sub-expressions to check
         Mono.MonoLiteral _ _ ->
             []
 
@@ -180,7 +209,8 @@ checkExpr ctx expr =
             []
 
 
-{-| Check all jump branches have types matching resultType.
+{-| Returns a violation for each body in `jumps` whose type is not `==` to
+`resultType`. It does not look inside the bodies.
 -}
 checkJumps : String -> Mono.MonoType -> List ( Int, Mono.MonoExpr ) -> List Violation
 checkJumps ctx resultType jumps =
@@ -208,7 +238,13 @@ checkJumps ctx resultType jumps =
         jumps
 
 
-{-| Check the decider tree for inline leaves that have types matching resultType.
+{-| Returns the violations of every `Inline` leaf of `decider`: one if the
+leaf's body has a type not `==` to `resultType`, then those inside the body,
+all labelled with `inline-leaf` added to `ctx`.
+
+A `Jump` leaf gives nothing here: the body it names is in the jump list, which
+`checkJumps` compares.
+
 -}
 checkDecider : String -> Mono.MonoType -> Mono.Decider Mono.MonoChoice -> List Violation
 checkDecider ctx resultType decider =
@@ -216,7 +252,6 @@ checkDecider ctx resultType decider =
         Mono.Leaf choice ->
             case choice of
                 Mono.Jump _ ->
-                    -- Jump references are checked via checkJumps
                     []
 
                 Mono.Inline expr ->
@@ -225,7 +260,6 @@ checkDecider ctx resultType decider =
                             Mono.typeOf expr
                     in
                     if ty == resultType then
-                        -- Also check sub-expressions in the inlined expression
                         checkExpr (ctx ++ " inline-leaf") expr
 
                     else
@@ -249,7 +283,8 @@ checkDecider ctx resultType decider =
                 ++ checkDecider ctx resultType fallback
 
 
-{-| Format violations as a readable string.
+{-| Joins `violations` into one failure message, each written as
+`context: message`, with a blank line between them.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =

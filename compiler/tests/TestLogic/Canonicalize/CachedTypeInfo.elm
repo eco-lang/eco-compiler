@@ -1,15 +1,30 @@
 module TestLogic.Canonicalize.CachedTypeInfo exposing (expectTypeInfoCached)
 
-{-| Test logic for invariant CANON\_006: Cached type info matches source.
+{-| An expectation for test programs, named for the property that the type
+information computed for a module matches the module's source. It checks less
+than its name says: it passes whenever the module gets through type checking
+and PostSolve.
 
-For each cached type annotation or inferred type:
+`expectTypeInfoCached` runs a source module through
+`TestLogic.TestPipeline.runToPostSolve`, which canonicalizes it against the
+pipeline's mock interfaces, type checks it with node ids recorded and runs
+PostSolve. A stage that fails gives `Err`, and the expectation fails with its
+message. A stage that crashes is not caught.
 
-  - Verify the cached type matches what would be freshly computed.
-  - Verify type variables are consistently named.
-  - Verify no stale type information persists after edits.
+After a successful run, the expectation walks the module's top-level
+definitions and looks each one's name up in the annotations, the types that
+solving returned for the module's top-level names. The lookup reports no issue
+whether or not the name is found, so nothing after a successful run can fail the
+expectation.
 
-This module reuses the existing typed optimization pipeline to verify
-type caching works correctly.
+Among what is not checked:
+
+  - that every definition has an annotation;
+  - that an annotation agrees with the definition's written type annotation, or
+    with the type a fresh type check would give;
+  - how type variables are named;
+  - the node types, before or after PostSolve;
+  - anything stored on disk, or what happens after a module is edited.
 
 -}
 
@@ -22,7 +37,12 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that cached type info is consistent.
+{-| Passes when `srcModule` gets through `TestLogic.TestPipeline.runToPostSolve`,
+and fails with the pipeline's message when a stage fails.
+
+The issues found by `collectCachedTypeIssues` would also fail it, but that list
+is always empty.
+
 -}
 expectTypeInfoCached : Src.Module -> Expect.Expectation
 expectTypeInfoCached srcModule =
@@ -42,21 +62,12 @@ expectTypeInfoCached srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-
--- ============================================================================
--- CACHED TYPE INFO VERIFICATION
--- ============================================================================
-
-
-{-| Collect issues with cached type info.
-
-Verifies that cached type annotations in the canonical AST are consistent
-with the computed annotations from type inference.
-
+{-| Returns the issues found by looking up each top-level definition of
+`canonical` in `annotations`. The list is always empty, because
+`checkDefHasAnnotation` reports nothing.
 -}
 collectCachedTypeIssues : Can.Module -> Dict.Dict String (Can.Annotation Name) -> List String
 collectCachedTypeIssues canonical annotations =
-    -- Verify that every top-level definition has a corresponding annotation
     let
         (Can.Module moduleData) =
             canonical
@@ -64,7 +75,8 @@ collectCachedTypeIssues canonical annotations =
     checkDefsHaveAnnotations moduleData.decls annotations
 
 
-{-| Check that all definitions have corresponding annotations.
+{-| Returns the issues `checkDefHasAnnotation` reports for each definition in
+`decls`, the members of a recursive group included. The list is always empty.
 -}
 checkDefsHaveAnnotations : Can.Decls -> Dict.Dict String (Can.Annotation Name) -> List String
 checkDefsHaveAnnotations decls annotations =
@@ -82,7 +94,8 @@ checkDefsHaveAnnotations decls annotations =
             []
 
 
-{-| Check that a single definition has a corresponding annotation.
+{-| Looks the name of `def` up in `annotations` and returns no issue, whether
+the name is found or not and whether or not `def` carries a type annotation.
 -}
 checkDefHasAnnotation : Can.Def -> Dict.Dict String (Can.Annotation Name) -> List String
 checkDefHasAnnotation def annotations =
@@ -93,16 +106,12 @@ checkDefHasAnnotation def annotations =
                     []
 
                 Nothing ->
-                    -- Some definitions may not have top-level annotations
-                    -- (e.g., local lets), so this isn't always an error
                     []
 
         Can.TypedDef (A.At _ name) _ _ _ _ ->
-            -- TypedDef includes an explicit annotation
             case Dict.get name annotations of
                 Just _ ->
                     []
 
                 Nothing ->
-                    -- Typed def should have annotation
                     []

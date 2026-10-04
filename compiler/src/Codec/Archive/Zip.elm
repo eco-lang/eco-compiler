@@ -4,12 +4,14 @@ module Codec.Archive.Zip exposing
     , eRelativePath, fromEntry
     )
 
-{-| A simplified interface for working with ZIP archive structures.
+{-| Names for the contents of a ZIP archive once it has been extracted, using
+the names of the Haskell `Codec.Archive.Zip` module (from the `zip-archive`
+package) so that code ported from Haskell reads the same.
 
-This module provides types and accessor functions for representing ZIP archives as collections
-of entries with file paths and data. It is based on the Haskell zip library interface.
-
-Ref.: <https://hackage.haskell.org/package/zip-2.1.0/docs/Codec-Archive-Zip.html>
+An archive here is a list of entries, and an entry is one path within the
+archive together with its contents as a `String`. Nothing in this module reads
+or writes the ZIP format: an `Archive` is built from contents extracted
+elsewhere, and the functions here only read the pieces back.
 
 
 # Types
@@ -29,19 +31,29 @@ Ref.: <https://hackage.haskell.org/package/zip-2.1.0/docs/Codec-Archive-Zip.html
 -}
 
 
-{-| A file path represented as a string. FIXME: Should use System.IO.FilePath.
+{-| A file path, as text.
+
+This is a name for `String`, not a new type. Any `String` is accepted where a
+`FilePath` is expected, and nothing checks that it is a well-formed path.
+
 -}
 type alias FilePath =
     String
 
 
-{-| A ZIP archive represented as a list of entries.
+{-| An extracted ZIP archive: its entries, in the order the list was built.
+
+This is a name for `List Entry`, not a new type, so any list of entries is an
+`Archive`. Nothing here sorts the entries or checks that their paths are
+distinct.
+
 -}
 type alias Archive =
     List Entry
 
 
-{-| A single entry in a ZIP archive containing a relative file path and its data.
+{-| One item from an extracted ZIP archive: its path within the archive and its
+contents.
 -}
 type alias Entry =
     { eRelativePath : FilePath
@@ -49,21 +61,21 @@ type alias Entry =
     }
 
 
-{-| Extracts the list of entries from a ZIP archive.
+{-| Returns the entries of an archive, in the archive's own order.
 -}
 zEntries : Archive -> List Entry
 zEntries =
     identity
 
 
-{-| Extracts the relative file path from a ZIP entry.
+{-| Returns the path of an entry within its archive.
 -}
 eRelativePath : Entry -> FilePath
 eRelativePath zipEntry =
     zipEntry.eRelativePath
 
 
-{-| Extracts the file data from a ZIP entry.
+{-| Returns the contents of an entry.
 -}
 fromEntry : Entry -> String
 fromEntry zipEntry =

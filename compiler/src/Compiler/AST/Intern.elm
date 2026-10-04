@@ -4,39 +4,43 @@ module Compiler.AST.Intern exposing
     , eqExact
     )
 
-{-| Construction-time hash-consing for `MonoType` (K6 of
-`plans/mono-comparable-key-optimization.md`).
+{-| Monomorphization builds the same `MonoType` structures over and over, and
+this module lets structurally identical types share one object.
 
-A self-compile builds **14,778,865 type nodes for 116,322 distinct types —
-99.2% duplicates** (plan §13). This table makes the duplicates share one
-object: a constructor probes for the structure it is about to return and hands
-back the canonical copy if it already exists.
+The technique is hash-consing. A table holds one object for each distinct
+composite structure it has seen, its canonical copy. Code that builds a type
+offers it to `hashCons`, which looks the structure up and hands back the
+canonical copy if there is one. Two benefits follow. The runtime's `==` returns
+at once for two references to the same object, so comparing canonical types is
+cheap. And the heap holds one copy of each repeated structure instead of one
+per construction.
 
-Two consequences, and the second is the one that matters:
+Canonicalisation is by exact structure, `==`, never by comparable-key equality
+(`Mono.eqKeySpec`, `Mono.eqKeyLayout`). The key equalities deliberately merge
+structures that differ: an `MVar _ CNumber` keys as `MInt`, and variable ids
+are erased. Sharing by key would hand back a type that keys the same but has a
+different shape. So two types whose only difference is an arrow labelled
+`LTop` in one and `LVar` in the other are two entries. The bucket hash is
+`Mono.specHashOf`, which equal structures always share; `==` decides.
 
-1.  Equality gets cheap. The runtime's structural equality short-circuits on
-    pointer identity (`elm-kernel-cpp/src/core/Utils.cpp`), so two canonical
-    types compare in O(1) — which is why `eqKeySpec`/`eqKeyLayout` try `==`
-    first.
-2.  **Retention collapses.** 14.8M live type objects become 116K shared ones.
-    GC cost here follows SURVIVORS, not allocation volume — that is exactly
-    why K4 cut allocation 21% and bought nothing (plan §11) — so sharing is
-    the mechanism with a plausible path to wall time.
+Only composites are canonicalised: `MList`, `MTuple`, `MRecord`, `MCustom` and
+`MFunction`. Leaves and `MVar`s pass through unchanged. `hashCons` looks only
+at the top node, so a whole type is shared only when it is built bottom-up,
+each child consed before its parent.
 
-**Canonicalisation is by EXACT structure (`==`), never by comparable-key
-equality.** The key equivalences deliberately merge distinct structures —
-`MVar _ CNumber` keys as `MInt` (D4), `MVar` ids are erased (MONO\_003) — so
-canonicalising by them would hand back a type that is _keyed_ the same but
-_shaped_ differently, silently changing what the compiler emits. The bucket
-hash is `specHashOf` (equal structure implies equal hash, which is all a hash
-must promise); `==` decides.
+A table is in one of three modes. A live table, from `empty`, looks structures
+up and registers new ones. A read-only view, from `readOnly`, looks up but
+never registers, for a traversal that cannot hand an updated table back. A
+disabled table, `disabled`, does neither. Sharing is never needed for
+correctness, so every mode gives correct types and differs only in how much
+is shared.
 
-The table has three modes, and which one a traversal gets is purely about what
-its callers can carry (plan §16): a live `Intern` reads and registers,
-`readOnly` reads without registering, `disabled` does neither.
+The table also memoises `widenSets`, the table-threading form of
+`Mono.widenSets`, on a live table only.
 
-@docs Intern, empty, disabled, readOnly, size
+@docs Intern, empty, disabled, readOnly, size, entries
 @docs hashCons, widenSets
+@docs eqExact
 
 -}
 
@@ -45,28 +49,19 @@ import Data.HashMap as HashMap
 import Dict
 
 
-{-| Structure → canonical object, a read-only view of one, or `Disabled`.
+{-| A hash-consing table, in one of three modes, together with the memo of
+`widenSets` results.
 
-`Disabled` exists because the threaded traversals here
-(`TypeSubst.applySubstPure`, `Zonk.canTypeToMono`) have callers with no table in
-reach at all — `Analysis.buildCtorShapeFromUnion` runs from `Prune`, after the
-monomorphizer's state is gone, and `Monomorphize`'s entry seeding runs before it
-exists. Those callers run the same traversal with `disabled`, which makes every
-`hashCons` an identity: sound (sharing is never required for correctness), and
-cheaper than handing them a throwaway table that would allocate an insert per
-node.
+`Intern` is a live table. It answers a lookup with the canonical copy and
+registers a structure it has not seen, so `hashCons` can return a grown table.
+Only a live table memoises `widenSets`.
 
-`ReadOnly` (K7) is for the callers that DO hold a table but have nowhere to put
-an updated one — `Specialize`, which has `MonoState` in scope throughout and can
-therefore lend `accum.intern` to a traversal whose result is a bare type. It
-probes and hands back the canonical object on a hit, and on a miss keeps the
-freshly built node without inserting it. Because it never inserts, it never
-produces a new table, so a read-only traversal needs no state threading at any
-call site — only an extra ARGUMENT. See `readOnly`.
+`ReadOnly` is a view of a live table's contents. It answers a lookup the same
+way but registers nothing, and it is always returned unchanged. A traversal
+given one can therefore discard the table it gets back.
 
-Coverage measured on a self-compile (plan §16): before K7, 42.04% of composite
-`hashCons` calls under the subst engine arrived `Disabled` and were therefore
-never shared; the solver engine was already at 1.52% after §15.
+`Disabled` holds nothing and shares nothing: `hashCons` returns its input. It
+is for a traversal with no table to use, and costs nothing per node.
 
 -}
 type Intern
@@ -75,15 +70,14 @@ type Intern
     | Disabled
 
 
-{-| One table entry: the canonical node, plus — for a record only — its fields
-in ascending name order, so that a probe can walk a FRESH record's `Dict.foldl`
-(also ascending) in lockstep against it without allocating and without a
-`Dict.get` per field. `fields` is `[]` for every other kind.
+{-| The key under which a canonical type is stored: the type itself, and, for a
+record, its fields in ascending name order.
 
-Built once per canonical node, on the MISS path only (~1 % of probes). The whole
-point of the split key type is that the 99 % hit path never builds one: the probe
-stays a bare `MonoType` and `HashMap.getBy` compares it against the stored
-`Canon` directly.
+The field list lets a lookup compare a freshly built record against the stored
+one by walking the fresh record's fields in the same order, without a
+`Dict.get` per field. `fields` is `[]` for every type other than a record. A
+lookup in the table compares the bare type it was given against the stored
+keys.
 
 -}
 type alias Canon =
@@ -92,6 +86,8 @@ type alias Canon =
     }
 
 
+{-| Builds the table key for a type.
+-}
 canonOf : MonoType -> Canon
 canonOf mt =
     case mt of
@@ -102,45 +98,43 @@ canonOf mt =
             { node = mt, fields = [] }
 
 
+{-| Returns the bucket hash of a key, the spec hash of its type.
+-}
 canonHash : Canon -> Int
 canonHash c =
     Mono.specHashOf c.node
 
 
+{-| Returns whether two keys hold exactly equal (`==`) types.
+-}
 canonEq : Canon -> Canon -> Bool
 canonEq a b =
     eqExactAgainst a.node b
 
 
-{-| An empty table.
+{-| An empty live table.
 -}
 empty : Intern
 empty =
     Intern HashMap.empty HashMap.empty
 
 
-{-| A table that never canonicalises. See the `Intern` docs.
+{-| A table that shares nothing: `hashCons` returns its input, and `widenSets`
+widens without memoising.
 -}
 disabled : Intern
 disabled =
     Disabled
 
 
-{-| A probe-only view of a table (K7 of
-`plans/mono-comparable-key-optimization.md`).
+{-| Returns a read-only view of a table, for a traversal that has a table to
+read but cannot hand an updated one back.
 
-Hand this to a traversal that has a table available but no way to thread an
-updated one back — `TypeSubst.applySubstPureRO` and its callers in
-`Monomorphize.Specialize`. Every composite the traversal builds is still offered
-to `hashCons`, so a structure the table already holds is returned as the
-EXISTING object (real sharing, and therefore real retention collapse); a
-structure it does not hold is kept as built and NOT registered.
-
-The table is never modified, so `hashCons` always returns the very value it was
-given and no caller has anything to write back.
-
-Idempotent, and `Disabled` stays disabled: the conversion is a view, not a
-decision about whether interning is wanted.
+With the view, `hashCons` returns the stored copy of a structure the table
+already holds, and the type as given for one it does not, without registering
+it. `hashCons` and `widenSets` always return the view unchanged, so there is
+nothing to write back. A view of a read-only view is the same view, and a view
+of `disabled` is still disabled.
 
 -}
 readOnly : Intern -> Intern
@@ -156,7 +150,8 @@ readOnly intern =
             intern
 
 
-{-| Number of distinct structures canonicalised so far.
+{-| Returns the number of distinct structures the table holds canonical copies
+of. It does not count the `widenSets` memo; `entries` does.
 -}
 size : Intern -> Int
 size intern =
@@ -171,10 +166,16 @@ size intern =
             0
 
 
-{-| Return the canonical copy of a type, registering it if this structure has
-not been seen. Only the TOP node is considered — callers hash-cons bottom-up,
-so the children are already canonical and `==` on them short-circuits on
-pointer identity.
+{-| Returns the canonical copy of a type and the table to carry on with.
+
+On a live table, a composite already held comes back as its stored copy, and
+one not held is registered and comes back as given. On a read-only view a
+composite not held also comes back as given, but is not registered. A leaf or
+`MVar`, or any type given a disabled table, comes back as given.
+
+Only the top node is looked up. Its children are compared with `==`, which is
+fast when they are already canonical, so a type should be consed bottom-up.
+
 -}
 hashCons : MonoType -> Intern -> ( MonoType, Intern )
 hashCons mt intern =
@@ -200,8 +201,7 @@ hashCons mt intern =
                     probe mt m w intern
 
                 _ ->
-                    -- Leaves and `MVar`: nothing to share beyond the two words
-                    -- they already occupy.
+                    -- Leaves and `MVar` are never registered.
                     ( mt, intern )
 
         ReadOnly m _ ->
@@ -225,9 +225,13 @@ hashCons mt intern =
                     ( mt, intern )
 
 
-{-| `intern` is passed alongside its own unwrapped map so a HIT can hand the
-caller back the very table value it was given. Rebuilding `Intern m` there would
-allocate one wrapper per hit — and hits are ~99% of calls (plan §13).
+{-| Looks a composite up in a live table's maps `m` and `w`, returning the stored
+copy and `intern` unchanged on a hit, or the type and a table with it
+registered on a miss.
+
+`intern` is the table `m` and `w` came from, passed so that a hit returns it
+as it is instead of building a new wrapper.
+
 -}
 probe : MonoType -> HashMap.HashMap Canon MonoType -> HashMap.HashMap MonoType MonoType -> Intern -> ( MonoType, Intern )
 probe mt m w intern =
@@ -239,12 +243,9 @@ probe mt m w intern =
             ( mt, Intern (HashMap.insert canonHash canonEq (canonOf mt) mt m) w )
 
 
-{-| The read-only probe: identical to `probe` on a hit, and a no-op on a miss.
-
-The table value is returned unchanged on BOTH paths, which is what makes a
-read-only traversal free of state threading — and it also means
-`Engine.withIntern`'s "did the table grow?" guard can never fire for one.
-
+{-| Looks a composite up in a read-only view's map `m`, returning the stored copy
+on a hit and the type as given on a miss. `intern` is returned unchanged
+either way.
 -}
 probeRO : MonoType -> HashMap.HashMap Canon MonoType -> Intern -> ( MonoType, Intern )
 probeRO mt m intern =
@@ -256,17 +257,12 @@ probeRO mt m intern =
             ( mt, intern )
 
 
-{-| EXACT structural equality — deliberately `==`, not `eqKeySpec`. See the
-module docs: the key equivalences merge structures that must not be
-substituted for one another.
+{-| Returns whether two types are equal under `==`, the equality the table
+shares by.
 
-Consequence of the Phase-1/3 `LTop`/`LVar` split
-(`plans/lss-unknown-elimination.md`), noted so it is not mistaken for a bug:
-`==` separates the two ⊤ labels, so an `LTop`-labelled and an
-`LVar`-labelled twin of one structure become two intern entries. Since Phase 3
-they also hash differently (`Mono.annoHash` separates `LVar n` from `LTop`), so
-they land in different buckets rather than colliding in one — cheaper than the
-Phase-1 situation, and still not an artifact change.
+It answers as `==` does, not as `Mono.eqKeySpec` does, so types that differ
+only in an arrow's lambda set annotation, or only in a variable's id, are not
+equal.
 
 -}
 eqExact : MonoType -> MonoType -> Bool
@@ -274,26 +270,18 @@ eqExact a b =
     eqExactAgainst a (canonOf b)
 
 
-{-| EXACT structural equality of a FRESH node against a stored entry: decides
-precisely what `==` decides, but shaped so that on the hit path it is one packed
-`Int` compare plus one word compare per slot, with no descent into the children.
+{-| Returns whether type `a` is equal under `==` to the type stored in key `c`.
 
-Why that is a saving at all: `==` on a composite reaches the kernel's structural
-walk, and for `MRecord` that means comparing two red-black trees — two vector
-allocations, an in-order walk of both, and a string compare per field name — even
-though the children on both sides are already canonical and would have compared
-equal on the first word. The container shells were the entire cost.
+It gives the same answer as `==`. A composite's stored hash is computed from
+its children's hashes, so equal types always have equal hashes and comparing
+the hashes first never rejects an equal pair. The remaining tests are the ones
+`==` makes, in a different order. A record's fields are compared in ascending
+name order against the key's field list, which compares contents as `==` on a
+`Dict` does, without walking the second dictionary.
 
-Why it is still exactly `==` (the byte-identity argument): the leading packed hash
-is computed from the children's stored hashes, so equal structures always produce
-equal packed hashes and the test can never reject an equal pair; what follows is
-the same field-wise `==` tests in a different order, and `&&` may be reordered
-freely for total, pure predicates. The record arm is content equality between two
-ascending in-order sequences, which is what the kernel's `dictEq` decides as well.
-Children are compared with `==`, NOT with this function, because a caller may cons
-a node whose children were rebuilt by a pure rebuilder and are therefore
-structurally equal to the canonical ones without being the same object; `==` still
-answers correctly there, it is merely slower.
+Children are compared with `==`, not with this function. That is fast when a
+child is the same object as the stored one, and still correct when it is an
+equal but separately built copy.
 
 -}
 eqExactAgainst : MonoType -> Canon -> Bool
@@ -340,11 +328,13 @@ eqExactAgainst a c =
                     False
 
         _ ->
-            -- Leaves never reach a probe (`hashCons` filters them out), but the
-            -- function must stay total and `==`-exact.
+            -- Leaves never reach a lookup, but `eqExact` can be given one.
             a == c.node
 
 
+{-| Returns whether two lists of types have the same length and are equal
+element by element under `==`.
+-}
 eqChildren : List MonoType -> List MonoType -> Bool
 eqChildren xs ys =
     case xs of
@@ -360,25 +350,34 @@ eqChildren xs ys =
                     False
 
 
-{-| Sentinel parked in the accumulator after the first field mismatch. A record
-field name is a lower-case identifier and can never be `""`, so once this is in
-the accumulator every later step returns it again and the fold finishes
-non-empty, i.e. failed.
+{-| The remainder that marks a failed field comparison in `eqFieldsAgainst`.
+
+It is non-empty, so a fold that ends with it fails. Its one field is named
+`""`, which no record field is, so every later step of the fold meets a
+mismatch and returns it again.
+
 -}
 failedFields : List ( String, MonoType )
 failedFields =
     [ ( "", Mono.MUnit ) ]
 
 
-{-| The fresh record equals the stored one iff walking it in ascending name order
-consumes the stored list EXACTLY. Size equality is implied: fewer fresh fields
-leave a non-empty remainder, more fresh fields run into `[]`.
+{-| Returns whether the fields of `fresh` are exactly the `stored` list, which is
+in ascending name order.
+
+Each of `fresh`'s fields, taken in ascending name order, must match the head of
+what remains of `stored`, and the fields are equal when nothing remains. Fewer
+fields in `fresh` leave a remainder; more find nothing left to match.
+
 -}
 eqFieldsAgainst : Dict.Dict String MonoType -> List ( String, MonoType ) -> Bool
 eqFieldsAgainst fresh stored =
     List.isEmpty (Dict.foldl eqFieldStep stored fresh)
 
 
+{-| Returns the rest of `remaining` when its head is field `name` with type `t`,
+and `failedFields` otherwise.
+-}
 eqFieldStep : String -> MonoType -> List ( String, MonoType ) -> List ( String, MonoType )
 eqFieldStep name t remaining =
     case remaining of
@@ -393,12 +392,12 @@ eqFieldStep name t remaining =
             failedFields
 
 
-{-| An EXACT "has the table changed" stamp for the write-back guards.
+{-| Returns the number of canonical structures plus the number of `widenSets`
+memo entries in the table.
 
-`size` counts canonicalised structures and is report semantics; it deliberately
-ignores the widen memo. A guard must not, or a run that only added memo entries
-would write nothing back and throw them away. Both tables only ever grow, so
-equal counts imply the same value.
+Nothing is ever removed from either, so the table `hashCons` or `widenSets`
+returns is the one it was given exactly when the two have equal `entries`.
+Unlike `size`, this notices a table that grew only in its memo.
 
 -}
 entries : Intern -> Int
@@ -414,43 +413,28 @@ entries intern =
             0
 
 
-{-| `Mono.widenSets` threading the table — the hash-consed twin of the pure
-rebuilder in `Compiler.AST.Monomorphized` (it lives HERE because that module
-cannot import this one: `Intern` imports it).
+{-| Returns the type with every arrow's annotation replaced by `Mono.topWiden`,
+as `Mono.widenSets` does, with every rebuilt composite consed through the
+table.
 
-Its output is the annotation-insensitive **spec-registry key**
-(`Engine.enqueueSpec` / `enqueueSpecKeyed` under LSS), and the registry probes
-that key through `Mono.eqKeySpec`, whose `identicalOr` fast path compares
-pointers first. A freshly rebuilt key can never take that path, so an
-uncanonicalised widen forces a full structural walk on every enqueue.
-Canonicalising it also makes the common no-op case free: a type whose arrows are
-already `LTop` widens to a structure that is `==` to itself, so the probe hands
-back the very object that came in.
+The result is `==` to what `Mono.widenSets` returns, and the two must change
+together, as `Mono.widenSets` says. This one rebuilds a record by inserting its
+fields into an empty `Dict` rather than with `Dict.map`, which can give a
+different tree but the same contents, and `==` on a `Dict` compares contents.
 
-Keep this in step with `Mono.widenSets` — same arms, same order, `LTop` on every
-arrow. A divergence produces a different widened structure and therefore a
-different registry key, changing specialization identity with no compile error;
-the bootstrap is the gate.
+On a live table, consing the result makes it the canonical copy, so later
+comparisons against it can succeed on reference. A type whose arrows are all
+already `topWiden` widens to a structure `==` to itself, and if that type is
+canonical the lookup returns the same object.
 
-**One deliberate divergence, and it is safe.** `Mono.widenSets` rebuilds a
-record with `Dict.map`, which preserves the input dictionary's red-black tree
-SHAPE; threading state forces `Dict.foldl` + `insert` from empty here, which
-gives the canonical ascending-insert shape instead. Elm's `==` on `Dict` is
-structural over that tree, so the two can differ for an extension record whose
-base fields were inserted out of order — but only in the `==` direction that
-matters least: this form makes MORE content-equal records compare equal, never
-fewer. `eqKeySpec` decides record equality on `Dict.toList` (content, not
-shape), so the set of colliding spec keys is identical either way and only the
-probe gets faster. `specHashOf` folds with `Dict.foldl` (ascending), so the
-bucket hash is shape-independent too.
+On a live table every input is memoised, leaves and `MVar`s included, and the
+memo is consulted at every node, so a repeated subterm is widened once even
+within one call. A read-only view or a disabled table does not memoise.
 
 -}
 widenSets : MonoType -> Intern -> ( MonoType, Intern )
 widenSets monoType intern0 =
-    -- Step 11b: memoised per INPUT node. Widening is a pure function of the
-    -- input, and the input is canonical (every producer hash-conses bottom
-    -- up), so one entry answers every later enqueue of the same demand type.
-    -- Leaves and `MVar` are the identity and never enter the memo.
+    -- Widening is a pure function of the input, so the memo is keyed on it.
     case intern0 of
         Intern _ w ->
             case HashMap.get Mono.specHashOf widenEq monoType w of
@@ -465,22 +449,24 @@ widenSets monoType intern0 =
                     ( widened, putWiden monoType widened intern1 )
 
         _ ->
-            -- ReadOnly and Disabled do not memoise: the first must not grow,
-            -- and the second canonicalises nothing, so there is no canonical
-            -- input to key on.
+            -- A read-only view must not grow.
             widenSetsGo monoType intern0
 
 
-{-| The memo's key equality. `==` on the input node, which is pointer-fast for a
-canonical input and correctly SEPARATES differently-annotated twins: two inputs
-that differ only in an arrow's label are two entries mapping to the same widened
-object, which is exact.
+{-| The key equality of the `widenSets` memo, `==` on the input type.
+
+Two inputs that differ only in an arrow's annotation are therefore two memo
+entries, which both map to the same widened type.
+
 -}
 widenEq : MonoType -> MonoType -> Bool
 widenEq a b =
     a == b
 
 
+{-| Records in a live table's memo that `key` widens to `widened`. Any other
+table is returned unchanged.
+-}
 putWiden : MonoType -> MonoType -> Intern -> Intern
 putWiden key widened intern =
     case intern of
@@ -491,6 +477,10 @@ putWiden key widened intern =
             intern
 
 
+{-| Widens one node without consulting the memo for it: its children go through
+`widenSets`, and the rebuilt composite is consed. A leaf or `MVar` is returned
+unchanged.
+-}
 widenSetsGo : MonoType -> Intern -> ( MonoType, Intern )
 widenSetsGo monoType intern0 =
     case monoType of
@@ -545,6 +535,9 @@ widenSetsGo monoType intern0 =
             ( monoType, intern0 )
 
 
+{-| Widens each type of a list through `widenSets`, in order, threading the
+table.
+-}
 widenList : List MonoType -> Intern -> ( List MonoType, Intern )
 widenList types intern0 =
     case types of

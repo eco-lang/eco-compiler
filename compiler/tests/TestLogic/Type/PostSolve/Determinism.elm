@@ -1,13 +1,26 @@
 module TestLogic.Type.PostSolve.Determinism exposing (expectDeterministicTypes)
 
-{-| Test logic for invariant POST\_004: Type inference is deterministic.
+{-| Test logic for the invariant that type inference is deterministic: the same
+program, compiled twice, gets the same types.
 
-Verify that running type inference multiple times on the same input
-produces identical results. This is important for:
+The type checker runs as a `System.TypeCheck.IO` action over a store of cells,
+through `IO.unsafePerformIO`. If its result depended on anything but its input,
+the same program could get different types from two runs, and without this
+check nothing would notice.
 
-  - Reproducible builds
-  - Consistent error messages
-  - Caching correctness
+`expectDeterministicTypes` runs one `Src.Module` through
+`TestLogic.TestPipeline.runToPostSolve` twice, in the same test process, and
+compares the node types after PostSolve. The node types are an array indexed
+by node id, holding the type of each expression or pattern that has one. Two
+types count as equal when they are _structurally equal_: the same constructors
+with the same module and type names, type variable names, record field names,
+field indices and extension variables, alias arguments and alias bodies. The
+arrow slot that every `Can.TLambda` carries is not compared.
+
+Among what is not checked: the annotations, the node types before PostSolve and
+the kernel type environment of the two runs; a node that has a type in the
+second run and none in the first, when both arrays have the same length; and
+whether a run in another process, or another build, gives the same types.
 
 -}
 
@@ -20,11 +33,16 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that PostSolve is deterministic for remaining Group B (Str, Chr, Float, Unit) and kernels.
+{-| Creates an expectation that two runs of `srcModule` through PostSolve give
+structurally equal node types.
+
+It fails if either run fails, naming which one. Otherwise it fails if the two
+arrays differ in length, or if a node typed in the first run has no type or a
+different type in the second, listing each such difference on its own line.
+
 -}
 expectDeterministicTypes : Src.Module -> Expect.Expectation
 expectDeterministicTypes srcModule =
-    -- Run PostSolve twice and compare results
     case ( Pipeline.runToPostSolve srcModule, Pipeline.runToPostSolve srcModule ) of
         ( Err msg1, _ ) ->
             Expect.fail ("First run failed: " ++ msg1)
@@ -50,12 +68,20 @@ expectDeterministicTypes srcModule =
 -- ============================================================================
 
 
-{-| Compare two NodeTypes dictionaries for equality.
+{-| Returns a description of each difference between the node types of a
+first run, `types1`, and a second run, `types2`, or an empty list if there is
+none.
+
+A difference in length is reported first. Then each node typed in `types1`
+whose type in `types2` is missing or not structurally equal is reported by its
+node id, the highest id first. The comparison goes one way: a node typed only in
+`types2` is not reported, though when it lies past the end of `types1` the
+difference in length is.
+
 -}
 compareNodeTypes : Array.Array (Maybe (Can.Type Name)) -> Array.Array (Maybe (Can.Type Name)) -> List String
 compareNodeTypes types1 types2 =
     let
-        -- Check for different array sizes
         keyIssues =
             if Array.length types1 /= Array.length types2 then
                 [ "Different number of nodes: " ++ String.fromInt (Array.length types1) ++ " vs " ++ String.fromInt (Array.length types2) ]
@@ -63,7 +89,6 @@ compareNodeTypes types1 types2 =
             else
                 []
 
-        -- Compare types for each index
         typeIssues =
             Array.foldl
                 (\maybeType1 ( nodeId, acc ) ->
@@ -90,9 +115,12 @@ compareNodeTypes types1 types2 =
     keyIssues ++ typeIssues
 
 
-{-| Check if two types are structurally equal.
+{-| Returns whether two types are structurally equal: built from the same
+constructors with equal names and arguments, all the way down.
 
-This is a deep equality check that compares the structure of types.
+Type variables are equal only when their names are, so `a -> a` and `b -> b`
+differ. The arrow slot of a `Can.TLambda` is ignored; everything else the type
+carries is compared.
 
 -}
 typesStructurallyEqual : Can.Type Name -> Can.Type Name -> Bool
@@ -133,7 +161,8 @@ typesStructurallyEqual type1 type2 =
             False
 
 
-{-| Check if two record field dictionaries are equal.
+{-| Returns whether two records' fields have the same names, and each field the
+same field index and a structurally equal type.
 -}
 recordFieldsEqual : Dict.Dict String (Can.FieldType Name) -> Dict.Dict String (Can.FieldType Name) -> Bool
 recordFieldsEqual fields1 fields2 =
@@ -158,7 +187,8 @@ recordFieldsEqual fields1 fields2 =
             keys1
 
 
-{-| Check if two aliased types are equal.
+{-| Returns whether two alias bodies are both `Holey` or both `Filled`, with
+structurally equal types.
 -}
 aliasedTypesEqual : Can.AliasType Name -> Can.AliasType Name -> Bool
 aliasedTypesEqual alias1 alias2 =

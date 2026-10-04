@@ -1,7 +1,51 @@
 module Compiler.AST.TypeTableTest exposing (suite)
 
-{-| Cache-serialization plan S3 (ECOT\_003): the per-file type table dedups
-exactly the `==`-equal types, assigns ids children-first, and round-trips.
+{-| Tests for `Compiler.AST.TypeTable`, the table of distinct types that a typed
+artifact stores once per file and refers to by id. Without them, a change that
+merged two types the table must keep apart, or that broke the table's encoding,
+could make a cached artifact decode to the wrong types or not decode at all.
+
+The table merges two types only when they are `==`. That is Elm's structural
+equality, which compares all the data a `Can.Type` carries, so types a reader
+might call the same, such as two arrows that differ only in their arrow slot,
+get separate entries. Entries are numbered children first: a row refers only to
+rows before it, which lets the decoder build the table in one forward pass.
+
+The fixture types are `int` and `listOf`, both homed in elm/core, and types
+written out in each test. Most tests measure a table by `TypeTable.size` after
+adding a list of types to an empty builder.
+
+The tests establish:
+
+  - Merging: adding `Int`, `List Int` twice and `Int -> List Int` gives 3
+    entries. Adding a tuple of `Int` and `List Int` after those two types adds
+    exactly one. Two two-field records whose dicts were built by inserting the
+    fields in opposite orders share one entry.
+  - Keeping apart: each of eight pairs gets two entries. The pairs are arrows
+    with `NoArrow` and with `SolverRoot 0`, arrows with `SolverRoot 0` and
+    `SolverRoot 7`, an alias with a `Holey` and with a `Filled` body, one-field
+    records with field index 0 and 1, an empty closed record and one extending
+    `r`, an alias with its argument named `a` and named `b`, a type whose home
+    package differs only in its author, and tuples of two and three elements.
+  - Round trip: a string table, the type table and one reference per type are
+    encoded together and decode back to the same list of types. This is checked
+    for seven hand-written types, one of them repeated, for 300 distinct type
+    variables, and for 200 lists of one to six types from `typeFuzzer 3`. With
+    300 entries the table is past the 256 that one-byte references can number,
+    so its references are two bytes wide; the test checks the round trip, not
+    the width. The string table is built from `TypeTable.collectStrings` alone,
+    so a string it failed to register would come back as a different string and
+    fail these comparisons.
+  - Children-first decoding: a hand-written table whose single row is an arrow
+    referring to row 0, itself, fails to decode.
+  - `refMaybe` returns `Nothing` for `List Int` against a table holding only
+    `Int`.
+
+Among what is not tested: the encoded bytes themselves, since nothing is
+compared with a fixed byte sequence; four-byte references; the `Arrow` slot;
+`ref`'s crash on a type that was never added; a row with an unknown tag; which
+id a given type receives; and the values `hashType` returns.
+
 -}
 
 import Array
@@ -20,35 +64,56 @@ import Fuzz exposing (Fuzzer)
 import Test exposing (Test)
 
 
+{-| The home of most fixture types: elm/core's `Basics` module.
+-}
 home : ModuleName.Canonical
 home =
     ModuleName.Canonical ( "elm", "core" ) "Basics"
 
 
+{-| The type `Int`, homed in elm/core's `Basics`.
+-}
 int : Can.Type Name
 int =
     Can.TType home "Int" []
 
 
+{-| Returns the type `List t`, homed in elm/core's `List` module.
+-}
 listOf : Can.Type Name -> Can.Type Name
 listOf t =
     Can.TType (ModuleName.Canonical ( "elm", "core" ) "List") "List" [ t ]
 
 
+{-| Returns the number of entries in a table built by adding `ts`, in order, to
+an empty builder.
+-}
 sizeOf : List (Can.Type Name) -> Int
 sizeOf ts =
     TypeTable.size (List.foldl TypeTable.add TypeTable.empty ts)
 
 
-{-| Both members of a pair must get distinct ids: interning both grows the
-table by one more than interning the first alone.
+{-| Returns an expectation that adding `b` after `a` grows the table by exactly
+one entry.
+
+When every child of `b` already occurs in `a`, as in each pair this module
+passes, that one entry is `b` itself, so the expectation holds only if `b` was
+not merged with `a`. A `b` that brought a new child of its own would grow the
+table by more than one and fail.
+
 -}
 distinct : Can.Type Name -> Can.Type Name -> Expect.Expectation
 distinct a b =
     Expect.equal (sizeOf [ a ] + 1) (sizeOf [ a, b ])
 
 
-{-| Encode a table plus one ref per type, then decode them back.
+{-| Returns the types decoded after encoding `ts` as a string table, a type
+table and one reference per type, or `Nothing` if the decode fails.
+
+The string table holds only the strings `TypeTable.collectStrings` registers
+for the type table, and the type table holds `ts` added in order to an empty
+builder.
+
 -}
 roundTrip : List (Can.Type Name) -> Maybe (List (Can.Type Name))
 roundTrip ts =
@@ -86,6 +151,9 @@ roundTrip ts =
     BD.decode dec bytes
 
 
+{-| Produces a decoder that runs `d` `n` times and returns the results in the
+order they were read.
+-}
 decodeN : Int -> BD.Decoder a -> BD.Decoder (List a)
 decodeN n d =
     BD.loop ( n, [] )
@@ -98,11 +166,26 @@ decodeN n d =
         )
 
 
+{-| A fuzzer for the names in fuzzed types, drawn from seven fixed strings. The
+same names serve as type variables, type and alias names, record field names,
+extension variables and alias argument names.
+-}
 nameFuzzer : Fuzzer String
 nameFuzzer =
     Fuzz.oneOfValues [ "a", "number", "msg", "Int", "List", "x", "comparable" ]
 
 
+{-| Produces a fuzzer for types nested at most `depth` levels above the leaves.
+
+At depth 0 it gives a leaf: a type variable, unit or `Int`. At a greater depth
+it gives a leaf or one of the following, built from types of one less depth: an
+arrow whose slot comes from `slotOf`; a type homed in `Basics` with up to two
+arguments; a one-field record, with a field index from 0 to 300 and an optional
+extension variable; a tuple of two or three elements; or an alias with one
+argument whose type is also the alias body, either `Holey` or `Filled`. Field
+indexes of 128 and above take two bytes of the variable-length integer encoding.
+
+-}
 typeFuzzer : Int -> Fuzzer (Can.Type Name)
 typeFuzzer depth =
     let
@@ -151,6 +234,9 @@ typeFuzzer depth =
             ]
 
 
+{-| Returns the arrow slot the fuzzer uses for `s`: `NoArrow` for 0, otherwise
+`SolverRoot (s * 7)`.
+-}
 slotOf : Int -> TypeIds.ArrowSlot
 slotOf s =
     if s == 0 then
@@ -160,6 +246,8 @@ slotOf s =
         TypeIds.SolverRoot (s * 7)
 
 
+{-| The type-table tests, in the groups the module docstring lists.
+-}
 suite : Test
 suite =
     Test.describe "TypeTable (cache-serialization S3, ECOT_003)"

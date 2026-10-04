@@ -1,10 +1,44 @@
 module SourceIR.KernelCases exposing (expectSuite)
 
-{-| Tests for VarKernel expressions.
+{-| Canonical modules containing kernel references, built by hand so that a
+check on the canonical AST, or on a stage that starts from it, can be run
+against kernel references in a range of positions.
 
-VarKernel expressions represent references to Elm.Kernel.\* functions.
-These can only be created by directly constructing canonical AST,
-not from regular Elm source code.
+A kernel reference names a value of a kernel module, such as
+`Elm.Kernel.List.cons`, and appears in the canonical AST as `Can.VarKernel`. The
+canonicalizer produces one only in a module of a kernel package. These cases
+are written directly as canonical AST with `Compiler.AST.CanonicalBuilder`, with
+no source text.
+
+Every case is a module made by `makeModule`, so it is the module `Test` of
+`elm/core` and has one declaration, `testValue`, which takes no arguments and
+has no annotation. Every kernel reference has the `Elm` prefix. Each expression
+and pattern in a case has an id chosen by hand and different from every other id
+in that case. Nothing here checks that a kernel function of the given name
+exists.
+
+This module asserts nothing itself. `expectSuite` applies the caller's
+expectation to the module of each case, so what a case establishes is whatever
+that expectation checks. There are 22 cases:
+
+  - Eight bare references: `testValue` is a kernel reference on its own, to
+    `List.batch`, `Platform.batch`, `Scheduler.succeed`, `Process.spawn`,
+    `JsArray.empty`, `Utils.Tuple2`, `Basics.pi` or `Basics.add`.
+  - Six cases of calling or passing kernel functions: a kernel function
+    applied to an `Int`; to an `Int` and an empty list; to the result of
+    another kernel call; two kernel calls as the two halves of a pair; a kernel
+    function passed to a let-bound function that applies it; and three uncalled
+    kernel references as the elements of a list.
+  - Eight cases of kernels in context: a kernel call as a lambda body; as a
+    let-bound value; three references from one kernel module in a list; three
+    from different modules in a list; a kernel function applied to a pair and a
+    list; three calls nested one inside the next; and a kernel function called
+    through a let-bound name, directly and through a second name bound to the
+    first.
+
+Among what is not tested: references with the `Eco` prefix, kernel references
+inside `if`, `case` or record expressions, and kernel references in annotated
+definitions or in definitions that take arguments.
 
 -}
 
@@ -28,12 +62,20 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named `"VarKernel expressions "` followed by `condStr`,
+that applies `expectFn` to the module of each case in turn. It stops at
+the first case that fails and reports it under that case's label, as
+`Compiler.BulkCheck.bulkCheck` describes.
+-}
 expectSuite : (Can.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("VarKernel expressions " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns all 22 cases, each applying `expectFn` to its module: the bare
+references first, then the calls, then the kernels in context.
+-}
 testCases : (Can.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -45,10 +87,13 @@ testCases expectFn =
 
 
 -- ============================================================================
--- SIMPLE KERNEL EXPRESSIONS (8 tests)
+-- SIMPLE KERNEL EXPRESSIONS
 -- ============================================================================
 
 
+{-| Returns the eight cases in which `testValue` is a kernel reference on its
+own, each applying `expectFn` to its module.
+-}
 simpleKernelCases : (Can.Module -> Expectation) -> List TestCase
 simpleKernelCases expectFn =
     [ { label = "VarKernel List.batch", run = varKernelListBatch expectFn }
@@ -62,6 +107,9 @@ simpleKernelCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the bare reference
+`Elm.Kernel.List.batch`.
+-}
 varKernelListBatch : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelListBatch expectFn _ =
     let
@@ -72,6 +120,9 @@ varKernelListBatch expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the bare reference
+`Elm.Kernel.Platform.batch`.
+-}
 varKernelPlatformBatch : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelPlatformBatch expectFn _ =
     let
@@ -82,6 +133,9 @@ varKernelPlatformBatch expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the bare reference
+`Elm.Kernel.Scheduler.succeed`.
+-}
 varKernelSchedulerSucceed : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelSchedulerSucceed expectFn _ =
     let
@@ -92,6 +146,9 @@ varKernelSchedulerSucceed expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the bare reference
+`Elm.Kernel.Process.spawn`.
+-}
 varKernelProcessSpawn : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelProcessSpawn expectFn _ =
     let
@@ -102,6 +159,9 @@ varKernelProcessSpawn expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the bare reference
+`Elm.Kernel.JsArray.empty`.
+-}
 varKernelJsArrayEmpty : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelJsArrayEmpty expectFn _ =
     let
@@ -112,6 +172,9 @@ varKernelJsArrayEmpty expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the bare reference
+`Elm.Kernel.Utils.Tuple2`.
+-}
 varKernelUtilsTuple2 : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelUtilsTuple2 expectFn _ =
     let
@@ -122,9 +185,13 @@ varKernelUtilsTuple2 expectFn _ =
     expectFn modul
 
 
-{-| Tests the ConstantFloat intrinsic branch in generateVarKernel.
-Basics.pi is recognized as a constant float intrinsic and generates
-an arith.constant operation directly.
+{-| Applies `expectFn` to a module whose `testValue` is the bare reference
+`Elm.Kernel.Basics.pi`.
+
+The case's label refers to the MLIR back end, where
+`Compiler.Generate.MLIR.Intrinsics` has a float-constant intrinsic for
+`Basics.pi`.
+
 -}
 varKernelBasicsPi : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelBasicsPi expectFn _ =
@@ -136,9 +203,13 @@ varKernelBasicsPi expectFn _ =
     expectFn modul
 
 
-{-| Tests the intrinsic function with arity > 0 branch in generateVarKernel.
-Basics.add is an intrinsic function that, when referenced without being called,
-creates a papCreate (partial application) closure with arity 2.
+{-| Applies `expectFn` to a module whose `testValue` is
+`Elm.Kernel.Basics.add`, referenced without being called.
+
+The case's label refers to the MLIR back end, where
+`Compiler.Generate.MLIR.Intrinsics` has intrinsics for calls of `Basics.add`, a
+kernel function that takes arguments.
+
 -}
 varKernelBasicsAdd : (Can.Module -> Expectation) -> (() -> Expectation)
 varKernelBasicsAdd expectFn _ =
@@ -152,10 +223,13 @@ varKernelBasicsAdd expectFn _ =
 
 
 -- ============================================================================
--- KERNEL FUNCTION CALLS (6 tests)
+-- KERNEL FUNCTIONS CALLED, PASSED OR COLLECTED
 -- ============================================================================
 
 
+{-| Returns the six cases in which a kernel function is called, or passed or
+collected as a value, each applying `expectFn` to its module.
+-}
 kernelCallCases : (Can.Module -> Expectation) -> List TestCase
 kernelCallCases expectFn =
     [ { label = "Calling kernel function with int arg", run = kernelCallWithIntArg expectFn }
@@ -167,6 +241,9 @@ kernelCallCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`Elm.Kernel.List.singleton 42`.
+-}
 kernelCallWithIntArg : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelCallWithIntArg expectFn _ =
     let
@@ -183,6 +260,9 @@ kernelCallWithIntArg expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`Elm.Kernel.List.cons 1 []`, one call with two arguments.
+-}
 kernelCallWithMultipleArgs : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelCallWithMultipleArgs expectFn _ =
     let
@@ -202,6 +282,9 @@ kernelCallWithMultipleArgs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`Elm.Kernel.List.head (Elm.Kernel.List.singleton 1)`.
+-}
 nestedKernelCalls : (Can.Module -> Expectation) -> (() -> Expectation)
 nestedKernelCalls expectFn _ =
     let
@@ -224,6 +307,9 @@ nestedKernelCalls expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the pair
+`( Elm.Kernel.List.head [], Elm.Kernel.List.tail [] )`.
+-}
 multipleKernelCallsInTuple : (Can.Module -> Expectation) -> (() -> Expectation)
 multipleKernelCallsInTuple expectFn _ =
     let
@@ -240,10 +326,13 @@ multipleKernelCallsInTuple expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`let apply f x = f x in apply Elm.Kernel.List.singleton 42`, so the kernel
+function is an argument and is called through the parameter `f`.
+-}
 kernelAsHigherOrderArg : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelAsHigherOrderArg expectFn _ =
     let
-        -- apply f x = f x (where f is a kernel function)
         applyDef =
             makeDef "apply"
                 [ pVar 3 "f", pVar 4 "x" ]
@@ -265,6 +354,10 @@ kernelAsHigherOrderArg expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the list of the uncalled
+references `Elm.Kernel.List.head`, `Elm.Kernel.List.tail` and
+`Elm.Kernel.List.length`.
+-}
 kernelFunctionInList : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelFunctionInList expectFn _ =
     let
@@ -286,10 +379,14 @@ kernelFunctionInList expectFn _ =
 
 
 -- ============================================================================
--- KERNEL IN CONTEXT (6 tests)
+-- KERNEL IN CONTEXT
 -- ============================================================================
 
 
+{-| Returns the eight cases in which a kernel reference sits inside a lambda, a
+`let`, a list or a chain of calls, or is called with a pair and a list as its
+arguments, each applying `expectFn` to its module.
+-}
 kernelInContextCases : (Can.Module -> Expectation) -> List TestCase
 kernelInContextCases expectFn =
     [ { label = "Kernel function in lambda body", run = kernelInLambdaBody expectFn }
@@ -303,6 +400,9 @@ kernelInContextCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`\x -> Elm.Kernel.List.singleton x`.
+-}
 kernelInLambdaBody : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelInLambdaBody expectFn _ =
     let
@@ -318,6 +418,9 @@ kernelInLambdaBody expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`let result = Elm.Kernel.List.singleton 1 in result`.
+-}
 kernelInLetBinding : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelInLetBinding expectFn _ =
     let
@@ -337,6 +440,10 @@ kernelInLetBinding expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the list of the uncalled
+references `Elm.Kernel.List.cons`, `Elm.Kernel.List.singleton` and
+`Elm.Kernel.List.append`, all from one kernel module.
+-}
 multipleKernelSameModule : (Can.Module -> Expectation) -> (() -> Expectation)
 multipleKernelSameModule expectFn _ =
     let
@@ -356,6 +463,10 @@ multipleKernelSameModule expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is the list of the uncalled
+references `Elm.Kernel.List.cons`, `Elm.Kernel.Platform.batch` and
+`Elm.Kernel.Scheduler.succeed`, from three kernel modules.
+-}
 kernelDifferentModules : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelDifferentModules expectFn _ =
     let
@@ -375,6 +486,9 @@ kernelDifferentModules expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`Elm.Kernel.Utils.pair ( 1, 2 ) [ 3, 4 ]`.
+-}
 kernelWithComplexArgs : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelWithComplexArgs expectFn _ =
     let
@@ -394,10 +508,12 @@ kernelWithComplexArgs expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a module whose `testValue` is
+`Elm.Kernel.List.head (Elm.Kernel.List.tail (Elm.Kernel.List.singleton 1))`.
+-}
 chainedKernelCalls : (Can.Module -> Expectation) -> (() -> Expectation)
 chainedKernelCalls expectFn _ =
     let
-        -- head (tail (singleton 1))
         innermost =
             callExpr 3 (varKernelExpr 2 "List" "singleton") [ intExpr 4 1 ]
 
@@ -413,22 +529,19 @@ chainedKernelCalls expectFn _ =
     expectFn modul
 
 
-{-| Tests that a local alias to a kernel function uses flattened call model.
-let f = Elm.Kernel.List.singleton in f 42
-The call through 'f' should use flattened external arity (all args at once),
-not stage-curried arity.
+{-| Applies `expectFn` to a module whose `testValue` is
+`let f = Elm.Kernel.List.singleton in f 42`, a call made through a local name
+bound to a kernel function.
 -}
 kernelAliasDirectCall : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelAliasDirectCall expectFn _ =
     let
-        -- f = Elm.Kernel.List.singleton
         kernelFn =
             varKernelExpr 2 "List" "singleton"
 
         fDef =
             makeDef "f" [] kernelFn
 
-        -- f 42
         body =
             callExpr 4 (varLocalExpr 5 "f") [ intExpr 6 42 ]
 
@@ -439,29 +552,25 @@ kernelAliasDirectCall expectFn _ =
     expectFn modul
 
 
-{-| Tests transitive propagation of kernel call model through alias chains.
-let f = Elm.Kernel.List.singleton in let g = f in g 42
-The call through 'g' should inherit 'f's flattened external call model.
+{-| Applies `expectFn` to a module whose `testValue` is
+`let f = Elm.Kernel.List.singleton in let g = f in g 42`, a call made through a
+local name bound to another local name that is bound to a kernel function.
 -}
 kernelAliasTransitiveCall : (Can.Module -> Expectation) -> (() -> Expectation)
 kernelAliasTransitiveCall expectFn _ =
     let
-        -- f = Elm.Kernel.List.singleton
         kernelFn =
             varKernelExpr 2 "List" "singleton"
 
         fDef =
             makeDef "f" [] kernelFn
 
-        -- g = f
         gDef =
             makeDef "g" [] (varLocalExpr 4 "f")
 
-        -- g 42
         innerBody =
             callExpr 6 (varLocalExpr 7 "g") [ intExpr 8 42 ]
 
-        -- let g = f in g 42
         innerLet =
             letExpr 3 gDef innerBody
 

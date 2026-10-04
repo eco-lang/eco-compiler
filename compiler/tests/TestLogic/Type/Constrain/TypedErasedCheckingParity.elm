@@ -3,11 +3,48 @@ module TestLogic.Type.Constrain.TypedErasedCheckingParity exposing
     , expectEquivalentTypeCheckingCanonical
     )
 
-{-| Shared test infrastructure for constraint equivalence testing.
+{-| Expectations that type-check one module in two ways and fail when the two
+disagree.
 
-This module provides test runners that compare `constrain` and `constrainWithIds` paths.
+The compiler can type-check a module on either of two paths. The _erased
+path_ generates constraints with `Compiler.Type.Constrain.Erased.Module.constrain`
+and solves them with `Compiler.Type.Solve.run`. The _typed path_ generates them
+with `Compiler.Type.Constrain.Typed.Module.constrainWithIds` and solves them
+with `Compiler.Type.Solve.runWithIds`, which also returns `nodeTypes`: an array
+indexed by node id holding, for each id, `Maybe` the type the solver found. A
+_node id_ is the integer that every canonical expression and pattern carries.
+If the two paths disagreed, a module could be accepted on one and rejected on
+the other; these expectations exist to catch that, and to catch the typed path
+leaving an expression with no type.
 
-For Canonical AST builders, use Compiler.AST.CanonicalBuilder.
+Both expectations run the two paths on one canonical module, and pass in
+exactly two cases:
+
+  - Both paths succeed, and every expression id in the module has a `Just`
+    entry in the typed path's `nodeTypes`. The ids are those of every
+    expression node reachable from the module's declarations, nested ones
+    included.
+  - Both paths fail with the same number of errors, and the errors match
+    pairwise in list order: the same constructor and the same region, and in
+    addition the same category constructor for `BadExpr` and `BadPattern`
+    (ignoring any payload the category carries) and the same variable name for
+    `InfiniteType`.
+
+Any other outcome fails, with a message describing the difference.
+
+`expectEquivalentTypeChecking` starts from source and canonicalizes it first;
+`expectEquivalentTypeCheckingCanonical` starts from a canonical module.
+
+Among what is not checked:
+
+  - When both paths succeed, their annotations are not compared, and neither
+    is any node type: only its presence.
+  - A pattern's own node id is never collected, so a pattern with no type
+    passes.
+  - The types an error carries (actual, expected, or the infinite type), and
+    the payload of a category.
+  - Whether the module is accepted: two matching failures pass as surely as
+    two successes.
 
 -}
 
@@ -35,7 +72,12 @@ import Set exposing (Set)
 import System.TypeCheck.IO as IO
 
 
-{-| Convert a canonicalization error to a string for debugging.
+{-| Returns a one-line description of a canonicalization error for a failure
+message: its kind and the name it concerns. For `NotFoundVar`, `NotFoundType`
+and `NotFoundVariant` the name is prefixed with the qualifier it was written
+with, if any, and `BadArity` also gives the expected and actual argument
+counts. Kinds this function has no case for, such as `AmbiguousVariant`, all
+give `"Other error (unhandled)"`.
 -}
 errorToString : CanError.Error -> String
 errorToString error =
@@ -101,21 +143,17 @@ errorToString error =
             "Other error (unhandled)"
 
 
+{-| Creates an expectation that `srcModule`, once canonicalized, type-checks
+the same way on the erased and the typed path.
 
--- ============================================================================
--- TEST INFRASTRUCTURE
--- ============================================================================
-
-
-{-| Run both constraint paths and verify they produce equivalent results.
-
-Both paths should either:
-
-  - Both succeed (annotations may differ in internal details but should be equivalent)
-  - Both fail with errors
-
-Additionally, when WithIds path succeeds, we verify that ALL expression IDs
-from the original module are present in the nodeTypes map.
+It canonicalizes as package `eco/example` against
+`Compiler.Elm.Interface.Basic.testIfaces`, and fails with the error count and
+a description of the first error if canonicalization fails. Otherwise it
+passes when both paths succeed and the typed path gives every expression id a
+node type, or when both fail with matching errors: the same count and,
+pairwise in order, the same constructor and region, the same category
+constructor for `BadExpr` and `BadPattern`, and the same variable name for
+`InfiniteType`. Annotations, and the types inside errors, are not compared.
 
 -}
 expectEquivalentTypeChecking : Src.Module -> Expect.Expectation
@@ -153,13 +191,11 @@ expectEquivalentTypeChecking srcModule =
                 withIdsResult =
                     IO.unsafePerformIO (runWithIdsPath modul)
 
-                -- Extract all expression IDs from the module
                 allExprIds =
                     extractModuleExprIds modul
             in
             case ( standardResult, withIdsResult ) of
                 ( Ok _, Ok { nodeTypes } ) ->
-                    -- Both succeeded - now check that all IDs are in nodeTypes
                     let
                         nodeTypeIds =
                             Array.foldl
@@ -192,7 +228,6 @@ expectEquivalentTypeChecking srcModule =
                             )
 
                 ( Err standardErrors, Err withIdsErrors ) ->
-                    -- Both failed - check if they failed for equivalent reasons
                     let
                         standardErrorList =
                             NE.toList standardErrors
@@ -221,7 +256,6 @@ expectEquivalentTypeChecking srcModule =
                             )
 
                     else
-                        -- Check that errors are equivalent
                         let
                             mismatches =
                                 List.map2 compareTypeErrors standardErrorList withIdsErrorList
@@ -261,11 +295,12 @@ expectEquivalentTypeChecking srcModule =
                         )
 
 
-{-| Run both constraint paths on a Canonical module and verify they produce equivalent results.
+{-| Creates an expectation that the canonical module `modul` type-checks the
+same way on the erased and the typed path.
 
-This skips canonicalization and directly tests the constraint generation paths.
-Useful for testing kernel variables and other constructs that can only be created
-by directly constructing canonical AST.
+It makes the same comparison as `expectEquivalentTypeChecking`, with no
+canonicalization step, so it suits a module built directly as canonical AST
+with its node ids already assigned.
 
 -}
 expectEquivalentTypeCheckingCanonical : Can.Module -> Expect.Expectation
@@ -277,13 +312,11 @@ expectEquivalentTypeCheckingCanonical modul =
         withIdsResult =
             IO.unsafePerformIO (runWithIdsPath modul)
 
-        -- Extract all expression IDs from the module
         allExprIds =
             extractModuleExprIds modul
     in
     case ( standardResult, withIdsResult ) of
         ( Ok _, Ok { nodeTypes } ) ->
-            -- Both succeeded - now check that all IDs are in nodeTypes
             let
                 nodeTypeIds =
                     Array.foldl
@@ -316,7 +349,6 @@ expectEquivalentTypeCheckingCanonical modul =
                     )
 
         ( Err standardErrors, Err withIdsErrors ) ->
-            -- Both failed - check if they failed for equivalent reasons
             let
                 standardErrorList =
                     NE.toList standardErrors
@@ -345,7 +377,6 @@ expectEquivalentTypeCheckingCanonical modul =
                     )
 
             else
-                -- Check that errors are equivalent
                 let
                     mismatches =
                         List.map2 compareTypeErrors standardErrorList withIdsErrorList
@@ -385,7 +416,8 @@ expectEquivalentTypeCheckingCanonical modul =
                 )
 
 
-{-| Convert a type error to a string for debugging output.
+{-| Returns a one-line description of a type error for a failure message: its
+constructor, region, category or variable name, and the types it carries.
 -}
 typeErrorToString : TypeError.Error -> String
 typeErrorToString error =
@@ -419,7 +451,11 @@ typeErrorToString error =
                 ++ tTypeToString tType
 
 
-{-| Convert a T.Type to a string for debugging.
+{-| Returns an error type as readable text for a failure message.
+
+Type and alias names are printed without their module, and a constrained
+variable by its name alone, so two different types can print the same.
+
 -}
 tTypeToString : T.Type -> String
 tTypeToString tType =
@@ -484,7 +520,8 @@ tTypeToString tType =
             name ++ " " ++ String.join " " (List.map (\( _, t ) -> tTypeToString t) args)
 
 
-{-| Convert a TypeError.Expected to a string for debugging.
+{-| Returns an expression's expected type as text for a failure message,
+naming where the expectation came from.
 -}
 tExpectedToString : TypeError.Expected T.Type -> String
 tExpectedToString expected =
@@ -499,7 +536,8 @@ tExpectedToString expected =
             "FromAnnotation(" ++ name ++ ", " ++ tTypeToString tType ++ ")"
 
 
-{-| Convert a TypeError.PExpected to a string for debugging.
+{-| Returns a pattern's expected type as text for a failure message, naming
+where the expectation came from.
 -}
 tPExpectedToString : TypeError.PExpected T.Type -> String
 tPExpectedToString expected =
@@ -511,7 +549,8 @@ tPExpectedToString expected =
             "PFromContext(" ++ pContextToString pContext ++ ", " ++ tTypeToString tType ++ ")"
 
 
-{-| Convert a PContext to a string.
+{-| Returns the name of a pattern context's constructor, with the name it
+carries for `PTypedArg` and `PCtorArg`.
 -}
 pContextToString : TypeError.PContext -> String
 pContextToString pContext =
@@ -532,7 +571,8 @@ pContextToString pContext =
             "PTail"
 
 
-{-| Convert a Context to a string.
+{-| Returns the name of an expression context's constructor, without its
+payload.
 -}
 contextToString : TypeError.Context -> String
 contextToString context =
@@ -577,7 +617,7 @@ contextToString context =
             "Destructure"
 
 
-{-| Convert a region to a string for debugging.
+{-| Returns a region as `startRow:startCol-endRow:endCol`.
 -}
 regionToString : A.Region -> String
 regionToString (A.Region (A.Position startRow startCol) (A.Position endRow endCol)) =
@@ -590,7 +630,8 @@ regionToString (A.Region (A.Position startRow startCol) (A.Position endRow endCo
         ++ String.fromInt endCol
 
 
-{-| Convert an expression category to a string.
+{-| Returns the name of an expression category's constructor, without its
+payload.
 -}
 categoryToString : TypeError.Category -> String
 categoryToString category =
@@ -650,7 +691,7 @@ categoryToString category =
             "Foreign"
 
 
-{-| Convert a pattern category to a string.
+{-| Returns the name of a pattern category's constructor, without its payload.
 -}
 pCategoryToString : TypeError.PCategory -> String
 pCategoryToString pCategory =
@@ -683,8 +724,15 @@ pCategoryToString pCategory =
             "PBool"
 
 
-{-| Compare two type errors for equivalence.
-Returns Nothing if they match, or Just a description of the mismatch.
+{-| Returns `Nothing` when `err1` and `err2` count as the same error, or `Just`
+a description of how they differ.
+
+They match when they have the same constructor and the same region, and in
+addition the same category constructor for `BadExpr` and `BadPattern` (as
+`categoriesEquivalent` and `pCategoriesEquivalent` decide) and the same
+variable name for `InfiniteType`. The types an error carries are never
+compared.
+
 -}
 compareTypeErrors : TypeError.Error -> TypeError.Error -> Maybe String
 compareTypeErrors err1 err2 =
@@ -758,7 +806,9 @@ compareTypeErrors err1 err2 =
                 )
 
 
-{-| Check if two categories are equivalent.
+{-| Returns whether two expression categories have the same constructor. The
+payload of `CallResult` (what was called) and the name carried by `Accessor`,
+`Access`, `Local` and `Foreign` are ignored.
 -}
 categoriesEquivalent : TypeError.Category -> TypeError.Category -> Bool
 categoriesEquivalent cat1 cat2 =
@@ -821,7 +871,8 @@ categoriesEquivalent cat1 cat2 =
             False
 
 
-{-| Check if two pattern categories are equivalent.
+{-| Returns whether two pattern categories have the same constructor. The
+constructor name carried by `PCtor` is ignored.
 -}
 pCategoriesEquivalent : TypeError.PCategory -> TypeError.PCategory -> Bool
 pCategoriesEquivalent pCat1 pCat2 =
@@ -857,8 +908,9 @@ pCategoriesEquivalent pCat1 pCat2 =
             False
 
 
-{-| Run the standard constraint generation and solving path.
-Returns actual errors instead of just a count.
+{-| Type-checks `modul` on the erased path: generates its constraints with
+`ConstrainErased.constrain` and solves them with `Solve.run`, giving the
+solver's errors or its annotations.
 -}
 runStandardPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Dict Name.Name (Can.Annotation Name)))
 runStandardPath modul =
@@ -866,8 +918,11 @@ runStandardPath modul =
         |> IO.andThen Solve.run
 
 
-{-| Run the WithIds constraint generation and solving path.
-Returns both annotations and the nodeTypes map, or actual errors.
+{-| Type-checks `modul` on the typed path: generates its constraints and node
+variables with `ConstrainTyped.constrainWithIds` and solves them with
+`Solve.runWithIds`, giving the solver's errors or its full result, `nodeTypes`
+included. The scheme binder variables `constrainWithIds` also returns are
+dropped.
 -}
 runWithIdsPath :
     Can.Module
@@ -892,14 +947,15 @@ runWithIdsPath modul =
             )
 
 
-{-| Extract all expression IDs from a module.
+{-| Returns the node id of every expression in the module's declarations.
 -}
 extractModuleExprIds : Can.Module -> Set Int
 extractModuleExprIds (Can.Module { decls }) =
     extractDeclsExprIds decls
 
 
-{-| Extract expression IDs from declarations.
+{-| Returns the expression ids of every definition in a chain of declarations,
+recursive groups included.
 -}
 extractDeclsExprIds : Can.Decls -> Set Int
 extractDeclsExprIds decls =
@@ -917,7 +973,8 @@ extractDeclsExprIds decls =
             Set.empty
 
 
-{-| Extract expression IDs from a definition.
+{-| Returns the expression ids of a definition's body. Its argument patterns
+are walked too, but contribute none (see `extractPatternExprIds`).
 -}
 extractDefExprIds : Can.Def -> Set Int
 extractDefExprIds def =
@@ -933,14 +990,16 @@ extractDefExprIds def =
                 (extractAllExprIds expr)
 
 
-{-| Extract all expression IDs from an expression (recursively).
+{-| Returns the id of an expression together with the ids of every expression
+nested inside it.
 -}
 extractAllExprIds : Can.Expr -> Set Int
 extractAllExprIds (A.At _ { id, node }) =
     Set.insert id (extractExprNodeIds node)
 
 
-{-| Extract expression IDs from an expression node.
+{-| Returns the ids of the expressions nested in an expression node, not
+including the node's own id, which the enclosing `Can.Expr` holds.
 -}
 extractExprNodeIds : Can.Expr_ -> Set Int
 extractExprNodeIds node =
@@ -1056,8 +1115,11 @@ extractExprNodeIds node =
             Set.empty
 
 
-{-| Extract expression IDs from a pattern (patterns don't have expression IDs,
-but they may contain nested patterns that we need to traverse).
+{-| Returns the empty set for every pattern.
+
+It walks the nested sub-patterns, but a pattern contains no expression, and
+the node id each pattern carries is never collected.
+
 -}
 extractPatternExprIds : Can.Pattern -> Set Int
 extractPatternExprIds (A.At _ { node }) =

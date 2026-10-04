@@ -1,17 +1,55 @@
 module Compiler.Type.PostSolve exposing (postSolve, NodeTypes)
 
-{-| PostSolve phase for fixing remaining Group B expression types and computing kernel types.
+{-| Rewrites the solver's node types for two kinds of node once solving is
+done. A kernel function has no Elm declaration, so nothing gives a reference to
+it a type, and this module works one out. A string, character or float literal
+or unit is given its fixed type, whatever the solver recorded.
 
-This phase runs after the type solver (`runWithIds`) and before `TypedCanonical.fromCanonical`.
-It walks the canonical AST to:
+Each expression node's type is recorded in one of two ways, and
+`Compiler.Type.Constrain.Typed.Expression` decides which. A _Group A_
+node records the solver variable for its own result. A _Group B_ node, which is
+a `Str`, `Chr`, `Float`, `Unit` or `Shader` node or a variable reference,
+records a placeholder variable constrained to the type its context expects.
+Group A entries are kept as they are. Of the Group B entries, string,
+character and float literals and unit are overwritten with `String`, `Char`,
+`Float` and `()`, kernel references are treated as below, and the rest are
+kept.
 
-1.  Fix types for remaining Group B expressions (Str, Chr, Float, Unit) whose
-    synthetic vars are unconstrained. Most expression forms are now Group A
-    (solver-owned via recordNodeVar) and do not need structural repair.
-2.  Compute kernel function types (`KernelTypeEnv`) via alias seeding and usage inference
+A _kernel reference_ is a `Can.VarKernel`, a use of a function of a kernel
+module such as `Elm.Kernel.List.map`. Its type is worked out from how the
+module uses it. The types are kept in a `KernelTypes.KernelTypeEnv`,
+one per kernel function, under the first-usage-wins rule and the keying that
+`Compiler.Type.KernelTypes` describes. Entries are added in this order.
 
-The result is a fixed `nodeTypes` map where all expression IDs have meaningful types,
-plus a `kernelEnv` for typed optimization.
+1.  A _kernel alias_ is a top-level definition with no arguments whose body is
+    a bare kernel reference, such as `map = Elm.Kernel.List.map`. Before
+    anything else, every kernel alias contributes its type: an annotated one
+    its annotated type, and an unannotated one its type in the solver's
+    `annotations`, if that has one.
+2.  Then the declarations are walked in order. A call whose function is a
+    kernel reference contributes the function type from its arguments' node
+    types to its own node type. A bare kernel reference passed as an argument
+    to a kernel call contributes the parameter type at its position in the
+    called kernel's entry, or `Can.TVar "a"` where the entry has no parameter
+    there. One passed to a constructor call contributes the type of the
+    parameter it is passed for, taken from the constructor's annotation, with
+    the annotation's type variables found by matching its result type against
+    the call's node type. A bare kernel reference that is an operand of a
+    binary operator contributes the parameter type in the operator's
+    annotation, and one that is the body of a `case` branch contributes the
+    `case` expression's node type.
+
+A kernel reference walked after its kernel has an entry, or whose own position
+creates the entry, gets that entry as its node type, so those occurrences of
+one kernel all get the same type, whatever the context of each. Any other
+kernel reference keeps the solver's type: one walked before its kernel had an
+entry, in a position that did not create it, and one whose kernel never gets
+an entry.
+
+The exception is an annotated definition with no arguments whose body is a
+bare kernel reference, top-level or in a `let`: that reference gets the
+definition's own annotated type, whatever its kernel's entry, so that two such
+definitions sharing one kernel at different types each keep their own.
 
 @docs postSolve, NodeTypes
 
@@ -27,25 +65,26 @@ import Data.Map
 import Dict exposing (Dict)
 
 
-{-| Node types mapping expression/pattern ID to canonical type.
+{-| The type of each expression and pattern node of a module, indexed by node
+id. `Nothing` marks an id with no recorded type.
+
+This is a name for an `Array`, not a new type, so nothing checks that it
+covers every id of the module.
+
 -}
 type alias NodeTypes =
     Array (Maybe (Can.Type Name))
 
 
-{-| Run the post-solve phase on a canonical module.
+{-| Returns the solver's node types for a module with the literal and kernel
+reference entries rewritten as the module documentation describes, together
+with the kernel type environment built along the way.
 
-Takes:
+`annotations` are the solver's types for the module's top-level definitions.
+They are read only for an unannotated kernel alias.
 
-  - `annotations`: Top-level type annotations from type checking
-  - `canonical`: The canonical module AST
-  - `nodeTypes`: Expression/pattern types from the solver (remaining Group B
-    entries — Str, Chr, Float, Unit — are unconstrained)
-
-Returns:
-
-  - `nodeTypes`: Fixed node types with all expressions properly typed
-  - `kernelEnv`: Kernel function type environment for typed optimization
+An entry is written with `Array.set`, so a node id outside the array is
+skipped and the array never grows.
 
 -}
 postSolve :
@@ -58,12 +97,10 @@ postSolve :
         }
 postSolve annotations (Can.Module canData) nodeTypes0 =
     let
-        -- Phase 0: Seed kernel env from alias definitions
         kernel0 : KernelTypes.KernelTypeEnv
         kernel0 =
             seedKernelAliases annotations canData.decls
 
-        -- Phase 1: Fix expression types + infer kernel types from usage
         ( nodeTypes1, kernel1 ) =
             postSolveDecls annotations canData.decls nodeTypes0 kernel0
     in
@@ -73,15 +110,12 @@ postSolve annotations (Can.Module canData) nodeTypes0 =
 
 
 
--- ====== PHASE 0: KERNEL ALIAS SEEDING ======
+-- ====== KERNEL ALIAS SEEDING ======
 
 
-{-| Seed kernel type environment from alias definitions.
-
-Scans declarations looking for zero-argument definitions whose bodies are
-exactly `VarKernel` references. For each, extracts the type annotation
-and inserts it into the kernel environment.
-
+{-| Builds the kernel type environment that the module's kernel aliases alone
+give, before any expression is walked. Aliases are taken in declaration order,
+so where two aliases name one kernel the first one's type is kept.
 -}
 seedKernelAliases :
     Dict Name (Can.Annotation Name)
@@ -91,6 +125,9 @@ seedKernelAliases annotations decls =
     seedKernelAliasesHelp annotations decls Dict.empty
 
 
+{-| Returns `env` with an entry added for each kernel alias among `decls`, in
+declaration order.
+-}
 seedKernelAliasesHelp :
     Dict Name (Can.Annotation Name)
     -> Can.Decls
@@ -115,6 +152,11 @@ seedKernelAliasesHelp annotations decls env =
             env
 
 
+{-| Returns `env` with the definition's type added for its kernel, when `def`
+is a kernel alias, and `env` unchanged otherwise. An annotated definition
+contributes its annotated type; an unannotated one is looked up in
+`annotations` by name.
+-}
 checkDefForAlias :
     Dict Name (Can.Annotation Name)
     -> Can.Def
@@ -133,7 +175,6 @@ checkDefForAlias annotations def env =
         Can.TypedDef (A.At _ _) _ typedArgs body resultType ->
             case typedArgs of
                 [] ->
-                    -- For TypedDef with result type, we can use the result type directly
                     let
                         { node } =
                             A.toValue body
@@ -149,6 +190,10 @@ checkDefForAlias annotations def env =
                     env
 
 
+{-| Returns `env` with the type `annotations` gives `defName` added for the
+kernel, when `body` is a bare kernel reference, and `env` unchanged otherwise,
+including when `annotations` has no entry for `defName`.
+-}
 checkKernelAliasBody :
     Dict Name (Can.Annotation Name)
     -> Name
@@ -170,10 +215,11 @@ checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
 
 
 
--- ====== PHASE 1: EXPRESSION TRAVERSAL ======
+-- ====== EXPRESSION TRAVERSAL ======
 
 
-{-| Walk declarations, fixing expression types and inferring kernel types.
+{-| Returns the node types and kernel type environment after walking every
+definition of `decls`, in declaration order.
 -}
 postSolveDecls :
     Dict Name (Can.Annotation Name)
@@ -207,7 +253,14 @@ postSolveDecls annotations decls nodeTypes0 kernel0 =
             ( nodeTypes0, kernel0 )
 
 
-{-| Walk a definition, processing its body expression.
+{-| Returns the node types and kernel type environment after walking one
+definition, top-level or in a `let`.
+
+An annotated definition with no arguments whose body is a bare kernel
+reference is handled on its own: the body's node is given the definition's
+annotated type rather than its kernel's entry, and the environment is left
+unchanged.
+
 -}
 postSolveDef :
     Dict Name (Can.Annotation Name)
@@ -227,10 +280,6 @@ postSolveDef annotations def nodeTypes0 kernel0 =
         Can.TypedDef _ _ typedArgs body resultType ->
             case typedArgs of
                 [] ->
-                    -- Zero-arg typed def: if body is a VarKernel alias, use the
-                    -- definition's result type directly. The kernel env may have the
-                    -- wrong type when multiple aliases (fromFloat, fromInt) share a
-                    -- polymorphic kernel (fromNumber).
                     let
                         bodyInfo =
                             A.toValue body
@@ -255,7 +304,8 @@ postSolveDef annotations def nodeTypes0 kernel0 =
                     postSolveExpr annotations body nodeTypes1 kernel1
 
 
-{-| Walk a list of patterns, processing any nested expressions.
+{-| Returns the node types and kernel type environment after walking each of
+`patterns`, which leaves both unchanged, as `postSolvePattern` does.
 -}
 postSolvePatterns :
     List Can.Pattern
@@ -269,7 +319,9 @@ postSolvePatterns patterns nodeTypes0 kernel0 =
         patterns
 
 
-{-| Process a single pattern (patterns don't contain expressions, but may have nested patterns).
+{-| Returns `nodeTypes` and the kernel type environment unchanged. A pattern
+contains no expression, so nothing in it is rewritten; the walk only descends
+into the sub-patterns.
 -}
 postSolvePattern :
     Can.Pattern
@@ -340,18 +392,14 @@ postSolvePattern (A.At _ patInfo) nodeTypes0 kernel0 =
                 ctorData.args
 
 
-{-| Main expression traversal.
+{-| Returns the node types and kernel type environment after walking one
+expression and everything inside it.
 
-For Group A expressions (Int, Negate, Binop, Call, If, Case, Access, Update,
-Accessor, List, Tuple, Record, Lambda, Let, LetRec, LetDestruct):
-we trust the solver's type and just recurse into children.
-
-For Group B expressions (Str, Chr, Float, Unit): we compute the type
-structurally and write it to nodeTypes.
-
-For VarKernel: we look up the type from kernelEnv.
-
-For Call with VarKernel callee: we also infer the kernel type from usage.
+A string, character or float literal, or unit, gets its fixed type. A kernel
+reference gets its kernel's entry, if it has one by now, and otherwise keeps
+the solver's type. Every other node keeps the solver's type; the calls,
+binary operators and `case` expressions inside it are where kernel types are
+inferred.
 
 -}
 postSolveExpr :
@@ -366,7 +414,6 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             exprInfo.id
     in
     case exprInfo.node of
-        -- ====== GROUP A: Trust solver's type, just recurse into children ======
         Can.Int _ ->
             ( nodeTypes0, kernel0 )
 
@@ -391,11 +438,9 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
         Can.Update record fields ->
             postSolveUpdate annotations record fields nodeTypes0 kernel0
 
-        -- ====== VARKERNEL: Look up from kernelEnv ======
         Can.VarKernel _ home name ->
             case KernelTypes.lookup home name kernel0 of
                 Just kernelType ->
-                    -- Type known: update nodeTypes with the kernel type
                     let
                         nodeTypes1 =
                             arraySetJust exprId kernelType nodeTypes0
@@ -403,12 +448,10 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
                     ( nodeTypes1, kernel0 )
 
                 Nothing ->
-                    -- Type not known yet: don't crash, leave nodeTypes unchanged.
-                    -- The type may be inferred later if this is passed as an
-                    -- argument to a kernel call (propagated from callee's type).
+                    -- The enclosing call, operator or case may still give this
+                    -- node a type once it has inferred one for the kernel.
                     ( nodeTypes0, kernel0 )
 
-        -- ====== GROUP B: Compute type structurally (Str, Chr, Float, Unit) ======
         Can.Str _ ->
             let
                 strType =
@@ -446,7 +489,6 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             in
             ( nodeTypes1, kernel0 )
 
-        -- ====== GROUP A: Trust solver's type, just recurse into children ======
         Can.List elems ->
             List.foldl
                 (\e ( nt, ke ) -> postSolveExpr annotations e nt ke)
@@ -486,7 +528,6 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             postSolveExpr annotations body nt1 ke1
 
         Can.Accessor _ ->
-            -- Solver provides type via recordNodeVar; nothing to recurse into
             ( nodeTypes0, kernel0 )
 
         Can.Let def body ->
@@ -517,10 +558,8 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             postSolveExpr annotations body nt2 ke2
 
         Can.Shader _ _ ->
-            -- Keep solver's type for shaders
             ( nodeTypes0, kernel0 )
 
-        -- Variables: trust solver's type
         Can.VarLocal _ ->
             ( nodeTypes0, kernel0 )
 
@@ -540,12 +579,22 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             ( nodeTypes0, kernel0 )
 
 
-{-| Handle Call expressions with special logic for kernel usage inference.
+{-| Returns the node types and kernel type environment after walking a call,
+where `exprId` is the call's own node id.
 
-IMPORTANT: When the callee is a VarKernel, we must NOT recurse into it first,
-because we need to infer its type from the call before we can assign it.
-We handle VarKernel specially: recurse into args only, infer the kernel type,
-then update both kernelEnv and the VarKernel node's type in nodeTypes.
+When `func` is a kernel reference, the arguments are walked first and the
+function itself is not walked as an expression. The kernel's candidate type is
+the function type from the arguments' node types to the call's node type,
+with `Can.TVar "a"` for an argument and `Can.TVar "result"` for the call when
+the node has no type. The candidate is recorded if the kernel has no entry
+yet, `func`'s node gets the kernel's entry, and each bare kernel reference
+among the arguments whose kernel has no entry is given the parameter type at
+its position in that entry, or `Can.TVar "a"` where the entry has no parameter
+at that position, as `propagateKernelArgTypes` does.
+
+When `func` is a constructor and some argument is a bare kernel reference, the
+call is handled by `postSolveCallWithCtorKernelArgs`. Any other call is walked
+as an ordinary expression.
 
 -}
 postSolveCall :
@@ -557,13 +606,10 @@ postSolveCall :
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveCall annotations exprId func args nodeTypes0 kernel0 =
-    -- Check if func is VarKernel BEFORE recursing
     case func of
         A.At _ funcInfo ->
             case funcInfo.node of
                 Can.VarKernel _ home name ->
-                    -- Direct kernel call: DON'T recurse into func (it's VarKernel)
-                    -- Only recurse into args
                     let
                         ( nodeTypes1, kernel1 ) =
                             List.foldl
@@ -571,7 +617,6 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                                 ( nodeTypes0, kernel0 )
                                 args
 
-                        -- Get arg types
                         argTypes =
                             List.map
                                 (\arg ->
@@ -582,49 +627,39 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                                 )
                                 args
 
-                        -- The call's result type is already in nodeTypes from solver (Group A)
                         callResultType =
                             arrayGetFlat exprId nodeTypes1
                                 |> Maybe.withDefault (Can.TVar "result")
 
-                        -- Build the full function type for this kernel
                         candidateType =
                             KernelTypes.buildFunctionType argTypes callResultType
 
-                        -- Add to kernel env (first-usage-wins)
                         kernel2 =
                             KernelTypes.insertFirstUsage home name candidateType kernel1
 
-                        -- Now update the VarKernel node's type in nodeTypes
-                        -- Use the inferred type (or look up from kernel2 which now has it)
+                        -- An earlier entry, if there was one, wins over this call's
+                        -- candidate.
                         kernelNodeType =
                             case KernelTypes.lookup home name kernel2 of
                                 Just t ->
                                     t
 
                                 Nothing ->
-                                    -- Should never happen since we just inserted it
                                     candidateType
 
                         nodeTypes2 =
                             arraySetJust funcInfo.id kernelNodeType nodeTypes1
 
-                        -- Propagate types to VarKernel arguments:
-                        -- Peel the callee's function type to get expected arg types,
-                        -- then for each VarKernel arg, insert that type into kernelEnv.
                         ( inferredArgTypes, _ ) =
                             peelFunctionType kernelNodeType
                     in
                     propagateKernelArgTypes args inferredArgTypes nodeTypes2 kernel2
 
                 Can.VarCtor _ _ _ _ ctorAnnotation ->
-                    -- Constructor call: check if any args are VarKernel
-                    -- If so, use the constructor's annotation to infer kernel types
                     if hasKernelArg args then
                         postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation func args nodeTypes0 kernel0
 
                     else
-                        -- No kernel args; recurse normally
                         let
                             ( nodeTypes1, kernel1 ) =
                                 postSolveExpr annotations func nodeTypes0 kernel0
@@ -635,7 +670,6 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                             args
 
                 _ ->
-                    -- Non-kernel, non-ctor callee: recurse into both func and args normally
                     let
                         ( nodeTypes1, kernel1 ) =
                             postSolveExpr annotations func nodeTypes0 kernel0
@@ -646,7 +680,8 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                         args
 
 
-{-| Handle If expression (Group A - trust solver's type).
+{-| Returns the node types and kernel type environment after walking each
+condition and branch of an `if`, in order, and then the final `else` branch.
 -}
 postSolveIf :
     Dict Name (Can.Annotation Name)
@@ -672,11 +707,14 @@ postSolveIf annotations branches final nodeTypes0 kernel0 =
     postSolveExpr annotations final nt1 ke1
 
 
-{-| Handle Binop expression (Group A - trust solver's type).
+{-| Returns the node types and kernel type environment after walking both
+operands of a binary operator.
 
-Also infers kernel types for VarKernel expressions that appear as
-operands to the binary operator. Uses the operator's annotation to
-determine the expected types for left and right operands.
+An operand that is a bare kernel reference, and whose kernel still has no
+entry after the walk, is given the parameter type at its position in
+`opAnnotation`: the first parameter for `left`, the second for `right`. That
+type is taken from the annotation as it stands, in the operator's own type
+variables, not from the operand's node type.
 
 -}
 postSolveBinop :
@@ -689,14 +727,12 @@ postSolveBinop :
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0 =
     let
-        -- First, recurse into left and right to process any nested expressions
         ( nt1, ke1 ) =
             postSolveExpr annotations left nodeTypes0 kernel0
 
         ( nt2, ke2 ) =
             postSolveExpr annotations right nt1 ke1
 
-        -- Check if either operand is a VarKernel
         leftIsKernel =
             isKernelExpr left
 
@@ -704,7 +740,6 @@ postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0 =
             isKernelExpr right
     in
     if leftIsKernel || rightIsKernel then
-        -- Extract expected types from the operator's annotation
         let
             (Can.Forall _ opType) =
                 opAnnotation
@@ -712,14 +747,12 @@ postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0 =
             ( argTypes, _ ) =
                 peelFunctionType opType
 
-            -- Get expected types for left and right (first two args of binop)
             maybeLeftType =
                 List.head argTypes
 
             maybeRightType =
                 argTypes |> List.drop 1 |> List.head
 
-            -- Infer kernel type for left if it's a VarKernel
             ( nt3, ke3 ) =
                 case ( leftIsKernel, maybeLeftType ) of
                     ( True, Just expectedType ) ->
@@ -739,11 +772,10 @@ postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0 =
         ( nt2, ke2 )
 
 
-{-| Infer kernel type from a binop operand.
-
-If the operand is a VarKernel that doesn't have a known type yet,
-use the expected type (from the operator's annotation) to infer its type.
-
+{-| Returns the node types and kernel type environment with `expectedType`
+recorded for the kernel and written to `operand`'s node, when `operand` is a
+bare kernel reference whose kernel has no entry yet. Otherwise both are
+returned unchanged.
 -}
 inferBinopKernelType :
     Can.Expr
@@ -757,11 +789,9 @@ inferBinopKernelType operand expectedType nodeTypes kernel =
             case exprInfo.node of
                 Can.VarKernel _ home name ->
                     if KernelTypes.hasEntry home name kernel then
-                        -- Already have a type for this kernel; don't override
                         ( nodeTypes, kernel )
 
                     else
-                        -- Insert the inferred type for this kernel
                         let
                             ke2 =
                                 KernelTypes.insertFirstUsage home name expectedType kernel
@@ -775,11 +805,14 @@ inferBinopKernelType operand expectedType nodeTypes kernel =
                     ( nodeTypes, kernel )
 
 
-{-| Handle Case expression (Group A - trust solver's type).
+{-| Returns the node types and kernel type environment after walking the
+scrutinee and then each branch of a `case`, where `caseExprId` is the `case`
+expression's own node id.
 
-Also infers kernel types for VarKernel expressions that appear directly
-as case branch bodies. Since all branches must have the same type as the
-case expression, a VarKernel branch body has the case's result type.
+Every branch has the type of the whole `case`, so a branch body that is a bare
+kernel reference, and whose kernel still has no entry after the branch is
+walked, is given the `case` node's type, or `Can.TVar "a"` when that node has
+none.
 
 -}
 postSolveCase :
@@ -795,7 +828,6 @@ postSolveCase annotations caseExprId scrutinee branches nodeTypes0 kernel0 =
         ( nt1, ke1 ) =
             postSolveExpr annotations scrutinee nodeTypes0 kernel0
 
-        -- Get case result type (all branches have this type)
         caseResultType =
             arrayGetFlat caseExprId nt1
                 |> Maybe.withDefault (Can.TVar "a")
@@ -808,17 +840,15 @@ postSolveCase annotations caseExprId scrutinee branches nodeTypes0 kernel0 =
                 ( nt3, ke3 ) =
                     postSolveExpr annotations branchExpr nt2 ke2
             in
-            -- Infer kernel type if branch body is VarKernel
             inferBranchKernelType branchExpr caseResultType nt3 ke3
     in
     List.foldl stepBranch ( nt1, ke1 ) branches
 
 
-{-| Infer kernel type from a case branch body.
-
-If the branch body is a VarKernel that doesn't have a known type yet,
-use the expected type (from the case expression) to infer its type.
-
+{-| Returns the node types and kernel type environment with `expectedType`
+recorded for the kernel and written to `branchExpr`'s node, when `branchExpr`
+is a bare kernel reference whose kernel has no entry yet. Otherwise both are
+returned unchanged.
 -}
 inferBranchKernelType :
     Can.Expr
@@ -832,11 +862,9 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
             case exprInfo.node of
                 Can.VarKernel _ home name ->
                     if KernelTypes.hasEntry home name kernel then
-                        -- Already have a type for this kernel; don't override
                         ( nodeTypes, kernel )
 
                     else
-                        -- Insert the inferred type for this kernel
                         let
                             ke2 =
                                 KernelTypes.insertFirstUsage home name expectedType kernel
@@ -850,7 +878,8 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
                     ( nodeTypes, kernel )
 
 
-{-| Handle Update expression (Group A - trust solver's type).
+{-| Returns the node types and kernel type environment after walking the
+record being updated and then each new field value, in field-name order.
 -}
 postSolveUpdate :
     Dict Name (Can.Annotation Name)
@@ -879,13 +908,17 @@ postSolveUpdate annotations record fields nodeTypes0 kernel0 =
 -- ====== KERNEL ARGUMENT TYPE INFERENCE ======
 
 
-{-| Check if any argument in a list is a direct VarKernel expression.
+{-| Tells whether any of `args` is a bare kernel reference. A call of a kernel
+function among the arguments does not count.
 -}
 hasKernelArg : List Can.Expr -> Bool
 hasKernelArg args =
     List.any isKernelExpr args
 
 
+{-| Tells whether an expression is a bare kernel reference, a `Can.VarKernel`
+node.
+-}
 isKernelExpr : Can.Expr -> Bool
 isKernelExpr (A.At _ info) =
     case info.node of
@@ -896,17 +929,13 @@ isKernelExpr (A.At _ info) =
             False
 
 
-{-| Propagate inferred types to VarKernel arguments.
-
-Given a list of arguments and their expected types (from peeling the callee's
-function type), for each VarKernel argument:
-
-  - Insert its type into kernelEnv
-  - Update its type in nodeTypes
-
-This handles the pattern where a kernel function is passed as an argument
-to another kernel call.
-
+{-| Returns the node types and kernel type environment with each bare kernel
+reference among `args` given the type in the same position of
+`expectedTypes`, when its kernel has no entry yet: the type is recorded for
+the kernel and written to the argument's node. An argument beyond the end of
+`expectedTypes` is given `Can.TVar "a"`. Other arguments, and kernel
+references whose kernel already has an entry, are left as they are; they are
+expected to have been walked already.
 -}
 propagateKernelArgTypes :
     List Can.Expr
@@ -916,7 +945,6 @@ propagateKernelArgTypes :
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
     let
-        -- Pair args with their expected types (use Nothing for excess args)
         argsWithTypes =
             List.map2 Tuple.pair args expectedTypes
                 ++ List.map (\arg -> ( arg, Can.TVar "a" )) (List.drop (List.length expectedTypes) args)
@@ -927,11 +955,9 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
                     case argInfo.node of
                         Can.VarKernel _ argHome argName ->
                             if KernelTypes.hasEntry argHome argName ke then
-                                -- Already have a type for this kernel; don't override
                                 ( nt, ke )
 
                             else
-                                -- Insert the inferred type for this kernel arg
                                 let
                                     ke2 =
                                         KernelTypes.insertFirstUsage argHome argName expectedType ke
@@ -942,22 +968,29 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
                                 ( nt2, ke2 )
 
                         _ ->
-                            -- Not a VarKernel; already processed
                             ( nt, ke )
     in
     List.foldl processArg ( nodeTypes0, kernel0 ) argsWithTypes
 
 
-{-| Type variable substitution map.
+{-| A binding of type variable names to types, found by matching a
+constructor's annotation against a call's type with `unifySchemeToType`.
 -}
 type alias Subst =
     Dict Name (Can.Type Name)
 
 
-{-| Unify a scheme type (with TVars) against a concrete type to extract substitutions.
+{-| Returns the binding of `scheme`'s type variables that makes it match
+`concrete`, or `Nothing` when the two do not match.
 
-This is a one-way unifier: TVars in the scheme get bound to corresponding
-parts of the concrete type. Returns Nothing if types are incompatible.
+The match is one way: only a type variable of `scheme` is bound, and a type
+variable of `concrete` is matched like any other type. A variable met twice
+must be bound to `==` types both times. The arrow slots of two function types
+being matched are not compared, and a `Filled` alias on either side is
+replaced by its body, except that a type variable of `scheme` is bound to an
+alias as it stands. Two record types match only with the same extension
+variable, or none, and the same field names. A `Holey` alias is not looked
+into: it matches only a type `==` to it.
 
 -}
 unifySchemeToType : Can.Type Name -> Can.Type Name -> Maybe Subst
@@ -965,6 +998,9 @@ unifySchemeToType scheme concrete =
     unifyHelp Dict.empty scheme concrete
 
 
+{-| Returns `subst` extended so that `schemeType` matches `concreteType`, or
+`Nothing` when it cannot be, as `unifySchemeToType` describes.
+-}
 unifyHelp : Subst -> Can.Type Name -> Can.Type Name -> Maybe Subst
 unifyHelp subst schemeType concreteType =
     case ( schemeType, concreteType ) of
@@ -987,11 +1023,9 @@ unifyHelp subst schemeType concreteType =
             else
                 Nothing
 
-        -- Mechanical `_` (Phase 2a §4.6c): this walk is structural — it
-        -- destructures and recurses, never `==` on a node — so binding the ids
-        -- to `_` preserves behaviour exactly. Do NOT "fix" it by comparing
-        -- them: arrows have OCCURRENCE identity, not solver identity, and two
-        -- structurally-equal occurrence types legitimately differ.
+        -- The arrow slots are left uncompared on purpose: a slot names one
+        -- occurrence of a function type, so two occurrences of the same type
+        -- may carry different slots and still match.
         ( Can.TLambda _ arg1 res1, Can.TLambda _ arg2 res2 ) ->
             case unifyHelp subst arg1 arg2 of
                 Nothing ->
@@ -1021,8 +1055,6 @@ unifyHelp subst schemeType concreteType =
             Just subst
 
         ( Can.TRecord fields1 ext1, Can.TRecord fields2 ext2 ) ->
-            -- For records, try to unify field types
-            -- This is simplified; full record unification is more complex
             if ext1 == ext2 then
                 let
                     fieldList1 =
@@ -1047,7 +1079,6 @@ unifyHelp subst schemeType concreteType =
             unifyHelp subst t1 realType2
 
         _ ->
-            -- For other cases, require structural equality
             if schemeType == concreteType then
                 Just subst
 
@@ -1055,6 +1086,10 @@ unifyHelp subst schemeType concreteType =
                 Nothing
 
 
+{-| Returns `subst` extended so that each type of `list1` matches the type in
+the same position of `list2`, or `Nothing` when one does not or the lists
+differ in length.
+-}
 unifyList : Subst -> List (Can.Type Name) -> List (Can.Type Name) -> Maybe Subst
 unifyList subst list1 list2 =
     case ( list1, list2 ) of
@@ -1073,6 +1108,11 @@ unifyList subst list1 list2 =
             Nothing
 
 
+{-| Returns `subst` extended so that each field type of `list1` matches the
+field in the same position of `list2`, or `Nothing` when one does not, two
+fields in the same position have different names, or the lists differ in
+length. The field index stored in each `FieldType` is ignored.
+-}
 unifyFieldList : Subst -> List ( Name, Can.FieldType Name ) -> List ( Name, Can.FieldType Name ) -> Maybe Subst
 unifyFieldList subst list1 list2 =
     case ( list1, list2 ) of
@@ -1095,7 +1135,9 @@ unifyFieldList subst list1 list2 =
             Nothing
 
 
-{-| Apply a substitution to a type, replacing TVars with their bound types.
+{-| Returns `tipe` with every type variable that `subst` binds replaced by its
+binding, including inside the body of a `Holey` alias. A record's extension
+variable is left as it is.
 -}
 applySubst : Subst -> Can.Type Name -> Can.Type Name
 applySubst subst tipe =
@@ -1108,14 +1150,9 @@ applySubst subst tipe =
             Can.TType home name (List.map (applySubst subst) args)
 
         Can.TLambda aid arg res ->
-            -- PRESERVE the arrow id (Phase 2a §4.6d): there is no id supply
-            -- threaded here, and preservation is what stays correct if ids are
-            -- ever stamped before AssignMVarIds. Today this is always
-            -- `NoArrow` — `applySubst` works on `Can.Type Name`.
-            --
-            -- Watch the `TVar` arm above under any such earlier stamping:
-            -- `Dict.get v subst` splices ONE substituted type object into
-            -- multiple positions, cloning its arrow ids.
+            -- The arrow slot is kept as it is. Where the bound types carry
+            -- stamped slots, the `TVar` arm copies one bound type, slots and
+            -- all, into every position its variable occupies.
             Can.TLambda aid (applySubst subst arg) (applySubst subst res)
 
         Can.TTuple a b cs ->
@@ -1145,10 +1182,13 @@ applySubst subst tipe =
             tipe
 
 
-{-| Peel TLambdas off a function type, returning the list of argument types
-and the final result type.
+{-| Returns the parameter types of a function type, in order, and the type
+that remains once they are all taken off.
 
     peelFunctionType (A -> B -> C) == ( [A, B], C )
+
+Only `TLambda` nodes are taken off. An alias of a function type is not looked
+into, so for one the result is no parameters and the alias itself.
 
 -}
 peelFunctionType : Can.Type Name -> ( List (Can.Type Name), Can.Type Name )
@@ -1165,10 +1205,14 @@ peelFunctionType tipe =
             ( [], tipe )
 
 
-{-| Handle Call where callee is a VarCtor and some arguments may be VarKernel.
+{-| Returns the node types and kernel type environment after walking a call
+of a constructor, where `exprId` is the call's own node id.
 
-We extract the constructor's type from its annotation, unify with the call's
-result type to get substitutions, then use those to infer kernel argument types.
+The result type in `ctorAnnotation` is matched against the call's node type
+with `unifySchemeToType`. When they match, the call is handled by
+`processCtorArgs` with the binding found. When they do not, or the call has no
+node type, the function and the arguments are walked as ordinary expressions
+and no kernel type is inferred here.
 
 -}
 postSolveCallWithCtorKernelArgs :
@@ -1182,19 +1226,15 @@ postSolveCallWithCtorKernelArgs :
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args nodeTypes0 kernel0 =
     let
-        -- Extract the constructor's function type from its annotation
         (Can.Forall _ ctorType) =
             ctorAnnotation
 
-        -- Peel the constructor type into argument types and result type
         ( ctorArgTypes, ctorResType ) =
             peelFunctionType ctorType
 
-        -- Get the call's result type from nodeTypes (Group A - solver computed it)
         maybeCallType =
             arrayGetFlat exprId nodeTypes0
 
-        -- Try to compute substitution from unifying ctor result with call result
         maybeSubst =
             case maybeCallType of
                 Just callType ->
@@ -1205,11 +1245,9 @@ postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args 
     in
     case maybeSubst of
         Just subst ->
-            -- We have a substitution; process each argument
             processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0
 
         Nothing ->
-            -- Couldn't compute substitution; fall back to normal processing
             let
                 ( nodeTypes1, kernel1 ) =
                     postSolveExpr annotations funcExpr nodeTypes0 kernel0
@@ -1220,7 +1258,16 @@ postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args 
                 args
 
 
-{-| Process constructor arguments, inferring types for any VarKernel args.
+{-| Returns the node types and kernel type environment after walking
+`funcExpr` and then each of `args`, giving kernel types to the bare kernel
+references among them.
+
+A bare kernel reference whose kernel has no entry yet is given the matching
+parameter type of `ctorArgTypes` with `subst` applied: the type is recorded
+for the kernel and written to the argument's node. Every other argument,
+including a kernel reference beyond the end of `ctorArgTypes`, is walked as an
+ordinary expression.
+
 -}
 processCtorArgs :
     Dict Name (Can.Annotation Name)
@@ -1233,11 +1280,9 @@ processCtorArgs :
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 =
     let
-        -- First, post-solve the callee (the VarCtor itself)
         ( nodeTypes1, kernel1 ) =
             postSolveExpr annotations funcExpr nodeTypes0 kernel0
 
-        -- Now process each argument, pairing with expected types
         processArg : ( Can.Expr, Maybe (Can.Type Name) ) -> ( NodeTypes, KernelTypes.KernelTypeEnv ) -> ( NodeTypes, KernelTypes.KernelTypeEnv )
         processArg ( arg, maybeExpectedType ) ( nt, ke ) =
             case arg of
@@ -1245,11 +1290,9 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
                     case argInfo.node of
                         Can.VarKernel _ home name ->
                             if KernelTypes.hasEntry home name ke then
-                                -- Already have a type for this kernel; recurse normally
                                 postSolveExpr annotations arg nt ke
 
                             else
-                                -- Try to infer from expected type
                                 case maybeExpectedType of
                                     Just expectedType ->
                                         let
@@ -1265,14 +1308,11 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
                                         ( nt2, ke2 )
 
                                     Nothing ->
-                                        -- No expected type; recurse normally (may crash later)
                                         postSolveExpr annotations arg nt ke
 
                         _ ->
-                            -- Not a VarKernel; recurse normally
                             postSolveExpr annotations arg nt ke
 
-        -- Pair args with their expected types (if we have enough ctor arg types)
         argsWithTypes =
             List.map2 (\arg t -> ( arg, Just t )) args ctorArgTypes
                 ++ List.map (\arg -> ( arg, Nothing )) (List.drop (List.length ctorArgTypes) args)
@@ -1284,11 +1324,17 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
 -- ====== Array Helpers ======
 
 
+{-| Returns `nodeTypes` with `tipe` recorded for node `id`. An `id` outside the
+array, such as a negative one, leaves it unchanged.
+-}
 arraySetJust : Int -> Can.Type Name -> NodeTypes -> NodeTypes
 arraySetJust id tipe nodeTypes =
     Array.set id (Just tipe) nodeTypes
 
 
+{-| Returns the type recorded for node `id`, or `Nothing` when there is none or
+`id` is outside the array.
+-}
 arrayGetFlat : Int -> NodeTypes -> Maybe (Can.Type Name)
 arrayGetFlat id nodeTypes =
     Array.get id nodeTypes |> Maybe.andThen identity

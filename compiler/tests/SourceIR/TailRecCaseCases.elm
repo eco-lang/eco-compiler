@@ -1,10 +1,47 @@
 module SourceIR.TailRecCaseCases exposing (expectSuite)
 
-{-| Tests for tail-recursive functions with case expressions.
+{-| Programs in which a self-recursive function makes its recursive call from
+inside a branch of a `case`, built so that a caller can run its own check on
+each.
 
-These exercise TailRec.compileCaseStep, compileDestructStep, and
-compileCaseFanOutStep — the paths that caused the
-mkCaseRegionFromDecider crash (CGEN\_028 violation).
+A tail call is a call whose result is the calling function's own result, with
+nothing left to do after it. The MLIR back end compiles a function that makes a
+tail call to itself to a loop rather than to a chain of calls, as
+`Compiler.Generate.MLIR.TailRec` describes. When the function's body is a
+`case`, each step of that loop is itself a `case`: a branch ending in the tail
+call sets up the arguments of the next iteration, a branch ending in a value
+finishes the loop with it, and the variables a branch's pattern binds are
+extracted inside the step. That is separate code from the lowering of an
+ordinary `case`, and these programs put decision trees of several shapes in
+that position.
+
+The module asserts nothing. Each program is a `Src.Module` built with
+`Compiler.AST.SourceBuilder` and handed to the caller's expectation function,
+which decides how far through the compiler the program goes and what is
+checked. The cases run as `Compiler.BulkCheck` describes.
+
+Four of the programs are a module named `Test`, importing `Basics` and `List`,
+whose one top-level value `testValue` defines the recursive function, without
+an annotation, in a `let` and applies it to arguments that include a literal
+list of integers. The fifth declares its own list type and an annotated
+top-level function. The function docstrings below give each program as Elm
+source; the built trees have no `Parens` nodes where that source has
+parentheses. In outline:
+
+  - `tailRecFoldl`: a left fold, recursing from the `x :: xs` branch.
+  - `tailRecContains`: the tail call is in the `else` of an `if` inside the
+    `::` branch.
+  - `tailRecCustomTypeSum`: the `case` is on the constructors `Empty` and
+    `Node` of a declared type `MyList`.
+  - `tailRecNestedCase`: the `::` branch is a second `case`, and the tail call
+    is in that inner `case`'s wildcard branch.
+  - `tailRecWildcardDestruct`: the head of the list is matched by `_`, so the
+    `::` branch binds only the tail.
+
+Among what is not tested: a tail call inside a `let` in a branch, a `case` on
+literals, tuples or records, more than one tail call in a function, and mutual
+recursion. Whether a program does become a loop depends on what the caller's
+expectation runs, and nothing here checks it.
 
 -}
 
@@ -40,12 +77,19 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named `"Tail-recursive case expressions "` followed by
+`condStr`, that applies `expectFn` to the five programs in the order the
+module docstring lists them, stopping at the first whose expectation fails and
+failing under that program's label.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Tail-recursive case expressions " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the five labelled cases, each applying `expectFn` to one program.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Tail-rec foldl with case on list", run = tailRecFoldl expectFn }
@@ -56,12 +100,21 @@ testCases expectFn =
     ]
 
 
-{-| myFoldl func acc list = case list of [] -> acc; x :: xs -> myFoldl func (func x acc) xs
+{-| Returns `expectFn` applied to a program whose `testValue` defines this left
+fold in a `let` and applies it to `\a b -> a + b`, `0` and `[ 1, 2, 3 ]`:
+
+    myFoldl f acc list =
+        case list of
+            [] ->
+                acc
+
+            x :: xs ->
+                myFoldl f (f x acc) xs
+
 -}
 tailRecFoldl : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecFoldl expectFn _ =
     let
-        -- myFoldl f acc list = case list of [] -> acc ; x :: xs -> myFoldl f (f x acc) xs
         body =
             caseExpr (varExpr "list")
                 [ ( pList [], varExpr "acc" )
@@ -91,7 +144,22 @@ tailRecFoldl expectFn _ =
     expectFn modul
 
 
-{-| contains target list = case list of [] -> False; x :: rest -> if x == target then True else contains target rest
+{-| Returns `expectFn` applied to a program whose `testValue` defines this
+function in a `let` and applies it to `3` and `[ 1, 2, 3 ]`. The tail call is in
+the `else` of an `if`, not directly in the `case` branch:
+
+    contains target list =
+        case list of
+            [] ->
+                False
+
+            x :: rest ->
+                if x == target then
+                    True
+
+                else
+                    contains target rest
+
 -}
 tailRecContains : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecContains expectFn _ =
@@ -119,8 +187,29 @@ tailRecContains expectFn _ =
     expectFn modul
 
 
-{-| Custom type: type MyList a = Nil | Cons a (MyList a)
-sumMyList acc list = case list of Nil -> acc; Cons x rest -> sumMyList (acc + x) rest
+{-| Returns `expectFn` applied to a module named `Test` that declares its own
+list type and sums it with an annotated top-level function, so the `case` is on
+the constructors of a declared type rather than on a built-in list:
+
+    type MyList a
+        = Empty
+        | Node a (MyList a)
+
+    sumMyList : Int -> MyList Int -> Int
+    sumMyList acc list =
+        case list of
+            Empty ->
+                acc
+
+            Node x rest ->
+                sumMyList (acc + x) rest
+
+    testValue : Int
+    testValue =
+        sumMyList 0 (Node 1 (Node 2 Empty))
+
+The module's imports are those `makeModuleWithTypedDefsUnionsAliases` adds.
+
 -}
 tailRecCustomTypeSum : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecCustomTypeSum expectFn _ =
@@ -181,12 +270,27 @@ tailRecCustomTypeSum expectFn _ =
     expectFn modul
 
 
-{-| Nested case: tail-rec with case in both outer and inner branches.
+{-| Returns `expectFn` applied to a program whose `testValue` defines this
+function in a `let` and applies it to `0` and `[ 1, 2, 3 ]`. The `::` branch is
+a second `case`, and the tail call is in its wildcard branch:
+
+    myLast default list =
+        case list of
+            [] ->
+                default
+
+            x :: rest ->
+                case rest of
+                    [] ->
+                        x
+
+                    _ ->
+                        myLast default rest
+
 -}
 tailRecNestedCase : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecNestedCase expectFn _ =
     let
-        -- myLast default list = case list of [] -> default; x :: rest -> case rest of [] -> x; _ -> myLast default rest
         body =
             caseExpr (varExpr "list")
                 [ ( pList [], varExpr "default" )
@@ -212,7 +316,18 @@ tailRecNestedCase expectFn _ =
     expectFn modul
 
 
-{-| Tail-rec with wildcard pattern that discards head: count acc list = case list of [] -> acc; \_ :: rest -> count (acc + 1) rest
+{-| Returns `expectFn` applied to a program whose `testValue` defines this
+function in a `let` and applies it to `0` and `[ 10, 20, 30 ]`. The head is
+matched by `_`, so the `::` branch binds only `rest`:
+
+    count acc list =
+        case list of
+            [] ->
+                acc
+
+            _ :: rest ->
+                count (acc + 1) rest
+
 -}
 tailRecWildcardDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecWildcardDestruct expectFn _ =

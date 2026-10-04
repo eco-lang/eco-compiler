@@ -4,24 +4,24 @@ module Compiler.Elm.Licenses exposing
     , encode, decoder
     )
 
-{-| OSI-approved SPDX license validation and encoding.
+{-| A package's `elm.json` must name the package's license, and this module
+decides which names are accepted.
 
-Validates license identifiers against the list of OSI-approved SPDX licenses
-and provides suggestions for invalid license strings. Used in elm.json validation.
+A license is named by its SPDX identifier, a short standard name such as `MIT`
+or `BSD-3-Clause`. The accepted identifiers are a fixed list held in this
+module, each paired with the license's full name. A given identifier is accepted
+only if it matches one on the list exactly, including case. The list has no
+`-only` or `-or-later` forms, so `GPL-3.0` is accepted and `GPL-3.0-only` is
+not.
 
-
-# Types
+When an identifier is not accepted, four identifiers from the list are offered
+as suggestions: those nearest to it as `Compiler.Reporting.Suggest` measures
+nearness. The given string is compared both with each identifier and with each
+full name, so a near miss on either finds the license, and the same identifier
+can be suggested twice.
 
 @docs License
-
-
-# Common Licenses
-
 @docs bsd3
-
-
-# Encoding and Decoding
-
 @docs encode, decoder
 
 -}
@@ -36,28 +36,42 @@ import Dict exposing (Dict)
 -- ====== LICENSES ======
 
 
-{-| Represents a validated OSI-approved SPDX license identifier.
+{-| A license identifier that is on this module's list of accepted
+identifiers.
+
+A value is obtained only from `decoder`, which rejects any identifier not on
+the list, or as `bsd3`. Code holding a `License` need not check it again.
+
 -}
 type License
     = License String
 
 
-{-| The BSD 3-Clause license, commonly used in Elm packages.
+{-| The BSD 3-Clause license, whose identifier is `BSD-3-Clause`.
 -}
 bsd3 : License
 bsd3 =
     License "BSD-3-Clause"
 
 
-{-| Encodes a license as a JSON string containing its SPDX identifier.
+{-| Returns the license's identifier as a JSON string, the form `decoder`
+reads.
 -}
 encode : License -> E.Value
 encode (License code) =
     E.string code
 
 
-{-| Decodes and validates a license string, providing suggestions if the license is not recognized.
-The error callback receives a list of suggested valid license identifiers.
+{-| Produces a decoder for a JSON string that is an accepted license
+identifier.
+
+A string that matches no identifier on the list exactly, including case, fails
+with `toError` applied to four suggested identifiers. They are the identifiers
+nearest to the string as `Compiler.Reporting.Suggest` measures it, comparing
+the string with both the identifiers and the licenses' full names, so the same
+identifier can appear twice. A JSON value that is not a string fails as
+`Compiler.Json.Decode.string` does, without `toError`.
+
 -}
 decoder : (List String -> x) -> D.Decoder x License
 decoder toError =
@@ -77,6 +91,9 @@ decoder toError =
 -- ====== CHECK ======
 
 
+{-| Returns the license if `givenCode` is on the list exactly, otherwise the
+four identifiers nearest to it, compared with both identifiers and full names.
+-}
 check : String -> Result (List String) License
 check givenCode =
     if Dict.member givenCode osiApprovedSpdxLicenses then
@@ -84,6 +101,7 @@ check givenCode =
 
     else
         let
+            -- Each license twice: once to match its identifier, once its full name.
             pairs : List ( String, String )
             pairs =
                 List.map (\code -> ( code, code )) (Dict.keys osiApprovedSpdxLicenses)
@@ -101,6 +119,8 @@ check givenCode =
 -- ====== LIST OF LICENSES ======
 
 
+{-| The accepted license identifiers, each mapped to the license's full name.
+-}
 osiApprovedSpdxLicenses : Dict String String
 osiApprovedSpdxLicenses =
     Dict.fromList

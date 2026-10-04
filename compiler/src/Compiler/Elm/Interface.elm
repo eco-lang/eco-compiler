@@ -10,12 +10,31 @@ module Compiler.Elm.Interface exposing
     , interfaceEncoder, interfaceDecoder, dependencyInterfaceEncoder, dependencyInterfaceDecoder
     )
 
-{-| Module interface representation for type checking and compilation.
+{-| What a compiled module offers to the modules that import it, recorded so
+that they can be compiled against it.
 
-An interface captures the public API surface of a compiled Elm module, including exported
-values, types, type aliases, and operators. Interfaces distinguish between public and private
-declarations, and between open and closed union types. This information is used for separate
-compilation and dependency management.
+An interface belongs to one module. It records the package the module is in,
+the type annotation of each value the module exposes, each infix operator it
+exposes, and every custom type and type alias it declares, exposed or not.
+Values and operators are cut down to what the module's `exposing` list
+exposes, but no type is left out. Each type carries its visibility instead. A
+custom type is _open_ (exposed with its constructors, as `Type(..)`),
+_closed_ (exposed without them) or _private_ (not exposed), and a type alias
+is _public_ or _private_. With `exposing (..)` every custom type is open and
+every alias public.
+
+`fromModule` stores every type with its complete declaration, constructors
+included, whatever its visibility. The visibility is what decides how much of
+a type a module importing this one may see, which `toPublicUnion` and
+`toPublicAlias` work out: an open type whole, a closed type with no
+constructors, and nothing of a private type or alias.
+
+A `DependencyInterface` is an interface in one of two forms: the whole
+interface, or a _private_ one reduced to the types, with no values or
+operators.
+
+The rest of the module is the binary encoding of interfaces and dependency
+interfaces, in the format `Utils.Bytes.Encode` describes.
 
 
 # Interface Types
@@ -81,8 +100,13 @@ import Utils.Crash exposing (crash)
 -- ====== INTERFACE ======
 
 
-{-| Record containing the complete interface data for a module, including its package
-home, exported values with their type annotations, union types, type aliases, and binary operators.
+{-| The contents of a module's interface.
+
+`home` is the package of the module, not the module itself; the interface does
+not record the module's name. `values` and `binops` hold only what the module
+exposes, while `unions` and `aliases` hold every custom type and type alias it
+declares, each tagged with its visibility. `binops` is keyed by the operator.
+
 -}
 type alias InterfaceData =
     { home : Pkg.Name
@@ -93,15 +117,20 @@ type alias InterfaceData =
     }
 
 
-{-| Wrapper type for module interface data, representing the complete public API
-surface of a compiled Elm module.
+{-| One module's interface: what it exposes, and every type it declares.
 -}
 type Interface
     = Interface InterfaceData
 
 
-{-| Represents a union type's visibility in the interface. Open unions export all
-constructors, closed unions hide constructors, and private unions are not exported.
+{-| A custom type as an interface records it: a declaration, tagged with how
+the module's `exposing` list exposes it.
+
+`OpenUnion` is exposed with its constructors, as `Type(..)`, and `ClosedUnion`
+without them. `PrivateUnion` is not exposed. As `fromModule` builds them, all
+three hold the declaration with its constructors; a closed type loses them only
+in what `toPublicUnion` returns.
+
 -}
 type Union
     = OpenUnion Can.Union
@@ -109,16 +138,24 @@ type Union
     | PrivateUnion Can.Union
 
 
-{-| Represents a type alias's visibility in the interface. Public aliases are exported,
-while private aliases are only available within the defining module.
+{-| A type alias as an interface records it: its complete declaration, tagged
+with whether the module's `exposing` list exposes it.
+
+`PublicAlias` is exposed and `PrivateAlias` is not. Both hold the whole
+declaration.
+
 -}
 type Alias
     = PublicAlias Can.Alias
     | PrivateAlias Can.Alias
 
 
-{-| Record containing all information about a binary operator, including its name,
-type annotation, associativity (left/right), and precedence level.
+{-| An infix operator a module exposes: the function it stands for, that
+function's type annotation, and the operator's associativity and precedence.
+
+`name` is the name of the function, not of the operator. The operator is the
+key the record is stored under in `binops`.
+
 -}
 type alias BinopData =
     { name : Name.Name
@@ -128,7 +165,7 @@ type alias BinopData =
     }
 
 
-{-| Wrapper type for binary operator data.
+{-| An infix operator a module exposes, as `BinopData` describes it.
 -}
 type Binop
     = Binop BinopData
@@ -138,8 +175,17 @@ type Binop
 -- ====== FROM MODULE ======
 
 
-{-| Constructs an interface from a canonical module, extracting only the exported values,
-types, aliases, and operators based on the module's export list.
+{-| Builds the interface of a canonical module in package `home`, given the
+annotations of its top-level values.
+
+A value or operator is kept only if the module's `exposing` list names it, and
+every one is kept under `exposing (..)`. Every custom type and type alias is
+kept, with the visibility the list gives it.
+
+Crashes if `annotations` has no annotation for the function an operator stands
+for, whether or not the operator is exposed, or if the `exposing` list names a
+custom type as some other kind of thing.
+
 -}
 fromModule : Pkg.Name -> Can.Module -> Dict Name.Name (Can.Annotation Name) -> Interface
 fromModule home (Can.Module canData) annotations =
@@ -152,6 +198,10 @@ fromModule home (Can.Module canData) annotations =
         }
 
 
+{-| Returns the entries of `dict` whose names `exports` exposes: all of them
+for `exposing (..)`, otherwise those whose names the list contains, whatever
+kind of thing the list says each name is.
+-}
 restrict : Can.Exports -> Dict Name.Name a -> Dict Name.Name a
 restrict exports dict =
     case exports of
@@ -162,6 +212,10 @@ restrict exports dict =
             Dict.filter (\k _ -> Dict.member k explicitExports) dict
 
 
+{-| Returns the interface's record of an operator declaration, with the
+annotation of the function it stands for taken from `types`. Crashes if
+`types` has no annotation for that function.
+-}
 toOp : Dict Name.Name (Can.Annotation Name) -> Can.Binop -> Binop
 toOp types (Can.Binop_ associativity precedence name) =
     Binop
@@ -178,6 +232,11 @@ toOp types (Can.Binop_ associativity precedence name) =
         }
 
 
+{-| Tags each custom type in `unions` with its visibility under `exports`.
+Under `exposing (..)` every type is open. Otherwise a type is open or closed as
+the list names it, and private if the list does not name it. Crashes if the
+list names a type as anything other than an open or closed custom type.
+-}
 restrictUnions : Can.Exports -> Dict Name.Name Can.Union -> Dict Name.Name Union
 restrictUnions exports unions =
     case exports of
@@ -204,6 +263,10 @@ restrictUnions exports unions =
                 Dict.empty
 
 
+{-| Tags each type alias in `aliases` as public if `exports` exposes it,
+under `exposing (..)` or by name, and as private otherwise. The kind of thing
+the list says the name is goes unchecked.
+-}
 restrictAliases : Can.Exports -> Dict Name.Name Can.Alias -> Dict Name.Name Alias
 restrictAliases exports aliases =
     case exports of
@@ -224,8 +287,13 @@ restrictAliases exports aliases =
 -- ====== TO PUBLIC ======
 
 
-{-| Converts a union type to its public representation. Open unions expose all constructors,
-closed unions expose the type but hide constructors, and private unions are not exposed.
+{-| Returns what a module importing this interface may see of a custom type:
+the whole declaration if it is open, the declaration without its constructors
+if it is closed, and `Nothing` if it is private.
+
+A closed type keeps its type variables and its `opts` unchanged, but has an
+empty `alts` and a `numAlts` of 0.
+
 -}
 toPublicUnion : Union -> Maybe Can.Union
 toPublicUnion iUnion =
@@ -240,8 +308,8 @@ toPublicUnion iUnion =
             Nothing
 
 
-{-| Converts a type alias to its public representation. Returns Just for public aliases
-and Nothing for private aliases.
+{-| Returns the declaration of a public type alias, or `Nothing` for a private
+one.
 -}
 toPublicAlias : Alias -> Maybe Can.Alias
 toPublicAlias iAlias =
@@ -257,32 +325,38 @@ toPublicAlias iAlias =
 -- ====== DEPENDENCY INTERFACE ======
 
 
-{-| Represents how a module's interface is exposed to dependencies. Public interfaces
-expose the full API, while private interfaces only expose type definitions without values.
+{-| A module's interface in one of two forms: whole, or reduced to its types.
+
+`Public` holds the whole interface. `Private` holds the module's package and
+the declaration of every custom type and type alias the module declares, by
+name, with no values and no operators. As `private` builds it, its
+declarations are the interface's own without their visibility, so a closed or
+private custom type keeps the constructors the interface records.
+
 -}
 type DependencyInterface
     = Public Interface
     | Private Pkg.Name (Dict Name.Name Can.Union) (Dict Name.Name Can.Alias)
 
 
-{-| Creates a public dependency interface, exposing the full module API including all
-exported values, types, and operators.
+{-| Returns the whole interface as a `Public` dependency interface.
 -}
 public : Interface -> DependencyInterface
 public =
     Public
 
 
-{-| Creates a private dependency interface, exposing only type definitions (unions and aliases)
-without values or operators. Used for dependency cycles where only types are needed.
+{-| Reduces an interface to a `Private` dependency interface: its package and
+the declaration the interface holds for every custom type and type alias,
+exposed or not, without its visibility.
 -}
 private : Interface -> DependencyInterface
 private (Interface i) =
     Private i.home (Dict.map (\_ -> extractUnion) i.unions) (Dict.map (\_ -> extractAlias) i.aliases)
 
 
-{-| Extracts the underlying canonical union type from any union visibility wrapper,
-regardless of whether it is open, closed, or private.
+{-| Returns the declaration a custom type holds, whatever its visibility.
+Unlike `toPublicUnion`, it does not remove a closed type's constructors.
 -}
 extractUnion : Union -> Can.Union
 extractUnion iUnion =
@@ -297,8 +371,7 @@ extractUnion iUnion =
             union
 
 
-{-| Extracts the underlying canonical type alias from any alias visibility wrapper,
-regardless of whether it is public or private.
+{-| Returns the declaration of a type alias, whatever its visibility.
 -}
 extractAlias : Alias -> Can.Alias
 extractAlias iAlias =
@@ -310,8 +383,8 @@ extractAlias iAlias =
             alias
 
 
-{-| Converts a dependency interface to its private form, keeping only type definitions.
-If already private, returns the interface unchanged.
+{-| Reduces a dependency interface to its `Private` form, as `private` does,
+and returns one that is already `Private` unchanged.
 -}
 privatize : DependencyInterface -> DependencyInterface
 privatize di =
@@ -327,7 +400,8 @@ privatize di =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encodes an interface to binary format for serialization to disk or network transmission.
+{-| Encodes an interface as its package, then its values, custom types, type
+aliases and operators, each as a dictionary keyed by name.
 -}
 interfaceEncoder : Interface -> Bytes.Encode.Encoder
 interfaceEncoder (Interface i) =
@@ -340,8 +414,8 @@ interfaceEncoder (Interface i) =
         ]
 
 
-{-| Decodes an interface from binary format, reconstructing the full interface structure
-from serialized bytes.
+{-| A decoder for an interface as `interfaceEncoder` writes it. It fails on a
+visibility tag `interfaceEncoder` does not write.
 -}
 interfaceDecoder : Bytes.Decode.Decoder Interface
 interfaceDecoder =
@@ -353,6 +427,9 @@ interfaceDecoder =
         (BD.stdDict BD.string binopDecoder)
 
 
+{-| Encodes a custom type as a one-byte visibility tag, 0 for open, 1 for
+closed and 2 for private, followed by the declaration it holds.
+-}
 unionEncoder : Union -> Bytes.Encode.Encoder
 unionEncoder union_ =
     case union_ of
@@ -375,6 +452,9 @@ unionEncoder union_ =
                 ]
 
 
+{-| A decoder for a custom type as `unionEncoder` writes it, failing on a tag
+other than 0, 1 or 2.
+-}
 unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
     Bytes.Decode.unsignedInt8
@@ -395,6 +475,9 @@ unionDecoder =
             )
 
 
+{-| Encodes a type alias as a one-byte visibility tag, 0 for public and 1 for
+private, followed by its declaration.
+-}
 aliasEncoder : Alias -> Bytes.Encode.Encoder
 aliasEncoder aliasValue =
     case aliasValue of
@@ -411,6 +494,9 @@ aliasEncoder aliasValue =
                 ]
 
 
+{-| A decoder for a type alias as `aliasEncoder` writes it, failing on a tag
+other than 0 or 1.
+-}
 aliasDecoder : Bytes.Decode.Decoder Alias
 aliasDecoder =
     Bytes.Decode.unsignedInt8
@@ -428,6 +514,9 @@ aliasDecoder =
             )
 
 
+{-| Encodes an operator record as the name of its function, its annotation,
+its associativity and its precedence, in that order.
+-}
 binopEncoder : Binop -> Bytes.Encode.Encoder
 binopEncoder (Binop data) =
     Bytes.Encode.sequence
@@ -438,6 +527,8 @@ binopEncoder (Binop data) =
         ]
 
 
+{-| A decoder for an operator record as `binopEncoder` writes it.
+-}
 binopDecoder : Bytes.Decode.Decoder Binop
 binopDecoder =
     Bytes.Decode.map4
@@ -450,8 +541,10 @@ binopDecoder =
         Binop.precedenceDecoder
 
 
-{-| Encodes a dependency interface to binary format, handling both public and private
-interface variants with appropriate type tags.
+{-| Encodes a dependency interface as a one-byte tag followed by its contents.
+A `Public` one is tag 0 and the interface as `interfaceEncoder` writes it. A
+`Private` one is tag 1, the package, and the custom type and type alias
+declarations, each as a dictionary keyed by name.
 -}
 dependencyInterfaceEncoder : DependencyInterface -> Bytes.Encode.Encoder
 dependencyInterfaceEncoder dependencyInterface =
@@ -471,8 +564,8 @@ dependencyInterfaceEncoder dependencyInterface =
                 ]
 
 
-{-| Decodes a dependency interface from binary format, reconstructing either a public
-or private interface based on the encoded type tag.
+{-| A decoder for a dependency interface as `dependencyInterfaceEncoder` writes
+it, failing on a tag other than 0 or 1.
 -}
 dependencyInterfaceDecoder : Bytes.Decode.Decoder DependencyInterface
 dependencyInterfaceDecoder =

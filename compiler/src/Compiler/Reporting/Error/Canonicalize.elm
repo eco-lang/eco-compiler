@@ -7,13 +7,28 @@ module Compiler.Reporting.Error.Canonicalize exposing
     , invalidPayloadEncoder, invalidPayloadDecoder
     )
 
-{-| Error reporting for the canonicalization phase.
+{-| Every problem the canonicalizer finds is a value of `Error`, and this module
+defines those errors and the message a person reads for each.
 
-This module defines errors that occur during canonicalization, which transforms
-parsed source AST into canonical AST. Canonicalization resolves names, validates
-declarations, checks for ambiguities, and ensures program structure is valid.
-Errors include name resolution failures, duplicate definitions, invalid ports,
-recursive type issues, and scope violations.
+Canonicalization is the compiler phase that turns the parsed source AST into the
+canonical AST. It resolves each name to the module that defines it, and checks
+what can be checked before types are known: duplicate definitions, the exposing
+lists of the module and its imports, the types of ports, values defined in terms
+of themselves, and the type variables of type declarations. Each way this can
+fail is one constructor of `Error`. The other types here are details that some
+constructors carry.
+
+Most of the module is `toReport`, which turns one error into a
+`Compiler.Reporting.Report.Report`: a title naming the kind of problem, the
+region it concerns, and a message built around a snippet of the source. Where a
+name could not be found, the message offers the nearest names that do exist,
+ordered by `Compiler.Reporting.Suggest.sort` and cut to the first four (two for
+an operator).
+
+The rest is a binary codec for `Error`. An error is written as a one-byte tag,
+its constructor's position in the declaration of `Error` (0 to 37), followed by
+its fields, and an unknown tag fails to decode. The tags are written as
+literals, so reordering or inserting a constructor changes the format.
 
 
 # Errors
@@ -63,7 +78,81 @@ import Utils.Bytes.Encode as BE
 -- ====== CANONICALIZATION ERRORS ======
 
 
-{-| Represents errors that occur during canonicalization of Elm source code.
+{-| A problem found during canonicalization, carrying what its report needs.
+Most constructors carry the region of the offending code and the names
+involved.
+
+`DuplicateDecl`, `DuplicateType`, `DuplicateCtor`, `DuplicateBinop`,
+`DuplicateField`, `DuplicateAliasArg`, `DuplicateUnionArg`, `DuplicatePattern`,
+`ExportDuplicate` and `Shadowing` carry two regions, both places where one name
+is defined or exposed, and their reports show both and are located at the
+second. In `Shadowing` the first is the binding already in scope and the second
+is the new binding that reuses its name.
+
+`AnnotationTooShort` is a definition with more arguments than its type
+annotation has arrows for. Its index is the number of arguments the annotation
+allows, and its `Int` is how many more the definition has.
+
+`AmbiguousVar`, `AmbiguousType`, `AmbiguousVariant` and `AmbiguousBinop` are a
+name that more than one import provides. The `Maybe Name` is the qualifier
+written before the name, `Nothing` when there is none; an operator never has
+one. The last two fields together are the candidate home modules, so there are
+at least two.
+
+`BadArity` is a type, or a variant in a pattern, applied to the wrong number of
+arguments. Its two `Int`s are the number expected, then the number given.
+
+`Binop` carries two operators of one chain that cannot be grouped without
+parentheses.
+
+`EffectNotFound` is an effect type named by an effect module for which the file
+defines no custom type. `EffectFunctionNotFound` is a function that the kind of
+effect module requires and the file does not define.
+
+`ExportNotFound` is an exposed name with no definition. It carries what kind of
+name it is and the names of that kind the module does define, from which the
+report draws its suggestions. `ExportOpenAlias` and `ImportOpenAlias` are a
+`(..)` written after a type alias, in the module's own exposing list and in an
+import's. `ImportCtorByName` is a variant imported by name, and carries the
+variant and then the type it belongs to.
+
+`ImportNotFound` is an import of a module that cannot be found. No
+`Compiler.Canonicalize` module raises it, and its report ignores the list of
+modules it carries.
+
+`ImportExposingNotFound` is a name in an import's exposing list that the
+imported module does not expose. It carries that module and the names of that
+kind which it does expose. Its suggestions are ordered by closeness to the
+module's name, not to the missing name.
+
+`NotFoundVar`, `NotFoundType` and `NotFoundVariant` are a name that is not in
+scope, with its qualifier if one was written and the names to suggest from.
+`NotFoundBinop` is an operator that is not in scope, with the operators that
+are.
+
+`PatternHasRecordCtor` is the constructor of a record alias used in a pattern.
+
+`PortPayloadInvalid` is a port whose payload contains a type that cannot cross
+to JavaScript. It carries that part of the type, which the report does not
+show, and the reason. `PortTypeInvalid` is a port whose type has the wrong
+shape.
+
+`RecursiveAlias` is a type alias defined in terms of itself. It carries the
+alias's parameters and body, from which the report builds a suggested `type`
+declaration, and the other aliases on the cycle, empty when the alias refers to
+itself directly. `RecursiveDecl` and `RecursiveLet` are a value, at the top
+level or in a `let`, defined in terms of itself, with the other definitions on
+the cycle, empty when it refers to itself directly.
+
+`TupleLargerThanThree` is a tuple of more than three elements.
+
+`TypeVarsUnboundInUnion` is a custom type whose variants use type variables it
+does not declare. It carries the declared variables, then the undeclared ones,
+each with a region where it is used, the first split off so that there is
+always one. `TypeVarsMessedUpInAlias` is a type alias whose declared and used
+type variables differ. It carries the declared variables, then those declared
+but not used, then those used but not declared, each with a region.
+
 -}
 type Error
     = AnnotationTooShort A.Region Name Index.ZeroBased Int
@@ -106,14 +195,22 @@ type Error
     | TypeVarsMessedUpInAlias A.Region Name (List Name) (List ( Name, A.Region )) (List ( Name, A.Region ))
 
 
-{-| Context for arity mismatch errors, indicating whether the error occurred in a type or pattern.
+{-| What was given the wrong number of arguments in a `BadArity` error: a type,
+or a variant in a pattern.
 -}
 type BadArityContext
     = TypeArity
     | PatternArity
 
 
-{-| Context indicating where duplicate pattern variables were found.
+{-| Where one variable name was bound twice, which decides the wording of a
+`DuplicatePattern` report.
+
+`DPLambdaArgs` is the arguments of an anonymous function, and `DPFuncArgs` the
+arguments of the named function it carries. `DPCaseBranch` is the pattern of a
+`case` branch, `DPLetBinding` the definitions of one `let`, and `DPDestruct` a
+pattern that a `let` destructures.
+
 -}
 type DuplicatePatternContext
     = DPLambdaArgs
@@ -123,7 +220,13 @@ type DuplicatePatternContext
     | DPDestruct
 
 
-{-| Describes why a port's payload type is invalid for communication with JavaScript.
+{-| Why a type cannot cross between Elm and JavaScript.
+
+`ExtendedRecord` is a record type with a type variable standing for its other
+fields. `TypeVariable` carries the name of the variable. `UnsupportedType`
+carries the name of a type that is not allowed, or that is applied to arguments
+it may not have.
+
 -}
 type InvalidPayload
     = ExtendedRecord
@@ -132,7 +235,15 @@ type InvalidPayload
     | UnsupportedType Name
 
 
-{-| Describes structural problems with port type signatures.
+{-| What is wrong with the shape of a port's type, apart from its payload.
+
+`CmdNoArg` is an outgoing port, one whose result is a `Cmd`, that takes no
+argument, and `CmdExtraArgs` one that takes more than one, carrying how many.
+`CmdBadMsg` is an outgoing port whose `Cmd` is not applied to a type variable.
+`SubBad` is an incoming port whose type is not of the form
+`(payload -> msg) -> Sub msg`. `NotCmdOrSub` is a port whose result is neither
+a `Cmd` nor a `Sub` applied to one argument.
+
 -}
 type PortProblem
     = CmdNoArg
@@ -142,7 +253,13 @@ type PortProblem
     | NotCmdOrSub
 
 
-{-| Collection of locally defined names and qualified names available in scope for suggesting alternatives.
+{-| The names in scope of the kind that could not be found, from which a
+`NotFoundVar`, `NotFoundType` or `NotFoundVariant` report draws its
+suggestions.
+
+`locals` are the names usable unqualified. `quals` maps each qualifier to the
+names usable after it.
+
 -}
 type alias PossibleNames =
     { locals : EverySet String Name
@@ -154,7 +271,8 @@ type alias PossibleNames =
 -- ====== KIND ======
 
 
-{-| Categorizes the kind of name that was not found or exported incorrectly.
+{-| The kind of name an `ExportNotFound` error is about, which decides how the
+report describes and writes it. `BadPattern` is never raised.
 -}
 type VarKind
     = BadOp
@@ -163,6 +281,10 @@ type VarKind
     | BadType
 
 
+{-| Returns the words that describe an exposed `name` of kind `kind`: the
+article, the noun for the kind, and the name as an exposing list writes it, in
+parentheses for an operator and in backquotes otherwise.
+-}
 toKindInfo : VarKind -> Name -> ( D.Doc, D.Doc, D.Doc )
 toKindInfo kind name =
     case kind of
@@ -203,8 +325,13 @@ toKindInfo kind name =
 -- ====== TO REPORT ======
 
 
-{-| Convert a canonicalization error into a user-friendly error report with
-source code snippets and helpful suggestions.
+{-| Builds the report for `err`, quoting the lines of `source` it concerns.
+
+The report is located at the error's region, or at the second region for an
+error that carries two. Its list of suggestions holds the names the message
+offers in place of one that was not found, and for the unknown operators `===`,
+`!=` or `!==`, and `**` it holds the operators the message recommends instead.
+
 -}
 toReport : Code.Source -> Error -> Report.Report
 toReport source err =
@@ -525,10 +652,6 @@ toReport source err =
                     )
 
         ImportNotFound region name _ ->
-            --
-            -- NOTE: this should always be detected by `builder`
-            -- So this error should never actually get printed out.
-            --
             Report.report "UNKNOWN IMPORT" region [] <|
                 Code.toSnippet source
                     region
@@ -1136,6 +1259,16 @@ toReport source err =
                             )
 
 
+{-| Builds the report for a type declaration `typeName` that uses type
+variables it does not declare.
+
+`tipe` is the declaration's keyword or keywords, `type` or `type alias`, and
+`allVars` the variables it declares. The undeclared variables arrive as the
+first of them, with the region where it is used, followed by the rest. With
+only one, the snippet highlights where it is used. The suggested declaration
+adds every undeclared variable after the declared ones.
+
+-}
 unboundTypeVars : Code.Source -> A.Region -> List D.Doc -> Name.Name -> List Name.Name -> ( Name.Name, A.Region ) -> List ( Name.Name, A.Region ) -> Report.Report
 unboundTypeVars source declRegion tipe typeName allVars ( unboundVar, varRegion ) unboundVars =
     let
@@ -1204,6 +1337,9 @@ unboundTypeVars source declRegion tipe typeName allVars ( unboundVar, varRegion 
             )
 
 
+{-| Builds the report for one name defined twice, at `r1` and at `r2`, which
+opens with `messageThatEndsWithPunctuation` and is located at `r2`.
+-}
 nameClash : Code.Source -> A.Region -> A.Region -> String -> Report.Report
 nameClash source r1 r2 messageThatEndsWithPunctuation =
     Report.report "NAME CLASH" r2 [] <|
@@ -1219,6 +1355,16 @@ nameClash source r1 r2 messageThatEndsWithPunctuation =
             )
 
 
+{-| Builds the report for `name`, a `thing` such as a variable or a type, which
+several imports provide.
+
+`h` and `hs` are the candidate home modules, listed sorted by
+`ModuleName.compareCanonical`. Without a qualifier each candidate is shown as
+`Home.name`. With qualifier `prefix`, each is shown as the import that would
+give it that qualifier: `import Home` when `prefix` is the module's name, and
+`import Home as prefix` otherwise.
+
+-}
 ambiguousName : Code.Source -> A.Region -> Maybe Name.Name -> Name.Name -> ModuleName.Canonical -> OneOrMore.OneOrMore ModuleName.Canonical -> String -> Report.Report
 ambiguousName source region maybePrefix name h hs thing =
     let
@@ -1290,6 +1436,15 @@ ambiguousName source region maybePrefix name h hs thing =
         |> Report.report "AMBIGUOUS NAME" region []
 
 
+{-| Builds the report for `name`, a `thing` such as a variable or a type, which
+is not in scope, written with the qualifier `maybePrefix` if it has one.
+
+The report offers up to four of the possible names nearest to the name as
+written, taking every name in `locals` and every name in `quals` written with
+its qualifier. Its advice depends on whether a qualifier was written and, if
+so, whether `quals` has an entry for it.
+
+-}
 notFound : Code.Source -> A.Region -> Maybe Name.Name -> Name.Name -> String -> PossibleNames -> Report.Report
 notFound source region maybePrefix name thing { locals, quals } =
     let
@@ -1351,6 +1506,8 @@ notFound source region maybePrefix name thing { locals, quals } =
             )
 
 
+{-| Returns `name` qualified by `prefix`, as `prefix.name`.
+-}
 toQualString : Name.Name -> Name.Name -> String
 toQualString prefix name =
     prefix ++ "." ++ name
@@ -1360,6 +1517,14 @@ toQualString prefix name =
 -- ====== BAD ALIAS RECURSION ======
 
 
+{-| Builds the report for a type alias `name` defined in terms of itself.
+
+With `others` empty the alias refers to itself directly, and the report
+suggests the `type` declaration that `aliasToUnionDoc` builds from `args` and
+`tipe`. Otherwise it shows the cycle through `others` and asks for one of the
+aliases on it to become a `type`.
+
+-}
 aliasRecursionReport : Code.Source -> A.Region -> Name -> List Name -> Src.Type -> List Name -> Report.Report
 aliasRecursionReport source region name args tipe others =
     case others of
@@ -1391,6 +1556,14 @@ aliasRecursionReport source region name args tipe others =
                     )
 
 
+{-| Builds a `type` declaration named `name` with one variant, also named `name`,
+whose argument is the alias body `tipe`.
+
+The header is meant to declare the parameters `args`, but `List.foldr` with the
+flipped `D.plus` puts them after the `=` and in reverse, so that parameters
+`a b` print as `type  Name = b a`, with two spaces after `type`.
+
+-}
 aliasToUnionDoc : Name -> List Name -> Src.Type -> D.Doc
 aliasToUnionDoc name args tipe =
     D.vcat
@@ -1408,7 +1581,8 @@ aliasToUnionDoc name args tipe =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Serialize a canonicalization error to bytes for caching or transmission.
+{-| Encodes `error` as its tag, its position in the declaration of `Error`,
+followed by its fields.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
@@ -1735,7 +1909,8 @@ errorEncoder error =
                 ]
 
 
-{-| Deserialize a canonicalization error from bytes.
+{-| A decoder for an `Error` as `errorEncoder` writes it. A tag outside 0 to 37
+fails.
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
@@ -1992,6 +2167,9 @@ errorDecoder =
             )
 
 
+{-| Encodes `badArityContext` as one byte, 0 for `TypeArity` and 1 for
+`PatternArity`.
+-}
 badArityContextEncoder : BadArityContext -> Bytes.Encode.Encoder
 badArityContextEncoder badArityContext =
     Bytes.Encode.unsignedInt8
@@ -2004,6 +2182,9 @@ badArityContextEncoder badArityContext =
         )
 
 
+{-| A decoder for a `BadArityContext` as `badArityContextEncoder` writes it.
+Any other byte fails.
+-}
 badArityContextDecoder : Bytes.Decode.Decoder BadArityContext
 badArityContextDecoder =
     Bytes.Decode.unsignedInt8
@@ -2021,6 +2202,9 @@ badArityContextDecoder =
             )
 
 
+{-| Encodes `duplicatePatternContext` as a tag byte, its position in the
+declaration, followed by the function name for `DPFuncArgs`.
+-}
 duplicatePatternContextEncoder : DuplicatePatternContext -> Bytes.Encode.Encoder
 duplicatePatternContextEncoder duplicatePatternContext =
     case duplicatePatternContext of
@@ -2043,6 +2227,9 @@ duplicatePatternContextEncoder duplicatePatternContext =
             Bytes.Encode.unsignedInt8 4
 
 
+{-| A decoder for a `DuplicatePatternContext` as
+`duplicatePatternContextEncoder` writes it. An unknown tag fails.
+-}
 duplicatePatternContextDecoder : Bytes.Decode.Decoder DuplicatePatternContext
 duplicatePatternContextDecoder =
     Bytes.Decode.unsignedInt8
@@ -2069,6 +2256,8 @@ duplicatePatternContextDecoder =
             )
 
 
+{-| Encodes `varKind` as one byte, its position in the declaration of `VarKind`.
+-}
 varKindEncoder : VarKind -> Bytes.Encode.Encoder
 varKindEncoder varKind =
     Bytes.Encode.unsignedInt8
@@ -2087,6 +2276,9 @@ varKindEncoder varKind =
         )
 
 
+{-| A decoder for a `VarKind` as `varKindEncoder` writes it. Any other byte
+fails.
+-}
 varKindDecoder : Bytes.Decode.Decoder VarKind
 varKindDecoder =
     Bytes.Decode.unsignedInt8
@@ -2110,6 +2302,8 @@ varKindDecoder =
             )
 
 
+{-| Encodes `possibleNames` as its `locals` followed by its `quals`.
+-}
 possibleNamesEncoder : PossibleNames -> Bytes.Encode.Encoder
 possibleNamesEncoder possibleNames =
     Bytes.Encode.sequence
@@ -2118,6 +2312,8 @@ possibleNamesEncoder possibleNames =
         ]
 
 
+{-| A decoder for `PossibleNames` as `possibleNamesEncoder` writes them.
+-}
 possibleNamesDecoder : Bytes.Decode.Decoder PossibleNames
 possibleNamesDecoder =
     Bytes.Decode.map2 PossibleNames
@@ -2125,7 +2321,9 @@ possibleNamesDecoder =
         (BD.stdDict BD.string (BD.everySet identity BD.string))
 
 
-{-| Serialize an invalid port payload type to bytes.
+{-| Encodes `invalidPayload` as a tag byte, its position in the declaration of
+`InvalidPayload`, followed by the name that `TypeVariable` and
+`UnsupportedType` carry.
 -}
 invalidPayloadEncoder : InvalidPayload -> Bytes.Encode.Encoder
 invalidPayloadEncoder invalidPayload =
@@ -2149,7 +2347,8 @@ invalidPayloadEncoder invalidPayload =
                 ]
 
 
-{-| Deserialize an invalid port payload type from bytes.
+{-| A decoder for an `InvalidPayload` as `invalidPayloadEncoder` writes it. An
+unknown tag fails.
 -}
 invalidPayloadDecoder : Bytes.Decode.Decoder InvalidPayload
 invalidPayloadDecoder =
@@ -2174,6 +2373,9 @@ invalidPayloadDecoder =
             )
 
 
+{-| Encodes `portProblem` as a tag byte, its position in the declaration of
+`PortProblem`, followed by the count that `CmdExtraArgs` carries.
+-}
 portProblemEncoder : PortProblem -> Bytes.Encode.Encoder
 portProblemEncoder portProblem =
     case portProblem of
@@ -2196,6 +2398,9 @@ portProblemEncoder portProblem =
             Bytes.Encode.unsignedInt8 4
 
 
+{-| A decoder for a `PortProblem` as `portProblemEncoder` writes it. An unknown
+tag fails.
+-}
 portProblemDecoder : Bytes.Decode.Decoder PortProblem
 portProblemDecoder =
     Bytes.Decode.unsignedInt8

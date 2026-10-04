@@ -1,20 +1,42 @@
 module SourceIR.TypeAliasCtorCases exposing (expectSuite, suite)
 
-{-| Test cases for using a type alias name as a record constructor.
+{-| Programs that call a record type alias's name as a function, so that a
+pipeline stage can be checked on a record alias's constructor and not only on
+the constructors of custom types.
 
-In Elm, a type alias to a record generates a constructor function with the
-alias name. For example:
+In Elm, a type alias whose body is a closed record also defines a _record
+constructor_: a function with the alias's name that takes one argument per
+field and returns the record. Given
 
     type alias Style =
         { bold : Bool, count : Int }
 
-generates a constructor function `Style : Bool -> Int -> Style` that can
-be called as `Style True 42`.
+`Style True 42` is a `Style` whose `bold` is `True` and whose `count` is `42`.
+Typed local optimization gives each such constructor a top-level definition
+of its own: an ordinary function that builds the record, with an annotation of
+its own. A custom type's constructor gets a constructor node instead, so a call
+to `Style` reaches monomorphization as a call to a function, not to a
+constructor.
 
-The bootstrap crash "getOrBuildSchemeInfo: no annotation entry for global
-...Style" is triggered when the monomorphizer encounters a type alias
-constructor and fails to find an annotation entry because it only looks
-for custom type constructors, not alias-derived record constructors.
+The fixture is the same in both cases: a module `Test` that declares `Style`
+as above and an annotated `testValue : Int`. The constructor is referred to as
+an unqualified `Style`, and its `Bool` argument is the qualified constructor
+`Basics.True`.
+
+This module asserts nothing itself. `expectSuite` hands each program to the
+expectation function its caller supplies, and `suite` supplies
+`TestLogic.TestPipeline.expectMonomorphization`. The cases are:
+
+  - "Simple type alias used as record constructor": `testValue` binds
+    `Style True 42` in a `let` and returns its `count` field.
+  - "Type alias constructor passed to a function": `testValue` passes
+    `Style True 7` to a top-level `getCount : Style -> Int` that returns the
+    `count` field.
+
+Among what is not tested: an alias with type parameters, a constructor
+applied to fewer arguments than it has fields or passed as a function value,
+a constructor imported from another module, and the value `testValue`
+computes.
 
 -}
 
@@ -43,6 +65,11 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| A test that applies `TestLogic.TestPipeline.expectMonomorphization` to both
+programs. That expectation runs the program through `runToMono`, which uses the
+substitution engine, and passes when monomorphization succeeds and gives a graph
+with a `main` and at least one node.
+-}
 suite : Test
 suite =
     Test.describe "Type alias as record constructor"
@@ -50,7 +77,10 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Builds one test, named "Type alias constructor " followed by `condStr`,
+that passes when `expectFn` passes on both programs. The cases run in order
+under `Compiler.BulkCheck.bulkCheck`, so a failure names the first case that
+failed.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -58,6 +88,8 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the two labelled cases, each applying `expectFn` to its program.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Simple type alias used as record constructor"
@@ -75,7 +107,9 @@ testCases expectFn =
 -- ============================================================================
 
 
-{-| A type alias to a record, with the alias name used as a constructor.
+{-| Returns a check that applies `expectFn` to a module whose `testValue`
+binds the result of the record constructor `Style` in a `let` and reads a field
+of it:
 
     type alias Style =
         { bold : Bool, count : Int }
@@ -103,7 +137,6 @@ simpleAliasAsCtor expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -135,7 +168,9 @@ simpleAliasAsCtor expectFn _ =
 -- ============================================================================
 
 
-{-| Type alias constructor used to build a record, then passed to a function.
+{-| Returns a check that applies `expectFn` to a module whose `testValue` passes
+the result of the record constructor `Style` straight to a top-level function
+that reads a field of it:
 
     type alias Style =
         { bold : Bool, count : Int }
@@ -163,7 +198,6 @@ aliasCtorPassedToFunction expectFn _ =
                     ]
             }
 
-        -- getCount : Style -> Int
         getCountDef : TypedDef
         getCountDef =
             { name = "getCount"
@@ -176,7 +210,6 @@ aliasCtorPassedToFunction expectFn _ =
                 accessExpr (varExpr "s") "count"
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"

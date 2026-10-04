@@ -1,10 +1,58 @@
 module Type.Constrain.KernelTests exposing (suite)
 
-{-| Tests for kernel function expressions (VarKernel).
+{-| Tests that the compiler's two type-checking paths agree on modules that use
+kernel references. The erased path yields only a module's top-level
+annotations; the typed path also records a _node type_, the solved type of an
+expression, keyed by the expression's id. `Type.Constrain.Shared` describes
+both.
 
-Kernel functions are references to JavaScript implementations like
-Elm.Kernel.Platform.batch. These need special handling because they
-have no Elm source code to type-check - we trust the type annotation.
+A _kernel reference_ (`Can.VarKernel`) names a value of a kernel module, such as
+`Elm.Kernel.List.cons`, whose implementation is not Elm source. The constraint
+generator looks a kernel reference up in `Compiler.Type.KernelIntrinsics`, and
+one with no row there contributes no constraint of its own, so its type is
+bounded only by what surrounds it. None of the kernels named here has a row,
+so every test exercises that unconstrained case, and a name such as
+`Elm.Kernel.X.batch` serves as well as a real one.
+
+The fixture is one canonical module per test, built by hand with
+`Compiler.AST.CanonicalBuilder`. In every module each kernel reference is the
+whole body of an annotated definition, such as `batch : List a -> List a` bound
+to `Elm.Kernel.List.batch`; in most, other definitions then use it. Those uses
+are built as local variables (`varLocalExpr`) rather than top-level references,
+which the constraint generator treats alike. Expression and pattern ids are
+written by hand, and no two nodes in one module share an id.
+
+Each test's only assertion is
+`Type.Constrain.Shared.expectEquivalentTypeChecking`. It passes when both paths
+reject the module; otherwise it requires both to accept it, and the typed path
+to give a node type to each expression id. The tests, group by group:
+
+  - `simpleKernelTests`: a lone annotated definition bound to a kernel, at four
+    types.
+  - `kernelCallingTests`: a kernel-bound `batch` called on a list of three
+    `Int`s, on the empty list, and on a fuzzed list of `Int`s.
+  - `kernelWrapperTests`: a definition that calls a kernel-bound one, two
+    kernel-bound definitions combined in one expression, and a kernel bound in
+    a `let`.
+  - `kernelHigherOrderTests`: a kernel-bound definition passed to unannotated
+    `apply` and `compose` functions.
+  - `varKernelExprTests`: a lone annotated definition bound to a kernel, for a
+    kernel of each of six kernel modules.
+  - `varKernelCallTests`: kernel-bound `List` definitions called with one and
+    two arguments, nested, side by side in a pair, passed to `apply`, and placed
+    unapplied in a list.
+  - `varKernelContextTests`: kernel-bound definitions called inside a lambda, a
+    `let` and a chain of calls, and with a tuple and a list as arguments, plus
+    two modules whose `testValue` uses none of the kernel-bound definitions
+    beside it.
+  - `varKernelFuzzTests`: `singleton` called on one fuzzed `Int`, and three
+    calls of `singleton`, each on a fuzzed `Int`, collected in a list.
+
+Among what is not tested: that any of these modules type-checks, since a module
+both paths reject passes; the annotations either path infers; a kernel with a
+row in `Compiler.Type.KernelIntrinsics`; a kernel reference under the `Eco`
+prefix, which `varKernelExpr` cannot build; and a kernel reference anywhere but
+as the whole body of an annotated definition.
 
 -}
 
@@ -35,6 +83,9 @@ import Test exposing (Test)
 import Type.Constrain.Shared exposing (expectEquivalentTypeChecking)
 
 
+{-| Every group of kernel type-checking tests in this module, under one
+`describe`.
+-}
 suite : Test
 suite =
     Test.describe "Kernel function expressions"
@@ -55,6 +106,11 @@ suite =
 -- ============================================================================
 
 
+{-| The tests of a module whose one definition is annotated and bound to a
+kernel: `Elm.Kernel.List.batch` as `List a -> List a`, `Elm.Kernel.Time.now` as
+`Int`, `Elm.Kernel.List.map` as `(a -> b) -> List a -> List b`, and
+`Elm.Kernel.Tuple.pair` as `a -> b -> ( a, b )`.
+-}
 simpleKernelTests : Test
 simpleKernelTests =
     Test.describe "Simple kernel definitions"
@@ -136,6 +192,10 @@ simpleKernelTests =
 -- ============================================================================
 
 
+{-| The tests of `batch`, annotated `List a -> List a` and bound to
+`Elm.Kernel.List.batch`, called from an unannotated `testValue`: on
+`[ 1, 2, 3 ]`, on `[]`, and on a list of fuzzed `Int`s, which may be empty.
+-}
 kernelCallingTests : Test
 kernelCallingTests =
     Test.describe "Calling kernel functions"
@@ -199,7 +259,6 @@ kernelCallingTests =
                             (varKernelExpr 2 "List" "batch")
                             (funType (listType (varType "a")) (listType (varType "a")))
 
-                    -- Build list expression from fuzzed ints
                     listItems =
                         List.indexedMap (\i n -> intExpr (10 + i) n) nums
 
@@ -224,6 +283,17 @@ kernelCallingTests =
 -- ============================================================================
 
 
+{-| The tests of definitions that use kernel-bound ones, with kernels of the
+module `Elm.Kernel.X`.
+
+The first declares `batch : List a -> a` and the unannotated `none = batch []`.
+The second declares `batch : List a -> List a` and
+`map : (a -> b) -> List a -> List b`, and uses both in
+`testValue = map (\x -> x) (batch [])`. The third is a module whose one
+definition, `testValue`, is a `let` binding an annotated `batch` to the kernel,
+with body `batch []`.
+
+-}
 kernelWrapperTests : Test
 kernelWrapperTests =
     Test.describe "Wrapper functions calling kernel"
@@ -273,7 +343,6 @@ kernelWrapperTests =
                                 (funType (listType (varType "a")) (listType (varType "b")))
                             )
 
-                    -- identity function: \x -> x
                     identityFn =
                         lambdaExpr 10 [ pVar 11 "x" ] (varLocalExpr 12 "x")
 
@@ -298,7 +367,7 @@ kernelWrapperTests =
         , Test.test "Kernel in let expression types check equivalently" <|
             \_ ->
                 let
-                    -- testValue = let batch = Elm.Kernel.X.batch in batch []
+                    -- testValue = let batch : List a -> List a; batch = Elm.Kernel.X.batch in batch []
                     batchLetDef =
                         makeTypedDef "batch"
                             []
@@ -324,14 +393,18 @@ kernelWrapperTests =
 -- ============================================================================
 
 
+{-| The tests of `batch`, annotated `List a -> List a` and bound to
+`Elm.Kernel.X.batch`, passed as an argument to an unannotated function:
+`apply batch [ 1 ]` with `apply f x = f x`, and `compose batch batch [ 1, 2 ]`
+with `compose f g x = f (g x)`.
+-}
 kernelHigherOrderTests : Test
 kernelHigherOrderTests =
     Test.describe "Kernel functions in higher-order contexts"
         [ Test.test "Kernel function passed to higher-order function types check equivalently" <|
             \_ ->
                 let
-                    -- apply : (a -> b) -> a -> b
-                    -- apply f x = f x
+                    -- apply f x = f x, with no annotation
                     applyDef =
                         makeDef "apply"
                             [ pVar 3 "f", pVar 4 "x" ]
@@ -368,8 +441,7 @@ kernelHigherOrderTests =
         , Test.test "Kernel function used in composition types check equivalently" <|
             \_ ->
                 let
-                    -- compose : (b -> c) -> (a -> b) -> a -> c
-                    -- compose f g x = f (g x)
+                    -- compose f g x = f (g x), with no annotation
                     composeDef =
                         makeDef "compose"
                             [ pVar 3 "f", pVar 4 "g", pVar 5 "x" ]
@@ -412,11 +484,16 @@ kernelHigherOrderTests =
 
 
 -- ============================================================================
--- VARKERNEL EXPRESSIONS (from Canonicalize tests)
--- These test VarKernel AST nodes directly with type annotations
+-- VARKERNEL EXPRESSIONS
 -- ============================================================================
 
 
+{-| The tests of a module whose one definition, `testValue`, is annotated and
+bound to a kernel: `Elm.Kernel.List.batch` as `List a -> List a`,
+`Elm.Kernel.Platform.batch` as `List a -> a`, `Elm.Kernel.Scheduler.succeed` as
+`a -> a`, `Elm.Kernel.Process.spawn` as `a -> b`, `Elm.Kernel.JsArray.empty` as
+`List a`, and `Elm.Kernel.Utils.Tuple2` as `a -> b -> ( a, b )`.
+-}
 varKernelExprTests : Test
 varKernelExprTests =
     Test.describe "VarKernel expressions"
@@ -507,6 +584,17 @@ varKernelExprTests =
 -- ============================================================================
 
 
+{-| The tests of definitions bound to `Elm.Kernel.List` kernels and used by an
+unannotated `testValue`.
+
+The uses are `singleton 42`, `cons 1 []`, `head (singleton 1)`, the pair
+`( head [ 1 ], tail [ 2 ] )`, and `apply singleton 42` with an unannotated
+`apply f x = f x`. These annotate the kernels polymorphically, `head` as
+`List a -> a`. The last test annotates `head`, `tail` and `length` at `Int`
+and makes `testValue` the list `[ head, length ]` of the two unapplied
+functions of type `List Int -> Int`; `tail` is declared and not used.
+
+-}
 varKernelCallTests : Test
 varKernelCallTests =
     Test.describe "VarKernel function calls"
@@ -693,6 +781,19 @@ varKernelCallTests =
 -- ============================================================================
 
 
+{-| The tests of kernel-bound definitions used inside other expressions, and
+declared without being used.
+
+The uses are `\x -> singleton x`, `let result = singleton 1 in result`,
+`pair ( 1, 2 ) [ 3, 4 ]` with `pair` bound to `Elm.Kernel.Utils.pair` as
+`a -> b -> ( a, b )`, and `head (tail (singleton 1))`; the other kernels in
+these four tests are from `Elm.Kernel.List`. Two tests declare kernel-bound
+definitions that `testValue` does not use: `cons`, `singleton` and `append`
+from `Elm.Kernel.List` beside `testValue = [ 1, 2, 3 ]`, and kernels from
+`Elm.Kernel.List`, `Elm.Kernel.Platform` and `Elm.Kernel.Scheduler` beside
+`testValue = 42`.
+
+-}
 varKernelContextTests : Test
 varKernelContextTests =
     Test.describe "VarKernel in context"
@@ -907,6 +1008,11 @@ varKernelContextTests =
 -- ============================================================================
 
 
+{-| The fuzz tests of `singleton`, annotated `a -> List a` and bound to
+`Elm.Kernel.List.singleton`: `singleton n` for one fuzzed `Int`, and the list
+of `singleton` applied to each of three fuzzed `Int`s. The fuzzed values reach
+only `Int` literals, so they cannot change the module's types.
+-}
 varKernelFuzzTests : Test
 varKernelFuzzTests =
     Test.describe "VarKernel fuzz tests"

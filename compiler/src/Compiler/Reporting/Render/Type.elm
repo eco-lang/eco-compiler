@@ -5,11 +5,22 @@ module Compiler.Reporting.Render.Type exposing
     , lambda, apply, tuple, record, vrecord, vrecordSnippet
     )
 
-{-| Rendering type expressions as human-readable documentation.
+{-| A type shown to a programmer, in an error message for instance, should read
+as the type would be written in Elm, with parentheses where Elm needs them. This
+module holds that layout.
 
-This module converts both source and canonical type representations into
-formatted Doc values for display in error messages and documentation,
-with proper parenthesization and layout.
+Whether a type needs parentheses depends on where it sits. A function type needs
+them as an argument of a type, as in `Maybe (a -> b)`, and as a part of another
+function type, as in `(a -> b) -> c`. A type applied to arguments, such as
+`Maybe a`, needs them only as an argument of another type, as in
+`List (Maybe a)`. Variables, unit, tuples and records never need them. A
+`Context` names the position a type is printed in.
+
+`lambda`, `apply`, `tuple`, `record`, `vrecord` and `vrecordSnippet` build each
+form of type from documents already printed for its parts, so that a printer for
+any representation of types can share the layout. `srcToDoc` prints a type as
+parsed from source, and `canToDoc` prints a canonical type, writing each type's
+name as a `Localizer` gives it.
 
 
 # Rendering Context
@@ -46,8 +57,18 @@ import List.Extra as List
 -- ====== TO DOC ======
 
 
-{-| Parenthesization context for type rendering. Determines whether parentheses
-are needed around a type expression based on where it appears.
+{-| The position a type is printed in, which decides whether it needs
+parentheses.
+
+`None` is a position where no type needs them: the whole type, a tuple element,
+or the type of a record field.
+
+`Func` is a part of a function type, one of its arguments or its final result. A
+function type is parenthesised there.
+
+`App` is an argument of a type applied to arguments. A function type, and a type
+applied to arguments, are parenthesised there.
+
 -}
 type Context
     = None
@@ -55,9 +76,16 @@ type Context
     | App
 
 
-{-| Renders a function type with proper formatting and context-aware parenthesization.
-Takes the first two arguments and any additional arguments, formatting them as
-`arg1 -> arg2 -> ... -> result`.
+{-| Returns the function type `arg1 -> arg2 -> ...`, whose last part is its
+final result, from documents already printed for its parts. It is parenthesised
+unless `context` is `None`.
+
+The parts are on one line if they fit. Otherwise each is on a line of its own,
+every line after the first starting with `->`. The parentheses, if any, go on
+lines of their own whenever the whole does not fit on the line, even when the
+parts then fit on one line. The parts are used as they are given; printing them
+in the `Func` context is for the caller to do.
+
 -}
 lambda : Context -> D.Doc -> D.Doc -> List D.Doc -> D.Doc
 lambda context arg1 arg2 args =
@@ -77,8 +105,12 @@ lambda context arg1 arg2 args =
             D.cat [ D.fromChars "(", lambdaDoc, D.fromChars ")" ]
 
 
-{-| Renders a type application (type constructor applied to arguments) with
-proper formatting and context-aware parenthesization.
+{-| Returns the type `name` applied to `args`. With no arguments it is `name`
+alone, in any context. Otherwise it is parenthesised in the `App` context, and
+the arguments follow the name on one line if they fit, or each on a line of its
+own, indented four columns past where the name begins. The parentheses, if any,
+go on lines of their own whenever the whole does not fit on the line, even when
+the name and arguments then fit on one line.
 -}
 apply : Context -> D.Doc -> List D.Doc -> D.Doc
 apply context name args =
@@ -103,8 +135,13 @@ apply context name args =
                     applyDoc
 
 
-{-| Renders a tuple type with proper formatting. Takes at least two elements
-(tuples in Elm have 2 or more elements) and formats them as `( a, b, ... )`.
+{-| Returns the tuple type `( a, b, ... )` from documents already printed for
+its elements. It is never parenthesised.
+
+When the tuple does not fit on the line, the closing parenthesis goes on a line
+of its own. If the rest still does not fit, the opening parenthesis, each
+element and each comma between elements are each put on a line of their own too.
+
 -}
 tuple : D.Doc -> D.Doc -> List D.Doc -> D.Doc
 tuple a b cs =
@@ -116,9 +153,19 @@ tuple a b cs =
     D.sep [ D.cat entries, D.fromChars ")" ] |> D.align
 
 
-{-| Renders a record type with horizontal layout. Takes field name/type pairs
-and an optional extension variable, formatting as `{ field : Type, ... }` or
-`{ ext | field : Type, ... }`.
+{-| Returns a record type from documents already printed for each field's name
+and type, extending `maybeExt` when it is given. With no fields and no extension
+it is `{}`.
+
+On one line, a closed record reads `{ x : Int, y : Int }`, and an extensible
+one `{  r |x : Int, y : Int }`, with two spaces after the brace and none after
+the bar. When the record does not fit on the line, the closing brace goes on a
+line of its own, and the fields and their separators stay together on one line
+while they fit; in an extensible record that line may be a line of their own
+after `{  r`, indented four columns. When they do not fit, each field and each
+separator is put on a line of its own, indented four columns in an extensible
+record.
+
 -}
 record : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
 record entries maybeExt =
@@ -147,13 +194,23 @@ record entries maybeExt =
                     ]
 
 
+{-| Returns one record field as `name : type`, with the type on the next line,
+indented four columns past where the name begins, when the two do not fit on one
+line.
+-}
 entryToDoc : ( D.Doc, D.Doc ) -> D.Doc
 entryToDoc ( fieldName, fieldType ) =
     D.sep [ fieldName |> D.plus (D.fromChars ":"), fieldType ] |> D.hang 4
 
 
-{-| Renders a partial record type snippet with vertical layout, showing the first
-field and indicating additional fields with `...`. Used for abbreviated error messages.
+{-| Returns a record type showing only some of its fields: `entry` on the line
+of the opening brace, then each of `entries`, then `...` for the fields not
+shown, and the closing brace, each on a line of its own.
+
+Between each two of the lines for `entries` and `...` come three more lines: a
+single space, a comma, and a single space. No comma comes between `entry` and
+the first of `entries`.
+
 -}
 vrecordSnippet : ( D.Doc, D.Doc ) -> List ( D.Doc, D.Doc ) -> D.Doc
 vrecordSnippet entry entries =
@@ -170,8 +227,15 @@ vrecordSnippet entry entries =
     D.vcat (field :: fields ++ [ D.fromChars "}" ])
 
 
-{-| Renders a record type with vertical layout (each field on its own line).
-Takes field name/type pairs and an optional extension variable.
+{-| Returns a record type laid out over several lines, from documents already
+printed for each field's name and type, extending `maybeExt` when it is given.
+With no fields and no extension it is `{}`.
+
+Without an extension, the opening brace, each field, each comma and a single
+space between each of these are each put on a line of their own, followed by the
+closing brace. With an extension `r`, the first line is `r {`, and the next,
+indented four columns, is `| x : Int , y : Int` when the fields fit on it.
+
 -}
 vrecord : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
 vrecord entries maybeExt =
@@ -204,8 +268,18 @@ vrecord entries maybeExt =
 -- ====== SOURCE TYPE TO DOC ======
 
 
-{-| Converts a source-level type (as parsed from user code) into a formatted
-Doc for display in error messages and documentation.
+{-| Returns a type as parsed from source, printed in `context`.
+
+Names are printed as written, a qualified one with the module prefix the source
+used, and a record's fields in source order. Comments within the type are not
+printed.
+
+Parentheses written in the source are not kept: each part is parenthesised as
+its context needs. The exception is a function type written in parentheses, with
+a comment directly after the `(` or before the `)`, as the result of another
+function type. It is not joined to the chain of arrows, so
+`a -> ({- c -} b -> c)` is printed as `a -> (b -> c)`.
+
 -}
 srcToDoc : Context -> Src.Type -> D.Doc
 srcToDoc context (A.At _ tipe) =
@@ -239,11 +313,19 @@ srcToDoc context (A.At _ tipe) =
             srcToDoc context tipe_
 
 
+{-| Returns one field of a source record type as its name and its type printed
+in the `None` context.
+-}
 srcFieldToDocs : Src.C2 ( Src.C1 (A.Located Name.Name), Src.C1 Src.Type ) -> ( D.Doc, D.Doc )
 srcFieldToDocs ( _, ( ( _, A.At _ fieldName ), ( _, fieldType ) ) ) =
     ( D.fromName fieldName, srcToDoc None fieldType )
 
 
+{-| Returns the parts of a function type's result: when `tipe` is itself a
+function type, its argument followed by the parts of its own result, and
+otherwise `tipe` alone. The last part is the final result. A function type
+inside a `Src.TParens` is not looked into.
+-}
 collectSrcArgs : Src.Type -> ( Src.Type, List Src.Type )
 collectSrcArgs tipe =
     case tipe of
@@ -262,9 +344,15 @@ collectSrcArgs tipe =
 -- ====== CANONICAL TYPE TO DOC ======
 
 
-{-| Converts a canonical type (after type checking and resolution) into a
-formatted Doc for display, using the localizer to determine the best way to
-display qualified type names.
+{-| Returns a canonical type printed in `context`, with the name of each named
+type written as `localizer` gives it, which
+`Compiler.Reporting.Render.Type.Localizer.toChars` describes. Type variables are
+printed by their names.
+
+A use of a type alias is printed as the alias applied to its arguments, never as
+the type it stands for. A record's fields come in the order `Can.fieldsToList`
+gives.
+
 -}
 canToDoc : L.Localizer -> Context -> Can.Type Name -> D.Doc
 canToDoc localizer context tipe =
@@ -295,11 +383,19 @@ canToDoc localizer context tipe =
             apply context (L.toDoc localizer home name) (List.map (canToDoc localizer App << Tuple.second) args)
 
 
+{-| Returns one field of a canonical record type as its name and its type
+printed in the `None` context.
+-}
 canFieldToDoc : L.Localizer -> ( Name.Name, Can.Type Name ) -> ( D.Doc, D.Doc )
 canFieldToDoc localizer ( name, tipe ) =
     ( D.fromName name, canToDoc localizer None tipe )
 
 
+{-| Returns the parts of a function type's result: when `tipe` is itself a
+function type, its argument followed by the parts of its own result, and
+otherwise `tipe` alone. The last part is the final result. An alias of a
+function type is not looked into.
+-}
 collectArgs : Can.Type Name -> ( Can.Type Name, List (Can.Type Name) )
 collectArgs tipe =
     case tipe of

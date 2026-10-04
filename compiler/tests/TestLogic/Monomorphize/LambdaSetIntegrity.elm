@@ -1,16 +1,42 @@
 module TestLogic.Monomorphize.LambdaSetIntegrity exposing (expectLambdaSetIntegrity, expectLambdaSetIntegrityArrowId)
 
-{-| Test logic for invariant LSS\_002: lowering totality of lambda sets.
+{-| Checks that no closure in a monomorphized program is missing from the
+lambda set its own type claims for it.
 
-For every reachable `MonoClosure` whose `ClosureInfo.srcLambda` is
-`Just m`, the head annotation of the closure's own `MonoType` must be
-`LTop` or a set containing `m` — i.e. no closure instance can exist whose
-own identity is missing from its arrow's claimed member set.
+A _lambda set_ is the annotation on the arrow of a function type that names
+the function values, its _members_, that can flow through that arrow
+(`Compiler.AST.Monomorphized` defines the annotations). An `LSet` claims that
+its member list is complete, and later passes act on that claim: a call
+through a set with one member can be stamped for a direct call to that member.
+A closure whose own member id is missing from the `LSet` on its type is a
+_lost member_, and such a pass treats calls to it as calls to something else.
+The failure messages name this check `LSS_002`.
 
-Runs the SOLVER engine with `lss.enabled = True` (the only pipeline that
-produces real `LSet` annotations), then GlobalOpt, and checks the final
-graph — so widening anywhere upstream (kernel poison, size budget,
-LTop-stamping rebuilders) keeps the invariant satisfied via `LTop`.
+The check compiles the test program it is given with
+`TestLogic.TestPipeline.runToGlobalOptLssOn`: the solver engine with
+lambda-set specialization on, then the post-monomorphization inliner and
+global optimization. It inspects `optimizedMonoGraph`, the graph those last
+two passes produce.
+
+In every node of that graph it visits every closure (`MonoClosure`), including
+closures nested in other closures' bodies and captures, in let definitions and
+in case branches. A closure whose `srcLambda` is `Nothing` is skipped.
+Otherwise its _member id_ is its `lssMember`, the id the solver engine
+registered this instance under, or, when that is `Nothing`, its raw
+`srcLambda` id. The annotation checked is the _head annotation_ of the
+closure's own type, the one on its outermost arrow (`Mono.headAnno`). An
+`LSet` passes only if it contains the member id. `LTop` (widened: the members
+are not all known), `LVar` (not yet determined) and `LPartial` (at least these
+members) make no claim that the set is complete, so they always pass.
+
+Among what is not checked:
+
+  - closures whose `srcLambda` is `Nothing`, which include closures the
+    inliner builds for a partial inline;
+  - whether an `LSet` holds a member that cannot actually flow there;
+  - annotations on arrows other than the head of a closure's own type, and on
+    function values that are not closures, such as references to globals;
+  - the graph as it was before the inliner and global optimization.
 
 -}
 
@@ -23,29 +49,30 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| LSS\_002: every reachable closure's source identity is covered by its
-head annotation.
-
-Phase 2a arrow identity (`plans/lss-unknown-elimination.md` §4) makes repeated
-loads of one stamped type object SHARE a set slot, and the failure mode of a
-sharing bug is a LOST MEMBER — a closure instance whose own identity is
-missing from the set its arrow claims. That is exactly what LSS\_002 asserts,
-over the whole SourceIR corpus, through the real pipeline. A spurious member
-here would be a MISCOMPILE; a lost one is what slot sharing can plausibly
-cause. It used to be a SECOND arm (`lss.arrowIdentity` on); the flag was fixed
-at its default and removed 2026-09-18, so the two arms are one run.
-
+{-| Compiles a test program with `runToGlobalOptLssOn` and passes when no
+closure in the optimized graph is a lost member of its head annotation. It
+fails with the pipeline's message when compilation fails, and otherwise with
+one line per lost member.
 -}
 expectLambdaSetIntegrity : Src.Module -> Expect.Expectation
 expectLambdaSetIntegrity =
     integrityWith Pipeline.runToGlobalOptLssOn
 
 
+{-| Does what `expectLambdaSetIntegrity` does, through
+`runToGlobalOptLssArrowIdOn`. `TestLogic.TestPipeline` binds that name to the
+same function as `runToGlobalOptLssOn`, so the two checks compile and inspect
+the program identically.
+-}
 expectLambdaSetIntegrityArrowId : Src.Module -> Expect.Expectation
 expectLambdaSetIntegrityArrowId =
     integrityWith Pipeline.runToGlobalOptLssArrowIdOn
 
 
+{-| Runs `runner` on `srcModule` and passes when its `optimizedMonoGraph` has
+no lost members. It fails with the runner's message when the runner fails, and
+otherwise with the violation messages joined one per line.
+-}
 integrityWith : (Src.Module -> Result String Pipeline.GlobalOptArtifacts) -> Src.Module -> Expect.Expectation
 integrityWith runner srcModule =
     case runner srcModule of
@@ -64,6 +91,10 @@ integrityWith runner srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
+{-| Returns a message for each lost member in the graph's nodes. A node is
+numbered by its index in `nodes`, which is its SpecId, and a removed node
+(`Nothing`) is skipped.
+-}
 collectViolations : Mono.MonoGraph -> List String
 collectViolations (Mono.MonoGraph data) =
     Array.foldl
@@ -82,6 +113,10 @@ collectViolations (Mono.MonoGraph data) =
         |> Tuple.second
 
 
+{-| Returns the expressions a node holds: its body for a definition, a tail
+function or a port, and none for a constructor, an enum, an extern or a
+manager leaf.
+-}
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
 nodeExprs node =
     case node of
@@ -110,11 +145,22 @@ nodeExprs node =
             []
 
 
+{-| Adds to `acc` a message for each lost member among the closures anywhere
+in `root`, reported against `specId`.
+-}
 checkExprTree : Int -> Mono.MonoExpr -> List String -> List String
 checkExprTree specId root acc =
     MonoTraverse.foldExpr (checkOne specId) acc root
 
 
+{-| Adds to `acc` a message when `expr` is a closure with a `srcLambda` whose
+member id is missing from the `LSet` at the head of its own type. Any other
+expression or annotation leaves `acc` unchanged.
+
+The message labels the member id `srcLambda` even when it is the closure's
+`lssMember`.
+
+-}
 checkOne : Int -> Mono.MonoExpr -> List String -> List String
 checkOne specId expr acc =
     case expr of
@@ -125,10 +171,6 @@ checkOne specId expr acc =
 
                 Just m ->
                     let
-                        -- Fix B (LSS_017): the identity a closure's annotation
-                        -- must cover is the id it was MINTED under —
-                        -- spec-qualified for keyed-routed globals — not the
-                        -- raw source id.
                         mid =
                             case info.lssMember of
                                 Just q ->
@@ -142,15 +184,9 @@ checkOne specId expr acc =
                             acc
 
                         Mono.LVar _ ->
-                            -- Satisfies LSS_002 exactly as LTop does: a
-                            -- variable claims nothing, so it cannot fail to
-                            -- contain the minted member.
                             acc
 
                         Mono.LPartial _ ->
-                            -- A lower bound claims nothing COMPLETE, so a
-                            -- missing member may sit in the unknown
-                            -- remainder — not an LSS_002 violation.
                             acc
 
                         Mono.LSet members ->

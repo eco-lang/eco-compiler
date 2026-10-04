@@ -4,13 +4,18 @@ module Eco.Process.Error exposing
     , toString
     )
 
-{-| Structured process-spawn error type for Eco.Process.spawn / spawnProcess.
+{-| A failed process spawn is reported as the failure tuple that `Eco.IO.Error`
+decodes, and this module reads that tuple in terms of the command being
+spawned.
 
-`wait` continues to represent a non-zero exit as an `ExitFailure` value (not an
-error), and `exit` never returns; only the spawn family can fail. Spawn failures
-arrive as the same neutral IO failure tuple used elsewhere; the errno
-classification is reinterpreted in process terms (ENOENT -> CommandNotFound,
-EACCES -> CommandNotExecutable), falling back to a wrapped `IOError`.
+The failure tuple, its tags and the `IOError` each tag decodes to are set out in
+`Eco.IO.Error`. For a spawn, two of those tags say something about the command
+rather than about a file. Tag 1, which `Eco.IO.Error` decodes as
+`FileNotFound`, becomes `CommandNotFound`, and tag 2, which it decodes as
+`PermissionDenied`, becomes `CommandNotExecutable`. For these two, the command
+in the result is the one passed in, not anything read from the tuple. Any other
+tag gives `SpawnIOError` holding the `IOError` that `Eco.IO.Error` decodes it
+to.
 
 @docs ProcessError
 @docs decodeProcessError, ofKernelTuple
@@ -21,7 +26,18 @@ EACCES -> CommandNotExecutable), falling back to a wrapped `IOError`.
 import Eco.IO.Error as IOErr exposing (IOError)
 
 
-{-| A structured process-spawn error.
+{-| A failed attempt to spawn a process, classified by what it says about the
+command.
+
+`CommandNotFound` and `CommandNotExecutable` carry the command string given to
+`decodeProcessError` or `ofKernelTuple`, not the path the failure reported.
+
+`SpawnIOError` is a failure with any other tag, held as the `IOError` that
+`Eco.IO.Error.decodeIOError` gives for it.
+
+`OtherProcessError` carries a message, which `toString` returns unchanged.
+Nothing in this module produces it.
+
 -}
 type ProcessError
     = CommandNotFound String
@@ -30,7 +46,12 @@ type ProcessError
     | OtherProcessError String
 
 
-{-| Map the neutral IO error record into a `ProcessError`, given the command.
+{-| Classifies `raw`, a failure reported while spawning `cmd`.
+
+Tag 1 gives `CommandNotFound cmd` and tag 2 gives `CommandNotExecutable cmd`;
+for these the path and message in `raw` are dropped. Any other tag gives
+`SpawnIOError` holding `Eco.IO.Error.decodeIOError raw`.
+
 -}
 decodeProcessError : String -> IOErr.RawIOError -> ProcessError
 decodeProcessError cmd raw =
@@ -45,15 +66,21 @@ decodeProcessError cmd raw =
             SpawnIOError (IOErr.decodeIOError raw)
 
 
-{-| Convenience: decode straight from the kernel failure tuple, given the
-command being spawned.
+{-| Classifies a failure tuple `( tag, path, message )` reported while spawning
+`cmd`, as `decodeProcessError` does.
 -}
 ofKernelTuple : String -> ( Int, String, String ) -> ProcessError
 ofKernelTuple cmd tuple =
     decodeProcessError cmd (IOErr.fromKernel tuple)
 
 
-{-| A short human-readable description, for embedding in larger messages.
+{-| Returns a short description of `err`.
+
+`CommandNotFound` and `CommandNotExecutable` give `"command not found: "` and
+`"command not executable: "` followed by the command. `SpawnIOError` gives what
+`Eco.IO.Error.toString` gives for its `IOError`, and `OtherProcessError` gives
+its message unchanged.
+
 -}
 toString : ProcessError -> String
 toString err =

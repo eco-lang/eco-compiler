@@ -1,6 +1,29 @@
 module Compiler.Elm.Interface.JsArray exposing (jsArrayInterface)
 
-{-| Interface for Elm.JsArray module types and functions used in tests.
+{-| A test program that imports `Elm.JsArray` needs an interface for that module
+to be canonicalized against, and this module supplies a hand-written one in
+place of one compiled from elm/core.
+
+An interface is what a compiled module offers to the modules that import it:
+the type annotation of each exposed value, and its unions, aliases and
+operators. `jsArrayInterface` is that record for `Elm.JsArray`, the elm/core
+module that defines the `JsArray` type.
+
+It is a mock, and it differs from the elm/core source that
+`Compiler.Elm.Source.JsArray` carries in three ways.
+
+  - It declares only eight functions: `empty`, `push`, `length`, `slice`,
+    `foldl`, `foldr`, `initializeFromList` and `map`. Others in that source,
+    such as `singleton`, `initialize` and `unsafeGet`, are not in it.
+  - Its `JsArray a` has a single constructor, `JsArray_elm_builtin`, which
+    takes no arguments, so the `a` appears in no constructor. The source
+    declares `type JsArray a = JsArray a`.
+  - The union is open, so a module importing this interface sees its
+    constructor. The source exposes `JsArray` without its constructor.
+
+Each function's annotation quantifies over every type variable in its type,
+which `mkAnnotation` finds with `collectFreeVars`.
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -12,7 +35,8 @@ import Compiler.Elm.Package as Pkg
 import Dict exposing (Dict)
 
 
-{-| Canonical module name for Elm.JsArray (kernel module).
+{-| The canonical name of the module `Elm.JsArray` in the `elm/core` package,
+which is the home of the `JsArray` type.
 -}
 jsArrayModuleName : Canonical
 jsArrayModuleName =
@@ -25,7 +49,9 @@ jsArrayModuleName =
 -- ============================================================================
 
 
-{-| The JsArray module interface containing JsArray types and functions.
+{-| The mock interface of `Elm.JsArray`: the eight functions of `jsArrayValues`
+and the `JsArray` union, with no aliases or operators, in the `elm/core`
+package.
 -}
 jsArrayInterface : I.Interface
 jsArrayInterface =
@@ -38,7 +64,9 @@ jsArrayInterface =
         }
 
 
-{-| Collect all free type variables from a canonical type.
+{-| Returns the name of every type variable that occurs in `tipe`, including the
+extension variable of an extensible record. For an alias, the variables of its
+arguments and of its body are both collected.
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
@@ -88,7 +116,8 @@ collectFreeVars tipe =
                     Dict.union argVars (collectFreeVars t)
 
 
-{-| Helper to create a value annotation.
+{-| Returns an annotation of `tipe` that quantifies over every type variable in
+it.
 -}
 mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
@@ -101,33 +130,45 @@ mkAnnotation tipe =
 -- ============================================================================
 
 
+{-| The type variable `a`, the element type of `JsArray a` and `List a` in these
+signatures.
+-}
 aVar : Can.Type Name
 aVar =
     Can.TVar "a"
 
 
+{-| The type variable `b`, the accumulator of the folds and the element type of
+the array `map` returns.
+-}
 bVar : Can.Type Name
 bVar =
     Can.TVar "b"
 
 
+{-| The type `Int` from `Basics`.
+-}
 intType : Can.Type Name
 intType =
     Can.TType ModuleName.basics "Int" []
 
 
-{-| JsArray a
+{-| The type `JsArray a`.
 -}
 jsArrayA : Can.Type Name
 jsArrayA =
     Can.TType jsArrayModuleName "JsArray" [ aVar ]
 
 
+{-| The type `JsArray b`, which `map` returns.
+-}
 jsArrayB : Can.Type Name
 jsArrayB =
     Can.TType jsArrayModuleName "JsArray" [ bVar ]
 
 
+{-| The type `List a`, which `initializeFromList` takes and returns.
+-}
 listA : Can.Type Name
 listA =
     Can.TType ModuleName.list "List" [ aVar ]
@@ -139,10 +180,8 @@ listA =
 -- ============================================================================
 
 
-{-| JsArray union type definition.
-
-type JsArray a = JsArray\_elm\_builtin
-
+{-| The unions of the mock module, of which there is one: `JsArray a`, open,
+with a single constructor `JsArray_elm_builtin` that takes no arguments.
 -}
 jsArrayUnions : Dict Name I.Union
 jsArrayUnions =
@@ -174,7 +213,8 @@ jsArrayUnions =
 -- ============================================================================
 
 
-{-| JsArray function values.
+{-| The annotations of the eight functions the mock module exposes, keyed by
+name.
 -}
 jsArrayValues : Dict Name (Can.Annotation Name)
 jsArrayValues =

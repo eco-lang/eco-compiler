@@ -1,6 +1,53 @@
 module SourceIR.BinopCases exposing (expectSuite)
 
-{-| Tests for binary operator expressions.
+{-| Programs that use binary operators, for a compiler stage's tests to run
+through. They exercise a stage on operators used alone, in chains, inside
+other expressions, and with operands that are themselves compound
+expressions.
+
+This module only builds the programs. What is checked about each one is
+decided by the expectation function given to `expectSuite`, so nothing here
+asserts how an operator is compiled. Each program is built with
+`Compiler.AST.SourceBuilder.makeModule`, whose docstring gives the module it
+makes; the expression under test is the body of its one value, `testValue`.
+An operator chain is built with `binopsExpr`, which stores the chain flat,
+with no precedence applied.
+
+The programs, by section:
+
+  - Arithmetic: `1 + 2`, `5 - 3`, `4 * 5`, `10 // 3` and `10 % 3` on `Int`
+    literals, and `10.0 / 2.0` and `2.0 ^ 3.0` on `Float` literals. elm/core
+    has no `%` operator, so that program only resolves against a `Basics`
+    interface that declares one.
+  - Comparison: `1 == 1`, `1 /= 2`, `1 < 2`, `2 > 1`, `1 <= 1` and `2 >= 1`
+    on `Int` literals, and `"a" < "b"`.
+  - Logical: `True && False`, `True || False`, `True && True && True` and
+    `False || False || True`.
+  - String append: `"hello" ++ " world"`, `"a" ++ "b" ++ "c"` and
+    `"" ++ "test"`.
+  - List: `[ 1, 2 ] ++ [ 3, 4 ]`, `1 :: [ 2, 3 ]` and `42 :: []`.
+  - Chains of more than one operator, with no parentheses: `1 + 2 + 3`,
+    `1 + 2 * 3`, `1 + 2 + 3 + 4 + 5` and `1 + 2 - 3 * 4`.
+  - Operators inside other expressions: `( 1 + 2, 3 )`, `[ 1 + 2, 3 ]`,
+    `( 1 + 2, 3 * 4 )`, `x + y` with `x` and `y` bound by a `let`, `-1 + 2`,
+    and `(1 + 2) * (3 + 4)`.
+  - Operators with compound operands: `f 1 + 2` with `f x = x` bound by a
+    `let`, `r.x + r.y` with `r = { x = 1, y = 2 }` bound by a `let`,
+    `(if True then 1 else 0) + 2`, `x + 2` in the body of a `let` that binds
+    `x = 1`, and `(1 + 2) * 3`.
+
+Two of these programs have a shape the parser never produces. In
+`(1 + 2) * (3 + 4)` the two inner chains, and in `(if True then 1 else 0) + 2`
+the `if`, are operands of the chain directly, with no `Parens` node around
+them. A chain the parser builds never has another chain as an operand, and has
+an `if` only as its last operand. `(1 + 2) * 3` is the one program whose
+parenthesised operand has a `Parens` node.
+
+Among what is not tested: the pipe operators `|>` and `<|`, the composition
+operators `>>` and `<<`, an operator used as a function such as `(+)`, a
+comparison of `Float` values, and a chain of non-associative operators such as
+`1 < 2 < 3`.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -30,12 +77,21 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Binary operator expressions " followed by
+`condStr`, that applies `expectFn` to every program in this module, in the
+order of the sections. It is run with `Compiler.BulkCheck.bulkCheck`, so a
+failure names the first program whose expectation fails, and the programs
+after it are not run.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Binary operator expressions " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in this module, each a label and the application of
+`expectFn` to its program, section by section.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -52,10 +108,12 @@ testCases expectFn =
 
 
 -- ============================================================================
--- ARITHMETIC BINOPS (8 tests)
+-- ARITHMETIC BINOPS
 -- ============================================================================
 
 
+{-| Returns the cases that apply each arithmetic operator once.
+-}
 arithmeticBinopCases : (Src.Module -> Expectation) -> List TestCase
 arithmeticBinopCases expectFn =
     [ { label = "Simple addition", run = simpleAddition expectFn }
@@ -68,6 +126,8 @@ arithmeticBinopCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program `1 + 2`.
+-}
 simpleAddition : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleAddition expectFn _ =
     let
@@ -77,6 +137,8 @@ simpleAddition expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `5 - 3`.
+-}
 simpleSubtraction : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleSubtraction expectFn _ =
     let
@@ -86,6 +148,8 @@ simpleSubtraction expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `4 * 5`.
+-}
 simpleMultiplication : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleMultiplication expectFn _ =
     let
@@ -95,6 +159,8 @@ simpleMultiplication expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `10.0 / 2.0`.
+-}
 simpleDivision : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleDivision expectFn _ =
     let
@@ -104,6 +170,8 @@ simpleDivision expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `10 // 3`.
+-}
 integerDivision : (Src.Module -> Expectation) -> (() -> Expectation)
 integerDivision expectFn _ =
     let
@@ -113,6 +181,10 @@ integerDivision expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `10 % 3`. `%` is not an elm/core
+operator, so the program only resolves against a `Basics` interface that
+declares one.
+-}
 moduloOp : (Src.Module -> Expectation) -> (() -> Expectation)
 moduloOp expectFn _ =
     let
@@ -122,6 +194,8 @@ moduloOp expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `2.0 ^ 3.0`.
+-}
 powerOp : (Src.Module -> Expectation) -> (() -> Expectation)
 powerOp expectFn _ =
     let
@@ -133,10 +207,13 @@ powerOp expectFn _ =
 
 
 -- ============================================================================
--- COMPARISON BINOPS (8 tests)
+-- COMPARISON BINOPS
 -- ============================================================================
 
 
+{-| Returns the cases that apply one comparison operator each: all six on
+`Int` literals, and `<` again on `String` literals.
+-}
 comparisonBinopCases : (Src.Module -> Expectation) -> List TestCase
 comparisonBinopCases expectFn =
     [ { label = "Equals", run = equalsOp expectFn }
@@ -149,6 +226,8 @@ comparisonBinopCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program `1 == 1`.
+-}
 equalsOp : (Src.Module -> Expectation) -> (() -> Expectation)
 equalsOp expectFn _ =
     let
@@ -158,6 +237,8 @@ equalsOp expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `1 /= 2`.
+-}
 notEqualsOp : (Src.Module -> Expectation) -> (() -> Expectation)
 notEqualsOp expectFn _ =
     let
@@ -167,6 +248,8 @@ notEqualsOp expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `1 < 2`.
+-}
 lessThan : (Src.Module -> Expectation) -> (() -> Expectation)
 lessThan expectFn _ =
     let
@@ -176,6 +259,8 @@ lessThan expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `2 > 1`.
+-}
 greaterThan : (Src.Module -> Expectation) -> (() -> Expectation)
 greaterThan expectFn _ =
     let
@@ -185,6 +270,8 @@ greaterThan expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `1 <= 1`.
+-}
 lessThanOrEqual : (Src.Module -> Expectation) -> (() -> Expectation)
 lessThanOrEqual expectFn _ =
     let
@@ -194,6 +281,8 @@ lessThanOrEqual expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `2 >= 1`.
+-}
 greaterThanOrEqual : (Src.Module -> Expectation) -> (() -> Expectation)
 greaterThanOrEqual expectFn _ =
     let
@@ -203,6 +292,9 @@ greaterThanOrEqual expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `"a" < "b"`, a comparison of two
+`String` literals.
+-}
 compareOnStrings : (Src.Module -> Expectation) -> (() -> Expectation)
 compareOnStrings expectFn _ =
     let
@@ -214,10 +306,13 @@ compareOnStrings expectFn _ =
 
 
 -- ============================================================================
--- LOGICAL BINOPS (6 tests)
+-- LOGICAL BINOPS
 -- ============================================================================
 
 
+{-| Returns the cases that use `&&` and `||`, once each and in chains of
+three operands.
+-}
 logicalBinopCases : (Src.Module -> Expectation) -> List TestCase
 logicalBinopCases expectFn =
     [ { label = "And", run = andOp expectFn }
@@ -227,6 +322,8 @@ logicalBinopCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program `True && False`.
+-}
 andOp : (Src.Module -> Expectation) -> (() -> Expectation)
 andOp expectFn _ =
     let
@@ -236,6 +333,8 @@ andOp expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `True || False`.
+-}
 orOp : (Src.Module -> Expectation) -> (() -> Expectation)
 orOp expectFn _ =
     let
@@ -245,6 +344,8 @@ orOp expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `True && True && True`.
+-}
 chainedAnd : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedAnd expectFn _ =
     let
@@ -260,6 +361,8 @@ chainedAnd expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `False || False || True`.
+-}
 chainedOr : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedOr expectFn _ =
     let
@@ -277,10 +380,12 @@ chainedOr expectFn _ =
 
 
 -- ============================================================================
--- STRING BINOPS (4 tests)
+-- STRING BINOPS
 -- ============================================================================
 
 
+{-| Returns the cases that append `String` literals with `++`.
+-}
 stringBinopCases : (Src.Module -> Expectation) -> List TestCase
 stringBinopCases expectFn =
     [ { label = "String concat", run = stringConcat expectFn }
@@ -289,6 +394,8 @@ stringBinopCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program `"hello" ++ " world"`.
+-}
 stringConcat : (Src.Module -> Expectation) -> (() -> Expectation)
 stringConcat expectFn _ =
     let
@@ -298,6 +405,8 @@ stringConcat expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `"a" ++ "b" ++ "c"`.
+-}
 multipleStringConcat : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleStringConcat expectFn _ =
     let
@@ -313,6 +422,9 @@ multipleStringConcat expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `"" ++ "test"`, whose left operand is
+the empty string.
+-}
 stringConcatWithEmpty : (Src.Module -> Expectation) -> (() -> Expectation)
 stringConcatWithEmpty expectFn _ =
     let
@@ -324,10 +436,12 @@ stringConcatWithEmpty expectFn _ =
 
 
 -- ============================================================================
--- LIST BINOPS (4 tests)
+-- LIST BINOPS
 -- ============================================================================
 
 
+{-| Returns the cases that use `++` on lists and `::`.
+-}
 listBinopCases : (Src.Module -> Expectation) -> List TestCase
 listBinopCases expectFn =
     [ { label = "List append", run = listAppend expectFn }
@@ -336,6 +450,8 @@ listBinopCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program `[ 1, 2 ] ++ [ 3, 4 ]`.
+-}
 listAppend : (Src.Module -> Expectation) -> (() -> Expectation)
 listAppend expectFn _ =
     let
@@ -349,6 +465,8 @@ listAppend expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `1 :: [ 2, 3 ]`.
+-}
 consOperator : (Src.Module -> Expectation) -> (() -> Expectation)
 consOperator expectFn _ =
     let
@@ -362,6 +480,8 @@ consOperator expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `42 :: []`, a cons onto the empty list.
+-}
 consWithConstant : (Src.Module -> Expectation) -> (() -> Expectation)
 consWithConstant expectFn _ =
     let
@@ -377,10 +497,14 @@ consWithConstant expectFn _ =
 
 
 -- ============================================================================
--- CHAINED BINOPS (6 tests)
+-- CHAINED BINOPS
 -- ============================================================================
 
 
+{-| Returns the cases with more than one operator in a chain and no
+parentheses, so that the operators' precedence and associativity decide how
+they group.
+-}
 chainedBinopCases : (Src.Module -> Expectation) -> List TestCase
 chainedBinopCases expectFn =
     [ { label = "Three-element addition chain", run = threeElementAdditionChain expectFn }
@@ -390,6 +514,8 @@ chainedBinopCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program `1 + 2 + 3`.
+-}
 threeElementAdditionChain : (Src.Module -> Expectation) -> (() -> Expectation)
 threeElementAdditionChain expectFn _ =
     let
@@ -405,6 +531,8 @@ threeElementAdditionChain expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `1 + 2 * 3`.
+-}
 mixedArithmeticChain : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedArithmeticChain expectFn _ =
     let
@@ -420,6 +548,8 @@ mixedArithmeticChain expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `1 + 2 + 3 + 4 + 5`.
+-}
 longChain : (Src.Module -> Expectation) -> (() -> Expectation)
 longChain expectFn _ =
     let
@@ -437,6 +567,8 @@ longChain expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `1 + 2 - 3 * 4`.
+-}
 chainWithDifferentOperators : (Src.Module -> Expectation) -> (() -> Expectation)
 chainWithDifferentOperators expectFn _ =
     let
@@ -455,10 +587,13 @@ chainWithDifferentOperators expectFn _ =
 
 
 -- ============================================================================
--- NESTED BINOPS (6 tests)
+-- NESTED BINOPS
 -- ============================================================================
 
 
+{-| Returns the cases with an operator inside a tuple, a list or a `let`,
+applied to a negation, or with operator chains as operands.
+-}
 nestedBinopCases : (Src.Module -> Expectation) -> List TestCase
 nestedBinopCases expectFn =
     [ { label = "Binop in tuple", run = binopInTuple expectFn }
@@ -470,6 +605,8 @@ nestedBinopCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to the program `( 1 + 2, 3 )`.
+-}
 binopInTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 binopInTuple expectFn _ =
     let
@@ -482,6 +619,8 @@ binopInTuple expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `[ 1 + 2, 3 ]`.
+-}
 binopInList : (Src.Module -> Expectation) -> (() -> Expectation)
 binopInList expectFn _ =
     let
@@ -494,6 +633,8 @@ binopInList expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `( 1 + 2, 3 * 4 )`.
+-}
 multipleBinopsInTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleBinopsInTuple expectFn _ =
     let
@@ -509,6 +650,9 @@ multipleBinopsInTuple expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a program whose value is `x + y`, inside a `let`
+that binds `x = 1` and `y = 2`.
+-}
 binopWithVariableOperands : (Src.Module -> Expectation) -> (() -> Expectation)
 binopWithVariableOperands expectFn _ =
     let
@@ -527,6 +671,9 @@ binopWithVariableOperands expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `-1 + 2`, where the left operand is a
+negation of the literal `1`.
+-}
 binopWithNegate : (Src.Module -> Expectation) -> (() -> Expectation)
 binopWithNegate expectFn _ =
     let
@@ -537,6 +684,10 @@ binopWithNegate expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a program meaning `(1 + 2) * (3 + 4)`. The two
+inner chains are operands of the outer one directly, with no `Parens` node
+around them, a shape the parser never produces.
+-}
 complexNestedBinops : (Src.Module -> Expectation) -> (() -> Expectation)
 complexNestedBinops expectFn _ =
     let
@@ -555,10 +706,13 @@ complexNestedBinops expectFn _ =
 
 
 -- ============================================================================
--- BINOP WITH EXPRESSIONS (6 tests)
+-- BINOP WITH EXPRESSIONS
 -- ============================================================================
 
 
+{-| Returns the cases whose operands are a call, a record field access, an
+`if`, a variable bound by a `let`, or a parenthesised chain.
+-}
 binopWithExpressionsCases : (Src.Module -> Expectation) -> List TestCase
 binopWithExpressionsCases expectFn =
     [ { label = "Binop with function call", run = binopWithFunctionCall expectFn }
@@ -569,6 +723,9 @@ binopWithExpressionsCases expectFn =
     ]
 
 
+{-| Applies `expectFn` to a program whose value is `f 1 + 2`, inside a `let`
+that binds `f x = x`.
+-}
 binopWithFunctionCall : (Src.Module -> Expectation) -> (() -> Expectation)
 binopWithFunctionCall expectFn _ =
     let
@@ -587,6 +744,9 @@ binopWithFunctionCall expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a program whose value is `r.x + r.y`, inside a
+`let` that binds `r = { x = 1, y = 2 }`.
+-}
 binopWithRecordAccess : (Src.Module -> Expectation) -> (() -> Expectation)
 binopWithRecordAccess expectFn _ =
     let
@@ -607,6 +767,10 @@ binopWithRecordAccess expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a program meaning `(if True then 1 else 0) + 2`.
+The `if` is the chain's left operand directly, with no `Parens` node around
+it, a shape the parser never produces.
+-}
 binopWithIfExpr : (Src.Module -> Expectation) -> (() -> Expectation)
 binopWithIfExpr expectFn _ =
     let
@@ -620,6 +784,9 @@ binopWithIfExpr expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to a program whose value is `x + 2`, inside a `let`
+that binds `x = 1`.
+-}
 binopInsideLetBody : (Src.Module -> Expectation) -> (() -> Expectation)
 binopInsideLetBody expectFn _ =
     let
@@ -635,6 +802,9 @@ binopInsideLetBody expectFn _ =
     expectFn modul
 
 
+{-| Applies `expectFn` to the program `(1 + 2) * 3`, whose left operand is
+wrapped in a `Parens` node.
+-}
 binopWithParens : (Src.Module -> Expectation) -> (() -> Expectation)
 binopWithParens expectFn _ =
     let

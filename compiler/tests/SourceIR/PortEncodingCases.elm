@@ -1,12 +1,49 @@
 module SourceIR.PortEncodingCases exposing (expectSuite)
 
-{-| Test cases for port encoding/decoding.
+{-| Ports are how an Elm program sends values out and takes values in, and for
+every port a program declares the compiler builds a JSON encoder or decoder
+from the port's type. These cases supply programs whose ports carry many
+different types, so that whatever a caller checks is checked against each of
+those shapes, not only the few an ordinary program would use.
 
-These tests exercise the Compiler.LocalOpt.Typed.Port module to improve coverage of:
+A port module declares ports: typed names with no definition. An _outgoing_
+port has a type `a -> Cmd msg` and sends its argument out. An _incoming_ port
+has a type `(a -> msg) -> Sub msg` and delivers the values that come in. In
+both, `a` is the port's _value type_. Which value types are allowed is decided
+by `Compiler.Canonicalize.Effects`. The typed optimizer builds an encoder for
+each outgoing port and a decoder for each incoming one
+(`Compiler.LocalOpt.Typed.Port`), whether or not the program uses the port.
 
-  - Port encoder generation
-  - Port decoder generation
-  - JSON encoding/decoding for various Elm types through ports
+Every program is a module built by `makePortModule`, so it is named `Test`
+and imports, among others, `Array`, `Json.Encode`, `Json.Decode`,
+`Platform.Cmd` and `Platform.Sub`. Besides its ports it has one top-level
+value, `testValue`, an unannotated integer literal. No program refers to its
+ports, so each port is present only as a declaration.
+
+This module asserts nothing itself. `expectSuite` hands the programs, in
+order, to the expectation function its caller supplies, and stops at the first
+one that function rejects; the caller decides what is checked.
+
+  - Fifteen programs each declare one outgoing port `out`, with value type
+    `Int`, `Float`, `Bool`, `String`, `Maybe Int`, `Maybe String`,
+    `List Int`, `List String`, `( Int, String )`, `( Int, ( String, Bool ) )`,
+    `{ x : Int, y : Int }`, `{ pos : { x : Int, y : Int } }`,
+    `{ items : List Int }`, `List { x : Int }` or `Maybe { x : Int }`. The
+    case labelled "Encode Tuple3" is the nested pair, not a three-element
+    tuple.
+  - Thirteen programs each declare one incoming port `inp`, with value type
+    `Int`, `Float`, `Bool`, `String`, `Maybe Int`, `List Int`,
+    `( Int, String )`, `{ x : Int }`, `{ pos : { x : Int } }`,
+    `{ a : Int, b : String, c : Bool }`, `List { x : Int }`,
+    `Maybe { x : Int }` or `Maybe (Maybe Int)`.
+  - Five programs go further: three outgoing ports in one module, an outgoing
+    `Array Int`, an outgoing and an incoming port in one module, an outgoing
+    `List (Maybe (List { x : Int, y : List String }))`, and an outgoing record
+    that holds a record and a list of records.
+
+Among what is not tested: a `Json.Encode.Value` or `Json.Decode.Value` value
+type, a three-element tuple, an incoming `Array`, and a program that sends on
+a port or subscribes to one.
 
 -}
 
@@ -29,12 +66,21 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Returns one test, named "Port encoding " followed by `condStr`, that gives
+the programs here to `expectFn` in order and passes when `expectFn` accepts
+them all. It stops at the first program `expectFn` rejects and names only that
+case, as `Compiler.BulkCheck.bulkCheck` describes.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Port encoding " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Lists every case: the outgoing-port cases, then the incoming-port cases,
+then the cases with several ports, an `Array` value type, or a deeply nested
+value type, each checked with `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -50,6 +96,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Lists the cases that each declare one outgoing port `out`, one per value
+type.
+-}
 encoderCases : (Src.Module -> Expectation) -> List TestCase
 encoderCases expectFn =
     [ { label = "Encode Int", run = encodeInt expectFn }
@@ -68,13 +117,13 @@ encoderCases expectFn =
     , { label = "Encode List Of Records", run = encodeListOfRecords expectFn }
     , { label = "Encode Maybe Record", run = encodeMaybeRecord expectFn }
 
-    -- Note: Json.Value tests require special handling for ambiguous Value type resolution
-    -- from both Json.Encode and Json.Decode. Skipped for now.
-    -- , { label = "Encode Json Value", run = encodeJsonValue expectFn }
+    -- No case carries a Value: both Json modules are imported with everything
+    -- exposed and each has its own Value, so an unqualified Value is ambiguous.
     ]
 
 
-{-| port out : Int -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : Int -> Cmd msg`.
 -}
 encodeInt : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeInt expectFn _ =
@@ -91,7 +140,8 @@ encodeInt expectFn _ =
     expectFn modul
 
 
-{-| port out : Float -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : Float -> Cmd msg`.
 -}
 encodeFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeFloat expectFn _ =
@@ -108,7 +158,8 @@ encodeFloat expectFn _ =
     expectFn modul
 
 
-{-| port out : Bool -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : Bool -> Cmd msg`.
 -}
 encodeBool : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeBool expectFn _ =
@@ -125,7 +176,8 @@ encodeBool expectFn _ =
     expectFn modul
 
 
-{-| port out : String -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : String -> Cmd msg`.
 -}
 encodeString : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeString expectFn _ =
@@ -142,7 +194,8 @@ encodeString expectFn _ =
     expectFn modul
 
 
-{-| port out : Maybe Int -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : Maybe Int -> Cmd msg`.
 -}
 encodeMaybeInt : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeMaybeInt expectFn _ =
@@ -159,7 +212,8 @@ encodeMaybeInt expectFn _ =
     expectFn modul
 
 
-{-| port out : Maybe String -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : Maybe String -> Cmd msg`.
 -}
 encodeMaybeString : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeMaybeString expectFn _ =
@@ -176,7 +230,8 @@ encodeMaybeString expectFn _ =
     expectFn modul
 
 
-{-| port out : List Int -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : List Int -> Cmd msg`.
 -}
 encodeListInt : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeListInt expectFn _ =
@@ -193,7 +248,8 @@ encodeListInt expectFn _ =
     expectFn modul
 
 
-{-| port out : List String -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : List String -> Cmd msg`.
 -}
 encodeListString : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeListString expectFn _ =
@@ -210,7 +266,8 @@ encodeListString expectFn _ =
     expectFn modul
 
 
-{-| port out : (Int, String) -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : ( Int, String ) -> Cmd msg`.
 -}
 encodeTuple2 : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeTuple2 expectFn _ =
@@ -227,12 +284,13 @@ encodeTuple2 expectFn _ =
     expectFn modul
 
 
-{-| port out : (Int, String, Bool) -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : ( Int, ( String, Bool ) ) -> Cmd msg`. The value type is a pair whose
+second element is a pair, because `tTuple` builds only pairs.
 -}
 encodeTuple3 : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeTuple3 expectFn _ =
     let
-        -- Note: Using nested tuples to simulate 3-tuple since tTuple only takes 2 args
         outPort : PortDef
         outPort =
             { name = "out"
@@ -245,7 +303,8 @@ encodeTuple3 expectFn _ =
     expectFn modul
 
 
-{-| port out : { x : Int, y : Int } -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : { x : Int, y : Int } -> Cmd msg`.
 -}
 encodeSimpleRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeSimpleRecord expectFn _ =
@@ -265,7 +324,8 @@ encodeSimpleRecord expectFn _ =
     expectFn modul
 
 
-{-| port out : { pos : { x : Int, y : Int } } -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : { pos : { x : Int, y : Int } } -> Cmd msg`.
 -}
 encodeNestedRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeNestedRecord expectFn _ =
@@ -285,7 +345,8 @@ encodeNestedRecord expectFn _ =
     expectFn modul
 
 
-{-| port out : { items : List Int } -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : { items : List Int } -> Cmd msg`.
 -}
 encodeRecordWithList : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeRecordWithList expectFn _ =
@@ -305,7 +366,8 @@ encodeRecordWithList expectFn _ =
     expectFn modul
 
 
-{-| port out : List { x : Int } -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : List { x : Int } -> Cmd msg`.
 -}
 encodeListOfRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeListOfRecords expectFn _ =
@@ -325,7 +387,8 @@ encodeListOfRecords expectFn _ =
     expectFn modul
 
 
-{-| port out : Maybe { x : Int } -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : Maybe { x : Int } -> Cmd msg`.
 -}
 encodeMaybeRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeMaybeRecord expectFn _ =
@@ -351,6 +414,9 @@ encodeMaybeRecord expectFn _ =
 -- ============================================================================
 
 
+{-| Lists the cases that each declare one incoming port `inp`, one per value
+type.
+-}
 decoderCases : (Src.Module -> Expectation) -> List TestCase
 decoderCases expectFn =
     [ { label = "Decode Int", run = decodeInt expectFn }
@@ -365,22 +431,23 @@ decoderCases expectFn =
     , { label = "Decode Record Multi Field", run = decodeRecordMultiField expectFn }
     , { label = "Decode List Of Records", run = decodeListOfRecords expectFn }
     , { label = "Decode Maybe Record", run = decodeMaybeRecord expectFn }
-
-    -- Note: Json.Value tests require special handling for ambiguous Value type resolution
-    -- from both Json.Encode and Json.Decode. Skipped for now.
-    -- , { label = "Decode Json Value", run = decodeJsonValue expectFn }
     , { label = "Decode Nested Maybe", run = decodeNestedMaybe expectFn }
+
+    -- No case carries a Value: both Json modules are imported with everything
+    -- exposed and each has its own Value, so an unqualified Value is ambiguous.
     ]
 
 
-{-| Helper to create incoming port type: (valueType -> msg) -> Sub msg
+{-| Builds the type of an incoming port whose value type is `valueType`:
+`(valueType -> msg) -> Sub msg`.
 -}
 incomingPortType : Src.Type -> Src.Type
 incomingPortType valueType =
     tLambda (tLambda valueType (tVar "msg")) (tSub (tVar "msg"))
 
 
-{-| port inp : (Int -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (Int -> msg) -> Sub msg`.
 -}
 decodeInt : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeInt expectFn _ =
@@ -397,7 +464,8 @@ decodeInt expectFn _ =
     expectFn modul
 
 
-{-| port inp : (Float -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (Float -> msg) -> Sub msg`.
 -}
 decodeFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeFloat expectFn _ =
@@ -414,7 +482,8 @@ decodeFloat expectFn _ =
     expectFn modul
 
 
-{-| port inp : (Bool -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (Bool -> msg) -> Sub msg`.
 -}
 decodeBool : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeBool expectFn _ =
@@ -431,7 +500,8 @@ decodeBool expectFn _ =
     expectFn modul
 
 
-{-| port inp : (String -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (String -> msg) -> Sub msg`.
 -}
 decodeString : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeString expectFn _ =
@@ -448,7 +518,8 @@ decodeString expectFn _ =
     expectFn modul
 
 
-{-| port inp : (Maybe Int -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (Maybe Int -> msg) -> Sub msg`.
 -}
 decodeMaybeInt : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeMaybeInt expectFn _ =
@@ -465,7 +536,8 @@ decodeMaybeInt expectFn _ =
     expectFn modul
 
 
-{-| port inp : (List Int -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (List Int -> msg) -> Sub msg`.
 -}
 decodeListInt : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeListInt expectFn _ =
@@ -482,7 +554,8 @@ decodeListInt expectFn _ =
     expectFn modul
 
 
-{-| port inp : ((Int, String) -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (( Int, String ) -> msg) -> Sub msg`.
 -}
 decodeTuple2 : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeTuple2 expectFn _ =
@@ -499,7 +572,8 @@ decodeTuple2 expectFn _ =
     expectFn modul
 
 
-{-| port inp : ({ x : Int } -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : ({ x : Int } -> msg) -> Sub msg`.
 -}
 decodeSimpleRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeSimpleRecord expectFn _ =
@@ -516,7 +590,8 @@ decodeSimpleRecord expectFn _ =
     expectFn modul
 
 
-{-| port inp : ({ pos : { x : Int } } -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : ({ pos : { x : Int } } -> msg) -> Sub msg`.
 -}
 decodeNestedRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeNestedRecord expectFn _ =
@@ -533,7 +608,8 @@ decodeNestedRecord expectFn _ =
     expectFn modul
 
 
-{-| port inp : ({ a : Int, b : String, c : Bool } -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : ({ a : Int, b : String, c : Bool } -> msg) -> Sub msg`.
 -}
 decodeRecordMultiField : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeRecordMultiField expectFn _ =
@@ -557,7 +633,8 @@ decodeRecordMultiField expectFn _ =
     expectFn modul
 
 
-{-| port inp : (List { x : Int } -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (List { x : Int } -> msg) -> Sub msg`.
 -}
 decodeListOfRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeListOfRecords expectFn _ =
@@ -574,7 +651,8 @@ decodeListOfRecords expectFn _ =
     expectFn modul
 
 
-{-| port inp : (Maybe { x : Int } -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (Maybe { x : Int } -> msg) -> Sub msg`.
 -}
 decodeMaybeRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeMaybeRecord expectFn _ =
@@ -591,7 +669,8 @@ decodeMaybeRecord expectFn _ =
     expectFn modul
 
 
-{-| port inp : (Maybe (Maybe Int) -> msg) -> Sub msg
+{-| Passes `expectFn` a module declaring the incoming port
+`inp : (Maybe (Maybe Int) -> msg) -> Sub msg`.
 -}
 decodeNestedMaybe : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeNestedMaybe expectFn _ =
@@ -614,6 +693,9 @@ decodeNestedMaybe expectFn _ =
 -- ============================================================================
 
 
+{-| Lists the cases with several ports in one module, an `Array` value type, or a
+deeply nested value type.
+-}
 complexPortCases : (Src.Module -> Expectation) -> List TestCase
 complexPortCases expectFn =
     [ { label = "Multiple ports", run = multiplePorts expectFn }
@@ -624,7 +706,9 @@ complexPortCases expectFn =
     ]
 
 
-{-| Multiple outgoing ports in one module
+{-| Passes `expectFn` a module declaring three outgoing ports:
+`sendInt : Int -> Cmd msg`, `sendString : String -> Cmd msg` and
+`sendBool : Bool -> Cmd msg`.
 -}
 multiplePorts : (Src.Module -> Expectation) -> (() -> Expectation)
 multiplePorts expectFn _ =
@@ -653,7 +737,8 @@ multiplePorts expectFn _ =
     expectFn modul
 
 
-{-| port out : Array Int -> Cmd msg
+{-| Passes `expectFn` a module declaring the outgoing port
+`out : Array Int -> Cmd msg`.
 -}
 portWithArray : (Src.Module -> Expectation) -> (() -> Expectation)
 portWithArray expectFn _ =
@@ -670,7 +755,9 @@ portWithArray expectFn _ =
     expectFn modul
 
 
-{-| Both incoming and outgoing ports
+{-| Passes `expectFn` a module declaring the outgoing port
+`sendData : Int -> Cmd msg` and the incoming port
+`receiveData : (Int -> msg) -> Sub msg`.
 -}
 bidirectionalPorts : (Src.Module -> Expectation) -> (() -> Expectation)
 bidirectionalPorts expectFn _ =
@@ -693,12 +780,12 @@ bidirectionalPorts expectFn _ =
     expectFn modul
 
 
-{-| Deeply nested type through port
+{-| Passes `expectFn` a module declaring the outgoing port `out` with value type
+`List (Maybe (List { x : Int, y : List String }))`.
 -}
 portWithDeepNesting : (Src.Module -> Expectation) -> (() -> Expectation)
 portWithDeepNesting expectFn _ =
     let
-        -- List (Maybe (List { x : Int, y : List String }))
         deepType =
             tType "List"
                 [ tType "Maybe"
@@ -723,12 +810,12 @@ portWithDeepNesting expectFn _ =
     expectFn modul
 
 
-{-| Multiple record types through port
+{-| Passes `expectFn` a module declaring the outgoing port `out` with value type
+`{ user : { name : String, age : Int }, items : List { id : Int, name : String } }`.
 -}
 portWithMultipleRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 portWithMultipleRecords expectFn _ =
     let
-        -- { user : { name : String, age : Int }, items : List { id : Int, name : String } }
         complexRecordType =
             tRecord
                 [ ( "user"

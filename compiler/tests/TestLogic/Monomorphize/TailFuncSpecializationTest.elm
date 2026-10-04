@@ -1,17 +1,42 @@
 module TestLogic.Monomorphize.TailFuncSpecializationTest exposing (suite)
 
-{-| Test suite for invariant MONO\_TAILFUNC\_001: TailFunc specialization types match annotation.
+{-| Pins the types the monomorphizer gives a tail-recursive top-level function,
+so that a specialization whose parameter types or function type disagree with
+the function's annotation does not go unnoticed.
 
-This test verifies that for tail-recursive functions:
+The substitution engine, which these tests run, specializes a tail-recursive
+top-level function to a `Mono.MonoTailFunc` node. The node carries the
+function's parameters, each with its `MonoType`, and one `MonoType` for the
+whole function, not only for its result. The first test expects that
+whole-function type to be _nested_: one `MFunction` per arrow of the
+annotation, each taking one parameter, so `Int -> Int -> Int` is
+`MFunction [MInt] (MFunction [MInt] MInt)` rather than the flattened
+`MFunction [MInt, MInt] MInt`.
 
-1.  When we build a `MonoType` from argument types and return type,
-    the resulting type matches what the monomorphizer produces.
+The fixture, `sumHelperModule`, is a module with two annotated definitions:
+`sumHelper : Int -> Int -> Int`, which adds `n` down to zero into the
+accumulator `acc` and calls itself in tail position, and `testValue`, which
+calls `sumHelper 0 10`. It is run through `TestLogic.TestPipeline.runToMono`;
+the `TestLogic.TestPipeline` module docstring says how the synthetic `main` it
+adds makes `testValue` reachable.
 
-2.  The MonoTailFunc node's argument count and return type match
-    the expected monomorphized function type.
+The tests establish:
 
-Note: Under the stage-aware design, Mono.mFunction types are nested (one per TLambda),
-not flattened. For `Int -> Int -> Int`, we get `Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt)`.
+  - "sumHelper MonoTailFunc has nested ...": the first `MonoTailFunc` node in
+    the graph has two parameters, each of type `MInt`, and its function type
+    is `MFunction [MInt] (MFunction [MInt] MInt)`. Types are compared by
+    `monoTypesMatch`, which ignores lambda-set annotations.
+  - "MonoTailFunc arg count matches expected arity": the first `MonoTailFunc`
+    node in the graph has two parameters.
+
+Both fail when the pipeline fails or the graph has no `MonoTailFunc` node.
+
+Among what is not tested: that the node checked is `sumHelper`'s, since both
+take the first `MonoTailFunc` node whatever its name (`sumHelper` is the
+fixture's only tail-recursive definition); the lambda-set annotations on the
+arrows; the node's body; a polymorphic tail-recursive function, or one
+specialized at more than one type; the solver engine; and the graph after
+global optimization.
 
 -}
 
@@ -36,6 +61,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The two tail-function specialization tests, described in the module
+docstring.
+-}
 suite : Test
 suite =
     Test.describe "MonoTailFunc specialization type invariants (MONO_TAILFUNC_001)"
@@ -48,11 +76,11 @@ suite =
 
 
 -- ============================================================================
--- TEST: sumHelper : Int -> Int -> Int -> MonoType
+-- FIXTURE AND TESTS
 -- ============================================================================
 
 
-{-| Create a tail-recursive sumHelper function with explicit type annotation.
+{-| The fixture: a module named `Test` holding these two definitions.
 
     sumHelper : Int -> Int -> Int
     sumHelper acc n =
@@ -62,13 +90,17 @@ suite =
         else
             sumHelper (acc + n) (n - 1)
 
-Expected MonoType: Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt)
+    testValue : Int
+    testValue =
+        sumHelper 0 10
+
+`testValue` calls `sumHelper` at `Int`, which is what makes `sumHelper`
+reachable and so specialized.
 
 -}
 sumHelperModule : Src.Module
 sumHelperModule =
     let
-        -- Type: Int -> Int -> Int
         intType =
             tType "Int" []
 
@@ -93,20 +125,14 @@ sumHelperModule =
           , args = []
           , tipe = intType
           , body =
-                -- Call sumHelper with concrete Int args to trigger monomorphization
                 callExpr (varExpr "sumHelper") [ intExpr 0, intExpr 10 ]
           }
         ]
 
 
-{-| Check that the MonoTailFunc node has the expected MonoType.
-
-For sumHelper : Int -> Int -> Int, we expect:
-
-  - MonoTailFunc with 2 arguments (acc: MInt, n: MInt)
-  - Return type: MInt
-  - Overall function type: Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt)
-
+{-| Runs the fixture to monomorphization and checks its first `MonoTailFunc`
+node's parameter and function types with `checkMonoTailFuncType`, failing if
+the pipeline fails.
 -}
 checkSumHelperMono : Expectation
 checkSumHelperMono =
@@ -118,7 +144,8 @@ checkSumHelperMono =
             checkMonoTailFuncType "sumHelper" monoGraph
 
 
-{-| Check the MonoTailFunc argument count matches expected arity.
+{-| Runs the fixture to monomorphization and checks that its first
+`MonoTailFunc` node has two parameters, failing if the pipeline fails.
 -}
 checkMonoTailFuncArity : Expectation
 checkMonoTailFuncArity =
@@ -136,18 +163,21 @@ checkMonoTailFuncArity =
 -- ============================================================================
 
 
-{-| Check MonoTailFunc types against expected values.
+{-| Passes when the first `MonoTailFunc` node in the graph has the types of
+`sumHelper : Int -> Int -> Int`: exactly two parameters, each matching `MInt`,
+and a function type matching `MFunction [MInt] (MFunction [MInt] MInt)`.
+Otherwise it fails with every mismatch found, and a wrong parameter count
+skips the comparison of parameter types.
 
-For sumHelper : Int -> Int -> Int, we expect:
-
-  - MonoTailFunc with 2 arguments (acc: MInt, n: MInt)
-  - MonoType field: Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt) (nested per stage-aware design)
+The expected types are fixed here, not derived from an argument, and the node
+is the first `MonoTailFunc` in node order whatever its name: `funcName` is used
+only in the message when the graph has no such node. Types are compared with
+`monoTypesMatch`, so lambda-set annotations are ignored.
 
 -}
 checkMonoTailFuncType : String -> Mono.MonoGraph -> Expectation
 checkMonoTailFuncType funcName (Mono.MonoGraph data) =
     let
-        -- Find MonoTailFunc node(s)
         tailFuncNodes =
             Array.toList data.nodes
                 |> List.filterMap
@@ -169,15 +199,12 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                 actualArgTypes =
                     List.map Tuple.second args
 
-                -- Expected for sumHelper : Int -> Int -> Int
                 expectedArgTypes =
                     [ Mono.MInt, Mono.MInt ]
 
-                -- Under stage-aware design, Int -> Int -> Int becomes nested MFunction
                 expectedMonoType =
                     Mono.mFunction Mono.topLegacy [ Mono.MInt ] (Mono.mFunction Mono.topLegacy [ Mono.MInt ] Mono.MInt)
 
-                -- Check argument types
                 argTypeErrors =
                     if List.length actualArgTypes /= List.length expectedArgTypes then
                         [ "Arg count mismatch: expected "
@@ -204,7 +231,7 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                             expectedArgTypes
                             |> List.filterMap identity
 
-                -- Check MonoType field (full function type per MONO_004)
+                -- The node's type is the whole function's type, not its result type.
                 monoTypeError =
                     if monoTypesMatch monoType expectedMonoType then
                         Nothing
@@ -227,12 +254,17 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                 Expect.fail (String.join "; " allErrors)
 
 
-{-| Check that MonoTailFunc has the expected number of arguments.
+{-| Passes when the first `MonoTailFunc` node in the graph has `expectedCount`
+parameters, and fails when it has another number or the graph has no such
+node.
+
+The node is the first `MonoTailFunc` in node order whatever its name:
+`funcName` is used only in the failure messages.
+
 -}
 checkMonoTailFuncArgCount : String -> Int -> Mono.MonoGraph -> Expectation
 checkMonoTailFuncArgCount funcName expectedCount (Mono.MonoGraph data) =
     let
-        -- Find MonoTailFunc node(s)
         tailFuncNodes =
             Array.toList data.nodes
                 |> List.filterMap
@@ -271,7 +303,14 @@ checkMonoTailFuncArgCount funcName expectedCount (Mono.MonoGraph data) =
 -- ============================================================================
 
 
-{-| Check if two MonoTypes match structurally.
+{-| Reports whether two `MonoType`s match, comparing the primitive types by
+constructor and lists and functions structurally, with lambda-set annotations
+ignored.
+
+Two custom types match when their home, name and number of arguments agree,
+whatever the arguments are. Tuples, records and type variables never match
+anything, not even themselves.
+
 -}
 monoTypesMatch : Mono.MonoType -> Mono.MonoType -> Bool
 monoTypesMatch actual expected =
@@ -307,14 +346,16 @@ monoTypesMatch actual expected =
             home1 == home2 && name1 == name2 && List.length args1 == List.length args2
 
         ( Mono.MVar _ _, _ ) ->
-            -- MVar indicates unresolved polymorphism - Bug 1
+            -- A type variable left in a specialized type is a mismatch,
+            -- even against itself.
             False
 
         _ ->
             False
 
 
-{-| Convert a MonoType to a debug string.
+{-| Renders a `MonoType` for a failure message. Lambda-set annotations are
+left out, and record and tuple types are shown without their contents.
 -}
 monoTypeToString : Mono.MonoType -> String
 monoTypeToString monoType =

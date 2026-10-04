@@ -1,16 +1,57 @@
 module SourceIR.FloatMathCases exposing (expectSuite, suite)
 
-{-| Test cases for Float math operations in MLIR codegen.
+{-| Programs that call `Basics` operations on `Float`, one or a few per case,
+so that a compiler stage meets each of them with `Float` arguments or results.
 
-These tests cover:
+The MLIR back end can turn a call to a `Basics` operation into an intrinsic,
+chosen by the operation's name and its monomorphized argument types in the
+private `basicsIntrinsic` of `Compiler.Generate.MLIR.Intrinsics`. That function
+gives an intrinsic for every operation these programs call, at the types they
+call it at, except two: its `logBase` row gives none, and it has no row for
+`clamp`. These cases give each operation a small program that calls it at
+those types. Whether a run gets as far as code generation depends on the
+expectation it is given.
 
-  - MLIR.Intrinsics.basicsIntrinsic (38% coverage) - float branches
-  - Basics.pi, Basics.e (constants)
-  - sqrt, sin, cos, tan, asin, acos, atan, atan2
-  - isNaN, isInfinite
-  - round, floor, ceiling, truncate
-  - Float comparisons (<, <=, >, >=)
-  - toFloat
+Every case builds a module named `Test` with
+`makeModuleWithTypedDefsUnionsAliases`, which imports `Basics` with
+`exposing (..)`. The module holds an annotated `testValue` and, in some cases,
+one or two annotated helper functions. Every literal is a `Float`, apart
+from the `Int` 42 given to `toFloat`. Most operations are named qualified, as
+`Basics.sin`; `logBase` and `negate` are named unqualified. Operator chains are
+built with `binopsExpr`, which leaves precedence to canonicalization. Where one
+chain is an operand of another it is placed there directly rather than in
+`parensExpr`, a shape the parser never produces; canonicalization reads the
+inner chain as a single operand.
+
+This module asserts nothing itself. `expectSuite` hands the programs, in
+order, to the caller's expectation until one fails, and `suite` runs them with
+`TestLogic.TestPipeline.expectMonomorphization`. The cases, in the order they
+run:
+
+  - Constants: `testValue` is `Basics.pi`; it is `Basics.e`; and it is
+    `circleArea 2.0`, where `circleArea r = pi * r * r`.
+  - Trigonometry: `sin`, `cos`, `tan`, `asin` and `atan` of 0.0, `acos` of 1.0,
+    and `atan2 1.0 1.0`.
+  - Square root and logarithm: `sqrt 16.0`; `logBase 2.0 8.0`; and
+    `distance 0.0 0.0 3.0 4.0`, where `distance` takes the `sqrt` of the sum of
+    the squared differences of its coordinates.
+  - Rounding and conversion: `round 2.7`, `floor 2.7`, `ceiling 2.3` and
+    `truncate 2.9`, each with an `Int` `testValue`, and `toFloat 42`.
+  - Comparison: `1.5 < 2.5`, `2.0 <= 2.0`, `3.0 > 2.0` and `2.0 >= 2.0`, each
+    with a `Bool` `testValue`, and `Basics.min` and `Basics.max` of 1.5 and
+    2.5.
+  - Special values: `isNaN (0.0 / 0.0)` and `isInfinite (1.0 / 0.0)`.
+  - Combined: `sin x * sin x + cos x * cos x` at 1.0; a quadratic root built
+    from `negate`, `sqrt`, `/` and a helper `discriminant`; and
+    `Basics.clamp 0.0 1.0 1.5`.
+
+Among what is not tested:
+
+  - the value any program computes: the cases only build programs, and
+    `expectMonomorphization` does not evaluate them;
+  - a call to a user-defined `clamp`: `clampTest` defines one, but `testValue`
+    calls `Basics.clamp`, so no program calls the module's own;
+  - `==`, `/=`, `abs` and `^` on `Float`.
 
 -}
 
@@ -35,6 +76,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| The cases of this module run with `expectMonomorphization`, as a test of
+their own.
+-}
 suite : Test
 suite =
     Test.describe "Float math operations coverage"
@@ -42,7 +86,12 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Creates one test, named "Float math operations " followed by `condStr`,
+that passes when `expectFn` passes on every program in this module.
+
+The cases run through `Compiler.BulkCheck.bulkCheck`, so a failure names only
+the first case that fails, and the cases after it do not run.
+
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -50,7 +99,8 @@ expectSuite expectFn condStr =
         \() -> bulkCheck (testCases expectFn)
 
 
-{-| All test cases for Float math operations.
+{-| Returns every case in this module, group by group, each handing its
+program to `expectFn`.
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
@@ -69,6 +119,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases for the constants `pi` and `e`, each handing its program
+to `expectFn`.
+-}
 constantCases : (Src.Module -> Expectation) -> List TestCase
 constantCases expectFn =
     [ { label = "Basics.pi"
@@ -83,13 +136,12 @@ constantCases expectFn =
     ]
 
 
-{-| Test Basics.pi constant.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.pi`.
 -}
 piTest : (Src.Module -> Expectation) -> (() -> Expectation)
 piTest expectFn _ =
     let
-        -- testValue : Float
-        -- testValue = pi
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -107,13 +159,12 @@ piTest expectFn _ =
     expectFn modul
 
 
-{-| Test Basics.e constant.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.e`.
 -}
 eTest : (Src.Module -> Expectation) -> (() -> Expectation)
 eTest expectFn _ =
     let
-        -- testValue : Float
-        -- testValue = e
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -131,13 +182,14 @@ eTest expectFn _ =
     expectFn modul
 
 
-{-| Test pi used in arithmetic expression.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `circleArea 2.0`, where `circleArea r` is
+`Basics.pi * r * r`.
 -}
 piInExpressionTest : (Src.Module -> Expectation) -> (() -> Expectation)
 piInExpressionTest expectFn _ =
     let
         -- circleArea : Float -> Float
-        -- circleArea r = pi * r * r
         circleAreaDef : TypedDef
         circleAreaDef =
             { name = "circleArea"
@@ -174,6 +226,9 @@ piInExpressionTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for `sin`, `cos`, `tan`, `asin`, `acos`, `atan` and
+`atan2`, each handing its program to `expectFn`.
+-}
 trigCases : (Src.Module -> Expectation) -> List TestCase
 trigCases expectFn =
     [ { label = "sin"
@@ -200,7 +255,8 @@ trigCases expectFn =
     ]
 
 
-{-| Test sin function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.sin 0.0`.
 -}
 sinTest : (Src.Module -> Expectation) -> (() -> Expectation)
 sinTest expectFn _ =
@@ -222,7 +278,8 @@ sinTest expectFn _ =
     expectFn modul
 
 
-{-| Test cos function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.cos 0.0`.
 -}
 cosTest : (Src.Module -> Expectation) -> (() -> Expectation)
 cosTest expectFn _ =
@@ -244,7 +301,8 @@ cosTest expectFn _ =
     expectFn modul
 
 
-{-| Test tan function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.tan 0.0`.
 -}
 tanTest : (Src.Module -> Expectation) -> (() -> Expectation)
 tanTest expectFn _ =
@@ -266,7 +324,8 @@ tanTest expectFn _ =
     expectFn modul
 
 
-{-| Test asin function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.asin 0.0`.
 -}
 asinTest : (Src.Module -> Expectation) -> (() -> Expectation)
 asinTest expectFn _ =
@@ -288,7 +347,8 @@ asinTest expectFn _ =
     expectFn modul
 
 
-{-| Test acos function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.acos 1.0`.
 -}
 acosTest : (Src.Module -> Expectation) -> (() -> Expectation)
 acosTest expectFn _ =
@@ -310,7 +370,8 @@ acosTest expectFn _ =
     expectFn modul
 
 
-{-| Test atan function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.atan 0.0`.
 -}
 atanTest : (Src.Module -> Expectation) -> (() -> Expectation)
 atanTest expectFn _ =
@@ -332,7 +393,8 @@ atanTest expectFn _ =
     expectFn modul
 
 
-{-| Test atan2 function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.atan2 1.0 1.0`.
 -}
 atan2Test : (Src.Module -> Expectation) -> (() -> Expectation)
 atan2Test expectFn _ =
@@ -360,6 +422,9 @@ atan2Test expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for `sqrt` and `logBase`, each handing its program to
+`expectFn`.
+-}
 sqrtLogCases : (Src.Module -> Expectation) -> List TestCase
 sqrtLogCases expectFn =
     [ { label = "sqrt"
@@ -374,7 +439,8 @@ sqrtLogCases expectFn =
     ]
 
 
-{-| Test sqrt function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.sqrt 16.0`.
 -}
 sqrtTest : (Src.Module -> Expectation) -> (() -> Expectation)
 sqrtTest expectFn _ =
@@ -396,7 +462,8 @@ sqrtTest expectFn _ =
     expectFn modul
 
 
-{-| Test logBase function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `logBase 2.0 8.0`, with `logBase` named unqualified.
 -}
 logBaseTest : (Src.Module -> Expectation) -> (() -> Expectation)
 logBaseTest expectFn _ =
@@ -418,13 +485,14 @@ logBaseTest expectFn _ =
     expectFn modul
 
 
-{-| Test sqrt in a more complex expression.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `distance 0.0 0.0 3.0 4.0`, where `distance x1 y1 x2 y2`
+is `Basics.sqrt` of the sum of the squares of `x2 - x1` and `y2 - y1`.
 -}
 sqrtInExpressionTest : (Src.Module -> Expectation) -> (() -> Expectation)
 sqrtInExpressionTest expectFn _ =
     let
         -- distance : Float -> Float -> Float -> Float -> Float
-        -- distance x1 y1 x2 y2 = sqrt ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1))
         distanceDef : TypedDef
         distanceDef =
             { name = "distance"
@@ -475,6 +543,9 @@ sqrtInExpressionTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for `round`, `floor`, `ceiling`, `truncate` and
+`toFloat`, each handing its program to `expectFn`.
+-}
 roundingCases : (Src.Module -> Expectation) -> List TestCase
 roundingCases expectFn =
     [ { label = "round"
@@ -495,7 +566,8 @@ roundingCases expectFn =
     ]
 
 
-{-| Test round function.
+{-| Returns a thunk that applies `expectFn` to a program whose `testValue : Int`
+is `Basics.round 2.7`.
 -}
 roundTest : (Src.Module -> Expectation) -> (() -> Expectation)
 roundTest expectFn _ =
@@ -517,7 +589,8 @@ roundTest expectFn _ =
     expectFn modul
 
 
-{-| Test floor function.
+{-| Returns a thunk that applies `expectFn` to a program whose `testValue : Int`
+is `Basics.floor 2.7`.
 -}
 floorTest : (Src.Module -> Expectation) -> (() -> Expectation)
 floorTest expectFn _ =
@@ -539,7 +612,8 @@ floorTest expectFn _ =
     expectFn modul
 
 
-{-| Test ceiling function.
+{-| Returns a thunk that applies `expectFn` to a program whose `testValue : Int`
+is `Basics.ceiling 2.3`.
 -}
 ceilingTest : (Src.Module -> Expectation) -> (() -> Expectation)
 ceilingTest expectFn _ =
@@ -561,7 +635,8 @@ ceilingTest expectFn _ =
     expectFn modul
 
 
-{-| Test truncate function.
+{-| Returns a thunk that applies `expectFn` to a program whose `testValue : Int`
+is `Basics.truncate 2.9`.
 -}
 truncateTest : (Src.Module -> Expectation) -> (() -> Expectation)
 truncateTest expectFn _ =
@@ -583,7 +658,8 @@ truncateTest expectFn _ =
     expectFn modul
 
 
-{-| Test toFloat function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.toFloat 42`.
 -}
 toFloatTest : (Src.Module -> Expectation) -> (() -> Expectation)
 toFloatTest expectFn _ =
@@ -611,6 +687,9 @@ toFloatTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for `<`, `<=`, `>`, `>=`, `min` and `max` on `Float`,
+each handing its program to `expectFn`.
+-}
 comparisonCases : (Src.Module -> Expectation) -> List TestCase
 comparisonCases expectFn =
     [ { label = "Float less than"
@@ -634,7 +713,8 @@ comparisonCases expectFn =
     ]
 
 
-{-| Test float less than comparison.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Bool` is `1.5 < 2.5`.
 -}
 floatLessThanTest : (Src.Module -> Expectation) -> (() -> Expectation)
 floatLessThanTest expectFn _ =
@@ -656,7 +736,8 @@ floatLessThanTest expectFn _ =
     expectFn modul
 
 
-{-| Test float less than or equal comparison.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Bool` is `2.0 <= 2.0`.
 -}
 floatLessEqualTest : (Src.Module -> Expectation) -> (() -> Expectation)
 floatLessEqualTest expectFn _ =
@@ -678,7 +759,8 @@ floatLessEqualTest expectFn _ =
     expectFn modul
 
 
-{-| Test float greater than comparison.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Bool` is `3.0 > 2.0`.
 -}
 floatGreaterThanTest : (Src.Module -> Expectation) -> (() -> Expectation)
 floatGreaterThanTest expectFn _ =
@@ -700,7 +782,8 @@ floatGreaterThanTest expectFn _ =
     expectFn modul
 
 
-{-| Test float greater than or equal comparison.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Bool` is `2.0 >= 2.0`.
 -}
 floatGreaterEqualTest : (Src.Module -> Expectation) -> (() -> Expectation)
 floatGreaterEqualTest expectFn _ =
@@ -722,7 +805,8 @@ floatGreaterEqualTest expectFn _ =
     expectFn modul
 
 
-{-| Test float min function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.min 1.5 2.5`.
 -}
 floatMinTest : (Src.Module -> Expectation) -> (() -> Expectation)
 floatMinTest expectFn _ =
@@ -744,7 +828,8 @@ floatMinTest expectFn _ =
     expectFn modul
 
 
-{-| Test float max function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.max 1.5 2.5`.
 -}
 floatMaxTest : (Src.Module -> Expectation) -> (() -> Expectation)
 floatMaxTest expectFn _ =
@@ -772,6 +857,9 @@ floatMaxTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases for `isNaN` and `isInfinite`, each handing its program to
+`expectFn`.
+-}
 specialValueCases : (Src.Module -> Expectation) -> List TestCase
 specialValueCases expectFn =
     [ { label = "isNaN"
@@ -783,13 +871,12 @@ specialValueCases expectFn =
     ]
 
 
-{-| Test isNaN function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Bool` is `Basics.isNaN (0.0 / 0.0)`.
 -}
 isNaNTest : (Src.Module -> Expectation) -> (() -> Expectation)
 isNaNTest expectFn _ =
     let
-        -- testValue : Bool
-        -- testValue = isNaN (0.0 / 0.0)
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -809,13 +896,12 @@ isNaNTest expectFn _ =
     expectFn modul
 
 
-{-| Test isInfinite function.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Bool` is `Basics.isInfinite (1.0 / 0.0)`.
 -}
 isInfiniteTest : (Src.Module -> Expectation) -> (() -> Expectation)
 isInfiniteTest expectFn _ =
     let
-        -- testValue : Bool
-        -- testValue = isInfinite (1.0 / 0.0)
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -841,6 +927,9 @@ isInfiniteTest expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases that use several `Float` operations in one program, each
+handing its program to `expectFn`.
+-}
 combinedFloatCases : (Src.Module -> Expectation) -> List TestCase
 combinedFloatCases expectFn =
     [ { label = "sin^2 + cos^2 = 1"
@@ -855,13 +944,18 @@ combinedFloatCases expectFn =
     ]
 
 
-{-| Test sin^2(x) + cos^2(x) = 1 identity.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `pythagorean 1.0`, where `pythagorean x` is
+`Basics.sin x * Basics.sin x + Basics.cos x * Basics.cos x`.
+
+Its case label states the identity that makes this 1, but nothing evaluates
+the result.
+
 -}
 pythagoreanIdentityTest : (Src.Module -> Expectation) -> (() -> Expectation)
 pythagoreanIdentityTest expectFn _ =
     let
         -- pythagorean : Float -> Float
-        -- pythagorean x = sin x * sin x + cos x * cos x
         pythagoreanDef : TypedDef
         pythagoreanDef =
             { name = "pythagorean"
@@ -898,13 +992,21 @@ pythagoreanIdentityTest expectFn _ =
     expectFn modul
 
 
-{-| Test quadratic formula discriminant.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `quadraticRoot 1.0 -3.0 2.0`, with two helpers:
+`discriminant a b c` is `b * b - 4.0 * a * c`, and `quadraticRoot a b c` is
+`(negate b + sqrt (discriminant a b c)) / 2.0 * a`.
+
+`/` and `*` have equal precedence and group to the left, so `quadraticRoot`
+divides by 2.0 and then multiplies by `a`; it does not divide by `2.0 * a`. The
+`-3.0` is built directly as a negative `Float` literal, which the parser never
+produces; it would parse `-3.0` as a negation.
+
 -}
 quadraticFormulaTest : (Src.Module -> Expectation) -> (() -> Expectation)
 quadraticFormulaTest expectFn _ =
     let
         -- discriminant : Float -> Float -> Float -> Float
-        -- discriminant a b c = b * b - 4.0 * a * c
         discriminantDef : TypedDef
         discriminantDef =
             { name = "discriminant"
@@ -924,7 +1026,6 @@ quadraticFormulaTest expectFn _ =
             }
 
         -- quadraticRoot : Float -> Float -> Float -> Float
-        -- quadraticRoot a b c = (-b + sqrt (discriminant a b c)) / (2.0 * a)
         quadraticRootDef : TypedDef
         quadraticRootDef =
             { name = "quadraticRoot"
@@ -967,13 +1068,17 @@ quadraticFormulaTest expectFn _ =
     expectFn modul
 
 
-{-| Test clamp function using min and max.
+{-| Returns a thunk that applies `expectFn` to a program whose
+`testValue : Float` is `Basics.clamp 0.0 1.0 1.5`.
+
+The program also defines a top-level `clamp lo hi x` as `min hi (max lo x)`, but
+`testValue` names `Basics.clamp`, so nothing calls the module's own `clamp`.
+
 -}
 clampTest : (Src.Module -> Expectation) -> (() -> Expectation)
 clampTest expectFn _ =
     let
         -- clamp : Float -> Float -> Float -> Float
-        -- clamp lo hi x = min hi (max lo x)
         clampDef : TypedDef
         clampDef =
             { name = "clamp"

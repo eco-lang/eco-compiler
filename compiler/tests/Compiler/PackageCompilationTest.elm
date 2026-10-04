@@ -1,10 +1,53 @@
 module Compiler.PackageCompilationTest exposing (suite)
 
-{-| Tests for compiling elm/\* package modules from source strings.
+{-| Checks that the source text of elm/core's `Elm.JsArray` and `Array` modules
+parses, compiles and goes on through monomorphization to MLIR. These are the
+only tests in this elm-test suite that compile these two modules from their
+source text.
 
-These tests verify that modules like Array.elm and JsArray.elm from elm/core
-can be compiled correctly, exactly as they would be when used as project
-dependencies.
+The work is done by `Compiler.PackageCompilation`, whose docstrings own what
+follows. It compiles a module on two _pathways_: the erased one, which feeds
+the JavaScript back end, and the typed one, which feeds monomorphization. A
+module compiles when both pathways type-check and optimize it; any
+`CompileError` fails the test that asked for it.
+
+The fixture is the source text of `Elm.JsArray`, from
+`Compiler.Elm.Source.JsArray`, whose functions are bound to kernel values of
+`Elm.Kernel.JsArray`, and of `Array`, from `Compiler.Elm.Source.Array`, which
+imports `Elm.JsArray`, `Basics`, `Bitwise`, `List`, `Maybe` and `Tuple`. Both
+are compiled as modules of elm/core (`Pkg.core`), against
+`extendedTestIfaces`. Where `Array` is compiled it is compiled after
+`Elm.JsArray` with `compileModulesInOrder`, which adds the compiled
+`Elm.JsArray` interface to the interfaces `Array` is compiled against.
+
+The tests establish:
+
+  - `parseModule` accepts the `Elm.JsArray` source, and the parsed module is
+    named `Elm.JsArray`.
+  - `compileModule` compiles `Elm.JsArray`, and the result is named
+    `Elm.JsArray` and has at least one annotation.
+  - `parseModule` accepts the `Array` source, and the parsed module is named
+    `Array`.
+  - Compiling `Elm.JsArray` then `Array` succeeds and gives results named
+    `Elm.JsArray` and `Array`, in that order.
+  - The `Array` result's annotations include `repeat`, `push` and `map`.
+  - The test named for `Array` using the `Elm.JsArray` interface asserts that
+    compiling the two gives two results. `compileModulesInOrder` returns one
+    result per source whenever it succeeds, so this checks nothing the first
+    multi-module test does not.
+  - `monomorphize` succeeds on the `Elm.JsArray` result, and on the `Array`
+    result of compiling the two in order.
+  - `generateMLIRFromResult` gives non-empty text containing `func.func` or
+    `eco.` for the `Elm.JsArray` result, and for the `Array` result of compiling
+    the two in order.
+
+Among what is not tested: the types in any annotation, only the presence of
+names; whether `Array` was compiled against the compiled `Elm.JsArray`
+interface rather than the mock one in `extendedTestIfaces`; monomorphization
+from any entry point other than the one
+`Compiler.PackageCompilation.monomorphize` chooses, which for `Array` is the
+constructor of its `Builder` record alias; anything in the MLIR beyond the two
+substrings; and any source that fails to compile.
 
 -}
 
@@ -23,7 +66,13 @@ import Expect
 import Test exposing (Test)
 
 
-{-| Extended test interfaces including Bitwise and Tuple for Array.elm.
+{-| The interfaces every module here is compiled against, keyed by module name.
+
+This is exactly `Compiler.Elm.Interface.Basic.testIfaces`: the `Bitwise` and
+`Tuple` interfaces it inserts are the ones `testIfaces` already holds under
+those names. `testIfaces` also holds a mock `Elm.JsArray`, which
+`compileModulesInOrder` replaces with the compiled one before compiling `Array`.
+
 -}
 extendedTestIfaces : Dict ModuleName.Raw I.Interface
 extendedTestIfaces =
@@ -32,6 +81,8 @@ extendedTestIfaces =
         |> Dict.insert "Tuple" TupleInterface.tupleInterface
 
 
+{-| The tests of this module, in five groups.
+-}
 suite : Test
 suite =
     Test.describe "Package compilation from source strings"
@@ -49,6 +100,9 @@ suite =
 -- ============================================================================
 
 
+{-| The tests that parse the `Elm.JsArray` source and check the parsed module's
+name.
+-}
 jsArrayParsingTests : Test
 jsArrayParsingTests =
     Test.describe "JsArray.elm parsing"
@@ -77,6 +131,9 @@ jsArrayParsingTests =
 -- ============================================================================
 
 
+{-| The tests that compile the `Elm.JsArray` source on its own and check the
+result's module name and that it has annotations.
+-}
 jsArrayCompilationTests : Test
 jsArrayCompilationTests =
     Test.describe "JsArray.elm compilation"
@@ -105,7 +162,6 @@ jsArrayCompilationTests =
                                 Expect.fail ("Compile failed: " ++ PC.errorToString err)
 
                             Ok result ->
-                                -- Check that we have some annotations
                                 if Dict.isEmpty result.annotations then
                                     Expect.fail "No annotations produced"
 
@@ -120,6 +176,8 @@ jsArrayCompilationTests =
 -- ============================================================================
 
 
+{-| The tests that parse the `Array` source and check the parsed module's name.
+-}
 arrayParsingTests : Test
 arrayParsingTests =
     Test.describe "Array.elm parsing"
@@ -148,6 +206,10 @@ arrayParsingTests =
 -- ============================================================================
 
 
+{-| The tests that compile `Elm.JsArray` then `Array` with
+`compileModulesInOrder` and check the results' names and order and that
+`Array` has annotations for `repeat`, `push` and `map`.
+-}
 multiModuleCompilationTests : Test
 multiModuleCompilationTests =
     Test.describe "Multi-module compilation"
@@ -182,7 +244,6 @@ multiModuleCompilationTests =
                     Ok results ->
                         case List.filter (\r -> r.moduleName == "Array") results of
                             [ arrayResult ] ->
-                                -- Verify Array exports exist by checking annotations
                                 let
                                     hasRepeat =
                                         Dict.member "repeat" arrayResult.annotations
@@ -211,9 +272,6 @@ multiModuleCompilationTests =
                                 Expect.fail "Array module not found in results"
         , Test.test "Array.elm uses JsArray interface correctly" <|
             \() ->
-                -- This test verifies that the interface threading works:
-                -- Array imports JsArray, so JsArray must be compiled first
-                -- and its interface added to the environment
                 case
                     PC.compileModulesInOrder Pkg.core
                         extendedTestIfaces
@@ -225,11 +283,12 @@ multiModuleCompilationTests =
                         Expect.fail (moduleName ++ ": " ++ PC.errorToString err)
 
                     Ok results ->
-                        -- If we got here, the interface threading worked
                         Expect.equal (List.length results) 2
         ]
 
 
+{-| Returns `"true"` or `"false"`, for a failure message.
+-}
 boolToString : Bool -> String
 boolToString b =
     if b then
@@ -245,15 +304,11 @@ boolToString b =
 -- ============================================================================
 
 
-{-| Tests that verify the typed pathway continues through Monomorphization and MLIR generation.
-
-The erased path reaches Optimized, and the typed path reaches TypedOptimized in the
-standard compilation tests above. These tests extend the typed path only to verify
-it can also pass through Monomorphization and MLIR generation.
-
-If both pathways pass the optimization phase, then the typed path should also pass
-its later stages.
-
+{-| The tests that carry a compiled module's typed graph on through
+monomorphization and MLIR generation, for `Elm.JsArray` compiled on its own and
+for `Array` compiled after it. For each module, one test checks that
+`monomorphize` succeeds and another that `generateMLIRFromResult` gives
+non-empty text containing `func.func` or `eco.`.
 -}
 typedPathwayTests : Test
 typedPathwayTests =
@@ -270,7 +325,6 @@ typedPathwayTests =
                                 Expect.fail ("Compile failed: " ++ PC.errorToString err)
 
                             Ok result ->
-                                -- Both pathways passed optimization, now verify typed path monomorphizes
                                 case PC.monomorphize result of
                                     Err err ->
                                         Expect.fail ("Monomorphization failed: " ++ PC.errorToString err)
@@ -304,7 +358,6 @@ typedPathwayTests =
                                             Expect.pass
         , Test.test "Array.elm typed path monomorphizes successfully" <|
             \() ->
-                -- Array depends on JsArray, so compile both in order
                 case
                     PC.compileModulesInOrder Pkg.core
                         extendedTestIfaces
@@ -318,7 +371,6 @@ typedPathwayTests =
                     Ok results ->
                         case List.filter (\r -> r.moduleName == "Array") results of
                             [ arrayResult ] ->
-                                -- Both pathways passed optimization, now verify typed path monomorphizes
                                 case PC.monomorphize arrayResult of
                                     Err err ->
                                         Expect.fail ("Array monomorphization failed: " ++ PC.errorToString err)

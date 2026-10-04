@@ -4,8 +4,7 @@ module Compiler.AST.SourceBuilder exposing
     , TypedDef
     , UnionCtor
     , UnionDef
-    , -- Comment wrappers
-      accessExpr
+    , accessExpr
     , accessorExpr
     , binopsExpr
     , boolExpr
@@ -15,7 +14,6 @@ module Compiler.AST.SourceBuilder exposing
     , ctorExpr
     , define
     , destruct
-      -- Pattern builders
     , floatExpr
     , ifExpr
     , intExpr
@@ -29,7 +27,6 @@ module Compiler.AST.SourceBuilder exposing
     , makeModuleWithTypedDefsUnionsAliases
     , makeModuleWithTypedDefsUnionsAliasesExtended
     , makePortModule
-      -- Fuzzers
     , negateExpr
     , opExpr
     , pAlias
@@ -46,11 +43,9 @@ module Compiler.AST.SourceBuilder exposing
     , pUnit
     , pVar
     , parensExpr
-      -- Module builders
     , qualVarExpr
     , recordExpr
     , strExpr
-      -- Type builders
     , tCmd
     , tExtRecord
     , tLambda
@@ -60,25 +55,51 @@ module Compiler.AST.SourceBuilder exposing
     , tType
     , tUnit
     , tVar
-      -- Type aliases for module building
     , tuple3Expr
     , tupleExpr
     , unitExpr
     , updateExpr
     , varExpr
-      -- Definition builders
     )
 
-{-| Source AST builders for constructing test expressions and modules.
+{-| Lets a test write an Elm program as a Source AST value, so that the program
+can be given to the compiler stages that follow parsing without being written
+out as source text and parsed.
 
-This module provides:
+The Source AST (`Compiler.AST.Source`) is what the parser produces. Besides the
+syntax it holds every comment found around each node, which the formatter
+needs, and the region of every node, which error reports need. A program built
+here has neither: every comment slot is empty, and every region is `A.zero`,
+the region from row 0 column 0 to row 0 column 0. The private helpers `c1`,
+`c2`, `c0Eol` and `c2Eol`, and the constant `noComments`, fill the comment
+slots.
 
-1.  Comment wrappers for Source AST formatting
-2.  Expression builders for Source AST construction
-3.  Pattern builders for Source AST construction
-4.  Definition builders for Source AST construction
-5.  Module builders for creating complete Source modules
-6.  Fuzzers for generating random test inputs
+There are builders for expressions, patterns, let definitions, types, and whole
+modules. Each module builder exposes everything from the module. The builders
+differ in what they accept and in the imports they add:
+
+  - `makeModule` and `makeModuleWithDefs` import `Basics` and `List`.
+  - `makeModuleWithTypedDefs` and `makeModuleWithTypedDefsUnionsAliases` import
+    the standard set: `Basics`, `Maybe`, `List`, `Elm.JsArray as JsArray`,
+    `String` and `Char`.
+  - `makeModuleWithTypedDefsUnionsAliasesExtended` imports the standard set and
+    `Bitwise`.
+  - `makeKernelModule` imports the standard set and `Bitwise`, `Tuple`,
+    `Bytes`, `Bytes.Encode` and `Bytes.Decode`.
+  - `makePortModule` imports the standard set and `Array`, `Json.Encode`,
+    `Json.Decode`, `Platform.Cmd` and `Platform.Sub`.
+
+Every import exposes everything, as `exposing (..)` does. Each module imported
+is one of the interfaces in `Compiler.Elm.Interface.Basic.testIfaces`.
+
+A builder stores what it is given and checks nothing, so a built program need
+not be one the parser could produce, nor one that compiles. Two differences
+from the parser's output are easy to miss. A string or character literal holds
+its text exactly as given, while the parser keeps a literal in escaped source
+form (`Compiler.Parse.String`), so text that needs an escape must be passed
+already escaped. And every list is stored in the order given, while the parser
+stores a module's declarations and a record pattern's fields in reverse source
+order (`Compiler.Parse.Module`, `Compiler.AST.Source`).
 
 -}
 
@@ -93,35 +114,36 @@ import Compiler.Reporting.Annotation as A
 -- ============================================================================
 
 
-{-| Empty list of formatting comments.
+{-| The empty list of comments, for every comment slot a builder fills.
 -}
 noComments : Src.FComments
 noComments =
     []
 
 
-{-| Wrap a value with comments before it.
+{-| Pairs a value with an empty list of comments before it.
 -}
 c1 : a -> Src.C1 a
 c1 a =
     ( noComments, a )
 
 
-{-| Wrap a value with comments before and after it.
+{-| Pairs a value with empty lists of comments before and after it.
 -}
 c2 : a -> Src.C2 a
 c2 a =
     ( ( noComments, noComments ), a )
 
 
-{-| Wrap a value with optional end-of-line comment.
+{-| Pairs a value with no end-of-line comment.
 -}
 c0Eol : a -> Src.C0Eol a
 c0Eol a =
     ( Nothing, a )
 
 
-{-| Wrap a value with comments before/after and optional end-of-line comment.
+{-| Pairs a value with empty lists of comments before and after it and no
+end-of-line comment.
 -}
 c2Eol : a -> Src.C2Eol a
 c2Eol a =
@@ -134,42 +156,46 @@ c2Eol a =
 -- ============================================================================
 
 
-{-| Create an Int literal expression.
+{-| Builds an `Int` literal, spelled as `String.fromInt` writes `n`.
 -}
 intExpr : Int -> Src.Expr
 intExpr n =
     A.At A.zero (Src.Int n (String.fromInt n))
 
 
-{-| Create a Float literal expression.
+{-| Builds a `Float` literal, spelled as `String.fromFloat` writes `f`, so a
+whole number such as `1.0` is spelled `1`.
 -}
 floatExpr : Float -> Src.Expr
 floatExpr f =
     A.At A.zero (Src.Float f (String.fromFloat f))
 
 
-{-| Create a String literal expression.
+{-| Builds a single-line string literal whose text is `s` exactly as given,
+with no escaping added.
 -}
 strExpr : String -> Src.Expr
 strExpr s =
     A.At A.zero (Src.Str s False)
 
 
-{-| Create a Char literal expression.
+{-| Builds a character literal whose text is `c` exactly as given, with no
+escaping added.
 -}
 chrExpr : String -> Src.Expr
 chrExpr c =
     A.At A.zero (Src.Chr c)
 
 
-{-| Create a Unit expression.
+{-| The unit expression, `()`.
 -}
 unitExpr : Src.Expr
 unitExpr =
     A.At A.zero Src.Unit
 
 
-{-| Create a Bool literal expression (True/False as constructor).
+{-| Builds `Basics.True` or `Basics.False`, a constructor qualified with its
+module.
 -}
 boolExpr : Bool -> Src.Expr
 boolExpr b =
@@ -184,56 +210,58 @@ boolExpr b =
     A.At A.zero (Src.VarQual Src.CapVar "Basics" name)
 
 
-{-| Create a local variable reference.
+{-| Builds an unqualified reference to the lower-case name `name`.
 -}
 varExpr : Name -> Src.Expr
 varExpr name =
     A.At A.zero (Src.Var Src.LowVar name)
 
 
-{-| Create a constructor expression (e.g., Just, Nothing, custom type constructors).
+{-| Builds an unqualified reference to the constructor `name`, such as `Just`.
 -}
 ctorExpr : Name -> Src.Expr
 ctorExpr name =
     A.At A.zero (Src.Var Src.CapVar name)
 
 
-{-| Create a qualified variable reference (e.g., Basics.abs, List.map).
+{-| Builds a reference to the lower-case name `name` qualified with
+`moduleName`, such as `List.map`.
 -}
 qualVarExpr : String -> Name -> Src.Expr
 qualVarExpr moduleName name =
     A.At A.zero (Src.VarQual Src.LowVar moduleName name)
 
 
-{-| Create an operator-as-value reference (e.g., `(::)`, `(+)`).
+{-| Builds an operator used as a value, such as `(+)`. `name` is the operator
+without parentheses.
 -}
 opExpr : Name -> Src.Expr
 opExpr name =
     A.At A.zero (Src.Op name)
 
 
-{-| Create a List expression.
+{-| Builds a list literal of `elements`.
 -}
 listExpr : List Src.Expr -> Src.Expr
 listExpr elements =
     A.At A.zero (Src.List (List.map c2Eol elements) noComments)
 
 
-{-| Create a 2-tuple expression.
+{-| Builds a pair.
 -}
 tupleExpr : Src.Expr -> Src.Expr -> Src.Expr
 tupleExpr a b =
     A.At A.zero (Src.Tuple (c2 a) (c2 b) [])
 
 
-{-| Create a 3-tuple expression.
+{-| Builds a triple.
 -}
 tuple3Expr : Src.Expr -> Src.Expr -> Src.Expr -> Src.Expr
 tuple3Expr a b c =
     A.At A.zero (Src.Tuple (c2 a) (c2 b) [ c2 c ])
 
 
-{-| Create a Record expression.
+{-| Builds a record literal with the given field names and values.
 -}
 recordExpr : List ( Name, Src.Expr ) -> Src.Expr
 recordExpr fields =
@@ -244,70 +272,77 @@ recordExpr fields =
     A.At A.zero (Src.Record (c1 fieldList))
 
 
-{-| Create a Negate expression.
+{-| Builds the negation of `inner`. The parser negates only a term, so an
+`inner` built by `callExpr`, `binopsExpr` or `negateExpr` and not wrapped in
+`parensExpr` gives a value it would not produce.
 -}
 negateExpr : Src.Expr -> Src.Expr
 negateExpr inner =
     A.At A.zero (Src.Negate inner)
 
 
-{-| Create a Binops expression (left-to-right chain of binary operators).
+{-| Builds a chain of binary operators. Each pair in `ops` is an operand and the
+operator after it, and `final` is the last operand, so
+`binopsExpr [ ( a, "+" ), ( b, "*" ) ] c` is `a + b * c`. The chain is
+stored flat; precedence is applied later, during canonicalization.
 -}
 binopsExpr : List ( Src.Expr, Name ) -> Src.Expr -> Src.Expr
 binopsExpr ops final =
     A.At A.zero (Src.Binops (List.map (\( e, op ) -> ( e, c2 (A.At A.zero op) )) ops) final)
 
 
-{-| Create a Lambda expression.
+{-| Builds an anonymous function taking `args` and returning `body`.
 -}
 lambdaExpr : List Src.Pattern -> Src.Expr -> Src.Expr
 lambdaExpr args body =
     A.At A.zero (Src.Lambda (c1 (List.map c1 args)) (c1 body))
 
 
-{-| Create a function Call expression.
+{-| Builds the application of `func` to `args`. An empty `args` gives a call
+with no arguments, which source text cannot express.
 -}
 callExpr : Src.Expr -> List Src.Expr -> Src.Expr
 callExpr func args =
     A.At A.zero (Src.Call func (List.map c1 args))
 
 
-{-| Create an If expression.
+{-| Builds an `if` with no `else if` branches.
 -}
 ifExpr : Src.Expr -> Src.Expr -> Src.Expr -> Src.Expr
 ifExpr condition then_ else_ =
     A.At A.zero (Src.If (c1 ( c2 condition, c2 then_ )) [] (c1 else_))
 
 
-{-| Create a Let expression.
+{-| Builds a `let` of `defs`, in the order given, around `body`.
 -}
 letExpr : List Src.Def -> Src.Expr -> Src.Expr
 letExpr defs body =
     A.At A.zero (Src.Let (List.map (\d -> c2 (A.At A.zero d)) defs) noComments body)
 
 
-{-| Create a Case expression.
+{-| Builds a `case` of `subject` with one branch per pattern and body pair.
 -}
 caseExpr : Src.Expr -> List ( Src.Pattern, Src.Expr ) -> Src.Expr
 caseExpr subject branches =
     A.At A.zero (Src.Case (c2 subject) (List.map (\( p, e ) -> ( c2 p, c1 e )) branches))
 
 
-{-| Create an Accessor function expression (.field).
+{-| Builds the accessor function for `field`, as `.field` is written.
 -}
 accessorExpr : Name -> Src.Expr
 accessorExpr field =
     A.At A.zero (Src.Accessor field)
 
 
-{-| Create a field Access expression.
+{-| Builds `record.field`.
 -}
 accessExpr : Src.Expr -> Name -> Src.Expr
 accessExpr record field =
     A.At A.zero (Src.Access record (A.At A.zero field))
 
 
-{-| Create a Record Update expression.
+{-| Builds an update of `record` that sets the given fields. `record` may be any
+expression, though source text only allows a variable there.
 -}
 updateExpr : Src.Expr -> List ( Name, Src.Expr ) -> Src.Expr
 updateExpr record fields =
@@ -318,7 +353,7 @@ updateExpr record fields =
     A.At A.zero (Src.Update (c2 record) (c1 fieldList))
 
 
-{-| Create a Parens expression.
+{-| Builds `inner` in parentheses.
 -}
 parensExpr : Src.Expr -> Src.Expr
 parensExpr inner =
@@ -331,91 +366,97 @@ parensExpr inner =
 -- ============================================================================
 
 
-{-| Wildcard pattern (\_).
+{-| The wildcard pattern, `_`.
 -}
 pAnything : Src.Pattern
 pAnything =
     A.At A.zero (Src.PAnything "_")
 
 
-{-| Variable pattern.
+{-| Builds a pattern that binds `name`.
 -}
 pVar : Name -> Src.Pattern
 pVar name =
     A.At A.zero (Src.PVar name)
 
 
-{-| Int literal pattern.
+{-| Builds a pattern matching the `Int` `n`, spelled as `String.fromInt`
+writes it.
 -}
 pInt : Int -> Src.Pattern
 pInt n =
     A.At A.zero (Src.PInt n (String.fromInt n))
 
 
-{-| String literal pattern.
+{-| Builds a pattern matching the single-line string literal whose text is
+`s` exactly as given, with no escaping added.
 -}
 pStr : String -> Src.Pattern
 pStr s =
     A.At A.zero (Src.PStr s False)
 
 
-{-| Character literal pattern.
+{-| Builds a pattern matching the character literal whose text is `c`
+exactly as given, with no escaping added.
 -}
 pChr : String -> Src.Pattern
 pChr c =
     A.At A.zero (Src.PChr c)
 
 
-{-| Unit pattern.
+{-| The unit pattern, `()`.
 -}
 pUnit : Src.Pattern
 pUnit =
     A.At A.zero (Src.PUnit noComments)
 
 
-{-| Tuple pattern.
+{-| Builds a pattern matching a pair.
 -}
 pTuple : Src.Pattern -> Src.Pattern -> Src.Pattern
 pTuple a b =
     A.At A.zero (Src.PTuple (c2 a) (c2 b) [])
 
 
-{-| 3-tuple pattern.
+{-| Builds a pattern matching a triple.
 -}
 pTuple3 : Src.Pattern -> Src.Pattern -> Src.Pattern -> Src.Pattern
 pTuple3 a b c =
     A.At A.zero (Src.PTuple (c2 a) (c2 b) [ c2 c ])
 
 
-{-| List literal pattern.
+{-| Builds a pattern matching a list of exactly as many elements as
+`elements` has.
 -}
 pList : List Src.Pattern -> Src.Pattern
 pList elements =
     A.At A.zero (Src.PList (c1 (List.map c2 elements)))
 
 
-{-| Cons pattern (head :: tail).
+{-| Builds the pattern `head :: tail`.
 -}
 pCons : Src.Pattern -> Src.Pattern -> Src.Pattern
 pCons head tail =
     A.At A.zero (Src.PCons (c0Eol head) (c2Eol tail))
 
 
-{-| Record pattern.
+{-| Builds a record pattern that binds `fields`. They are stored in the order
+given, which is the reverse of how the parser stores the same pattern.
 -}
 pRecord : List Name -> Src.Pattern
 pRecord fields =
     A.At A.zero (Src.PRecord (c1 (List.map (\name -> c2 (A.At A.zero name)) fields)))
 
 
-{-| As-pattern (binding a pattern to a name).
+{-| Builds `pattern as name`.
 -}
 pAlias : Src.Pattern -> Name -> Src.Pattern
 pAlias pattern name =
     A.At A.zero (Src.PAlias (c1 pattern) (c1 (A.At A.zero name)))
 
 
-{-| Constructor pattern (e.g., Just x, Nothing).
+{-| Builds a pattern matching the unqualified constructor `name` applied to
+`args`.
 -}
 pCtor : Name -> List Src.Pattern -> Src.Pattern
 pCtor name args =
@@ -428,14 +469,15 @@ pCtor name args =
 -- ============================================================================
 
 
-{-| Create a function/value definition.
+{-| Builds a let definition of `name` with arguments `args` and no type
+annotation.
 -}
 define : Name -> List Src.Pattern -> Src.Expr -> Src.Def
 define name args body =
     Src.Define (A.At A.zero name) (List.map c1 args) (c1 body) Nothing
 
 
-{-| Create a destructuring definition.
+{-| Builds a let definition that matches `expr` against `pattern`.
 -}
 destruct : Src.Pattern -> Src.Expr -> Src.Def
 destruct pattern expr =
@@ -448,7 +490,7 @@ destruct pattern expr =
 -- ============================================================================
 
 
-{-| Import statement for Basics exposing everything.
+{-| The import `import Basics exposing (..)`.
 -}
 basicsImport : Src.Import
 basicsImport =
@@ -458,7 +500,7 @@ basicsImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Maybe exposing everything.
+{-| The import `import Maybe exposing (..)`.
 -}
 maybeImport : Src.Import
 maybeImport =
@@ -468,7 +510,7 @@ maybeImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for List exposing everything.
+{-| The import `import List exposing (..)`.
 -}
 listImport : Src.Import
 listImport =
@@ -478,7 +520,7 @@ listImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Elm.JsArray as JsArray exposing everything.
+{-| The import `import Elm.JsArray as JsArray exposing (..)`.
 -}
 jsArrayImport : Src.Import
 jsArrayImport =
@@ -488,7 +530,7 @@ jsArrayImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for String exposing everything.
+{-| The import `import String exposing (..)`.
 -}
 stringImport : Src.Import
 stringImport =
@@ -498,7 +540,7 @@ stringImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Char exposing everything.
+{-| The import `import Char exposing (..)`.
 -}
 charImport : Src.Import
 charImport =
@@ -508,7 +550,7 @@ charImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Bitwise exposing everything.
+{-| The import `import Bitwise exposing (..)`.
 -}
 bitwiseImport : Src.Import
 bitwiseImport =
@@ -518,7 +560,7 @@ bitwiseImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Tuple exposing everything.
+{-| The import `import Tuple exposing (..)`.
 -}
 tupleImport : Src.Import
 tupleImport =
@@ -528,28 +570,30 @@ tupleImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Standard imports for test modules.
+{-| The standard import set: `Basics`, `Maybe`, `List`, `Elm.JsArray as JsArray`,
+`String` and `Char`.
 -}
 standardImports : List Src.Import
 standardImports =
     [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport ]
 
 
-{-| Extended imports including Bitwise for tests that need bitwise operations.
+{-| The standard import set and `Bitwise`.
 -}
 extendedImports : List Src.Import
 extendedImports =
     [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport, bitwiseImport ]
 
 
-{-| Full kernel imports — all modules available in testIfaces.
+{-| The kernel import set: the standard set and `Bitwise`, `Tuple`, `Bytes`,
+`Bytes.Encode` and `Bytes.Decode`.
 -}
 kernelImports : List Src.Import
 kernelImports =
     [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport, bitwiseImport, tupleImport, bytesImport, bytesEncodeImport, bytesDecodeImport ]
 
 
-{-| Import statement for Bytes exposing everything.
+{-| The import `import Bytes exposing (..)`.
 -}
 bytesImport : Src.Import
 bytesImport =
@@ -559,7 +603,7 @@ bytesImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Bytes.Encode exposing everything.
+{-| The import `import Bytes.Encode exposing (..)`.
 -}
 bytesEncodeImport : Src.Import
 bytesEncodeImport =
@@ -569,7 +613,7 @@ bytesEncodeImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Bytes.Decode exposing everything.
+{-| The import `import Bytes.Decode exposing (..)`.
 -}
 bytesDecodeImport : Src.Import
 bytesDecodeImport =
@@ -579,7 +623,9 @@ bytesDecodeImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Create a simple module with a single top-level definition.
+{-| Builds a module named `Test` whose one top-level value is `name`, defined
+as `expr` with no arguments and no annotation. It imports `Basics` and
+`List`.
 -}
 makeModule : Name -> Src.Expr -> Src.Module
 makeModule name expr =
@@ -606,7 +652,10 @@ makeModule name expr =
         }
 
 
-{-| Create a simple module with all kernel-accessible imports (Basics, List, Tuple, Bitwise, etc.).
+{-| Builds a module named `Test` whose one top-level value is `name`, defined
+as `expr` with no arguments and no annotation. It imports the kernel set:
+`Basics`, `Maybe`, `List`, `Elm.JsArray as JsArray`, `String`, `Char`,
+`Bitwise`, `Tuple`, `Bytes`, `Bytes.Encode` and `Bytes.Decode`.
 -}
 makeKernelModule : Name -> Src.Expr -> Src.Module
 makeKernelModule name expr =
@@ -633,7 +682,9 @@ makeKernelModule name expr =
         }
 
 
-{-| Create a module with multiple definitions.
+{-| Builds a module named `moduleName` with one top-level value for each name,
+arguments and body in `defs`, none annotated. It imports `Basics` and
+`List`.
 -}
 makeModuleWithDefs : Name -> List ( Name, List Src.Pattern, Src.Expr ) -> Src.Module
 makeModuleWithDefs moduleName defs =
@@ -666,7 +717,8 @@ makeModuleWithDefs moduleName defs =
         }
 
 
-{-| A typed definition: name, args, type annotation, and body.
+{-| A top-level value with a type annotation, for the module builders that take
+annotated definitions. `tipe` is the annotation.
 -}
 type alias TypedDef =
     { name : Name
@@ -676,7 +728,9 @@ type alias TypedDef =
     }
 
 
-{-| Create a module with multiple typed definitions.
+{-| Builds a module named `moduleName` with one annotated top-level value for
+each of `defs`. It imports the standard set: `Basics`, `Maybe`, `List`,
+`Elm.JsArray as JsArray`, `String` and `Char`.
 -}
 makeModuleWithTypedDefs : Name -> List TypedDef -> Src.Module
 makeModuleWithTypedDefs moduleName defs =
@@ -715,35 +769,35 @@ makeModuleWithTypedDefs moduleName defs =
 -- ============================================================================
 
 
-{-| Create a type variable.
+{-| Builds the type variable `name`.
 -}
 tVar : Name -> Src.Type
 tVar name =
     A.At A.zero (Src.TVar name)
 
 
-{-| Create a function type (a -> b).
+{-| Builds the function type `from -> to`.
 -}
 tLambda : Src.Type -> Src.Type -> Src.Type
 tLambda from to =
     A.At A.zero (Src.TLambda (c0Eol from) (c2Eol to))
 
 
-{-| Create a type constructor with arguments (e.g., List a, Maybe b).
+{-| Builds the unqualified type `name` applied to `args`, such as `Maybe a`.
 -}
 tType : Name -> List Src.Type -> Src.Type
 tType name args =
     A.At A.zero (Src.TType A.zero name (List.map c1 args))
 
 
-{-| Create a tuple type.
+{-| Builds a pair type.
 -}
 tTuple : Src.Type -> Src.Type -> Src.Type
 tTuple a b =
     A.At A.zero (Src.TTuple (c2Eol a) (c2Eol b) [])
 
 
-{-| Create a record type.
+{-| Builds a closed record type with the given field names and types.
 -}
 tRecord : List ( Name, Src.Type ) -> Src.Type
 tRecord fields =
@@ -754,7 +808,8 @@ tRecord fields =
     A.At A.zero (Src.TRecord fieldList Nothing noComments)
 
 
-{-| Create an extensible record type: { a | field : Type }
+{-| Builds the extensible record type `{ extVar | ... }` with the given field
+names and types.
 -}
 tExtRecord : Name -> List ( Name, Src.Type ) -> Src.Type
 tExtRecord extVar fields =
@@ -765,7 +820,7 @@ tExtRecord extVar fields =
     A.At A.zero (Src.TRecord fieldList (Just (c2 (A.At A.zero extVar))) noComments)
 
 
-{-| Create a Unit type.
+{-| The unit type, `()`.
 -}
 tUnit : Src.Type
 tUnit =
@@ -778,7 +833,8 @@ tUnit =
 -- ============================================================================
 
 
-{-| A union type constructor: name and list of argument types.
+{-| One constructor of a custom type declared by a `UnionDef`, with the types
+of its arguments.
 -}
 type alias UnionCtor =
     { name : Name
@@ -786,7 +842,8 @@ type alias UnionCtor =
     }
 
 
-{-| A union type definition: name, type parameters, and constructors.
+{-| A custom type declaration to add to a built module. `args` are the names
+of its type parameters.
 -}
 type alias UnionDef =
     { name : Name
@@ -795,7 +852,7 @@ type alias UnionDef =
     }
 
 
-{-| Create a Source union type from a definition.
+{-| Builds the custom type declaration that `def` describes.
 -}
 makeUnion : UnionDef -> A.Located Src.Union
 makeUnion def =
@@ -815,7 +872,8 @@ makeUnion def =
         )
 
 
-{-| A type alias definition: name, type parameters, and aliased type.
+{-| A type alias declaration to add to a built module. `args` are the names of
+its type parameters, and `tipe` is the type it names.
 -}
 type alias AliasDef =
     { name : Name
@@ -824,7 +882,7 @@ type alias AliasDef =
     }
 
 
-{-| Create a Source type alias from a definition.
+{-| Builds the type alias declaration that `def` describes.
 -}
 makeAlias : AliasDef -> A.Located Src.Alias
 makeAlias def =
@@ -838,7 +896,10 @@ makeAlias def =
         )
 
 
-{-| Create a module with typed definitions, unions, and aliases.
+{-| Builds a module named `moduleName` with one annotated top-level value for
+each of `defs` and the custom types and aliases that `unions` and `aliases`
+describe. It imports the standard set: `Basics`, `Maybe`, `List`,
+`Elm.JsArray as JsArray`, `String` and `Char`.
 -}
 makeModuleWithTypedDefsUnionsAliases :
     Name
@@ -876,7 +937,8 @@ makeModuleWithTypedDefsUnionsAliases moduleName defs unions aliases =
         }
 
 
-{-| Create a module with typed definitions, unions, aliases, and extended imports (including Bitwise).
+{-| Builds the same module as `makeModuleWithTypedDefsUnionsAliases`, with
+`Bitwise` imported as well.
 -}
 makeModuleWithTypedDefsUnionsAliasesExtended : Name -> List TypedDef -> List UnionDef -> List AliasDef -> Src.Module
 makeModuleWithTypedDefsUnionsAliasesExtended moduleName defs unions aliases =
@@ -915,10 +977,13 @@ makeModuleWithTypedDefsUnionsAliasesExtended moduleName defs unions aliases =
 -- ============================================================================
 
 
-{-| A port definition: name and type.
+{-| A port declaration to add to a built module.
 
-For outgoing ports (commands), the type should be: `tLambda valueType (tCmd (tVar "msg"))`
-For incoming ports (subscriptions), the type should be: `tLambda (tLambda valueType (tVar "msg")) (tSub (tVar "msg"))`
+`tipe` is the whole type of the port, and nothing here checks it.
+`Compiler.Canonicalize.Effects` accepts an outgoing port typed
+`tLambda valueType (tCmd (tVar "msg"))` and an incoming one typed
+`tLambda (tLambda valueType (tVar "msg")) (tSub (tVar "msg"))`, where
+`valueType` is a type it allows to cross a port.
 
 -}
 type alias PortDef =
@@ -927,28 +992,31 @@ type alias PortDef =
     }
 
 
-{-| Create a Cmd type: `Cmd msg`
+{-| Builds the type `Cmd msgType`.
 -}
 tCmd : Src.Type -> Src.Type
 tCmd msgType =
     A.At A.zero (Src.TType A.zero "Cmd" [ c1 msgType ])
 
 
-{-| Create a Sub type: `Sub msg`
+{-| Builds the type `Sub msgType`.
 -}
 tSub : Src.Type -> Src.Type
 tSub msgType =
     A.At A.zero (Src.TType A.zero "Sub" [ c1 msgType ])
 
 
-{-| Create a Source port declaration from a port definition.
+{-| Builds the port declaration that `def` describes.
 -}
 portDecl : PortDef -> Src.Port
 portDecl def =
     Src.Port noComments (c2 (A.At A.zero def.name)) def.tipe
 
 
-{-| Create a port module with ports and a single top-level definition.
+{-| Builds a port module named `Test` that declares `ports` and whose one
+top-level value is `defName`, defined as `expr` with no arguments and no
+annotation. It imports the standard set and `Array`, `Json.Encode`,
+`Json.Decode`, `Platform.Cmd` and `Platform.Sub`.
 -}
 makePortModule : Name -> List PortDef -> Src.Expr -> Src.Module
 makePortModule defName ports expr =
@@ -975,7 +1043,8 @@ makePortModule defName ports expr =
         }
 
 
-{-| Imports for port modules (includes Json.Encode, Json.Decode, Platform.Cmd, Platform.Sub).
+{-| The import set for a port module: the standard set and `Array`,
+`Json.Encode`, `Json.Decode`, `Platform.Cmd` and `Platform.Sub`.
 -}
 portModuleImports : List Src.Import
 portModuleImports =
@@ -993,7 +1062,7 @@ portModuleImports =
     ]
 
 
-{-| Import statement for Array exposing everything.
+{-| The import `import Array exposing (..)`.
 -}
 arrayImport : Src.Import
 arrayImport =
@@ -1003,7 +1072,7 @@ arrayImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Json.Encode exposing everything.
+{-| The import `import Json.Encode exposing (..)`.
 -}
 jsonEncodeImport : Src.Import
 jsonEncodeImport =
@@ -1013,7 +1082,7 @@ jsonEncodeImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Json.Decode exposing everything.
+{-| The import `import Json.Decode exposing (..)`.
 -}
 jsonDecodeImport : Src.Import
 jsonDecodeImport =
@@ -1023,7 +1092,7 @@ jsonDecodeImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Platform.Cmd exposing Cmd.
+{-| The import `import Platform.Cmd exposing (..)`.
 -}
 platformCmdImport : Src.Import
 platformCmdImport =
@@ -1033,7 +1102,7 @@ platformCmdImport =
         (c2 (Src.Open noComments noComments))
 
 
-{-| Import statement for Platform.Sub exposing Sub.
+{-| The import `import Platform.Sub exposing (..)`.
 -}
 platformSubImport : Src.Import
 platformSubImport =
@@ -1041,9 +1110,3 @@ platformSubImport =
         (c1 (A.At A.zero "Platform.Sub"))
         Nothing
         (c2 (Src.Open noComments noComments))
-
-
-
--- ============================================================================
--- FUZZERS
--- ============================================================================

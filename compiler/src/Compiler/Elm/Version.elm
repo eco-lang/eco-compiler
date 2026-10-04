@@ -10,11 +10,20 @@ module Compiler.Elm.Version exposing
     , parser
     )
 
-{-| Semantic versioning utilities for Elm packages and the compiler.
+{-| Packages, the Elm language and the compiler's own caches are all identified
+by a version number, and this module is that number.
 
-This module implements semantic versioning (major.minor.patch) with parsers, encoders,
-comparison functions, and version bumping operations. It follows the SemVer specification
-for version ordering and compatibility.
+A version is three whole numbers, written `major.minor.patch`, such as `1.0.5`.
+There is nothing else to it: no pre-release tag and no build metadata. Versions
+are ordered by major number, then minor, then patch, and every comparison here
+uses that order.
+
+The module holds the ordering, the bumps that make the next version, the
+written form and its parser, a JSON codec for the written form, a binary codec,
+and a few versions with fixed meanings. Of those, `compiler` is the one that
+needs care: it is not the version Eco reports to its users but the
+_artifact-format version_, which names the directories that cached build
+artifacts are kept in. Its docstring says when to change it.
 
 
 # Types
@@ -76,21 +85,24 @@ import Utils.Bytes.Encode as BE
 -- ====== VERSION ======
 
 
-{-| Represents a semantic version with major, minor, and patch components.
+{-| A version number: the major, minor and patch numbers, in that order.
+
+Nothing stops a component from being negative.
+
 -}
 type Version
     = Version Int Int Int
 
 
-{-| Extract the major version number from a Version.
+{-| Returns the major number of a version.
 -}
 major : Version -> Int
 major (Version major_ _ _) =
     major_
 
 
-{-| Compare two versions following semantic versioning rules.
-Returns LT if the first version is less than the second, GT if greater, EQ if equal.
+{-| Returns how the first version is ordered against the second, comparing the
+major numbers, then the minor numbers, then the patch numbers.
 -}
 compare : Version -> Version -> Order
 compare (Version major1 minor1 patch1) (Version major2 minor2 patch2) =
@@ -107,14 +119,16 @@ compare (Version major1 minor1 patch1) (Version major2 minor2 patch2) =
             majorRes
 
 
-{-| Convert a Version to a comparable tuple for use in sorting and comparison operations.
+{-| Returns the version as a tuple of its three numbers, which Elm's built-in
+comparison orders the same way `compare` does, so it can serve as a sort key or
+a `Dict` key.
 -}
 toComparable : Version -> ( Int, Int, Int )
 toComparable (Version major_ minor_ patch_) =
     ( major_, minor_, patch_ )
 
 
-{-| Return the smaller of two versions according to semantic versioning order.
+{-| Returns the earlier of two versions, by `compare`.
 -}
 min : Version -> Version -> Version
 min v1 v2 =
@@ -126,7 +140,7 @@ min v1 v2 =
             v1
 
 
-{-| Return the larger of two versions according to semantic versioning order.
+{-| Returns the later of two versions, by `compare`.
 -}
 max : Version -> Version -> Version
 max v1 v2 =
@@ -138,55 +152,50 @@ max v1 v2 =
             v1
 
 
-{-| Version 1.0.0, commonly used as the initial package version.
+{-| Version `1.0.0`: the version a new package is created with, and the one
+`Terminal.Bump` expects of a package that has not been published before.
 -}
 one : Version
 one =
     Version 1 0 0
 
 
-{-| The maximum representable version (2147483647.0.0), using the maximum 32-bit signed integer.
+{-| A version whose major number is the largest 32-bit signed integer, and whose
+minor and patch numbers are zero.
+
+It is later than every version with a smaller major number. It is not the
+largest possible `Version`: one with the same major number and a non-zero minor
+or patch number is later still, and an `Int` may exceed 32 bits.
+
 -}
 maxVersion : Version
 maxVersion =
     Version 2147483647 0 0
 
 
-{-| The compiler's **artifact-format** version.
+{-| The artifact-format version: the version of the layout in which the
+compiler writes its cached build artifacts.
 
-Drives the `eco-stuff/<ver>/` cache directory layout, the local-package
-`*.dat` cache filenames, and other places that need a stable on-disk key
-across the dev/release split. **Bump only when the on-disk layout
-changes**; the marketing/welcome-banner version is `Version_Build.userFacing`
-(generated from `version.txt` + git describe at CMake configure time).
+`Builder.Stuff` names both a project's cache directory,
+`<root>/eco-stuff/<version>`, and the caches under the Eco home directory,
+`<home>/<version>/`, after it. Changing it therefore leaves every existing cache
+behind at once, and everything that was cached, packages included, has to be
+downloaded or built again.
 
-Initial release: `0.1.0`.
+It must change whenever the format of anything cached changes. An artifact
+written in an older format is not reliably rejected when it is read back: it
+can decode with no error and fail only later in compilation.
+
+This is not the version Eco reports to its users, which is
+`Compiler.Elm.Version_Build.userFacing`. The two change independently.
 
 -}
 compiler : Version
 compiler =
-    -- BUMPED 0.1.2 -> 0.1.3 on 2026-10-03: Int LITERALS (TOpt.Int, DT.IsInt) are
-    -- encoded exactly as i64 (Utils.Bytes int64) instead of float64, which
-    -- corrupted literals beyond 2^53 in cached modules (9223372036854775807
-    -- decoded as -9223372036854775808); typedGraphFormatVersion 2 -> 3.
-    -- BUMPED 0.1.1 -> 0.1.2 on 2026-10-03 for the .ecot v2 TYPE TABLE
-    -- (plans/cache-serialization-optimization.md S3, ECOT_003) and varint
-    -- regions/indices (S10): typedGraphFormatVersion 1 -> 2.
-    -- BUMPED 0.1.0 -> 0.1.1 on 2026-08-24 for the Phase 2b ARTIFACT FORMAT
-    -- CHANGE (plans/lss-unknown-elimination.md §4.9 step 3): `Can.TLambda` now
-    -- carries its solver-root index across `typeEncoderS`/`typeDecoderS`, so
-    -- every cached `.eci` / typed-artifact written by an older compiler would
-    -- decode SHORT — and the recorded failure mode for that is silent, not
-    -- loud (a mis-decoded artifact surfaces later as "no annotation entry" in
-    -- mono, not as a decode error). This constant keys `Stuff.compilerVersion`,
-    -- which keys BOTH `<root>/eco-stuff/<version>` and
-    -- `~/.eco/<version>/packages/...`, so bumping it invalidates every cache in
-    -- one move. Cost, and it is unavoidable: one full package rebuild on every
-    -- developer and CI machine.
     Version 0 1 3
 
 
-{-| The version of the Elm compiler this implementation targets: 0.19.1.
+{-| The version of Elm that this compiler implements.
 -}
 elmCompiler : Version
 elmCompiler =
@@ -197,24 +206,24 @@ elmCompiler =
 -- ====== BUMP ======
 
 
-{-| Increment the patch version number by 1 (e.g., 1.2.3 becomes 1.2.4).
-Used for backwards-compatible bug fixes.
+{-| Returns the version with its patch number raised by one, so `1.2.3` becomes
+`1.2.4`.
 -}
 bumpPatch : Version -> Version
 bumpPatch (Version major_ minor patch) =
     Version major_ minor (patch + 1)
 
 
-{-| Increment the minor version number by 1 and reset patch to 0 (e.g., 1.2.3 becomes 1.3.0).
-Used for backwards-compatible new features.
+{-| Returns the version with its minor number raised by one and its patch number
+set to zero, so `1.2.3` becomes `1.3.0`.
 -}
 bumpMinor : Version -> Version
 bumpMinor (Version major_ minor _) =
     Version major_ (minor + 1) 0
 
 
-{-| Increment the major version number by 1 and reset minor and patch to 0 (e.g., 1.2.3 becomes 2.0.0).
-Used for backwards-incompatible API changes.
+{-| Returns the version with its major number raised by one and its minor and
+patch numbers set to zero, so `1.2.3` becomes `2.0.0`.
 -}
 bumpMajor : Version -> Version
 bumpMajor (Version major_ _ _) =
@@ -225,7 +234,8 @@ bumpMajor (Version major_ _ _) =
 -- ====== TO CHARS ======
 
 
-{-| Convert a Version to its string representation in the format "major.minor.patch".
+{-| Returns the written form of a version, its three numbers in decimal joined
+by dots, such as `1.0.5`.
 -}
 toChars : Version -> String
 toChars (Version major_ minor patch) =
@@ -236,15 +246,19 @@ toChars (Version major_ minor patch) =
 -- ====== JSON ======
 
 
-{-| Decode a Version from a JSON string using the custom parser.
-Returns a decoder that produces error positions on parse failure.
+{-| A decoder for a version written as a JSON string, read by `parser`.
+
+The whole string must be a version. When the string is not a version, the
+failure carries the row and column at which reading stopped, as
+`Compiler.Json.Decode.customString` reports it.
+
 -}
 decoder : D.Decoder ( Row, Col ) Version
 decoder =
     D.customString parser Tuple.pair
 
 
-{-| Encode a Version to a JSON string value in the format "major.minor.patch".
+{-| Returns a version as a JSON string in its written form.
 -}
 encode : Version -> E.Value
 encode version =
@@ -255,8 +269,18 @@ encode version =
 -- ====== PARSER ======
 
 
-{-| Parse a semantic version string in the format "major.minor.patch".
-Each component must be a valid non-negative integer. Leading zeros are only allowed for "0".
+{-| A parser for the written form of a version: three runs of decimal digits
+separated by single dots.
+
+A number that starts with `0` is read as just that `0`, and reading stops after
+it. So `01.0.0` fails, because a dot is expected after the `0`, but in
+`1.0.01` the parser reads `1.0.0` and leaves the final `1` for whatever
+follows. The parser does not check what comes after the patch number. Nothing
+limits how many digits a number has, or how large it is.
+
+On failure the error is the row and column at which a digit or a dot was
+expected.
+
 -}
 parser : P.Parser ( Row, Col ) Version
 parser =
@@ -277,6 +301,13 @@ parser =
             )
 
 
+{-| A parser for one number of a version: either a single `0`, or a run of
+digits that starts with any other digit.
+
+It reads as many digits as follow, with no bound on the value. It fails, at the
+current position, when the next character is not a digit or there is none.
+
+-}
 numberParser : P.Parser ( Row, Col ) Int
 numberParser =
     P.Parser <|
@@ -313,6 +344,13 @@ numberParser =
                     P.Eerr st.row st.col Tuple.pair
 
 
+{-| Returns `total` extended by the decimal digits of `src` from `pos` onwards,
+with the position just past the last digit.
+
+It stops at the first character that is not a digit, or at `end`. Despite the
+name, nothing bounds the value to 16 bits.
+
+-}
 chompWord16 : String -> Int -> Int -> Int -> ( Int, Int )
 chompWord16 src pos end total =
     if pos >= end then
@@ -331,6 +369,8 @@ chompWord16 src pos end total =
             ( total, pos )
 
 
+{-| Returns whether a character is one of the ASCII digits `0` to `9`.
+-}
 isDigit : Char -> Bool
 isDigit word =
     '0' <= word && word <= '9'
@@ -340,7 +380,8 @@ isDigit word =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a Version to a binary format as three consecutive integers (major, minor, patch).
+{-| Returns the binary form of a version: its major, minor and patch numbers in
+that order, each written by `Utils.Bytes.Encode.int`.
 -}
 versionEncoder : Version -> Bytes.Encode.Encoder
 versionEncoder (Version major_ minor_ patch_) =
@@ -351,7 +392,7 @@ versionEncoder (Version major_ minor_ patch_) =
         ]
 
 
-{-| Decode a Version from a binary format expecting three consecutive integers (major, minor, patch).
+{-| A decoder for the binary form that `versionEncoder` writes.
 -}
 versionDecoder : Bytes.Decode.Decoder Version
 versionDecoder =

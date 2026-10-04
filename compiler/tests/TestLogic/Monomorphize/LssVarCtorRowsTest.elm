@@ -1,22 +1,52 @@
 module TestLogic.Monomorphize.LssVarCtorRowsTest exposing (suite)
 
-{-| CTOR-ROW VAR WRITES — `lss.varCtorRows` (plans/lss-var-chain-roots.md
-§3 Phase 2b).
+{-| Checks, on two small fixtures, that the solver engine leaves no unresolved
+lambda set, `LVar`, on the payload of the constructor `Mk`, and that
+`Mono.enrichAnnotationsTopOnly` keeps an `LVar` base unchanged on a one-arrow
+function type.
 
-A ctor spec row's var payload may take the sibling-cell union ONLY when the
-cell is COMPLETE: zero ⊤ contributors AND zero var contributions from
-flex-marked construction specs (the wrap-class hazard — a construction that
-transported an unresolved param flex hides a real inhabitant behind its var
-row). Destructure-only var rows are benign.
+A _lambda set_ is the set of functions that may reach an arrow, and
+`Mono.LambdaSetAnno` records it on every `MFunction`. `LSet` names the
+members, `LPartial` names some members and admits more, `LTop` means the
+members are unknown, and `LVar` is a set variable: a slot that nothing
+wrote. As `Mono.LambdaSetAnno` describes, consumers other than the
+analysis treat `LVar` as they treat `LTop`: it names no members, so no call
+through it can be devirtualized. A constructor's
+_registry row_ is one of its `( Global, MonoType )` entries in the graph's
+`reverseMapping`, one per specialization.
 
-Three suites:
+Once specialization finishes, `Compiler.MonoSolver.Monomorphize` settles
+constructor rows from their sibling rows. Its pass that fills a variable
+slot on a constructor row from the sets of the sibling rows does so under a
+completeness rule of its own, and it heals rows that carry `LTop` with
+`Mono.enrichAnnotationsTopOnly`. That merge drops `LTop` contributors
+from the union it writes, so used on a never-written slot it could write a
+set that leaves out a function that reaches the slot; it therefore keeps an
+`LVar` base as it is.
 
-1.  CLEAN differential — a destructure-only phantom spec's var payload
-    flips to the constructing sibling's set.
-2.  FLEX-GATE differential — adding `wrap f = Mk 1 f` (flex-marked
-    construction) keeps the whole cell UNWRITTEN on the on-arm.
-3.  `enrichAnnotationsTopOnly` pins — the AR-V1 retrofit: an LVar base
-    never flips through the ⊤-heal path; an LTop base still heals.
+The fixtures declare `type PS x = Mk Int (Int -> x) | Nope`, and the payload
+tests 1 and 2 read is `Mk`'s second argument, the arrow `Int -> x`.
+`fixtureClean` builds one `PS Int` with `Mk` and a literal lambda and
+consumes it, and also builds a `PS String` with `Nope` alone, so `Mk` is
+never constructed at `PS String`. `fixtureFlex` keeps `fixtureClean`'s
+`mkBox` and `useBox`, drops the `PS String` definitions, and adds a `Mk`
+construction whose payload is a function parameter rather than a literal
+lambda. Both are run by `runWith`.
+
+  - Test 1 requires `fixtureClean` to give at least one readable `Mk` payload
+    annotation, and none of them to be `LVar`.
+  - Test 2 requires none of `fixtureFlex`'s `Mk` payload annotations to be
+    `LVar`. It does not require any to be found.
+  - Test 3 calls `Mono.enrichAnnotationsTopOnly` on one-arrow `Int -> Int`
+    types: an `LVar 3` base stays `LVar 3` against an `LSet [ 7 ]` source,
+    an `LTop` base becomes `LSet [ 7 ]`, and an `LSet [ 7 ]` base stays as it
+    is against an `LVar` source.
+
+Among what is not tested: whether a payload was never a variable or was
+filled by settling, so the completeness rule's refusals are not exercised;
+`Mk` rows whose type does not have the shape `mkPayloadAnnos` reads; payloads
+that are `LTop` or `LPartial`; and `Mono.enrichAnnotationsTopOnly` on nested
+arrows or on types other than functions.
 
 -}
 
@@ -45,21 +75,11 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The three tests described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "completeness-gated ctor-row var writes"
-        -- FIXTURE FINDING (plans/lss-var-chain-roots.md §5.1): one-module
-        -- fixtures cannot manufacture the target var-row class — in-item
-        -- unification + default-on producer machinery cover every payload
-        -- this fixture can express (mono AND poly variants measured
-        -- all-set off-arm; a never-constructed second instantiation is
-        -- PRUNED before the registry the tests read). The corpus battery's
-        -- `varctor|wrote`/`varctor|skipFlexVar` counters and named cells
-        -- are the differential. The flag (`lss.settle.varCtorRows`) was fixed
-        -- at its default and removed 2026-09-18; the additive-only pins that
-        -- compared the two arms went with it. What remains is the coverage
-        -- claim they rested on — no var row survives at either fixture — plus
-        -- the AR-V1 retrofit helper.
         [ Test.test "1. the clean fixture's ctor payload rows carry no var" <|
             \() ->
                 case runWith fixtureClean of
@@ -120,21 +140,30 @@ suite =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int`.
+-}
 hInt : Src.Type
 hInt =
     tType "Int" []
 
 
+{-| The source type `PS Int`.
+-}
 psOfInt : Src.Type
 psOfInt =
     tType "PS" [ hInt ]
 
 
+{-| The source type `Int -> x`, the field type of `Mk`'s function payload.
+-}
 psField : Src.Type
 psField =
     tLambda hInt (tVar "x")
 
 
+{-| The declaration `type PS x = Mk Int (Int -> x) | Nope`, in the form the
+module builder takes.
+-}
 psUnion : { name : String, args : List String, ctors : List { name : String, args : List Src.Type } }
 psUnion =
     { name = "PS"
@@ -146,9 +175,15 @@ psUnion =
     }
 
 
-{-| CLEAN: one constructing spec (literal lambda payload — a SET row) and
-one destructure-only phantom spec (`peek` on a `Nope`-built value — a VAR
-row, unmarked). Same (Mk, /a1) cell, zero ⊤, zero flex marks.
+{-| A module in which `Mk` is constructed in one place, by `mkBox`, with
+the literal lambda `\x -> x + 1` as its payload, and that payload is called
+by `useBox`.
+
+`nopeStr` is a `PS String` built with `Nope`, and `peekStr` matches on it with
+a `Mk` branch, so `PS String` is used without `Mk` ever being constructed at
+that type. `testValue` calls `useBox` and `peekStr` so that both are
+specialized.
+
 -}
 fixtureClean : Src.Module
 fixtureClean =
@@ -173,12 +208,7 @@ fixtureClean =
                     , ( pCtor "Nope" [], intExpr 0 )
                     ]
           }
-        , -- the destructure-only spec at a SECOND instantiation (PS String):
-          -- Mk String is never constructed anywhere (its only value route is
-          -- the payload-free Nope), so its row payload is an honest
-          -- never-written flex — var, UNMARKED. Same (Mk, /a1) cell as the
-          -- Int spec's SET row.
-          { name = "nopeStr"
+        , { name = "nopeStr"
           , args = []
           , tipe = tType "PS" [ tType "String" [] ]
           , body = ctorExpr "Nope"
@@ -204,10 +234,14 @@ fixtureClean =
         []
 
 
-{-| FLEX: same cell plus `wrap f = Mk 1 f` — a construction transporting
-its PARAM's flex arrow. The slow path marks wrap's Mk spec; the cell is
-contaminated; nothing in it may be written (the caller's lambda `ℓ2` is a
-real inhabitant the union cannot see).
+{-| A module with `fixtureClean`'s `mkBox` and `useBox`, plus a second `Mk`
+construction whose payload is a function parameter.
+
+`wrap f = Mk 1 f` is polymorphic in the payload's result, and is called only
+through `wrap2`, which passes on its own parameter. `testValue` calls `wrap2`
+with the lambda `\z -> z + 9` and hands the result to `useBox`, so two
+functions reach `Mk`'s payload: `mkBox`'s lambda and that one.
+
 -}
 fixtureFlex : Src.Module
 fixtureFlex =
@@ -221,12 +255,7 @@ fixtureFlex =
                     , lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1))
                     ]
           }
-        , -- POLYMORPHIC wrap behind an indirection: wrap2's param head is a
-          -- genuine flex when wrap's body constructs (the caller's ℓ2 lands
-          -- only on wrap2's OWN param head, argUnifyVar being head-only), so
-          -- the construction transports an UNRESOLVED flex — the marked
-          -- hazard shape.
-          { name = "wrap"
+        , { name = "wrap"
           , args = [ pVar "f" ]
           , tipe = tLambda (tLambda hInt (tVar "x")) (tType "PS" [ tVar "x" ])
           , body = callExpr (ctorExpr "Mk") [ intExpr 1, varExpr "f" ]
@@ -268,6 +297,10 @@ fixtureFlex =
 -- ====== HARNESS ======
 
 
+{-| Monomorphizes `srcModule` with the solver engine, under the default limits
+and the default lambda-set configuration with `enabled` set, which that
+default already has.
+-}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
     let
@@ -283,8 +316,13 @@ runWith srcModule =
 -- ====== READERS ======
 
 
-{-| Every Mk registry row's payload-arrow head anno (`/a1` of the curried
-ctor: `Mk : Int -> (Int -> x) -> PS x`).
+{-| Returns the lambda-set annotation of `Mk`'s function payload from every
+registry row named `Mk`.
+
+A row is read only when its type is two curried one-parameter arrows whose
+second parameter is a function; any other row named `Mk` is skipped.
+Removed specializations are skipped too.
+
 -}
 mkPayloadAnnos : Mono.MonoGraph -> List Mono.LambdaSetAnno
 mkPayloadAnnos (Mono.MonoGraph g) =
@@ -310,6 +348,8 @@ mkPayloadAnnos (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Tells whether an annotation is a set variable, `LVar`.
+-}
 isVar : Mono.LambdaSetAnno -> Bool
 isVar a =
     case a of
@@ -320,6 +360,9 @@ isVar a =
             False
 
 
+{-| Tells whether an annotation is an `LSet` with at least one member. No test
+uses it.
+-}
 isSet : Mono.LambdaSetAnno -> Bool
 isSet a =
     case a of
@@ -330,6 +373,9 @@ isSet a =
             False
 
 
+{-| Renders annotations for a failure message, giving each set's member count
+rather than its members.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe annos =
     "["

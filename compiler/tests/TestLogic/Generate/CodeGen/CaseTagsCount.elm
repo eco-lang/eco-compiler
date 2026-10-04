@@ -1,8 +1,23 @@
 module TestLogic.Generate.CodeGen.CaseTagsCount exposing (expectCaseTagsCount)
 
-{-| Test logic for CGEN\_029: Case Tags Count invariant.
+{-| Checks that every `eco.case` the code generator emits carries one tag for
+each of its alternatives, so that no alternative is left without a tag and no
+tag is left without an alternative.
 
-The `eco.case` `tags` array length must equal the number of alternative regions.
+An `eco.case` chooses one of its regions, the alternatives, by the value of its
+scrutinee. Its `tags` attribute is an array holding the tag for each
+alternative, and nothing in `Mlir.Mlir` ties the length of that array to the
+number of regions.
+
+`expectCaseTagsCount` compiles the program it is given to MLIR with
+`TestLogic.TestPipeline.runToMlir`, and fails when compilation fails. It then
+finds every op named `eco.case`, at any depth, and fails when one has no `tags`
+array attribute or when the array's length differs from the op's number of
+regions. When several ops fail, only the first is reported, as
+`violationsToExpectation` describes.
+
+Among what is not tested: the values of the tags, the kind of their elements,
+and the `string_patterns` attribute of a string case.
 
 @docs expectCaseTagsCount
 
@@ -21,7 +36,9 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that case tags count invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR and passes when
+every `eco.case` in the result has a `tags` array as long as its list of
+regions. It fails with the compiler's message if compilation fails.
 -}
 expectCaseTagsCount : Src.Module -> Expectation
 expectCaseTagsCount srcModule =
@@ -33,7 +50,8 @@ expectCaseTagsCount srcModule =
             violationsToExpectation (checkCaseTagsCount mlirModule)
 
 
-{-| Check case tags count invariants.
+{-| Returns a violation for each `eco.case` in the module whose `tags` array
+is missing or has a different length from its list of regions.
 -}
 checkCaseTagsCount : MlirModule -> List Violation
 checkCaseTagsCount mlirModule =
@@ -44,6 +62,10 @@ checkCaseTagsCount mlirModule =
     List.filterMap checkCaseTagsMatch caseOps
 
 
+{-| Returns a violation when the op has no `tags` array attribute, or when the
+array's length differs from the number of the op's regions, and `Nothing`
+otherwise. A `tags` attribute that is not an array is reported as missing.
+-}
 checkCaseTagsMatch : MlirOp -> Maybe Violation
 checkCaseTagsMatch op =
     let

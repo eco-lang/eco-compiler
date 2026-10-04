@@ -9,39 +9,53 @@ module Compiler.GlobalOpt.KernelFacts exposing
     , validationErrors
     )
 
-{-| The single audited source of per-kernel semantic facts
-(design\_docs/kernel-boundary-reduction.md §6.C1;
-plans/kernel-opt-07-kernel-facts-table.md).
+{-| A kernel is a function implemented in C++ in the runtime rather than in Elm,
+and the compiler cannot see its body. Several optimisations want to delete,
+merge, price or call a kernel directly, and each needs to know something about
+what that body does. This module is the one table of those facts, each read by
+hand from the C++ source, so that every optimisation gets the same answer.
 
-Keyed by plain `(home, name)` like `KernelTypeEnv` and the borrow table it
-replaces — **Mono** names: the `MonoVarKernel` prefix field ("Elm"/"Eco") and
-the `_Int/_Float/_Char` ABI suffixes minted by `KernelAbi.kernelInstanceSymbol`
-(KernelAbi.elm:182-407 — root at :187, suffix arms :193-404, unsuffixed
-fall-through :406-407) never appear here; symbol-only consumers use
-`lookupSymbol`.
+**The key.** A row is keyed by a _Mono key_: the `( home, name )` pair of a
+kernel reference after monomorphization, such as `( "Utils", "equal" )`. It
+carries neither the `Elm`/`Eco` prefix of the kernel module, so `Elm.Kernel.X.f`
+and `Eco.Kernel.X.f` share a row, nor the `_Int`, `_Float` or `_Char` suffix
+that names a typed variant of the emitted C symbol. `lookup` takes a Mono key.
+`splitSymbol` turns an emitted symbol into one, and `lookupSymbol` looks a
+symbol's row up through it.
 
-**Whitelist discipline (§6.F): unknown ⇒ each consumer keeps its OWN pre-table
-behaviour.** A `Nothing` is not a shared default; it means "no consumer may
-move". A blacklist would be unsound.
+**Whitelist discipline.** A kernel with no row licenses nothing: whoever asks
+must behave as it would if this table did not exist. `lookup` answers `Nothing`
+for such a kernel, the key forms of the derived facts answer `False`, and
+`devirtOf` answers `DevirtNo`. A `Nothing` is never a default to be filled
+with a guess.
 
-**Derived facts are computed, never stored** (`canTriggerGC` / `gcLeafEligible`
-/ `droppable` / `hoistable`), each in TWO forms: the record form
-(`KernelFacts -> Bool`, what kernel-opt-11/12/13 call on a row they already
-looked up) and a key form suffixed `For` (`( Name, Name ) -> Bool`, which
-folds the whitelist default in and is what kernel-opt-08 calls where it has
-only a `KernelInstanceKey`). Elm has no overloading, so the two forms MUST
-have different names.
+**A row.** Most stored fields of `KernelFacts` answer one question about the
+C++ body, and each axis has a value that means "do not know":
+`EffObservableIO`, `GcUnbounded`, `cppAlloc = True`, `HofUnknown`,
+`MayDiverge`, `cseSafe = False`, and `params = []` for the borrow axis.
 
-Each stored field has exactly one C++ question behind it. Rejected rows
-(POwned, do NOT add — Console.write precedent, the result is a `Task_Binding`
-capturing the arg): `File.fileExists`/`dirExists`
-(eco-kernel-cpp/src/eco/File.cpp:679/684), `Env.lookup`
-(eco-kernel-cpp/src/eco/Env.cpp:52), `Scheduler.spawn`
-(runtime/src/platform/Scheduler.cpp:467).
+Rows are built from one of two private bases. An _audited_ row starts from a
+body that has been read for effects and found pure. An _unaudited_ row starts
+from every axis at "do not know"; no such row in the table changes `cseSafe` or
+`gcAlloc`, so none licenses deleting, merging or gc-leaf marking a call. It is
+there to carry what is known, such as the borrow axis, a higher-order flag, an
+effect, a divergence note or a devirtualization registration.
 
-TODO cost axis: `MonoInlineSimplify.computeCost` still prices every kernel at a
-flat 1 (:1230-1231). §6.C1 leaves this out of v1 — a cost model needs
-measurement, not audit.
+**Derived facts.** What the consumers ask is computed from the stored fields,
+never stored: `canTriggerGC`, `gcLeafEligible`, `droppable`, `hoistable`,
+`mayCallBackIntoElm` and `costClass`. Three of them, `gcLeafEligible`,
+`droppable` and `hoistable`, also come in a form that takes a key instead of a
+row (the name ending in `For`), which folds in the whitelist default.
+
+**Checking.** The rules a row must obey, such as "`cseSafe` needs no effect,
+no call-back and a totality other than `MayDiverge`", are checked by
+`validationErrors`, which is empty exactly when every row passes and no key is
+repeated. Nothing in this module evaluates it, so the table is only as
+consistent as whatever asserts that list is empty.
+
+Some kernels are deliberately not listed. `File.fileExists`, `File.dirExists`,
+`Env.lookup` and `Scheduler.spawn` each return a task that holds on to its
+argument. They have no row, rather than a row that marks the argument owned.
 
 @docs KernelFacts, CallTimeEffect, GcAlloc, Totality, ParamMode
 @docs DevirtPolicy, ShapeGuard, devirtOf
@@ -58,24 +72,56 @@ import Compiler.Data.Name exposing (Name)
 import Dict exposing (Dict)
 
 
-{-| What the kernel does, observably, at the moment it is called.
+{-| What a call to the kernel does that can be observed, at the moment it is
+called.
+
+`EffNone` means nothing observable happens. The kernels in the table that build
+a task are `EffNone`: the work the task describes happens when the scheduler
+runs it, not when the kernel returns it.
+
+`EffObservableIO` covers input and output of any kind. It is also the "do not
+know" value, so the unaudited base has it.
+
+`EffRuntimeState` is a change to state held inside the runtime itself.
+
+`EffNoreturn` means the call ends the process instead of returning.
+`validationErrors` rejects it on a row whose totality is `Total`.
+
 -}
 type CallTimeEffect
-    = EffNone -- nothing observable at call time (incl. Task builders, KERNEL_TASK_IO_001)
-    | EffObservableIO -- stdio / fs / net / calls the app; ALSO the "unknown" answer
-    | EffRuntimeState -- mutates runtime-internal tables (regex cache, port registry)
-    | EffNoreturn -- exit()/abort — never returns
+    = EffNone
+    | EffObservableIO
+    | EffRuntimeState
+    | EffNoreturn
 
 
-{-| Eco-heap allocation performed by the call.
+{-| How much a call allocates on the Eco heap, the heap the garbage collector
+manages. Memory the C++ code takes for itself is recorded separately, by the
+`cppAlloc` field of `KernelFacts`.
+
+`GcNone` means no allocation on any path through the call.
+
+`GcFixed n` means at most `n` objects per call, each of a size known in
+advance. `validationErrors` requires `n` to be positive; zero is written
+`GcNone`.
+
+`GcUnbounded` means the number or size of the objects depends on the
+arguments. It is also the "do not know" value.
+
 -}
 type GcAlloc
-    = GcNone -- provably zero Eco-heap allocation on EVERY path
-    | GcFixed Int -- <= N objects of statically known shapes per call
-    | GcUnbounded -- input-dependent; ALSO the "unknown" answer
+    = GcNone
+    | GcFixed Int
+    | GcUnbounded
 
 
-{-| Whether the call always returns normally.
+{-| Whether a call always returns normally.
+
+`Total` calls always return. A `Throws` call can fail instead of returning,
+and `validationErrors` requires its row to carry a divergence note.
+`MayDiverge` is for a call that may never return, and is also the "do not know"
+value.
+
 -}
 type Totality
     = Total
@@ -83,26 +129,21 @@ type Totality
     | MayDiverge
 
 
-{-| Whether the kernel re-enters Elm through a user closure — THREE-state,
-because the two-state version conflated "audited: it does" with "nobody looked".
+{-| Whether the kernel applies an Elm function value passed to it, and so runs
+Elm code before it returns. This is the _HOF axis_, for higher-order function.
+It is answered from the C++ body, not from the kernel's Elm type: a kernel that
+takes a function and stores it without applying it, as `Scheduler.andThen`
+does, is `HofNo`.
 
-That conflation was not academic. `costClass`'s first test is this field, so an
-`unaudited` row (which answered True as a safety default) was priced as a
-higher-order call at `kernelCostHof` = 20, while a kernel with NO ROW AT ALL was
-priced at 6. Measured 2026-08-20: **no row in the table declared the HOF bit
-explicitly**, so every member of `CHof` was there by default — half of them
-kernels like `JsArray.length`, `String.trim` and `Basics.tan` that plainly do not
-re-enter Elm. An unaudited row asserted a cost nobody had measured.
+`HofNo` and `HofYes` are audited answers. `HofUnknown` means nobody has looked.
 
-The readings differ by consumer, and that is the point:
-
-  - **Safety** (`canTriggerGC`, the `cseSafe` implication) reads `HofUnknown` as
-    "might", via `mayCallBackIntoElm`. Conservative, unchanged.
-  - **Cost** (`costClass`) reads `HofUnknown` as `CUnknown`, so an unaudited row
-    and a missing row agree on the price. Only `HofYes` reaches `CHof`.
-
-Mirrors `params = []` for the borrow axis: a row says what it knows, and silence
-is not an assertion.
+The two kinds of question read `HofUnknown` differently. A question about
+safety reads it as "may call back", through `mayCallBackIntoElm`: it makes
+`canTriggerGC` true, and `validationErrors` rejects a row that has it and is
+`cseSafe`. A question about cost reads it as not knowing: `costClass` answers
+`CUnknown`, not `CHof`, so a row that has not been audited on this axis asserts
+no price. Only `HofYes` gives `CHof`, which is why every higher-order row states
+it.
 
 -}
 type HofAxis
@@ -111,42 +152,52 @@ type HofAxis
     | HofYes
 
 
-{-| The SAFETY reading of the HOF axis: unknown counts as "might".
+{-| Returns whether the kernel may run Elm code during the call: true unless its
+HOF axis is audited as `HofNo`.
 -}
 mayCallBackIntoElm : KernelFacts -> Bool
 mayCallBackIntoElm f =
     f.callsBack /= HofNo
 
 
-{-| Borrow mode of one parameter.
+{-| How a kernel treats one of its arguments, for the borrow analysis.
+
+`PBorrowed` means the call does not take ownership of the argument. Whether
+the result may be or contain the argument is recorded separately, in
+`resultAliases`.
+
+`POwned` means it may store the argument, return it, or pass it to code it does
+not know.
+
 -}
 type ParamMode
-    = PBorrowed -- reads only; never stores or returns-by-identity
-    | POwned -- may store, return, or hand to unknown code
+    = PBorrowed
+    | POwned
 
 
-{-| E9.2 kernel devirtualization registration (LSS\_016).
+{-| Whether a call site may call the kernel directly instead of through a
+function value, which is what _devirtualization_ means here.
 
-`DevirtNo` is the default and means "not registered" — the site keeps its
-indirect call, which is always correct.
+`DevirtNo` means the kernel is not registered, and a call keeps its indirect
+form. This is the answer for every row that does not say otherwise, and
+`devirtOf` gives it for an unlisted kernel.
 
-`DevirtAt arity guard` registers the kernel, pinning the **Elm-visible call
-arity** (what a site's argument count is compared against — NOT the C++ export
-arity, which differs for compiler-injected operands like `Debug.toString`'s
-`type_id` and for `()`-applied zero-parameter exports).
+`DevirtAt arity guard` registers the kernel. `arity` is the number of arguments
+a call in Elm passes, which a site's argument count is compared against. It is
+not the number of parameters of the C++ export, which can differ: an export may
+take an operand the compiler adds, as `Debug.toString` takes a type id, or a
+kernel with no parameters may be applied to `()`. `guard` restricts the types a
+site may have, as `ShapeGuard` describes. `validationErrors` requires `arity` to
+be non-negative and equal to the length of `params` when `params` is not
+empty, the row to carry evidence, and every guard position to be `-1` or an
+argument index from 0 to `arity - 1`.
 
-**What registration actually commits to** (Wave 0 of
-`plans/kernel-devirt-arity-table.md`, LSS\_016 as amended): the rewrite itself is
-semantically identity-preserving and needs no purity — it re-emits the same call
-over the same already-translated args, discarding only a var read. What it does
-is make the kernel's IDENTITY visible to three default-on purity-driven
-consumers (`MonoInlineSimplify`'s dead-let gate, `CsePurity`/`MonoCse`, and the
-`eco.cse_safe` MLIR stamp), any of which may then merge or delete the call. So
-registering a kernel promotes THIS ROW's `cseSafe`/`totality` from inert to
-load-bearing at every devirtualized site. Register only when the row's purity
-fields have actually been audited — a row left on the `unaudited` base is safe
-(all three consumers answer False for it) but gains nothing beyond the dispatch
-removal.
+Registering a kernel matters beyond removing the indirection. A direct call
+names the kernel, so anything that reads this row's `cseSafe` and `totality` to
+merge or delete calls can now act at that site. Those fields should therefore
+be audited before a kernel is registered. A row left on the unaudited base is
+safe to register, since its `cseSafe` is `False`, but it gains only the direct
+call.
 
 -}
 type DevirtPolicy
@@ -154,17 +205,23 @@ type DevirtPolicy
     | DevirtAt Int ShapeGuard
 
 
-{-| The REP-level precondition on a registered kernel's DERIVED ABI.
+{-| A condition on the types at a call site, which must hold before the site
+calls a registered kernel directly. The emitted symbol and the declared
+argument and result types of a direct kernel call follow from the types at the
+site, and an `Int`, `Float` or `Char` there is passed as an unboxed scalar, a
+raw machine value rather than a pointer. An unresolved `number` type variable
+counts as one too, since it can be fixed to `Int` before code is emitted.
 
-`ShapeAny` — every legal ABI variant is safe, because the kernel has no
-suffix-selected typed variants whose layout could disagree with the site.
+`ShapeAny` accepts every site. It suits a kernel with typed variants for the
+unboxed cases, such as `Basics.add`, or one whose only export takes and returns
+unboxed scalars, such as `Basics.round`.
 
-`ShapeNoUnboxedScalarAt positions` — the named positions must not derive as
-unboxed scalars (0-based argument index; `-1` is the result). This is the
-`List.cons` hazard generalized: an imprecise site derives `cons_Int` with an
-i64 tail, reinterpreting a list pointer as a raw integer, which the CGEN\_038
-kernel-declaration registry catches as a signature mismatch. Declining leaves
-the always-correct indirect call.
+`ShapeNoUnboxedScalarAt positions` declines a site where any listed position
+is an unboxed scalar. A position is a 0-based argument index, or `-1` for the
+result. It is for positions where the kernel has only a boxed export: a site
+that derived a scalar there would declare the kernel with a signature that
+conflicts with its real one. For `List.cons`, an `Int` tail would read the
+tail list's pointer as an integer. A declined site keeps its indirect call.
 
 -}
 type ShapeGuard
@@ -172,26 +229,34 @@ type ShapeGuard
     | ShapeNoUnboxedScalarAt (List Int)
 
 
-{-| One audited row.
+{-| One row of the table: what the C++ body of one kernel was found to do.
+
+`params` holds the borrow mode of each argument, and an empty list means the
+borrow axis has not been audited, not that the kernel takes no arguments.
+`cppAlloc` records memory the C++ code takes for itself, which does not stop a
+call being a gc-leaf but does keep it out of `CGcLeaf` in `costClass`.
+
 -}
 type alias KernelFacts =
-    { params : List ParamMode -- [] == borrow axis NOT audited (see the shim)
-    , resultAliases : List Int -- result may alias these params (0-based)
+    { params : List ParamMode
+    , resultAliases : List Int -- indexes into params of arguments the result may be or contain
     , callTimeEffect : CallTimeEffect
     , gcAlloc : GcAlloc
-    , cppAlloc : Bool -- C++-heap use; gc-leaf-COMPATIBLE, informational
-    , callsBack : HofAxis -- HOF axis; audited from C++ bodies, NEVER from Elm types
-    , cseSafe : Bool -- referentially transparent at the Mono level
+    , cppAlloc : Bool
+    , callsBack : HofAxis
+    , cseSafe : Bool -- no effect, no call-back, and the result depends only on the arguments
     , totality : Totality
-    , divergence : Maybe String -- A6 ledger note (C++ body vs intrinsic)
-    , devirt : DevirtPolicy -- LSS_016 E9.2 registration; see DevirtPolicy
-    , evidence : String -- MANDATORY repo-relative "path.cpp:line" anchor(s)
+    , divergence : Maybe String -- how the C++ departs from the Elm meaning or the inline version
+    , devirt : DevirtPolicy
+    , evidence : String -- where in the C++ source the row was read from; needs a .cpp: or .hpp: anchor
     }
 
 
-{-| The conservative base: every axis at its "we do not know" end. A row built
-from `unaudited` licenses NOTHING (all four derived facts are False) and fails
-`validationErrors` until it carries an evidence anchor.
+{-| The base of every unaudited row: each axis at its "do not know" value,
+`params` empty, no evidence, and no devirtualization registration. A row built
+from it answers `False` for `gcLeafEligible`, `droppable` and `hoistable`, and
+`True` for `canTriggerGC`, unless it overrides the fields those read. With
+`evidence` still empty it fails `validationErrors`.
 -}
 unaudited : KernelFacts
 unaudited =
@@ -209,9 +274,10 @@ unaudited =
     }
 
 
-{-| Base for a row whose C++ body has been read end-to-end and found free of IO,
-of Elm call-backs, and of throwing paths. Still allocates (`GcUnbounded`) until
-the row says otherwise.
+{-| The base of every audited row, for a kernel whose C++ body was read and found
+to have no call-time effect, no call back into Elm, and no path that fails to
+return. It is `cseSafe`. It has `cppAlloc = False` and still `GcUnbounded`; a
+row sets either allocation field as its kernel's body requires.
 -}
 auditedPure : KernelFacts
 auditedPure =
@@ -225,64 +291,80 @@ auditedPure =
 
 
 
--- DERIVED FACTS (computed, never stored — §A7 :1209-1215, the paragraph
--- "Derived facts (never stored, always computed)"; note it sits under A7,
--- not A6, in design_docs/kernel-boundary-reduction.md)
+-- DERIVED FACTS
 
 
-{-| A call can trigger a GC if it allocates or if it can run Elm code.
+{-| Returns whether a garbage collection can happen during a call: true if the
+kernel may allocate on the Eco heap, or may run Elm code, which can allocate.
+`cppAlloc` does not count.
 -}
 canTriggerGC : KernelFacts -> Bool
 canTriggerGC f =
     f.gcAlloc /= GcNone || mayCallBackIntoElm f
 
 
-{-| Exactly what the `eco.gc_leaf` declaration attribute means (kernel-opt-08).
+{-| Returns whether a call is a _gc-leaf_: one during which no garbage
+collection can happen, because it neither allocates on the Eco heap nor runs
+Elm code.
 -}
 gcLeafEligible : KernelFacts -> Bool
 gcLeafEligible f =
     not (canTriggerGC f)
 
 
-{-| An unused result may be deleted (kernel-opt-11/12).
+{-| Returns whether the row licenses deleting a call whose result is unused:
+it is `cseSafe` and `Total`.
 -}
 droppable : KernelFacts -> Bool
 droppable f =
     f.cseSafe && f.totality == Total
 
 
-{-| Two identical calls may be merged (kernel-opt-10/13).
+{-| Returns whether the row licenses merging two calls with the same arguments
+into one. This is `cseSafe` alone, so it can hold for a `Throws` row, where
+`droppable` cannot. It says nothing about allocation: a merged call that
+allocates leaves one value where there would have been two.
 -}
 hoistable : KernelFacts -> Bool
 hoistable f =
     f.cseSafe
 
 
-{-| Inliner cost class (kernel-opt-11 (b)), DERIVED — never stored.
+{-| A rough price for a kernel call, for an inliner's cost model, derived from
+the row by `costClass`. It says only what the audit knows, whether the call
+allocates and whether it runs Elm code.
 
-There is deliberately no `CInline` case: whether a symbol lowers to an inline op
-rather than a call is a property of `Generate.MLIR.Intrinsics`, not of this
-audit, and is queried there. This type says only what the AUDIT knows — whether
-the callee can allocate, and whether it can re-enter Elm.
+`CGcLeaf` is a call that allocates nothing, on the Eco heap or in C++, and
+never runs Elm code.
+
+`CAlloc` is a call that may allocate, on either heap, and never runs Elm code.
+
+`CHof` is a call audited as applying an Elm function value.
+
+`CUnknown` is a call whose HOF axis has not been audited, which says nothing
+about its price.
 
 -}
 type CostClass
-    = CGcLeaf -- plain leaf call: no Elm GC, no C++ heap traffic, no callback
-    | CAlloc -- allocates on the Elm heap or the C++ heap
-    | CHof -- AUDITED to re-enter Elm through a user closure
-    | CUnknown -- the row's HOF axis is unaudited; use the no-row price
+    = CGcLeaf
+    | CAlloc
+    | CHof
+    | CUnknown
 
 
-{-| Classify for the cost model. Ordered most-expensive-first: re-entering Elm
-dominates allocating, which dominates a plain leaf call.
+{-| Returns the cost class of a call. The HOF axis decides first: `HofUnknown`
+gives `CUnknown` and `HofYes` gives `CHof`. Only for `HofNo` does allocation
+matter, giving `CAlloc` when `gcAlloc` is not `GcNone` or `cppAlloc` is set,
+and `CGcLeaf` otherwise.
+
+So `CGcLeaf` is narrower than `gcLeafEligible`: a gc-leaf call that uses C++
+memory, such as `Utils.equal`, is `CAlloc`.
+
 -}
 costClass : KernelFacts -> CostClass
 costClass f =
     case f.callsBack of
         HofUnknown ->
-            -- The row asserts nothing about the cost axis, so neither do we:
-            -- the consumer applies the same price it uses for a kernel with no
-            -- row at all. See `HofAxis`.
             CUnknown
 
         HofYes ->
@@ -297,28 +379,27 @@ costClass f =
 
 
 
--- KEY FORMS: same facts, whitelist default folded in. An unlisted key answers
--- False for all three, which is every consumer's status-quo behaviour. These
--- exist so a consumer holding a key (kernel-opt-08's `KernelInstanceKey`) does
--- not have to spell `lookup >> Maybe.map … >> Maybe.withDefault False` and
--- accidentally pick `withDefault True`.
+-- KEY FORMS
+--
+-- The same facts asked of a Mono key, with the whitelist default folded in: an
+-- unlisted key answers False, so no caller has to choose the default itself.
 
 
-{-| Key form of `gcLeafEligible`; unlisted ⇒ False.
+{-| Returns `gcLeafEligible` of the key's row, or `False` for an unlisted key.
 -}
 gcLeafEligibleFor : ( Name, Name ) -> Bool
 gcLeafEligibleFor key =
     lookup key |> Maybe.map gcLeafEligible |> Maybe.withDefault False
 
 
-{-| Key form of `droppable`; unlisted ⇒ False.
+{-| Returns `droppable` of the key's row, or `False` for an unlisted key.
 -}
 droppableFor : ( Name, Name ) -> Bool
 droppableFor key =
     lookup key |> Maybe.map droppable |> Maybe.withDefault False
 
 
-{-| Key form of `hoistable`; unlisted ⇒ False.
+{-| Returns `hoistable` of the key's row, or `False` for an unlisted key.
 -}
 hoistableFor : ( Name, Name ) -> Bool
 hoistableFor key =
@@ -329,25 +410,21 @@ hoistableFor key =
 -- LOOKUP
 
 
-{-| The whole table, keyed by Mono `(home, name)`.
+{-| Looks up the row for a Mono key, `( home, name )` with no `Elm`/`Eco`
+prefix and no ABI suffix. `Nothing` means the kernel is unlisted and licenses
+nothing.
 -}
 lookup : ( Name, Name ) -> Maybe KernelFacts
 lookup key =
     Dict.get key table
 
 
-{-| **The one sanctioned mangled-symbol → Mono-key stripper.** Any consumer that
-holds only the emitted C symbol MUST go through this (or through `splitSymbol`,
-which is exposed for that purpose) rather than re-implement prefix/suffix
-handling: two strippers WILL drift, and the drift is silent (a missed strip is
-a lookup miss, i.e. a silently-lost optimisation, not an error).
+{-| Looks up the row for an emitted C symbol, such as
+`Elm_Kernel_Utils_compare_Float`, by turning it into a Mono key with
+`splitSymbol`. Anything that is not a kernel symbol, or names an unlisted
+kernel, gives `Nothing`.
 
-Strips the `Elm_Kernel_`/`Eco_Kernel_` prefix (both are exactly 11 chars; the
-prefix comes from `KernelInstanceKey.prefix ++ "_Kernel_"`, KernelAbi.elm:187)
-and any `_Int/_Float/_Char` ABI suffix, then looks up the base Mono row. Sound:
-the primitive-specialised C variants are strictly WEAKER in effect than their
-boxed base (unboxed operands, no resolve), so inheriting the base row
-over-approximates. Precedent for the two-prefix test: Ops.elm:664.
+A typed variant shares its base kernel's row.
 
 -}
 lookupSymbol : String -> Maybe KernelFacts
@@ -355,16 +432,22 @@ lookupSymbol sym =
     splitSymbol sym |> Maybe.andThen lookup
 
 
-{-| Exposed on purpose: `Elm_Kernel_Utils_compare_Float` -> `Just ("Utils", "compare")`.
-Anything that is not a kernel symbol (`eco_gc_alloc_region_fast`,
-`Eco_Runtime_getOrderLT`) answers `Nothing` or a key no row matches.
+{-| Turns an emitted kernel symbol into a Mono key:
+`Elm_Kernel_Utils_compare_Float` gives `Just ( "Utils", "compare" )`.
+
+It strips the `Elm_Kernel_` or `Eco_Kernel_` prefix, takes the text up to the
+next `_` as the home and the rest as the name, and removes any `_Int`,
+`_Float` or `_Char` ending from the name. A symbol without either prefix
+(`eco_gc_alloc_region_fast`, `Eco_Runtime_getOrderLT`), or with no `_` after
+it, gives `Nothing`. A home containing `_` would be split in the wrong place.
+
 -}
 splitSymbol : String -> Maybe ( Name, Name )
 splitSymbol sym =
     let
         afterPrefix : Maybe String
         afterPrefix =
-            -- String.length "Elm_Kernel_" == String.length "Eco_Kernel_" == 11.
+            -- Both prefixes are 11 characters long.
             if String.startsWith "Elm_Kernel_" sym || String.startsWith "Eco_Kernel_" sym then
                 Just (String.dropLeft 11 sym)
 
@@ -396,6 +479,9 @@ splitSymbol sym =
             )
 
 
+{-| The rows indexed by Mono key, for `lookup`. If two rows had the same key the
+later would win here; `validationErrors` reports that.
+-}
 table : Dict ( Name, Name ) KernelFacts
 table =
     Dict.fromList rows
@@ -403,20 +489,10 @@ table =
 
 
 -- THE TABLE
---
--- 52 rows = 48 kernel rows + 4 Basics_* A6-ledger rows. The 48 are the 33
--- legacy Borrow/KernelSigs keys (so borrow behaviour is bit-identical through
--- the shim) plus 15 new effect-audited keys from §6.E. Class A rows carry an
--- effect verdict; class B rows are legacy borrow rows whose C++ body has NOT
--- been re-read for effects, so they are built from `unaudited` and license
--- nothing. Promoting a class-B row to class A is a separate, reviewed change.
---
--- Every anchor was opened and verified in the tree on 2026-08-10.
 
 
-{-| The devirt registration for a kernel — `DevirtNo` for anything unlisted,
-which is the whitelist discipline: an unregistered kernel keeps its indirect
-call.
+{-| Returns the devirtualization registration for a Mono key. An unlisted kernel
+is not registered: it gives `DevirtNo`.
 -}
 devirtOf : ( Name, Name ) -> DevirtPolicy
 devirtOf key =
@@ -425,12 +501,18 @@ devirtOf key =
         |> Maybe.withDefault DevirtNo
 
 
-{-| The audited rows, in table order. Exposed so tests (and censuses) can walk
-the whole table without a second copy of the keys.
+{-| Every row of the table, in the order written, unaudited rows included.
+
+The rows fall into groups. The audited rows come first, ending with the
+kernels that build tasks. The unaudited rows follow: most of the higher-order
+kernels, which state `HofYes`; rows that carry the borrow axis, some with a
+devirtualization registration or an effect as well; and rows that exist to
+record a divergence note.
+
 -}
 rows : List ( ( Name, Name ), KernelFacts )
 rows =
-    -- ── A1: gc-leaf eligible AND cseSafe (the kernel-opt-08 stampable 14) ──
+    -- Audited pure rows that allocate nothing on the Eco heap.
     [ ( ( "Utils", "equal" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
@@ -438,20 +520,16 @@ rows =
             , cppAlloc = True -- dictEq uses std::vector working stacks
             , divergence = Just "depth > 100 returns true (elm-kernel-cpp/src/core/Utils.cpp:560-563): deep unequal values compare equal; cmp has no such cap"
 
-            -- LSS_016 wave 3. `(==) : a -> a -> Bool`, arity 2. Utils.equal IS
-            -- suffix-selecting (equal_Int/_Float/_Char exist), so unboxed
-            -- ARGUMENTS are legitimate -- that is what the variants are for --
-            -- and guarding them would decline exactly the sites the variants
-            -- serve. Every variant returns `HPtr`, so only the RESULT is
-            -- guarded; deep CNumber-freedom rejects the imprecise sites.
+            -- `(==)` takes two arguments. Typed variants serve unboxed
+            -- arguments, and every variant returns a boxed value, so only the
+            -- result is guarded.
             , devirt = DevirtAt 2 (ShapeNoUnboxedScalarAt [ -1 ])
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:107-109 (equalRespectingConstants :94-105); elm-kernel-cpp/src/core/Utils.cpp:470-472 (eqHelp :521-734, dictEq :747-797); runtime/src/allocator/StringOps.hpp:1486-1533; runtime/src/allocator/HeapHelpers.hpp:822"
         }
       )
     , ( ( "Utils", "notEqual" )
-        -- Same body as `equal`: the extern is `!equalRespectingConstants(…)`.
-        -- Every field must MATCH the `equal` row, which is why the two rows are
-        -- edited together, never separately.
+        -- The export is the negation of `equal`'s, so the audited fields of
+        -- this row must match the `equal` row's.
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
@@ -461,11 +539,8 @@ rows =
         }
       )
     , ( ( "Utils", "compare" )
-        -- GcNone because the three Order results are PRE-allocated singletons;
-        -- the only alloc::custom calls are in initOrderSingletons, whose sole
-        -- caller is the one-time runtime-init hook. A reviewer who reads only
-        -- elm-kernel-cpp/src/core/ListExports.cpp:718 ("Utils::compare may
-        -- allocate") concludes the opposite, so the hook is named below.
+        -- GcNone because each Order result is an embedded constant, so a call
+        -- returns one without allocating.
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
@@ -510,10 +585,9 @@ rows =
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
 
-            -- LSS_016 wave 3. `String.length : String -> Int`, arity 1. The one
-            -- export is `int64_t (HPtr)`: the ARGUMENT must stay boxed, but the
-            -- RESULT is legitimately an unboxed i64, so only position 0 is
-            -- guarded -- guarding the result would decline every site.
+            -- The only export takes a boxed string and returns an unboxed Int,
+            -- so only the argument is guarded; guarding the result would
+            -- decline every site.
             , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0 ])
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:18-27; runtime/src/allocator/StringOps.hpp:239-243"
         }
@@ -561,66 +635,52 @@ rows =
         }
       )
 
-    -- ── A2: audited pure, allocating (cseSafe, NOT gc-leaf) ──
+    -- Audited pure rows that allocate, except `Basics.not` and `Basics.round`.
     , ( ( "Basics", "not" )
-        -- LSS_016 wave 3, NEW audited row. `Bool -> Bool`, arity 1.
+        -- Returns one of the embedded True and False constants, so nothing is
+        -- allocated.
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
             , cppAlloc = False
 
-            -- Sole export `(HPtr) -> HPtr`, no typed variants, so an
-            -- unboxed-scalar derivation at either end would register a
-            -- colliding declaration. It cannot fire in practice: Bool is boxed
-            -- as the embedded True/False constants per REP_ABI_001, never
-            -- MInt/MFloat/MChar. Guarded anyway, so a REP change is caught.
+            -- The only export is boxed at both ends, with no typed variants. A
+            -- Bool is never an unboxed scalar, so the guard should never decline
+            -- a site; it is there in case that changes.
             , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_not; elm-kernel-cpp/src/core/Basics.cpp:165-167 (return !a); ExportHelpers.hpp:80-82 (elmTrue/elmFalse are EMBEDDED HPointer constants, so nothing is allocated)"
         }
       )
     , ( ( "Basics", "add" )
-        -- LSS_016 wave 3, NEW audited row. `number -> number -> number`,
-        -- arity 2. One row covers all three exports: `lookupSymbol` strips the
-        -- _Int/_Float suffixes, so the facts must hold for the WIDEST of them --
-        -- the boxed root, which allocates a result box.
+        -- `lookupSymbol` maps the boxed export and its `_Int` and `_Float`
+        -- variants all to this row, so its facts are the boxed export's, which
+        -- allocates one box for the result.
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcFixed 1
             , cppAlloc = False
 
-            -- ShapeAny, deliberately: `add_Int (i64, i64) -> i64` and
-            -- `add_Float (double, double) -> double` exist, so unboxed
-            -- positions are the CORRECT derivation, not a hazard. Guarding
-            -- them would decline exactly the sites the typed variants serve.
-            -- The universal deep-CNumber check is what rejects unsettled
-            -- number sites here.
+            -- No guard: an unboxed site calls one of the typed variants.
             , devirt = DevirtAt 2 ShapeAny
             , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_add (boxed root: tag test then boxInt(add_Int ..) / boxFloat(add_Float ..) -- ONE box allocated, no C++ heap, no callback); KernelExports.h declares add_Int/add_Float/add"
         }
       )
     , ( ( "Basics", "round" )
-        -- LSS_016 wave 3, NEW audited row. `Float -> Int`, arity 1.
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
             , cppAlloc = False
 
-            -- ShapeAny is REQUIRED, not merely permitted: the sole export is
-            -- `int64_t (double)`, unboxed in and unboxed out, and the type is
-            -- monomorphic so the ABI always derives that way. A scalar guard
-            -- would decline every site.
+            -- The only export takes and returns unboxed scalars, and the type
+            -- has no variables, so a guard would decline every site.
             , devirt = DevirtAt 1 ShapeAny
             , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_round (return Basics::round(x)); KernelExports.h: int64_t Elm_Kernel_Basics_round(double) is the ONLY export -- no Elm heap value is touched"
         }
       )
     , ( ( "String", "fromList" )
-        -- LSS_016 wave 3, NEW audited row. `List Char -> String`, arity 1.
-        -- Two-pass: count the list, allocate one exact-size String, walk again
-        -- writing chars in. Length-dependent, hence GcUnbounded. `cppAlloc` is
-        -- left at the conservative True: the all-ASCII fast path is
-        -- vector-free by construction (its own comment), but the UTF-16 branch
-        -- below it was not read end-to-end, and over-claiming here would leak
-        -- into gcLeafEligible.
+        -- Counts the list, allocates one string of that length and fills it,
+        -- hence GcUnbounded. cppAlloc is set True because only the all-ASCII
+        -- path was read in full.
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcUnbounded
@@ -630,27 +690,16 @@ rows =
         }
       )
     , ( ( "Json", "wrap" )
-        -- LSS_016 wave 3, NEW audited row. `a -> Value`, arity 1 at all five of
-        -- its (mutually inconsistent) inline use sites.
-        --
-        -- POwned with resultAliases = [0]: the ENC_BOOL/ENC_STRING branches
-        -- STORE the argument into `enc->values[0].p`, and the final
-        -- "already an encoder" branch returns the argument BY IDENTITY.
-        --
-        -- Separately REJECTED on the set-flow axis (LSS_022) for exactly that
-        -- identity fallthrough, which launders an arbitrary value into the
-        -- opaque `Value`. Different axis, different question: that is about
-        -- whether a FUNCTION value can be retained, this is about whether the
-        -- call is referentially transparent and droppable.
+        -- POwned with resultAliases = [ 0 ]: some branches store the argument
+        -- in the new value, and the last returns the argument itself.
       , { auditedPure
             | params = [ POwned ]
             , resultAliases = [ 0 ]
             , gcAlloc = GcFixed 1
             , cppAlloc = False
 
-            -- Suffix-selecting (wrap_Int/wrap_Float exist), so unboxed
-            -- ARGUMENTS are the correct derivation; every variant returns
-            -- `HPtr`, so only the result is guarded.
+            -- Typed variants serve unboxed arguments, and every variant returns
+            -- a boxed value, so only the result is guarded.
             , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ -1 ])
             , evidence = "elm-kernel-cpp/src/json/JsonExports.cpp:Elm_Kernel_Json_wrap (ENC_BOOL/ENC_STRING/ENC_FLOAT branches each allocate ONE Tag_Custom; string branch stores the arg at values[0].p; final branch returns the arg unchanged). Grep over the whole body: zero eco_apply, zero statics, zero globals"
         }
@@ -659,22 +708,18 @@ rows =
       , { auditedPure
             | gcAlloc = GcFixed 1
 
-            -- LSS_016 v1, migrated here verbatim from Translate's if-else.
-            -- `cons : a -> List a -> List a` — arity 2; the TAIL (index 1) and
-            -- the RESULT must not derive as unboxed scalars, or an imprecise
-            -- site mints `Elm_Kernel_List_cons_Int : (i64, i64) -> i64` and
-            -- reinterprets the tail list pointer as a raw integer.
+            -- The tail and the result must stay boxed: a site that derived an
+            -- Int there would call `Elm_Kernel_List_cons_Int` with the tail
+            -- list's pointer read as an integer.
             , devirt = DevirtAt 2 (ShapeNoUnboxedScalarAt [ 1, -1 ])
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:276-283; runtime/src/allocator/HeapHelpers.hpp:630"
         }
       )
     , ( ( "Utils", "append" )
-        -- kernel-opt-05 filled the borrow axes: OWNER over BOTH string and list.
-        -- makeRope stores both operands as GC roots and ListOps::append aliases
-        -- the rhs into the result tail, and copy-vs-rope is a RUNTIME decision on
-        -- byte length that a static (home, name) sig cannot discriminate -- so
-        -- the poisoned heap args are not recoverable (borrow-inf-census.md:883-897
-        -- CORRECTION 2026-07-27).
+        -- Both arguments owned. Appending strings may keep both operands inside
+        -- a rope, and appending lists shares the second list as the result's
+        -- tail. Whether a rope is built depends on the lengths at run time,
+        -- which one row per kernel cannot express.
       , { auditedPure
             | params = [ POwned, POwned ]
             , resultAliases = [ 0, 1 ]
@@ -682,9 +727,8 @@ rows =
             , cppAlloc = True
             , divergence = Just "unsupported tag pair silently returns the first argument (elm-kernel-cpp/src/core/Utils.cpp:845-846) instead of failing"
 
-            -- LSS_016 wave 3. `(++) : appendable -> appendable -> appendable`,
-            -- arity 2. Sole export `(HPtr, HPtr) -> HPtr` with no typed
-            -- variants, so all three positions must stay boxed.
+            -- The only export is boxed everywhere, with no typed variants, so
+            -- both arguments and the result are guarded.
             , devirt = DevirtAt 2 (ShapeNoUnboxedScalarAt [ 0, 1, -1 ])
             , evidence = "elm-kernel-cpp/src/core/Utils.cpp:823-847; runtime/src/allocator/StringOps.hpp:477-537; runtime/src/allocator/ListOps.cpp:262"
         }
@@ -728,26 +772,15 @@ rows =
         }
       )
 
-    -- ── A3: Task constructors (EffNone per KERNEL_TASK_IO_001,
-    -- design_docs/invariants.csv:590 — the IO fires when the scheduler steps
-    -- the binding, not at kernel-call time) ──
+    -- Audited pure rows for kernels that build a task. Building the task does
+    -- nothing observable; its work happens when the scheduler runs it.
     , ( ( "Scheduler", "succeed" )
       , { auditedPure
             | gcAlloc = GcFixed 1
 
-            -- LSS_016 wave 2 (plans/kernel-devirt-arity-table.md). `Task.succeed
-            -- : a -> Task x a` (elm/core Task.elm:78, eta-free alias) — arity 1.
-            -- PURITY RE-CONFIRMED before registering, because devirt promotes
-            -- this row's cseSafe/totality from inert to load-bearing:
-            -- `taskSucceed` is `allocTask(Task_Succeed, value, nil, nil, nil)`
-            -- (Scheduler.cpp:123-126) — a plain allocation that touches no
-            -- scheduler state, enqueues nothing and registers nothing globally.
-            -- The exposure is not new in kind: `Task.succeed` is an eta-free
-            -- alias, so ordinary written-out calls already reach this row today.
-            -- Guard: the sole export is `(HPtr) -> HPtr`
-            -- (SchedulerExports.cpp:16) with no typed variants, so an imprecise
-            -- site deriving an unboxed scalar would register a colliding
-            -- `(i64) -> ptr` declaration (CGEN_038) — same hazard as cons.
+            -- Only allocates the task: it touches no scheduler state and
+            -- registers nothing. The only export is boxed at both ends, with no
+            -- typed variants, so both are guarded.
             , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:16-21; runtime/src/platform/Scheduler.cpp:123-126"
         }
@@ -756,16 +789,13 @@ rows =
       , { auditedPure
             | gcAlloc = GcFixed 1
 
-            -- LSS_016 wave 2. `Task.fail : x -> Task x a` (Task.elm:92) —
-            -- arity 1. `taskFail` is `allocTask(Task_Fail, error, nil, nil,
-            -- nil)` (Scheduler.cpp:139-142); same re-confirmation and same
-            -- guard as `succeed` above.
+            -- As for `succeed`.
             , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:23-28; runtime/src/platform/Scheduler.cpp:139-142"
         }
       )
     , ( ( "Scheduler", "andThen" )
-        -- NOT a HOF: it stores the closure in the Task, never applies it.
+        -- HofNo: it stores the callback in the task and never applies it.
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:30-37; runtime/src/platform/Scheduler.cpp:149-152"
@@ -779,28 +809,28 @@ rows =
       )
     , ( ( "MVar", "put" )
       , { auditedPure
-            | gcAlloc = GcFixed 1 -- the binding
+            | gcAlloc = GcFixed 1
             , evidence = "eco-kernel-cpp/src/eco/MVarExports.cpp:38-46; eco-kernel-cpp/src/eco/MVar.cpp:290"
         }
       )
     , ( ( "MVar", "read" )
       , { auditedPure
-            | gcAlloc = GcFixed 1 -- the binding
+            | gcAlloc = GcFixed 1
             , evidence = "eco-kernel-cpp/src/eco/MVarExports.cpp:30-32; eco-kernel-cpp/src/eco/MVar.cpp:264"
         }
       )
 
-    -- ── A4: HOFs — effect/alloc/totality all join over the user closure, so
-    -- these keep every conservative default from `unaudited` ──
+    -- Higher-order kernels. Whatever the function value does becomes part of
+    -- the call's effect, allocation and totality, so effect and allocation
+    -- stay unaudited and totality is never Total.
+    -- Each row states HofYes; left as HofUnknown, costClass would answer
+    -- CUnknown instead of CHof.
     , ( ( "JsArray", "foldl" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: JsArrayExports.cpp foldImpl applies the folder per element.
+            -- Applies the folding function to each element.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:651-653; foldImpl :576 (final accumulator returned by identity when it stayed boxed, :636-640)"
         }
@@ -810,10 +840,7 @@ rows =
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: JsArrayExports.cpp foldImpl applies the folder per element.
+            -- Applies the folding function to each element.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:655-657; foldImpl :576"
         }
@@ -823,20 +850,14 @@ rows =
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 1 ]
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: JsArrayExports.cpp applies the mapper per element via eco_apply_closure_eval.
+            -- Applies the mapping function to each element.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:463"
         }
       )
     , ( ( "JsArray", "initialize" )
       , { unaudited
-          -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-          -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-          -- must say so or it would be costed like a cheap unknown call.
-          -- Body evidence: JsArrayExports.cpp applies the generator per index.
+          -- Applies the generating function to each index.
             | callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:422 (base export; the ABI variant _Int is :948, same Mono key)"
         }
@@ -846,10 +867,7 @@ rows =
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: ListExports.cpp kernelListMapN applies the callback via eco_apply_closure_eval.
+            -- Applies the mapping function to each pair of elements.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:592-600; kernelListMapN :432"
         }
@@ -861,10 +879,7 @@ rows =
             , totality = Throws
             , divergence = Just "strict-weak-ordering UB on embedded-constant keys (report 03 #8): the comparator resolves constants to nullptr and relies on Utils::cmp's early returns"
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: ListExports.cpp Elm_Kernel_List_sortBy calls the key function per element (callUnaryClosure).
+            -- Applies the key function to each element.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:759 (Elm_Kernel_List_sortBy; comparator :805-825); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
@@ -876,10 +891,7 @@ rows =
             , totality = Throws
             , divergence = Just "strict-weak-ordering UB on embedded-constant keys (report 03 #8): the comparator resolves constants to nullptr and relies on Utils::cmp's early returns"
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: ListExports.cpp Elm_Kernel_List_sortWith calls the comparator per comparison (callBinaryClosure).
+            -- Applies the comparison function in each comparison.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:832 (Elm_Kernel_List_sortWith; comparator :862-878); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
@@ -888,18 +900,15 @@ rows =
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: StringExports.cpp applies the predicate per char.
+            -- Applies the predicate to each character.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:305 (snapshotChars copies; fn args are unboxed Chars)"
         }
       )
 
-    -- ── B: borrow-legacy rows. The C++ body has NOT been re-read for effects,
-    -- so all four derived facts are False and every consumer keeps its default.
-    -- Only the borrow axis is carried over from Borrow/KernelSigs.elm. ──
+    -- Unaudited rows that carry the borrow axis. Their C++ bodies have not been
+    -- read for effects, so none of them licenses deleting, merging or gc-leaf
+    -- marking a call.
     , ( ( "JsArray", "length" )
       , { unaudited
             | params = [ PBorrowed ]
@@ -907,8 +916,8 @@ rows =
         }
       )
     , ( ( "JsArray", "unsafeGet" )
-        -- C signature is `unsafeGet index array`: array is param 1; aliases an
-        -- element only in the boxed branch (:221).
+        -- The C signature is `unsafeGet index array`, so the array is argument
+        -- 1. The result is one of its elements only when elements are boxed.
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 1 ]
@@ -932,10 +941,7 @@ rows =
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 0, 1 ]
 
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: BytesExports.cpp applies the decoder closure via eco_apply_closure_typed.
+            -- Applies the decoder, which is an Elm function value.
             , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:418"
         }
@@ -959,8 +965,8 @@ rows =
             | params = [ PBorrowed ]
             , resultAliases = [ 0 ]
 
-            -- LSS_016 wave 3. `String.trim : String -> String`, arity 1; sole
-            -- export `(HPtr) -> HPtr`. Same `unaudited`-base caveat as toLower.
+            -- Registered on an unaudited row, so only the direct call is gained.
+            -- The only export is boxed at both ends.
             , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:91; runtime/src/allocator/StringOps.hpp:878"
         }
@@ -969,11 +975,7 @@ rows =
       , { unaudited
             | params = [ PBorrowed ]
 
-            -- LSS_016 wave 3. `String.toLower : String -> String`, arity 1;
-            -- sole export `(HPtr) -> HPtr`, both ends boxed. NOTE this row sits
-            -- on the `unaudited` base, so cseSafe/droppable stay False: the
-            -- registration buys the dispatch removal only, and no CSE/DCE
-            -- consumer will act on it until the row is properly audited.
+            -- As for `trim`.
             , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:86; runtime/src/allocator/StringOps.hpp:801"
         }
@@ -985,7 +987,7 @@ rows =
         }
       )
     , ( ( "Debug", "log" )
-        -- The one row CafHoist gets right today: it prints.
+        -- It prints, so the effect is stated, though the base has it already.
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 1 ]
@@ -994,10 +996,9 @@ rows =
         }
       )
     , ( ( "Crash", "crash" )
-        -- gcAlloc stays GcUnbounded (not §6.E's GcNone): Crash::crash calls
-        -- toString(message) at eco-kernel-cpp/src/eco/Crash.cpp:21, which is
-        -- unread. A noreturn call is never a useful gc-leaf, so the
-        -- conservative value costs nothing.
+        -- gcAlloc stays GcUnbounded: the body converts the message to a
+        -- string, and that code has not been read. A call that never returns
+        -- gains nothing from being a gc-leaf.
       , { unaudited
             | params = [ PBorrowed ]
             , callTimeEffect = EffNoreturn
@@ -1007,11 +1008,9 @@ rows =
         }
       )
 
-    -- ── A6 divergence ledger (R8): ledger-only rows. NO borrow entry (params =
-    -- [] ⇒ the shim reports a miss ⇒ Constrain/LssFacts keep today's poison
-    -- path) and no audited axis beyond what the ledger states. They exist so the
-    -- divergence is recorded before any Part-2 migration touches these symbols.
-    -- `evidence` is still MANDATORY (rule V1). ──
+    -- Unaudited rows that exist to record a divergence note: how the C++
+    -- kernel differs from the compiler's inline version of the same
+    -- operation. They leave params empty, so they carry no borrow modes.
     , ( ( "Basics", "modBy" )
       , { unaudited
             | totality = Throws
@@ -1042,14 +1041,29 @@ rows =
 
 
 -- VALIDATION
---
--- Elm cannot fail a BUILD on data, so "build-time validation" means a compiler
--- unit test that runs on every elm-tests invocation and blocks the merge
--- (compiler/tests/Compiler/GlobalOpt/KernelFactsTest.elm, suite 1).
 
 
-{-| Cross-field consistency of the whole table. An inconsistent row is a test
-failure of the compiler, not a latent miscompile. Empty == healthy.
+{-| Messages for the ways the table breaks its own rules; an empty list means
+the table is consistent.
+
+Repeated keys give a single message stating how many rows repeat an earlier
+key.
+
+Each row must obey these rules, and a row that breaks one gets a message naming
+it. Evidence must contain `.cpp:` or `.hpp:`. A `cseSafe` row must have no
+call-time effect, an audited `HofNo`, and a totality other than
+`MayDiverge`. An `EffNoreturn` row must not be `Total`. `GcFixed` must be
+positive. A `HofYes` row must be `GcUnbounded` and not `Total`. A `Throws` row
+must carry a divergence note. Every `resultAliases` index must point into
+`params`. The key must look like a Mono key: home and name non-empty, a home
+not starting with `Elm_Kernel_` or `Eco_Kernel_`, and a name not ending in
+`_Int`, `_Float` or `_Char`.
+
+A row registered with `DevirtAt arity guard` must also have a non-negative
+`arity`, equal to the length of `params` when `params` is not empty, carry
+evidence, and give guard positions that are `-1` or an argument index from 0 to
+`arity - 1`.
+
 -}
 validationErrors : List String
 validationErrors =
@@ -1058,13 +1072,15 @@ validationErrors =
         ++ List.concatMap (\( key, facts ) -> devirtErrors key facts) rows
 
 
-{-| LSS\_016 registration checks. A wrong arity is a MISCOMPILE (the derived ABI
-misreads arguments), so the two independent statements of a kernel's arity in
-this table are cross-checked against each other rather than trusted separately.
+{-| Returns a message for each way a row's devirtualization registration is
+wrong, or nothing for a row that is not registered. A registration must have a
+non-negative arity, evidence, and guard positions that are `-1` or a valid
+argument index for that arity.
 
-`params = []` deliberately means "borrow axis NOT audited", NOT "zero
-arguments", so it is only compared when non-empty — which is exactly why the
-arity is an explicit field instead of `List.length params`.
+A row can state its arity twice, in `DevirtAt` and as the length of `params`,
+and the two must agree. Since `params = []` means the borrow axis was not
+audited rather than that the kernel takes no arguments, they are compared only
+when `params` is not empty; that is why `DevirtAt` carries its own arity.
 
 -}
 devirtErrors : ( Name, Name ) -> KernelFacts -> List String
@@ -1115,9 +1131,12 @@ devirtErrors ( home, name ) facts =
                    )
 
 
+{-| A message giving how many rows repeat an earlier row's key, or nothing
+when every key is distinct. `table` would keep only the last such row, with no
+other sign of the others.
+-}
 dupKeyErrors : List String
 dupKeyErrors =
-    -- Dict.fromList silently keeps the LAST duplicate; catch it here.
     if List.length rows == Dict.size table then
         []
 
@@ -1125,6 +1144,16 @@ dupKeyErrors =
         [ "duplicate key(s): " ++ String.fromInt (List.length rows - Dict.size table) ]
 
 
+{-| Returns a message, naming the row, for each rule the row breaks. Evidence
+must contain `.cpp:` or `.hpp:`. A `cseSafe` row must have no
+call-time effect, an audited `HofNo`, and a totality other than `MayDiverge`.
+An `EffNoreturn` row must not be `Total`. `GcFixed` must be positive. A `HofYes`
+row must be `GcUnbounded` and not `Total`. A `Throws` row must carry a
+divergence note. Every `resultAliases` index must point into `params`. The key
+must look like a Mono key: home and name non-empty, a home not starting with
+`Elm_Kernel_` or `Eco_Kernel_`, and a name not ending in `_Int`, `_Float` or
+`_Char`.
+-}
 rowErrors : ( ( Name, Name ), KernelFacts ) -> List String
 rowErrors ( ( home, name ), f ) =
     let
@@ -1139,30 +1168,23 @@ rowErrors ( ( home, name ), f ) =
                 [ tag msg ]
     in
     List.concat
-        [ -- V1 evidence is mandatory and must be a C++ anchor
-          check (String.contains ".cpp:" f.evidence || String.contains ".hpp:" f.evidence)
+        [ check (String.contains ".cpp:" f.evidence || String.contains ".hpp:" f.evidence)
             "evidence must carry at least one <file>.cpp:<line> / .hpp:<line> anchor"
-        , -- V2 cseSafe is the strongest claim: no effect, no callback, terminates
-          check (not f.cseSafe || (f.callTimeEffect == EffNone && not (mayCallBackIntoElm f) && f.totality /= MayDiverge))
+        , check (not f.cseSafe || (f.callTimeEffect == EffNone && not (mayCallBackIntoElm f) && f.totality /= MayDiverge))
             "cseSafe requires EffNone AND callsBack == HofNo AND totality /= MayDiverge"
-        , -- V3 a noreturn row cannot be Total
-          check (f.callTimeEffect /= EffNoreturn || f.totality /= Total)
+        , check (f.callTimeEffect /= EffNoreturn || f.totality /= Total)
             "EffNoreturn requires totality /= Total"
-        , -- V4 GcFixed is a positive object budget
-          check (gcBudgetOk f.gcAlloc)
+        , check (gcBudgetOk f.gcAlloc)
             "GcFixed n requires n > 0 (use GcNone for zero)"
-        , -- V5 a callback into Elm can allocate arbitrarily and can diverge
+        , -- Elm code run by a call can allocate any amount, and need not return.
           check (f.callsBack /= HofYes || (f.gcAlloc == GcUnbounded && f.totality /= Total))
             "callsBack == HofYes requires GcUnbounded AND totality /= Total"
-        , -- V6 a Throws row must say what it throws
-          check (f.totality /= Throws || f.divergence /= Nothing)
+        , check (f.totality /= Throws || f.divergence /= Nothing)
             "totality = Throws requires a divergence note"
-        , -- V7 resultAliases must index real params (so an unaudited row, params
-          -- == [], cannot smuggle in alias edges the shim would then hide)
+        , -- So a row with no borrow modes cannot list aliases either.
           check (List.all (\i -> i >= 0 && i < List.length f.params) f.resultAliases)
             "resultAliases index out of range for params"
-        , -- V8 keys are MONO names, not ABI symbols
-          check (home /= "" && name /= "")
+        , check (home /= "" && name /= "")
             "empty home/name"
         , check (not (String.startsWith "Elm_Kernel_" home || String.startsWith "Eco_Kernel_" home))
             "home must be the Mono home, not the C symbol prefix"
@@ -1171,6 +1193,9 @@ rowErrors ( ( home, name ), f ) =
         ]
 
 
+{-| Returns whether an allocation bound is acceptable: `GcFixed` must be
+positive, and the other values always are.
+-}
 gcBudgetOk : GcAlloc -> Bool
 gcBudgetOk ga =
     case ga of

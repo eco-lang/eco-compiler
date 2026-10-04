@@ -1,9 +1,46 @@
 module SourceIR.CombinatorCases exposing (expectSuite)
 
-{-| Tests for SKI-style combinators with integer arithmetic.
+{-| Small integer programs built from combinators, for a caller to push through
+whichever compiler stage it tests.
 
-These test cases correspond to the E2E tests in test/elm/src/CombinatorTest.elm,
-building each combinator from S and K, then applying it to integer operations.
+A combinator is a function that only rearranges and applies its arguments. Two
+are enough to build many others: K takes two arguments and returns the first,
+and S takes `bf`, `uf` and `x` and returns `bf x (uf x)`. The four programs
+built from S and K (I, B, C and T) consist of little but functions passed as
+arguments, partial applications, and definitions with no arguments of their own
+whose value is a function. They give a stage under test those shapes in
+concentrated form.
+
+Each program is a module named `Test`, built with
+`Compiler.AST.SourceBuilder.makeModule`, whose one top-level value `testValue`
+has no annotation. Its body is a single `let` holding every combinator and
+helper the program uses, around one application whose result is an `Int`. The
+arithmetic uses only `+`, `-` and `*`.
+
+This module builds the programs and nothing more. `expectSuite` hands each one
+to the caller's `expectFn`, which decides what is checked. The values given
+below are what each `testValue` evaluates to; no case here compares them.
+
+The programs, in the order they run:
+
+  - K: `k 42 99`, which is `42`.
+  - S: `s add double 5` with a local `add a b = a + b` and `double x = x * 2`,
+    which is `add 5 (double 5)`, `15`.
+  - I, defined as `s k k`: `i 42`, which is `42`.
+  - B, the composition combinator, defined as `s (k s) k`:
+    `b square inc 4`, which is `square (inc 4)`, `25`.
+  - C, the argument-flipping combinator, defined as `s (b b s) (k k)` from
+    local S, K and B: `c sub 10 3` with `sub x y = x - y`, which is
+    `sub 3 10`, `-7`.
+  - SP, defined directly as `sp bf uf1 uf2 x = bf (uf1 x) (uf2 x)`:
+    `sp mul inc double 6`, which is `mul 7 12`, `84`.
+  - T, defined as `c i` from local S, K, B, C and I: `t 7 (\x -> x * 3)`,
+    which is `21`.
+  - W, defined directly as `w bf x = bf x x`: `w mul 9`, which is `81`.
+
+Among what is not tested: combinators at the top level of a module, or with
+type annotations; an operator such as `(+)` passed as a function value; and a
+`testValue` of any type other than `Int`.
 
 -}
 
@@ -26,12 +63,19 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named `"SKI combinator tests "` followed by `condStr`, that
+hands each program in turn to `expectFn` and passes when every result passes.
+The cases run through `Compiler.BulkCheck.bulkCheck`, so a failure names only the
+first failing case.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("SKI combinator tests " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns all eight labelled cases: K and S, then I, B and C, then SP, T and W.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     baseCombinatorCases expectFn
@@ -41,10 +85,12 @@ testCases expectFn =
 
 
 -- ============================================================================
--- BASE COMBINATORS: K and S (2 tests)
+-- BASE COMBINATORS: K and S (2 cases)
 -- ============================================================================
 
 
+{-| Returns the labelled K and S cases.
+-}
 baseCombinatorCases : (Src.Module -> Expectation) -> List TestCase
 baseCombinatorCases expectFn =
     [ { label = "K combinator (always)", run = kCombinator expectFn }
@@ -52,7 +98,8 @@ baseCombinatorCases expectFn =
     ]
 
 
-{-| k a \_ = a; testValue = k 42 99
+{-| Builds the K program, `k 42 99` with a local `k a _ = a`, and hands it to
+`expectFn`.
 -}
 kCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 kCombinator expectFn _ =
@@ -69,9 +116,9 @@ kCombinator expectFn _ =
     expectFn modul
 
 
-{-| s bf uf x = bf x (uf x)
-double x = x \* 2
-testValue = s (+) double 5 -- 5 + 10 = 15
+{-| Builds the S program and hands it to `expectFn`. Local `s`, `double` and
+`add` are applied as `s add double 5`; `add` is a two-argument local function,
+not the `(+)` operator.
 -}
 sCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 sCombinator expectFn _ =
@@ -106,10 +153,13 @@ sCombinator expectFn _ =
 
 
 -- ============================================================================
--- DERIVED COMBINATORS: I, B, C (3 tests)
+-- DERIVED COMBINATORS: I, B, C (3 cases)
 -- ============================================================================
 
 
+{-| Returns the labelled I, B and C cases, each built from local S and K (C also
+through a local B).
+-}
 derivedCombinatorCases : (Src.Module -> Expectation) -> List TestCase
 derivedCombinatorCases expectFn =
     [ { label = "I combinator (identity via S K K)", run = iCombinator expectFn }
@@ -118,7 +168,8 @@ derivedCombinatorCases expectFn =
     ]
 
 
-{-| i = s k k; testValue = i 42
+{-| Builds the I program, `i 42` with `i` defined without arguments as
+`s k k`, and hands it to `expectFn`.
 -}
 iCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 iCombinator expectFn _ =
@@ -147,10 +198,8 @@ iCombinator expectFn _ =
     expectFn modul
 
 
-{-| b = s (k s) k
-square x = x \* x
-inc x = x + 1
-testValue = b square inc 4 -- (4+1)^2 = 25
+{-| Builds the B program, `b square inc 4` with `b` defined without arguments
+as `s (k s) k`, and hands it to `expectFn`.
 -}
 bCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 bCombinator expectFn _ =
@@ -191,9 +240,8 @@ bCombinator expectFn _ =
     expectFn modul
 
 
-{-| c = s (b b s) (k k)
-sub x y = x - y
-testValue = c sub 10 3 -- sub 3 10 = -7
+{-| Builds the C program, `c sub 10 3` with `c` defined without arguments as
+`s (b b s) (k k)`, and hands it to `expectFn`.
 -}
 cCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 cCombinator expectFn _ =
@@ -244,10 +292,12 @@ cCombinator expectFn _ =
 
 
 -- ============================================================================
--- APPLIED COMBINATORS: SP, T, W (3 tests)
+-- APPLIED COMBINATORS: SP, T, W (3 cases)
 -- ============================================================================
 
 
+{-| Returns the labelled SP, T and W cases.
+-}
 appliedCombinatorCases : (Src.Module -> Expectation) -> List TestCase
 appliedCombinatorCases expectFn =
     [ { label = "SP combinator (combine two projections)", run = spCombinator expectFn }
@@ -256,11 +306,8 @@ appliedCombinatorCases expectFn =
     ]
 
 
-{-| sp bf uf1 uf2 x = bf (uf1 x) (uf2 x)
-mul x y = x \* y
-inc x = x + 1
-double x = x \* 2
-testValue = sp mul inc double 6 -- 7 \* 12 = 84
+{-| Builds the SP program, `sp mul inc double 6` with `sp` taking its four
+arguments directly, and hands it to `expectFn`.
 -}
 spCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 spCombinator expectFn _ =
@@ -294,8 +341,9 @@ spCombinator expectFn _ =
     expectFn modul
 
 
-{-| t = c i (thrush / pipe-forward)
-testValue = t 7 (\\x -> x \* 3) -- 21
+{-| Builds the T program, `t 7 (\x -> x * 3)` with `t` defined without
+arguments as `c i`, and hands it to `expectFn`. T applies its second argument to
+its first, as `|>` does.
 -}
 tCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 tCombinator expectFn _ =
@@ -349,9 +397,8 @@ tCombinator expectFn _ =
     expectFn modul
 
 
-{-| w bf x = bf x x
-mul x y = x \* y
-testValue = w mul 9 -- 81
+{-| Builds the W program, `w mul 9` with `w` taking its two arguments
+directly, and hands it to `expectFn`.
 -}
 wCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 wCombinator expectFn _ =

@@ -1,19 +1,37 @@
 module Compiler.Monomorphize.ResolveAccessorValues exposing (accessorTypeNeedsDefer, rewriteNode)
 
-{-| Eliminates MonoAccessorValue nodes from monomorphized expressions.
+{-| A record accessor such as `.name`, used as a value rather than applied
+directly, cannot always be specialized when it is reached: its record type may
+not yet be known, or the field it reads may itself be a function.
+Specialization then leaves a placeholder, an _accessor value_
+(`MonoAccessorValue`), and this module replaces such placeholders once the
+surrounding types say what record they read.
 
-Two tiers of elimination are applied sequentially:
+`accessorTypeNeedsDefer` is the test that decides whether an accessor becomes
+a placeholder in the first place. `rewriteNode` is the rewrite, applied to the
+body of one specialized node.
 
-1.  **Data-flow analysis** — forward intraprocedural analysis that tracks which locals
-    are definitely accessor values, enabling call-site elimination.
+The rewrite is a single forward pass over an expression. Alongside it, the pass
+records for each local which accessor it is believed to be, or that it is a
+record some of whose fields are accessors. Where branches join, a branch about
+which nothing is known does not count against the other. That knowledge
+allows two replacements:
 
-2.  **Closure fallback** — any surviving MonoAccessorValue is replaced with a closure
-    `\record -> record.field`, guaranteeing all accessor values have concrete
-    implementations.
+  - A call whose callee is known to be `.field` and whose first argument has a
+    record type becomes a direct `MonoRecordAccess` of that argument. Any
+    further arguments become a call on the field's value.
 
-After both tiers, no MonoAccessorValue remains (MONO\_027).
+  - A placeholder whose expected type, the type its context demands, is a
+    one-parameter function from a record to a field type, with no type
+    variable in either, becomes a fresh closure `\record -> record.field`.
+    Each such closure takes a new `AnonymousLambda` id in the module being
+    rewritten (`home`), numbered from a counter that the caller passes in
+    and gets back.
 
-@docs accessorTypeNeedsDefer, rewriteNode
+A placeholder that fits neither case is left in place. Many positions are
+rewritten with no expected type at all, among them call arguments, list
+elements, record update values and closure captures, so a placeholder can
+survive this pass.
 
 -}
 
@@ -35,15 +53,14 @@ import Dict exposing (Dict)
 -- ============================================================================
 
 
-{-| Check whether an accessor's MonoType needs to be deferred via MonoAccessorValue
-rather than creating an immediate Mono.Accessor virtual global.
+{-| Returns whether an accessor with the given specialized type must be left
+as an accessor value rather than made into an accessor global at once.
 
-Defer when:
-
-  - The first parameter is not Mono.mRecord (row variable unresolved)
-  - The result type is a function (accessor extracts a function-typed field, which
-    causes arity mismatch: specializeAccessorGlobal creates a 1-param TailFunc but
-    the flattened type arity would be > 1)
+It returns `False` only for a function type whose first parameter is a record
+and whose result is not itself a function. A non-record first parameter means
+the record is not yet known. A function result means the field read is itself a
+function, and an accessor global is built as a function of one parameter, so
+its arity would not match the type.
 
 -}
 accessorTypeNeedsDefer : MonoType -> Bool
@@ -61,9 +78,8 @@ accessorTypeNeedsDefer monoType =
             True
 
 
-{-| Rewrite an expression body to eliminate all MonoAccessorValue nodes.
-Applies data-flow analysis with context-rooted closure fallback.
-Returns ( rewrittenExpr, updatedLambdaCounter ).
+{-| Rewrites one node body, starting with no known locals, and returns it with
+the advanced lambda counter.
 -}
 rewriteExprBody : ModuleName.Canonical -> Int -> Maybe MonoType -> MonoExpr -> ( MonoExpr, Int )
 rewriteExprBody home lambdaCounter maybeExpectedType expr =
@@ -74,9 +90,14 @@ rewriteExprBody home lambdaCounter maybeExpectedType expr =
     ( afterDataFlow, finalCounter )
 
 
-{-| Rewrite a MonoNode's body expression(s) to eliminate MonoAccessorValue.
-Nodes without expression bodies (MonoCtor, MonoEnum, MonoExtern, MonoManagerLeaf)
-are returned unchanged.
+{-| Rewrites the body of `node` as the module docstring describes, and returns
+it with the lambda counter advanced past any closures made.
+
+The expected type of a body is the node's type, except for a `MonoTailFunc`,
+whose body is expected to have the type left after every stage of the
+function's type is applied. A node with no body (a constructor, an enum, an
+extern, a manager leaf) is returned unchanged.
+
 -}
 rewriteNode : ModuleName.Canonical -> Int -> Mono.MonoNode -> ( Mono.MonoNode, Int )
 rewriteNode home lambdaCounter node =
@@ -127,24 +148,45 @@ rewriteNode home lambdaCounter node =
 
 
 -- ============================================================================
--- ====== DATA-FLOW ANALYSIS WITH CONTEXT-ROOTED CLOSURE FALLBACK ==
+-- ====== DATA-FLOW REWRITE ======
 -- ============================================================================
 
 
+{-| Which accessor a value is known to be: `AO_Field` names the field it reads.
+-}
 type AccessorOrigin
     = AO_Field String
 
 
+{-| What the pass knows about the value of an expression.
+
+`VI_Unknown` means nothing is known. `VI_Accessor` means the value is the
+accessor for a field. `VI_Record` means the value is a record, and holds what is
+known about some of its fields; a field missing from the dictionary is unknown.
+
+-}
 type ValueInfo
     = VI_Unknown
     | VI_Accessor AccessorOrigin
     | VI_Record (Dict String ValueInfo)
 
 
+{-| What is known about each local in scope, by name. A local with nothing
+known is absent.
+-}
 type alias Env =
     Dict String ValueInfo
 
 
+{-| Combines what is known about the values of two branches into what is known
+about whichever one is taken.
+
+Two different accessors, or an accessor and a record, combine to `VI_Unknown`,
+and two records keep only the fields known alike in both. `VI_Unknown` combined
+with anything gives the other side unchanged, so a branch about which nothing
+is known does not weaken what the other branch says.
+
+-}
 joinValueInfo : ValueInfo -> ValueInfo -> ValueInfo
 joinValueInfo v1 v2 =
     case ( v1, v2 ) of
@@ -191,9 +233,9 @@ joinValueInfo v1 v2 =
             VI_Unknown
 
 
-{-| Check if an expected type is a fully concrete accessor signature.
-Returns Just (recordType, fieldType) if the type is MFunction [MRecord fields] fieldType
-where neither fields nor fieldType contain any MVar.
+{-| Returns the record type and field type of `expectedType` when it is a
+function of exactly one record parameter and neither the record nor the result
+contains a type variable, and `Nothing` otherwise.
 -}
 maybeAccessorSigFromExpected : MonoType -> Maybe ( MonoType, MonoType )
 maybeAccessorSigFromExpected expectedType =
@@ -209,7 +251,9 @@ maybeAccessorSigFromExpected expectedType =
             Nothing
 
 
-{-| Build a closure fallback from a fully concrete expected type.
+{-| Builds the closure `\record -> record.field` for `fieldName`, with no
+captures, typed `expectedType`, and returns it with `counter` advanced by one.
+Its lambda id is `AnonymousLambda home counter`.
 -}
 buildAccessorClosure : ModuleName.Canonical -> Int -> String -> MonoType -> MonoType -> MonoType -> ( MonoExpr, Int )
 buildAccessorClosure home counter fieldName recordType fieldType expectedType =
@@ -238,14 +282,25 @@ buildAccessorClosure home counter fieldName recordType fieldType expectedType =
     )
 
 
-{-| Forward data-flow analysis with context-rooted closure fallback.
-Threads ModuleName.Canonical and lambda counter for closure generation.
+{-| Rewrites `expr` given what `env` knows about the locals in scope and the
+type its context expects, if any. Returns the rewritten expression, what is
+known about its value, and the advanced lambda counter.
+
+What is known about a value comes from a placeholder, a local, a record
+creation, a field access on a known record, a `let` body, and the branches of
+an `if`. A `case` reports only what its jump bodies say, not its inline leaves.
+Every other expression, a closure included, reports `VI_Unknown`.
+
+A placeholder reports the accessor it stands for, whether or not it was
+replaced by a closure. A rewritten call on a known accessor with more than one
+argument is rewritten again, so the call on the field's value is itself
+examined.
+
 -}
 rewriteExpr : ModuleName.Canonical -> Int -> Env -> Maybe MonoType -> MonoExpr -> ( MonoExpr, ValueInfo, Int )
 rewriteExpr home counter env maybeExpected expr =
     case expr of
         MonoAccessorValue _ fieldName _ ->
-            -- Tier 3: try context-rooted closure fallback
             case maybeExpected of
                 Just expectedType ->
                     case maybeAccessorSigFromExpected expectedType of
@@ -257,7 +312,6 @@ rewriteExpr home counter env maybeExpected expr =
                             ( closure, VI_Accessor (AO_Field fieldName), newCounter )
 
                         Nothing ->
-                            -- Expected type not a safe accessor sig; leave as-is
                             ( expr, VI_Accessor (AO_Field fieldName), counter )
 
                 Nothing ->
@@ -612,6 +666,10 @@ rewriteExpr home counter env maybeExpected expr =
             ( MonoTailCall name (List.reverse newArgsRev) t, VI_Unknown, c1 )
 
 
+{-| Rewrites every inline leaf of a `case` decision tree, each with
+`maybeExpected` as its expected type, and returns the tree with the advanced
+lambda counter.
+-}
 rewriteDecider : ModuleName.Canonical -> Int -> Env -> Maybe MonoType -> Decider MonoChoice -> ( Decider MonoChoice, Int )
 rewriteDecider home counter env maybeExpected decider =
     case decider of
@@ -652,6 +710,9 @@ rewriteDecider home counter env maybeExpected decider =
             ( FanOut path (List.reverse newEdgesRev) fallback1, c3 )
 
 
+{-| Rewrites an inline leaf with `maybeExpected` as its expected type, and
+returns a jump unchanged.
+-}
 rewriteChoice : ModuleName.Canonical -> Int -> Env -> Maybe MonoType -> MonoChoice -> ( MonoChoice, Int )
 rewriteChoice home counter env maybeExpected choice =
     case choice of
@@ -666,6 +727,8 @@ rewriteChoice home counter env maybeExpected choice =
             ( Jump i, counter )
 
 
+{-| Pairs the elements of two lists in order, stopping at the end of the shorter.
+-}
 zip : List a -> List b -> List ( a, b )
 zip xs ys =
     case ( xs, ys ) of

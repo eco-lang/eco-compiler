@@ -1,15 +1,33 @@
 module TestLogic.Type.RankPolymorphism exposing (expectRankPolymorphismValid)
 
-{-| Test logic for invariant TYPE\_005: Rank polymorphism is correctly handled.
+{-| An expectation for tests of let-polymorphism to apply to a source module
+they build. Without one, a module whose polymorphic definitions should type
+check could be rejected unnoticed.
 
-For each let-binding and function:
+Elm's polymorphism is rank-1: a polymorphic type quantifies its type
+variables once, at the outside of the whole type, so no argument of a function
+can itself be required to be polymorphic. A type whose argument is polymorphic
+in that sense is _higher-rank_. In the canonical AST the quantifier is the
+`Can.Forall` around an annotation, and `Can.Type` has no constructor for one,
+so a canonical type cannot express a higher-rank type at all.
 
-  - Verify type variables are correctly generalized at appropriate ranks.
-  - Verify monomorphization respects rank restrictions.
-  - Verify higher-rank types are rejected or handled correctly.
+The expectation runs a module through PostSolve with
+`TestLogic.TestPipeline.runToPostSolve`, which fails only when canonicalizing or
+type checking fails, and then walks the type of each top-level annotation the
+type checker returned. Let-bound definitions have no entry there. The walk
+reports nothing for any type: a type variable gives no issue, and the
+higher-rank check made on each function argument type gives none in every
+case. So the expectation's outcome is decided by the pipeline alone.
 
-This module reuses the existing typed optimization pipeline to verify
-rank polymorphism is correctly handled.
+What `expectRankPolymorphismValid` establishes:
+
+  - A module that fails to canonicalize or type check fails, with the
+    pipeline's message, which gives only the number of errors.
+  - A module that type checks passes.
+
+Among what is not tested: the rank at which any type variable is generalized,
+whether a let-bound definition is generalized, monomorphization, and the
+rejection of higher-rank types.
 
 -}
 
@@ -21,7 +39,12 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that rank-based let-polymorphism is enforced.
+{-| Runs `srcModule` through PostSolve and passes if it gets there.
+
+A failure to canonicalize or type check fails with the pipeline's message. The
+walk over the module's top-level annotations finds no issue in any type, so a
+module that type checks always passes.
+
 -}
 expectRankPolymorphismValid : Src.Module -> Expect.Expectation
 expectRankPolymorphismValid srcModule =
@@ -43,18 +66,12 @@ expectRankPolymorphismValid srcModule =
 
 
 -- ============================================================================
--- RANK POLYMORPHISM VERIFICATION
+-- ANNOTATION WALK
 -- ============================================================================
 
 
-{-| Collect rank polymorphism issues from annotations.
-
-Let-polymorphism should only generalize type variables that:
-
-  - Are at the correct rank (not escaping their scope)
-  - Are not constrained by outer scopes
-  - Are properly quantified in the type scheme
-
+{-| Returns the issues `checkAnnotationRank` finds in each of `annotations`,
+keyed by name, joined into one list. It is always empty.
 -}
 collectRankIssues : Dict.Dict String (Can.Annotation Name) -> List String
 collectRankIssues annotations =
@@ -66,35 +83,32 @@ collectRankIssues annotations =
         annotations
 
 
-{-| Check a type annotation for rank-related issues.
-
-Valid annotations should have:
-
-  - Properly quantified type variables
-  - No escaping type variables
-  - Consistent polymorphism
-
+{-| Returns the issues `checkTypeForRankIssues` finds in the type of
+`annotation`, given `name` as its context. The annotation's quantified
+variables are not looked at. The result is always empty.
 -}
 checkAnnotationRank : String -> Can.Annotation Name -> List String
 checkAnnotationRank name annotation =
     case annotation of
         Can.Forall _ canType ->
-            -- Check that the type is valid for its rank
             checkTypeForRankIssues name canType
 
 
-{-| Check a type for rank-related issues given the free variables.
+{-| Returns the issues found in `canType` and every type inside it. The only
+source of an issue is `checkForHigherRank`, made on the argument type of each
+function type, and that never finds one, so the result is always empty.
+
+For an alias the walk covers both the alias's arguments and the type it stands
+for. `context` is passed on unchanged.
+
 -}
 checkTypeForRankIssues : String -> Can.Type Name -> List String
 checkTypeForRankIssues context canType =
     case canType of
         Can.TVar _ ->
-            -- Type variables should either be free or properly bound
-            -- For now, just verify basic validity
             []
 
         Can.TLambda _ argType resultType ->
-            -- Check for higher-rank polymorphism (which Elm doesn't support)
             checkForHigherRank context argType
                 ++ checkTypeForRankIssues context argType
                 ++ checkTypeForRankIssues context resultType
@@ -129,29 +143,17 @@ checkTypeForRankIssues context canType =
                    )
 
 
-{-| Check for higher-rank polymorphism (which Elm doesn't support).
+{-| Returns the higher-rank issues in a function's argument type `canType`,
+which are always none, whatever the type and the context.
 
-Higher-rank polymorphism would be a forall inside a function argument type.
-Elm uses rank-1 polymorphism, so all quantifiers should be at the outermost level.
+A higher-rank type would need a quantifier inside the argument type, and
+`Can.Type` has no constructor for one.
 
 -}
 checkForHigherRank : String -> Can.Type Name -> List String
 checkForHigherRank _ canType =
-    -- Elm uses rank-1 polymorphism, so we don't need to check for higher ranks
-    -- in the sense of explicit foralls inside types (Elm doesn't have those).
-    -- Instead, we verify that type inference produces valid rank-1 types.
-    --
-    -- In a rank-1 system, all polymorphic functions have their type variables
-    -- quantified at the top level, not inside function argument positions.
-    --
-    -- Since Elm's type system doesn't allow explicit forall in type annotations
-    -- and the compiler ensures rank-1 inference, we just verify the types
-    -- are well-formed.
     case canType of
         Can.TLambda _ _ _ ->
-            -- Functions in argument position could indicate higher-rank if
-            -- their type variables are later instantiated differently.
-            -- In practice, Elm prevents this through its inference algorithm.
             []
 
         _ ->

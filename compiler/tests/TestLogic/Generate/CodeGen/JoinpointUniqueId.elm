@@ -1,8 +1,30 @@
 module TestLogic.Generate.CodeGen.JoinpointUniqueId exposing (expectJoinpointUniqueId)
 
-{-| Test logic for CGEN\_031: Joinpoint ID Uniqueness invariant.
+{-| An `eco.jump` names the joinpoint it transfers control to by an integer,
+so two joinpoints with the same integer in one function would make a jump
+ambiguous. This module checks that no generated function has such a pair.
 
-Within a single `func.func`, each `eco.joinpoint` id must be unique.
+A _joinpoint_ is an `eco.joinpoint` op, identified within its function by its
+integer `id` attribute. An `eco.jump` names its destination by that integer, in
+its `target` attribute.
+
+`expectJoinpointUniqueId` compiles a source module to MLIR and walks each
+top-level `func.func` of the result, including every op nested in its regions,
+in both the entry block and the other blocks, and in both block bodies and
+terminators. Within one function it reports:
+
+  - a joinpoint with no integer `id` attribute;
+  - a joinpoint whose `id` an earlier joinpoint of the same function already
+    has, with the op id of that earlier joinpoint in the message.
+
+Ids are compared only within one top-level `func.func`, so the same `id` in two
+different functions is not a violation.
+
+The code generator under `src/` builds no op named `eco.joinpoint`, so on
+generated MLIR this check finds no joinpoint and passes whenever compilation
+succeeds.
+
+Among what is not tested: that each `eco.jump` names a joinpoint that exists.
 
 @docs expectJoinpointUniqueId
 
@@ -24,7 +46,14 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that joinpoint ID uniqueness invariants hold for a source module.
+{-| Returns an expectation that compiles `srcModule` to MLIR and passes when no
+top-level `func.func` contains an `eco.joinpoint` without an integer `id` or two
+`eco.joinpoint` ops with the same `id`.
+
+It fails when compilation fails. When there are violations, it fails with the
+message of one of them only. For a repeated `id` that message names the function
+and the op id of the joinpoint that first had the `id`.
+
 -}
 expectJoinpointUniqueId : Src.Module -> Expectation
 expectJoinpointUniqueId srcModule =
@@ -36,7 +65,8 @@ expectJoinpointUniqueId srcModule =
             violationsToExpectation (checkJoinpointUniqueness mlirModule)
 
 
-{-| Check joinpoint ID uniqueness invariants.
+{-| Returns the joinpoint violations found in the top-level `func.func` ops of
+`mlirModule`, each function checked on its own.
 -}
 checkJoinpointUniqueness : MlirModule -> List Violation
 checkJoinpointUniqueness mlirModule =
@@ -47,6 +77,14 @@ checkJoinpointUniqueness mlirModule =
     List.concatMap checkFunctionJoinpoints funcOps
 
 
+{-| Returns the violations among the joinpoints nested anywhere in `funcOp`: one
+for each joinpoint with no integer `id`, and one for each joinpoint whose `id`
+an earlier joinpoint, in walk order, already has.
+
+The function is named by its `sym_name`, or `unknown` when it has none. The
+violations come out in the reverse of walk order.
+
+-}
 checkFunctionJoinpoints : MlirOp -> List Violation
 checkFunctionJoinpoints funcOp =
     let
@@ -101,6 +139,9 @@ checkFunctionJoinpoints funcOp =
     violations
 
 
+{-| Returns `op` itself if it is an `eco.joinpoint`, followed by every
+`eco.joinpoint` nested in its regions, in walk order.
+-}
 findJoinpointsInOp : MlirOp -> List MlirOp
 findJoinpointsInOp op =
     let
@@ -117,6 +158,9 @@ findJoinpointsInOp op =
     selfJoinpoints ++ regionJoinpoints
 
 
+{-| Returns every `eco.joinpoint` in a region, those in the entry block first
+and then those in the other blocks in their stored order.
+-}
 findJoinpointsInRegion : MlirRegion -> List MlirOp
 findJoinpointsInRegion (MlirRegion { entry, blocks }) =
     let
@@ -132,6 +176,9 @@ findJoinpointsInRegion (MlirRegion { entry, blocks }) =
     entryJoinpoints ++ blockJoinpoints
 
 
+{-| Returns every `eco.joinpoint` in a block, at any depth, those in the body
+ops first and then those in the terminator.
+-}
 findJoinpointsInBlock : MlirBlock -> List MlirOp
 findJoinpointsInBlock block =
     let

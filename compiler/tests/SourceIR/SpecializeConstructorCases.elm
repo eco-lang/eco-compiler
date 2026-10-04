@@ -1,14 +1,49 @@
 module SourceIR.SpecializeConstructorCases exposing (expectSuite, suite)
 
-{-| Test cases for constructor specialization in Specialize.elm.
+{-| Source programs that declare their own custom types and both build and
+pattern match on their constructors, so that a pipeline stage is run over
+constructors of these shapes: with no fields, with one field, with several,
+with type parameters, and with a field whose type is a parameterised type
+alias. A stage that mishandles one of those shapes, for example when
+monomorphization gives a constructor its concrete field types, then fails on a
+small program built around that shape.
 
-These tests cover:
+The module asserts nothing itself. Each case builds one module, named `Test`,
+with `Compiler.AST.SourceBuilder.makeModuleWithTypedDefsUnionsAliases`: a few
+annotated top-level functions, the custom types and aliases they use, and an
+annotated top-level `testValue` that calls those functions on values built
+with the constructors. It then hands the module to the expectation function
+the caller supplies, which decides what is checked. `expectSuite` runs all
+twelve cases inside one test with `Compiler.BulkCheck.bulkCheck`, and `suite`
+supplies `TestLogic.TestPipeline.expectMonomorphization`. Under `suite`, the
+test pipeline appends a `main` that binds `testValue`, and monomorphization
+starts from that `main`, so each function is specialized only as `testValue`
+uses it.
 
-  - specializeNodeContent for Ctor nodes
-  - Nullary constructors (True, False, Nothing)
-  - Unary constructors (Just x)
-  - Multi-field constructors (custom union types)
-  - Polymorphic constructor instantiation
+The cases, by group:
+
+  - Constructors with no fields: a three-constructor enum `Color` and a
+    four-constructor enum `Direction`, each matched in full by a function that
+    `testValue` applies to one constructor.
+  - Constructors with one field: an `Int` wrapper, a `Bool` wrapper whose
+    unwrapped value is matched against `True` and `False`, and a type `Box`
+    with one constructor without fields and one with an `Int` field.
+  - Constructors with several fields: a two-field `Point` and a three-field
+    `Vec3`.
+  - Constructors with type parameters: `Identity a`, `Either a b`, and three
+    types whose single constructor's field is an alias applied to the type's
+    own parameter (`Pair b`, `Id x` and `Phantom b`). The alias's formal
+    parameter has a different name from the type's parameter, so it can only
+    be resolved through the alias, not among the type's own variables; the
+    monomorphizer does this with
+    `Compiler.Monomorphize.Analysis.convertCanTypeNameToMVarId`.
+
+Among what is not tested: the value any `testValue` would compute, since no
+case evaluates it; a phantom alias whose body does not mention its parameter,
+since the `Phantom` alias here is `Maybe a`; an alias with more than one
+parameter in a constructor field; record and recursive constructor fields; and
+under `suite`, the solver monomorphizer, since `expectMonomorphization` runs
+the substitution engine.
 
 -}
 
@@ -41,6 +76,11 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| The twelve cases run as one test against
+`TestLogic.TestPipeline.expectMonomorphization`, which passes when a module
+compiles through monomorphization, on the substitution engine, to a graph with
+a `main` and at least one node.
+-}
 suite : Test
 suite =
     Test.describe "Specialize.elm constructor coverage"
@@ -48,7 +88,10 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Creates one test, named "Constructor specialization " followed by
+`condStr`, that applies `expectFn` to each case's module in turn. It stops at
+the first case that fails and reports that case's label, as
+`Compiler.BulkCheck.bulkCheck` describes.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -56,6 +99,9 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case, each checked with `expectFn`: those without fields,
+then one field, then several fields, then type parameters.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -72,6 +118,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the cases whose custom types have only constructors without
+fields, checked with `expectFn`.
+-}
 nullaryCtorCases : (Src.Module -> Expectation) -> List TestCase
 nullaryCtorCases expectFn =
     [ { label = "Custom enum type", run = customEnumType expectFn }
@@ -79,8 +128,30 @@ nullaryCtorCases expectFn =
     ]
 
 
-{-| Custom type with only nullary constructors (enum-like).
-Tests specializeNodeContent for Ctor with no fields.
+{-| Applies `expectFn` to a module that maps a three-constructor enum to an
+`Int`:
+
+    type Color
+        = Red
+        | Green
+        | Blue
+
+    toRgb : Color -> Int
+    toRgb color =
+        case color of
+            Red ->
+                16711680
+
+            Green ->
+                65280
+
+            Blue ->
+                255
+
+    testValue : Int
+    testValue =
+        toRgb Red
+
 -}
 customEnumType : (Src.Module -> Expectation) -> (() -> Expectation)
 customEnumType expectFn _ =
@@ -96,7 +167,6 @@ customEnumType expectFn _ =
                 ]
             }
 
-        -- toRgb : Color -> Int
         toRgbDef : TypedDef
         toRgbDef =
             { name = "toRgb"
@@ -110,7 +180,6 @@ customEnumType expectFn _ =
                     ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -128,7 +197,34 @@ customEnumType expectFn _ =
     expectFn modul
 
 
-{-| Pattern matching on multiple enum constructors.
+{-| Applies `expectFn` to a module that matches every constructor of a
+four-constructor enum, each in its own branch:
+
+    type Direction
+        = North
+        | South
+        | East
+        | West
+
+    isVertical : Direction -> Bool
+    isVertical dir =
+        case dir of
+            North ->
+                True
+
+            South ->
+                True
+
+            East ->
+                False
+
+            West ->
+                False
+
+    testValue : Bool
+    testValue =
+        isVertical North
+
 -}
 multipleEnumCtorsInCase : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleEnumCtorsInCase expectFn _ =
@@ -145,7 +241,6 @@ multipleEnumCtorsInCase expectFn _ =
                 ]
             }
 
-        -- isVertical : Direction -> Bool
         isVerticalDef : TypedDef
         isVerticalDef =
             { name = "isVertical"
@@ -183,6 +278,9 @@ multipleEnumCtorsInCase expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases whose custom types have a constructor with one field,
+checked with `expectFn`.
+-}
 unaryCtorCases : (Src.Module -> Expectation) -> List TestCase
 unaryCtorCases expectFn =
     [ { label = "Single-field wrapper type", run = singleFieldWrapper expectFn }
@@ -191,8 +289,22 @@ unaryCtorCases expectFn =
     ]
 
 
-{-| Wrapper type with single field.
-Tests specializeNodeContent for Ctor with one field.
+{-| Applies `expectFn` to a module that wraps an `Int` in a one-constructor
+type and unwraps it again:
+
+    type Wrapper
+        = Wrap Int
+
+    unwrap : Wrapper -> Int
+    unwrap w =
+        case w of
+            Wrap n ->
+                n
+
+    testValue : Int
+    testValue =
+        unwrap (Wrap 42)
+
 -}
 singleFieldWrapper : (Src.Module -> Expectation) -> (() -> Expectation)
 singleFieldWrapper expectFn _ =
@@ -205,7 +317,6 @@ singleFieldWrapper expectFn _ =
                 [ { name = "Wrap", args = [ tType "Int" [] ] } ]
             }
 
-        -- unwrap : Wrapper -> Int
         unwrapDef : TypedDef
         unwrapDef =
             { name = "unwrap"
@@ -216,7 +327,6 @@ singleFieldWrapper expectFn _ =
                     [ ( pCtor "Wrap" [ pVar "n" ], varExpr "n" ) ]
             }
 
-        -- testValue : Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -234,9 +344,36 @@ singleFieldWrapper expectFn _ =
     expectFn modul
 
 
-{-| Wrapper type with Bool field.
-Tests that Bool values are correctly represented at ABI boundaries.
-This catches REP\_ABI\_001 violations where Bool might be passed as i1 instead of !eco.value.
+{-| Applies `expectFn` to a module that stores a `Bool` in a constructor
+field, takes it out again, and matches it against `True` and `False`:
+
+    type BoolWrapper
+        = WrapBool Bool
+
+    boolToInt : Bool -> Int
+    boolToInt b =
+        case b of
+            True ->
+                1
+
+            False ->
+                0
+
+    unwrapBool : BoolWrapper -> Bool
+    unwrapBool w =
+        case w of
+            WrapBool b ->
+                b
+
+    testValue : Int
+    testValue =
+        boolToInt (unwrapBool (WrapBool True))
+
+The program passes the `Bool` through a constructor field and a function
+argument and result, places where the MLIR back end represents a `Bool` boxed
+rather than as an `i1`, as `Compiler.Generate.MLIR.Types` describes. Whether
+that representation is checked depends on `expectFn`.
+
 -}
 boolWrapperType : (Src.Module -> Expectation) -> (() -> Expectation)
 boolWrapperType expectFn _ =
@@ -249,7 +386,6 @@ boolWrapperType expectFn _ =
                 [ { name = "WrapBool", args = [ tType "Bool" [] ] } ]
             }
 
-        -- unwrapBool : BoolWrapper -> Bool
         unwrapBoolDef : TypedDef
         unwrapBoolDef =
             { name = "unwrapBool"
@@ -260,8 +396,6 @@ boolWrapperType expectFn _ =
                     [ ( pCtor "WrapBool" [ pVar "b" ], varExpr "b" ) ]
             }
 
-        -- testValue : Int
-        -- Returns 1 if wrapped bool is True, 0 otherwise
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -274,7 +408,6 @@ boolWrapperType expectFn _ =
                     ]
             }
 
-        -- boolToInt : Bool -> Int
         boolToIntDef : TypedDef
         boolToIntDef =
             { name = "boolToInt"
@@ -296,7 +429,26 @@ boolWrapperType expectFn _ =
     expectFn modul
 
 
-{-| Unary constructor used in pattern matching.
+{-| Applies `expectFn` to a module whose type has one constructor without
+fields and one with an `Int` field, both matched:
+
+    type Box
+        = Empty
+        | Full Int
+
+    getOrDefault : Box -> Int -> Int
+    getOrDefault box default =
+        case box of
+            Empty ->
+                default
+
+            Full x ->
+                x
+
+    testValue : Int
+    testValue =
+        getOrDefault (Full 10) 0
+
 -}
 unaryCtorPatternMatch : (Src.Module -> Expectation) -> (() -> Expectation)
 unaryCtorPatternMatch expectFn _ =
@@ -311,7 +463,6 @@ unaryCtorPatternMatch expectFn _ =
                 ]
             }
 
-        -- getOrDefault : Box -> Int -> Int
         getOrDefaultDef : TypedDef
         getOrDefaultDef =
             { name = "getOrDefault"
@@ -347,6 +498,9 @@ unaryCtorPatternMatch expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases whose custom types have a constructor with several
+fields, checked with `expectFn`.
+-}
 multiFieldCtorCases : (Src.Module -> Expectation) -> List TestCase
 multiFieldCtorCases expectFn =
     [ { label = "Constructor with two fields", run = twoFieldCtor expectFn }
@@ -354,7 +508,28 @@ multiFieldCtorCases expectFn =
     ]
 
 
-{-| Custom type with two-field constructor.
+{-| Applies `expectFn` to a module that builds a two-field constructor twice
+and reads each field with its own match:
+
+    type Point
+        = Point Int Int
+
+    getX : Point -> Int
+    getX p =
+        case p of
+            Point x y ->
+                x
+
+    getY : Point -> Int
+    getY p =
+        case p of
+            Point x y ->
+                y
+
+    testValue : Int
+    testValue =
+        getX (Point 3 4) + getY (Point 3 4)
+
 -}
 twoFieldCtor : (Src.Module -> Expectation) -> (() -> Expectation)
 twoFieldCtor expectFn _ =
@@ -367,7 +542,6 @@ twoFieldCtor expectFn _ =
                 [ { name = "Point", args = [ tType "Int" [], tType "Int" [] ] } ]
             }
 
-        -- getX : Point -> Int
         getXDef : TypedDef
         getXDef =
             { name = "getX"
@@ -378,7 +552,6 @@ twoFieldCtor expectFn _ =
                     [ ( pCtor "Point" [ pVar "x", pVar "y" ], varExpr "x" ) ]
             }
 
-        -- getY : Point -> Int
         getYDef : TypedDef
         getYDef =
             { name = "getY"
@@ -409,7 +582,22 @@ twoFieldCtor expectFn _ =
     expectFn modul
 
 
-{-| Custom type with three-field constructor.
+{-| Applies `expectFn` to a module that builds a three-field constructor and
+adds its fields together in one match:
+
+    type Vector3
+        = Vec3 Int Int Int
+
+    magnitude : Vector3 -> Int
+    magnitude v =
+        case v of
+            Vec3 x y z ->
+                x + y + z
+
+    testValue : Int
+    testValue =
+        magnitude (Vec3 1 2 3)
+
 -}
 threeFieldCtor : (Src.Module -> Expectation) -> (() -> Expectation)
 threeFieldCtor expectFn _ =
@@ -422,7 +610,6 @@ threeFieldCtor expectFn _ =
                 [ { name = "Vec3", args = [ tType "Int" [], tType "Int" [], tType "Int" [] ] } ]
             }
 
-        -- magnitude : Vector3 -> Int (simplified to sum for testing)
         magnitudeDef : TypedDef
         magnitudeDef =
             { name = "magnitude"
@@ -463,6 +650,14 @@ threeFieldCtor expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the cases whose custom types have type parameters, checked with
+`expectFn`.
+
+The label "Ctor field referencing phantom alias (body ignores param)" does not
+describe its program: that alias's body is `Maybe a`, which mentions the
+parameter.
+
+-}
 polymorphicCtorCases : (Src.Module -> Expectation) -> List TestCase
 polymorphicCtorCases expectFn =
     [ { label = "Polymorphic wrapper type", run = polymorphicWrapper expectFn }
@@ -473,17 +668,32 @@ polymorphicCtorCases expectFn =
     ]
 
 
-{-| Probe for the args-branch fix in `convertCanTypeNameToMVarId`:
-the alias body does NOT reference the formal parameter, so this test
-exercises only the args-branch lookup of the formal-param name. With
-the buggy code it crashes with "Unbound alias parameter: a"; with the
-fix it passes.
+{-| Applies `expectFn` to a module whose constructor field is a one-parameter
+alias applied to the type's own parameter, where the alias's parameter has a
+different name:
 
     type alias Phantom a =
-        Int
+        Maybe a
 
     type Marker b
         = Marker (Phantom b)
+
+    unmark : Marker Int -> Int
+    unmark m =
+        case m of
+            Marker (Just n) ->
+                n
+
+            Marker Nothing ->
+                0
+
+    testValue : Int
+    testValue =
+        unmark (Marker (Just 5))
+
+Despite the alias's name, its body mentions its parameter, so this is not a
+phantom alias. What it adds to the other two alias cases is the parameter
+sitting inside `Maybe`, and a match on nested constructors.
 
 -}
 ctorFieldReferencingPhantomAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -504,7 +714,6 @@ ctorFieldReferencingPhantomAlias expectFn _ =
                 [ { name = "Marker", args = [ tType "Phantom" [ tVar "b" ] ] } ]
             }
 
-        -- unmark : Marker Int -> Int
         unmarkDef : TypedDef
         unmarkDef =
             { name = "unmark"
@@ -536,18 +745,28 @@ ctorFieldReferencingPhantomAlias expectFn _ =
     expectFn modul
 
 
-{-| Regression: a union constructor whose field type is a reference to a
-parameterized type alias whose formal parameter name differs from the
-union's own type variable. Triggers
-`convertCanTypeNameToMVarId` "Unbound alias parameter: a" in
-Compiler.Monomorphize.Analysis (the TAlias branch incorrectly looks up
-the alias's formal parameter name in the enclosing union's nameToId).
+{-| Applies `expectFn` to a module whose constructor field is a pair alias
+applied to the type's own parameter, where the alias's parameter has a
+different name:
 
     type alias Pair a =
         ( a, a )
 
     type Box b
         = Box (Pair b)
+
+    firstOfBox : Box Int -> Int
+    firstOfBox box =
+        case box of
+            Box ( x, y ) ->
+                x
+
+    testValue : Int
+    testValue =
+        firstOfBox (Box ( 1, 2 ))
+
+The alias's body uses its parameter `a`, which is not among `Box`'s type
+variables, so converting the field type must resolve `a` through the alias.
 
 -}
 ctorFieldReferencingPairAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -568,7 +787,6 @@ ctorFieldReferencingPairAlias expectFn _ =
                 [ { name = "Box", args = [ tType "Pair" [ tVar "b" ] ] } ]
             }
 
-        -- firstOfBox : Box Int -> Int
         firstOfBoxDef : TypedDef
         firstOfBoxDef =
             { name = "firstOfBox"
@@ -601,14 +819,25 @@ ctorFieldReferencingPairAlias expectFn _ =
     expectFn modul
 
 
-{-| Regression: simpler variant of the alias-in-ctor-field bug, using a
-single-parameter identity alias.
+{-| Applies `expectFn` to a module whose constructor field is an identity
+alias applied to the type's own parameter, where the alias's parameter has a
+different name:
 
     type alias Id a =
         a
 
     type Wrap x
         = Wrap (Id x)
+
+    unwrap : Wrap Int -> Int
+    unwrap w =
+        case w of
+            Wrap n ->
+                n
+
+    testValue : Int
+    testValue =
+        unwrap (Wrap 7)
 
 -}
 ctorFieldReferencingIdAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -629,7 +858,6 @@ ctorFieldReferencingIdAlias expectFn _ =
                 [ { name = "Wrap", args = [ tType "Id" [ tVar "x" ] ] } ]
             }
 
-        -- unwrap : Wrap Int -> Int
         unwrapDef : TypedDef
         unwrapDef =
             { name = "unwrap"
@@ -659,8 +887,22 @@ ctorFieldReferencingIdAlias expectFn _ =
     expectFn modul
 
 
-{-| Polymorphic wrapper type (like Identity).
-Tests constructor instantiation with type variables.
+{-| Applies `expectFn` to a module with a one-parameter wrapper type, unwrapped
+by a polymorphic function that is called at `Int`:
+
+    type Identity a
+        = Identity a
+
+    runIdentity : Identity a -> a
+    runIdentity id =
+        case id of
+            Identity x ->
+                x
+
+    testValue : Int
+    testValue =
+        runIdentity (Identity 99)
+
 -}
 polymorphicWrapper : (Src.Module -> Expectation) -> (() -> Expectation)
 polymorphicWrapper expectFn _ =
@@ -673,7 +915,6 @@ polymorphicWrapper expectFn _ =
                 [ { name = "Identity", args = [ tVar "a" ] } ]
             }
 
-        -- runIdentity : Identity a -> a
         runIdentityDef : TypedDef
         runIdentityDef =
             { name = "runIdentity"
@@ -684,7 +925,6 @@ polymorphicWrapper expectFn _ =
                     [ ( pCtor "Identity" [ pVar "x" ], varExpr "x" ) ]
             }
 
-        -- testValue : Int (uses Identity Int)
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -702,8 +942,29 @@ polymorphicWrapper expectFn _ =
     expectFn modul
 
 
-{-| Either-like type with two type parameters.
-Tests multi-parameter polymorphic constructors.
+{-| Applies `expectFn` to a module with a two-parameter type whose
+constructors each carry one of the parameters:
+
+    type Either a b
+        = Left a
+        | Right b
+
+    fromLeft : Either a b -> a -> a
+    fromLeft e default =
+        case e of
+            Left x ->
+                x
+
+            Right _ ->
+                default
+
+    testValue : Int
+    testValue =
+        fromLeft (Left 42) 0
+
+The call fixes `a` to `Int` and leaves `b` unconstrained. The `_` in the
+`Right` pattern is built as a variable named `_`, not as a wildcard pattern.
+
 -}
 eitherLikeType : (Src.Module -> Expectation) -> (() -> Expectation)
 eitherLikeType expectFn _ =
@@ -718,7 +979,6 @@ eitherLikeType expectFn _ =
                 ]
             }
 
-        -- fromLeft : Either a b -> a -> a
         fromLeftDef : TypedDef
         fromLeftDef =
             { name = "fromLeft"
@@ -731,7 +991,6 @@ eitherLikeType expectFn _ =
                     ]
             }
 
-        -- testValue : Int (uses Either Int String)
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"

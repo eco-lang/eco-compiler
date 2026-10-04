@@ -1,19 +1,46 @@
 module TestLogic.Monomorphize.ClosureSpecKeyConsistency exposing (expectClosureSpecKeyConsistency, Violation)
 
-{-| Test logic for MONO\_025: Closure MonoType matches specialization key.
+{-| A check that the function a specialization implements has the types its
+registry entry says it has. Under the substitution engine the registry's type
+for a SpecId is normally the node's own type, written back after the node is
+built, so the check mostly catches a node whose declared function type
+disagrees with its closure's parameter types and body type.
 
-For every reachable MonoClosure or MonoTailFunc node implementing a user-defined
-function or lambda specialization, the closure's stored MonoType must be
-consistent with its specialization key.
+Monomorphization numbers each specialization with a SpecId, and the
+specialization registry's `reverseMapping` records, for each SpecId, a global
+and a MonoType. That MonoType is called the _key type_ here. Monomorphization
+keeps function types curried (`Compiler.Monomorphize.TypeSubst` owns that
+rule), so the key type of a two-argument function is a function of one argument
+returning a function of one argument, while the closure implementing it may
+take both parameters at once. The check therefore compares in flattened form: a
+function type is flattened by collecting the parameters of each nested
+`MFunction` in order, down to the first result that is not a function.
 
-This is verified by flattening the specialization key MonoType into a list of
-parameter types and a result type, then comparing the closure's parameter types
-against the corresponding prefix of the flattened key parameters.
+`expectClosureSpecKeyConsistency` monomorphizes a source module with
+`TestLogic.TestPipeline.runToMono`, which uses the substitution engine, not the
+solver engine, and checks every SpecId whose registry entry is present and
+whose node exists. Only two kinds of node are checked: a `MonoDefine` whose
+body is a `MonoClosure`, and a `MonoTailFunc`. For each, when the key type
+flattens to at least one parameter:
 
-When the closure is fully saturated (same number of params as the flattened key),
-the result type must also match. When the closure returns a function (fewer params
-than the flattened key), the result type must be an Mono.mFunction whose flattening
-covers the remaining key parameter types and result type.
+  - the closure may not have more parameters than the flattened key type;
+  - each closure parameter's type must equal the key parameter at the same
+    position;
+  - when the closure takes every key parameter, the type of its body must equal
+    the flattened key result;
+  - when it takes fewer, the body's type must flatten to exactly the remaining
+    key parameters and the key result, however its stages are grouped.
+
+Types are compared structurally, ignoring the hash field of composite types and
+the lambda-set annotation of function types, and comparing type variables by id
+alone, without their constraint.
+
+Among what is not checked: closures nested inside a body; a `MonoDefine` whose
+body is not a closure literal; the MonoType stored on the closure itself, as
+opposed to its parameters and body; and any node whose key type is not a
+function, even if the node is a closure with parameters. The node's own type is
+not read directly, though under the substitution engine it is normally what the
+key type is.
 
 @docs expectClosureSpecKeyConsistency, Violation
 
@@ -28,7 +55,13 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Violation record for reporting MONO\_025 issues.
+{-| One disagreement between a checked node and its key type.
+
+`context` names the SpecId and its global, followed by `param=<name>` for a
+parameter mismatch, by `result` or `result (returns function)` for a result
+mismatch, and by nothing when the closure has too many parameters. `message`
+gives the detail over several lines, with the types it compares printed.
+
 -}
 type alias Violation =
     { context : String
@@ -36,7 +69,12 @@ type alias Violation =
     }
 
 
-{-| MONO\_025: Verify closure MonoTypes match specialization keys.
+{-| Returns an expectation that passes when `srcModule` monomorphizes and no
+checked node disagrees with its key type, as the module docstring describes.
+
+It fails with the pipeline's message when `runToMono` returns an error, and
+otherwise with one message listing every violation found.
+
 -}
 expectClosureSpecKeyConsistency : Src.Module -> Expectation
 expectClosureSpecKeyConsistency srcModule =
@@ -56,7 +94,11 @@ expectClosureSpecKeyConsistency srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check closure/function nodes for consistency with their specialization keys.
+{-| Returns the violations of every node in the graph, in SpecId order.
+
+A SpecId whose registry entry is `Nothing`, or whose node is missing, is
+skipped.
+
 -}
 checkClosureSpecKeyConsistency : Mono.MonoGraph -> List Violation
 checkClosureSpecKeyConsistency (Mono.MonoGraph data) =
@@ -65,13 +107,12 @@ checkClosureSpecKeyConsistency (Mono.MonoGraph data) =
             (\( specId, maybeEntry ) acc ->
                 case maybeEntry of
                     Nothing ->
-                        -- Pruned slot (MONO_022), skip
+                        -- A pruned specialization leaves its slot empty.
                         acc
 
                     Just ( global, keyMonoType ) ->
                         case Array.get specId data.nodes |> Maybe.andThen identity of
                             Nothing ->
-                                -- No node (caught by MONO_017)
                                 acc
 
                             Just node ->
@@ -80,7 +121,12 @@ checkClosureSpecKeyConsistency (Mono.MonoGraph data) =
             []
 
 
-{-| Check a single node's closure/function types against the specialization key.
+{-| Returns the violations of one node against `keyMonoType`, its key type.
+
+Only a `MonoDefine` whose body is a `MonoClosure`, and a `MonoTailFunc`, are
+compared; every other node gives no violations. `specId` and `global` only
+label the violations.
+
 -}
 checkNodeAgainstKey : Int -> Mono.Global -> Mono.MonoType -> Mono.MonoNode -> List Violation
 checkNodeAgainstKey specId global keyMonoType node =
@@ -95,13 +141,11 @@ checkNodeAgainstKey specId global keyMonoType node =
                     checkClosureParams ctx keyMonoType info.params (Mono.typeOf body)
 
                 _ ->
-                    -- Non-closure define: not a function specialization, skip
                     []
 
         Mono.MonoTailFunc params body _ ->
             checkClosureParams ctx keyMonoType params (Mono.typeOf body)
 
-        -- Non-closure nodes: skip
         Mono.MonoCtor _ _ ->
             []
 
@@ -121,7 +165,17 @@ checkNodeAgainstKey specId global keyMonoType node =
             []
 
 
-{-| Compare closure parameter types against the flattened specialization key.
+{-| Returns the violations of a closure with parameters `closureParams` and body
+type `bodyType` against the key type `keyMonoType`, labelled with `ctx`.
+
+A key type that flattens to no parameters gives no violations, whatever the
+closure takes. A closure with more parameters than the flattened key gives one
+violation and nothing else is compared. Otherwise each parameter is compared
+with the key parameter at its position, and the body type with the flattened
+key result when the closure takes every key parameter, or, when it takes fewer,
+with a function of the remaining key parameters returning that result, both
+sides flattened.
+
 -}
 checkClosureParams : String -> Mono.MonoType -> List ( String, Mono.MonoType ) -> Mono.MonoType -> List Violation
 checkClosureParams ctx keyMonoType closureParams bodyType =
@@ -139,11 +193,9 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
             List.length keyParamTypes
     in
     if keyParamCount == 0 then
-        -- Key is not a function type; not a closure specialization
         []
 
     else if closureParamCount > keyParamCount then
-        -- Closure has more params than key -- this would be very wrong
         [ { context = ctx
           , message =
                 "MONO_025 violation: closure has more params than key function type\n"
@@ -160,7 +212,6 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 
     else
         let
-            -- Compare closure params against the prefix of key params
             keyPrefix =
                 List.take closureParamCount keyParamTypes
 
@@ -189,10 +240,8 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
                     keyPrefix
                     |> List.filterMap identity
 
-            -- Check result type consistency
             resultMismatches =
                 if closureParamCount == keyParamCount then
-                    -- Fully saturated: body type should match key result type
                     if monoTypeEq bodyType keyResultType then
                         []
 
@@ -209,14 +258,12 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
                         ]
 
                 else
-                    -- Closure returns a function (nested lambda). The body type
-                    -- should be an MFunction covering the remaining key params.
                     let
                         remainingKeyParams =
                             List.drop closureParamCount keyParamTypes
 
+                        -- The annotation is arbitrary: monoTypeEq ignores annotations.
                         expectedBodyType =
-                            -- Compared via monoTypeEq, which ignores annotations.
                             Mono.mFunction Mono.topLegacy remainingKeyParams keyResultType
 
                         ( bodyParamTypes, bodyResultType ) =
@@ -252,13 +299,16 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 -- ============================================================================
 
 
-{-| Flatten an Mono.mFunction type by recursively peeling Mono.mFunction layers.
+{-| Returns the parameters of `monoType` and of every function it returns, in
+order, paired with the first result that is not a function. A type that is not
+a function gives no parameters and itself.
 
-    flattenMFunction (Mono.mFunction [ a, b ] (Mono.mFunction [ c ] d))
+    -- with f = Mono.mFunction anno
+    flattenMFunction (f [ a, b ] (f [ c ] d))
         == ( [ a, b, c ], d )
 
-    flattenMFunction MInt
-        == ( [], MInt )
+    flattenMFunction Mono.MInt
+        == ( [], Mono.MInt )
 
 -}
 flattenMFunction : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
@@ -275,7 +325,13 @@ flattenMFunction monoType =
             ( [], monoType )
 
 
-{-| Structural equality for MonoTypes.
+{-| Returns whether two MonoTypes are the same type.
+
+The comparison ignores the hash field of composite types and the lambda-set
+annotation of function types, and treats two type variables as equal when their
+ids are equal, whatever their constraints. A type variable never equals a
+concrete type, so `MVar _ CNumber` does not equal `MInt`.
+
 -}
 monoTypeEq : Mono.MonoType -> Mono.MonoType -> Bool
 monoTypeEq a b =
@@ -314,14 +370,14 @@ monoTypeEq a b =
             aHome == bHome && aName == bName && listEq monoTypeEq aArgs bArgs
 
         ( Mono.MVar aId _, Mono.MVar bId _ ) ->
-            -- MVar equality: same id (constraint may differ)
             Id.toComparable aId == Id.toComparable bId
 
         _ ->
             False
 
 
-{-| Compare two lists elementwise using a custom equality function.
+{-| Returns whether `xs` and `ys` have the same length and `eq` holds for each
+pair of elements at the same position.
 -}
 listEq : (a -> a -> Bool) -> List a -> List a -> Bool
 listEq eq xs ys =
@@ -336,7 +392,8 @@ listEq eq xs ys =
             False
 
 
-{-| Compare two Dicts by checking same keys and equal values.
+{-| Returns whether `a` and `b` have the same keys and `eq` holds for the two
+values under each key.
 -}
 dictEq : (v -> v -> Bool) -> Dict.Dict String v -> Dict.Dict String v -> Bool
 dictEq eq a b =
@@ -363,7 +420,8 @@ dictEq eq a b =
 -- ============================================================================
 
 
-{-| Format violations as a readable string.
+{-| Returns a failure message giving the number of violations, then each as
+`context: message`, separated by blank lines.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
@@ -376,7 +434,8 @@ formatViolations violations =
            )
 
 
-{-| Convert a Global to a readable string.
+{-| Returns the name of a global for a violation's context, without its
+module; an accessor is written as `.field`.
 -}
 globalToString : Mono.Global -> String
 globalToString global =
@@ -388,7 +447,12 @@ globalToString global =
             "." ++ name
 
 
-{-| Convert a MonoType to a string for error messages.
+{-| Returns a short rendering of a MonoType for a violation message.
+
+It is lossy: a custom type is shown by its name alone, without module or
+arguments, a type variable by its id alone, and record fields in descending
+name order.
+
 -}
 monoTypeToString : Mono.MonoType -> String
 monoTypeToString monoType =

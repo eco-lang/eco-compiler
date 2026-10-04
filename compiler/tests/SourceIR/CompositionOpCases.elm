@@ -1,13 +1,48 @@
 module SourceIR.CompositionOpCases exposing (expectSuite)
 
-{-| Tests for composition operators, triple case, Order case, and case returning functions.
+{-| Source programs that use function composition, `case` on a 3-tuple, `case`
+on an `Order`, and a `case` whose branches are functions, so that a compiler
+stage given them can be checked against these shapes.
 
-Covers gaps 18, 22, 23, 24 from e2e-to-elmtest.md:
+The module asserts nothing itself. `expectSuite` takes an expectation function,
+which decides what is done with a program and what counts as passing, and runs
+it on every program here inside one elm-test test through
+`Compiler.BulkCheck.bulkCheck`, so the first failing program is reported by its
+label and the rest are not run.
 
-  - Function composition operators (>> and <<)
-  - Case on triple (3-tuple) with literal patterns
-  - Case on Order type (LT, EQ, GT)
-  - Case returning functions (staged case with partial application)
+Every program is a `Src.Module` built with `Compiler.AST.SourceBuilder`, and
+each one's result is the top-level value `testValue`. Most are built with
+`makeModule`: a module `Test` importing `Basics` and `List`, whose `testValue`
+has no annotation and defines any helpers in a `let`. The two programs whose
+`case` branches are functions instead declare `type Op = Add | Sub`, an
+annotated `getOp : Op -> Int -> Int -> Int` and an annotated `testValue : Int`,
+with the standard imports of `makeModuleWithTypedDefsUnionsAliases`. The
+helpers `addOne` (`x + 1`) and `double` (`x * 2`) recur in the composition
+programs.
+
+The programs, in four groups:
+
+  - Composition: `addOne >> double` bound to a name and applied to 9 (20);
+    `addOne << double` bound to a name and applied to 5 (11); each of those two
+    compositions applied directly, unnamed, to the same argument; and the chain
+    `addOne >> double >> addOne` bound to a name and applied to 4 (11). The
+    chain is built as one flat operator sequence, so its grouping is left to
+    canonicalization.
+  - `case` on a 3-tuple of `Int` literals: one matched by an all-literal
+    pattern; `( 0, 1, 0 )` against an all-literal pattern, two patterns mixing
+    literals and wildcards, and a final wildcard, where the first mixed pattern
+    is the first that matches; and one whose single branch binds all three
+    elements and sums them.
+  - `case` on an `Order`: a let-bound function from `LT`, `EQ` and `GT` to
+    strings, applied to `LT`; and a `case` on `Basics.compare 1 2` with the same
+    three branches.
+  - `case` returning functions: `getOp` answers each `Op` with a two-argument
+    lambda, and `testValue` either applies `getOp Add` to 3 and 4 in a second
+    call (7), or binds `getOp Add 5` in a `let` and applies it to 10 (15).
+
+Among what is not tested: a `<<` chain of more than two functions, the `Sub`
+branch of `getOp` being taken, a `case` on an `Order` with a wildcard branch,
+and a 3-tuple whose elements are not all `Int`.
 
 -}
 
@@ -43,12 +78,18 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named "Composition operators and staged case " followed by
+`condStr`, that passes when `expectFn` passes on every program in this module.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Composition operators and staged case " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every labelled case in the module, in group order, each checking its
+program with `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     compositionOpCases expectFn
@@ -59,10 +100,13 @@ testCases expectFn =
 
 
 -- ============================================================================
--- FUNCTION COMPOSITION OPERATORS >> and << (Gap 18)
+-- FUNCTION COMPOSITION OPERATORS >> and <<
 -- ============================================================================
 
 
+{-| Returns the five composition cases, each checking its program with
+`expectFn`.
+-}
 compositionOpCases : (Src.Module -> Expectation) -> List TestCase
 compositionOpCases expectFn =
     [ { label = "ComposeR (>>) two functions", run = composeRightTwoFunctions expectFn }
@@ -73,8 +117,8 @@ compositionOpCases expectFn =
     ]
 
 
-{-| addOneThenDouble = addOne >> double
-Uses the >> operator via binopsExpr.
+{-| Gives `expectFn` a program that binds `addOneThenDouble = addOne >> double`
+in a `let` and applies it to 9, so `testValue` is `(9 + 1) * 2`, which is 20.
 -}
 composeRightTwoFunctions : (Src.Module -> Expectation) -> (() -> Expectation)
 composeRightTwoFunctions expectFn _ =
@@ -85,11 +129,9 @@ composeRightTwoFunctions expectFn _ =
         double =
             define "double" [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
 
-        -- addOneThenDouble = addOne >> double
         composed =
             define "addOneThenDouble" [] (binopsExpr [ ( varExpr "addOne", ">>" ) ] (varExpr "double"))
 
-        -- testValue = addOneThenDouble 9  =>  (9 + 1) * 2 = 20
         modul =
             makeModule "testValue"
                 (letExpr [ addOne, double, composed ]
@@ -99,8 +141,9 @@ composeRightTwoFunctions expectFn _ =
     expectFn modul
 
 
-{-| doubleThenAddOne = addOne << double
-Uses the << operator via binopsExpr.
+{-| Gives `expectFn` a program that binds `doubleThenAddOne = addOne << double`
+in a `let` and applies it to 5. `<<` applies its right operand first, so
+`testValue` is `(5 * 2) + 1`, which is 11.
 -}
 composeLeftTwoFunctions : (Src.Module -> Expectation) -> (() -> Expectation)
 composeLeftTwoFunctions expectFn _ =
@@ -111,11 +154,9 @@ composeLeftTwoFunctions expectFn _ =
         double =
             define "double" [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
 
-        -- doubleThenAddOne = addOne << double  means addOne(double(x))
         composed =
             define "doubleThenAddOne" [] (binopsExpr [ ( varExpr "addOne", "<<" ) ] (varExpr "double"))
 
-        -- testValue = doubleThenAddOne 5  =>  (5 * 2) + 1 = 11
         modul =
             makeModule "testValue"
                 (letExpr [ addOne, double, composed ]
@@ -125,7 +166,8 @@ composeLeftTwoFunctions expectFn _ =
     expectFn modul
 
 
-{-| compose then immediately apply: (addOne >> double) 9
+{-| Gives `expectFn` a program whose `testValue` applies `addOne >> double`
+directly to 9, with no name bound to the composition, giving 20.
 -}
 composeRightApplied : (Src.Module -> Expectation) -> (() -> Expectation)
 composeRightApplied expectFn _ =
@@ -145,7 +187,8 @@ composeRightApplied expectFn _ =
     expectFn modul
 
 
-{-| compose then immediately apply with <<: (addOne << double) 5
+{-| Gives `expectFn` a program whose `testValue` applies `addOne << double`
+directly to 5, with no name bound to the composition, giving 11.
 -}
 composeLeftApplied : (Src.Module -> Expectation) -> (() -> Expectation)
 composeLeftApplied expectFn _ =
@@ -165,8 +208,12 @@ composeLeftApplied expectFn _ =
     expectFn modul
 
 
-{-| Chain of three: addOne >> double >> addOne applied to 4
-Result: addOne(double(addOne(4))) = addOne(double(5)) = addOne(10) = 11
+{-| Gives `expectFn` a program that binds `chain = addOne >> double >> addOne`
+in a `let` and applies it to 4, so `testValue` is `((4 + 1) * 2) + 1`, or 11.
+
+The two operators are built as one flat sequence, leaving their grouping to
+canonicalization; either grouping gives the same function.
+
 -}
 composeRightChain : (Src.Module -> Expectation) -> (() -> Expectation)
 composeRightChain expectFn _ =
@@ -177,7 +224,6 @@ composeRightChain expectFn _ =
         double =
             define "double" [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
 
-        -- addOne >> double >> addOne
         composed =
             define "chain"
                 []
@@ -194,10 +240,13 @@ composeRightChain expectFn _ =
 
 
 -- ============================================================================
--- CASE ON TRIPLE (3-TUPLE) WITH LITERAL PATTERNS (Gap 22)
+-- CASE ON TRIPLE (3-TUPLE)
 -- ============================================================================
 
 
+{-| Returns the three cases that match on a 3-tuple, each checking its program
+with `expectFn`.
+-}
 tripleCaseCases : (Src.Module -> Expectation) -> List TestCase
 tripleCaseCases expectFn =
     [ { label = "Case on triple with all-zero literal pattern", run = caseTripleAllZero expectFn }
@@ -206,9 +255,9 @@ tripleCaseCases expectFn =
     ]
 
 
-{-| case (0, 0, 0) of
-(0, 0, 0) -> "all zero"
-\_ -> "other"
+{-| Gives `expectFn` a program whose `testValue` is a `case` on `( 0, 0, 0 )`
+with the branches `( 0, 0, 0 )` and `_`, so the literal pattern matches and the
+result is `"all zero"`.
 -}
 caseTripleAllZero : (Src.Module -> Expectation) -> (() -> Expectation)
 caseTripleAllZero expectFn _ =
@@ -227,11 +276,12 @@ caseTripleAllZero expectFn _ =
     expectFn modul
 
 
-{-| case (0, 1, 0) of
-(0, 0, 0) -> "all zero"
-(0, _, _) -> "x zero"
-(_, _, 0) -> "z zero"
-\_ -> "none zero"
+{-| Gives `expectFn` a program whose `testValue` is a `case` on `( 0, 1, 0 )`
+with the branches `( 0, 0, 0 )`, `( 0, _, _ )`, `( _, _, 0 )` and `_`.
+
+The subject matches both middle patterns; the first of them wins, so the result
+is `"x zero"`.
+
 -}
 caseTripleMixedWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
 caseTripleMixedWildcards expectFn _ =
@@ -252,8 +302,8 @@ caseTripleMixedWildcards expectFn _ =
     expectFn modul
 
 
-{-| case (1, 2, 3) of
-(a, b, c) -> a + b + c
+{-| Gives `expectFn` a program whose `testValue` is a `case` on `( 1, 2, 3 )`
+with the single branch `( a, b, c ) -> a + b + c`, giving 6.
 -}
 caseTripleVarExtraction : (Src.Module -> Expectation) -> (() -> Expectation)
 caseTripleVarExtraction expectFn _ =
@@ -275,10 +325,13 @@ caseTripleVarExtraction expectFn _ =
 
 
 -- ============================================================================
--- CASE ON ORDER TYPE (LT, EQ, GT) (Gap 23)
+-- CASE ON ORDER TYPE (LT, EQ, GT)
 -- ============================================================================
 
 
+{-| Returns the two cases that match on an `Order`, each checking its program
+with `expectFn`.
+-}
 orderCaseCases : (Src.Module -> Expectation) -> List TestCase
 orderCaseCases expectFn =
     [ { label = "Case on Order with LT/EQ/GT patterns", run = caseOrderPatterns expectFn }
@@ -286,8 +339,9 @@ orderCaseCases expectFn =
     ]
 
 
-{-| orderToStr ord = case ord of LT -> "less"; EQ -> "equal"; GT -> "greater"
-testValue = orderToStr LT
+{-| Gives `expectFn` a program that defines, in a `let`, an unannotated
+`orderToStr` mapping `LT`, `EQ` and `GT` to `"less"`, `"equal"` and `"greater"`,
+and applies it to `LT`, giving `"less"`.
 -}
 caseOrderPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOrderPatterns expectFn _ =
@@ -311,8 +365,9 @@ caseOrderPatterns expectFn _ =
     expectFn modul
 
 
-{-| testValue = case compare 1 2 of LT -> "less"; EQ -> "equal"; GT -> "greater"
-Uses qualVarExpr "Basics" "compare" to reference the compare function.
+{-| Gives `expectFn` a program whose `testValue` is a `case` on
+`Basics.compare 1 2`, written qualified, with branches for `LT`, `EQ` and `GT`,
+so the subject is a call rather than a variable and the result is `"less"`.
 -}
 caseCompareResult : (Src.Module -> Expectation) -> (() -> Expectation)
 caseCompareResult expectFn _ =
@@ -334,10 +389,13 @@ caseCompareResult expectFn _ =
 
 
 -- ============================================================================
--- CASE RETURNING FUNCTIONS / STAGED CASE (Gap 24)
+-- CASE RETURNING FUNCTIONS
 -- ============================================================================
 
 
+{-| Returns the two cases whose `case` branches are functions, each checking its
+program with `expectFn`.
+-}
 caseReturningFunctionCases : (Src.Module -> Expectation) -> List TestCase
 caseReturningFunctionCases expectFn =
     [ { label = "Case returns lambda, then apply", run = caseReturnsLambdaThenApply expectFn }
@@ -345,9 +403,13 @@ caseReturningFunctionCases expectFn =
     ]
 
 
-{-| type Op = Add | Sub
-getOp op = case op of Add -> \\a b -> a + b; Sub -> \\a b -> a - b
-testValue = (getOp Add) 3 4 => 7
+{-| Gives `expectFn` a module `Test` declaring `type Op = Add | Sub` and
+`getOp : Op -> Int -> Int -> Int`, which takes one argument and answers `Add`
+with `\a b -> a + b` and `Sub` with `\a b -> a - b`.
+
+`testValue : Int` calls `getOp Add` and then applies the result to 3 and 4 in a
+second call, giving 7.
+
 -}
 caseReturnsLambdaThenApply : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturnsLambdaThenApply expectFn _ =
@@ -400,10 +462,13 @@ caseReturnsLambdaThenApply expectFn _ =
     expectFn modul
 
 
-{-| Partial application of case-returned function:
-getOp Add returns \\a b -> a + b
-addFive = getOp Add 5 (partial application)
-testValue = addFive 10 => 15
+{-| Gives `expectFn` the same module `Test`, `Op` and `getOp` as
+`caseReturnsLambdaThenApply`, with a different `testValue : Int`.
+
+Here `testValue` binds `addFive = getOp Add 5` in a `let`, one call supplying
+the `Op` and the first of the lambda's two arguments, and applies `addFive` to
+10, giving 15.
+
 -}
 caseReturnsLambdaPartialApp : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturnsLambdaPartialApp expectFn _ =

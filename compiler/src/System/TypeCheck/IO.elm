@@ -9,15 +9,40 @@ module System.TypeCheck.IO exposing
     , classifySorted, lsTopContent, lsTopContentK, pointKey, unionSortedAsc
     )
 
-{-| IO monad and state threading for type inference.
+{-| The type checker and the monomorphization solver are imperative algorithms
+over a union-find store, written in Elm by passing the store from each step to
+the next. This module is the state monad that does the passing.
 
-This module implements a specialized IO monad used throughout the type inference
-system. It provides state threading for mutable references (Points, Descriptors,
-etc.) without actual side effects, simulating imperative union-find and type
-unification algorithms in a pure functional style. The State contains arrays that
-act as pseudo-mutable stores for type variables and descriptors.
+An _action_, of type `IO a`, is a function that takes the current `State` and
+returns the next one together with a result. Despite its name the monad performs
+no input or output: the state is all an action can change. `pure` makes an
+action from a value, `map`, `apply` and `andThen` build actions from other
+actions, and the iterators run an action once for each element of a list, array
+or dictionary, handing the state each run leaves on to the next.
 
-Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
+The heart of the state is the _point store_, the union-find store itself, which
+holds one cell for each type variable; `Compiler.Type.Vars` describes points and
+their cells. The point store is an `Eco.CellStore`, which the native build
+changes in place, so a state is subject to that module's linearity contract:
+once a state has been given to an action, only the state the action returns is
+used again. A state kept from before an action is therefore not a snapshot that
+can be gone back to. Alongside the point store, the state holds a table of
+vectors, the state of fresh-name generation, and the record of which variable
+stands for each node of the syntax tree.
+
+Because every step may change the state, the order in which an iterator visits
+elements is part of what it computes. It decides, for instance, which index each
+newly made point is given. `traverseList`, `mapM`, `foldM`, `foldMArray`,
+`traverseArrayMaybe` and `traverseMapWithKey` go from the first element to the
+last. `foldrM` also goes from the first to the last, despite its name. `mapM_`
+and `forM_` go from the last element to the first. Each iterator loops through
+a self-tail-recursive helper, which Elm compiles to a loop, so a long list does
+not deepen the stack.
+
+The last group of functions serves lambda sets, which `Compiler.Type.Vars`
+defines, and is used by `Compiler.Type.Unify` and by the monomorphization
+solver: comparing and merging ascending lists of member ids, the index of a
+point as a key, and shared contents for the top lambda set.
 
 @docs unsafePerformIO, freshState
 
@@ -43,6 +68,11 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 @docs NodeIdState, getNodeIds, modifyNodeIds, withNodeIds
 
+
+# Lambda Sets
+
+@docs classifySorted, lsTopContent, lsTopContentK, pointKey, unionSortedAsc
+
 -}
 
 import Array exposing (Array)
@@ -54,28 +84,27 @@ import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
 
 
-{-| Execute an IO action and extract its result, discarding the final state.
+{-| Runs `ioA` on a state made by `freshState` and returns its result, discarding
+the final state.
 
-This is the entry point for running IO computations. It initializes an empty
-state (with no references allocated) and returns only the computed value.
+The final state's point store is passed to `Eco.CellStore.disposeThen`
+whatever the action did with it, including when the action has already passed
+it to `Eco.CellStore.freeze`.
 
 -}
 unsafePerformIO : IO a -> a
 unsafePerformIO ioA =
     case ioA (freshState ()) of
         ( s1, a ) ->
-            -- The run owns its point store; nothing outside can reach it once
-            -- the run is over, so free it here. Disposal is threaded through
-            -- the RESULT so it is a data dependency and cannot be dropped as a
-            -- dead statement. Idempotent, so a `Solve.runWithIds` that already
-            -- froze the store is fine.
             CellStore.disposeThen s1.ioRefsPoint a
 
 
-{-| A fresh IO state, with an empty point store.
+{-| Creates a state with an empty point store, no vectors, the empty name
+state, and the empty node-id state, in which recording is off.
 
-This MUST take an argument. As a zero-argument definition it would be a
-memoised constant and every "fresh" state would share one mutable store.
+It takes `()` because the native build's point store is mutable. As a constant
+it would be evaluated once, and every state made from it would share one
+store.
 
 -}
 freshState : () -> State
@@ -87,40 +116,29 @@ freshState () =
     }
 
 
+{-| A step of the type checker or the solver: a function from the state before
+it to the state after it, paired with the step's result.
 
--- A5: `type Step`/`loop` (the trampoline) REMOVED — all `IO.loop` call sites were
--- rewritten to direct self-tail-recursion (constraint solver `solveGo`, the five
--- `*Go` iterators, and the expression/pattern/decl spine walks), which the compiler
--- TCO's to while-loops (still stack-safe) while dropping the per-iteration
--- `Step`/loop-state-tuple/closure allocations.
--- ====== THE IO MONAD ======
-
-
-{-| The IO monad for type inference computations.
-
-An IO action is a function that takes a State and returns an updated State
-along with a result value.
+This is a name for a function type, not a new type, so any function of that
+shape is an action. The state comes first in the pair. Some state-passing
+functions elsewhere, such as `Compiler.Type.UnionFind.getS`, put it second.
 
 -}
 type alias IO a =
     State -> ( State, a )
 
 
-{-| The mutable state threaded through IO computations.
+{-| Everything an action can change.
 
-Contains arrays acting as pseudo-mutable stores for:
+`ioRefsPoint` is the point store, with one cell for each point. It is used
+under the linearity contract of `Eco.CellStore`, so an attempt that may have to
+be abandoned must be enclosed in one of the store's undo scopes
+(`Eco.CellStore.pushMark` and `Eco.CellStore.rollback`); keeping the earlier
+state does not undo it.
 
-  - `ioRefsPoint`: the union-find cell per Point — weight and descriptor —
-    held in an `Eco.CellStore`, an OFF-HEAP mutable vector. It used to be a
-    persistent `Array`, which meant a path copy of two or three 32-slot trie
-    nodes on every union and every descriptor write. The store is threaded
-    LINEARLY here (see `Compiler.Type.UnionFind`), which is what makes in-place
-    mutation sound; the three places that are not linear — the best-effort
-    unify recovery sites — bracket their speculation with
-    `CellStore.pushMark`/`rollback`
-    inline on a root, or a link to the parent (kernel-opt-02 merged the former
-    three index-synchronised weight/pointInfo/descriptor arrays into this one)
-  - `ioRefsMVector`: Additional mutable vector storage
+`ioRefsMVector` holds every vector made by `Data.IORef.newIORefMVector`, such
+as the solver's pools of variables by rank. A reference to a vector is its
+position in this array.
 
 -}
 type alias State =
@@ -131,9 +149,15 @@ type alias State =
     }
 
 
-{-| Fresh-name generation state, threaded through the type -> annotation/error
-conversion. Folded into `State` so the conversion runs in plain `IO`, removing
-the separate `StateT NameState` layer.
+{-| The state of fresh-name generation while solved types are converted back
+into annotations and error types.
+
+`taken` is the set of names already in use. The five counters, `normals` to
+`compAppends`, hold for each kind of variable (plain, `number`, `comparable`,
+`appendable` and `compappend`) the index from which the next generated name is
+tried. `canMemo` maps the index of a union-find root to the type already built
+for it, so that a root reached twice is converted once.
+
 -}
 type alias NameState =
     { taken : CoreDict.Dict String ()
@@ -146,30 +170,35 @@ type alias NameState =
     }
 
 
-{-| The seed name state (no names taken, all counters at zero).
+{-| The name state a fresh state starts with: no names taken, every counter at
+zero and nothing remembered.
 -}
 emptyNameState : NameState
 emptyNameState =
     { taken = CoreDict.empty, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0, canMemo = CoreDict.empty }
 
 
-{-| Read the current fresh-name state.
+{-| Returns the current name state, leaving the state unchanged.
 -}
 getNames : IO NameState
 getNames s =
     ( s, s.names )
 
 
-{-| Replace the fresh-name state.
+{-| Replaces the name state with `names`.
 -}
 putNames : NameState -> IO ()
 putNames names s =
     ( { s | names = names }, () )
 
 
-{-| Run an action with a freshly-seeded name state, restoring the previous one
-afterward. Keeps naming passes isolated and re-entrancy safe (e.g. a
-`toErrorType` invoked mid-unification cannot corrupt an in-flight naming pass).
+{-| Runs `action` with `seed` as the name state, then puts back the name state
+it found, so names generated inside do not reach the caller's name state. One
+such run is a _naming scope_.
+
+Every other part of the state, the point store included, keeps what the action
+did to it.
+
 -}
 withFreshNames : NameState -> IO a -> IO a
 withFreshNames seed action s =
@@ -183,14 +212,16 @@ withFreshNames seed action s =
     ( { s1 | names = saved }, a )
 
 
-{-| Node ID → solver variable tracking state, threaded through constraint
-generation. Folded into `State` (like `NameState`) so the constraint
-generator runs in plain `IO` with no explicit state tuple threading.
+{-| The record, kept while constraints are generated, of which solver variable
+stands for each expression and pattern of a module.
 
-  - `mapping`: node id → solver variable (expressions and patterns)
-  - `syntheticExprIds`: ids recorded via the Group B synthetic-placeholder path
-  - `schemeBinderVars`: definition name → forall binder → solver variable
-  - `recording`: False on the erased pathway (all recording is a no-op)
+`mapping` is indexed by node id, and holds `Nothing` for an id with no
+variable recorded. `syntheticExprIds` holds the ids of expressions whose
+variable in `mapping` is a placeholder made in order to be recorded.
+`schemeBinderVars` maps an annotated definition's name to the type variables
+its annotation introduces, those not already bound by an enclosing annotation,
+each by its name. `recording` says whether records are to be made at all; this
+module only stores it, and it is off in the state `freshState` makes.
 
 -}
 type alias NodeIdState =
@@ -201,8 +232,8 @@ type alias NodeIdState =
     }
 
 
-{-| The seed node-id state: empty, with recording DISABLED. Entry points that
-want recording seed an enabled state via `withNodeIds`.
+{-| The node-id state a fresh state starts with: nothing recorded, and
+`recording` off.
 -}
 emptyNodeIds : NodeIdState
 emptyNodeIds =
@@ -213,22 +244,23 @@ emptyNodeIds =
     }
 
 
-{-| Read the current node-id state.
+{-| Returns the current node-id state, leaving the state unchanged.
 -}
 getNodeIds : IO NodeIdState
 getNodeIds s =
     ( s, s.nodeIds )
 
 
-{-| Update the node-id state with a function.
+{-| Replaces the node-id state with `f` applied to it.
 -}
 modifyNodeIds : (NodeIdState -> NodeIdState) -> IO ()
 modifyNodeIds f s =
     ( { s | nodeIds = f s.nodeIds }, () )
 
 
-{-| Run an action with a freshly-seeded node-id state, restoring the previous
-one afterward and returning the final seeded state alongside the result.
+{-| Runs `action` with `seed` as the node-id state, then puts back the node-id
+state it found. The result is the action's own, paired with the node-id state
+the action finished with.
 -}
 withNodeIds : NodeIdState -> IO a -> IO ( a, NodeIdState )
 withNodeIds seed action s =
@@ -242,16 +274,17 @@ withNodeIds seed action s =
     ( { s1 | nodeIds = saved }, ( a, s1.nodeIds ) )
 
 
-{-| Lift a pure value into the IO monad without modifying state.
+{-| Returns an action that leaves the state unchanged and returns `x`.
 -}
 pure : a -> IO a
 pure x =
     \s -> ( s, x )
 
 
-{-| Apply a function wrapped in IO to a value wrapped in IO.
+{-| Returns an action that runs `mf`, then `ma`, and applies the function the
+first returns to the value the second returns.
 
-Applicative functor operation for sequencing effects.
+The function's action runs first, although it is the second argument.
 
 -}
 apply : IO a -> IO (a -> b) -> IO b
@@ -259,7 +292,7 @@ apply ma mf =
     andThen (\f -> andThen (f >> pure) ma) mf
 
 
-{-| Map a pure function over an IO computation.
+{-| Returns an action that runs `ma` and applies `fn` to its result.
 -}
 map : (a -> b) -> IO a -> IO b
 map fn ma s0 =
@@ -270,18 +303,11 @@ map fn ma s0 =
     ( s1, fn a )
 
 
-{-| Chain IO computations sequentially, threading state through each step.
-
-The first IO action runs, then its result is passed to the continuation
-function to produce the next IO action.
-
+{-| Returns an action that runs `ma`, then runs the action `f` makes from its
+result on the state `ma` left.
 -}
 andThen : (a -> IO b) -> IO a -> IO b
 andThen f ma s0 =
-    -- P0 (plans/io-monad-dispatch-reduction.md): spelled with its state
-    -- parameter, like `map` above. Point-free (`andThen f ma = \s0 -> ...`) this
-    -- allocates a closure for EVERY andThen node; saturated, the closure is only
-    -- built where the result is genuinely passed around as an `IO b` value.
     let
         ( s1, a ) =
             ma s0
@@ -289,19 +315,20 @@ andThen f ma s0 =
     f a s1
 
 
-{-| Fold over a list from right to left with an IO-producing function.
+{-| Returns an action that folds `f` over `xs`, starting from `z0`, where `f`
+takes an element and the value so far.
 
-Similar to `List.foldr`, but the combining function returns an IO action.
+Despite the name, the elements are visited from the head of the list to its end,
+as in `foldM`. The two differ only in the order of `f`'s arguments.
 
 -}
 foldrM : (a -> b -> IO b) -> b -> List a -> IO b
 foldrM f z0 xs s0 =
-    -- Direct self-tail-recursion (TCO'd to a while-loop → stack-safe) replacing the
-    -- `loop`/`Step` trampoline: no `Step` ctor, no loop-state tuple, no `map`
-    -- closure per element. Byte-identical element order + state threading.
     foldrMGo f xs z0 s0
 
 
+{-| Folds `f` over `xs` from the head, starting from `acc` on the state `s0`.
+-}
 foldrMGo : (a -> b -> IO b) -> List a -> b -> State -> ( State, b )
 foldrMGo f xs acc s0 =
     case xs of
@@ -316,18 +343,17 @@ foldrMGo f xs acc s0 =
             foldrMGo f rest b s1
 
 
-{-| Fold over a list from left to right with an IO-producing function.
-
-Similar to `List.foldl`, but the combining function returns an IO action.
-
+{-| Returns an action that folds `f` over `list` from the first element to the
+last, starting from `b0`.
 -}
 foldM : (b -> a -> IO b) -> b -> List a -> IO b
 foldM f b0 list s0 =
-    -- Direct tail-recursion (TCO → while-loop). Byte-identical to the former
-    -- `loop (foldMHelp f) …`, without the per-element trampoline allocations.
     foldMGo f b0 list s0
 
 
+{-| Folds `f` over `list` from the first element, starting from `acc` on the
+state `s0`.
+-}
 foldMGo : (b -> a -> IO b) -> b -> List a -> State -> ( State, b )
 foldMGo f acc list s0 =
     case list of
@@ -342,17 +368,23 @@ foldMGo f acc list s0 =
             foldMGo f b rest s1
 
 
-{-| Traverse a dictionary, applying an IO-producing function to each key-value pair.
+{-| Returns an action that runs `f` on every key and value of `dict` and
+returns a dictionary of the results under the same keys.
 
-The function receives both the key and value, allowing key-dependent transformations.
+The entries are visited in ascending order of their projected keys.
+`keyComparison` has no effect, because `Data.Map.toList` ignores its ordering
+function. Each result is filed under `toComparable` of its key, so
+`toComparable` should be the projection `dict` was built with.
 
 -}
 traverseMapWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> IO b) -> Dict comparable k a -> IO (Dict comparable k b)
 traverseMapWithKey toComparable keyComparison f dict s0 =
-    -- Direct tail-recursion (TCO → while-loop); same Dict.toList order + inserts.
     traverseMapGo toComparable f (Dict.toList keyComparison dict) Dict.empty s0
 
 
+{-| Runs `f` on each of `pairs` in list order, inserting each result into
+`result` under its key.
+-}
 traverseMapGo : (k -> comparable) -> (k -> a -> IO b) -> List ( k, a ) -> Dict comparable k b -> State -> ( State, Dict comparable k b )
 traverseMapGo toComparable f pairs result s0 =
     case pairs of
@@ -367,18 +399,19 @@ traverseMapGo toComparable f pairs result s0 =
             traverseMapGo toComparable f rest (Dict.insert toComparable k b result) s1
 
 
-{-| Map an IO-producing function over a list, discarding the results.
+{-| Returns an action that runs `f` on every element of `list` for its effect
+on the state, discarding the results.
 
-Used for executing side effects in sequence without collecting return values.
+The elements are visited from the last to the first.
 
 -}
 mapM_ : (a -> IO b) -> List a -> IO ()
 mapM_ f list s0 =
-    -- Direct tail-recursion (TCO → while-loop). Preserves the former impl's
-    -- REVERSED evaluation order (`List.reverse list`) and (), sans trampoline.
     mapMGo_ f (List.reverse list) s0
 
 
+{-| Runs `f` on each element of `list` in list order, discarding the results.
+-}
 mapMGo_ : (a -> IO b) -> List a -> State -> ( State, () )
 mapMGo_ f list s0 =
     case list of
@@ -393,26 +426,19 @@ mapMGo_ f list s0 =
             mapMGo_ f rest s1
 
 
-{-| Flipped version of `mapM_` for convenient pipeline-style code.
-
-Iterate over a list, executing IO actions for their side effects only.
-
+{-| Returns the action `mapM_ f list`, taking its arguments the other way round,
+so it also visits the elements from the last to the first.
 -}
 forM_ : List a -> (a -> IO b) -> IO ()
 forM_ list f =
     mapM_ f list
 
 
-{-| Traverse a list, applying an IO-producing function to each element.
-
-Collects results into a new list while threading state through each computation.
-
+{-| Returns an action that runs `f` on every element of `list`, from the first
+to the last, and returns the results in the same order.
 -}
 traverseList : (a -> IO b) -> List a -> IO (List b)
 traverseList f list s0 =
-    -- Direct tail-recursion (TCO → while-loop). Builds a reversed accumulator then
-    -- reverses once (== the former `loop … |> map List.reverse`). No per-element
-    -- Step/loop-tuple/closure. Byte-identical order + state threading.
     let
         ( s1, revAcc ) =
             traverseListGo f list [] s0
@@ -420,6 +446,9 @@ traverseList f list s0 =
     ( s1, List.reverse revAcc )
 
 
+{-| Runs `f` on each element of `list` in list order, pushing each result onto
+`acc`, so the results come out with the last first.
+-}
 traverseListGo : (a -> IO b) -> List a -> List b -> State -> ( State, List b )
 traverseListGo f list acc s0 =
     case list of
@@ -434,31 +463,25 @@ traverseListGo f list acc s0 =
             traverseListGo f rest (b :: acc) s1
 
 
-{-| Traverse the second element of a tuple with an IO-producing function.
-
-The first element is left unchanged.
-
+{-| Returns an action that runs `f` on the second component of a pair and pairs
+its result with the unchanged first component.
 -}
 traverseTuple : (b -> IO c) -> ( a, b ) -> IO ( a, c )
 traverseTuple f ( a, b ) =
     map (Tuple.pair a) (f b)
 
 
-{-| Alias for `traverseList`.
-
-Map an IO-producing function over a list, collecting results.
-
+{-| Another name for `traverseList`: the action that runs a function on every
+element of a list, from the first to the last, and collects the results in the
+same order.
 -}
 mapM : (a -> IO b) -> List a -> IO (List b)
 mapM =
     traverseList
 
 
-{-| Traverse an array, applying an IO-producing function to each element.
-
-Collects results into a new array while threading state through each computation.
-Stack-safe via `traverseList`.
-
+{-| Returns an action that runs `f` on every element of `arr` in index order
+and returns the results as an array in the same order.
 -}
 traverseArray : (a -> IO b) -> Array a -> IO (Array b)
 traverseArray f arr =
@@ -467,8 +490,8 @@ traverseArray f arr =
         |> map Array.fromList
 
 
-{-| Traverse an array of optional values, applying an IO-producing function to
-each `Just` while preserving `Nothing` holes.
+{-| Returns an action that runs `f` on the value in every `Just` element of an
+array, in index order, and leaves each `Nothing` where it is.
 -}
 traverseArrayMaybe : (a -> IO b) -> Array (Maybe a) -> IO (Array (Maybe b))
 traverseArrayMaybe f =
@@ -483,50 +506,40 @@ traverseArrayMaybe f =
         )
 
 
-{-| Fold over an array from left to right with an IO-producing function.
-
-Similar to `foldM`, but over an `Array`. Stack-safe.
-
+{-| Returns an action that folds `f` over `arr` in index order, starting from
+`b`.
 -}
 foldMArray : (b -> a -> IO b) -> b -> Array a -> IO b
 foldMArray f b arr =
     foldM f b (Array.toList arr)
 
 
-
--- ====== POINT ======
--- ====== DESCRIPTORS ======
-
-
-{-| Construct a Descriptor from its component properties.
+{-| Builds a descriptor from its content, rank, mark and copy, given in that
+order.
 -}
 makeDescriptor : Content -> Int -> Mark -> Maybe Variable -> Descriptor
 makeDescriptor content rank mark copy =
     { content = content, rank = rank, mark = mark, copy = copy }
 
 
+{-| Returns the index of a point in its store, for use as a key.
 
--- ====== MARKS ======
--- ====== TYPE PRIMITIVES ======
+An index identifies a point only within the store that made it, and two points
+of one class have different indices even after they are joined.
 
-
-{-| The raw index of a Point — the dedupe key for `LsFrom` source lists.
-Twin of `Engine.pointKey`, duplicated here because `Unify` (which merges
-edge lists) cannot import MonoSolver.
 -}
 pointKey : Variable -> Int
 pointKey (Pt n) =
     n
 
 
-{-| Shared ⊤ contents, one CAF per provenance kind so every top-write stays
-allocation-free (the §4.9 provenance kinds; codes mirror
-`Mono.tkPoison..tkLegacy` = 0..7 — this module cannot import Mono). The
-kind is census metadata ONLY: every store reader treats all `LsTop` values
-identically, and the ⊤-⊤ unify merge takes `min` (priority).
+{-| The content of a set slot holding the top lambda set with provenance code
+10, the value of `Compiler.AST.Monomorphized.tkLegacy`.
 
-`lsTopContent` keeps its historical name as the LEGACY-kind constant for
-sites with no better attribution.
+`lsTopContentK` also returns it for code 10 and for any code above 20. This
+module keeps one shared content for each code from 0 to 20, here and in the
+private constants below, so that writing a top lambda set into the store builds
+no new value.
 
 -}
 lsTopContent : Content
@@ -534,106 +547,169 @@ lsTopContent =
     Structure (LambdaSet1 (LsTop 10))
 
 
+{-| The top lambda-set content with provenance code 0,
+`Compiler.AST.Monomorphized.tkPoison`.
+-}
 lsTopPoison : Content
 lsTopPoison =
     Structure (LambdaSet1 (LsTop 0))
 
 
+{-| The top lambda-set content with provenance code 1,
+`Compiler.AST.Monomorphized.tkConflict`.
+-}
 lsTopConflict : Content
 lsTopConflict =
     Structure (LambdaSet1 (LsTop 1))
 
 
+{-| The top lambda-set content with provenance code 2,
+`Compiler.AST.Monomorphized.tkWiden`.
+-}
 lsTopWiden : Content
 lsTopWiden =
     Structure (LambdaSet1 (LsTop 2))
 
 
+{-| The top lambda-set content with provenance code 3,
+`Compiler.AST.Monomorphized.tkEdge`.
+-}
 lsTopEdge : Content
 lsTopEdge =
     Structure (LambdaSet1 (LsTop 3))
 
 
+{-| The top lambda-set content with provenance code 4,
+`Compiler.AST.Monomorphized.tkAbi`.
+-}
 lsTopAbi : Content
 lsTopAbi =
     Structure (LambdaSet1 (LsTop 4))
 
 
+{-| The top lambda-set content with provenance code 5,
+`Compiler.AST.Monomorphized.tkDeclZonk`.
+-}
 lsTopDeclZonk : Content
 lsTopDeclZonk =
     Structure (LambdaSet1 (LsTop 5))
 
 
+{-| The top lambda-set content with provenance code 6, which
+`Compiler.AST.Monomorphized` names `tkDeclStoreC`.
+-}
 lsTopDeclScheme : Content
 lsTopDeclScheme =
     Structure (LambdaSet1 (LsTop 6))
 
 
+{-| The top lambda-set content with provenance code 7, which
+`Compiler.AST.Monomorphized` names `tkDeclStoreS`.
+-}
 lsTopDeclKey : Content
 lsTopDeclKey =
     Structure (LambdaSet1 (LsTop 7))
 
 
+{-| The top lambda-set content with provenance code 8, which
+`Compiler.AST.Monomorphized` names `tkDeclOther`.
+-}
 lsTopDeclSpec : Content
 lsTopDeclSpec =
     Structure (LambdaSet1 (LsTop 8))
 
 
+{-| The top lambda-set content with provenance code 9,
+`Compiler.AST.Monomorphized.tkSynth`.
+-}
 lsTopSynth : Content
 lsTopSynth =
     Structure (LambdaSet1 (LsTop 9))
 
 
+{-| The top lambda-set content with provenance code 11,
+`Compiler.AST.Monomorphized.tkClassCase`.
+-}
 lsTopCls11 : Content
 lsTopCls11 =
     Structure (LambdaSet1 (LsTop 11))
 
 
+{-| The top lambda-set content with provenance code 12,
+`Compiler.AST.Monomorphized.tkClassIf`.
+-}
 lsTopCls12 : Content
 lsTopCls12 =
     Structure (LambdaSet1 (LsTop 12))
 
 
+{-| The top lambda-set content with provenance code 13,
+`Compiler.AST.Monomorphized.tkClassLocal`.
+-}
 lsTopCls13 : Content
 lsTopCls13 =
     Structure (LambdaSet1 (LsTop 13))
 
 
+{-| The top lambda-set content with provenance code 14,
+`Compiler.AST.Monomorphized.tkClassLit`.
+-}
 lsTopCls14 : Content
 lsTopCls14 =
     Structure (LambdaSet1 (LsTop 14))
 
 
+{-| The top lambda-set content with provenance code 15,
+`Compiler.AST.Monomorphized.tkClassParam`.
+-}
 lsTopCls15 : Content
 lsTopCls15 =
     Structure (LambdaSet1 (LsTop 15))
 
 
+{-| The top lambda-set content with provenance code 16,
+`Compiler.AST.Monomorphized.tkClassDestr`.
+-}
 lsTopCls16 : Content
 lsTopCls16 =
     Structure (LambdaSet1 (LsTop 16))
 
 
+{-| The top lambda-set content with provenance code 17,
+`Compiler.AST.Monomorphized.tkClassLambda`.
+-}
 lsTopCls17 : Content
 lsTopCls17 =
     Structure (LambdaSet1 (LsTop 17))
 
 
+{-| The top lambda-set content with provenance code 18,
+`Compiler.AST.Monomorphized.tkClassCall`.
+-}
 lsTopCls18 : Content
 lsTopCls18 =
     Structure (LambdaSet1 (LsTop 18))
 
 
+{-| The top lambda-set content with provenance code 19,
+`Compiler.AST.Monomorphized.tkClassLet`.
+-}
 lsTopCls19 : Content
 lsTopCls19 =
     Structure (LambdaSet1 (LsTop 19))
 
 
+{-| The top lambda-set content with provenance code 20,
+`Compiler.AST.Monomorphized.tkClassMisc`.
+-}
 lsTopCls20 : Content
 lsTopCls20 =
     Structure (LambdaSet1 (LsTop 20))
 
 
+{-| Returns the shared top lambda-set content for code `k` from 11 to 19, and
+the one for code 20 for any other `k`.
+-}
 lsTopClassK : Int -> Content
 lsTopClassK k =
     if k == 11 then
@@ -667,6 +743,14 @@ lsTopClassK k =
         lsTopCls20
 
 
+{-| Returns the shared content of a set slot holding the top lambda set with
+provenance code `k`.
+
+Codes 0 to 9 and 11 to 20 each have a content of their own. A negative `k`
+gets the content for code 0, and 10 and any code above 20 get `lsTopContent`,
+whose code is 10, so the code read back from the result is not always `k`.
+
+-}
 lsTopContentK : Int -> Content
 lsTopContentK k =
     if k <= 0 then
@@ -700,19 +784,28 @@ lsTopContentK k =
         lsTopSynth
 
     else if k >= 11 && k <= 20 then
-        -- §9.3 classify-caller attribution codes; one shared CAF each so
-        -- the store write stays allocation-free.
         lsTopClassK k
 
     else
         lsTopContent
 
 
+{-| Returns how two lists of member ids relate as sets, as a
+`Compiler.Type.Vars.SortedRel`, in a single pass over both.
+
+The lists must be ascending and free of duplicates. The types cannot say so,
+and for lists that are not, the answer has no meaning.
+
+-}
 classifySorted : List Int -> List Int -> SortedRel
 classifySorted =
     classifySortedGo False False
 
 
+{-| Returns how `xs` and `ys` relate as sets, given whether an id found only in
+the first list (`leftOnly`) or only in the second (`rightOnly`) has already
+been seen. It stops as soon as both have.
+-}
 classifySortedGo : Bool -> Bool -> List Int -> List Int -> SortedRel
 classifySortedGo leftOnly rightOnly xs ys =
     if leftOnly && rightOnly then
@@ -740,6 +833,10 @@ classifySortedGo leftOnly rightOnly xs ys =
                     classifySortedGo leftOnly True xs yRest
 
 
+{-| Returns the relation between two sets, given whether the first holds an id
+the second lacks (`leftOnly`) and whether the second holds one the first lacks
+(`rightOnly`).
+-}
 sortedRelOf : Bool -> Bool -> SortedRel
 sortedRelOf leftOnly rightOnly =
     if leftOnly then
@@ -756,10 +853,14 @@ sortedRelOf leftOnly rightOnly =
         SortedEqual
 
 
-{-| Ascending dedup merge of two ascending lists; reuses the exhausted
-side's suffix by pointer. Deliberately a twin of `Mono.unionSortedInts` —
-`Monomorphized` imports this module, so the shared copy must live here and
-a cross-import would cycle.
+{-| Returns the ascending union of two lists of ids, keeping once an id that is
+in both.
+
+The lists must be ascending and free of duplicates. The types cannot say so,
+and for lists that are not, the result need not be ascending or free of
+duplicates. Once one list runs out, the remainder of the other is used as it
+is, without being copied.
+
 -}
 unionSortedAsc : List Int -> List Int -> List Int
 unionSortedAsc xs ys =
@@ -779,7 +880,3 @@ unionSortedAsc xs ys =
 
             else
                 y :: unionSortedAsc xs yRest
-
-
-
--- ====== CANONICAL ======

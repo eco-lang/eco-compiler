@@ -1,13 +1,52 @@
 module Compiler.Data.BitSetTest exposing (suite)
 
-{-| Tests for `BitSet.count` and `BitSet.remove`.
+{-| Tests that `BitSet.count` and `BitSet.remove` give the right answers,
+including on the words where the two back ends disagree about the number a word
+holds.
 
-`count` carries the real risk. It popcounts a 32-bit word, and a word with bit
-31 set is a NEGATIVE `Int` on the JS backend (`Bitwise.or` yields a signed
-result) but a positive one below 2^32 on the native backend, where `Int` is
-64-bit. The SWAR halving has to give the same answer either way, so the
-word-boundary and full-word cases below are the point of this suite, not
-padding.
+A `BitSet` keeps its bits in 32-bit words, and `count` adds up the set bits of
+each word with bitwise arithmetic. A word with bit 31 set by `insert` is a
+negative `Int` on the JavaScript back end, where `Bitwise.or` and
+`Bitwise.shiftLeftBy` give signed 32-bit results, and a positive one on the
+native back end, where `Int` is 64 bits wide. A word written through `setWord`
+keeps the sign it was given, so the `-1` one test writes is negative on both.
+These tests check `count` on words with bit 31 set, which is where the two
+readings differ; a run checks the reading of the back end it runs on. They also
+check `remove` on bits that share a word with other set bits.
+
+Each test builds its own set, mostly with `BitSet.fromSize`, so that every word
+the set can use exists from the start. `insertAll` inserts a list of indices.
+
+What the tests establish:
+
+  - `count` is 0 for `BitSet.empty` and for a 100-bit set with nothing
+    inserted.
+  - `count` is 4 after inserting 0, 5, 63 and 99, and 1 after inserting 7 three
+    times.
+  - `count` is 1 when bit 31 alone is set, 32 for a word with bits 0 to 31
+    inserted, and 32 for a word written as `-1` through `BitSet.setWord`.
+  - `count` is 3 after inserting 31, 32 and 33, which span two words, and 100
+    after inserting every index of a 100-bit set.
+  - Inserting 8, 100 and -1 into an 8-bit set adds nothing to `count`.
+  - After a `remove`, `member` is `False` for the removed index; removing 40
+    from 39, 40 and 41 leaves 39 and 41 members and a `count` of 2; and a
+    removed index can be inserted again.
+  - Removing an absent index, or the out-of-range indices 64 and -1 from an
+    8-bit set, leaves `count` at 1.
+  - Removing bits 0 and 30 from a full word leaves bit 31 a member and a
+    `count` of 30.
+  - `count` equals the number of indices for which `member` is `True` on a
+    40,000-bit set holding every multiple of 7 and every index that leaves 3
+    when divided by 31, and on a 5,000-bit set that was full before every
+    multiple of 3 was removed. `member` reads one bit at a time, so this checks
+    `count` on many more word patterns than the hand-computed cases.
+  - Removing 0 to 149 from a full 200-bit set leaves a `count` of 50, with 149
+    absent and 150 present.
+
+Among what is not tested: `BitSet.emptyWithSize`, `BitSet.insertGrowing` and
+`BitSet.removeGrowing`; `count` on a set whose words were added by `insert`
+rather than by `fromSize`; `setWord` with any word other than `-1` or with an
+index outside the set; and `member` on an index outside the set.
 
 -}
 
@@ -16,11 +55,17 @@ import Expect
 import Test exposing (Test)
 
 
+{-| Inserts each index in `bits` into `set`. An index outside the set's size is
+skipped, as `BitSet.insert` skips it.
+-}
 insertAll : List Int -> BitSet.BitSet -> BitSet.BitSet
 insertAll bits set =
     List.foldl BitSet.insert set bits
 
 
+{-| The `BitSet` tests, grouped as `count`, `remove`, `count` against `member`,
+and a long run of removals from a full set.
+-}
 suite : Test
 suite =
     Test.describe "BitSet"
@@ -59,9 +104,6 @@ suite =
                         |> Expect.equal 32
             , Test.test "an all-ones word written directly counts as 32" <|
                 \_ ->
-                    -- -1 forces the negative-word representation on every
-                    -- backend, which is the case the multiply-free SWAR exists
-                    -- to survive.
                     BitSet.fromSize 32
                         |> BitSet.setWord 0 -1
                         |> BitSet.count
@@ -128,8 +170,6 @@ suite =
                         |> Expect.equal True
             , Test.test "bit 31 survives removal of its word-mates" <|
                 \_ ->
-                    -- Clearing through `Bitwise.complement` on a 64-bit Int
-                    -- sets every high bit; bit 31 must not be collateral.
                     BitSet.fromSize 32
                         |> insertAll (List.range 0 31)
                         |> BitSet.remove 0
@@ -140,11 +180,6 @@ suite =
         , Test.describe "count agrees with member"
             [ Test.test "on an irregular pattern at CsePurity scale" <|
                 \_ ->
-                    -- Differential check: popcount against the already-trusted
-                    -- `member`, at the ~40k width `CsePurity.analyze` actually
-                    -- allocates. Hand-computed constants cannot catch a SWAR
-                    -- step that only misbehaves on some word patterns; this
-                    -- can, because the two implementations share nothing.
                     let
                         n =
                             40000

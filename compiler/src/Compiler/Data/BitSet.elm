@@ -1,6 +1,25 @@
 module Compiler.Data.BitSet exposing (BitSet, count, empty, emptyWithSize, fromSize, insert, insertGrowing, member, remove, removeGrowing, setWord)
 
-{-| A compact bit set backed by an Array of 32-bit words.
+{-| A set of small non-negative integers, such as dense ids, kept as one bit per
+possible member. Asking whether an integer is a member is one array lookup and
+one shift. The module answers membership and counts members; it has no way to
+list them.
+
+A set has a _capacity_, its `size`: it can hold the integers from 0 to
+`size - 1` and no others. `member`, `insert` and `remove` treat an integer
+outside that range as absent and leave the set as it is; they never raise the
+capacity. `insertGrowing` and `removeGrowing` raise it first, so they suit a set
+whose largest member is not known in advance.
+
+The bits are stored 32 to a _word_, one `Int` each, in an `Array`. A set may
+have fewer words than its capacity needs, and a missing word reads as all
+clear. `fromSize` allocates every word at once, `emptyWithSize` none, and
+`insert` and `remove` add words up to the one they touch.
+
+Only the low 32 bits of a word stand for members, on both back ends. On the
+JavaScript back end a word with bit 31 set may be a negative `Int`, as it is
+once `insert` has set that bit. `member` and `count` give the same answer
+whatever the sign.
 
 @docs BitSet, count, empty, emptyWithSize, fromSize, insert, insertGrowing, member, remove, removeGrowing, setWord
 
@@ -10,7 +29,15 @@ import Array exposing (Array)
 import Bitwise
 
 
-{-| A set of non-negative integers stored as an array of 32-bit words.
+{-| A set of integers drawn from 0 up to, but not including, a capacity.
+
+`size` is the capacity, not the number of members; `count` gives that. Bit `i`
+of the word at index `w` in `words` stands for the integer `32 * w + i`.
+
+`==` compares `size` and `words`, not the members. Two sets with the same
+members and capacity differ when one has allocated more words than the other,
+as an empty set from `fromSize` and one from `emptyWithSize` do.
+
 -}
 type alias BitSet =
     { size : Int
@@ -18,21 +45,26 @@ type alias BitSet =
     }
 
 
+{-| The number of bits in one word. It is 32, the width at which Elm's `Bitwise`
+functions work on the JavaScript back end, so that a word means the same on
+both back ends.
+-}
 wordSize : Int
 wordSize =
     32
 
 
-{-| An empty BitSet with no allocated storage.
+{-| The empty set with capacity 0 and no words. Until `insertGrowing` or
+`removeGrowing` raises its capacity, `insert` ignores every integer given to it.
 -}
 empty : BitSet
 empty =
     { size = 0, words = Array.empty }
 
 
-{-| Create an empty BitSet with storage for the given number of bits already
-allocated. Unlike `emptyWithSize` the backing words exist immediately, so
-`insert` never has to grow the array — use this when the bit count is known.
+{-| Creates an empty set with capacity `nBits`, with every word it needs
+allocated now. Its members are those of `emptyWithSize nBits`, but because its
+words exist, `setWord` can write to any of them straight away.
 -}
 fromSize : Int -> BitSet
 fromSize nBits =
@@ -41,7 +73,9 @@ fromSize nBits =
     }
 
 
-{-| Create an empty BitSet pre-allocated for the given number of bits.
+{-| Creates an empty set with capacity `nBits` and no words allocated. `insert`
+and `remove` allocate words as they reach them, but `setWord` does nothing until
+the word it names exists, so `fromSize` is the one to fill a word at a time.
 -}
 emptyWithSize : Int -> BitSet
 emptyWithSize nBits =
@@ -50,17 +84,23 @@ emptyWithSize nBits =
     }
 
 
+{-| Returns the index of the word that holds the bit for `bitIndex`.
+-}
 wordIndex : Int -> Int
 wordIndex bitIndex =
     bitIndex // wordSize
 
 
+{-| Returns the position of the bit for `bitIndex` within its word, from 0 for
+the least significant bit to 31.
+-}
 bitOffset : Int -> Int
 bitOffset bitIndex =
     bitIndex |> modBy wordSize
 
 
-{-| Test whether a bit is set.
+{-| Returns whether `bitIndex` is a member of `set`. An integer outside the
+capacity, or one whose word has not been allocated, is not a member.
 -}
 member : Int -> BitSet -> Bool
 member bitIndex set =
@@ -76,26 +116,26 @@ member bitIndex set =
                 Bitwise.and (Bitwise.shiftRightZfBy (bitOffset bitIndex) word) 1 /= 0
 
 
-{-| How many bits are set.
-
-Computed on demand in O(words) rather than maintained as a counter, so callers
-that never ask pay nothing on `insert`/`remove` — the usual reason a bit set
-does not carry a cardinality field.
-
+{-| Returns the number of bits set among the low 32 bits of each word of `set`,
+by counting the bits of every word on each call. This is the number of members,
+unless bits at or beyond the capacity have been stored, as `setWord` allows:
+those are counted here although `member` reports them absent.
 -}
 count : BitSet -> Int
 count set =
     Array.foldl (\word n -> n + popcount32 word) 0 set.words
 
 
-{-| Population count of one 32-bit word, by the standard SWAR halving.
+{-| Returns the number of set bits among the low 32 bits of `word`.
 
-Deliberately multiply-free: the usual `* 0x01010101` horizontal sum needs 32-bit
-wraparound to be correct. Every step here is `and`/`add`/`shiftRightZfBy` on a
-value below 2^31, which reads the same whether `Int` is a 32-bit JS integer or a
-native 64-bit one. `insert` can leave a word negative on the JS backend (bit 31
-set), and that is fine: the first `Bitwise.and` re-normalizes the pattern before
-any value escapes.
+It counts in parallel within the word: first the bits of each 2-bit field, then
+of each 4-bit field, then of each byte, then adds the four byte counts. The
+common last step, a multiplication by `0x01010101`, relies on the product
+wrapping at 32 bits, which a 64-bit native `Int` does not do, so the bytes are
+added with shifts instead. On the JavaScript back end a word with bit 31 set may
+be negative, and then so is `pairs`; the `Bitwise` functions read each as the same
+32-bit pattern, and every later intermediate stays below 2^31, so the count is
+the same on both back ends.
 
 -}
 popcount32 : Int -> Int
@@ -117,6 +157,9 @@ popcount32 word =
     Bitwise.and (halves + Bitwise.shiftRightZfBy 16 halves) 0x3F
 
 
+{-| Returns `set` with zero words appended, if it needs them, so that the word at
+index `wIdx` exists. The capacity is not changed.
+-}
 ensureWord : Int -> BitSet -> BitSet
 ensureWord wIdx set =
     let
@@ -130,7 +173,12 @@ ensureWord wIdx set =
         { set | words = Array.append set.words (Array.repeat (wIdx + 1 - len) 0) }
 
 
-{-| Set a bit. The index must be within the allocated size.
+{-| Adds `bitIndex` to `set`, allocating words up to the one that holds it.
+
+An integer outside the capacity, that is one not in the range
+`0 <= bitIndex < size`, is ignored and the set returned unchanged; nothing
+reports it. `insertGrowing` raises the capacity instead.
+
 -}
 insert : Int -> BitSet -> BitSet
 insert bitIndex set0 =
@@ -156,8 +204,9 @@ insert bitIndex set0 =
                 { set | words = Array.set wIndex (Bitwise.or word mask) set.words }
 
 
-{-| Clear a bit. The index must be within the allocated size; clearing an index
-outside it is a no-op, since it is already absent.
+{-| Removes `bitIndex` from `set`. An integer outside the capacity is ignored,
+as it cannot be a member. Like `insert`, it allocates words up to the one that
+holds the bit, even when that bit was already clear.
 -}
 remove : Int -> BitSet -> BitSet
 remove bitIndex set0 =
@@ -183,8 +232,9 @@ remove bitIndex set0 =
                 { set | words = Array.set wIndex (Bitwise.and word (Bitwise.complement mask)) set.words }
 
 
-{-| Grow the BitSet so that `bitIndex` is a valid index, then insert.
-Useful when the maximum index is not known ahead of time.
+{-| Adds `bitIndex` to `set`, first raising the capacity, if it does not already
+cover `bitIndex`, to the smallest multiple of 64 above it. A negative
+`bitIndex` is ignored.
 -}
 insertGrowing : Int -> BitSet -> BitSet
 insertGrowing bitIndex set =
@@ -195,8 +245,9 @@ insertGrowing bitIndex set =
         insert bitIndex (growTo bitIndex set)
 
 
-{-| Grow the BitSet so that `bitIndex` is a valid index, then remove.
-Useful when the maximum index is not known ahead of time.
+{-| Removes `bitIndex` from `set`, first raising the capacity as `insertGrowing`
+does. The capacity is raised even though an integer beyond it cannot have been
+a member. A negative `bitIndex` is ignored.
 -}
 removeGrowing : Int -> BitSet -> BitSet
 removeGrowing bitIndex set =
@@ -207,8 +258,11 @@ removeGrowing bitIndex set =
         remove bitIndex (growTo bitIndex set)
 
 
-{-| Ensure the BitSet is large enough to hold the given bit index.
-Grows by rounding up to the next multiple of 64 bits for amortization.
+{-| Returns `set` with a capacity that covers `bitIndex`. A set that already
+covers it is returned unchanged. Otherwise the capacity becomes the smallest
+multiple of 64 above `bitIndex`, so that integers arriving in increasing order
+raise it once per 64 rather than once each, and words are allocated for the
+whole new capacity.
 -}
 growTo : Int -> BitSet -> BitSet
 growTo bitIndex set =
@@ -239,7 +293,17 @@ growTo bitIndex set =
         }
 
 
-{-| Replace an entire 32-bit word at the given word index.
+{-| Replaces the word at index `wIndex` with `newWord`, setting membership for
+the 32 integers from `32 * wIndex` at once: bit `i` of `newWord` stands for
+`32 * wIndex + i`.
+
+Only an allocated word is replaced. A `wIndex` beyond the allocated words leaves
+the set unchanged, which for a set from `emptyWithSize` is every `wIndex` until
+some other call has allocated that word. `newWord` is not checked against the
+capacity: bits it sets for integers at or beyond `size` are stored, and `count`
+counts them although `member` reports them absent. `member` and `count` ignore
+bits above 31.
+
 -}
 setWord : Int -> Int -> BitSet -> BitSet
 setWord wIndex newWord set =

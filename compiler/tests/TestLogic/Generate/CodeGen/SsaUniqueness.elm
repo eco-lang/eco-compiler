@@ -1,13 +1,31 @@
 module TestLogic.Generate.CodeGen.SsaUniqueness exposing (expectSsaUniqueness)
 
-{-| Test logic for SSA uniqueness invariant.
+{-| Generated MLIR must not define a name that is already visible where the
+definition is made, and this module is the check for that rule.
 
-Every SSA variable must be defined at most once within its scope.
-In MLIR, non-isolated regions (like eco.case alternatives) share the parent's
-SSA namespace. This means a variable defined in a parent scope MUST NOT be
-redefined inside an eco.case alternative.
+In MLIR each value is an _SSA value_: it is defined once, as a block argument or
+an op result, and is referred to by its name. The regions of a `func.func` are
+_isolated_: names from outside are not visible in them. The regions of many
+other ops, such as the alternatives of an `eco.case`, are not isolated: the
+names defined before the op that holds them are visible inside, so defining one
+of those names again inside the region is a redefinition. This check treats the
+regions of every op other than `func.func` as not isolated.
 
-func.func regions are isolated (define their own scope).
+`expectSsaUniqueness` compiles a source module with
+`TestLogic.TestPipeline.runToMlir` and checks the first region of each
+top-level `func.func`, starting from no names. Within a block the names are
+collected in order: the block's arguments, then the results of each op in its
+body, then the results of its terminator. An op result whose name has already
+been collected is a violation. An op's own regions are checked against the
+names collected up to and including that op's results, and the names defined
+inside them are not visible to the ops that follow.
+
+Among what is not checked: a block argument that repeats a visible name; a name
+defined in two blocks of the same region, because each block starts from the
+names of the enclosing scope only; a name defined in two sibling regions; the
+regions of a `func.func` nested inside another op, which are skipped rather than
+checked as a scope of their own; and any region of a `func.func` after the
+first.
 
 @docs expectSsaUniqueness
 
@@ -28,7 +46,17 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that SSA uniqueness holds for a source module.
+{-| Compiles `srcModule` to MLIR and returns an expectation that passes when no
+top-level function in it redefines a visible SSA name, under the rules in the
+module docstring.
+
+If `runToMlir` returns `Err`, the expectation fails with a message that starts
+`Compilation failed:` and ends with the pipeline's message. Otherwise a failure
+shows only the first violation, as
+`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes. A
+violation's own message reads `SSA redefinition of '<name>' in function <f>`,
+where `<f>` is the function's `sym_name`, or its op id if it has none.
+
 -}
 expectSsaUniqueness : Src.Module -> Expectation
 expectSsaUniqueness srcModule =
@@ -40,7 +68,8 @@ expectSsaUniqueness srcModule =
             violationsToExpectation (checkSsaUniqueness mlirModule)
 
 
-{-| Check SSA uniqueness across the module.
+{-| Returns the redefinitions found in the top-level `func.func` ops of
+`mlirModule`, function by function.
 -}
 checkSsaUniqueness : MlirModule -> List Violation
 checkSsaUniqueness mlirModule =
@@ -51,8 +80,9 @@ checkSsaUniqueness mlirModule =
     List.concatMap checkFunction funcOps
 
 
-{-| Check SSA uniqueness within a single function.
-func.func has an isolated region, so each function has its own SSA scope.
+{-| Returns the redefinitions in the first region of `funcOp`, starting from no
+visible names, because a `func.func` region is isolated. A function with no
+region gives none, and any region after the first is not checked.
 -}
 checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
@@ -68,9 +98,12 @@ checkFunction funcOp =
             checkRegionSsa funcName Set.empty region
 
 
-{-| Check SSA uniqueness in a region, given the set of SSA vars already
-defined in parent scopes. Non-isolated regions (like eco.case alternatives)
-inherit the parent's SSA namespace.
+{-| Returns the redefinitions in each block of a region, entry block first,
+given the names `parentDefs` visible from the enclosing scopes.
+
+Every block is checked against `parentDefs` alone, so a name defined in one
+block is not visible when another block of the region is checked.
+
 -}
 checkRegionSsa : String -> Set String -> MlirRegion -> List Violation
 checkRegionSsa funcName parentDefs (MlirRegion { entry, blocks }) =
@@ -81,16 +114,20 @@ checkRegionSsa funcName parentDefs (MlirRegion { entry, blocks }) =
     List.concatMap (checkBlockSsa funcName parentDefs) allBlocks
 
 
-{-| Check SSA uniqueness in a block, given already-defined vars from parent scopes.
+{-| Returns the redefinitions in `block`, given the names `parentDefs` visible
+from the enclosing scopes.
+
+The block's arguments are added to the visible names without being checked.
+Each op of the body, and then the terminator, is checked against the names
+defined before it.
+
 -}
 checkBlockSsa : String -> Set String -> MlirBlock -> List Violation
 checkBlockSsa funcName parentDefs block =
     let
-        -- Block arguments also define SSA vars
         argDefs =
             List.foldl (\( name, _ ) acc -> Set.insert name acc) parentDefs block.args
 
-        -- Check body ops and accumulate definitions
         ( bodyViolations, defsAfterBody ) =
             List.foldl
                 (\op ( accViolations, accDefs ) ->
@@ -103,20 +140,26 @@ checkBlockSsa funcName parentDefs block =
                 ( [], argDefs )
                 block.body
 
-        -- Check terminator
         ( termViolations, _ ) =
             checkOpSsa funcName defsAfterBody block.terminator
     in
     bodyViolations ++ termViolations
 
 
-{-| Check an op for SSA redefinitions and recurse into non-isolated regions.
-Returns violations and the updated set of defined vars.
+{-| Checks `op` against the visible names `defs`, returning the redefinitions
+found and `defs` extended with the op's results.
+
+A result whose name is already visible, including one repeated earlier in the
+same op's results, is a violation on `op` with the message
+`SSA redefinition of '<name>' in function <funcName>`. The op's regions are
+then checked against the extended names, except that the regions of a
+`func.func` are skipped. Names defined inside the regions are not in the
+returned set.
+
 -}
 checkOpSsa : String -> Set String -> MlirOp -> ( List Violation, Set String )
 checkOpSsa funcName defs op =
     let
-        -- Check result definitions
         ( resultViolations, defsWithResults ) =
             List.foldl
                 (\( varName, _ ) ( accViolations, accDefs ) ->
@@ -139,21 +182,19 @@ checkOpSsa funcName defs op =
                 ( [], defs )
                 op.results
 
-        -- Check non-isolated regions (eco.case, scf.if, etc.)
-        -- func.func is isolated but we handle it at the top level, not here.
+        -- A nested func.func's regions are not checked: only top-level functions are walked.
         regionViolations =
             if op.name == "func.func" then
-                -- func.func has isolated regions - don't check with parent defs
                 []
 
             else
-                -- Non-isolated regions inherit the parent's SSA namespace
                 List.concatMap (checkRegionSsa funcName defsWithResults) op.regions
     in
     ( resultViolations ++ regionViolations, defsWithResults )
 
 
-{-| Get the function name from a func.func op.
+{-| Returns the `sym_name` string attribute of `op`, or its `id` if it has
+none.
 -}
 getFuncName : MlirOp -> String
 getFuncName op =

@@ -1,12 +1,51 @@
 module SourceIR.SpecializeCycleCases exposing (expectSuite, suite)
 
-{-| Test cases for cycle detection and mutual recursion in Specialize.elm.
+{-| Programs with recursive definitions, so that a stage of the compiler that
+mishandles recursion, by failing or crashing on it, makes a test fail.
 
-These tests cover:
+A _recursion group_ is a set of definitions that call one another in a cycle;
+a single function that calls itself is a group of one. The cases cover groups
+of one, two and three functions, functions of different arities in one group,
+values that use a recursive function without being part of its group, and
+_benign polymorphic cycles_: recursion groups in which a type variable is
+never fixed to a concrete type and no value of that type is ever present,
+either because the list involved is always empty or because the type is a
+phantom type whose constructor carries nothing.
 
-  - MONO\_004: All functions are callable MonoNodes
-  - Cycle functions: visitCycleNodes, insertCycleNodePlaceholders, etc.
-  - Mutual recursion: value-only and function mutual recursion
+Each case builds one `Src.Module` with `Compiler.AST.SourceBuilder`. All but
+the last use `makeModule`, which makes a module with one unannotated top-level
+value, `testValue`; their recursive functions are `let`-bound inside it, so in
+those cases the recursion is between local definitions, not top-level ones.
+Only the phantom-type case declares its mutually recursive functions at top
+level, with annotations. Each case's docstring shows its program as Elm source;
+the built tree has no `Parens` node where the source has parentheses. The
+integer literals are unannotated, so their type is `number` unless something
+fixes it.
+
+The cases only build programs; what is checked is decided by the expectation
+function they are given. `expectSuite` runs all nine against one expectation,
+inside one test that stops at the first failing case (see
+`Compiler.BulkCheck`). `suite` runs them against
+`TestLogic.TestPipeline.expectMonomorphization`, which passes when the
+program compiles through monomorphization with the substitution engine and the
+resulting graph has a `main` and at least one node. The cases are:
+
+  - two local functions that call each other (`isEven` and `isOdd`);
+  - three local functions that call one another in a ring;
+  - two mutually recursive local functions, of one argument and of two;
+  - a self-recursive local `factorial` and a local value that calls it;
+  - a self-recursive local `countdown` and two local values that call it,
+    one of them unused;
+  - two mutually recursive local functions over lists that fix neither the
+    list's element type nor their result's, applied to a list of integer
+    literals;
+  - a non-recursive local function holding a self-recursive local function;
+  - a self-recursive local list function applied only to `[]`;
+  - two mutually recursive top-level functions over a phantom type.
+
+Among what `suite` does not test: which specializations monomorphization
+produces for a recursion group, or that each function in one becomes a callable
+node; no program is evaluated.
 
 -}
 
@@ -42,6 +81,11 @@ import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
+{-| A test that runs the cases in order against `expectMonomorphization`,
+stopping at the first that fails. A case passes when its program compiles
+through monomorphization with the substitution engine and the resulting graph
+has a `main` and at least one node.
+-}
 suite : Test
 suite =
     Test.describe "Specialize.elm cycle coverage"
@@ -49,7 +93,9 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
+{-| Builds one test, named `"Specialize cycles "` followed by `condStr`, that
+checks the cases in order with `expectFn`, stops at the first that fails, and
+reports that case's label.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
@@ -57,6 +103,9 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns all nine cases, each checked with `expectFn`, group by group in the
+order of this file.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     List.concat
@@ -73,6 +122,9 @@ testCases expectFn =
 -- ============================================================================
 
 
+{-| Returns the three cases whose local functions call one another, each
+checked with `expectFn`.
+-}
 mutualRecursionCases : (Src.Module -> Expectation) -> List TestCase
 mutualRecursionCases expectFn =
     [ { label = "Two mutually recursive functions (isEven/isOdd)", run = twoMutuallyRecursiveFns expectFn }
@@ -81,13 +133,31 @@ mutualRecursionCases expectFn =
     ]
 
 
-{-| Classic isEven/isOdd mutual recursion pattern.
-Tests visitCycleNodes and insertCycleNodePlaceholders.
+{-| Applies `expectFn` to a program in which two local functions call each
+other:
+
+    testValue =
+        let
+            isEven n =
+                if n == 0 then
+                    True
+
+                else
+                    isOdd (n - 1)
+
+            isOdd n =
+                if n == 0 then
+                    False
+
+                else
+                    isEven (n - 1)
+        in
+        isEven 10
+
 -}
 twoMutuallyRecursiveFns : (Src.Module -> Expectation) -> (() -> Expectation)
 twoMutuallyRecursiveFns expectFn _ =
     let
-        -- isEven n = if n == 0 then True else isOdd (n - 1)
         isEven =
             define "isEven"
                 [ pVar "n" ]
@@ -99,7 +169,6 @@ twoMutuallyRecursiveFns expectFn _ =
                     )
                 )
 
-        -- isOdd n = if n == 0 then False else isEven (n - 1)
         isOdd =
             define "isOdd"
                 [ pVar "n" ]
@@ -111,7 +180,6 @@ twoMutuallyRecursiveFns expectFn _ =
                     )
                 )
 
-        -- testValue = isEven 10
         modul =
             makeModule "testValue"
                 (letExpr [ isEven, isOdd ]
@@ -121,13 +189,39 @@ twoMutuallyRecursiveFns expectFn _ =
     expectFn modul
 
 
-{-| Three functions in a cycle: A -> B -> C -> A.
-Tests handling of larger cycles.
+{-| Applies `expectFn` to a program in which three local functions call one
+another in a ring, `funcA` calling `funcB`, `funcB` calling `funcC` and
+`funcC` calling `funcA`:
+
+    testValue =
+        let
+            funcA n =
+                if n <= 0 then
+                    0
+
+                else
+                    funcB (n - 1)
+
+            funcB n =
+                if n <= 0 then
+                    1
+
+                else
+                    funcC (n - 1)
+
+            funcC n =
+                if n <= 0 then
+                    2
+
+                else
+                    funcA (n - 1)
+        in
+        funcA 10
+
 -}
 threeMutuallyRecursiveFns : (Src.Module -> Expectation) -> (() -> Expectation)
 threeMutuallyRecursiveFns expectFn _ =
     let
-        -- funcA n = if n <= 0 then 0 else funcB (n - 1)
         funcA =
             define "funcA"
                 [ pVar "n" ]
@@ -139,7 +233,6 @@ threeMutuallyRecursiveFns expectFn _ =
                     )
                 )
 
-        -- funcB n = if n <= 0 then 1 else funcC (n - 1)
         funcB =
             define "funcB"
                 [ pVar "n" ]
@@ -151,7 +244,6 @@ threeMutuallyRecursiveFns expectFn _ =
                     )
                 )
 
-        -- funcC n = if n <= 0 then 2 else funcA (n - 1)
         funcC =
             define "funcC"
                 [ pVar "n" ]
@@ -172,12 +264,31 @@ threeMutuallyRecursiveFns expectFn _ =
     expectFn modul
 
 
-{-| Mutually recursive functions with different arities.
+{-| Applies `expectFn` to a program in which a local function of one argument
+and a local function of two call each other:
+
+    testValue =
+        let
+            singleArg n =
+                if n <= 0 then
+                    0
+
+                else
+                    doubleArg n 1
+
+            doubleArg a b =
+                if a <= 0 then
+                    b
+
+                else
+                    singleArg (a - b)
+        in
+        singleArg 5
+
 -}
 mutuallyRecursiveDifferentArities : (Src.Module -> Expectation) -> (() -> Expectation)
 mutuallyRecursiveDifferentArities expectFn _ =
     let
-        -- singleArg n = if n <= 0 then 0 else doubleArg n 1
         singleArg =
             define "singleArg"
                 [ pVar "n" ]
@@ -189,7 +300,6 @@ mutuallyRecursiveDifferentArities expectFn _ =
                     )
                 )
 
-        -- doubleArg a b = if a <= 0 then b else singleArg (a - b)
         doubleArg =
             define "doubleArg"
                 [ pVar "a", pVar "b" ]
@@ -212,10 +322,14 @@ mutuallyRecursiveDifferentArities expectFn _ =
 
 
 -- ============================================================================
--- CYCLE WITH VALUES TESTS
+-- VALUES THAT USE A RECURSIVE FUNCTION
 -- ============================================================================
 
 
+{-| Returns the two cases in which local values call a self-recursive local
+function, each checked with `expectFn`. In neither is a value part of the
+recursion.
+-}
 cycleWithValuesCases : (Src.Module -> Expectation) -> List TestCase
 cycleWithValuesCases expectFn =
     [ { label = "Value depending on recursive function", run = valueWithRecursiveFunction expectFn }
@@ -223,12 +337,27 @@ cycleWithValuesCases expectFn =
     ]
 
 
-{-| A value that depends on a recursive function.
+{-| Applies `expectFn` to a program with a self-recursive local function and a
+local value that calls it:
+
+    testValue =
+        let
+            factorial n =
+                if n <= 1 then
+                    1
+
+                else
+                    n * factorial (n - 1)
+
+            result =
+                factorial 5
+        in
+        result
+
 -}
 valueWithRecursiveFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 valueWithRecursiveFunction expectFn _ =
     let
-        -- factorial n = if n <= 1 then 1 else n * factorial (n - 1)
         factorial =
             define "factorial"
                 [ pVar "n" ]
@@ -243,7 +372,6 @@ valueWithRecursiveFunction expectFn _ =
                     )
                 )
 
-        -- result = factorial 5
         result =
             define "result" [] (callExpr (varExpr "factorial") [ intExpr 5 ])
 
@@ -256,12 +384,30 @@ valueWithRecursiveFunction expectFn _ =
     expectFn modul
 
 
-{-| Multiple values in a recursive binding group.
+{-| Applies `expectFn` to a program with a self-recursive local function and
+two local values that call it, of which only `numbers` is used:
+
+    testValue =
+        let
+            countdown n =
+                if n <= 0 then
+                    []
+
+                else
+                    n :: countdown (n - 1)
+
+            numbers =
+                countdown 5
+
+            sumVal =
+                countdown 3
+        in
+        numbers
+
 -}
 multipleValuesWithRecursion : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleValuesWithRecursion expectFn _ =
     let
-        -- countdown n = if n <= 0 then [] else n :: countdown (n - 1)
         countdown =
             define "countdown"
                 [ pVar "n" ]
@@ -276,11 +422,9 @@ multipleValuesWithRecursion expectFn _ =
                     )
                 )
 
-        -- numbers = countdown 5
         numbers =
             define "numbers" [] (callExpr (varExpr "countdown") [ intExpr 5 ])
 
-        -- sum = List.foldr (+) 0 numbers (represented as simpler expression)
         sumVal =
             define "sumVal" [] (callExpr (varExpr "countdown") [ intExpr 3 ])
 
@@ -295,10 +439,14 @@ multipleValuesWithRecursion expectFn _ =
 
 
 -- ============================================================================
--- MULTI-NODE CYCLE TESTS
+-- POLYMORPHIC AND NESTED RECURSION
 -- ============================================================================
 
 
+{-| Returns two cases, each checked with `expectFn`: two mutually recursive
+local functions whose types are left polymorphic, and a self-recursive local
+function nested inside another local function.
+-}
 multiNodeCycleCases : (Src.Module -> Expectation) -> List TestCase
 multiNodeCycleCases expectFn =
     [ { label = "Cycle with polymorphic functions", run = cycleWithPolymorphicFunctions expectFn }
@@ -306,13 +454,32 @@ multiNodeCycleCases expectFn =
     ]
 
 
-{-| Cycle involving polymorphic functions.
-Tests specialization of cycles with type variables.
+{-| Applies `expectFn` to a program in which two local functions over lists
+call each other:
+
+    testValue =
+        let
+            process xs =
+                case xs of
+                    [] ->
+                        []
+
+                    nonEmpty ->
+                        transform nonEmpty
+
+            transform xs =
+                process xs
+        in
+        process [ 1, 2 ]
+
+Nothing in the two functions fixes the element type of the list they take or
+of the list they return, so both are polymorphic; `testValue` applies
+`process` to a list of integer literals.
+
 -}
 cycleWithPolymorphicFunctions : (Src.Module -> Expectation) -> (() -> Expectation)
 cycleWithPolymorphicFunctions expectFn _ =
     let
-        -- process xs = if List.isEmpty xs then [] else transform xs
         processF =
             define "process"
                 [ pVar "xs" ]
@@ -322,8 +489,6 @@ cycleWithPolymorphicFunctions expectFn _ =
                     ]
                 )
 
-        -- transform xs = process (List.drop 1 xs)
-        -- Simplified: transform xs = process xs
         transformF =
             define "transform"
                 [ pVar "xs" ]
@@ -338,12 +503,28 @@ cycleWithPolymorphicFunctions expectFn _ =
     expectFn modul
 
 
-{-| Nested cycles - cycles within cycles.
+{-| Applies `expectFn` to a program in which a self-recursive local function
+is defined inside another local function, which is not itself recursive:
+
+    testValue =
+        let
+            outer n =
+                let
+                    inner m =
+                        if m <= 0 then
+                            0
+
+                        else
+                            inner (m - 1)
+                in
+                inner n
+        in
+        outer 5
+
 -}
 nestedCycles : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedCycles expectFn _ =
     let
-        -- outer function with inner recursive let
         outerFn =
             define "outer"
                 [ pVar "n" ]
@@ -376,6 +557,9 @@ nestedCycles expectFn _ =
 -- ============================================================================
 
 
+{-| Returns the two benign polymorphic cycle cases, each checked with
+`expectFn`.
+-}
 benignCycleCases : (Src.Module -> Expectation) -> List TestCase
 benignCycleCases expectFn =
     [ { label = "Recursive list function with unconstrained element type", run = recursiveListUnconstrained expectFn }
@@ -383,28 +567,28 @@ benignCycleCases expectFn =
     ]
 
 
-{-| Recursive list function whose element type is never constrained.
+{-| Applies `expectFn` to a program in which a self-recursive local function
+over lists is applied only to the empty list:
 
-    process : List a -> List a
-    process xs =
-        case xs of
-            [] ->
-                []
+    testValue =
+        let
+            process xs =
+                case xs of
+                    [] ->
+                        []
 
-            _ :: rest ->
-                process rest
-
-    main =
+                    _ :: rest ->
+                        process rest
+        in
         process []
 
-The type variable `a` is never unified with any concrete type.
-This is a benign polymorphic cycle: `a` never affects layout or behaviour.
+Nothing in the program fixes the element type of either list, and no element
+ever exists, so this is a benign polymorphic cycle.
 
 -}
 recursiveListUnconstrained : (Src.Module -> Expectation) -> (() -> Expectation)
 recursiveListUnconstrained expectFn _ =
     let
-        -- process xs = case xs of [] -> []; _ :: rest -> process rest
         processF =
             define "process"
                 [ pVar "xs" ]
@@ -425,7 +609,8 @@ recursiveListUnconstrained expectFn _ =
     expectFn modul
 
 
-{-| Mutually recursive functions over a phantom custom type.
+{-| Applies `expectFn` to a program in which two annotated top-level functions
+over a phantom type call each other:
 
     type Box a
         = Box
@@ -438,12 +623,15 @@ recursiveListUnconstrained expectFn _ =
     g x =
         f x
 
-    main =
+    testValue : Box a
+    testValue =
         f Box
 
-`Box a` is phantom: the constructor carries no payload, so `a` is never
-present at runtime. Both `f` and `g` are in a mutual recursion cycle with
-an unconstrained type variable -- a benign polymorphic cycle.
+`Box a` is a phantom type: its constructor carries nothing, so a `Box a`
+holds no value of `a`, and nothing in the program fixes `a`. This makes `f` and
+`g` a benign polymorphic cycle. Unlike the other cases, the module is built with
+`makeModuleWithTypedDefsUnionsAliases`, which imports the standard set and
+names the module `testValue`.
 
 -}
 mutualRecursionPhantomType : (Src.Module -> Expectation) -> (() -> Expectation)

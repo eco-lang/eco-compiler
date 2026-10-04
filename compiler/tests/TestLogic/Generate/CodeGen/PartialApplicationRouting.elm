@@ -1,10 +1,21 @@
 module TestLogic.Generate.CodeGen.PartialApplicationRouting exposing (expectPartialApplicationRouting)
 
-{-| Test logic for CGEN\_002: Partial Applications Through Closure Generation.
+{-| A call that supplies fewer arguments than its function takes must build a
+closure (`eco.papCreate`) or add arguments to one (`eco.papExtend`), not be
+emitted as an `eco.call`. This module is meant to catch an `eco.call` that
+does so.
 
-When a call produces a function-typed result (partial application), it must
-go through eco.papCreate/eco.papExtend, not eco.call. eco.call should only
-produce non-function results (fully saturated calls).
+`expectPartialApplicationRouting` compiles a program to MLIR and reports each
+`eco.call` with exactly one result whose type is an MLIR `FunctionType`.
+
+The check cannot tell an under-saturated call from a saturated call that
+returns a function, but in practice neither is reported: the code generator
+gives a function value the type `!eco.value` (`Compiler.Generate.MLIR.Types`),
+so an `eco.call` that returns a function has an `!eco.value` result. As things
+stand `expectPartialApplicationRouting` passes whenever compilation succeeds.
+
+Among what is not tested: calls with no result or several results, and whether
+an `eco.call` supplies as many arguments as its callee takes.
 
 @docs expectPartialApplicationRouting
 
@@ -23,7 +34,13 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that partial applications are routed through closure generation.
+{-| Returns an expectation that passes when `srcModule` compiles to MLIR with
+`runToMlir` and no single-result `eco.call` in the result has a `FunctionType`
+result.
+
+A failed compilation fails with its error. Otherwise only the first violation
+found is reported, as `violationsToExpectation` describes.
+
 -}
 expectPartialApplicationRouting : Src.Module -> Expectation
 expectPartialApplicationRouting srcModule =
@@ -35,15 +52,8 @@ expectPartialApplicationRouting srcModule =
             violationsToExpectation (checkPartialApplicationRouting mlirModule)
 
 
-{-| Check that eco.call never produces function-typed results.
-
-CGEN\_002: Partial applications must go through eco.papCreate/papExtend.
-
-Note: This checks that eco.call results are not function types. If a function
-returns another function as its result (not a partial application), the callee
-itself returns a closure, which is fine. This test catches cases where
-generateCall incorrectly emits eco.call for undersaturated calls.
-
+{-| Returns a violation for each `eco.call` op in `mlirModule`, at any depth,
+that has a single result of `FunctionType`.
 -}
 checkPartialApplicationRouting : MlirModule -> List Violation
 checkPartialApplicationRouting mlirModule =
@@ -54,7 +64,8 @@ checkPartialApplicationRouting mlirModule =
     List.filterMap checkCallResultType callOps
 
 
-{-| Check a single eco.call for function-typed result.
+{-| Returns a violation if `op` has exactly one result and its type is a
+`FunctionType`. An op with no result or several results is not checked.
 -}
 checkCallResultType : MlirOp -> Maybe Violation
 checkCallResultType op =
@@ -75,11 +86,10 @@ checkCallResultType op =
                 Nothing
 
         _ ->
-            -- Malformed or no-result call, skip
             Nothing
 
 
-{-| Check if a type is a function type.
+{-| Returns whether `t` is an MLIR `FunctionType`.
 -}
 isFunctionType : MlirType -> Bool
 isFunctionType t =
@@ -91,6 +101,9 @@ isFunctionType t =
             False
 
 
+{-| Returns `t` written in the style of MLIR's textual syntax, for a violation
+message. A named struct prints with a leading `!`, as in `!eco.value`.
+-}
 typeToString : MlirType -> String
 typeToString t =
     case t of

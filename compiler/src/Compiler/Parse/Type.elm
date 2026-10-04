@@ -3,11 +3,33 @@ module Compiler.Parse.Type exposing
     , variant
     )
 
-{-| Parser for type annotations and type declarations in Elm.
+{-| Type annotations, alias bodies, port types and the variants of custom types
+are all written in Elm's type syntax, and this module parses that syntax into
+`Compiler.AST.Source` types.
 
-This module parses type expressions including type variables, type constructors,
-function types, tuple types, record types, and extensible record types. It also
-handles parsing type constructor variants for custom type declarations.
+A type is built from _terms_ and two ways of combining them. A term is a type
+that needs no parentheses to be an argument: a type variable, a type name with
+no arguments, `()`, a parenthesised type, a tuple, or a record. A _type
+application_ is a type name, possibly qualified, followed by argument terms.
+An arrow joins a term or application on its left to a whole type on its right,
+so `a -> b -> c` is `a -> (b -> c)`. A type name with arguments is always
+parsed as an application, and a type name met as an argument is a term with no
+arguments of its own, which is why `Maybe List a` gives `Maybe` two arguments.
+
+Two facts about the source shape most of the file. First, layout: each argument
+of an application, and an arrow after a type, belongs to the type only when it
+is indented past the current indentation column, as `Space.checkIndent`
+decides. That is how a type annotation ends where the next declaration begins
+in column 1. Second, comments: the formatter has to put back every comment
+between the tokens of a type, so every gap is read with `Space.chomp` and its
+comments are stored in the surrounding `C1`, `C2` or `C2Eol` group. Which gap
+each group holds is decided here, site by site, and the end-of-line slot of a
+`C2Eol` is always `Nothing`.
+
+A parenthesised single type with no comments inside its parentheses is
+returned as the inner type itself, with no `Src.TParens` node; one with
+comments becomes `Src.TParens`. Tuples of any length of two or more are
+accepted; their arity is not limited here.
 
 
 # Type Expressions
@@ -34,6 +56,14 @@ import Compiler.Reporting.Error.Syntax as E
 -- ====== TYPE TERMS ======
 
 
+{-| A parser for one term: a type name with no arguments, a type variable, `()`,
+a parenthesised type or tuple, or a record or extensible record type.
+
+An extensible record must have at least one field after the `|`. In a record,
+the first field's comments after `{` are kept with the field, or, in an
+extensible record, with the extended variable's name.
+
+-}
 term : P.Parser E.Type Src.Type
 term =
     P.getPosition
@@ -159,17 +189,15 @@ term =
 -- ====== TYPE EXPRESSIONS ======
 
 
-{-| Parse a type expression including function types, type applications, and type terms.
+{-| Produces a parser for a whole type: a type application or a term, followed
+by any number of `->` and further types, each arrow grouping to the right.
 
-Handles parsing of complete type expressions such as:
-
-  - Simple types: `Int`, `String`, `Maybe a`
-  - Function types: `Int -> String`, `a -> b -> c`
-  - Type applications: `List Int`, `Dict String Value`
-  - Tuples: `(Int, String)`, `(a, b, c)`
-  - Records: `{ x : Int, y : Int }`, `{ a | x : Int }`
-
-Returns a tuple containing the parsed type with comments and the end position.
+The result's comment group holds `trailingComments` first, which the caller
+has already read before the type, then the comments read after the type, and
+`Nothing` for the end-of-line comment. The position returned with it is where
+the type ends, before those comments after it. An arrow is taken only when it
+is indented past the current indentation column; otherwise the type ends
+before it.
 
 -}
 expression : Src.FComments -> Space.Parser E.Type (Src.C2Eol Src.Type)
@@ -193,11 +221,9 @@ expression trailingComments =
                     |> P.andThen
                         (\( ( postTipe1comments, tipe1 ), end1 ) ->
                             P.oneOfWithFallback
-                                [ -- should never trigger
-                                  Space.checkIndent end1 E.TIndentStart
+                                [ Space.checkIndent end1 E.TIndentStart
                                     |> P.andThen
                                         (\_ ->
-                                            -- could just be another type instead
                                             P.word2 '-' '>' E.TStart
                                                 |> P.andThen
                                                     (\_ ->
@@ -227,6 +253,15 @@ expression trailingComments =
 -- ====== TYPE CONSTRUCTORS ======
 
 
+{-| Produces a parser for a type name, possibly qualified, and its argument
+terms, where `start` is where the name begins.
+
+The result's comments are those read after the last argument, or after the
+name when there are none. The `Src.TType` or `Src.TTypeQual` node carries the
+region of the name alone, while its located wrapper spans from `start` to the
+end of the last argument.
+
+-}
 app : A.Position -> Space.Parser E.Type (Src.C1 Src.Type)
 app start =
     Var.foreignUpper E.TStart
@@ -262,6 +297,17 @@ app start =
             )
 
 
+{-| Produces a parser that reads argument terms for as long as each starts
+indented past the current indentation column, where `args` holds the
+arguments already read, in reverse order, and returns all of them in source
+order.
+
+`preComments` are the comments already read before the next argument and `end`
+is where the previous token ended. Each argument is paired with the comments
+before it, and the comments read after the last one are returned with the list,
+along with the end of the last argument, or `end` when there is none.
+
+-}
 chompArgs : Src.FComments -> List (Src.C1 Src.Type) -> A.Position -> Space.Parser E.Type (Src.C1 (List (Src.C1 Src.Type)))
 chompArgs preComments args end =
     P.oneOfWithFallback
@@ -290,6 +336,15 @@ chompArgs preComments args end =
 -- ====== TUPLES ======
 
 
+{-| Produces a parser for the rest of a parenthesised type after its first
+entry, up to and including the `)`, where `start` is the position of the `(`
+and `revTypes` holds the later entries already read, in reverse order.
+
+With no later entries, the result is the first type itself when no comments
+were read after the `(` or before the `)`, and `Src.TParens` otherwise. With
+one or more, it is a `Src.TTuple`.
+
+-}
 chompTupleEnd : A.Position -> Src.C2Eol Src.Type -> List (Src.C2Eol Src.Type) -> P.Parser E.TTuple Src.Type
 chompTupleEnd start ( firstTimeComments, firstType ) revTypes =
     P.oneOf E.TTupleEnd
@@ -333,10 +388,24 @@ chompTupleEnd start ( firstTimeComments, firstType ) revTypes =
 -- ====== RECORD ======
 
 
+{-| One field of a record type: its name, and its type.
+
+The name's comments are those after the name, before the `:`, and the type's
+comments are those after the `:`, before the type.
+
+-}
 type alias Field =
     ( Src.C1 (A.Located Name), Src.C1 Src.Type )
 
 
+{-| Produces a parser for the rest of a record type, up to and including the `}`,
+where `fields` holds the fields already read, in reverse order.
+
+`comments` are those read after the previous field's type. Each further field
+is paired with the comments before its comma and those after it, and the
+result is the fields in source order with the comments before the `}`.
+
+-}
 chompRecordEnd : Src.FComments -> List (Src.C2 Field) -> P.Parser E.TRecord (Src.C1 (List (Src.C2 Field)))
 chompRecordEnd comments fields =
     P.oneOf E.TRecordEnd
@@ -358,6 +427,9 @@ chompRecordEnd comments fields =
         ]
 
 
+{-| A parser for one `name : type` field of a record type, returned with the
+comments read after its type.
+-}
 chompField : P.Parser E.TRecord (Src.C1 Field)
 chompField =
     P.addLocation (Var.lower E.TRecordField)
@@ -388,20 +460,14 @@ chompField =
 -- ====== VARIANT ======
 
 
-{-| Parse a custom type variant declaration.
+{-| Produces a parser for one variant of a custom type: an unqualified
+constructor name followed by its argument terms, each indented past the
+current indentation column.
 
-Parses variant constructors in custom type definitions, handling:
-
-  - Constructor name (must be uppercase)
-  - Optional type arguments
-
-Examples:
-
-  - `Nothing` (no arguments)
-  - `Just a` (one argument)
-  - `Node a (Tree a) (Tree a)` (multiple arguments)
-
-Returns the variant constructor name and its type arguments with associated comments.
+The result's comment group holds `trailingComments`, which the caller has
+already read before the variant, then the comments read after the last
+argument (or after the name), and `Nothing` for the end-of-line comment. Each
+argument is paired with the comments before it.
 
 -}
 variant : Src.FComments -> Space.Parser E.CustomType (Src.C2Eol ( A.Located Name, List (Src.C1 Src.Type) ))

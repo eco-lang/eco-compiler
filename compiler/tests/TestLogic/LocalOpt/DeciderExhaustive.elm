@@ -3,15 +3,35 @@ module TestLogic.LocalOpt.DeciderExhaustive exposing
     , expectDeciderNoNestedPatterns
     )
 
-{-| Test logic for invariant TOPT\_002: Decider trees are exhaustive with no nested patterns.
+{-| Checks meant to show that the typed optimizer turns every `case` into a
+decision tree that covers every value and whose tests need no nested matching.
+As written, neither check can fail once the module has compiled: each passes
+whenever `TestLogic.TestPipeline.runToTypedOpt` returns `Ok`.
 
-Examine the Decider data structure in TypedOptimized.Case:
+In the typed optimized IR (`Compiler.AST.TypedOptimized`) a `case` holds a
+_decider_, a tree of tests on the value being matched. A `Leaf` holds the
+chosen branch, either inline or as the number of a branch kept beside the tree.
+A `Chain` runs a list of tests, each at a _path_, and continues in one subtree
+if all of them pass and in the other if not. A `FanOut` switches on the value at
+one path, with a subtree per test and a fallback subtree. A path is the steps
+from the matched value to a part of it (`Compiler.AST.DecisionTree.TypedPath`),
+so a nested pattern becomes tests at longer paths.
 
-  - Verify each leaf or FanOut completely covers remaining cases without overlap.
-  - Assert no Path contains PCtorArg/PListCons etc. that would require nested matching.
+Both expectations take one source module, run it to typed optimization, fail
+with the pipeline's message if that returns `Err`, and otherwise walk every
+decider they reach in the module's local graph:
 
-This module reuses the existing typed optimization pipeline to verify
-decision trees are properly compiled.
+  - `expectDeciderNoNestedPatterns` hands every path tested at a `Chain` or
+    `FanOut` to a check meant to reject a path that needs nested matching. That
+    check returns no failure for any path.
+  - `expectDeciderComplete` is meant to reject a decider that leaves some value
+    unmatched. Its walk recurses through `Chain` and `FanOut` and returns no
+    failure at a `Leaf`, so no decider can fail it.
+
+Among what is not tested: whether any decider covers every value, or whether
+two of its tests overlap; anything about the paths; and a `case` nested in a
+branch held inline in a `Leaf`, or in the body of a value of a recursive group
+(the second field of a `Cycle` node), which the walks do not enter.
 
 -}
 
@@ -27,7 +47,12 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| TOPT\_002: Verify decision trees have no nested patterns.
+{-| Runs `srcModule` to typed optimization and hands the paths tested by the
+deciders it reaches to a check for nested matching. A `case` inside a branch
+held inline in a `Leaf`, or in a value body of a `Cycle`, is not reached. The
+path check finds nothing in any path, so this passes whenever
+`TestLogic.TestPipeline.runToTypedOpt` returns `Ok`, and fails with the
+pipeline's message when it returns `Err`.
 -}
 expectDeciderNoNestedPatterns : Src.Module -> Expect.Expectation
 expectDeciderNoNestedPatterns srcModule =
@@ -48,7 +73,12 @@ expectDeciderNoNestedPatterns srcModule =
                     Expect.all checks ()
 
 
-{-| TOPT\_002: Verify decision trees are complete (exhaustive).
+{-| Runs `srcModule` to typed optimization and walks the deciders it reaches
+to check that each covers every value. A `case` inside a branch held inline in
+a `Leaf`, or in a value body of a `Cycle`, is not reached. The walk reports
+nothing for any decider, so this passes whenever
+`TestLogic.TestPipeline.runToTypedOpt` returns `Ok`, and fails with the
+pipeline's message when it returns `Err`.
 -}
 expectDeciderComplete : Src.Module -> Expect.Expectation
 expectDeciderComplete srcModule =
@@ -71,11 +101,13 @@ expectDeciderComplete srcModule =
 
 
 -- ============================================================================
--- NESTED PATTERN VERIFICATION
+-- NESTED PATTERNS
 -- ============================================================================
 
 
-{-| Collect nested pattern checks in decision trees.
+{-| Returns the nested-pattern checks of every node in the graph. Each node's
+name, from `globalToString`, is passed down as context, though no check uses
+it.
 -}
 collectNestedPatternChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectNestedPatternChecks (TOpt.LocalGraph data) =
@@ -91,7 +123,8 @@ collectNestedPatternChecks (TOpt.LocalGraph data) =
         data.nodes
 
 
-{-| Convert a Global to a string for context messages.
+{-| Returns a global as its module name and its own name joined by a dot, as
+in `Module.name`, without the package.
 -}
 globalToString : TOpt.Global -> String
 globalToString (TOpt.Global home name) =
@@ -100,7 +133,9 @@ globalToString (TOpt.Global home name) =
             moduleName ++ "." ++ name
 
 
-{-| Check for nested patterns in a node.
+{-| Returns the nested-pattern checks of one node: those of the body of a
+definition or port, or of each `Def` of a `Cycle`. A `Cycle`'s value bodies
+(its second field) and the nodes that hold no expression give none.
 -}
 checkNodeNestedPatterns : String -> TOpt.Node Name -> List (() -> Expect.Expectation)
 checkNodeNestedPatterns context node =
@@ -124,7 +159,8 @@ checkNodeNestedPatterns context node =
             []
 
 
-{-| Check Def for nested patterns.
+{-| Returns the nested-pattern checks of a definition's body, with
+`" Def <name>"` or `" TailDef <name>"` added to `context`.
 -}
 checkDefNestedPatterns : String -> TOpt.Def Name -> List (() -> Expect.Expectation)
 checkDefNestedPatterns context def =
@@ -136,13 +172,14 @@ checkDefNestedPatterns context def =
             collectExprNestedPatternIssues (context ++ " TailDef " ++ name) expr
 
 
-{-| Collect nested pattern checks from expressions.
+{-| Returns the nested-pattern checks of the deciders reached in `expr` and its
+sub-expressions. A `case` gives those of its decider and of the branches kept
+beside the decider; a branch held inline in a `Leaf` is not entered.
 -}
 collectExprNestedPatternIssues : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
 collectExprNestedPatternIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
-            -- Check the decider tree for nested patterns
             checkDeciderNestedPatterns context decider
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprNestedPatternIssues context branchExpr) branches
 
@@ -195,21 +232,17 @@ collectExprNestedPatternIssues context expr =
             []
 
 
-{-| Check a decider tree for nested patterns.
-
-Nested patterns would be indicated by Path values that descend into
-constructor arguments or list elements in a way that requires nested matching.
-
+{-| Returns `checkPathForNesting`'s checks for every path tested in `decider`,
+at each `Chain` and `FanOut`. A `Leaf` gives none, and a branch held inline in
+it is not entered.
 -}
 checkDeciderNestedPatterns : String -> TOpt.Decider (TOpt.Choice Name) -> List (() -> Expect.Expectation)
 checkDeciderNestedPatterns context decider =
     case decider of
         TOpt.Leaf _ ->
-            -- Leaf nodes have no patterns to check
             []
 
         TOpt.Chain tests success failure ->
-            -- Chain nodes: check the paths in tests
             let
                 pathIssues =
                     List.concatMap (\( path, _ ) -> checkPathForNesting context path) tests
@@ -219,35 +252,28 @@ checkDeciderNestedPatterns context decider =
                 ++ checkDeciderNestedPatterns context failure
 
         TOpt.FanOut path tests fallback ->
-            -- FanOut nodes: check the path and recurse into tests
             checkPathForNesting context path
                 ++ List.concatMap (\( _, subDecider ) -> checkDeciderNestedPatterns context subDecider) tests
                 ++ checkDeciderNestedPatterns context fallback
 
 
-{-| Check a path for nested pattern indicators.
-
-The Path type in TypedOptimized uses simple indexing (Index, Field, etc.)
-which represents flat destructuring. True nested patterns would require
-complex path operations that don't exist in the flat representation.
-
+{-| Returns the checks for one decider path: none, whatever the path. Both
+arguments are ignored, so no path can make `expectDeciderNoNestedPatterns`
+fail.
 -}
 checkPathForNesting : String -> DT.Path -> List (() -> Expect.Expectation)
 checkPathForNesting _ _ =
-    -- In the TypedOptimized representation, paths are already flattened.
-    -- The decision tree compilation process ensures patterns are compiled
-    -- to flat bindings with simple index/field access.
-    -- We verify this by checking that the decider structure is valid.
     []
 
 
 
 -- ============================================================================
--- EXHAUSTIVENESS VERIFICATION
+-- EXHAUSTIVENESS
 -- ============================================================================
 
 
-{-| Collect exhaustiveness checks from the local graph.
+{-| Returns the coverage checks of every node in the graph. Each node's name,
+from `globalToString`, is passed down as context, though no check uses it.
 -}
 collectExhaustivenessChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectExhaustivenessChecks (TOpt.LocalGraph data) =
@@ -263,7 +289,9 @@ collectExhaustivenessChecks (TOpt.LocalGraph data) =
         data.nodes
 
 
-{-| Check exhaustiveness for a node.
+{-| Returns the coverage checks of one node: those of the body of a definition
+or port, or of each `Def` of a `Cycle`. A `Cycle`'s value bodies (its second
+field) and the nodes that hold no expression give none.
 -}
 checkNodeExhaustiveness : String -> TOpt.Node Name -> List (() -> Expect.Expectation)
 checkNodeExhaustiveness context node =
@@ -287,7 +315,8 @@ checkNodeExhaustiveness context node =
             []
 
 
-{-| Check Def for exhaustiveness.
+{-| Returns the coverage checks of a definition's body, with `" Def <name>"`
+or `" TailDef <name>"` added to `context`.
 -}
 checkDefExhaustiveness : String -> TOpt.Def Name -> List (() -> Expect.Expectation)
 checkDefExhaustiveness context def =
@@ -299,13 +328,14 @@ checkDefExhaustiveness context def =
             collectExprExhaustivenessIssues (context ++ " TailDef " ++ name) expr
 
 
-{-| Collect exhaustiveness checks from expressions.
+{-| Returns the coverage checks of the deciders reached in `expr` and its
+sub-expressions. A `case` gives those of its decider and of the branches kept
+beside the decider; a branch held inline in a `Leaf` is not entered.
 -}
 collectExprExhaustivenessIssues : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
 collectExprExhaustivenessIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
-            -- Check that the decider has proper coverage
             checkDeciderExhaustiveness decider
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprExhaustivenessIssues context branchExpr) branches
 
@@ -358,28 +388,21 @@ collectExprExhaustivenessIssues context expr =
             []
 
 
-{-| Check a decider tree for exhaustiveness.
-
-A decision tree is exhaustive if:
-
-  - Every FanOut has a fallback case (or covers all constructors)
-  - All paths through the tree lead to a Leaf
-
+{-| Returns the coverage checks of `decider`: none, for any decider. It
+recurses into both subtrees of each `Chain` and into every subtree and the
+fallback of each `FanOut`, and gives no check at a `Leaf`; neither the tests nor
+the paths are looked at.
 -}
 checkDeciderExhaustiveness : TOpt.Decider (TOpt.Choice Name) -> List (() -> Expect.Expectation)
 checkDeciderExhaustiveness decider =
     case decider of
         TOpt.Leaf _ ->
-            -- Leaf is always exhaustive for its branch
             []
 
         TOpt.Chain _ success failure ->
-            -- Both branches must be exhaustive
             checkDeciderExhaustiveness success
                 ++ checkDeciderExhaustiveness failure
 
         TOpt.FanOut _ tests fallback ->
-            -- The fallback ensures exhaustiveness for any missed cases
-            -- Just verify all sub-trees are exhaustive
             List.concatMap (\( _, subDecider ) -> checkDeciderExhaustiveness subDecider) tests
                 ++ checkDeciderExhaustiveness fallback

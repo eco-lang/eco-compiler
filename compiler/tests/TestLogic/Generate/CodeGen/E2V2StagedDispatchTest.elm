@@ -1,10 +1,25 @@
 module TestLogic.Generate.CodeGen.E2V2StagedDispatchTest exposing (suite)
 
-{-| E2.7 / LSS\_014 staged stamping — activation pin.
+{-| Checks that global optimization stamps a closure call that supplies more
+arguments than the called lambda's first stage takes. When
+`Compiler.GlobalOpt.AbiCloning` declines to stamp a call, it leaves the call
+unchanged and reports no error, so without this test a lost stamp would go
+unnoticed.
 
-Fixture: a CURRIED lambda literal (`\a -> \b -> a*10 + b`, stage arities
-[1,1]) flows into a recursion-protected HOF whose body OVER-applies it:
+A _stamp_ is what `Compiler.GlobalOpt.AbiCloning` writes into the `CallInfo`
+of a call whose callee lambda-set specialization has narrowed to a single
+function value: it sets the call's `fastEvaluator` and `captureAbi`. A curried
+lambda such as `\a -> \b -> e` takes its arguments in stages, one per lambda,
+so its first stage takes one argument. A call that passes it two arguments
+_over-applies_ it. A stamp on an over-applied call is a _staged stamp_: its
+`captureAbi.paramTypes` are those of the first stage only, so the call has
+more arguments than `captureAbi.paramTypes`.
 
+The fixture is one module, run through
+`TestLogic.TestPipeline.runToGlobalOptLssOn` (the solver engine with
+lambda-set specialization on, then the inliner and global optimization):
+
+    applyStaged : (Int -> Int -> Int) -> Int -> Int -> Int
     applyStaged f n acc =
         if n <= 0 then
             acc
@@ -12,18 +27,24 @@ Fixture: a CURRIED lambda literal (`\a -> \b -> a*10 + b`, stage arities
         else
             f 10 (applyStaged f (n - 1) acc)
 
+    testValue : Int
     testValue =
         applyStaged (\a -> \b -> a * 10 + b) 2 3
 
-The site `f 10 (…)` applies 2 args over the instance's 1-param first stage —
-v1 declines it (`declinedShapeArityOver`); E2.7 stamps it (same fields as the
-exact arm, `fastPapPrefix` absent) and emission splits fast-batch-1 +
-generic remainder. NON-TAIL recursion on purpose (the E5-pin lesson: a
-tail-recursive HOF with a saturated closure-param call is H5-loopified and
-no dispatch survives).
+The call `f 10 (...)` is the over-applied site, and the curried lambda is the
+only function value passed for `f`. The recursion is deliberately not a tail
+call, so `applyStaged` is not compiled as a tail function; the inliner's
+loopification in `Compiler.GlobalOpt.MonoInlineSimplify` considers only tail
+functions.
 
-The pin asserts a stamped call whose arg count EXCEEDS its captureAbi's
-param count — the staged-stamp signature. RED before E2.7, GREEN after.
+The one test passes when some call in a node of the optimized graph has a
+`fastEvaluator`, a `captureAbi`, and more arguments than that `captureAbi`'s
+`paramTypes`. It fails when the pipeline returns an error or no call has that
+shape.
+
+Among what is not tested: that the stamped call is the `f 10 (...)` site,
+which lambda `fastEvaluator` names, the call's other `CallInfo` fields, and how
+the MLIR back end emits a staged call.
 
 -}
 
@@ -50,6 +71,10 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The module's one test: it runs `fixtureModule` through
+`Pipeline.runToGlobalOptLssOn` and passes when `hasStagedStamp` finds a staged
+stamp in the optimized graph.
+-}
 suite : Test
 suite =
     Test.describe "E2.7: staged stamp fires on an over-applied singleton"
@@ -73,22 +98,32 @@ suite =
 -- FIXTURE (DSL) -------------------------------------------------------------
 
 
+{-| The source type `Int`.
+-}
 intT : Src.Type
 intT =
     tType "Int" []
 
 
+{-| The source type `Int -> Int`, the result type of `f`'s first stage in
+`applyStaged`'s annotation.
+-}
 int1T : Src.Type
 int1T =
     tLambda intT intT
 
 
+{-| The fixture: a module named `Test` holding the annotated definitions
+`applyStaged` and `testValue`.
+-}
 fixtureModule : Src.Module
 fixtureModule =
     makeModuleWithTypedDefs "Test" [ applyStagedDef, testValueDef ]
 
 
-{-| applyStaged f n acc = if n <= 0 then acc else f 10 (applyStaged f (n-1) acc)
+{-| The definition of `applyStaged : (Int -> Int -> Int) -> Int -> Int -> Int`.
+Its else branch calls `f` with two arguments, `10` and a recursive call, so
+the recursive call is not in tail position.
 -}
 applyStagedDef : TypedDef
 applyStagedDef =
@@ -111,7 +146,8 @@ applyStagedDef =
     }
 
 
-{-| testValue = applyStaged (\\a -> \\b -> a\*10 + b) 2 3
+{-| The definition of `testValue : Int`, which calls `applyStaged` with the
+curried lambda `\a -> \b -> a * 10 + b`, then `2` and `3`.
 -}
 testValueDef : TypedDef
 testValueDef =
@@ -137,6 +173,10 @@ testValueDef =
 -- GRAPH WALK ----------------------------------------------------------------
 
 
+{-| Returns whether any node of the graph has a body containing a call for
+which `isStagedStampedCall` holds. Empty node slots and nodes with no body
+expression contribute nothing.
+-}
 hasStagedStamp : Mono.MonoGraph -> Bool
 hasStagedStamp (Mono.MonoGraph data) =
     Array.foldl
@@ -150,6 +190,11 @@ hasStagedStamp (Mono.MonoGraph data) =
         data.nodes
 
 
+{-| Returns whether `e` is a call whose `CallInfo` has a `fastEvaluator` and a
+`captureAbi`, and which has more arguments than that `captureAbi`'s
+`paramTypes`: the shape of a staged stamp. Any other expression, including a
+call missing either field, gives `False`.
+-}
 isStagedStampedCall : Mono.MonoExpr -> Bool
 isStagedStampedCall e =
     case e of
@@ -165,6 +210,9 @@ isStagedStampedCall e =
             False
 
 
+{-| Returns the body expression of a node slot: one for a define, a tail
+function or a port, and none for an empty slot or any other node.
+-}
 nodeExprs : Maybe Mono.MonoNode -> List Mono.MonoExpr
 nodeExprs maybeNode =
     case maybeNode of

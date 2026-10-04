@@ -5,16 +5,44 @@ module TestLogic.Generate.MonoLayoutIntegrity exposing
     , expectRecordTupleLayoutsComplete
     )
 
-{-| Test logic for invariants:
+{-| Expectations that a program's monomorphized graph agrees with itself about
+the shape of its records and custom types, so that a record access naming a
+field its record's type lacks, or a constructor tag out of step with
+constructor order, is reported by a test rather than left for code generation.
 
-  - MONO\_006: Record and tuple layouts capture shape completely
-  - MONO\_007: Record access matches layout metadata
-  - MONO\_013: Constructor layouts define consistent custom types
-  - MONO\_014: Structurally equivalent layouts are canonical
+The _monomorphized graph_ is the program after each polymorphic definition
+has been specialized to the types it is used at
+(`Compiler.AST.Monomorphized.MonoGraph`).
+Its `ctorShapes` table holds, for each custom type in the graph, the list of
+that type's constructors, each with a name, a runtime tag and field types.
 
-This module reuses the existing typed optimization pipeline to verify layout integrity.
-The key verification is that monomorphization succeeds - which validates that layouts
-are properly computed and used.
+Each exposed expectation takes one source module and runs it through
+`TestLogic.TestPipeline.runToMono`, so the module must meet that function's
+requirements (it must define `testValue`). Monomorphization there uses the
+substitution engine, not the solver engine a default build uses. If
+`runToMono` returns an error, the expectation fails with its message. Otherwise
+it builds a list of checks from the graph and fails if any of them fails.
+
+What the expectations establish:
+
+  - `expectRecordAccessMatchesLayout`: for each record access it visits, the
+    accessed expression has a record type and that type has the field; for
+    each record update it visits, the updated expression has a record type
+    holding every updated field.
+  - `expectCtorLayoutsConsistent`: in every `ctorShapes` entry, the
+    constructor at position `i` of the list has tag `i`. The tags come from
+    `Compiler.Data.CtorTag.effective`, which gives elm/core's
+    `Dict.RBNode_elm_builtin` a reserved tag, so a graph whose `ctorShapes`
+    holds elm/core's `Dict` type would fail this check.
+  - `expectRecordTupleLayoutsComplete`: its only tests, for a negative field
+    or element count, can never fail, so it passes whenever `runToMono`
+    succeeds.
+  - `expectLayoutsCanonical`: checks nothing beyond `runToMono` succeeding.
+
+Among what is not tested: expressions held inline in a `case`'s decision tree,
+which `expectRecordAccessMatchesLayout` does not visit, so a record access
+inside one is not checked; constructor field counts and field types; the graph
+after global optimization.
 
 -}
 
@@ -26,7 +54,13 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| MONO\_006: Verify record and tuple layouts capture shape completely.
+{-| Returns an expectation that monomorphizes `srcModule` and checks some of
+the record and tuple types in the graph.
+
+The checks applied cannot fail: they test for a record with a negative number
+of fields and a tuple with a negative number of elements. The expectation
+therefore passes exactly when `runToMono` succeeds.
+
 -}
 expectRecordTupleLayoutsComplete : Src.Module -> Expect.Expectation
 expectRecordTupleLayoutsComplete srcModule =
@@ -47,7 +81,12 @@ expectRecordTupleLayoutsComplete srcModule =
                     Expect.all checks ()
 
 
-{-| MONO\_007: Verify record access matches layout metadata.
+{-| Returns an expectation that monomorphizes `srcModule` and fails if a record
+access or record update names a field that the type of the record expression
+does not have, or is applied to an expression whose type is not a record.
+
+Expressions held inline in a `case`'s decision tree are not visited.
+
 -}
 expectRecordAccessMatchesLayout : Src.Module -> Expect.Expectation
 expectRecordAccessMatchesLayout srcModule =
@@ -68,7 +107,14 @@ expectRecordAccessMatchesLayout srcModule =
                     Expect.all checks ()
 
 
-{-| MONO\_013: Verify constructor layouts define consistent custom types.
+{-| Returns an expectation that monomorphizes `srcModule` and fails if, for any
+custom type in the graph's `ctorShapes` table, a constructor's tag differs
+from its position in that type's constructor list.
+
+Only tags are compared; field counts and field types are not checked.
+elm/core's `Dict.RBNode_elm_builtin`, which `Compiler.Data.CtorTag.effective`
+gives the reserved tag 0xFFFF, fails this check.
+
 -}
 expectCtorLayoutsConsistent : Src.Module -> Expect.Expectation
 expectCtorLayoutsConsistent srcModule =
@@ -89,7 +135,9 @@ expectCtorLayoutsConsistent srcModule =
                     Expect.all checks ()
 
 
-{-| MONO\_014: Verify structurally equivalent layouts are canonical.
+{-| Returns an expectation that monomorphizes `srcModule`. It applies no check
+of its own, so it passes exactly when `runToMono` succeeds; whether
+structurally equal layouts are shared is not tested.
 -}
 expectLayoutsCanonical : Src.Module -> Expect.Expectation
 expectLayoutsCanonical srcModule =
@@ -112,17 +160,15 @@ expectLayoutsCanonical srcModule =
 
 
 -- ============================================================================
--- MONO_006: LAYOUT COMPLETENESS
+-- RECORD AND TUPLE LAYOUT COMPLETENESS
 -- ============================================================================
 
 
-{-| Collect layout completeness checks.
+{-| Returns the layout-completeness checks for every node in the graph, each
+labelled with the node's position in the node array.
 -}
 collectLayoutCompletenessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectLayoutCompletenessChecks (Mono.MonoGraph data) =
-    -- Traverse all nodes and check that:
-    -- 1. Record types have complete RecordLayouts
-    -- 2. Tuple types have complete TupleLayouts
     Array.foldl
         (\maybeNode ( specId, acc ) ->
             case maybeNode of
@@ -137,7 +183,10 @@ collectLayoutCompletenessChecks (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Check layout completeness for a single node.
+{-| Returns the layout-completeness checks for one node, labelled with
+`specId`: those for the node's type, for the parameter types of a tail-recursive
+function, and for the types `collectExprLayoutIssues` visits in the node's
+expression.
 -}
 checkNodeLayoutCompleteness : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeLayoutCompleteness specId node =
@@ -176,14 +225,19 @@ checkNodeLayoutCompleteness specId node =
                 ++ collectExprLayoutIssues context expr
 
 
-{-| Check if a type has complete layout information.
+{-| Returns the layout-completeness checks for `monoType`, each failure message
+prefixed with `context`.
+
+A record or tuple yields a check only if it has a negative number of fields or
+elements, which cannot happen, so this always returns an empty list. It
+descends into list elements, custom-type arguments and function parameter and
+result types, but not into the fields of a record or the elements of a tuple.
+
 -}
 checkTypeLayoutComplete : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkTypeLayoutComplete context monoType =
     case monoType of
         Mono.MRecord _ fields ->
-            -- Check that record has valid shape
-            -- Since MRecord is now a Dict, we just verify it's well-formed
             if Dict.size fields < 0 then
                 [ \() -> Expect.fail (context ++ ": Record has negative field count") ]
 
@@ -191,7 +245,6 @@ checkTypeLayoutComplete context monoType =
                 []
 
         Mono.MTuple _ elementTypes ->
-            -- Check that tuple has valid shape
             if List.length elementTypes < 0 then
                 [ \() -> Expect.fail (context ++ ": Tuple has negative element count") ]
 
@@ -212,7 +265,14 @@ checkTypeLayoutComplete context monoType =
             []
 
 
-{-| Collect layout checks from expressions.
+{-| Returns the layout-completeness checks for the type of `expr` and of some
+of the expressions inside it.
+
+In a `case`, only the branches reached by jumps are visited; expressions held
+inline in the decision tree are not. The field expressions of a record
+creation, the elements of a tuple creation and the new values of a record
+update are not visited either.
+
 -}
 collectExprLayoutIssues : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprLayoutIssues context expr =
@@ -271,7 +331,8 @@ collectExprLayoutIssues context expr =
             checkTypeLayoutComplete context (Mono.typeOf expr)
 
 
-{-| Collect layout checks from a MonoDef.
+{-| Returns the layout-completeness checks for a `let` definition: its
+parameter types, if it is a tail-recursive function, and its body.
 -}
 collectDefLayoutIssues : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
 collectDefLayoutIssues context def =
@@ -286,11 +347,12 @@ collectDefLayoutIssues context def =
 
 
 -- ============================================================================
--- MONO_007: RECORD ACCESS CONSISTENCY
+-- RECORD ACCESS CONSISTENCY
 -- ============================================================================
 
 
-{-| Collect record access checks.
+{-| Returns the record access and update checks for every node in the graph,
+each labelled with the node's position in the node array.
 -}
 collectRecordAccessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectRecordAccessChecks (Mono.MonoGraph data) =
@@ -308,7 +370,8 @@ collectRecordAccessChecks (Mono.MonoGraph data) =
         |> Tuple.second
 
 
-{-| Check record access consistency for a node.
+{-| Returns the record access and update checks for the expression of one
+node, labelled with `specId`. Nodes with no expression yield none.
 -}
 checkNodeRecordAccess : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeRecordAccess specId node =
@@ -333,7 +396,13 @@ checkNodeRecordAccess specId node =
             []
 
 
-{-| Collect record access checks from expressions.
+{-| Returns a failing check, prefixed with `context`, for each record access
+or record update in `expr` whose record expression does not have a record type,
+or whose record type lacks a field that the access or update names.
+
+In a `case`, only the branches reached by jumps are visited; expressions held
+inline in the decision tree are not.
+
 -}
 collectExprRecordAccessIssues : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprRecordAccessIssues context expr =
@@ -346,7 +415,6 @@ collectExprRecordAccessIssues context expr =
                 checks =
                     case recordType of
                         Mono.MRecord _ fields ->
-                            -- Verify field exists in the record
                             case Dict.get fieldName fields of
                                 Just _ ->
                                     []
@@ -367,7 +435,6 @@ collectExprRecordAccessIssues context expr =
                 checks =
                     case recordType of
                         Mono.MRecord _ fields ->
-                            -- Verify all update field names are valid
                             List.concatMap
                                 (\( fName, _ ) ->
                                     case Dict.get fName fields of
@@ -424,7 +491,8 @@ collectExprRecordAccessIssues context expr =
             []
 
 
-{-| Collect record access checks from a MonoDef.
+{-| Returns the record access and update checks for the body of a `let`
+definition.
 -}
 collectDefRecordAccessIssues : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
 collectDefRecordAccessIssues context def =
@@ -438,17 +506,16 @@ collectDefRecordAccessIssues context def =
 
 
 -- ============================================================================
--- MONO_013: CONSTRUCTOR LAYOUT CONSISTENCY
+-- CONSTRUCTOR TAG ORDER
 -- ============================================================================
 
 
-{-| Collect constructor shape checks.
+{-| Returns a failing check for each constructor in the graph's `ctorShapes`
+whose tag differs from its position in its type's constructor list. The failure
+message gives the position and the tag but not the type.
 -}
 collectCtorLayoutChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCtorLayoutChecks (Mono.MonoGraph data) =
-    -- For each entry in ctorShapes, verify consistency:
-    -- - Constructor tags should be sequential (0, 1, 2, ...)
-    -- - Field counts should be non-negative
     Mono.layoutMapFoldl
         (\_ ctors acc ->
             acc
@@ -470,21 +537,17 @@ collectCtorLayoutChecks (Mono.MonoGraph data) =
 
 
 -- ============================================================================
--- MONO_014: LAYOUT CANONICALITY
+-- LAYOUT CANONICALITY
 -- ============================================================================
 
 
-{-| Collect layout canonicality checks.
+{-| Returns no checks, whatever the graph.
 
-Two structurally equivalent layouts should be canonical (share the same representation).
+The intended check is that structurally equal layouts share one
+representation. The graph does not expose layout identity, so nothing here
+compares layouts.
 
 -}
 collectCanonicalityChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCanonicalityChecks (Mono.MonoGraph _) =
-    -- Layout canonicality is difficult to test directly without access to
-    -- the layout identity. For now, we verify the invariant by checking that
-    -- the monomorphization completed successfully (which implies layouts are valid).
-    --
-    -- A more thorough check would require comparing layouts by structure
-    -- and verifying they produce the same code generation output.
     []

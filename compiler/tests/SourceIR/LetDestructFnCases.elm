@@ -1,18 +1,47 @@
 module SourceIR.LetDestructFnCases exposing (expectSuite)
 
-{-| Tests for destructuring let expressions where the bound value
-contains functions (lambdas, accessors, record update closures).
+{-| Source programs in which a `let` takes apart a pair of functions, such as
+`let ( get, set ) = ... in ...`, so that a pipeline stage can be checked on
+destructuring when the parts of the value taken apart are functions.
 
-These test cases target the monomorphizer's handling of LetDestruct
-when the bound expression has a type containing TLambda. The optimizer
-compiles `let (a, b) = expr` into `Let (Def "_v0" expr) (Destruct ... (Root "_v0") ...)`,
-and the monomorphizer must have "\_v0" in VarEnv when processing the
-Destruct nodes.
+Destructuring on the typed path depends on two stages agreeing about a name.
+The typed optimizer (`Compiler.LocalOpt.Typed.Expression`) turns
+`let ( a, b ) = e in body` into a `let` that binds `e` to a generated name,
+around one destructor per variable, each reading its part from that name. The
+substitution-engine monomorphizer (`Compiler.Monomorphize.Specialize`) crashes
+if that name is not in its variable environment when it reaches a destructor.
+It also treats a `let` binding that is not itself a function, but whose type
+contains one together with an unresolved type variable, differently from
+other bindings (`shouldUseValueMulti`), and a pair of functions is the kind of
+value that can have such a type.
 
-Bug scenario: When `shouldUseValueMulti` returns True (the type contains
-lambdas AND has CEcoValue type variables), the body may be processed
-before the let-bound variable is added to VarEnv, causing a crash at
-`specializePath: Root variable '_v0' not found in VarEnv`.
+The module asserts nothing itself. `expectSuite` hands each program to the
+expectation function its caller supplies, and that function decides which
+stage runs and what is checked.
+
+Each program is a module named `Test`, made with
+`makeModuleWithTypedDefsUnionsAliases`. It holds one annotated function whose
+body is the destructuring `let`, and an annotated `testValue` that calls the
+function with fixed arguments. Every `let` binds a pair pattern of two
+variables.
+
+The programs, one per case:
+
+  - `processGesture` cases on a two-constructor `Loc` and binds a record
+    accessor and a two-argument record-update lambda.
+  - `choose` cases on `Loc` and binds two record accessors.
+  - `applyBoth` binds an accessor and an identity lambda from a literal pair,
+    with no branching.
+  - `getSet` branches with `if` on a `Bool` and binds an accessor and a
+    record-update lambda.
+  - `transform` cases on a two-constructor `Dir` and binds two one-argument
+    arithmetic lambdas.
+
+Among what is not tested: patterns other than a pair of variables, such as a
+triple, a record, a constructor or a nested pair; a pair that comes from a
+function call rather than from a `case`, an `if` or a literal pair; and whether
+any program reaches the `shouldUseValueMulti` route, which nothing here
+observes.
 
 -}
 
@@ -50,12 +79,21 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Creates one test, named "Let destruct with function-typed values "
+followed by `condStr`, that passes each of the five programs to `expectFn` in
+turn. It fails with the label of the first program whose expectation fails, and
+the programs after that one are not checked. A program whose check crashes ends
+the whole test without its label.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Let destruct with function-typed values " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the five labelled cases, each of which builds its program when run
+and gives `expectFn`'s verdict on it.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Destruct tuple of lambdas from case", run = destructTupleOfLambdasFromCase expectFn }
@@ -68,17 +106,18 @@ testCases expectFn =
 
 
 -- ============================================================================
--- 1. Tuple of lambdas from case (matches the original crash exactly)
+-- 1. Accessor and record-update lambda from a case
 -- ============================================================================
 
 
-{-| Mirrors Scene.Drawing.processGesture:
+{-| Checks with `expectFn` a module whose `let` takes apart a pair chosen by a
+`case`, holding a record accessor and a two-argument record-update lambda:
 
     type Loc
         = Doc
         | Div
 
-    processGesture : Loc -> { a : Int, b : Int } -> ( { a : Int, b : Int } -> Int, Int -> { a : Int, b : Int } -> { a : Int, b : Int } )
+    processGesture : Loc -> { a : Int, b : Int } -> ( Int, { a : Int, b : Int } )
     processGesture loc rec =
         let
             ( get, set ) =
@@ -90,6 +129,10 @@ testCases expectFn =
                         ( .b, \x m -> { m | b = x } )
         in
         ( get rec, set 99 rec )
+
+    testValue : ( Int, { a : Int, b : Int } )
+    testValue =
+        processGesture Doc { a = 1, b = 2 }
 
 -}
 destructTupleOfLambdasFromCase : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -108,7 +151,6 @@ destructTupleOfLambdasFromCase expectFn _ =
         recType =
             tRecord [ ( "a", tType "Int" [] ), ( "b", tType "Int" [] ) ]
 
-        -- processGesture : Loc -> { a : Int, b : Int } -> ( Int, { a : Int, b : Int } )
         processFn : TypedDef
         processFn =
             { name = "processGesture"
@@ -157,11 +199,14 @@ destructTupleOfLambdasFromCase expectFn _ =
 
 
 -- ============================================================================
--- 2. Tuple of accessors from case
+-- 2. Two accessors from a case
 -- ============================================================================
 
 
-{-| Similar but both elements are accessors:
+{-| Checks with `expectFn` a module whose `let` takes apart a pair of record
+accessors chosen by a `case`. `Loc` is the same two-constructor type as in
+`destructTupleOfLambdasFromCase`, declared again in this program's `Test`
+module:
 
     choose : Loc -> { a : Int, b : Int } -> ( Int, Int )
     choose loc rec =
@@ -175,6 +220,10 @@ destructTupleOfLambdasFromCase expectFn _ =
                         ( .b, .a )
         in
         ( fst rec, snd rec )
+
+    testValue : ( Int, Int )
+    testValue =
+        choose Doc { a = 10, b = 20 }
 
 -}
 destructTupleOfAccessorsFromCase : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -237,11 +286,12 @@ destructTupleOfAccessorsFromCase expectFn _ =
 
 
 -- ============================================================================
--- 3. Tuple of lambdas direct (no case)
+-- 3. Accessor and lambda from a literal pair (no branching)
 -- ============================================================================
 
 
-{-| Destructure a tuple of lambdas without a case expression:
+{-| Checks with `expectFn` a module whose `let` takes apart a literal pair of
+a record accessor and an identity lambda, with no branch choosing it:
 
     applyBoth : { a : Int, b : Int } -> ( Int, Int )
     applyBoth rec =
@@ -250,6 +300,10 @@ destructTupleOfAccessorsFromCase expectFn _ =
                 ( .a, \x -> x )
         in
         ( get rec, transform (get rec) )
+
+    testValue : ( Int, Int )
+    testValue =
+        applyBoth { a = 5, b = 10 }
 
 -}
 destructTupleOfLambdasDirect : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -295,11 +349,12 @@ destructTupleOfLambdasDirect expectFn _ =
 
 
 -- ============================================================================
--- 4. Tuple of accessor and record-update lambda from case
+-- 4. Accessor and record-update lambda from an if
 -- ============================================================================
 
 
-{-| Mixed accessor and record update lambda via if expression:
+{-| Checks with `expectFn` a module whose `let` takes apart a pair chosen by
+an `if`, holding a record accessor and a two-argument record-update lambda:
 
     getSet : Bool -> { x : Int } -> ( Int, { x : Int } )
     getSet flag rec =
@@ -312,6 +367,10 @@ destructTupleOfLambdasDirect expectFn _ =
                     ( .x, \v r -> { r | x = v + 1 } )
         in
         ( getter rec, setter 42 rec )
+
+    testValue : ( Int, { x : Int } )
+    testValue =
+        getSet True { x = 7 }
 
 -}
 destructTupleOfAccessorAndLambdaFromCase : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -369,11 +428,13 @@ destructTupleOfAccessorAndLambdaFromCase expectFn _ =
 
 
 -- ============================================================================
--- 5. Tuple of lambdas, both used in body expressions
+-- 5. Two arithmetic lambdas from a case, both applied in the body
 -- ============================================================================
 
 
-{-| Both destructured functions are used with multiple args:
+{-| Checks with `expectFn` a module whose `let` takes apart a pair of
+one-argument arithmetic lambdas chosen by a `case`, and applies each of them to
+a different argument of the enclosing function:
 
     type Dir
         = Left
@@ -391,6 +452,10 @@ destructTupleOfAccessorAndLambdaFromCase expectFn _ =
                         ( \x -> x * 3, \x -> x + 4 )
         in
         ( f a, g b )
+
+    testValue : ( Int, Int )
+    testValue =
+        transform Left 10 20
 
 -}
 destructPairOfLambdasUsedInBody : (Src.Module -> Expectation) -> (() -> Expectation)

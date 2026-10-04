@@ -1,16 +1,44 @@
 module SourceIR.MutualRecTailRecCases exposing (expectSuite)
 
-{-| Tests for mutual recursion, lambda boundary normalization, let-rec closure
-capturing, nested tail-recursive definitions, and variable name collision
-after inlining.
+{-| Supplies test programs in which functions call one another, return
+functions, or are defined locally and recurse, so that the checks of a pipeline
+stage are run against these shapes and not only against simpler programs.
 
-Covers gaps 8, 10, 19, 20, 11 from e2e-to-elmtest.md:
+This module asserts nothing itself. `expectSuite` hands the programs, in order,
+to the expectation function its caller passes, stopping at the first that
+fails, so what is checked depends on that function.
 
-  - Top-level mutual recursion (non-trivial isEven/isOdd)
-  - Lambda boundary normalization (case and let)
-  - Let-rec closure capturing outer scope variable
-  - Nested tail-recursive definitions
-  - Variable name collision after inlining
+Each program is one module named `Test` with a top-level `testValue`. The
+mutual-recursion, nested tail-recursion and inlining programs declare their
+functions at top level, each with a type annotation. The lambda-boundary and
+local-recursion programs declare only `testValue`, unannotated, and bind the
+functions under test in its `let`.
+
+The cases, in the order they run:
+
+  - Mutual recursion: two top-level functions that call each other, as
+    `isEven` and `isOdd`, and as a pair whose base cases return different
+    values.
+  - Lambda boundaries: a function that returns a lambda from each branch of a
+    `case`, and one that returns a lambda after a `let`. In both, the
+    function's parameters are split between the outer definition and the
+    returned lambda. These are the two shapes that
+    `Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries` rewrites, where it can,
+    by moving the inner lambda's parameters onto the outer function.
+  - Local recursion that captures: a `let`-bound recursive function that reads
+    a parameter of the function enclosing it, in two programs.
+  - Nested tail recursion: a tail-recursive local function inside a function
+    that is itself tail-recursive, and two tail-recursive local functions side
+    by side in one `let`.
+  - Inlining collisions: a function that destructures its argument into a
+    named variable, called twice in one expression, so that copying both calls'
+    bodies into the caller would bind the same name twice.
+
+Among what is not tested: mutual recursion between `let`-bound functions,
+recursion through a value with no arguments, and `case` branches that return
+lambdas of different arities. The value each program computes is not checked
+here; the results given in each case's docstring are what the program evaluates
+to.
 
 -}
 
@@ -48,12 +76,21 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds one test, named `"Mutual recursion and tail-rec gaps "` followed by
+`condStr`, that runs the cases in order through `Compiler.BulkCheck.bulkCheck`,
+applying `expectFn` to each case's module. It passes if every case passes. The
+first failing case stops the run, and the test fails with that case's label and
+failure description; a case that crashes ends the test without its label.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Mutual recursion and tail-rec gaps " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns every case in the module, group by group, each checking its program
+with `expectFn`.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     mutualRecursionCases expectFn
@@ -65,10 +102,13 @@ testCases expectFn =
 
 
 -- ============================================================================
--- TOP-LEVEL MUTUAL RECURSION (Gap 8)
+-- TOP-LEVEL MUTUAL RECURSION
 -- ============================================================================
 
 
+{-| Returns the two mutual-recursion cases, each checking its program with
+`expectFn`.
+-}
 mutualRecursionCases : (Src.Module -> Expectation) -> List TestCase
 mutualRecursionCases expectFn =
     [ { label = "Mutual recursion isEven/isOdd terminating", run = mutualRecIsEvenOdd expectFn }
@@ -76,11 +116,31 @@ mutualRecursionCases expectFn =
     ]
 
 
-{-| isEven 0 = True
-isEven n = isOdd (n - 1)
-isOdd 0 = False
-isOdd n = isEven (n - 1)
-testValue = isEven 4 => True
+{-| Builds a module in which `isEven` and `isOdd` call each other, and applies
+`expectFn` to it:
+
+    isEven : Int -> Bool
+    isEven n =
+        if n == 0 then
+            True
+
+        else
+            isOdd (n - 1)
+
+    isOdd : Int -> Bool
+    isOdd n =
+        if n == 0 then
+            False
+
+        else
+            isEven (n - 1)
+
+    testValue : Bool
+    testValue =
+        isEven 4
+
+`testValue` is `True`.
+
 -}
 mutualRecIsEvenOdd : (Src.Module -> Expectation) -> (() -> Expectation)
 mutualRecIsEvenOdd expectFn _ =
@@ -133,12 +193,31 @@ mutualRecIsEvenOdd expectFn _ =
     expectFn modul
 
 
-{-| Mutual recursion where both functions have different base values:
-countDown 0 = 0
-countDown n = countUp (n - 1)
-countUp 0 = 100
-countUp n = countDown (n - 1)
-testValue = countDown 3
+{-| Builds a module in which `countDown` and `countUp` call each other but
+return different values at zero, and applies `expectFn` to it:
+
+    countDown : Int -> Int
+    countDown n =
+        if n == 0 then
+            0
+
+        else
+            countUp (n - 1)
+
+    countUp : Int -> Int
+    countUp n =
+        if n == 0 then
+            100
+
+        else
+            countDown (n - 1)
+
+    testValue : Int
+    testValue =
+        countDown 3
+
+The recursion ends in `countUp`, so `testValue` is 100.
+
 -}
 mutualRecDifferentBases : (Src.Module -> Expectation) -> (() -> Expectation)
 mutualRecDifferentBases expectFn _ =
@@ -190,10 +269,13 @@ mutualRecDifferentBases expectFn _ =
 
 
 -- ============================================================================
--- LAMBDA BOUNDARY NORMALIZATION (Gap 10)
+-- LAMBDA BOUNDARY NORMALIZATION
 -- ============================================================================
 
 
+{-| Returns the two lambda-boundary cases, each checking its program with
+`expectFn`.
+-}
 lambdaBoundaryCases : (Src.Module -> Expectation) -> List TestCase
 lambdaBoundaryCases expectFn =
     [ { label = "Lambda-case boundary: case returns lambdas", run = lambdaCaseBoundary expectFn }
@@ -201,13 +283,22 @@ lambdaBoundaryCases expectFn =
     ]
 
 
-{-| getOp op = case op of
-0 -> \\a b -> a + b
-\_ -> \\a b -> a - b
-testValue = getOp 0 3 4 => 7
+{-| Builds a module whose `testValue` defines a local `getOp` that returns a
+two-argument lambda from each branch of a `case`, and applies `expectFn` to it:
 
-Tests normalization: \\op -> case op of 0 -> \\a b -> a+b; \_ -> \\a b -> a-b
-should become \\op a b -> case op of 0 -> a+b; \_ -> a-b
+    testValue =
+        let
+            getOp op =
+                case op of
+                    0 ->
+                        \a b -> a + b
+
+                    _ ->
+                        \a b -> a - b
+        in
+        getOp 0 3 4
+
+`getOp` takes one parameter and is called with three. `testValue` is 7.
 
 -}
 lambdaCaseBoundary : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -237,11 +328,21 @@ lambdaCaseBoundary expectFn _ =
     expectFn modul
 
 
-{-| f a = let y = a + 5 in \\z -> y + z
-testValue = f 10 20 => 35
+{-| Builds a module whose `testValue` defines a local `f` that returns a lambda
+after a `let`, and applies `expectFn` to it:
 
-Tests normalization: \\a -> let y = a+5 in \\z -> y+z
-should become \\a z -> let y = a+5 in y+z
+    testValue =
+        let
+            f a =
+                let
+                    y =
+                        a + 5
+                in
+                \z -> y + z
+        in
+        f 10 20
+
+`f` takes one parameter and is called with two. `testValue` is 35.
 
 -}
 lambdaLetBoundary : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -268,10 +369,13 @@ lambdaLetBoundary expectFn _ =
 
 
 -- ============================================================================
--- LET-REC CLOSURE CAPTURING OUTER SCOPE (Gap 19)
+-- LET-REC CLOSURE CAPTURING OUTER SCOPE
 -- ============================================================================
 
 
+{-| Returns the two cases of a local recursive function that captures a
+parameter of its enclosing function, each checking its program with `expectFn`.
+-}
 letRecClosureCaptureCases : (Src.Module -> Expectation) -> List TestCase
 letRecClosureCaptureCases expectFn =
     [ { label = "Let-rec captures outer variable (takeItems pattern)", run = letRecCaptureOuter expectFn }
@@ -279,17 +383,36 @@ letRecClosureCaptureCases expectFn =
     ]
 
 
-{-| processItems threshold items = case items of
-[] -> []
-x :: rest ->
-let
-takeMore xs = case xs of
-[] -> []
-y :: ys -> if y > threshold then y :: takeMore ys else []
-in
-x :: takeMore rest
+{-| Builds a module whose `testValue` defines a local `processItems`, inside
+which a recursive `takeMore` reads `processItems`'s parameter `threshold`, and
+applies `expectFn` to it:
 
-takeMore captures `threshold` from outer scope and self-recurses.
+    testValue =
+        let
+            processItems threshold items =
+                case items of
+                    [] ->
+                        []
+
+                    x :: rest ->
+                        let
+                            takeMore xs =
+                                case xs of
+                                    [] ->
+                                        []
+
+                                    y :: ys ->
+                                        if y > threshold then
+                                            y :: takeMore ys
+
+                                        else
+                                            []
+                        in
+                        x :: takeMore rest
+        in
+        processItems 3 [ 5, 4, 2, 6 ]
+
+`takeMore`'s recursive call is not in tail position. `testValue` is `[ 5, 4 ]`.
 
 -}
 letRecCaptureOuter : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -334,16 +457,32 @@ letRecCaptureOuter expectFn _ =
     expectFn modul
 
 
-{-| filterAbove limit xs =
-let
-go items = case items of
-[] -> []
-h :: t -> if h > limit then h :: go t else go t
-in
-go xs
-testValue = filterAbove 2 [1, 3, 2, 4] => [3, 4]
+{-| Builds a module whose `testValue` defines a local `filterAbove`, inside
+which a recursive `go` reads `filterAbove`'s parameter `limit`, and applies
+`expectFn` to it:
 
-`go` captures `limit` from outer scope.
+    testValue =
+        let
+            filterAbove limit xs =
+                let
+                    go items =
+                        case items of
+                            [] ->
+                                []
+
+                            h :: t ->
+                                if h > limit then
+                                    h :: go t
+
+                                else
+                                    go t
+                in
+                go xs
+        in
+        filterAbove 2 [ 1, 3, 2, 4 ]
+
+`go` calls itself in tail position in one branch and not in the other.
+`testValue` is `[ 3, 4 ]`.
 
 -}
 letRecCaptureOuterParam : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -382,10 +521,13 @@ letRecCaptureOuterParam expectFn _ =
 
 
 -- ============================================================================
--- NESTED TAIL-RECURSIVE DEFINITIONS (Gap 20)
+-- NESTED TAIL-RECURSIVE DEFINITIONS
 -- ============================================================================
 
 
+{-| Returns the two nested tail-recursion cases, each checking its program with
+`expectFn`.
+-}
 nestedTailRecCases : (Src.Module -> Expectation) -> List TestCase
 nestedTailRecCases expectFn =
     [ { label = "Outer tail-rec with inner tail-rec def", run = outerTailRecWithInner expectFn }
@@ -393,16 +535,35 @@ nestedTailRecCases expectFn =
     ]
 
 
-{-| outerLoop n acc =
-let
-sumUpTo i s = if i <= 0 then s else sumUpTo (i - 1) (s + i)
-localResult = sumUpTo n 0
-in
-case localResult of
-0 -> acc
-\_ -> outerLoop (n - 1) (acc + localResult)
-testValue = outerLoop 3 0
-Both outerLoop and sumUpTo are tail-recursive.
+{-| Builds a module in which the tail-recursive `outerLoop` defines its own
+tail-recursive `sumUpTo` in a `let`, and applies `expectFn` to it:
+
+    outerLoop : Int -> Int -> Int
+    outerLoop n acc =
+        let
+            sumUpTo i s =
+                if i <= 0 then
+                    s
+
+                else
+                    sumUpTo (i - 1) (s + i)
+
+            localResult =
+                sumUpTo n 0
+        in
+        case localResult of
+            0 ->
+                acc
+
+            _ ->
+                outerLoop (n - 1) (acc + localResult)
+
+    testValue : Int
+    testValue =
+        outerLoop 3 0
+
+`testValue` is 10, the sum of 6, 3 and 1.
+
 -}
 outerTailRecWithInner : (Src.Module -> Expectation) -> (() -> Expectation)
 outerTailRecWithInner expectFn _ =
@@ -458,14 +619,34 @@ outerTailRecWithInner expectFn _ =
     expectFn modul
 
 
-{-| process n =
-let
-sumTo i acc = if i <= 0 then acc else sumTo (i - 1) (acc + i)
-mulTo i acc = if i <= 0 then acc else mulTo (i - 1) (acc \* i)
-in
-sumTo n 0 + mulTo n 1
-testValue = process 4
-Two local tail-recursive defs in the same let block.
+{-| Builds a module in which `process` defines two tail-recursive functions in
+one `let` and adds their results, and applies `expectFn` to it:
+
+    process : Int -> Int
+    process n =
+        let
+            sumTo i acc =
+                if i <= 0 then
+                    acc
+
+                else
+                    sumTo (i - 1) (acc + i)
+
+            mulTo j acc2 =
+                if j <= 0 then
+                    acc2
+
+                else
+                    mulTo (j - 1) (acc2 * j)
+        in
+        sumTo n 0 + mulTo n 1
+
+    testValue : Int
+    testValue =
+        process 4
+
+`testValue` is 34, which is 10 + 24.
+
 -}
 twoNestedTailRecs : (Src.Module -> Expectation) -> (() -> Expectation)
 twoNestedTailRecs expectFn _ =
@@ -527,10 +708,13 @@ twoNestedTailRecs expectFn _ =
 
 
 -- ============================================================================
--- VARIABLE NAME COLLISION AFTER INLINING (Gap 11)
+-- VARIABLE NAME COLLISION AFTER INLINING
 -- ============================================================================
 
 
+{-| Returns the two inlining-collision cases, each checking its program with
+`expectFn`.
+-}
 inlineVarCollisionCases : (Src.Module -> Expectation) -> List TestCase
 inlineVarCollisionCases expectFn =
     [ { label = "Inline var collision: extract called twice", run = inlineVarCollisionExtract expectFn }
@@ -538,13 +722,26 @@ inlineVarCollisionCases expectFn =
     ]
 
 
-{-| type Wrapped = Wrapped Int
-extract (Wrapped n) = n
-useTwice w = extract w + extract w
-testValue = useTwice (Wrapped 21) => 42
+{-| Builds a module in which `useTwice` calls `extract` twice on the same value,
+and applies `expectFn` to it:
 
-After inlining first `extract` call, the destructured "n" must not shadow
-the "n" from the second `extract` call.
+    type Wrapped
+        = Wrapped Int
+
+    extract : Wrapped -> Int
+    extract (Wrapped n) =
+        n
+
+    useTwice : Wrapped -> Int
+    useTwice w =
+        extract w + extract w
+
+    testValue : Int
+    testValue =
+        useTwice (Wrapped 21)
+
+Copying `extract`'s body into `useTwice` at both calls brings two bindings
+named `n` into one expression. `testValue` is 42.
 
 -}
 inlineVarCollisionExtract : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -598,14 +795,31 @@ inlineVarCollisionExtract expectFn _ =
     expectFn modul
 
 
-{-| type Box = Box Int
-getVal (Box v) = v
-helper a b = a + b
-combine box1 box2 = helper (getVal box1) (getVal box2)
-testValue = combine (Box 10) (Box 32) => 42
+{-| Builds a module in which `combine` passes the results of two `getVal` calls
+as the arguments of a third function, and applies `expectFn` to it:
 
-When both getVal calls are inlined, both produce a destructured "v".
-Tests that MonoInlineSimplify renames to avoid collision.
+    type Box
+        = Box Int
+
+    getVal : Box -> Int
+    getVal (Box v) =
+        v
+
+    helper : Int -> Int -> Int
+    helper a b =
+        a + b
+
+    combine : Box -> Box -> Int
+    combine box1 box2 =
+        helper (getVal box1) (getVal box2)
+
+    testValue : Int
+    testValue =
+        combine (Box 10) (Box 32)
+
+Copying `getVal`'s body into `combine` at both calls brings two bindings named
+`v` into one expression. Nothing is destructured more than one level deep,
+despite the case's label. `testValue` is 42.
 
 -}
 inlineVarCollisionNested : (Src.Module -> Expectation) -> (() -> Expectation)

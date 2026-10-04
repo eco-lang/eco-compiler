@@ -1,13 +1,27 @@
 module TestLogic.Generate.CodeGen.CEcoValueLoweringTest exposing (suite)
 
-{-| Test suite for CGEN\_013: CEcoValue MVars Always Lower to eco.value.
+{-| A type variable that monomorphization leaves with the `CEcoValue`
+constraint stands for a value that is always boxed, and code generation is
+expected to give it the MLIR type `!eco.value` (see `Constraint` in
+`Compiler.AST.Monomorphized`). This suite runs the checker named for that rule,
+`TestLogic.Generate.CodeGen.CEcoValueLowering.expectCEcoValueLowering`, on
+every program of the standard catalogue. As that module describes, the checker
+reports no violations, so in effect this suite checks only that each program
+compiles to MLIR.
 
-CEcoValue type variables must always lower to !eco.value in MLIR.
+The fixture is the catalogue that `SourceIR.Suite.StandardTestSuites.expectSuite`
+collects from the `SourceIR` case modules it includes. Most of its programs are
+fixed; those of its fuzz tests vary from run to run.
 
-Note: This test is currently conservative and does not report violations
-because distinguishing legitimate concrete types from incorrectly lowered
-polymorphic types requires MonoType information that is not preserved in MLIR.
-The test infrastructure is in place for future enhancement.
+What the tests establish:
+
+  - `suite` applies the checker to each catalogue program: a program passes
+    when it compiles to MLIR through `TestLogic.TestPipeline.runToMlir`, and
+    fails otherwise.
+
+Among what is not tested:
+
+  - the rule itself: no MLIR type in the result can fail a test.
 
 -}
 
@@ -16,6 +30,9 @@ import Test exposing (Test)
 import TestLogic.Generate.CodeGen.CEcoValueLowering exposing (expectCEcoValueLowering)
 
 
+{-| The `CEcoValue` lowering checker applied to every program of the standard
+catalogue, grouped under `CGEN_013: CEcoValue Lowering`.
+-}
 suite : Test
 suite =
     Test.describe "CGEN_013: CEcoValue Lowering"

@@ -4,18 +4,38 @@ module Compiler.Type.Vars exposing
     , FlatType(..), LambdaSet(..), SortedRel(..)
     )
 
-{-| The union-find VOCABULARY of type inference: the data the solver's store
-holds, with no reference to the monad that threads it.
+{-| Many modules need to name a type variable, or read what the solver knows
+about one, without running the solver. This module gives them the types for
+that, apart from the `System.TypeCheck.IO` monad that threads the solver's
+state, so they can depend on these types without depending on the monad.
 
-Split out of `System.TypeCheck.IO` on 2026-09-08. These types were declared
-alongside the `IO` monad, so every module that merely wanted to NAME a type
-variable had to import the monad — 88 modules imported `System.TypeCheck.IO`
-while only 13 ever used a monadic operation. The module's shape actively
-misrepresented how widely the monad was used
-(`/work/direct-call-decline-census.md` §3).
+It is pure data: it defines types and no functions. `System.TypeCheck.IO`
+imports it, and the only compiler module whose types it uses is
+`Compiler.Elm.ModuleName`, for the module a named type belongs to.
 
-Pure data: nothing here mentions `IO` or `State`, which is exactly why the
-split is possible. The layering is `IO -> Vars -> ModuleName`.
+Type inference works on _points_. A point is a type variable, and the points
+that unification has made equal are joined into one equivalence class by a
+union-find structure. The _store_ holds one cell per point. Each class has one
+root, and the root's cell carries the class's _descriptor_: what the solver
+currently knows the type to be, which is its _content_, together with
+bookkeeping for generalization and for graph traversals. `Variable` and `Point`
+are two names for the same type.
+
+A content is one of five kinds. A _flex_ variable is one that unification may
+still bind to a type. A _rigid_ variable comes from a type annotation and is
+never bound; unification can only bind a flex variable to it. Either kind may
+carry a _super-type_, the constraint Elm expresses by naming a variable
+`number`, `comparable`, `appendable` or `compappend`. A structure is a concrete
+type, and it is _flat_: its children are points, not nested types, so unifying
+two structures means unifying their child points. The remaining kinds are an
+alias together with its expansion, and `Error`.
+
+The last few types serve lambda-set specialization, which the monomorphization
+solver (`Compiler.MonoSolver.*`) runs on stores of its own built from these same
+types. A _lambda set_ is the set of function values that a function-typed value
+can be, each named by an integer _member id_. In those stores an arrow that
+carries a lambda set is a `FunL`, whose third point, the _set slot_, holds the
+arrow's lambda set as a `LambdaSet1` content. The type checker builds neither.
 
 @docs Variable, Point, PointCell, RootedVar
 @docs Descriptor, Content, SuperType, Mark
@@ -29,37 +49,37 @@ import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
 
 
-{-| A type variable is represented as a Point.
+{-| A type variable, which is a point in the union-find store.
 
-Variables are the fundamental unit of type inference, connected through
-the union-find structure and associated with Descriptors.
+This is a name for `Point`, not a new type, and the two are interchangeable.
 
 -}
 type alias Variable =
     Point
 
 
-{-| A reference to a type variable in the union-find structure.
+{-| A reference to one cell of the union-find store.
 
-Points are integer indices into the `ioRefsPoint` array in the State.
-Used to implement path compression and union-by-rank for type unification.
+`Pt` carries the cell's index. A store numbers its points from 0 in the order
+it makes them, so an index identifies a point only within the store that made
+it. The index is visible to other modules, and `System.TypeCheck.IO.pointKey`
+returns it for use as a key.
 
 -}
 type Point
     = Pt Int
 
 
-{-| The union-find cell for a Point.
+{-| The contents of one cell of the union-find store: either the root of a
+class or a link towards one.
 
-  - `Root weight descriptor`: a root, carrying its weight and its descriptor
-    INLINE
-  - `Chain parent`: a non-root node pointing at its parent
+`Root` carries the class's weight and its descriptor. The weight is the number
+of points in the class, and `Compiler.Type.UnionFind` uses it to decide which of
+two roots stays a root when their classes are joined. It is not the
+descriptor's rank.
 
-kernel-opt-02 replaced the former `PointInfo = Info Int Int | Link Point` plus
-the separate `ioRefsWeight`/`ioRefsDescriptor` arrays with this single cell. The
-three arrays were index-synchronised — only `UnionFind.fresh` ever grew them, one
-element each — so `Info w d` stored two copies of the point's own index. The
-merge preserves the numeric Point ids exactly.
+`Chain` carries the next point on the way to the root, which may itself be a
+`Chain`. Only a root's cell holds a descriptor.
 
 -}
 type PointCell
@@ -67,19 +87,14 @@ type PointCell
     | Chain Point
 
 
-{-| A type descriptor containing information about a type variable.
+{-| What the solver knows about one class of type variables, stored on its
+root.
 
-Descriptors are stored inline in the `ioRefsPoint` cell of their root Point.
-Each descriptor contains the actual type content, rank for generalization,
-marking for traversal algorithms, and an optional copy field for cloning.
-
-Formerly a single-constructor wrapper; collapsed to a bare record alias so it is
-read/written directly on the hot union-find path with no box or wrap/unwrap.
-
-  - `content`: The actual type information (flex var, rigid var, structure, etc.)
-  - `rank`: Used for let-generalization and determining type variable scope
-  - `mark`: Used by traversal algorithms to avoid revisiting nodes
-  - `copy`: Optional reference to a copied variable during cloning operations
+`rank` is the let-nesting depth the class belongs to, which generalization uses
+to decide which variables it may quantify; `Compiler.Type.Type` names its
+reserved values. `mark` is the stamp a graph traversal leaves on a class it has
+visited. `copy` is used while a generalized type is instantiated, and holds the
+copy already made of this class, so that a class reached twice is copied once.
 
 -}
 type alias Descriptor =
@@ -90,15 +105,33 @@ type alias Descriptor =
     }
 
 
-{-| The content of a type descriptor.
+{-| What a class of type variables is known to be.
 
-  - `FlexVar name`: A flexible type variable (can be unified with anything)
-  - `FlexSuper supertype name`: A flexible variable constrained by a supertype
-  - `RigidVar name`: A rigid type variable (cannot be unified)
-  - `RigidSuper supertype name`: A rigid variable constrained by a supertype
-  - `Structure type`: A concrete type structure (function, record, etc.)
-  - `Alias canonical name args realType`: A type alias with its expansion
-  - `Error`: Represents a type error
+`FlexVar` is a variable that unification may still bind. Its name is `Nothing`
+when it has none; `Compiler.Type.Type` writes generated names into such
+variables when it converts solved types back.
+
+`FlexSuper` is a flex variable constrained by a super-type, so it may be bound
+only to types that satisfy that constraint.
+
+`RigidVar` and `RigidSuper` are variables from a type annotation, with the
+name written there. Unification never binds them to another type. It succeeds
+against a `FlexVar`, against a `FlexSuper` only when the rigid variable is a
+`RigidSuper` whose super-type is compatible, and against `Error`; in the first
+two cases the flex variable takes on the rigid content. Against an alias the
+outcome depends on argument order, since with the alias first its expansion is
+unified with the rigid variable. Against another rigid variable or a structure
+it fails.
+
+`Structure` is a concrete type, as a `FlatType`.
+
+`Alias` is a use of a type alias: the module that defines it, its name, each of
+its parameter names paired with the argument given for it, and the point that
+holds the type the alias expands to.
+
+`Error` marks a class that unification or the occurs check has found
+inconsistent. Unifying anything with it succeeds and leaves `Error`, so one
+mistake produces one error report rather than many.
 
 -}
 type Content
@@ -111,12 +144,12 @@ type Content
     | Error
 
 
-{-| Supertypes that constrain type variables.
+{-| A constraint on what a type variable may stand for, which Elm expresses by
+the variable's name.
 
-  - `Number`: Can be Int or Float
-  - `Comparable`: Can be compared with (<), (>), etc.
-  - `Appendable`: Can be concatenated with (++)
-  - `CompAppend`: Both comparable and appendable
+`Number` admits `Int` and `Float`. `Comparable` admits the types the
+comparison operators accept. `Appendable` admits the types `++` accepts.
+`CompAppend` admits the types that are both comparable and appendable.
 
 -}
 type SuperType
@@ -126,24 +159,24 @@ type SuperType
     | CompAppend
 
 
-{-| A mark used for graph traversal algorithms.
+{-| A stamp that a traversal of the type graph writes on the descriptors it
+visits, so that it can recognise a class it has already reached and stop on a
+cyclic type.
 
-Marks prevent infinite loops when traversing cyclic type structures.
-Each traversal uses a unique mark value to identify visited nodes.
+`Compiler.Type.Type` defines the fixed marks and `nextMark`, which gives a mark
+different from the one it is given.
 
 -}
 type Mark
     = Mark Int
 
 
-{-| A union-find root variable together with the super constraint recorded on
-its root descriptor at snapshot time.
+{-| The root of a class, as it was after solving, together with the super-type
+recorded in the root's content.
 
-The `super` is solver truth about the ROOT — it is read from the root's
-`Content` (`FlexSuper`/`RigidSuper`) at normalization time, independent of
-whichever type-variable name happens to refer to that root. This is what lets
-downstream passes recover `number`/`comparable`/`appendable`/`compappend`
-without re-parsing variable names.
+`super` is read from the root's `FlexSuper` or `RigidSuper` content, so it does
+not depend on the name of any variable that refers to the root. `var` is a point
+of the store it was read from, and has meaning only alongside that store.
 
 -}
 type alias RootedVar =
@@ -152,25 +185,32 @@ type alias RootedVar =
     }
 
 
-{-| The flattened representation of concrete type structures.
+{-| A concrete type whose immediate children are points rather than types.
 
-  - `App1 module name args`: Type constructor application (e.g., List Int)
-  - `Fun1 arg result`: Function type (no lambda-set slot)
-  - `FunL arg result setSlot`: Function type WITH a lambda-set slot. Minted
-    ONLY by MonoSolver stores with `lss.enabled`; the typechecking phase
-    never constructs it. `Fun1` retains the meaning "arrow with no set
-    slot" so the lss-off path is allocation-identical to today.
-  - `EmptyRecord1`: The empty record type {}
-  - `Record1 fields extension`: Record type with named fields and optional extension
-  - `Unit1`: The unit type ()
-  - `Tuple1 first second rest`: Tuple type (2 or more elements)
-  - `LambdaSet1 set`: A lambda set — the ONLY legal content of a
-    `FunL` set slot besides `FlexVar` (LSS\_007); it never appears anywhere
-    else, and typecheck-phase stores contain neither `FunL` nor
-    `LambdaSet1`. Members are ground per-run ids. Since LSS\_023 a set MAY
-    carry deferred in-edge source Points (`LsFrom` — Variables that are SET
-    SLOTS, not type structure), so "no Variables inside" is retired; the
-    join is STILL total (edge lists merge) and can never mismatch.
+`App1` is a named type applied to its arguments: the module that defines it, its
+name, and the arguments.
+
+`Fun1` is a function type from its first point to its second.
+
+`FunL` is a function type that also has a set slot, its third point. Only the
+monomorphization solver builds it, and there the slot's content is either a flex
+variable, while nothing is known yet, or a `LambdaSet1`. `Compiler.Type.Unify`
+treats a `Fun1` as a `FunL` whose slot is unconstrained.
+
+`EmptyRecord1` is the record type with no fields.
+
+`Record1` is a record type: its fields, and the point for the rest of the
+record, which may hold more fields; for a closed record that chain ends in
+`EmptyRecord1`.
+
+`Unit1` is the type `()`.
+
+`Tuple1` is a tuple type of two or more elements: the first, the second, and the
+rest.
+
+`LambdaSet1` is the content of a set slot. It is not a type of values, and the
+type checker's conversions back to types crash if they meet one anywhere but in
+a `FunL`'s slot.
 
 -}
 type FlatType
@@ -184,36 +224,28 @@ type FlatType
     | LambdaSet1 LambdaSet
 
 
-{-| An LSS lambda set in a `FunL` slot (`plans/lss-set-write-substrate.md`
-Phase 2; formerly `Bool (Dict Int ())`).
+{-| A lambda set as it is held in a set slot of the monomorphization solver's
+store.
 
-`LsMembers` is ascending, deduped, and NON-EMPTY by construction — every
-producer feeds an already-ascending list (a zonked `Mono.LSet`, a signature
-fact, or a singleton injection), mirroring LSS\_001 for the in-store form.
+`LsTop` is _top_, the set that admits any function value. Joining top with any
+set gives top, and no join or slot write replaces a top with a smaller set.
+Its `Int` records why the set was widened, as a provenance code, and does not
+change what the set means; it carries no members and no sources.
 
-`LsTop` is ⊤ (widened/kernel-facing): terminal (nothing un-tops a slot) and
-absorbing under join. Members are DEAD under ⊤ at every reader in the repo
-(audited 2026-08-17, census included), so ⊤ carries none — every poison
-write is a set of the shared `lsTopContent` constant, allocation-free, and
-every join-with-⊤ is a constant return. ⊤ also DROPS `LsFrom` sources
-(⊤ ⊇ everything — sound).
+`LsMembers` is a set of known member ids. Its list is ascending and has no
+duplicates; the type does not enforce this, and the merges that join two sets
+rely on it.
 
-`LsFrom members sources` (LSS\_023, `plans/lss-directed-set-flow.md`) is a
-set carrying DEFERRED INCLUSION edges: "this slot ⊇ each source slot",
-resolved at READ (zonk) time by a DFS over the reachable edge graph — never
-eagerly, never by a write hook. Invariants:
+`LsFrom` is a set that also includes, besides its own members, every set held in
+its source slots. Its members follow the same rule as those of `LsMembers`, but
+may be empty. Its sources are set slots of the same store, and the list of them
+is not empty. Sources are not followed when the edge is added or when two sets
+are joined, only when the set is read back, by `Compiler.MonoSolver.Store` and
+`Compiler.MonoSolver.LssInfer`. Only `Compiler.MonoSolver.Store` adds a
+source, and it does not add a point that is already listed, though two listed
+points may be, or later become, the same class.
 
-  - the source list is NON-EMPTY by construction: no transition mints a
-    source-free `LsFrom` (`Store.addSlotSource` only adds; merges carry
-    sources through; ⊤ drops the whole variant). There is deliberately NO
-    collapse rule.
-  - `members` is ascending/deduped but MAY be empty (unlike `LsMembers`).
-  - sources are deduped by `pointKey` at install; UF unions may later alias
-    them — resolution re-dedupes via its visited set.
-  - `LsFrom` is created ONLY by the LSS\_020 signature channel (every producer is there,
-    including the kernel-tunnel selector) and NEVER escapes the store:
-    `zonkSetSlot`/`zonkSigGo` resolve it, `Mono.LambdaSetAnno` stays
-    `LTop | LSet`.
+Joining two lambda sets never fails. `Compiler.Type.Unify` states the join.
 
 -}
 type LambdaSet
@@ -222,10 +254,17 @@ type LambdaSet
     | LsFrom (List Int) (List Variable)
 
 
-{-| Relation between two ascending member lists, decided in ONE merge-scan:
-O(n+m), zero allocation, early exit to `SortedMixed` once both sides have
-shown an exclusive element. `SortedSuper` = second ⊆ first (strictly);
-`SortedSub` = first ⊆ second (strictly).
+{-| How two ascending lists of member ids relate as sets, the result of
+`System.TypeCheck.IO.classifySorted`.
+
+`SortedEqual` means they hold the same ids. `SortedSuper` means the first
+holds every id of the second and at least one more. `SortedSub` means the
+second holds every id of the first and at least one more. `SortedMixed` means
+each holds an id the other lacks.
+
+The answer is meaningful only for lists that are ascending and have no
+duplicates.
+
 -}
 type SortedRel
     = SortedEqual

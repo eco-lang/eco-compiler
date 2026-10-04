@@ -1,9 +1,22 @@
 module TestLogic.Generate.CodeGen.ListConstruction exposing (expectListConstruction)
 
-{-| Test logic for CGEN\_016: List Construction invariant.
+{-| The eco MLIR dialect has its own operations for lists: `eco.construct.list`
+builds a cons cell, and the empty list is an `eco.constant`. This module checks
+that no list constructor is built instead with `eco.construct.custom`, the
+generic operation for a value of a custom type.
 
-List values must use `eco.construct.list` for cons cells and `eco.constant Nil`
-for empty lists; never `eco.construct.custom`.
+It compiles a source module to MLIR and looks at every `eco.construct.custom`
+op in it. The op's `constructor` attribute, a string, names the constructor it
+builds, and the op is a violation when that name is `Cons`, `Nil`, `List.Cons`,
+`List.Nil` or `::`.
+
+Among what is not checked:
+
+  - that cons cells are built with `eco.construct.list`, or that the empty
+    list is an `eco.constant`;
+  - an `eco.construct.custom` op with no `constructor` attribute;
+  - where a matching constructor comes from: the test is by name only, so a
+    program's own constructor named `Cons` or `Nil` is reported too.
 
 @docs expectListConstruction
 
@@ -22,11 +35,14 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that list construction invariants hold for a source module.
+{-| Returns an expectation that `srcModule` compiles to MLIR with no
+`eco.construct.custom` op whose `constructor` attribute is `Cons`, `Nil`,
+`List.Cons`, `List.Nil` or `::`.
 
-This compiles the module to MLIR and checks that list construction uses
-proper operations (eco.construct.list, eco.constant Nil) instead of
-eco.construct.custom.
+The module is compiled with `TestLogic.TestPipeline.runToMlir`. If compilation
+fails, the expectation fails with the pipeline's message. If there are
+violations, it fails with the message of the first one only, as
+`violationsToExpectation` describes.
 
 -}
 expectListConstruction : Src.Module -> Expectation
@@ -39,7 +55,9 @@ expectListConstruction srcModule =
             violationsToExpectation (checkListConstruction mlirModule)
 
 
-{-| Check that list construction uses proper operations.
+{-| Returns one violation for each `eco.construct.custom` op in `mlirModule`, at
+any depth, whose `constructor` attribute is one of the names
+`isListConstructorName` accepts, in the order `findOpsNamed` returns them.
 -}
 checkListConstruction : MlirModule -> List Violation
 checkListConstruction mlirModule =
@@ -50,7 +68,8 @@ checkListConstruction mlirModule =
     List.filterMap checkForListConstructorMisuse customOps
 
 
-{-| Check if an eco.construct.custom op is incorrectly used for list construction.
+{-| Returns a violation for `op` when its `constructor` string attribute is a
+list constructor's name, and `Nothing` when it is another name or absent.
 -}
 checkForListConstructorMisuse : MlirOp -> Maybe Violation
 checkForListConstructorMisuse op =
@@ -74,6 +93,9 @@ checkForListConstructorMisuse op =
             Nothing
 
 
+{-| Returns whether `name` is one of the names this check treats as a list
+constructor: `Cons`, `Nil`, `List.Cons`, `List.Nil` or `::`.
+-}
 isListConstructorName : String -> Bool
 isListConstructorName name =
     List.member name [ "Cons", "Nil", "List.Cons", "List.Nil", "::" ]

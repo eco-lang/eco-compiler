@@ -1,6 +1,35 @@
 module TestLogic.Type.OccursCheckTest exposing (suite)
 
-{-| Test suite for invariant TYPE\_004: Occurs check forbids infinite types.
+{-| Tests that a definition whose type would have to contain itself is rejected,
+and that three definitions that have ordinary types are accepted.
+Without them, a front end that let an infinite type through, or one that
+rejected an ordinary definition, would go unnoticed. The suite labels the
+property TYPE\_004.
+
+A type is _infinite_ when a type variable would have to equal a type containing
+that same variable, so that no finite type satisfies the equation. The check
+that refuses one is the _occurs check_ (`Compiler.Type.Occurs`).
+
+Each test builds a one-module program with
+`Compiler.AST.SourceBuilder.makeModuleWithDefs`: unannotated top-level
+definitions, importing `Basics` and `List`. The expectations come from
+`TestLogic.Type.OccursCheck` and run the program through canonicalization,
+type checking and PostSolve.
+
+  - "self-referential through function application" builds module `SelfRef`
+    defining `f x = f`. `expectInfiniteTypeDetected` passes when the module
+    fails to canonicalize or type check, without looking at the error.
+  - "simple identity function" (`id x = x`), "composition function"
+    (`compose f g x = f (g x)`) and "nested data structures"
+    (`nested = [ ( 1, "a" ), ( 2, "b" ) ]`) each pass under
+    `expectNoInfiniteTypes` when the module gets through PostSolve. That
+    expectation's walk of the node types never reports anything, so these tests
+    check only that the module is accepted.
+
+Among what is not tested: that the rejection of `f x = f` is an infinite-type
+error rather than some other error, the name such an error carries, infinite
+types arising in a `let` or a lambda, and annotated definitions.
+
 -}
 
 import Compiler.AST.SourceBuilder as SB
@@ -8,6 +37,9 @@ import Test exposing (Test)
 import TestLogic.Type.OccursCheck exposing (expectInfiniteTypeDetected, expectNoInfiniteTypes)
 
 
+{-| The occurs-check tests: one program that must be rejected and three that
+must be accepted.
+-}
 suite : Test
 suite =
     Test.describe "Occurs check forbids infinite types (TYPE_004)"
@@ -16,17 +48,15 @@ suite =
         ]
 
 
+{-| The test that `f x = f` is rejected. The test passes when the module fails
+to canonicalize or type check, for any reason.
+-}
 infiniteTypeTests : Test
 infiniteTypeTests =
     Test.describe "Infinite type detection"
-        [ -- Note: Most infinite type scenarios are prevented by Elm's syntax
-          -- and type system design. These tests verify the occurs check works
-          -- for edge cases that might slip through.
+        [ -- f's result type is f's own type: f : a -> (a -> (a -> ...)).
           Test.test "self-referential through function application" <|
             \_ ->
-                -- f x = f creates an infinite type: f : a -> ∞
-                -- The type of f would need to satisfy: f : a -> f_type where f_type = a -> f_type
-                -- Elm correctly detects and rejects this as an infinite type.
                 let
                     modul =
                         SB.makeModuleWithDefs "SelfRef"
@@ -40,6 +70,9 @@ infiniteTypeTests =
         ]
 
 
+{-| The tests that three definitions with ordinary types, `id`, `compose` and a
+list of tuples, get through PostSolve.
+-}
 validTypeTests : Test
 validTypeTests =
     Test.describe "Valid types without cycles"

@@ -5,18 +5,29 @@ module Compiler.Type.Constrain.Typed.NodeIds exposing
     , SchemeBinderVars, recordSchemeBinders
     )
 
-{-| Unified node ID tracking for type constraint generation (Typed pathway).
+{-| After a module's types are solved, the type of each of its expressions and
+patterns is wanted, not only the types of its top-level definitions. The solver
+only knows variables, so while constraints are generated something has to note
+which variable stands for which node. This module is that record and the
+operations that add to it.
 
-This module provides a shared ID space for tracking solver variables
-associated with canonical AST nodes (both expressions and patterns).
+A _node id_ is the integer that canonicalization puts on every canonical
+expression and pattern; expressions and patterns share one numbering within a
+module. The record maps each node id to the solver variable whose solved type is
+that node's type. It also keeps, under each annotated definition's name, the
+solver variables that stand for type variables of that definition's annotation.
 
-During constraint generation, each node is assigned a fresh type variable.
-This module maintains the mapping from node IDs to those variables, enabling
-the solver to later produce a mapping from node IDs to their inferred types.
+The record lives in the type checker's state, as the `NodeIdState` that
+`System.TypeCheck.IO` defines and describes, so each recording operation is an
+`IO ()` action and nothing else has to be threaded through constraint
+generation. That state carries a `recording` flag. With it off, every recording
+operation here leaves the state unchanged, so constraints can be generated
+without building a record; `emptyNodeIdState` and `erasedNodeIdState` are the
+starting states with it on and off.
 
-The state itself lives in `IO.State` (see `System.TypeCheck.IO.NodeIdState`),
-so the recording operations are plain `IO ()` actions and the constraint
-generator needs no explicit state threading.
+Recording never fails and never checks for an earlier entry: a second record
+for the same node id, or for the same definition name, replaces the first. A
+negative node id is never recorded.
 
 
 # Types
@@ -48,35 +59,46 @@ import Dict
 import System.TypeCheck.IO as IO exposing (IO)
 
 
-{-| Mapping from definition names to their forall binder → solver variable mappings.
+{-| Solver variables for the type variables of annotated definitions, keyed by
+the definition's name and then by the type variable's name.
+
+Which of an annotation's type variables have an entry is up to the caller of
+`recordSchemeBinders`.
+
+Definitions are told apart by name alone, so two annotated definitions of the
+same name in one module share one entry, and the one recorded later replaces
+the other.
+
 -}
 type alias SchemeBinderVars =
     Dict.Dict Name.Name (Dict.Dict Name.Name Vars.Variable)
 
 
-{-| Mapping from node IDs to solver variables.
+{-| The solver variable recorded for each node, indexed by node id.
 
-Each key is the ID of either a canonical expression or pattern,
-and the value is the solver variable representing its type.
+`Nothing` at an index means no variable was recorded for that id. The array
+grows only as far as the recorded ids require, so an id beyond its end has no
+variable either. This is a name for an `Array`, not a new type, and the
+compiler does not check that it is indexed by node id.
 
 -}
 type alias NodeVarMap =
     Array (Maybe Vars.Variable)
 
 
-{-| State for tracking node ID to variable mappings during constraint generation.
+{-| The node-id record kept in the type checker's state while constraints are
+generated.
 
-The `syntheticExprIds` field tracks which expression IDs were recorded via
-the remaining Group B "generic" constraint path (Str, Chr, Float, Unit, Shader),
-where a synthetic placeholder variable is allocated. This metadata enables tests
-to distinguish between legitimate polymorphic TVars and unfilled placeholder holes.
+This is another name for `System.TypeCheck.IO.NodeIdState`, whose docstring
+describes its fields.
 
 -}
 type alias NodeIdState =
     IO.NodeIdState
 
 
-{-| Initial node ID state with recording ENABLED (the Typed pathway).
+{-| The node-id state to start constraint generation from when a record is
+wanted: nothing recorded yet, and `recording` on.
 -}
 emptyNodeIdState : NodeIdState
 emptyNodeIdState =
@@ -87,24 +109,19 @@ emptyNodeIdState =
     }
 
 
-{-| Node ID state with recording DISABLED (the Erased pathway).
-
-The single generator runs with this state to produce the erased constraints:
-`recordNodeVar`/`recordSyntheticExprVar`/`recordSchemeBinders` all become no-ops
-(so no id→var table is built), and the Group B synthetic-placeholder wrapper is
-skipped in `Constrain.Typed.Expression`, so the constraints match the plain
-type-check pathway without paying for node tracking on the JS backend.
-
+{-| The node-id state to start constraint generation from when no record is
+wanted: nothing recorded, and `recording` off, so `recordNodeVar`,
+`recordSyntheticExprVar` and `recordSchemeBinders` all leave it unchanged.
 -}
 erasedNodeIdState : NodeIdState
 erasedNodeIdState =
     { emptyNodeIdState | recording = False }
 
 
-{-| Record a mapping from a node ID to its solver variable.
+{-| Records `var` as the solver variable for node `id`, replacing any variable
+already recorded for it.
 
-Negative IDs (used for placeholder nodes like synthesized patterns)
-are skipped to avoid polluting the mapping.
+Nothing is recorded when `recording` is off or `id` is negative.
 
 -}
 recordNodeVar : Int -> Vars.Variable -> IO ()
@@ -115,18 +132,17 @@ recordNodeVar id var =
                 { state | mapping = arraySetGrowing id (Just var) state.mapping }
 
             else
-                -- Not recording (erased pathway), or a negative ID (placeholders from
-                -- makeExprPlaceholder / synthesized patterns): skip.
                 state
         )
 
 
-{-| Record a mapping from a synthetic Group B expression ID to its solver variable.
+{-| Records `var` as the solver variable for expression `id`, as
+`recordNodeVar` does, and also marks `id` as one whose variable is a
+placeholder, by adding it to `syntheticExprIds`.
 
-This is used for remaining Group B expressions (Str, Chr, Float, Unit, Shader)
-where the constraint generator allocates a synthetic placeholder variable.
-The ID is also added to `syntheticExprIds` so tests can identify which
-expression IDs had placeholder variables that PostSolve should fill.
+A placeholder is a variable made only so that an expression with no variable of
+its own has one to record. Nothing is recorded when `recording` is off or `id`
+is negative.
 
 -}
 recordSyntheticExprVar : Int -> Vars.Variable -> IO ()
@@ -140,12 +156,13 @@ recordSyntheticExprVar id var =
                 }
 
             else
-                -- Not recording (erased pathway) or a negative ID: skip.
                 state
         )
 
 
-{-| Record the forall binder → solver variable mapping for a definition.
+{-| Records `binders`, solver variables keyed by type variable name, as the
+entry for the annotated definition named `defName`, replacing any entry already
+recorded under that name. Nothing is recorded when `recording` is off.
 -}
 recordSchemeBinders : Name.Name -> Dict.Dict Name.Name Vars.Variable -> IO ()
 recordSchemeBinders defName binders =
@@ -159,6 +176,12 @@ recordSchemeBinders defName binders =
         )
 
 
+{-| Returns `arr` with `val` at index `idx`, first lengthening it with `Nothing`
+up to `idx` when it is too short.
+
+`idx` must not be negative; the callers here check that.
+
+-}
 arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)
 arraySetGrowing idx val arr =
     if idx < Array.length arr then

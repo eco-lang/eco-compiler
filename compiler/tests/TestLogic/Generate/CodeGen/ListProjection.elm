@@ -1,8 +1,23 @@
 module TestLogic.Generate.CodeGen.ListProjection exposing (expectListProjection)
 
-{-| Test logic for CGEN\_021: List Projection invariant.
+{-| The eco MLIR dialect reads the parts of a cons cell with two operations:
+`eco.project.list_head` gives the head and `eco.project.list_tail` gives the
+tail. Each takes the cell as its one operand and gives one result. The tail is
+itself a list, so its result must be `!eco.value`, the type of a boxed value.
+This module checks that every such op in generated MLIR has that shape.
 
-List destructuring must use only `eco.project.list_head` and `eco.project.list_tail`.
+It compiles a source module to MLIR and looks at every op of the two names, at
+any depth. An op is a violation when:
+
+  - it has other than exactly one operand;
+  - it has other than exactly one result;
+  - it is an `eco.project.list_tail` whose result type is not `!eco.value`.
+
+Among what is not checked:
+
+  - the type of a head's result, which may be unboxed;
+  - the type of either op's operand;
+  - whether a list is ever taken apart by some other operation.
 
 @docs expectListProjection
 
@@ -22,7 +37,16 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that list projection invariants hold for a source module.
+{-| Returns an expectation that every `eco.project.list_head` and
+`eco.project.list_tail` op in the MLIR compiled from `srcModule` has exactly one
+operand and one result, and that each `eco.project.list_tail` result is
+`!eco.value`.
+
+The module is compiled with `TestLogic.TestPipeline.runToMlir`. If compilation
+fails, the expectation fails with the pipeline's message. If there are
+violations, it fails with the message of the first one only, as
+`violationsToExpectation` describes.
+
 -}
 expectListProjection : Src.Module -> Expectation
 expectListProjection srcModule =
@@ -34,7 +58,8 @@ expectListProjection srcModule =
             violationsToExpectation (checkListProjection mlirModule)
 
 
-{-| Check list projection invariants.
+{-| Returns the violations of every `eco.project.list_head` op in `mlirModule`,
+followed by those of every `eco.project.list_tail` op, at most one per op.
 -}
 checkListProjection : MlirModule -> List Violation
 checkListProjection mlirModule =
@@ -54,6 +79,10 @@ checkListProjection mlirModule =
     headViolations ++ tailViolations
 
 
+{-| Returns a violation when the `eco.project.list_head` op `op` has other than
+one operand or, failing that, other than one result. Its result type is not
+looked at.
+-}
 checkListHeadOp : MlirOp -> Maybe Violation
 checkListHeadOp op =
     let
@@ -81,6 +110,10 @@ checkListHeadOp op =
         Nothing
 
 
+{-| Returns a violation when the `eco.project.list_tail` op `op` has other than
+one operand, other than one result, or a result whose type is not
+`!eco.value`, checked in that order, so an op reports only the first of these.
+-}
 checkListTailOp : MlirOp -> Maybe Violation
 checkListTailOp op =
     let

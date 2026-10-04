@@ -1,8 +1,29 @@
 module TestLogic.Generate.CodeGen.CustomProjection exposing (expectCustomProjection)
 
-{-| Test logic for CGEN\_024: Custom ADT Projection invariant.
+{-| Nothing in the types of `Mlir.Mlir` stops the code generator from emitting
+a malformed field read, so this module checks the generated MLIR for one.
 
-Custom ADT field access must use `eco.project.custom` with valid field index.
+An `eco.project.custom` op reads one field of a custom type value. Its one
+operand is the value, its one result is the field, and its integer
+`field_index` attribute says which field is read.
+
+`expectCustomProjection` compiles a source module to MLIR with
+`TestLogic.TestPipeline.runToMlir`. It fails when the pipeline returns an
+error, and when any `eco.project.custom` op in the module, at any depth, has:
+
+  - no `field_index` attribute holding an integer;
+  - a negative `field_index`;
+  - a number of operands other than one;
+  - a number of results other than one.
+
+An op with several of these faults is reported for the first of them in that
+order. As `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation`
+describes, a failing test shows only the first violation.
+
+Among what is not tested: whether `field_index` is less than the number of
+fields the constructor has, whether the result type is the field's type, and
+whether every field read of a custom type value uses `eco.project.custom` at
+all.
 
 @docs expectCustomProjection
 
@@ -21,7 +42,9 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that custom projection invariants hold for a source module.
+{-| Compiles `srcModule` to MLIR and passes when no `eco.project.custom` op in
+it has any of the faults the module docstring lists. When `runToMlir` returns
+an error, fails with `Compilation failed:` and that error.
 -}
 expectCustomProjection : Src.Module -> Expectation
 expectCustomProjection srcModule =
@@ -33,7 +56,8 @@ expectCustomProjection srcModule =
             violationsToExpectation (checkCustomProjection mlirModule)
 
 
-{-| Check custom projection invariants.
+{-| Returns one violation for each malformed `eco.project.custom` op in the
+module, at any depth, in the order the ops are walked.
 -}
 checkCustomProjection : MlirModule -> List Violation
 checkCustomProjection mlirModule =
@@ -44,6 +68,11 @@ checkCustomProjection mlirModule =
     List.filterMap checkCustomProjectOp customProjectOps
 
 
+{-| Returns the violation for one `eco.project.custom` op, or `Nothing` when it
+is well formed. Only the first fault is reported, checked in this order: no
+integer `field_index`, a negative `field_index`, an operand count other than
+one, a result count other than one.
+-}
 checkCustomProjectOp : MlirOp -> Maybe Violation
 checkCustomProjectOp op =
     let

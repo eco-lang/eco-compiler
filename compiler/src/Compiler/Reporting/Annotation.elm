@@ -7,12 +7,23 @@ module Compiler.Reporting.Annotation exposing
     , locatedEncoder, locatedDecoder
     )
 
-{-| Source location tracking for compiler error reporting.
+{-| An error found in a late phase of the compiler still has to point at the
+source text that caused it, so the syntax trees carry source locations. This
+module defines those locations.
 
-This module provides types and utilities for tracking the position of syntax
-elements in source code. Every significant AST node is annotated with its
-location, enabling precise error messages that point to exactly where
-problems occur.
+A _position_ is a row and a column in a source file. A _region_ is a span of
+source from a start position to an end position. A _located_ value is any value
+paired with the region of source it is attributed to. The positions the parser
+records, as `Compiler.Parse.Primitives` describes, count rows and columns from 1
+and take the end of a region to be the position just after its last character.
+The types here do not check any of that: a `Position` holds any two `Int`s.
+
+Besides the types, the module has a few functions that build, take apart and
+combine located values and regions, and binary encoders and decoders for them.
+A region has two binary encodings. The fixed encoding writes four integers with
+`Utils.Bytes.Encode.int`. The compact encoding writes varints, which take fewer
+bytes for small numbers. Bytes written with one can be read only with the
+decoder of the same encoding.
 
 
 # Core Types
@@ -48,35 +59,25 @@ import Utils.Bytes.Encode as BE
 -- ====== LOCATED ======
 
 
-{-| A value annotated with its source location.
-
-Wraps any value with information about where it appears in the source code,
-enabling precise error reporting.
-
+{-| A value together with the region of source it is attributed to.
 -}
 type Located a
-    = At Region a -- PERF see if unpacking region is helpful
+    = At Region a
 
 
-{-| Compare two located values based on their underlying values, ignoring location.
-
-Useful for sorting or equality checks where location is irrelevant.
-
+{-| Compares two located values by their values alone, so that two values at
+different places in the source compare as `EQ` when the values are equal.
 -}
 compareLocated : Located comparable -> Located comparable -> Order
 compareLocated (At _ a) (At _ b) =
     compare a b
 
 
-{-| Apply a state-passing function to a located value, preserving its location.
+{-| Applies `func` to the value inside a located value, threading a state
+through it, and returns the final state with the result at the original region.
 
-Spelled in the state-passing shape rather than as `a -> IO b` so this module
-does not depend on the typechecker's monad: `IO b` IS `State -> ( State, b )`,
-so every `IO` caller still type-checks, and the signature now also serves any
-other state. `Compiler.Reporting.Annotation` is a low-level data module and an
-import of `System.TypeCheck.IO` here put the whole typechecker inside an
-import cycle once the union-find vocabulary moved to `Compiler.Type.Vars`
-(2026-09-08).
+The type checker's `IO` from `System.TypeCheck.IO` is a function of this
+shape, so this works with it without this module importing the type checker.
 
 -}
 traverse : (a -> s -> ( s, b )) -> Located a -> s -> ( s, Located b )
@@ -88,17 +89,17 @@ traverse func (At region value) s0 =
     ( s1, At region b )
 
 
-{-| Extract the value from a located wrapper, discarding location information.
+{-| Returns the value of a located value, without its region.
 -}
 toValue : Located a -> a
 toValue (At _ value) =
     value
 
 
-{-| Create a located value spanning the combined region of two other located values.
+{-| Places `value` at the region running from the start of the first located
+value's region to the end of the second's.
 
-Takes the start position from the first located value and the end position
-from the second, wrapping a new value with this merged region.
+Nothing checks that the first comes before the second.
 
 -}
 merge : Located a -> Located b -> c -> Located c
@@ -110,19 +111,17 @@ merge (At r1 _) (At r2 _) value =
 -- ====== POSITION ======
 
 
-{-| A single position in source code, represented as row and column numbers.
+{-| A point in a source file: a row, then a column.
 
-Both row and column are 1-indexed (first character is at row 1, column 1).
+Positions recorded by the parser count both from 1. `zero` uses row 0 and
+column 0 for code that has no source.
 
 -}
 type Position
     = Position Int Int
 
 
-{-| Create a located value from start and end positions.
-
-Constructs a region from the two positions and wraps the value with it.
-
+{-| Places a value at the region from `start` to `end`.
 -}
 at : Position -> Position -> a -> Located a
 at start end a =
@@ -133,56 +132,44 @@ at start end a =
 -- ====== REGION ======
 
 
-{-| A contiguous span in source code, from a start position to an end position.
-
-Represents the location of a syntactic construct in the source file.
-
+{-| A span of a source file, from a start position to an end position.
 -}
 type Region
     = Region Position Position
 
 
-{-| Extract the region from a located value, discarding the value itself.
+{-| Returns the region of a located value, without the value.
 -}
 toRegion : Located a -> Region
 toRegion (At region _) =
     region
 
 
-{-| Combine two regions into one spanning from the start of the first to the end of the second.
-
-Useful for representing the location of a construct that encompasses multiple sub-parts.
-
+{-| Returns the region from the start of the first region to the end of the
+second. Nothing checks that the first comes before the second.
 -}
 mergeRegions : Region -> Region -> Region
 mergeRegions (Region start _) (Region _ end) =
     Region start end
 
 
-{-| A zero-width region at position (0, 0).
-
-Used for synthetic or compiler-generated constructs with no source location.
-
+{-| An empty region at row 0, column 0, which no position recorded by the parser
+can hold. It stands for a value that has no location in the source.
 -}
 zero : Region
 zero =
     Region (Position 0 0) (Position 0 0)
 
 
-{-| A zero-width region at position (1, 1).
-
-Represents the very beginning of a source file.
-
+{-| An empty region at row 1, column 1, the first character of a file.
 -}
 one : Region
 one =
     Region (Position 1 1) (Position 1 1)
 
 
-{-| Check if a region spans multiple lines.
-
-Returns True if the start and end positions are on different rows.
-
+{-| Returns whether a region's start and end are on different rows. Columns are
+not looked at.
 -}
 isMultiline : Region -> Bool
 isMultiline (Region (Position startRow _) (Position endRow _)) =
@@ -193,10 +180,8 @@ isMultiline (Region (Position startRow _) (Position endRow _)) =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a region to bytes for serialization.
-
-Encodes both the start and end positions sequentially.
-
+{-| Produces the fixed encoding of a region: start row, start column, end row
+and end column, each written with `Utils.Bytes.Encode.int`.
 -}
 regionEncoder : Region -> Bytes.Encode.Encoder
 regionEncoder (Region start end) =
@@ -206,10 +191,7 @@ regionEncoder (Region start end) =
         ]
 
 
-{-| Decode a region from bytes.
-
-Expects the bytes to contain a start position followed by an end position.
-
+{-| A decoder for a region in the fixed encoding that `regionEncoder` writes.
 -}
 regionDecoder : Bytes.Decode.Decoder Region
 regionDecoder =
@@ -218,17 +200,21 @@ regionDecoder =
         positionDecoder
 
 
-{-| Compact region encoding for the typed artifacts only (`.ecot`,
-`typed-artifacts.dat`; plan S10): `uintV startRow, uintV startCol,
-sintV (endRow - startRow), uintV endCol`. `.eci` and the other formats keep
-`regionEncoder`.
+{-| Produces the compact encoding of a region: start row, start column, the end
+row minus the start row, and end column, as varints. The difference is written
+with `Utils.Bytes.Encode.sintV`, so it may be negative, and the other three
+with `Utils.Bytes.Encode.uintV`, so they must not be.
+
+The ranges `Utils.Bytes.Encode.uintV` and `Utils.Bytes.Encode.sintV` require
+are not checked here. Only `regionDecoderV` can read the result.
+
 -}
 regionEncoderV : Region -> Bytes.Encode.Encoder
 regionEncoderV (Region (Position r1 c1) (Position r2 c2)) =
     Bytes.Encode.sequence [ BE.uintV r1, BE.uintV c1, BE.sintV (r2 - r1), BE.uintV c2 ]
 
 
-{-| Decode a region written by `regionEncoderV`.
+{-| A decoder for a region in the compact encoding that `regionEncoderV` writes.
 -}
 regionDecoderV : Bytes.Decode.Decoder Region
 regionDecoderV =
@@ -239,6 +225,9 @@ regionDecoderV =
         BD.uintV
 
 
+{-| Produces the fixed encoding of a position: its row, then its column, each
+written with `Utils.Bytes.Encode.int`.
+-}
 positionEncoder : Position -> Bytes.Encode.Encoder
 positionEncoder (Position start end) =
     Bytes.Encode.sequence
@@ -247,6 +236,8 @@ positionEncoder (Position start end) =
         ]
 
 
+{-| A decoder for a position that `positionEncoder` writes.
+-}
 positionDecoder : Bytes.Decode.Decoder Position
 positionDecoder =
     Bytes.Decode.map2 Position
@@ -254,10 +245,8 @@ positionDecoder =
         BD.int
 
 
-{-| Encode a located value to bytes using a custom encoder for the value.
-
-Encodes the region first, then the wrapped value using the provided encoder.
-
+{-| Produces an encoding of a located value: its region in the fixed encoding
+that `regionEncoder` writes, then its value as `encoder` writes it.
 -}
 locatedEncoder : (a -> Bytes.Encode.Encoder) -> Located a -> Bytes.Encode.Encoder
 locatedEncoder encoder (At region value) =
@@ -267,11 +256,8 @@ locatedEncoder encoder (At region value) =
         ]
 
 
-{-| Decode a located value from bytes using a custom decoder for the value.
-
-Decodes the region first, then the value using the provided decoder,
-and combines them into a Located value.
-
+{-| Produces a decoder for a located value that `locatedEncoder` writes: a
+region in the fixed encoding, then a value that `decoder` reads.
 -}
 locatedDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (Located a)
 locatedDecoder decoder =

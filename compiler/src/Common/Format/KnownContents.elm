@@ -1,34 +1,36 @@
 module Common.Format.KnownContents exposing (KnownContents, mempty)
 
-{-| A mapping from module names to their exported contents.
-Used to resolve exposing-all imports by looking up what values a module exports.
+{-| A placeholder for knowledge of what other modules expose. It exists so that
+`fromModule` and `fromImports` in `Common.Format.ImportInfo` keep a parameter
+for this knowledge.
 
-@docs KnownContents, mempty
+The name stands for a table from module names to the names each module
+exposes, the information needed to say which names an `exposing (..)` import
+brings into scope. This module holds no such table. `KnownContents` carries no
+information at all, and `mempty` is its only value.
 
 -}
 
 
-{-| A mapping from module names to their exported contents.
-Used to resolve exposing-all imports by looking up what values a module exports.
+{-| A stand-in for knowledge of what other modules expose, holding none.
+
+Every value is the same value, and nothing can be looked up in one. Outside
+this module the only way to get one is `mempty`.
+
 -}
 type KnownContents
     = KnownContents
 
 
-
--- instance Semigroup KnownContents where
---     (KnownContents a) <> (KnownContents b) = KnownContents (\ns -> a ns <> b ns)
-
-
-{-| Empty known contents that knows about no modules.
+{-| The `KnownContents` value, knowing about no module.
 -}
 mempty : KnownContents
 mempty =
     fromFunction (always Nothing)
 
 
-{-| Create known contents from a lookup function.
-The function returns Nothing if the module contents are unknown.
+{-| Returns the `KnownContents` value, discarding the given lookup function, so
+nothing it would answer is kept.
 -}
 fromFunction : (String -> Maybe (List String)) -> KnownContents
 fromFunction _ =

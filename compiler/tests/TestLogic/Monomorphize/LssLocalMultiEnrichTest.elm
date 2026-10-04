@@ -1,27 +1,62 @@
 module TestLogic.Monomorphize.LssLocalMultiEnrichTest exposing (suite)
 
-{-| E4a local-multi USE enrichment — `Translate.flushLocalMultiEnrich`.
+{-| Checks that, once the solver engine has monomorphized a program with
+lambda-set specialization on, each use of a let-bound name carries the
+lambda-set annotations of the definition it refers to. A use left with ⊤ where
+its definition has a set is still sound, only less precise, so the compiled
+program would not show the loss.
 
-Since 2026-09-04 the overlay of a let-function's instance annotations onto
-its use sites is DEFERRED to the outermost let-function of the item and done
-in one lexically scoped walk (the per-let `traverseExpr` walks were 68 % of
-the self-compile's dispatch). The pin is the observable property the old
-scheme established and the new one must reproduce: under the solver with LSS
-on, every use of a `MonoDef`-bound local function carries its binding's
-annotations — `t == overlayAnnotations t (typeOf rhs)` — in each shape the
-deferral had to get right:
+A lambda-set annotation, defined in `Compiler.AST.Monomorphized`, says which
+function values can flow through an arrow of a function type; an `LSet` lists
+the ones that can flow, and ⊤ means the analysis could not bound the set. The
+solver translates the body of a `let` that binds a function before the function
+itself, so each use is emitted with a type whose annotations can be weaker than
+those of the instance it is bound to. Only afterwards is the right-hand side
+translated, once for each type the function is used at, giving one definition
+per instance (`f`, `f$1`, ...), or once at its declared type if it is unused; a
+tail-recursive function gets a single definition. Copying each instance's
+annotations onto its uses is _use enrichment_, and `flushLocalMultiEnrich` in
+`Compiler.MonoSolver.Translate` does it. What matters here is that a
+let-function in the body of another hands its enrichment to the enclosing one,
+so that the outermost does it for all of them in a single walk of its body. The
+fixtures are nesting shapes that this walk has to get right.
 
-  - a chain of nested let-functions (inner lets defer to the outer walk);
-  - a let-function inside another's RHS (walked at its own completion, the
-    outer stack entry having been popped);
-  - sibling scopes reusing one name for a function and a plain value;
-  - an alias whose RHS is a bare use of the enclosing function;
-  - a tail-recursive local (pushes the same stack) with a nested let-function;
-  - a lambda capturing a let-function;
-  - a five-deep chain used at two types on several levels.
+The property checked is this: for a use `MonoVarLocal n t` in the body of a
+`let` whose definition is `MonoDef n rhs`,
+`Mono.overlayAnnotations t (Mono.typeOf rhs)` equals `t`, that is, copying the
+definition's annotations onto the use's type changes nothing. Every `MonoDef` is
+bound, plain values as well as functions, and only for the body of its `let`,
+not for its own right-hand side. A `MonoTailDef` binds nothing in the check, so
+uses of its name are not checked. Every node of the output graph is walked, not
+only `testValue`.
 
-Each test also asserts the fixture is non-vacuous: at least one checked use
-binds to an instance whose head annotation is a real set.
+Each fixture is a module `Test` whose `testValue` is the expression shown in the
+fixture's docstring. Every test goes through `pin`, and passes when the pipeline
+succeeds, no checked use disagrees with its definition, and at least one checked
+use refers to a definition whose type has an `LSet` on its outermost arrow, so
+that a case cannot pass only because every annotation is ⊤.
+
+  - Test 1, `nestedChain`: three let-functions, each in the body of the one
+    before and calling it, with the innermost used at two types and the
+    outermost also used directly.
+  - Test 2, `rhsNested`: a let-function defined inside another's right-hand
+    side rather than its body, with the outer one used at two types.
+  - Test 3, `siblings`: two `case` branches that each bind `f`, one to a
+    function used at two types and the other to a number, so that each
+    branch's uses are compared with its own `f`.
+  - Test 4, `aliasUse`: a `let` whose right-hand side is a bare use of an
+    enclosing let-function, with both names used.
+  - Test 5, `tailNested`: a local function that calls itself in tail position,
+    with a let-function used at two types in its body.
+  - Test 6, `inLambda`: a let-function used at two types inside a lambda passed
+    to `List.map`.
+  - Test 7, `deepChain`: a chain of five let-functions, with `e`, `c` and `a`
+    used in the innermost body.
+
+Among what is not tested: the substitution engine, or the solver with
+lambda-set specialization off; whether the sets are the right ones, rather than
+the same on the use as on the definition; uses of a name inside its own
+right-hand side; names bound by a `MonoTailDef` or by destructuring.
 
 -}
 
@@ -55,6 +90,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The seven enrichment tests, one per fixture.
+-}
 suite : Test
 suite =
     Test.describe "E4a local-multi use enrichment survives the deferred single walk"
@@ -68,6 +105,15 @@ suite =
         ]
 
 
+{-| Builds the test named `label` that monomorphizes `fixture` and checks the
+graph with `check`.
+
+It fails with the pipeline's message if any stage of the pipeline fails, with
+every disagreeing use if there are any, and as vacuous if no checked use refers
+to a definition with an `LSet` on its outermost arrow. The vacuous message lists
+each `MonoDef` the walk met, with its right-hand side's type, in the order met.
+
+-}
 pin : String -> Src.Module -> Test
 pin label fixture =
     Test.test label <|
@@ -91,6 +137,11 @@ pin label fixture =
                         Expect.pass
 
 
+{-| Monomorphizes `srcModule` with the solver engine, under the default
+specialization limits and the default lambda-set configuration with `enabled`
+set, and returns the graph before global optimization. `enabled` is already on
+in the default.
+-}
 run : Src.Module -> Result String Mono.MonoGraph
 run srcModule =
     let
@@ -104,10 +155,22 @@ run srcModule =
 -- ====== THE PROPERTY ======
 
 
+{-| What `check` has gathered so far from a graph.
+
+`violations` holds one message per use whose type copying the definition's
+annotations would change, newest first. `enriched` counts the uses that agree
+with their definition and whose definition has an `LSet` on its outermost arrow.
+`defs` names each `MonoDef` met, with its right-hand side's type, newest first.
+
+-}
 type alias Found =
     { violations : List String, enriched : Int, defs : List String }
 
 
+{-| Returns what `checkExpr` finds in every expression of every node of the
+graph, each walked with no names bound. Only define, tail-function and port
+nodes hold expressions.
+-}
 check : Mono.MonoGraph -> Found
 check (Mono.MonoGraph data) =
     Array.foldl
@@ -123,8 +186,18 @@ check (Mono.MonoGraph data) =
         data.nodes
 
 
-{-| Lexically scoped: a `MonoDef` binds its name for its BODY only (the old
-walk never covered a group's own RHSs); tail defs are never enriched.
+{-| Adds to `acc` what is found in `expr`, given `env`, which maps each name
+bound by an enclosing `MonoDef` to the type of its right-hand side.
+
+A use of a name in `env` is recorded as a violation if overlaying the
+definition's annotations changes its type, and otherwise counted in `enriched`
+when the definition's outermost arrow has an `LSet`. A use of any other name is
+ignored. A `MonoDef` is checked under `env` and binds its name for the `let`
+body only. A `let` of a `MonoTailDef`, like every other expression, has its
+children walked under the same `env`, so its name is never bound. Nothing is
+removed from `env` either, so a lambda parameter or destructured name is not
+told apart from an enclosing `MonoDef` of the same name.
+
 -}
 checkExpr : Dict.Dict String Mono.MonoType -> Mono.MonoExpr -> Found -> Found
 checkExpr env expr acc =
@@ -156,6 +229,9 @@ checkExpr env expr acc =
             List.foldl (checkExpr env) acc (MonoTraverse.childrenOf expr)
 
 
+{-| Returns whether `t` is a function type whose outermost arrow is annotated
+with an `LSet`, of any size, the empty set included.
+-}
 headIsSet : Mono.MonoType -> Bool
 headIsSet t =
     case t of
@@ -166,6 +242,8 @@ headIsSet t =
             False
 
 
+{-| Returns 1 for `True` and 0 for `False`.
+-}
 boolToInt : Bool -> Int
 boolToInt b =
     if b then
@@ -175,6 +253,10 @@ boolToInt b =
         0
 
 
+{-| Returns the expression a node holds: the body of a define or a tail
+function, or a port's expression. Constructor, enum, extern and effect-manager
+leaf nodes hold none.
+-}
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
 nodeExprs node =
     case node of
@@ -207,17 +289,39 @@ nodeExprs node =
 -- ====== FIXTURES ======
 
 
+{-| Builds a let definition of a function `name` with one parameter, the
+variable `param`.
+-}
 fn : String -> String -> Src.Expr -> Src.Def
 fn name param body =
     define name [ pVar param ] body
 
 
+{-| Builds a call of the unqualified name `f` with the single argument `arg`.
+-}
 call1 : String -> Src.Expr -> Src.Expr
 call1 f arg =
     callExpr (varExpr f) [ arg ]
 
 
-{-| let a x = x in let b y = a y in let c z = b z in (c 1, (c True, a [2]))
+{-| A module whose `testValue` is a chain of three let-functions, the
+innermost used at an integer literal and at `Bool` and the outermost at a
+list:
+
+    let
+        a x =
+            x
+    in
+    let
+        b y =
+            a y
+    in
+    let
+        c z =
+            b z
+    in
+    ( c 1, ( c True, a [ 2 ] ) )
+
 -}
 nestedChain : Src.Module
 nestedChain =
@@ -233,7 +337,20 @@ nestedChain =
         )
 
 
-{-| let wrap v = (let pick p = p in (pick v, pick True)) in (wrap 1, wrap False)
+{-| A module whose `testValue` has a let-function, `pick`, inside the right-hand
+side of another, `wrap`. `wrap` is used at an integer literal and at `Bool`, and
+`pick` at `wrap`'s argument and at `Bool`:
+
+    let
+        wrap v =
+            let
+                pick p =
+                    p
+            in
+            ( pick v, pick True )
+    in
+    ( wrap 1, wrap False )
+
 -}
 rhsNested : Src.Module
 rhsNested =
@@ -249,9 +366,30 @@ rhsNested =
         )
 
 
-{-| case True of
-True -> let f x = x in f 1 + (if f True then 1 else 0)
-False -> let f = 2 in f + f
+{-| A module whose `testValue` binds `f` in two `case` branches, to a function
+used at an integer literal and at `Bool` in one and to a number in the other:
+
+    case True of
+        True ->
+            let
+                f x =
+                    x
+            in
+            f 1
+                + (if f True then
+                    1
+
+                   else
+                    0
+                  )
+
+        False ->
+            let
+                f =
+                    2
+            in
+            f + f
+
 -}
 siblings : Src.Module
 siblings =
@@ -271,12 +409,21 @@ siblings =
         )
 
 
-{-| let base x = x in let same = base in (same 1, (same True, base [2]))
+{-| A module whose `testValue` has a let, `same`, whose right-hand side is a
+bare use of the enclosing let-function `base`:
 
-The alias's own instances are re-translated under a fresh-store demand and
-carry ⊤ heads (the recorded RHS type is the un-enriched use of `base` — the
-old per-let scheme's order, reproduced by the deferral), so the direct
-two-type use of `base` is what makes the pin non-vacuous.
+    let
+        base x =
+            x
+    in
+    let
+        same =
+            base
+    in
+    ( same 1, ( same True, base [ 2 ] ) )
+
+`base` is also used directly, at a list, so the case has a checked use of
+`base` itself and not only of `same`.
 
 -}
 aliasUse : Src.Module
@@ -291,8 +438,30 @@ aliasUse =
         )
 
 
-{-| let go acc i = if i <= 0 then acc else (let step k = k in go (acc + step i) (if step True then i - 1 else 0))
-in go 0 3
+{-| A module whose `testValue` has a local function `go` that calls itself
+in tail position, with a let-function `step` used at `go`'s number argument
+and at `Bool` in its body:
+
+    let
+        go acc i =
+            if i <= 0 then
+                acc
+
+            else
+                let
+                    step k =
+                        k
+                in
+                go (acc + step i)
+                    (if step True then
+                        i - 1
+
+                     else
+                        0
+                    )
+    in
+    go 0 3
+
 -}
 tailNested : Src.Module
 tailNested =
@@ -315,7 +484,15 @@ tailNested =
         )
 
 
-{-| let show v = v in List.map (\\x -> (show x, show True)) [1, 2]
+{-| A module whose `testValue` uses a let-function at an integer and at
+`Bool` inside a lambda passed to `List.map`:
+
+    let
+        show v =
+            v
+    in
+    List.map (\x -> ( show x, show True )) [ 1, 2 ]
+
 -}
 inLambda : Src.Module
 inLambda =
@@ -329,8 +506,32 @@ inLambda =
         )
 
 
-{-| let a x = x in let b x = a x in let c x = b x in let d x = c x in let e x = d x
-in (e 1, (e True, (c False, a 3)))
+{-| A module whose `testValue` is a chain of five let-functions, each calling
+the one before, with `e` used at an integer literal and at `Bool`, `c` at
+`Bool` and `a` at an integer literal:
+
+    let
+        a x =
+            x
+    in
+    let
+        b x =
+            a x
+    in
+    let
+        c x =
+            b x
+    in
+    let
+        d x =
+            c x
+    in
+    let
+        e x =
+            d x
+    in
+    ( e 1, ( e True, ( c False, a 3 ) ) )
+
 -}
 deepChain : Src.Module
 deepChain =

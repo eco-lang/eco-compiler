@@ -1,15 +1,39 @@
 module TestLogic.Monomorphize.MonoCtorLayoutIntegrity exposing (expectMonoCtorLayoutIntegrity, Violation)
 
-{-| Test logic for MONO\_013: Constructor layouts define consistent custom types.
+{-| Checks the constructor shapes of a monomorphized graph, so that a
+constructor node whose name and tag no listed shape has, or a shape whose heap
+layout unboxes a field that cannot be unboxed, fails a test. The violation
+messages call this invariant MONO\_013.
 
-For each custom type and each constructor in MonoGraph.ctorShapes:
+Two terms are owned elsewhere. A _constructor shape_ (`Mono.CtorShape`) is a
+constructor's name, its tag, and the types of its fields after
+monomorphization; the graph's `ctorShapes` table holds lists of shapes keyed
+by type. A _constructor layout_ (`Types.CtorLayout`) is what
+`Types.computeCtorLayout` makes of a shape: one entry per field, each saying
+whether the field is stored unboxed.
 
-  - Verify CtorShape ↔ CtorLayout consistency (field count, ordering, unboxed flags).
-  - Check that MonoCtor nodes reference shapes that exist in ctorShapes.
-  - Verify unboxed flags are valid (only Int, Float, Char can be unboxed).
+The fixture is whatever source module the caller passes.
+`expectMonoCtorLayoutIntegrity` runs it through `TestPipeline.runToMono`,
+which monomorphizes with the substitution engine (see that function's
+docstring), and fails with its message if `runToMono` returns an error.
+Otherwise it applies two checks to the resulting graph and fails with every
+violation they find:
 
-Note: MVar types in fieldTypes are allowed for polymorphic types, as long as
-they are marked as boxed (isUnboxed = False).
+  - Every shape in `ctorShapes`, under every type key, is given to
+    `Types.computeCtorLayout`. The layout must have as many fields as the shape
+    has field types, and a field may be marked unboxed only if its type is
+    `Int`, `Float` or `Char`. As `computeCtorLayout` stands, neither check can
+    fail: it makes one field per field type, and unboxes a field only when
+    `Types.canUnbox` accepts its type, which it does for the same three types.
+  - Every `MonoCtor` node in the graph must have a shape whose name and tag
+    match those of some shape in `ctorShapes`. The match ignores the type key a
+    shape is listed under and its field types, so a shape with the same name
+    and tag listed under any custom type satisfies it.
+
+Among what is not tested: the order of a layout's fields, its unboxed bitmap
+and count, the boxing of fields from the twenty-fifth on, whether a shape
+agrees with the constructor's source definition, and anything inside an
+expression body, such as a call of a constructor or a pattern match on one.
 
 @docs expectMonoCtorLayoutIntegrity, Violation
 
@@ -25,7 +49,9 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Violation record for reporting issues.
+{-| One failed check. `context` names what was checked: a constructor shape
+with the type it is listed under, or a constructor node as `SpecId` and its
+position in the graph's node array.
 -}
 type alias Violation =
     { context : String
@@ -33,7 +59,11 @@ type alias Violation =
     }
 
 
-{-| MONO\_013: Verify constructor layouts are consistent.
+{-| Runs `srcModule` through `TestPipeline.runToMono` and passes if the
+resulting graph's constructor shapes meet both checks the module docstring
+describes. It fails with the pipeline's error if `runToMono` returns one, and
+otherwise with every violation found, each as its context and message,
+separated by blank lines.
 -}
 expectMonoCtorLayoutIntegrity : Src.Module -> Expectation
 expectMonoCtorLayoutIntegrity srcModule =
@@ -53,23 +83,23 @@ expectMonoCtorLayoutIntegrity srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check constructor layout consistency for all custom types in the MonoGraph.
+{-| Returns the violations of both checks on a graph: those of the shapes'
+layouts first, then those of the constructor nodes.
 -}
 checkMonoCtorLayoutIntegrity : Mono.MonoGraph -> List Violation
 checkMonoCtorLayoutIntegrity (Mono.MonoGraph data) =
     let
-        -- Part 1: Check CtorShape ↔ CtorLayout consistency
         layoutViolations =
             checkCtorShapesAgainstLayouts data.ctorShapes
 
-        -- Part 2: Check all MonoCtor nodes use known shapes
         nodeViolations =
             checkCtorNodesUseKnownShapes data.ctorShapes data.nodes
     in
     layoutViolations ++ nodeViolations
 
 
-{-| Format violations as a readable string.
+{-| Joins violations into one failure message, each as its context, a colon
+and its message, separated by blank lines.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
@@ -84,7 +114,8 @@ formatViolations violations =
 -- ============================================================================
 
 
-{-| Check all CtorShapes produce valid CtorLayouts via Types.computeCtorLayout.
+{-| Returns the layout violations of every shape in `ctorShapes`, giving each
+shape's type key, as `Mono.monoTypeToDebugString` prints it, in its context.
 -}
 checkCtorShapesAgainstLayouts : Mono.LayoutMap (List Mono.CtorShape) -> List Violation
 checkCtorShapesAgainstLayouts ctorShapes =
@@ -96,7 +127,10 @@ checkCtorShapesAgainstLayouts ctorShapes =
         ctorShapes
 
 
-{-| Check a single CtorShape produces a valid CtorLayout.
+{-| Returns the violations of the layout `Types.computeCtorLayout` makes of
+`shape`: a field count that differs from the shape's, and any field marked
+unboxed whose type cannot be. `typeKey` is the printed type the shape is
+listed under, and is used only in the context.
 -}
 checkShapeAgainstLayout : String -> Mono.CtorShape -> List Violation
 checkShapeAgainstLayout typeKey shape =
@@ -107,7 +141,6 @@ checkShapeAgainstLayout typeKey shape =
         context =
             "CtorShape " ++ shape.name ++ " (type: " ++ typeKey ++ ")"
 
-        -- Check field count consistency
         fieldCountViolations =
             if List.length shape.fieldTypes /= List.length layout.fields then
                 [ { context = context
@@ -122,14 +155,14 @@ checkShapeAgainstLayout typeKey shape =
             else
                 []
 
-        -- Check unboxed flags are valid
         unboxedViolations =
             checkUnboxedFlags context layout.fields
     in
     fieldCountViolations ++ unboxedViolations
 
 
-{-| Check that unboxed flags are only set for Int, Float, Char.
+{-| Returns one violation, with `context`, for each of `fields` that is marked
+unboxed although `isUnboxable` rejects its type.
 -}
 checkUnboxedFlags : String -> List Types.FieldInfo -> List Violation
 checkUnboxedFlags context fields =
@@ -152,7 +185,9 @@ checkUnboxedFlags context fields =
         fields
 
 
-{-| Check if a MonoType can be unboxed (only Int, Float, Char).
+{-| Tells whether a field of this type may be stored unboxed, which is so for
+`Int`, `Float` and `Char` and for nothing else. It is a copy of the rule, not a
+call of `Types.canUnbox`, which currently accepts the same three types.
 -}
 isUnboxable : Mono.MonoType -> Bool
 isUnboxable monoType =
@@ -170,7 +205,9 @@ isUnboxable monoType =
             False
 
 
-{-| Convert a MonoType to a string for error messages.
+{-| Returns a short, Elm-like rendering of a type for a failure message. A
+record prints as `{ ... }`, a custom type as its bare name without its
+arguments, and a type variable as `MVar(n)`, where `n` is its id.
 -}
 monoTypeToString : Mono.MonoType -> String
 monoTypeToString monoType =
@@ -218,7 +255,9 @@ monoTypeToString monoType =
 -- ============================================================================
 
 
-{-| Check all MonoCtor nodes reference shapes that exist in ctorShapes.
+{-| Returns a violation for each `MonoCtor` node in `nodes` whose shape
+`shapeExistsInDict` does not find in `ctorShapes`, naming the node as `SpecId`
+and its position in `nodes`. Empty slots and other kinds of node are skipped.
 -}
 checkCtorNodesUseKnownShapes :
     Mono.LayoutMap (List Mono.CtorShape)
@@ -258,7 +297,8 @@ checkCtorNodesUseKnownShapes ctorShapes nodes =
         |> Tuple.second
 
 
-{-| Check if a CtorShape exists in the ctorShapes dictionary.
+{-| Tells whether any shape in `ctorShapes`, under any type key, has the name
+and tag of `targetShape`. Field types are not compared.
 -}
 shapeExistsInDict : Mono.CtorShape -> Mono.LayoutMap (List Mono.CtorShape) -> Bool
 shapeExistsInDict targetShape ctorShapes =

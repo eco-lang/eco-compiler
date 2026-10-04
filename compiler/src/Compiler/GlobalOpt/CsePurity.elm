@@ -8,28 +8,35 @@ module Compiler.GlobalOpt.CsePurity exposing
     , safeSpecCount
     )
 
-{-| Shared purity oracle for Mono-level CSE (kernel-opt-13, executing
-`plans/cse-pure-calls.md` carve-out 3).
+{-| Common subexpression elimination (CSE) merges structurally equal
+expressions into one shared value, and this module decides which calls it may
+merge without changing what the program does.
 
-Two questions, and the second is the one the outline left implicit:
+CSE aims to merge only calls whose repeated evaluation cannot be observed, and
+this module approximates that. Two kinds of callee need two kinds of answer.
 
-1.  **Is this kernel call CSE-safe?** Answered by kernel-opt-07's audited
-    `cseSafe` bit. Whitelist discipline: an unlisted kernel is NOT safe.
-2.  **Is this call to a global spec CSE-safe?** This needs a TRANSITIVE answer,
-    because a user function that internally `Debug.log`s is not safe even though
-    its own call node looks innocent. `analyze` computes that as a fixpoint over
-    the spec graph and hands back a `BitSet` of safe spec ids.
+A kernel, a function implemented outside Elm, is judged by its row in
+`Compiler.GlobalOpt.KernelFacts`: it is accepted only if `hoistableFor` is
+`True`, and an unlisted kernel is not.
 
-**Why the graph's own caches are not used.** `MonoGraph` carries `callEdges`,
-`specHasEffects` and `specValueUsed`, and all three are DEAD at this point in
-the pipeline: `MonoInlineSimplify.optimize` rebuilds the graph with them empty
-and runs before GlobalOpt. Reading them here would classify every spec as
-Debug-free — an unsound-optimistic oracle. Do not "optimize" `analyze` by
-consulting them, and do not repopulate them.
+A global spec, one specialization of a top-level Elm definition, is judged
+transitively, because a function that calls `Debug.log` somewhere inside it
+looks as innocent at its call site as one that does not. `analyze` therefore
+works over the whole spec graph. It gives each spec with a body a direct
+verdict, which is that the body mentions no `Debug` kernel outside closure
+captures, and records every global spec the body mentions as a callee outside
+closure captures. It then repeatedly marks unsafe any spec with an unsafe
+callee, until nothing changes. Unsafety, the _poison_, travels from callee to
+caller, and a spec only ever moves from safe to unsafe, so this terminates. The
+direct verdict looks for `Debug` and nothing else: a spec whose body calls some
+other kernel with effects is not poisoned by it.
 
-`OPT_DEBUG_ORDER_001` D-2 is enforced BY CONSTRUCTION here: any spec that can
-reach a `Debug.*` kernel is unsafe, and a direct `Debug.*` reference is unsafe,
-so no merge this oracle licenses can change how many log lines are emitted.
+`analyze` finds the call edges itself from the spec bodies and does not read
+the graph's `callEdges`, `specHasEffects` or `specValueUsed`.
+
+The rest of the module is a cost measure, `costOf`, and a use counter,
+`countLocalUses`. The child traversal `foldChildren` is shared by `scanBody`,
+`isSafeExpr` and `countLocalUses`; `costOf` walks expressions separately.
 
 -}
 
@@ -41,30 +48,23 @@ import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Dict exposing (Dict)
 
 
-{-| Two different questions, and conflating them is a miscompile.
+{-| The answers `analyze` computes for one graph: two sets of spec ids, for two
+different questions.
 
-`safeSpecs` answers **"can evaluating this reach `Debug`?"** — the
-`OPT_DEBUG_ORDER_001` D-2 question the `List.map` template's licence asks. A
-CONSTRUCTION cannot reach `Debug`, so ctor and enum specs belong here.
+`safeSpecs` holds the specs in which no `Debug` kernel was found, directly or
+through the global specs they mention, outside closure captures and function
+values passed in. Constructor and enumeration specs are in it. This set is
+sound for the `List.map` template only together with that template's own rule
+about arguments, in `Compiler.GlobalOpt.MapTemplate`.
 
-`mergeableSpecs` answers **"may two structurally equal occurrences of this
-become ONE value?"** — what MonoCse asks. A construction may NOT: allocation
-identity is observable through `==`'s pointer-equality fast path, so merging
-two `Point nan nan` allocations makes them compare EQUAL when `NaN == NaN`
-must be `False`. Measured: seeding constructions into the merge oracle turned
-`ContainerEqualityCustomFloatTest` red under `ECO_CSE=1` (2026-08-15) — the
-same NaN-sharing class that reverted the MLIR CSE flip in Run R.
+`mergeableSpecs` holds the specs two structurally equal calls of which may
+become one value. It is computed in the same way but leaves out constructor
+and enumeration specs. Merging two constructions makes two allocations one, and
+equality compares by pointer before it compares contents, so two merged values
+holding `NaN` would compare equal where two separate ones do not.
 
-`mergeableSpecs` is therefore the pre-2026-08-15 fixpoint, unchanged, and CSE
-behaviour is bit-identical to before the split.
-
-Both are `BitSet`, not `Set Int`: spec ids are a dense range `[0, nodeCount)`,
-so each set is allocated at its exact width up front and the fixpoint's inner
-question — "is every callee still safe?" — becomes an array index rather than a
-tree walk. This needed two things of `BitSet`. `remove` already existed and was
-merely unexposed. A cardinality turned out not to be needed at all: `settle`
-detects its own fixpoint with a changed flag, and the only surviving count is
-the census line below, which is cheaper to popcount on demand than to maintain.
+A spec id absent from either set is unsafe for that question, including the id
+of a `MonoExtern` or `MonoManagerLeaf` spec, which is never in either.
 
 -}
 type alias Oracle =
@@ -73,7 +73,7 @@ type alias Oracle =
     }
 
 
-{-| Number of specs classified safe; for the census line.
+{-| Returns the number of specs in `safeSpecs`.
 -}
 safeSpecCount : Oracle -> Int
 safeSpecCount oracle =
@@ -81,12 +81,11 @@ safeSpecCount oracle =
 
 
 
--- KERNEL AXIS
+-- KERNEL CALLS
 
 
-{-| A kernel call is CSE-safe iff kernel-opt-07's audit says so. `hoistable` is
-`cseSafe`; the key form folds in the whitelist default (unlisted ⇒ False), which
-is exactly the carve-out-3 requirement.
+{-| Returns whether the kernel `name` in module `home` may be merged, which is
+its `KernelFacts` row's `hoistable` fact, and `False` for an unlisted kernel.
 -}
 kernelCseSafe : Name -> Name -> Bool
 kernelCseSafe home name =
@@ -94,14 +93,16 @@ kernelCseSafe home name =
 
 
 
--- SPEC AXIS (transitive)
+-- GLOBAL SPECS
 
 
-{-| Classify every spec by whether evaluating it can be observed.
+{-| Builds the `Oracle` for a graph.
 
-One pass builds each spec's direct verdict plus its callee set; a fixpoint then
-poisons any spec that reaches an unsafe one. Poison travels callee → caller, so
-the fixpoint is monotone and terminates: a spec only ever moves safe → unsafe.
+A spec with a body starts in both sets when its body mentions no `Debug`
+kernel outside closure captures. A constructor or enumeration spec starts in
+`safeSpecs` only. Any other spec, and an empty slot in the graph, starts in
+neither. Each set is then reduced separately: a spec with a body is removed
+while any spec its body mentions is absent, until a full pass removes nothing.
 
 -}
 analyze : Mono.MonoGraph -> Oracle
@@ -110,13 +111,6 @@ analyze (Mono.MonoGraph g) =
         noSpecs =
             BitSet.fromSize (Array.length g.nodes)
 
-        -- Pass 1: direct verdict + callee edges, per spec.
-        --
-        -- The two seeds are accumulated side by side rather than unioned at the
-        -- end. They differ only in whether constructions are in, so seeding
-        -- each spec directly into the sets it belongs to costs one extra
-        -- `insert` on the specs they share, and spares `BitSet` a `union` that
-        -- would have no other caller.
         scan =
             Array.foldl
                 (\maybeNode ( sid, acc ) ->
@@ -127,36 +121,6 @@ analyze (Mono.MonoGraph g) =
                         Just node ->
                             case bodyOf node of
                                 Nothing ->
-                                    -- Bodiless specs. `MonoCtor`/`MonoEnum`
-                                    -- ARE observation-free — a construction
-                                    -- cannot reach `Debug` — so they seed the
-                                    -- safe set with no edges. `MonoExtern` is
-                                    -- opaque and `MonoManagerLeaf` is an
-                                    -- effect stub: both stay absent, which is
-                                    -- permanent poison, as intended.
-                                    --
-                                    -- The previous comment claimed nothing
-                                    -- calls these as specs "so the
-                                    -- conservative answer costs nothing".
-                                    -- Both clauses were false: `scanBody`
-                                    -- records a callee edge for ANY
-                                    -- `MonoVarGlobal` reference, so merely
-                                    -- MENTIONING a ctor poisoned the
-                                    -- mentioning spec and then every caller.
-                                    -- Measured before this change: safeSpecs
-                                    -- 17,531 of 30,905, and all 50 of the
-                                    -- `List.map` template's
-                                    -- `declinedOpaqueGlobal`.
-                                    --
-                                    -- Seeding them is only SOUND alongside
-                                    -- the template's argument-position taint
-                                    -- rule: un-starving `Maybe.map` unmasks
-                                    -- `\x -> Maybe.map g x`, which was safe
-                                    -- by accident while `Maybe.map` itself
-                                    -- was poisoned. That rule landed
-                                    -- 2026-08-14 (plans/list-map-mlir-template.md
-                                    -- F-4); do not revert one without the
-                                    -- other.
                                     ( sid + 1
                                     , if isPureConstruction node then
                                         { acc | safeSeed = BitSet.insert sid acc.safeSeed }
@@ -182,13 +146,6 @@ analyze (Mono.MonoGraph g) =
                 g.nodes
                 |> Tuple.second
 
-        -- Pass 2: poison to a fixpoint.
-        --
-        -- Termination is a CHANGED FLAG, not a comparison of set sizes. A spec
-        -- only ever moves safe → unsafe, so "did this sweep clear a bit?" is
-        -- already the exact fixpoint test — and it asks nothing of the set
-        -- representation, which is why swapping `Set` for `BitSet` here did not
-        -- need a cardinality operation.
         settle safe =
             let
                 ( next, changed ) =
@@ -214,7 +171,8 @@ analyze (Mono.MonoGraph g) =
     }
 
 
-{-| Seed `sid` into a set when its direct verdict says so.
+{-| Returns `set` with `sid` added when `cond` is `True`, and `set` unchanged
+otherwise.
 -}
 insertIf : Bool -> Int -> BitSet -> BitSet
 insertIf cond sid set =
@@ -225,12 +183,8 @@ insertIf cond sid set =
         set
 
 
-{-| Is this bodiless spec a pure CONSTRUCTION (so, observation-free)?
-
-`MonoCtor` builds a value and `MonoEnum` is a constant; neither can reach
-`Debug`. `MonoExtern` is opaque and `MonoManagerLeaf` runs effects, so both
-must stay unsafe. Nodes WITH bodies never reach here.
-
+{-| Returns whether a node is a `MonoCtor` or a `MonoEnum`, the specs that build
+a value and so cannot reach `Debug`.
 -}
 isPureConstruction : Mono.MonoNode -> Bool
 isPureConstruction node =
@@ -245,6 +199,9 @@ isPureConstruction node =
             False
 
 
+{-| Returns the expression a node is defined by, for a `MonoDefine`, a
+`MonoTailFunc` and the two port kinds, and `Nothing` for every other node.
+-}
 bodyOf : Mono.MonoNode -> Maybe MonoExpr
 bodyOf node =
     case node of
@@ -264,8 +221,13 @@ bodyOf node =
             Nothing
 
 
-{-| One walk: is this body directly observation-free, and which specs does it
-call? "Directly" ignores the callees, which the fixpoint handles.
+{-| Returns whether `root` mentions no `Debug` kernel, and the ids of the
+global specs it mentions, whether called or only referred to.
+
+The walk stops collecting at the first `Debug` kernel, so the list is complete
+only when the verdict is `True`. Expressions inside a closure's captures are
+not visited, as `foldChildren` describes.
+
 -}
 scanBody : MonoExpr -> ( Bool, List Int )
 scanBody root =
@@ -277,8 +239,6 @@ scanBody root =
             else
                 case expr of
                     MonoVarKernel _ _ home name _ ->
-                        -- A bare kernel reference in value position mints a PAP
-                        -- at worst; what matters is whether it is Debug.
                         ( home /= "Debug", callees )
 
                     MonoVarGlobal _ sid _ ->
@@ -293,10 +253,14 @@ scanBody root =
     go root ( True, [] )
 
 
-{-| Is this expression safe to merge with a structurally equal sibling?
+{-| Returns whether an expression may be merged with a structurally equal one.
 
-Conservative and total: every leaf must be inert, every kernel call must be
-audited `cseSafe`, and every global call must land in the oracle's safe set.
+Every kernel it mentions must be `hoistable` in `KernelFacts`, every global spec
+it mentions must be in the oracle's `mergeableSpecs`, and it must contain no
+closure and no tail call. Kernels inside a called global spec are not checked
+here; that spec's place in `mergeableSpecs` stands for them, and it records
+only that no `Debug` kernel was found in that spec or the global specs it
+mentions.
 
 -}
 isSafeExpr : Oracle -> MonoExpr -> Bool
@@ -315,8 +279,6 @@ isSafeExpr oracle root =
                         BitSet.member sid oracle.mergeableSpecs
 
                     MonoClosure _ _ _ ->
-                        -- Creating a closure is pure, but v1 excludes closures
-                        -- from candidacy anyway (different eval frequency).
                         False
 
                     MonoTailCall _ _ _ ->
@@ -328,7 +290,8 @@ isSafeExpr oracle root =
     go root True
 
 
-{-| Candidate test for a CALL specifically — the shape CSE targets.
+{-| Returns `isSafeExpr` for a `MonoCall`, and `False` for any other
+expression.
 -}
 isSafeCall : Oracle -> MonoExpr -> Bool
 isSafeCall oracle expr =
@@ -344,9 +307,12 @@ isSafeCall oracle expr =
 -- COST
 
 
-{-| Transcribed from `MonoInlineSimplify.computeCost` for the constructors v1
-admits, because that function is not exposed. The census and the pass share this
-one definition so the reported histogram and the `minCost` cut cannot disagree.
+{-| Returns an approximate size of an expression.
+
+A list, tuple or record creation costs 3 plus its parts, a call costs 5 plus
+its function and arguments, whatever the callee, and a record access costs 1
+plus its record. Every other expression costs 1, however large it is.
+
 -}
 costOf : MonoExpr -> Int
 costOf expr =
@@ -371,12 +337,15 @@ costOf expr =
 
 
 
--- LIVENESS (kernel-opt-11 ride-along)
+-- LOCAL USES
 
 
-{-| Occurrences of a local name. `MonoInlineSimplify`'s equivalents are not
-reachable: `usesInDefs` is a `let`-local inside `dropDeadDefs` and `countUsages`
-is top-level but not exposed.
+{-| Returns the number of `MonoVarLocal` occurrences of `name` in `root`.
+
+Names are compared without regard to scope, so a reference to a different
+binding with the same name is counted too. References inside a closure's
+captures are not counted, as `foldChildren` describes.
+
 -}
 countLocalUses : Name -> MonoExpr -> Int
 countLocalUses name root =
@@ -396,13 +365,15 @@ countLocalUses name root =
     go root 0
 
 
-{-| Fold `f` over the DIRECT sub-expressions of `expr`, left to right.
+{-| Folds `f` over the immediate sub-expressions of `expr`, left to right.
 
-Written here rather than imported: `Compiler.AST.Monomorphized` exposes no
-generic child traversal, and every consumer in this module wants the same
-shape. Being exhaustive over the constructor list is the point — a new
-`MonoExpr` constructor should break this compile rather than be silently
-skipped by a catch-all that returns the accumulator unchanged.
+A `case` contributes the expressions in its decider's inline leaves and then its
+branches. A `let` contributes the bound expression of its definition and then
+its body. A closure contributes only its body: the expressions it captures are
+not visited.
+
+The match lists every `MonoExpr` constructor, so a new one is a compile error
+here rather than a case silently skipped.
 
 -}
 foldChildren : (MonoExpr -> a -> a) -> a -> MonoExpr -> a
@@ -465,6 +436,10 @@ foldChildren f acc expr =
             List.foldl f acc items
 
 
+{-| Folds `f` over the expressions in a decider's inline leaves, success branch
+before failure branch and tests before fallback. A jump leaf contributes
+nothing.
+-}
 foldDecider : (MonoExpr -> a -> a) -> a -> Mono.Decider Mono.MonoChoice -> a
 foldDecider f acc decider =
     case decider of
@@ -483,6 +458,9 @@ foldDecider f acc decider =
                 fallback
 
 
+{-| Returns the expression a local definition binds, which for a tail
+definition is its body.
+-}
 defBound : Mono.MonoDef -> MonoExpr
 defBound def =
     case def of

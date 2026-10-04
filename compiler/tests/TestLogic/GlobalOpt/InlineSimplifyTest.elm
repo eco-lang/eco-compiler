@@ -1,19 +1,49 @@
 module TestLogic.GlobalOpt.InlineSimplifyTest exposing (suite)
 
-{-| Test suite for the PRE-monomorphization inliner
-(`plans/pre-mono-inline-simplify.md` §6).
+{-| Tests for `Compiler.GlobalOpt.InlineSimplify`, the inliner that runs on the
+typed global graph before monomorphization.
 
-The pass runs on the `TOpt.GlobalGraph`, i.e. BEFORE `MonoSolver`, so these
-tests take `Pipeline.runToMono`'s `globalGraph` — which is exactly the graph
-`Builder.Generate.runMonoOptPipeline` hands to `InlineSimplify.optimize` — and
-call `optimize` on it directly.
+The pass is off by default in a build, and none of the `TestPipeline` stages
+runs it, so without these tests a change that stopped it finding anything to
+inline, made it inline the self-recursive fixture, or made it ignore its size
+threshold would go unnoticed. What a candidate is, and which globals are refused, is
+described in `Compiler.GlobalOpt.InlineSimplify`. In brief, a _candidate_ is a
+top-level function the pass is willing to inline, and the pass reports what it
+did as a `Metrics` record of counters.
 
-What is pinned:
+Every test builds a one-module program, runs `TestPipeline.runToAssigned` on it
+to get the global graph with its type ids assigned, and calls
+`InlineSimplify.optimize` on that graph directly. A pipeline failure fails the
+test. The graph is not quite the one a build hands to the pass: a build with
+alias forwarding and eta-expansion switched on, as they are by default, first
+applies them to it, and a build assigns ids with the flags of the engine it
+uses.
 
-  - the candidate index is non-empty and excludes recursive globals (Step 3);
-  - an exact-arity call to a small global is actually inlined (Step 4);
-  - the pass is a no-op when `preMono` admits nothing (budget 0);
-  - metrics never go negative and the graph keeps every node.
+There are two fixtures. `addOneModule` has a one-parameter `addOne` and a
+`testValue` that calls it with one argument. `countDownModule` has a
+`countDown` that calls itself and a `testValue` that calls it.
+
+What the tests establish:
+
+  - On `addOneModule`, `bodiesSeen` is above zero, so the pass recognised at
+    least one top-level function body.
+  - On `addOneModule`, `candidates` is above zero.
+  - On `countDownModule`, `bodiesSeen` and `candidates` are both zero: the
+    recursive global is never offered to the pass as a body at all.
+  - On `countDownModule`, `inlineCount` is zero.
+  - On `addOneModule`, `inlineCount` is above zero.
+  - On `addOneModule`, `inlinedByCallee` is not empty. Which name it holds is
+    not checked.
+  - On `addOneModule`, the graph has as many nodes after the pass as before.
+  - On `addOneModule` with `preMonoThreshold` set to 0, `candidates` and
+    `inlineCount` are both zero.
+
+Among what is not tested: the rewritten expressions themselves (only counters
+and the node count are read), a polymorphic candidate or a call site that does
+not fix its types, the refusals for function-typed parameters, open records,
+polymorphic kernel references and constrained type variables, a call with the
+wrong number of arguments, mutual recursion, a recursive global the pass does
+see as a body, and the repeated rounds.
 
 -}
 
@@ -44,6 +74,9 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The inliner tests, in three groups: which globals become candidates, what
+is inlined, and the effect of a zero threshold.
+-}
 suite : Test
 suite =
     Test.describe "InlineSimplify (pre-mono)"
@@ -55,20 +88,20 @@ suite =
 
 
 -- ============================================================================
--- CANDIDATES (Step 3)
+-- CANDIDATES
 -- ============================================================================
 
 
+{-| The tests of which globals the pass examines and admits as candidates, and
+that the recursive fixture is not inlined.
+-}
 candidateSuite : Test
 candidateSuite =
     Test.describe "Candidate index"
         [ Test.test "the pass examines top-level bodies at all" <|
             \_ ->
-                -- The denominator whose zero is impossible. `candidates = 0`
-                -- reads identically whether the pass refused everything or
-                -- never matched a node shape at all; `bodiesSeen` separates
-                -- them, and the first version of `buildCandidates` matched
-                -- only `Define`/`Function` and saw almost nothing.
+                -- `candidates = 0` reads the same whether the pass refused
+                -- every body or recognised none; this rules out the second.
                 withMetrics addOneModule
                     (\m ->
                         if m.bodiesSeen > 0 then
@@ -89,12 +122,9 @@ candidateSuite =
                     )
         , Test.test "a recursive global never becomes a candidate" <|
             \_ ->
-                -- Asserted as "no body was even offered", which is what the
-                -- front end actually produces: a self-recursive definition is
-                -- emitted as a `Cycle` node, and `bodyOf` refuses those. The
-                -- `recursiveSkipped` counter exists for the other route — a
-                -- `Define` that reaches itself through the dependency SCC, or
-                -- names itself in its body — and does not fire on this shape.
+                -- The front end puts a self-recursive definition in a `Cycle`
+                -- node, which the pass never takes a body from, so its
+                -- recursion check and `recursiveSkipped` are not reached here.
                 withMetrics countDownModule
                     (\m -> Expect.equal ( 0, 0 ) ( m.bodiesSeen, m.candidates ))
         , Test.test "a recursive global is not inlined" <|
@@ -105,10 +135,12 @@ candidateSuite =
 
 
 -- ============================================================================
--- INLINING (Step 4)
+-- INLINING
 -- ============================================================================
 
 
+{-| The tests of what the pass does to `addOneModule`'s call to `addOne`.
+-}
 inlineSuite : Test
 inlineSuite =
     Test.describe "Inlining"
@@ -147,6 +179,10 @@ inlineSuite =
 -- ============================================================================
 
 
+{-| The test that a `preMonoThreshold` of 0 admits no candidate and inlines
+nothing. Every expression costs at least 1 in the pass's measure of size, so no
+body fits under that threshold.
+-}
 budgetSuite : Test
 budgetSuite =
     Test.describe "Budget"
@@ -174,16 +210,29 @@ budgetSuite =
 -- ============================================================================
 
 
+{-| The inline configuration the tests run the pass with: the default one with
+`preMono` switched on.
+
+`optimize` does not read `preMono` itself, so the setting changes nothing here;
+`preMonoThreshold` and the number of rounds keep their defaults.
+
+-}
 inlineConfig : Config.InlineConfig
 inlineConfig =
     { defaultInline | preMono = True }
 
 
+{-| The default inline configuration from `Compiler.Eco.Config`.
+-}
 defaultInline : Config.InlineConfig
 defaultInline =
     Config.default.inline
 
 
+{-| Runs the pass with `inlineConfig` on the assigned global graph of
+`srcModule` and returns `check` applied to the metrics it reports. A pipeline
+failure fails the expectation with its message.
+-}
 withMetrics : Src.Module -> (InlineSimplify.Metrics -> Expect.Expectation) -> Expect.Expectation
 withMetrics srcModule check =
     case Pipeline.runToAssigned srcModule of
@@ -198,6 +247,11 @@ withMetrics srcModule check =
             check m
 
 
+{-| Runs the pass with `inlineConfig` on the assigned global graph of
+`srcModule` and returns `check` applied to the graph before the pass and the
+graph after it, in that order. A pipeline failure fails the expectation with
+its message.
+-}
 withGraphs :
     Src.Module
     -> (TOpt.GlobalGraph TypeIds.MVarId -> TOpt.GlobalGraph TypeIds.MVarId -> Expect.Expectation)
@@ -215,6 +269,8 @@ withGraphs srcModule check =
             check assigned.graph after
 
 
+{-| Returns the number of nodes in a global graph.
+-}
 nodeCount : TOpt.GlobalGraph TypeIds.MVarId -> Int
 nodeCount (TOpt.GlobalGraph nodes _ _ _ _) =
     Data.Map.size nodes
@@ -226,17 +282,22 @@ nodeCount (TOpt.GlobalGraph nodes _ _ _ _) =
 -- ============================================================================
 
 
-{-| addOne : Int -> Int
-addOne x = x
+{-| A module named `Test` with one small, non-recursive function and one call
+to it with exactly one argument:
+
+    addOne : Int -> Int
+    addOne x =
+        x
 
     testValue : Int
     testValue =
         addOne 41
 
-**No arithmetic on purpose.** The shared test harness leaves bare `TVar`s on
-`Binop` nodes — that is what this suite's pre-existing `POST_010` / `TYPE_007`
-failures report — and `isGround` refuses a body carrying one. A binop fixture
-therefore measures the harness's type coverage, not the inliner.
+Despite its name, `addOne` returns its argument unchanged, and the fixture does
+no arithmetic. The pass never inlines a body with a type variable on one of
+its nodes that the call's argument and result types leave unfixed, so a
+fixture whose arithmetic the test pipeline left with such a variable would
+test the pipeline's typing rather than the inliner.
 
 -}
 addOneModule : Src.Module
@@ -261,21 +322,20 @@ addOneModule =
     makeModuleWithTypedDefsUnionsAliases "Test" [ addOneDef, testValueDef ] [] []
 
 
-{-| countDown : Int -> Int
-countDown n = negate (countDown n)
+{-| A module named `Test` with one self-recursive function and one call to it:
+
+    countDown : Int -> Int
+    countDown n =
+        negate (countDown n)
 
     testValue : Int
     testValue =
         countDown 3
 
-A self-recursive global whose recursive call is NOT in tail position, so it is
-a real `VarGlobal` reference to itself and inlining it would not terminate.
-
-The `negate` wrapper is load-bearing. Written as the tail call
-`countDown n = countDown n`, the front end compiles the recursion into a local
-`Case`/`TailCall` loop with no `VarGlobal` self-reference at all — and such a
-function IS safely inlinable, because the loop is copied along with the body
-and stays self-contained. The guard exists for the non-tail case.
+The recursive call is wrapped in `negate`, so it is not a tail call.
+`countDown` never returns, but the tests only compile the module and never run
+it. The front end puts a self-recursive top-level definition in a `Cycle` node
+whether or not its recursive call is a tail call.
 
 -}
 countDownModule : Src.Module

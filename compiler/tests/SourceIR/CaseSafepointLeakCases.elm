@@ -1,19 +1,52 @@
 module SourceIR.CaseSafepointLeakCases exposing (expectSuite)
 
-{-| Tests for non-tail-recursive case expressions where temporaries inside
-alternative regions leak via definedSsaVars into the parent scope's safepoints.
+{-| Programs for checking that a value defined inside one alternative of a
+`case` is not used after the `case`. In each, a `case` bound by a `let` yields a
+boxed value from each alternative and a heap allocation follows the `case`, and
+each program is handed to an expectation function the caller supplies.
 
-The key pattern: a case expression with alternatives that create temporary
-!eco.value-typed SSA variables (e.g., function calls, string literals),
-followed by a heap allocation that triggers a safepoint.
+When a `case` is lowered to an `eco.case` op, its alternatives are placed in
+that op's regions (or those of nested `eco.case` ops), and an SSA value defined
+inside one region cannot be used outside it. The code generator tracks which
+values are in scope through `varMappings` and `definedSsaVars` in
+`Compiler.Generate.MLIR.Context`. `ctxForSiblingRegion` sets both back to their
+state just before the `eco.case` op at the start of each alternative after the
+first. `ctxAfterBranchOp` sets `varMappings` back to that state after the
+`case`, and `definedSsaVars` to that state plus the result variables of the
+branch construct. If a value defined inside an alternative stayed in scope
+afterwards, an op after the `case` could name it, for example as a GC root hint:
+a live `!eco.value` operand appended to an allocating op, though
+`Context.liveEcoValueVars` currently returns no hints. The "safepoint" in the
+module's name is the point at which an allocation may run the garbage collector.
 
-Unlike IfLetSafepointCases (which targets if-then-else wrapping case),
-these target the direct case expression code paths:
+A `case` that reaches MLIR generation as a case, and whose decision tree tests
+its scrutinee, is lowered by the decision-tree code of
+`Compiler.Generate.MLIR.Expr` as a chain of tests or a fan-out, each with a
+Bool form and a general one (`generateChainForBoolADTWithJumps`,
+`generateChainGeneralWithJumps`, `generateBoolFanOutWithJumps`,
+`generateFanOutGeneralWithJumps`). Which of the four a program reaches depends
+on the decision tree built for it, and nothing here checks which one is used.
 
-  - generateChainForBoolADTWithJumps
-  - generateChainGeneralWithJumps
-  - generateBoolFanOutWithJumps
-  - generateFanOutGeneralWithJumps
+Each program is a module named `Test` built with
+`makeModuleWithTypedDefsUnionsAliases`, which imports `Maybe` among the
+standard modules. The function holding the `case` binds its result in a `let`
+and returns it consed onto `[]`, and `testValue` applies that function to fixed
+arguments. The module builds the programs and asserts nothing itself:
+`expectFn` decides what is checked. The four programs are:
+
+  - a `case` on a `Bool` whose alternatives return parameters
+    (`boolCaseWithAlloc`);
+  - a `case` on a three-constructor enumeration whose alternatives are string
+    literals (`multiCtorCaseWithAlloc`);
+  - a `case` on a `Maybe (Maybe String)` with a nested `case` in its `Just`
+    alternative (`nestedCaseWithAlloc`);
+  - a `case` on a two-constructor type whose alternatives call a local
+    function (`caseWithCallThenAlloc`).
+
+Among what is not tested: an outermost `case` whose result is not bound by a
+`let`, a `case` on an `Int`, `Char` or `String` pattern, an alternative that
+builds a list, record or constructor value, and an allocation after the `case`
+other than `::`.
 
 -}
 
@@ -42,12 +75,22 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Creates one test, titled "Case safepoint leak cases " followed by
+`condStr`, that applies `expectFn` to each of the four programs in turn.
+
+The cases run through `Compiler.BulkCheck.bulkCheck`, so the test reports only
+the first failing case, labelled, and the cases after it do not run.
+
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.test ("Case safepoint leak cases " ++ condStr) <|
         \_ -> bulkCheck (testCases expectFn)
 
 
+{-| Returns the four labelled cases, in the order they run, each applying
+`expectFn` to its program.
+-}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     [ { label = "Bool case with temporaries then allocation", run = boolCaseWithAlloc expectFn }
@@ -57,11 +100,8 @@ testCases expectFn =
     ]
 
 
-{-| Bool case (2-way) where both branches create a temporary, followed
-by a list allocation.
-
-    type Wrapper
-        = Wrap String
+{-| Applies `expectFn` to a program whose `case` is on a `Bool` and returns one
+of two `String` parameters, and whose `testValue` is `f True "hello" "world"`.
 
     f : Bool -> String -> String -> List String
     f flag a b =
@@ -120,8 +160,9 @@ boolCaseWithAlloc expectFn _ =
         )
 
 
-{-| Multi-constructor case (3+ ctors) where alternatives call functions
-that create !eco.value temporaries, followed by allocation.
+{-| Applies `expectFn` to a program whose `case` is on a three-constructor
+enumeration declared in the program, with a string literal in each
+alternative, and whose `testValue` is `colorName Green`.
 
     type Color
         = Red
@@ -197,12 +238,10 @@ multiCtorCaseWithAlloc expectFn _ =
         )
 
 
-{-| Nested case: outer case selects a value, inner case destructures it.
-Both create temporaries. Followed by allocation.
-
-    type Maybe a
-        = Just a
-        | Nothing
+{-| Applies `expectFn` to a program whose `case` is on a `Maybe (Maybe String)`
+and holds a second `case`, on the inner `Maybe`, in its `Just` alternative.
+`Maybe` is the imported one; the program declares no type. Its `testValue` is
+`extract (Just (Just "found")) "missing"`.
 
     extract : Maybe (Maybe String) -> String -> List String
     extract outer fallback =
@@ -273,8 +312,9 @@ nestedCaseWithAlloc expectFn _ =
         )
 
 
-{-| Case with function calls in alternatives (creating !eco.value temporaries),
-followed by record construction (allocation).
+{-| Applies `expectFn` to a program whose `case` is on a two-constructor type
+declared in the program, each alternative binding the constructor's `String`
+and passing it to a call, and whose `testValue` is `describe (Greet "World")`.
 
     type Action
         = Greet String
@@ -286,12 +326,16 @@ followed by record construction (allocation).
             msg =
                 case action of
                     Greet name ->
-                        String.append "Hello, " name
+                        append "Hello, " name
 
                     Farewell name ->
-                        String.append "Goodbye, " name
+                        append "Goodbye, " name
         in
         msg :: []
+
+`append : String -> String -> String` is a top-level function of the program,
+not `String.append`. Its body calls `a` with no arguments, which source text
+cannot write, so it ignores `b` and does not concatenate.
 
 -}
 caseWithCallThenAlloc : (Src.Module -> Expectation) -> (() -> Expectation)

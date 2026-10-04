@@ -1,25 +1,62 @@
 module TestLogic.Monomorphize.LssRegIdentityTest exposing (suite)
 
-{-| REGISTRATION SELF-IDENTITY — `lss.regIdentity`
-(`plans/lss-registration-self-identity.md`).
+{-| Checks the solver engine's registration self-identity stamp. Without these
+tests, a change that kept the stamp from reaching a specialization's stored
+type, or that let it make a function parameter look as if only one function
+could reach it when two can, would go unnoticed.
 
-The registry key is `SpecKey global monoType`: the global is IN the key, so
-the value at the stored type's spine position d is g's spec applied to d
-arguments, by definition. The stamp writes that tautology into the stored
-type's spine annos (⊤/`LVar` only, never over a set), bounded by declared
-arity, with the SAME member ids every other injection path mints.
+Under lambda-set specialization (LSS), every arrow of a `MonoType` carries a
+`Mono.LambdaSetAnno` naming the function values, its _members_, that can flow
+through it: `LSet` (exactly these), `LPartial` (at least these), `LVar` (a
+set variable) or `LTop` (unknown, written ⊤). A set with one member is a
+_singleton_. The _spine_ of a function type is its chain of arrows: depth 0 is
+the arrow taking the first argument, depth 1 the arrow of the function left
+after one argument, and so on.
 
-Pins below follow the arc's differential rule: a flag test proves nothing
-until the arms are shown to differ.
+The stamp rests on one fact. A specialization is registered under its global
+as well as its type, so a value at depth `d` of the stored type is that global
+applied to `d` arguments, whatever the rest of the program does.
+`Compiler.MonoSolver.Translate.stampSelfSpine` therefore writes a singleton
+`LSet` at each depth of the stored type's spine, up to the global's declared
+arity and at least the head arrow, wherever the annotation is not already an
+`LSet`, which it leaves as it is. Some globals, such as raw kernels, effect
+managers and ports, have no member of their own, and their stored types are
+left unstamped.
 
-Two §5 pins are deliberately ABSENT, with reasons:
+`runWith` runs a fixture module through the solver engine with LSS on, and
+the readers below collect annotations from the output graph's registry: the
+stored type of every specialization of a global with a given name. In these
+tests a _set_ is any `LSet`, of any size, including an empty one.
 
-  - never-overwrite: a spine position with a PRE-existing set is not
-    constructible at pipeline level today (this plan exists because spines
-    are ⊤); the `LSet _ -> keep` arm plus the `regid|alreadySet` counter
-    carry it.
-  - subst isolation: `runSubstMonoWithLimits` takes no LSS config at all, so
-    the flag is unreachable there BY TYPE — isolation holds at compile time.
+The tests establish:
+
+  - Test 1 (`plainModule`): every stored function type of `double`
+    (`Int -> Int`) has a set at its head, whatever its size. It fails if
+    `double` has no stored function type.
+  - Test 2a (`plainModule`): every stored function type of `plus2`
+    (`Int -> Int -> Int`, two parameters) has a set at depth 0, and also at
+    depth 1 when the stored type has a second arrow. It fails if `plus2` has
+    no stored function type.
+  - Test 3 (`consModule`, whose `testValue` is `double :: []`): every head
+    annotation of a stored function type of a global named `cons` is `LTop`
+    or a set; `LVar` and `LPartial` fail. `List.cons` is a kernel alias in the
+    test pipeline's graph. The test passes when no such specialization is
+    registered.
+  - Test 4 (`joinModule`): `useIt` takes an `Int -> Int` and is called with
+    `if True then addTo 7 else idf`, so two different function values can
+    reach its parameter. Every function-typed parameter of `useIt`'s stored
+    types must be `LTop`, `LVar`, `LPartial`, or a set of at least two
+    members; a singleton or an empty set fails. It fails if no such
+    parameter is found.
+
+Among what is not tested:
+
+  - That the stamp stops at declared arity. `retModule` has a global, `ret1`,
+    whose type has more arrows than it has parameters, but no test runs it.
+  - That the stamp leaves an existing `LSet` unchanged.
+  - Which members the stamp writes, or that a stamped arrow is a singleton.
+  - The substitution engine, which `TestPipeline.runSubstMonoWithLimits` runs
+    with no LSS configuration at all.
 
 -}
 
@@ -48,6 +85,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The registration self-identity tests, as the module docstring lists them.
+-}
 suite : Test
 suite =
     Test.describe "tautological self-identity at spec registration"
@@ -63,11 +102,6 @@ suite =
                                 Expect.fail "no spec registered for `double` — fixture broken"
 
                             onHeads ->
-                                -- COVERED, not necessarily singleton: the MSET
-                                -- census showed the stamp's `g|` member joining
-                                -- the def's own body-root `l|` member — two ids
-                                -- for the same function, both honest, so the set
-                                -- is a sound 2-set.
                                 if List.all isSet onHeads then
                                     Expect.pass
 
@@ -75,8 +109,6 @@ suite =
                                     Expect.fail ("head expected covered sets, got " ++ describe onHeads)
         , Test.test "2a. ARITY: both spine depths of a 2-ary def are stamped" <|
             \() ->
-                -- `plus2 : Int -> Int -> Int` (arity 2): depth 0 AND depth 1
-                -- are parameters (LSS_013), so both get singleton stamps.
                 case runWith plainModule of
                     Err e ->
                         Expect.fail e
@@ -99,12 +131,6 @@ suite =
                                 )
         , Test.test "3. KERNEL BOUNDARY: a kernel-alias spec's head stays ⊤ (documented residue)" <|
             \() ->
-                -- P0 measured this: the kernel parametricity machinery
-                -- absorbs the stamp at kernel-backed globals. The pin makes
-                -- the boundary INTENTIONAL — if this ever starts passing a
-                -- singleton, the kernel-license interaction changed and the
-                -- plan's residue model must be re-derived, not silently
-                -- enjoyed.
                 case runWith consModule of
                     Err e ->
                         Expect.fail e
@@ -112,26 +138,10 @@ suite =
                     Ok g ->
                         case headAnnos "cons" g of
                             [] ->
-                                -- No cons spec registered in this small
-                                -- program is also acceptable — the pin only
-                                -- constrains it when it exists.
+                                -- Unlike the other tests, finding nothing passes.
                                 Expect.pass
 
                             heads ->
-                                -- ⊤ (the boundary absorbed the stamp — the
-                                -- P0 full-pipeline outcome) and a SINGLETON
-                                -- (the poison did not fire at this scale) are
-                                -- both acceptable. What is NEVER acceptable
-                                -- is a MULTI-set: that is the g|/k| split
-                                -- identity E9.2 exists to prevent, and the
-                                -- stamp reusing the kernel-alias fold is
-                                -- exactly what this pin verifies.
-                                -- ⊤ (the boundary absorbed it), a singleton,
-                                -- or the benign body-root pairing (l| with
-                                -- the k| the fold chose) are all acceptable.
-                                -- `LVar` is not: the stamp targets exactly
-                                -- ⊤/var, so a var surviving at a stampable
-                                -- kernel-alias head means the routing broke.
                                 if List.all (\a -> isTop a || isSet a) heads then
                                     Expect.pass
 
@@ -142,10 +152,6 @@ suite =
                                         )
         , Test.test "4. CO-GATE: a one-sided join is still never a false singleton" <|
             \() ->
-                -- The `LssPapMembersTest` crash shape with `regIdentity = True`
-                -- added: the stamp must not manufacture a false singleton at
-                -- a CONSUMER's parameter (it only writes at spec spines,
-                -- where the inhabitant is tautological).
                 case runWith joinModule of
                     Err e ->
                         Expect.fail e
@@ -171,11 +177,17 @@ suite =
 -- ====== FIXTURES ======
 
 
+{-| The source type `Int -> Int`.
+-}
 hInt : Src.Type
 hInt =
     tLambda (tType "Int" []) (tType "Int" [])
 
 
+{-| A module with two annotated functions that `testValue` calls with all
+their arguments: `double x = x + x`, of type `Int -> Int`, and
+`plus2 a b = a + b`, of type `Int -> Int -> Int`.
+-}
 plainModule : Src.Module
 plainModule =
     makeModuleWithTypedDefs "Test"
@@ -197,6 +209,10 @@ plainModule =
         ]
 
 
+{-| A module whose `ret1 : Int -> Int -> Int` takes one parameter and returns
+`double`, so its type has one more arrow than its parameters. `testValue`
+applies `ret1 0` to `7`. No test uses this module.
+-}
 retModule : Src.Module
 retModule =
     makeModuleWithTypedDefs "Test"
@@ -218,6 +234,10 @@ retModule =
         ]
 
 
+{-| A module whose `testValue`, of type `List (Int -> Int)`, is `double :: []`,
+so the function `double` is passed to `::`, which the test interfaces
+define as `List.cons`.
+-}
 consModule : Src.Module
 consModule =
     makeModuleWithTypedDefs "Test"
@@ -234,6 +254,12 @@ consModule =
         ]
 
 
+{-| A module in which `useIt`, of type `(Int -> Int) -> Int`, applies its
+parameter to `1`, and `testValue` calls it with
+`if True then addTo 7 else idf`. The two branches are different function
+values: a partial application of the two-parameter `addTo`, and the
+identity function `idf`.
+-}
 joinModule : Src.Module
 joinModule =
     makeModuleWithTypedDefs "Test"
@@ -266,12 +292,10 @@ joinModule =
 -- ====== HARNESS ======
 
 
-{-| `lss.regIdentity` was fixed at its default and removed 2026-09-18, so the
-two differentials that toggled it are gone. What they pinned, flag-off: a
-plain def's stored head anno was UNCOVERED (⊤/var), and `ret1`'s beyond-arity
-`/r` arrow was IDENTICAL across the arms — the stamp changes the head and
-never leaks past declared arity (LSS\_013). Solo census with it OFF: `var` ->
-19,131 and ⊤ -> 11,333, artifact +214 KB.
+{-| Runs `srcModule` through the test pipeline to the solver engine's
+monomorphized graph, with the default specialization limits and the default
+LSS configuration, in which LSS is on. An `Err` carries the failing stage's
+message.
 -}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
@@ -288,6 +312,9 @@ runWith srcModule =
 -- ====== READERS ======
 
 
+{-| Returns the stored type of every registered specialization of a global
+named `target`, from any module.
+-}
 demandsOf : String -> Mono.MonoGraph -> List Mono.MonoType
 demandsOf target (Mono.MonoGraph g) =
     Array.foldl
@@ -307,6 +334,9 @@ demandsOf target (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Returns the head annotation of each stored function type of a global named
+`target`. Stored types that are not functions are skipped.
+-}
 headAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 headAnnos target graph =
     List.filterMap
@@ -321,7 +351,9 @@ headAnnos target graph =
         (demandsOf target graph)
 
 
-{-| `( head anno, Maybe depth-1 anno )` of one stored type's spine.
+{-| Returns the annotations at depth 0 and depth 1 of a function type, the
+second being `Nothing` when the type has no arrow at depth 1. A type that is
+not a function gives `Nothing`.
 -}
 spineAnnos : Mono.MonoType -> Maybe ( Mono.LambdaSetAnno, Maybe Mono.LambdaSetAnno )
 spineAnnos t =
@@ -338,7 +370,8 @@ spineAnnos t =
             Nothing
 
 
-{-| Annos at a CONSUMER's parameter positions (the co-gate reading).
+{-| Returns the head annotation of each function-typed parameter taken by the
+outermost arrow of each stored function type of a global named `target`.
 -}
 paramAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 paramAnnos target graph =
@@ -363,11 +396,16 @@ paramAnnos target graph =
         (demandsOf target graph)
 
 
+{-| Tells whether an annotation is `LTop`.
+-}
 isTop : Mono.LambdaSetAnno -> Bool
 isTop a =
     Mono.isTopAnno a
 
 
+{-| Tells whether an annotation is an `LSet` with exactly one member. No test
+uses it.
+-}
 isSingleton : Mono.LambdaSetAnno -> Bool
 isSingleton a =
     case a of
@@ -378,6 +416,9 @@ isSingleton a =
             False
 
 
+{-| Tells whether an optional annotation is an `LSet`. `Nothing`, which
+`spineAnnos` gives for a type with no arrow at depth 1, counts as passing.
+-}
 maybeSet : Maybe Mono.LambdaSetAnno -> Bool
 maybeSet m =
     case m of
@@ -385,11 +426,11 @@ maybeSet m =
             isSet a
 
         Nothing ->
-            -- The stored type has no depth-1 arrow (fully applied demand);
-            -- nothing to assert.
             True
 
 
+{-| Tells whether an annotation is an `LSet`, of any size, including empty.
+-}
 isSet : Mono.LambdaSetAnno -> Bool
 isSet a =
     case a of
@@ -400,6 +441,10 @@ isSet a =
             False
 
 
+{-| Tells whether an annotation leaves room for more than one function: `LTop`,
+`LVar`, `LPartial`, or an `LSet` with at least two members. A singleton or
+an empty `LSet` gives `False`.
+-}
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
     case anno of
@@ -416,11 +461,17 @@ neverFalselyComplete anno =
             List.length ms >= 2
 
 
+{-| Renders a list of annotations for a failure message, each as `describeAnno`
+renders it.
+-}
 describe : List Mono.LambdaSetAnno -> String
 describe annos =
     "[" ++ String.join ", " (List.map describeAnno annos) ++ "]"
 
 
+{-| Renders an optional annotation for a failure message, as `describeAnno`
+does, or says that there is no arrow at depth 1.
+-}
 describeMaybe : Maybe Mono.LambdaSetAnno -> String
 describeMaybe m =
     case m of
@@ -431,6 +482,9 @@ describeMaybe m =
             "(no /r arrow)"
 
 
+{-| Renders an annotation for a failure message: its constructor and, for
+`LVar`, its number, or for `LSet` and `LPartial`, how many members it has.
+-}
 describeAnno : Mono.LambdaSetAnno -> String
 describeAnno anno =
     case anno of

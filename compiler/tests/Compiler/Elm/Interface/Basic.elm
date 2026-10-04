@@ -1,6 +1,50 @@
 module Compiler.Elm.Interface.Basic exposing (testIfaces)
 
-{-| Shared test infrastructure for emulating the interface of elm/core Basics.
+{-| A test program has to be canonicalized against the interfaces of the
+modules it imports, and the test suite has no compiled elm/core, elm/json,
+elm/html, elm/virtual-dom or elm/bytes to take them from. This module builds
+stand-ins for those interfaces by hand and collects them in `testIfaces`.
+
+An interface is what a compiled module offers its importers: its values with
+their type annotations, its unions, its aliases and its operators, together
+with the package the module belongs to (`Compiler.Elm.Interface`). `testIfaces`
+keys each interface by module name, and the canonicalizer pairs that name with
+the interface's package to give the module's home. A test module can import
+only the modules named there: importing any other module crashes
+canonicalization, because the name is looked up with `Utils.Main.dictFind`.
+The exception is a kernel module imported without `as` by a module of a kernel
+package (one authored by `elm`, `elm-explorations` or `eco`); the canonicalizer
+drops such imports.
+
+Most of the file is the `Basics` interface, the only one built here with real
+content. The other interfaces built here (`String`, `Char`, `Array`,
+`Json.Encode`, `Json.Decode`, `Platform.Cmd`, `Platform.Sub`) each declare one
+type with no constructors, and nothing else. The rest come from the sibling
+modules `Compiler.Elm.Interface.List`, `.Maybe`, `.JsArray`, `.Bitwise`,
+`.Tuple`, `.Html` and `.Bytes`.
+
+Every annotation built here quantifies over all the type variables in its
+type. Where elm/core uses a constrained type variable, the annotation uses one
+named `number`, `comparable` or `appendable`; the type checker knows the
+constraint from the name alone, as `Compiler.Data.Name` describes.
+
+These interfaces are not elm/core 1.0.5 or elm/json, and a test that passes
+against them says nothing about the places where they differ:
+
+  - `/` and `//` are typed `number -> number -> number`; elm/core types them
+    `Float -> Float -> Float` and `Int -> Int -> Int`.
+  - There is a `%` operator, standing for `modBy`, which elm/core does not
+    have; `modBy` itself is not a value here.
+  - `>>` is left-associative and `<<` right-associative; elm/core has them the
+    other way round.
+  - `::` is not in `Basics`; it is in the `List` interface.
+  - `Basics` has only the values listed in `basicsValues`, and no `Never`
+    type.
+  - `Bool` declares `False` before `True`, so `False` has constructor index 0;
+    elm/core declares `True | False`.
+  - `Json.Decode.Value` is a separate type from `Json.Encode.Value`; elm/json
+    makes the first an alias of the second.
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -26,7 +70,9 @@ import Dict exposing (Dict)
 -- ============================================================================
 
 
-{-| The Basics module interface containing Bool (True/False), Int, and standard operators.
+{-| The interface of elm/core's `Basics` as test programs see it: the unions of
+`basicsUnions`, the values of `basicsValues` and the operators of
+`standardBinops`, with no aliases.
 -}
 basicsInterface : I.Interface
 basicsInterface =
@@ -39,13 +85,21 @@ basicsInterface =
         }
 
 
-{-| Basic unions: Bool (True/False), Int, and Float.
-String and Char are in their own modules (String.String, Char.Char).
+{-| The unions of the mock `Basics`, keyed by type name.
+
+`Bool` and `Order` are open, so an importer can use their constructors, and
+both are enumerations (`Can.Enum`). `Bool`'s constructors are `False` (index 0)
+and `True` (index 1); `Order`'s are `LT`, `EQ` and `GT`, indexed 0 to 2.
+
+`Int` and `Float` are closed and have no constructors at all, so an importer
+can name the types but has no constructor to build or match one with.
+
+`String` and `Char` are not here; each has its own interface.
+
 -}
 basicsUnions : Dict Name I.Union
 basicsUnions =
     let
-        -- Bool type
         falseC =
             Can.Ctor { name = "False", index = Index.first, numArgs = 0, args = [] }
 
@@ -60,7 +114,6 @@ basicsUnions =
                 , opts = Can.Enum
                 }
 
-        -- Int type (opaque, no constructors exposed)
         intUnion =
             Can.Union
                 { vars = []
@@ -69,7 +122,6 @@ basicsUnions =
                 , opts = Can.Normal
                 }
 
-        -- Float type (opaque, no constructors exposed)
         floatUnion =
             Can.Union
                 { vars = []
@@ -78,7 +130,6 @@ basicsUnions =
                 , opts = Can.Normal
                 }
 
-        -- Order type (LT, EQ, GT)
         ltC =
             Can.Ctor { name = "LT", index = Index.first, numArgs = 0, args = [] }
 
@@ -104,7 +155,14 @@ basicsUnions =
         ]
 
 
-{-| Collect all free type variables from a canonical type.
+{-| Returns the names of the type variables in `tipe`: every `TVar`, every
+record extension variable, and, for an alias, those of its arguments and of its
+body.
+
+For a `Holey` alias, the result includes the names of the alias's own
+parameters that the body mentions, which are bound by the alias rather than
+free in `tipe`. No type built in this module contains an alias.
+
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
@@ -154,12 +212,20 @@ collectFreeVars tipe =
                     Dict.union argVars (collectFreeVars t)
 
 
-{-| Standard binary operators from Basics.
+{-| The operators of the mock `Basics`, keyed by operator symbol. Each names the
+`Basics` function it stands for and carries an annotation, an associativity and
+a precedence.
+
+Names, precedences and associativities are elm/core's, except that `>>` and
+`<<` have their associativities swapped and `%`, standing for `modBy`, has no
+counterpart in elm/core. The types differ from elm/core's only for `/` and
+`//`, both `number -> number -> number` here. `%` is also typed
+`number -> number -> number`.
+
 -}
 standardBinops : Dict Name I.Binop
 standardBinops =
     let
-        -- Type variables
         numberVar =
             Can.TVar "number"
 
@@ -175,11 +241,9 @@ standardBinops =
         bVar =
             Can.TVar "b"
 
-        -- Common types
         boolType =
             Can.TType ModuleName.basics "Bool" []
 
-        -- Helper to create a binop
         binop op funcName tipe assoc prec =
             ( op
             , I.Binop
@@ -190,7 +254,7 @@ standardBinops =
                 }
             )
 
-        -- Number -> Number -> Number
+        -- number -> number -> number
         numBinType =
             Can.tLambda numberVar (Can.tLambda numberVar numberVar)
 
@@ -230,7 +294,7 @@ standardBinops =
             Can.tLambda (Can.tLambda bVar cVar) (Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda aVar cVar))
     in
     Dict.fromList
-        [ -- Arithmetic (precedence 6-7)
+        [ -- Arithmetic
           binop "+" "add" numBinType Binop.Left 6
         , binop "-" "sub" numBinType Binop.Left 6
         , binop "*" "mul" numBinType Binop.Left 7
@@ -239,7 +303,7 @@ standardBinops =
         , binop "^" "pow" numBinType Binop.Right 8
         , binop "%" "modBy" numBinType Binop.Left 7
 
-        -- Comparison (precedence 4)
+        -- Comparison
         , binop "==" "eq" eqType Binop.Non 4
         , binop "/=" "neq" eqType Binop.Non 4
         , binop "<" "lt" compType Binop.Non 4
@@ -247,26 +311,25 @@ standardBinops =
         , binop "<=" "le" compType Binop.Non 4
         , binop ">=" "ge" compType Binop.Non 4
 
-        -- Boolean (precedence 3)
+        -- Boolean
         , binop "&&" "and" boolBinType Binop.Right 3
         , binop "||" "or" boolBinType Binop.Right 2
 
-        -- Append (precedence 5)
+        -- Append
         , binop "++" "append" appendType Binop.Right 5
 
-        -- Note: :: (cons) is defined in List interface only.
-        -- Test modules should import List to use it.
-        -- Pipe (precedence 0)
+        -- Pipe
         , binop "|>" "apR" pipeRType Binop.Left 0
         , binop "<|" "apL" pipeLType Binop.Right 0
 
-        -- Composition (precedence 9)
+        -- Composition
         , binop ">>" "composeR" composeRType Binop.Left 9
         , binop "<<" "composeL" composeLType Binop.Right 9
         ]
 
 
-{-| String module interface - exports the String type.
+{-| The interface of elm/core's `String`: the closed type `String`, with no
+constructors, values or operators.
 -}
 stringInterface : I.Interface
 stringInterface =
@@ -288,7 +351,8 @@ stringInterface =
         }
 
 
-{-| Char module interface - exports the Char type.
+{-| The interface of elm/core's `Char`: the closed type `Char`, with no
+constructors, values or operators.
 -}
 charInterface : I.Interface
 charInterface =
@@ -310,12 +374,12 @@ charInterface =
         }
 
 
-{-| Array module interface - exports the Array type.
+{-| The interface of elm/core's `Array`: the closed type `Array a`, with no
+constructors, values or operators.
 -}
 arrayInterface : I.Interface
 arrayInterface =
     let
-        -- Array a is an opaque type with one type parameter
         arrayUnion =
             Can.Union
                 { vars = [ "a" ]
@@ -333,12 +397,12 @@ arrayInterface =
         }
 
 
-{-| Json.Encode module interface - exports the Value type.
+{-| The interface of elm/json's `Json.Encode`: the closed type `Value`, with no
+constructors, values or operators.
 -}
 jsonEncodeInterface : I.Interface
 jsonEncodeInterface =
     let
-        -- Value is an opaque type with no type parameters
         valueUnion =
             Can.Union
                 { vars = []
@@ -356,12 +420,17 @@ jsonEncodeInterface =
         }
 
 
-{-| Json.Decode module interface - exports the Value type.
+{-| The interface of elm/json's `Json.Decode`: a closed type `Value` of its own,
+with no constructors, values or operators.
+
+This `Value` is a different type from `Json.Encode`'s, so a value of one is
+rejected where the other is expected. In elm/json `Json.Decode.Value` is an
+alias of `Json.Encode.Value`.
+
 -}
 jsonDecodeInterface : I.Interface
 jsonDecodeInterface =
     let
-        -- Value is an opaque type with no type parameters
         valueUnion =
             Can.Union
                 { vars = []
@@ -379,12 +448,12 @@ jsonDecodeInterface =
         }
 
 
-{-| Platform.Cmd module interface - exports the Cmd type.
+{-| The interface of elm/core's `Platform.Cmd`: the closed type `Cmd msg`, with
+no constructors, values or operators.
 -}
 platformCmdInterface : I.Interface
 platformCmdInterface =
     let
-        -- Cmd msg is an opaque type with one type parameter
         cmdUnion =
             Can.Union
                 { vars = [ "msg" ]
@@ -402,12 +471,12 @@ platformCmdInterface =
         }
 
 
-{-| Platform.Sub module interface - exports the Sub type.
+{-| The interface of elm/core's `Platform.Sub`: the closed type `Sub msg`, with
+no constructors, values or operators.
 -}
 platformSubInterface : I.Interface
 platformSubInterface =
     let
-        -- Sub msg is an opaque type with one type parameter
         subUnion =
             Can.Union
                 { vars = [ "msg" ]
@@ -425,7 +494,17 @@ platformSubInterface =
         }
 
 
-{-| Test environment with Basics, List, Maybe, JsArray, Bitwise, Tuple, String, Char, Platform.Cmd, and Platform.Sub module interfaces.
+{-| The interfaces test programs are canonicalized against, keyed by the module
+name an import uses.
+
+There are eighteen: `Basics`, `List`, `Maybe`, `Elm.JsArray`, `Bitwise`,
+`Tuple`, `String`, `Char`, `Array`, `Json.Encode`, `Json.Decode`,
+`Platform.Cmd`, `Platform.Sub`, `VirtualDom`, `Html`, `Bytes`, `Bytes.Encode`
+and `Bytes.Decode`. Each interface names its own package, which together with
+the key gives the module's home. Modules such as `Debug`, `Result`, `Platform`
+and `Dict` are absent, and a test module that imports one crashes
+canonicalization.
+
 -}
 testIfaces : Dict Name I.Interface
 testIfaces =
@@ -451,19 +530,25 @@ testIfaces =
         ]
 
 
-{-| Helper to create a value annotation with collected free vars.
+{-| Makes an annotation for `tipe` that quantifies over every type variable in
+it, as `collectFreeVars` finds them.
 -}
 mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
 
-{-| Basics module function values needed by Array.elm.
+{-| The functions and constants of the mock `Basics`, keyed by name, with their
+annotations. Each annotation has the type elm/core gives that value.
+
+These are the only `Basics` values a test program can use. Among those absent
+are `modBy`, `xor`, `degrees`, `radians`, `turns`, `toPolar`, `fromPolar` and
+`never`.
+
 -}
 basicsValues : Dict Name (Can.Annotation Name)
 basicsValues =
     let
-        -- Type variables
         numberVar =
             Can.TVar "number"
 
@@ -473,7 +558,6 @@ basicsValues =
         bVar =
             Can.TVar "b"
 
-        -- Common types
         intType =
             Can.TType ModuleName.basics "Int" []
 
@@ -543,7 +627,6 @@ basicsValues =
           , mkAnnotation (Can.tLambda numberVar numberVar)
           )
 
-        -- Float constants and math functions
         -- pi : Float
         , ( "pi"
           , mkAnnotation floatType

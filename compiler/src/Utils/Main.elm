@@ -33,10 +33,47 @@ module Utils.Main exposing
     , dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictUnionWith, dictMapM__, dictFromKeysA
     )
 
-{-| Utility module providing data structure utilities, HTTP types, and pure helper functions.
+{-| Stands in for the parts of Haskell's libraries that the compiler was ported
+from, so that code written in their shape runs on the `Eco.*` modules that do
+this program's IO.
 
-IO-related types (FilePath, MVar, ChItem, Stream, ReplSettings, LockSharedExclusive) are
-defined in System.IO.
+Most names here are a Haskell name with a prefix saying where it comes from:
+`fp` for file paths, `dir` for directories, `env` for the environment, `repl`
+for line input, `http` for HTTP errors, and `dict`, `map`, `list` and so on for
+helpers over those structures. Such a name says which Haskell function a value
+stands in for, not that it behaves the same way. Where one differs from what
+its name suggests, its docstring says so.
+
+File paths are plain strings, and the `fp` functions work on their text alone:
+they never ask the file system anything. They take `/` as the only separator.
+`fpIsRelative`, which `fpCombine` uses, is the one place that also recognises
+the Windows forms of an absolute path.
+
+The `dir` and `env` functions, `lockWithFileLock`, the binary file functions
+and the REPL input functions are tasks over `Eco.File`, `Eco.Env` and
+`Eco.Console`, and none of them can fail. Where the operation
+underneath can fail with an `IOError`, the failure crashes the program through
+`System.IO.crashOnError`. `binaryDecodeFileOrFail` is the exception: there, a
+failure to read the file becomes an `Err`.
+
+An _MVar_ is a cell, held outside the program, that is either empty or holds
+one value, as `Eco.MVar` describes. The MVar functions here take an encoder or
+a decoder for what the MVar holds because `Eco.MVar`'s operations do. A
+_channel_ (`Chan`) is an unbounded first-in, first-out queue built from MVars,
+through which concurrent tasks hand values to one another.
+
+`HttpExceptionContent` and the types it is built from describe a failed HTTP
+request, and come with binary codecs.
+
+The rest are pure helpers over `Dict`, `Data.Map`, `List`, `Maybe`, `Result`,
+non-empty lists and `Compiler.Reporting.Result`, most of them traversals. Those
+that take a function giving a `Task` perform the tasks one after another, in
+the order each docstring gives. `find`, `dictFind`, `mapFindMin`,
+`listMaximum`, `foldl1_` and `foldr1` crash the program, through
+`Utils.Crash.crash`, on a missing key or an empty input.
+
+The types `FilePath`, `MVar`, `ChItem`, `Stream`, `ReplSettings` and
+`LockSharedExclusive` used here are defined in `System.IO`.
 
 
 # File Path Operations
@@ -179,21 +216,22 @@ import Utils.Crash exposing (crash)
 import Utils.Task.Extra as Task
 
 
-{-| Lift a Task into the REPL input monad (no-op in this implementation).
+{-| Returns the task as it is, since a `ReplInputT` is a `Task Never`.
 -}
 liftInputT : Task Never () -> ReplInputT ()
 liftInputT =
     identity
 
 
-{-| Lift an IO Task into the REPL input monad (no-op in this implementation).
+{-| Returns the task as it is, since a `ReplInputT` is a `Task Never`.
 -}
 liftIOInputT : Task Never a -> ReplInputT a
 liftIOInputT =
     identity
 
 
-{-| Remove the file name component from a file path, leaving only the directory path.
+{-| Returns `path` with everything after its last `/` removed, keeping that `/`,
+so `"a/b.elm"` gives `"a/"`. A path with no `/` gives `""`.
 -}
 fpDropFileName : FilePath -> FilePath
 fpDropFileName path =
@@ -206,12 +244,12 @@ fpDropFileName path =
             ""
 
 
-{-| An alias for `</>`.
+{-| Returns `path2` appended to `path1` with a `/` between them, standing in for
+Haskell's `</>`.
 
-Combine two paths with a path separator. If the second path starts with a
-path separator or a drive letter, then it returns the second.
-The intention is that readFile `(dir </> file)` will access the same file
-as `setCurrentDirectory dir; readFile file`.
+`path2` is returned unchanged when `fpIsRelative` says it is absolute, and also
+whenever it begins with the text of `path1`, whether or not that text ends at a
+`/`: `fpCombine "src" "srcgen/A.elm"` is `"srcgen/A.elm"`.
 
 -}
 fpCombine : FilePath -> FilePath -> FilePath
@@ -223,7 +261,9 @@ fpCombine path1 path2 =
         path1 ++ "/" ++ path2
 
 
-{-| Add a file extension to a path. Automatically adds a dot if not present in the extension.
+{-| Returns `path` with `extension` appended, putting a `.` between them unless
+`extension` already starts with one. An empty `extension` gives `path` followed
+by a `.`.
 -}
 fpAddExtension : FilePath -> String -> FilePath
 fpAddExtension path extension =
@@ -234,14 +274,15 @@ fpAddExtension path extension =
         path ++ "." ++ extension
 
 
-{-| Encode a Maybe value to bytes using the provided encoder for the inner value.
+{-| Encodes a `Maybe`, writing the value in a `Just` with the given encoder. It is
+`Utils.Bytes.Encode.maybe`, which describes the format.
 -}
 maybeEncoder : (a -> Bytes.Encode.Encoder) -> Maybe a -> Bytes.Encode.Encoder
 maybeEncoder =
     BE.maybe
 
 
-{-| Extract all error values from a list of Results, discarding the Ok values.
+{-| Returns the errors in the list, in list order, leaving out every `Ok`.
 -}
 eitherLefts : List (Result e a) -> List e
 eitherLefts =
@@ -256,7 +297,9 @@ eitherLefts =
         )
 
 
-{-| Filter a list using a monadic predicate, preserving elements where the predicate returns True.
+{-| Returns a task that performs the predicate `p` on each element, first to last,
+and succeeds with the elements for which it gave `True`, in their original
+order.
 -}
 filterM : (a -> Task Never Bool) -> List a -> Task Never (List a)
 filterM p =
@@ -277,7 +320,9 @@ filterM p =
         (Task.succeed [])
 
 
-{-| Find a value by key in a dictionary, crashing if the key is not present. Use with caution.
+{-| Returns the value filed under key `k` in a `Data.Map` dictionary, looked up
+through the key projection `toComparable`, and crashes the program if there is
+none.
 -}
 find : (k -> comparable) -> k -> Map.Dict comparable k a -> a
 find toComparable k items =
@@ -289,7 +334,7 @@ find toComparable k items =
             crash "Map.!: given key is not an element in the map"
 
 
-{-| Find a value by key in a stdlib Dict, crashing if the key is not present. Use with caution.
+{-| Returns the value under key `k`, and crashes the program if there is none.
 -}
 dictFind : comparable -> Dict.Dict comparable a -> a
 dictFind k items =
@@ -301,7 +346,8 @@ dictFind k items =
             crash "Map.!: given key is not an element in the map"
 
 
-{-| Find the minimum key-value pair in a dictionary, crashing if the dictionary is empty.
+{-| Returns the entry with the lowest key, and crashes the program if the
+dictionary is empty.
 -}
 mapFindMin : Dict.Dict comparable a -> ( comparable, a )
 mapFindMin dict =
@@ -313,28 +359,37 @@ mapFindMin dict =
             crash "Error: empty map has no minimal element"
 
 
-{-| Fold a list from the left using a monadic function, accumulating results in the RResult monad.
+{-| Returns the result of folding `f` over the list from the left, starting from
+`b`. The steps are joined with `Compiler.Reporting.Result.andThen`, so a step
+that fails ends the fold, and the elements after it are never given to `f`.
 -}
 foldM : (b -> a -> ReportingResult.RResult info warnings error b) -> b -> List a -> ReportingResult.RResult info warnings error b
 foldM f b =
     List.foldl (\a -> ReportingResult.andThen (\acc -> f acc a)) (ReportingResult.ok b)
 
 
-{-| Sequence a list of Maybes into a Maybe list, returning Nothing if any value is Nothing.
+{-| Returns the values in the `Just`s, in order, or `Nothing` if any element is
+`Nothing`.
 -}
 sequenceListMaybe : List (Maybe a) -> Maybe (List a)
 sequenceListMaybe =
     List.foldr (Maybe.map2 (::)) (Just [])
 
 
-{-| Sequence a non-empty list of Results into a Result of a non-empty list, failing at the first error.
+{-| Returns the values in the `Ok`s, in order, or an error if any element is an
+`Err`.
+
+When several elements are `Err`s, the error returned is that of the last of
+them, not the first.
+
 -}
 sequenceNonemptyListResult : NE.Nonempty (Result e v) -> Result e (NE.Nonempty v)
 sequenceNonemptyListResult (NE.Nonempty x xs) =
     List.foldl (\a acc -> Result.map2 NE.snoc a acc) (Result.map NE.singleton x) xs
 
 
-{-| Map a monadic function over a list, discarding the results and returning ().
+{-| Returns a task that performs the task `f` gives for each element, first to
+last, and discards their results.
 -}
 mapM_ : (a -> Task Never b) -> List a -> Task Never ()
 mapM_ f =
@@ -346,28 +401,39 @@ mapM_ f =
     List.foldr c (Task.succeed ())
 
 
-{-| Map a Maybe-producing function over a list, returning Nothing if any application returns Nothing.
+{-| Returns the results of the function on each element, in order, or `Nothing` if
+it gives `Nothing` for any of them.
 -}
 maybeMapM : (a -> Maybe b) -> List a -> Maybe (List b)
 maybeMapM =
     listMaybeTraverse
 
 
-{-| Like mapMapKeys but returns a core Dict when the output key is already comparable.
+{-| Returns a core `Dict` holding each entry of a `Data.Map` dictionary under its
+key as `f` turns it into a `comparable`.
+
+The ordering function is ignored. When `f` gives two keys the same result, the
+entry whose key comes first in the dictionary's order is kept.
+
 -}
 dictMapKeys : (k1 -> k1 -> Order) -> (k1 -> comparable) -> Map.Dict c k1 a -> Dict.Dict comparable a
 dictMapKeys keyComparison f =
     Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) [] >> Dict.fromList
 
 
-{-| Traverse a dictionary with a Task-producing function, collecting results into a new dictionary.
+{-| Returns a task that performs the task `f` gives for each value of a `Data.Map`
+dictionary, in the dictionary's order, and succeeds with a dictionary of the
+results under the same keys. The ordering function is ignored.
 -}
 mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Task Never b) -> Map.Dict comparable k a -> Task Never (Map.Dict comparable k b)
 mapTraverse toComparable keyComparison f =
     mapTraverseWithKey toComparable keyComparison (\_ -> f)
 
 
-{-| Traverse a dictionary with a Task-producing function that has access to the key.
+{-| Returns a task that performs the task `f` gives for each key and value of a
+`Data.Map` dictionary, in the dictionary's order, and succeeds with a
+dictionary of the results under the same keys. The ordering function is
+ignored.
 -}
 mapTraverseWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> Task Never b) -> Map.Dict comparable k a -> Task Never (Map.Dict comparable k b)
 mapTraverseWithKey toComparable keyComparison f =
@@ -376,7 +442,11 @@ mapTraverseWithKey toComparable keyComparison f =
         (Task.succeed Map.empty)
 
 
-{-| Build a standard Dict from a list of pairs, combining values with the same key.
+{-| Returns an empty `Dict`, whatever the list holds.
+
+Each pair only updates a key that is already in the dictionary, and the fold
+starts from an empty one, so no key is ever added and `f` is never called.
+
 -}
 dictFromListWith : (a -> a -> a) -> List ( comparable, a ) -> Dict comparable a
 dictFromListWith f =
@@ -387,21 +457,24 @@ dictFromListWith f =
         Dict.empty
 
 
-{-| Insert into a standard Dict, combining with existing value using the provided function.
+{-| Inserts `a` under `k`. When `k` already has a value, the value stored is
+`f a old`, where `old` is the value it had.
 -}
 dictInsertWith : (a -> a -> a) -> comparable -> a -> Dict comparable a -> Dict comparable a
 dictInsertWith f k a =
     Dict.update k (Maybe.map (f a) >> Maybe.withDefault a >> Just)
 
 
-{-| Union of two standard Dicts, combining values with the same key.
+{-| Returns every entry of `a` and of `b`. A key in both holds `f` applied to its
+value in `a` and then its value in `b`.
 -}
 dictUnionWith : (a -> a -> a) -> Dict comparable a -> Dict comparable a -> Dict comparable a
 dictUnionWith f a b =
     Dict.merge Dict.insert (\k va vb acc -> Dict.insert k (f va vb) acc) Dict.insert a b Dict.empty
 
 
-{-| Map a Maybe-producing function over standard Dict values, keeping only Just results.
+{-| Returns the entries for which `func` gives `Just`, each holding the value in
+that `Just`.
 -}
 dictMapMaybe : (a -> Maybe b) -> Dict comparable a -> Dict comparable b
 dictMapMaybe func =
@@ -410,14 +483,17 @@ dictMapMaybe func =
         >> Dict.fromList
 
 
-{-| Traverse a standard Dict with a Task-producing function.
+{-| Returns a task that performs the task `f` gives for each value, in ascending
+key order, and succeeds with a `Dict` of the results under the same keys.
 -}
 dictTraverse : (a -> Task Never b) -> Dict comparable a -> Task Never (Dict comparable b)
 dictTraverse f =
     dictTraverseWithKey (\_ -> f)
 
 
-{-| Traverse a standard Dict with a Task-producing function that has access to the key.
+{-| Returns a task that performs the task `f` gives for each key and value, in
+ascending key order, and succeeds with a `Dict` of the results under the same
+keys.
 -}
 dictTraverseWithKey : (comparable -> a -> Task Never b) -> Dict comparable a -> Task Never (Dict comparable b)
 dictTraverseWithKey f =
@@ -426,56 +502,78 @@ dictTraverseWithKey f =
         (Task.succeed Dict.empty)
 
 
-{-| Intersection of two standard Dicts, combining values with the provided function.
+{-| Returns the keys present in both `a` and `b`, each holding `f` applied to its
+value in `a` and then its value in `b`.
 -}
 dictIntersectionWith : (a -> b -> c) -> Dict comparable a -> Dict comparable b -> Dict comparable c
 dictIntersectionWith f a b =
     Dict.merge (\_ _ acc -> acc) (\k va vb acc -> Dict.insert k (f va vb) acc) (\_ _ acc -> acc) a b Dict.empty
 
 
-{-| Sequence a Dict of Results into a Result of Dict, short-circuiting on the first error.
+{-| Returns the values in the `Ok`s under their keys, or an error if any value is
+an `Err`.
+
+When several values are `Err`s, the error returned is that of the one with the
+highest key, not the lowest.
+
 -}
 dictSequenceResult : Dict comparable (Result e a) -> Result e (Dict comparable a)
 dictSequenceResult =
     Dict.foldl (\k v acc -> Result.map2 (Dict.insert k) v acc) (Ok Dict.empty)
 
 
-{-| Sequence a Dict of Maybes into a Maybe of Dict, returning Nothing if any value is Nothing.
+{-| Returns the values in the `Just`s under their keys, or `Nothing` if any value
+is `Nothing`.
 -}
 dictSequenceMaybe : Dict comparable (Maybe a) -> Maybe (Dict comparable a)
 dictSequenceMaybe =
     Dict.foldl (\k v acc -> Maybe.map2 (Dict.insert k) v acc) (Just Dict.empty)
 
 
-{-| Traverse a standard Dict with a Result-producing function.
+{-| Returns the results of `f` on each value under the same keys, or an error if
+`f` gives an `Err` for any value.
+
+`f` is applied to every value, and when several give an `Err`, the error
+returned is that of the one with the highest key, not the lowest.
+
 -}
 dictTraverseResult : (a -> Result e b) -> Dict comparable a -> Result e (Dict comparable b)
 dictTraverseResult f =
     dictTraverseWithKeyResult (\_ -> f)
 
 
-{-| Traverse a standard Dict with a Result-producing function that has access to the key.
+{-| Returns the results of `f` on each key and value under the same keys, or an
+error if `f` gives an `Err` for any entry.
+
+`f` is applied to every entry, and when several give an `Err`, the error
+returned is that of the one with the highest key, not the lowest.
+
 -}
 dictTraverseWithKeyResult : (comparable -> a -> Result e b) -> Dict comparable a -> Result e (Dict comparable b)
 dictTraverseWithKeyResult f =
     Dict.foldl (\k a acc -> Result.map2 (Dict.insert k) (f k a) acc) (Ok Dict.empty)
 
 
-{-| Intersection of two standard Dicts with key access, combining values with the provided function.
+{-| Returns the keys present in both `a` and `b`, each holding `f` applied to the
+key, its value in `a` and its value in `b`.
 -}
 dictIntersectionWithKey : (comparable -> a -> b -> c) -> Dict comparable a -> Dict comparable b -> Dict comparable c
 dictIntersectionWithKey f a b =
     Dict.merge (\_ _ acc -> acc) (\k va vb acc -> Dict.insert k (f k va vb) acc) (\_ _ acc -> acc) a b Dict.empty
 
 
-{-| Map a monadic function over standard Dict values, discarding the results.
+{-| Returns a task that performs the task `f` gives for each value and discards
+their results. The tasks are performed in descending key order, highest key
+first.
 -}
 dictMapM__ : (a -> Task Never b) -> Dict comparable a -> Task Never ()
 dictMapM__ f =
     Dict.foldl (\_ x k -> f x |> Task.andThen (\_ -> k)) (Task.succeed ())
 
 
-{-| Build a standard Dict from keys by applying a Task-producing function.
+{-| Returns a task that performs the task `toValue` gives for each key, first to
+last, and succeeds with a `Dict` from each key to its value. A key listed twice
+keeps the value from its last appearance.
 -}
 dictFromKeysA : (comparable -> Task Never v) -> List comparable -> Task Never (Dict comparable v)
 dictFromKeysA toValue keys =
@@ -483,14 +581,17 @@ dictFromKeysA toValue keys =
         |> Task.map Dict.fromList
 
 
-{-| Traverse a list with a Task-producing function, collecting results into a new list.
+{-| Returns a task that performs the task the function gives for each element,
+first to last, and succeeds with their results in the same order. It is
+`Utils.Task.Extra.mapM`.
 -}
 listTraverse : (a -> Task Never b) -> List a -> Task Never (List b)
 listTraverse =
     Task.mapM
 
 
-{-| Traverse a list with a Maybe-producing function, returning Nothing if any application returns Nothing.
+{-| Returns the results of `f` on each element, in order, or `Nothing` if `f`
+gives `Nothing` for any of them.
 -}
 listMaybeTraverse : (a -> Maybe b) -> List a -> Maybe (List b)
 listMaybeTraverse f =
@@ -498,7 +599,8 @@ listMaybeTraverse f =
         (Just [])
 
 
-{-| Traverse a non-empty list with a Task-producing function, preserving the non-empty structure.
+{-| Returns a task that performs the task `f` gives for each element, first to
+last, and succeeds with their results in the same order.
 -}
 nonEmptyListTraverse : (a -> Task Never b) -> NE.Nonempty a -> Task Never (NE.Nonempty b)
 nonEmptyListTraverse f (NE.Nonempty x list) =
@@ -507,7 +609,8 @@ nonEmptyListTraverse f (NE.Nonempty x list) =
         list
 
 
-{-| Traverse a list with a Task-producing function, discarding the results and returning ().
+{-| Returns a task that performs the task `f` gives for each element, first to
+last, and discards their results.
 -}
 listTraverse_ : (a -> Task Never b) -> List a -> Task Never ()
 listTraverse_ f =
@@ -515,7 +618,9 @@ listTraverse_ f =
         >> Task.map (\_ -> ())
 
 
-{-| Traverse a Maybe value with a Task-producing function, preserving the Maybe structure.
+{-| Returns a task that performs the task `f` gives for the value in a `Just` and
+succeeds with its result in a `Just`, or, given `Nothing`, a task that succeeds
+with `Nothing`.
 -}
 maybeTraverseTask : (a -> Task x b) -> Maybe a -> Task x (Maybe b)
 maybeTraverseTask f a =
@@ -527,7 +632,9 @@ maybeTraverseTask f a =
             Task.succeed Nothing
 
 
-{-| Zip two lists with a Maybe-producing function, returning Nothing if any application returns Nothing.
+{-| Returns `f` applied to the elements of `xs` and `ys` pair by pair, or
+`Nothing` if `f` gives `Nothing` for any pair. The extra elements of the longer
+list are ignored.
 -}
 zipWithM : (a -> b -> Maybe c) -> List a -> List b -> Maybe (List c)
 zipWithM f xs ys =
@@ -535,7 +642,12 @@ zipWithM f xs ys =
         |> Maybe.combine
 
 
-{-| Group consecutive elements in a list that satisfy the binary predicate.
+{-| Splits the list into runs of consecutive elements, keeping their order.
+
+An element joins the run of the element just before it when `p` holds for that
+element and then this one. Each element is compared with its neighbour, not
+with the first element of its run.
+
 -}
 listGroupBy : (a -> a -> Bool) -> List a -> List (List a)
 listGroupBy p list =
@@ -561,7 +673,8 @@ listGroupBy p list =
                 |> List.reverse
 
 
-{-| Find the maximum element in a list using the provided comparison function, crashing if the list is empty.
+{-| Returns the largest element as `compare` orders them, and crashes the program
+if the list is empty.
 -}
 listMaximum : (a -> a -> Order) -> List a -> a
 listMaximum compare xs =
@@ -573,7 +686,8 @@ listMaximum compare xs =
             crash "maximum: empty structure"
 
 
-{-| Look up a key in an association list, returning the first matching value.
+{-| Returns the value paired with the first occurrence of `key` in the list, or
+`Nothing` if there is none.
 -}
 listLookup : a -> List ( a, b ) -> Maybe b
 listLookup key list =
@@ -589,7 +703,12 @@ listLookup key list =
                 listLookup key xys
 
 
-{-| Fold a non-empty list from the left, using the first element as the initial accumulator. Crashes if the list is empty.
+{-| Folds `f` over a list from the left, starting from its first element, and
+crashes the program if the list is empty.
+
+`f` takes the element first and the accumulator second, so `[ a, b, c ]` gives
+`f c (f b a)`.
+
 -}
 foldl1 : (a -> a -> a) -> List a -> a
 foldl1 f xs =
@@ -613,14 +732,20 @@ foldl1 f xs =
             crash "foldl1: empty structure"
 
 
-{-| Fold a non-empty list from the left with argument order flipped. Crashes if the list is empty.
+{-| Folds `f` over a list from the left, starting from its first element, and
+crashes the program if the list is empty.
+
+`f` takes the accumulator first and the element second, so `[ a, b, c ]` gives
+`f (f a b) c`, as Haskell's `foldl1` does.
+
 -}
 foldl1_ : (a -> a -> a) -> List a -> a
 foldl1_ f =
     foldl1 (\a b -> f b a)
 
 
-{-| Fold a non-empty list from the right, using the last element as the initial accumulator. Crashes if the list is empty.
+{-| Folds `f` over a list from the right, starting from its last element, and
+crashes the program if the list is empty. `[ a, b, c ]` gives `f a (f b c)`.
 -}
 foldr1 : (a -> a -> a) -> List a -> a
 foldr1 f xs =
@@ -644,14 +769,15 @@ foldr1 f xs =
             crash "foldr1: empty structure"
 
 
-{-| Split a string into lines at newline characters.
+{-| Splits the text at each newline. A newline at the end gives a final empty
+string.
 -}
 lines : String -> List String
 lines =
     String.split "\n"
 
 
-{-| Join a list of strings with newlines, adding a final newline at the end.
+{-| Joins the strings with newlines, and ends the result with one more newline.
 -}
 unlines : List String -> String
 unlines xs =
@@ -662,7 +788,8 @@ unlines xs =
 -- System.FilePath
 
 
-{-| Split a file path into its directory components.
+{-| Returns the components of `path` between its `/`s, leaving out empty ones, with
+`"/"` first when `path` starts with `/`.
 -}
 fpSplitDirectories : String -> List String
 fpSplitDirectories path =
@@ -679,7 +806,9 @@ fpSplitDirectories path =
            )
 
 
-{-| Split a file path into the base name and extension (including the dot).
+{-| Splits a path before the last `.` in its last component, giving the path
+without its extension and the extension with its `.`. When the last component
+has no `.`, the extension is `""`; a `.` in a directory name never starts one.
 -}
 fpSplitExtension : String -> ( String, String )
 fpSplitExtension filename =
@@ -700,7 +829,8 @@ fpSplitExtension filename =
             ( "", "" )
 
 
-{-| Join a list of path components into a single path, handling leading slashes.
+{-| Joins path components with `/`. A first component of `"/"` is the root, so
+`[ "/", "a" ]` gives `"/a"` rather than `"//a"`.
 -}
 fpJoinPath : List String -> String
 fpJoinPath paths =
@@ -712,7 +842,13 @@ fpJoinPath paths =
             String.join "/" paths
 
 
-{-| Make a path relative to a root directory by removing the root prefix if present.
+{-| Returns `path` with `root` and the one character after it removed when `path`
+starts with the text of `root`, and `path` unchanged otherwise.
+
+Nothing checks that the character removed is a `/`. A `root` of `"src"` turns
+`"srcgen/A.elm"` into `"en/A.elm"`, and a `root` ending in `/` loses the first
+character after it.
+
 -}
 fpMakeRelative : FilePath -> FilePath -> FilePath
 fpMakeRelative root path =
@@ -723,7 +859,7 @@ fpMakeRelative root path =
         path
 
 
-{-| Ensure a path ends with a trailing path separator.
+{-| Returns `path` ending in a `/`, adding one if it does not already.
 -}
 fpAddTrailingPathSeparator : FilePath -> FilePath
 fpAddTrailingPathSeparator path =
@@ -734,26 +870,18 @@ fpAddTrailingPathSeparator path =
         path ++ "/"
 
 
-{-| The path separator character used by the file system (forward slash on Unix-like systems).
+{-| The character that separates the components of a path in this module.
 -}
 fpPathSeparator : Char
 fpPathSeparator =
     '/'
 
 
-{-| Check if a path is relative.
+{-| Returns whether `path` is relative, meaning not absolute.
 
-A path is absolute if it begins with:
-
-  - A POSIX root slash: "/foo/bar".
-  - A Windows drive prefix followed by a separator: "C:/...", "c:\\...".
-  - A Windows UNC root: "\\\\server\\share\\..." or "//server/share/..."
-    (incoming paths are normalised to "/" by the kernel IO boundary, so
-    backslash forms are accepted defensively but should be rare).
-
-Anything else (including a bare drive letter "C:" with no slash) is
-treated as relative, matching the behaviour the rest of the toolchain
-expects.
+A path is absolute when it starts with `/` or `\`, or with an ASCII letter, a
+`:` and then a `/` or `\`, as `C:/` does. Anything else is relative, a bare
+drive such as `C:` included.
 
 -}
 fpIsRelative : FilePath -> Bool
@@ -761,6 +889,8 @@ fpIsRelative path =
     not (isAbsolutePath path)
 
 
+{-| Returns whether `path` is absolute, as `fpIsRelative` describes.
+-}
 isAbsolutePath : String -> Bool
 isAbsolutePath path =
     if String.startsWith "/" path then
@@ -780,6 +910,8 @@ isAbsolutePath path =
                 False
 
 
+{-| Returns whether the character is an ASCII letter, upper or lower case.
+-}
 isAsciiLetter : Char -> Bool
 isAsciiLetter c =
     let
@@ -789,14 +921,16 @@ isAsciiLetter c =
     (code >= 0x41 && code <= 0x5A) || (code >= 0x61 && code <= 0x7A)
 
 
-{-| Extract just the file name from a path (everything after the last slash).
+{-| Returns what follows the last `/` of the path, or the whole path when it has
+no `/`. A path ending in `/` gives `""`.
 -}
 fpTakeFileName : FilePath -> FilePath
 fpTakeFileName filename =
     Prelude.last (String.split "/" filename)
 
 
-{-| Split a path into the directory part and the file name part.
+{-| Splits the path after its last `/`, giving the directory with that `/` and the
+file name. A path with no `/` gives `"./"` as the directory.
 -}
 fpSplitFileName : FilePath -> ( String, String )
 fpSplitFileName filename =
@@ -808,21 +942,29 @@ fpSplitFileName filename =
             ( "./", filename )
 
 
-{-| Extract just the extension from a path (including the dot).
+{-| Returns the extension of the path with its `.`, as `fpSplitExtension` finds
+it, or `""` if there is none.
 -}
 fpTakeExtension : FilePath -> String
 fpTakeExtension =
     fpSplitExtension >> Tuple.second
 
 
-{-| Remove the extension from a path.
+{-| Returns the path without its extension, as `fpSplitExtension` finds it.
 -}
 fpDropExtension : FilePath -> FilePath
 fpDropExtension =
     fpSplitExtension >> Tuple.first
 
 
-{-| Extract the directory part of a path (everything before the last slash).
+{-| Returns the directory part of a path, which is everything before its last
+component.
+
+A path with no `/` gives `"."`, and `"/"` gives `"/"`. A path ending in `/`
+loses its last named component as well, so `"a/b/"` gives `"a"` and `"a/"`
+gives `""`. A component directly under the root gives `""`, not `"/"`, so
+`"/foo"` gives `""`.
+
 -}
 fpTakeDirectory : FilePath -> FilePath
 fpTakeDirectory filename =
@@ -837,15 +979,11 @@ fpTakeDirectory filename =
             String.join "/" (List.reverse other)
 
         _ :: other ->
-            -- A bare filename like "hello.js" has no slash, so `other` is
-            -- empty here and `String.join` would produce "". Match Haskell's
-            -- System.FilePath.takeDirectory and return "." instead —
-            -- otherwise callers that mkdir the result (e.g. Terminal.Make
-            -- when `--output=` has no directory component) blow up with
-            -- EINVAL on createDir(""). Done as an `if` rather than a
-            -- separate `_ :: []` pattern arm because the latter triggers a
-            -- bug in the current self-hosted Eco compiler that leaves Stage
-            -- 3 unable to compile its own source.
+            -- A bare file name has no `/`, so `other` is empty and joining it
+            -- would give "". "." is returned instead, so that a caller that
+            -- creates the directory does not ask for "". This is an `if`
+            -- rather than a separate `_ :: []` arm because the current
+            -- self-hosted Eco compiler miscompiles such an arm.
             if List.isEmpty other then
                 "."
 
@@ -857,7 +995,12 @@ fpTakeDirectory filename =
 -- System.FileLock
 
 
-{-| Execute an action while holding an exclusive file lock, releasing the lock when done.
+{-| Returns a task that locks the file at `path`, performs `ioFunc`, unlocks the
+file, and succeeds with what `ioFunc` gave.
+
+Locking and unlocking are done by `Eco.File.lock` and `Eco.File.unlock`, whose
+docstrings say what a lock achieves. A failure of either crashes the program.
+
 -}
 lockWithFileLock : String -> LockSharedExclusive -> (() -> Task Never a) -> Task Never a
 lockWithFileLock path mode ioFunc =
@@ -872,12 +1015,18 @@ lockWithFileLock path mode ioFunc =
                     )
 
 
+{-| Locks the file at `path` with `Eco.File.lock`, and crashes the program if
+that fails.
+-}
 lockFile : FilePath -> Task Never ()
 lockFile path =
     Eco.File.lock path
         |> IO.crashOnError
 
 
+{-| Unlocks the file at `path` with `Eco.File.unlock`, and crashes the program if
+that fails.
+-}
 unlockFile : FilePath -> Task Never ()
 unlockFile path =
     Eco.File.unlock path
@@ -888,29 +1037,34 @@ unlockFile path =
 -- System.Directory
 
 
-{-| Check if a file exists at the given path.
+{-| Returns whether `filename` names a file, as `Eco.File.fileExists` decides. A
+directory is not a file here.
 -}
 dirDoesFileExist : FilePath -> Task Never Bool
 dirDoesFileExist filename =
     Eco.File.fileExists filename
 
 
-{-| Search for an executable in the system PATH, returning its full path if found.
+{-| Returns the path of the executable called `filename` that the system's search
+path finds, or `Nothing` if it finds none.
 -}
 dirFindExecutable : FilePath -> Task Never (Maybe FilePath)
 dirFindExecutable filename =
     Eco.File.findExecutable filename
 
 
-{-| Create a directory if it doesn't exist, optionally creating parent directories.
+{-| Creates the directory `filename`, and its missing parents too when
+`createParents` is `True`. An empty `filename` does nothing.
+
+Any failure crashes the program. As `Eco.File.createDir` describes, an existing
+directory is not a failure when `createParents` is `True`; with `False` it can
+be.
+
 -}
 dirCreateDirectoryIfMissing : Bool -> FilePath -> Task Never ()
 dirCreateDirectoryIfMissing createParents filename =
-    -- Empty path is a no-op. Some callers compute the directory from a
-    -- bare filename and get back ""; rather than chase every such site
-    -- (see fpTakeDirectory / fpDropFileName), short-circuit here. The
-    -- POSIX mkdir / std::filesystem::create_directories layer below would
-    -- otherwise return EINVAL.
+    -- A directory computed from a bare file name, as fpDropFileName
+    -- computes it, is "", and the layer below fails to create "".
     if String.length filename == 0 then
         Task.succeed ()
 
@@ -919,21 +1073,25 @@ dirCreateDirectoryIfMissing createParents filename =
             |> IO.crashOnError
 
 
-{-| Get the current working directory.
+{-| A task that gives the current working directory, as `Eco.File.getCwd` reads
+it.
 -}
 dirGetCurrentDirectory : Task Never String
 dirGetCurrentDirectory =
     Eco.File.getCwd
 
 
-{-| Get the application-specific user data directory for the given application name.
+{-| Returns the directory where the application called `filename` keeps its data
+for the current user, as `Eco.File.appDataDir` gives it. The directory need not
+exist.
 -}
 dirGetAppUserDataDirectory : FilePath -> Task Never FilePath
 dirGetAppUserDataDirectory filename =
     Eco.File.appDataDir filename
 
 
-{-| Get the last modification time of a file or directory.
+{-| Returns when the file at `filename` was last modified, and crashes the program
+if that cannot be read.
 -}
 dirGetModificationTime : FilePath -> Task Never Time.Posix
 dirGetModificationTime filename =
@@ -941,7 +1099,7 @@ dirGetModificationTime filename =
         |> IO.crashOnError
 
 
-{-| Remove a file at the given path.
+{-| Removes the file at `path`, and crashes the program if that fails.
 -}
 dirRemoveFile : FilePath -> Task Never ()
 dirRemoveFile path =
@@ -949,14 +1107,16 @@ dirRemoveFile path =
         |> IO.crashOnError
 
 
-{-| Check if a directory exists at the given path.
+{-| Returns whether `path` names a directory, as `Eco.File.dirExists` decides.
 -}
 dirDoesDirectoryExist : FilePath -> Task Never Bool
 dirDoesDirectoryExist path =
     Eco.File.dirExists path
 
 
-{-| Convert a path to its canonical form, resolving symbolic links and removing redundant components.
+{-| Returns `path` made absolute, as `Eco.File.canonicalize` gives it, with its
+symbolic links resolved where that can resolve them: a path that does not exist
+is only made absolute and normalized. Crashes the program if the request fails.
 -}
 dirCanonicalizePath : FilePath -> Task Never FilePath
 dirCanonicalizePath path =
@@ -964,7 +1124,9 @@ dirCanonicalizePath path =
         |> IO.crashOnError
 
 
-{-| Run an action with a temporarily changed current directory, restoring the original directory afterward.
+{-| Returns a task that makes `dir` the current working directory, performs
+`action`, changes back to the directory that was current before, and succeeds
+with what `action` gave. A failure to change directory crashes the program.
 -}
 dirWithCurrentDirectory : FilePath -> Task Never a -> Task Never a
 dirWithCurrentDirectory dir action =
@@ -978,7 +1140,8 @@ dirWithCurrentDirectory dir action =
             )
 
 
-{-| List all files and directories in the given directory path.
+{-| Returns the names of the entries in the directory at `path`, as
+`Eco.File.list` gives them, and crashes the program if it cannot be listed.
 -}
 dirListDirectory : FilePath -> Task Never (List FilePath)
 dirListDirectory path =
@@ -990,21 +1153,24 @@ dirListDirectory path =
 -- System.Environment
 
 
-{-| Look up an environment variable by name, returning Nothing if not found.
+{-| Returns the value of the environment variable `name`, or `Nothing` if it is not
+set.
 -}
 envLookupEnv : String -> Task Never (Maybe String)
 envLookupEnv name =
     Eco.Env.lookup name
 
 
-{-| Get the program name (hardcoded as "eco" in this implementation).
+{-| A task that gives the program's name, which is always `"eco"`. Nothing is read
+from the environment.
 -}
 envGetProgName : Task Never String
 envGetProgName =
     Task.succeed "eco"
 
 
-{-| Get the command-line arguments passed to the program.
+{-| A task that gives the command-line arguments, as `Eco.Env.rawArgs` reports
+them.
 -}
 envGetArgs : Task Never (List String)
 envGetArgs =
@@ -1016,7 +1182,17 @@ envGetArgs =
 -- Network.HTTP.Client
 
 
-{-| Content describing an HTTP exception that occurred during a request.
+{-| The reason an HTTP request failed, standing in for the type of the same name in
+Haskell's `http-client`.
+
+`StatusCodeException` carries the response (its status and headers) and,
+separately, a body as a `String`.
+
+`TooManyRedirects` carries a list of responses.
+
+`ConnectionFailure` carries a `SomeException`, which says nothing about what
+went wrong.
+
 -}
 type HttpExceptionContent
     = StatusCodeException (HttpResponse ()) String
@@ -1024,7 +1200,10 @@ type HttpExceptionContent
     | ConnectionFailure SomeException
 
 
-{-| An HTTP response with status, headers, and optional body.
+{-| The status and headers of an HTTP response.
+
+Nothing uses the type parameter `body`: no body is held, whatever `body` is.
+
 -}
 type HttpResponse body
     = HttpResponse
@@ -1033,34 +1212,37 @@ type HttpResponse body
         }
 
 
-{-| HTTP response headers as a list of key-value pairs.
+{-| The headers of an HTTP response, as pairs of a header name and its value.
+
+This is a name for a list of pairs, not a new type.
+
 -}
 type alias HttpResponseHeaders =
     List ( String, String )
 
 
-{-| Extract the status from an HTTP response.
+{-| Returns the status of the response.
 -}
 httpResponseStatus : HttpResponse body -> HttpStatus
 httpResponseStatus (HttpResponse { responseStatus }) =
     responseStatus
 
 
-{-| Extract the headers from an HTTP response.
+{-| Returns the headers of the response.
 -}
 httpResponseHeaders : HttpResponse body -> HttpResponseHeaders
 httpResponseHeaders (HttpResponse { responseHeaders }) =
     responseHeaders
 
 
-{-| The "Location" HTTP header name constant.
+{-| The name of the HTTP header that gives the target of a redirect.
 -}
 httpHLocation : String
 httpHLocation =
     "Location"
 
 
-{-| HTTP status with code and message.
+{-| The status of an HTTP response: its code and the message that comes with it.
 -}
 type HttpStatus
     = HttpStatus Int String
@@ -1070,13 +1252,20 @@ type HttpStatus
 -- Control.Exception
 
 
-{-| A generic exception type representing any exception.
+{-| An exception of any kind, standing in for Haskell's `SomeException`. Its one
+constructor carries nothing, so a value says that something went wrong, not
+what.
 -}
 type SomeException
     = SomeException
 
 
-{-| Execute an action with resource acquisition and cleanup, ensuring cleanup runs even if the action fails.
+{-| Returns a task that performs `before`, then `thing` with its result, then
+`after` with the same result, and succeeds with what `thing` gave.
+
+A `Task Never` cannot fail, so `after` runs whenever `thing` finishes. If the
+program crashes in `thing`, `after` does not run.
+
 -}
 bracket : Task Never a -> (a -> Task Never b) -> (a -> Task Never c) -> Task Never c
 bracket before after thing =
@@ -1092,7 +1281,8 @@ bracket before after thing =
             )
 
 
-{-| Execute an action with setup and cleanup tasks, discarding the setup result.
+{-| Returns a task that performs `before`, `thing` and `after`, in that order, and
+succeeds with what `thing` gave.
 -}
 bracket_ : Task Never a -> Task Never b -> Task Never c -> Task Never c
 bracket_ before after thing =
@@ -1103,13 +1293,17 @@ bracket_ before after thing =
 -- Control.Concurrent
 
 
-{-| A thread identifier for concurrent execution.
+{-| The identifier of a task started by `forkIO`.
+
+This is a name for `Process.Id`, not a new type.
+
 -}
 type alias ThreadId =
     Process.Id
 
 
-{-| Fork a new thread to execute the given task concurrently, returning the thread ID.
+{-| Returns a task that starts the given task running concurrently, as
+`Process.spawn` does, and succeeds at once with its identifier.
 -}
 forkIO : Task Never () -> Task Never ThreadId
 forkIO =
@@ -1120,7 +1314,7 @@ forkIO =
 -- Control.Concurrent.MVar
 
 
-{-| Create a new MVar with an initial value.
+{-| Returns a task that creates an MVar holding `value`, written with `toEncoder`.
 -}
 newMVar : (a -> Bytes.Encode.Encoder) -> a -> Task Never (MVar a)
 newMVar toEncoder value =
@@ -1132,13 +1326,19 @@ newMVar toEncoder value =
             )
 
 
-{-| Read the current value of an MVar without removing it, blocking if the MVar is empty.
+{-| Returns the MVar's value, read with `decoder`, and leaves the MVar full. Waits
+while the MVar is empty.
 -}
 readMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 readMVar decoder (MVar ref) =
     Eco.MVar.read decoder (Eco.MVar.MVar ref)
 
 
+{-| Returns a task that takes the MVar's value, gives it to `io`, puts the first
+part of `io`'s result back into the MVar, and succeeds with the second part.
+While `io` runs the MVar is empty, so another task that reads or takes it
+waits.
+-}
 modifyMVar : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> MVar a -> (a -> Task Never ( a, b )) -> Task Never b
 modifyMVar decoder toEncoder m io =
     takeMVar decoder m
@@ -1150,29 +1350,31 @@ modifyMVar decoder toEncoder m io =
             )
 
 
-{-| Take the value from an MVar, removing it and blocking if the MVar is empty.
+{-| Returns the MVar's value, read with `decoder`, and leaves the MVar empty.
+Waits while the MVar is empty.
 -}
 takeMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 takeMVar decoder (MVar ref) =
     Eco.MVar.take decoder (Eco.MVar.MVar ref)
 
 
-{-| Put a value into an MVar, blocking if the MVar is already full.
+{-| Puts `value`, written with `encoder`, into the MVar. Waits while the MVar is
+full.
 -}
 putMVar : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
 putMVar encoder (MVar ref) value =
     Eco.MVar.put encoder (Eco.MVar.MVar ref) value
 
 
-{-| Create a new empty MVar.
+{-| A task that creates a new, empty MVar.
 -}
 newEmptyMVar : Task Never (MVar a)
 newEmptyMVar =
     Eco.MVar.new |> Task.map (\(Eco.MVar.MVar id) -> MVar id)
 
 
-{-| Destroy an MVar, removing it from the store entirely.
-Use only when no further access will occur.
+{-| Discards the MVar, together with any value it holds. Use it only when nothing
+will use the MVar again.
 -}
 dropMVar : MVar a -> Task Never ()
 dropMVar (MVar ref) =
@@ -1183,13 +1385,20 @@ dropMVar (MVar ref) =
 -- Control.Concurrent.Chan
 
 
-{-| A thread-safe channel for communication between threads, implemented using MVars.
+{-| An unbounded first-in, first-out channel, through which concurrent tasks hand
+values to one another.
+
+A channel is made by `newChan`. Writing to it does not wait for a reader, and
+reading waits until there is a value to read. Each value written is returned
+by one `readChan`, in the order the values were written.
+
 -}
 type Chan a
     = Chan (MVar (Stream a)) (MVar (Stream a))
 
 
-{-| Create a new empty channel.
+{-| Returns a task that creates an empty channel. `toEncoder` writes the channel's
+own references to MVars, and `mVarEncoder` is such an encoder.
 -}
 newChan : (MVar (ChItem a) -> Bytes.Encode.Encoder) -> Task Never (Chan a)
 newChan toEncoder =
@@ -1208,13 +1417,18 @@ newChan toEncoder =
             )
 
 
-{-| Read a value from a channel, blocking if the channel is empty.
+{-| Returns the oldest value in the channel that no `readChan` has yet returned,
+read with `decoder`. Waits while there is none.
 
-The consumed hole is taken and then dropped: an MVar is an off-heap GC root
-until dropped (HEAP_005), so a hole left full would pin its item until exit
-(plans/frontend-heap-release.md §7.2 row 2). This is safe because there is no
-`dupChan` (a second reader would need the hole) and the writer never touches
-a hole again after its single `putMVar`.
+A channel is a chain of MVars called holes. A hole, once filled, holds a value
+and the next hole. The channel keeps the hole to be read next and the hole to
+be filled next. A read takes the value out of the first, drops that hole, and
+moves on to the next.
+
+The hole is dropped because an MVar keeps its value until it is dropped, so a
+hole left behind would keep its value for as long as the program runs. Nothing
+else refers to it: only one read takes from a given hole, and a write fills
+each hole once.
 
 -}
 readChan : Bytes.Decode.Decoder a -> Chan a -> Task Never a
@@ -1229,7 +1443,8 @@ readChan decoder (Chan readVar _) =
                     )
 
 
-{-| Write a value to a channel.
+{-| Adds `val`, written with `toEncoder`, to the end of the channel. It does not
+wait for a reader.
 -}
 writeChan : (a -> Bytes.Encode.Encoder) -> Chan a -> a -> Task Never ()
 writeChan toEncoder (Chan _ writeVar) val =
@@ -1249,7 +1464,8 @@ writeChan toEncoder (Chan _ writeVar) val =
 -- Data.ByteString.Builder
 
 
-{-| Write a string to a file handle.
+{-| Writes the text to the stream the handle names. It is `System.IO.write`, so it
+cannot fail and any error is discarded.
 -}
 builderHPutBuilder : IO.Handle -> String -> Task Never ()
 builderHPutBuilder =
@@ -1260,7 +1476,14 @@ builderHPutBuilder =
 -- Data.Binary
 
 
-{-| Decode a binary file using the provided decoder, returning an error with position and message on failure.
+{-| Returns the value `decoder` reads from the file at `filename`, or an error as a
+position and a message.
+
+The position is always 0. A file `decoder` cannot read gives the message
+`"binary decode failed"`. A failure to read the file is an `Err` too, not a
+crash, with the `IOError` as `Eco.IO.Error.toString` renders it. Bytes left
+over after the value are ignored.
+
 -}
 binaryDecodeFileOrFail : Bytes.Decode.Decoder a -> FilePath -> Task Never (Result ( Int, String ) a)
 binaryDecodeFileOrFail decoder filename =
@@ -1274,12 +1497,11 @@ binaryDecodeFileOrFail decoder filename =
                     Nothing ->
                         Err ( 0, "binary decode failed" )
             )
-        -- An IO failure reading the artifact is surfaced as a decode-style
-        -- failure so the caller rebuilds rather than crashing (IO_ERR_001 (a)).
         |> Task.onError (\err -> Task.succeed (Err ( 0, IOErr.toString err )))
 
 
-{-| Encode a value to binary and write it to a file.
+{-| Writes `value`, encoded with `toEncoder`, to the file at `path` with
+`Eco.File.writeBytesAtomic`, and crashes the program if that fails.
 -}
 binaryEncodeFile : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 binaryEncodeFile toEncoder path value =
@@ -1291,27 +1513,38 @@ binaryEncodeFile toEncoder path value =
 -- System.Console.Haskeline
 
 
-{-| The REPL input monad, which is just a Task in this implementation.
+{-| A computation that reads REPL input, standing in for Haskeline's `InputT`.
+
+This is a name for `Task Never a`, not a new type, which is why
+`liftInputT`, `liftIOInputT` and `replWithInterrupt` return their argument as
+it is.
+
 -}
 type alias ReplInputT a =
     Task Never a
 
 
-{-| Run a REPL input task with the given settings.
+{-| Returns a state computation that performs `io` and produces its exit code,
+leaving the state unchanged. The settings are ignored.
 -}
 replRunInputT : ReplSettings -> ReplInputT Exit.ExitCode -> State.StateT s Exit.ExitCode
 replRunInputT _ io =
     State.liftIO io
 
 
-{-| Wrap a REPL action to enable interrupt handling (no-op in this implementation).
+{-| Returns the computation as it is. Nothing here handles an interrupt.
 -}
 replWithInterrupt : ReplInputT a -> ReplInputT a
 replWithInterrupt =
     identity
 
 
-{-| Read a line of input from the REPL with the given prompt, returning Nothing on EOF.
+{-| Writes `prompt` to standard output, reads a line of standard input, and
+returns the line in a `Just`.
+
+The result is never `Nothing`: `Eco.Console.readLine` has no separate value for
+the end of input, and a failure to write or read crashes the program.
+
 -}
 replGetInputLine : String -> ReplInputT (Maybe String)
 replGetInputLine prompt =
@@ -1321,7 +1554,9 @@ replGetInputLine prompt =
         |> IO.crashOnError
 
 
-{-| Read a line of input with initial text on the left and right of the cursor.
+{-| Reads a line as `replGetInputLine` does, with `left`, `prompt` and `right`
+written together as the prompt. The text of `left` and `right` is only printed;
+it is not part of the line returned.
 -}
 replGetInputLineWithInitial : String -> ( String, String ) -> ReplInputT (Maybe String)
 replGetInputLineWithInitial prompt ( left, right ) =
@@ -1332,14 +1567,16 @@ replGetInputLineWithInitial prompt ( left, right ) =
 -- ====== NODE ======
 
 
-{-| Get the directory name of the current module (Node.js \_\_dirname equivalent).
+{-| A task that gives the directory `Eco.Runtime.dirname` returns, standing in for
+Node's `__dirname`.
 -}
 nodeGetDirname : Task Never String
 nodeGetDirname =
     Eco.Runtime.dirname
 
 
-{-| Generate a random float between 0 and 1 using Node.js Math.random().
+{-| A task that gives a random number from `Eco.Runtime.random`, expected to be at
+least 0 and less than 1. Nothing checks the range.
 -}
 nodeMathRandom : Task Never Float
 nodeMathRandom =
@@ -1350,21 +1587,23 @@ nodeMathRandom =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Decoder for MVar references from binary data.
+{-| A decoder for a reference to an MVar, as `mVarEncoder` writes it. It reads the
+reference, not the MVar's contents.
 -}
 mVarDecoder : Bytes.Decode.Decoder (MVar a)
 mVarDecoder =
     Bytes.Decode.map MVar BD.int
 
 
-{-| Encoder for MVar references to binary data.
+{-| Encodes a reference to an MVar, not its contents, as the MVar's number.
 -}
 mVarEncoder : MVar a -> Bytes.Encode.Encoder
 mVarEncoder (MVar ref) =
     BE.int ref
 
 
-{-| Encoder for channel items to binary data.
+{-| Encodes one link of a channel as its value, written with `valueEncoder`,
+followed by the reference to the next hole.
 -}
 chItemEncoder : (a -> Bytes.Encode.Encoder) -> ChItem a -> Bytes.Encode.Encoder
 chItemEncoder valueEncoder (ChItem value hole) =
@@ -1374,7 +1613,8 @@ chItemEncoder valueEncoder (ChItem value hole) =
         ]
 
 
-{-| Decoder for channel items from binary data.
+{-| Produces a decoder for one link of a channel, as `chItemEncoder` writes it,
+reading the value with `decoder`.
 -}
 chItemDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (ChItem a)
 chItemDecoder decoder =
@@ -1383,14 +1623,15 @@ chItemDecoder decoder =
         mVarDecoder
 
 
-{-| Encoder for exceptions to binary data.
+{-| Encodes a `SomeException` as the single byte 0.
 -}
 someExceptionEncoder : SomeException -> Bytes.Encode.Encoder
 someExceptionEncoder _ =
     Bytes.Encode.unsignedInt8 0
 
 
-{-| Decoder for exceptions from binary data.
+{-| A decoder for a `SomeException`, which reads one byte and accepts any value in
+it.
 -}
 someExceptionDecoder : Bytes.Decode.Decoder SomeException
 someExceptionDecoder =
@@ -1398,6 +1639,8 @@ someExceptionDecoder =
         |> Bytes.Decode.map (\_ -> SomeException)
 
 
+{-| Encodes a response as its status followed by its headers.
+-}
 httpResponseEncoder : HttpResponse body -> Bytes.Encode.Encoder
 httpResponseEncoder (HttpResponse httpResponse) =
     Bytes.Encode.sequence
@@ -1406,6 +1649,8 @@ httpResponseEncoder (HttpResponse httpResponse) =
         ]
 
 
+{-| A decoder for a response, as `httpResponseEncoder` writes it.
+-}
 httpResponseDecoder : Bytes.Decode.Decoder (HttpResponse body)
 httpResponseDecoder =
     Bytes.Decode.map2
@@ -1419,6 +1664,8 @@ httpResponseDecoder =
         httpResponseHeadersDecoder
 
 
+{-| Encodes a status as its code followed by its message.
+-}
 httpStatusEncoder : HttpStatus -> Bytes.Encode.Encoder
 httpStatusEncoder (HttpStatus statusCode statusMessage) =
     Bytes.Encode.sequence
@@ -1427,6 +1674,8 @@ httpStatusEncoder (HttpStatus statusCode statusMessage) =
         ]
 
 
+{-| A decoder for a status, as `httpStatusEncoder` writes it.
+-}
 httpStatusDecoder : Bytes.Decode.Decoder HttpStatus
 httpStatusDecoder =
     Bytes.Decode.map2 HttpStatus
@@ -1434,17 +1683,23 @@ httpStatusDecoder =
         BD.string
 
 
+{-| Encodes headers as a list of name and value pairs.
+-}
 httpResponseHeadersEncoder : HttpResponseHeaders -> Bytes.Encode.Encoder
 httpResponseHeadersEncoder =
     BE.list (BE.jsonPair BE.string BE.string)
 
 
+{-| A decoder for headers, as `httpResponseHeadersEncoder` writes them.
+-}
 httpResponseHeadersDecoder : Bytes.Decode.Decoder HttpResponseHeaders
 httpResponseHeadersDecoder =
     BD.list (BD.jsonPair BD.string BD.string)
 
 
-{-| Encoder for HTTP exception content to binary data.
+{-| Encodes an `HttpExceptionContent` as a tag byte, 0 for `StatusCodeException`,
+1 for `TooManyRedirects` and 2 for `ConnectionFailure`, followed by what the
+constructor carries.
 -}
 httpExceptionContentEncoder : HttpExceptionContent -> Bytes.Encode.Encoder
 httpExceptionContentEncoder httpExceptionContent =
@@ -1469,7 +1724,8 @@ httpExceptionContentEncoder httpExceptionContent =
                 ]
 
 
-{-| Decoder for HTTP exception content from binary data.
+{-| A decoder for an `HttpExceptionContent`, as `httpExceptionContentEncoder`
+writes it. It fails on a tag byte other than 0, 1 or 2.
 -}
 httpExceptionContentDecoder : Bytes.Decode.Decoder HttpExceptionContent
 httpExceptionContentDecoder =

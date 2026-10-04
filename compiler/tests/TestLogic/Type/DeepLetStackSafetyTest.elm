@@ -1,14 +1,33 @@
 module TestLogic.Type.DeepLetStackSafetyTest exposing (suite)
 
-{-| Stack-safety guard for constraint generation over deep `let` chains.
+{-| Checks that the erased type-check path can take a deeply nested `let` chain
+without overflowing the JavaScript call stack. The erased path records no
+types for individual expressions. Each `let` puts its body one level deeper, so
+a step that used one stack frame per level would fail on a long enough chain.
 
-The Erased constraint generator used to recurse into a `let` body in `andThen`
-subject position, which builds the `Prog` value on the Elm/JS call stack one
-frame per `let` level (a construction-time overflow risk for deeply nested or
-machine-generated code). The body recursion is now deferred behind a `Step`, so
-a deep chain is walked one level per interpreter iteration. This test drives a
-deeply nested `let` chain through the erased type-check path and asserts it
-type-checks without overflowing.
+The path is run here as three steps: `Compiler.Canonicalize.Module.canonicalize`,
+then constraint generation with `Compiler.Type.Constrain.Erased.Module.constrain`,
+then `Compiler.Type.Solve.run`. How the constraint generator walks a `let`
+chain without a stack frame per level is described in
+`Compiler.Type.Constrain.Typed.Expression`.
+
+The fixture is one module, built with `Compiler.AST.SourceBuilder.makeModule`,
+whose single top-level value `testValue` is `deepLet 1000`: a chain of 1000
+nested `let`s, each binding one unused integer literal, ending in `0`. It is
+canonicalized as a module of the package `eco/example` against
+`Compiler.Elm.Interface.Basic.testIfaces`.
+
+What the test establishes:
+
+  - "deeply nested let chain type-checks without stack overflow":
+    canonicalization succeeds, and constraint generation followed by solving
+    returns `Ok`. It therefore also fails if the chain does not canonicalize
+    or does not type-check.
+
+Among what is not tested: chains of recursive (`LetRec`) or destructuring
+(`LetDestruct`) `let`s, which the generator handles in cases of their own; the
+typed path, which also records expression types; chains deeper than 1000;
+and the types the solver infers.
 
 -}
 
@@ -25,9 +44,10 @@ import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
-{-| A right-nested chain of `n` `let`s ending in `0`:
+{-| Builds a chain of `n` nested `let`s ending in `0`, each binding one name to
+an integer literal:
 
-    let x1 = 1 in let x2 = 2 in ... let xn = n in 0
+    let xn = n in ... let x2 = 2 in let x1 = 1 in 0
 
 -}
 deepLet : Int -> Src.Expr
@@ -38,6 +58,10 @@ deepLet n =
         (List.range 1 n)
 
 
+{-| The single test, which runs a 1000-deep `let` chain through
+canonicalization, erased constraint generation and solving, and expects it to
+type-check.
+-}
 suite : Test
 suite =
     Test.describe "Deep let-chain constraint generation is stack-safe (erased path)"
@@ -61,6 +85,10 @@ suite =
         ]
 
 
+{-| Canonicalizes `srcModule` as a module of the package `eco/example` against
+`Basic.testIfaces`. Warnings are dropped, and any errors are replaced by the
+message "canonicalization failed".
+-}
 canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     case Result.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of

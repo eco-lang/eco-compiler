@@ -1,9 +1,29 @@
 module TestLogic.Generate.CodeGen.TupleConstruction exposing (expectTupleConstruction)
 
-{-| Test logic for CGEN\_017: Tuple Construction invariant.
+{-| A check that the code generator builds tuples with the tuple construction
+ops, with every element supplied. Nothing in `Mlir.Mlir` stops it emitting a
+tuple op with an element missing, or building a tuple through the generic
+`eco.construct.custom` op, and this check is what notices.
 
-Tuples must use `eco.construct.tuple2` or `eco.construct.tuple3`;
-never `eco.construct.custom`.
+A tuple of two or three elements has its own heap construction ops,
+`eco.construct.tuple2` and `eco.construct.tuple3`, which take the elements as
+their leading operands. The code generator's builders for them may append
+GC-root hints after the elements, extra operands naming values to be kept as
+garbage-collection roots, so an op with more operands than elements is
+accepted, and only one with fewer is a violation.
+
+`expectTupleConstruction` compiles a module to MLIR and reports, among the ops
+at any nesting depth:
+
+  - an `eco.construct.tuple2` with fewer than two operands;
+  - an `eco.construct.tuple3` with fewer than three operands;
+  - an `eco.construct.custom` whose `constructor` attribute is `Tuple2`,
+    `Tuple3`, `(,)` or `(,,)`.
+
+Among what is not checked: the value-level `eco.make.tuple2` and
+`eco.make.tuple3` ops, an `eco.make.custom` with a tuple constructor name, an
+`eco.construct.custom` that has no `constructor` attribute, and the types of
+the operands.
 
 @docs expectTupleConstruction
 
@@ -22,13 +42,15 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Verify that tuple construction invariants hold for a source module.
+{-| Returns an expectation that `srcModule` compiles to MLIR through
+`TestLogic.TestPipeline.runToMlir` and that the MLIR breaks none of the tuple
+construction rules in the module docstring.
 
-This compiles the module to MLIR and checks:
-
-  - eco.construct.tuple2 has exactly 2 operands
-  - eco.construct.tuple3 has exactly 3 operands
-  - eco.construct.custom is never used for tuple constructors
+A compilation failure fails with `Compilation failed:` followed by the
+pipeline's error. When there are violations, only the first is reported, as
+`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes:
+`eco.construct.tuple2` violations come first, then `eco.construct.tuple3`,
+then `eco.construct.custom`.
 
 -}
 expectTupleConstruction : Src.Module -> Expectation
@@ -41,26 +63,25 @@ expectTupleConstruction srcModule =
             violationsToExpectation (checkTupleConstruction mlirModule)
 
 
-{-| Check tuple construction invariants on an MlirModule.
+{-| Returns the violations in `mlirModule`: those of the `eco.construct.tuple2`
+ops, then those of the `eco.construct.tuple3` ops, then the
+`eco.construct.custom` ops that name a tuple constructor.
 -}
 checkTupleConstruction : MlirModule -> List Violation
 checkTupleConstruction mlirModule =
     let
-        -- Check tuple2 operand count
         tuple2Ops =
             findOpsNamed "eco.construct.tuple2" mlirModule
 
         tuple2Violations =
             List.filterMap checkTuple2OperandCount tuple2Ops
 
-        -- Check tuple3 operand count
         tuple3Ops =
             findOpsNamed "eco.construct.tuple3" mlirModule
 
         tuple3Violations =
             List.filterMap checkTuple3OperandCount tuple3Ops
 
-        -- Check for tuple misuse in eco.construct.custom
         customOps =
             findOpsNamed "eco.construct.custom" mlirModule
 
@@ -70,15 +91,16 @@ checkTupleConstruction mlirModule =
     tuple2Violations ++ tuple3Violations ++ customViolations
 
 
+{-| Returns a violation when `op`, an `eco.construct.tuple2`, has fewer than two
+operands. More are accepted, because operands after the two elements are GC-root
+hints.
+-}
 checkTuple2OperandCount : MlirOp -> Maybe Violation
 checkTuple2OperandCount op =
     let
         operandCount =
             List.length op.operands
     in
-    -- Two fixed field operands; anything beyond that is the variadic
-    -- `live_roots` segment populated either by the front-end or by
-    -- EcoGCPrepare. Only flag the too-few case.
     if operandCount < 2 then
         Just
             { opId = op.id
@@ -90,13 +112,16 @@ checkTuple2OperandCount op =
         Nothing
 
 
+{-| Returns a violation when `op`, an `eco.construct.tuple3`, has fewer than
+three operands. More are accepted, because operands after the three elements
+are GC-root hints.
+-}
 checkTuple3OperandCount : MlirOp -> Maybe Violation
 checkTuple3OperandCount op =
     let
         operandCount =
             List.length op.operands
     in
-    -- Three fixed field operands; anything beyond is the `live_roots` segment.
     if operandCount < 3 then
         Just
             { opId = op.id
@@ -108,6 +133,10 @@ checkTuple3OperandCount op =
         Nothing
 
 
+{-| Returns a violation when the `constructor` attribute of `op`, an
+`eco.construct.custom`, is a name `isTupleConstructorName` accepts. An op
+without that attribute gives no violation.
+-}
 checkForTupleConstructorMisuse : MlirOp -> Maybe Violation
 checkForTupleConstructorMisuse op =
     let
@@ -130,6 +159,9 @@ checkForTupleConstructorMisuse op =
             Nothing
 
 
+{-| Tells whether `name` is one of the constructor names that mark a tuple:
+`Tuple2`, `Tuple3`, `(,)` or `(,,)`.
+-}
 isTupleConstructorName : String -> Bool
 isTupleConstructorName name =
     List.member name [ "Tuple2", "Tuple3", "(,)", "(,,)" ]

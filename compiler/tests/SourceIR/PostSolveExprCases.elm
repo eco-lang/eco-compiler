@@ -1,9 +1,67 @@
 module SourceIR.PostSolveExprCases exposing (expectSuite)
 
-{-| Test cases for PostSolve expression type resolution.
+{-| The type checker records a type for each expression node, and after solving
+the post-solve pass (`Compiler.Type.PostSolve`) rewrites some of them, such as
+those of string, character, float and unit literals. A form of expression that
+no test program contains is a form whose node types no checker ever sees. This
+module supplies small programs, grouped by expression form, so that a checker
+can be run over each form.
 
-These tests exercise various expression types through the PostSolve phase
-to improve coverage of Compiler.Type.PostSolve.postSolveExpr and related functions.
+The tests assert nothing themselves. Every test builds a `Src.Module` with
+`Compiler.AST.SourceBuilder` and hands it to the expectation function given to
+`expectSuite`, which decides which compiler stages run and what is checked.
+Most programs are built with `makeModule`: a module `Test`, importing `Basics`
+and `List`, whose one value `testValue` is an unannotated expression. The rest
+are built with `makeModuleWithTypedDefs` or
+`makeModuleWithTypedDefsUnionsAliases`, where every top-level value is
+annotated, `testValue` included. An integer literal has type `number` unless
+something fixes it to `Int`, such as an annotation or an integer pattern in a
+`case`; in most of the unannotated programs nothing does.
+
+The groups, each a `Test.describe`, are:
+
+  - Literals: `testValue` is a string, a character, a float, `()`, an integer
+    and `True`, one per test.
+  - Structures: an empty list annotated `List Int`, lists of one and of three
+    integers, a pair, a triple, a record with one field, a record inside a
+    record, and a record with an integer, a string and a `Bool` field.
+  - Functions: annotated top-level functions that `testValue` calls. They take
+    one argument (`increment`) or two (`add`), return a lambda (`makeAdder`,
+    the only one whose body is a lambda expression), are polymorphic
+    (`identity : a -> a`, applied to an integer), take a record (`getX`) or
+    return a pair (`pair`).
+  - Accessors: one field access on a record literal, chains of two and three
+    accesses into nested records, and the accessor `.field` as the whole body
+    of an annotated top-level value that `testValue` calls.
+  - Let: one definition, a `let` nested in a `let` body, a local function,
+    destructuring of a pair and of a record, and three definitions used in one
+    sum.
+  - Control flow: an `if`, an `if` nested in a `then` branch, an `if` whose two
+    branches are records of the same type `{ value : Int }` (although the
+    test's name says "different result types"), and three `case` expressions:
+    on an integer with two literal branches and a wildcard, on an integer with
+    five literal branches and a wildcard, and on a pair with tuple patterns.
+  - Record update: one field replaced, two fields of three replaced, a field
+    replaced by a value computed from its old value, and a field holding a
+    record replaced by a new record.
+  - Calls, all to annotated top-level functions: a plain call to the
+    module's own `negate`, a call as another call's argument, a function
+    passed to a higher-order function, a partial application bound to a
+    top-level value and then called, and a call with a record argument.
+  - Operators: `1 + 2`, `5 > 3`, `True && False`, `1 + 2 + 3 + 4` and
+    `2 * 3 + 4`, each one flat operator chain.
+  - Negation: of an integer literal, of a float literal, and of a negation.
+    The last is a `Negate` directly inside a `Negate`, a shape the parser
+    never builds, since it negates only a term.
+  - Annotation forms: annotations containing `()`, a type alias of a record,
+    and an extensible record. When the program is type checked, each of these
+    is converted by `Compiler.Type.Instantiate.fromSrcType`, which has a
+    separate arm for unit, alias and record types.
+
+Among what is not tested: `case` on a custom type or on string, character or
+list patterns; operators used as values; qualified references other than
+`True` and `False`; annotated or recursive `let` definitions; kernel
+references.
 
 -}
 
@@ -55,6 +113,10 @@ import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
+{-| Builds the whole suite: one group per expression form, each test applying
+`expectFn` to its program. `condStr` is appended to the name of every group
+and every test, so it should say what `expectFn` checks.
+-}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.describe ("PostSolve expression types " ++ condStr)
@@ -78,6 +140,8 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
+{-| Groups the literal tests, with `condStr` appended to every name.
+-}
 literalTypeTests : (Src.Module -> Expectation) -> String -> Test
 literalTypeTests expectFn condStr =
     Test.describe ("Literal types " ++ condStr)
@@ -90,6 +154,9 @@ literalTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is the string literal
+`"hello world"`.
+-}
 stringLiteralType : (Src.Module -> Expectation) -> (() -> Expectation)
 stringLiteralType expectFn _ =
     let
@@ -99,6 +166,8 @@ stringLiteralType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is the character literal `'x'`.
+-}
 charLiteralType : (Src.Module -> Expectation) -> (() -> Expectation)
 charLiteralType expectFn _ =
     let
@@ -108,6 +177,8 @@ charLiteralType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is the float literal `3.14159`.
+-}
 floatLiteralType : (Src.Module -> Expectation) -> (() -> Expectation)
 floatLiteralType expectFn _ =
     let
@@ -117,6 +188,8 @@ floatLiteralType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `()`.
+-}
 unitLiteralType : (Src.Module -> Expectation) -> (() -> Expectation)
 unitLiteralType expectFn _ =
     let
@@ -126,6 +199,9 @@ unitLiteralType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is the integer literal `42`,
+unannotated, so of type `number`.
+-}
 intLiteralType : (Src.Module -> Expectation) -> (() -> Expectation)
 intLiteralType expectFn _ =
     let
@@ -135,6 +211,9 @@ intLiteralType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `True`, built as the
+qualified constructor `Basics.True`.
+-}
 boolLiteralType : (Src.Module -> Expectation) -> (() -> Expectation)
 boolLiteralType expectFn _ =
     let
@@ -150,6 +229,9 @@ boolLiteralType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the list, tuple and record literal tests, with `condStr` appended to
+every name.
+-}
 structuralTypeTests : (Src.Module -> Expectation) -> String -> Test
 structuralTypeTests expectFn condStr =
     Test.describe ("Structural types " ++ condStr)
@@ -164,10 +246,12 @@ structuralTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is `[]`, annotated `List Int`
+so that the element type is fixed.
+-}
 emptyListType : (Src.Module -> Expectation) -> (() -> Expectation)
 emptyListType expectFn _ =
     let
-        -- testValue : List Int
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
@@ -182,6 +266,8 @@ emptyListType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `[ 1 ]`.
+-}
 singletonListType : (Src.Module -> Expectation) -> (() -> Expectation)
 singletonListType expectFn _ =
     let
@@ -191,6 +277,8 @@ singletonListType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `[ 1, 2, 3 ]`.
+-}
 multipleElementListType : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleElementListType expectFn _ =
     let
@@ -200,6 +288,8 @@ multipleElementListType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `( 1, "hello" )`.
+-}
 tuple2Type : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple2Type expectFn _ =
     let
@@ -209,6 +299,8 @@ tuple2Type expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `( 1, "hello", True )`.
+-}
 tuple3Type : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple3Type expectFn _ =
     let
@@ -218,6 +310,8 @@ tuple3Type expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `{ x = 10 }`.
+-}
 simpleRecordType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleRecordType expectFn _ =
     let
@@ -227,6 +321,9 @@ simpleRecordType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`{ outer = { inner = 42 } }`.
+-}
 nestedRecordType : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedRecordType expectFn _ =
     let
@@ -244,6 +341,9 @@ nestedRecordType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`{ a = 1, b = "two", c = True }`.
+-}
 multiFieldRecordType : (Src.Module -> Expectation) -> (() -> Expectation)
 multiFieldRecordType expectFn _ =
     let
@@ -265,6 +365,10 @@ multiFieldRecordType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the tests of annotated top-level functions, with `condStr` appended to
+every name. Despite the group's name, only one of them contains a lambda
+expression.
+-}
 lambdaTypeTests : (Src.Module -> Expectation) -> String -> Test
 lambdaTypeTests expectFn condStr =
     Test.describe ("Lambda types " ++ condStr)
@@ -277,10 +381,12 @@ lambdaTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module with `increment : Int -> Int`, defined as
+`increment x = x + 1`, and `testValue : Int` defined as `increment 5`.
+-}
 simpleLambdaType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleLambdaType expectFn _ =
     let
-        -- increment : Int -> Int
         incrementDef : TypedDef
         incrementDef =
             { name = "increment"
@@ -303,10 +409,12 @@ simpleLambdaType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `add : Int -> Int -> Int`, defined as
+`add a b = a + b`, and `testValue : Int` defined as `add 3 4`.
+-}
 multiArgLambdaType : (Src.Module -> Expectation) -> (() -> Expectation)
 multiArgLambdaType expectFn _ =
     let
-        -- add : Int -> Int -> Int
         addDef : TypedDef
         addDef =
             { name = "add"
@@ -329,10 +437,13 @@ multiArgLambdaType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `makeAdder : Int -> Int -> Int`, defined as
+`makeAdder n = \x -> x + n`, and `testValue : Int` defined as
+`(makeAdder 10) 5`, a call whose function is itself a call.
+-}
 lambdaReturningLambdaType : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaReturningLambdaType expectFn _ =
     let
-        -- makeAdder : Int -> (Int -> Int)
         makeAdderDef : TypedDef
         makeAdderDef =
             { name = "makeAdder"
@@ -355,10 +466,12 @@ lambdaReturningLambdaType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `identity : a -> a`, defined as
+`identity x = x`, and `testValue : Int` defined as `identity 42`.
+-}
 identityLambdaType : (Src.Module -> Expectation) -> (() -> Expectation)
 identityLambdaType expectFn _ =
     let
-        -- identity : a -> a (monomorphized to Int -> Int)
         identityDef : TypedDef
         identityDef =
             { name = "identity"
@@ -381,10 +494,12 @@ identityLambdaType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `getX : { x : Int } -> Int`, defined as
+`getX r = r.x`, and `testValue : Int` defined as `getX { x = 10 }`.
+-}
 lambdaWithRecordArgType : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaWithRecordArgType expectFn _ =
     let
-        -- getX : { x : Int } -> Int
         getXDef : TypedDef
         getXDef =
             { name = "getX"
@@ -407,10 +522,12 @@ lambdaWithRecordArgType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `pair : Int -> ( Int, Int )`, defined as
+`pair x = ( x, x )`, and `testValue : ( Int, Int )` defined as `pair 7`.
+-}
 lambdaWithTupleResultType : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaWithTupleResultType expectFn _ =
     let
-        -- pair : Int -> ( Int, Int )
         pairDef : TypedDef
         pairDef =
             { name = "pair"
@@ -439,6 +556,9 @@ lambdaWithTupleResultType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the field access and accessor function tests, with `condStr`
+appended to every name.
+-}
 accessorTypeTests : (Src.Module -> Expectation) -> String -> Test
 accessorTypeTests expectFn condStr =
     Test.describe ("Accessor types " ++ condStr)
@@ -449,6 +569,8 @@ accessorTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is `{ name = "Alice" }.name`.
+-}
 simpleAccessorType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleAccessorType expectFn _ =
     let
@@ -459,6 +581,9 @@ simpleAccessorType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`{ person = { age = 30 } }.person.age`.
+-}
 accessorOnNestedRecordType : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorOnNestedRecordType expectFn _ =
     let
@@ -480,11 +605,13 @@ accessorOnNestedRecordType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `getField : { field : Int } -> Int`, defined
+with no arguments as the accessor `.field`, and `testValue : Int` defined as
+`getField { field = 99 }`.
+-}
 accessorFunctionType : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorFunctionType expectFn _ =
     let
-        -- Uses .field accessor syntax as a function
-        -- getField : { field : Int } -> Int
         getFieldDef : TypedDef
         getFieldDef =
             { name = "getField"
@@ -507,6 +634,9 @@ accessorFunctionType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` reads `value` out of three
+nested records, `{ level1 = { level2 = { value = 123 } } }.level1.level2.value`.
+-}
 multipleAccessorChainType : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleAccessorChainType expectFn _ =
     let
@@ -541,6 +671,8 @@ multipleAccessorChainType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the `let` tests, with `condStr` appended to every name.
+-}
 letBindingTypeTests : (Src.Module -> Expectation) -> String -> Test
 letBindingTypeTests expectFn condStr =
     Test.describe ("Let binding types " ++ condStr)
@@ -553,6 +685,8 @@ letBindingTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is `let x = 42 in x`.
+-}
 simpleLetType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleLetType expectFn _ =
     let
@@ -566,6 +700,10 @@ simpleLetType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let x = 10 in let y = x + 5 in y`, the second `let` being the first one's
+body.
+-}
 nestedLetType : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedLetType expectFn _ =
     let
@@ -582,6 +720,9 @@ nestedLetType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let double n = n * 2 in double 21`.
+-}
 letWithFunctionType : (Src.Module -> Expectation) -> (() -> Expectation)
 letWithFunctionType expectFn _ =
     let
@@ -595,6 +736,9 @@ letWithFunctionType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let ( a, b ) = ( 1, 2 ) in a + b`.
+-}
 letDestructTupleType : (Src.Module -> Expectation) -> (() -> Expectation)
 letDestructTupleType expectFn _ =
     let
@@ -608,6 +752,9 @@ letDestructTupleType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let { x, y } = { x = 3, y = 4 } in x + y`.
+-}
 letDestructRecordType : (Src.Module -> Expectation) -> (() -> Expectation)
 letDestructRecordType expectFn _ =
     let
@@ -621,6 +768,9 @@ letDestructRecordType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is a single `let` that
+defines `a = 1`, `b = 2` and `c = 3` and whose body is `a + b + c`.
+-}
 multipleLetBindingsType : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleLetBindingsType expectFn _ =
     let
@@ -643,6 +793,10 @@ multipleLetBindingsType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the `if` and `case` tests, with `condStr` appended to every name. The
+test named "If with different result types" runs `ifWithRecordResultType`,
+whose branches have the same type.
+-}
 controlFlowTypeTests : (Src.Module -> Expectation) -> String -> Test
 controlFlowTypeTests expectFn condStr =
     Test.describe ("Control flow types " ++ condStr)
@@ -655,6 +809,8 @@ controlFlowTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is `if True then 1 else 0`.
+-}
 simpleIfType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleIfType expectFn _ =
     let
@@ -665,6 +821,9 @@ simpleIfType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`if True then if False then 1 else 2 else 3`.
+-}
 nestedIfType : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedIfType expectFn _ =
     let
@@ -678,6 +837,10 @@ nestedIfType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`if True then { value = 1 } else { value = 2 }`. Both branches are records of
+type `{ value : Int }`.
+-}
 ifWithRecordResultType : (Src.Module -> Expectation) -> (() -> Expectation)
 ifWithRecordResultType expectFn _ =
     let
@@ -691,6 +854,9 @@ ifWithRecordResultType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is a `case` on the integer `1`
+with branches `0`, `1` and `_`, each giving a string.
+-}
 simpleCaseType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleCaseType expectFn _ =
     let
@@ -706,6 +872,9 @@ simpleCaseType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is a `case` on the integer `5`
+with branches `0` to `4` and `_`, each giving an integer.
+-}
 multiBranchCaseType : (Src.Module -> Expectation) -> (() -> Expectation)
 multiBranchCaseType expectFn _ =
     let
@@ -724,6 +893,9 @@ multiBranchCaseType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is a `case` on `( 1, 2 )` with
+the branches `( 0, y ) -> y`, `( x, 0 ) -> x` and `( x, y ) -> x + y`.
+-}
 caseWithNestedPatternsType : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithNestedPatternsType expectFn _ =
     let
@@ -745,6 +917,8 @@ caseWithNestedPatternsType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the record update tests, with `condStr` appended to every name.
+-}
 recordUpdateTypeTests : (Src.Module -> Expectation) -> String -> Test
 recordUpdateTypeTests expectFn condStr =
     Test.describe ("Record update types " ++ condStr)
@@ -755,6 +929,9 @@ recordUpdateTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let r = { x = 1, y = 2 } in { r | x = 10 }`.
+-}
 simpleRecordUpdateType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleRecordUpdateType expectFn _ =
     let
@@ -768,6 +945,9 @@ simpleRecordUpdateType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let r = { a = 1, b = 2, c = 3 } in { r | a = 100, c = 300 }`.
+-}
 multiFieldRecordUpdateType : (Src.Module -> Expectation) -> (() -> Expectation)
 multiFieldRecordUpdateType expectFn _ =
     let
@@ -781,6 +961,9 @@ multiFieldRecordUpdateType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let r = { count = 5 } in { r | count = r.count + 1 }`.
+-}
 recordUpdateWithExpressionType : (Src.Module -> Expectation) -> (() -> Expectation)
 recordUpdateWithExpressionType expectFn _ =
     let
@@ -796,6 +979,9 @@ recordUpdateWithExpressionType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is
+`let outer = { inner = { value = 1 } } in { outer | inner = { value = 99 } }`.
+-}
 nestedRecordUpdateType : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedRecordUpdateType expectFn _ =
     let
@@ -823,6 +1009,8 @@ nestedRecordUpdateType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the function call tests, with `condStr` appended to every name.
+-}
 callTypeTests : (Src.Module -> Expectation) -> String -> Test
 callTypeTests expectFn condStr =
     Test.describe ("Call types " ++ condStr)
@@ -834,10 +1022,12 @@ callTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module with its own `negate : Int -> Int`, defined as
+`negate x = 0 - x`, and `testValue : Int` defined as `negate 42`.
+-}
 simpleCallType : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleCallType expectFn _ =
     let
-        -- negate : Int -> Int
         negateDef : TypedDef
         negateDef =
             { name = "negate"
@@ -860,10 +1050,12 @@ simpleCallType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `double : Int -> Int`, defined as
+`double x = x * 2`, and `testValue : Int` defined as `double (double 5)`.
+-}
 nestedCallType : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedCallType expectFn _ =
     let
-        -- double : Int -> Int
         doubleDef : TypedDef
         doubleDef =
             { name = "double"
@@ -886,10 +1078,13 @@ nestedCallType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `apply : (Int -> Int) -> Int -> Int`, defined
+as `apply f x = f x`, `inc : Int -> Int`, defined as `inc n = n + 1`, and
+`testValue : Int` defined as `apply inc 10`.
+-}
 higherOrderCallType : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderCallType expectFn _ =
     let
-        -- apply : (Int -> Int) -> Int -> Int
         applyDef : TypedDef
         applyDef =
             { name = "apply"
@@ -898,7 +1093,6 @@ higherOrderCallType expectFn _ =
             , body = callExpr (varExpr "f") [ varExpr "x" ]
             }
 
-        -- inc : Int -> Int
         incDef : TypedDef
         incDef =
             { name = "inc"
@@ -921,10 +1115,13 @@ higherOrderCallType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `add : Int -> Int -> Int`, defined as
+`add a b = a + b`, `add5 : Int -> Int`, defined with no arguments as `add 5`,
+and `testValue : Int` defined as `add5 10`.
+-}
 partialApplicationType : (Src.Module -> Expectation) -> (() -> Expectation)
 partialApplicationType expectFn _ =
     let
-        -- add : Int -> Int -> Int
         addDef : TypedDef
         addDef =
             { name = "add"
@@ -933,7 +1130,6 @@ partialApplicationType expectFn _ =
             , body = binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b")
             }
 
-        -- add5 : Int -> Int (partial application)
         add5Def : TypedDef
         add5Def =
             { name = "add5"
@@ -956,10 +1152,13 @@ partialApplicationType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `sumRecord : { x : Int, y : Int } -> Int`,
+defined as `sumRecord r = r.x + r.y`, and `testValue : Int` defined as
+`sumRecord { x = 3, y = 4 }`.
+-}
 callWithComplexArgType : (Src.Module -> Expectation) -> (() -> Expectation)
 callWithComplexArgType expectFn _ =
     let
-        -- sumRecord : { x : Int, y : Int } -> Int
         sumRecordDef : TypedDef
         sumRecordDef =
             { name = "sumRecord"
@@ -988,6 +1187,8 @@ callWithComplexArgType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the binary operator tests, with `condStr` appended to every name.
+-}
 binopTypeTests : (Src.Module -> Expectation) -> String -> Test
 binopTypeTests expectFn condStr =
     Test.describe ("Binop types " ++ condStr)
@@ -999,6 +1200,8 @@ binopTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is `1 + 2`.
+-}
 additionBinopType : (Src.Module -> Expectation) -> (() -> Expectation)
 additionBinopType expectFn _ =
     let
@@ -1008,6 +1211,8 @@ additionBinopType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `5 > 3`.
+-}
 comparisonBinopType : (Src.Module -> Expectation) -> (() -> Expectation)
 comparisonBinopType expectFn _ =
     let
@@ -1017,6 +1222,8 @@ comparisonBinopType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `True && False`.
+-}
 logicalBinopType : (Src.Module -> Expectation) -> (() -> Expectation)
 logicalBinopType expectFn _ =
     let
@@ -1026,6 +1233,9 @@ logicalBinopType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `1 + 2 + 3 + 4`, stored as
+one flat chain of four operands.
+-}
 chainedBinopType : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedBinopType expectFn _ =
     let
@@ -1036,6 +1246,9 @@ chainedBinopType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `2 * 3 + 4`, stored as one
+flat chain whose precedence is settled during canonicalization.
+-}
 mixedBinopType : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedBinopType expectFn _ =
     let
@@ -1052,6 +1265,8 @@ mixedBinopType expectFn _ =
 -- ============================================================================
 
 
+{-| Groups the negation tests, with `condStr` appended to every name.
+-}
 negateTypeTests : (Src.Module -> Expectation) -> String -> Test
 negateTypeTests expectFn condStr =
     Test.describe ("Negate types " ++ condStr)
@@ -1061,6 +1276,9 @@ negateTypeTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module whose `testValue` is `-42`, a negation of the
+integer literal `42`.
+-}
 negateIntType : (Src.Module -> Expectation) -> (() -> Expectation)
 negateIntType expectFn _ =
     let
@@ -1070,6 +1288,9 @@ negateIntType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is `-3.14`, a negation of the
+float literal `3.14`.
+-}
 negateFloatType : (Src.Module -> Expectation) -> (() -> Expectation)
 negateFloatType expectFn _ =
     let
@@ -1079,6 +1300,10 @@ negateFloatType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module whose `testValue` is the negation of the
+negation of `10`. The inner negation is not wrapped in parentheses, a shape
+the parser never builds, since it negates only a term.
+-}
 doubleNegateType : (Src.Module -> Expectation) -> (() -> Expectation)
 doubleNegateType expectFn _ =
     let
@@ -1091,10 +1316,14 @@ doubleNegateType expectFn _ =
 
 -- ============================================================================
 -- INSTANTIATE EDGE CASE TESTS
--- Targets: Type.Instantiate lines 96 (Filled alias), 110 (Unit), 121 (extensible record)
 -- ============================================================================
 
 
+{-| Groups the tests of annotation forms, with `condStr` appended to every name.
+When the program is type checked, each annotation is converted by
+`Compiler.Type.Instantiate.fromSrcType`, and each test reaches a different arm
+of it: unit, alias and record.
+-}
 instantiateEdgeCaseTests : (Src.Module -> Expectation) -> String -> Test
 instantiateEdgeCaseTests expectFn condStr =
     Test.describe ("Instantiate edge cases " ++ condStr)
@@ -1104,10 +1333,12 @@ instantiateEdgeCaseTests expectFn condStr =
         ]
 
 
+{-| Passes `expectFn` a module with `f : () -> Int`, defined as `f _ = 42`, and
+`testValue : Int` defined as `f ()`.
+-}
 unitAnnotationType : (Src.Module -> Expectation) -> (() -> Expectation)
 unitAnnotationType expectFn _ =
     let
-        -- f : () -> Int; f _ = 42
         fDef : TypedDef
         fDef =
             { name = "f"
@@ -1130,10 +1361,14 @@ unitAnnotationType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module that declares
+`type alias Point = { x : Int, y : Int }` and has `getX : Point -> Int`,
+defined as `getX p = p.x`, and `testValue : Int` defined as
+`getX { x = 10, y = 20 }`.
+-}
 typeAliasAnnotationType : (Src.Module -> Expectation) -> (() -> Expectation)
 typeAliasAnnotationType expectFn _ =
     let
-        -- type alias Point = { x : Int, y : Int }
         pointAlias : AliasDef
         pointAlias =
             { name = "Point"
@@ -1141,7 +1376,6 @@ typeAliasAnnotationType expectFn _ =
             , tipe = tRecord [ ( "x", tType "Int" [] ), ( "y", tType "Int" [] ) ]
             }
 
-        -- getX : Point -> Int
         getXDef : TypedDef
         getXDef =
             { name = "getX"
@@ -1167,10 +1401,13 @@ typeAliasAnnotationType expectFn _ =
     expectFn modul
 
 
+{-| Passes `expectFn` a module with `getX : { a | x : Int } -> Int`, defined as
+`getX r = r.x`, and `testValue : Int` defined as `getX { x = 5, y = 10 }`, a
+record with a field the annotation does not name.
+-}
 extensibleRecordAnnotationType : (Src.Module -> Expectation) -> (() -> Expectation)
 extensibleRecordAnnotationType expectFn _ =
     let
-        -- getX : { a | x : Int } -> Int
         getXDef : TypedDef
         getXDef =
             { name = "getX"
