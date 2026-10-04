@@ -331,7 +331,7 @@ toShaderRecord types baseRecType =
         baseRecType
 
     else
-        RecordN (Dict.fromList (DataMap.toList compare (DataMap.map (\_ -> glToType) types))) baseRecType
+        RecordN (Dict.fromList (DataMap.toList (DataMap.map (\_ -> glToType) types))) baseRecType
 
 
 {-| Convert a GLSL/WebGL type to the corresponding Elm type (e.g., V2 becomes

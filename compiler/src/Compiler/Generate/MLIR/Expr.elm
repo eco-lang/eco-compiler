@@ -111,9 +111,9 @@ following op is not a GCRootCarrier (e.g. `eco.string_literal`, back-edge
 RS4GC handles the resulting call's statepoint independently.
 
 -}
-emitSafepointHints : Ctx.Context -> List ( String, MlirType )
-emitSafepointHints ctx =
-    Ctx.liveEcoValueVars ctx
+emitSafepointHints : List ( String, MlirType )
+emitSafepointHints =
+    Ctx.liveEcoValueVars
 
 
 {-| Rename an SSA variable in a list of MlirOps, recursing into nested regions.
@@ -454,8 +454,8 @@ generateExpr ctx0 expr =
                 Nothing ->
                     generateCall ctx func args resultType callInfo
 
-        Mono.MonoTailCall name args _ ->
-            generateTailCall ctx name args
+        Mono.MonoTailCall _ args _ ->
+            generateTailCall ctx args
 
         Mono.MonoIf branches final monoType ->
             -- Step 10a: `if` IS part of the result spine now. The flag is
@@ -479,11 +479,11 @@ generateExpr ctx0 expr =
                 Nothing ->
                     generateLet ctx def body
 
-        Mono.MonoDestruct destructor body destType ->
-            generateDestruct ctx destructor body destType
+        Mono.MonoDestruct destructor body _ ->
+            generateDestruct ctx destructor body
 
-        Mono.MonoCase scrutinee1 scrutinee2 decider jumps resultType ->
-            generateCase ctx scrutinee1 scrutinee2 decider jumps resultType
+        Mono.MonoCase _ _ decider jumps resultType ->
+            generateCase ctx decider jumps resultType
 
         Mono.MonoRecordCreate namedFields monoType ->
             let
@@ -514,9 +514,9 @@ generateExpr ctx0 expr =
                     ListX.find (\fi -> fi.name == fieldName) layout.fields
                         |> Maybe.withDefault { name = fieldName, index = 0, monoType = fieldType, isUnboxed = False }
             in
-            generateRecordAccess ctx record fieldName fieldInfo.index fieldInfo.isUnboxed fieldType
+            generateRecordAccess ctx record fieldInfo.index fieldInfo.isUnboxed fieldType
 
-        Mono.MonoRecordUpdate record namedUpdates monoType ->
+        Mono.MonoRecordUpdate record namedUpdates _ ->
             let
                 recordType =
                     Mono.typeOf record
@@ -532,7 +532,7 @@ generateExpr ctx0 expr =
                         )
                         namedUpdates
             in
-            generateRecordUpdate ctx record indexedUpdates layout monoType
+            generateRecordUpdate ctx record indexedUpdates layout
 
         Mono.MonoTupleCreate _ elements monoType ->
             case ctx.sretTailLayout of
@@ -824,7 +824,7 @@ generateVarGlobal ctx specId monoType =
                                                 Types.monoTypeToAbi sig.returnType
 
                                             ( ctx2, callOp ) =
-                                                Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
+                                                Ops.ecoCallNamed ctx1 emitSafepointHints var funcName [] resultMlirType
                                         in
                                         { ops = [ callOp ]
                                         , resultVar = var
@@ -889,7 +889,7 @@ generateVarGlobal ctx specId monoType =
                             Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
+                            Ops.ecoCallNamed ctx1 emitSafepointHints var funcName [] resultMlirType
                     in
                     { ops = [ callOp ]
                     , resultVar = var
@@ -943,7 +943,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                                 Types.monoTypeToAbi monoType
 
                             ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var kernelName [] resultMlirType
+                                Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
                         in
                         { ops = [ callOp ]
                         , resultVar = var
@@ -970,7 +970,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var kernelName [] resultMlirType
+                            Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
                     in
                     { ops = [ callOp ]
                     , resultVar = var
@@ -999,7 +999,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                                 Types.monoTypeToAbi monoType
 
                             ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var kernelName [] resultMlirType
+                                Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
                         in
                         { ops = [ callOp ]
                         , resultVar = var
@@ -1020,7 +1020,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var kernelName [] resultMlirType
+                            Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
                     in
                     { ops = [ callOp ]
                     , resultVar = var
@@ -1152,7 +1152,7 @@ generateList ctx items listType =
                                         Ctx.freshVar result.ctx
 
                                     ( ctx4, consOp ) =
-                                        Ops.ecoConstructList ctx3 (emitSafepointHints ctx3) consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
+                                        Ops.ecoConstructList ctx3 emitSafepointHints consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
                                 in
                                 ( consOp :: List.reverse result.ops ++ accOps, consVar, ctx4 )
 
@@ -1166,7 +1166,7 @@ generateList ctx items listType =
                                         Ctx.freshVar ctx3
 
                                     ( ctx5, consOp ) =
-                                        Ops.ecoConstructList ctx4 (emitSafepointHints ctx4) consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
+                                        Ops.ecoConstructList ctx4 emitSafepointHints consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
                                 in
                                 ( consOp :: List.reverse boxOps ++ List.reverse result.ops ++ accOps, consVar, ctx5 )
                         )
@@ -1281,7 +1281,7 @@ generateClosure ctx closureInfo body monoType =
                 Types.monoTypeToAbi monoType
 
             ( ctx4, callOp ) =
-                Ops.ecoCallNamed ctx3 (emitSafepointHints ctx3) resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
+                Ops.ecoCallNamed ctx3 emitSafepointHints resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
         in
         { ops = captureOps ++ boxOps ++ [ callOp ]
         , resultVar = resultVar
@@ -1411,7 +1411,7 @@ boxToEcoValue ctx var mlirTy =
                 Ctx.freshVar ctx
 
             ( ctx2, toHeapOp ) =
-                Ops.ecoToHeap ctx1 (emitSafepointHints ctx1) heapVar ( var, mlirTy )
+                Ops.ecoToHeap ctx1 emitSafepointHints heapVar ( var, mlirTy )
         in
         ( [ toHeapOp ], heapVar, ctx2 )
 
@@ -1669,7 +1669,7 @@ generateCall ctx func args resultType callInfo =
                             generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
                         Nothing ->
-                            generateGenericApplyCoerced ctx func args resultType callInfo
+                            generateGenericApplyCoerced ctx func args resultType
 
         Mono.CallSegmentationUnknown ->
             case fastDispatchStamp callInfo args of
@@ -1690,7 +1690,7 @@ generateCall ctx func args resultType callInfo =
                             -- Result is always !eco.value, so coerce back to expected ABI type.
                             let
                                 unkRes =
-                                    generateUnknownSegmentationCall ctx func args resultType callInfo
+                                    generateUnknownSegmentationCall ctx func args resultType
 
                                 expectedType =
                                     Types.monoTypeToAbi resultType
@@ -1806,8 +1806,8 @@ callKindToAttrString callKind =
             "segmentation_unknown"
 
 
-generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateGenericApply ctx func args resultType _ =
+generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateGenericApply ctx func args resultType =
     let
         funcResult : ExprResult
         funcResult =
@@ -1877,7 +1877,7 @@ generateGenericApply ctx func args resultType _ =
         -- GC root hints are appended after the call operands; eco.gc_roots_count
         -- tells the C++ GCRootCarrier interface how many tail operands are roots.
         gcRootHints1 =
-            emitSafepointHints ctx3
+            emitSafepointHints
 
         ( gcRootNames1, gcRootTypes1 ) =
             List.unzip gcRootHints1
@@ -1928,8 +1928,8 @@ closure boundary.
 Result type is always !eco.value since saturation is unknown at compile time.
 
 -}
-generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateUnknownSegmentationCall ctx func args resultType _ =
+generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateUnknownSegmentationCall ctx func args resultType =
     let
         funcResult : ExprResult
         funcResult =
@@ -2017,7 +2017,7 @@ generateUnknownSegmentationCall ctx func args resultType _ =
         -- GC root hints are appended after the call operands; eco.gc_roots_count
         -- tells the C++ GCRootCarrier interface how many tail operands are roots.
         gcRootHints2 =
-            emitSafepointHints ctx3
+            emitSafepointHints
 
         ( gcRootNames2, gcRootTypes2 ) =
             List.unzip gcRootHints2
@@ -2168,7 +2168,7 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
                 [ ( "_result_kind", IntAttr (Just I8) segResultKind ) ]
 
         gcRootHintsT =
-            emitSafepointHints ctx3
+            emitSafepointHints
 
         ( gcRootNamesT, gcRootTypesT ) =
             List.unzip gcRootHintsT
@@ -2215,11 +2215,11 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
 Extracted so the CallGenericApply arm can gate on the LSS fast-dispatch
 stamp first.
 -}
-generateGenericApplyCoerced : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateGenericApplyCoerced ctx func args resultType callInfo =
+generateGenericApplyCoerced : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateGenericApplyCoerced ctx func args resultType =
     let
         genericRes =
-            generateGenericApply ctx func args resultType callInfo
+            generateGenericApply ctx func args resultType
 
         expectedType =
             Types.monoTypeToAbi resultType
@@ -2351,7 +2351,7 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
             Ctx.freshVar ctx2
 
         gcRootHintsF =
-            emitSafepointHints ctx3
+            emitSafepointHints
 
         ( gcRootNamesF, gcRootTypesF ) =
             List.unzip gcRootHintsF
@@ -2563,7 +2563,7 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     -- eco.gc_roots_count attr tells the GCRootCarrier interface
                     -- how many tail operands are roots.
                     gcRootHints3 =
-                        emitSafepointHints ctx1
+                        emitSafepointHints
 
                     ( gcRootNames3, gcRootTypes3 ) =
                         List.unzip gcRootHints3
@@ -2749,7 +2749,7 @@ generateFlattenedPartialApplication ctx func args resultType =
                 [ ( "_result_kind", IntAttr (Just I8) flatPapResultKind ) ]
 
         gcRootHints4 =
-            emitSafepointHints ctx2
+            emitSafepointHints
 
         ( gcRootNames4, gcRootTypes4 ) =
             List.unzip gcRootHints4
@@ -3642,7 +3642,7 @@ emitPsplitCall ctx specId info args resultType =
             Ctx.freshVar ctxA
 
         ( ctxC, callOp ) =
-            Ops.ecoCallNamed ctxB (emitSafepointHints ctxB) resultVar (funcName ++ "$psplit") (List.reverse operandsRev) returnAbi
+            Ops.ecoCallNamed ctxB emitSafepointHints resultVar (funcName ++ "$psplit") (List.reverse operandsRev) returnAbi
     in
     { ops = List.reverse opsRev ++ [ callOp ]
     , resultVar = resultVar
@@ -3900,7 +3900,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     Types.monoTypeToAbi sig.returnType
 
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar kernelName argVarPairs callResultType
+                                    Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName argVarPairs callResultType
                             in
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
@@ -3994,7 +3994,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             Types.ecoValue
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar kernelName kernelArgPairs callResultType
+                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName kernelArgPairs callResultType
                                     in
                                     { ops = argOps ++ boxOps ++ [ projectOp, callOp ]
                                     , resultVar = resVar
@@ -4037,7 +4037,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                                         Nothing ->
                                             -- No intrinsic match - check if we should use kernel or compiled function
-                                            if Ctx.hasKernelImplementation moduleName name then
+                                            if Ctx.hasKernelImplementation then
                                                 -- Fall back to kernel call (e.g., negate with boxed values)
                                                 let
                                                     sig : Ctx.FuncSignature
@@ -4059,7 +4059,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                         Types.monoTypeToAbi sig.returnType
 
                                                     ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar kernelName argVarPairs callResultType
+                                                        Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName argVarPairs callResultType
                                                 in
                                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                                 , resultVar = resVar
@@ -4101,7 +4101,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                                 Types.monoTypeToAbi resultType
 
                                                     ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resultVar funcName argVarPairs resultMlirType
+                                                        Ops.ecoCallNamed ctx2 emitSafepointHints resultVar funcName argVarPairs resultMlirType
                                                 in
                                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                                 , resultVar = resultVar
@@ -4144,7 +4144,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                     Types.monoTypeToAbi resultType
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resultVar funcName argVarPairs resultMlirType
+                                            Ops.ecoCallNamed ctx2 emitSafepointHints resultVar funcName argVarPairs resultMlirType
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resultVar
@@ -4328,7 +4328,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                         ( ctx2d, callOp ) =
                             Ops.ecoCallNamed ctx2c
-                                (emitSafepointHints ctx2c)
+                                emitSafepointHints
                                 resultVar
                                 "Elm_Kernel_Debug_toString"
                                 [ ( boxedValueVar, Types.ecoValue )
@@ -4384,7 +4384,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             Ctx.freshVar ctx1b
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resVar
@@ -4403,7 +4403,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     Ctx.freshVar ctx1b
 
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                    Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
                             in
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
@@ -4456,7 +4456,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             Ctx.freshVar ctx1b
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resVar
@@ -4475,7 +4475,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     Ctx.freshVar ctx1b
 
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                                    Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
                             in
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
@@ -4515,7 +4515,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             let
                                 policy : KernelAbi.KernelBackendAbiPolicy
                                 policy =
-                                    KernelAbi.kernelBackendAbiPolicy home name
+                                    KernelAbi.kernelBackendAbiPolicy
                             in
                             case policy of
                                 KernelAbi.ElmDerived ->
@@ -4562,7 +4562,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             instanceAbi.abiResultType
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar kernelName argVarPairs resultMlirType
+                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName argVarPairs resultMlirType
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resVar
@@ -4745,8 +4745,8 @@ generateExprListTyped ctx exprs =
 
 {-| Generate MLIR code for a tail call.
 -}
-generateTailCall : Ctx.Context -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
-generateTailCall ctx _ args =
+generateTailCall : Ctx.Context -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
+generateTailCall ctx args =
     let
         -- Generate arguments and track actual SSA types
         ( argsOpsReversed, argsWithTypesReversed, ctx1 ) =
@@ -6302,7 +6302,7 @@ generateLetGroup ctx members body =
         ( ctxWithGroupOp, groupOp ) =
             Ops.ecoPapCreateGroup
                 ctxAfterSiblings
-                (emitSafepointHints ctxAfterSiblings)
+                emitSafepointHints
                 siblingMetaList
                 crossEdges
                 resultVars
@@ -6427,8 +6427,8 @@ wrapDefsIntoLet members tail =
 -- ====== DESTRUCT GENERATION ======
 
 
-generateDestruct : Ctx.Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body _ =
+generateDestruct : Ctx.Context -> Mono.MonoDestructor -> Mono.MonoExpr -> ExprResult
+generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body =
     let
         -- Use the path's actual result type for generating the destructor.
         -- The path's MonoIndex/MonoField/etc. nodes carry the correctly-specialized
@@ -7134,8 +7134,8 @@ inside each alternative. The EcoControlFlowToSCF pass transforms eco.case
 into scf.if/scf.index\_switch.
 
 -}
-generateCase : Ctx.Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
-generateCase ctx _ _ decider jumps resultMonoType =
+generateCase : Ctx.Context -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
+generateCase ctx decider jumps resultMonoType =
     let
         resultMlirType =
             spineResultMlirType ctx resultMonoType
@@ -7239,7 +7239,7 @@ generateRecordCreate ctx fields layout recordType =
 
             -- Use eco.construct.record for records
             ( ctx4, constructOp ) =
-                Ops.ecoConstructRecord ctx3 (emitSafepointHints ctx3) resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
+                Ops.ecoConstructRecord ctx3 emitSafepointHints resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
         in
         { ops = fieldsOps ++ boxOps ++ [ constructOp ]
         , resultVar = resultVar
@@ -7251,8 +7251,8 @@ generateRecordCreate ctx fields layout recordType =
 
 {-| Generate MLIR code to access a record field.
 -}
-generateRecordAccess : Ctx.Context -> Mono.MonoExpr -> Name.Name -> Int -> Bool -> Mono.MonoType -> ExprResult
-generateRecordAccess ctx record _ index isUnboxed fieldType =
+generateRecordAccess : Ctx.Context -> Mono.MonoExpr -> Int -> Bool -> Mono.MonoType -> ExprResult
+generateRecordAccess ctx record index isUnboxed fieldType =
     let
         recordResult : ExprResult
         recordResult =
@@ -7311,8 +7311,8 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
 
 {-| Generate MLIR code to update record fields.
 -}
-generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Types.RecordLayout -> Mono.MonoType -> ExprResult
-generateRecordUpdate ctx record updates layout _ =
+generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Types.RecordLayout -> ExprResult
+generateRecordUpdate ctx record updates layout =
     let
         -- Step 1: Evaluate the original record once
         recordResult : ExprResult
@@ -7386,7 +7386,7 @@ generateRecordUpdate ctx record updates layout _ =
                 Ctx.freshVar finalCtx
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructRecord ctx1 (emitSafepointHints ctx1) resultVar fieldVarsAndTypes layout.fieldCount layout.unboxedBitmap
+                Ops.ecoConstructRecord ctx1 emitSafepointHints resultVar fieldVarsAndTypes layout.fieldCount layout.unboxedBitmap
         in
         { ops = allOps ++ [ constructOp ]
         , resultVar = resultVar
@@ -7459,7 +7459,7 @@ generateTupleCreate ctx elements layout tupleType =
         -- Use type-specific tuple construction ops.
         -- Now that MonoPath carries ContainerKind, projection ops match construction layout.
         tupleGcRootHints =
-            emitSafepointHints ctx3
+            emitSafepointHints
 
         ( ctx4, constructOp ) =
             case elemVarPairs of
@@ -7829,7 +7829,7 @@ emitSretCallMulti ctx specId cargs info =
             List.reverse resultPairsRev
 
         ( ctxD, callOp ) =
-            Ops.ecoCallNamedMulti ctxC (emitSafepointHints ctxC) resultPairs (funcName ++ "$sret") argVarPairs
+            Ops.ecoCallNamedMulti ctxC emitSafepointHints resultPairs (funcName ++ "$sret") argVarPairs
     in
     ( argOps ++ boxOps ++ [ callOp ], resultPairs, ctxD )
 
@@ -8520,7 +8520,7 @@ generateCustomCreateHeap ctx shape args =
 
         ( ctx4, constructOp ) =
             Ops.ecoConstructCustom ctx3
-                (emitSafepointHints ctx3)
+                emitSafepointHints
                 resultVar
                 layout.tag
                 (List.length layout.fields)

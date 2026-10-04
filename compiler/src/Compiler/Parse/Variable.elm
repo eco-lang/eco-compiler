@@ -459,7 +459,7 @@ module docstring describes, and 0 when there is none, including at or past
 getUpperWidth : String -> Int -> Int -> Int
 getUpperWidth src pos end =
     if pos < end then
-        getUpperWidthHelp src pos end (P.unsafeIndex src pos)
+        getUpperWidthHelp src pos (P.unsafeIndex src pos)
 
     else
         0
@@ -470,8 +470,8 @@ getUpperWidth src pos end =
 group is decoded from the characters after `pos` without checking them against
 the end; past the end of `src`, `unsafeIndex` crashes.
 -}
-getUpperWidthHelp : String -> Int -> Int -> Char -> Int
-getUpperWidthHelp src pos _ word =
+getUpperWidthHelp : String -> Int -> Char -> Int
+getUpperWidthHelp src pos word =
     let
         code : Int
         code =
@@ -537,7 +537,7 @@ there is none, including at or past `end`.
 getLowerWidth : String -> Int -> Int -> Int
 getLowerWidth src pos end =
     if pos < end then
-        getLowerWidthHelp src pos end (P.unsafeIndex src pos)
+        getLowerWidthHelp src pos (P.unsafeIndex src pos)
 
     else
         0
@@ -547,8 +547,8 @@ getLowerWidth src pos end =
 `pos` in `src`. Like `getUpperWidthHelp`, it ignores its third argument and
 reads a group without checking it against the end of the input.
 -}
-getLowerWidthHelp : String -> Int -> Int -> Char -> Int
-getLowerWidthHelp src pos _ word =
+getLowerWidthHelp : String -> Int -> Char -> Int
+getLowerWidthHelp src pos word =
     let
         code : Int
         code =
@@ -613,7 +613,7 @@ describes, and 0 when there is none, including at or past `end`.
 getInnerWidth : String -> Int -> Int -> Int
 getInnerWidth src pos end =
     if pos < end then
-        getInnerWidthHelp src pos end (P.unsafeIndex src pos)
+        getInnerWidthHelp src pos (P.unsafeIndex src pos)
 
     else
         0
@@ -628,8 +628,8 @@ code from 0xC0 to 0xF7, the one to three characters after `pos` are read
 whatever the end, and reading past the end of `src` crashes in `unsafeIndex`.
 
 -}
-getInnerWidthHelp : String -> Int -> Int -> Char -> Int
-getInnerWidthHelp src pos _ word =
+getInnerWidthHelp : String -> Int -> Char -> Int
+getInnerWidthHelp src pos word =
     let
         code : Int
         code =

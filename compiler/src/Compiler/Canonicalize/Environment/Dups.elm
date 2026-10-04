@@ -87,7 +87,7 @@ detectLocated toError dict =
     dict
         |> Dict.foldl (\k x xs -> ( A.At (Dict.get k nameLocations |> Maybe.withDefault A.zero) k, x ) :: xs) []
         |> DataMap.fromList A.toValue
-        |> ReportingResult.mapTraverseWithKey A.toValue A.compareLocated (\(A.At _ name) values -> detectHelp toError name values)
+        |> ReportingResult.mapTraverseWithKey A.toValue (\(A.At _ name) values -> detectHelp toError name values)
 
 
 extractLocation : OneOrMore.OneOrMore (Info a) -> Maybe A.Region

@@ -1,7 +1,7 @@
 module Compiler.GlobalOpt.KernelFacts exposing
-    ( KernelFacts, CallTimeEffect(..), GcAlloc(..), Totality(..), ParamMode(..)
+    ( KernelFacts, CallTimeEffect, GcAlloc, Totality, ParamMode(..)
     , DevirtPolicy(..), ShapeGuard(..), devirtOf
-    , HofAxis(..)
+    , HofAxis
     , lookup, lookupSymbol, rows
     , gcLeafEligible, droppable
     , gcLeafEligibleFor

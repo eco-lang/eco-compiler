@@ -432,7 +432,7 @@ traverseDictWithIds env state dict =
     let
         entries : List ( A.Located Name, Src.Expr )
         entries =
-            Data.Map.toList A.compareLocated dict
+            Data.Map.toList dict
     in
     traverseDictEntriesWithIds env state entries []
         |> ReportingResult.map
@@ -475,7 +475,7 @@ traverseUpdateFieldsWithIds env state dict =
     let
         entries : List ( A.Located Name, Src.Expr )
         entries =
-            Data.Map.toList A.compareLocated dict
+            Data.Map.toList dict
     in
     traverseUpdateEntriesWithIds env state entries []
         |> ReportingResult.map
@@ -644,7 +644,7 @@ canonicalizeBinopsWithIds overallRegion env state ops final =
                                     ReportingResult.ok ( cfinal, stateAfterFinal )
 
                                 _ ->
-                                    runBinopStepperWithIds overallRegion stateAfterFinal (MoreWithIds stateAfterFinal cOps cfinal)
+                                    runBinopStepperWithIds overallRegion (MoreWithIds stateAfterFinal cOps cfinal)
                         )
             )
 
@@ -661,8 +661,8 @@ type alias MakeBinopFn =
     IdState -> Can.Expr -> ( Can.Expr, IdState )
 
 
-runBinopStepperWithIds : A.Region -> IdState -> StepWithIds -> EResult FreeLocals w ( Can.Expr, IdState )
-runBinopStepperWithIds overallRegion _ step =
+runBinopStepperWithIds : A.Region -> StepWithIds -> EResult FreeLocals w ( Can.Expr, IdState )
+runBinopStepperWithIds overallRegion step =
     case step of
         DoneWithIds expr finalState ->
             ReportingResult.ok ( expr, finalState )
@@ -672,7 +672,7 @@ runBinopStepperWithIds overallRegion _ step =
 
         MoreWithIds innerState (( expr, op ) :: rest) final ->
             toBinopStepWithIds innerState (toBinopWithIds op expr) op rest final
-                |> runBinopStepperWithIds overallRegion innerState
+                |> runBinopStepperWithIds overallRegion
 
         ErrorWithIds (Env.Binop binopData1) (Env.Binop binopData2) ->
             ReportingResult.throw (Error.Binop overallRegion binopData1.op binopData2.op)

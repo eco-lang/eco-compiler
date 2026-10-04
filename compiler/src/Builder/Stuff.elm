@@ -1,9 +1,8 @@
 module Builder.Stuff exposing
     ( findRoot, getElmHome
-    , PackageCache, getPackageCache, getReplCache, package, isLocalPackage, localPackageSource, registry
+    , PackageCache, getPackageCache, package, isLocalPackage, localPackageSource, registry
     , resolveBundledKernel
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
-    , testDir
     , withRootLock, withRootLockBuildDir, withRegistryLock
     , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
     , ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir
@@ -25,14 +24,12 @@ managing file locks.
 
 # Package Cache
 
-@docs PackageCache, getPackageCache, getReplCache, package, isLocalPackage, localPackageSource, registry
+@docs PackageCache, getPackageCache, package, isLocalPackage, localPackageSource, registry
 @docs resolveBundledKernel
 @docs typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
 
 
 # Special Directories
-
-@docs testDir
 
 
 # File Locking
@@ -101,13 +98,6 @@ interfacesWithBuildDir root maybeBuildDir =
 objectsWithBuildDir : String -> Maybe String -> String
 objectsWithBuildDir root maybeBuildDir =
     stuffWithBuildDir root maybeBuildDir ++ "/o.dat"
-
-
-{-| Returns the path to the test output directory.
--}
-testDir : String -> String
-testDir root =
-    stuff root ++ "/test"
 
 
 compilerVersion : String
@@ -345,13 +335,6 @@ typedPackageArtifacts cache name version =
 
 
 -- ====== CACHE ======
-
-
-{-| Returns the REPL cache directory, creating it if necessary.
--}
-getReplCache : Task Never String
-getReplCache =
-    getCacheDir "repl"
 
 
 getCacheDir : String -> Task Never String

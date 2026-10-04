@@ -115,35 +115,23 @@ Returns artifacts suitable for JavaScript code generation.
 -}
 compile : Pkg.Name -> Dict.Dict ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
 compile pkg ifaces modul =
-    let
-        modName : Name
-        modName =
-            Src.getName modul
-    in
-    -- Phase logs: emit one stderr line per pipeline phase so we can see
-    -- which phase the compiler is working in (canonicalize / type-check /
-    -- nitpick / optimize). Each phase boundary is also a Task scheduling
-    -- point, so even when the pipeline is single-threaded the GC has a
-    -- chance to interleave between phases. The original implementation
-    -- ran the whole pipeline inside one Task.succeed, which made the
-    -- outside world blind to per-phase progress.
-    phase modName "canonicalize"
+    phase
         |> Task.map (\_ -> canonicalize pkg ifaces modul)
         |> Task.andThen
             (\canonicalResult ->
                 case canonicalResult of
                     Ok canonical ->
-                        phase modName "type-check"
+                        phase
                             |> Task.map (\_ -> typeCheck modul canonical)
                             |> Task.andThen
                                 (\tcResult ->
-                                    phase modName "nitpick"
+                                    phase
                                         |> Task.map (\_ -> nitpick canonical)
                                         |> Task.andThen
                                             (\nitpickResult ->
                                                 case Result.map2 (\annotations () -> annotations) tcResult nitpickResult of
                                                     Ok annotations ->
-                                                        phase modName "optimize"
+                                                        phase
                                                             |> Task.map
                                                                 (\_ ->
                                                                     optimize modul annotations canonical
@@ -165,8 +153,8 @@ compile pkg ifaces modul =
 work between canonicalize/type-check/nitpick/optimize even when the pipeline
 is otherwise single-threaded.
 -}
-phase : Name -> String -> Task Never ()
-phase _ _ =
+phase : Task Never ()
+phase =
     Task.succeed ()
 
 
@@ -189,7 +177,7 @@ compileTyped pkg ifaces modul =
         modName =
             Src.getName modul
     in
-    phase modName "canonicalize"
+    phase
         |> Task.map (\_ -> canonicalize pkg ifaces modul)
         |> Task.andThen
             (\canonicalResult ->
@@ -200,7 +188,7 @@ compileTyped pkg ifaces modul =
                             moduleTypeEnv =
                                 TypeEnv.fromCanonical canonical
                         in
-                        phase modName "type-check"
+                        phase
                             |> Task.andThen (\_ -> stampGuardEnabled)
                             |> Task.andThen
                                 (\census ->
@@ -217,7 +205,7 @@ compileTyped pkg ifaces modul =
                                             -- rendered in the mono phase.
                                             emitStampGuard census modName stampWalked stampSkipped annWalked annSkipped
                                                 |> Task.andThen
-                                                    (\_ -> phase modName "nitpick")
+                                                    (\_ -> phase)
                                                 |> Task.map (\_ -> nitpick canonical)
                                                 |> Task.andThen
                                                     (\nitpickResult ->
@@ -227,7 +215,7 @@ compileTyped pkg ifaces modul =
                                                                 -- typed path. Its graph was never read there (no .eco
                                                                 -- write, stripUntypedGraph discarded it), and the
                                                                 -- typed optimizer raises the identical BadMains errors.
-                                                                phase modName "typed-opt"
+                                                                phase
                                                                     |> Task.map
                                                                         (\_ ->
                                                                             typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots typedCanonical

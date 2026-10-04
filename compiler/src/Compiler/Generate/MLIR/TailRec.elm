@@ -771,9 +771,9 @@ compileStep ctx loopSpec expr =
             -- MonoTailFunc bodies and always refers back to the enclosing function)
             compileTailCallStep ctx loopSpec args
 
-        Mono.MonoCase scrutinee1 scrutinee2 decider jumps resultType ->
+        Mono.MonoCase _ _ decider jumps _ ->
             -- Case expression -> multi-result eco.case
-            compileCaseStep ctx loopSpec scrutinee1 scrutinee2 decider jumps resultType
+            compileCaseStep ctx loopSpec decider jumps
 
         Mono.MonoIf branches final _ ->
             -- If expression -> treat as multi-way case
@@ -1181,13 +1181,10 @@ StepResult instead of ExprResult.
 compileCaseStep :
     Ctx.Context
     -> LoopSpec
-    -> Name.Name
-    -> Name.Name
     -> Mono.Decider Mono.MonoChoice
     -> List ( Int, Mono.MonoExpr )
-    -> Mono.MonoType
     -> StepResult
-compileCaseStep ctx loopSpec _ _ decider jumps _ =
+compileCaseStep ctx loopSpec decider jumps =
     let
         jumpLookup : Array (Maybe Mono.MonoExpr)
         jumpLookup =

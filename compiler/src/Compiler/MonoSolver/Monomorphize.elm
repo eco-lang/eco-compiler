@@ -3900,7 +3900,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
           -- ignores its ordering argument (Data/Map.elm:240-242); it is passed
           -- for documentation only.
           toptNodes =
-            DMap.foldl TOpt.compareGlobal
+            DMap.foldl
                 (\g node acc -> HashMap.insert TOpt.globalHash (==) g node acc)
                 HashMap.empty
                 nodes

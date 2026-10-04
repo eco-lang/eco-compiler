@@ -428,10 +428,10 @@ checkExpr (A.At region exprInfo) errors =
             checkExpr record errors
 
         Can.Update record fields ->
-            Data.Map.foldr A.compareLocated (\_ -> checkField) errors fields |> checkExpr record
+            Data.Map.foldr (\_ -> checkField) errors fields |> checkExpr record
 
         Can.Record fields ->
-            Data.Map.foldr A.compareLocated (\_ -> checkExpr) errors fields
+            Data.Map.foldr (\_ -> checkExpr) errors fields
 
         Can.Unit ->
             errors

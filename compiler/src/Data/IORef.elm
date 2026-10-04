@@ -1,7 +1,8 @@
 module Data.IORef exposing
     ( IORef(..)
+    , readPointCellS, writePointCellS
+    , newPointCellS
     , newIORefMVector, readIORefMVector, writeIORefMVector, modifyIORefMVector
-    , newPointCellS, readPointCellS, writePointCellS
     )
 
 {-| The type checker's state holds two stores that change as it works, and this

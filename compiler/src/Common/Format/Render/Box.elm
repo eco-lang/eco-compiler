@@ -26,9 +26,8 @@ throughout.
 import Basics.Extra exposing (flip)
 import Common.Format.Box as Box exposing (Box)
 import Common.Format.Cheapskate.Parse as Parse
-import Common.Format.Cheapskate.Types exposing (Block(..), Blocks, Doc(..), LinkTarget(..), Options(..))
+import Common.Format.Cheapskate.Types exposing (Block(..), Blocks, Doc(..), LinkTarget(..))
 import Common.Format.ImportInfo as ImportInfo exposing (ImportInfo)
-import Common.Format.KnownContents as KnownContents
 import Common.Format.Render.ElmStructure as ElmStructure
 import Common.Format.Render.Markdown as Markdown
 import Compiler.AST.Snippet as Snippet
@@ -382,7 +381,7 @@ sortVars forceMultiline fromExposing fromDocs =
         listedInExposing : List (Src.C2 Value)
         listedInExposing =
             fromExposing
-                |> EverySet.toList (\a b -> compare (varName a) (varName b))
+                |> EverySet.toList
                 |> List.sortBy varOrder
 
         varName : Src.C2 Value -> String
@@ -399,7 +398,7 @@ sortVars forceMultiline fromExposing fromDocs =
 
         varSetToMap : EverySet String (Src.C2 Value) -> Dict String String Value
         varSetToMap set =
-            EverySet.toList (\a b -> compare (varName a) (varName b)) set
+            EverySet.toList set
                 |> List.map (\( c, var ) -> ( varName ( c, var ), var ))
                 |> Map.fromList identity
 
@@ -551,9 +550,9 @@ formatModuleHeader addDefaultHeader modu =
                                     name
                     in
                     List.foldl EverySet.union EverySet.empty <|
-                        [ Map.toList compare values |> List.map (\( name, ( c, () ) ) -> ( c, Value name )) |> EverySet.fromList toComparable
-                        , Map.toList compare operators |> List.map (\( name, ( c, () ) ) -> ( c, OpValue name )) |> EverySet.fromList toComparable
-                        , Map.toList compare types |> List.map (\( name, ( c, ( preListing, listing ) ) ) -> ( c, Union ( preListing, name ) listing )) |> EverySet.fromList toComparable
+                        [ Map.toList values |> List.map (\( name, ( c, () ) ) -> ( c, Value name )) |> EverySet.fromList toComparable
+                        , Map.toList operators |> List.map (\( name, ( c, () ) ) -> ( c, OpValue name )) |> EverySet.fromList toComparable
+                        , Map.toList types |> List.map (\( name, ( c, ( preListing, listing ) ) ) -> ( c, Union ( preListing, name ) listing )) |> EverySet.fromList toComparable
                         ]
 
         detailedListingIsMultiline : Listing a -> Bool
@@ -690,7 +689,7 @@ formatImports modu =
     [ formatComments comments
         |> Maybe.toList
     , imports
-        |> Map.toList compare
+        |> Map.toList
         |> List.map (\( name, ( pre, method ) ) -> formatImport ( ( pre, name ), method ))
     ]
         |> List.filter (not << List.isEmpty)
@@ -862,7 +861,7 @@ formatModu modu =
                     (List.reverse modu.infixes)
                 ++ declarations
     in
-    { importInfo = ImportInfo.fromModule KnownContents.mempty modu
+    { importInfo = ImportInfo.fromModule
     , initialComments = modu.initialComments
     , header =
         Maybe.map
@@ -965,7 +964,6 @@ formatModu modu =
                     String.slice offset (offset + length) fptr
                         |> String.trim
                         |> Parse.markdown
-                            Options
                         |> (\(Doc blocks) -> blocks)
                 )
             |> A.At A.zero
@@ -1002,7 +1000,6 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            Options
                                         |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
@@ -1048,7 +1045,6 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            Options
                                         |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
@@ -1075,7 +1071,6 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            Options
                                         |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
@@ -1092,7 +1087,6 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            Options
                                         |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
@@ -1598,30 +1592,30 @@ formatListing format listing =
 formatDetailedListing : DetailedListing -> List Box
 formatDetailedListing listing =
     List.concat
-        [ formatCommentedMap compare
+        [ formatCommentedMap
             (\name () -> OpValue name)
             formatVarValue
             listing.operators
-        , formatCommentedMap compare
+        , formatCommentedMap
             (\name ( inner, listing_ ) -> Union ( inner, name ) listing_)
             formatVarValue
             listing.types
-        , formatCommentedMap compare
+        , formatCommentedMap
             (\name () -> Value name)
             formatVarValue
             listing.values
         ]
 
 
-formatCommentedMap : (k -> k -> Order) -> (k -> v -> a) -> (a -> Box) -> CommentedMap k v -> List Box
-formatCommentedMap keyComparison construct format values =
+formatCommentedMap : (k -> v -> a) -> (a -> Box) -> CommentedMap k v -> List Box
+formatCommentedMap construct format values =
     let
         format_ : ( k, Src.C2 v ) -> Box
         format_ ( k, ( c, v ) ) =
             formatCommented ( c, format (construct k v) )
     in
     values
-        |> Map.toList keyComparison
+        |> Map.toList
         |> List.map format_
 
 
@@ -1637,7 +1631,7 @@ formatVarValue aval =
         Union name listing ->
             case
                 ( formatListing
-                    (formatCommentedMap compare
+                    (formatCommentedMap
                         (\name_ () -> name_)
                         (Box.line << formatUppercaseIdentifier)
                     )

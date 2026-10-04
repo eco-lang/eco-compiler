@@ -127,7 +127,7 @@ kinds, `Cycle` included, are not checked.
 -}
 duplicateBinders : TOpt.GlobalGraph TypeIds.MVarId -> List String
 duplicateBinders (TOpt.GlobalGraph nodes _ _ _ _) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\g node acc ->
             case bodyExpr node of
                 Just expr ->

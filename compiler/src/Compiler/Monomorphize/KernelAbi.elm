@@ -91,8 +91,8 @@ Arguments:
 Returns the appropriate `KernelAbiMode`.
 
 -}
-deriveKernelAbiMode : ( String, String ) -> Can.Type MVarId -> MVarEnv -> KernelAbiMode
-deriveKernelAbiMode ( home, _ ) canFuncType _ =
+deriveKernelAbiMode : ( String, String ) -> Can.Type MVarId -> KernelAbiMode
+deriveKernelAbiMode ( home, _ ) canFuncType =
     -- Debug kernels are always polymorphic
     if EverySet.member List.singleton home alwaysPolymorphicModules then
         PreserveVars

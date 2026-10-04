@@ -301,7 +301,7 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
                     else
                         let
                             ( ctx5, cmpOp ) =
-                                Ops.ecoCallNamed ctx4 (Ctx.liveEcoValueVars ctx4) eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+                                Ops.ecoCallNamed ctx4 Ctx.liveEcoValueVars eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
 
                             ( unboxOps, unboxedVar, ctx5b ) =
                                 Intrinsics.unboxToType ctx5 eqVar I1
@@ -377,7 +377,7 @@ materializeSplitParam ctx info =
             Ctx.freshVar ctx
 
         hints =
-            Ctx.liveEcoValueVars ctx1
+            Ctx.liveEcoValueVars
     in
     case info.split of
         Ctx.SplitTuple layout ->

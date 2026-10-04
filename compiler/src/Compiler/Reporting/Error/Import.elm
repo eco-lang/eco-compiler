@@ -262,7 +262,7 @@ measures it, and no name is left out for being too far away.
 -}
 toSuggestions : ModuleName.Raw -> EverySet String ModuleName.Raw -> List ModuleName.Raw
 toSuggestions name unimportedModules =
-    Suggest.sort name identity (EverySet.toList compare unimportedModules) |> List.take 4
+    Suggest.sort name identity (EverySet.toList unimportedModules) |> List.take 4
 
 
 
@@ -348,7 +348,7 @@ errorEncoder (Error { region, name, unimportedModules, problem }) =
     Bytes.Encode.sequence
         [ A.regionEncoder region
         , ModuleName.rawEncoder name
-        , BE.everySet compare ModuleName.rawEncoder unimportedModules
+        , BE.everySet ModuleName.rawEncoder unimportedModules
         , problemEncoder problem
         ]
 

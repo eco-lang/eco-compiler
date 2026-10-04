@@ -2,9 +2,9 @@ module Utils.Main exposing
     ( fpCombine, fpAddExtension, fpDropExtension, fpDropFileName, fpSplitExtension
     , fpSplitFileName, fpSplitDirectories, fpJoinPath, fpMakeRelative, fpAddTrailingPathSeparator
     , fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
-    , dirDoesFileExist, dirDoesDirectoryExist, dirFindExecutable, dirCreateDirectoryIfMissing
+    , dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
     , dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-    , dirRemoveFile, dirCanonicalizePath, dirWithCurrentDirectory
+    , dirRemoveFile, dirCanonicalizePath
     , envLookupEnv, envGetProgName, envGetArgs
     , lockWithFileLock
     , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
@@ -17,16 +17,13 @@ module Utils.Main exposing
     , newMVar, newEmptyMVar, readMVar, takeMVar, putMVar, dropMVar
     , mVarEncoder, mVarDecoder
     , Chan, newChan, readChan, writeChan
-    , ReplInputT
-    , replRunInputT, replWithInterrupt, replGetInputLine
-    , replGetInputLineWithInitial, liftInputT, liftIOInputT
-    , nodeGetDirname, nodeMathRandom
+    , nodeGetDirname
     , mapFindMin
     , dictMapKeys, find, dictFind
     , mapTraverse
     , eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
-    , listTraverse, listTraverse_, lines, unlines, zipWithM, mapM_
-    , maybeEncoder, maybeMapM, maybeTraverseTask
+    , listTraverse, listTraverse_, unlines, zipWithM, mapM_
+    , maybeEncoder, maybeMapM
     , nonEmptyListTraverse
     , sequenceListMaybe, sequenceNonemptyListResult
     , foldM
@@ -49,10 +46,9 @@ they never ask the file system anything. They take `/` as the only separator.
 `fpIsRelative`, which `fpCombine` uses, is the one place that also recognises
 the Windows forms of an absolute path.
 
-The `dir` and `env` functions, `lockWithFileLock`, the binary file functions
-and the REPL input functions are tasks over `Eco.File`, `Eco.Env` and
-`Eco.Console`, and none of them can fail. Where the operation
-underneath can fail with an `IOError`, the failure crashes the program through
+The `dir` and `env` functions, `lockWithFileLock` and the binary file functions
+are tasks over `Eco.File` and `Eco.Env`, and none of them can fail. Where the
+operation underneath can fail with an `IOError`, the failure crashes the program through
 `System.IO.crashOnError`. `binaryDecodeFileOrFail` is the exception: there, a
 failure to read the file becomes an `Err`.
 
@@ -72,8 +68,8 @@ the order each docstring gives. `find`, `dictFind`, `mapFindMin`,
 `listMaximum`, `foldl1_` and `foldr1` crash the program, through
 `Utils.Crash.crash`, on a missing key or an empty input.
 
-The types `FilePath`, `MVar`, `ChItem`, `Stream`, `ReplSettings` and
-`LockSharedExclusive` used here are defined in `System.IO`.
+The types `FilePath`, `MVar`, `ChItem`, `Stream` and `LockSharedExclusive` used
+here are defined in `System.IO`.
 
 
 # File Path Operations
@@ -85,9 +81,9 @@ The types `FilePath`, `MVar`, `ChItem`, `Stream`, `ReplSettings` and
 
 # Directory Operations
 
-@docs dirDoesFileExist, dirDoesDirectoryExist, dirFindExecutable, dirCreateDirectoryIfMissing
+@docs dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
 @docs dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-@docs dirRemoveFile, dirCanonicalizePath, dirWithCurrentDirectory
+@docs dirRemoveFile, dirCanonicalizePath
 
 
 # Environment Operations
@@ -134,16 +130,9 @@ The types `FilePath`, `MVar`, `ChItem`, `Stream`, `ReplSettings` and
 @docs Chan, newChan, readChan, writeChan
 
 
-# REPL Support
-
-@docs ReplInputT
-@docs replRunInputT, replWithInterrupt, replGetInputLine
-@docs replGetInputLineWithInitial, liftInputT, liftIOInputT
-
-
 # Node.js Integration
 
-@docs nodeGetDirname, nodeMathRandom
+@docs nodeGetDirname
 
 
 # Dictionary Utilities
@@ -160,12 +149,12 @@ The types `FilePath`, `MVar`, `ChItem`, `Stream`, `ReplSettings` and
 # List Utilities
 
 @docs eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
-@docs listTraverse, listTraverse_, lines, unlines, zipWithM, mapM_
+@docs listTraverse, listTraverse_, unlines, zipWithM, mapM_
 
 
 # Maybe Utilities
 
-@docs maybeEncoder, maybeMapM, maybeTraverseTask
+@docs maybeEncoder, maybeMapM
 
 
 # NonEmptyList Traversal
@@ -194,10 +183,8 @@ import Bytes.Decode
 import Bytes.Encode
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Result as ReportingResult
-import Control.Monad.State.Strict as State
 import Data.Map as Map
 import Dict exposing (Dict)
-import Eco.Console
 import Eco.Env
 import Eco.File
 import Eco.IO.Error as IOErr
@@ -206,28 +193,13 @@ import Eco.Runtime
 import Maybe.Extra as Maybe
 import Prelude
 import Process
-import System.Exit as Exit
-import System.IO as IO exposing (ChItem(..), FilePath, LockSharedExclusive(..), MVar(..), ReplSettings, Stream)
+import System.IO as IO exposing (ChItem(..), FilePath, LockSharedExclusive(..), MVar(..), Stream)
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
 import Utils.Task.Extra as Task
-
-
-{-| Returns the task as it is, since a `ReplInputT` is a `Task Never`.
--}
-liftInputT : Task Never () -> ReplInputT ()
-liftInputT =
-    identity
-
-
-{-| Returns the task as it is, since a `ReplInputT` is a `Task Never`.
--}
-liftIOInputT : Task Never a -> ReplInputT a
-liftIOInputT =
-    identity
 
 
 {-| Returns `path` with everything after its last `/` removed, keeping that `/`,
@@ -416,18 +388,18 @@ The ordering function is ignored. When `f` gives two keys the same result, the
 entry whose key comes first in the dictionary's order is kept.
 
 -}
-dictMapKeys : (k1 -> k1 -> Order) -> (k1 -> comparable) -> Map.Dict c k1 a -> Dict.Dict comparable a
-dictMapKeys keyComparison f =
-    Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) [] >> Dict.fromList
+dictMapKeys : (k1 -> comparable) -> Map.Dict c k1 a -> Dict.Dict comparable a
+dictMapKeys f =
+    Map.foldl (\k x xs -> ( f k, x ) :: xs) [] >> Dict.fromList
 
 
 {-| Returns a task that performs the task `f` gives for each value of a `Data.Map`
 dictionary, in the dictionary's order, and succeeds with a dictionary of the
 results under the same keys. The ordering function is ignored.
 -}
-mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Task Never b) -> Map.Dict comparable k a -> Task Never (Map.Dict comparable k b)
-mapTraverse toComparable keyComparison f =
-    mapTraverseWithKey toComparable keyComparison (\_ -> f)
+mapTraverse : (k -> comparable) -> (a -> Task Never b) -> Map.Dict comparable k a -> Task Never (Map.Dict comparable k b)
+mapTraverse toComparable f =
+    mapTraverseWithKey toComparable (\_ -> f)
 
 
 {-| Returns a task that performs the task `f` gives for each key and value of a
@@ -435,9 +407,9 @@ mapTraverse toComparable keyComparison f =
 dictionary of the results under the same keys. The ordering function is
 ignored.
 -}
-mapTraverseWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> Task Never b) -> Map.Dict comparable k a -> Task Never (Map.Dict comparable k b)
-mapTraverseWithKey toComparable keyComparison f =
-    Map.foldl keyComparison
+mapTraverseWithKey : (k -> comparable) -> (k -> a -> Task Never b) -> Map.Dict comparable k a -> Task Never (Map.Dict comparable k b)
+mapTraverseWithKey toComparable f =
+    Map.foldl
         (\k a -> Task.andThen (\c -> Task.map (\va -> Map.insert toComparable k va c) (f k a)))
         (Task.succeed Map.empty)
 
@@ -618,20 +590,6 @@ listTraverse_ f =
         >> Task.map (\_ -> ())
 
 
-{-| Returns a task that performs the task `f` gives for the value in a `Just` and
-succeeds with its result in a `Just`, or, given `Nothing`, a task that succeeds
-with `Nothing`.
--}
-maybeTraverseTask : (a -> Task x b) -> Maybe a -> Task x (Maybe b)
-maybeTraverseTask f a =
-    case Maybe.map f a of
-        Just b ->
-            Task.map Just b
-
-        Nothing ->
-            Task.succeed Nothing
-
-
 {-| Returns `f` applied to the elements of `xs` and `ys` pair by pair, or
 `Nothing` if `f` gives `Nothing` for any pair. The extra elements of the longer
 list are ignored.
@@ -767,14 +725,6 @@ foldr1 f xs =
 
         Nothing ->
             crash "foldr1: empty structure"
-
-
-{-| Splits the text at each newline. A newline at the end gives a final empty
-string.
--}
-lines : String -> List String
-lines =
-    String.split "\n"
 
 
 {-| Joins the strings with newlines, and ends the result with one more newline.
@@ -1045,14 +995,6 @@ dirDoesFileExist filename =
     Eco.File.fileExists filename
 
 
-{-| Returns the path of the executable called `filename` that the system's search
-path finds, or `Nothing` if it finds none.
--}
-dirFindExecutable : FilePath -> Task Never (Maybe FilePath)
-dirFindExecutable filename =
-    Eco.File.findExecutable filename
-
-
 {-| Creates the directory `filename`, and its missing parents too when
 `createParents` is `True`. An empty `filename` does nothing.
 
@@ -1122,22 +1064,6 @@ dirCanonicalizePath : FilePath -> Task Never FilePath
 dirCanonicalizePath path =
     Eco.File.canonicalize path
         |> IO.crashOnError
-
-
-{-| Returns a task that makes `dir` the current working directory, performs
-`action`, changes back to the directory that was current before, and succeeds
-with what `action` gave. A failure to change directory crashes the program.
--}
-dirWithCurrentDirectory : FilePath -> Task Never a -> Task Never a
-dirWithCurrentDirectory dir action =
-    dirGetCurrentDirectory
-        |> Task.andThen
-            (\currentDir ->
-                bracket_
-                    (Eco.File.setCwd dir |> IO.crashOnError)
-                    (Eco.File.setCwd currentDir |> IO.crashOnError)
-                    action
-            )
 
 
 {-| Returns the names of the entries in the directory at `path`, as
@@ -1258,35 +1184,6 @@ what.
 -}
 type SomeException
     = SomeException
-
-
-{-| Returns a task that performs `before`, then `thing` with its result, then
-`after` with the same result, and succeeds with what `thing` gave.
-
-A `Task Never` cannot fail, so `after` runs whenever `thing` finishes. If the
-program crashes in `thing`, `after` does not run.
-
--}
-bracket : Task Never a -> (a -> Task Never b) -> (a -> Task Never c) -> Task Never c
-bracket before after thing =
-    before
-        |> Task.andThen
-            (\a ->
-                thing a
-                    |> Task.andThen
-                        (\r ->
-                            after a
-                                |> Task.map (\_ -> r)
-                        )
-            )
-
-
-{-| Returns a task that performs `before`, `thing` and `after`, in that order, and
-succeeds with what `thing` gave.
--}
-bracket_ : Task Never a -> Task Never b -> Task Never c -> Task Never c
-bracket_ before after thing =
-    bracket before (always after) (always thing)
 
 
 
@@ -1511,59 +1408,6 @@ binaryEncodeFile toEncoder path value =
 
 
 -- System.Console.Haskeline
-
-
-{-| A computation that reads REPL input, standing in for Haskeline's `InputT`.
-
-This is a name for `Task Never a`, not a new type, which is why
-`liftInputT`, `liftIOInputT` and `replWithInterrupt` return their argument as
-it is.
-
--}
-type alias ReplInputT a =
-    Task Never a
-
-
-{-| Returns a state computation that performs `io` and produces its exit code,
-leaving the state unchanged. The settings are ignored.
--}
-replRunInputT : ReplSettings -> ReplInputT Exit.ExitCode -> State.StateT s Exit.ExitCode
-replRunInputT _ io =
-    State.liftIO io
-
-
-{-| Returns the computation as it is. Nothing here handles an interrupt.
--}
-replWithInterrupt : ReplInputT a -> ReplInputT a
-replWithInterrupt =
-    identity
-
-
-{-| Writes `prompt` to standard output, reads a line of standard input, and
-returns the line in a `Just`.
-
-The result is never `Nothing`: `Eco.Console.readLine` has no separate value for
-the end of input, and a failure to write or read crashes the program.
-
--}
-replGetInputLine : String -> ReplInputT (Maybe String)
-replGetInputLine prompt =
-    Eco.Console.write Eco.Console.stdout prompt
-        |> Task.andThen (\_ -> Eco.Console.readLine)
-        |> Task.map Just
-        |> IO.crashOnError
-
-
-{-| Reads a line as `replGetInputLine` does, with `left`, `prompt` and `right`
-written together as the prompt. The text of `left` and `right` is only printed;
-it is not part of the line returned.
--}
-replGetInputLineWithInitial : String -> ( String, String ) -> ReplInputT (Maybe String)
-replGetInputLineWithInitial prompt ( left, right ) =
-    replGetInputLine (left ++ prompt ++ right)
-
-
-
 -- ====== NODE ======
 
 
@@ -1573,14 +1417,6 @@ Node's `__dirname`.
 nodeGetDirname : Task Never String
 nodeGetDirname =
     Eco.Runtime.dirname
-
-
-{-| A task that gives a random number from `Eco.Runtime.random`, expected to be at
-least 0 and less than 1. Nothing checks the range.
--}
-nodeMathRandom : Task Never Float
-nodeMathRandom =
-    Eco.Runtime.random
 
 
 
@@ -1625,8 +1461,8 @@ chItemDecoder decoder =
 
 {-| Encodes a `SomeException` as the single byte 0.
 -}
-someExceptionEncoder : SomeException -> Bytes.Encode.Encoder
-someExceptionEncoder _ =
+someExceptionEncoder : Bytes.Encode.Encoder
+someExceptionEncoder =
     Bytes.Encode.unsignedInt8 0
 
 
@@ -1717,10 +1553,10 @@ httpExceptionContentEncoder httpExceptionContent =
                 , BE.list httpResponseEncoder responses
                 ]
 
-        ConnectionFailure someException ->
+        ConnectionFailure _ ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
-                , someExceptionEncoder someException
+                , someExceptionEncoder
                 ]
 
 

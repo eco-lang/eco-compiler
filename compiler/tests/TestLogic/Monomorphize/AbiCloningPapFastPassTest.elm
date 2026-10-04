@@ -99,7 +99,7 @@ suite =
                         [ specClosure [ Mono.MInt, Mono.MInt ] Mono.MInt ]
 
                     site =
-                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
+                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( onGraph, onStats ) =
                         run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
@@ -144,7 +144,7 @@ suite =
                         ]
 
                     site =
-                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
+                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( g, st ) =
                         run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
@@ -167,7 +167,7 @@ suite =
                         [ Mono.MonoDefine (Mono.MonoLiteral (Mono.LInt 7) Mono.MInt) Mono.MInt ]
 
                     site =
-                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
+                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( _, st ) =
                         run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
@@ -187,7 +187,7 @@ suite =
                         [ specClosure [ Mono.MChar, Mono.MInt ] Mono.MInt ]
 
                     site =
-                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
+                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( _, st ) =
                         run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
@@ -209,7 +209,7 @@ suite =
                         fn1 [ Mono.MInt ] (Mono.mFunction Mono.topLegacy [ Mono.MInt ] Mono.MInt)
 
                     site =
-                        papSite 2 curriedResidual 1
+                        papSite 2 curriedResidual
 
                     ( g, st ) =
                         run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
@@ -233,7 +233,7 @@ suite =
                         [ specClosure [ Mono.MInt, Mono.MInt ] Mono.MFloat ]
 
                     site =
-                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
+                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( _, st ) =
                         run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
@@ -251,7 +251,7 @@ suite =
                         [ specClosure [ Mono.MInt, Mono.MInt, Mono.MInt ] Mono.MInt ]
 
                     site =
-                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 2
+                        papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( g, st ) =
                         run (origins [ ( pap, Mono.OriginPap addGlobal 2 ) ]) reg nodes [ site ]
@@ -278,7 +278,7 @@ suite =
                         [ ctorSpec [ Mono.MInt, Mono.MFloat ] ]
 
                     site =
-                        papSite 1 (fn1 [ Mono.MFloat ] shapeTy) 1
+                        papSite 1 (fn1 [ Mono.MFloat ] shapeTy)
 
                     ( g, st ) =
                         run (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
@@ -308,7 +308,7 @@ suite =
                         [ ctorSpec fields ]
 
                     site =
-                        papSite 24 (fn1 (List.repeat 24 Mono.MInt) shapeTy) 1
+                        papSite 24 (fn1 (List.repeat 24 Mono.MInt) shapeTy)
 
                     ( _, st ) =
                         run (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
@@ -433,8 +433,8 @@ of type `calleeTy`. The call's result type is the return of `calleeTy`'s first
 stage, which in test 5 is still a function. The third argument is ignored; it
 names k for the reader of each test.
 -}
-papSite : Int -> Mono.MonoType -> Int -> Mono.MonoExpr
-papSite argCount calleeTy _ =
+papSite : Int -> Mono.MonoType -> Mono.MonoExpr
+papSite argCount calleeTy =
     Mono.MonoCall A.zero
         (Mono.MonoVarLocal "h" calleeTy)
         (List.repeat argCount (Mono.MonoLiteral (Mono.LInt 1) Mono.MInt))

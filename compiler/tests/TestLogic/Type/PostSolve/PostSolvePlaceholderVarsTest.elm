@@ -195,7 +195,7 @@ checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annota
 
         placeholders =
             funcPositionVars
-                |> EverySet.toList compare
+                |> EverySet.toList
                 |> List.filter (\name -> not (EverySet.member identity name legitimateVars))
     in
     if List.isEmpty placeholders then

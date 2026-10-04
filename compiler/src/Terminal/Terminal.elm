@@ -115,8 +115,8 @@ not reported as dead code), but it is hidden from the CLI: it cannot be invoked 
 not appear in `--help` or the overview. Switch back to `enabled` to restore it.
 
 -}
-disabled : Command -> Maybe Command
-disabled _ =
+disabled : Maybe Command
+disabled =
     Nothing
 
 

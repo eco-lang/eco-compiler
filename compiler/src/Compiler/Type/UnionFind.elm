@@ -1,7 +1,6 @@
 module Compiler.Type.UnionFind exposing
-    ( fresh, repr, get, set, modify, equivalent, redundant
-    , equivalentS
-    , getS, unionS
+    ( fresh, repr, get, set, modify, unionS, equivalent, redundant
+    , getS, equivalentS
     )
 
 {-| Type inference decides which type variables must be equal, and this module

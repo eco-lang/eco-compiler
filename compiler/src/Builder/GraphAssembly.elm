@@ -132,7 +132,7 @@ addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2 
     let
         -- Re-key annotations from bare Name to Global by iterating through nodes
         globalAnnotations =
-            Data.Map.foldl TOpt.compareGlobal
+            Data.Map.foldl
                 (\global _ acc ->
                     let
                         name =
@@ -152,7 +152,7 @@ addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2 
 
         -- Re-key scheme roots from bare Name to Global similarly
         globalSchemeRoots =
-            Data.Map.foldl TOpt.compareGlobal
+            Data.Map.foldl
                 (\global _ acc ->
                     let
                         name =

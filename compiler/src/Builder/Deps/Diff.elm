@@ -49,7 +49,6 @@ import Compiler.Elm.Version as V exposing (Version)
 import Compiler.Json.Decode as D
 import Data.Set as EverySet
 import Dict exposing (Dict)
-import List
 import Task exposing (Task)
 import Utils.Main as Utils
 

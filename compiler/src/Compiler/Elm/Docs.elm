@@ -1,7 +1,7 @@
 module Compiler.Elm.Docs exposing
     ( Documentation, Module(..), ModuleData, Comment
     , Alias(..), Union(..), Value(..), Binop(..), DocsBinopData
-    , Error(..)
+    , Error
     , fromModule
     , encode, decoder
     , bytesModuleEncoder, bytesModuleDecoder

@@ -2,7 +2,6 @@ module Builder.Generate exposing
     ( javascriptBackend
     , dev, debug
     , prod
-    , repl
     , MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirStreamingBytecode
     )
 
@@ -31,8 +30,6 @@ produce JavaScript, MLIR, or other target code.
 
 # REPL Code Generation
 
-@docs repl
-
 
 # Native MLIR Streaming
 
@@ -49,7 +46,6 @@ import Builder.File as File
 import Builder.GraphAssembly as GA
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.TypeEnv as TypeEnv
@@ -91,7 +87,6 @@ import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Nitpick.Debug as Nitpick
-import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map
 import Dict exposing (Dict)
 import System.IO exposing (FilePath, MVar)
@@ -228,38 +223,12 @@ prepareSourceMaps : Bool -> FilePath -> Task Exit.Generate CodeGen.SourceMaps
 prepareSourceMaps withSourceMaps root =
     if withSourceMaps then
         Outline.getAllModulePaths root
-            |> Task.andThen (Utils.mapTraverse ModuleName.toComparableCanonical ModuleName.compareCanonical File.readUtf8)
+            |> Task.andThen (Utils.mapTraverse ModuleName.toComparableCanonical File.readUtf8)
             |> Task.map CodeGen.SourceMaps
             |> Task.io
 
     else
         Task.succeed CodeGen.NoSourceMaps
-
-
-{-| Generates code for REPL evaluation with type annotation display.
--}
-repl : CodeGen.CodeGen -> FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate CodeGen.Output
-repl backend root details ansi (Build.ReplArtifacts replArtifacts) name =
-    loadObjects root Nothing details replArtifacts.modules
-        |> Task.andThen finalizeObjects
-        |> Task.map (generateReplOutput backend ansi replArtifacts.localizer replArtifacts.home name replArtifacts.annotations)
-
-
-generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> ModuleName.Canonical -> N.Name -> Dict N.Name (Can.Annotation Name) -> Objects -> CodeGen.Output
-generateReplOutput backend ansi localizer home name annotations objects =
-    let
-        graph : Opt.GlobalGraph
-        graph =
-            objectsToGlobalGraph objects
-    in
-    backend.generateForRepl
-        { ansi = ansi
-        , localizer = localizer
-        , graph = graph
-        , home = home
-        , name = name
-        , annotation = Utils.dictFind name annotations
-        }
 
 
 
@@ -443,7 +412,7 @@ collectAndMergeTypes ifaces freshTypes mvars =
     let
         foreigns : Extract.Types
         foreigns =
-            Extract.mergeMany (Data.Map.values ModuleName.compareCanonical (Data.Map.map Extract.fromDependencyInterface ifaces))
+            Extract.mergeMany (Data.Map.values (Data.Map.map Extract.fromDependencyInterface ifaces))
     in
     Utils.listTraverse (Utils.takeMVar (BD.maybe Extract.typesDecoder)) mvars
         |> Task.map (mergeLoadedTypes foreigns freshTypes)
@@ -2349,8 +2318,6 @@ abiCensusLines abi =
 writeMonoMlirStreaming :
     Config.EcoConfig
     -> FEStats.Handle
-    -> Bool
-    -> Int
     -> FilePath
     -> Maybe String
     -> Maybe ( Pkg.Name, FilePath )
@@ -2358,7 +2325,7 @@ writeMonoMlirStreaming :
     -> Build.Artifacts
     -> FilePath
     -> Task Exit.Generate ()
-writeMonoMlirStreaming ecoConfig stats _ _ root maybeBuildDir maybeLocal details artifacts target =
+writeMonoMlirStreaming ecoConfig stats root maybeBuildDir maybeLocal details artifacts target =
     buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
@@ -2384,8 +2351,6 @@ Processes funcs one at a time to reduce peak memory usage.
 writeMonoMlirStreamingBytecode :
     Config.EcoConfig
     -> FEStats.Handle
-    -> Bool
-    -> Int
     -> FilePath
     -> Maybe String
     -> Maybe ( Pkg.Name, FilePath )
@@ -2393,7 +2358,7 @@ writeMonoMlirStreamingBytecode :
     -> Build.Artifacts
     -> FilePath
     -> Task Exit.Generate ()
-writeMonoMlirStreamingBytecode ecoConfig stats _ _ root maybeBuildDir maybeLocal details artifacts target =
+writeMonoMlirStreamingBytecode ecoConfig stats root maybeBuildDir maybeLocal details artifacts target =
     buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->

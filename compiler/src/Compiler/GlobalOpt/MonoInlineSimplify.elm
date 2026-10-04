@@ -917,7 +917,7 @@ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMembe
                         Just node ->
                             let
                                 ( optimizedNode, newCtx ) =
-                                    optimizeNode accCtx specId node
+                                    optimizeNode accCtx node
                             in
                             ( Just optimizedNode :: accList, newCtx, specId + 1 )
                 )
@@ -2694,8 +2694,8 @@ type alias Binding =
 -- ============================================================================
 
 
-optimizeNode : RewriteCtx -> SpecId -> MonoNode -> ( MonoNode, RewriteCtx )
-optimizeNode ctx _ node =
+optimizeNode : RewriteCtx -> MonoNode -> ( MonoNode, RewriteCtx )
+optimizeNode ctx node =
     -- Reset per-function inline count at start of each node
     let
         ctxForNode =

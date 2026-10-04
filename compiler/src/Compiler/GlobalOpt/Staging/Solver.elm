@@ -42,7 +42,7 @@ solveStagingGraph producerInfo sg =
 
         -- 2) For each class, choose canonical segmentation
         classSeg =
-            chooseCanonicalSegs producerInfo sg nodeToClass classMembers
+            chooseCanonicalSegs producerInfo sg classMembers
 
         -- 3) Build producerClass / slotClass maps
         ( producerClass, slotClass ) =
@@ -173,10 +173,9 @@ If a kernel is in the class, use the kernel's segmentation.
 chooseCanonicalSegs :
     ProducerInfo
     -> StagingGraph
-    -> Array Int
     -> Array (List NodeId)
     -> Array (Maybe Segmentation)
-chooseCanonicalSegs producerInfo sg _ classMembers =
+chooseCanonicalSegs producerInfo sg classMembers =
     Array.map
         (\nodeIds ->
             Just (chooseForClass producerInfo sg nodeIds)

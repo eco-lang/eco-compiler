@@ -68,7 +68,7 @@ generateMainEntry ctx ports flagsDecoder mainInfo =
                                 Ctx.freshVar ctxMain
 
                             ( ctxB, regCallOp ) =
-                                Ops.ecoCallNamed ctxA (Expr.emitSafepointHints ctxA) regVar "__eco_register_ports" [] Types.ecoValue
+                                Ops.ecoCallNamed ctxA Expr.emitSafepointHints regVar "__eco_register_ports" [] Types.ecoValue
                         in
                         ( [ regCallOp ], ctxB )
 
@@ -80,7 +80,7 @@ generateMainEntry ctx ports flagsDecoder mainInfo =
                     specIdToFuncName ctx.registry mainSpecId
 
                 ( ctx2, callOp ) =
-                    Ops.ecoCallNamed ctx1 (Expr.emitSafepointHints ctx1) callVar mainFuncName [] Types.ecoValue
+                    Ops.ecoCallNamed ctx1 Expr.emitSafepointHints callVar mainFuncName [] Types.ecoValue
 
                 ( ctx3, returnOp ) =
                     Ops.ecoReturn ctx2 callVar Types.ecoValue
@@ -192,7 +192,7 @@ generateRegisterPorts ctx0 ports flagsDecoder =
 
                             ( c2, decoderCallOp ) =
                                 Ops.ecoCallNamed c1
-                                    (Expr.emitSafepointHints c1)
+                                    Expr.emitSafepointHints
                                     decoderVar
                                     (specIdToFuncName c1.registry decoderSpecId)
                                     []
@@ -203,7 +203,7 @@ generateRegisterPorts ctx0 ports flagsDecoder =
 
                             ( c4, registerOp ) =
                                 Ops.ecoCallNamed c3
-                                    (Expr.emitSafepointHints c3)
+                                    Expr.emitSafepointHints
                                     resultVar
                                     "Elm_Kernel_Platform_registerFlagsDecoder"
                                     [ ( decoderVar, Types.ecoValue ) ]
@@ -229,7 +229,7 @@ generateRegisterPorts ctx0 ports flagsDecoder =
 
                                     ( c4, decoderCallOp ) =
                                         Ops.ecoCallNamed c3
-                                            (Expr.emitSafepointHints c3)
+                                            Expr.emitSafepointHints
                                             decoderVar
                                             (specIdToFuncName c3.registry decoderSpecId)
                                             []
@@ -240,7 +240,7 @@ generateRegisterPorts ctx0 ports flagsDecoder =
 
                                     ( c6, registerOp ) =
                                         Ops.ecoCallNamed c5
-                                            (Expr.emitSafepointHints c5)
+                                            Expr.emitSafepointHints
                                             resultVar
                                             "Elm_Kernel_Platform_registerIncomingPort"
                                             [ ( nameVar, Types.ecoValue ), ( decoderVar, Types.ecoValue ) ]
@@ -255,7 +255,7 @@ generateRegisterPorts ctx0 ports flagsDecoder =
 
                                     ( c4, registerOp ) =
                                         Ops.ecoCallNamed c3
-                                            (Expr.emitSafepointHints c3)
+                                            Expr.emitSafepointHints
                                             resultVar
                                             "Elm_Kernel_Platform_registerOutgoingPort"
                                             [ ( nameVar, Types.ecoValue ) ]
@@ -1581,7 +1581,7 @@ generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs retu
             Ctx.freshVar ctxAfterProject
 
         ( ctxFinal, callOp ) =
-            Ops.ecoCallNamed ctxAfterFresh (Expr.emitSafepointHints ctxAfterFresh) resultVar fastCloneName callArgs returnType
+            Ops.ecoCallNamed ctxAfterFresh Expr.emitSafepointHints resultVar fastCloneName callArgs returnType
     in
     ( List.reverse projectOps ++ [ callOp ], resultVar, ctxFinal )
 
@@ -1862,7 +1862,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 Ctx.freshVar ctxFreshScope
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructCustom ctx1 (Ctx.liveEcoValueVars ctx1) resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
+                Ops.ecoConstructCustom ctx1 Ctx.liveEcoValueVars resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
 
             ( _, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -1979,7 +1979,7 @@ generateExtern ctx funcName monoType =
             Ctx.freshVar ctxWithArgs
 
         ( ctx2, stubOp ) =
-            generateStubValue ctx1 stubVar resultMonoType resultMlirType
+            generateStubValue ctx1 stubVar resultMlirType
 
         ( ctx3, returnOp ) =
             Ops.ecoReturn ctx2 stubVar resultMlirType
@@ -2087,7 +2087,7 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
 
         ( ctx4, callOp ) =
             Ops.ecoCallNamed ctx3
-                (Expr.emitSafepointHints ctx3)
+                Expr.emitSafepointHints
                 resultVar
                 "Elm_Kernel_Platform_leaf"
                 [ ( homeVar, Types.ecoValue ), ( "%arg0", Types.ecoValue ) ]
@@ -2133,8 +2133,8 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
 
 {-| Generate a stub value of the given type for extern function bodies.
 -}
-generateStubValue : Ctx.Context -> String -> Mono.MonoType -> MlirType -> ( Ctx.Context, MlirOp )
-generateStubValue ctx resultVar _ mlirType =
+generateStubValue : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
+generateStubValue ctx resultVar mlirType =
     -- Use mlirType instead of monoType because mlirType represents the actual
     -- concrete type after monomorphization, which may be a primitive even when
     -- the monoType is a type variable.

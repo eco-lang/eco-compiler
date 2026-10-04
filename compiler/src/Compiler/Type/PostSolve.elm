@@ -511,7 +511,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
         Can.Record fields ->
             let
                 fieldList =
-                    Data.Map.toList A.compareLocated fields
+                    Data.Map.toList fields
             in
             List.foldl
                 (\( _, fieldExpr ) ( nt, ke ) ->
@@ -894,7 +894,7 @@ postSolveUpdate annotations record fields nodeTypes0 kernel0 =
             postSolveExpr annotations record nodeTypes0 kernel0
 
         fieldList =
-            Data.Map.toList A.compareLocated fields
+            Data.Map.toList fields
     in
     List.foldl
         (\( _, Can.FieldUpdate _ fieldExpr ) ( nt, ke ) ->

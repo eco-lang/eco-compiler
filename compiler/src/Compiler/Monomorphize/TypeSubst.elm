@@ -51,7 +51,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.State as State exposing (MVarEnv, SchemeInfo, Substitution)
 import Dict
 import Set exposing (Set)
-import Tuple
 
 
 constraintOf : MVarId -> MVarEnv -> Mono.Constraint

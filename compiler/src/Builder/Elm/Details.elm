@@ -1953,7 +1953,7 @@ downloadPackage cache manager pkg vsn =
                                             Task.succeed (Err (Exit.PP_BadEndpointContent url))
 
                                         Ok ( endpoint, expectedHash ) ->
-                                            Http.getArchive manager endpoint Exit.PP_BadArchiveRequest (Exit.PP_BadArchiveContent endpoint) <|
+                                            Http.getArchive endpoint (Exit.PP_BadArchiveContent endpoint) <|
                                                 \( sha, archive ) ->
                                                     if expectedHash == Http.shaToChars sha then
                                                         Task.map Ok (File.writePackage (Stuff.package cache pkg vsn) archive)
@@ -2048,7 +2048,7 @@ detailsDecoder =
 
 interfacesEncoder : Interfaces -> Bytes.Encode.Encoder
 interfacesEncoder =
-    BE.assocListDict ModuleName.compareCanonical ModuleName.canonicalEncoder I.dependencyInterfaceEncoder
+    BE.assocListDict ModuleName.canonicalEncoder I.dependencyInterfaceEncoder
 
 
 interfacesDecoder : Bytes.Decode.Decoder Interfaces
@@ -2099,7 +2099,7 @@ dictNameMVarDepEncoder =
 artifactCacheEncoder : ArtifactCache -> Bytes.Encode.Encoder
 artifactCacheEncoder (ArtifactCache fingerprints artifacts) =
     Bytes.Encode.sequence
-        [ BE.everySet (\_ _ -> EQ) fingerprintEncoder fingerprints
+        [ BE.everySet fingerprintEncoder fingerprints
         , artifactsEncoder artifacts
         ]
 
@@ -2114,7 +2114,7 @@ artifactCacheDecoder =
 typedArtifactCacheEncoder : TypedArtifactCache -> Bytes.Encode.Encoder
 typedArtifactCacheEncoder (TypedArtifactCache fingerprints ifaces typedGraph typeEnv) =
     Bytes.Encode.sequence
-        [ BE.everySet (\_ _ -> EQ) fingerprintEncoder fingerprints
+        [ BE.everySet fingerprintEncoder fingerprints
         , BE.stdDict ModuleName.rawEncoder I.dependencyInterfaceEncoder ifaces
         , TOpt.globalGraphEncoder typedGraph
         , TypeEnv.globalTypeEnvEncoder typeEnv

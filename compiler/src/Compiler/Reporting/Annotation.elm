@@ -1,7 +1,7 @@
 module Compiler.Reporting.Annotation exposing
     ( Located(..), Position(..), Region(..)
     , at, toValue, toRegion
-    , compareLocated, traverse, merge
+    , traverse, merge
     , mergeRegions, zero, one, isMultiline
     , regionEncoder, regionDecoder, regionEncoderV, regionDecoderV
     , locatedEncoder, locatedDecoder
@@ -34,7 +34,7 @@ decoder of the same encoding.
 # Working with Located Values
 
 @docs at, toValue, toRegion
-@docs compareLocated, traverse, merge
+@docs traverse, merge
 
 
 # Region Utilities
@@ -63,14 +63,6 @@ import Utils.Bytes.Encode as BE
 -}
 type Located a
     = At Region a
-
-
-{-| Compares two located values by their values alone, so that two values at
-different places in the source compare as `EQ` when the values are equal.
--}
-compareLocated : Located comparable -> Located comparable -> Order
-compareLocated (At _ a) (At _ b) =
-    compare a b
 
 
 {-| Applies `func` to the value inside a located value, threading a state

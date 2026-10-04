@@ -777,7 +777,7 @@ toReport source err =
                 let
                     suggestions : List String
                     suggestions =
-                        Suggest.sort op identity (EverySet.toList compare locals) |> List.take 2
+                        Suggest.sort op identity (EverySet.toList locals) |> List.take 2
 
                     format : D.Doc -> D.Doc
                     format altOp =
@@ -1457,9 +1457,9 @@ notFound source region maybePrefix name thing { locals, quals } =
             let
                 addQuals : Name -> EverySet String Name -> List String -> List String
                 addQuals prefix localSet allNames =
-                    EverySet.foldr compare (\x xs -> toQualString prefix x :: xs) allNames localSet
+                    EverySet.foldr (\x xs -> toQualString prefix x :: xs) allNames localSet
             in
-            Dict.foldr addQuals (EverySet.toList compare locals) quals
+            Dict.foldr addQuals (EverySet.toList locals) quals
 
         nearbyNames : List String
         nearbyNames =
@@ -1822,7 +1822,7 @@ errorEncoder error =
                 [ Bytes.Encode.unsignedInt8 27
                 , A.regionEncoder region
                 , BE.string op
-                , BE.everySet compare BE.string locals
+                , BE.everySet BE.string locals
                 ]
 
         PatternHasRecordCtor region name ->
@@ -2307,8 +2307,8 @@ varKindDecoder =
 possibleNamesEncoder : PossibleNames -> Bytes.Encode.Encoder
 possibleNamesEncoder possibleNames =
     Bytes.Encode.sequence
-        [ BE.everySet compare BE.string possibleNames.locals
-        , BE.stdDict BE.string (BE.everySet compare BE.string) possibleNames.quals
+        [ BE.everySet BE.string possibleNames.locals
+        , BE.stdDict BE.string (BE.everySet BE.string) possibleNames.quals
         ]
 
 

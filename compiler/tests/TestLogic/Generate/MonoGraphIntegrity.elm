@@ -484,7 +484,7 @@ collectClosureChecks (Mono.MonoGraph data) =
 
         undefinedRefs =
             Set.diff referencedSpecIds definedSpecIds
-                |> Set.toList compare
+                |> Set.toList
 
         specIdIssues =
             List.map
@@ -936,7 +936,7 @@ collectRegistryChecks (Mono.MonoGraph data) =
 
         undefinedRegistrySpecIds =
             Set.diff registrySpecIds definedSpecIds
-                |> Set.toList compare
+                |> Set.toList
     in
     List.map
         (\specId -> \() -> Expect.fail ("Registry contains SpecId " ++ String.fromInt specId ++ " which is not defined in nodes"))

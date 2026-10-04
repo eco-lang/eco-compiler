@@ -200,13 +200,13 @@ collectLocalReferences (A.At _ exprInfo) =
             collectLocalReferences record
 
         Can.Update record fields ->
-            Dict.foldl A.compareLocated
+            Dict.foldl
                 (\_ (Can.FieldUpdate _ e) acc -> Set.union acc (collectLocalReferences e))
                 (collectLocalReferences record)
                 fields
 
         Can.Record fields ->
-            Dict.foldl A.compareLocated (\_ e acc -> Set.union acc (collectLocalReferences e)) Set.empty fields
+            Dict.foldl (\_ e acc -> Set.union acc (collectLocalReferences e)) Set.empty fields
 
         Can.Tuple a b rest ->
             Set.union

@@ -50,7 +50,6 @@ that has one. Nothing uses it.
 
 import Dict exposing (Dict)
 import FormatNumber as Fmt
-import Mlir.Loc exposing (Loc)
 import Mlir.Mlir
     exposing
         ( MlirAttr(..)
@@ -166,11 +165,11 @@ ppModuleHeader =
 `ppModule` produces. Locations are not printed, so `loc` makes no difference to
 the result.
 -}
-ppModuleFooter : Loc -> String
-ppModuleFooter loc =
+ppModuleFooter : String
+ppModuleFooter =
     "}"
         ++ " "
-        ++ ppLoc loc
+        ++ ppLoc
         ++ "\n"
 
 
@@ -202,7 +201,7 @@ ppModule m =
                 |> String.concat
 
         footer =
-            ppModuleFooter m.loc
+            ppModuleFooter
     in
     header ++ bodyStr ++ footer
 
@@ -402,7 +401,7 @@ ppOp indent env op =
                 "[" ++ String.join ", " op.successors ++ "]"
 
         locStr =
-            " " ++ ppLoc op.loc
+            " " ++ ppLoc
     in
     String.concat
         [ pad
@@ -487,8 +486,8 @@ indentPad n =
 {-| Returns the text of a location, which is always empty: locations are not
 printed.
 -}
-ppLoc : Loc -> String
-ppLoc _ =
+ppLoc : String
+ppLoc =
     ""
 
 

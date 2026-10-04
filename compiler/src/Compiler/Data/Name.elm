@@ -7,7 +7,7 @@ module Compiler.Data.Name exposing
     , isNumberType, isComparableType, isAppendableType, isCompappendType
     , int, float, bool, char, string, maybe, result, list, array, dict, bytes, tuple, jsArray, json, task, router, cmd, sub
     , platform, virtualDom, shader, debug, debugger, bitwise, basics, utils
-    , negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replModule, replValueToPrint
+    , negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replValueToPrint
     )
 
 {-| Every identifier the compiler handles is a `Name`, and this module holds the
@@ -83,7 +83,7 @@ text, so one constant can name several things: `maybe` is both the module
 
 # Special Names
 
-@docs negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replModule, replValueToPrint
+@docs negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replValueToPrint
 
 -}
 
@@ -681,13 +681,6 @@ dollar =
 identity_ : Name
 identity_ =
     "identity"
-
-
-{-| The name `Elm_Repl`, of the module the REPL compiles its input in.
--}
-replModule : Name
-replModule =
-    "Elm_Repl"
 
 
 {-| The name the REPL declares an entered expression under, so that its value

@@ -1,7 +1,7 @@
 module Compiler.Parse.Module exposing
     ( fromByteString
     , Module, Header, ProjectType(..), Effects(..)
-    , chompModule, chompImports, chompImport
+    , chompModule, chompImports
     , isKernel
     )
 
@@ -27,7 +27,7 @@ This module provides the entry point for parsing entire Elm modules. It handles:
 
 # Parsers
 
-@docs chompModule, chompImports, chompImport
+@docs chompModule, chompImports
 
 
 # Utilities
@@ -518,8 +518,6 @@ chompModuleHeaderCommon errCtx makeEffects initialComments start =
                                                                                 |> P.map
                                                                                     (\docCommentResult ->
                                                                                         buildHeader initialComments
-                                                                                            start
-                                                                                            effectEnd
                                                                                             beforeNameComments
                                                                                             name
                                                                                             afterNameComments
@@ -538,8 +536,6 @@ chompModuleHeaderCommon errCtx makeEffects initialComments start =
 
 buildHeader :
     Src.FComments
-    -> A.Position
-    -> A.Position
     -> Src.FComments
     -> A.Located Name.Name
     -> Src.FComments
@@ -548,7 +544,7 @@ buildHeader :
     -> Effects
     -> Src.C1 (Result A.Region Src.Comment)
     -> Src.C2 (Maybe Header)
-buildHeader initialComments _ _ beforeNameComments name afterNameComments afterExportsComments exports effects ( headerComments, docComment ) =
+buildHeader initialComments beforeNameComments name afterNameComments afterExportsComments exports effects ( headerComments, docComment ) =
     ( ( initialComments, headerComments )
     , Just <|
         Header

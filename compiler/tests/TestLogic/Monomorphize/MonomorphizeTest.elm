@@ -177,10 +177,10 @@ numbered by `convertForTest`.
 testDeriveAbiMode : ( String, String ) -> Can.Type Name -> KernelAbi.KernelAbiMode
 testDeriveAbiMode kernelId canType =
     let
-        ( converted, env ) =
+        ( converted, _ ) =
             convertForTest canType
     in
-    KernelAbi.deriveKernelAbiMode kernelId converted env
+    KernelAbi.deriveKernelAbiMode kernelId converted
 
 
 {-| Every test in this module, in the groups the module docstring lists.

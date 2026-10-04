@@ -60,11 +60,11 @@ run pkg =
                                                         case oldOutline of
                                                             Outline.App outline ->
                                                                 makeAppPlan env pkg outline
-                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline V.toChars changes)
+                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline changes)
 
                                                             Outline.Pkg outline ->
                                                                 makePkgPlan env pkg outline
-                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline C.toChars changes)
+                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline changes)
                                                     )
                                         )
                                 )
@@ -83,8 +83,8 @@ type Changes vsn
     | Changes Outline.Outline
 
 
-attemptChanges : String -> Solver.Env -> Outline.Outline -> (a -> String) -> Changes a -> Task Exit.Install ()
-attemptChanges root env oldOutline _ changes =
+attemptChanges : String -> Solver.Env -> Outline.Outline -> Changes a -> Task Exit.Install ()
+attemptChanges root env oldOutline changes =
     case changes of
         AlreadyInstalled ->
             Task.io (IO.printLn "It is already installed!")
@@ -331,7 +331,7 @@ detectChanges old new =
     Dict.merge
         (\k _ -> Dict.insert k Remove)
         (\k oldElem newElem acc ->
-            case keepChange k oldElem newElem of
+            case keepChange oldElem newElem of
                 Just change ->
                     Dict.insert k change acc
 
@@ -344,8 +344,8 @@ detectChanges old new =
         Dict.empty
 
 
-keepChange : k -> v -> v -> Maybe (Change v)
-keepChange _ old new =
+keepChange : v -> v -> Maybe (Change v)
+keepChange old new =
     if old == new then
         Nothing
 

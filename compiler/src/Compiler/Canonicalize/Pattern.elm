@@ -155,7 +155,7 @@ canonicalizeWithIds : Env.Env -> Ids.IdState -> Src.Pattern -> PResult DupsDict 
 canonicalizeWithIds env state0 (A.At region pattern) =
     case pattern of
         Src.PAnything _ ->
-            logVar_ region Can.PAnything
+            logVar_ Can.PAnything
                 |> ReportingResult.map (\pattern_ -> makePattern region state0 pattern_)
 
         Src.PVar name ->
@@ -244,8 +244,8 @@ canonicalizeWithIds env state0 (A.At region pattern) =
 
 {-| Helper to pass through a pattern without logging.
 -}
-logVar_ : A.Region -> a -> PResult DupsDict w a
-logVar_ _ value =
+logVar_ : a -> PResult DupsDict w a
+logVar_ value =
     ReportingResult.ok value
 
 

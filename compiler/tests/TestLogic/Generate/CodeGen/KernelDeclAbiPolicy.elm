@@ -89,8 +89,8 @@ checkKernelFunc op =
                 Nothing ->
                     []
 
-                Just ( home, name ) ->
-                    case kernelBackendAbiPolicy home name of
+                Just _ ->
+                    case kernelBackendAbiPolicy of
                         ElmDerived ->
                             []
 

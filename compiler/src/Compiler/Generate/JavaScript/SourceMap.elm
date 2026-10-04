@@ -364,10 +364,10 @@ lookupIndexOrderedListBuilder toComparable value (OrderedListBuilder _ values) =
 {-| Returns the values in order of their numbers, so that each value's position
 in the list is its number. `keyComparison` has no effect.
 -}
-orderedListBuilderToList : (k -> k -> Order) -> OrderedListBuilder c k -> List k
-orderedListBuilderToList keyComparison (OrderedListBuilder _ values) =
+orderedListBuilderToList : OrderedListBuilder c k -> List k
+orderedListBuilderToList (OrderedListBuilder _ values) =
     values
-        |> DataMap.toList keyComparison
+        |> DataMap.toList
         |> List.map (\( val, idx ) -> ( idx, val ))
         |> Dict.fromList
         |> Dict.values
@@ -386,7 +386,7 @@ mappingsToJson moduleSources (Mappings props) =
     let
         moduleNames : List ModuleName.Canonical
         moduleNames =
-            orderedListBuilderToList ModuleName.compareCanonical props.sources
+            orderedListBuilderToList props.sources
     in
     Encode.object
         [ ( "version", Encode.int 3 )
@@ -400,6 +400,6 @@ mappingsToJson moduleSources (Mappings props) =
                 )
                 moduleNames
           )
-        , ( "names", Encode.list (\jsName -> Encode.string jsName) (orderedListBuilderToList compare props.names) )
+        , ( "names", Encode.list (\jsName -> Encode.string jsName) (orderedListBuilderToList props.names) )
         , ( "mappings", Encode.string props.vlqs )
         ]

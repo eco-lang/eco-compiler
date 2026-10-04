@@ -174,16 +174,16 @@ map alter (D dict) =
 {-| Folds `func` over the entries in ascending order of their projected keys,
 lowest first. The ordering function is ignored.
 -}
-foldl : (k -> k -> Order) -> (k -> v -> b -> b) -> b -> Dict c k v -> b
-foldl _ func initialResult (D dict) =
+foldl : (k -> v -> b -> b) -> b -> Dict c k v -> b
+foldl func initialResult (D dict) =
     Dict.foldl (\_ ( key, value ) result -> func key value result) initialResult dict
 
 
 {-| Folds `func` over the entries in descending order of their projected keys,
 highest first. The ordering function is ignored.
 -}
-foldr : (k -> k -> Order) -> (k -> v -> b -> b) -> b -> Dict c k v -> b
-foldr _ func initialResult (D dict) =
+foldr : (k -> v -> b -> b) -> b -> Dict c k v -> b
+foldr func initialResult (D dict) =
     Dict.foldr (\_ ( key, value ) result -> func key value result) initialResult dict
 
 
@@ -202,8 +202,8 @@ filter isGood (D dict) =
 {-| Returns the stored keys in ascending order of their projections. The
 ordering function is ignored.
 -}
-keys : (k -> k -> Order) -> Dict c k v -> List k
-keys _ (D dict) =
+keys : Dict c k v -> List k
+keys (D dict) =
     Dict.values dict
         |> List.map Tuple.first
 
@@ -211,8 +211,8 @@ keys _ (D dict) =
 {-| Returns the values in ascending order of their entries' projected keys. The
 ordering function is ignored.
 -}
-values : (k -> k -> Order) -> Dict c k v -> List v
-values _ (D dict) =
+values : Dict c k v -> List v
+values (D dict) =
     Dict.values dict
         |> List.map Tuple.second
 
@@ -220,8 +220,8 @@ values _ (D dict) =
 {-| Returns the entries as key-value pairs in ascending order of their projected
 keys. The ordering function is ignored.
 -}
-toList : (k -> k -> Order) -> Dict c k v -> List ( k, v )
-toList _ (D dict) =
+toList : Dict c k v -> List ( k, v )
+toList (D dict) =
     Dict.values dict
 
 

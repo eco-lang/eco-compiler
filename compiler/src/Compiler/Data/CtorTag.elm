@@ -104,8 +104,8 @@ nullConsCapacity =
 null-cons constant, which it is unless `isEmbeddedConstantCtor` picks it out.
 The tag argument is ignored.
 -}
-embedsAsNullCons : Name -> Int -> Bool
-embedsAsNullCons name _ =
+embedsAsNullCons : Name -> Bool
+embedsAsNullCons name =
     not (isEmbeddedConstantCtor name)
 
 

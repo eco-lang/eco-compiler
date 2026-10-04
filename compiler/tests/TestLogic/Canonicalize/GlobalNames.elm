@@ -258,7 +258,7 @@ collectExprNodeIssues node =
 
         Can.Update record fields ->
             collectExprIssues record
-                ++ DMap.foldl A.compareLocated
+                ++ DMap.foldl
                     (\_ (Can.FieldUpdate _ expr) acc ->
                         collectExprIssues expr ++ acc
                     )
@@ -266,7 +266,7 @@ collectExprNodeIssues node =
                     fields
 
         Can.Record fields ->
-            DMap.foldl A.compareLocated
+            DMap.foldl
                 (\_ expr acc -> collectExprIssues expr ++ acc)
                 []
                 fields

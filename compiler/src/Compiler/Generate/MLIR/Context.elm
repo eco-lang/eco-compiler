@@ -189,8 +189,8 @@ we no longer need kernel fallbacks for negate and not. The intrinsics should alw
 match for concrete Int, Float, or Bool argument types.
 
 -}
-hasKernelImplementation : String -> String -> Bool
-hasKernelImplementation _ _ =
+hasKernelImplementation : Bool
+hasKernelImplementation =
     False
 
 
@@ -693,8 +693,8 @@ recover on its own.
 
 
 -}
-liveEcoValueVars : Context -> List ( String, MlirType )
-liveEcoValueVars _ =
+liveEcoValueVars : List ( String, MlirType )
+liveEcoValueVars =
     []
 
 

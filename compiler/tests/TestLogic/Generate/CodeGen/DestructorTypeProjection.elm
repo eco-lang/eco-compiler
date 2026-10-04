@@ -90,9 +90,6 @@ checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
     let
         -- Built and passed on, but checkForSpuriousUnbox ignores it.
-        typeEnv =
-            buildTypeEnvFromOp funcOp
-
         allOps =
             walkOpsInOp funcOp
 
@@ -102,7 +99,7 @@ checkFunction funcOp =
         unboxOps =
             List.filter (\op -> op.name == "eco.unbox") allOps
     in
-    List.filterMap (checkForSpuriousUnbox typeEnv definingOps) unboxOps
+    List.filterMap (checkForSpuriousUnbox definingOps) unboxOps
 
 
 {-| Returns a dictionary from each SSA name that an op in `ops` defines as a
@@ -129,8 +126,8 @@ The violation is reported against the `eco.project.custom` op, not the
 `eco.unbox`. The `TypeEnv` argument is ignored.
 
 -}
-checkForSpuriousUnbox : TypeEnv -> Dict.Dict String MlirOp -> MlirOp -> Maybe Violation
-checkForSpuriousUnbox _ definingOps unboxOp =
+checkForSpuriousUnbox : Dict.Dict String MlirOp -> MlirOp -> Maybe Violation
+checkForSpuriousUnbox definingOps unboxOp =
     case unboxOp.operands of
         [ operandName ] ->
             case unboxOp.results of
@@ -173,23 +170,6 @@ of a custom-type value.
 isCustomProjection : MlirOp -> Bool
 isCustomProjection op =
     op.name == "eco.project.custom"
-
-
-{-| Returns the types of every SSA value that `op` or an op nested in it defines
-as a result, together with every entry-block and block argument in its
-regions, keyed by SSA name. A name defined twice keeps the type it was given
-last.
--}
-buildTypeEnvFromOp : MlirOp -> TypeEnv
-buildTypeEnvFromOp op =
-    let
-        withResults =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                Dict.empty
-                op.results
-    in
-    List.foldl collectFromRegion withResults op.regions
 
 
 {-| Returns `env` extended with the types of the region's block arguments and of

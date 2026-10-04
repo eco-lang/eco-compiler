@@ -1131,8 +1131,8 @@ expectMLIRGeneration srcModule =
         Err msg ->
             Expect.fail msg
 
-        Ok { monoGraph, mlirOutput } ->
-            verifyMLIROutput monoGraph mlirOutput
+        Ok { mlirOutput } ->
+            verifyMLIROutput mlirOutput
 
 
 {-| Creates an expectation that the graph has a `main` and a node array that is
@@ -1155,8 +1155,8 @@ verifyMonoGraph (Mono.MonoGraph data) =
 {-| Creates an expectation that `output` is not empty and contains `func.func`
 or `eco.` somewhere. The graph argument is not used.
 -}
-verifyMLIROutput : Mono.MonoGraph -> String -> Expect.Expectation
-verifyMLIROutput _ output =
+verifyMLIROutput : String -> Expect.Expectation
+verifyMLIROutput output =
     if String.isEmpty output then
         Expect.fail "MLIR output is empty"
 

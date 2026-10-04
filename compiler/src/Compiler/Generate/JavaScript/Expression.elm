@@ -233,7 +233,7 @@ generate mode parentModule expression =
 
                 toTranslationObject : EverySet.EverySet String Name.Name -> JS.Expr
                 toTranslationObject fields =
-                    JS.ExprObject (List.map toTranlation (EverySet.toList compare fields))
+                    JS.ExprObject (List.map toTranlation (EverySet.toList fields))
             in
             JsExpr <|
                 JS.ExprObject
@@ -367,7 +367,7 @@ generateTrackedRecord mode parentModule region fields =
         toPair ( A.At fieldRegion field, value ) =
             ( A.At fieldRegion (generateField mode field), generateJsExpr mode parentModule value )
     in
-    JS.ExprTrackedObject parentModule region (List.map toPair (EveryDict.toList A.compareLocated fields))
+    JS.ExprTrackedObject parentModule region (List.map toPair (EveryDict.toList fields))
 
 
 {-| Convert an Elm field name to a JavaScript property name, applying production-mode shortening if enabled.

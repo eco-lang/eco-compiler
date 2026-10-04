@@ -1,5 +1,5 @@
 module Compiler.Parse.Number exposing
-    ( Number(..), Outcome(..)
+    ( Number(..), Outcome
     , number, precedence
     , chompHex
     )
@@ -62,9 +62,9 @@ import Compiler.Reporting.Error.Syntax as E
 name, which a number must not run into: an ASCII letter, a digit, `_`, or a
 character `Compiler.Parse.Variable.getInnerWidthHelp` accepts beyond ASCII.
 -}
-isDirtyEnd : String -> Int -> Int -> Char -> Bool
-isDirtyEnd src pos end word =
-    Var.getInnerWidthHelp src pos end word > 0
+isDirtyEnd : String -> Int -> Char -> Bool
+isDirtyEnd src pos word =
+    Var.getInnerWidthHelp src pos word > 0
 
 
 {-| Returns whether a character is one of the ASCII digits `0` to `9`.
@@ -248,7 +248,7 @@ chompInt src pos end n =
         else if word == 'e' || word == 'E' then
             chompExponent src (pos + 1) end
 
-        else if isDirtyEnd src pos end word then
+        else if isDirtyEnd src pos word then
             Err_ pos E.NumberEnd
 
         else
@@ -307,7 +307,7 @@ chompFractionHelp src pos end =
         else if word == 'e' || word == 'E' then
             chompExponent src (pos + 1) end
 
-        else if isDirtyEnd src pos end word then
+        else if isDirtyEnd src pos word then
             Err_ pos E.NumberEnd
 
         else
@@ -411,7 +411,7 @@ chompZero src pos end =
         else if isDecimalDigit word then
             Err_ pos E.NumberNoLeadingZero
 
-        else if isDirtyEnd src pos end word then
+        else if isDirtyEnd src pos word then
             Err_ pos E.NumberEnd
 
         else
@@ -469,7 +469,7 @@ chompHexHelp src pos end answer accumulator =
         let
             newAnswer : Int
             newAnswer =
-                stepHex src pos end (charAtPos pos src) accumulator
+                stepHex src pos (charAtPos pos src) accumulator
         in
         if newAnswer < 0 then
             ( pos
@@ -488,8 +488,8 @@ chompHexHelp src pos end answer accumulator =
 `pos`. For a character that is not a hexadecimal digit it returns `-2` when the
 character may continue a name and `-1` otherwise.
 -}
-stepHex : String -> Int -> Int -> Char -> Int -> Int
-stepHex src pos end word acc =
+stepHex : String -> Int -> Char -> Int -> Int
+stepHex src pos word acc =
     if '0' <= word && word <= '9' then
         16 * acc + (Char.toCode word - Char.toCode '0')
 
@@ -499,7 +499,7 @@ stepHex src pos end word acc =
     else if 'A' <= word && word <= 'F' then
         16 * acc + 10 + (Char.toCode word - Char.toCode 'A')
 
-    else if isDirtyEnd src pos end word then
+    else if isDirtyEnd src pos word then
         -2
 
     else

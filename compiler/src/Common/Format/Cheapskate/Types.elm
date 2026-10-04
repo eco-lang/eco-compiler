@@ -1,5 +1,5 @@
 module Common.Format.Cheapskate.Types exposing
-    ( Doc(..), Options(..)
+    ( Doc(..)
     , Block(..), Blocks
     , CodeAttr(..), ListType(..), NumWrapper(..), HtmlTagType(..)
     , Inline(..), Inlines, LinkTarget(..)
@@ -28,7 +28,7 @@ comment, which name the values a module documents.
 
 # Document
 
-@docs Doc, Options
+@docs Doc
 
 
 # Block Elements
@@ -234,10 +234,3 @@ removed. No link is resolved through it: a `Ref` keeps its label.
 -}
 type alias ReferenceMap =
     Dict String ( String, String )
-
-
-{-| Settings for parsing a Markdown document. Its one constructor has no fields,
-so a value carries no settings.
--}
-type Options
-    = Options

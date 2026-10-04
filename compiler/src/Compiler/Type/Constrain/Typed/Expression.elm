@@ -136,13 +136,13 @@ constrainDefWithIds rtv def bodyCon =
                 newNames =
                     Dict.diff freeVars rtv
             in
-            IO.traverseMapWithKey identity compare (\k _ -> Type.nameToRigid k) (DMap.fromList identity (Dict.toList newNames))
+            IO.traverseMapWithKey identity (\k _ -> Type.nameToRigid k) (DMap.fromList identity (Dict.toList newNames))
                 |> IO.andThen
                     (\newRigidsDMap ->
                         let
                             newRigids : Dict Name Vars.Variable
                             newRigids =
-                                Dict.fromList (DMap.toList compare newRigidsDMap)
+                                Dict.fromList (DMap.toList newRigidsDMap)
 
                             newRtv : RigidTypeVar
                             newRtv =
@@ -241,13 +241,13 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                         newNames =
                             Dict.diff freeVars rtv
                     in
-                    IO.traverseMapWithKey identity compare (\k _ -> Type.nameToRigid k) (DMap.fromList identity (Dict.toList newNames))
+                    IO.traverseMapWithKey identity (\k _ -> Type.nameToRigid k) (DMap.fromList identity (Dict.toList newNames))
                         |> IO.andThen
                             (\newRigidsDMap ->
                                 let
                                     newRigids : Dict Name Vars.Variable
                                     newRigids =
-                                        Dict.fromList (DMap.toList compare newRigidsDMap)
+                                        Dict.fromList (DMap.toList newRigidsDMap)
 
                                     newRtv : RigidTypeVar
                                     newRtv =
@@ -2124,7 +2124,7 @@ constrainRecordWithIds rtv region fields expected =
     let
         fieldList : List ( A.Located Name, Can.Expr )
         fieldList =
-            DMap.toList A.compareLocated fields
+            DMap.toList fields
     in
     constrainFieldsWithIds rtv fieldList []
         |> IO.map
@@ -2140,7 +2140,7 @@ constrainRecordWithIds rtv region fields expected =
 
                     recordType : Type
                     recordType =
-                        RecordN (Utils.dictMapKeys A.compareLocated A.toValue (DMap.map getTypeFromResult dict)) EmptyRecordN
+                        RecordN (Utils.dictMapKeys A.toValue (DMap.map getTypeFromResult dict)) EmptyRecordN
 
                     recordCon : Constraint
                     recordCon =
@@ -2148,11 +2148,11 @@ constrainRecordWithIds rtv region fields expected =
 
                     vars : List Vars.Variable
                     vars =
-                        DMap.foldr A.compareLocated (\_ ( v, _, _ ) vs -> v :: vs) [] dict
+                        DMap.foldr (\_ ( v, _, _ ) vs -> v :: vs) [] dict
 
                     cons : List Constraint
                     cons =
-                        DMap.foldr A.compareLocated (\_ ( _, _, c ) cs -> c :: cs) [ recordCon ] dict
+                        DMap.foldr (\_ ( _, _, c ) cs -> c :: cs) [ recordCon ] dict
                 in
                 Type.exists vars (CAnd cons)
             )
@@ -2196,13 +2196,13 @@ constrainUpdateWithIds rtv region exprId expr locatedFields expected =
                                         let
                                             fields : Dict Name Can.FieldUpdate
                                             fields =
-                                                DMap.foldl A.compareLocated (\k v acc -> Dict.insert (A.toValue k) v acc) Dict.empty locatedFields
+                                                DMap.foldl (\k v acc -> Dict.insert (A.toValue k) v acc) Dict.empty locatedFields
 
                                             updateList : List ( Name, Can.FieldUpdate )
                                             updateList =
                                                 Dict.toList fields
                                         in
-                                        constrainUpdateFieldsWithIds rtv region updateList []
+                                        constrainUpdateFieldsWithIds rtv updateList []
                                             |> IO.andThen
                                                 (\fieldResults ->
                                                     let
@@ -2245,8 +2245,8 @@ constrainUpdateWithIds rtv region exprId expr locatedFields expected =
             )
 
 
-constrainUpdateFieldsWithIds : RigidTypeVar -> A.Region -> List ( Name, Can.FieldUpdate ) -> List ( Name, ( Vars.Variable, Type, Constraint ) ) -> IO (List ( Name, ( Vars.Variable, Type, Constraint ) ))
-constrainUpdateFieldsWithIds rtv _ fields acc =
+constrainUpdateFieldsWithIds : RigidTypeVar -> List ( Name, Can.FieldUpdate ) -> List ( Name, ( Vars.Variable, Type, Constraint ) ) -> IO (List ( Name, ( Vars.Variable, Type, Constraint ) ))
+constrainUpdateFieldsWithIds rtv fields acc =
     case fields of
         [] ->
             IO.pure (List.reverse acc)
@@ -2267,7 +2267,7 @@ constrainUpdateFieldsWithIds rtv _ fields acc =
                         constrainWithIds rtv expr expectation
                             |> IO.andThen
                                 (\fieldCon ->
-                                    constrainUpdateFieldsWithIds rtv fieldRegion rest (( name, ( fieldVar, fieldType, fieldCon ) ) :: acc)
+                                    constrainUpdateFieldsWithIds rtv rest (( name, ( fieldVar, fieldType, fieldCon ) ) :: acc)
                                 )
                     )
 
@@ -2295,7 +2295,7 @@ constrainTupleWithIds rtv region a b cs expected =
                                         constrainWithIds rtv b (NoExpectation bType)
                                             |> IO.andThen
                                                 (\bCon ->
-                                                    constrainTupleRestWithIds rtv region cs [] []
+                                                    constrainTupleRestWithIds rtv cs [] []
                                                         |> IO.map
                                                             (\( cCons, cVars ) ->
                                                                 let
@@ -2315,13 +2315,13 @@ constrainTupleWithIds rtv region a b cs expected =
             )
 
 
-constrainTupleRestWithIds : RigidTypeVar -> A.Region -> List Can.Expr -> List Constraint -> List Vars.Variable -> IO ( List Constraint, List Vars.Variable )
-constrainTupleRestWithIds rtv _ cs accCons accVars =
+constrainTupleRestWithIds : RigidTypeVar -> List Can.Expr -> List Constraint -> List Vars.Variable -> IO ( List Constraint, List Vars.Variable )
+constrainTupleRestWithIds rtv cs accCons accVars =
     case cs of
         [] ->
             IO.pure ( List.reverse accCons, List.reverse accVars )
 
-        ((A.At cRegion _) as c) :: rest ->
+        ((A.At _ _) as c) :: rest ->
             Type.mkFlexVar
                 |> IO.andThen
                     (\cVar ->
@@ -2333,7 +2333,7 @@ constrainTupleRestWithIds rtv _ cs accCons accVars =
                         constrainWithIds rtv c (NoExpectation cType)
                             |> IO.andThen
                                 (\cCon ->
-                                    constrainTupleRestWithIds rtv cRegion rest (cCon :: accCons) (cVar :: accVars)
+                                    constrainTupleRestWithIds rtv rest (cCon :: accCons) (cVar :: accVars)
                                 )
                     )
 

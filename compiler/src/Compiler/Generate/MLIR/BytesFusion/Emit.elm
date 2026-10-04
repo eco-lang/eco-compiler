@@ -86,8 +86,8 @@ emitFusedEncoderTagged compileExpr ctx ops =
 emitOp : Op -> EmitState -> EmitState
 emitOp op state =
     case op of
-        InitCursor cursorName widthExpr ->
-            emitInitCursor cursorName widthExpr state
+        InitCursor _ widthExpr ->
+            emitInitCursor widthExpr state
 
         WriteU8 _ valueExpr ->
             emitWriteU8 valueExpr state
@@ -124,8 +124,8 @@ emitOp op state =
 {-| Emit cursor initialization.
 Allocates the buffer and creates initial cursor.
 -}
-emitInitCursor : String -> WidthExpr -> EmitState -> EmitState
-emitInitCursor _ widthExpr state =
+emitInitCursor : WidthExpr -> EmitState -> EmitState
+emitInitCursor widthExpr state =
     let
         -- Emit width computation
         ( widthOps, widthVar, ctx1 ) =
@@ -1049,19 +1049,19 @@ emitDecoderOpsNested ops state =
             emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar rest state
 
         (Apply1 fnExpr argPlaceholder resultPlaceholder) :: rest ->
-            emitApplyNested 1 fnExpr [ argPlaceholder ] resultPlaceholder rest state
+            emitApplyNested fnExpr [ argPlaceholder ] resultPlaceholder rest state
 
         (Apply2 fnExpr arg1 arg2 resultPlaceholder) :: rest ->
-            emitApplyNested 2 fnExpr [ arg1, arg2 ] resultPlaceholder rest state
+            emitApplyNested fnExpr [ arg1, arg2 ] resultPlaceholder rest state
 
         (Apply3 fnExpr arg1 arg2 arg3 resultPlaceholder) :: rest ->
-            emitApplyNested 3 fnExpr [ arg1, arg2, arg3 ] resultPlaceholder rest state
+            emitApplyNested fnExpr [ arg1, arg2, arg3 ] resultPlaceholder rest state
 
         (Apply4 fnExpr arg1 arg2 arg3 arg4 resultPlaceholder) :: rest ->
-            emitApplyNested 4 fnExpr [ arg1, arg2, arg3, arg4 ] resultPlaceholder rest state
+            emitApplyNested fnExpr [ arg1, arg2, arg3, arg4 ] resultPlaceholder rest state
 
         (Apply5 fnExpr arg1 arg2 arg3 arg4 arg5 resultPlaceholder) :: rest ->
-            emitApplyNested 5 fnExpr [ arg1, arg2, arg3, arg4, arg5 ] resultPlaceholder rest state
+            emitApplyNested fnExpr [ arg1, arg2, arg3, arg4, arg5 ] resultPlaceholder rest state
 
         (PushValue valueExpr placeholderVar) :: rest ->
             emitPushValueNested valueExpr placeholderVar rest state
@@ -1636,8 +1636,8 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
 Apply operations don't do bounds checks, so no scf.if needed.
 Looks up arg placeholder vars in varMapping to get actual SSA variables.
 -}
-emitApplyNested : Int -> Mono.MonoExpr -> List String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
-emitApplyNested _ fnExpr argPlaceholders resultPlaceholder restOps state =
+emitApplyNested : Mono.MonoExpr -> List String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
+emitApplyNested fnExpr argPlaceholders resultPlaceholder restOps state =
     let
         -- Compile function expression
         fnResult =
@@ -2337,52 +2337,52 @@ emitItemDecoderOps ops state =
             }
 
         -- Single primitive reads
-        [ ReadU8 _ placeholderVar ] ->
-            emitSimpleRead 1 "bf.read.u8" Nothing I64 placeholderVar state
+        [ ReadU8 _ _ ] ->
+            emitSimpleRead "bf.read.u8" Nothing I64 state
 
-        [ ReadI8 _ placeholderVar ] ->
-            emitSimpleRead 1 "bf.read.i8" Nothing I64 placeholderVar state
+        [ ReadI8 _ _ ] ->
+            emitSimpleRead "bf.read.i8" Nothing I64 state
 
-        [ ReadU16 _ endian placeholderVar ] ->
-            emitSimpleRead 2 "bf.read.u16" (Just endian) I64 placeholderVar state
+        [ ReadU16 _ endian _ ] ->
+            emitSimpleRead "bf.read.u16" (Just endian) I64 state
 
-        [ ReadI16 _ endian placeholderVar ] ->
-            emitSimpleRead 2 "bf.read.i16" (Just endian) I64 placeholderVar state
+        [ ReadI16 _ endian _ ] ->
+            emitSimpleRead "bf.read.i16" (Just endian) I64 state
 
-        [ ReadU32 _ endian placeholderVar ] ->
-            emitSimpleRead 4 "bf.read.u32" (Just endian) I64 placeholderVar state
+        [ ReadU32 _ endian _ ] ->
+            emitSimpleRead "bf.read.u32" (Just endian) I64 state
 
-        [ ReadI32 _ endian placeholderVar ] ->
-            emitSimpleRead 4 "bf.read.i32" (Just endian) I64 placeholderVar state
+        [ ReadI32 _ endian _ ] ->
+            emitSimpleRead "bf.read.i32" (Just endian) I64 state
 
-        [ ReadF32 _ endian placeholderVar ] ->
-            emitSimpleRead 4 "bf.read.f32" (Just endian) F64 placeholderVar state
+        [ ReadF32 _ endian _ ] ->
+            emitSimpleRead "bf.read.f32" (Just endian) F64 state
 
-        [ ReadF64 _ endian placeholderVar ] ->
-            emitSimpleRead 8 "bf.read.f64" (Just endian) F64 placeholderVar state
+        [ ReadF64 _ endian _ ] ->
+            emitSimpleRead "bf.read.f64" (Just endian) F64 state
 
         -- Read + Apply1 (map pattern): decode item, then apply function
-        [ ReadU8 _ _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
-            emitReadThenApply1 1 "bf.read.u8" Nothing I64 fnExpr argPlaceholder resultPlaceholder state
+        [ ReadU8 _ _, Apply1 fnExpr _ _ ] ->
+            emitReadThenApply1 "bf.read.u8" Nothing I64 fnExpr state
 
-        [ ReadU16 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
-            emitReadThenApply1 2 "bf.read.u16" (Just endian) I64 fnExpr argPlaceholder resultPlaceholder state
+        [ ReadU16 _ endian _, Apply1 fnExpr _ _ ] ->
+            emitReadThenApply1 "bf.read.u16" (Just endian) I64 fnExpr state
 
-        [ ReadU32 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
-            emitReadThenApply1 4 "bf.read.u32" (Just endian) I64 fnExpr argPlaceholder resultPlaceholder state
+        [ ReadU32 _ endian _, Apply1 fnExpr _ _ ] ->
+            emitReadThenApply1 "bf.read.u32" (Just endian) I64 fnExpr state
 
-        [ ReadI32 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
-            emitReadThenApply1 4 "bf.read.i32" (Just endian) I64 fnExpr argPlaceholder resultPlaceholder state
+        [ ReadI32 _ endian _, Apply1 fnExpr _ _ ] ->
+            emitReadThenApply1 "bf.read.i32" (Just endian) I64 fnExpr state
 
-        [ ReadF32 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
-            emitReadThenApply1 4 "bf.read.f32" (Just endian) F64 fnExpr argPlaceholder resultPlaceholder state
+        [ ReadF32 _ endian _, Apply1 fnExpr _ _ ] ->
+            emitReadThenApply1 "bf.read.f32" (Just endian) F64 fnExpr state
 
-        [ ReadF64 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
-            emitReadThenApply1 8 "bf.read.f64" (Just endian) F64 fnExpr argPlaceholder resultPlaceholder state
+        [ ReadF64 _ endian _, Apply1 fnExpr _ _ ] ->
+            emitReadThenApply1 "bf.read.f64" (Just endian) F64 fnExpr state
 
         -- Two reads + Apply2 (map2 pattern)
-        [ read1, read2, Apply2 fnExpr _ _ resultPlaceholder ] ->
-            emitTwoReadsThenApply2 read1 read2 fnExpr resultPlaceholder state
+        [ read1, read2, Apply2 fnExpr _ _ _ ] ->
+            emitTwoReadsThenApply2 read1 read2 fnExpr state
 
         _ ->
             -- Unhandled pattern - emit sequential ops with cursor threading
@@ -2392,8 +2392,8 @@ emitItemDecoderOps ops state =
 {-| Emit a simple read without nested scf.if (for use inside loop body).
 Assumes bounds have already been checked or will be checked at higher level.
 -}
-emitSimpleRead : Int -> String -> Maybe Endianness -> MlirType -> String -> DecoderEmitState -> ItemDecoderResult
-emitSimpleRead _ readOpName maybeEndian resultType _ state =
+emitSimpleRead : String -> Maybe Endianness -> MlirType -> DecoderEmitState -> ItemDecoderResult
+emitSimpleRead readOpName maybeEndian resultType state =
     let
         ( valueVar, ctx1 ) =
             Context.freshVar state.ctx
@@ -2453,12 +2453,12 @@ emitSimpleRead _ readOpName maybeEndian resultType _ state =
 {-| Emit read + Apply1 pattern (map) for loop item.
 Returns (ops, resultVar, newCursor, ctx).
 -}
-emitReadThenApply1 : Int -> String -> Maybe Endianness -> MlirType -> Mono.MonoExpr -> String -> String -> DecoderEmitState -> ItemDecoderResult
-emitReadThenApply1 byteCount readOpName maybeEndian resultType fnExpr argPlaceholder _ state =
+emitReadThenApply1 : String -> Maybe Endianness -> MlirType -> Mono.MonoExpr -> DecoderEmitState -> ItemDecoderResult
+emitReadThenApply1 readOpName maybeEndian resultType fnExpr state =
     let
         -- First emit the read
         readResult =
-            emitSimpleRead byteCount readOpName maybeEndian resultType argPlaceholder state
+            emitSimpleRead readOpName maybeEndian resultType state
 
         -- Compile the function expression
         fnResult =
@@ -2505,8 +2505,8 @@ emitReadThenApply1 byteCount readOpName maybeEndian resultType fnExpr argPlaceho
 {-| Emit two reads + Apply2 pattern (map2) for loop item.
 Returns (ops, resultVar, newCursor, ctx).
 -}
-emitTwoReadsThenApply2 : DecoderOp -> DecoderOp -> Mono.MonoExpr -> String -> DecoderEmitState -> ItemDecoderResult
-emitTwoReadsThenApply2 read1 read2 fnExpr _ state =
+emitTwoReadsThenApply2 : DecoderOp -> DecoderOp -> Mono.MonoExpr -> DecoderEmitState -> ItemDecoderResult
+emitTwoReadsThenApply2 read1 read2 fnExpr state =
     let
         -- Emit first read
         read1Result =
@@ -2623,29 +2623,29 @@ Helper for multi-read patterns.
 emitSingleReadOp : DecoderOp -> DecoderEmitState -> ItemDecoderResult
 emitSingleReadOp op state =
     case op of
-        ReadU8 _ placeholderVar ->
-            emitSimpleRead 1 "bf.read.u8" Nothing I64 placeholderVar state
+        ReadU8 _ _ ->
+            emitSimpleRead "bf.read.u8" Nothing I64 state
 
-        ReadI8 _ placeholderVar ->
-            emitSimpleRead 1 "bf.read.i8" Nothing I64 placeholderVar state
+        ReadI8 _ _ ->
+            emitSimpleRead "bf.read.i8" Nothing I64 state
 
-        ReadU16 _ endian placeholderVar ->
-            emitSimpleRead 2 "bf.read.u16" (Just endian) I64 placeholderVar state
+        ReadU16 _ endian _ ->
+            emitSimpleRead "bf.read.u16" (Just endian) I64 state
 
-        ReadI16 _ endian placeholderVar ->
-            emitSimpleRead 2 "bf.read.i16" (Just endian) I64 placeholderVar state
+        ReadI16 _ endian _ ->
+            emitSimpleRead "bf.read.i16" (Just endian) I64 state
 
-        ReadU32 _ endian placeholderVar ->
-            emitSimpleRead 4 "bf.read.u32" (Just endian) I64 placeholderVar state
+        ReadU32 _ endian _ ->
+            emitSimpleRead "bf.read.u32" (Just endian) I64 state
 
-        ReadI32 _ endian placeholderVar ->
-            emitSimpleRead 4 "bf.read.i32" (Just endian) I64 placeholderVar state
+        ReadI32 _ endian _ ->
+            emitSimpleRead "bf.read.i32" (Just endian) I64 state
 
-        ReadF32 _ endian placeholderVar ->
-            emitSimpleRead 4 "bf.read.f32" (Just endian) F64 placeholderVar state
+        ReadF32 _ endian _ ->
+            emitSimpleRead "bf.read.f32" (Just endian) F64 state
 
-        ReadF64 _ endian placeholderVar ->
-            emitSimpleRead 8 "bf.read.f64" (Just endian) F64 placeholderVar state
+        ReadF64 _ endian _ ->
+            emitSimpleRead "bf.read.f64" (Just endian) F64 state
 
         _ ->
             -- Unsupported op - return unit with unchanged cursor

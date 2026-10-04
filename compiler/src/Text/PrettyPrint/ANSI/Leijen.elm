@@ -1,5 +1,5 @@
 module Text.PrettyPrint.ANSI.Leijen exposing
-    ( Doc, SimpleDoc(..), Style, Color(..)
+    ( Doc, SimpleDoc(..), Style, Color
     , text, empty
     , append, plus, a
     , align, indent, hang, fill
@@ -151,8 +151,8 @@ styled, so a reset still comes before the next string without a style, although
 it set nothing; `plain` gives every string such a style.
 
 -}
-renderPretty : Float -> Int -> Doc -> SimpleDoc
-renderPretty _ w doc =
+renderPretty : Int -> Doc -> SimpleDoc
+renderPretty w doc =
     PR.pretty w
         { init = { styled = False, newline = False, list = [] }
         , tagged =

@@ -75,8 +75,8 @@ uint64\_t (eco.value) and returns uint64\_t should be marked AllBoxed.
 When in doubt, use ElmDerived (safe default — preserves current behavior).
 
 -}
-kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
-kernelBackendAbiPolicy _ _ =
+kernelBackendAbiPolicy : KernelBackendAbiPolicy
+kernelBackendAbiPolicy =
     -- Phase F step 3 + step 5: every kernel now derives its ABI from the
     -- call-site monomorphized type via `monoTypeToAbi`. Kernels with no
     -- primitive-capable parameters (List.fromArray/toArray/map2-5/
@@ -150,7 +150,7 @@ deriveKernelInstanceAbi key =
 
         policy : KernelBackendAbiPolicy
         policy =
-            kernelBackendAbiPolicy key.home key.name
+            kernelBackendAbiPolicy
 
         ( abiArgTypes, abiResultType ) =
             case policy of

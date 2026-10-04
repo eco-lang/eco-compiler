@@ -75,7 +75,6 @@ compiler/src/Common/Format/Cheapskate,Types.elm
 compiler/src/Common/Format/Cheapskate,Util.elm
 compiler/src/Common,Format.elm
 compiler/src/Common/Format,ImportInfo.elm
-compiler/src/Common/Format,KnownContents.elm
 compiler/src/Common/Format/Render,Box.elm
 compiler/src/Common/Format/Render,ElmStructure.elm
 compiler/src/Common/Format/Render,Markdown.elm
@@ -233,7 +232,6 @@ compiler/src/Compiler/Type,Solve.elm
 compiler/src/Compiler/Type,Type.elm
 compiler/src/Compiler/Type,Unify.elm
 compiler/src/Compiler/Type,UnionFind.elm
-compiler/src/Control/Monad/State,Strict.elm
 compiler/src/Control/Monad/State/TypeCheck,Strict.elm
 compiler/src/Data,IORef.elm
 compiler/src/Data,Map.elm
@@ -247,7 +245,6 @@ compiler/src,Prelude.elm
 compiler/src/System/Console,Ansi.elm
 compiler/src/System,Exit.elm
 compiler/src/System,IO.elm
-compiler/src/System,Process.elm
 compiler/src/System/TypeCheck,IO.elm
 compiler/src/Terminal,Bump.elm
 compiler/src/Terminal,Diff.elm
@@ -257,13 +254,11 @@ compiler/src/Terminal,Install.elm
 compiler/src/Terminal,Main.elm
 compiler/src/Terminal,Make.elm
 compiler/src/Terminal,Publish.elm
-compiler/src/Terminal,Repl.elm
 compiler/src/Terminal/Terminal,Chomp.elm
 compiler/src/Terminal,Terminal.elm
 compiler/src/Terminal/Terminal,Error.elm
 compiler/src/Terminal/Terminal,Helpers.elm
 compiler/src/Terminal/Terminal,Internal.elm
-compiler/src/Terminal,Test.elm
 compiler/src/Terminal,Uninstall.elm
 compiler/src/Text/PrettyPrint/ANSI,Leijen.elm
 compiler/src/Utils/Bytes,Decode.elm

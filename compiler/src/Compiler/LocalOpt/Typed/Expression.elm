@@ -236,7 +236,7 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
                             firstJustList targetName exprVars rest
 
         Can.Record fields ->
-            firstJustList targetName exprVars (Data.Map.values A.compareLocated fields)
+            firstJustList targetName exprVars (Data.Map.values fields)
 
         Can.Update recordExpr fieldUpdates ->
             case findVarLocalTvar targetName exprVars recordExpr of
@@ -246,7 +246,7 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
                 Nothing ->
                     firstJustList targetName
                         exprVars
-                        (List.map (\(Can.FieldUpdate _ e) -> e) (Data.Map.values A.compareLocated fieldUpdates))
+                        (List.map (\(Can.FieldUpdate _ e) -> e) (Data.Map.values fieldUpdates))
 
         -- Control flow
         Can.If branches final ->
@@ -396,7 +396,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             else
                 Names.lookupLocalType name
                     |> Names.map (\localType -> TOpt.TrackedVarLocal region name { tipe = localType, tvar = tvar })
-                    |> catchMissing (Names.pure (TOpt.TrackedVarLocal region name { tipe = tipe, tvar = tvar }))
+                    |> catchMissing
 
         Can.VarTopLevel varHome name ->
             let
@@ -749,7 +749,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                         |> Names.map (\optExpr -> ( locName, optExpr ))
 
                 fieldUpdateList =
-                    Data.Map.toList A.compareLocated fieldUpdates
+                    Data.Map.toList fieldUpdates
             in
             optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars recordExpr)
                 |> Names.andThen
@@ -761,7 +761,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                                         optUpdatesDict =
                                             Data.Map.fromList A.toValue optUpdates
                                     in
-                                    Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue fieldUpdates)
+                                    Names.registerFieldDict (Utils.dictMapKeys A.toValue fieldUpdates)
                                         (TOpt.Update region optRecord optUpdatesDict { tipe = tipe, tvar = tvar })
                                 )
                     )
@@ -775,7 +775,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
 
                 fieldList : List ( A.Located Name, Can.Expr )
                 fieldList =
-                    Data.Map.toList A.compareLocated fields
+                    Data.Map.toList fields
             in
             Names.traverse optimizeField fieldList
                 |> Names.andThen
@@ -784,7 +784,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                             optFieldsDict =
                                 Data.Map.fromList A.toValue optFields
                         in
-                        Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue fields) (TOpt.TrackedRecord region optFieldsDict { tipe = tipe, tvar = tvar })
+                        Names.registerFieldDict (Utils.dictMapKeys A.toValue fields) (TOpt.TrackedRecord region optFieldsDict { tipe = tipe, tvar = tvar })
                     )
 
         Can.Unit ->
@@ -810,13 +810,13 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                     )
 
         Can.Shader src (Shader.Types attributes uniforms _) ->
-            Names.pure (TOpt.Shader src (EverySet.fromList identity (Data.Map.keys compare attributes)) (EverySet.fromList identity (Data.Map.keys compare uniforms)) { tipe = tipe, tvar = tvar })
+            Names.pure (TOpt.Shader src (EverySet.fromList identity (Data.Map.keys attributes)) (EverySet.fromList identity (Data.Map.keys uniforms)) { tipe = tipe, tvar = tvar })
 
 
 {-| Catch a missing local type error and use a fallback.
 -}
-catchMissing : Names.Tracker a -> Names.Tracker a -> Names.Tracker a
-catchMissing _ tracker =
+catchMissing : Names.Tracker a -> Names.Tracker a
+catchMissing tracker =
     -- In a proper implementation, we'd catch the error
     -- For now, just use the tracker
     tracker
@@ -1431,8 +1431,8 @@ lookupPatternVar exprVars patId =
 
 {-| Build a Meta record for a destructor, combining type and optional type variable.
 -}
-makeDestructorMeta : ExprTypes -> ExprVars -> Int -> Can.Type Name -> TOpt.Meta Name
-makeDestructorMeta _ exprVars patId tipe =
+makeDestructorMeta : ExprVars -> Int -> Can.Type Name -> TOpt.Meta Name
+makeDestructorMeta exprVars patId tipe =
     { tipe = tipe, tvar = lookupPatternVar exprVars patId }
 
 
@@ -1536,7 +1536,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                         Nothing ->
                             lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PVar"
             in
-            Names.pure (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars effectivePatId varType) :: revDs)
+            Names.pure (TOpt.Destructor name path (makeDestructorMeta exprVars effectivePatId varType) :: revDs)
 
         Can.PRecord fields ->
             let
@@ -1568,7 +1568,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                 aliasType =
                     lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PAlias"
             in
-            (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars effectivePatId aliasType) :: revDs) |> destructHelp exprTypes exprVars (TOpt.Root name) subPattern
+            (TOpt.Destructor name path (makeDestructorMeta exprVars effectivePatId aliasType) :: revDs) |> destructHelp exprTypes exprVars (TOpt.Root name) subPattern
 
         Can.PUnit ->
             Names.pure revDs
@@ -1594,7 +1594,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                     genType =
                                         lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PTuple3 gen"
                                 in
-                                destructHelp exprTypes exprVars (TOpt.Index Index.first TOpt.HintTuple3 newRoot) a (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars effectivePatId genType) :: revDs)
+                                destructHelp exprTypes exprVars (TOpt.Index Index.first TOpt.HintTuple3 newRoot) a (TOpt.Destructor name path (makeDestructorMeta exprVars effectivePatId genType) :: revDs)
                                     |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.second TOpt.HintTuple3 newRoot) b)
                                     |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.third TOpt.HintTuple3 newRoot) c)
                             )
@@ -1677,7 +1677,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                                 lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PCtor gen"
                                         in
                                         List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes exprVars name (TOpt.Root genName) revDs_ arg))
-                                            (Names.pure (TOpt.Destructor genName path (makeDestructorMeta exprTypes exprVars effectivePatId genType) :: revDs))
+                                            (Names.pure (TOpt.Destructor genName path (makeDestructorMeta exprVars effectivePatId genType) :: revDs))
                                             args
                                     )
 
@@ -1703,7 +1703,7 @@ destructTwo exprTypes exprVars parentPatId hint path a b revDs =
                             genType =
                                 lookupPatternType exprTypes parentPatId "Expression.destructTwo: generated"
                         in
-                        destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.first hint newRoot) a (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars parentPatId genType) :: revDs)
+                        destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.first hint newRoot) a (TOpt.Destructor name path (makeDestructorMeta exprVars parentPatId genType) :: revDs)
                             |> Names.andThen (destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.second hint newRoot) b)
                     )
 

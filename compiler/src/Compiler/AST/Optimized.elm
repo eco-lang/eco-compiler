@@ -286,7 +286,7 @@ toKernelGlobal shortName =
 globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields) =
     Bytes.Encode.sequence
-        [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
+        [ BE.assocListDict globalEncoder nodeEncoder nodes
         , BE.stdDict BE.string BE.int fields
         ]
 
@@ -306,7 +306,7 @@ localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
 localGraphEncoder (LocalGraph main nodes fields) =
     Bytes.Encode.sequence
         [ BE.maybe mainEncoder main
-        , BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
+        , BE.assocListDict globalEncoder nodeEncoder nodes
         , BE.stdDict BE.string BE.int fields
         ]
 
@@ -376,7 +376,7 @@ nodeEncoder node =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , exprEncoder expr
-                , BE.everySet compareGlobal globalEncoder deps
+                , BE.everySet globalEncoder deps
                 ]
 
         TrackedDefine region expr deps ->
@@ -384,7 +384,7 @@ nodeEncoder node =
                 [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , exprEncoder expr
-                , BE.everySet compareGlobal globalEncoder deps
+                , BE.everySet globalEncoder deps
                 ]
 
         Ctor index arity ->
@@ -415,7 +415,7 @@ nodeEncoder node =
                 , BE.list BE.string names
                 , BE.list (BE.jsonPair BE.string exprEncoder) values
                 , BE.list defEncoder functions
-                , BE.everySet compareGlobal globalEncoder deps
+                , BE.everySet globalEncoder deps
                 ]
 
         Manager effectsType ->
@@ -428,21 +428,21 @@ nodeEncoder node =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 9
                 , BE.list K.chunkEncoder chunks
-                , BE.everySet compareGlobal globalEncoder deps
+                , BE.everySet globalEncoder deps
                 ]
 
         PortIncoming decoder deps ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 10
                 , exprEncoder decoder
-                , BE.everySet compareGlobal globalEncoder deps
+                , BE.everySet globalEncoder deps
                 ]
 
         PortOutgoing encoder deps ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 11
                 , exprEncoder encoder
-                , BE.everySet compareGlobal globalEncoder deps
+                , BE.everySet globalEncoder deps
                 ]
 
 
@@ -693,7 +693,7 @@ exprEncoder expr =
                 [ Bytes.Encode.unsignedInt8 24
                 , A.regionEncoder region
                 , exprEncoder record
-                , BE.assocListDict A.compareLocated (A.locatedEncoder BE.string) exprEncoder fields
+                , BE.assocListDict (A.locatedEncoder BE.string) exprEncoder fields
                 ]
 
         Record value ->
@@ -706,7 +706,7 @@ exprEncoder expr =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 26
                 , A.regionEncoder region
-                , BE.assocListDict A.compareLocated (A.locatedEncoder BE.string) exprEncoder value
+                , BE.assocListDict (A.locatedEncoder BE.string) exprEncoder value
                 ]
 
         Unit ->
@@ -725,8 +725,8 @@ exprEncoder expr =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 29
                 , Shader.sourceEncoder src
-                , BE.everySet compare BE.string attributes
-                , BE.everySet compare BE.string uniforms
+                , BE.everySet BE.string attributes
+                , BE.everySet BE.string uniforms
                 ]
 
 

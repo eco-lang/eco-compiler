@@ -1,5 +1,5 @@
 module Compiler.Generate.MLIR.LogicalTypes exposing
-    ( LogicalTypeDesc(..), AggKind(..)
+    ( LogicalTypeDesc, AggKind
     , addLogicalTypesAttr, addLogicalTypesAttrUnknown
     )
 

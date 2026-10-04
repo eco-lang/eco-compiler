@@ -1336,13 +1336,13 @@ expr_Encoder expr_ =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 23
                 , exprEncoder record
-                , BE.assocListDict A.compareLocated (A.toValue >> BE.string) fieldUpdateEncoder updates
+                , BE.assocListDict (A.toValue >> BE.string) fieldUpdateEncoder updates
                 ]
 
         Record fields ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 24
-                , BE.assocListDict A.compareLocated (A.toValue >> BE.string) exprEncoder fields
+                , BE.assocListDict (A.toValue >> BE.string) exprEncoder fields
                 ]
 
         Unit ->

@@ -1,6 +1,6 @@
 module Compiler.Reporting.Error.Json exposing
     ( toReport
-    , Context(..), FailureToReport(..), Reason(..)
+    , Context, FailureToReport(..), Reason(..)
     )
 
 {-| Error reporting for JSON parsing and decoding failures.

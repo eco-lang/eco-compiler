@@ -267,9 +267,9 @@ one byte `Type` describes. There is no string-table variant.
 typesEncoder : Types -> Bytes.Encode.Encoder
 typesEncoder (Types attribute uniform varying) =
     Bytes.Encode.sequence
-        [ BE.assocListDict compare BE.string typeEncoder attribute
-        , BE.assocListDict compare BE.string typeEncoder uniform
-        , BE.assocListDict compare BE.string typeEncoder varying
+        [ BE.assocListDict BE.string typeEncoder attribute
+        , BE.assocListDict BE.string typeEncoder uniform
+        , BE.assocListDict BE.string typeEncoder varying
         ]
 
 

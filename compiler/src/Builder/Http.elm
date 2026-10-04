@@ -221,8 +221,8 @@ shaToChars =
 
 {-| Downloads a package archive from a URL, returning the SHA hash and archive contents.
 -}
-getArchive : Manager -> String -> (Error -> e) -> e -> (( Sha, Zip.Archive ) -> Task Never (Result e a)) -> Task Never (Result e a)
-getArchive _ url _ defaultError onSuccess =
+getArchive : String -> e -> (( Sha, Zip.Archive ) -> Task Never (Result e a)) -> Task Never (Result e a)
+getArchive url defaultError onSuccess =
     Eco.Http.getArchive url
         |> Task.andThen
             (\result ->
@@ -261,11 +261,11 @@ errorEncoder error =
                 , Utils.httpExceptionContentEncoder httpExceptionContent
                 ]
 
-        BadMystery url someException ->
+        BadMystery url _ ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
                 , BE.string url
-                , Utils.someExceptionEncoder someException
+                , Utils.someExceptionEncoder
                 ]
 
 

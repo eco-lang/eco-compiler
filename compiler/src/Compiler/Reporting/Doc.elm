@@ -3,7 +3,7 @@ module Compiler.Reporting.Doc exposing
     , plus, append, a
     , align, cat, empty, fill, fillSep, hang
     , hcat, hsep, indent, sep, vcat
-    , Color(..)
+    , Color
     , red, cyan, green, blue, black, yellow
     , dullred, dullcyan, dullyellow
     , fromChars, fromName, fromVersion, fromPackage, fromInt
@@ -163,7 +163,7 @@ describes.
 -}
 toAnsi : Handle -> Doc -> Task Never ()
 toAnsi handle doc =
-    P.displayIO handle (P.renderPretty 1 80 doc)
+    P.displayIO handle (P.renderPretty 80 doc)
 
 
 {-| Returns `doc` as text laid out for a page 80 columns wide, with every
@@ -176,7 +176,7 @@ reset sequence still comes before each line break that follows text, as
 -}
 toString : Doc -> String
 toString doc =
-    P.displayS (P.renderPretty 1 80 (P.plain doc)) ""
+    P.displayS (P.renderPretty 80 (P.plain doc)) ""
 
 
 {-| Returns `doc` as text with every style switched off, laid out for a page
@@ -195,7 +195,7 @@ toLine doc =
         maxBound =
             2147483647
     in
-    P.displayS (P.renderPretty 1 (maxBound // 2) (P.plain doc)) ""
+    P.displayS (P.renderPretty (maxBound // 2) (P.plain doc)) ""
 
 
 
@@ -512,7 +512,7 @@ styled text, the array begins with the empty string. No function in
 -}
 encode : Doc -> E.Value
 encode doc =
-    E.array (toJsonHelp noStyle [] (P.renderPretty 1 80 doc))
+    E.array (toJsonHelp noStyle [] (P.renderPretty 80 doc))
 
 
 {-| The style in effect at a point in the rendered text, as `encode` records it:

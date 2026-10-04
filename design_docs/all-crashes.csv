@@ -105,9 +105,6 @@ Common/Format/Box.elm,180,stack1: empty structure
 Common/Format/Render/Box.elm,1042,Union type without constructors
 Common/Format/Render/Box.elm,1712,List can't be empty
 Common/Format/Render/ElmStructure.elm,129,forceableSpaceSepOrStack1 with empty list
-Terminal/Repl.elm,749,Not implemented
-Terminal/Test.elm,352,Not implemented
-Terminal/Test.elm,392,addKernelTestChecking: no submatches found
 API/Make.elm,89,No main! - missing main function
 API/Make.elm,96,TODO - not yet implemented
 Data/Vector.elm,43,Data.Vector.unsafeLast: invalid value

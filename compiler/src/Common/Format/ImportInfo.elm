@@ -1,5 +1,5 @@
 module Common.Format.ImportInfo exposing
-    ( ImportInfo(..)
+    ( ImportInfo
     , fromModule
     )
 
@@ -29,12 +29,6 @@ The import resolution system supports:
 
 -}
 
-import Common.Format.KnownContents exposing (KnownContents)
-import Compiler.AST.Source as Src
-import Compiler.Parse.Module as M
-import Compiler.Reporting.Annotation as A
-import Dict exposing (Dict)
-
 
 {-| Complete import information for a module, tracking all symbols and their sources.
 Contains exposed values, module aliases, direct imports, ambiguous names, and unresolved imports.
@@ -45,25 +39,13 @@ type ImportInfo
 
 {-| Build import information from a parsed module, using known contents to resolve exposing-all imports.
 -}
-fromModule : KnownContents -> M.Module -> ImportInfo
-fromModule knownContents modu =
-    let
-        ( _, imports ) =
-            modu.imports
-    in
-    fromImports knownContents (importsToDict (List.map Src.c1Value imports))
-
-
-{-| Convert a list of imports to a dictionary keyed by module name.
--}
-importsToDict : List Src.Import -> Dict String Src.Import
-importsToDict =
-    List.map (\((Src.Import ( _, A.At _ name ) _ _) as import_) -> ( name, import_ ))
-        >> Dict.fromList
+fromModule : ImportInfo
+fromModule =
+    fromImports
 
 
 {-| Build import information from a dictionary of imports, resolving symbols to their source modules.
 -}
-fromImports : KnownContents -> Dict String Src.Import -> ImportInfo
-fromImports _ _ =
+fromImports : ImportInfo
+fromImports =
     ImportInfo

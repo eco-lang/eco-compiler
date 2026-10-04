@@ -1690,8 +1690,8 @@ specializeNode ctorName node requestedMonoType state =
             in
             ( Mono.MonoManagerLeaf homeModuleName requestedMonoType, state )
 
-        TOpt.Cycle names valueDefs funcDefs _ ->
-            specializeCycle names valueDefs funcDefs requestedMonoType state
+        TOpt.Cycle _ valueDefs funcDefs _ ->
+            specializeCycle valueDefs funcDefs requestedMonoType state
 
         TOpt.PortIncoming expr _ meta ->
             case requestedMonoType of
@@ -1912,13 +1912,12 @@ recordPortRegistration reg state =
 {-| Specialize a mutually recursive cycle, handling both value and function definitions.
 -}
 specializeCycle :
-    List Name
-    -> List ( Name, TOpt.Expr MVarId )
+    List ( Name, TOpt.Expr MVarId )
     -> List (TOpt.Def MVarId)
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeCycle _ valueDefs funcDefs requestedMonoType state =
+specializeCycle valueDefs funcDefs requestedMonoType state =
     case ( List.isEmpty funcDefs, state.ctx.currentGlobal ) of
         ( True, Just (Mono.Global requestedCanonical requestedName) ) ->
             -- Pure-value SCC: specializeFunctionCycle with an empty funcDefs reduces
@@ -3931,7 +3930,7 @@ specializeExpr expr subst state =
                             Nothing
 
                 ( monoUpdates, state2 ) =
-                    Data.Map.foldl A.compareLocated
+                    Data.Map.foldl
                         (\locName updateExpr ( acc, st ) ->
                             let
                                 fieldName =
@@ -4013,7 +4012,7 @@ specializeExpr expr subst state =
                             Dict.empty
 
                 ( monoFields, stateAfter ) =
-                    Data.Map.foldl A.compareLocated
+                    Data.Map.foldl
                         (\locName fieldExpr accSt ->
                             specializeRecordField subst monoFieldTypes (A.toValue locName) fieldExpr accSt
                         )
@@ -5451,7 +5450,7 @@ deriveKernelAbiType intern mvarEnv kernelId canFuncType callSubst =
 
         mode : KernelAbi.KernelAbiMode
         mode =
-            KernelAbi.deriveKernelAbiMode kernelId canFuncType mvarEnv
+            KernelAbi.deriveKernelAbiMode kernelId canFuncType
     in
     case mode of
         KernelAbi.UseSubstitution ->

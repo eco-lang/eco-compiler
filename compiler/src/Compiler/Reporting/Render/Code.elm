@@ -41,7 +41,6 @@ gutter of each of its lines. There is no syntax highlighting.
 
 -}
 
-import Char
 import Compiler.Parse.Primitives exposing (Col, Row)
 import Compiler.Parse.Symbol exposing (binopCharSet)
 import Compiler.Parse.Variable as Var

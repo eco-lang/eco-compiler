@@ -81,7 +81,7 @@ generate sourceMaps leadingLines mode (Opt.GlobalGraph graph _) mains =
     let
         state : State
         state =
-            DataMap.foldr ModuleName.compareCanonical (addMain mode graph) (emptyState (firstGeneratedLineNumber mode)) mains
+            DataMap.foldr (addMain mode graph) (emptyState (firstGeneratedLineNumber mode)) mains
     in
     prelude mode
         ++ stateToBuilder state
@@ -388,7 +388,7 @@ addGlobalHelp mode graph ((Opt.Global home _) as global) state =
                 sortedDeps : List Opt.Global
                 sortedDeps =
                     -- This is required given that it looks like `Data.Set.union` sorts its elements
-                    List.sortWith Opt.compareGlobal (EverySet.toList Opt.compareGlobal deps)
+                    List.sortWith Opt.compareGlobal (EverySet.toList deps)
             in
             List.foldl (flip (addGlobal mode graph)) someState sortedDeps
     in
@@ -763,7 +763,7 @@ toMainExports mode mains =
 
         exports : String
         exports =
-            generateExports mode (DataMap.foldr ModuleName.compareCanonical addToTrie emptyTrie mains)
+            generateExports mode (DataMap.foldr addToTrie emptyTrie mains)
     in
     export ++ "(" ++ exports ++ ");"
 

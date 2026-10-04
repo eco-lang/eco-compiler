@@ -219,7 +219,7 @@ globalTypeEnvEncoder env =
     in
     Bytes.Encode.sequence
         [ StringTable.tableEncoder st
-        , BE.assocListDict ModuleName.compareCanonical
+        , BE.assocListDict
             (ModuleName.canonicalEncoderS st)
             (moduleTypeEnvBodyEncoderS st)
             env
@@ -298,7 +298,7 @@ its own rule decides.
 -}
 collectStringsFromGlobalTypeEnv : GlobalTypeEnv -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalTypeEnv env acc =
-    Data.Map.foldl ModuleName.compareCanonical
+    Data.Map.foldl
         (\home modEnv a ->
             a
                 |> ModuleName.collectStringsFromCanonical home

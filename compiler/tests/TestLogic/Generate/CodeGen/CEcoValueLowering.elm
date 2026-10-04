@@ -22,10 +22,9 @@ passed to `checkCEcoValueLowering`, but it is not read.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -51,16 +50,16 @@ expectCEcoValueLowering srcModule =
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 
-        Ok { mlirModule, monoGraph } ->
-            violationsToExpectation (checkCEcoValueLowering mlirModule monoGraph)
+        Ok { mlirModule } ->
+            violationsToExpectation (checkCEcoValueLowering mlirModule)
 
 
 {-| Returns the violations found in the operands of the `Debug` calls in
 `mlirModule`, which is always none, because `checkPolymorphicOperands` reports
 none. The `MonoGraph` argument is not read.
 -}
-checkCEcoValueLowering : MlirModule -> Mono.MonoGraph -> List Violation
-checkCEcoValueLowering mlirModule _ =
+checkCEcoValueLowering : MlirModule -> List Violation
+checkCEcoValueLowering mlirModule =
     let
         callOps =
             findOpsNamed "eco.call" mlirModule
@@ -100,12 +99,12 @@ checkDebugCallOperands op =
     case getStringAttr "callee" op of
         Just callee ->
             case extractOperandTypes op of
-                Just operandTypes ->
+                Just _ ->
                     if String.contains "log" callee then
-                        checkPolymorphicOperands op callee (List.drop 1 operandTypes)
+                        checkPolymorphicOperands
 
                     else if String.contains "toString" callee then
-                        checkPolymorphicOperands op callee operandTypes
+                        checkPolymorphicOperands
 
                     else
                         []
@@ -120,6 +119,6 @@ checkDebugCallOperands op =
 {-| Returns no violations, whatever the call, its callee name and the operand
 types it is given. None of its arguments is examined.
 -}
-checkPolymorphicOperands : MlirOp -> String -> List MlirType -> List Violation
-checkPolymorphicOperands _ _ _ =
+checkPolymorphicOperands : List Violation
+checkPolymorphicOperands =
     []

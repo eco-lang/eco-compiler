@@ -164,7 +164,7 @@ checkTailDefTypes : String -> TOpt.LocalGraph Name -> Dict Name.Name (Can.Annota
 checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
     let
         maybeTailDef =
-            Data.Map.toList TOpt.compareGlobal data.nodes
+            Data.Map.toList data.nodes
                 |> List.filterMap
                     (\( _, node ) ->
                         case node of

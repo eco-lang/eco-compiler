@@ -109,7 +109,6 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.PreMono.AliasForward as AliasForward
 import Compiler.Monomorphize.EntryPrep as EntryPrep
-import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set as EverySet
 import Dict as CoreDict
@@ -577,7 +576,7 @@ nodes have that name, it returns the last in the graph's key order.
 -}
 globalNamed : TOpt.GlobalGraph TypeIds.MVarId -> Name -> Maybe TOpt.Global
 globalNamed (TOpt.GlobalGraph nodes _ _ _ _) name =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\((TOpt.Global _ n) as g) _ acc ->
             if n == name then
                 Just g
@@ -595,7 +594,7 @@ returns the last in the graph's key order.
 -}
 nodeBody : TOpt.GlobalGraph TypeIds.MVarId -> Name -> Maybe (TOpt.Expr TypeIds.MVarId)
 nodeBody (TOpt.GlobalGraph nodes _ _ _ _) name =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\(TOpt.Global _ n) node acc ->
             if n == name then
                 case node of
@@ -621,7 +620,7 @@ returns the last in the graph's key order.
 -}
 nodeDeps : TOpt.GlobalGraph TypeIds.MVarId -> Name -> Maybe (EverySet.EverySet String TOpt.Global)
 nodeDeps (TOpt.GlobalGraph nodes _ _ _ _) name =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\(TOpt.Global _ n) node acc ->
             if n == name then
                 case node of
@@ -655,7 +654,7 @@ its values, and its functions whether `Def` or `TailDef`.
 -}
 cycleBodies : TOpt.GlobalGraph TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 cycleBodies (TOpt.GlobalGraph nodes _ _ _ _) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\_ node acc ->
             case node of
                 TOpt.Cycle _ values defs _ ->
@@ -787,13 +786,13 @@ children expr =
             [ inner ]
 
         TOpt.Update _ record fields _ ->
-            record :: Data.Map.values A.compareLocated fields
+            record :: Data.Map.values fields
 
         TOpt.Record fields _ ->
             CoreDict.values fields
 
         TOpt.TrackedRecord _ fields _ ->
-            Data.Map.values A.compareLocated fields
+            Data.Map.values fields
 
         TOpt.Tuple _ a b rest _ ->
             a :: b :: rest

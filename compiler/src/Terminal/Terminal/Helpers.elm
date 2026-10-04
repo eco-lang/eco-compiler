@@ -1,6 +1,6 @@
 module Terminal.Terminal.Helpers exposing
     ( version, parseVersion
-    , elmFile, parseElmFile, filePath, parseFilePath
+    , elmFile, parseElmFile
     , package, parsePackage
     )
 
@@ -18,7 +18,7 @@ suggestions, and example generation for user feedback.
 
 # File Path Parsing
 
-@docs elmFile, parseElmFile, filePath, parseFilePath
+@docs elmFile, parseElmFile
 
 
 # Package Parsing
@@ -148,39 +148,6 @@ exampleElmFiles _ =
 
 
 -- ====== FILE PATH ======
-
-
-{-| Parser for general file paths.
-
-Accepts any string as a file path without validation.
-
--}
-filePath : Parser
-filePath =
-    Parser
-        { singular = "file path"
-        , plural = "file paths"
-        , suggest = \_ -> Task.succeed []
-        , examples = exampleFilePaths
-        }
-
-
-{-| Parse a string as a file path.
-
-Always succeeds, accepting any string as a valid file path.
-
--}
-parseFilePath : String -> Maybe FilePath
-parseFilePath =
-    Just
-
-
-exampleFilePaths : String -> Task Never (List String)
-exampleFilePaths _ =
-    Task.succeed [ "Main.elm", "src" ]
-
-
-
 -- ====== PACKAGE ======
 
 

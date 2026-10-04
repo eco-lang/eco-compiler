@@ -263,21 +263,21 @@ optimize cycle (A.At region exprInfo) =
                     )
 
         Can.Update record updates ->
-            Names.mapTraverse A.toValue A.compareLocated (optimizeUpdate cycle) updates
+            Names.mapTraverse A.toValue (optimizeUpdate cycle) updates
                 |> Names.andThen
                     (\optUpdates ->
                         optimize cycle record
                             |> Names.andThen
                                 (\optRecord ->
-                                    Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue updates) (Opt.Update region optRecord optUpdates)
+                                    Names.registerFieldDict (Utils.dictMapKeys A.toValue updates) (Opt.Update region optRecord optUpdates)
                                 )
                     )
 
         Can.Record fields ->
-            Names.mapTraverse A.toValue A.compareLocated (optimize cycle) fields
+            Names.mapTraverse A.toValue (optimize cycle) fields
                 |> Names.andThen
                     (\optFields ->
-                        Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue fields) (Opt.TrackedRecord region optFields)
+                        Names.registerFieldDict (Utils.dictMapKeys A.toValue fields) (Opt.TrackedRecord region optFields)
                     )
 
         Can.Unit ->
@@ -296,7 +296,7 @@ optimize cycle (A.At region exprInfo) =
                     )
 
         Can.Shader src (Shader.Types attributes uniforms _) ->
-            Names.pure (Opt.Shader src (EverySet.fromList identity (Data.Map.keys compare attributes)) (EverySet.fromList identity (Data.Map.keys compare uniforms)))
+            Names.pure (Opt.Shader src (EverySet.fromList identity (Data.Map.keys attributes)) (EverySet.fromList identity (Data.Map.keys uniforms)))
 
 
 

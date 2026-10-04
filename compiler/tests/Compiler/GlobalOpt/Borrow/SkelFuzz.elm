@@ -1,5 +1,5 @@
 module Compiler.GlobalOpt.Borrow.SkelFuzz exposing
-    ( Skel(..)
+    ( Skel
     , allProbes
     , allSkels
     , executions

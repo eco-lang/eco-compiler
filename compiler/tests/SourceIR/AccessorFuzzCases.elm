@@ -223,10 +223,10 @@ three levels down.
 chainedAccessTests : (Src.Module -> Expectation) -> String -> Test
 chainedAccessTests expectFn condStr =
     Test.describe ("Chained field access " ++ condStr)
-        [ Test.fuzz (twoLevelAccessFuzzer (emptyScope 2))
+        [ Test.fuzz twoLevelAccessFuzzer
             ("Two-level chained access " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
-        , Test.fuzz (threeLevelAccessFuzzer (emptyScope 2))
+        , Test.fuzz threeLevelAccessFuzzer
             ("Three-level chained access " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
         ]
@@ -236,8 +236,8 @@ chainedAccessTests expectFn condStr =
 drawn independently from `fieldNameFuzzer` and so can be the same name. `scope`
 is not used.
 -}
-twoLevelAccessFuzzer : Scope -> Fuzzer Src.Expr
-twoLevelAccessFuzzer _ =
+twoLevelAccessFuzzer : Fuzzer Src.Expr
+twoLevelAccessFuzzer =
     Fuzz.map2
         (\outerField innerField ->
             let
@@ -259,8 +259,8 @@ twoLevelAccessFuzzer _ =
 and `c` are drawn independently from `fieldNameFuzzer` and so can repeat.
 `scope` is not used.
 -}
-threeLevelAccessFuzzer : Scope -> Fuzzer Src.Expr
-threeLevelAccessFuzzer _ =
+threeLevelAccessFuzzer : Fuzzer Src.Expr
+threeLevelAccessFuzzer =
     Fuzz.map3
         (\fieldA fieldB fieldC ->
             let
@@ -296,10 +296,10 @@ threeLevelAccessFuzzer _ =
 multiFieldRecordTests : (Src.Module -> Expectation) -> String -> Test
 multiFieldRecordTests expectFn condStr =
     Test.describe ("Multi-field record access " ++ condStr)
-        [ Test.fuzz (manyFieldAccessFuzzer (emptyScope 2))
+        [ Test.fuzz manyFieldAccessFuzzer
             ("Access on record with many fields " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
-        , Test.fuzz (multipleAccessorsFuzzer (emptyScope 2))
+        , Test.fuzz multipleAccessorsFuzzer
             ("Multiple accessors on same record " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
         ]
@@ -310,8 +310,8 @@ eight fields, named with the letters from `a` onwards and each holding its own
 position from 0, read at one field `x` chosen at random. Only the number of
 fields and the field read vary. `scope` is not used.
 -}
-manyFieldAccessFuzzer : Scope -> Fuzzer Src.Expr
-manyFieldAccessFuzzer _ =
+manyFieldAccessFuzzer : Fuzzer Src.Expr
+manyFieldAccessFuzzer =
     Fuzz.intRange 5 8
         |> Fuzz.andThen
             (\fieldCount ->
@@ -346,8 +346,8 @@ three field accesses on one `let`-bound record, reading an integer literal, a
 string and a `Bool`. The field names are fixed and distinct.
 It uses field access, not accessor functions. `scope` is not used.
 -}
-multipleAccessorsFuzzer : Scope -> Fuzzer Src.Expr
-multipleAccessorsFuzzer _ =
+multipleAccessorsFuzzer : Fuzzer Src.Expr
+multipleAccessorsFuzzer =
     let
         fieldA =
             "alpha"

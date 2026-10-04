@@ -377,9 +377,9 @@ function. Each result is filed under `toComparable` of its key, so
 `toComparable` should be the projection `dict` was built with.
 
 -}
-traverseMapWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> IO b) -> Dict comparable k a -> IO (Dict comparable k b)
-traverseMapWithKey toComparable keyComparison f dict s0 =
-    traverseMapGo toComparable f (Dict.toList keyComparison dict) Dict.empty s0
+traverseMapWithKey : (k -> comparable) -> (k -> a -> IO b) -> Dict comparable k a -> IO (Dict comparable k b)
+traverseMapWithKey toComparable f dict s0 =
+    traverseMapGo toComparable f (Dict.toList dict) Dict.empty s0
 
 
 {-| Runs `f` on each of `pairs` in list order, inserting each result into

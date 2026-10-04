@@ -1,9 +1,8 @@
 module Builder.Build exposing
     ( Artifacts(..), ArtifactsData, BResult, Module(..), Root(..)
-    , ReplArtifacts(..), ReplArtifactsData
     , CachedInterface(..), Dependencies
-    , DocsGoal(..), keepDocs, ignoreDocs, writeDocs
-    , fromExposed, fromPaths, fromPathsWith, CacheMode(..), fromRepl
+    , DocsGoal, keepDocs, ignoreDocs, writeDocs
+    , fromExposed, fromPaths, fromPathsWith, CacheMode(..)
     , getRootNames, cachedInterfaceDecoder
     )
 
@@ -12,17 +11,12 @@ module Builder.Build exposing
 This module implements the core build system that compiles Elm modules in parallel,
 tracks dependencies between modules, performs incremental compilation based on
 modification times and interface changes, and manages build artifacts. It handles
-both application and package builds, including REPL sessions.
+both application and package builds.
 
 
 # Build Results
 
 @docs Artifacts, ArtifactsData, BResult, Module, Root
-
-
-# REPL Artifacts
-
-@docs ReplArtifacts, ReplArtifactsData
 
 
 # Module Status
@@ -37,7 +31,7 @@ both application and package builds, including REPL sessions.
 
 # Build Entry Points
 
-@docs fromExposed, fromPaths, fromPathsWith, CacheMode, fromRepl
+@docs fromExposed, fromPaths, fromPathsWith, CacheMode
 
 
 # Utilities
@@ -79,7 +73,6 @@ import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Docs as EDocs
 import Compiler.Reporting.Error.Import as Import
 import Compiler.Reporting.Error.Syntax as Syntax
-import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map
 import Data.Set as EverySet
 import Dict exposing (Dict)
@@ -848,8 +841,8 @@ checkModule : Env -> Dependencies -> MVar ResultDict -> ModuleName.Raw -> Status
 checkModule ((Env envData) as env) foreigns resultsMVar name status =
     FEStats.withModuleStage envData.stats FEStats.Check name <|
         case status of
-            SCached ((Details.Local localData) as local) ->
-                checkCachedModule env envData.root envData.projectType resultsMVar name localData.path localData.time localData.deps localData.hasMain localData.lastChange localData.lastCompile local
+            SCached (Details.Local localData) ->
+                checkCachedModule env envData.root envData.projectType resultsMVar name localData.path localData.time localData.deps localData.hasMain localData.lastChange localData.lastCompile
 
             SChanged ((Details.Local localData) as local) source ((Src.Module srcData) as modul) docsNeed ->
                 checkChangedModule env envData.root resultsMVar name localData.path localData.time localData.deps localData.lastCompile local source srcData.imports modul docsNeed
@@ -884,12 +877,11 @@ checkCachedModule :
     -> Bool
     -> Details.BuildID
     -> Details.BuildID
-    -> Details.Local
     -> Task Never BResult
-checkCachedModule ((Env envData) as env) root projectType resultsMVar name path time deps hasMain lastChange lastCompile local =
+checkCachedModule ((Env envData) as env) root projectType resultsMVar name path time deps hasMain lastChange lastCompile =
     Utils.readMVar resultDictDecoder resultsMVar
         |> Task.andThen (\resultDict -> checkDeps root envData.maybeBuildDir resultDict deps lastCompile)
-        |> Task.andThen (handleCachedDepsStatus env root projectType name path time deps hasMain lastChange local)
+        |> Task.andThen (handleCachedDepsStatus env root projectType name path time deps hasMain lastChange)
 
 
 handleCachedDepsStatus :
@@ -902,10 +894,9 @@ handleCachedDepsStatus :
     -> List ModuleName.Raw
     -> Bool
     -> Details.BuildID
-    -> Details.Local
     -> DepsStatus
     -> Task Never BResult
-handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange _ depsStatus =
+handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange depsStatus =
     case depsStatus of
         DepsSame same cached ->
             -- A cached module is only reusable if the artifact for THIS backend
@@ -929,7 +920,7 @@ handleCachedDepsStatus ((Env envData) as env) root projectType name path time de
         DepsChange ifaces ->
             -- Dependencies changed, need to read source and recompile
             File.readUtf8 (Utils.fpCombine root path)
-                |> Task.andThen (recompileCachedModule env root projectType name path time deps ifaces)
+                |> Task.andThen (recompileCachedModule env projectType name path time deps ifaces)
 
         DepsBlock ->
             Task.succeed RBlocked
@@ -986,12 +977,11 @@ recompileIfInterfacesLoaded env root projectType name path time deps maybeIfaces
 
         Just ifaces ->
             File.readUtf8 (Utils.fpCombine root path)
-                |> Task.andThen (recompileCachedModule env root projectType name path time deps ifaces)
+                |> Task.andThen (recompileCachedModule env projectType name path time deps ifaces)
 
 
 recompileCachedModule :
     Env
-    -> FilePath
     -> Parse.ProjectType
     -> ModuleName.Raw
     -> FilePath
@@ -1000,7 +990,7 @@ recompileCachedModule :
     -> Dict ModuleName.Raw I.Interface
     -> String
     -> Task Never BResult
-recompileCachedModule env _ projectType name path time deps ifaces source =
+recompileCachedModule env projectType name path time deps ifaces source =
     case Parse.fromByteString projectType source of
         Err err ->
             Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
@@ -2026,180 +2016,6 @@ toDocs result =
 
         RKernelLocal _ ->
             Nothing
-
-
-
--------------------------------------------------------------------------------
------- NOW FOR SOME REPL STUFF -------------------------------------------------
---------------------------------------------------------------------------------
--- ====== FROM REPL ======
-
-
-{-| Data contained within REPL build artifacts.
--}
-type alias ReplArtifactsData =
-    { home : ModuleName.Canonical
-    , modules : List Module
-    , localizer : L.Localizer
-    , annotations : Dict Name.Name (Can.Annotation Name)
-    }
-
-
-{-| Build artifacts specific to REPL sessions, including type information for interactive evaluation.
--}
-type ReplArtifacts
-    = ReplArtifacts ReplArtifactsData
-
-
-{-| Compile Elm source code for evaluation in a REPL session.
-
-Parses the source, type checks it against available dependencies, and produces
-artifacts suitable for interactive evaluation.
-
--}
-fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
-fromRepl root details source =
-    makeEnv WriteCaches Reporting.ignorer root Nothing Nothing details False FEStats.disabled
-        |> Task.andThen
-            (\((Env envData) as env) ->
-                case Parse.fromByteString envData.projectType source of
-                    Err syntaxError ->
-                        Error.BadSyntax syntaxError |> Exit.ReplBadInput source |> Err |> Task.succeed
-
-                    Ok ((Src.Module srcData) as modul) ->
-                        let
-                            deps : List Name.Name
-                            deps =
-                                List.map Src.getImportName srcData.imports
-                        in
-                        crawlRepl root Nothing details env deps
-                            |> Task.andThen (compileRepl root Nothing details env source modul deps)
-            )
-
-
-{-| Context for REPL crawl and compile phases.
--}
-type alias ReplBuildContext =
-    { dmvar : MVar (Maybe Dependencies)
-    , statuses : Dict ModuleName.Raw Status
-    }
-
-
-{-| Crawl phase for REPL: discover module dependencies.
--}
-crawlRepl : FilePath -> Maybe String -> Details.Details -> Env -> List Name.Name -> Task Never ReplBuildContext
-crawlRepl root maybeBuildDir details env deps =
-    Details.loadInterfaces root maybeBuildDir details
-        |> Task.andThen
-            (\dmvar ->
-                Utils.newMVar statusDictEncoder Dict.empty
-                    |> Task.andThen
-                        (\mvar ->
-                            crawlDeps env mvar deps ()
-                                |> Task.andThen (\_ -> Utils.readMVar statusDictDecoder mvar)
-                                |> Task.andThen (Utils.dictTraverse (Utils.readMVar statusDecoder))
-                                |> Task.map (\statuses -> { dmvar = dmvar, statuses = statuses })
-                        )
-            )
-
-
-{-| Compile phase for REPL: check midpoint and compile modules.
--}
-compileRepl : FilePath -> Maybe String -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> ReplBuildContext -> Task Never (Result Exit.Repl ReplArtifacts)
-compileRepl root maybeBuildDir details env source modul deps { dmvar, statuses } =
-    checkMidpoint dmvar statuses
-        |> Task.andThen
-            (\midpoint ->
-                case midpoint of
-                    Err problem ->
-                        Exit.ReplProjectProblem problem |> Err |> Task.succeed
-
-                    Ok foreigns ->
-                        compileReplModules root maybeBuildDir details env source modul deps foreigns statuses
-            )
-
-
-{-| Compile REPL modules and finalize artifacts.
--}
-compileReplModules : FilePath -> Maybe String -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> Dependencies -> Dict ModuleName.Raw Status -> Task Never (Result Exit.Repl ReplArtifacts)
-compileReplModules root maybeBuildDir details env source modul deps foreigns statuses =
-    Utils.newEmptyMVar
-        |> Task.andThen
-            (\rmvar ->
-                dictForkWithKey bResultEncoder (checkModule env foreigns rmvar) statuses
-                    |> Task.andThen
-                        (\resultMVars ->
-                            Utils.putMVar resultDictEncoder rmvar resultMVars
-                                |> Task.andThen (\_ -> Utils.dictTraverse (Utils.readMVar bResultDecoder) resultMVars)
-                                |> Task.andThen
-                                    (\results ->
-                                        writeDetails root maybeBuildDir details results
-                                            |> Task.andThen (\_ -> checkDeps root maybeBuildDir resultMVars deps 0)
-                                            |> Task.andThen (\depsStatus -> finalizeReplArtifacts env source modul depsStatus resultMVars results)
-                                    )
-                        )
-            )
-
-
-finalizeReplArtifacts : Env -> String -> Src.Module -> DepsStatus -> ResultDict -> Dict ModuleName.Raw BResult -> Task Never (Result Exit.Repl ReplArtifacts)
-finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as modul) depsStatus resultMVars results =
-    let
-        pkg : Pkg.Name
-        pkg =
-            projectTypeToPkg envData.projectType
-
-        compileInput : Dict ModuleName.Raw I.Interface -> Task Never (Result Exit.Repl ReplArtifacts)
-        compileInput ifaces =
-            Compile.compile pkg ifaces modul
-                |> Task.map
-                    (\result ->
-                        case result of
-                            Ok (Compile.Artifacts ((Can.Module canData) as canonical) annotations objects) ->
-                                let
-                                    h : ModuleName.Canonical
-                                    h =
-                                        canData.name
-
-                                    m : Module
-                                    m =
-                                        Fresh (Src.getName modul) (I.fromModule pkg canonical annotations) objects Nothing Nothing
-
-                                    ms : List Module
-                                    ms =
-                                        Dict.foldr addInside [] results
-                                in
-                                ReplArtifacts { home = h, modules = m :: ms, localizer = L.fromModule modul, annotations = annotations } |> Ok
-
-                            Err errors ->
-                                Exit.ReplBadInput source errors |> Err
-                    )
-    in
-    case depsStatus of
-        DepsChange ifaces ->
-            compileInput ifaces
-
-        DepsSame same cached ->
-            loadInterfaces envData.root envData.maybeBuildDir same cached
-                |> Task.andThen
-                    (\maybeLoaded ->
-                        case maybeLoaded of
-                            Just ifaces ->
-                                compileInput ifaces
-
-                            Nothing ->
-                                Exit.ReplBadCache |> Err |> Task.succeed
-                    )
-
-        DepsBlock ->
-            case Dict.foldr (\_ -> addErrors) [] results of
-                [] ->
-                    Exit.ReplBlocked |> Err |> Task.succeed
-
-                e :: es ->
-                    Exit.ReplBadLocalDeps envData.root e es |> Err |> Task.succeed
-
-        DepsNotFound problems ->
-            toImportErrors env resultMVars srcData.imports problems |> Error.BadImports |> Exit.ReplBadInput source |> Err |> Task.succeed
 
 
 

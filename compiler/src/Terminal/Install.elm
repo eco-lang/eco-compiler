@@ -653,7 +653,7 @@ detectChanges old new =
     Dict.merge
         (\k v -> Dict.insert k (Remove v))
         (\k oldElem newElem acc ->
-            case keepChange k oldElem newElem of
+            case keepChange oldElem newElem of
                 Just change ->
                     Dict.insert k change acc
 
@@ -666,8 +666,8 @@ detectChanges old new =
         Dict.empty
 
 
-keepChange : k -> v -> v -> Maybe (Change v)
-keepChange _ old new =
+keepChange : v -> v -> Maybe (Change v)
+keepChange old new =
     if old == new then
         Nothing
 

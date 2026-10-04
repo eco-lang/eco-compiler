@@ -1,4 +1,4 @@
-module Compiler.Data.Bag exposing (Bag(..), append, empty, one, toList)
+module Compiler.Data.Bag exposing (Bag, append, empty, one, toList)
 
 {-| A way to gather results from many places and join them cheaply, deferring
 the cost of building a list until the end.

@@ -445,10 +445,10 @@ walkChildren funcName binders node nodeTypes =
             go expr
 
         Can.Update expr fields ->
-            go expr ++ DMap.foldl A.compareLocated (\_ (Can.FieldUpdate _ e) acc -> go e ++ acc) [] fields
+            go expr ++ DMap.foldl (\_ (Can.FieldUpdate _ e) acc -> go e ++ acc) [] fields
 
         Can.Record fields ->
-            DMap.foldl A.compareLocated (\_ e acc -> go e ++ acc) [] fields
+            DMap.foldl (\_ e acc -> go e ++ acc) [] fields
 
         Can.Tuple a b extras ->
             go a ++ go b ++ List.concatMap go extras

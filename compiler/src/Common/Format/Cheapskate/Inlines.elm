@@ -1034,7 +1034,7 @@ pLink remap =
                     lab_ =
                         parseInlines remap lab
                 in
-                oneOf (oneOf (pInlineLink lab_) (pReferenceLink remap lab lab_))
+                oneOf (oneOf (pInlineLink lab_) (pReferenceLink lab lab_))
                     (return (Str "[" :: lab_ ++ [ Str "]" ]))
             )
 
@@ -1075,8 +1075,8 @@ for `[text][]`. Otherwise the target is `rawlab`. It never fails, and the
 reference map is ignored.
 
 -}
-pReferenceLink : ReferenceMap -> String -> Inlines -> Parser Inlines
-pReferenceLink _ rawlab lab =
+pReferenceLink : String -> Inlines -> Parser Inlines
+pReferenceLink rawlab lab =
     option rawlab (scanSpnl |> andThen (\_ -> pLinkLabel))
         |> map (\ref -> [ Link lab (Ref ref) "" ])
 

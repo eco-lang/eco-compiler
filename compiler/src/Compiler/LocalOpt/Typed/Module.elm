@@ -99,8 +99,8 @@ optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars allSchemeR
         , schemeRoots = allSchemeRoots
         , varSupers = Dict.empty
         }
-        |> addAliases tData.name annotations tData.aliases
-        |> addUnions tData.name annotations tData.unions
+        |> addAliases tData.name tData.aliases
+        |> addUnions tData.name tData.unions
         |> addEffects tData.name annotations tData.effects
         |> addDecls tData.name annotations exprTypes exprVars kernelEnv annotationVars tData.decls
         |> ReportingResult.map LambdaNorm.normalizeLocalGraph
@@ -129,8 +129,8 @@ type alias TypedNodes =
     Data.Map.Dict String TOpt.Global (TOpt.Node Name)
 
 
-addUnions : ModuleName.Canonical -> Annotations -> Dict Name.Name Can.Union -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
-addUnions home _ unions (TOpt.LocalGraph data) =
+addUnions : ModuleName.Canonical -> Dict Name.Name Can.Union -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
+addUnions home unions (TOpt.LocalGraph data) =
     let
         ( nodes1, ann1 ) =
             Dict.foldr (addUnion home) ( data.nodes, data.annotations ) unions
@@ -188,13 +188,13 @@ addCtorNode home typeName unionData (Can.Ctor c) ( nodes, ann ) =
 -- ====== Type Aliases ======
 
 
-addAliases : ModuleName.Canonical -> Annotations -> Dict Name.Name Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
-addAliases home annotations aliases graph =
-    Dict.foldr (addAlias home annotations) graph aliases
+addAliases : ModuleName.Canonical -> Dict Name.Name Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
+addAliases home aliases graph =
+    Dict.foldr (addAlias home) graph aliases
 
 
-addAlias : ModuleName.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
-addAlias home _ name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
+addAlias : ModuleName.Canonical -> Name.Name -> Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
+addAlias home name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
             let

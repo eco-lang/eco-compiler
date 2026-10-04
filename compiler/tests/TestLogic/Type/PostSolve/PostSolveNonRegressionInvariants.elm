@@ -211,7 +211,7 @@ checkPost006 nodeKinds nodeTypesPre nodeTypesPost =
                                                     let
                                                         newVars =
                                                             EverySet.diff postVars preVars
-                                                                |> EverySet.toList compare
+                                                                |> EverySet.toList
                                                     in
                                                     { invariant = "POST_006"
                                                     , nodeId = nodeId
@@ -628,7 +628,7 @@ collectExprNodeKinds (A.At _ exprInfo) acc =
                 Can.Update expr fields ->
                     let
                         fAcc =
-                            Dict.foldl A.compareLocated
+                            Dict.foldl
                                 (\_ (Can.FieldUpdate _ e) a -> collectExprNodeKinds e a)
                                 acc
                                 fields
@@ -637,7 +637,7 @@ collectExprNodeKinds (A.At _ exprInfo) acc =
 
                 Can.Record fields ->
                     ( KOther
-                    , Dict.foldl A.compareLocated
+                    , Dict.foldl
                         (\_ e a -> collectExprNodeKinds e a)
                         acc
                         fields

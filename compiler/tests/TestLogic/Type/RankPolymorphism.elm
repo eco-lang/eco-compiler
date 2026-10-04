@@ -76,8 +76,8 @@ keyed by name, joined into one list. It is always empty.
 collectRankIssues : Dict.Dict String (Can.Annotation Name) -> List String
 collectRankIssues annotations =
     Dict.foldl
-        (\name annotation acc ->
-            checkAnnotationRank name annotation ++ acc
+        (\_ annotation acc ->
+            checkAnnotationRank annotation ++ acc
         )
         []
         annotations
@@ -87,11 +87,11 @@ collectRankIssues annotations =
 `annotation`, given `name` as its context. The annotation's quantified
 variables are not looked at. The result is always empty.
 -}
-checkAnnotationRank : String -> Can.Annotation Name -> List String
-checkAnnotationRank name annotation =
+checkAnnotationRank : Can.Annotation Name -> List String
+checkAnnotationRank annotation =
     case annotation of
         Can.Forall _ canType ->
-            checkTypeForRankIssues name canType
+            checkTypeForRankIssues canType
 
 
 {-| Returns the issues found in `canType` and every type inside it. The only
@@ -102,24 +102,24 @@ For an alias the walk covers both the alias's arguments and the type it stands
 for. `context` is passed on unchanged.
 
 -}
-checkTypeForRankIssues : String -> Can.Type Name -> List String
-checkTypeForRankIssues context canType =
+checkTypeForRankIssues : Can.Type Name -> List String
+checkTypeForRankIssues canType =
     case canType of
         Can.TVar _ ->
             []
 
         Can.TLambda _ argType resultType ->
-            checkForHigherRank context argType
-                ++ checkTypeForRankIssues context argType
-                ++ checkTypeForRankIssues context resultType
+            checkForHigherRank argType
+                ++ checkTypeForRankIssues argType
+                ++ checkTypeForRankIssues resultType
 
         Can.TType _ _ args ->
-            List.concatMap (checkTypeForRankIssues context) args
+            List.concatMap checkTypeForRankIssues args
 
         Can.TRecord fields _ ->
             Dict.foldl
                 (\_ (Can.FieldType _ fieldType) acc ->
-                    checkTypeForRankIssues context fieldType ++ acc
+                    checkTypeForRankIssues fieldType ++ acc
                 )
                 []
                 fields
@@ -128,18 +128,18 @@ checkTypeForRankIssues context canType =
             []
 
         Can.TTuple a b cs ->
-            checkTypeForRankIssues context a
-                ++ checkTypeForRankIssues context b
-                ++ List.concatMap (checkTypeForRankIssues context) cs
+            checkTypeForRankIssues a
+                ++ checkTypeForRankIssues b
+                ++ List.concatMap checkTypeForRankIssues cs
 
         Can.TAlias _ _ args aliasedType ->
-            List.concatMap (\( _, argType ) -> checkTypeForRankIssues context argType) args
+            List.concatMap (\( _, argType ) -> checkTypeForRankIssues argType) args
                 ++ (case aliasedType of
                         Can.Holey t ->
-                            checkTypeForRankIssues context t
+                            checkTypeForRankIssues t
 
                         Can.Filled t ->
-                            checkTypeForRankIssues context t
+                            checkTypeForRankIssues t
                    )
 
 
@@ -150,8 +150,8 @@ A higher-rank type would need a quantifier inside the argument type, and
 `Can.Type` has no constructor for one.
 
 -}
-checkForHigherRank : String -> Can.Type Name -> List String
-checkForHigherRank _ canType =
+checkForHigherRank : Can.Type Name -> List String
+checkForHigherRank canType =
     case canType of
         Can.TLambda _ _ _ ->
             []

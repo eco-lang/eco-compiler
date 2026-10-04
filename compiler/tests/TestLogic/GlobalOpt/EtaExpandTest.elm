@@ -123,7 +123,6 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.PreMono.EtaExpand as EtaExpand
-import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict as CoreDict
 import Expect
@@ -540,7 +539,7 @@ that is a member of a `Cycle`.
 -}
 nodeBody : TOpt.GlobalGraph TypeIds.MVarId -> Name -> Maybe (TOpt.Expr TypeIds.MVarId)
 nodeBody (TOpt.GlobalGraph nodes _ _ _ _) name =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\(TOpt.Global _ n) node acc ->
             if n == name then
                 case node of
@@ -643,7 +642,7 @@ every `Cycle` node in the graph. A `Cycle`'s recursive values are not read.
 -}
 cycleBranchArgCounts : TOpt.GlobalGraph TypeIds.MVarId -> List Int
 cycleBranchArgCounts (TOpt.GlobalGraph nodes _ _ _ _) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\_ node acc ->
             case node of
                 TOpt.Cycle _ _ funcDefs _ ->
@@ -712,13 +711,13 @@ children expr =
             [ inner ]
 
         TOpt.Update _ record fields _ ->
-            record :: Data.Map.values A.compareLocated fields
+            record :: Data.Map.values fields
 
         TOpt.Record fields _ ->
             CoreDict.values fields
 
         TOpt.TrackedRecord _ fields _ ->
-            Data.Map.values A.compareLocated fields
+            Data.Map.values fields
 
         TOpt.Tuple _ a b rest _ ->
             a :: b :: rest

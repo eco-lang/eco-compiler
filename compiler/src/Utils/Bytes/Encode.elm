@@ -259,9 +259,9 @@ The pairs are in descending order of their projected keys, the reverse of
 `Data.Map.toList`'s order. `keyComparison` is ignored, as `Data.Map` describes.
 
 -}
-assocListDict : (k -> k -> Order) -> (k -> BE.Encoder) -> (v -> BE.Encoder) -> EveryDict.Dict c k v -> BE.Encoder
-assocListDict keyComparison keyEncoder valueEncoder =
-    EveryDict.toList keyComparison >> List.reverse >> list (jsonPair keyEncoder valueEncoder)
+assocListDict : (k -> BE.Encoder) -> (v -> BE.Encoder) -> EveryDict.Dict c k v -> BE.Encoder
+assocListDict keyEncoder valueEncoder =
+    EveryDict.toList >> List.reverse >> list (jsonPair keyEncoder valueEncoder)
 
 
 {-| Encodes a core `Dict` as a `list` of its key-value pairs in ascending key
@@ -286,9 +286,9 @@ jsonPair encoderA encoderB ( a, b ) =
 {-| Encodes a `Data.Set` set as a `list` of its elements, in descending order of
 their projections. `keyComparison` is ignored, as `Data.Set` describes.
 -}
-everySet : (a -> a -> Order) -> (a -> BE.Encoder) -> EverySet c a -> BE.Encoder
-everySet keyComparison encoder =
-    EverySet.toList keyComparison >> List.reverse >> list encoder
+everySet : (a -> BE.Encoder) -> EverySet c a -> BE.Encoder
+everySet encoder =
+    EverySet.toList >> List.reverse >> list encoder
 
 
 {-| Encodes a `OneOrMore` tree node by node, keeping its shape: a `One` as the

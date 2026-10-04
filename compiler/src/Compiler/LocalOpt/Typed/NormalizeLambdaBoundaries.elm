@@ -1,5 +1,5 @@
 module Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries exposing
-    ( LambdaKind(..)
+    ( LambdaKind
     , RenameCtx, RenameEnv
     , normalizeLocalGraph
     )
@@ -409,7 +409,7 @@ normalizeExpr expr =
                     normalizeExpr body
 
                 ( finalParams, finalBody ) =
-                    normalizeLambdaBodyFixpoint params normalizedBody lambdaMeta
+                    normalizeLambdaBodyFixpoint params normalizedBody
             in
             rebuildLambda PlainLambda finalParams finalBody lambdaMeta
 
@@ -432,7 +432,7 @@ normalizeExpr expr =
                     List.map (\( A.At _ n, t ) -> ( n, t )) params
 
                 ( finalParams, finalBody ) =
-                    normalizeLambdaBodyFixpoint flatParams normalizedBody lambdaMeta
+                    normalizeLambdaBodyFixpoint flatParams normalizedBody
             in
             rebuildLambda kind finalParams finalBody lambdaMeta
 
@@ -525,18 +525,17 @@ normalizeChoiceExpr choice =
 normalizeLambdaBodyFixpoint :
     List ( Name.Name, Can.Type Name )
     -> TOpt.Expr Name
-    -> TOpt.Meta Name
     -> ( List ( Name.Name, Can.Type Name ), TOpt.Expr Name )
-normalizeLambdaBodyFixpoint params body lambdaMeta =
+normalizeLambdaBodyFixpoint params body =
     case tryNormalizeLetBoundary params body of
         Just ( newParams, newBody ) ->
             -- Keep iterating
-            normalizeLambdaBodyFixpoint newParams newBody lambdaMeta
+            normalizeLambdaBodyFixpoint newParams newBody
 
         Nothing ->
-            case tryNormalizeCaseBoundary params body lambdaMeta of
+            case tryNormalizeCaseBoundary params body of
                 Just ( newParams, newBody ) ->
-                    normalizeLambdaBodyFixpoint newParams newBody lambdaMeta
+                    normalizeLambdaBodyFixpoint newParams newBody
 
                 Nothing ->
                     ( params, body )
@@ -732,9 +731,8 @@ hasAnyInline decider =
 tryNormalizeCaseBoundary :
     List ( Name.Name, Can.Type Name )
     -> TOpt.Expr Name
-    -> TOpt.Meta Name
     -> Maybe ( List ( Name.Name, Can.Type Name ), TOpt.Expr Name )
-tryNormalizeCaseBoundary outerParams body _ =
+tryNormalizeCaseBoundary outerParams body =
     case body of
         TOpt.Case label scrut decider jumps caseMeta ->
             let

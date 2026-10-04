@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.TypeTable exposing (generateTypeTable, TypeKind(..), PrimKind(..))
+module Compiler.Generate.MLIR.TypeTable exposing (generateTypeTable, TypeKind, PrimKind)
 
 {-| Type table generation for debug printing support.
 
@@ -240,8 +240,8 @@ processType typeIds ( typeId, monoType ) accum =
         Mono.MRecord _ fields ->
             addRecordType typeIds typeId (Types.computeRecordLayout fields) accum
 
-        Mono.MCustom _ _ typeName _ ->
-            addCustomType typeIds typeId typeName monoType accum
+        Mono.MCustom _ _ _ _ ->
+            addCustomType typeIds typeId monoType accum
 
         Mono.MFunction _ _ argTypes resultType ->
             addFunctionType typeIds typeId argTypes resultType accum
@@ -412,8 +412,8 @@ addRecordType typeIds typeId layout accum =
 
 {-| Add a custom type descriptor with constructor information.
 -}
-addCustomType : Mono.LayoutMap Int -> Int -> Name.Name -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
-addCustomType typeIds typeId _ monoType accum =
+addCustomType : Mono.LayoutMap Int -> Int -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
+addCustomType typeIds typeId monoType accum =
     let
         -- Look up constructor shapes and compute layouts
         ctorShapes =

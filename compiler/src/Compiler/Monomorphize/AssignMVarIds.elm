@@ -241,14 +241,11 @@ assignIds useSolverRoots censusOn (TOpt.GlobalGraph nodes fields annotations all
             , arrowsUnstampedInPartial = 0
             }
 
-        dummyCompare _ _ =
-            EQ
-
         ( newAnnotations, state1 ) =
             rewriteAnnotationsByGlobal useSolverRoots varSupers allSchemeRoots annotations state0
 
         ( newNodes, state2 ) =
-            rewriteNodes useSolverRoots dummyCompare varSupers allSchemeRoots nodes state1
+            rewriteNodes useSolverRoots varSupers allSchemeRoots nodes state1
     in
     -- Row 6 (plans/frontend-heap-release.md §7.3): `allSchemeRoots` and
     -- `varSupers` are consumed HERE (they seeded every binder above) and every
@@ -405,11 +402,7 @@ rewriteAnnotationsByGlobal :
     -> GlobalMVarState
     -> ( TOpt.AnnotationsByGlobal TypeIds.MVarId, GlobalMVarState )
 rewriteAnnotationsByGlobal useSolverRoots varSupers allSchemeRoots annotations state =
-    let
-        dummyCompare _ _ =
-            EQ
-    in
-    DMap.foldl dummyCompare
+    DMap.foldl
         (\global ann ( acc, st ) ->
             let
                 schemeRootsForDef =
@@ -474,14 +467,13 @@ rewriteAnnotation useSolverRoots varSupers moduleKey schemeRootsForDef (Can.Fora
 
 rewriteNodes :
     Bool
-    -> (TOpt.Global -> TOpt.Global -> Order)
     -> Dict Name Vars.SuperType
     -> TOpt.SchemeRootsByGlobal
     -> DMap.Dict String TOpt.Global (TOpt.Node Name)
     -> GlobalMVarState
     -> ( DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId), GlobalMVarState )
-rewriteNodes useSolverRoots cmp varSupers allSchemeRoots nodes state =
-    DMap.foldl cmp
+rewriteNodes useSolverRoots varSupers allSchemeRoots nodes state =
+    DMap.foldl
         (\global node ( acc, st ) ->
             let
                 -- Look up scheme roots for this definition by Global key
@@ -1007,13 +999,10 @@ rewriteDictExprs ctx dict =
 rewriteDataMapExprs : Ctx -> DMap.Dict String (A.Located Name) (TOpt.Expr Name) -> ( DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteDataMapExprs ctx dmap =
     let
-        dummyCompare _ _ =
-            EQ
-
         toComparable (A.At _ name) =
             name
     in
-    DMap.foldl dummyCompare
+    DMap.foldl
         (\key e ( acc, c ) ->
             let
                 ( newE, c1 ) =

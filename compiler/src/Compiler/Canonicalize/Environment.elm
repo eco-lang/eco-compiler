@@ -73,7 +73,6 @@ import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Data.Set as EverySet
 import Dict exposing (Dict)
-import Maybe exposing (Maybe(..))
 
 
 
@@ -281,7 +280,7 @@ addLocals : Dict Name.Name A.Region -> Env -> EResult i w Env
 addLocals names env =
     ReportingResult.map (\newVars -> { env | vars = newVars })
         (Dict.merge
-            (\name region -> ReportingResult.map (Dict.insert name (addLocalLeft name region)))
+            (\name region -> ReportingResult.map (Dict.insert name (addLocalLeft region)))
             (\name region var acc ->
                 addLocalBoth name region var
                     |> ReportingResult.andThen (\var_ -> ReportingResult.map (Dict.insert name var_) acc)
@@ -296,8 +295,8 @@ addLocals names env =
 {-| Returns the entry for a new local bound at `region` whose name is not yet in
 scope.
 -}
-addLocalLeft : Name.Name -> A.Region -> Var
-addLocalLeft _ region =
+addLocalLeft : A.Region -> Var
+addLocalLeft region =
     Local region
 
 

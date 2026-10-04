@@ -237,7 +237,7 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                     |> Task.andThen (\_ -> writeOps mainOps writeChunk)
                     |> Task.andThen (\_ -> writeOps (List.reverse kernelDeclOps) writeChunk)
                     |> Task.andThen (\_ -> writeOps [ typeTableOp ] writeChunk)
-                    |> Task.andThen (\_ -> writeChunk (Pretty.ppModuleFooter Loc.unknown))
+                    |> Task.andThen (\_ -> writeChunk Pretty.ppModuleFooter)
             )
 
 
@@ -1477,7 +1477,7 @@ buildNullConsBySpec registry nodes =
                 ( specId + 1
                 , case maybeNode of
                     Just (Mono.MonoCtor shape _) ->
-                        if List.isEmpty shape.fieldTypes && CtorTag.embedsAsNullCons shape.name shape.tag then
+                        if List.isEmpty shape.fieldTypes && CtorTag.embedsAsNullCons shape.name then
                             Dict.insert specId shape.tag acc
 
                         else
@@ -1486,7 +1486,7 @@ buildNullConsBySpec registry nodes =
                     Just (Mono.MonoEnum tag _) ->
                         case Registry.lookupSpecKey specId registry of
                             Just ( Mono.Global _ ctorName, _ ) ->
-                                if CtorTag.embedsAsNullCons ctorName tag then
+                                if CtorTag.embedsAsNullCons ctorName then
                                     Dict.insert specId tag acc
 
                                 else

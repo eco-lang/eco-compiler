@@ -403,8 +403,8 @@ threading state through each step. Returns a Tracker containing a dictionary wit
 transformed values and all accumulated dependencies.
 
 -}
-mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Tracker b) -> DataMap.Dict comparable k a -> Tracker (DataMap.Dict comparable k b)
-mapTraverse toComparable keyComparison func dict =
+mapTraverse : (k -> comparable) -> (a -> Tracker b) -> DataMap.Dict comparable k a -> Tracker (DataMap.Dict comparable k b)
+mapTraverse toComparable func dict =
     loop
         (\( pairs, acc ) ->
             case pairs of
@@ -414,4 +414,4 @@ mapTraverse toComparable keyComparison func dict =
                 ( k, a ) :: rest ->
                     map (\b -> Loop ( rest, DataMap.insert toComparable k b acc )) (func a)
         )
-        ( DataMap.toList keyComparison dict, DataMap.empty )
+        ( DataMap.toList dict, DataMap.empty )

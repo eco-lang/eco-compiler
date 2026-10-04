@@ -177,7 +177,7 @@ census ((TOpt.GlobalGraph nodes _ _ _ _) as graph) =
             , loopifiable = loopifiable
             }
     in
-    (Dict.foldl TOpt.compareGlobal (\_ node c -> walkNode c node) ctx0 nodes).metrics
+    (Dict.foldl (\_ node c -> walkNode c node) ctx0 nodes).metrics
 
 
 walkNode : Ctx -> TOpt.Node TypeIds.MVarId -> Ctx
@@ -404,7 +404,7 @@ shape that becomes the `MonoTailFunc` spec `buildLoopifiables` reads.
 -}
 buildLoopifiable : CoreDict.Dict String () -> TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String ()
 buildLoopifiable rec (TOpt.GlobalGraph nodes _ _ _ _) =
-    Dict.foldl TOpt.compareGlobal
+    Dict.foldl
         (\g node acc ->
             List.foldl
                 (\( key, hasFn ) a ->
@@ -530,12 +530,12 @@ recursiveNames (TOpt.GlobalGraph nodes _ _ _ _) =
                     EverySet.empty
 
         edges =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node acc ->
                     ( TOpt.toComparableGlobal g
                     , TOpt.toComparableGlobal g
                     , List.map TOpt.toComparableGlobal
-                        (EverySet.toList TOpt.compareGlobal (depsOf node))
+                        (EverySet.toList (depsOf node))
                     )
                         :: acc
                 )
@@ -556,7 +556,7 @@ recursiveNames (TOpt.GlobalGraph nodes _ _ _ _) =
                 (Graph.stronglyConnComp edges)
 
         structural =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node acc ->
                     case node of
                         TOpt.Cycle _ _ funcDefs _ ->
@@ -788,13 +788,13 @@ children expr =
             [ inner ]
 
         TOpt.Update _ record fields _ ->
-            record :: Dict.values A.compareLocated fields
+            record :: Dict.values fields
 
         TOpt.Record fields _ ->
             CoreDict.values fields
 
         TOpt.TrackedRecord _ fields _ ->
-            Dict.values A.compareLocated fields
+            Dict.values fields
 
         TOpt.Tuple _ a b rest _ ->
             a :: b :: rest

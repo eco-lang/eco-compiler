@@ -1389,7 +1389,7 @@ walkExpr letEnv expr s0 =
             walkLiteral letEnv "record" (CoreDict.toList fields) Nothing meta expr s0
 
         TOpt.TrackedRecord _ fields meta ->
-            walkLiteral letEnv "record" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList A.compareLocated fields)) Nothing meta expr s0
+            walkLiteral letEnv "record" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList fields)) Nothing meta expr s0
 
         TOpt.Tuple _ a b rest meta ->
             walkLiteral letEnv "tuple" (List.indexedMap (\i e -> ( String.fromInt i, e )) (a :: b :: rest)) Nothing meta expr s0
@@ -1398,7 +1398,7 @@ walkExpr letEnv expr s0 =
             walkLiteral letEnv "list" (List.map (\e -> ( "l", e )) items) Nothing meta expr s0
 
         TOpt.Update _ record fields meta ->
-            walkLiteral letEnv "update" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList A.compareLocated fields)) (Just record) meta expr s0
+            walkLiteral letEnv "update" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList fields)) (Just record) meta expr s0
 
         _ ->
             -- Everything else: structural recursion only. Shared MVarIds
@@ -3325,13 +3325,13 @@ directChildren expr =
             [ record ]
 
         TOpt.Update _ record fields _ ->
-            record :: DMap.values A.compareLocated fields
+            record :: DMap.values fields
 
         TOpt.Record fields _ ->
             CoreDict.values fields
 
         TOpt.TrackedRecord _ fields _ ->
-            DMap.values A.compareLocated fields
+            DMap.values fields
 
         TOpt.Unit _ ->
             []

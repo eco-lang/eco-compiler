@@ -39,7 +39,6 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict
 import Expect
@@ -84,7 +83,7 @@ labelled by its global as `Module.name`. The list is always empty.
 -}
 collectExprTypeIssues : TOpt.LocalGraph Name -> List String
 collectExprTypeIssues (TOpt.LocalGraph data) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\global node acc ->
             let
                 context =
@@ -115,30 +114,22 @@ checkNodeExprsHaveTypes : String -> TOpt.Node Name -> List String
 checkNodeExprsHaveTypes context node =
     case node of
         TOpt.Define expr _ _ ->
-            let
-                exprType =
-                    TOpt.typeOf expr
-            in
-            checkTypeNotEmpty (context ++ " Define") exprType
+            checkTypeNotEmpty
                 ++ collectExprNestedTypeIssues context expr
 
         TOpt.TrackedDefine _ expr _ _ ->
-            let
-                exprType =
-                    TOpt.typeOf expr
-            in
-            checkTypeNotEmpty (context ++ " TrackedDefine") exprType
+            checkTypeNotEmpty
                 ++ collectExprNestedTypeIssues context expr
 
         TOpt.Cycle _ _ defs _ ->
             List.concatMap (\def -> checkDefExprsHaveTypes context def) defs
 
         TOpt.PortIncoming expr _ _ ->
-            checkTypeNotEmpty (context ++ " PortIncoming") (TOpt.typeOf expr)
+            checkTypeNotEmpty
                 ++ collectExprNestedTypeIssues context expr
 
         TOpt.PortOutgoing expr _ _ ->
-            checkTypeNotEmpty (context ++ " PortOutgoing") (TOpt.typeOf expr)
+            checkTypeNotEmpty
                 ++ collectExprNestedTypeIssues context expr
 
         _ ->
@@ -152,13 +143,13 @@ the types of a `TailDef`'s parameters, and the expressions in the body that
 checkDefExprsHaveTypes : String -> TOpt.Def Name -> List String
 checkDefExprsHaveTypes context def =
     case def of
-        TOpt.Def _ name expr _ ->
-            checkTypeNotEmpty (context ++ " Def " ++ name) (TOpt.typeOf expr)
+        TOpt.Def _ _ expr _ ->
+            checkTypeNotEmpty
                 ++ collectExprNestedTypeIssues context expr
 
-        TOpt.TailDef _ name params expr _ _ ->
-            checkTypeNotEmpty (context ++ " TailDef " ++ name) (TOpt.typeOf expr)
-                ++ List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " param") paramType) params
+        TOpt.TailDef _ _ params expr _ _ ->
+            checkTypeNotEmpty
+                ++ List.concatMap (\_ -> checkTypeNotEmpty) params
                 ++ collectExprNestedTypeIssues context expr
 
 
@@ -172,20 +163,17 @@ bodies inlined in its decision tree, and a `Destruct` only into its body.
 collectExprNestedTypeIssues : String -> TOpt.Expr Name -> List String
 collectExprNestedTypeIssues context expr =
     let
-        exprType =
-            TOpt.typeOf expr
-
         typeIssue =
-            checkTypeNotEmpty context exprType
+            checkTypeNotEmpty
     in
     typeIssue
         ++ (case expr of
                 TOpt.Function _ params bodyExpr _ ->
-                    List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " Function param") paramType) params
+                    List.concatMap (\_ -> checkTypeNotEmpty) params
                         ++ collectExprNestedTypeIssues context bodyExpr
 
                 TOpt.TrackedFunction _ params bodyExpr _ ->
-                    List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " TrackedFunction param") paramType) params
+                    List.concatMap (\_ -> checkTypeNotEmpty) params
                         ++ collectExprNestedTypeIssues context bodyExpr
 
                 TOpt.Call _ fnExpr argExprs _ ->
@@ -217,13 +205,13 @@ collectExprNestedTypeIssues context expr =
 
                 TOpt.Update _ recordExpr updates _ ->
                     collectExprNestedTypeIssues context recordExpr
-                        ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprNestedTypeIssues context updateExpr ++ acc) [] updates
+                        ++ Data.Map.foldl (\_ updateExpr acc -> collectExprNestedTypeIssues context updateExpr ++ acc) [] updates
 
                 TOpt.Record fieldExprs _ ->
                     Dict.foldl (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.TrackedRecord _ fieldExprs _ ->
-                    Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
+                    Data.Map.foldl (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.Tuple _ e1 e2 rest _ ->
                     collectExprNestedTypeIssues context e1
@@ -238,8 +226,8 @@ collectExprNestedTypeIssues context expr =
 {-| Returns no issues for any type: both the context label and the type are
 ignored.
 -}
-checkTypeNotEmpty : String -> Can.Type Name -> List String
-checkTypeNotEmpty _ _ =
+checkTypeNotEmpty : List String
+checkTypeNotEmpty =
     []
 
 
@@ -321,13 +309,13 @@ collectExprTypeWellFormedness context expr =
 
                 TOpt.Update _ recordExpr updates _ ->
                     collectExprTypeWellFormedness context recordExpr
-                        ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprTypeWellFormedness context updateExpr ++ acc) [] updates
+                        ++ Data.Map.foldl (\_ updateExpr acc -> collectExprTypeWellFormedness context updateExpr ++ acc) [] updates
 
                 TOpt.Record fieldExprs _ ->
                     Dict.foldl (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.TrackedRecord _ fieldExprs _ ->
-                    Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
+                    Data.Map.foldl (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.Tuple _ e1 e2 rest _ ->
                     collectExprTypeWellFormedness context e1

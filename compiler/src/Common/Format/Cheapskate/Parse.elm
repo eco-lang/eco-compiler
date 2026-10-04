@@ -65,7 +65,6 @@ The result departs from the source in several ways:
     only a bullet is an empty one; numbered items are read. A line of as few as
     two `*`, `_` or `-`, spaces aside, is a horizontal rule, unless a line of
     `-` is taken as a setext underline.
-  - The `Options` given to `markdown` are ignored.
 
 @docs markdown
 
@@ -112,7 +111,6 @@ import Common.Format.Cheapskate.Types
         , HtmlTagType(..)
         , ListType(..)
         , NumWrapper(..)
-        , Options
         , ReferenceMap
         )
 import Common.Format.Cheapskate.Util
@@ -149,8 +147,8 @@ module documentation lists; most visibly, its blocks come out in reverse source
 order.
 
 -}
-markdown : Options -> String -> Doc
-markdown _ =
+markdown : String -> Doc
+markdown =
     processLines >> processDocument >> Doc
 
 
@@ -283,8 +281,8 @@ containerContinue (Container containerType _) =
 a block quote or a list item, and returns the kind of container. The `Bool` is
 ignored.
 -}
-containerStart : Bool -> Parser ContainerType
-containerStart _ =
+containerStart : Parser ContainerType
+containerStart =
     scanNonindentSpace
         |> andThen
             (\_ ->
@@ -1066,7 +1064,7 @@ tryNewContainers lastLineIsText offset t =
                         setPosition (Position ln (offset + 1))
                             |> andThen
                                 (\_ ->
-                                    many (containerStart lastLineIsText)
+                                    many containerStart
                                         |> andThen
                                             (\regContainers ->
                                                 option [] (count 1 (verbatimContainerStart lastLineIsText))

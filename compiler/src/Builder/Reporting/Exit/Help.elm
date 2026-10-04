@@ -158,7 +158,7 @@ toStderr doc =
 
 toHandle : IO.Handle -> D.Doc -> Task Never ()
 toHandle handle doc =
-    IO.isTerminal handle
+    IO.isTerminal
         |> Task.andThen
             (\isTerminal ->
                 if isTerminal then

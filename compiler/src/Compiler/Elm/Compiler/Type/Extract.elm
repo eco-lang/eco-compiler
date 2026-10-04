@@ -206,8 +206,8 @@ extractTransitive types (Deps seenAliases seenUnions) (Deps nextAliases nextUnio
             ( newDeps, ( resultAlias, resultUnion ) ) =
                 run
                     (pure Tuple.pair
-                        |> apply (traverse (extractAlias types) (EverySet.toList Opt.compareGlobal aliases))
-                        |> apply (traverse (extractUnion types) (EverySet.toList Opt.compareGlobal unions))
+                        |> apply (traverse (extractAlias types) (EverySet.toList aliases))
+                        |> apply (traverse (extractUnion types) (EverySet.toList unions))
                     )
 
             oldDeps : Deps
@@ -368,7 +368,7 @@ tupleTraverse f ( a, b ) =
 -}
 typesEncoder : Types -> Bytes.Encode.Encoder
 typesEncoder (Types types) =
-    BE.assocListDict ModuleName.compareCanonical ModuleName.canonicalEncoder types_Encoder types
+    BE.assocListDict ModuleName.canonicalEncoder types_Encoder types
 
 
 {-| Decodes a type collection from binary format.

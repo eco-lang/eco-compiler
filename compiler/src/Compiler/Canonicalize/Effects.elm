@@ -23,7 +23,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
-import Maybe exposing (Maybe(..))
 
 
 

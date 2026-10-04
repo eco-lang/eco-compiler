@@ -155,7 +155,7 @@ collectExprIssues ctx expr =
                 ++ collectExprIssues ctx elseExpr
 
         Mono.MonoCase _ _ decider branches _ ->
-            collectDeciderIssues ctx decider
+            collectDeciderIssues decider
                 ++ List.concatMap (\( _, e ) -> collectExprIssues ctx e) branches
 
         Mono.MonoDestruct _ valueExpr _ ->
@@ -200,19 +200,19 @@ collectDefIssues ctx def =
 subtrees and returns nothing at a leaf, so a call inside an `Inline` leaf is
 never examined. The context argument is ignored.
 -}
-collectDeciderIssues : String -> Mono.Decider Mono.MonoChoice -> List String
-collectDeciderIssues _ decider =
+collectDeciderIssues : Mono.Decider Mono.MonoChoice -> List String
+collectDeciderIssues decider =
     case decider of
         Mono.Leaf _ ->
             []
 
         Mono.Chain _ success failure ->
-            collectDeciderIssues "" success
-                ++ collectDeciderIssues "" failure
+            collectDeciderIssues success
+                ++ collectDeciderIssues failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderIssues "" d) edges
-                ++ collectDeciderIssues "" fallback
+            List.concatMap (\( _, d ) -> collectDeciderIssues d) edges
+                ++ collectDeciderIssues fallback
 
 
 
@@ -237,7 +237,7 @@ checkCallInfo ctx funcExpr args callInfo =
                     List.length args
             in
             checkGopt011 ctx callInfo
-                ++ checkGopt012 ctx funcExpr callInfo
+                ++ checkGopt012 ctx callInfo
                 ++ checkGopt013 ctx callInfo
                 ++ checkGopt014 ctx argCount callInfo
                 ++ checkGopt015 ctx funcExpr callInfo
@@ -280,8 +280,8 @@ found no producer for the callee gets one of those two kinds and an
 `initialRemaining` of 0. A call with no stage arities is also exempt.
 
 -}
-checkGopt012 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
-checkGopt012 ctx _ callInfo =
+checkGopt012 : String -> Mono.CallInfo -> List String
+checkGopt012 ctx callInfo =
     case callInfo.callKind of
         Mono.CallGenericApply ->
             []

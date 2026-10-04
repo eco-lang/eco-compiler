@@ -1,5 +1,5 @@
 module Common.Format.Render.Markdown exposing
-    ( Context(..), LongestSpanResult(..)
+    ( Context, LongestSpanResult
     , formatMarkdown
     )
 

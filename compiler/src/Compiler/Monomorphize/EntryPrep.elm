@@ -97,7 +97,7 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
     let
         entryMeta : Maybe ( ModuleName.Canonical, Can.Type Name )
         entryMeta =
-            DMap.foldl TOpt.compareGlobal
+            DMap.foldl
                 (\global node acc ->
                     case acc of
                         Just _ ->
@@ -164,7 +164,7 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
 -}
 findEntryPointId : Name -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe ( TOpt.Global, Can.Type TypeIds.MVarId )
 findEntryPointId entryPointName nodes =
-    DMap.foldl TOpt.compareGlobal
+    DMap.foldl
         (\global node acc ->
             case acc of
                 Just _ ->

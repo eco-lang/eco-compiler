@@ -241,7 +241,7 @@ walkExpr scopeName (A.At _ exprInfo) acc =
                 Can.Update expr fields ->
                     let
                         fAcc =
-                            Data.Map.foldl A.compareLocated
+                            Data.Map.foldl
                                 (\_ (Can.FieldUpdate _ e) a -> walkExpr scopeName e a)
                                 acc
                                 fields
@@ -249,7 +249,7 @@ walkExpr scopeName (A.At _ exprInfo) acc =
                     walkExpr scopeName expr fAcc
 
                 Can.Record fields ->
-                    Data.Map.foldl A.compareLocated
+                    Data.Map.foldl
                         (\_ e a -> walkExpr scopeName e a)
                         acc
                         fields

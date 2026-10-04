@@ -175,7 +175,7 @@ collectCallIssues ctx registry expr =
                 ++ collectCallIssues ctx registry elseExpr
 
         Mono.MonoCase _ _ decider branches _ ->
-            collectDeciderIssues ctx registry decider
+            collectDeciderIssues decider
                 ++ List.concatMap (\( _, e ) -> collectCallIssues ctx registry e) branches
 
         Mono.MonoDestruct _ valueExpr _ ->
@@ -219,8 +219,8 @@ collectDefIssues ctx registry def =
 {-| Returns the call check's problems in a case's decision tree, which are
 always none. The context and the registry are ignored.
 -}
-collectDeciderIssues : String -> Mono.SpecializationRegistry -> Mono.Decider Mono.MonoChoice -> List String
-collectDeciderIssues _ _ decider =
+collectDeciderIssues : Mono.Decider Mono.MonoChoice -> List String
+collectDeciderIssues decider =
     collectDeciderIssuesHelp decider
 
 

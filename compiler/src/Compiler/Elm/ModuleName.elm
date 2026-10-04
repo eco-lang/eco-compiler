@@ -267,7 +267,7 @@ chompInner src pos end col =
 
             width : Int
             width =
-                Var.getInnerWidthHelp src pos end word
+                Var.getInnerWidthHelp src pos word
         in
         if width == 0 then
             if word == '.' then

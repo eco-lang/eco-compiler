@@ -2,7 +2,7 @@ module Builder.Deps.Solver exposing
     ( Solver, SolverResult(..), State
     , Env(..), EnvData, Connection(..), initEnv
     , Details(..)
-    , AppSolution(..), addToApp, addToTestApp, removeFromApp
+    , AppSolution(..), addToApp, removeFromApp
     , verify
     , envEncoder, envDecoder
     )
@@ -38,7 +38,7 @@ The solver works by:
 
 # Application Solutions
 
-@docs AppSolution, addToApp, addToTestApp, removeFromApp
+@docs AppSolution, addToApp, removeFromApp
 
 
 # Package Verification
@@ -341,77 +341,6 @@ addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
 
 
 -- ====== ADD TO TEST APP ======
-
-
-{-| Add a package with a specific constraint to test dependencies.
-
-Similar to addToApp but for test-specific dependencies with an explicit version
-constraint. Used when the test framework requires a particular package version range.
-
--}
-addToTestApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> C.Constraint -> Outline.AppOutline -> Task Never (SolverResult AppSolution)
-addToTestApp cache connection registry pkg con (Outline.AppOutline appData) =
-    Stuff.withRegistryLock cache <|
-        let
-            allIndirects : Dict Pkg.Name V.Version
-            allIndirects =
-                Dict.union appData.depsIndirect appData.testIndirect
-
-            allDirects : Dict Pkg.Name V.Version
-            allDirects =
-                Dict.union appData.depsDirect appData.testDirect
-
-            allDeps : Dict Pkg.Name V.Version
-            allDeps =
-                Dict.union allDirects allIndirects
-
-            attempt : (a -> C.Constraint) -> Dict Pkg.Name a -> Solver (Dict Pkg.Name V.Version)
-            attempt toConstraint deps =
-                try (Dict.insert pkg con (Dict.map (\_ -> toConstraint) deps))
-        in
-        case
-            oneOf
-                (attempt C.exactly allDeps)
-                [ attempt C.exactly allDirects
-                , attempt C.untilNextMinor allDirects
-                , attempt C.untilNextMajor allDirects
-                , attempt (\_ -> C.anything) allDirects
-                ]
-        of
-            Solver solver ->
-                solver (State { cache = cache, connection = connection, registry = registry, cDict = Dict.empty })
-                    |> Task.map
-                        (\result ->
-                            case result of
-                                ISOk (State st) new ->
-                                    let
-                                        d : Dict Pkg.Name V.Version
-                                        d =
-                                            Dict.intersect new (Dict.insert pkg V.one appData.depsDirect)
-
-                                        i : Dict Pkg.Name V.Version
-                                        i =
-                                            Dict.diff (getTransitive st.cDict new (Dict.toList d) Dict.empty) d
-
-                                        td : Dict Pkg.Name V.Version
-                                        td =
-                                            Dict.intersect new (Dict.remove pkg appData.testDirect)
-
-                                        ti : Dict Pkg.Name V.Version
-                                        ti =
-                                            Dict.diff new (List.foldr Dict.union Dict.empty [ d, i, td ])
-                                    in
-                                    SolverOk (AppSolution allDeps new (Outline.AppOutline { appData | depsDirect = d, depsIndirect = i, testDirect = td, testIndirect = ti }))
-
-                                ISBack _ ->
-                                    noSolution connection
-
-                                ISErr e ->
-                                    SolverErr e
-                        )
-
-
-
 -- ====== REMOVE FROM APP ======
 
 

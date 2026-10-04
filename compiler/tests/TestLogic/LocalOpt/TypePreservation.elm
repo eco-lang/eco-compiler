@@ -147,7 +147,7 @@ with the name of its global.
 -}
 checkLocalGraph : TypeEnv -> TOpt.LocalGraph Name -> List Violation
 checkLocalGraph env (TOpt.LocalGraph data) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\global node acc ->
             let
                 context =
@@ -391,13 +391,13 @@ checkExpr env context expr =
 
         TOpt.Update _ recordExpr updates _ ->
             checkExpr env context recordExpr
-                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> checkExpr env context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl (\_ updateExpr acc -> checkExpr env context updateExpr ++ acc) [] updates
 
         TOpt.Record fields _ ->
             Dict.foldl (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
         TOpt.TrackedRecord _ fields _ ->
-            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
+            Data.Map.foldl (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
         TOpt.Tuple _ e1 e2 rest _ ->
             checkExpr env context e1

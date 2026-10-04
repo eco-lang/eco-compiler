@@ -1,5 +1,5 @@
 module Compiler.Generate.MLIR.BytesFusion.Reify exposing
-    ( EncoderNode(..), DecoderNode(..), BodyLookup
+    ( EncoderNode, DecoderNode, BodyLookup
     , reifyEncoderWith, reifyDecoder
     , nodesToOps, decoderNodeToOps
     , CountSource, LengthDecoder
@@ -229,7 +229,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
 
                 Mono.MonoVarKernel _ _ "Bytes" name _ ->
                     -- Kernel function from Bytes module
-                    reifyBytesKernelCall bodyLookup registry exprCache name args
+                    reifyBytesKernelCall name args
 
                 -- Curried call: func is itself a call (e.g. from pipe operator expansion).
                 -- Flatten inner args with outer args and try again.
@@ -248,7 +248,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
                                     Nothing
 
                         Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                            reifyBytesKernelCall bodyLookup registry exprCache name2 (innerArgs ++ args)
+                            reifyBytesKernelCall name2 (innerArgs ++ args)
 
                         _ ->
                             Nothing
@@ -271,7 +271,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
                                             Nothing
 
                                 Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                                    reifyBytesKernelCall bodyLookup registry exprCache name2 (innerArgs ++ args)
+                                    reifyBytesKernelCall name2 (innerArgs ++ args)
 
                                 _ ->
                                     Nothing
@@ -409,8 +409,8 @@ reifyBytesEncodeCall bodyLookup registry exprCache name args =
 
 {-| Reify a kernel call (e.g., from Elm.Kernel.Bytes).
 -}
-reifyBytesKernelCall : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyBytesKernelCall _ _ _ name args =
+reifyBytesKernelCall : String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyBytesKernelCall name args =
     -- Kernel functions like write_i8, write_u16, etc.
     case ( name, args ) of
         ( "write_u8", [ valueExpr ] ) ->
@@ -1077,8 +1077,8 @@ reifyDecoder registry exprCache expr =
                         _ ->
                             Nothing
 
-                Mono.MonoVarKernel _ _ "Bytes" name _ ->
-                    reifyBytesKernelDecodeCall registry exprCache name args
+                Mono.MonoVarKernel _ _ "Bytes" _ _ ->
+                    reifyBytesKernelDecodeCall
 
                 -- Curried call: func is itself a call (e.g. from pipe operator expansion).
                 -- Flatten inner args with outer args and try again.
@@ -1096,8 +1096,8 @@ reifyDecoder registry exprCache expr =
                                 _ ->
                                     Nothing
 
-                        Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                            reifyBytesKernelDecodeCall registry exprCache name2 (innerArgs ++ args)
+                        Mono.MonoVarKernel _ _ "Bytes" _ _ ->
+                            reifyBytesKernelDecodeCall
 
                         _ ->
                             Nothing
@@ -1121,8 +1121,8 @@ reifyDecoder registry exprCache expr =
                                         _ ->
                                             Nothing
 
-                                Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                                    reifyBytesKernelDecodeCall registry exprCache name2 (innerArgs ++ args)
+                                Mono.MonoVarKernel _ _ "Bytes" _ _ ->
+                                    reifyBytesKernelDecodeCall
 
                                 _ ->
                                     Nothing
@@ -1266,8 +1266,8 @@ reifyBytesDecodeCall registry exprCache name args =
 
 {-| Reify kernel decode calls.
 -}
-reifyBytesKernelDecodeCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe DecoderNode
-reifyBytesKernelDecodeCall _ _ _ _ =
+reifyBytesKernelDecodeCall : Maybe DecoderNode
+reifyBytesKernelDecodeCall =
     -- Kernel decode functions are internal; typically not exposed
     Nothing
 
@@ -1324,7 +1324,7 @@ reifyAndThenBody registry exprCache firstDecoder closureInfo bodyExpr =
 
         Just paramName ->
             -- Try to match length-prefixed patterns first
-            case matchLengthPrefixedPattern registry exprCache paramName bodyExpr of
+            case matchLengthPrefixedPattern registry paramName bodyExpr of
                 Just patternConstructor ->
                     -- Convert firstDecoder to LengthDecoder if it's an integer type
                     case decoderToLengthDecoder firstDecoder of
@@ -1350,11 +1350,10 @@ Returns a constructor that takes a LengthDecoder.
 -}
 matchLengthPrefixedPattern :
     Mono.SpecializationRegistry
-    -> Dict String Mono.MonoExpr
     -> String
     -> Mono.MonoExpr
     -> Maybe (LengthDecoder -> DecoderNode)
-matchLengthPrefixedPattern registry _ paramName bodyExpr =
+matchLengthPrefixedPattern registry paramName bodyExpr =
     case bodyExpr of
         Mono.MonoCall _ func [ argExpr ] _ _ ->
             case func of

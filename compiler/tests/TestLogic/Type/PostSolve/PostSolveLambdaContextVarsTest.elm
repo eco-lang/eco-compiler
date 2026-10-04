@@ -173,7 +173,7 @@ checkLambdaContextVars exprNode nodeTypesPre nodeTypesPost annotations =
 
                 newVars =
                     EverySet.diff postVars contextVars
-                        |> EverySet.toList compare
+                        |> EverySet.toList
             in
             if List.isEmpty newVars then
                 Nothing

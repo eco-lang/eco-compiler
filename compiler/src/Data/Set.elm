@@ -129,9 +129,9 @@ diff (EverySet d1) (EverySet d2) =
 {-| Returns the elements in ascending order of their projections. The ordering
 function is ignored.
 -}
-toList : (a -> a -> Order) -> EverySet c a -> List a
-toList keyComparison (EverySet d) =
-    Dict.keys keyComparison d
+toList : EverySet c a -> List a
+toList (EverySet d) =
+    Dict.keys d
 
 
 {-| Creates a set from a list, inserting from left to right. Where two elements
@@ -145,9 +145,9 @@ fromList toComparable xs =
 {-| Folds `f` over the elements in descending order of their projections,
 highest first. The ordering function is ignored.
 -}
-foldr : (a -> a -> Order) -> (a -> b -> b) -> b -> EverySet c a -> b
-foldr keyComparison f b (EverySet d) =
-    Dict.foldr keyComparison (\k _ result -> f k result) b d
+foldr : (a -> b -> b) -> b -> EverySet c a -> b
+foldr f b (EverySet d) =
+    Dict.foldr (\k _ result -> f k result) b d
 
 
 {-| Keeps only the elements for which `p` returns `True`.

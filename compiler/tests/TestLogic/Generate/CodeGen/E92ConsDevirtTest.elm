@@ -251,7 +251,7 @@ the failure message uses it.
 -}
 consNodeKeys : TOpt.GlobalGraph n -> List String
 consNodeKeys (TOpt.GlobalGraph nodes _ _ _ _) =
-    Data.Map.foldl (\_ _ -> EQ) (\g _ acc -> TOpt.toComparableGlobal g :: acc) [] nodes
+    Data.Map.foldl (\g _ acc -> TOpt.toComparableGlobal g :: acc) [] nodes
         |> List.filter (String.contains "cons")
 
 

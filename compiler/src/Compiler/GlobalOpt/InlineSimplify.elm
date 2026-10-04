@@ -442,7 +442,7 @@ buildCandidates cfg state (TOpt.GlobalGraph nodes _ annotations _ _) =
                 Nothing ->
                     acc
     in
-    Dict.foldl TOpt.compareGlobal
+    Dict.foldl
         step
         { index = CoreDict.empty
         , recursiveSkipped = 0
@@ -831,13 +831,13 @@ children expr =
             [ inner ]
 
         TOpt.Update _ record fields _ ->
-            record :: Dict.values A.compareLocated fields
+            record :: Dict.values fields
 
         TOpt.Record fields _ ->
             CoreDict.values fields
 
         TOpt.TrackedRecord _ fields _ ->
-            Dict.values A.compareLocated fields
+            Dict.values fields
 
         TOpt.Tuple _ a b rest _ ->
             a :: b :: rest
@@ -955,12 +955,12 @@ recursiveGlobals nodes =
                     EverySet.empty
 
         edges =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node acc ->
                     ( TOpt.toComparableGlobal g
                     , TOpt.toComparableGlobal g
                     , List.map TOpt.toComparableGlobal
-                        (EverySet.toList TOpt.compareGlobal (depsOf node))
+                        (EverySet.toList (depsOf node))
                     )
                         :: acc
                 )
@@ -981,7 +981,7 @@ recursiveGlobals nodes =
                 (Graph.stronglyConnComp edges)
 
         structural =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node acc ->
                     case node of
                         TOpt.Cycle _ _ _ _ ->
@@ -1120,13 +1120,13 @@ cost expr =
             1 + cost inner
 
         TOpt.Update _ inner fields _ ->
-            3 + cost inner + Dict.foldl A.compareLocated (\_ e a -> a + cost e) 0 fields
+            3 + cost inner + Dict.foldl (\_ e a -> a + cost e) 0 fields
 
         TOpt.Record fields _ ->
             3 + CoreDict.foldl (\_ e a -> a + cost e) 0 fields
 
         TOpt.TrackedRecord _ fields _ ->
-            3 + Dict.foldl A.compareLocated (\_ e a -> a + cost e) 0 fields
+            3 + Dict.foldl (\_ e a -> a + cost e) 0 fields
 
         TOpt.Tuple _ a b rest _ ->
             3 + cost a + cost b + sumBy cost rest
@@ -1182,7 +1182,7 @@ rewriteGraph : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph Type
 rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
     let
         ( nodes1, ctx1 ) =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node ( acc, c ) ->
                     let
                         cIn =
@@ -1418,7 +1418,7 @@ rewriteLocatedFields :
     -> Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
     -> ( Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteLocatedFields ctx fields =
-    Dict.foldl A.compareLocated
+    Dict.foldl
         (\k e ( acc, c ) ->
             let
                 ( e1, c2 ) =

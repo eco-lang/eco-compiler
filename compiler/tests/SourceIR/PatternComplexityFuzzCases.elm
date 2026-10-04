@@ -89,13 +89,13 @@ in lists, and a list and a tuple in a tuple, each checking its module with
 nestedPatternTests : (Src.Module -> Expectation) -> String -> Test
 nestedPatternTests expectFn condStr =
     Test.describe ("Nested patterns " ++ condStr)
-        [ Test.fuzz (nestedTuplePatternCaseFuzzer (emptyScope 2))
+        [ Test.fuzz nestedTuplePatternCaseFuzzer
             ("Nested tuple patterns " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
-        , Test.fuzz (nestedListPatternCaseFuzzer (emptyScope 2))
+        , Test.fuzz nestedListPatternCaseFuzzer
             ("Nested list patterns " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
-        , Test.fuzz (mixedNestedPatternCaseFuzzer (emptyScope 2))
+        , Test.fuzz mixedNestedPatternCaseFuzzer
             ("Mixed nested patterns " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
         ]
@@ -109,8 +109,8 @@ The first pattern matches every subject, so the other two branches are
 redundant.
 
 -}
-nestedTuplePatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-nestedTuplePatternCaseFuzzer _ =
+nestedTuplePatternCaseFuzzer : Fuzzer Src.Expr
+nestedTuplePatternCaseFuzzer =
     Fuzz.map2
         (\val1 val2 ->
             let
@@ -150,8 +150,8 @@ The second pattern matches only lists the first already matches, so its branch
 is redundant.
 
 -}
-nestedListPatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-nestedListPatternCaseFuzzer _ =
+nestedListPatternCaseFuzzer : Fuzzer Src.Expr
+nestedListPatternCaseFuzzer =
     Fuzz.map2
         (\val1 val2 ->
             let
@@ -196,8 +196,8 @@ The first two patterns between them match every subject, so the last two
 branches are redundant.
 
 -}
-mixedNestedPatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-mixedNestedPatternCaseFuzzer _ =
+mixedNestedPatternCaseFuzzer : Fuzzer Src.Expr
+mixedNestedPatternCaseFuzzer =
     Fuzz.map3
         (\val1 val2 val3 ->
             let
@@ -249,7 +249,7 @@ with `expectFn`.
 asPatternTests : (Src.Module -> Expectation) -> String -> Test
 asPatternTests expectFn condStr =
     Test.describe ("As-patterns " ++ condStr)
-        [ Test.fuzz (asPatternCaseFuzzer (emptyScope 2))
+        [ Test.fuzz asPatternCaseFuzzer
             ("As-patterns with nested inner " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
         ]
@@ -263,8 +263,8 @@ The first pattern matches every subject, so the other two branches are
 redundant.
 
 -}
-asPatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-asPatternCaseFuzzer _ =
+asPatternCaseFuzzer : Fuzzer Src.Expr
+asPatternCaseFuzzer =
     Fuzz.map2
         (\val1 val2 ->
             let
@@ -311,7 +311,7 @@ overlappingPatternTests expectFn condStr =
         [ Test.fuzz (overlappingIntPatternCaseFuzzer (emptyScope 2))
             ("Overlapping int patterns " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
-        , Test.fuzz (overlappingTuplePatternCaseFuzzer (emptyScope 2))
+        , Test.fuzz overlappingTuplePatternCaseFuzzer
             ("Overlapping tuple patterns " ++ condStr)
             (\expr -> expectFn (makeModule "testValue" expr))
         ]
@@ -357,8 +357,8 @@ returning 1, 2, 3 and `x + y`. The scope is ignored.
 The first two patterns both match `(0, 0)`, and the last matches every subject.
 
 -}
-overlappingTuplePatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-overlappingTuplePatternCaseFuzzer _ =
+overlappingTuplePatternCaseFuzzer : Fuzzer Src.Expr
+overlappingTuplePatternCaseFuzzer =
     Fuzz.map2
         (\val1 val2 ->
             let

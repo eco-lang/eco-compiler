@@ -779,7 +779,7 @@ translateDispatch expr s0 =
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
             case
                 connectRecordFields
-                    (List.map (\( locName, e ) -> ( A.toValue locName, e )) (DMap.toList A.compareLocated fields))
+                    (List.map (\( locName, e ) -> ( A.toValue locName, e )) (DMap.toList fields))
                     meta.tipe
                     s0
             of
@@ -792,7 +792,7 @@ translateDispatch expr s0 =
                                         ( ( A.toValue locName, me ) :: acc, sx1 )
                             )
                             []
-                            (DMap.toList A.compareLocated fields)
+                            (DMap.toList fields)
                             s1
                     of
                         ( monoFieldsRev, s2 ) ->
@@ -4457,7 +4457,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                         ( monoAfterSubst, sC ) ->
                             case currentMVarEnv sC of
                                 ( mvarEnv, sD ) ->
-                                    case KernelAbi.deriveKernelAbiMode kernelId canFuncType mvarEnv of
+                                    case KernelAbi.deriveKernelAbiMode kernelId canFuncType of
                                         KernelAbi.UseSubstitution ->
                                             ( monoAfterSubst, sD )
 
@@ -5020,7 +5020,7 @@ translateUpdate record updates canType s0 =
                                         ( ( A.toValue locName, me ) :: acc, sx1 )
                             )
                             []
-                            (DMap.toList A.compareLocated updates)
+                            (DMap.toList updates)
                             s2
                     of
                         ( monoUpdatesRev, s3 ) ->
@@ -5653,7 +5653,7 @@ specializeNumberDestruct dname path dmeta rootName eagerRootType body s0 =
                                                 Nothing ->
                                                     []
                                     in
-                                    case Engine.traverse (buildRefinedDestructor rootName eagerRootType path dmeta) instances s4 of
+                                    case Engine.traverse (buildRefinedDestructor rootName eagerRootType path) instances s4 of
                                         ( maybeDestructors, s5 ) ->
                                             let
                                                 destructors =
@@ -5669,13 +5669,13 @@ instance with only this slot refined (overlay the leaf onto the eager root type)
 register it on the root's multi-entry, and build the renamed destructor pointing
 at that fresh root instance. Returns Nothing if the slot can't be refined.
 -}
-buildRefinedDestructor : Name -> Mono.MonoType -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Engine.NumberInstance -> Step (Maybe Mono.MonoDestructor)
-buildRefinedDestructor rootName eagerRootType path dmeta inst s0 =
-    buildRefinedDestructorWith s0.env.globalTypeEnv rootName eagerRootType path dmeta inst s0
+buildRefinedDestructor : Name -> Mono.MonoType -> TOpt.Path -> Engine.NumberInstance -> Step (Maybe Mono.MonoDestructor)
+buildRefinedDestructor rootName eagerRootType path inst s0 =
+    buildRefinedDestructorWith s0.env.globalTypeEnv rootName eagerRootType path inst s0
 
 
-buildRefinedDestructorWith : TypeEnv.GlobalTypeEnv -> Name -> Mono.MonoType -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Engine.NumberInstance -> Step (Maybe Mono.MonoDestructor)
-buildRefinedDestructorWith gte rootName eagerRootType path _ inst s0 =
+buildRefinedDestructorWith : TypeEnv.GlobalTypeEnv -> Name -> Mono.MonoType -> TOpt.Path -> Engine.NumberInstance -> Step (Maybe Mono.MonoDestructor)
+buildRefinedDestructorWith gte rootName eagerRootType path inst s0 =
     case refineRootInstance gte eagerRootType path inst.monoType of
         Just refinedRootType ->
             case Engine.recordNumberInstance rootName refinedRootType s0 of

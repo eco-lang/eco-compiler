@@ -5,7 +5,7 @@ module Compiler.GlobalOpt.Borrow.Constrain exposing
     , Gen
     , Get
     , Occ
-    , Reason(..)
+    , Reason
     , constrainClosureForSig
     , constrainDef
     , emptyEnv

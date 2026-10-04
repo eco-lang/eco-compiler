@@ -268,7 +268,7 @@ rewriteGraph : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph Type
 rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
     let
         ( newNodes, ctx1 ) =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node ( acc, c ) ->
                     let
                         ( newNode, c1 ) =
@@ -603,7 +603,7 @@ isCtorAlias gate body =
 -}
 buildCtorSet : TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String ()
 buildCtorSet (TOpt.GlobalGraph nodes _ _ _ _) =
-    Dict.foldl TOpt.compareGlobal
+    Dict.foldl
         (\g node acc ->
             case node of
                 TOpt.Ctor _ _ _ ->
@@ -753,7 +753,7 @@ rewriteExpr ctx expr =
                     rewriteExpr ctx record
 
                 ( newFields, ctx2 ) =
-                    Dict.foldl A.compareLocated
+                    Dict.foldl
                         (\k e ( acc, c ) ->
                             let
                                 ( e1, c1 ) =
@@ -785,7 +785,7 @@ rewriteExpr ctx expr =
         TOpt.TrackedRecord region fields meta ->
             let
                 ( newFields, ctx1 ) =
-                    Dict.foldl A.compareLocated
+                    Dict.foldl
                         (\k e ( acc, c ) ->
                             let
                                 ( e1, c1 ) =
@@ -1299,10 +1299,10 @@ cheap ctx expr =
             List.all (cheap ctx) (CoreDict.values fields)
 
         TOpt.TrackedRecord _ fields _ ->
-            List.all (cheap ctx) (Dict.values A.compareLocated fields)
+            List.all (cheap ctx) (Dict.values fields)
 
         TOpt.Update _ record fields _ ->
-            cheap ctx record && List.all (cheap ctx) (Dict.values A.compareLocated fields)
+            cheap ctx record && List.all (cheap ctx) (Dict.values fields)
 
         TOpt.Access inner _ _ _ ->
             cheap ctx inner
@@ -1504,7 +1504,7 @@ inliner having run.
 -}
 buildIndex : TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String Callee
 buildIndex (TOpt.GlobalGraph nodes _ _ _ _) =
-    Dict.foldl TOpt.compareGlobal
+    Dict.foldl
         (\g node acc ->
             case node of
                 TOpt.Define e _ _ ->
@@ -1582,7 +1582,7 @@ buildPostArity gate (TOpt.GlobalGraph nodes _ _ _ _) =
             else
                 base
     in
-    Dict.foldl TOpt.compareGlobal
+    Dict.foldl
         (\g node acc ->
             let
                 key =
@@ -1687,7 +1687,7 @@ whose graph arity is therefore 0 forever. See `Gate.aliasCost`.
 -}
 buildAliasCost : TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String Int
 buildAliasCost (TOpt.GlobalGraph nodes _ _ _ _) =
-    Dict.foldl TOpt.compareGlobal
+    Dict.foldl
         (\g node acc ->
             case node of
                 TOpt.Define e _ _ ->
@@ -1761,13 +1761,13 @@ cost expr =
             1 + cost inner
 
         TOpt.Update _ inner fields _ ->
-            3 + Dict.foldl A.compareLocated (\_ e a -> a + cost e) (cost inner) fields
+            3 + Dict.foldl (\_ e a -> a + cost e) (cost inner) fields
 
         TOpt.Record fields _ ->
             3 + CoreDict.foldl (\_ e a -> a + cost e) 0 fields
 
         TOpt.TrackedRecord _ fields _ ->
-            3 + Dict.foldl A.compareLocated (\_ e a -> a + cost e) 0 fields
+            3 + Dict.foldl (\_ e a -> a + cost e) 0 fields
 
         TOpt.Tuple _ a b rest _ ->
             3 + cost a + cost b + sumBy cost rest

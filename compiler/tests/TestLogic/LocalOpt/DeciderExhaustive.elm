@@ -39,8 +39,6 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict
 import Expect
@@ -111,7 +109,7 @@ it.
 -}
 collectNestedPatternChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectNestedPatternChecks (TOpt.LocalGraph data) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\global node acc ->
             let
                 context =
@@ -180,7 +178,7 @@ collectExprNestedPatternIssues : String -> TOpt.Expr Name -> List (() -> Expect.
 collectExprNestedPatternIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
-            checkDeciderNestedPatterns context decider
+            checkDeciderNestedPatterns decider
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprNestedPatternIssues context branchExpr) branches
 
         TOpt.Function _ _ bodyExpr _ ->
@@ -215,13 +213,13 @@ collectExprNestedPatternIssues context expr =
 
         TOpt.Update _ recordExpr updates _ ->
             collectExprNestedPatternIssues context recordExpr
-                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprNestedPatternIssues context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl (\_ updateExpr acc -> collectExprNestedPatternIssues context updateExpr ++ acc) [] updates
 
         TOpt.Record fieldExprs _ ->
             Dict.foldl (\_ fieldExpr acc -> collectExprNestedPatternIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.TrackedRecord _ fieldExprs _ ->
-            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprNestedPatternIssues context fieldExpr ++ acc) [] fieldExprs
+            Data.Map.foldl (\_ fieldExpr acc -> collectExprNestedPatternIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.Tuple _ e1 e2 rest _ ->
             collectExprNestedPatternIssues context e1
@@ -236,8 +234,8 @@ collectExprNestedPatternIssues context expr =
 at each `Chain` and `FanOut`. A `Leaf` gives none, and a branch held inline in
 it is not entered.
 -}
-checkDeciderNestedPatterns : String -> TOpt.Decider (TOpt.Choice Name) -> List (() -> Expect.Expectation)
-checkDeciderNestedPatterns context decider =
+checkDeciderNestedPatterns : TOpt.Decider (TOpt.Choice Name) -> List (() -> Expect.Expectation)
+checkDeciderNestedPatterns decider =
     case decider of
         TOpt.Leaf _ ->
             []
@@ -245,24 +243,24 @@ checkDeciderNestedPatterns context decider =
         TOpt.Chain tests success failure ->
             let
                 pathIssues =
-                    List.concatMap (\( path, _ ) -> checkPathForNesting context path) tests
+                    List.concatMap (\_ -> checkPathForNesting) tests
             in
             pathIssues
-                ++ checkDeciderNestedPatterns context success
-                ++ checkDeciderNestedPatterns context failure
+                ++ checkDeciderNestedPatterns success
+                ++ checkDeciderNestedPatterns failure
 
-        TOpt.FanOut path tests fallback ->
-            checkPathForNesting context path
-                ++ List.concatMap (\( _, subDecider ) -> checkDeciderNestedPatterns context subDecider) tests
-                ++ checkDeciderNestedPatterns context fallback
+        TOpt.FanOut _ tests fallback ->
+            checkPathForNesting
+                ++ List.concatMap (\( _, subDecider ) -> checkDeciderNestedPatterns subDecider) tests
+                ++ checkDeciderNestedPatterns fallback
 
 
 {-| Returns the checks for one decider path: none, whatever the path. Both
 arguments are ignored, so no path can make `expectDeciderNoNestedPatterns`
 fail.
 -}
-checkPathForNesting : String -> DT.Path -> List (() -> Expect.Expectation)
-checkPathForNesting _ _ =
+checkPathForNesting : List (() -> Expect.Expectation)
+checkPathForNesting =
     []
 
 
@@ -277,7 +275,7 @@ from `globalToString`, is passed down as context, though no check uses it.
 -}
 collectExhaustivenessChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectExhaustivenessChecks (TOpt.LocalGraph data) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\global node acc ->
             let
                 context =
@@ -371,13 +369,13 @@ collectExprExhaustivenessIssues context expr =
 
         TOpt.Update _ recordExpr updates _ ->
             collectExprExhaustivenessIssues context recordExpr
-                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprExhaustivenessIssues context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl (\_ updateExpr acc -> collectExprExhaustivenessIssues context updateExpr ++ acc) [] updates
 
         TOpt.Record fieldExprs _ ->
             Dict.foldl (\_ fieldExpr acc -> collectExprExhaustivenessIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.TrackedRecord _ fieldExprs _ ->
-            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprExhaustivenessIssues context fieldExpr ++ acc) [] fieldExprs
+            Data.Map.foldl (\_ fieldExpr acc -> collectExprExhaustivenessIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.Tuple _ e1 e2 rest _ ->
             collectExprExhaustivenessIssues context e1

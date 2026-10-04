@@ -876,14 +876,14 @@ chainedInsertCases expectFn =
 -}
 dictInsertChain5 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChain5 expectFn _ =
-    dictInsertChainN 5 (tTuple tString tInt) expectFn
+    dictInsertChainN 5 expectFn
 
 
 {-| Applies `expectFn` to the `dictInsertChainN` program with ten inserts.
 -}
 dictInsertChain10 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChain10 expectFn _ =
-    dictInsertChainN 10 (tTuple tString tInt) expectFn
+    dictInsertChainN 10 expectFn
 
 
 {-| Applies `expectFn` to the `dictInsertChainN` program with five inserts. The
@@ -892,7 +892,7 @@ one `dictInsertChain5` checks.
 -}
 dictInsertChainListKey5 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChainListKey5 expectFn _ =
-    dictInsertChainN 5 (tList tString) expectFn
+    dictInsertChainN 5 expectFn
 
 
 {-| Applies `expectFn` to a program whose `testValue` inserts `n` entries into an
@@ -920,8 +920,8 @@ literals. `MyDict`, `insert` and `size` are as in `dictInsertFromPolyCaller`.
         size dn
 
 -}
-dictInsertChainN : Int -> Src.Type -> (Src.Module -> Expectation) -> Expectation
-dictInsertChainN n _ expectFn =
+dictInsertChainN : Int -> (Src.Module -> Expectation) -> Expectation
+dictInsertChainN n expectFn =
     let
         tMyDict k v =
             tType "MyDict" [ k, v ]

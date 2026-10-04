@@ -404,13 +404,13 @@ collectExprNodeIdsAsList node =
 
         Can.Update record fields ->
             collectExprIdsAsList record
-                ++ DMap.foldl A.compareLocated
+                ++ DMap.foldl
                     (\_ (Can.FieldUpdate _ expr) acc -> collectExprIdsAsList expr ++ acc)
                     []
                     fields
 
         Can.Record fields ->
-            DMap.foldl A.compareLocated (\_ expr acc -> collectExprIdsAsList expr ++ acc) [] fields
+            DMap.foldl (\_ expr acc -> collectExprIdsAsList expr ++ acc) [] fields
 
         Can.Unit ->
             []

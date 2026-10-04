@@ -1,5 +1,5 @@
 module Compiler.Json.Encode exposing
-    ( Value(..)
+    ( Value
     , string, name, chars, bool, int, null
     , array, list, object
     , stdDict

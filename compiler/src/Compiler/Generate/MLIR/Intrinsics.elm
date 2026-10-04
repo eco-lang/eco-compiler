@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Intrinsics exposing (Intrinsic(..), CompareKind(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOps)
+module Compiler.Generate.MLIR.Intrinsics exposing (Intrinsic(..), CompareKind, kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOps)
 
 {-| Intrinsic operations for the MLIR backend.
 
@@ -380,10 +380,10 @@ kernelIntrinsic home name argTypes resultType =
             basicsIntrinsic name argTypes resultType
 
         "Bitwise" ->
-            bitwiseIntrinsic name argTypes resultType
+            bitwiseIntrinsic name argTypes
 
         "Utils" ->
-            utilsIntrinsic name argTypes resultType
+            utilsIntrinsic name argTypes
 
         "JsArray" ->
             jsArrayIntrinsic name argTypes resultType
@@ -392,10 +392,10 @@ kernelIntrinsic home name argTypes resultType =
             listIntrinsic name argTypes resultType
 
         "Char" ->
-            charIntrinsic name argTypes resultType
+            charIntrinsic name argTypes
 
         "String" ->
-            stringIntrinsic name argTypes resultType
+            stringIntrinsic name argTypes
 
         _ ->
             Nothing
@@ -593,8 +593,8 @@ basicsIntrinsic name argTypes resultType =
             Nothing
 
 
-bitwiseIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-bitwiseIntrinsic name argTypes _ =
+bitwiseIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
+bitwiseIntrinsic name argTypes =
     case ( name, argTypes ) of
         ( "and", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.and" })
@@ -621,8 +621,8 @@ bitwiseIntrinsic name argTypes _ =
             Nothing
 
 
-utilsIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-utilsIntrinsic name argTypes _ =
+utilsIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
+utilsIntrinsic name argTypes =
     case ( name, argTypes ) of
         -- Int comparisons
         ( "equal", [ Mono.MInt, Mono.MInt ] ) ->
@@ -771,8 +771,8 @@ utilsIntrinsic name argTypes _ =
             Nothing
 
 
-charIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-charIntrinsic name argTypes _ =
+charIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
+charIntrinsic name argTypes =
     case ( name, argTypes ) of
         ( "toCode", [ Mono.MChar ] ) ->
             Just CharToInt
@@ -784,8 +784,8 @@ charIntrinsic name argTypes _ =
             Nothing
 
 
-stringIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-stringIntrinsic name argTypes _ =
+stringIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
+stringIntrinsic name argTypes =
     case ( name, argTypes ) of
         ( "fromNumber", [ Mono.MInt ] ) ->
             Just StringFromInt

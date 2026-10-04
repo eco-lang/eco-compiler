@@ -149,7 +149,7 @@ starts with a digit, so the result is empty.
 computeHoleVarNames : Compile.DetailedArtifacts -> EverySet String String
 computeHoleVarNames artifacts =
     artifacts.syntheticExprIds
-        |> EverySet.toList compare
+        |> EverySet.toList
         |> List.filterMap
             (\exprId ->
                 case Array.get exprId artifacts.nodeTypesPre |> Maybe.andThen identity of
@@ -199,7 +199,7 @@ checkNoHoleVars nodeId postType holeVarNames exprNodes =
 
         foundHoles =
             freeVars
-                |> EverySet.toList compare
+                |> EverySet.toList
                 |> List.filter (\name -> EverySet.member identity name holeVarNames)
     in
     if List.isEmpty foundHoles then

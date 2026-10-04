@@ -18,4 +18,4 @@ import Data.Map as Dict exposing (Dict)
 -}
 any : (v -> Bool) -> Dict c k v -> Bool
 any isGood dict =
-    Dict.foldl (\_ _ -> EQ) (\_ v acc -> isGood v || acc) False dict
+    Dict.foldl (\_ v acc -> isGood v || acc) False dict

@@ -167,10 +167,10 @@ letPortWithVars : Name -> Can.Port -> IO Constraint -> IO Constraint
 letPortWithVars name port_ makeConstraint =
     case port_ of
         Can.Incoming { freeVars, func } ->
-            IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
+            IO.traverseMapWithKey identity (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
                 |> IO.andThen
                     (\vars ->
-                        Instantiate.fromSrcType (Dict.fromList (List.map (\( k, v ) -> ( k, VarN v )) (DMap.toList compare vars))) func
+                        Instantiate.fromSrcType (Dict.fromList (List.map (\( k, v ) -> ( k, VarN v )) (DMap.toList vars))) func
                             |> IO.andThen
                                 (\tipe ->
                                     let
@@ -179,15 +179,15 @@ letPortWithVars name port_ makeConstraint =
                                             Dict.singleton name (A.At A.zero tipe)
                                     in
                                     makeConstraint
-                                        |> IO.map (\con -> CLet (DMap.values compare vars) [] header CTrue con)
+                                        |> IO.map (\con -> CLet (DMap.values vars) [] header CTrue con)
                                 )
                     )
 
         Can.Outgoing { freeVars, func } ->
-            IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
+            IO.traverseMapWithKey identity (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
                 |> IO.andThen
                     (\vars ->
-                        Instantiate.fromSrcType (Dict.fromList (List.map (\( k, v ) -> ( k, VarN v )) (DMap.toList compare vars))) func
+                        Instantiate.fromSrcType (Dict.fromList (List.map (\( k, v ) -> ( k, VarN v )) (DMap.toList vars))) func
                             |> IO.andThen
                                 (\tipe ->
                                     let
@@ -196,7 +196,7 @@ letPortWithVars name port_ makeConstraint =
                                             Dict.singleton name (A.At A.zero tipe)
                                     in
                                     makeConstraint
-                                        |> IO.map (\con -> CLet (DMap.values compare vars) [] header CTrue con)
+                                        |> IO.map (\con -> CLet (DMap.values vars) [] header CTrue con)
                                 )
                     )
 

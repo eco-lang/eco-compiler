@@ -23,12 +23,10 @@ import Terminal.Diff as Diff
 import Terminal.Init as Init
 import Terminal.Install as Install
 import Terminal.Make as Make
-import Terminal.Repl as Repl
 import Terminal.Terminal as Terminal
 import Terminal.Terminal.Chomp as Chomp
 import Terminal.Terminal.Helpers as Terminal
 import Terminal.Terminal.Internal as Terminal
-import Terminal.Test as Test
 import Terminal.Uninstall as Uninstall
 
 
@@ -46,14 +44,14 @@ app : Task Never ()
 app =
     Terminal.app intro
         outro
-        [ Terminal.disabled repl
+        [ Terminal.disabled
         , Terminal.enabled init
         , Terminal.enabled make
         , Terminal.enabled install
         , Terminal.enabled uninstall
         , Terminal.enabled bump
         , Terminal.enabled diff
-        , Terminal.disabled test
+        , Terminal.disabled
         ]
 
 
@@ -144,76 +142,6 @@ init =
 
 
 -- ====== REPL ======
-
-
-repl : Terminal.Command
-repl =
-    let
-        summary : String
-        summary =
-            "Open up an interactive programming session. Type in Elm expressions like (2 + 2) or (String.length \"test\") and see if they equal four!"
-
-        details : String
-        details =
-            "The `repl` command opens up an interactive programming session:"
-
-        example : D.Doc
-        example =
-            reflow
-                ("Start working through <https://guide.elm-lang.org> to learn how to use this! "
-                    ++ "It has a whole chapter that uses the REPL for everything, so that is probably the quickest way to get started."
-                )
-
-        replFlags : Terminal.Flags
-        replFlags =
-            Terminal.flags
-                |> Terminal.more (Terminal.flag "interpreter" interpreter "Path to a alternate JS interpreter, like node or nodejs.")
-                |> Terminal.more
-                    (Terminal.onOff "no-colors"
-                        ("Turn off the colors in the REPL. This can help if you are having trouble reading the values. "
-                            ++ "Some terminals use a custom color scheme that diverges significantly from the standard ANSI colors, "
-                            ++ "so another path may be to pick a more standard color scheme."
-                        )
-                    )
-    in
-    Terminal.Command
-        { name = "repl"
-        , summary = Terminal.Common summary
-        , details = details
-        , example = example
-        , args = Terminal.noArgs
-        , flags = replFlags
-        , run =
-            \chunks ->
-                Chomp.chomp Nothing
-                    chunks
-                    [ Chomp.chompExactly (Chomp.pure ())
-                    ]
-                    (Chomp.pure Repl.Flags
-                        |> Chomp.apply (Chomp.chompNormalFlag "interpreter" interpreter Just)
-                        |> Chomp.apply (Chomp.chompOnOffFlag "no-colors")
-                        |> Chomp.andThen
-                            (\value ->
-                                Chomp.checkForUnknownFlags replFlags
-                                    |> Chomp.map (\_ -> value)
-                            )
-                    )
-                    |> Tuple.second
-                    |> Result.map (\( args, flags ) -> Repl.run args flags)
-        }
-
-
-interpreter : Terminal.Parser
-interpreter =
-    Terminal.Parser
-        { singular = "interpreter"
-        , plural = "interpreters"
-        , suggest = \_ -> Task.succeed []
-        , examples = \_ -> Task.succeed [ "node", "nodejs" ]
-        }
-
-
-
 -- ====== MAKE ======
 
 
@@ -642,80 +570,6 @@ diff =
 
 
 -- ====== TEST ======
-
-
-test : Terminal.Command
-test =
-    let
-        details : String
-        details =
-            "The `test` command runs tests."
-
-        example : D.Doc
-        example =
-            stack
-                [ reflow "For example:"
-                , D.green (D.fromChars "eco test") |> D.indent 4
-                , reflow "Run tests in the tests/ folder."
-                , D.green (D.fromChars "eco test src/Main.elm") |> D.indent 4
-                , reflow "Run tests in files matching the glob."
-                ]
-
-        testArgs : Terminal.Args
-        testArgs =
-            Terminal.zeroOrMore Terminal.filePath
-
-        testFlags : Terminal.Flags
-        testFlags =
-            Terminal.flags
-                |> Terminal.more (Terminal.flag "fuzz" int "Run with a specific fuzzer seed (default: random)")
-                |> Terminal.more (Terminal.flag "seed" int "Define how many times each fuzz-test should run (default: 100)")
-                |> Terminal.more (Terminal.flag "report" Test.format "Specify which format to use for reporting test results (choices: \"json\", \"junit\", \"console\", default: \"console\")")
-    in
-    Terminal.Command
-        { name = "test"
-        , summary = Terminal.Uncommon
-        , details = details
-        , example = example
-        , args = testArgs
-        , flags = testFlags
-        , run =
-            \chunks ->
-                Chomp.chomp Nothing
-                    chunks
-                    [ Chomp.chompMultiple (Chomp.pure identity) Terminal.filePath Terminal.parseFilePath
-                    ]
-                    (Chomp.pure Test.Flags
-                        |> Chomp.apply (Chomp.chompNormalFlag "seed" int parseInt)
-                        |> Chomp.apply (Chomp.chompNormalFlag "fuzz" int parseInt)
-                        |> Chomp.apply (Chomp.chompNormalFlag "report" Test.format Test.parseReport)
-                        |> Chomp.andThen
-                            (\value ->
-                                Chomp.checkForUnknownFlags testFlags
-                                    |> Chomp.map (\_ -> value)
-                            )
-                    )
-                    |> Tuple.second
-                    |> Result.map (\( args, flags ) -> Test.run args flags)
-        }
-
-
-int : Terminal.Parser
-int =
-    Terminal.Parser
-        { singular = "int"
-        , plural = "ints"
-        , suggest = \_ -> Task.succeed []
-        , examples = \_ -> Task.succeed []
-        }
-
-
-parseInt : String -> Maybe Int
-parseInt =
-    String.toInt
-
-
-
 -- ====== HELPERS ======
 
 

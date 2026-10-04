@@ -526,7 +526,7 @@ solveScc nodes indexToSpecId scc ( table, bailouts, maxIter ) =
         Graph.AcyclicSCC idx ->
             case Array.get idx indexToSpecId of
                 Just specId ->
-                    ( setSig nodes table specId (analyzeAndReadback nodes table specId), bailouts, maxIter )
+                    ( setSig table specId (analyzeAndReadback nodes table specId), bailouts, maxIter )
 
                 Nothing ->
                     ( table, bailouts, maxIter )
@@ -537,7 +537,7 @@ solveScc nodes indexToSpecId scc ( table, bailouts, maxIter ) =
                     List.filterMap (\i -> Array.get i indexToSpecId) idxs
 
                 table0 =
-                    List.foldl (\sid t -> setSig nodes t sid (Just (initSig nodes sid))) table specIds
+                    List.foldl (\sid t -> setSig t sid (Just (initSig nodes sid))) table specIds
 
                 ( tableN, iters, converged ) =
                     iterateScc nodes specIds table0 0
@@ -547,7 +547,7 @@ solveScc nodes indexToSpecId scc ( table, bailouts, maxIter ) =
 
             else
                 -- bailout: total poison fallback (design §5.3 discipline)
-                ( List.foldl (\sid t -> setSig nodes t sid (Just (allOwnedSigFor nodes sid))) tableN specIds
+                ( List.foldl (\sid t -> setSig t sid (Just (allOwnedSigFor nodes sid))) tableN specIds
                 , bailouts + 1
                 , max maxIter iters
                 )
@@ -571,10 +571,10 @@ iterateScc nodes specIds table iter =
                                             ( t, ch )
 
                                         else
-                                            ( setSig nodes t sid (Just newSig), True )
+                                            ( setSig t sid (Just newSig), True )
 
                                     Nothing ->
-                                        ( setSig nodes t sid (Just newSig), True )
+                                        ( setSig t sid (Just newSig), True )
 
                             Nothing ->
                                 ( t, ch )
@@ -589,8 +589,8 @@ iterateScc nodes specIds table iter =
             ( table1, iter, True )
 
 
-setSig : Array (Maybe Mono.MonoNode) -> SigTable -> Mono.SpecId -> Maybe BorrowSig -> SigTable
-setSig _ table specId maybeSig =
+setSig : SigTable -> Mono.SpecId -> Maybe BorrowSig -> SigTable
+setSig table specId maybeSig =
     Array.set specId maybeSig table
 
 

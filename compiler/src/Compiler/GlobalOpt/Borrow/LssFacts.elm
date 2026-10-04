@@ -3,7 +3,7 @@ module Compiler.GlobalOpt.Borrow.LssFacts exposing
     , Facts
     , LambdaRef
     , MemberInfo(..)
-    , PoisonCause(..)
+    , PoisonCause
     , buildInstances
     , buildMemberTable
     , meetSig

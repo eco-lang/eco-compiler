@@ -1,6 +1,6 @@
 module Terminal.Make exposing
     ( run
-    , Flags(..), FlagsData, Output(..), ReportType(..)
+    , Flags(..), FlagsData, Output, ReportType
     , output, reportType, docsFile
     , parseOutput, parseReportType, parseDocsFile
     , buildDir, parseBuildDir
@@ -344,8 +344,6 @@ handleMlirOutput ctx target artifacts =
                         Generate.writeMonoMlirStreaming
                             ctx.ecoConfig
                             ctx.stats
-                            ctx.withSourceMaps
-                            0
                             ctx.root
                             ctx.maybeBuildDir
                             ctx.localPackage
@@ -357,8 +355,6 @@ handleMlirOutput ctx target artifacts =
                         Generate.writeMonoMlirStreamingBytecode
                             ctx.ecoConfig
                             ctx.stats
-                            ctx.withSourceMaps
-                            0
                             ctx.root
                             ctx.maybeBuildDir
                             ctx.localPackage
@@ -428,8 +424,6 @@ handleElfOutput ctx target artifacts =
                         Generate.writeMonoMlirStreaming
                             ctx.ecoConfig
                             ctx.stats
-                            ctx.withSourceMaps
-                            0
                             ctx.root
                             ctx.maybeBuildDir
                             ctx.localPackage
@@ -442,8 +436,6 @@ handleElfOutput ctx target artifacts =
                         Generate.writeMonoMlirStreamingBytecode
                             ctx.ecoConfig
                             ctx.stats
-                            ctx.withSourceMaps
-                            0
                             ctx.root
                             ctx.maybeBuildDir
                             ctx.localPackage

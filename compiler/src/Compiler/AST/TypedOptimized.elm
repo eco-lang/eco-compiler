@@ -533,8 +533,8 @@ globalGraphEncoder ((GlobalGraph nodes _ annotations allSchemeRoots varSupers) a
         [ Bytes.Encode.unsignedInt8 typedGraphFormatVersion
         , StringTable.tableEncoder st
         , TypeTable.encoder st tt
-        , BE.assocListDict compareGlobal (globalEncoderS st) (nodeEncoderS st tt) nodes
-        , BE.assocListDict compareGlobal (globalEncoderS st) (annotationEncoderT st tt) annotations
+        , BE.assocListDict (globalEncoderS st) (nodeEncoderS st tt) nodes
+        , BE.assocListDict (globalEncoderS st) (annotationEncoderT st tt) annotations
         , globalSchemeRootsEncoderS st allSchemeRoots
         , varSupersEncoderS st varSupers
         ]
@@ -593,7 +593,7 @@ localGraphEncoder ((LocalGraph data) as graph) =
         [ Bytes.Encode.unsignedInt8 typedGraphFormatVersion
         , StringTable.tableEncoder st
         , TypeTable.encoder st tt
-        , BE.assocListDict compareGlobal (globalEncoderS st) (nodeEncoderS st tt) data.nodes
+        , BE.assocListDict (globalEncoderS st) (nodeEncoderS st tt) data.nodes
         , BE.stdDict (StringTable.string st) (annotationEncoderT st tt) data.annotations
         , schemeRootsEncoderS st data.schemeRoots
         , varSupersEncoderS st data.varSupers
@@ -1058,7 +1058,7 @@ exprEncoderS st tt expr =
                 [ Bytes.Encode.unsignedInt8 24
                 , A.regionEncoderV region
                 , exprEncoderS st tt record
-                , BE.assocListDict A.compareLocated (A.locatedEncoder (StringTable.string st)) (exprEncoderS st tt) fields
+                , BE.assocListDict (A.locatedEncoder (StringTable.string st)) (exprEncoderS st tt) fields
                 , TypeTable.ref tt meta.tipe
                 ]
 
@@ -1073,7 +1073,7 @@ exprEncoderS st tt expr =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 26
                 , A.regionEncoderV region
-                , BE.assocListDict A.compareLocated (A.locatedEncoder (StringTable.string st)) (exprEncoderS st tt) value
+                , BE.assocListDict (A.locatedEncoder (StringTable.string st)) (exprEncoderS st tt) value
                 , TypeTable.ref tt meta.tipe
                 ]
 
@@ -1097,8 +1097,8 @@ exprEncoderS st tt expr =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 29
                 , Shader.sourceEncoderS st src
-                , BE.everySet compare (StringTable.string st) attributes
-                , BE.everySet compare (StringTable.string st) uniforms
+                , BE.everySet (StringTable.string st) attributes
+                , BE.everySet (StringTable.string st) uniforms
                 , TypeTable.ref tt meta.tipe
                 ]
 
@@ -1735,7 +1735,7 @@ varSupersDecoderS st =
 
 globalSchemeRootsEncoderS : StringTable -> SchemeRootsByGlobal -> Bytes.Encode.Encoder
 globalSchemeRootsEncoderS st allRoots =
-    BE.assocListDict compareGlobal (globalEncoderS st) (schemeRootsForDefEncoderS st) allRoots
+    BE.assocListDict (globalEncoderS st) (schemeRootsForDefEncoderS st) allRoots
 
 
 globalSchemeRootsDecoderS : StringTable -> Bytes.Decode.Decoder SchemeRootsByGlobal
@@ -1752,7 +1752,7 @@ globalSchemeRootsDecoderS st =
 collectStringsFromLocalGraph : LocalGraph Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromLocalGraph (LocalGraph data) acc =
     acc
-        |> (\a -> Data.Map.foldl compareGlobal collectStringsFromGlobalNodePair a data.nodes)
+        |> (\a -> Data.Map.foldl collectStringsFromGlobalNodePair a data.nodes)
         |> (\a -> Dict.foldl collectStringsFromAnnotationPair a data.annotations)
         |> collectStringsFromSchemeRoots data.schemeRoots
         |> (\a -> Dict.foldl (\k _ a2 -> StringTable.add k a2) a data.varSupers)
@@ -1763,8 +1763,8 @@ collectStringsFromLocalGraph (LocalGraph data) acc =
 collectStringsFromGlobalGraph : GlobalGraph Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalGraph (GlobalGraph nodes _ annotations allSchemeRoots varSupers) acc =
     acc
-        |> (\a -> Data.Map.foldl compareGlobal collectStringsFromGlobalNodePair a nodes)
-        |> (\a -> Data.Map.foldl compareGlobal collectStringsFromGlobalAnnotationPair a annotations)
+        |> (\a -> Data.Map.foldl collectStringsFromGlobalNodePair a nodes)
+        |> (\a -> Data.Map.foldl collectStringsFromGlobalAnnotationPair a annotations)
         |> collectStringsFromGlobalSchemeRoots allSchemeRoots
         |> (\a -> Dict.foldl (\k _ a2 -> StringTable.add k a2) a varSupers)
 
@@ -1809,7 +1809,7 @@ collectStringsFromSchemeRoots roots acc =
 
 collectStringsFromGlobalSchemeRoots : SchemeRootsByGlobal -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalSchemeRoots roots acc =
-    Data.Map.foldl compareGlobal
+    Data.Map.foldl
         (\g inner a ->
             Dict.foldl (\k _ a2 -> StringTable.add k a2) (collectStringsFromGlobal g a) inner
         )
@@ -1856,15 +1856,15 @@ prePassGlobal graph =
 internTypesFromLocalGraph : LocalGraph Name -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromLocalGraph (LocalGraph data) tb =
     tb
-        |> (\b -> Data.Map.foldl compareGlobal (\_ node b2 -> internTypesFromNode node b2) b data.nodes)
+        |> (\b -> Data.Map.foldl (\_ node b2 -> internTypesFromNode node b2) b data.nodes)
         |> (\b -> Dict.foldl (\_ (Can.Forall _ t) b2 -> TypeTable.add t b2) b data.annotations)
 
 
 internTypesFromGlobalGraph : GlobalGraph Name -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromGlobalGraph (GlobalGraph nodes _ annotations _ _) tb =
     tb
-        |> (\b -> Data.Map.foldl compareGlobal (\_ node b2 -> internTypesFromNode node b2) b nodes)
-        |> (\b -> Data.Map.foldl compareGlobal (\_ (Can.Forall _ t) b2 -> TypeTable.add t b2) b annotations)
+        |> (\b -> Data.Map.foldl (\_ node b2 -> internTypesFromNode node b2) b nodes)
+        |> (\b -> Data.Map.foldl (\_ (Can.Forall _ t) b2 -> TypeTable.add t b2) b annotations)
 
 
 internTypesFromNode : Node Name -> TypeTable.Builder -> TypeTable.Builder
@@ -1964,7 +1964,7 @@ internTypesFromExpr expr tb =
             tb |> internTypesFromExpr record |> TypeTable.add meta.tipe
 
         Update _ record fields meta ->
-            Data.Map.foldl A.compareLocated
+            Data.Map.foldl
                 (\_ e b -> internTypesFromExpr e b)
                 (internTypesFromExpr record tb)
                 fields
@@ -1975,7 +1975,7 @@ internTypesFromExpr expr tb =
                 |> TypeTable.add meta.tipe
 
         TrackedRecord _ value meta ->
-            Data.Map.foldl A.compareLocated (\_ e b -> internTypesFromExpr e b) tb value
+            Data.Map.foldl (\_ e b -> internTypesFromExpr e b) tb value
                 |> TypeTable.add meta.tipe
 
         Tuple _ a b cs meta ->
@@ -2287,7 +2287,7 @@ collectStringsFromExpr expr acc =
                 withRecord =
                     collectStringsFromExpr record acc
             in
-            Data.Map.foldl A.compareLocated
+            Data.Map.foldl
                 (\locN e a ->
                     a |> StringTable.add (A.toValue locN) |> collectStringsFromExpr e
                 )
@@ -2301,7 +2301,7 @@ collectStringsFromExpr expr acc =
                 value
 
         TrackedRecord _ value _ ->
-            Data.Map.foldl A.compareLocated
+            Data.Map.foldl
                 (\locN e a ->
                     a |> StringTable.add (A.toValue locN) |> collectStringsFromExpr e
                 )
@@ -2327,9 +2327,9 @@ collectStringsFromExpr expr acc =
 
                 withAttrs : StringTable.Collector
                 withAttrs =
-                    Data.Set.foldr compare StringTable.add withSrc attributes
+                    Data.Set.foldr StringTable.add withSrc attributes
             in
-            Data.Set.foldr compare StringTable.add withAttrs uniforms
+            Data.Set.foldr StringTable.add withAttrs uniforms
 
 
 collectStringsFromDestructor : Destructor Name -> StringTable.Collector -> StringTable.Collector

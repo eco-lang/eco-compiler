@@ -323,9 +323,9 @@ entry to the next. The first entry whose computation fails ends the traversal,
 and the result carries only that entry's errors.
 
 -}
-mapTraverseWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> RResult i w x b) -> DataMap.Dict comparable k a -> RResult i w x (DataMap.Dict comparable k b)
-mapTraverseWithKey toComparable keyComparison f dict =
-    loop (mapTraverseWithKeyHelp toComparable f) ( DataMap.toList keyComparison dict, DataMap.empty )
+mapTraverseWithKey : (k -> comparable) -> (k -> a -> RResult i w x b) -> DataMap.Dict comparable k a -> RResult i w x (DataMap.Dict comparable k b)
+mapTraverseWithKey toComparable f dict =
+    loop (mapTraverseWithKeyHelp toComparable f) ( DataMap.toList dict, DataMap.empty )
 
 
 {-| Performs one iteration of the loop behind `mapTraverseWithKey`. Given the

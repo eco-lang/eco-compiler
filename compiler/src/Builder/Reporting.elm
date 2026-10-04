@@ -235,7 +235,7 @@ ask doc =
 
 askHelp : Task Never Bool
 askHelp =
-    IO.flush IO.stdout
+    IO.flush
         |> Task.andThen (\_ -> IO.readLine |> IO.crashOnError)
         |> Task.andThen parseYesNoResponse
 
@@ -709,7 +709,7 @@ vbottom =
 putStrFlush : String -> Task Never ()
 putStrFlush str =
     IO.write IO.stdout str
-        |> Task.andThen (\_ -> IO.flush IO.stdout)
+        |> Task.andThen (\_ -> IO.flush)
 
 
 

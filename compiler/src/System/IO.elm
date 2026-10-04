@@ -5,12 +5,10 @@ module System.IO exposing
     , writeString
     , LockSharedExclusive(..)
     , write
-    , writeLn, print, printLn, readLine, close, flush, isTerminal
+    , writeLn, print, printLn, readLine, flush, isTerminal
     , crashOnError
     , MVar(..)
     , Stream, ChItem(..)
-    , ReplState(..), initialReplState
-    , ReplSettings(..)
     )
 
 {-| The compiler is a headless Elm program whose every effect is a `Task`, and
@@ -29,14 +27,13 @@ number passed on as it is. `stdout` and `stderr` are the two handles defined
 here.
 
 Console output is best-effort. `write`, `writeLn`, `print` and `printLn` cannot
-fail: an error from the write is discarded and the task succeeds. `readLine`,
-`close` and `writeString` fail with an `IOError`, as `Eco.IO.Error` describes,
+fail: an error from the write is discarded and the task succeeds. `readLine`
+and `writeString` fail with an `IOError`, as `Eco.IO.Error` describes,
 and `crashOnError` turns such a failure into a crash. `flush` and `isTerminal`
 ask the host nothing: `flush` does nothing, and `isTerminal` answers `True`.
 
-`LockSharedExclusive`, `MVar`, `ChItem`, `Stream`, `ReplState` and
-`ReplSettings` are defined here, but this module has no operations on them,
-apart from the constant `initialReplState`. The operations on MVars, channels
+`LockSharedExclusive`, `MVar`, `ChItem` and `Stream` are defined here, but this
+module has no operations on them. The operations on MVars, channels
 and file locks are in `Utils.Main`. A _channel_ is a queue of values passed
 between concurrent tasks, built from MVars by `Utils.Main`.
 
@@ -57,7 +54,7 @@ between concurrent tasks, built from MVars by `Utils.Main`.
 # Console
 
 @docs write
-@docs writeLn, print, printLn, readLine, close, flush, isTerminal
+@docs writeLn, print, printLn, readLine, flush, isTerminal
 
 
 # Failures
@@ -69,12 +66,9 @@ between concurrent tasks, built from MVars by `Utils.Main`.
 
 @docs MVar
 @docs Stream, ChItem
-@docs ReplState, initialReplState
-@docs ReplSettings
 
 -}
 
-import Dict exposing (Dict)
 import Eco.Console
 import Eco.File
 import Eco.IO.Error as IOErr exposing (IOError)
@@ -173,14 +167,6 @@ stderr =
 -- ====== FILE OPERATIONS ======
 
 
-{-| Closes the stream or file the handle names, as `Eco.File.close` does for
-the same number.
--}
-close : Handle -> Task IOError ()
-close (Handle handle) =
-    Eco.File.close (Eco.File.Handle handle)
-
-
 {-| Writes `content` as text to the file at `path`, as `Eco.File.writeString`
 does.
 -}
@@ -255,16 +241,16 @@ readLine =
 {-| Does nothing and succeeds, whatever the handle. Nothing in this module
 holds output back, so it has nothing of its own to flush.
 -}
-flush : Handle -> Task Never ()
-flush _ =
+flush : Task Never ()
+flush =
     Task.succeed ()
 
 
 {-| Answers `True` for every handle, without asking the host whether the handle
 is a terminal.
 -}
-isTerminal : Handle -> Task Never Bool
-isTerminal _ =
+isTerminal : Task Never Bool
+isTerminal =
     Task.succeed True
 
 
@@ -316,32 +302,3 @@ This is a name for `MVar (ChItem a)`, not a new type.
 -}
 type alias Stream a =
     MVar (ChItem a)
-
-
-
--- ====== REPL STATE ======
-
-
-{-| The source text a REPL session holds.
-
-The three dictionaries are, in order, its imports, its type declarations and
-its value declarations, each mapping a name to the source text that defines it.
-
--}
-type ReplState
-    = ReplState (Dict String String) (Dict String String) (Dict String String)
-
-
-{-| The state of a REPL session that holds nothing: no imports and no
-declarations.
--}
-initialReplState : ReplState
-initialReplState =
-    ReplState Dict.empty Dict.empty Dict.empty
-
-
-{-| The settings for a REPL session. The one constructor carries nothing, so
-there is nothing to set.
--}
-type ReplSettings
-    = ReplSettings

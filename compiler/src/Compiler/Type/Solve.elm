@@ -775,18 +775,18 @@ introduce rank pools variables =
 -}
 typeToVariable : Int -> Pools -> Type -> IO Variable
 typeToVariable rank pools tipe =
-    typeToVar rank pools Dict.empty tipe
+    typeToVar rank pools tipe
 
 
 {-| Convert a Type to a Variable, tracking alias placeholders in aliasDict.
 Recursively converts all contained types to variables and registers them in pools.
 -}
-typeToVar : Int -> Pools -> Dict Name.Name Variable -> Type -> IO Variable
-typeToVar rank pools _ tipe =
+typeToVar : Int -> Pools -> Type -> IO Variable
+typeToVar rank pools tipe =
     let
         go : Type -> IO Variable
         go =
-            typeToVar rank pools Dict.empty
+            typeToVar rank pools
     in
     case tipe of
         Type.VarN v ->

@@ -44,7 +44,6 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict
 import Expect
@@ -94,7 +93,7 @@ function examined passed.
 -}
 collectFunctionTypeChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectFunctionTypeChecks (TOpt.LocalGraph data) =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\global node acc ->
             let
                 context =
@@ -223,13 +222,13 @@ collectExprFunctionTypeChecks context expr =
 
         TOpt.Update _ recordExpr updates _ ->
             collectExprFunctionTypeChecks context recordExpr
-                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprFunctionTypeChecks context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl (\_ updateExpr acc -> collectExprFunctionTypeChecks context updateExpr ++ acc) [] updates
 
         TOpt.Record fieldExprs _ ->
             Dict.foldl (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.TrackedRecord _ fieldExprs _ ->
-            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
+            Data.Map.foldl (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.Tuple _ e1 e2 rest _ ->
             collectExprFunctionTypeChecks context e1

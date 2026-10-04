@@ -4,8 +4,6 @@ module Builder.Reporting.Exit exposing
     , Install(..), installToReport
     , Uninstall(..), uninstallToReport
     , Make(..), makeToReport
-    , Repl(..), replToReport
-    , Test(..), testToReport
     , Diff(..), diffToReport
     , Bump(..), bumpToReport
     , BuildProblem(..), BuildProjectProblem(..)
@@ -54,12 +52,8 @@ functions to convert them into user-friendly error reports.
 
 # REPL Errors
 
-@docs Repl, replToReport
-
 
 # Test Errors
-
-@docs Test, testToReport
 
 
 # Diff Errors
@@ -115,7 +109,6 @@ functions to convert them into user-friendly error reports.
 
 -}
 
-import Builder.File as File
 import Builder.Http as Http
 import Builder.Reporting.Exit.Help as Help
 import Bytes.Decode
@@ -2608,194 +2601,7 @@ corruptCacheReport =
 
 
 -- ====== REPL ======
-
-
-{-| Error conditions that can occur during REPL evaluation.
--}
-type Repl
-    = ReplBadDetails Details
-    | ReplBadInput String Error.Error
-    | ReplBadLocalDeps FilePath Error.Module (List Error.Module)
-    | ReplProjectProblem BuildProjectProblem
-    | ReplBadGenerate Generate
-    | ReplBadCache
-    | ReplBlocked
-
-
-{-| Converts a REPL error to a user-friendly report.
--}
-replToReport : Repl -> Help.Report
-replToReport problem =
-    case problem of
-        ReplBadDetails details ->
-            toDetailsReport details
-
-        ReplBadInput source err ->
-            Help.compilerReport "/" (Error.Module N.replModule "REPL" File.zeroTime source err) []
-
-        ReplBadLocalDeps root e es ->
-            Help.compilerReport root e es
-
-        ReplProjectProblem projectProblem ->
-            toProjectProblemReport projectProblem
-
-        ReplBadGenerate generate ->
-            toGenerateReport generate
-
-        ReplBadCache ->
-            corruptCacheReport
-
-        ReplBlocked ->
-            corruptCacheReport
-
-
-
 -- ====== TEST ======
-
-
-{-| Error conditions that can occur when running tests.
--}
-type Test
-    = TestNoOutline
-    | TestBadOutline Outline
-    | TestBadRegistry RegistryProblem
-    | TestNoOnlineAppSolution Pkg.Name
-    | TestNoOfflineAppSolution Pkg.Name
-    | TestNoOnlinePkgSolution Pkg.Name
-    | TestNoOfflinePkgSolution Pkg.Name
-    | TestHadSolverTrouble Solver
-    | TestUnknownPackageOnline Pkg.Name (List Pkg.Name)
-    | TestUnknownPackageOffline Pkg.Name (List Pkg.Name)
-    | TestBadDetails Details
-    | TestCannotBuild BuildProblem
-    | TestBadGenerate Generate
-
-
-{-| Converts a test error to a user-friendly report.
--}
-testToReport : Test -> Help.Report
-testToReport test =
-    case test of
-        TestNoOutline ->
-            Help.report "TEST WHAT?"
-                Nothing
-                "I cannot find an elm.json so I am not sure what you want me to test."
-                [ "Elm packages always have an elm.json that states the version number, dependencies, exposed modules, etc." |> D.reflow
-                ]
-
-        TestBadOutline outline ->
-            toOutlineReport outline
-
-        TestBadRegistry problem ->
-            "I need the list of published packages to figure out how to install things" |> toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem
-
-        TestNoOnlineAppSolution pkg ->
-            Help.report "CANNOT FIND COMPATIBLE VERSION"
-                (Just "elm.json")
-                ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
-                [ D.reflow <|
-                    "I checked all the published versions. When that failed, I tried to find any compatible "
-                        ++ "combination of these packages, even if it meant changing all your existing dependencies! "
-                        ++ "That did not work either!"
-                , D.reflow <|
-                    "This is most likely to happen when a package is not upgraded yet. Maybe a new version of "
-                        ++ "Elm came out recently? Maybe a common package was changed recently? Maybe a better package "
-                        ++ "came along, so there was no need to upgrade this one? Try asking around "
-                        ++ "https://elm-lang.org/community to learn what might be going on with this package."
-                , D.toSimpleNote <|
-                    "Whatever the case, please be kind to the relevant package authors! Having friendly "
-                        ++ "interactions with users is great motivation, and conversely, getting berated by strangers "
-                        ++ "on the internet sucks your soul dry. Furthermore, package authors are humans with families, "
-                        ++ "friends, jobs, vacations, responsibilities, goals, etc. They face obstacles outside of their "
-                        ++ "technical work you will never know about, so please assume the best and try to be patient "
-                        ++ "and supportive!"
-                ]
-
-        TestNoOfflineAppSolution pkg ->
-            Help.report "CANNOT FIND COMPATIBLE VERSION LOCALLY"
-                (Just "elm.json")
-                ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
-                [ "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past." |> D.reflow
-                , "Try again later when you have internet!" |> D.reflow
-                ]
-
-        TestNoOnlinePkgSolution pkg ->
-            Help.report "CANNOT FIND COMPATIBLE VERSION"
-                (Just "elm.json")
-                ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing constraints.")
-                [ D.reflow <|
-                    "With applications, I try to broaden the constraints to see if anything works, but messing "
-                        ++ "with package constraints is much more delicate business. E.g. making your constraints stricter "
-                        ++ "may make it harder for applications to find compatible dependencies. So fixing something here "
-                        ++ "may break it for a lot of other people!"
-                , D.reflow <|
-                    "So I recommend making an application with the same dependencies as your package. See if "
-                        ++ "there is a solution at all. From there it may be easier to figure out how to proceed in a way "
-                        ++ "that will disrupt your users as little as possible. And the solution may be to help other "
-                        ++ "package authors to get their packages updated, or to drop a dependency entirely."
-                ]
-
-        TestNoOfflinePkgSolution pkg ->
-            Help.report "CANNOT FIND COMPATIBLE VERSION LOCALLY"
-                (Just "elm.json")
-                ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing constraints.")
-                [ "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past." |> D.reflow
-                , "Try again later when you have internet!" |> D.reflow
-                ]
-
-        TestHadSolverTrouble solver ->
-            toSolverReport solver
-
-        TestUnknownPackageOnline pkg suggestions ->
-            Help.docReport "UNKNOWN PACKAGE"
-                Nothing
-                (D.fillSep
-                    [ D.fromChars "I"
-                    , D.fromChars "cannot"
-                    , D.fromChars "find"
-                    , D.fromChars "a"
-                    , D.fromChars "package"
-                    , D.fromChars "named"
-                    , D.red (D.fromPackage pkg)
-                        |> D.a (D.fromChars ".")
-                    ]
-                )
-                [ "I looked through https://package.elm-lang.org for packages with similar names and found these:" |> D.reflow
-                , List.map D.fromPackage suggestions |> D.vcat |> D.dullyellow |> D.indent 4
-                , "Maybe you want one of these instead?" |> D.reflow
-                ]
-
-        TestUnknownPackageOffline pkg suggestions ->
-            Help.docReport "UNKNOWN PACKAGE"
-                Nothing
-                (D.fillSep
-                    [ D.fromChars "I"
-                    , D.fromChars "cannot"
-                    , D.fromChars "find"
-                    , D.fromChars "a"
-                    , D.fromChars "package"
-                    , D.fromChars "named"
-                    , D.red (D.fromPackage pkg)
-                        |> D.a (D.fromChars ".")
-                    ]
-                )
-                [ "I could not connect to https://package.elm-lang.org though, so new packages may have been published since I last updated my local cache of package names." |> D.reflow
-                , "Looking through the locally cached names, the closest ones are:" |> D.reflow
-                , List.map D.fromPackage suggestions |> D.vcat |> D.dullyellow |> D.indent 4
-                , "Maybe you want one of these instead?" |> D.reflow
-                ]
-
-        TestBadDetails details ->
-            toDetailsReport details
-
-        TestCannotBuild buildProblem ->
-            toBuildProblemReport buildProblem
-
-        TestBadGenerate generateProblem ->
-            toGenerateReport generateProblem
-
-
-
 -- ====== ENCODERS and DECODERS ======
 
 

@@ -544,7 +544,7 @@ allBadFields =
         add keyword dict =
             Dict.update (String.length keyword) (addRenaming keyword >> Just) dict
     in
-    Dict.values (EverySet.foldr compare add Dict.empty jsReservedWords)
+    Dict.values (EverySet.foldr add Dict.empty jsReservedWords)
 
 
 {-| Returns the replacements for one width with `keyword` added, given those

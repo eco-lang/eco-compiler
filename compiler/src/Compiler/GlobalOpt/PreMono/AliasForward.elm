@@ -188,7 +188,7 @@ aliasMap (TOpt.GlobalGraph nodes _ _ _ _) =
     let
         raw : CoreDict.Dict String Target
         raw =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node acc ->
                     case rawTarget g node of
                         Just t ->
@@ -375,7 +375,7 @@ rewriteGraph : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph Type
 rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
     let
         ( newNodes, ctx1 ) =
-            Dict.foldl TOpt.compareGlobal
+            Dict.foldl
                 (\g node ( acc, c ) ->
                     let
                         ( newNode, c1 ) =
@@ -714,7 +714,7 @@ rewriteLocatedFields :
     -> Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
     -> ( Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteLocatedFields ctx fields =
-    Dict.foldl A.compareLocated
+    Dict.foldl
         (\k e ( acc, c ) ->
             let
                 ( e1, c2 ) =

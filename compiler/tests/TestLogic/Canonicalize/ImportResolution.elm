@@ -174,10 +174,10 @@ collectExprImportIssues (A.At _ exprInfo) =
 
         Can.Update record fields ->
             collectExprImportIssues record
-                ++ Dict.foldl A.compareLocated (\_ (Can.FieldUpdate _ fieldExpr) acc -> collectExprImportIssues fieldExpr ++ acc) [] fields
+                ++ Dict.foldl (\_ (Can.FieldUpdate _ fieldExpr) acc -> collectExprImportIssues fieldExpr ++ acc) [] fields
 
         Can.Record fields ->
-            Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprImportIssues fieldExpr ++ acc) [] fields
+            Dict.foldl (\_ fieldExpr acc -> collectExprImportIssues fieldExpr ++ acc) [] fields
 
         Can.Unit ->
             []

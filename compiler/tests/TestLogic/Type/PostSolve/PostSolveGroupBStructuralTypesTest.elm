@@ -117,7 +117,7 @@ expectGroupBStructuralTypes srcModule =
                 -- isGroupBExprNode rejects Shader and variable references, so only Str, Chr, Float and Unit remain.
                 syntheticGroupBIds =
                     artifacts.syntheticExprIds
-                        |> EverySet.toList compare
+                        |> EverySet.toList
                         |> List.filter
                             (\exprId ->
                                 case DataMap.get identity exprId exprNodes of
@@ -174,7 +174,7 @@ checkGroupBExpr exprId exprNodes artifacts =
                 Just preType ->
                     case preType of
                         Can.TVar _ ->
-                            checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts
+                            checkSyntheticPlaceholder exprId exprNode preType artifacts
 
                         _ ->
                             Nothing
@@ -194,10 +194,9 @@ checkSyntheticPlaceholder :
     Int
     -> Helpers.ExprNode
     -> Can.Type Name
-    -> DataMap.Dict Int Int Helpers.ExprNode
     -> Compile.DetailedArtifacts
     -> Maybe Violation
-checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts =
+checkSyntheticPlaceholder exprId exprNode preType artifacts =
     case Array.get exprId artifacts.nodeTypesPost |> Maybe.andThen identity of
         Nothing ->
             Just
@@ -254,7 +253,7 @@ checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts =
                 _ ->
                     let
                         maybeExpected =
-                            computeExpectedType exprNode.node artifacts.nodeTypesPost exprNodes
+                            computeExpectedType exprNode.node artifacts.nodeTypesPost
                     in
                     case maybeExpected of
                         Nothing ->
@@ -289,9 +288,8 @@ argument is not used.
 computeExpectedType :
     Can.Expr_
     -> PostSolve.NodeTypes
-    -> DataMap.Dict Int Int Helpers.ExprNode
     -> Maybe (Can.Type Name)
-computeExpectedType expr nodeTypes _ =
+computeExpectedType expr nodeTypes =
     case expr of
         Can.Str _ ->
             Just (Can.TType ModuleName.string Name.string [])
@@ -352,7 +350,7 @@ computeExpectedType expr nodeTypes _ =
         Can.Record fields ->
             let
                 maybeFieldTypes =
-                    DataMap.foldl A.compareLocated
+                    DataMap.foldl
                         (\(A.At _ fieldName) (A.At _ fieldExprInfo) acc ->
                             case acc of
                                 Nothing ->

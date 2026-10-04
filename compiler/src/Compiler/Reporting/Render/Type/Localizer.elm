@@ -292,7 +292,7 @@ exposingEncoder exposing_ =
         Only set ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
-                , BE.everySet compare BE.string set
+                , BE.everySet BE.string set
                 ]
 
 

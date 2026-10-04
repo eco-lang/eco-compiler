@@ -634,7 +634,7 @@ copyLocatedFields :
     -> DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
     -> ( DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId), Env )
 copyLocatedFields env fields =
-    DMap.foldl A.compareLocated
+    DMap.foldl
         (\k e ( out, en ) ->
             let
                 ( newE, en1 ) =
@@ -1215,7 +1215,7 @@ mintLocatedFields :
     -> DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
     -> ( DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId), AssignMVarIds.GlobalMVarState )
 mintLocatedFields state fields =
-    DMap.foldl A.compareLocated
+    DMap.foldl
         (\k e ( out, s ) ->
             let
                 ( newE, s1 ) =
@@ -1351,7 +1351,7 @@ assertMinted : TOpt.GlobalGraph TypeIds.MVarId -> Result String ()
 assertMinted (TOpt.GlobalGraph nodes _ _ _ _) =
     let
         result =
-            DMap.foldl TOpt.compareGlobal
+            DMap.foldl
                 (\g node acc ->
                     case acc of
                         Err _ ->
@@ -1571,13 +1571,13 @@ exprChildren expr =
             [ inner ]
 
         TOpt.Update _ record fields _ ->
-            record :: DMap.values A.compareLocated fields
+            record :: DMap.values fields
 
         TOpt.Record fields _ ->
             Dict.values fields
 
         TOpt.TrackedRecord _ fields _ ->
-            DMap.values A.compareLocated fields
+            DMap.values fields
 
         TOpt.Tuple _ a b rest _ ->
             a :: b :: rest

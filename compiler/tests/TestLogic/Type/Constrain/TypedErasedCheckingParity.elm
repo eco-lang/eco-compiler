@@ -1094,13 +1094,13 @@ extractExprNodeIds node =
             extractAllExprIds record
 
         Can.Update record fields ->
-            Data.Map.foldl A.compareLocated
+            Data.Map.foldl
                 (\_ (Can.FieldUpdate _ expr) acc -> Set.union (extractAllExprIds expr) acc)
                 (extractAllExprIds record)
                 fields
 
         Can.Record fields ->
-            Data.Map.foldl A.compareLocated (\_ expr acc -> Set.union (extractAllExprIds expr) acc) Set.empty fields
+            Data.Map.foldl (\_ expr acc -> Set.union (extractAllExprIds expr) acc) Set.empty fields
 
         Can.Unit ->
             Set.empty

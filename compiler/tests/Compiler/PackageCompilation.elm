@@ -1,5 +1,5 @@
 module Compiler.PackageCompilation exposing
-    ( CompileResult, CompileError(..), PathwayDiscrepancy(..)
+    ( CompileResult, CompileError(..), PathwayDiscrepancy
     , parseModule
     , compileModule, compileModulesInOrder
     , monomorphize
@@ -635,7 +635,7 @@ never chosen.
 -}
 findAnyEntryPoint : Data.Map.Dict String TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
 findAnyEntryPoint nodes =
-    Data.Map.foldl TOpt.compareGlobal
+    Data.Map.foldl
         (\global node acc ->
             case acc of
                 Just _ ->
