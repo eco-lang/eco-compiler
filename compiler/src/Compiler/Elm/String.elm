@@ -1,7 +1,4 @@
-module Compiler.Elm.String exposing
-    ( Chunk(..)
-    , fromChunks
-    )
+module Compiler.Elm.String exposing (Chunk(..), fromChunks)
 
 {-| A string or char literal can be recorded as a list of pieces, some copied
 from the source text and some standing for an escape, and this module turns such
@@ -13,6 +10,8 @@ backslash escapes in the forms a JavaScript string literal uses, `\n` or
 `\u00E9`. So the result is the body of a literal, not the value it denotes.
 
 Each piece is a `Chunk`, and `fromChunks` joins a list of them in order.
+
+@docs Chunk, fromChunks
 
 -}
 

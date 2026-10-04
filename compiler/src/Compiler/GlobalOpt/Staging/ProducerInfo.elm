@@ -27,6 +27,11 @@ import Dict
 -- ============================================================================
 
 
+{-| Adds what one graph node contributes to the producer information: the
+closures in a definition's body, the natural segmentation of a tail function,
+and the flat segmentation of a kernel. Meant as the step of a fold over the
+nodes of a `MonoGraph`, given each node with its id.
+-}
 foldNode : Int -> Mono.MonoNode -> ProducerInfo -> ProducerInfo
 foldNode nodeId node acc =
     case node of

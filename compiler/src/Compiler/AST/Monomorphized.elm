@@ -1,136 +1,26 @@
 module Compiler.AST.Monomorphized exposing
-    ( AnnoCoverage
-    , CallInfo
-    , CallKind(..)
-    , CallModel(..)
-    , CaptureABI
-    , ClosureInfo
-    , ClosureKind(..)
-    , ClosureKindId(..)
-    , Constraint(..)
-    , ContainerKind(..)
-    , CtorShape
-    , Decider(..)
-    , Global(..)
-    , LambdaId(..)
-    , LambdaSetAnno(..)
-    , LayoutMap
-    , Literal(..)
-    , MainInfo(..)
-    , MaybeClosureKind
-    , MemberOrigin(..)
-    , MonoChoice(..)
-    , MonoDef(..)
-    , MonoDestructor(..)
-    , MonoDtPath(..)
-    , MonoExpr(..)
-    , MonoGraph(..)
-    , MonoNode(..)
-    , MonoPath(..)
-    , MonoType(..)
-    , PortRegistration
-    , Segmentation
-    , SpecId
-    , SpecKey(..)
-    , SpecKeyMap
-    , SpecMap
-    , SpecializationRegistry
-    , annoCoverage
-    , annoCovers
-    , buildSegmentedFunctionType
-    , chooseCanonicalSegmentation
-    , clearLssTables
-    , collectAnnoMembers
-    , containsAnyMVar
-    , countTotalArity
-    , decomposeFunctionType
-    , defaultCallInfo
-    , dtPathType
-    , emptyAnnoCoverage
-    , enrichAnnotations
-    , enrichAnnotationsTopOnly
-    , eqKeyLayout
-    , eqKeySpec
-    , eqLayout
-    , eqModuloTopLabel
-    , getMonoPathType
-    , hasTopAnno
-    , hasVarAnno
-    , headAnno
-    , isFunctionType
-    , isTopAnno
-    , joinAnnotationsChanged
-    , joinCollisionCells
-    , layoutHashOf
-    , layoutMapEmpty
-    , layoutMapFoldl
-    , layoutMapGet
-    , layoutMapInsert
-    , layoutMapMap
-    , layoutMapMember
-    , layoutMapValues
-    , mCustom
-    , mFunction
-    , mList
-    , mRecord
-    , mTuple
-    , monoTypeToDebugString
-    , nodeType
-    , overlayAnnotations
-    , recoverStoredSets
-    , resolveNumberType
-    , resultTypeOf
-    , segmentLengths
-    , shallowLayoutKey
-    , singletonHeadMember
-    , specHashOf
-    , specKeyMapEmpty
-    , specKeyMapGet
-    , specKeyMapInsert
-    , specMapEmpty
-    , specMapFoldl
-    , specMapGet
-    , specMapInsert
-    , specMapIsEmpty
-    , specMapRemove
-    , specMapSingleton
-    , specMapSize
-    , specMapToList
-    , specMapValues
-    , stageParamTypes
-    , stageReturnType
-    , tkClassCall
-    , tkClassCase
-    , tkClassDestr
-    , tkClassIf
-    , tkClassLambda
-    , tkClassLet
-    , tkClassLit
-    , tkClassLocal
-    , tkClassMisc
-    , tkClassParam
-    , tkEdge
-    , tkLegacy
-    , tkPoison
-    , tkWiden
-    , toComparableGlobal
-    , toComparableMonoType
-    , topAbi
-    , topDeclOther
-    , topDeclStoreC
-    , topDeclZonk
-    , topEdge
-    , topKindLabel
-    , topLegacy
-    , topOfKind
-    , topPoison
-    , topSynth
-    , topWiden
-    , typeHasResidualNumber
-    , typeNodesWithin
-    , typeOf
-    , unionAnno
-    , unionSortedInts
+    ( AnnoCoverage, CallInfo, CallKind(..), CallModel(..), CaptureABI, ClosureInfo
+    , ClosureKind(..), ClosureKindId(..), Constraint(..), ContainerKind(..), CtorShape, Decider(..)
+    , Global(..), LambdaId(..), LambdaSetAnno(..), LayoutMap, Literal(..), MainInfo(..)
+    , MaybeClosureKind, MemberOrigin(..), MonoChoice(..), MonoDef(..), MonoDestructor(..), MonoDtPath(..)
+    , MonoExpr(..), MonoGraph(..), MonoNode(..), MonoPath(..), MonoType(..), PortRegistration
+    , Segmentation, SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
+    , annoCoverage, annoCovers, buildSegmentedFunctionType, chooseCanonicalSegmentation, clearLssTables, collectAnnoMembers
+    , containsAnyMVar, countTotalArity, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
+    , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
+    , getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
+    , joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
+    , layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
+    , mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
+    , recoverStoredSets, resolveNumberType, resultTypeOf, segmentLengths, shallowLayoutKey, singletonHeadMember
+    , specHashOf, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specMapEmpty, specMapFoldl
+    , specMapGet, specMapInsert, specMapIsEmpty, specMapRemove, specMapSingleton, specMapSize
+    , specMapToList, specMapValues, stageParamTypes, stageReturnType, tkClassCall, tkClassCase
+    , tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal
+    , tkClassMisc, tkClassParam, tkEdge, tkLegacy, tkPoison, tkWiden
+    , toComparableGlobal, toComparableMonoType, topAbi, topDeclOther, topDeclStoreC, topDeclZonk
+    , topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topSynth
+    , topWiden, typeHasResidualNumber, typeNodesWithin, typeOf, unionAnno, unionSortedInts
     , widenSets
     )
 
@@ -188,6 +78,37 @@ many arguments each stage takes, so `\a b -> \c -> e` has segmentation
 `[2, 1]`. The helpers near the end of the file read and rebuild
 segmentations, and `CallInfo` records on each `MonoCall` how the call is to be
 made.
+
+
+# Types
+
+@docs AnnoCoverage, CallInfo, CallKind, CallModel, CaptureABI, ClosureInfo
+@docs ClosureKind, ClosureKindId, Constraint, ContainerKind, CtorShape, Decider
+@docs Global, LambdaId, LambdaSetAnno, LayoutMap, Literal, MainInfo
+@docs MaybeClosureKind, MemberOrigin, MonoChoice, MonoDef, MonoDestructor, MonoDtPath
+@docs MonoExpr, MonoGraph, MonoNode, MonoPath, MonoType, PortRegistration
+@docs Segmentation, SpecId, SpecKey, SpecKeyMap, SpecMap, SpecializationRegistry
+
+
+# Functions
+
+@docs annoCoverage, annoCovers, buildSegmentedFunctionType, chooseCanonicalSegmentation, clearLssTables, collectAnnoMembers
+@docs containsAnyMVar, countTotalArity, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
+@docs enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
+@docs getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
+@docs joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
+@docs layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
+@docs mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
+@docs recoverStoredSets, resolveNumberType, resultTypeOf, segmentLengths, shallowLayoutKey, singletonHeadMember
+@docs specHashOf, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specMapEmpty, specMapFoldl
+@docs specMapGet, specMapInsert, specMapIsEmpty, specMapRemove, specMapSingleton, specMapSize
+@docs specMapToList, specMapValues, stageParamTypes, stageReturnType, tkClassCall, tkClassCase
+@docs tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal
+@docs tkClassMisc, tkClassParam, tkEdge, tkLegacy, tkPoison, tkWiden
+@docs toComparableGlobal, toComparableMonoType, topAbi, topDeclOther, topDeclStoreC, topDeclZonk
+@docs topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topSynth
+@docs topWiden, typeHasResidualNumber, typeNodesWithin, typeOf, unionAnno, unionSortedInts
+@docs widenSets
 
 -}
 

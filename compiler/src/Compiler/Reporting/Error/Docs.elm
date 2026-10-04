@@ -9,12 +9,12 @@ them to the user.
 
 Documentation for a module is assembled from its doc comments. The module
 docstring, here called the overview, must exist and must list every exposed
-name on `@docs` lines, and every exposed definition must carry a doc comment of
+name on its docs lines, and every exposed definition must carry a doc comment of
 its own. The checks themselves are made in `Compiler.Elm.Docs`; this module
 only describes what they can find and renders it.
 
 The problems fall into five kinds, in the order the checks meet them: the
-module exposes everything, the overview is missing, the `@docs` lines cannot be
+module exposes everything, the overview is missing, the docs lines cannot be
 parsed, the names on them disagree with the `exposing` list, or an exposed
 definition lacks a comment or annotation. The last kind collects every
 definition problem found, so `toReports` gives one report per problem.

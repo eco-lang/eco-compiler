@@ -104,6 +104,9 @@ type alias SplitParamInfo =
     }
 
 
+{-| How a boxed value is split into scalar slots: as the fields of a tuple, or
+of a constructor, with the layout that places them.
+-}
 type SplitSpec
     = SplitTuple Types.TupleLayout
     | SplitCtor Types.CtorLayout
@@ -120,6 +123,9 @@ type alias SretInfo =
     }
 
 
+{-| Returns the context with the `$sret` result promotions set, keyed by
+function.
+-}
 withSretPromoted : Dict.Dict Int SretInfo -> Context -> Context
 withSretPromoted d ctx =
     { ctx | sretPromoted = d }
@@ -134,12 +140,18 @@ type alias PsplitInfo =
     }
 
 
+{-| The plan for one promoted parameter of a `$psplit` worker: how the boxed
+value is split, and the MLIR type of each slot it becomes.
+-}
 type alias SlotPlan =
     { spec : SplitSpec
     , slotTypes : List MlirType
     }
 
 
+{-| Returns the context with the `$psplit` parameter promotions set, keyed by
+function.
+-}
 withPsplitPromoted : Dict.Dict Int PsplitInfo -> Context -> Context
 withPsplitPromoted d ctx =
     { ctx | psplitPromoted = d }

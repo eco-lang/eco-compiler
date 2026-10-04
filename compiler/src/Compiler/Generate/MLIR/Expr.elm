@@ -1385,6 +1385,9 @@ generateClosure ctx closureInfo body monoType =
         }
 
 
+{-| The MLIR function name of an anonymous lambda: its home module's MLIR name,
+then `_lambda_` and the lambda's unique id.
+-}
 lambdaIdToString : Mono.LambdaId -> String
 lambdaIdToString lambdaId =
     case lambdaId of

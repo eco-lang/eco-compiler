@@ -257,6 +257,9 @@ hasAnyFreeVar canType =
             hasAnyFreeVar inner || List.any (\( _, t ) -> hasAnyFreeVar t) args
 
 
+{-| Adds the type variables of `canType` that are not in `acc` to the front of
+`acc`, each once, the one met last in a left-to-right walk of the type first.
+-}
 freeVarIds : Can.Type MVarId -> List MVarId -> List MVarId
 freeVarIds canType acc =
     let

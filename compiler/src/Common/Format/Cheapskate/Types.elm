@@ -22,7 +22,7 @@ in the document as a block of their own. An HTML entity such as `&amp;` stays an
 entity rather than becoming the character it names, and raw HTML is kept as
 text.
 
-One block is particular to Elm. `ElmDocs` holds the `@docs` lines of a doc
+One block is particular to Elm. `ElmDocs` holds the docs lines of a doc
 comment, which name the values a module documents.
 
 

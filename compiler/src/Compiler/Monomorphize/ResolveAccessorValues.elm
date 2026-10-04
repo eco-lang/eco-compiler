@@ -33,6 +33,8 @@ rewritten with no expected type at all, among them call arguments, list
 elements, record update values and closure captures, so a placeholder can
 survive this pass.
 
+@docs accessorTypeNeedsDefer, rewriteNode
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

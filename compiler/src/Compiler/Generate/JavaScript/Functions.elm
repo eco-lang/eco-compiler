@@ -27,6 +27,8 @@ wrapped function is a plain closure, so a later call to it applies its
 arguments one at a time. There are no helpers for one argument or for more
 than nine.
 
+@docs functions
+
 -}
 
 

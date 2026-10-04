@@ -31,6 +31,8 @@ they are first used.
 The finished document is not written to a file of its own. `generate` returns
 it as a comment holding a base64 `data:` URL, to be appended to the program.
 
+@docs generate
+
 -}
 
 import Base64

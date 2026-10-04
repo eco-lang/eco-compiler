@@ -5,7 +5,8 @@ reads the text of a doc comment into the `Common.Format.Cheapskate.Types` tree
 it is printed from. It finds the blocks of the text, such as paragraphs,
 headings, lists, block quotes and code blocks, and hands the text inside
 paragraphs and headings to `Common.Format.Cheapskate.Inlines`. One block is
-particular to Elm: a line that starts with `@docs` becomes an `ElmDocs` block.
+particular to Elm: a docs line (one starting with the docs keyword) becomes an `ElmDocs`
+block.
 
 The text is read in two phases. The first builds a tree of containers from the
 lines, and the second turns that tree into blocks.
