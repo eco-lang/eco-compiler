@@ -38,8 +38,7 @@ mark, so `rollback` simply returns to the saved array. The lifecycle functions
 free nothing: the kernel module frees the store in `disposeThen`, `freeze`,
 `renew` and `release`, while here the old store stays readable. An
 out-of-range index, or a `rollback` or `commit` with no mark open, crashes
-through `Debug.todo`, so a build containing this module cannot use
-`--optimize`.
+through `Utils.Crash.crash`.
 
 
 # Types
@@ -64,6 +63,7 @@ through `Debug.todo`, so a build containing this module cannot use
 -}
 
 import Array exposing (Array)
+import Utils.Crash as Crash
 
 
 {-| A store of cells of type `a`, indexed from 0 to one less than its `size`,
@@ -141,7 +141,7 @@ cell count as they were when that scope was opened. This also undoes writes
 that scopes nested inside it committed. Crashes if no scope is open.
 -}
 rollback : Store a -> Store a
-rollback (Store arr marks) =
+rollback (Store _ marks) =
     case marks of
         saved :: rest ->
             Store saved rest
@@ -200,7 +200,7 @@ release _ keep =
 -}
 crashOutOfRange : Int -> a
 crashOutOfRange ix =
-    crashWith ("Eco.CellStore: index out of range (" ++ String.fromInt ix ++ ")")
+    Crash.crash ("Eco.CellStore: index out of range (" ++ String.fromInt ix ++ ")")
 
 
 {-| Crashes with a message saying that the operation named `op` was called with
@@ -208,11 +208,4 @@ no mark open.
 -}
 crashNoMark : String -> a
 crashNoMark op =
-    crashWith ("Eco.CellStore: " ++ op ++ " without a mark")
-
-
-{-| Crashes with `message` through `Debug.todo`.
--}
-crashWith : String -> a
-crashWith message =
-    Debug.todo message
+    Crash.crash ("Eco.CellStore: " ++ op ++ " without a mark")

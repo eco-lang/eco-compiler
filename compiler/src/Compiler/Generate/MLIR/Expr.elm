@@ -44,6 +44,7 @@ This module handles generation of MLIR code for all Elm expressions.
 # Let-binding Helpers
 
 @docs collectLetBoundNames, addPlaceholderMappings
+@docs aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
 
 -}
 

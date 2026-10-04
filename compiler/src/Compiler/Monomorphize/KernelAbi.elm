@@ -47,6 +47,7 @@ kernel instantiation to a C symbol and `MlirType` ABI lives in
 # Free Variable Ids
 
 @docs freeVarIds
+@docs alwaysPolymorphicModules, hasAnyFreeVar
 
 -}
 

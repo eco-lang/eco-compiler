@@ -64,6 +64,7 @@ emitFusedEncoder compileExpr ctxIn ops =
     emitFusedEncoderTagged compileExpr { ctxIn | currentFuncName = ctxIn.currentFuncName ++ "/bf-enc" } ops
 
 
+emitFusedEncoderTagged : ExprCompiler -> Context -> List Op -> ( List MlirOp, String, Context )
 emitFusedEncoderTagged compileExpr ctx ops =
     let
         initialState =

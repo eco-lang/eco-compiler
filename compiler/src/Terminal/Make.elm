@@ -75,8 +75,6 @@ import Maybe.Extra as Maybe
 import System.IO exposing (FilePath)
 import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
@@ -553,9 +551,7 @@ buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs stats
     in
     FEStats.withPhase stats FEStats.PhaseLocal <|
         (Task.eio Exit.MakeCannotBuild <|
-            Build.fromExposed BD.unit
-                BE.unit
-                style
+            Build.fromExposed style
                 root
                 maybeBuildDir
                 maybeKernelPackage

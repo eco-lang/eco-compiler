@@ -14,6 +14,7 @@ spine does not yet cover returns `Engine.crashFailure (Unsupported …)` — nev
 to the original engine.
 
 @docs translate
+@docs demandUnifyRoot, enumNode, specializeCtorViaScheme, specializeCycle, specializePort, stampSelfSpine
 
 -}
 
@@ -865,7 +866,7 @@ translateDispatch expr s0 =
                                     case classifyAs Mono.tkClassDestr dmeta.tipe s1 of
                                         ( eagerLeaf, s2 ) ->
                                             if isScalarNumber eagerLeaf && refineRootInstance s1.env.globalTypeEnv eagerRootType path eagerLeaf /= Nothing then
-                                                specializeNumberDestruct dname path dmeta (pathRootName path) eagerRootType body meta s2
+                                                specializeNumberDestruct dname path dmeta (pathRootName path) eagerRootType body s2
 
                                             else
                                                 generalDestruct destructor body meta s2
@@ -5630,8 +5631,8 @@ a slot-refined root instance (`recordNumberInstance rootName` — the root's own
 `translateNumberMultiLet` emits it) and emit a renamed destructor. The eager Int
 destructor is emitted only if the bare `dname` is actually referenced.
 -}
-specializeNumberDestruct : Name -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Name -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
-specializeNumberDestruct dname path dmeta rootName eagerRootType body meta s0 =
+specializeNumberDestruct : Name -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Name -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
+specializeNumberDestruct dname path dmeta rootName eagerRootType body s0 =
     case classifyAs Mono.tkClassDestr dmeta.tipe s0 of
         ( eagerLeaf, s1 ) ->
             case Engine.recordNumberInstance dname eagerLeaf (Engine.pushNumberMulti dname s1) of

@@ -44,6 +44,7 @@ or omits a release after a tail call.
 
 import Array
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B
 import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Lifetime(..))
@@ -89,6 +90,7 @@ The self-call in the `else` branch is the tail call. Of its two arguments, only
 generated `main` reaches `loop`.
 
 -}
+fixtureModule : Src.Module
 fixtureModule =
     let
         intType =

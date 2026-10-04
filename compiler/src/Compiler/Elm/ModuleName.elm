@@ -85,6 +85,7 @@ canonical names, and constants naming particular modules of `elm/core`,
 
 @docs canonicalEncoderS, canonicalDecoderS
 @docs collectStringsFromCanonical
+@docs Canonical
 
 -}
 

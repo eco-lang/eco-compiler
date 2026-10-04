@@ -916,8 +916,8 @@ lambdaHomesOf nodes =
 lambdaHomesExpr : Mono.MonoExpr -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell } -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell }
 lambdaHomesExpr e acc =
     case e of
-        Mono.MonoClosure info body t ->
-            lambdaHomesExpr body (recordLambdaHome info body t acc)
+        Mono.MonoClosure info body _ ->
+            lambdaHomesExpr body (recordLambdaHome info body acc)
 
         Mono.MonoList _ items _ ->
             List.foldl lambdaHomesExpr acc items
@@ -987,8 +987,8 @@ lambdaHomeDeciderExprs d acc =
                 (List.foldl (\( _, dd ) aa -> lambdaHomeDeciderExprs dd aa) acc tests)
 
 
-recordLambdaHome : Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell } -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell }
-recordLambdaHome info body t acc =
+recordLambdaHome : Mono.ClosureInfo -> Mono.MonoExpr -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell } -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell }
+recordLambdaHome info body acc =
     case info.lssMember of
         Just mid ->
             let
@@ -999,7 +999,7 @@ recordLambdaHome info body t acc =
                     List.length info.params
 
                 cells =
-                    varCellWalk (varArgIds False t (varArgIds False bodyType Dict.empty)) "/r" bodyType Dict.empty
+                    varCellWalk "/r" bodyType Dict.empty
             in
             Dict.update mid
                 (\v ->
@@ -1061,43 +1061,8 @@ varMapMerge a b =
         b
 
 
-{-| Ids of set variables sitting at ARGUMENT positions — retained so a var
-cell can record that it is consumer-fed. (Kept for parity with the census's
-pass-through classification; the write rule blocks on `var` either way.)
--}
-varArgIds : Bool -> Mono.MonoType -> Dict.Dict Int () -> Dict.Dict Int ()
-varArgIds underArg t acc =
-    case t of
-        Mono.MFunction _ anno args result ->
-            let
-                acc1 =
-                    case ( underArg, anno ) of
-                        ( True, Mono.LVar n ) ->
-                            Dict.insert n () acc
-
-                        _ ->
-                            acc
-            in
-            List.foldl (\a aa -> varArgIds True a aa) (varArgIds underArg result acc1) args
-
-        Mono.MList _ inner ->
-            varArgIds underArg inner acc
-
-        Mono.MTuple _ elems ->
-            List.foldl (\e aa -> varArgIds underArg e aa) acc elems
-
-        Mono.MRecord _ fields ->
-            Dict.foldl (\_ ft aa -> varArgIds underArg ft aa) acc fields
-
-        Mono.MCustom _ _ _ args ->
-            List.foldl (\a aa -> varArgIds underArg a aa) acc args
-
-        _ ->
-            acc
-
-
-varCellWalk : Dict.Dict Int () -> String -> Mono.MonoType -> Dict.Dict String VarCell -> Dict.Dict String VarCell
-varCellWalk argIds path t acc =
+varCellWalk : String -> Mono.MonoType -> Dict.Dict String VarCell -> Dict.Dict String VarCell
+varCellWalk path t acc =
     case t of
         Mono.MFunction _ anno args result ->
             let
@@ -1127,25 +1092,25 @@ varCellWalk argIds path t acc =
                         acc
 
                 accR =
-                    varCellWalk argIds (path ++ "/r") result acc1
+                    varCellWalk (path ++ "/r") result acc1
             in
-            List.foldl (\( i, a ) aa -> varCellWalk argIds (path ++ "/a" ++ String.fromInt i) a aa)
+            List.foldl (\( i, a ) aa -> varCellWalk (path ++ "/a" ++ String.fromInt i) a aa)
                 accR
                 (List.indexedMap Tuple.pair args)
 
         Mono.MList _ inner ->
-            varCellWalk argIds (path ++ "/l") inner acc
+            varCellWalk (path ++ "/l") inner acc
 
         Mono.MTuple _ elems ->
-            List.foldl (\( i, e ) aa -> varCellWalk argIds (path ++ "/t" ++ String.fromInt i) e aa)
+            List.foldl (\( i, e ) aa -> varCellWalk (path ++ "/t" ++ String.fromInt i) e aa)
                 acc
                 (List.indexedMap Tuple.pair elems)
 
         Mono.MRecord _ fields ->
-            Dict.foldl (\fn ft aa -> varCellWalk argIds (path ++ "/f:" ++ fn) ft aa) acc fields
+            Dict.foldl (\fn ft aa -> varCellWalk (path ++ "/f:" ++ fn) ft aa) acc fields
 
         Mono.MCustom _ _ _ args ->
-            List.foldl (\( i, a ) aa -> varCellWalk argIds (path ++ "/c" ++ String.fromInt i) a aa)
+            List.foldl (\( i, a ) aa -> varCellWalk (path ++ "/c" ++ String.fromInt i) a aa)
                 acc
                 (List.indexedMap Tuple.pair args)
 

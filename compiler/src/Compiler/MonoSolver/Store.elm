@@ -21,6 +21,7 @@ defaults numbers; the shared Prune close does that (MONO\_028).
 
 @docs loadType, unifyStep, zonkToMono
 @docs rezonkSettled
+@docs LoadCtx, LssZonkAcc, SetWriteCtx, ZonkCtx, addSlotSource, aliasBodyEligible, aliasKeyOf, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, groundHash, groundNoArrow, groundNoArrowWith, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeS, loadTypeWithArrows, monoTypeToVarS, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffortStoreS, unifySlotWithSet, unifySlotWithSetC, unifyStrict, unifyStrictS
 
 -}
 

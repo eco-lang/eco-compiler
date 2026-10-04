@@ -52,6 +52,7 @@ silent miscompile.
 # API
 
 @docs AbiCloningStats, abiCloningPass
+@docs instanceFingerprint, peelStages
 
 -}
 

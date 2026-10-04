@@ -54,6 +54,7 @@ state during MLIR code generation.
 # Kernel Instance Registration
 
 @docs registerKernelInstance
+@docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, residualResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
 
 -}
 

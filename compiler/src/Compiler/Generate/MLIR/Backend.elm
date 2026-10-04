@@ -10,6 +10,7 @@ All polymorphism has been resolved and layout information is embedded
 in the types.
 
 @docs backend, generateMlirModule, streamMlirToWriter, streamMlirBytecode
+@docs constThunkReport
 
 -}
 

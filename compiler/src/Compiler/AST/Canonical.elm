@@ -104,6 +104,7 @@ plain codec, reached through `fieldUpdateEncoder`.
 @docs unionEncoderS, unionDecoderS
 @docs collectStringsFromType
 @docs collectStringsFromUnion
+@docs noArrow, tLambda
 
 -}
 

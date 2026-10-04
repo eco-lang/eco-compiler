@@ -62,10 +62,11 @@ argument. They have no row, rather than a row that marks the argument owned.
 @docs DevirtPolicy, ShapeGuard, devirtOf
 @docs HofAxis
 @docs lookup, lookupSymbol, rows
-@docs gcLeafEligible, droppable, hoistable
-@docs gcLeafEligibleFor, droppableForFor
+@docs gcLeafEligible, droppable
+@docs gcLeafEligibleFor
 @docs CostClass, costClass
 @docs validationErrors
+@docs droppableFor, hoistableFor
 
 -}
 

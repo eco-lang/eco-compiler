@@ -4,7 +4,7 @@ module Compiler.Elm.Docs exposing
     , Error(..)
     , fromModule
     , encode, decoder
-    , bytesEncoder, bytesModuleEncoder, bytesDecoder, bytesModuleDecoder
+    , bytesModuleEncoder, bytesModuleDecoder
     )
 
 {-| Documentation extraction and validation for Elm modules.
@@ -33,7 +33,7 @@ for package publishing with full type information and module comments.
 
 # Binary Encoding
 
-@docs bytesEncoder, bytesModuleEncoder, bytesDecoder, bytesModuleDecoder
+@docs bytesModuleEncoder, bytesModuleDecoder
 
 -}
 
@@ -847,20 +847,6 @@ addDef types def =
 
 -- ====== JSON ENCODERS and DECODERS ======
 -- ====== ENCODERS and DECODERS ======
-
-
-{-| Encodes Documentation to a binary format for efficient serialization.
--}
-bytesEncoder : Documentation -> Bytes.Encode.Encoder
-bytesEncoder docs =
-    BE.list bytesModuleEncoder (Dict.values docs)
-
-
-{-| Decodes Documentation from a binary format.
--}
-bytesDecoder : Bytes.Decode.Decoder Documentation
-bytesDecoder =
-    Bytes.Decode.map toDict (BD.list bytesModuleDecoder)
 
 
 {-| Encodes a single Module to a binary format.

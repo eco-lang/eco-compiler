@@ -110,7 +110,7 @@ signatureFor global s0 =
                                         ( sigTarget, { s1 | lssSignatures = HashMap.insert TOpt.globalHash (==) global sigTarget s1.lssSignatures } )
 
                     _ ->
-                        inferUnit global gkey s0
+                        inferUnit global s0
 
 
 {-| Load the callee's signature-source type as a fresh per-call-site
@@ -382,8 +382,8 @@ type alias UnitMember =
     }
 
 
-inferUnit : TOpt.Global -> String -> Engine.S -> ( Engine.LssSignature, Engine.S )
-inferUnit global gkey s0 =
+inferUnit : TOpt.Global -> Engine.S -> ( Engine.LssSignature, Engine.S )
+inferUnit global s0 =
     case resolveUnit global s0 of
         ( members, s1 ) ->
             let
@@ -2226,8 +2226,8 @@ declaredArityGo sought g fuel s =
             Just (TOpt.TrackedDefine _ (TOpt.TrackedFunction _ params _ _) _ _) ->
                 List.length params
 
-            Just (TOpt.Cycle _ valueDefs funcDefs _) ->
-                cycleDefArity sought valueDefs funcDefs
+            Just (TOpt.Cycle _ _ funcDefs _) ->
+                cycleDefArity sought funcDefs
 
             -- KERNEL-ALIAS defines (`(::)` → VarGlobal List.cons, node =
             -- Define (VarKernel …)) fell through the wildcard and floored at
@@ -2274,10 +2274,10 @@ canTypeArrowSpine t =
 
 {-| Dig a cycle unit's def list for the sought member's declared param
 count: `Def` bodies carry their params on the `Function` node; `TailDef`
-carries an explicit typed-args list; a valueDefs hit (or no hit) floors at 1.
+carries an explicit typed-args list; no hit floors at 1.
 -}
-cycleDefArity : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> List (TOpt.Def TypeIds.MVarId) -> Int
-cycleDefArity sought valueDefs funcDefs =
+cycleDefArity : Name -> List (TOpt.Def TypeIds.MVarId) -> Int
+cycleDefArity sought funcDefs =
     let
         fromFunc =
             List.foldl

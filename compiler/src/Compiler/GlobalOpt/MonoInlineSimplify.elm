@@ -20,6 +20,7 @@ Key optimizations:
   - Case simplifications
 
 @docs Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures
+@docs functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
 
 -}
 
@@ -693,13 +694,13 @@ application time is unobservable in Elm except for ⊥ timing (crash moves
 to first application) and `Debug.log` ordering.
 
 -}
-raiseStagedSpecs : Config.InlineConfig -> (Int -> Bool) -> Array (Maybe MonoNode) -> ( Array (Maybe MonoNode), ( Int, Int ) )
-raiseStagedSpecs inlineConfig allowSpec nodes =
+raiseStagedSpecs : (Int -> Bool) -> Array (Maybe MonoNode) -> ( Array (Maybe MonoNode), ( Int, Int ) )
+raiseStagedSpecs allowSpec nodes =
     Array.foldl
         (\maybeNode ( acc, specId, ( nRaised, nSkipped ) ) ->
             case maybeNode of
                 Just (MonoDefine (MonoClosure info body cty) defTy) ->
-                    case raiseOne inlineConfig specId info body cty defTy of
+                    case raiseOne specId info body cty defTy of
                         Just raised ->
                             -- H6.2.5 Lever 2: the spec QUALIFIES structurally;
                             -- the applied-share predicate decides whether its
@@ -722,8 +723,8 @@ raiseStagedSpecs inlineConfig allowSpec nodes =
         |> (\( acc, _, counters ) -> ( acc, counters ))
 
 
-raiseOne : Config.InlineConfig -> Int -> Mono.ClosureInfo -> MonoExpr -> Mono.MonoType -> Mono.MonoType -> Maybe MonoNode
-raiseOne inlineConfig specId info body cty defTy =
+raiseOne : Int -> Mono.ClosureInfo -> MonoExpr -> Mono.MonoType -> Mono.MonoType -> Maybe MonoNode
+raiseOne specId info body cty defTy =
     case ( flattenArrowOnce cty, flattenArrowOnce defTy ) of
         ( Just ctyFlat, Just defTyFlat ) ->
             case body of
@@ -846,7 +847,7 @@ optimize inlineConfig graph =
                             raiseAllowedBySites inlineConfig.raiseAppliedShareMin
                                 (fnResultSiteCensus nodes)
                 in
-                raiseStagedSpecs inlineConfig allowSpec nodes
+                raiseStagedSpecs allowSpec nodes
 
             else
                 ( nodes, ( 0, 0 ) )

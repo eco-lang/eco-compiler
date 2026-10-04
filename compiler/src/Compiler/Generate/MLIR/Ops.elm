@@ -66,6 +66,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 # PAP Group Creation
 
 @docs ecoPapCreateGroup, GroupSibling
+@docs aggCustomType, aggTupleType, ecoCallNamedMulti, ecoFromHeap, ecoGlobal, ecoMakeCustom, ecoMakeTuple2, ecoMakeTuple3, ecoProjectCustomAgg, ecoProjectTuple2Agg, ecoProjectTuple3Agg, ecoReturnMulti, ecoToHeap, funcFuncMulti
 
 -}
 

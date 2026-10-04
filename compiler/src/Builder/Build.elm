@@ -233,8 +233,8 @@ documentation goal (keep, write, or ignore). It performs parallel compilation wi
 incremental rebuilding based on modification times and interface changes.
 
 -}
-fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> DocsGoal docs -> FEStats.Handle -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
-fromExposed docsDecoder docsEncoder style root maybeBuildDir maybeKernelPackage details docsGoal stats ((NE.Nonempty e es) as exposed) =
+fromExposed : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> DocsGoal docs -> FEStats.Handle -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
+fromExposed style root maybeBuildDir maybeKernelPackage details docsGoal stats ((NE.Nonempty e es) as exposed) =
     Reporting.trackBuild style <|
         \key ->
             makeEnv WriteCaches key root maybeBuildDir maybeKernelPackage details False stats

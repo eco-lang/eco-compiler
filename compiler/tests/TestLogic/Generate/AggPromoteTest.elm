@@ -66,6 +66,7 @@ generated.
 
 import Array
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B
 import Compiler.Generate.MLIR.Expr as Expr
 import Dict
@@ -350,6 +351,7 @@ reached from the `main` that `TestLogic.TestPipeline` adds and is specialized
 by monomorphization.
 
 -}
+fixtureModule : Src.Module
 fixtureModule =
     let
         intType =

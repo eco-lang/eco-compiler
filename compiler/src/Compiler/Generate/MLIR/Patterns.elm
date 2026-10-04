@@ -14,6 +14,7 @@ This module handles:
   - Fallback tag computation
 
 @docs generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
+@docs materializeSplitParam
 
 -}
 

@@ -13,6 +13,7 @@ union-find data structures for efficient variable binding.
 # Unification
 
 @docs unify, Answer
+@docs unifyBoolS, unifyS
 
 -}
 

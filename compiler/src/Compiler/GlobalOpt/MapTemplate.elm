@@ -57,6 +57,7 @@ pass makes instead of replicating (and drifting from) them.
 
 @docs Info, Callee, Templates, Stats
 @docs derive, empty, lookup, report
+@docs ArgTaintCauses, UnresolvedCauses
 
 -}
 

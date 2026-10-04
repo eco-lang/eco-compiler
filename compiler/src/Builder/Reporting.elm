@@ -35,6 +35,7 @@ styles including terminal progress indicators, JSON output, and silent mode.
 # User Interaction
 
 @docs ask, reportGenerate
+@docs BResult
 
 -}
 

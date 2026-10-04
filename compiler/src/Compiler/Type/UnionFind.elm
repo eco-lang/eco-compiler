@@ -40,8 +40,8 @@ The plain forms are wrappers over the `S` forms.
 
 # Operations
 
-@docs fresh, repr, get, set, modify, union, equivalent, redundant
-@docs getSS, equivalentS
+@docs fresh, repr, get, set, modify, unionS, equivalent, redundant
+@docs getS, equivalentS
 
 -}
 

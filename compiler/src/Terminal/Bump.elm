@@ -270,7 +270,7 @@ buildDocsFromExposed root exposed details =
             Task.throw Exit.BumpNoExposed
 
         e :: es ->
-            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing Nothing details Build.keepDocs FEStats.disabled (NE.Nonempty e es) |> Task.eio Exit.BumpBadBuild
+            Build.fromExposed Reporting.silent root Nothing Nothing details Build.keepDocs FEStats.disabled (NE.Nonempty e es) |> Task.eio Exit.BumpBadBuild
 
 
 

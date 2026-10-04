@@ -14,6 +14,7 @@ This module:
 # API
 
 @docs applyStagingSolution
+@docs wrapperHome
 
 -}
 

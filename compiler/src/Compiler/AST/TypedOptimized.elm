@@ -72,6 +72,7 @@ The key difference from Optimized:
 # Serialization
 
 @docs globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
+@docs globalHash
 
 -}
 
@@ -647,8 +648,8 @@ globalDecoderS st =
         (StringTable.stringDec st)
 
 
-metaEncoderS : StringTable -> TypeTable -> Meta Name -> Bytes.Encode.Encoder
-metaEncoderS st tt meta =
+metaEncoderS : TypeTable -> Meta Name -> Bytes.Encode.Encoder
+metaEncoderS tt meta =
     TypeTable.ref tt meta.tipe
 
 
@@ -669,8 +670,8 @@ annotationDecoderT st tdt =
         (TypeTable.refDecoder tdt)
 
 
-metaDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Meta Name)
-metaDecoderS st tdt =
+metaDecoderS : TypeTable.Decoded -> Bytes.Decode.Decoder (Meta Name)
+metaDecoderS tdt =
     Bytes.Decode.map (\t -> { tipe = t, tvar = Nothing }) (TypeTable.refDecoder tdt)
 
 
@@ -762,13 +763,13 @@ nodeDecoderS st tdt =
                     0 ->
                         Bytes.Decode.map2 (\expr meta -> Define expr Data.Set.empty meta)
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     1 ->
                         Bytes.Decode.map3 (\region expr meta -> TrackedDefine region expr Data.Set.empty meta)
                             A.regionDecoderV
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     3 ->
                         Bytes.Decode.map3 Ctor
@@ -802,12 +803,12 @@ nodeDecoderS st tdt =
                     10 ->
                         Bytes.Decode.map2 (\expr meta -> PortIncoming expr Data.Set.empty meta)
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     11 ->
                         Bytes.Decode.map2 (\expr meta -> PortOutgoing expr Data.Set.empty meta)
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     _ ->
                         Bytes.Decode.fail
@@ -1112,68 +1113,68 @@ exprDecoderS st tdt =
                         Bytes.Decode.map3 Bool
                             A.regionDecoderV
                             BD.bool
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     1 ->
                         Bytes.Decode.map3 Chr
                             A.regionDecoderV
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     2 ->
                         Bytes.Decode.map3 Str
                             A.regionDecoderV
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     3 ->
                         Bytes.Decode.map3 Int
                             A.regionDecoderV
                             BD.int64
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     4 ->
                         Bytes.Decode.map3 Float
                             A.regionDecoderV
                             BD.float
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     5 ->
                         Bytes.Decode.map2 VarLocal
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     6 ->
                         Bytes.Decode.map3 TrackedVarLocal
                             A.regionDecoderV
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     7 ->
                         Bytes.Decode.map3 VarGlobal
                             A.regionDecoderV
                             (globalDecoderS st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     8 ->
                         Bytes.Decode.map4 VarEnum
                             A.regionDecoderV
                             (globalDecoderS st)
                             Index.zeroBasedDecoderV
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     9 ->
                         Bytes.Decode.map3 VarBox
                             A.regionDecoderV
                             (globalDecoderS st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     10 ->
                         Bytes.Decode.map4 VarCycle
                             A.regionDecoderV
                             (ModuleName.canonicalDecoderS st)
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     11 ->
                         -- Per ECOT_001: reconstruct home and unhandledValueName locally.
@@ -1183,7 +1184,7 @@ exprDecoderS st tdt =
                             )
                             A.regionDecoderV
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     12 ->
                         Bytes.Decode.map5 VarKernel
@@ -1191,56 +1192,56 @@ exprDecoderS st tdt =
                             (StringTable.stringDec st)
                             (StringTable.stringDec st)
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     13 ->
                         Bytes.Decode.map3 List
                             A.regionDecoderV
                             (BD.list (exprDecoderS st tdt))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     14 ->
                         Bytes.Decode.map3 (Function Nothing)
                             (BD.list (typedNameDecoderS st tdt))
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     15 ->
                         Bytes.Decode.map3 (TrackedFunction Nothing)
                             (BD.list (typedLocatedNameDecoderS st tdt))
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     16 ->
                         Bytes.Decode.map4 Call
                             A.regionDecoderV
                             (exprDecoderS st tdt)
                             (BD.list (exprDecoderS st tdt))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     17 ->
                         Bytes.Decode.map3 TailCall
                             (StringTable.stringDec st)
                             (BD.list (BD.jsonPair (StringTable.stringDec st) (exprDecoderS st tdt)))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     18 ->
                         Bytes.Decode.map3 If
                             (BD.list (BD.jsonPair (exprDecoderS st tdt) (exprDecoderS st tdt)))
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     19 ->
                         Bytes.Decode.map3 Let
                             (defDecoderS st tdt)
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     20 ->
                         Bytes.Decode.map3 Destruct
                             (destructorDecoderS st tdt)
                             (exprDecoderS st tdt)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     21 ->
                         Bytes.Decode.map5 Case
@@ -1248,41 +1249,41 @@ exprDecoderS st tdt =
                             (StringTable.stringDec st)
                             (deciderDecoderS st (choiceDecoderS st tdt))
                             (BD.list (BD.jsonPair BD.uintV (exprDecoderS st tdt)))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     22 ->
                         Bytes.Decode.map3 Accessor
                             A.regionDecoderV
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     23 ->
                         Bytes.Decode.map4 Access
                             (exprDecoderS st tdt)
                             A.regionDecoderV
                             (StringTable.stringDec st)
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     24 ->
                         Bytes.Decode.map4 Update
                             A.regionDecoderV
                             (exprDecoderS st tdt)
                             (BD.assocListDict A.toValue (A.locatedDecoder (StringTable.stringDec st)) (exprDecoderS st tdt))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     25 ->
                         Bytes.Decode.map2 Record
                             (BD.stdDict (StringTable.stringDec st) (exprDecoderS st tdt))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     26 ->
                         Bytes.Decode.map3 TrackedRecord
                             A.regionDecoderV
                             (BD.assocListDict A.toValue (A.locatedDecoder (StringTable.stringDec st)) (exprDecoderS st tdt))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     27 ->
-                        Bytes.Decode.map Unit (metaDecoderS st tdt)
+                        Bytes.Decode.map Unit (metaDecoderS tdt)
 
                     28 ->
                         Bytes.Decode.map5 Tuple
@@ -1290,14 +1291,14 @@ exprDecoderS st tdt =
                             (exprDecoderS st tdt)
                             (exprDecoderS st tdt)
                             (BD.list (exprDecoderS st tdt))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     29 ->
                         Bytes.Decode.map4 Shader
                             (Shader.sourceDecoderS st)
                             (BD.everySet identity (StringTable.stringDec st))
                             (BD.everySet identity (StringTable.stringDec st))
-                            (metaDecoderS st tdt)
+                            (metaDecoderS tdt)
 
                     _ ->
                         Bytes.Decode.fail
@@ -1381,7 +1382,7 @@ destructorEncoderS st tt (Destructor name path meta) =
     Bytes.Encode.sequence
         [ StringTable.string st name
         , pathEncoderS st path
-        , metaEncoderS st tt meta
+        , metaEncoderS tt meta
         ]
 
 
@@ -1390,7 +1391,7 @@ destructorDecoderS st tdt =
     Bytes.Decode.map3 Destructor
         (StringTable.stringDec st)
         (pathDecoderS st)
-        (metaDecoderS st tdt)
+        (metaDecoderS tdt)
 
 
 deciderEncoderS : StringTable -> (a -> Bytes.Encode.Encoder) -> Decider a -> Bytes.Encode.Encoder

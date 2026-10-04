@@ -38,8 +38,8 @@ vector makes a new table rather than changing the old one.
 
 # Union-find cells
 
-@docs readPointCell, writePointCell
-@docs newPointCellSSS
+@docs readPointCellS, writePointCellS
+@docs newPointCellS
 
 
 # Mutable vectors

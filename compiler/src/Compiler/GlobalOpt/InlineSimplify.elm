@@ -247,11 +247,11 @@ optimize cfg state graph =
             , hofDeclined = cands.hofDeclined
             }
     in
-    rounds cfg ctx0 graph
+    rounds ctx0 graph
 
 
-rounds : Config.InlineConfig -> Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, AssignMVarIds.GlobalMVarState, Metrics )
-rounds cfg ctx graph =
+rounds : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, AssignMVarIds.GlobalMVarState, Metrics )
+rounds ctx graph =
     if ctx.fuel <= 0 then
         ( graph, ctx.state, ctx.metrics )
 
@@ -268,7 +268,7 @@ rounds cfg ctx graph =
             ( graph1, ctx1.state, ctx1.metrics )
 
         else
-            rounds cfg { ctx1 | fuel = ctx1.fuel - 1 } graph1
+            rounds { ctx1 | fuel = ctx1.fuel - 1 } graph1
 
 
 
