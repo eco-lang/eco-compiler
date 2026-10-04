@@ -11,11 +11,9 @@ module Compiler.AST.Canonical exposing
     , unionEncoder, unionDecoder
     , ctorOptsEncoder, ctorOptsDecoder
     , fieldUpdateEncoder, fieldUpdateDecoder
-    , annotationEncoderS, annotationDecoderS
-    , typeEncoderS, typeDecoderS
     , arrowSlotToInt, arrowSlotFromInt, freeVarsEncoderS, freeVarsDecoderS
     , unionEncoderS, unionDecoderS
-    , collectStringsFromAnnotation, collectStringsFromType
+    , collectStringsFromType
     , collectStringsFromUnion
     , noArrow, tLambda
     )
@@ -102,11 +100,9 @@ plain codec, reached through `fieldUpdateEncoder`.
 
 # String-Interned Serialization
 
-@docs annotationEncoderS, annotationDecoderS
-@docs typeEncoderS, typeDecoderS
 @docs arrowSlotToInt, arrowSlotFromInt, freeVarsEncoderS, freeVarsDecoderS
 @docs unionEncoderS, unionDecoderS
-@docs collectStringsFromAnnotation, collectStringsFromType
+@docs collectStringsFromType
 @docs collectStringsFromUnion
 
 -}
@@ -124,7 +120,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict exposing (Dict)
-import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -1818,17 +1813,6 @@ caseBranchDecoder =
 
 
 -- ====== STRING COLLECTORS ======
-
-
-{-| Gives the collector `acc` every string `annotationEncoderS` writes for the
-annotation: the names of its type variables and the strings of its type. Which
-of them `acc` keeps is its own rule, as `StringTable.Collector` describes.
--}
-collectStringsFromAnnotation : Annotation Name -> StringTable.Collector -> StringTable.Collector
-collectStringsFromAnnotation (Forall freeVars tipe) acc =
-    acc
-        |> (\a -> List.foldl StringTable.add a (Dict.keys freeVars))
-        |> collectStringsFromType tipe
 
 
 {-| Gives the collector `acc` every string `typeEncoderS` writes for the type:

@@ -67,8 +67,7 @@ agrees with any manifest.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , callExpr
+        ( callExpr
         , makeModuleWithTypedDefs
         , pVar
         , qualVarExpr

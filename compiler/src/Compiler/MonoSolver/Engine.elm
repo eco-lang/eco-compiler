@@ -2,9 +2,9 @@ module Compiler.MonoSolver.Engine exposing
     ( S, Step, Failure(..), WorkItem(..)
     , traverse, foldlS, liftIO
     , freshVar, enqueueSpec
-    , freshStore, renewStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
+    , freshStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
     , mvarIdKey, pointKey
-    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SigFlowStats, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, emptyQShadowStats, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTable, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isNumberMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markDirty, markFlexCtorSpec, memberClassOf, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
     )
 
 {-| Core state + step monad for the solver-based monomorphizer.
@@ -37,7 +37,7 @@ and one written as a combinator chain never is.
 @docs S, Step, Failure, WorkItem
 @docs traverse, foldlS, liftIO
 @docs freshVar, enqueueSpec
-@docs freshStore, renewStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
+@docs freshStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
 @docs mvarIdKey, pointKey
 
 -}
@@ -58,7 +58,6 @@ import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
 import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
-import Data.Map as DMap
 import Data.Set as EverySet
 import Dict as CoreDict exposing (Dict)
 import Eco.CellStore as CellStore
@@ -2545,13 +2544,6 @@ popNumberMulti s =
             ( Nothing, s )
 
 
-{-| Is `name` a let-bound number var currently being multi-specialized?
--}
-isNumberMultiTarget : String -> S -> ( Bool, S )
-isNumberMultiTarget name s =
-    ( List.any (\e -> e.defName == name) s.numberMulti, s )
-
-
 {-| The eager (index-0, bare-name) instance monoType of a number-multi target,
 or Nothing if `name` is not one. Used by the destructor-derived divert to
 overlay a refined slot onto the root container's type.
@@ -2706,18 +2698,6 @@ scoped step s0 =
     case step s0 of
         ( a, s1 ) ->
             ( a, { s1 | varEnv = s0.varEnv } )
-
-
-{-| Harvest number-taint (Join-R, §5.5) from the finished item's store into the
-global super table: every Point that resolved to a `Number` super marks its
-originating MVarId as `Number`. The shared Prune then closes any `MVar id
-CEcoValue` whose `id` became a number through unification (e.g. a call argument
-threading a `number` into a polymorphic parameter) to `MInt`, matching the
-original engine's taint-then-close behaviour. Runs before the store is discarded.
--}
-harvestSuperTable : S -> S
-harvestSuperTable s =
-    harvestSuperTableExcept EverySet.empty s
 
 
 {-| Harvest, excluding the given MVarId keys. Annotation vars of the item's own

@@ -1,7 +1,7 @@
 module Data.Map exposing
     ( Dict
-    , empty, singleton, insert, insertKeyed
-    , isEmpty, member, memberKeyed, get, size
+    , empty, singleton, insert
+    , isEmpty, member, get, size
     , keys, values, toList, fromList
     , map, foldl, foldr, filter
     , union, diff
@@ -43,12 +43,12 @@ once rather than twice.
 
 # Build
 
-@docs empty, singleton, insert, insertKeyed
+@docs empty, singleton, insert
 
 
 # Query
 
-@docs isEmpty, member, memberKeyed, get, size
+@docs isEmpty, member, get, size
 
 
 # Lists
@@ -119,31 +119,6 @@ size (D dict) =
 isEmpty : Dict c k v -> Bool
 isEmpty (D dict) =
     Dict.isEmpty dict
-
-
-{-| Returns whether an entry is filed under `comparableKey`, a key the caller
-has already projected.
-
-Paired with `insertKeyed`, this lets a caller test for a key and then insert it
-while projecting the key only once, which matters when the projection is
-costly to compute.
-
--}
-memberKeyed : comparable -> Dict comparable k v -> Bool
-memberKeyed comparableKey (D dict) =
-    Dict.member comparableKey dict
-
-
-{-| Inserts `key` and `value` under `comparableKey`, a key the caller has
-already projected, replacing any entry filed there.
-
-Nothing checks that `comparableKey` is the projection of `key`. If it is not,
-a later lookup of `key` through the projection will not find the entry.
-
--}
-insertKeyed : comparable -> k -> v -> Dict comparable k v -> Dict comparable k v
-insertKeyed comparableKey key value (D dict) =
-    D (Dict.insert comparableKey ( key, value ) dict)
 
 
 {-| Inserts `key` and `value` under the projection of `key`.

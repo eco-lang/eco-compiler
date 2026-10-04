@@ -156,13 +156,6 @@ hInt =
     tType "Int" []
 
 
-{-| The source type `Int -> Int`. Nothing in this module uses it.
--}
-int1 : Src.Type
-int1 =
-    tLambda hInt hInt
-
-
 {-| The source type `PS Int`, the one instantiation of `PS` the fixture uses.
 -}
 boxOfFn : Src.Type

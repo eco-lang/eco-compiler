@@ -74,7 +74,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
 import Set exposing (Set)
-import Utils.Crash
 
 
 {-| Counts describing what one `run` did.
@@ -224,23 +223,6 @@ entries in `nodes` and `reverseMapping` only: the forward `mapping`,
 run : { minNodes : Int, maxHoists : Int } -> Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 run cfg (Mono.MonoGraph g) =
     let
-        nodesLen =
-            Array.length g.nodes
-
-        _ =
-            if g.registry.nextId /= nodesLen || Array.length g.registry.reverseMapping /= nodesLen then
-                Utils.Crash.crash
-                    ("CafHoist: registry drift: nextId="
-                        ++ String.fromInt g.registry.nextId
-                        ++ " nodes="
-                        ++ String.fromInt nodesLen
-                        ++ " reverseMapping="
-                        ++ String.fromInt (Array.length g.registry.reverseMapping)
-                    )
-
-            else
-                ()
-
         ctx0 : Ctx
         ctx0 =
             { nextId = g.registry.nextId
@@ -572,11 +554,7 @@ collectChildren minNodes ctx expr =
             goList ctx (List.map Tuple.second fields)
 
         Mono.MonoRecordAccess rec _ _ ->
-            let
-                ( ri, rcs, ctx1 ) =
-                    go ctx rec
-            in
-            ( ri, rcs, ctx1 )
+            go ctx rec
 
         Mono.MonoRecordUpdate rec updates _ ->
             goList ctx (rec :: List.map Tuple.second updates)
@@ -1304,38 +1282,6 @@ large each bucket is, never which expressions are found equal.
 kindTagOf : Mono.MonoExpr -> String
 kindTagOf expr =
     let
-        kindTag =
-            case expr of
-                Mono.MonoCall _ func _ _ _ ->
-                    "c:" ++ headTag func
-
-                Mono.MonoLet _ _ _ ->
-                    "l"
-
-                Mono.MonoIf _ _ _ ->
-                    "i"
-
-                Mono.MonoCase _ _ _ _ _ ->
-                    "k"
-
-                Mono.MonoDestruct _ _ _ ->
-                    "d"
-
-                Mono.MonoRecordCreate _ _ ->
-                    "r"
-
-                Mono.MonoRecordUpdate _ _ _ ->
-                    "u"
-
-                Mono.MonoTupleCreate _ _ _ ->
-                    "t"
-
-                Mono.MonoList _ items _ ->
-                    "s" ++ String.fromInt (List.length items)
-
-                _ ->
-                    "x"
-
         headTag func =
             case func of
                 Mono.MonoVarGlobal _ sid _ ->
@@ -1347,4 +1293,33 @@ kindTagOf expr =
                 _ ->
                     "dyn"
     in
-    kindTag
+    case expr of
+        Mono.MonoCall _ func _ _ _ ->
+            "c:" ++ headTag func
+
+        Mono.MonoLet _ _ _ ->
+            "l"
+
+        Mono.MonoIf _ _ _ ->
+            "i"
+
+        Mono.MonoCase _ _ _ _ _ ->
+            "k"
+
+        Mono.MonoDestruct _ _ _ ->
+            "d"
+
+        Mono.MonoRecordCreate _ _ ->
+            "r"
+
+        Mono.MonoRecordUpdate _ _ _ ->
+            "u"
+
+        Mono.MonoTupleCreate _ _ _ ->
+            "t"
+
+        Mono.MonoList _ items _ ->
+            "s" ++ String.fromInt (List.length items)
+
+        _ ->
+            "x"

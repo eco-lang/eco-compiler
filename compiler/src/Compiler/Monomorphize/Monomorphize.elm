@@ -31,10 +31,9 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.Prune as Prune

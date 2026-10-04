@@ -72,7 +72,6 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , ifExpr
         , intExpr
-        , lambdaExpr
         , makeModuleWithTypedDefs
         , pVar
         , tLambda

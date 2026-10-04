@@ -1015,10 +1015,6 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                                             ( pattern, List.foldr (wrapDestruct tipe) obranch destructors )
                                         )
                             )
-
-                optimizeBranchTail : Can.Expr -> Names.Tracker (TOpt.Expr Name)
-                optimizeBranchTail can =
-                    optimizeTail kernelEnv annotations exprTypes exprVars home cycle rootName argNames resultType (TCanBuild.toTypedExpr exprTypes exprVars can)
             in
             Names.generate
                 |> Names.andThen

@@ -54,26 +54,20 @@ module Compiler.AST.Monomorphized exposing
     , eqLayout
     , eqModuloTopLabel
     , getMonoPathType
-    , globalHash
     , hasTopAnno
     , hasVarAnno
     , headAnno
     , isFunctionType
     , isTopAnno
-    , joinAnnotations
     , joinAnnotationsChanged
     , joinCollisionCells
     , layoutHashOf
     , layoutMapEmpty
     , layoutMapFoldl
-    , layoutMapFromList
     , layoutMapGet
     , layoutMapInsert
-    , layoutMapIsEmpty
     , layoutMapMap
     , layoutMapMember
-    , layoutMapSize
-    , layoutMapToList
     , layoutMapValues
     , mCustom
     , mFunction
@@ -93,13 +87,11 @@ module Compiler.AST.Monomorphized exposing
     , specKeyMapEmpty
     , specKeyMapGet
     , specKeyMapInsert
-    , specKeyMapSize
     , specMapEmpty
     , specMapFoldl
     , specMapGet
     , specMapInsert
     , specMapIsEmpty
-    , specMapMember
     , specMapRemove
     , specMapSingleton
     , specMapSize
@@ -107,7 +99,6 @@ module Compiler.AST.Monomorphized exposing
     , specMapValues
     , stageParamTypes
     , stageReturnType
-    , tkAbi
     , tkClassCall
     , tkClassCase
     , tkClassDestr
@@ -118,41 +109,21 @@ module Compiler.AST.Monomorphized exposing
     , tkClassLocal
     , tkClassMisc
     , tkClassParam
-    , tkConflict
-    , tkDeclOther
-    , tkDeclStoreC
-    , tkDeclStoreS
-    , tkDeclZonk
     , tkEdge
     , tkLegacy
     , tkPoison
-    , tkRow
-    , tkSynth
     , tkWiden
     , toComparableGlobal
     , toComparableMonoType
     , topAbi
-    , topClassCall
-    , topClassCase
-    , topClassDestr
-    , topClassIf
-    , topClassLambda
-    , topClassLet
-    , topClassLit
-    , topClassLocal
-    , topClassMisc
-    , topClassParam
-    , topConflict
     , topDeclOther
     , topDeclStoreC
-    , topDeclStoreS
     , topDeclZonk
     , topEdge
     , topKindLabel
     , topLegacy
     , topOfKind
     , topPoison
-    , topRow
     , topSynth
     , topWiden
     , typeHasResidualNumber
@@ -221,7 +192,6 @@ made.
 -}
 
 import Array exposing (Array)
-import Char
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
@@ -778,20 +748,6 @@ layoutMapInsert key value m =
     HashMap.insert layoutHashOf eqKeyLayout key value m
 
 
-{-| Returns the number of entries in a layout-keyed map.
--}
-layoutMapSize : LayoutMap v -> Int
-layoutMapSize m =
-    HashMap.size m
-
-
-{-| Returns whether a layout-keyed map has no entries.
--}
-layoutMapIsEmpty : LayoutMap v -> Bool
-layoutMapIsEmpty m =
-    HashMap.isEmpty m
-
-
 {-| Folds `step` over the entries of a layout-keyed map, in insertion order, a
 key removed and inserted again counting as new.
 -}
@@ -807,28 +763,12 @@ layoutMapMap f m =
     HashMap.map f m
 
 
-{-| Returns the entries of a layout-keyed map, in insertion order, a key
-removed and inserted again counting as new.
--}
-layoutMapToList : LayoutMap v -> List ( MonoType, v )
-layoutMapToList m =
-    HashMap.toList m
-
-
 {-| Returns the values of a layout-keyed map, in insertion order, a key
 removed and inserted again counting as new.
 -}
 layoutMapValues : LayoutMap v -> List v
 layoutMapValues m =
     HashMap.values m
-
-
-{-| Builds a layout-keyed map from `entries`. Where two entries have the same
-layout key, the later value is kept.
--}
-layoutMapFromList : List ( MonoType, v ) -> LayoutMap v
-layoutMapFromList entries =
-    HashMap.fromList layoutHashOf eqKeyLayout entries
 
 
 {-| Returns a hash of a global, for tables keyed by globals. Equal globals have
@@ -907,13 +847,6 @@ specKeyMapInsert key value m =
     HashMap.insert specKeyHash specKeyEq key value m
 
 
-{-| Returns the number of entries in a map keyed by `SpecKey`.
--}
-specKeyMapSize : SpecKeyMap v -> Int
-specKeyMapSize m =
-    HashMap.size m
-
-
 {-| An empty spec-keyed map.
 -}
 specMapEmpty : SpecMap v
@@ -926,13 +859,6 @@ specMapEmpty =
 specMapGet : MonoType -> SpecMap v -> Maybe v
 specMapGet key m =
     HashMap.get specHashOf eqKeySpec key m
-
-
-{-| Returns whether a value is stored under the spec key of `key`.
--}
-specMapMember : MonoType -> SpecMap v -> Bool
-specMapMember key m =
-    HashMap.member specHashOf eqKeySpec key m
 
 
 {-| Returns the map with `value` stored under the spec key of `key`, replacing any
@@ -1051,14 +977,6 @@ tkPoison =
     0
 
 
-{-| The ⊤ provenance code 1, labelled `conflict`. `unionAnno` gives it where two
-different set variables meet.
--}
-tkConflict : Int
-tkConflict =
-    1
-
-
 {-| The ⊤ provenance code 2, labelled `widen`. `widenSets` puts it on every arrow.
 -}
 tkWiden : Int
@@ -1071,52 +989,6 @@ tkWiden =
 tkEdge : Int
 tkEdge =
     3
-
-
-{-| The ⊤ provenance code 4, labelled `abi`.
--}
-tkAbi : Int
-tkAbi =
-    4
-
-
-{-| The ⊤ provenance code 5, labelled `declZonk`.
-
-Codes 5 to 8 mark a ⊤ placed on the arrows of a declaration's type, and tell
-apart the code paths that placed it.
-
--}
-tkDeclZonk : Int
-tkDeclZonk =
-    5
-
-
-{-| The ⊤ provenance code 6, labelled `declStoreC`.
--}
-tkDeclStoreC : Int
-tkDeclStoreC =
-    6
-
-
-{-| The ⊤ provenance code 7, labelled `declStoreS`.
--}
-tkDeclStoreS : Int
-tkDeclStoreS =
-    7
-
-
-{-| The ⊤ provenance code 8, labelled `declOther`.
--}
-tkDeclOther : Int
-tkDeclOther =
-    8
-
-
-{-| The ⊤ provenance code 9, labelled `synth`.
--}
-tkSynth : Int
-tkSynth =
-    9
 
 
 {-| The ⊤ provenance code 10, labelled `legacy`. `normalizeTopLabels` gives every
@@ -1201,13 +1073,6 @@ tkClassLet =
 tkClassMisc : Int
 tkClassMisc =
     20
-
-
-{-| The ⊤ provenance code 21, labelled `row`.
--}
-tkRow : Int
-tkRow =
-    21
 
 
 {-| The ⊤ with provenance code `tkPoison`. Each `top*` constant is the ⊤ with the
@@ -2332,57 +2197,6 @@ headAnno monoType =
             topLegacy
 
 
-{-| Returns `a` with each arrow's annotation joined (`unionAnno`) with the
-annotation at the same position in `b`.
-
-The two types are meant to have the same layout. Where they do not (a
-different constructor, number of arguments, field names or custom type, or a
-different leaf), the part of `a` at that point is widened with `widenSets`
-instead.
-
--}
-joinAnnotations : MonoType -> MonoType -> MonoType
-joinAnnotations a b =
-    case ( a, b ) of
-        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
-            if List.length argsA == List.length argsB then
-                mFunction (unionAnno annoA annoB) (List.map2 joinAnnotations argsA argsB) (joinAnnotations retA retB)
-
-            else
-                widenSets a
-
-        ( MList _ xa, MList _ xb ) ->
-            mList (joinAnnotations xa xb)
-
-        ( MTuple _ xsa, MTuple _ xsb ) ->
-            if List.length xsa == List.length xsb then
-                mTuple (List.map2 joinAnnotations xsa xsb)
-
-            else
-                widenSets a
-
-        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
-            if sameFieldKeys fieldsA fieldsB then
-                mRecord (Dict.map (\k ta -> joinAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
-
-            else
-                widenSets a
-
-        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
-            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
-                mCustom homeA nameA (List.map2 joinAnnotations argsA argsB)
-
-            else
-                widenSets a
-
-        _ ->
-            if a == b then
-                a
-
-            else
-                widenSets a
-
-
 {-| Returns `joinAnnotations a b`, paired with whether it differs from `a`. When
 the flag is `False` the type returned is `==` to `a`, and when it is `True` only
 the parts that changed are rebuilt.
@@ -2568,7 +2382,7 @@ annoCovers a b =
         ( LTop _, _ ) ->
             True
 
-        ( LPartial xs, LVar _ ) ->
+        ( LPartial _, LVar _ ) ->
             True
 
         ( LPartial xs, LPartial ys ) ->

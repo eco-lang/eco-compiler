@@ -141,7 +141,6 @@ result, whose lambda sets receive the argument's members. No row uses it.
 type ParamSetFlow
     = PSFOpaque
     | PSFApplies
-    | PSFTunnels
 
 
 {-| The per-position row of a kernel that holds no license: a `ParamSetFlow`

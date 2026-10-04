@@ -84,7 +84,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
@@ -92,7 +92,7 @@ import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map as Dict
 import Dict as CoreDict
 
 

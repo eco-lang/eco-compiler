@@ -1,6 +1,7 @@
 module Compiler.GlobalOpt.MapTemplate exposing
     ( Info, Callee(..), Templates, Stats
     , derive, empty, lookup, report
+    , ArgTaintCauses, UnresolvedCauses
     )
 
 {-| Licence analysis for the forward `List.map` MLIR template
@@ -531,9 +532,6 @@ countDecline verdict acc =
         PoisonOpaqueGlobal ->
             bump (\s -> { s | declinedOpaqueGlobal = s.declinedOpaqueGlobal + 1 }) acc
 
-        PoisonHigherOrder HOLocalLSet ->
-            bump (\s -> { s | declinedCalleeLocalLSet = s.declinedCalleeLocalLSet + 1 }) acc
-
         PoisonHigherOrder HOLocalLTop ->
             bump (\s -> { s | declinedCalleeLocalLTop = s.declinedCalleeLocalLTop + 1 }) acc
 
@@ -920,8 +918,7 @@ the LSS census predicted.
 
 -}
 type HOKind
-    = HOLocalLSet
-    | HOLocalLTop
+    = HOLocalLTop
     | HOOther
 
 

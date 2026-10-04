@@ -3,7 +3,6 @@ module Compiler.GlobalOpt.Borrow.Rty exposing
     , ResVar
     , allRes
     , freshRTy
-    , rcManaged
     , topRes
     , zipRTy
     )
@@ -311,16 +310,3 @@ zipRTyFields a b =
 
         _ ->
             []
-
-
-{-| Returns whether a type is reference-count managed, which is true of
-`MString` alone.
--}
-rcManaged : Mono.MonoType -> Bool
-rcManaged ty =
-    case ty of
-        Mono.MString ->
-            True
-
-        _ ->
-            False

@@ -3,7 +3,7 @@ module Data.HashMap exposing
     , empty, insert, get, getBy, member, remove
     , getHashed, insertNew
     , size, isEmpty
-    , foldl, map, toList, values, fromList
+    , foldl, map, toList, values
     )
 
 {-| A dictionary for keys that are costly to turn into a comparable value.
@@ -39,7 +39,7 @@ that a lookup that misses followed by an insert of the same key hashes it once.
 @docs empty, insert, get, getBy, member, remove
 @docs getHashed, insertNew
 @docs size, isEmpty
-@docs foldl, map, toList, values, fromList
+@docs foldl, map, toList, values
 
 -}
 
@@ -306,12 +306,3 @@ toList m =
 values : HashMap k v -> List v
 values m =
     List.map (\( _, _, v ) -> v) (orderedEntries m)
-
-
-{-| Builds a map from `entries`, inserting them in list order. Where two
-entries have equal keys under `eq`, the later value is kept, under the earlier
-key and in the earlier key's place.
--}
-fromList : (k -> Int) -> (k -> k -> Bool) -> List ( k, v ) -> HashMap k v
-fromList hash eq entries =
-    List.foldl (\( k, v ) acc -> insert hash eq k v acc) empty entries

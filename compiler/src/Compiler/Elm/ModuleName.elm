@@ -97,7 +97,6 @@ import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P
 import Compiler.Parse.Variable as Var
-import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 

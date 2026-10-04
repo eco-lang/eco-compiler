@@ -1,5 +1,5 @@
 module Compiler.GlobalOpt.PreMono.LiftClosedArgs exposing
-    ( Metrics, emptyMetrics
+    ( Metrics
     , census
     )
 
@@ -41,7 +41,7 @@ args, and `Destruct` destructor names, and uses are
 `VarLocal`/`TrackedVarLocal`, a `Path`'s `Root`, a `TailCall` label and a
 `Case`'s root (its LABEL is neither).
 
-@docs Metrics, emptyMetrics
+@docs Metrics
 @docs census
 
 -}

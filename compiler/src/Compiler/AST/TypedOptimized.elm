@@ -2269,12 +2269,8 @@ collectStringsFromExpr expr acc =
                 withDecider : StringTable.Collector
                 withDecider =
                     collectStringsFromDecider collectStringsFromChoice decider withLabels
-
-                withJumps : StringTable.Collector
-                withJumps =
-                    List.foldl (\( _, e ) a -> collectStringsFromExpr e a) withDecider jumps
             in
-            withJumps
+            List.foldl (\( _, e ) a -> collectStringsFromExpr e a) withDecider jumps
 
         Accessor _ field _ ->
             acc |> StringTable.add field
@@ -2289,41 +2285,27 @@ collectStringsFromExpr expr acc =
                 withRecord : StringTable.Collector
                 withRecord =
                     collectStringsFromExpr record acc
-
-                withFields : StringTable.Collector
-                withFields =
-                    Data.Map.foldl A.compareLocated
-                        (\locN e a ->
-                            a |> StringTable.add (A.toValue locN) |> collectStringsFromExpr e
-                        )
-                        withRecord
-                        fields
             in
-            withFields
+            Data.Map.foldl A.compareLocated
+                (\locN e a ->
+                    a |> StringTable.add (A.toValue locN) |> collectStringsFromExpr e
+                )
+                withRecord
+                fields
 
         Record value _ ->
-            let
-                withFields : StringTable.Collector
-                withFields =
-                    Dict.foldl
-                        (\k e a -> a |> StringTable.add k |> collectStringsFromExpr e)
-                        acc
-                        value
-            in
-            withFields
+            Dict.foldl
+                (\k e a -> a |> StringTable.add k |> collectStringsFromExpr e)
+                acc
+                value
 
         TrackedRecord _ value _ ->
-            let
-                withFields : StringTable.Collector
-                withFields =
-                    Data.Map.foldl A.compareLocated
-                        (\locN e a ->
-                            a |> StringTable.add (A.toValue locN) |> collectStringsFromExpr e
-                        )
-                        acc
-                        value
-            in
-            withFields
+            Data.Map.foldl A.compareLocated
+                (\locN e a ->
+                    a |> StringTable.add (A.toValue locN) |> collectStringsFromExpr e
+                )
+                acc
+                value
 
         Unit _ ->
             acc
@@ -2345,12 +2327,8 @@ collectStringsFromExpr expr acc =
                 withAttrs : StringTable.Collector
                 withAttrs =
                     Data.Set.foldr compare StringTable.add withSrc attributes
-
-                withUnis : StringTable.Collector
-                withUnis =
-                    Data.Set.foldr compare StringTable.add withAttrs uniforms
             in
-            withUnis
+            Data.Set.foldr compare StringTable.add withAttrs uniforms
 
 
 collectStringsFromDestructor : Destructor Name -> StringTable.Collector -> StringTable.Collector

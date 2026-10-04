@@ -45,7 +45,7 @@ import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..))
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
-import Dict exposing (Dict)
+import Dict
 
 
 {-| The answers `analyze` computes for one graph: two sets of spec ids, for two
@@ -238,7 +238,7 @@ scanBody root =
 
             else
                 case expr of
-                    MonoVarKernel _ _ home name _ ->
+                    MonoVarKernel _ _ home _ _ ->
                         ( home /= "Debug", callees )
 
                     MonoVarGlobal _ sid _ ->

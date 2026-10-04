@@ -1,4 +1,4 @@
-module Builder.GcPoints exposing (preLink, render)
+module Builder.GcPoints exposing (preLink)
 
 {-| Lets the compiler release the memory its earlier phases no longer need
 before the native back end, which lowers and links the program, starts.
@@ -15,7 +15,7 @@ A collection can only release data that nothing still refers to. Data
 captured by the closure of an `andThen` step that has not yet run is still
 referred to, so a collection that `preLink` asks for does not release it.
 
-@docs preLink, render
+@docs preLink
 
 -}
 

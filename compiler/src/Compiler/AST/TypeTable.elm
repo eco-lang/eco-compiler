@@ -1,8 +1,7 @@
 module Compiler.AST.TypeTable exposing
-    ( Builder, empty, add, intern, size, collectStrings
+    ( Builder, empty, add, size, collectStrings
     , TypeTable, freeze, ref, refMaybe, encoder
     , Decoded, decoder, refDecoder, decodedTypes
-    , hashType, hashTypeElm
     )
 
 {-| A typed artifact repeats the same types many times over, and this
@@ -49,7 +48,7 @@ the bytes written do not depend on it.
 
 # Building
 
-@docs Builder, empty, add, intern, size, collectStrings
+@docs Builder, empty, add, size, collectStrings
 
 
 # Encoding
@@ -63,8 +62,6 @@ the bytes written do not depend on it.
 
 
 # Hashing
-
-@docs hashType, hashTypeElm
 
 -}
 

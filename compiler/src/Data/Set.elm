@@ -1,7 +1,7 @@
 module Data.Set exposing
     ( EverySet
-    , empty, insert, insertKeyed
-    , isEmpty, member, memberKeyed, size
+    , empty, insert
+    , isEmpty, member, size
     , union, diff
     , toList, fromList
     , foldr, filter
@@ -33,12 +33,12 @@ projects it once rather than twice.
 
 # Build
 
-@docs empty, insert, insertKeyed
+@docs empty, insert
 
 
 # Query
 
-@docs isEmpty, member, memberKeyed, size
+@docs isEmpty, member, size
 
 
 # Combine
@@ -101,32 +101,6 @@ isEmpty (EverySet d) =
 member : (a -> comparable) -> a -> EverySet comparable a -> Bool
 member toComparable k (EverySet d) =
     Dict.member toComparable k d
-
-
-{-| Returns whether an element is stored under `comparableKey`, a projection
-the caller has already computed.
-
-Paired with `insertKeyed`, this lets a caller test for an element and then
-insert it while projecting it only once, which matters when the projection is
-costly to compute.
-
--}
-memberKeyed : comparable -> EverySet comparable a -> Bool
-memberKeyed comparableKey (EverySet d) =
-    Dict.memberKeyed comparableKey d
-
-
-{-| Inserts `k` under `comparableKey`, a projection the caller has already
-computed, replacing any element stored there.
-
-Nothing checks that `comparableKey` is the projection of `k`. If it is not, a
-later `member` test for `k` looks under its projection, not where `k` was
-stored.
-
--}
-insertKeyed : comparable -> a -> EverySet comparable a -> EverySet comparable a
-insertKeyed comparableKey k (EverySet d) =
-    Dict.insertKeyed comparableKey k () d |> EverySet
 
 
 {-| Returns the number of elements.

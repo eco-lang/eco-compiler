@@ -290,23 +290,6 @@ callSiteTyped argCount calleeTy retTy =
         Mono.defaultCallInfo
 
 
-{-| A closure instance of an unrelated member, 424242. No test uses it.
--}
-dummyClosure : Mono.MonoExpr
-dummyClosure =
-    Mono.MonoClosure
-        { lambdaId = Mono.AnonymousLambda home 7
-        , srcLambda = Nothing
-        , lssMember = Just 424242
-        , captures = []
-        , params = [ ( "x", Mono.MInt ) ]
-        , closureKind = Nothing
-        , captureAbi = Nothing
-        }
-        (Mono.MonoVarLocal "x" Mono.MInt)
-        (Mono.mFunction (Mono.LSet [ 424242 ]) [ Mono.MInt ] Mono.MInt)
-
-
 {-| Builds a member-origin table from (member, origin) pairs.
 -}
 origins : List ( Int, Mono.MemberOrigin ) -> Dict.Dict Int Mono.MemberOrigin

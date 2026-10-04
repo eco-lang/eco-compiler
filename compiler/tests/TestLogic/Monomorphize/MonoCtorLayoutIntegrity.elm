@@ -44,7 +44,6 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.Data.Id as Id
 import Compiler.Generate.MLIR.Types as Types
-import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 

@@ -30,7 +30,7 @@ import Compiler.Graph as Graph
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.State as State
-import Dict exposing (Dict)
+import Dict
 import Utils.Crash
 
 

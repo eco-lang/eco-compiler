@@ -1,6 +1,6 @@
 module Compiler.Monomorphize.EntryPrep exposing
     ( Assigned, assign
-    , flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType
+    , flagsDecoderName, findEntryPointId, findNodeAnnotationType
     )
 
 {-| Engine-agnostic monomorphization input preparation, shared by the two
@@ -12,7 +12,7 @@ entry-point discovery and flags-decoder synthesis. Nothing here depends on
 either engine's type machinery.
 
 @docs Assigned, assign
-@docs flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType
+@docs flagsDecoderName, findEntryPointId, findNodeAnnotationType
 
 -}
 

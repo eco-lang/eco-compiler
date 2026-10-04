@@ -6,7 +6,7 @@ module Compiler.Generate.MLIR.Types exposing
     , isUnboxable, mlirTypeToKind, bitmapSetKind
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
-    , ctorSlotTypes, isAggCustomType, isAggTupleType, isAggValueType, tupleSlotTypes
+    , ctorSlotTypes, isAggCustomType, isAggValueType, tupleSlotTypes
     )
 
 {-| The MLIR back end has to decide, for every Elm value, whether it travels as
@@ -53,7 +53,7 @@ rather than as heap objects.
 @docs isUnboxable, mlirTypeToKind, bitmapSetKind
 @docs RecordLayout, FieldInfo, TupleLayout, CtorLayout
 @docs computeRecordLayout, computeTupleLayout, computeCtorLayout
-@docs ctorSlotTypes, isAggCustomType, isAggTupleType, isAggValueType, tupleSlotTypes
+@docs ctorSlotTypes, isAggCustomType, isAggValueType, tupleSlotTypes
 
 -}
 

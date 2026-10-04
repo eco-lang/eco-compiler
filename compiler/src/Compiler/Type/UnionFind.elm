@@ -1,6 +1,7 @@
 module Compiler.Type.UnionFind exposing
-    ( fresh, repr, get, set, modify, union, equivalent, redundant
-    , freshS, reprS, getS, setS, modifyS, unionS, equivalentS, redundantQ
+    ( fresh, repr, get, set, modify, equivalent, redundant
+    , equivalentS
+    , getS, unionS
     )
 
 {-| Type inference decides which type variables must be equal, and this module
@@ -40,7 +41,7 @@ The plain forms are wrappers over the `S` forms.
 # Operations
 
 @docs fresh, repr, get, set, modify, union, equivalent, redundant
-@docs freshS, reprS, getS, setS, modifyS, unionS, equivalentS, redundantQ
+@docs getSS, equivalentS
 
 -}
 
@@ -102,19 +103,6 @@ set point newDesc s =
 modify : Vars.Point -> (Descriptor -> Descriptor) -> IO ()
 modify point func s =
     ( modifyS point func s, () )
-
-
-{-| Returns an action that joins the classes of `p1` and `p2` into one whose
-descriptor is `newDesc`.
-
-The root of the lighter class goes under the root of the heavier, and on equal
-weights `p2`'s root goes under `p1`'s. If the two points are already in one
-class, only the descriptor is replaced and the weight is kept.
-
--}
-union : Vars.Point -> Vars.Point -> Vars.Descriptor -> IO ()
-union p1 p2 newDesc s =
-    ( unionS p1 p2 newDesc s, () )
 
 
 {-| Returns an action that tells whether `p1` and `p2` are in the same class.

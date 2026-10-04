@@ -82,7 +82,6 @@ type PoisonCause
     | PBlocked
     | PUnresolved
     | PNoSig
-    | PMixedMeet
 
 
 

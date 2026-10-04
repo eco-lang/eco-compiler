@@ -36,7 +36,6 @@ import Bytes.Encode
 import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
-import Set exposing (Set)
 
 
 {-| The kind of container an `Index` step takes a field from.

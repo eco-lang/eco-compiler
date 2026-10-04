@@ -7,7 +7,6 @@ module Compiler.GlobalOpt.Borrow.Lifetime exposing
     , eq
     , fromPath
     , join
-    , joinAll
     , leq
     , onBoundary
     )
@@ -181,14 +180,6 @@ join a b =
 
         ( LLocal x, LLocal y ) ->
             LLocal (joinLife x y)
-
-
-{-| Returns the join of every lifetime in the list, which is `LEmpty` for an
-empty list.
--}
-joinAll : List Lifetime -> Lifetime
-joinAll =
-    List.foldl join LEmpty
 
 
 {-| Returns the later of two local lifetimes read from the same position, as

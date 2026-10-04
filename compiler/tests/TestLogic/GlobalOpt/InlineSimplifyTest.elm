@@ -52,9 +52,7 @@ import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
         , callExpr
-        , define
         , intExpr
-        , letExpr
         , makeModuleWithTypedDefsUnionsAliases
         , negateExpr
         , pVar
@@ -64,7 +62,6 @@ import Compiler.AST.SourceBuilder
         )
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
 import Data.Map

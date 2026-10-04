@@ -91,8 +91,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , binopsExpr
+        ( binopsExpr
         , callExpr
         , intExpr
         , listExpr

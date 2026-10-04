@@ -397,7 +397,7 @@ runSplitWithBudget budget =
         { defaults | enabled = True, maxSpecsPerGlobal = budget }
         splitModule
         |> Result.map
-            (\( (Mono.MonoGraph g) as graph, maybeReport ) ->
+            (\( Mono.MonoGraph g, maybeReport ) ->
                 { midSpecs = specCount "mid" g
                 , hofSpecs = specCount "applyHof" g
                 , report = Maybe.withDefault "" maybeReport

@@ -1497,11 +1497,6 @@ top n d =
         |> String.join " "
 
 
-renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
-renderInlineReport m graph =
-    renderInlineReportWith Config.default.inline m graph
-
-
 {-| Census line for the post-inline dead-spec prune
 (`plans/post-inline-dead-spec-prune.md` §3.5).
 

@@ -301,19 +301,6 @@ singletonIds =
         )
 
 
-{-| Tells whether an annotation is an `LVar`, a set left unconstrained. No test
-uses it.
--}
-isVar : Mono.LambdaSetAnno -> Bool
-isVar a =
-    case a of
-        Mono.LVar _ ->
-            True
-
-        _ ->
-            False
-
-
 {-| Tells whether an annotation is an `LSet` of exactly one member.
 -}
 isSingleton : Mono.LambdaSetAnno -> Bool
@@ -324,26 +311,6 @@ isSingleton a =
 
         _ ->
             False
-
-
-{-| Returns the number of members of an `LSet`, and a negative code for the
-other annotations: -1 for `LVar`, -2 for `LTop`, -3 for `LPartial`. No test
-uses it.
--}
-annoSize : Mono.LambdaSetAnno -> Int
-annoSize a =
-    case a of
-        Mono.LSet ms ->
-            List.length ms
-
-        Mono.LVar _ ->
-            -1
-
-        Mono.LTop _ ->
-            -2
-
-        Mono.LPartial _ ->
-            -3
 
 
 {-| Renders annotations for a failure message, each as its constructor name,

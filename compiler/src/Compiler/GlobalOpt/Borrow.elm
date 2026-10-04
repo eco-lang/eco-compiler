@@ -40,7 +40,7 @@ import Compiler.GlobalOpt.Borrow.Dsu as Dsu
 import Compiler.GlobalOpt.Borrow.Facts as Facts
 import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Life(..), Lifetime(..))
 import Compiler.GlobalOpt.Borrow.LssFacts as LssFacts
-import Compiler.GlobalOpt.Borrow.Mode as Mode exposing (Mode(..))
+import Compiler.GlobalOpt.Borrow.Mode exposing (Mode(..))
 import Compiler.GlobalOpt.Borrow.Rty as Rty exposing (ResVar)
 import Compiler.GlobalOpt.Borrow.Sig as Sig exposing (BorrowSig)
 import Compiler.GlobalOpt.Borrow.Solve as Solve

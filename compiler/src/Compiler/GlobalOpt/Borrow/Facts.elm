@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Borrow.Facts exposing
     ( CalleeParamFacts, OracleFacts
-    , emptyFacts, borrowedParamsOf, borrowedParamsOfLambda
+    , emptyFacts, borrowedParamsOfLambda
     )
 
 {-| The results of borrow inference reduced to what code generation can use:
@@ -33,7 +33,7 @@ graph they were derived from, not whatever that graph is later rewritten
 into.
 
 @docs CalleeParamFacts, OracleFacts
-@docs emptyFacts, borrowedParamsOf, borrowedParamsOfLambda
+@docs emptyFacts, borrowedParamsOfLambda
 
 -}
 
@@ -74,17 +74,6 @@ emptyFacts =
     { bySpec = Dict.empty
     , byLambda = Dict.empty
     }
-
-
-{-| Returns the positions of the wholly borrowed parameters of the
-specialization numbered `specId`, or the empty set when `facts` has no entry
-for it.
--}
-borrowedParamsOf : OracleFacts -> Int -> Set Int
-borrowedParamsOf facts specId =
-    Dict.get specId facts.bySpec
-        |> Maybe.map .borrowedParams
-        |> Maybe.withDefault Set.empty
 
 
 {-| Returns the positions of the wholly borrowed parameters of the lambda-set

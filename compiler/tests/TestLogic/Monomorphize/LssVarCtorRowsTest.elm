@@ -360,19 +360,6 @@ isVar a =
             False
 
 
-{-| Tells whether an annotation is an `LSet` with at least one member. No test
-uses it.
--}
-isSet : Mono.LambdaSetAnno -> Bool
-isSet a =
-    case a of
-        Mono.LSet (_ :: _) ->
-            True
-
-        _ ->
-            False
-
-
 {-| Renders annotations for a failure message, giving each set's member count
 rather than its members.
 -}

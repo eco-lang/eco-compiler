@@ -1,12 +1,13 @@
 module Compiler.GlobalOpt.KernelFacts exposing
     ( KernelFacts, CallTimeEffect(..), GcAlloc(..), Totality(..), ParamMode(..)
     , DevirtPolicy(..), ShapeGuard(..), devirtOf
-    , HofAxis(..), mayCallBackIntoElm
-    , lookup, lookupSymbol, splitSymbol, rows
-    , canTriggerGC, gcLeafEligible, droppable, hoistable
-    , gcLeafEligibleFor, droppableFor, hoistableFor
+    , HofAxis(..)
+    , lookup, lookupSymbol, rows
+    , gcLeafEligible, droppable
+    , gcLeafEligibleFor
     , CostClass(..), costClass
     , validationErrors
+    , droppableFor, hoistableFor
     )
 
 {-| A kernel is a function implemented in C++ in the runtime rather than in Elm,
@@ -59,10 +60,10 @@ argument. They have no row, rather than a row that marks the argument owned.
 
 @docs KernelFacts, CallTimeEffect, GcAlloc, Totality, ParamMode
 @docs DevirtPolicy, ShapeGuard, devirtOf
-@docs HofAxis, mayCallBackIntoElm
-@docs lookup, lookupSymbol, splitSymbol, rows
-@docs canTriggerGC, gcLeafEligible, droppable, hoistable
-@docs gcLeafEligibleFor, droppableFor, hoistableFor
+@docs HofAxis
+@docs lookup, lookupSymbol, rows
+@docs gcLeafEligible, droppable, hoistable
+@docs gcLeafEligibleFor, droppableForFor
 @docs CostClass, costClass
 @docs validationErrors
 
@@ -91,7 +92,6 @@ know" value, so the unaudited base has it.
 type CallTimeEffect
     = EffNone
     | EffObservableIO
-    | EffRuntimeState
     | EffNoreturn
 
 

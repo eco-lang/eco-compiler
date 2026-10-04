@@ -88,7 +88,6 @@ import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Dict exposing (Dict)
 import Levenshtein
-import Set exposing (Set)
 
 
 

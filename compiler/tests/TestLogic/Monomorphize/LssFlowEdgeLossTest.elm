@@ -125,33 +125,6 @@ useStepDef =
     }
 
 
-{-| A module in which `useStep` is given the result of a call: `mkAdderC u`
-returns the nested lambdas `\a -> \b -> a + b + u`, and `testValue` is
-`useStep (mkAdderC 1) 5`. No test uses it.
--}
-fixtureCall : Src.Module
-fixtureCall =
-    makeModuleWithTypedDefsUnionsAliases "Test"
-        [ { name = "mkAdderC"
-          , args = [ pVar "u" ]
-          , tipe = tLambda hInt (tLambda hInt (tLambda hInt hInt))
-          , body =
-                lambdaExpr [ pVar "a" ]
-                    (lambdaExpr [ pVar "b" ]
-                        (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "u"))
-                    )
-          }
-        , useStepDef
-        , { name = "testValue"
-          , args = []
-          , tipe = hInt
-          , body = callExpr (varExpr "useStep") [ callExpr (varExpr "mkAdderC") [ intExpr 1 ], intExpr 5 ]
-          }
-        ]
-        []
-        []
-
-
 {-| The module the test compiles, in which `useStep` is given the value
 `mkAdder = \a -> \b -> a + b` by bare reference: `testValue` is
 `useStep mkAdder 5`.

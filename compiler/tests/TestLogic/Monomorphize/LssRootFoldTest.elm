@@ -79,7 +79,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
-import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -435,32 +434,6 @@ singletonIds =
         )
 
 
-{-| Tells whether an annotation is an `LSet` of exactly one member. No test uses
-it.
--}
-isSingleton : Mono.LambdaSetAnno -> Bool
-isSingleton a =
-    case a of
-        Mono.LSet [ _ ] ->
-            True
-
-        _ ->
-            False
-
-
-{-| Tells whether an annotation is an `LSet` of at least two members. No test
-uses it.
--}
-isMulti : Mono.LambdaSetAnno -> Bool
-isMulti a =
-    case a of
-        Mono.LSet ms ->
-            List.length ms >= 2
-
-        _ ->
-            False
-
-
 {-| Tells whether an annotation is anything but an `LSet` of more than `n`
 members, so `LTop`, `LVar` and `LPartial` always pass.
 -}
@@ -472,26 +445,6 @@ sizeAtMost n a =
 
         _ ->
             True
-
-
-{-| Returns the member count of an `LSet`, and a negative code for any other
-annotation: -1 for `LVar`, -2 for `LTop` and -3 for `LPartial`. No test uses
-it.
--}
-annoSize : Mono.LambdaSetAnno -> Int
-annoSize a =
-    case a of
-        Mono.LSet ms ->
-            List.length ms
-
-        Mono.LVar _ ->
-            -1
-
-        Mono.LTop _ ->
-            -2
-
-        Mono.LPartial _ ->
-            -3
 
 
 {-| Tells whether an annotation is anything but an `LSet` of fewer than two

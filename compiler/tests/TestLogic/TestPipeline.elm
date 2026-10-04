@@ -17,7 +17,6 @@ module TestLogic.TestPipeline exposing
     , runToGlobalOptLssAllKeyedOn
     , runToGlobalOptLssArrowIdOn
     , runToGlobalOptLssOn
-    , runToGlobalOptLssOnStats
     , runToMlir
     , runToMono
     , runToPostSolve
@@ -639,50 +638,6 @@ runSubstMonoWithLimits limits srcModule =
                     buildGlobalTypeEnv canonical
             in
             Monomorphize.monomorphizeWithLimits limits "main" globalTypeEnv globalGraph
-
-
-{-| Runs what `runToGlobalOptLssOn` runs and returns only the global
-optimizer's statistics, such as how many calls ABI cloning stamped or
-declined, which the graph alone does not show.
-
-The global optimizer runs with its census on, which the default
-configuration has off. Per `Compiler.GlobalOpt.MonoGlobalOptimize`, the
-census changes what is counted, not the graph.
-
--}
-runToGlobalOptLssOnStats : Src.Module -> Result String MonoGlobalOptimize.GlobalOptStats
-runToGlobalOptLssOnStats srcModule =
-    case runToTypedOpt srcModule of
-        Err e ->
-            Err e
-
-        Ok { canonical, localGraph } ->
-            let
-                globalGraph =
-                    localGraphToGlobalGraph localGraph
-
-                globalTypeEnv =
-                    buildGlobalTypeEnv canonical
-
-                defaultLss =
-                    Config.defaultLss
-
-                lssOn =
-                    { defaultLss | enabled = True }
-            in
-            case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
-                Err monoErr ->
-                    Err ("Monomorphization (solver + lss) failed: " ++ monoErr)
-
-                Ok monoGraph ->
-                    let
-                        ( simplifiedGraph, _ ) =
-                            MonoInlineSimplify.optimize Config.default.inline monoGraph
-
-                        ( _, stats ) =
-                            MonoGlobalOptimize.globalOptimizeWithStats True Config.default.borrow Config.default.list.mapTemplate simplifiedGraph
-                    in
-                    Ok stats
 
 
 {-| Runs `runToGlobalOpt` on `srcModule` and generates MLIR from the optimized

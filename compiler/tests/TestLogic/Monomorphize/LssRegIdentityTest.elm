@@ -70,7 +70,6 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , ifExpr
         , intExpr
-        , lambdaExpr
         , listExpr
         , makeModuleWithTypedDefs
         , pVar
@@ -79,7 +78,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
-import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -205,31 +203,6 @@ plainModule =
           , args = []
           , tipe = tType "Int" []
           , body = binopsExpr [ ( callExpr (varExpr "double") [ intExpr 3 ], "+" ) ] (callExpr (varExpr "plus2") [ intExpr 1, intExpr 2 ])
-          }
-        ]
-
-
-{-| A module whose `ret1 : Int -> Int -> Int` takes one parameter and returns
-`double`, so its type has one more arrow than its parameters. `testValue`
-applies `ret1 0` to `7`. No test uses this module.
--}
-retModule : Src.Module
-retModule =
-    makeModuleWithTypedDefs "Test"
-        [ { name = "double"
-          , args = [ pVar "x" ]
-          , tipe = hInt
-          , body = binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "x")
-          }
-        , { name = "ret1"
-          , args = [ pVar "n" ]
-          , tipe = tLambda (tType "Int" []) hInt
-          , body = varExpr "double"
-          }
-        , { name = "testValue"
-          , args = []
-          , tipe = tType "Int" []
-          , body = callExpr (callExpr (varExpr "ret1") [ intExpr 0 ]) [ intExpr 7 ]
           }
         ]
 
@@ -401,19 +374,6 @@ paramAnnos target graph =
 isTop : Mono.LambdaSetAnno -> Bool
 isTop a =
     Mono.isTopAnno a
-
-
-{-| Tells whether an annotation is an `LSet` with exactly one member. No test
-uses it.
--}
-isSingleton : Mono.LambdaSetAnno -> Bool
-isSingleton a =
-    case a of
-        Mono.LSet [ _ ] ->
-            True
-
-        _ ->
-            False
 
 
 {-| Tells whether an optional annotation is an `LSet`. `Nothing`, which

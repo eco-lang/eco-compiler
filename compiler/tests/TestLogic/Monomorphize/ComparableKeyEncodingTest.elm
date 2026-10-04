@@ -322,7 +322,7 @@ suite =
             \_ ->
                 recordProbeCases
                     |> List.filter
-                        (\( label, ( a, b ), expected ) ->
+                        (\( _, ( a, b ), expected ) ->
                             not (Intern.eqExact a b == expected && (a == b) == expected)
                         )
                     |> List.map (\( label, _, _ ) -> label)

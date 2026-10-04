@@ -35,7 +35,6 @@ import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 

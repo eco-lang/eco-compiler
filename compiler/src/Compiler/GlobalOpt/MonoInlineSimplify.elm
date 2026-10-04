@@ -1622,15 +1622,6 @@ bumpBetaForwards ctx =
     { ctx | metrics = { m | betaForwards = m.betaForwards + 1 } }
 
 
-bumpLetElimination : RewriteCtx -> RewriteCtx
-bumpLetElimination ctx =
-    let
-        m =
-            ctx.metrics
-    in
-    { ctx | metrics = { m | letEliminations = m.letEliminations + 1 } }
-
-
 {-| kernel-opt-11: `letEliminations` counts every dead binding dropped and would
 blur old drops with new ones, so attribute the widening separately. Bumps
 `kernelLetDCE` only for the shape the new arm can license: a call whose callee is
@@ -2325,7 +2316,7 @@ loopifyBody sF renames flatOldNames lambdas innerNames expr =
                     )
                     t
 
-        MonoCall r ((MonoVarLocal n nt) as callee) cargs t ci ->
+        MonoCall r ((MonoVarLocal n _) as callee) cargs t ci ->
             case Dict.get n lambdas of
                 Just lam ->
                     MonoCall r lam (List.map go cargs) t ci
@@ -2339,7 +2330,7 @@ loopifyBody sF renames flatOldNames lambdas innerNames expr =
         MonoClosure _ _ _ ->
             expr
 
-        MonoLet ((Mono.MonoTailDef tn tps tb) as d) b t ->
+        MonoLet (Mono.MonoTailDef tn tps tb) b t ->
             let
                 inner1 =
                     tn :: innerNames
@@ -4110,16 +4101,6 @@ forwardGo ctx name payload expr =
 
         MonoAccessorValue _ _ _ ->
             Nothing
-
-
-isFunctionType : Mono.MonoType -> Bool
-isFunctionType t =
-    case t of
-        Mono.MFunction _ _ _ _ ->
-            True
-
-        _ ->
-            False
 
 
 {-| H2.5: static arity of a callee expression, when knowable. Only closure

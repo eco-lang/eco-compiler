@@ -64,7 +64,6 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
-import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.PreMono.Fresh as Fresh
@@ -72,7 +71,7 @@ import Compiler.Graph as Graph
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set as EverySet
 import Dict as CoreDict
 
 
@@ -2090,8 +2089,3 @@ suffixDecider sfx decider =
             TOpt.FanOut path
                 (List.map (\( t, d ) -> ( t, suffixDecider sfx d )) branches)
                 (suffixDecider sfx fallback)
-
-
-locatedName : A.Located Name -> Name
-locatedName =
-    A.toValue

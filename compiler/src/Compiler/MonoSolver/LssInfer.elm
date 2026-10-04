@@ -1,10 +1,8 @@
 module Compiler.MonoSolver.LssInfer exposing
     ( canTypeArrowDepth
-    , canTypeIsArrow
     , canTypeMentionsArrow
     , declaredArityOf
     , flowArrowSetsPlain
-    , injectLambdaMember
     , injectLambdaMemberQualified
     , injectLambdaMemberQualifiedId
     , injectPapSuccessors
@@ -14,7 +12,6 @@ module Compiler.MonoSolver.LssInfer exposing
     , kernelAliasOf
     , noteApplied
     , papMemberKey
-    , sigSourceTypeFor
     , signatureFor
     )
 
@@ -57,7 +54,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
-import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
+import Compiler.MonoSolver.Engine as Engine exposing (Failure(..))
 import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
 import Compiler.MonoSolver.Store as Store
 import Compiler.Reporting.Annotation as A
@@ -1650,7 +1647,7 @@ walkCall letEnv func args meta s0 =
         TOpt.TrackedVarLocal _ name _ ->
             localCalleeJoin letEnv name args meta s0
 
-        TOpt.VarEnum _ g _ funcMeta ->
+        TOpt.VarEnum _ _ _ _ ->
             -- A ctor call carries no member of its own: the ctor's payload
             -- members reach the site through the argument walk, not through
             -- the callee.
@@ -1666,9 +1663,6 @@ walkCall letEnv func args meta s0 =
 applyCalleeAt : TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 applyCalleeAt g funcFallbackType args meta s0 =
     let
-        gkey =
-            TOpt.toComparableGlobal g
-
         srcType =
             sigSourceTypeFor g funcFallbackType s0
     in
@@ -2107,11 +2101,6 @@ kernelArgsGo flows args poisoned tunnelsRev s0 =
 
                 KernelSetFacts.PSFApplies ->
                     kernelArgsGo fRest aRest poisoned tunnelsRev s0
-
-                KernelSetFacts.PSFTunnels ->
-                    case Store.loadTypeS (TOpt.typeOf arg) s0 of
-                        ( argVar, s1 ) ->
-                            kernelArgsGo fRest aRest poisoned (argVar :: tunnelsRev) s1
 
         _ ->
             ( ( poisoned, tunnelsRev ), s0 )

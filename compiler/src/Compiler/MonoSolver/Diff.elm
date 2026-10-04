@@ -1,4 +1,4 @@
-module Compiler.MonoSolver.Diff exposing (run, runAssigned)
+module Compiler.MonoSolver.Diff exposing (runAssigned)
 
 {-| The A/B gate for the two monomorphizer engines (`EngineDiff`).
 
@@ -24,27 +24,18 @@ This is a comparison harness, not a fallback: neither engine's _output_ is ever
 built from the other. It imports the original driver's public `monomorphize` to
 run it (the point of A/B); the solver engine proper never does.
 
-@docs run, runAssigned
+@docs runAssigned
 
 -}
 
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.Monomorphize as Monomorphize
-
-
-{-| Run both engines and compare. `dump` (from `ECO_MONO_DIFF_DUMP`) appends the
-first differing node's serialization to a mismatch error.
--}
-run : Bool -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-run dump entryPointName globalTypeEnv globalGraph =
-    runAssigned dump entryPointName globalTypeEnv (EntryPrep.assign ( False, False ) entryPointName globalGraph)
 
 
 {-| `run` on a graph that has ALREADY been through `AssignMVarIds`.

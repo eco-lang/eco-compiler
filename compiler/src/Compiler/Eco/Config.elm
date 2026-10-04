@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| The compiler's tunable settings live here: their defaults, the decoder for
@@ -48,7 +48,7 @@ order swap their values and still compile.
 
 @docs EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
 @docs default, decoder, hash, clamp
-@docs BorrowConfig, BorrowReify, CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine, SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+@docs BorrowConfig, BorrowReify, CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine, SpecLimits, defaultLimits, defaultLss, monoEngineFromString
 
 -}
 

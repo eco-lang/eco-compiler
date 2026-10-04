@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.ListCombinators exposing (Combinator(..), combinatorName, recognize, report)
+module Compiler.GlobalOpt.ListCombinators exposing (Combinator(..), recognize, report)
 
 {-| Finds the specializations in a monomorphized program that are instances of
 elm/core's own `List` functions, so that list-specific code generation and the
@@ -18,7 +18,7 @@ inlining or rewriting a spec's body does not change whether it is.
 Recognition only reads the graph. `recognize` gives the mapping and `report`
 renders a one-line count of it.
 
-@docs Combinator, combinatorName, recognize, report
+@docs Combinator, recognize, report
 
 -}
 

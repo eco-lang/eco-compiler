@@ -51,7 +51,6 @@ import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Data.Map
 import Dict exposing (Dict)
-import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 

@@ -60,7 +60,6 @@ import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Name exposing (Name)
 import Data.Map exposing (Dict)
 import Regex
-import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 

@@ -5133,22 +5133,3 @@ arraySetGrowing index value arr =
 
     else
         Array.set index value (Array.append arr (Array.repeat (index - len + 1) Nothing))
-
-
-renderFailure failure =
-    case failure of
-        Unsupported msg ->
-            "MonoSolver.unsupported: " ++ msg
-
-        UnifyMismatch msg ->
-            "MonoSolver.unify-mismatch: " ++ msg
-
-        EngineBug msg ->
-            "MonoSolver.bug: " ++ msg
-
-        LimitExceeded msg ->
-            -- MONO_030: a resource watchdog, deliberately NOT framed as a
-            -- compiler bug — the message itself names the limit, the env
-            -- var, and the likely cause (poly-rec via annotated mutual
-            -- cycles is legal Elm).
-            msg

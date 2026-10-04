@@ -8,7 +8,6 @@ module Compiler.GlobalOpt.Borrow.Constrain exposing
     , Reason(..)
     , constrainClosureForSig
     , constrainDef
-    , constrainNode
     , emptyEnv
     , emptyGen
     )
@@ -31,9 +30,9 @@ import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.Borrow.KernelSigs as KernelSigs
-import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Path, Step(..))
+import Compiler.GlobalOpt.Borrow.Lifetime exposing (Path, Step(..))
 import Compiler.GlobalOpt.Borrow.LssFacts as LssFacts
-import Compiler.GlobalOpt.Borrow.Mode as Mode exposing (Mode(..))
+import Compiler.GlobalOpt.Borrow.Mode exposing (Mode(..))
 import Compiler.GlobalOpt.Borrow.Rty as Rty exposing (RTy, ResVar)
 import Compiler.GlobalOpt.Borrow.Sig as Sig exposing (BorrowSig)
 import Dict exposing (Dict)
@@ -70,8 +69,6 @@ type Reason
     | RKernel
     | RClosureBoundary
     | RErased
-    | RPort
-    | RTailArg
     | RCapture
 
 
@@ -281,11 +278,6 @@ addForced r reason =
     emit (\c -> { c | forcedOwned = ( r, reason ) :: c.forcedOwned })
 
 
-addForcedAll : List ResVar -> Reason -> Gen -> Gen
-addForcedAll rs reason g =
-    List.foldl (\r acc -> addForced r reason acc) g rs
-
-
 addGet : Get -> Gen -> Gen
 addGet get =
     emit (\c -> { c | gets = get :: c.gets })
@@ -426,13 +418,6 @@ type alias DefAnalysis =
     , resultRty : RTy
     , gen : Gen
     }
-
-
-{-| Analyze one node into the constraint accumulator (census-only entry).
--}
-constrainNode : Env -> Mono.MonoNode -> Gen -> Gen
-constrainNode env node g =
-    (constrainDef env node g).gen
 
 
 {-| Analyze a def node, returning its param/result shapes+RTys + the final Gen.
@@ -595,7 +580,7 @@ constrainExpr env path expr g =
         Mono.MonoRecordCreate fes t ->
             constrainContainer env path (List.map Tuple.second fes) t g
 
-        Mono.MonoRecordAccess e f t ->
+        Mono.MonoRecordAccess e _ t ->
             let
                 ( n, g0 ) =
                     freshNode g
@@ -673,7 +658,7 @@ constrainExpr env path expr g =
             in
             ( resultRty, g6 )
 
-        Mono.MonoDestruct (Mono.MonoDestructor x dpath _) body t ->
+        Mono.MonoDestruct (Mono.MonoDestructor x dpath _) body _ ->
             let
                 ( n, g0 ) =
                     freshNode g
@@ -704,11 +689,8 @@ constrainExpr env path expr g =
 
                 g3 =
                     addScope (Maybe.withDefault -1 (Rty.topRes xRty)) (Seq n 1 :: path) g2b
-
-                ( bodyRty, g4 ) =
-                    constrainExpr env1 (Seq n 1 :: path) body g3
             in
-            ( bodyRty, g4 )
+            constrainExpr env1 (Seq n 1 :: path) body g3
 
         Mono.MonoCase _ scrutinee decider jumps t ->
             let
@@ -800,11 +782,8 @@ constrainExpr env path expr g =
 
                 g1 =
                     constrainTailArgs env n path (List.map Tuple.second args) g0
-
-                ( rty, g2 ) =
-                    freshR t g1
             in
-            ( rty, g2 )
+            freshR t g1
 
         Mono.MonoClosure info body t ->
             let
@@ -818,11 +797,8 @@ constrainExpr env path expr g =
                             let
                                 ( capRty, acc1 ) =
                                     constrainExpr env (Seq n 0 :: path) capE acc
-
-                                acc2 =
-                                    poison capRty RCapture bumpCaptures acc1
                             in
-                            acc2
+                            poison capRty RCapture bumpCaptures acc1
                         )
                         g0
                         info.captures
@@ -1703,11 +1679,6 @@ forceAllOf reason rty g =
 
         Rty.RCustom r args ->
             List.foldl (forceAllOf reason) (addForced r reason g) args
-
-
-ownArgs : List RTy -> Gen -> Gen
-ownArgs rtys g =
-    List.foldl ownEverything g rtys
 
 
 {-| U-T1.1: like `ownArgs` but also escape-seeds — an owned arg handed to an

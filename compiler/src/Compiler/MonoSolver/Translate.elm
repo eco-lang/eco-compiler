@@ -1,6 +1,6 @@
 module Compiler.MonoSolver.Translate exposing
     ( translate
-    , canKindDebug, demandUnify, demandUnifyRoot, enumNode, monoKindDebug, specializeCtorViaScheme, specializeCycle, specializePort, stampSelfSpine
+    , demandUnifyRoot, enumNode, specializeCtorViaScheme, specializeCycle, specializePort, stampSelfSpine
     )
 
 {-| Translate a TypedOptimized expression into a monomorphized expression — the
@@ -48,22 +48,6 @@ import Data.Map as DMap
 import Data.Set as EverySet
 import Dict
 import Set
-import System.TypeCheck.IO as IO
-import Utils.Crash
-
-
-{-| A node's monomorphized type: load its canonical type into the item store
-(through the shared memo, so any demand unified at the top of the item is
-visible) and zonk it back. For a monomorphic item with no demand this equals the
-pure `Zonk.canTypeToMono`; for a polymorphic item the memo carries the
-concretization — this is Architecture C's propagation-by-identity.
--}
-classify : Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
-classify canType s =
-    -- Read-only classification: no store minting, no S copies. Byte-identical to
-    -- the former `zonkToMono ∘ loadType` on fixed inputs (verified), see
-    -- Store.classifyDirect. A1: explicit trailing-S (η-expanded) → direct calls.
-    Store.classifyDirect Mono.tkDeclStoreS canType s
 
 
 {-| `classify`, attributing the ⊤s it stamps to a CALLER CLASS
@@ -76,22 +60,6 @@ is ⊤-kind-blind.
 classifyAs : Int -> Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
 classifyAs topKind canType s =
     Store.classifyDirect topKind canType s
-
-
-{-| Step 10b: `Step`-valued adapters over the direct `classify`/`classifyAs`
-above, for the combinator sites (`Engine.map`/`traverse`/`andThen` arguments)
-that are still `Step`-shaped. They allocate exactly what the old `classifyAs`
-allocated, so those sites are unchanged; the HOT sites call the direct form and
-get the `$sret` worker. Both disappear in 10f when their callers convert.
--}
-classifyStep : Can.Type TypeIds.MVarId -> Step Mono.MonoType
-classifyStep canType s =
-    classify canType s
-
-
-classifyAsStep : Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
-classifyAsStep topKind canType s =
-    classifyAs topKind canType s
 
 
 {-| Assert a demanded MonoType against a definition's annotation in the store,
@@ -928,15 +896,6 @@ translateDispatch expr s0 =
             ( Engine.crashFailure (Unsupported (nodeKind expr)), s0 )
 
 
-translateBranch : ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> Step ( Mono.MonoExpr, Mono.MonoExpr )
-translateBranch ( cond, bodyExpr ) s0 =
-    case translate cond s0 of
-        ( c, s1 ) ->
-            case translate bodyExpr s1 of
-                ( b, s2 ) ->
-                    ( ( c, b ), s2 )
-
-
 {-| Translate one If branch: condition first, then connect the branch value's
 type to the If's type, then the branch value (see the `TOpt.If` arm).
 -}
@@ -1264,47 +1223,6 @@ remapEcoVarsFresh nextId0 abiType =
             go abiType ( Dict.empty, nextId0 )
     in
     ( result, finalNext )
-
-
-canKindIds : Can.Type TypeIds.MVarId -> String
-canKindIds canType =
-    case canType of
-        Can.TVar mvarId ->
-            "v" ++ String.fromInt (Engine.mvarIdKey mvarId)
-
-        Can.TLambda _ a b ->
-            "(" ++ canKindIds a ++ "->" ++ canKindIds b ++ ")"
-
-        Can.TType _ name args ->
-            name
-                ++ (if List.isEmpty args then
-                        ""
-
-                    else
-                        "<" ++ String.join "," (List.map canKindIds args) ++ ">"
-                   )
-
-        Can.TRecord _ _ ->
-            "rec"
-
-        Can.TUnit ->
-            "unit"
-
-        Can.TTuple a b rest ->
-            "T(" ++ String.join "," (List.map canKindIds (a :: b :: rest)) ++ ")"
-
-        Can.TAlias _ name _ _ ->
-            "alias:" ++ name
-
-
-canKindDebug : Can.Type TypeIds.MVarId -> String
-canKindDebug =
-    canKind
-
-
-monoKindDebug : Mono.MonoType -> String
-monoKindDebug =
-    monoKind
 
 
 monoKind : Mono.MonoType -> String
@@ -3112,26 +3030,6 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
                                                     )
 
 
-{-| Emit a global MonoCall: translate the args, enqueue the callee spec, build
-the node — used by the M2b slow-fallback path.
--}
-emitCall : A.Region -> A.Region -> TOpt.Global -> Mono.MonoType -> Mono.MonoType -> List (TOpt.Expr TypeIds.MVarId) -> Step Mono.MonoExpr
-emitCall region funcRegion global funcMonoType resultMonoType args s0 =
-    -- D11: direct state-passing (desugared andThen/map). Avoids the two
-    -- per-call monad closures; monad-law-preserving → byte-identical.
-    case Engine.traverse translate args s0 of
-        ( monoArgs, s1 ) ->
-            case enqueueSpecStamped global funcMonoType s1 of
-                ( specId, s2 ) ->
-                    ( Mono.MonoCall region
-                        (Mono.MonoVarGlobal funcRegion specId funcMonoType)
-                        monoArgs
-                        resultMonoType
-                        Mono.defaultCallInfo
-                    , s2
-                    )
-
-
 translateGlobalCallSlow : A.Region -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0 =
     let
@@ -4786,9 +4684,6 @@ poisonKernelPerParam flows tunnelsRev v poisoned s0 =
 
                                 KernelSetFacts.PSFApplies ->
                                     poisonKernelPerParam rest tunnelsRev pRest poisoned s1
-
-                                KernelSetFacts.PSFTunnels ->
-                                    poisonKernelPerParam rest (pParam :: tunnelsRev) pRest poisoned s1
 
 
 joinKernelTunnels : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
@@ -7333,53 +7228,6 @@ specializeDestructor (TOpt.Destructor name path meta) s0 =
                                 (destrAnnoCensus monoType0 (Mono.getMonoPathType monoPath) sD)
                     in
                     ( Mono.MonoDestructor name monoPath monoType, sD1 )
-
-
-payloadRowGo : Mono.MonoPath -> String -> Step (Maybe String)
-payloadRowGo monoPath suffix s0 =
-    case monoPath of
-        Mono.MonoIndex fieldIx (Mono.CustomContainer ctorName) _ _ ->
-            if ctorName == "" then
-                ( Nothing, s0 )
-
-            else
-                ( Just (ctorName ++ "|" ++ String.repeat fieldIx "/r" ++ "/a0" ++ suffix), s0 )
-
-        Mono.MonoUnbox _ subPath ->
-            case Mono.getMonoPathType subPath of
-                Mono.MCustom _ home typeName _ ->
-                    case Analysis.lookupUnion s0.env.globalTypeEnv home typeName of
-                        Just (Can.Union unionData) ->
-                            case unionData.alts of
-                                [ Can.Ctor c ] ->
-                                    ( Just (c.name ++ "|/a0" ++ suffix), s0 )
-
-                                _ ->
-                                    ( Nothing, s0 )
-
-                        Nothing ->
-                            ( Nothing, s0 )
-
-                _ ->
-                    ( Nothing, s0 )
-
-        -- Pass-through projections: prepend this step's segment (we walk
-        -- OUTERMOST-first, which is DEEPEST in the type, so consing onto the
-        -- front of the accumulated suffix yields shallowest-to-deepest).
-        Mono.MonoIndex i Mono.Tuple2Container _ subPath ->
-            payloadRowGo subPath ("/t" ++ String.fromInt i ++ suffix) s0
-
-        Mono.MonoIndex i Mono.Tuple3Container _ subPath ->
-            payloadRowGo subPath ("/t" ++ String.fromInt i ++ suffix) s0
-
-        Mono.MonoIndex _ Mono.ListContainer _ subPath ->
-            payloadRowGo subPath ("/l" ++ suffix) s0
-
-        Mono.MonoField fieldName _ subPath ->
-            payloadRowGo subPath ("/f:" ++ fieldName ++ suffix) s0
-
-        Mono.MonoRoot _ _ ->
-            ( Nothing, s0 )
 
 
 specializePath : TOpt.Path -> Step Mono.MonoPath

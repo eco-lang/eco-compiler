@@ -67,11 +67,9 @@ import Compiler.AST.SourceBuilder
         ( TypedDef
         , binopsExpr
         , callExpr
-        , define
         , ifExpr
         , intExpr
         , lambdaExpr
-        , letExpr
         , makeModuleWithTypedDefs
         , pVar
         , tLambda

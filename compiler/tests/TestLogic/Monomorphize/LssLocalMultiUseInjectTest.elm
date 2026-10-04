@@ -451,19 +451,6 @@ nodeExprsOf node =
             []
 
 
-{-| Tells whether an annotation is an `LSet`, including one with no members.
-Nothing in this module calls it.
--}
-isSet : Mono.LambdaSetAnno -> Bool
-isSet anno =
-    case anno of
-        Mono.LSet _ ->
-            True
-
-        _ ->
-            False
-
-
 {-| Returns each value of a list once, in reverse order of first occurrence.
 -}
 distinct : List Int -> List Int

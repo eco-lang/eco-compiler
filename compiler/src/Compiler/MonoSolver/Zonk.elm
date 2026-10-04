@@ -1,4 +1,4 @@
-module Compiler.MonoSolver.Zonk exposing (canTypeToMono, canTypeToMonoI, canTypeToMonoWith, canTypeToMonoWithI)
+module Compiler.MonoSolver.Zonk exposing (canTypeToMono, canTypeToMonoI, canTypeToMonoWithI)
 
 {-| Convert a `Can.Type MVarId` to a `Mono.MonoType`.
 
@@ -23,7 +23,7 @@ no state to thread — sound (sharing is never required for correctness), and
 cheaper than handing them a throwaway table that would allocate an insert per
 node.
 
-@docs canTypeToMono, canTypeToMonoI, canTypeToMonoWith, canTypeToMonoWithI
+@docs canTypeToMono, canTypeToMonoI, canTypeToMonoWithI
 
 -}
 
@@ -51,11 +51,6 @@ canTypeToMono superVars canType =
 canTypeToMonoI : Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 canTypeToMonoI superVars canType intern =
     canTypeToMonoWithI superVars Dict.empty canType intern
-
-
-canTypeToMonoWith : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Mono.MonoType
-canTypeToMonoWith superVars subst canType =
-    Tuple.first (canTypeToMonoWithI superVars subst canType Intern.disabled)
 
 
 canTypeToMonoWithI : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )

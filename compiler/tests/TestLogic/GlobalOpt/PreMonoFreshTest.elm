@@ -60,7 +60,6 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
-import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds

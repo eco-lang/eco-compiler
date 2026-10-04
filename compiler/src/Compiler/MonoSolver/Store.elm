@@ -1,7 +1,7 @@
 module Compiler.MonoSolver.Store exposing
-    ( loadType, monoTypeToVar, unifyStep, zonkToMono
+    ( loadType, unifyStep, zonkToMono
     , rezonkSettled
-    , LoadCtx, SetWriteCtx, addSlotSource, aliasBodyEligible, aliasKeyOf, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, groundHash, groundNoArrow, groundNoArrowWith, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeS, loadTypeWithArrows, monoTypeToVarS, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffort, unifyBestEffortStoreS, unifySlotWithSet, unifySlotWithSetC, unifyStrict, unifyStrictS
+    , LoadCtx, LssZonkAcc, SetWriteCtx, ZonkCtx, addSlotSource, aliasBodyEligible, aliasKeyOf, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, groundHash, groundNoArrow, groundNoArrowWith, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeS, loadTypeWithArrows, monoTypeToVarS, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffortStoreS, unifySlotWithSet, unifySlotWithSetC, unifyStrict, unifyStrictS
     )
 
 {-| The solver store operations: load a canonical type into the union-find,
@@ -19,7 +19,7 @@ a concrete type resolves the whole class. This is why loading `add`'s
 (the id taken from the first MVarId that minted the Point — `revMemo`). It never
 defaults numbers; the shared Prune close does that (MONO\_028).
 
-@docs loadType, monoTypeToVar, unifyStep, zonkToMono
+@docs loadType, unifyStep, zonkToMono
 @docs rezonkSettled
 
 -}
@@ -795,11 +795,6 @@ monoTypeToVarS monoType s =
     ( v, { s | store = store1 } )
 
 
-monoTypeToVar : Mono.MonoType -> Step Vars.Variable
-monoTypeToVar monoType s =
-    monoTypeToVarS monoType s
-
-
 freshVarS : Vars.Content -> IO.State -> ( Vars.Variable, IO.State )
 freshVarS content st =
     let
@@ -1084,49 +1079,6 @@ errDeep t =
             "~" ++ name ++ "=" ++ errDeep real
 
 
-{-| Unify two Points. A mismatch is a hard failure (no fallback): the real
-unifier rejected something, which is a compiler bug or an M2+ gap.
--}
-errKind : TErr.Type -> String
-errKind t =
-    case t of
-        TErr.Lambda _ _ _ ->
-            "Lambda"
-
-        TErr.Infinite ->
-            "INFINITE"
-
-        TErr.Error ->
-            "Error"
-
-        TErr.FlexVar _ ->
-            "FlexVar"
-
-        TErr.FlexSuper _ _ ->
-            "FlexSuper"
-
-        TErr.RigidVar _ ->
-            "RigidVar"
-
-        TErr.RigidSuper _ _ ->
-            "RigidSuper"
-
-        TErr.Type _ n _ ->
-            "Type:" ++ n
-
-        TErr.Record _ _ ->
-            "Record"
-
-        TErr.Unit ->
-            "Unit"
-
-        TErr.Tuple _ _ _ ->
-            "Tuple"
-
-        TErr.Alias _ n _ _ ->
-            "Alias:" ++ n
-
-
 {-| Unify two store Points, reporting only whether it worked.
 
 This is the direct-state entry: no `Step`, no `Result`, no rendered error. A
@@ -1210,24 +1162,6 @@ unifyStrictS ctx v1 v2 s0 =
                            )
                     )
                 )
-
-
-{-| Best-effort unify: a mismatch is swallowed and the pre-unify state is
-restored. Used by the LSS inference walk, where structural failure means "no
-set flow here", never "abort the item".
-
-The restore used to be free: the store was a persistent array, so dropping the
-failed attempt's state dropped its partial merges with it. The store is now
-mutated in place, so the speculation is bracketed explicitly — `markStore`
-before, `rollbackStore` on failure, `commitStore` on success. Rollback undoes
-the partial merges, the descriptor overwrites, the path-compression writes AND
-the Points the failed unify minted, which is exactly what discarding the old
-array did.
-
--}
-unifyBestEffort : Vars.Variable -> Vars.Variable -> Step ()
-unifyBestEffort v1 v2 s =
-    ( (), unifyBestEffortStoreS v1 v2 s )
 
 
 unifyBestEffortStoreS : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
@@ -1409,25 +1343,22 @@ foldSetWrites c s0 =
                             sN.itemAux
                     in
                     { sN | itemAux = { aux | qLog = entries ++ aux.qLog } }
-
-        s1 =
-            withQ <|
-                if c.skip == 0 && c.flex == 0 && c.topJoin == 0 && c.union == 0 then
-                    { s0 | store = c.store }
-
-                else
-                    { s0
-                        | store = c.store
-                        , lssStats =
-                            { stats0
-                                | setWriteSkip = stats0.setWriteSkip + c.skip
-                                , setWriteFlex = stats0.setWriteFlex + c.flex
-                                , setWriteTopJoin = stats0.setWriteTopJoin + c.topJoin
-                                , setWriteUnion = stats0.setWriteUnion + c.union
-                            }
-                    }
     in
-    s1
+    withQ <|
+        if c.skip == 0 && c.flex == 0 && c.topJoin == 0 && c.union == 0 then
+            { s0 | store = c.store }
+
+        else
+            { s0
+                | store = c.store
+                , lssStats =
+                    { stats0
+                        | setWriteSkip = stats0.setWriteSkip + c.skip
+                        , setWriteFlex = stats0.setWriteFlex + c.flex
+                        , setWriteTopJoin = stats0.setWriteTopJoin + c.topJoin
+                        , setWriteUnion = stats0.setWriteUnion + c.union
+                    }
+            }
 
 
 {-| The set-write engine (join semantics and counter mapping exactly as the
@@ -1635,11 +1566,8 @@ qCensusInto toInfer roots s =
                             ( Dict.empty, acc.store )
                             roots
 
-                    ( counts, store1 ) =
+                    ( counts, _ ) =
                         qCompare sigClasses { acc | store = storeSig } solved
-
-                    _ =
-                        store1
 
                     stats =
                         s.lssStats

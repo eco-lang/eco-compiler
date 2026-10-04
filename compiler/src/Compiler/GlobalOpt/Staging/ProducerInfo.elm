@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.Staging.ProducerInfo exposing (computeProducerInfo, foldNode)
+module Compiler.GlobalOpt.Staging.ProducerInfo exposing (foldNode)
 
 {-| Computes natural staging information for all function producers.
 
@@ -11,13 +11,12 @@ This module traverses the MonoGraph to identify:
 
 # API
 
-@docs computeProducerInfo, foldNode
+@docs foldNode
 
 -}
 
-import Array
 import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation, emptyProducerInfo)
+import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
 import Dict
 
@@ -26,24 +25,6 @@ import Dict
 -- ============================================================================
 -- COMPUTE PRODUCER INFO
 -- ============================================================================
-
-
-{-| Traverse the MonoGraph and gather natural staging info for all producers.
--}
-computeProducerInfo : Mono.MonoGraph -> ProducerInfo
-computeProducerInfo (Mono.MonoGraph mono) =
-    Array.foldl
-        (\maybeNode ( nodeId, acc ) ->
-            case maybeNode of
-                Nothing ->
-                    ( nodeId + 1, acc )
-
-                Just node ->
-                    ( nodeId + 1, foldNode nodeId node acc )
-        )
-        ( 0, emptyProducerInfo )
-        mono.nodes
-        |> Tuple.second
 
 
 foldNode : Int -> Mono.MonoNode -> ProducerInfo -> ProducerInfo

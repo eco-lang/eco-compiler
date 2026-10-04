@@ -26,7 +26,7 @@ are tail-recursive so the fixpoint dimension never uses the JS call stack.
 -}
 
 import Array exposing (Array)
-import Compiler.GlobalOpt.Borrow.Constrain as C exposing (Constraints)
+import Compiler.GlobalOpt.Borrow.Constrain exposing (Constraints)
 import Compiler.GlobalOpt.Borrow.Dsu as Dsu
 import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Lifetime)
 import Compiler.GlobalOpt.Borrow.Mode exposing (Mode(..), lub)

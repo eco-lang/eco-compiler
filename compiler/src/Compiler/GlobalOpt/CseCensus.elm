@@ -380,19 +380,16 @@ scanSpec oracle minCost specName headName sid body inLoop acc0 =
                 )
                 Dict.empty
                 occs
-
-        acc2 =
-            Dict.foldl
-                (\_ inner a ->
-                    Mono.specMapFoldl
-                        (\_ members b -> classifyBucket headName specName sid inLoop members b)
-                        a
-                        inner
-                )
-                acc1
-                buckets
     in
-    acc2
+    Dict.foldl
+        (\_ inner a ->
+            Mono.specMapFoldl
+                (\_ members b -> classifyBucket headName specName sid inLoop members b)
+                a
+                inner
+        )
+        acc1
+        buckets
 
 
 {-| Exact equality inside a fingerprint bucket, then distance classification of
@@ -448,7 +445,7 @@ classifyBucket headName specName sid inLoop members acc =
                             , b1cProbe = bump (bucket == B1cProbe) redundant acc.b1cProbe
                             , b2Branch = bump (bucket == B2Branch) redundant acc.b2Branch
                             , b3Frame = bump (bucket == B3Frame) redundant acc.b3Frame
-                            , b4Crossdef = bump (bucket == B4Crossdef) redundant acc.b4Crossdef
+                            , b4Crossdef = bump False redundant acc.b4Crossdef
                             , nearRedundant = bump isNear redundant acc.nearRedundant
                             , nearCost = bump isNear (redundant * first.cost) acc.nearCost
                             , loopNear = bump (isNear && inLoop) redundant acc.loopNear
@@ -481,8 +478,7 @@ bump cond amount current =
 
 
 type Bucket
-    = B4Crossdef
-    | B3Frame
+    = B3Frame
     | B0Block
     | B1Seq
     | B1cProbe

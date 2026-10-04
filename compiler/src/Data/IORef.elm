@@ -1,8 +1,7 @@
 module Data.IORef exposing
     ( IORef(..)
-    , newPointCell, readPointCell, writePointCell
-    , newPointCellS, readPointCellS, writePointCellS
     , newIORefMVector, readIORefMVector, writeIORefMVector, modifyIORefMVector
+    , newPointCellS, readPointCellS, writePointCellS
     )
 
 {-| The type checker's state holds two stores that change as it works, and this
@@ -39,8 +38,8 @@ vector makes a new table rather than changing the old one.
 
 # Union-find cells
 
-@docs newPointCell, readPointCell, writePointCell
-@docs newPointCellS, readPointCellS, writePointCellS
+@docs readPointCell, writePointCell
+@docs newPointCellSSS
 
 
 # Mutable vectors
@@ -67,37 +66,6 @@ here takes it to be `Array (Maybe (List Variable))`.
 -}
 type IORef a
     = IORef Int
-
-
-{-| Returns an action that adds a root cell with weight `weight` and descriptor
-`desc` at the end of the point store, and gives the new cell's index, which is
-the number of cells the store held before.
--}
-newPointCell : Int -> Vars.Descriptor -> IO Int
-newPointCell weight desc s =
-    let
-        ( ref, s1 ) =
-            newPointCellS weight desc s
-    in
-    ( s1, ref )
-
-
-{-| Returns an action that gives the cell at index `ref` of the point store and
-leaves the state unchanged. An index the store does not hold crashes, as
-`Eco.CellStore.get` does.
--}
-readPointCell : Int -> IO Vars.PointCell
-readPointCell ref s =
-    ( s, readPointCellS s ref )
-
-
-{-| Returns an action that replaces the cell at index `ref` of the point store
-with `cell`. An index the store does not hold crashes, as `Eco.CellStore.set`
-does.
--}
-writePointCell : Int -> Vars.PointCell -> IO ()
-writePointCell ref cell s =
-    ( writePointCellS ref cell s, () )
 
 
 {-| Returns the cell at index `ref` of the point store in `s`. Reading leaves the

@@ -1,5 +1,5 @@
 module System.TypeCheck.IO exposing
-    ( unsafePerformIO, freshState
+    ( unsafePerformIO
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
     , mapM, traverseList, traverseTuple
     , traverseArrayMaybe, foldMArray
@@ -44,7 +44,7 @@ defines, and is used by `Compiler.Type.Unify` and by the monomorphization
 solver: comparing and merging ascending lists of member ids, the index of a
 point as a key, and shared contents for the top lambda set.
 
-@docs unsafePerformIO, freshState
+@docs unsafePerformIO
 
 
 # The IO monad
@@ -77,7 +77,7 @@ point as a key, and shared contents for the top lambda set.
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
-import Compiler.Type.Vars as Vars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark(..), Point(..), PointCell(..), RootedVar, SortedRel(..), SuperType(..), Variable)
+import Compiler.Type.Vars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark, Point(..), PointCell, SortedRel(..), Variable)
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict

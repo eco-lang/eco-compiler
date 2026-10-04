@@ -194,18 +194,6 @@ stepAnnos (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| Returns whether an annotation is an `LVar`. Nothing in this module calls it.
--}
-isVar : Mono.LambdaSetAnno -> Bool
-isVar a =
-    case a of
-        Mono.LVar _ ->
-            True
-
-        _ ->
-            False
-
-
 {-| Returns whether an annotation is an `LSet` with at least one member. An
 `LPartial`, an `LTop` or an `LVar` gives `False`.
 -}

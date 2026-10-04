@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.Borrow.Dsu exposing (Dsu, empty, find, findRoot, grow, size, union)
+module Compiler.GlobalOpt.Borrow.Dsu exposing (Dsu, empty, find, findRoot, grow, union)
 
 {-| Borrow inference groups the resources of a definition, numbered densely
 from `0`, into classes that only ever grow by merging. This module is the
@@ -56,13 +56,6 @@ empty n =
     { parent = Array.initialize n identity
     , rank = Array.repeat n 0
     }
-
-
-{-| Returns the capacity, the number of keys the structure holds a parent for.
--}
-size : Dsu -> Int
-size dsu =
-    Array.length dsu.parent
 
 
 {-| Returns `dsu` with its capacity raised to `n`, each added key starting as

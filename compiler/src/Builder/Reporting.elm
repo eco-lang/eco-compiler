@@ -5,6 +5,7 @@ module Builder.Reporting exposing
     , trackBuild, BKey, BMsg(..)
     , attempt, attemptWithStyle
     , ask, reportGenerate
+    , BResult
     )
 
 {-| Build progress reporting and user interaction for the Elm compiler.

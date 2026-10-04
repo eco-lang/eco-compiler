@@ -80,7 +80,6 @@ points that write back into the solver state.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.AST.Intern as Intern
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id

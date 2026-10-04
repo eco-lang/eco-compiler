@@ -1,6 +1,6 @@
 module Compiler.Data.CtorTag exposing
     ( effective
-    , checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor, nullConsCapacity
+    , checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor
     )
 
 {-| The tag a constructor carries at run time must be worked out the same way
@@ -35,7 +35,7 @@ The numbers here must equal the runtime's: 0xFFFF its `CTOR_DICT_RBNODE`,
 checks that they agree.
 
 @docs effective
-@docs checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor, nullConsCapacity
+@docs checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor
 
 -}
 

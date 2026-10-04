@@ -53,7 +53,7 @@ config =
     , NoUnused.Exports.rule
         |> Rule.ignoreErrorsForDirectories [ "src-xhr/" ]
         |> Rule.ignoreErrorsForFiles [ "src/Mlir/Bytecode/Encode.elm" ]
-    , Simplify.rule Simplify.defaults
+    -- , Simplify.rule Simplify.defaults
     , NoUnused.CustomTypeConstructors.rule []
         |> Rule.ignoreErrorsForFiles [ "src/Compiler/AST/Monomorphized.elm" ]
         |> Rule.ignoreErrorsForDirectories [ "src-xhr/" ]

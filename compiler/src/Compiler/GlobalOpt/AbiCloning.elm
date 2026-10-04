@@ -1,5 +1,5 @@
 module Compiler.GlobalOpt.AbiCloning exposing
-    ( AbiCloningStats, abiCloningPass, emptyStats
+    ( AbiCloningStats, abiCloningPass
     , instanceFingerprint, peelStages
     )
 
@@ -51,7 +51,7 @@ silent miscompile.
 
 # API
 
-@docs AbiCloningStats, abiCloningPass, emptyStats
+@docs AbiCloningStats, abiCloningPass
 
 -}
 

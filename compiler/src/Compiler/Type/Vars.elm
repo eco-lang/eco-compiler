@@ -44,8 +44,6 @@ arrow's lambda set as a `LambdaSet1` content. The type checker builds neither.
 -}
 
 import Compiler.Elm.ModuleName exposing (Canonical)
-import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
 
 

@@ -1,7 +1,6 @@
 module Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries exposing
     ( LambdaKind(..)
     , RenameCtx, RenameEnv
-    , renameExpr
     , normalizeLocalGraph
     )
 
@@ -28,7 +27,6 @@ Transformations:
 # Renaming Context
 
 @docs RenameCtx, RenameEnv
-@docs renameExpr
 
 
 # Transformation

@@ -83,8 +83,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , binopsExpr
+        ( binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
@@ -99,12 +98,10 @@ import Compiler.AST.SourceBuilder
         , tLambda
         , tTuple
         , tType
-        , tVar
         , tupleExpr
         , varExpr
         )
 import Compiler.Eco.Config as Config
-import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -366,39 +363,6 @@ demandsOf target (Mono.MonoGraph g) =
         )
         []
         g.registry.reverseMapping
-
-
-{-| Returns the annotation of every arrow in `t`, including arrows inside
-lists, tuples, records and the arguments of custom types.
--}
-annosOf : Mono.MonoType -> List Mono.LambdaSetAnno
-annosOf t =
-    case t of
-        Mono.MFunction _ anno args ret ->
-            anno :: (List.concatMap annosOf args ++ annosOf ret)
-
-        Mono.MList _ el ->
-            annosOf el
-
-        Mono.MTuple _ els ->
-            List.concatMap annosOf els
-
-        Mono.MRecord _ fields ->
-            Dict.foldl (\_ ft acc -> acc ++ annosOf ft) [] fields
-
-        Mono.MCustom _ _ _ args ->
-            List.concatMap annosOf args
-
-        _ ->
-            []
-
-
-{-| Returns the annotation of every arrow in every demand type of `target`. No
-test uses it.
--}
-allAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
-allAnnos target graph =
-    List.concatMap annosOf (demandsOf target graph)
 
 
 {-| Returns the annotations of the parameter arrows of `t`: the head annotation
@@ -696,29 +660,6 @@ mk2Module =
         ]
 
 
-{-| A polymorphic `apply : (a -> b) -> a -> b`, which `testValue` calls with
-`\y -> y + 1` and 3. No test uses it.
--}
-applyModule : Src.Module
-applyModule =
-    makeModuleWithTypedDefs "Test"
-        [ { name = "apply"
-          , args = [ pVar "f", pVar "x" ]
-          , tipe = tLambda (tLambda (tVar "a") (tVar "b")) (tLambda (tVar "a") (tVar "b"))
-          , body = callExpr (varExpr "f") [ varExpr "x" ]
-          }
-        , { name = "testValue"
-          , args = []
-          , tipe = tType "Int" []
-          , body =
-                callExpr (varExpr "apply")
-                    [ lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 1))
-                    , intExpr 3
-                    ]
-          }
-        ]
-
-
 {-| The fixture of test 4: `pick c g` returns the global `inc` or the call
 `g 0`, where `g : Int -> Int -> Int`, and `testValue` applies
 `pick True mkAdd` to 7.
@@ -751,41 +692,6 @@ pickModule =
                 callExpr
                     (callExpr (varExpr "pick") [ boolExpr True, varExpr "mkAdd" ])
                     [ intExpr 7 ]
-          }
-        ]
-
-
-{-| A self-tail-recursive `countdown : Int -> (Int -> Int) -> (Int -> Int)`
-that returns `k` once `n` reaches 0, which `testValue` calls with 3 and `inc`
-and applies to 5. No test uses it.
--}
-countdownModule : Src.Module
-countdownModule =
-    makeModuleWithTypedDefs "Test"
-        [ { name = "inc"
-          , args = [ pVar "x" ]
-          , tipe = hInt
-          , body = binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)
-          }
-        , { name = "countdown"
-          , args = [ pVar "n", pVar "k" ]
-          , tipe = tLambda (tType "Int" []) (tLambda hInt hInt)
-          , body =
-                ifExpr (binopsExpr [ ( varExpr "n", "==" ) ] (intExpr 0))
-                    (varExpr "k")
-                    (callExpr (varExpr "countdown")
-                        [ binopsExpr [ ( varExpr "n", "-" ) ] (intExpr 1)
-                        , varExpr "k"
-                        ]
-                    )
-          }
-        , { name = "testValue"
-          , args = []
-          , tipe = tType "Int" []
-          , body =
-                callExpr
-                    (callExpr (varExpr "countdown") [ intExpr 3, varExpr "inc" ])
-                    [ intExpr 5 ]
           }
         ]
 

@@ -42,7 +42,7 @@ Wire format (one StringAttr per param/result):
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.MLIR.Types as Types
-import Dict exposing (Dict)
+import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
 
