@@ -11,6 +11,7 @@
     "test": "../build/toolchain/bin/elm-test-rs --project ../build/compiler/build-xhr --fuzz 10",
     "review": "elm-review --compiler ../build/toolchain/bin/elm --elm-format-path ../build/toolchain/bin/elm-format",
     "review:fix": "elm-review --compiler ../build/toolchain/bin/elm --elm-format-path ../build/toolchain/bin/elm-format --fix-all",
+    "docs": "PATH=../build/toolchain/bin:$PATH elm-doc-preview ../build/compiler/build-xhr",
     "format": "../build/toolchain/bin/elm-format --yes src tests",
     "format:check": "../build/toolchain/bin/elm-format --validate src tests",
     "watch": "onchange \"src/**/*.elm\" -- ../build/toolchain/bin/elm make --output=../build/compiler/build-xhr/bin/guida.js src/Terminal/Main.elm"
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.23.0",
+    "elm-doc-preview": "^6.0.1",
     "elm-review": "^2.13.2",
     "eslint": "^9.23.0",
     "globals": "^16.0.0",
