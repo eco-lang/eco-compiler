@@ -10,7 +10,7 @@
   "scripts": {
     "test": "../build/toolchain/bin/elm-test-rs --project ../build/compiler/build-xhr --fuzz 10",
     "review": "elm-review --compiler ../build/toolchain/bin/elm --elm-format-path ../build/toolchain/bin/elm-format",
-    "review:fix": "elm-review --compiler ../build/toolchain/bin/elm --elm-format-path ../build/toolchain/bin/elm-format --fix",
+    "review:fix": "elm-review --compiler ../build/toolchain/bin/elm --elm-format-path ../build/toolchain/bin/elm-format --fix-all",
     "format": "../build/toolchain/bin/elm-format --yes src tests",
     "format:check": "../build/toolchain/bin/elm-format --validate src tests",
     "watch": "onchange \"src/**/*.elm\" -- ../build/toolchain/bin/elm make --output=../build/compiler/build-xhr/bin/guida.js src/Terminal/Main.elm"
