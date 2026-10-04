@@ -1,28 +1,37 @@
 module Compiler.GlobalOpt.Borrow.Constrain exposing
-    ( Constraints
-    , DefAnalysis
-    , Env
-    , Gen
-    , Get
-    , Occ
-    , Reason
-    , constrainClosureForSig
-    , constrainDef
-    , emptyEnv
-    , emptyGen
+    ( Env, emptyEnv
+    , constrainDef, constrainClosureForSig, DefAnalysis, Constraints, Gen, emptyGen
+    , Get, Occ, Reason
     )
 
-{-| Borrow-inference constraint generation (design §7.5, §8). A Design-B
-direct-recursion walker over `MonoExpr` produces a `Constraints` accumulator
-(flows / gets / storageEq / scopes / seeds / forcedOwned / occs) that the
-Stage-A–D solver (`Solve`) consumes.
+{-| Borrow-inference constraint generation. A direct-recursion walker over
+`MonoExpr` produces a `Constraints` accumulator (flows / gets / storageEq /
+scopes / seeds / forcedOwned / occs) that the four-stage solver (`Solve`)
+consumes.
 
-Phase 2 keeps every call boundary all-owned: `Env.sigs` yields `Nothing` and
-kernels are all-owned unconditionally (`()` placeholders — Phase 3 swaps them
-for the real `Sig`/`KernelSigs` types at the same sites).
+At a call boundary the walker uses what is known about the callee: a
+saturated direct call applies the callee's `BorrowSig` from `Env.sigs`, a
+kernel call applies its entry in `KernelSigs`, and a closure call can be
+routed through the LSS facts in `Env.lssFacts`. A call with none of these, or
+a partial application, makes its arguments owned.
 
 Walk-time census counters live on `Gen` (flat `Int` fields, well under the
 32-slot record cap); the driver reads them off the final `Gen` per def.
+
+
+# Environment
+
+@docs Env, emptyEnv
+
+
+# Generation
+
+@docs constrainDef, constrainClosureForSig, DefAnalysis, Constraints, Gen, emptyGen
+
+
+# Constraint records
+
+@docs Get, Occ, Reason
 
 -}
 
@@ -43,6 +52,11 @@ import Set exposing (Set)
 -- CONSTRAINTS (design §7.5)
 
 
+{-| The constraints generated for one definition, consumed by
+`Compiler.GlobalOpt.Borrow.Solve`: flows from bindings to uses, container
+reads, storage equalities, binding scopes, lifetime seeds, resources forced
+owned (with the reason), use records, parameter seeds and escape edges.
+-}
 type alias Constraints =
     { flows : List ( ResVar, ResVar ) -- bind → use (lateral; I-Use)
     , gets : List Get -- container reads (I-Get)
@@ -56,14 +70,25 @@ type alias Constraints =
     }
 
 
+{-| A read out of a container at a point: the container's resource, pairs of a
+resource inside the container and the fresh resource of the value read out,
+and the path of the read.
+-}
 type alias Get =
     { container : ResVar, out : List ( ResVar, ResVar ), path : Path }
 
 
+{-| A record of one variable use: the fresh resources of the value at that use.
+-}
 type alias Occ =
     { res : List ResVar }
 
 
+{-| Why a resource is forced owned: it is stored into a constructed value
+(`RConstruct`), passed to a kernel (`RKernel`), crosses a closure-call boundary
+(`RClosureBoundary`), is an erased value the analysis cannot see into
+(`RErased`), or is captured by a closure (`RCapture`).
+-}
 type Reason
     = RConstruct
     | RKernel
@@ -90,6 +115,10 @@ emptyConstraints =
 -- GEN (per-def analysis state + walk-time census counters)
 
 
+{-| The state of constraint generation for one definition: the next fresh
+resource, the constraints so far, a node-id counter for the skeleton, and the
+census counters and lists the driver reads off when the walk ends.
+-}
 type alias Gen =
     { next : ResVar
     , cs : Constraints
@@ -115,6 +144,8 @@ type alias Gen =
     }
 
 
+{-| Generation state with no resources, no constraints and every counter at zero.
+-}
 emptyGen : Gen
 emptyGen =
     { next = 0
@@ -385,6 +416,10 @@ shapeClass rty =
 -- ENV
 
 
+{-| The environment of the walk: the resource skeleton of each variable in
+scope, the borrow signature of each specialization (`Nothing` when unsolved,
+treated as all-owned), and the LSS facts used to route closure calls, if any.
+-}
 type alias Env =
     { vars : Dict Name RTy
     , sigs :
@@ -394,6 +429,8 @@ type alias Env =
     }
 
 
+{-| An environment with no variables, no known signatures and no LSS facts.
+-}
 emptyEnv : Env
 emptyEnv =
     { vars = Dict.empty, sigs = \_ -> Nothing, lssFacts = Nothing }

@@ -328,6 +328,9 @@ recordFieldCanType f t =
             Nothing
 
 
+{-| Translate one typed optimized expression into a monomorphized expression,
+resolving its types through the engine state.
+-}
 translate : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
 translate expr s0 =
     -- Injection-totality census (plans/lss-injection-completeness.md §2.1):

@@ -1,11 +1,7 @@
 module Compiler.GlobalOpt.CsePurity exposing
-    ( Oracle
-    , analyze
-    , costOf
-    , countLocalUses
-    , isSafeCall
-    , isSafeExpr
-    , safeSpecCount
+    ( Oracle, analyze, safeSpecCount
+    , isSafeCall, isSafeExpr
+    , costOf, countLocalUses
     )
 
 {-| Common subexpression elimination (CSE) merges structurally equal
@@ -37,6 +33,10 @@ the graph's `callEdges`, `specHasEffects` or `specValueUsed`.
 The rest of the module is a cost measure, `costOf`, and a use counter,
 `countLocalUses`. The child traversal `foldChildren` is shared by `scanBody`,
 `isSafeExpr` and `countLocalUses`; `costOf` walks expressions separately.
+
+@docs Oracle, analyze, safeSpecCount
+@docs isSafeCall, isSafeExpr
+@docs costOf, countLocalUses
 
 -}
 

@@ -1,9 +1,6 @@
 module Compiler.GlobalOpt.PreMono.AliasForward exposing
-    ( Metrics
-    , Target(..)
-    , aliasMap
-    , emptyMetrics
-    , run
+    ( run, Metrics, emptyMetrics
+    , Target(..), aliasMap
     )
 
 {-| PRE-MONOMORPHIZATION alias forwarding
@@ -70,6 +67,9 @@ apply to reference substitution and this pass must not inherit the skip (R8).
 into its `deps` (`toKernelGlobal home` for a kernel target, the way
 `Names.registerKernel` records kernel deps); the alias stays in `deps` — a
 harmless over-approximation.
+
+@docs run, Metrics, emptyMetrics
+@docs Target, aliasMap
 
 -}
 

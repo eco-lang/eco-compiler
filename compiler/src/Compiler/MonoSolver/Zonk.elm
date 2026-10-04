@@ -53,6 +53,9 @@ canTypeToMonoI superVars canType intern =
     canTypeToMonoWithI superVars Dict.empty canType intern
 
 
+{-| `canTypeToMonoI` with a substitution: a type variable whose MVarId (by
+`Id.toComparable`) is in `subst` becomes the mapped mono type.
+-}
 canTypeToMonoWithI : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 canTypeToMonoWithI superVars subst canType intern0 =
     case canType of

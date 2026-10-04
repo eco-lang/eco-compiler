@@ -21,6 +21,8 @@ a bug in one of them, not a shrug).
 
 Output-only (stderr); never affects artifacts.
 
+@docs report
+
 -}
 
 import Array
@@ -423,6 +425,10 @@ walkNode node =
             ( [], 0 )
 
 
+{-| Build the census report for a graph as stderr text. The prefix labels the
+lines (for example a post-hoist run), and `minNodes` is the hoist pass's
+size threshold used for the below-minNodes and v1-eligible counts.
+-}
 report : String -> { minNodes : Int } -> Mono.MonoGraph -> String
 report prefix hoistCfg (Mono.MonoGraph g) =
     let

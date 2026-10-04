@@ -22,6 +22,8 @@ Phase 2A (`constThunks >= 2`): additionally a CLOSED body of those plus
 `logBase`, which codegen special-cases into two logs and a divide), within
 24 nodes.
 
+@docs build, report
+
 -}
 
 import Array exposing (Array)

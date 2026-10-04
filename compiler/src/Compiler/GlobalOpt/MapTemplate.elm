@@ -151,6 +151,10 @@ type alias Stats =
     }
 
 
+{-| Breakdown of `declinedUnresolvedMember` by cause: a member with no scannable
+instance (`blocked`), a `g|` member whose Global could be layout-matched to a
+spec (`global`), and a member with neither instance nor origin (`missing`).
+-}
 type alias UnresolvedCauses =
     { blocked : Int
     , global : Int
@@ -158,6 +162,10 @@ type alias UnresolvedCauses =
     }
 
 
+{-| Breakdown of `declinedArgTaint` by why an argument's provenance could not be
+proven: an `LTop` annotation, a global value outside `safeSpecs`, a poisoned
+resolved member, or an inline lambda argument whose own body is poison.
+-}
 type alias ArgTaintCauses =
     { ltop : Int
     , opaqueGlobal : Int
@@ -166,12 +174,17 @@ type alias ArgTaintCauses =
     }
 
 
+{-| The analysis result: the licence `Info` for each licensed `List.map` spec,
+keyed by SpecId, together with the census `Stats`.
+-}
 type alias Templates =
     { bySpec : Dict Int Info
     , stats : Stats
     }
 
 
+{-| No licensed specs and all-zero statistics.
+-}
 empty : Templates
 empty =
     { bySpec = Dict.empty
@@ -232,6 +245,9 @@ bumpCause cause causes =
             { causes | closurePoison = causes.closurePoison + 1 }
 
 
+{-| The licence `Info` for a spec, or `Nothing` if that spec is not a licensed
+`List.map` specialization.
+-}
 lookup : Int -> Templates -> Maybe Info
 lookup specId templates =
     Dict.get specId templates.bySpec

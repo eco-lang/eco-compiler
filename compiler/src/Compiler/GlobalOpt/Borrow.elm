@@ -1,31 +1,46 @@
 module Compiler.GlobalOpt.Borrow exposing
-    ( BorrowStats
+    ( run, deriveFacts
+    , BorrowStats, emptyStats, renderStats
     , analyzeDefForTest
-    , deriveFacts
-    , emptyStats
-    , renderStats
-    , run
     )
 
-{-| Borrow-inference driver (GlobalOpt Phase 6).
+{-| Borrow inference: works out which values a function only reads (borrows)
+and which it consumes (owns).
 
-  - **B2**: per-def constraint generation + Stage A–D solving + census.
-  - **B3**: interprocedural `BorrowSig`s via a reverse-topological SCC
-    fixpoint (`Borrow/Sig.elm`) plus the audited kernel table
-    (`Borrow/KernelSigs.elm`), so direct and kernel calls stop being
-    all-owned poison.
+  - Each definition gets constraints generated for it (`Borrow.Constrain`)
+    and solved in four stages (`Borrow.Solve`), and the results are counted
+    in a census.
+  - Calls are given interprocedural `BorrowSig`s by a fixpoint over the
+    call graph's strongly connected components in reverse topological order
+    (`Borrow.Sig`), and kernel calls by the audited kernel table
+    (`Borrow.KernelSigs`), so direct and kernel calls are not treated as
+    owning all their arguments.
 
 `reify = ROff` (the only mode) ⇒ the graph is returned UNCHANGED (census /
 uniqueness oracle only; byte-identical emitted MLIR). The census is computed
 in a single pass AFTER the fixpoint converges, so intermediate iterations
 never contribute to the counters.
 
-`deriveFacts` (OC0.2, plans/borrow-oracle-consumers.md) is the codegen-facing
-readback: sig fixpoint + lambda sigs distilled to SpecId/member-keyed
+`deriveFacts` is the readback for code generation: sig fixpoint + lambda sigs distilled to SpecId/member-keyed
 borrowed-param sets, invoked at MLIR-emission time under `borrow.oracleOpt`.
 
 `readbackSig` lives here (not in `Sig`) so `Sig` stays free of a `Solve`
 import (`Constrain` imports `Sig`; `Solve` imports `Constrain`).
+
+
+# Running
+
+@docs run, deriveFacts
+
+
+# Statistics
+
+@docs BorrowStats, emptyStats, renderStats
+
+
+# Testing
+
+@docs analyzeDefForTest
 
 -}
 
@@ -54,6 +69,9 @@ import Set exposing (Set)
 -- CENSUS (design §13 counter set; ≤32 fields)
 
 
+{-| Census counters collected by a borrow-inference run over the whole graph,
+printed by `renderStats`.
+-}
 type alias BorrowStats =
     { defsAnalyzed : Int
     , resources : Int
@@ -88,6 +106,8 @@ type alias BorrowStats =
     }
 
 
+{-| A census with every counter at zero and empty histograms.
+-}
 emptyStats : BorrowStats
 emptyStats =
     { defsAnalyzed = 0
@@ -132,6 +152,10 @@ maxIterConst =
 -- DRIVER
 
 
+{-| Runs borrow inference over the graph and returns the graph unchanged together
+with its census. When the config asks for neither a report, validation nor
+reification, the analysis is skipped and `emptyStats` is returned.
+-}
 run : Config.BorrowConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, BorrowStats )
 run cfg graph =
     if not (cfg.report || cfg.validate || cfg.reify /= Config.ROff) then
@@ -972,10 +996,11 @@ mergeDef table facts node stats =
     }
 
 
-
--- BORROW_005 test hook: analyze one def (with converged sigs) → its Solved.
-
-
+{-| Test hook: solves the borrow signatures of the whole graph, then analyses the
+definition with the given `SpecId` against them. Returns its solution, the
+resources of its tail-call arguments, and its resource count, or `Nothing`
+when there is no node at that id.
+-}
 analyzeDefForTest : Mono.MonoGraph -> Mono.SpecId -> Maybe ( Solve.Solved, List ResVar, Int )
 analyzeDefForTest graph specId =
     let
@@ -1047,6 +1072,8 @@ localDepth l =
 -- RENDER (stderr census line; grep -a-safe key=value)
 
 
+{-| Renders a census as one line of `key=value` pairs for the stderr report.
+-}
 renderStats : BorrowStats -> String
 renderStats s =
     let

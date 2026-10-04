@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.Borrow.Dsu exposing (Dsu, empty, find, findRoot, grow, union)
+module Compiler.GlobalOpt.Borrow.Dsu exposing (Dsu, empty, grow, find, findRoot, union)
 
 {-| Borrow inference groups the resources of a definition, numbered densely
 from `0`, into classes that only ever grow by merging. This module is the
@@ -26,6 +26,8 @@ chain does not deepen the stack.
 A key outside the capacity, including a negative one, has no parent and is
 treated as its own root by `findRoot` and `find`. `union` is not total in the
 same way; see its docstring.
+
+@docs Dsu, empty, grow, find, findRoot, union
 
 -}
 

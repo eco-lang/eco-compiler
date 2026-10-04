@@ -1,29 +1,33 @@
 module Compiler.GlobalOpt.Borrow.LssFacts exposing
-    ( CalleeFacts(..)
-    , Facts
-    , LambdaRef
-    , MemberInfo(..)
-    , PoisonCause
-    , buildInstances
-    , buildMemberTable
-    , meetSig
-    , query
+    ( Facts, CalleeFacts(..), PoisonCause, LambdaRef, MemberInfo(..)
+    , buildInstances, buildMemberTable, query, meetSig
     )
 
-{-| LSS handshake facts (borrow-inference B3.5, design §10). Where LSS knows a
-singleton lambda set, route the closure-call boundary through the member's
-real signature instead of poisoning it — sound on blocked/unresolvable
-members, and inert on all-`LTop` (subst) graphs (`headAnno` never `LSet`).
+{-| Facts from lambda-set specialization (LSS) for borrow inference. Where LSS
+knows a singleton lambda set, route the closure-call boundary through the
+member's real signature instead of poisoning it — sound on
+blocked/unresolvable members, and inert on all-`LTop` (subst) graphs
+(`headAnno` never `LSet`).
 
-**v1 scope (documented):** this resolves **lambda members** (a closure whose
-singleton set is found in the instance index → its computed lambda signature).
+**Scope:** this resolves **lambda members** (a closure whose singleton set is
+found in the instance index → its computed lambda signature).
 Standalone members (globals/ctors/kernels/accessors appearing in a lambda-set
 position) resolve to `PUnresolved` — the full `MonoGraph.lssMemberOrigins`
-routing for those is deferred. Sound (conservative) and still recovers the
+routing for those is not implemented. Sound (conservative) and still recovers the
 bulk of closure poison (direct closure calls).
 
 The `byMember` index keying primitives (`instanceMember`/`isWrapperHome`) are
-duplicated from `AbiCloning` (not exported there; ~14 LoC) per the plan.
+duplicated from `AbiCloning`, which does not export them.
+
+
+# Facts
+
+@docs Facts, CalleeFacts, PoisonCause, LambdaRef, MemberInfo
+
+
+# Building and querying
+
+@docs buildInstances, buildMemberTable, query, meetSig
 
 -}
 
@@ -39,6 +43,9 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
+{-| One closure instance of a lambda-set member: the lambda's id, the
+specialization whose body contains the closure, its closure info, and its body.
+-}
 type alias LambdaRef =
     { lambdaId : Mono.LambdaId
     , enclosingSpecId : Mono.SpecId
@@ -64,6 +71,10 @@ type MemberInfo
     | MemberStandalone Mono.MemberOrigin
 
 
+{-| What the borrow analysis knows about lambda-set members: what each member is,
+the signature computed for each lambda member, an index from global names to
+their specializations, and the signature lookup for specializations.
+-}
 type alias Facts =
     { members : Dict Int MemberInfo
     , lambdaSigsByMember : Dict Int BorrowSig
@@ -72,11 +83,20 @@ type alias Facts =
     }
 
 
+{-| The outcome of asking about a closure-call callee: either a signature the
+call can be routed through, or the reason the call boundary stays poisoned
+(all-owned).
+-}
 type CalleeFacts
     = Routed BorrowSig
     | Poison PoisonCause
 
 
+{-| Why a closure call could not be routed: the lambda set is unknown or only
+partly known (`PTop`), a member is blocked (`PBlocked`), a member could not be
+resolved to a signature source (`PUnresolved`), or the resolved member has no
+signature (`PNoSig`).
+-}
 type PoisonCause
     = PTop
     | PBlocked
@@ -236,6 +256,10 @@ isWrapperHome (Mono.AnonymousLambda home _) =
 -- QUERY + DECLINE LADDER (design §10.3)
 
 
+{-| Returns the facts for a call through a closure of the given type, from the
+lambda set on its head. A known set has each member resolved; the first poison
+wins, otherwise the members' signatures are combined with `meetSig`.
+-}
 query : Facts -> Mono.MonoType -> CalleeFacts
 query facts calleeType =
     case Mono.headAnno calleeType of
@@ -467,6 +491,11 @@ routedSigs =
 -- MEET (BORROW_006): params any-owned wins, result any-borrowed wins.
 
 
+{-| Combines two signatures into one that is safe for a call that may reach
+either: a parameter position is `Owned` if it is owned in either, a result
+position is `Borrowed` if it is borrowed in either, and the result couplings of
+both are kept.
+-}
 meetSig : BorrowSig -> BorrowSig -> BorrowSig
 meetSig a b =
     { params = map2Safe (meetSigTyWith modeOwnedWins) a.params b.params

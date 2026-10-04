@@ -1,4 +1,7 @@
-module Compiler.GlobalOpt.MonoCse exposing (Stats, emptyStats, renderStats, run)
+module Compiler.GlobalOpt.MonoCse exposing
+    ( run
+    , Stats, emptyStats, renderStats
+    )
 
 {-| C2: bounded-scope common-subexpression elimination over pure Mono-level
 calls (kernel-opt-13 Phase 3, executing `plans/cse-pure-calls.md` §"C2").
@@ -39,6 +42,9 @@ known exponential. Verbatim moves are already licensed in this slot — CGEN\_06
 records the `CafHoist` precedent — and function-typed results, the one case
 CGEN\_069 says breaks it, are excluded.
 
+@docs run
+@docs Stats, emptyStats, renderStats
+
 -}
 
 import Array
@@ -50,6 +56,11 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
+{-| Counters for one run: bodies rewritten, merge groups formed, occurrences
+merged away, `let`s inserted, groups dropped because a binder between the LCA
+and an occurrence binds one of their free locals, and groups dropped because
+the body's `maxPerDef` budget was used up.
+-}
 type alias Stats =
     { specsTouched : Int
     , groups : Int
@@ -60,6 +71,8 @@ type alias Stats =
     }
 
 
+{-| All counters at zero.
+-}
 emptyStats : Stats
 emptyStats =
     { specsTouched = 0
@@ -71,6 +84,8 @@ emptyStats =
     }
 
 
+{-| Render the counters as a single `mono-cse:` report line.
+-}
 renderStats : Stats -> String
 renderStats s =
     "mono-cse: specsTouched="
@@ -151,6 +166,11 @@ type alias Group =
 -- ENTRY
 
 
+{-| Run the pass over the bodies of every `MonoDefine` and `MonoTailFunc` node.
+Candidates cost at least `minCost` (by `CsePurity.costOf`), and at most
+`maxPerDef` groups are bound per body. Returns the rewritten graph and the
+counters.
+-}
 run : { minCost : Int, maxPerDef : Int } -> Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 run cfg ((Mono.MonoGraph g) as graph) =
     let

@@ -1,15 +1,9 @@
 module Compiler.GlobalOpt.Borrow.Solve exposing
-    ( Solved
-    , accessMode
-    , alphaOf
-    , ltAOf
-    , ltPOf
-    , reifiedOwned
-    , solve
-    , storageOwnedOf
+    ( solve, Solved
+    , alphaOf, accessMode, ltAOf, ltPOf, storageOwnedOf, reifiedOwned
     )
 
-{-| Staged borrow solving (design §9), two-index-space model (§7.1): the DSU
+{-| Staged borrow solving over two index spaces: the DSU
 carries storage classes only; access modes and lifetimes are raw-ResVar
 `Array`s. All fixpoints are finite (monotone over a finite lattice); the loops
 are tail-recursive so the fixpoint dimension never uses the JS call stack.
@@ -19,9 +13,19 @@ are tail-recursive so the fixpoint dimension never uses the JS call stack.
   - Stage B — approximate lifetimes `ltA` (seed + join along flows).
   - Stage C — access modes (owned flows down; escape from an owned binding
     forces the use owned; store obligation).
-  - Stage D — precise lifetimes `ltP` (v1: computed as `ltA`; the precise
-    lateral/vertical refinement is a Phase-5 concern, not needed for the
-    B2 census).
+  - Stage D — precise lifetimes `ltP` (the same seeds as `ltA`, propagated
+    only through borrowed uses and borrowed projections, since an owned use
+    consumes the value).
+
+
+# Solving
+
+@docs solve, Solved
+
+
+# Queries
+
+@docs alphaOf, accessMode, ltAOf, ltPOf, storageOwnedOf, reifiedOwned
 
 -}
 
@@ -35,6 +39,11 @@ import Dict
 import Set exposing (Set)
 
 
+{-| The solution for one definition, indexed by resource: the storage classes
+(as a union-find), whether each resource's class stores owned values, each
+resource's access mode, its approximate and precise lifetimes, the parameter
+positions it couples to, and the number of resources.
+-}
 type alias Solved =
     { dsu : Dsu.Dsu
     , storageOwned : Array Bool -- indexed by resvar; True iff its DSU class is owned-storing
@@ -46,6 +55,9 @@ type alias Solved =
     }
 
 
+{-| Solves the constraints of a definition with the given number of resources.
+When the flag is `True`, every resource starts `Owned`.
+-}
 solve : Int -> Bool -> Constraints -> Solved
 solve nRes allOwnedFlag cs =
     let
@@ -392,11 +404,17 @@ accGet r arr =
 -- READBACK API
 
 
+{-| Returns the solved access mode of a resource, `Borrowed` when it is out of
+range.
+-}
 accessMode : ResVar -> Solved -> Mode
 accessMode r s =
     accGet r s.access
 
 
+{-| Returns whether the storage class of a resource is owned, `False` when it is
+out of range.
+-}
 storageOwnedOf : ResVar -> Solved -> Bool
 storageOwnedOf r s =
     Maybe.withDefault False (Array.get (Dsu.findRoot r s.dsu) s.storageOwned)
@@ -410,16 +428,25 @@ reifiedOwned r s =
     accessMode r s == Owned || storageOwnedOf r s
 
 
+{-| Returns the approximate lifetime of a resource, `LEmpty` when it is out of
+range.
+-}
 ltAOf : ResVar -> Solved -> Lifetime
 ltAOf r s =
     arrGet r s.ltA
 
 
+{-| Returns the precise lifetime of a resource, which propagates only through
+borrowed uses; `LEmpty` when it is out of range.
+-}
 ltPOf : ResVar -> Solved -> Lifetime
 ltPOf r s =
     arrGet r s.ltP
 
 
+{-| Returns the parameter positions a resource is coupled to, the set that is
+read back as a signature's result couplings.
+-}
 alphaOf : ResVar -> Solved -> Set Int
 alphaOf r s =
     arrAlphaGet r s.alpha

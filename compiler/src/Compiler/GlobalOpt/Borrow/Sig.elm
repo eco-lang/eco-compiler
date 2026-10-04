@@ -1,12 +1,4 @@
-module Compiler.GlobalOpt.Borrow.Sig exposing
-    ( BorrowSig
-    , ResPos
-    , SigTy
-    , allOwnedSig
-    , optimisticSig
-    , sigEq
-    , uniformSigTy
-    )
+module Compiler.GlobalOpt.Borrow.Sig exposing (BorrowSig, SigTy, ResPos, allOwnedSig, optimisticSig, uniformSigTy, sigEq)
 
 {-| Borrow inference analyses one function at a time, and without a summary of
 each callee it would have to assume that every call takes ownership of every
@@ -30,6 +22,8 @@ the signature was read back.
 Reading a signature back from a solved analysis is done in
 `Compiler.GlobalOpt.Borrow`, not here: `Constrain` imports this module and
 `Solve` imports `Constrain`, so this module cannot import `Solve`.
+
+@docs BorrowSig, SigTy, ResPos, allOwnedSig, optimisticSig, uniformSigTy, sigEq
 
 -}
 

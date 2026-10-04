@@ -23,6 +23,8 @@ module's constructors. The conversion between the two names every constructor,
 with no catch-all branch, so a constructor added to `KernelFacts.ParamMode` is a
 compile error here until this module handles it.
 
+@docs KernelSig, ParamMode, lookup
+
 -}
 
 import Compiler.Data.Name exposing (Name)

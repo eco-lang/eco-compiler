@@ -1,14 +1,7 @@
 module Compiler.GlobalOpt.Borrow.Lifetime exposing
-    ( Life(..)
-    , Lifetime(..)
-    , Path
-    , Step(..)
-    , endsBefore
-    , eq
-    , fromPath
-    , join
-    , leq
-    , onBoundary
+    ( Path, Step(..), fromPath
+    , Lifetime(..), Life(..), join, leq, eq
+    , endsBefore, onBoundary
     )
 
 {-| Borrow inference has to know whether a value is dead at a given point in a
@@ -46,6 +39,21 @@ sequence and alternatives, a sequence step can meet an alternatives step. There
 
 Compare lifetimes with `eq`, never with `(==)`, which also compares the node ids
 that the lattice ignores.
+
+
+# Points
+
+@docs Path, Step, fromPath
+
+
+# Lifetimes
+
+@docs Lifetime, Life, join, leq, eq
+
+
+# Questions
+
+@docs endsBefore, onBoundary
 
 -}
 

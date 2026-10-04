@@ -1,18 +1,9 @@
 module Compiler.MonoSolver.LssInfer exposing
-    ( canTypeArrowDepth
-    , canTypeMentionsArrow
-    , declaredArityOf
-    , flowArrowSetsPlain
-    , injectLambdaMemberQualified
-    , injectLambdaMemberQualifiedId
-    , injectPapSuccessors
-    , injectPapSuccessorsFrom
-    , injectSpineMemberId
-    , instantiateWithSignature
-    , kernelAliasOf
-    , noteApplied
-    , papMemberKey
-    , signatureFor
+    ( signatureFor, instantiateWithSignature
+    , injectLambdaMemberQualified, injectLambdaMemberQualifiedId, injectSpineMemberId
+    , injectPapSuccessors, injectPapSuccessorsFrom, papMemberKey
+    , flowArrowSetsPlain, noteApplied, declaredArityOf, kernelAliasOf
+    , canTypeArrowDepth, canTypeMentionsArrow
     )
 
 {-| Lambda-set signature inference (LSS design §7).
@@ -45,6 +36,23 @@ way (`Translate.translateCall`'s annotation-first order). On arrow-count
 mismatch (an unannotated def whose use-site instantiation grew arrows), facts
 cannot be paired positionally — the total, sound fallback is to poison every
 slot of the instantiation (⊤ loses precision, never soundness).
+
+
+# Signatures
+
+@docs signatureFor, instantiateWithSignature
+
+
+# Member injection
+
+@docs injectLambdaMemberQualified, injectLambdaMemberQualifiedId, injectSpineMemberId
+@docs injectPapSuccessors, injectPapSuccessorsFrom, papMemberKey
+
+
+# Flow and queries
+
+@docs flowArrowSetsPlain, noteApplied, declaredArityOf, kernelAliasOf
+@docs canTypeArrowDepth, canTypeMentionsArrow
 
 -}
 
@@ -2175,6 +2183,10 @@ standaloneMember key =
     standaloneMemberWith (Engine.memberIdFor key)
 
 
+{-| The declared parameter count of a global, following `Link` hops up to
+`fuel` times. Ctors report their arity, function defines their parameter
+count, cycle members their own def's arity; anything unknown floors at 1.
+-}
 declaredArityOf : TOpt.Global -> Int -> Engine.S -> Int
 declaredArityOf ((TOpt.Global _ name) as g) fuel s =
     declaredArityGo name g fuel s

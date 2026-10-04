@@ -18,6 +18,8 @@ module invents none of its own.
 The `cse-dce:` lines are kernel-opt-11's free ride-along, per that plan's
 Phase 0.
 
+@docs report
+
 -}
 
 import Array

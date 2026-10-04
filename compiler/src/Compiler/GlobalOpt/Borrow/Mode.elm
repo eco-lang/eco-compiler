@@ -18,6 +18,8 @@ signatures, lets `Borrowed` win on the result.
 The module imports nothing, so any borrow module can import it without an
 import cycle.
 
+@docs Mode, lub
+
 -}
 
 

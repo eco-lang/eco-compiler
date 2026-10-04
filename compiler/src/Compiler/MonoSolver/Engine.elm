@@ -504,6 +504,8 @@ type alias MonoMemo =
     }
 
 
+{-| A `MonoMemo` with all three memo tables empty.
+-}
 emptyMonoMemo : MonoMemo
 emptyMonoMemo =
     { schemeMono = CoreDict.empty, callMemo = Mono.specKeyMapEmpty, aliasMemo = HashMap.empty }
@@ -539,11 +541,15 @@ type AliasVerdict
     | AliasGround Mono.MonoType
 
 
+{-| The precomputed hash of an `AliasKey`.
+-}
 aliasKeyHash : AliasKey -> Int
 aliasKeyHash k =
     k.hash
 
 
+{-| Structural equality of two `AliasKey`s (name, home and argument types).
+-}
 aliasKeyEq : AliasKey -> AliasKey -> Bool
 aliasKeyEq a b =
     -- Name first: it is the cheapest discriminator. `args` are ground and arrow-free,
@@ -564,6 +570,8 @@ putAliasVerdict key v s =
     { s | monoMemo = { m | aliasMemo = HashMap.insert aliasKeyHash aliasKeyEq key v m.aliasMemo } }
 
 
+{-| An `LssMemberTable` with no members registered.
+-}
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
     { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty, specWidenedKeys = CoreDict.empty, rootLamOf = CoreDict.empty }
@@ -589,6 +597,8 @@ insertMemberProvisional mid g t =
     { t | provisionalStandalone = CoreDict.insert mid g t.provisionalStandalone }
 
 
+{-| An `LssStats` with every counter zero and every histogram empty.
+-}
 emptyLssStats : LssStats
 emptyLssStats =
     { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
@@ -987,6 +997,8 @@ recordMuTied tiedId s =
         { s | lssMemberTable = { table | muTied = CoreDict.insert tiedId () table.muTied } }
 
 
+{-| Increment the `widenedByKernel` statistics counter.
+-}
 bumpWidenedByKernel : S -> S
 bumpWidenedByKernel s =
     let
@@ -1471,12 +1483,19 @@ type QEntry
 -- the census would report a divergence that is an artifact of the log.
 
 
+{-| The pre-state of a set slot recorded with a `QEntry`: still flexible, ⊤, or
+seeded with a member list.
+-}
 type QPre
     = PreFlex
     | PreTop
     | PreMembers (List Int)
 
 
+{-| Per-work-item auxiliary state: the root annotation, residual reads, loop
+parameters, the SpecId and local-multi instance being translated, per-item
+memos and logs, and a pending watchdog failure.
+-}
 type alias ItemAux =
     { lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, Vars.Variable )
     , ecoResidualReads : List Vars.Variable
@@ -1581,6 +1600,8 @@ type alias ItemAux =
     }
 
 
+{-| An `ItemAux` with every field empty or unset.
+-}
 emptyItemAux : ItemAux
 emptyItemAux =
     { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing, pendingFailure = Nothing }
@@ -1653,6 +1674,9 @@ type alias NumberMultiEntry =
     }
 
 
+{-| One concrete instance of a local-multi or number-multi definition: its fresh
+name, the mono type it is used at, and its insertion ordinal.
+-}
 type alias NumberInstance =
     { freshName : String
     , monoType : Mono.MonoType
@@ -1727,6 +1751,9 @@ crashFailure f =
     Crash.crash (renderFailure f)
 
 
+{-| Run a `Step` over each element of a list in order, threading the state and
+collecting the results.
+-}
 traverse : (a -> Step b) -> List a -> Step (List b)
 traverse f items =
     \s -> traverseGo f items s
@@ -2586,6 +2613,9 @@ pushLocalMulti rhsLam rhsPap defName s =
     { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, rhsPap = rhsPap, pendingEnrich = CoreDict.empty } :: s.localMulti }
 
 
+{-| Pop the top local-multi entry, returning it, or `Nothing` if the stack is
+empty.
+-}
 popLocalMulti : S -> ( Maybe NumberMultiEntry, S )
 popLocalMulti s =
     case s.localMulti of
@@ -2596,6 +2626,9 @@ popLocalMulti s =
             ( Nothing, s )
 
 
+{-| Whether the named definition is a let-bound function on the local-multi
+stack.
+-}
 isLocalMultiTarget : String -> S -> ( Bool, S )
 isLocalMultiTarget name s =
     ( List.any (\e -> e.defName == name) s.localMulti, s )
@@ -2753,11 +2786,15 @@ harvestSuperTableExcept excluded s =
 -- ====== M2 CACHES ======
 
 
+{-| Look up the memoized mono type for a scheme key.
+-}
 lookupSchemeMono : String -> S -> ( Maybe Mono.MonoType, S )
 lookupSchemeMono key s =
     ( CoreDict.get key s.monoMemo.schemeMono, s )
 
 
+{-| Record the mono type for a scheme key.
+-}
 putSchemeMono : String -> Mono.MonoType -> S -> S
 putSchemeMono key monoType s =
     let
@@ -2767,11 +2804,15 @@ putSchemeMono key monoType s =
     { s | monoMemo = { m | schemeMono = CoreDict.insert key monoType m.schemeMono } }
 
 
+{-| Look up a memoized call result (two mono types and the SpecId) by spec key.
+-}
 lookupCallMemo : Mono.SpecKey -> S -> ( Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId ), S )
 lookupCallMemo key s =
     ( Mono.specKeyMapGet key s.monoMemo.callMemo, s )
 
 
+{-| Record a call result (two mono types and the SpecId) under a spec key.
+-}
 putCallMemo : Mono.SpecKey -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> S -> S
 putCallMemo key entry s =
     let
@@ -2839,6 +2880,8 @@ withIntern intern1 s =
 -- ====== KEYS ======
 
 
+{-| The comparable integer key of an `MVarId`, for use in `Dict` keys.
+-}
 mvarIdKey : TypeIds.MVarId -> Int
 mvarIdKey =
     Id.toComparable
@@ -2868,6 +2911,8 @@ isScalarVar s mid =
             False
 
 
+{-| The integer index of a store Point, for use as a `Dict` key.
+-}
 pointKey : Vars.Variable -> Int
 pointKey (Vars.Pt n) =
     n

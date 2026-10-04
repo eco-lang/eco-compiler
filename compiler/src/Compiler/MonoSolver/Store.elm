@@ -216,6 +216,9 @@ writeBackIsolated c s =
         { s1 | itemAux = { aux | groundLoads = c.groundLoads } }
 
 
+{-| Load a canonical type into the union-find store as a Point, through the
+shared item memo so repeated `MVarId`s load to the same Point. Never fails.
+-}
 loadTypeS : Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 loadTypeS canType s =
     -- Step 10b: `loadType` never fails, so this is the real function and the
@@ -228,6 +231,8 @@ loadTypeS canType s =
     ( v, writeBackShared c s )
 
 
+{-| `loadTypeS` as a `Step`.
+-}
 loadType : Can.Type TypeIds.MVarId -> Step Vars.Variable
 loadType canType s =
     loadTypeS canType s
@@ -280,6 +285,10 @@ loadTypeIsolated canType s =
     ( v, writeBackIsolated c s )
 
 
+{-| Load a canonical type into the store, threading a `LoadCtx` instead of the
+whole engine state. `superStatic` gives the super type of each constrained
+type variable.
+-}
 loadTypeC : Dict.Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> LoadCtx -> ( Vars.Variable, LoadCtx )
 loadTypeC superStatic canType c0 =
     case canType of
@@ -1165,6 +1174,9 @@ unifyStrictS ctx v1 v2 s0 =
                 )
 
 
+{-| Unify two Points, committing the store on success and rolling it back to its
+state before the attempt on a mismatch.
+-}
 unifyBestEffortStoreS : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 unifyBestEffortStoreS v1 v2 s =
     let
@@ -1278,6 +1290,9 @@ qOnFor s =
     s.env.lss.enabled && s.env.lss.qCensus
 
 
+{-| A fresh `SetWriteCtx` over the given store, with zeroed counters and an empty
+shadow-`Q` log; the flag enables that log.
+-}
 setWriteCtx : Bool -> IO.State -> SetWriteCtx
 setWriteCtx qOn store =
     { store = store, skip = 0, flex = 0, topJoin = 0, union = 0, qOn = qOn, qLog = [] }
@@ -2435,6 +2450,10 @@ bumpCauseC f c =
             c
 
 
+{-| Read a store Point back as a fully resolved `Mono.MonoType`, reading its
+lambda sets when LSS is enabled and recording any residual reads on the
+current item.
+-}
 zonkToMono : Vars.Variable -> Engine.S -> ( Mono.MonoType, Engine.S )
 zonkToMono var s =
     -- Step 10e: A1 explicit trailing-S (was `\s -> …`), so every call is

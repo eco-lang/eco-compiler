@@ -1,11 +1,6 @@
 module Compiler.GlobalOpt.CafHoist exposing
-    ( Stats
-    , emptyStats
-    , kindTagOf
-    , renderStats
-    , run
-    , typeTouchesBytes
-    , zeroRegions
+    ( run, Stats, emptyStats, renderStats
+    , zeroRegions, kindTagOf, typeTouchesBytes
     )
 
 {-| A function body that evaluates the same closed expression on every call
@@ -64,6 +59,9 @@ spec is left where it is. Minted specs are appended after the existing nodes,
 named `hoist_0`, `hoist_1`, ... in the module `CafHoist` of the package
 `eco/hoisted`, in the order they were minted. Bodies are visited in SpecId
 order, so the result is deterministic.
+
+@docs run, Stats, emptyStats, renderStats
+@docs zeroRegions, kindTagOf, typeTouchesBytes
 
 -}
 

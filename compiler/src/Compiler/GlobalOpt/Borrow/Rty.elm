@@ -1,11 +1,4 @@
-module Compiler.GlobalOpt.Borrow.Rty exposing
-    ( RTy(..)
-    , ResVar
-    , allRes
-    , freshRTy
-    , topRes
-    , zipRTy
-    )
+module Compiler.GlobalOpt.Borrow.Rty exposing (RTy(..), ResVar, freshRTy, allRes, topRes, zipRTy)
 
 {-| Borrow inference reasons about the heap objects a value owns, and this module
 says where those objects are in a value of a given type.
@@ -26,6 +19,8 @@ The counter that supplies fresh `ResVar`s is a plain `Int` passed in and handed
 back, so this module needs nothing from the modules that use it.
 
 `rcManaged` is a separate predicate on `MonoType`, not on skeletons.
+
+@docs RTy, ResVar, freshRTy, allRes, topRes, zipRTy
 
 -}
 

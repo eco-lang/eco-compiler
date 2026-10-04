@@ -1,4 +1,7 @@
-module Compiler.GlobalOpt.CafDedupe exposing (Stats, emptyStats, renderStats, run)
+module Compiler.GlobalOpt.CafDedupe exposing
+    ( run
+    , Stats, emptyStats, renderStats
+    )
 
 {-| Top-level CAF spec dedupe (`ECO_CAF_DEDUPE=1`,
 design\_docs/caf-memoization-design.md §12 follow-on; measured as Run Y).
@@ -31,6 +34,9 @@ iterates until a round removes nothing.
 
 Deterministic: ascending-specId grouping, canonical = smallest specId.
 
+@docs run
+@docs Stats, emptyStats, renderStats
+
 -}
 
 import Array
@@ -39,6 +45,9 @@ import Compiler.GlobalOpt.CafHoist as CafHoist
 import Dict exposing (Dict)
 
 
+{-| Counters for one run: rounds executed, equal groups with more than one
+member, victim specs removed, and `MonoVarGlobal` references redirected.
+-}
 type alias Stats =
     { rounds : Int
     , groups : Int -- equal-classes with >1 member (across all rounds)
@@ -47,11 +56,15 @@ type alias Stats =
     }
 
 
+{-| All counters at zero.
+-}
 emptyStats : Stats
 emptyStats =
     { rounds = 0, groups = 0, removed = 0, refsRewritten = 0 }
 
 
+{-| Render the counters as a single `caf-dedupe:` report line.
+-}
 renderStats : Stats -> String
 renderStats s =
     "caf-dedupe: rounds="
@@ -64,6 +77,10 @@ renderStats s =
         ++ String.fromInt s.refsRewritten
 
 
+{-| Merge structurally identical top-level CAF specs into the smallest-SpecId
+canonical spec, repeating up to five rounds or until a round removes nothing.
+Returns the rewritten graph and the accumulated counters.
+-}
 run : Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 run graph =
     fixpoint 5 graph emptyStats
