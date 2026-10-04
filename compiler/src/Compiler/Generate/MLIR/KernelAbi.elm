@@ -403,49 +403,8 @@ kernelInstanceSymbol key =
         ( "MVar", "put", [ Mono.MInt, Mono.MChar ] ) ->
             suffixed "_Char"
 
-        -- CellStore cells cross the kernel ABI BOXED (the C signatures take
-        -- HPtr), so a `Store Int` / `Store Float` / `Store Char`
-        -- instantiation would derive an unboxed parameter against a boxed
-        -- callee and corrupt the cell. Fail stop rather than miscompile.
-        --
-        -- The writers are checked, not `get`: `kernelInstanceSymbol` cannot
-        -- see a result type, so a lone `get` at a primitive would slip past —
-        -- but every store that is read is also written, so catching `set` and
-        -- `push` catches the instantiation.
-        ( "CellStore", "set", [ Mono.MInt, Mono.MInt, Mono.MInt ] ) ->
-            crashPrimitiveCell "set"
-
-        ( "CellStore", "set", [ Mono.MInt, Mono.MFloat, Mono.MInt ] ) ->
-            crashPrimitiveCell "set"
-
-        ( "CellStore", "set", [ Mono.MInt, Mono.MChar, Mono.MInt ] ) ->
-            crashPrimitiveCell "set"
-
-        ( "CellStore", "push", [ Mono.MInt, Mono.MInt ] ) ->
-            crashPrimitiveCell "push"
-
-        ( "CellStore", "push", [ Mono.MFloat, Mono.MInt ] ) ->
-            crashPrimitiveCell "push"
-
-        ( "CellStore", "push", [ Mono.MChar, Mono.MInt ] ) ->
-            crashPrimitiveCell "push"
-
         _ ->
             rootSymbol
-
-
-{-| An `Eco.CellStore` instantiated at an unboxed cell type. See the arms in
-`kernelInstanceSymbol`.
--}
-crashPrimitiveCell : String -> String
-crashPrimitiveCell op =
-    crash
-        ("Eco.CellStore."
-            ++ op
-            ++ ": the cell type is Int, Float or Char. CellStore cells cross the kernel ABI boxed "
-            ++ "(REP_ABI_001), so a primitive instantiation would pair an unboxed argument with a "
-            ++ "boxed C parameter. Wrap the value (a one-field record or a custom type) instead."
-        )
 
 
 {-| Self-check (REP\_ABI\_001 / KERN\_006): an `MInt`/`MFloat`/`MChar` parameter

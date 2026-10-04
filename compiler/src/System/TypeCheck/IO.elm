@@ -22,13 +22,11 @@ or dictionary, handing the state each run leaves on to the next.
 
 The heart of the state is the _point store_, the union-find store itself, which
 holds one cell for each type variable; `Compiler.AST.TypeVars` describes points and
-their cells. The point store is an `Eco.CellStore`, which the native build
-changes in place, so a state is subject to that module's linearity contract:
-once a state has been given to an action, only the state the action returns is
-used again. A state kept from before an action is therefore not a snapshot that
-can be gone back to. Alongside the point store, the state holds a table of
-vectors, the state of fresh-name generation, and the record of which variable
-stands for each node of the syntax tree.
+their cells. The point store is an ordinary immutable `Array`, so a state kept
+from before an action is a snapshot: going back to it undoes everything the
+action did. Alongside the point store, the state holds a table of vectors, the
+state of fresh-name generation, and the record of which variable stands for
+each node of the syntax tree.
 
 Because every step may change the state, the order in which an iterator visits
 elements is part of what it computes. It decides, for instance, which index each
@@ -81,35 +79,22 @@ import Compiler.AST.TypeVars exposing (Content(..), Descriptor, FlatType(..), La
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
-import Eco.CellStore as CellStore
 
 
-{-| Runs `ioA` on a state made by `freshState` and returns its result, discarding
-the final state.
-
-The final state's point store is passed to `Eco.CellStore.disposeThen`
-whatever the action did with it, including when the action has already passed
-it to `Eco.CellStore.freeze`.
-
+{-| Runs `ioA` on `emptyState` and returns its result, discarding the final
+state.
 -}
 unsafePerformIO : IO a -> a
 unsafePerformIO ioA =
-    case ioA (freshState ()) of
-        ( s1, a ) ->
-            CellStore.disposeThen s1.ioRefsPoint a
+    Tuple.second (ioA emptyState)
 
 
-{-| Creates a state with an empty point store, no vectors, the empty name
-state, and the empty node-id state, in which recording is off.
-
-It takes `()` because the native build's point store is mutable. As a constant
-it would be evaluated once, and every state made from it would share one
-store.
-
+{-| A state with an empty point store, no vectors, the empty name state, and the
+empty node-id state, in which recording is off.
 -}
-freshState : () -> State
-freshState () =
-    { ioRefsPoint = CellStore.new 256
+emptyState : State
+emptyState =
+    { ioRefsPoint = Array.empty
     , ioRefsMVector = Array.empty
     , names = emptyNameState
     , nodeIds = emptyNodeIds
@@ -130,11 +115,9 @@ type alias IO a =
 
 {-| Everything an action can change.
 
-`ioRefsPoint` is the point store, with one cell for each point. It is used
-under the linearity contract of `Eco.CellStore`, so an attempt that may have to
-be abandoned must be enclosed in one of the store's undo scopes
-(`Eco.CellStore.pushMark` and `Eco.CellStore.rollback`); keeping the earlier
-state does not undo it.
+`ioRefsPoint` is the point store, with one cell for each point, indexed by the
+point's number. An attempt that may have to be abandoned is undone by putting
+back the point store from before it.
 
 `ioRefsMVector` holds every vector made by `Data.IORef.newIORefMVector`, such
 as the solver's pools of variables by rank. A reference to a vector is its
@@ -142,7 +125,7 @@ position in this array.
 
 -}
 type alias State =
-    { ioRefsPoint : CellStore.Store PointCell
+    { ioRefsPoint : Array PointCell
     , ioRefsMVector : Array (Array (Maybe (List Variable)))
     , names : NameState
     , nodeIds : NodeIdState
@@ -221,7 +204,7 @@ variable in `mapping` is a placeholder made in order to be recorded.
 `schemeBinderVars` maps an annotated definition's name to the type variables
 its annotation introduces, those not already bound by an enclosing annotation,
 each by its name. `recording` says whether records are to be made at all; this
-module only stores it, and it is off in the state `freshState` makes.
+module only stores it, and it is off in `emptyState`.
 
 -}
 type alias NodeIdState =

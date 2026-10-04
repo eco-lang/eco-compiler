@@ -929,7 +929,7 @@ set(ECO_ELM_KERNEL_MODS
     CACHE INTERNAL "Elm kernel module names — drives static lib targets and bundle install"
 )
 
-set(ECO_KERNEL_MODS File Console Env Process MVar CellStore Hash NativeDriver Runtime GC Http Crash
+set(ECO_KERNEL_MODS File Console Env Process MVar Hash NativeDriver Runtime GC Http Crash
     CACHE INTERNAL "Eco kernel module names — drives static lib targets and bundle install"
 )
 

@@ -17,7 +17,7 @@ drift. `OGS` = `runtime/src/allocator/OldGenSpace.cpp`; `TLH` = `ThreadLocalHeap
 | `builder[o]` | under construction by a kernel | `Header.builder` |
 | `fld[o][i]` | pointer fields | `HPointer` fields |
 | `root[r]` | stack slots, RootSet, JIT roots, root ranges | `TLH::startMarkCycle` `:1090-1095` |
-| `cell[c]` | off-heap mutable stores (CellStore cells and trail, MVar, scheduler queues) | external root scanners, `forEachMajorRoot` `kind == 2` (`TLH:1028`) |
+| `cell[c]` | off-heap mutable stores (MVar, scheduler queues, other external-root stores) | external root scanners, `forEachMajorRoot` `kind == 2` (`TLH:1028`) |
 | `mark[o]` | mark bit of an old-gen cell (old object or YLOS). All FALSE outside a cycle | `mark_.slot(id)` byte / `largeMark` |
 | `grey` | every marker's grey entries (private stacks, deques, rings). Empty outside a cycle | `MarkWorker::stack`, the deques, the rings |
 | `cycle` | `idle` / `marking` / `handoffDue` | `cycle_state_` (`CycleState`) |

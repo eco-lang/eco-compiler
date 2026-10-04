@@ -261,7 +261,6 @@
         "Data.Set",
         "Data.Vector",
         "Data.Vector.Mutable",
-        "Eco.CellStore",
         "Eco.Console",
         "Eco.Crash",
         "Eco.Env",

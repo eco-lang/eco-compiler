@@ -33,11 +33,9 @@ a `number` variable) is not hoisted. Neither is a result of function type,
 because a call's `CallInfo` describes the shape of its callee expression, and
 replacing that expression with a global would leave the `CallInfo` describing
 a shape that is no longer there. A subtree that references a kernel whose home
-is `Debug` or `CellStore` is not hoisted: moving a `Debug` call would change
-how many times it logs, and `CellStore.new` allocates a mutable store, so one
-hoisted call would share a single store among all its evaluations. The test
-looks only at kernel references, so a subtree that calls a global function
-that logs can still be hoisted. A result whose type contains a type from the
+is `Debug` is not hoisted: moving a `Debug` call would change how many times
+it logs. The test looks only at kernel references, so a subtree that calls a
+global function that logs can still be hoisted. A result whose type contains a type from the
 `elm/bytes` package, other than inside a function type, is not hoisted either,
 and nor is a call whose callee is a `Bytes` kernel.
 
@@ -83,8 +81,8 @@ counts sites left in place because `maxHoists` had been reached.
 The other `skipped` counts are of closed subexpressions of a candidate kind and
 of at least `minNodes` nodes that an exclusion rejected. A subexpression is
 counted under the first exclusion that rejects it, tried in the order scalar,
-function type, `Debug` or `CellStore`, bytes, and one below the size floor is
-counted nowhere. `skippedDebug` also counts `CellStore` rejections.
+function type, `Debug`, bytes, and one below the size floor is counted
+nowhere.
 
 -}
 type alias Stats =
@@ -144,8 +142,7 @@ renderStats s =
 
 `free` holds the local names the subtree uses without binding them; the
 subtree is closed when it is empty. `size` is the number of nodes in the
-subtree. `hasDebug` is set when it references a `Debug` or a `CellStore`
-kernel.
+subtree. `hasDebug` is set when it references a `Debug` kernel.
 
 -}
 type alias Info =
@@ -157,7 +154,7 @@ type alias Info =
 
 
 {-| The facts for a subtree that uses no local name, has no nodes counted yet,
-and contains no closure and no `Debug` or `CellStore` kernel.
+and contains no closure and no `Debug` kernel.
 -}
 leafInfo : Info
 leafInfo =
@@ -446,7 +443,7 @@ collectChildren minNodes ctx expr =
             ( leafInfo, [], ctx )
 
         Mono.MonoVarKernel _ _ home _ _ ->
-            ( { leafInfo | hasDebug = home == "Debug" || home == "CellStore" }, [], ctx )
+            ( { leafInfo | hasDebug = home == "Debug" }, [], ctx )
 
         Mono.MonoUnit ->
             ( leafInfo, [], ctx )

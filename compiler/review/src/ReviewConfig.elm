@@ -66,7 +66,6 @@ config =
 
             -- Stock-Elm twins of eco-kernel-cpp modules: their signatures must
             -- match the kernel versions, which do use these parameters.
-            , "src-xhr/Eco/CellStore.elm"
             , "src-xhr/Eco/Console.elm"
             , "src-xhr/Eco/NativeDriver.elm"
             ]

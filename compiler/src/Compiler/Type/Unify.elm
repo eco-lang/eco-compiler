@@ -101,11 +101,8 @@ It renders no error types and performs no error union, which is the whole cost
 of a best-effort failure and is unobservable to a caller that is about to
 discard the attempt.
 
-**The caller must bracket the call** (`Engine.markStore` / `rollbackStore`).
-Undoing a failure by keeping the older state value stopped working when the
-point store became an in-place `Eco.CellStore` (step 3): there is one store, so
-the pre-unify state names the same mutated cells. Returning `s0` here would
-therefore only look like an undo. The three best-effort callers already bracket.
+A caller that recovers undoes the attempt by putting back the point store it
+held before the call; the store is immutable, so that older store is intact.
 
 -}
 unifyBoolS : Vars.Variable -> Vars.Variable -> IO.State -> ( Bool, IO.State )

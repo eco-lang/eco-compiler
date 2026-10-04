@@ -39,7 +39,7 @@ The tests establish:
 
 Among what is not tested: candidates that contain a closure, which are minted
 once per site rather than shared; the exclusions for function-typed, `Debug`
-or `CellStore` and `elm/bytes` candidates; tail-function bodies and closure
+and `elm/bytes` candidates; tail-function bodies and closure
 capture expressions; an eligible subexpression inside an ineligible one; the
 names given to new specs in `reverseMapping`; the crash on a registry whose
 size does not match the node count; and the `origNodes` counter.

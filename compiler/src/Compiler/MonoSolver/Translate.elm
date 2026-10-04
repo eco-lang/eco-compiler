@@ -1731,38 +1731,14 @@ classifyRef refExpr canType s0 =
     -- `zonkToMono` fails only on its two `EngineBug` invariants — which the
     -- crash policy says abort rather than recover. So all three `Err` arms
     -- here were recovering conditions that either cannot arise or must not be
-    -- recovered; only the mark/rollback brackets survive, and they are what
-    -- makes the speculation sound against the in-place store.
+    -- recovered, and the chain is three plain steps.
     if not (s0.env.lss.enabled && LssInfer.canTypeMentionsArrow canType) then
         classifyAs Mono.tkClassMisc canType s0
 
     else
-        -- One undo scope PER FALLIBLE STEP. Each `Err` arm below falls back to
-        -- the state as of the last step that SUCCEEDED — `s0`, then `s1`
-        -- (which holds `loadType`'s mints), then `s2` (which also holds
-        -- `injectArgLambdaMember`'s writes). With a persistent store those
-        -- fallbacks came for free by naming the older value; with an in-place
-        -- store each step's writes have to be undone individually, so the
-        -- brackets nest one per step rather than wrapping the whole chain.
-        let
-            s0M =
-                Engine.markStore s0
-        in
-        case Store.loadTypeS canType s0M of
-            ( canVar, s1a ) ->
-                let
-                    s1M =
-                        Engine.markStore (Engine.commitStore s1a)
-                in
-                case injectArgLambdaMember refExpr canVar s1M of
-                    s2a ->
-                        let
-                            s2M =
-                                Engine.markStore (Engine.commitStore s2a)
-                        in
-                        case Store.zonkToMono canVar s2M of
-                            ( monoType, s3 ) ->
-                                ( monoType, Engine.commitStore s3 )
+        case Store.loadTypeS canType s0 of
+            ( canVar, s1 ) ->
+                Store.zonkToMono canVar (injectArgLambdaMember refExpr canVar s1)
 
 
 monoTypeMentionsEco : Mono.MonoType -> Bool
@@ -4734,24 +4710,17 @@ state. For polymorphic-call result/param unification where a higher-order arg's
 curried shape needn't line up (the residual then boxes to CEcoValue, matching
 the erased ABI).
 
-Bracketed for the same reason as `Store.unifyBestEffort`: the store is mutated
-in place, so a failed attempt has to be undone rather than merely dropped.
+Only the store goes back on failure, as in `Store.unifyBestEffortStoreS`.
 
 -}
 unifyBestEffortS : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 unifyBestEffortS v1 v2 s =
-    let
-        -- The MARKED state is what gets rolled back; see the note in
-        -- `Store.unifyBestEffort`.
-        sM =
-            Engine.markStore s
-    in
-    case Store.unifyStep v1 v2 sM of
+    case Store.unifyStep v1 v2 s of
         ( True, s1 ) ->
-            Engine.commitStore s1
+            s1
 
         ( False, s1 ) ->
-            Engine.rollbackStore s1
+            { s1 | store = s.store }
 
 
 unifyStepBestEffort : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
@@ -5395,18 +5364,15 @@ retranslateWithTag instTag retranslating defBody instType s0 =
             -- Point indices are meaningless against the restored item store
             -- (leaking them aliases low outer point indices and livelocks the
             -- saturation loop — found by the R0 census on elm-parser).
-            { s0 | store = Engine.freshStore (), memo = Dict.empty, revMemo = Array.empty, itemAux = { clearedA | currentLocalInstance = instTag, retranslating = retranslating } }
+            { s0 | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty, itemAux = { clearedA | currentLocalInstance = instTag, retranslating = retranslating } }
 
         step =
             \sx -> translate defBody (demandUnifyRoot (TOpt.typeOf defBody) instType defBody sx)
     in
     case step sFresh of
         ( monoExpr, s1 ) ->
-            -- Free the scratch store and reinstate the stashed one. The two
-            -- are different objects because `freshStore` above takes an
-            -- argument; on the `Err e` path the scratch store is not freed,
-            -- which is deliberate — that path ends the build.
-            ( monoExpr, { s1 | store = Engine.releaseScratch s1.store s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = Engine.restoredAux s0.itemAux s1.itemAux } )
+            -- Drop the scratch store and reinstate the stashed one.
+            ( monoExpr, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = Engine.restoredAux s0.itemAux s1.itemAux } )
 
 
 isNumberMultiEligible : Can.Type TypeIds.MVarId -> Step Bool

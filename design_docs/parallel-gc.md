@@ -36,7 +36,7 @@ Handbook references are `HB <chapter>.<section>`, e.g. `HB 16.3` is
      never change and Elm has no pointer identity.
 
    The lemma needs two things: a one-shot snapshot of the small set of *mutable* locations (roots,
-   plus off-heap stores such as CellStore and MVar), and a guarantee that the heap outside them is
+   plus off-heap stores such as MVar), and a guarantee that the heap outside them is
    not written after publication.
 2. **But "immutable" has to mean two different things, and the second one is not true today.**
    - *Contents immutability* (fields never change) is what the lemma needs. It holds for compiled
@@ -139,7 +139,7 @@ Reference: the W13c tree (180.08 s wall), from `benchmarks/gc-opt-loop.md` and t
 | Lazy sweep hidden in minor GC | 1.5–3 s | [D/E] | Sweeps ~14 GB of headers per run (Σ before−recovered, 10-major baseline log). `lazySweep` was 1.1 % of samples in the Sep-20 profile. |
 | Worst minor pause | 986 ms | [M] W7 leg A | Caused by the post-major sweep burst: 350 K promotions × 4 KiB ≈ 1.4 GB swept per minor |
 | Stack walk (libunwind + stackmap lookup) | **not measured** | — | Runs **before** the minor timer starts (`ThreadLocalHeap.cpp:530`, timer at `NurserySpace.cpp:439`), so it is billed as mutator time |
-| CellStore root scan (cells + trail) | **not measured** | — | Two `std::function` hops per slot. Grows with the union-find store. |
+| CellStore root scan (cells + trail; CellStore removed 2026-10-04, plans/remove-cellstore.md) | **not measured** | — | Two `std::function` hops per slot. Grows with the union-find store. |
 | Large-body sweep (`sweepNurseryLargeBodies`) | not measured | — | Runs **after** the timer stops (`NurserySpace.cpp:931`) |
 | Mark-bitmap clear at `startMark` | ≈20–30 ms per major | [E] | ~140 MB `std::fill` at a 9 GB old gen |
 
@@ -162,7 +162,7 @@ Take a handshake H: the mutator is at a statepoint, for example inside a minor-G
   - stack slots and shadow-stack ranges;
   - RootSet roots;
   - CAF/JIT slots;
-  - every external root scanner, **including the CellStore cells *and* its undo trail**, MVar
+  - every external root scanner, MVar
     slots, scheduler queues, the list scratch stack and the literal-intern slots;
   - every nursery object that exists at H.
 - **S_H** = Reach(R_H).
@@ -201,7 +201,7 @@ These exceptions are what every design must handle. They are the real cost of co
 | M1 | **Objects under construction written across safepoints:** `builder` arrays (HEAP_BUILDER_*); closures filled by `closureCapture`/`papExtend`, which raise `n_values` after allocation (`HeapHelpers.hpp:1934-1987`; kernel pattern `allocClosure → resolve → closureCapture`, e.g. `TaskEffectManager.cpp:88-91`) | nursery | A concurrent copier would miss a write made after it copied the object. Builders are already pinned to the nursery; closures are not flagged at all. |
 | M2 | **Kernel writes into an object after it has survived a GC** | Evidence: the re-drain loop comment, `NurserySpace.cpp:549-566` ("kernel-side mutation paths can violate it") | Today's STW minor GC tolerates this by alternating Cheney and promoted scans to a fixed point. **Any design that copies survivors concurrently (C and B) or promotes blindly (en-masse, §7.3) must forbid it or detect it.** The heap-validate `in_phase3_` assertion is the natural census tool. |
 | M3 | **Header words the runtime writes:** `age` and `color` (GC); `builder` cleared by `clear_builder`; `eco_array_set_fix_kind`; the `refcount` bits reserved by the borrow-inference plan (`NurserySpace.cpp:956-964`) | any | Header writes break "header immutability" (§2.4). Mutator-side refcount writes would break P0 itself (§12.1). |
-| M4 | **Off-heap mutable roots:** CellStore cells and trail (HEAP_047), MVar, Scheduler queues and `pendingResumes_`, the list scratch stack (HEAP_040), CAF slots (HEAP_035), PlatformRuntime model storage, literal-intern slots | C++ kernels | Harmless *if snapshotted at H*. A collector that reads them lazily later would hit the classic lost-object race, and a use-after-free when a `std::vector` grows. A kernel-only Yuasa barrier in `CellStore::set/rollback` is the fallback if the snapshot is too big. |
+| M4 | **Off-heap mutable roots:** MVar, Scheduler queues and `pendingResumes_`, the list scratch stack (HEAP_040), CAF slots (HEAP_035), PlatformRuntime model storage, literal-intern slots | C++ kernels | Harmless *if snapshotted at H*. A collector that reads them lazily later would hit the classic lost-object race, and a use-after-free when a `std::vector` grows. A kernel-only Yuasa barrier in `CellStore::set/rollback` is the fallback if the snapshot is too big. |
 | M5 | **Runtime frees of old objects between majors:** `freeLargeBodyCell` (`OldGenSpace.cpp:4518`) frees and *reuses* a split-header body once its nursery header dies | old gen | Unsound under concurrent mark: the collector may hold the body. Defer the free while marking is active (the compaction deferral path already exists, `:4456-4469`). |
 | M6 | **Identity-negative comparisons:** `ListOps::member` compares `hpBits` only (`ListOps.cpp:564-575`); no callers today | kernel | A stale copy and its replica would compare *unequal*. Positive fast paths (`a == b ⇒ equal`, `Utils.cpp:509`, `UtilsExports.cpp:44`) stay sound. |
 | M7 | **Heap metadata** mutated by the mutator's allocator while a collector reads it | `OldGenSpace` | Not an object mutation, but it is the bulk of the engineering (§3.5). |
@@ -574,7 +574,7 @@ GC creates.
 |---|---|---|
 | Stack walk (untimed today) | `ThreadLocalHeap::collectStackRootsFromStackMap` (`:793-864`) | **unmeasured**, 0.05–1.5 ms [E] |
 | Roots 1a/1b/1c/1e | `NurserySpace.cpp:457-513` | < 0.2 ms [E] |
-| Root 1d: external scanners, including CellStore cells and trail | `:515-524`; `CellStore.cpp:147-166` | **unmeasured**, possibly 1–5 ms [E] |
+| Root 1d: external scanners (included CellStore cells and trail until 2026-10-04) | `:515-524`; `CellStore.cpp:147-166` | **unmeasured**, possibly 1–5 ms [E] |
 | Cheney copy of age-0 survivors (hybrid DFS for spines) | `:562-576`, `evacuate` `:974-1263` | ≈5–6 ms (~18 %) [D] |
 | Promotion: cold read, `oldgen.allocate` per object, memcpy, forward, `promoted_buf_` rescan, 4 KiB lazy-sweep slice | `:1147-1181`; `OldGenSpace.cpp:630-720` | **≈23–25 ms (~75–80 %)** [D] |
 | Large-body sweep (untimed) | `:931` | small |

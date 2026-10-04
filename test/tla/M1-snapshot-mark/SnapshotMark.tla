@@ -5,7 +5,7 @@ CONSTANTS
     Obj,            \* object ids; an id not in alloc is a free cell
     Nil,            \* model value: a null / constant slot
     RootSlots,      \* stack slots and RootSet roots (read at t0 only)
-    CellSlots,      \* off-heap mutable stores: CellStore, MVar (external roots)
+    CellSlots,      \* off-heap mutable stores: MVar, scheduler queues (external roots)
     Fields,         \* pointer fields per object, e.g. {1}
     YlosIds,        \* ids that are young LARGE objects while young (old-gen cell)
     InitAlloc, InitGen, InitAge, InitFld, InitRoot, InitCell,
@@ -358,10 +358,10 @@ begin
             or          \* drop a root
                 await "drop" \in Ops;
                 with r \in RootSlots do root[r] := Nil; end with;
-            or          \* CellStore / MVar write (off-heap, may be overwritten any time)
+            or          \* off-heap store write, e.g. MVar (may be overwritten any time)
                 await "cellw" \in Ops;
                 with c \in CellSlots, r \in RootSlots do cell[c] := root[r]; end with;
-            or          \* CellStore / MVar read
+            or          \* off-heap store read, e.g. MVar
                 await "cellr" \in Ops;
                 with r \in RootSlots, c \in CellSlots do root[r] := cell[c]; end with;
             or          \* allocate a young object whose fields are values the mutator holds

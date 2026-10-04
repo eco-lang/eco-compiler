@@ -186,7 +186,7 @@ loadInto seedMemo canType store =
 -}
 loadFresh : Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> Loaded
 loadFresh seedMemo canType =
-    loadInto seedMemo canType (Engine.freshStore ())
+    loadInto seedMemo canType (Engine.freshStore)
 
 
 {-| Returns a load's number of ordinal positions, its number of mints, and
@@ -253,7 +253,7 @@ isolationPins =
         \() ->
             let
                 a =
-                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore ())
+                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore)
 
                 b =
                     loadInto Dict.empty (arrowWith firstId) a.store
@@ -263,7 +263,7 @@ isolationPins =
         \() ->
             let
                 a =
-                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore ())
+                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore)
 
                 b =
                     loadInto a.memo (arrowWith firstId) a.store

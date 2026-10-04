@@ -45,7 +45,6 @@ extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
 
 extern "C" void Eco_Kernel_register_all_gc_roots() {
     Eco_Kernel_MVar_register_gc_roots();
-    Eco_Kernel_CellStore_register_gc_roots();
     Eco_Kernel_Runtime_register_gc_roots();
     if (Eco_Kernel_Order_register_gc_roots)
         Eco_Kernel_Order_register_gc_roots();

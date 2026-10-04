@@ -1851,28 +1851,28 @@ facts =
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
-                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_dirname:9-11 | helpers: Runtime.cpp:dirname:64-67 | type: Eco/Runtime.elm:21 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :66); s_savedState untouched | B3: binding closure only | audited: 2026-09-19 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one added line in Eco_Kernel_register_all_gc_roots calling Eco_Kernel_CellStore_register_gc_roots; no licensed body, type or capture behaviour is touched)"
+                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_dirname:9-11 | helpers: Runtime.cpp:dirname:64-67 | type: Eco/Runtime.elm:21 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :66); s_savedState untouched | B3: binding closure only | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
         , ( ( "Runtime", "loadState" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
-                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_loadState:21-23 | helpers: Runtime.cpp:loadState | type: Eco/Runtime.elm (Task Never Encode.Value) | B1: vacuous - FULLY CONCRETE; the cross-call read is sound for the same reason as saveState | B2: reads runtime state, see B1 | B3: no allocClosure | audited: 2026-09-19 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one added line in Eco_Kernel_register_all_gc_roots calling Eco_Kernel_CellStore_register_gc_roots; no licensed body, type or capture behaviour is touched)"
+                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_loadState:21-23 | helpers: Runtime.cpp:loadState | type: Eco/Runtime.elm (Task Never Encode.Value) | B1: vacuous - FULLY CONCRETE; the cross-call read is sound for the same reason as saveState | B2: reads runtime state, see B1 | B3: no allocClosure | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
         , ( ( "Runtime", "random" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
-                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_random:13-15 | helpers: Runtime.cpp:random:69-72 | type: Eco/Runtime.elm:28 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :71); statics :41-42 are C++ PRNG state | B3: binding closure only | audited: 2026-09-19 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one added line in Eco_Kernel_register_all_gc_roots calling Eco_Kernel_CellStore_register_gc_roots; no licensed body, type or capture behaviour is touched)"
+                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_random:13-15 | helpers: Runtime.cpp:random:69-72 | type: Eco/Runtime.elm:28 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :71); statics :41-42 are C++ PRNG state | B3: binding closure only | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
         , ( ( "Runtime", "saveState" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
-                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_saveState:17-19 | helpers: Runtime.cpp:saveState | type: Eco/Runtime.elm (Encode.Value -> Task Never ()) | B1: vacuous - FULLY CONCRETE both ways, so the loaded scheme has zero set slots (R3). It IS cross-call (loadState returns what a different saveState stored) and that is IRRELEVANT: cross-call only disqualifies when the retained position is FUNCTION-CAPABLE | B2: stores into runtime state, see B1 | B3: no allocClosure | audited: 2026-09-19 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one added line in Eco_Kernel_register_all_gc_roots calling Eco_Kernel_CellStore_register_gc_roots; no licensed body, type or capture behaviour is touched)"
+                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_saveState:17-19 | helpers: Runtime.cpp:saveState | type: Eco/Runtime.elm (Encode.Value -> Task Never ()) | B1: vacuous - FULLY CONCRETE both ways, so the loaded scheme has zero set slots (R3). It IS cross-call (loadState returns what a different saveState stored) and that is IRRELEVANT: cross-call only disqualifies when the retained position is FUNCTION-CAPABLE | B2: stores into runtime state, see B1 | B3: no allocClosure | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
         , ( ( "Scheduler", "andThen" )

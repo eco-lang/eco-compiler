@@ -22,12 +22,9 @@ compression_. Compression is a write even when the caller only wanted to read,
 but it never changes a root, a descriptor or a weight, so a caller cannot see
 it.
 
-The store is an `Eco.CellStore`, used under that module's linearity contract:
-after a write, only the state the write returned may be used. On the native
-build the store is changed in place, so an older state does not keep the older
-cells, and a caller cannot undo a unification by going back to the state from
-before it. A caller that needs to undo one brackets it with
-`Compiler.MonoSolver.Engine.markStore` and `rollbackStore`.
+The store is an immutable `Array`: a write returns a new state and leaves the
+older one as it was, so a caller undoes a unification by going back to the
+state, or just the point store, from before it.
 
 Each operation comes in two forms with the same behaviour. The plain forms are
 `IO` actions. The `S` forms take the state as an ordinary argument, which spares

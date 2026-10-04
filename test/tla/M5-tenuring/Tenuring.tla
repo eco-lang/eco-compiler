@@ -16,7 +16,7 @@ CONSTANTS
     OC,             \* old-gen cells (>= MaxLid: each object is tenured at most once)
     YC,             \* young large object (YLOS) cells (0: no YLOS)
     NF,             \* pointer fields per object
-    Roots,          \* root slots (stack slots, RootSet, CellStore cells ...)
+    Roots,          \* root slots (stack slots, RootSet, off-heap store cells ...)
     MaxLid,         \* objects in a behaviour, the seeded old object included
     OldSeed,        \* 1: one old object exists at Init, held by a root
     MaxMinors, MaxMajors,

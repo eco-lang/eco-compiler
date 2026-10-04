@@ -815,6 +815,44 @@ Default leg (flag off):
   The deterministic counters all moved down (minor −38, promoted −118 MiB), and the phase split
   is flat to slightly better.
 
+### noCS: remove `Eco.CellStore`, immutable `Array` point store (plans/remove-cellstore.md, 2026-10-04): **regression, SHIPS (design decision)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 67.78 | 24.5 | 25.1 | 12.2 | 2.75 | 1302 | 6 | 6369 | 6553688 | 13364519 | same |
+| r2 | 67.26 | 24.3 | 25.2 | 11.9 | 2.78 | 1302 | 6 | 6369 | 6555780 | 13364519 | same |
+| r3 | 67.64 | 24.5 | 25.1 | 12.1 | 2.74 | 1302 | 6 | 6369 | 6542056 | 13364519 | same |
+| **median** | **67.64** | **24.5** | **25.1** | 12.1 | **2.75** | 1302 | 6 | 6369 | 6553688 | 13364519 | |
+| Δ vs tidy-check | **+3.16 (+4.9 %)** | **+1.2** | **+1.8** | +0.1 | **−0.56** | +172 | 0 | +58 | +38,864 | −5,421 (source moved) | |
+
+- **Change:** undoes step 3 of the LSS series. `IO.State.ioRefsPoint` is a plain `Array PointCell`
+  passed by value again. The mark/commit/rollback brackets become "put back the older store"
+  (`{ s1 | store = s.store }`). The census sites keep `s.store`, `classifyRef` loses its four
+  brackets, `freshStore`/`emptyState` are constants, and the disposal calls are gone. The kernel
+  module (Elm/JS/C++/CMake), its `src-xhr` twin, its tests and the KernelAbi/CafHoist cases are
+  deleted. HEAP_047/KERN_007 are retired; the license rows and the `F.externalRoots` canary are
+  re-pinned (M1 AUDIT: no model change). Patch `step-fe-noCS.patch`, 32 files.
+- **Checks:** deterministic, and at the fixed point (`eco-optnoCS` reproduces `econoCS.mlir`). rc 0
+  on every run, no `[gc-stats] SIG`. `.ecot` 8,547,951 B.
+- **Verdict:** wall +3.16 s, far outside the band (spreads 0.62 / 0.52), so this is a LOSS by §4.
+  It **ships anyway** by user decision: immutability is a golden rule for Elm code, and the cost
+  is accepted. The cost is where step 3 put it: union-find writes copy trie paths again, in
+  both the type checker (pcb +1.2 s) and the mono solver (+1.8 s), and minor GCs rise by 172.
+- **Finding:** GC *time* fell 0.56 s despite the extra minors. The off-heap cells were an external
+  root set scanned at every collection (parallel-gc.md listed "CellStore root scan" as
+  unmeasured), and that scan is gone. The extra trie garbage dies young and costs little.
+- **Gates: all green.**
+  - G1 elm-tests: the 12 known failures only (13,717 pass).
+  - G2 `full`: **2,028/2,028** (`/tmp/g2_full_nocs.txt`; the 4 CellStore kernel tests are gone).
+  - Bootstrap: PASS, all 16 stages including the 4b JS and 8c native fixed points
+    (`/tmp/g4_bootstrap_nocs.txt`); Stage 7a's `eco-compiler-boot.mlir` == `econoCS.mlir`.
+  - `stress`: **101/101** on a freshly built `stress-test`.
+  - `run-aot-e2e`: 898 passed, 2 failed, which are the known harness gaps (`FlagsRecordTest`,
+    `PortEchoTest`).
+  - The kernel-license check and `tla-canary` (strict) are green.
+- **Follow-ups (plan §7, no mutation, no monad):** skip known no-op writes, and pass the bare
+  array through `reprS`/`unionS`/`freshS` instead of rebuilding `IO.State` on every write.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1089,3 +1127,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | S8 | 64.95 | -3.42 | 1168 | 6 | 6392 | 6571668 | WIN (canType memo; parse/check/build 26.7 -> 23.4 s; promoted -1.34 GB; RSS -1.38 GB; .ecot/.eci byte-identical) | S4 |
 | I64 | 65.37 | +0.42 | 1168 | 6 | 6429 | 6528720 | FLAT, kept (exact i64 Int literals in .ecot; fixes cached-literal corruption; V 0.1.3) | S8 |
 | tidy-check | 64.48 | -0.89 | 1130 | 6 | 6311 | 6514824 | — (post-tidy regression check: none; parse/check/build 23.3 s; fixed point + deterministic) | I64 |
+| noCS | 67.64 | +3.16 | 1302 | 6 | 6369 | 6553688 | LOSS by §4, SHIPS (remove Eco.CellStore, immutable Array store; user decision: immutability rule; pcb +1.2 s, mono +1.8 s, GC time −0.56 s) | tidy-check |

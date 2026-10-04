@@ -174,7 +174,6 @@ if(APPLE)
     target_link_libraries(test rapidcheck
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_CellStore>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Hash>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Http>
@@ -182,7 +181,6 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_File>
         EcoRunner
         EcoKernel_MVar
-        EcoKernel_CellStore
         EcoKernel_Hash
         EcoKernel_Runtime
         EcoKernel_Http
@@ -197,7 +195,6 @@ elseif(WIN32)
     target_link_libraries(test rapidcheck
         EcoRunner
         EcoKernel_MVar
-        EcoKernel_CellStore
         EcoKernel_Hash
         EcoKernel_Runtime
         EcoKernel_Http
@@ -207,7 +204,6 @@ elseif(WIN32)
     target_link_options(test PRIVATE
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_MVar>
-        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_CellStore>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Hash>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Runtime>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Http>
@@ -219,7 +215,6 @@ else()
         -Wl,--whole-archive
             EcoRunner
             EcoKernel_MVar
-            EcoKernel_CellStore
             EcoKernel_Hash
             EcoKernel_Runtime
             EcoKernel_Http
@@ -250,12 +245,10 @@ if(APPLE)
     target_link_libraries(stress-test
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_CellStore>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Hash>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         EcoRunner
         EcoKernel_MVar
-        EcoKernel_CellStore
         EcoKernel_Hash
         EcoKernel_Runtime
     )
@@ -264,7 +257,6 @@ else()
         -Wl,--whole-archive
             EcoRunner
             EcoKernel_MVar
-            EcoKernel_CellStore
             EcoKernel_Hash
             EcoKernel_Runtime
         -Wl,--no-whole-archive

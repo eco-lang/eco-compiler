@@ -214,16 +214,7 @@ HPtr Eco_Kernel_MVar_put_Char (uint64_t id, uint16_t value);
 HPtr Eco_Kernel_MVar_drop(uint64_t id);
 
 //===----------------------------------------------------------------------===//
-// CellStore Module - off-heap mutable cell vectors with an undo trail
-//
-// Index-addressed mutable storage for boxed Elm values, kept OFF the Elm heap
-// (HEAP_005: the collector has no write barrier, so a mutated heap object
-// could hold an invisible old-to-young pointer) and rooted through an external
-// root scanner, the HEAP_040 / MVar pattern. Handles are dense int64_t ids and
-// are never reused; a disposed handle aborts on use.
-//
-// Every mutator returns the handle so the Elm side can thread it as a data
-// dependency — see the linearity contract in Eco/CellStore.elm.
+// Hash Module
 //===----------------------------------------------------------------------===//
 
 // Mix `seed` over a string's UTF-16 code units, allocation-free. Same mix as
@@ -232,28 +223,6 @@ int64_t Eco_Kernel_Hash_stringWithSeed(int64_t seed, HPtr str);
 
 // Full-width FNV-1a. For bucket keys only; see Hash.hpp.
 int64_t Eco_Kernel_Hash_string64(int64_t seed, HPtr str);
-
-// Create a store; `cap` is a capacity hint (<= 0 means default).
-int64_t Eco_Kernel_CellStore_new(int64_t cap);
-
-// Number of cells.
-int64_t Eco_Kernel_CellStore_size(int64_t h);
-
-// Read / write a cell by index. Out of range aborts.
-HPtr Eco_Kernel_CellStore_get(int64_t ix, int64_t h);
-int64_t Eco_Kernel_CellStore_set(int64_t ix, HPtr cell, int64_t h);
-
-// Append a cell at index size(h).
-int64_t Eco_Kernel_CellStore_push(HPtr cell, int64_t h);
-
-// Undo scopes: open one, then discard or keep the writes made inside it.
-int64_t Eco_Kernel_CellStore_pushMark(int64_t h);
-int64_t Eco_Kernel_CellStore_rollback(int64_t h);
-int64_t Eco_Kernel_CellStore_commit(int64_t h);
-
-// Free the store (idempotent) and return `x` unchanged, so disposal is a data
-// dependency and cannot be dropped as a dead statement.
-HPtr Eco_Kernel_CellStore_disposeThen(int64_t h, HPtr x);
 
 //===----------------------------------------------------------------------===//
 // Runtime Module - Node.js specific and REPL state
@@ -288,7 +257,6 @@ HPtr Eco_Kernel_GC_majorGC();
 //===----------------------------------------------------------------------===//
 
 void Eco_Kernel_MVar_register_gc_roots();
-void Eco_Kernel_CellStore_register_gc_roots();
 void Eco_Kernel_Runtime_register_gc_roots();
 void Eco_Kernel_register_all_gc_roots();
 

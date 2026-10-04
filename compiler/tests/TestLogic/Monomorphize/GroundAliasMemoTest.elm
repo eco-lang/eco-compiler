@@ -79,6 +79,7 @@ points that write back into the solver state.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
@@ -90,7 +91,6 @@ import Compiler.MonoSolver.Store as Store
 import Compiler.Type.UnionFind as UF
 import Data.HashMap as HashMap
 import Dict
-import Eco.CellStore as CellStore
 import Expect
 import Test exposing (Test)
 
@@ -303,7 +303,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore ())
+                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0
@@ -322,7 +322,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore ())
+                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
 
                         ( p1, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0
@@ -339,7 +339,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore ())
+                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty arrowAlias c0
@@ -361,7 +361,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore ())
+                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty (boxOf 1 intType) c0
@@ -382,7 +382,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore ())
+                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0
@@ -445,7 +445,7 @@ Points minted into it.
 -}
 cellCount : Store.LoadCtx -> Int
 cellCount c =
-    CellStore.size c.store.ioRefsPoint
+    Array.length c.store.ioRefsPoint
 
 
 {-| Returns the content of the root descriptor of `v`'s class in `c`'s store.

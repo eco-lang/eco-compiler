@@ -475,7 +475,7 @@ Testing::TestCase testIncrRootOverwrittenAfterT0(
     });
 
 namespace {
-std::vector<uint64_t> g_test_store;   // an off-heap store (the CellStore pattern)
+std::vector<uint64_t> g_test_store;   // an off-heap store (the MVar pattern)
 bool g_test_store_registered = false;
 void registerTestStore(Allocator& a) {
     // initAllocator resets the RootSet, so register once per allocator reset.

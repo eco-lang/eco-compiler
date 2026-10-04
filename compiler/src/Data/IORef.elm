@@ -14,8 +14,8 @@ either the root of a class, carrying the class's weight and descriptor, or a
 link towards the root, as `Compiler.AST.TypeVars.PointCell` describes. A cell is
 addressed by its index alone. A new cell is always added at the end, so the
 store's cells are numbered from 0 in the order they are made. The point store
-is an `Eco.CellStore`, which the native build changes in place, so these
-functions are used under that module's linearity contract.
+is an immutable `Array`: writing a cell makes a new store and leaves the old
+one as it was.
 
 There is no function that changes part of a cell. A caller that changes a
 root's descriptor writes the whole cell again, weight included.
@@ -51,7 +51,6 @@ vector makes a new table rather than changing the old one.
 
 import Array exposing (Array)
 import Compiler.AST.TypeVars as Vars
-import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 
@@ -71,36 +70,47 @@ type IORef a
 
 {-| Returns the cell at index `ref` of the point store in `s`. Reading leaves the
 state unchanged, so no state is returned. An index the store does not hold
-crashes, as `Eco.CellStore.get` does.
+crashes.
 -}
 readPointCellS : IO.State -> Int -> Vars.PointCell
 readPointCellS s ref =
-    CellStore.get ref s.ioRefsPoint
+    case Array.get ref s.ioRefsPoint of
+        Just cell ->
+            cell
+
+        Nothing ->
+            crashOutOfRange ref
 
 
 {-| Returns `s` with the cell at index `ref` of the point store replaced by
-`cell`. An index the store does not hold crashes, as `Eco.CellStore.set` does.
+`cell`. An index the store does not hold crashes, so a write never adds a cell.
 -}
 writePointCellS : Int -> Vars.PointCell -> IO.State -> IO.State
 writePointCellS ref cell s =
-    { s | ioRefsPoint = CellStore.set ref cell s.ioRefsPoint }
+    if ref < 0 || ref >= Array.length s.ioRefsPoint then
+        crashOutOfRange ref
+
+    else
+        { s | ioRefsPoint = Array.set ref cell s.ioRefsPoint }
 
 
 {-| Adds a root cell with weight `weight` and descriptor `desc` at the end of the
 point store in `s`, and returns the new cell's index with the new state. The
 index is the store's size before the push.
-
-On the native build `push` changes the store in place, so `size` must be read
-before `push` runs. The code relies on the pair's components being evaluated
-first to last; the two must not be split into independent `let` bindings, whose
-order is not fixed.
-
 -}
 newPointCellS : Int -> Vars.Descriptor -> IO.State -> ( Int, IO.State )
 newPointCellS weight desc s =
-    ( CellStore.size s.ioRefsPoint
-    , { s | ioRefsPoint = CellStore.push (Vars.Root weight desc) s.ioRefsPoint }
+    ( Array.length s.ioRefsPoint
+    , { s | ioRefsPoint = Array.push (Vars.Root weight desc) s.ioRefsPoint }
     )
+
+
+{-| Crashes with a message naming the point-store index `ref` that is out of
+range.
+-}
+crashOutOfRange : Int -> a
+crashOutOfRange ref =
+    crash ("Data.IORef: point store index out of range (" ++ String.fromInt ref ++ ")")
 
 
 {-| Returns an action that adds `value` at the end of the table of vectors and

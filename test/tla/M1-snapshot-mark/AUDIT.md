@@ -575,3 +575,17 @@ Re-audit (M1's part): the nested `majorGC` is the existing STW major (`J_Join` w
 point to the end of the outer pause, and the sweep-to-Idle and the forced shrink run after the mark with
 no cycle active (`finishSweepForRelease` aborts if one is). Nothing in M1's mark cycle (t0 snapshot,
 slices, handoff, join) changes. **Verdict: no model change needed.**
+
+## 2026-10-04 — remove-cellstore: F.externalRoots loses the CellStore scanner (GC_MODEL_001)
+
+Fired: grep `F.externalRoots` (M1), new hash prefix 631d334f9bcf.
+
+plans/remove-cellstore.md deletes the `Eco.CellStore` kernel module (the compiler's union-find point
+store is an immutable `Array` again), and with it the one line the grep lost:
+`eco-kernel-cpp/src/eco/CellStore.cpp: ...addExternalRootScanner(`. No atomic step, lock, memory
+order or scanner protocol changes; one external root scanner less registers at start-up. M1's
+`cell[c]` / `CellSlots` abstraction (off-heap stores read and overwritten at any time, scanned through
+`forEachMajorRoot` `kind == 2`) still describes every remaining scanner (MVar, Runtime, scheduler,
+ports, Http, Time), so only comments change: the CellStore mentions in `SnapshotMark.tla` (the
+`CellSlots` constant and the `cellw`/`cellr` actions), in MAPPING.md's `cell[c]` row, and in
+`M5-tenuring/Tenuring.tla`'s `Roots` comment. **Verdict: no model change needed.**

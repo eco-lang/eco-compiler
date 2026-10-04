@@ -65,8 +65,8 @@ Among what is not tested: `Utils.notEqual`, `lt`, `le`, `gt` and `ge`;
 `slice`, `initialize`, `initializeFromList` and `indexedMap`; a `number` type
 variable, which `monoTypeToAbi` makes `i64`; a key whose prefix is not the
 kernel's own, such as `MVar.put` with prefix `"Elm"`; and the compile-time
-crashes, for `CellStore.set` and `push` at an unboxed cell type and for an
-argument or result whose ABI type does not match its primitive type.
+crash for an argument or result whose ABI type does not match its primitive
+type.
 
 -}
 

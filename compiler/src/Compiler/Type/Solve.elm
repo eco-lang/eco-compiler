@@ -43,7 +43,6 @@ import Data.IORef exposing (IORef)
 import Data.Vector as Vector
 import Data.Vector.Mutable as MVector
 import Dict exposing (Dict)
-import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
@@ -130,7 +129,7 @@ runWithIds constraint nodeVars =
                                                                     , nodeTypes = nodeTypes
                                                                     , nodeVars = nodeVars
                                                                     , solverState =
-                                                                        { cells = CellStore.freeze s.ioRefsPoint
+                                                                        { cells = s.ioRefsPoint
                                                                         }
                                                                     }
                                                                 )

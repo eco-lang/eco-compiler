@@ -1,4 +1,3 @@
-eco-kernel-cpp/src/eco/CellStore.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
 eco-kernel-cpp/src/eco/MVar.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
 eco-kernel-cpp/src/eco/Runtime.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
 elm-kernel-cpp/src/http/HttpExports.cpp: Allocator::instance().getRootSet().addExternalRootScanner(

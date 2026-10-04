@@ -1092,9 +1092,9 @@ errDeep t =
 {-| Unify two store Points, reporting only whether it worked.
 
 This is the direct-state entry: no `Step`, no `Result`, no rendered error. A
-failing unify leaves the store as the attempt left it, so **a caller that means
-to recover must bracket the call** with `Engine.markStore` / `rollbackStore` —
-the store is mutated in place, so there is no older value to fall back to.
+failing unify leaves the store as the attempt left it, so a caller that means
+to recover puts back the store it had before the call; the store is an
+immutable value, so that older store is still intact.
 `unifyStrict` below is the entry for callers that propagate the failure instead.
 
 -}
@@ -1179,25 +1179,14 @@ state before the attempt on a mismatch.
 -}
 unifyBestEffortStoreS : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 unifyBestEffortStoreS v1 v2 s =
-    let
-        -- Bind the MARKED state and roll THAT back, never the pre-mark `s`.
-        -- Under the kernel the two would behave alike (one store, mutated in
-        -- place, and `s.store` is the same handle), but under the pure twin a
-        -- handle is a VALUE: `s` does not carry the mark, and rolling it back
-        -- is "rollback without a mark". `sM` differs from `s` only in the
-        -- store, so the non-store fields this arm returns are unchanged.
-        sM =
-            Engine.markStore s
-    in
-    case unifyStep v1 v2 sM of
+    case unifyStep v1 v2 s of
         ( True, s1 ) ->
-            Engine.commitStore s1
+            s1
 
         ( False, s1 ) ->
-            -- Roll back the state the attempt RETURNED, not the pre-mark one:
-            -- both name the same mutable store, but only this one carries the
-            -- mark under the pure twin.
-            Engine.rollbackStore s1
+            -- Only the store goes back: the other fields keep what the
+            -- attempt did to them.
+            { s1 | store = s.store }
 
 
 
@@ -1550,22 +1539,15 @@ qCensusInto toInfer roots s =
             entries ->
                 let
                     -- The replay below only READS the store, but reading a
-                    -- union-find reaches path compression, and the store is
-                    -- now mutated in place rather than copied — so the writes
-                    -- would outlive the census instead of being dropped with
-                    -- the discarded array. Compression is observationally
-                    -- invisible (same roots, same descriptors), but a census
-                    -- must leave no trace at all, so the whole replay runs
-                    -- inside an undo scope that is rolled back on the way out.
-                    sM =
-                        Engine.markStore s
-
+                    -- union-find reaches path compression. The store the
+                    -- replay ends with is discarded and `s.store` is kept, so
+                    -- the census leaves no trace.
                     acc =
                         -- `entries` is in reverse record order, so folding from
                         -- the head visits newest first and the OLDEST write of
                         -- each Point lands last — which is exactly the seed we
                         -- want (`Dict.insert` overwrites).
-                        List.foldl qStep (qAcc0 sM.store) entries
+                        List.foldl qStep (qAcc0 s.store) entries
 
                     solved =
                         qSolve acc
@@ -1634,18 +1616,17 @@ qCensusInto toInfer roots s =
                         , scratchDropped = prev.scratchDropped
                         }
                 in
-                Engine.rollbackStore
-                    { sM
-                        | lssStats =
-                            { stats
-                                | sigStats =
-                                    if toInfer then
-                                        { sig | qInfer = updated }
+                { s
+                    | lssStats =
+                        { stats
+                            | sigStats =
+                                if toInfer then
+                                    { sig | qInfer = updated }
 
-                                    else
-                                        { sig | qShadow = updated }
-                            }
-                    }
+                                else
+                                    { sig | qShadow = updated }
+                        }
+                }
 
 
 {-| §5.1 / §3.1: the set-slot classes the def's SIGNATURE reaches.
@@ -2238,10 +2219,9 @@ poisonGoC seen worklist c0 =
 
                     ( _, desc ) =
                         -- The returned state is DROPPED, not threaded. `UF.get`'s only
-                        -- write is path compression, and the store is mutated in place
-                        -- (step 3), so the compression has already happened; the state it
-                        -- hands back differs from `c0.store` in nothing but the record
-                        -- wrapper. Threading it cost a context copy per read.
+                        -- write is path compression, which no reader can observe, so
+                        -- dropping it loses only the shortcut. Threading it cost a
+                        -- context copy per read.
                         UF.get v c0.store
 
                     c1 =
@@ -2544,10 +2524,8 @@ rezonkSettled s =
                         { zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, grounded = 0, groundingDeferred = 0, mixedFlex = 0, mixedFlexGc = 0, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
 
                     -- Same reason as `qCensusInto`: the replay compresses
-                    -- paths, and an in-place store would keep those writes.
-                    sM =
-                        Engine.markStore s
-
+                    -- paths, so its final store is discarded and `s.store`
+                    -- is kept.
                     ctxN =
                         List.foldl
                             (\v c ->
@@ -2571,12 +2549,12 @@ rezonkSettled s =
                                     ( _, c1 ) ->
                                         c1
                             )
-                            { store = sM.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = Just acc0, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 }
+                            { store = s.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = Just acc0, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 }
                             log
                 in
                 case ctxN.lss of
                     Nothing ->
-                        Engine.rollbackStore sM
+                        s
 
                     Just acc ->
                         let
@@ -2591,38 +2569,35 @@ rezonkSettled s =
                         in
                         -- NOTE what is NOT written: `ctxN.store`, `ctxN.next`,
                         -- `ctxN.intern`, `ctxN.memberTable`, `ctxN.nextMemberId`,
-                        -- `ctxN.ecoReads`. Only counters cross this line — and
-                        -- the undo scope opened above is closed by rolling it
-                        -- back, so the replay's path compression does not
-                        -- survive either.
-                        Engine.rollbackStore
-                            { sM
-                                | lssStats =
-                                    { stats
-                                        | sigStats =
-                                            { sig
-                                                | settled =
-                                                    { items = prev.items + 1
-                                                    , zonked = prev.zonked + acc.zonked
-                                                    , hist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) prev.hist acc.hist
-                                                    , widenedBySize = prev.widenedBySize + acc.widenedBySize
-                                                    , causeTop = prev.causeTop + acc.causePoison + acc.causeEdgeTop
-                                                    , causeVar = prev.causeVar + acc.causeFlex + acc.causeEdgeEmpty
-                                                    , varArrows =
-                                                        Dict.foldl
-                                                            (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
-                                                            prev.varArrows
-                                                            acc.varArrows
-                                                    , setArrows =
-                                                        Dict.foldl
-                                                            (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
-                                                            prev.setArrows
-                                                            acc.setArrows
-                                                    , scratchDropped = prev.scratchDropped
-                                                    }
-                                            }
-                                    }
-                            }
+                        -- `ctxN.ecoReads`. Only counters cross this line, so the
+                        -- replay's path compression does not survive either.
+                        { s
+                            | lssStats =
+                                { stats
+                                    | sigStats =
+                                        { sig
+                                            | settled =
+                                                { items = prev.items + 1
+                                                , zonked = prev.zonked + acc.zonked
+                                                , hist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) prev.hist acc.hist
+                                                , widenedBySize = prev.widenedBySize + acc.widenedBySize
+                                                , causeTop = prev.causeTop + acc.causePoison + acc.causeEdgeTop
+                                                , causeVar = prev.causeVar + acc.causeFlex + acc.causeEdgeEmpty
+                                                , varArrows =
+                                                    Dict.foldl
+                                                        (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
+                                                        prev.varArrows
+                                                        acc.varArrows
+                                                , setArrows =
+                                                    Dict.foldl
+                                                        (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
+                                                        prev.setArrows
+                                                        acc.setArrows
+                                                , scratchDropped = prev.scratchDropped
+                                                }
+                                        }
+                                }
+                        }
 
 
 foldZonkStats : ZonkCtx -> Engine.S -> Engine.S
@@ -2779,10 +2754,9 @@ zonkToMonoC superTable revMemo var c0 =
     let
         ( _, desc ) =
             -- The returned state is DROPPED, not threaded. `UF.get`'s only
-            -- write is path compression, and the store is mutated in place
-            -- (step 3), so the compression has already happened; the state it
-            -- hands back differs from `c0.store` in nothing but the record
-            -- wrapper. Threading it cost a context copy per read.
+            -- write is path compression, which no reader can observe, so
+            -- dropping it loses only the shortcut. Threading it cost a
+            -- context copy per read.
             UF.get var c0.store
 
         c1 =
@@ -3133,10 +3107,9 @@ zonkSetSlot paramT resultT setVar c0 =
     let
         ( _, desc ) =
             -- The returned state is DROPPED, not threaded. `UF.get`'s only
-            -- write is path compression, and the store is mutated in place
-            -- (step 3), so the compression has already happened; the state it
-            -- hands back differs from `c0.store` in nothing but the record
-            -- wrapper. Threading it cost a context copy per read.
+            -- write is path compression, which no reader can observe, so
+            -- dropping it loses only the shortcut. Threading it cost a
+            -- context copy per read.
             UF.get setVar c0.store
 
         c1 =
@@ -3387,10 +3360,9 @@ resolveSources pending visited sawFlex acc c0 =
                 let
                     ( _, desc ) =
                         -- The returned state is DROPPED, not threaded. `UF.get`'s only
-                        -- write is path compression, and the store is mutated in place
-                        -- (step 3), so the compression has already happened; the state it
-                        -- hands back differs from `c0.store` in nothing but the record
-                        -- wrapper. Threading it cost a context copy per read.
+                        -- write is path compression, which no reader can observe, so
+                        -- dropping it loses only the shortcut. Threading it cost a
+                        -- context copy per read.
                         UF.get src c0.store
 
                     c1 =

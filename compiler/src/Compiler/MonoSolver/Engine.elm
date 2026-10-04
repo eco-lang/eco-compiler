@@ -2,7 +2,7 @@ module Compiler.MonoSolver.Engine exposing
     ( S, Step, Failure(..), WorkItem(..)
     , traverse, foldlS, liftIO
     , freshVar, enqueueSpec
-    , freshStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
+    , freshStore, resetItem
     , mvarIdKey, pointKey
     , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
     )
@@ -37,7 +37,7 @@ and one written as a combinator chain never is.
 @docs S, Step, Failure, WorkItem
 @docs traverse, foldlS, liftIO
 @docs freshVar, enqueueSpec
-@docs freshStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
+@docs freshStore, resetItem
 @docs mvarIdKey, pointKey
 @docs AliasKey, AliasVerdict, ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource, MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry, QPre, QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
 
@@ -61,7 +61,6 @@ import Compiler.Type.UnionFind as UF
 import Data.HashMap as HashMap
 import Data.Set as EverySet
 import Dict as CoreDict exposing (Dict)
-import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO
 import Utils.Crash as Crash
 
@@ -2091,7 +2090,7 @@ withScratchStore step s0 =
             -- residual reads made inside the scratch must not be scanned at
             -- item end (scratch re-translation is itself a re-translation
             -- mechanism; its staleness is out of scope for MONO_029 v1).
-            { s0 | store = freshStore (), memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
+            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
     in
     case step sFresh of
         ( a, s1 ) ->
@@ -2146,11 +2145,7 @@ withScratchStore step s0 =
                     else
                         s2
             in
-            -- `releaseScratch` frees the scratch store and reinstates the
-            -- stashed one. The stash was never touched: `freshStore ()` above
-            -- allocated a DIFFERENT store, which is why that function takes an
-            -- argument.
-            ( a, { s3 | store = releaseScratch s3.store s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
+            ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
 
 
 
@@ -2448,16 +2443,10 @@ enqueueSpecKeyed global monoType s0 =
 
 {-| A fresh, empty solver store. Built here (rather than via a private IO.elm
 seed) so the engine touches zero lines of the type checker.
-
-This MUST take an argument. `ioRefsPoint` is an `Eco.CellStore`, a MUTABLE
-off-heap vector; a zero-argument definition would be a memoised constant and
-every "fresh" store would be the same object — which would make
-`withScratchStore` write straight through its own stash.
-
 -}
-freshStore : () -> IO.State
-freshStore () =
-    { ioRefsPoint = CellStore.new 256
+freshStore : IO.State
+freshStore =
+    { ioRefsPoint = Array.empty
     , ioRefsMVector = Array.empty
     , names =
         { taken = CoreDict.empty
@@ -2477,65 +2466,15 @@ freshStore () =
     }
 
 
-{-| Free `dead`'s point store and return `keep`, for leaving a scratch scope.
--}
-releaseScratch : IO.State -> IO.State -> IO.State
-releaseScratch dead keep =
-    { keep | ioRefsPoint = CellStore.release dead.ioRefsPoint keep.ioRefsPoint }
-
-
-{-| Free the state's point store and give it a fresh empty one.
--}
-renewStore : IO.State -> IO.State
-renewStore st =
-    { st | ioRefsPoint = CellStore.renew st.ioRefsPoint }
-
-
-{-| Open an undo scope on the point store, for a speculative unify.
--}
-markStore : S -> S
-markStore s =
-    let
-        inner =
-            s.store
-    in
-    { s | store = { inner | ioRefsPoint = CellStore.pushMark inner.ioRefsPoint } }
-
-
-{-| Keep what a speculative unify wrote.
--}
-commitStore : S -> S
-commitStore s =
-    let
-        inner =
-            s.store
-    in
-    { s | store = { inner | ioRefsPoint = CellStore.commit inner.ioRefsPoint } }
-
-
-{-| Discard what a speculative unify wrote — the cells AND the Points it
-minted. This is what makes the best-effort recovery sites sound on a mutable
-store: they used to rely on simply dropping a persistent array.
--}
-rollbackStore : S -> S
-rollbackStore s =
-    let
-        inner =
-            s.store
-    in
-    { s | store = { inner | ioRefsPoint = CellStore.rollback inner.ioRefsPoint } }
-
-
 {-| Reset the per-work-item solver state before specializing a node.
 
 The finished item's store is dead by now (`finishNode` has already run the
-harvest and the report-gated censuses), so `renewStore` frees it and hands
-back an empty one.
+harvest and the report-gated censuses), so it is replaced by an empty one.
 
 -}
 resetItem : S -> S
 resetItem s =
-    { s | store = renewStore s.store, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, itemAux = emptyItemAux }
+    { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, itemAux = emptyItemAux }
 
 
 {-| Bind a local variable's monomorphized type.
@@ -2759,8 +2698,8 @@ harvestSuperTableExcept excluded s =
 
                     else
                         let
-                            -- Compressing read, state dropped: the write is in
-                            -- place (step 3) and this fold discarded its store
+                            -- Compressing read, state dropped: compression is
+                            -- unobservable and this fold discarded its store
                             -- half at the end anyway.
                             ( _, desc ) =
                                 UF.get (Vars.Pt pointIdx) store

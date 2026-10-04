@@ -58,7 +58,6 @@ import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict
-import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO
 
 
@@ -199,13 +198,7 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                             else
                                 Nothing
                     in
-                    -- Row 7 (plans/frontend-heap-release.md §7.4): the final
-                    -- point store is off-heap and a GC root until disposed
-                    -- (HEAP_047), and nothing reads it once `graph` and
-                    -- `report` exist (strict `let`: both are computed before
-                    -- this call). Disposal is threaded through the result so
-                    -- it is a data dependency; `disposeThen` is idempotent.
-                    Ok (CellStore.disposeThen sFinal.store.ioRefsPoint ( graph, report ))
+                    Ok ( graph, report )
 
 
 {-| destrAnno FIX B — the post-drain ctor-row settle (§9.8). For every
@@ -3924,7 +3917,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
         , limits = limits
         }
     , currentGlobal = Nothing
-    , store = Engine.freshStore ()
+    , store = Engine.freshStore
     , memo = Dict.empty
     , revMemo = Array.empty
     , varEnv = Dict.empty
