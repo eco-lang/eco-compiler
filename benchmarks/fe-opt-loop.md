@@ -793,6 +793,28 @@ Default leg (flag off):
 - **Gates:** bootstrap PASS (10 m 01 s, 4b and 8c fixed points hold under v3); `--target full`
   **2,032/2,032 PASS** (`/tmp/g2_full_i64.txt`), including the two new `Eco.File` kernel tests.
 
+### tidy-check: regression check after the code tidy-up (2026-10-04): **no regression (FLAT)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 64.48 | 23.4 | 23.3 | 11.9 | 3.28 | 1130 | 6 | 6311 | 6511100 | 13369940 | same |
+| r2 | 64.73 | 23.3 | 23.4 | 12.0 | 3.31 | 1130 | 6 | 6311 | 6516644 | 13369940 | same |
+| r3 | 64.11 | 23.1 | 23.3 | 12.0 | 3.31 | 1130 | 6 | 6311 | 6514824 | 13369940 | same |
+| **median** | **64.48** | **23.3** | 23.3 | 12.0 | 3.31 | 1130 | 6 | 6311 | 6514824 | 13369940 | |
+| Δ vs I64 | −0.89 (flat) | −0.3 | −0.5 | 0.0 | −0.20 | −38 | 0 | −118 | −13,896 | −4,937 (source moved) | |
+
+- **What:** not a step: the tidied tree, measured with the unchanged protocol. No kept binary
+  survived (`bin/` was rebuilt by a bootstrap at 15:47), so Phase 0's route was used:
+  `eco-compiler-boot` compiled the current source to `ecoTidy.mlir`, which was lowered to
+  `eco-optTidy`. `ecoTidy.mlir` is byte-identical to the bootstrap's `eco-compiler-boot-2.mlir`,
+  so the candidate is already at the fixed point, and no extra turn was needed.
+- **Checks:** all three runs are deterministic and match `ecoTidy.mlir` (fixed point). rc 0 on all runs, no `[gc-stats] SIG`.
+  `.ecot` 8,552,939 B (I64 era: ~8.74 MB).
+- **Verdict:** wall −0.89 s, just outside the 0.85 s band (I64 spread 0.85, this triple 0.62).
+  That is well inside the ±5 s drift between sittings, so read it as FLAT: **no regression**.
+  The deterministic counters all moved down (minor −38, promoted −118 MiB), and the phase split
+  is flat to slightly better.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1066,3 +1088,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | S4 --no-cache | 61.85 | -6.87 | 1217 | 7 | 7694 | 7499908 | WIN when used (opt-in one-shot; parse/check/build 27.0 -> 20.1 s) | S9 |
 | S8 | 64.95 | -3.42 | 1168 | 6 | 6392 | 6571668 | WIN (canType memo; parse/check/build 26.7 -> 23.4 s; promoted -1.34 GB; RSS -1.38 GB; .ecot/.eci byte-identical) | S4 |
 | I64 | 65.37 | +0.42 | 1168 | 6 | 6429 | 6528720 | FLAT, kept (exact i64 Int literals in .ecot; fixes cached-literal corruption; V 0.1.3) | S8 |
+| tidy-check | 64.48 | -0.89 | 1130 | 6 | 6311 | 6514824 | — (post-tidy regression check: none; parse/check/build 23.3 s; fixed point + deterministic) | I64 |
