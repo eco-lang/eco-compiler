@@ -636,21 +636,33 @@ mixTag tag ord =
     modBy 1073741789 (tag * 1000003 + ord + 1)
 
 
-{-| The tag a re-translation of local-multi instance `ord` should run under, or
-the enclosing tag unchanged when instance qualification is off, the instance is
-the FIRST one, or the §3.3 cap is reached. Bumps `instCapped` on a cap hit.
+{-| The tag a re-translation of local-multi instance `ord` should run under.
+Instance qualification off gives the enclosing tag unchanged; otherwise the
+tag is the enclosing tag composed with `ord` (`mixTag`), except for the
+_untagged_ case below. Bumps `instCapped` on a cap hit.
 
-**Ordinal 0 is never tagged.** It keeps today's key, so the overwhelmingly
-common case — a let-function with exactly ONE instance, which has no ambiguity
-to resolve — mints exactly the ids it mints now. Only the siblings that a
-split actually created pay for the split. This is also what makes the cap
-meaningful: `maxInstances = 1` tags nothing and reproduces the
-pre-instanceQual collapse exactly, and a cap of K bounds one (lambda, spec)
-to K identity classes — K-1 tagged plus the shared untagged one.
+**Ordinal 0 under an untagged enclosing context is never tagged.** It keeps
+today's key, so the overwhelmingly common case — a let-function with exactly
+ONE instance, not nested in a split one — mints exactly the ids it mints now.
+Only the siblings that a split actually created pay for the split. This is
+also what makes the cap meaningful: `maxInstances = 1` tags nothing and
+reproduces the pre-instanceQual collapse exactly, and a cap of K bounds one
+(lambda, spec) to K identity classes per level — K-1 tagged plus the shared
+ordinal-0 one.
 
-A capped or first re-translation CARRIES the outer tag rather than clearing
-it: the ENCLOSING instance's identity is still valid, only this level stops
-splitting.
+**Under a TAGGED enclosing instance, ordinal 0 is composed too**
+(`mixTag tag 0`). A lambda's tag encodes the path of ordinals of the
+local-multi instances enclosing it, and every path of one lambda has the same
+length (one ordinal per enclosing local-multi let). Dropping only the LEADING
+zeros of equal-length paths keeps them distinct; dropping a zero after a
+non-zero ordinal does not: (outer 0, inner 1) and (outer 1, inner 0) would
+both run under `mixTag 0 1`, and the inner lambda of two different instances
+— one capturing what the other does not — would share one member id
+(`LssInstanceQualTest` test 8).
+
+A capped re-translation (`ord >= maxInstances`) runs under the tag ordinal 0
+would get at this level, joining the shared class rather than splitting
+further.
 
 -}
 localInstanceTagFor : Int -> S -> ( Int, S )
@@ -658,15 +670,29 @@ localInstanceTagFor ord s =
     let
         cfg =
             s.env.lss.stamp
+
+        outer =
+            s.itemAux.currentLocalInstance
+
+        -- The tag of this level's shared (ordinal-0 / capped) class.
+        sharedTag =
+            if outer == 0 then
+                0
+
+            else
+                mixTag outer 0
     in
-    if ord == 0 || not s.env.lss.enabled then
-        ( s.itemAux.currentLocalInstance, s )
+    if not s.env.lss.enabled then
+        ( outer, s )
+
+    else if ord == 0 then
+        ( sharedTag, s )
 
     else if cfg.maxInstances > 0 && ord >= cfg.maxInstances then
-        ( s.itemAux.currentLocalInstance, bumpInstanceQual (\lq -> { lq | instCapped = lq.instCapped + 1 }) s )
+        ( sharedTag, bumpInstanceQual (\lq -> { lq | instCapped = lq.instCapped + 1 }) s )
 
     else
-        ( mixTag s.itemAux.currentLocalInstance ord, s )
+        ( mixTag outer ord, s )
 
 
 bumpInstanceQual : (LayoutQualStats -> LayoutQualStats) -> S -> S

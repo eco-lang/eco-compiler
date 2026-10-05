@@ -34,18 +34,25 @@ one pathway fails and the other succeeds, or both fail with different numbers
 of errors, the result is a `PathwayMismatch`. If both fail with the same number
 of errors, the erased pathway's errors are reported as an ordinary
 `TypeError` or `OptimizeError`, whatever either pathway's errors say. If both
-succeed, nothing is compared: the typed annotations are not checked against
-the erased ones, and the annotations and interface in a `CompileResult` are the
-erased pathway's.
+type checks succeed, the annotations they inferred must be equal (the typed
+pathway's taken before solver roots are stamped into them), or the result is a
+`PathwayMismatch`. The optimized graphs are not compared, and the annotations
+and interface in a `CompileResult` are the erased pathway's.
+
+The typed pathway follows `Compiler.Compile`: node and annotation variables
+are resolved to their union-find roots, solver roots are stamped into the
+arrows of the node types and annotations, and the typed optimizer is given the
+solver's scheme roots.
 
 A compiled module's typed graph can then be carried on through
 monomorphization and MLIR generation. That path differs from the compiler's:
 it uses the substitution monomorphizer
-(`Compiler.Monomorphize.Monomorphize`), starts from one defined value chosen by
-name order rather than from a `main`, takes its type information from
+(`Compiler.Monomorphize.Monomorphize`), starts from a top-level value the
+caller names rather than from a `main`, takes its type information from
 `Compiler.Elm.Interface.Basic.testIfaces` rather than from the interfaces the
-module was compiled against, and hands the result to the MLIR back end without
-the global optimization passes.
+module was compiled against, and runs only the inliner and
+`MonoGlobalOptimize.globalOptimize` of the global optimization steps before
+the MLIR back end.
 
 
 # Results
@@ -93,6 +100,7 @@ import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Eco.Config as Config
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
@@ -100,6 +108,8 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
+import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
+import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Erased.Module as Optimize
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize
@@ -116,10 +126,12 @@ import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
+import Compiler.Type.SolverRoots as SolverRoots
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
+import TestLogic.TestPipeline as Pipeline
 
 
 
@@ -176,7 +188,8 @@ pathways' results for that phase. Disagreeing means that one pathway failed
 while the other succeeded, or that both failed with different numbers of
 errors.
 
-`TypeCheckMismatch` carries the two type-checking results.
+`TypeCheckMismatch` carries the two type-checking results. Both may be `Ok`,
+when the two pathways inferred different annotations.
 
 `OptimizeMismatch` carries the two optimization results. It occurs only when
 both pathways type-checked and the pattern-match check passed.
@@ -199,16 +212,22 @@ what its optimizer needs.
 `nodeTypes` are the per-node types after `Compiler.Type.PostSolve` has
 completed them, and `typedCanonical` is built from those. `nodeVars` and
 `annotationVars` are the solver variables recorded for each node and for each
-top-level annotation.
+top-level annotation. As in `Compiler.Compile`, the variables are resolved to
+their union-find roots, the node types and `annotations` carry the solver roots
+of their arrows, and `schemeRoots` holds each definition's scheme roots (see
+`TestLogic.TestPipeline.stampLikeCompile`). `solvedAnnotations` are the
+annotations as the solver gave them, before that stamping.
 
 -}
 type alias TypeCheckTypedResult =
     { annotations : Dict Name.Name (Can.Annotation Name)
+    , solvedAnnotations : Dict Name.Name (Can.Annotation Name)
     , typedCanonical : TCan.Module
     , nodeTypes : TCan.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , nodeVars : Array (Maybe Vars.Variable)
     , annotationVars : Dict Name.Name Vars.Variable
+    , schemeRoots : SolverRoots.AllSchemeRoots
     }
 
 
@@ -247,7 +266,8 @@ pattern-match errors, and optimized on both pathways. The first phase to fail
 gives the error. After type checking and again after optimization, one pathway
 failing while the other succeeds, or both failing with different numbers of
 errors, gives a `PathwayMismatch`; both failing with the same number gives the
-erased pathway's errors. When everything succeeds nothing is compared, and the
+erased pathway's errors. Both type checks succeeding with different annotations
+also gives a `PathwayMismatch`. The optimized graphs are not compared, and the
 result's annotations and interface are the erased pathway's.
 
 -}
@@ -269,59 +289,70 @@ compileModule pkg ifaces srcModule =
                 in
                 case ( erasedTypeCheckResult, typedTypeCheckResult ) of
                     ( Ok erasedAnnotations, Ok typedResult ) ->
-                        nitpick canonical
-                            |> Result.andThen
-                                (\() ->
-                                    let
-                                        erasedOptResult =
-                                            optimizeErased erasedAnnotations canonical
+                        if erasedAnnotations /= typedResult.solvedAnnotations then
+                            Err
+                                (PathwayMismatch
+                                    (TypeCheckMismatch
+                                        { erasedResult = erasedTypeCheckResult
+                                        , typedResult = typedTypeCheckResult
+                                        }
+                                    )
+                                )
 
-                                        typedOptResult =
-                                            optimizeTyped typedResult.annotations typedResult.nodeTypes typedResult.nodeVars typedResult.kernelEnv typedResult.annotationVars typedResult.typedCanonical
-                                    in
-                                    case ( erasedOptResult, typedOptResult ) of
-                                        ( Ok objects, Ok typedObjects ) ->
-                                            Ok
-                                                { moduleName = Src.getName srcModule
-                                                , source = srcModule
-                                                , canonical = canonical
-                                                , annotations = erasedAnnotations
-                                                , objects = objects
-                                                , typedObjects = typedObjects
-                                                , interface = I.fromModule pkg canonical erasedAnnotations
-                                                }
+                        else
+                            nitpick canonical
+                                |> Result.andThen
+                                    (\() ->
+                                        let
+                                            erasedOptResult =
+                                                optimizeErased erasedAnnotations canonical
 
-                                        ( Err erasedErr, Err typedErr ) ->
-                                            let
-                                                erasedCount =
-                                                    List.length (OneOrMore.destruct (::) erasedErr)
+                                            typedOptResult =
+                                                optimizeTyped typedResult
+                                        in
+                                        case ( erasedOptResult, typedOptResult ) of
+                                            ( Ok objects, Ok typedObjects ) ->
+                                                Ok
+                                                    { moduleName = Src.getName srcModule
+                                                    , source = srcModule
+                                                    , canonical = canonical
+                                                    , annotations = erasedAnnotations
+                                                    , objects = objects
+                                                    , typedObjects = typedObjects
+                                                    , interface = I.fromModule pkg canonical erasedAnnotations
+                                                    }
 
-                                                typedCount =
-                                                    List.length (OneOrMore.destruct (::) typedErr)
-                                            in
-                                            if erasedCount == typedCount then
-                                                Err (OptimizeError erasedErr)
+                                            ( Err erasedErr, Err typedErr ) ->
+                                                let
+                                                    erasedCount =
+                                                        List.length (OneOrMore.destruct (::) erasedErr)
 
-                                            else
+                                                    typedCount =
+                                                        List.length (OneOrMore.destruct (::) typedErr)
+                                                in
+                                                if erasedCount == typedCount then
+                                                    Err (OptimizeError erasedErr)
+
+                                                else
+                                                    Err
+                                                        (PathwayMismatch
+                                                            (OptimizeMismatch
+                                                                { erasedResult = Err erasedErr
+                                                                , typedResult = Err typedErr
+                                                                }
+                                                            )
+                                                        )
+
+                                            _ ->
                                                 Err
                                                     (PathwayMismatch
                                                         (OptimizeMismatch
-                                                            { erasedResult = Err erasedErr
-                                                            , typedResult = Err typedErr
+                                                            { erasedResult = erasedOptResult
+                                                            , typedResult = typedOptResult
                                                             }
                                                         )
                                                     )
-
-                                        _ ->
-                                            Err
-                                                (PathwayMismatch
-                                                    (OptimizeMismatch
-                                                        { erasedResult = erasedOptResult
-                                                        , typedResult = typedOptResult
-                                                        }
-                                                    )
-                                                )
-                                )
+                                    )
 
                     ( Err erasedErr, Err typedErr ) ->
                         let
@@ -467,33 +498,40 @@ typeCheckTyped canonical =
         ioResult =
             TypeTyped.constrainWithIds canonical
                 |> TypeCheck.andThen
-                    (\( constraint, nodeVars, _ ) ->
+                    (\( constraint, nodeVars, schemeBinderVars ) ->
                         Type.runWithIds constraint nodeVars
+                            |> TypeCheck.map (\result -> ( result, schemeBinderVars ))
                     )
                 |> TypeCheck.unsafePerformIO
     in
     case ioResult of
-        Err errors ->
+        ( Err errors, _ ) ->
             Err errors
 
-        Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
+        ( Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState }, schemeBinderVars ) ->
             let
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
 
-                fixedNodeTypes =
-                    postSolveResult.nodeTypes
-
-                kernelEnv =
-                    postSolveResult.kernelEnv
+                stamped =
+                    Pipeline.stampLikeCompile
+                        { solverState = solverState
+                        , annotations = annotations
+                        , annotationVars = annotationVars
+                        , nodeTypes = postSolveResult.nodeTypes
+                        , nodeVars = nodeVars
+                        , schemeBinderVars = schemeBinderVars
+                        }
             in
             Ok
-                { annotations = annotations
-                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes nodeVars
-                , nodeTypes = fixedNodeTypes
-                , kernelEnv = kernelEnv
-                , nodeVars = nodeVars
-                , annotationVars = annotationVars
+                { annotations = stamped.annotations
+                , solvedAnnotations = annotations
+                , typedCanonical = TCanBuild.fromCanonical canonical stamped.nodeTypes stamped.nodeVars
+                , nodeTypes = stamped.nodeTypes
+                , kernelEnv = postSolveResult.kernelEnv
+                , nodeVars = stamped.nodeVars
+                , annotationVars = stamped.annotationVars
+                , schemeRoots = stamped.schemeRoots
                 }
 
 
@@ -518,18 +556,13 @@ optimizeErased annotations canonical =
     Tuple.second (RResult.run (Optimize.optimize annotations canonical))
 
 
-{-| Optimizes a typed canonical module on the typed pathway, discarding any
-warnings.
-
-The optimizer is given an empty map of scheme roots. `Compiler.Compile`
-instead stamps solver roots onto the node types and annotations and passes the
-solver's scheme roots, so the typed graph built here can differ from the
-compiler's.
-
+{-| Optimizes a typed canonical module on the typed pathway, as
+`Compiler.Compile` does with the stamped types and scheme roots of
+`typeCheckTyped`, discarding any warnings.
 -}
-optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
-optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
-    Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars Dict.empty tcanModule))
+optimizeTyped : TypeCheckTypedResult -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
+optimizeTyped r =
+    Tuple.second (RResult.run (TypedOptimize.optimizeTyped r.annotations r.nodeTypes r.nodeVars r.kernelEnv r.annotationVars r.schemeRoots r.typedCanonical))
 
 
 
@@ -538,42 +571,45 @@ optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule
 -- ============================================================================
 
 
-{-| Monomorphizes the typed graph of `result` with the substitution engine,
-`Compiler.Monomorphize.Monomorphize`, or gives a `MonomorphizeError` with its
-message.
+{-| Monomorphizes the typed graphs of `results` together with the substitution
+engine, `Compiler.Monomorphize.Monomorphize`, starting from the top-level value
+named `entry`, or gives a `MonomorphizeError` with its message (also when there
+is no such value). `results` are the modules compiled in dependency order, as
+`compileModulesInOrder` returns them; when several define `entry`, the one
+whose module name sorts first is used. A recursive value is never found as an
+entry.
 
-The graph holds only this module's definitions. The candidates for the entry
-point are the module's top-level values and the constructors of its closed
-record aliases, and the one chosen is the candidate whose name sorts first as
-a string. Capitals sort before lower case, so a record alias constructor wins
-over any value, and the choice need not be a function. A recursive function,
-whether it calls itself or belongs to a mutually recursive group, is not a
-candidate. A module with no candidate fails.
-
-Type information comes from the module's own types together with the
-interfaces of `Compiler.Elm.Interface.Basic.testIfaces`, which include mocks of
-`Elm.JsArray` and `Array`, whatever interfaces the module was compiled
-against. The module's own types replace any interface's for the same module.
+The global graph holds the nodes and annotations of every module in
+`results`, merged as `Builder.GraphAssembly.addTypedLocalGraph` merges them,
+plus an annotation for every value, constructor and operator of
+`Compiler.Elm.Interface.Basic.testIfaces` that the modules do not define, so
+that a reference to a mock dependency has a type. Type information comes from
+the modules' own types together with those interfaces; a module's own types
+replace any interface's for the same module.
 
 -}
-monomorphize : CompileResult -> Result CompileError Mono.MonoGraph
-monomorphize result =
-    monomorphizeWithIfaces extendedTestIfaces result
-
-
-{-| Monomorphizes the typed graph of `result` as `monomorphize` does, taking
-type information from `ifaces` and the module's own types.
--}
-monomorphizeWithIfaces : Dict ModuleName.Raw I.Interface -> CompileResult -> Result CompileError Mono.MonoGraph
-monomorphizeWithIfaces ifaces result =
+monomorphize : Name.Name -> List CompileResult -> Result CompileError Mono.MonoGraph
+monomorphize entry results =
     let
+        (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
+            List.foldl (\r g -> GA.addTypedLocalGraph r.typedObjects g) TOpt.emptyGlobalGraph results
+
         globalGraph =
-            GA.addTypedLocalGraph result.typedObjects TOpt.emptyGlobalGraph
+            TOpt.GlobalGraph nodes fields (Data.Map.union annotations (Pipeline.interfaceAnnotations Basic.testIfaces)) schemeRoots varSupers
 
         globalTypeEnv =
-            buildGlobalTypeEnvWithIfaces ifaces result.canonical
+            List.foldl
+                (\r env ->
+                    let
+                        moduleTypeEnv =
+                            TypeEnv.fromCanonical r.canonical
+                    in
+                    Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv env
+                )
+                (TypeEnv.fromInterfaces Basic.testIfaces)
+                results
     in
-    case monomorphizeAny globalTypeEnv globalGraph of
+    case Monomorphize.monomorphize entry globalTypeEnv globalGraph of
         Ok monoGraph ->
             Ok monoGraph
 
@@ -581,96 +617,26 @@ monomorphizeWithIfaces ifaces result =
             Err (MonomorphizeError errMsg)
 
 
-{-| Returns the unions and aliases of every module in `ifaces` together with
-those of `canModule`, which replace any interface's entry for the same module.
--}
-buildGlobalTypeEnvWithIfaces : Dict ModuleName.Raw I.Interface -> Can.Module -> TypeEnv.GlobalTypeEnv
-buildGlobalTypeEnvWithIfaces ifaces canModule =
-    let
-        ifaceTypeEnv =
-            TypeEnv.fromInterfaces ifaces
-
-        moduleTypeEnv =
-            TypeEnv.fromCanonical canModule
-    in
-    Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv ifaceTypeEnv
-
-
-{-| The interfaces `monomorphize` takes type information from. They are exactly
-`Compiler.Elm.Interface.Basic.testIfaces`.
--}
-extendedTestIfaces : Dict ModuleName.Raw I.Interface
-extendedTestIfaces =
-    Basic.testIfaces
-
-
-{-| Monomorphizes a typed global graph from the entry point that
-`findAnyEntryPoint` chooses. With no entry point the error is
-`"No function found in graph"`; any other error is the monomorphizer's.
-
-The graph's field counts and annotations are emptied before it is handed to
-the monomorphizer; its nodes, scheme roots and super-types are kept.
-
--}
-monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _ schemeRoots varSupers) =
-    case findAnyEntryPoint nodes of
-        Nothing ->
-            Err "No function found in graph"
-
-        Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Data.Map.empty schemeRoots varSupers)
-
-
-{-| Returns the global name and type of the first `Define` or `TrackedDefine`
-node of `nodes`, in the order of the nodes' keys.
-
-A key is the home module followed by the name, compared as a string; the
-`TOpt.compareGlobal` passed to the fold is ignored. Within one module that
-makes it the definition whose name sorts first, and since a closed record
-alias's constructor is a `Define` and capitals sort first, such a constructor
-is chosen over any value. Recursive definitions are `Cycle` nodes and are
-never chosen.
-
--}
-findAnyEntryPoint : Data.Map.Dict String TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
-findAnyEntryPoint nodes =
-    Data.Map.foldl
-        (\global node acc ->
-            case acc of
-                Just _ ->
-                    acc
-
-                Nothing ->
-                    case node of
-                        TOpt.Define _ _ meta ->
-                            Just ( global, meta.tipe )
-
-                        TOpt.TrackedDefine _ _ _ meta ->
-                            Just ( global, meta.tipe )
-
-                        _ ->
-                            Nothing
-        )
-        Nothing
-        nodes
-
-
 {-| Returns the MLIR text the MLIR back end generates for `monoGraph` in
 development mode, without source maps.
 
-The graph goes to the back end as monomorphization left it, without the global
-optimization passes the compiler runs first.
+Before the back end, the graph goes through the post-monomorphization inliner
+and `MonoGlobalOptimize.globalOptimize`, with the default configuration, as
+`TestLogic.TestPipeline.runToGlobalOpt` does. The later global steps of
+`Builder.Generate` (CSE, CAF dedupe and hoisting) are not run.
 
 -}
 generateMLIR : Mono.MonoGraph -> String
 generateMLIR monoGraph =
     let
+        ( simplifiedGraph, _ ) =
+            MonoInlineSimplify.optimize Config.default.inline monoGraph
+
         config =
             { sourceMaps = CodeGen.NoSourceMaps
             , leadingLines = 0
             , mode = Mode.Dev Nothing
-            , graph = monoGraph
+            , graph = MonoGlobalOptimize.globalOptimize simplifiedGraph
             }
 
         output =
@@ -679,17 +645,13 @@ generateMLIR monoGraph =
     CodeGen.outputToString output
 
 
-{-| Monomorphizes the typed graph of `result` as `monomorphize` does and returns
-the MLIR text the MLIR back end generates for it, in development mode.
-
-The monomorphized graph goes to the back end without the global optimization
-passes the compiler runs first. The result is an `Err` only when
+{-| Monomorphizes `results` from `entry` as `monomorphize` does and returns the
+MLIR text that `generateMLIR` gives for it. The result is an `Err` only when
 monomorphization fails.
-
 -}
-generateMLIRFromResult : CompileResult -> Result CompileError String
-generateMLIRFromResult result =
-    case monomorphize result of
+generateMLIRFromResult : Name.Name -> List CompileResult -> Result CompileError String
+generateMLIRFromResult entry results =
+    case monomorphize entry results of
         Err err ->
             Err err
 
@@ -829,8 +791,13 @@ discrepancyToString discrepancy =
                                 ++ "\n  Typed errors:\n"
                                 ++ typeErrorsToString (tf :: tr)
 
-                        _ ->
-                            ""
+                        ( Ok erasedAnns, Ok typedRes ) ->
+                            let
+                                differing =
+                                    Dict.keys (Dict.union erasedAnns typedRes.solvedAnnotations)
+                                        |> List.filter (\k -> Dict.get k erasedAnns /= Dict.get k typedRes.solvedAnnotations)
+                            in
+                            "\n  Annotations differ for: " ++ String.join ", " differing
             in
             "Type checking mismatch!\n  Erased pathway: "
                 ++ erasedStatus

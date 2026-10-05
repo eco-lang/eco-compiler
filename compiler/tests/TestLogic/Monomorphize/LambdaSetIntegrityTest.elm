@@ -20,21 +20,19 @@ What the tests establish:
   - `"satisfies LSS_002"`: for each program, `expectLambdaSetIntegrity`
     compiles it with `TestLogic.TestPipeline.runToGlobalOptLssOn` and finds no
     lost member among the closures of the optimized graph.
-  - `"satisfies LSS_002 under lss.arrowIdentity"`: the same check through
-    `expectLambdaSetIntegrityArrowId`, which compiles with
-    `runToGlobalOptLssArrowIdOn`. `TestLogic.TestPipeline` defines that as the
-    same function as `runToGlobalOptLssOn`, so this group repeats the first and
-    no `lss.arrowIdentity` setting is applied.
+  - `"satisfies LSS_002 before the inliner"`: the same check through
+    `expectLambdaSetIntegrityBeforeOpt`, on the graph the solver engine
+    produced, before the inliner and global optimization have run, so that a
+    lost member is told apart from one those passes lose.
 
 Among what is not tested: any lambda-set configuration other than the one
-`runToGlobalOptLssOn` uses, and the graph before the inliner and global
-optimization have run.
+`runToGlobalOptLssOn` uses.
 
 -}
 
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Monomorphize.LambdaSetIntegrity exposing (expectLambdaSetIntegrity, expectLambdaSetIntegrityArrowId)
+import TestLogic.Monomorphize.LambdaSetIntegrity exposing (expectLambdaSetIntegrity, expectLambdaSetIntegrityBeforeOpt)
 
 
 {-| The two groups of tests, each running a lambda-set check over every
@@ -44,7 +42,5 @@ suite : Test
 suite =
     Test.describe "Lambda set integrity (LSS_002)"
         [ StandardTestSuites.expectSuite expectLambdaSetIntegrity "satisfies LSS_002"
-
-        -- Repeats the group above: runToGlobalOptLssArrowIdOn is runToGlobalOptLssOn.
-        , StandardTestSuites.expectSuite expectLambdaSetIntegrityArrowId "satisfies LSS_002 under lss.arrowIdentity"
+        , StandardTestSuites.expectSuite expectLambdaSetIntegrityBeforeOpt "satisfies LSS_002 before the inliner"
         ]

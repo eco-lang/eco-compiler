@@ -19,8 +19,8 @@ own.
     rules. A program also fails when `runToMono` returns an error.
 
 Among what is not tested: closures nested inside a body, specializations whose
-key type is not a function type, and the solver engine, which is the default
-engine of a build.
+key type is not a function type beyond requiring that their closure take no
+parameters, and the solver engine, which is the default engine of a build.
 
 -}
 

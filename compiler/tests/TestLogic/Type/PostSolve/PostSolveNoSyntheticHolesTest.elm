@@ -9,9 +9,11 @@ and unit literals, a _synthetic placeholder_ as their type: a fresh variable
 recorded for that expression alone.
 `TestLogic.Type.PostSolve.CompileThroughPostSolve.compileToPostSolveDetailed`
 returns the ids of those expressions along with the node types from before and
-after PostSolve. A _hole var_, in this module, is the name of a type variable
-that was the whole pre-PostSolve type of a synthetic expression, when that name
-starts with a digit.
+after PostSolve. A _hole var_ is a placeholder that no constraint reached: a
+type variable that is the whole pre-PostSolve type of a synthetic expression,
+other than a definition's body, and occurs in no other node's pre-PostSolve
+type (`PostSolveInvariantHelpers.orphanPlaceholderVars`, whose docstring says
+why such a variable can only be a leftover).
 
 The fixture is the standard catalogue of programs in
 `SourceIR.Suite.StandardTestSuites`. For each program, the check:
@@ -23,14 +25,13 @@ The fixture is the standard catalogue of programs in
     (`VarKernel`), and fails, listing every offending node, if any of those
     types mentions a hole var anywhere inside it.
 
-The names the solver gives variables in node types all start with a letter
-(`Compiler.Data.Name.fromTypeVariableScheme` gives `a` to `z`, then `a26` and
-so on), and so do type variable names written in source. So no program yields
-a hole var, and the check passes whenever the program compiles.
+A hole var at a string, character or float literal or unit is replaced by
+PostSolve and so passes; one at any other synthetic expression, such as a
+variable reference, is left in place and fails.
 
-Among what is not tested: a placeholder whose variable has a name starting
-with a letter, a synthetic expression whose pre-PostSolve type is not a bare
-variable, and the types of kernel references.
+Among what is not tested: a placeholder that was left unconstrained inside a
+larger pre-PostSolve type, one that is a definition's whole body, one whose
+name collides with another variable's, and the types of kernel references.
 
 -}
 
@@ -111,10 +112,7 @@ expectNoSyntheticHoles srcModule =
                                     ( nodeId + 1, acc )
 
                                 Just postType ->
-                                    if nodeId < 0 then
-                                        ( nodeId + 1, acc )
-
-                                    else if EverySet.member identity nodeId kernelExprIds then
+                                    if EverySet.member identity nodeId kernelExprIds then
                                         ( nodeId + 1, acc )
 
                                     else
@@ -137,49 +135,14 @@ expectNoSyntheticHoles srcModule =
                     Expect.fail (formatViolations vs)
 
 
-{-| Returns the hole var names of a compiled program: for each synthetic
-expression whose pre-PostSolve type is a bare `TVar` with a name starting with a
-digit, that name.
-
-A synthetic expression with no pre-PostSolve type, or with any other type,
-contributes nothing. As the module docstring explains, no name the solver gives
-starts with a digit, so the result is empty.
-
+{-| Returns the hole var names of a compiled program, as
+`PostSolveInvariantHelpers.orphanPlaceholderVars` finds them.
 -}
 computeHoleVarNames : Compile.DetailedArtifacts -> EverySet String String
 computeHoleVarNames artifacts =
-    artifacts.syntheticExprIds
-        |> EverySet.toList
-        |> List.filterMap
-            (\exprId ->
-                case Array.get exprId artifacts.nodeTypesPre |> Maybe.andThen identity of
-                    Just (Can.TVar name) ->
-                        if isSolverGeneratedVarName name then
-                            Just name
-
-                        else
-                            Nothing
-
-                    _ ->
-                        Nothing
-            )
+    Helpers.orphanPlaceholderVars artifacts.canonical artifacts.syntheticExprIds artifacts.nodeTypesPre
+        |> List.map Tuple.second
         |> EverySet.fromList identity
-
-
-{-| Returns whether `name` starts with a digit.
-
-Despite this function's name, no type variable the solver names starts with a
-digit, so this is false for every one of them.
-
--}
-isSolverGeneratedVarName : String -> Bool
-isSolverGeneratedVarName name =
-    case String.uncons name of
-        Just ( first, _ ) ->
-            Char.isDigit first
-
-        Nothing ->
-            False
 
 
 {-| Returns a `Violation` for node `nodeId` when `postType` mentions any of

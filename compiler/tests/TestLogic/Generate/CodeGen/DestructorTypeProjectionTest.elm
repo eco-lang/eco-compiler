@@ -28,21 +28,31 @@ What the tests establish:
 
   - `standardTests`: every program in the standard catalogue compiles, and
     its generated MLIR holds no spurious unbox.
+
   - `testResultIntExtraction`: matching `Ok value` on a `Result String Int`
     generates no spurious unbox.
+
   - `testMaybeIntExtraction`: matching `Just value` on a `Maybe Int`
     generates no spurious unbox.
+
   - `testNestedResultExtraction`: a `case` on one `Result String Int` nested
     in the `Ok` branch of a `case` on another generates no spurious unbox.
 
-Among what is not tested: that the generated MLIR of a focused program holds
-any `eco.project.custom` at all, so a program whose match leaves no projection
-passes; the result type the projection declares; `Float` and `Char` fields,
+  - `testBoxedFieldPastSlotCap`: field 24 of a 25-`Int`-field constructor,
+    which is stored boxed, is projected as `!eco.value` (not read raw as
+    `i64`), and unboxing it is not reported as spurious.
+
+Each focused test also requires its MLIR to hold at least one
+`eco.project.custom`, so a match optimised away fails rather than passing
+vacuously.
+
+Among what is not tested: the result type the projection declares; `Float` and `Char` fields,
 since the focused programs read only `Int` fields; and the value `testValue`
 computes, since no program is run.
 
 -}
 
+import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -65,9 +75,11 @@ import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.CodeGen.DestructorTypeProjection
     exposing
-        ( countProjectionUnboxSequences
+        ( checkDestructorTypeProjection
+        , countCustomProjections
         , expectDestructorTypeProjection
         )
+import TestLogic.Generate.CodeGen.Invariants exposing (violationsToExpectation)
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
@@ -101,7 +113,85 @@ focusedTests =
         [ testResultIntExtraction
         , testMaybeIntExtraction
         , testNestedResultExtraction
+        , testBoxedFieldPastSlotCap
         ]
+
+
+{-| Compiles `modul` with `TestLogic.TestPipeline.runToMlir` and passes when the
+generated MLIR holds at least one `eco.project.custom` (so the match under test
+was not optimised away), no spurious unbox and no raw read of a boxed field.
+-}
+expectProjectedWithoutSpuriousUnbox : Src.Module -> Expect.Expectation
+expectProjectedWithoutSpuriousUnbox modul =
+    case runToMlir modul of
+        Err err ->
+            Expect.fail ("Compilation failed: " ++ err)
+
+        Ok { mlirModule } ->
+            if countCustomProjections mlirModule == 0 then
+                Expect.fail "No eco.project.custom was generated, so the match under test was not exercised"
+
+            else
+                violationsToExpectation (checkDestructorTypeProjection mlirModule)
+
+
+{-| The test that reading an `Int` field at index 24 of a constructor, a field
+`computeCtorLayout` stores boxed, projects it as an `!eco.value` (not as a raw
+`i64`, which would load the pointer's bits), and that the unbox it then needs
+is not reported as spurious. The program declares
+`type Wide = Wide Int Int ... Int` with 25 `Int` fields, and
+
+    lastField : Wide -> Int
+    lastField w =
+        case w of
+            Wide f0 f1 ... f24 ->
+                f24
+
+    testValue : Int
+    testValue =
+        lastField (Wide 0 1 ... 24)
+
+-}
+testBoxedFieldPastSlotCap : Test
+testBoxedFieldPastSlotCap =
+    Test.test "Int field past the unboxed slot cap is projected boxed, then unboxed" <|
+        \_ ->
+            let
+                fieldNames =
+                    List.map (\i -> "f" ++ String.fromInt i) (List.range 0 24)
+
+                wideUnion : UnionDef
+                wideUnion =
+                    { name = "Wide"
+                    , args = []
+                    , ctors = [ { name = "Wide", args = List.map (\_ -> tType "Int" []) fieldNames } ]
+                    }
+
+                lastFieldDef : TypedDef
+                lastFieldDef =
+                    { name = "lastField"
+                    , args = [ pVar "w" ]
+                    , tipe = tLambda (tType "Wide" []) (tType "Int" [])
+                    , body =
+                        caseExpr (varExpr "w")
+                            [ ( pCtor "Wide" (List.map pVar fieldNames), varExpr "f24" ) ]
+                    }
+
+                testValueDef : TypedDef
+                testValueDef =
+                    { name = "testValue"
+                    , args = []
+                    , tipe = tType "Int" []
+                    , body =
+                        callExpr (varExpr "lastField")
+                            [ callExpr (ctorExpr "Wide") (List.map intExpr (List.range 0 24)) ]
+                    }
+            in
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ lastFieldDef, testValueDef ]
+                [ wideUnion ]
+                []
+                |> expectProjectedWithoutSpuriousUnbox
 
 
 {-| The declaration `type Maybe a = Just a | Nothing`, which
@@ -186,26 +276,7 @@ testResultIntExtraction =
                         [ resultUnion ]
                         []
             in
-            case runToMlir modul of
-                Err err ->
-                    Expect.fail ("Compilation failed: " ++ err)
-
-                Ok { mlirModule } ->
-                    let
-                        spuriousCount =
-                            countProjectionUnboxSequences mlirModule
-                    in
-                    if spuriousCount > 0 then
-                        Expect.fail
-                            ("Found "
-                                ++ String.fromInt spuriousCount
-                                ++ " spurious projection→unbox sequence(s). "
-                                ++ "CGEN_004 requires projections to yield the natural MonoType, "
-                                ++ "so extracting Int from Ok should yield i64 directly."
-                            )
-
-                    else
-                        Expect.pass
+            expectProjectedWithoutSpuriousUnbox modul
 
 
 {-| The test that reading the `Int` out of `Just` on a `Maybe Int` generates no
@@ -258,25 +329,7 @@ testMaybeIntExtraction =
                         [ maybeUnion ]
                         []
             in
-            case runToMlir modul of
-                Err err ->
-                    Expect.fail ("Compilation failed: " ++ err)
-
-                Ok { mlirModule } ->
-                    let
-                        spuriousCount =
-                            countProjectionUnboxSequences mlirModule
-                    in
-                    if spuriousCount > 0 then
-                        Expect.fail
-                            ("Found "
-                                ++ String.fromInt spuriousCount
-                                ++ " spurious projection→unbox sequence(s). "
-                                ++ "CGEN_004 requires projections to yield the natural MonoType."
-                            )
-
-                    else
-                        Expect.pass
+            expectProjectedWithoutSpuriousUnbox modul
 
 
 {-| The test that reading the `Int`s out of two `Result String Int` values, with
@@ -348,22 +401,4 @@ testNestedResultExtraction =
                         [ resultUnion ]
                         []
             in
-            case runToMlir modul of
-                Err err ->
-                    Expect.fail ("Compilation failed: " ++ err)
-
-                Ok { mlirModule } ->
-                    let
-                        spuriousCount =
-                            countProjectionUnboxSequences mlirModule
-                    in
-                    if spuriousCount > 0 then
-                        Expect.fail
-                            ("Found "
-                                ++ String.fromInt spuriousCount
-                                ++ " spurious projection→unbox sequence(s). "
-                                ++ "CGEN_004 requires projections to yield the natural MonoType."
-                            )
-
-                    else
-                        Expect.pass
+            expectProjectedWithoutSpuriousUnbox modul

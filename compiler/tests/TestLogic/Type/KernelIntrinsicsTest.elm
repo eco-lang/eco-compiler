@@ -16,9 +16,12 @@ a row contributes no constraint of its own, so its type is bounded only by its
 context. `Compiler.Type.KernelIntrinsics` owns the table and the rules a row
 must follow.
 
-Tests 1 to 5 each build a module named `Test` holding one annotated function of
-one argument, whose body applies a kernel reference to that argument, and run it
-through `TestLogic.TestPipeline.runToTypeCheck`. Kernel syntax is accepted
+Tests 1, 2, 3 and 5 each build a module named `Test` holding one annotated
+function of one argument, whose body applies a kernel reference to that
+argument; test 4's module holds one unannotated definition applying a kernel to
+an integer literal. Each is run through canonicalization and type checking
+with `TestLogic.Type.TypeCheckErrors.typeCheck`, which keeps the errors, so a
+rejection test can require the error it is about. Kernel syntax is accepted
 there because canonicalization (`findVarQual` in
 `Compiler.Canonicalize.Expression`) turns a reference qualified with
 `Elm.Kernel.X` or `Eco.Kernel.X` into a kernel reference when the module belongs
@@ -30,14 +33,15 @@ has a row typed `List a -> List a`. `Elm.Kernel.Json.addEntry` has a row typed
 What the tests establish:
 
   - Test 1: `fromArray` used at `List String -> List String` type checks.
-  - Test 2: `fromArray` used at `List String -> List Int` is rejected, which
-    shows that the annotation's argument and result share one `a`.
+  - Test 2: `fromArray` used at `List String -> List Int` is rejected with an
+    error on the call's result against the enclosing annotation, which shows
+    that the row's argument and result share one `a`.
   - Test 3: `fromArray` given an `Int` argument, with a `List String` result,
-    is rejected.
-  - Test 4: `addEntry` applied to an `Int`, in a function annotated
-    `Int -> List Int`, is rejected. The argument contradicts the row's first
-    parameter and the result contradicts the row's remaining type, so the test
-    does not show which of the two is caught.
+    is rejected with an error on the call's first argument.
+  - Test 4: `badEncoder = addEntry 42` is rejected with an error on the call's
+    first argument: a number literal where the row wants `a -> Value`. The
+    definition is unannotated, so nothing else constrains the call and the
+    row's first parameter is the only thing that can reject it.
   - Test 5: `nonesuch` used at `Int -> List String` type checks, so a kernel
     without a row is unconstrained.
   - Test 6: every entry of `KernelIntrinsics.rows` has the prefix `Elm` or
@@ -52,11 +56,6 @@ What the tests establish:
     part of the key because one home and name can name two different kernels,
     such as `File.size` under `Elm` and under `Eco`.
 
-Tests 2, 3 and 4 pass on any `Err` from the pipeline, whose message gives only
-a count of errors, so they would also pass if canonicalization failed. Tests 1
-and 5 build modules of the same shape and expect them to type check, so a
-canonicalization failure common to that shape would also fail test 1 or 5.
-
 Among what is not tested: how the type checker applies the `addField` and
 `toArray` rows; the name a type error is reported under; that `useSites` and
 `evidence` say anything beyond the checks of test 6; and that `auditedFiles`
@@ -68,6 +67,8 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( callExpr
+        , intExpr
+        , makeModuleWithDefs
         , makeModuleWithTypedDefs
         , pVar
         , qualVarExpr
@@ -78,7 +79,7 @@ import Compiler.AST.SourceBuilder
 import Compiler.Type.KernelIntrinsics as KernelIntrinsics
 import Expect
 import Test exposing (Test)
-import TestLogic.TestPipeline as Pipeline
+import TestLogic.Type.TypeCheckErrors as TypeCheckErrors
 
 
 {-| The eight kernel intrinsic annotation tests described above.
@@ -88,44 +89,28 @@ suite =
     Test.describe "Kernel intrinsic annotations"
         [ Test.test "1. a use that INSTANTIATES the annotation typechecks" <|
             \() ->
-                case Pipeline.runToTypeCheck (fromArrayModule (tListOf tString) (tListOf tString)) of
-                    Ok _ ->
-                        Expect.pass
-
-                    Err msg ->
-                        Expect.fail ("expected the annotated use to typecheck, got: " ++ msg)
+                expectTypeChecks "expected the annotated use to typecheck" (fromArrayModule (tListOf tString) (tListOf tString))
         , Test.test "2. the two `a`s are CONNECTED — a result type differing from the argument is rejected" <|
             \() ->
-                case Pipeline.runToTypeCheck (fromArrayModule (tListOf tString) (tListOf tInt)) of
-                    Err _ ->
-                        Expect.pass
-
-                    Ok _ ->
-                        Expect.fail "List String -> List Int through fromArray must NOT typecheck — the annotation's shared `a` is not being enforced"
+                TypeCheckErrors.expectTypeErrorWhere
+                    "List String -> List Int through fromArray to be rejected against the annotation of useFromArray (the row's shared `a`)"
+                    (TypeCheckErrors.isAnnotationMismatch "useFromArray")
+                    (fromArrayModule (tListOf tString) (tListOf tInt))
         , Test.test "3. fail-stop: an argument the annotation forbids is a type ERROR" <|
             \() ->
-                case Pipeline.runToTypeCheck (fromArrayModule tInt (tListOf tString)) of
-                    Err _ ->
-                        Expect.pass
-
-                    Ok _ ->
-                        Expect.fail "passing an Int to fromArray must be a type error"
+                TypeCheckErrors.expectTypeErrorWhere
+                    "passing an Int to fromArray to be a type error on its first argument"
+                    (TypeCheckErrors.isCallArgMismatch 0)
+                    (fromArrayModule tInt (tListOf tString))
         , Test.test "4. fail-stop reaches a kernel applied to a NON-FUNCTION where the annotation wants one" <|
             \() ->
-                case Pipeline.runToTypeCheck addEntryBadModule of
-                    Err _ ->
-                        Expect.pass
-
-                    Ok _ ->
-                        Expect.fail "passing an Int as Json.addEntry's encoder must be a type error"
+                TypeCheckErrors.expectTypeErrorWhere
+                    "passing a number as Json.addEntry's encoder to be a type error on its first argument"
+                    (TypeCheckErrors.isCallArgMismatch 0)
+                    addEntryBadModule
         , Test.test "5. an UNANNOTATED kernel is still unconstrained (the table is opt-in)" <|
             \() ->
-                case Pipeline.runToTypeCheck unannotatedKernelModule of
-                    Ok _ ->
-                        Expect.pass
-
-                    Err msg ->
-                        Expect.fail ("an unannotated kernel must stay unconstrained, got: " ++ msg)
+                expectTypeChecks "an unannotated kernel must stay unconstrained" unannotatedKernelModule
         , Test.test "6. discipline: every row is prefix-keyed, evidenced and pins its C++" <|
             \() ->
                 let
@@ -196,6 +181,19 @@ suite =
         ]
 
 
+{-| Passes when `modul` type checks; otherwise fails with `what` and the
+errors.
+-}
+expectTypeChecks : String -> Src.Module -> Expect.Expectation
+expectTypeChecks what modul =
+    case TypeCheckErrors.typeCheck modul of
+        TypeCheckErrors.TypeChecks ->
+            Expect.pass
+
+        outcome ->
+            Expect.fail (what ++ ", but " ++ TypeCheckErrors.describeOutcome outcome)
+
+
 {-| Removes each element that equals the one before it, so a sorted list loses
 its repeats.
 -}
@@ -249,23 +247,22 @@ fromArrayModule argType resultType =
         ]
 
 
-{-| A module whose one function, `badEncoder`, is annotated `Int -> List Int`
-and returns `Elm.Kernel.Json.addEntry` applied to its `Int` argument alone.
+{-| A module whose one definition, `badEncoder`, is unannotated and is
+`Elm.Kernel.Json.addEntry` applied to the integer literal `42` alone.
 
-The annotation names no `Value`, because `Json.Encode` is not among the imports
-the module builder adds. The argument contradicts `addEntry`'s first parameter,
-`a -> Value`, and the result `List Int` contradicts the function type the
-partial application leaves.
+It is unannotated so that nothing but `addEntry`'s row constrains the call:
+the partial application's result, `a -> Value -> Value`, is free to be
+whatever it is, and the literal, a `number`, contradicts only the row's first
+parameter, `a -> Value`.
 
 -}
 addEntryBadModule : Src.Module
 addEntryBadModule =
-    makeModuleWithTypedDefs "Test"
-        [ { name = "badEncoder"
-          , args = [ pVar "n" ]
-          , tipe = tLambda tInt (tListOf tInt)
-          , body = callExpr (qualVarExpr "Elm.Kernel.Json" "addEntry") [ varExpr "n" ]
-          }
+    makeModuleWithDefs "Test"
+        [ ( "badEncoder"
+          , []
+          , callExpr (qualVarExpr "Elm.Kernel.Json" "addEntry") [ intExpr 42 ]
+          )
         ]
 
 

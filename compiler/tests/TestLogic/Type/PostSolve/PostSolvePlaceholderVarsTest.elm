@@ -16,11 +16,10 @@ around it, is not.
 
 A variable is _legitimate_ for a node when it occurs anywhere in the node's
 pre-type. For a node with no pre-type, the legitimate variables are those
-quantified by the annotation of the definition that
-`PostSolveInvariantHelpers.walkExprs` says the node sits in, looked up by name
-with `PostSolveInvariantHelpers.enclosingAnnotationVars`. The solver's
-annotations have no entry for a let-bound definition, so inside one that set is
-empty, and it is empty for a pattern with no pre-type too. POST\_009 holds when,
+in scope from the annotations around it, as
+`PostSolveInvariantHelpers.enclosingAnnotationVars` gives them: the scheme of
+its top-level definition and the annotations of the definitions around it. A
+pattern with no pre-type has none. POST\_009 holds when,
 for every node with a post-type except a kernel reference (a `Can.VarKernel`),
 every variable in function position in its post-type is legitimate.
 
@@ -45,8 +44,6 @@ Among what is not tested:
   - The types of kernel references.
   - Where a legitimate variable appears: one that occurs anywhere in the
     pre-type is accepted anywhere in the function types of the post-type.
-  - A function type inside the arguments of an alias that is not itself
-    inside a function type: only the alias's body is searched.
 
 -}
 
@@ -127,21 +124,17 @@ expectNoPlaceholderVars srcModule =
                                     ( nodeId + 1, acc )
 
                                 Just postType ->
-                                    if nodeId < 0 then
-                                        ( nodeId + 1, acc )
+                                    case Data.Map.get identity nodeId nodeKinds of
+                                        Just Invariants.KVarKernel ->
+                                            ( nodeId + 1, acc )
 
-                                    else
-                                        case Data.Map.get identity nodeId nodeKinds of
-                                            Just Invariants.KVarKernel ->
-                                                ( nodeId + 1, acc )
+                                        _ ->
+                                            case checkNoPlaceholdersInFuncPositions nodeId postType artifacts.nodeTypesPre exprNodes artifacts.annotations of
+                                                Nothing ->
+                                                    ( nodeId + 1, acc )
 
-                                            _ ->
-                                                case checkNoPlaceholdersInFuncPositions nodeId postType artifacts.nodeTypesPre exprNodes artifacts.annotations of
-                                                    Nothing ->
-                                                        ( nodeId + 1, acc )
-
-                                                    Just violation ->
-                                                        ( nodeId + 1, violation :: acc )
+                                                Just violation ->
+                                                    ( nodeId + 1, violation :: acc )
                         )
                         ( 0, [] )
                         artifacts.nodeTypesPost
@@ -161,9 +154,9 @@ otherwise.
 
 The legitimate variables are every variable name in the node's entry in
 `nodeTypesPre`, as `PostSolveInvariantHelpers.freeTypeVars` counts them. When
-that entry is missing, they are the variables quantified by the annotation in
-`annotations` of the definition that `exprNodes` places the node in, and none
-when `exprNodes` has no entry for `nodeId`.
+that entry is missing, they are the variables in scope at the node from the
+annotations around it (`PostSolveInvariantHelpers.enclosingAnnotationVars`),
+and none when `exprNodes` has no entry for `nodeId`.
 
 -}
 checkNoPlaceholdersInFuncPositions :
@@ -187,7 +180,7 @@ checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annota
                     case Data.Map.get identity nodeId exprNodes of
                         Just exprNode ->
                             Helpers.enclosingAnnotationVars
-                                exprNode.enclosingDef
+                                exprNode
                                 annotations
 
                         Nothing ->
@@ -219,8 +212,8 @@ checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annota
 Inside a `TLambda`, every variable name counts, as
 `PostSolveInvariantHelpers.freeTypeVars` counts them, record extension variables
 and alias arguments included. A `TLambda` is found among type constructor
-arguments, record fields, tuple elements and alias bodies. Outside a `TLambda`,
-the arguments of an alias are not searched.
+arguments, record fields and tuple elements, in a `Filled` alias's body, and in
+a `Holey` alias's arguments, which its body's parameters stand for.
 
 -}
 collectFuncPositionVars : Can.Type Name -> EverySet String String
@@ -251,10 +244,13 @@ collectFuncPositionVars tipe =
                 (EverySet.union (collectFuncPositionVars a) (collectFuncPositionVars b))
                 cs
 
-        Can.TAlias _ _ _ aliasType ->
+        Can.TAlias _ _ args aliasType ->
             case aliasType of
-                Can.Holey t ->
-                    collectFuncPositionVars t
+                Can.Holey _ ->
+                    List.foldl
+                        (\( _, t ) acc -> EverySet.union acc (collectFuncPositionVars t))
+                        EverySet.empty
+                        args
 
                 Can.Filled t ->
                     collectFuncPositionVars t

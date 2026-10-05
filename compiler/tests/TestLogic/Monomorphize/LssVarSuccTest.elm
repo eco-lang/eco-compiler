@@ -18,9 +18,10 @@ The module is named for `settleVarSuccessors` in
 `Compiler.MonoSolver.Monomorphize`, a pass that can fill an `LVar` result
 arrow under an `LSet` arrow with partial-application successors of that
 arrow's members, and does so only when every member has such a successor
-within its global's declared arity. It writes only into an `LVar` slot, so where both arrows already hold
-sets it has nothing to do. The test checks that end state on its fixture; it
-does not isolate the pass.
+within its global's declared arity. It writes only into an `LVar` slot, and
+on this fixture both arrows already hold sets before it runs, so it writes
+nothing here: making it the identity leaves the test passing. The test checks
+the end state the solver reaches on its fixture, whichever stage wrote it.
 
 The fixture is a module `Test` with three annotated definitions:
 
@@ -39,12 +40,12 @@ What the tests establish:
 
   - Test 1: the pipeline succeeds; at least one registry row for `useStep`
     has a first parameter that is a one-parameter arrow returning an arrow;
-    and in every such row both the `/a0` annotation and the `/a0/r`
-    annotation are an `LSet` with at least one member.
+    and in every such row the `/a0` annotation is the singleton `p|add3|1`
+    and the `/a0/r` annotation the singleton `p|add3|2`, as the graph's
+    `lssMemberOrigins` records them.
 
 Among what is not tested:
 
-  - which members the two sets hold;
   - a fixture in which `/a0/r` is still `LVar` before `settleVarSuccessors`
     runs, so the pass's own writes are not exercised;
   - registry rows for `useStep` of any other shape, which are skipped rather
@@ -68,17 +69,18 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| The test that the fixture's `useStep` rows carry an `LSet` at both `/a0`
-and `/a0/r`.
+{-| The test that the fixture's `useStep` rows carry `add3`'s
+partial-application members at both `/a0` and `/a0/r`.
 -}
 suite : Test
 suite =
-    Test.describe "PAP successor settle writes"
+    Test.describe "PAP successor coverage at a HOF parameter (end state)"
         [ Test.test "1. the fixture is fully covered at the useStep /a0 spine" <|
             \() ->
                 case runWith fixture of
@@ -88,14 +90,14 @@ suite =
                                 Expect.fail "no useStep /a0 arrow-result position — fixture broken"
 
                             a ->
-                                if List.any (\( h, r ) -> not (isSet h) || not (isSet r)) a then
-                                    Expect.fail
-                                        ("fixture no longer fully covered (in-item transport regressed?): "
-                                            ++ describePairs a
-                                        )
+                                if List.all (\( h, r ) -> isPapSingleton "add3" 1 g h && isPapSingleton "add3" 2 g r) a then
+                                    Expect.pass
 
                                 else
-                                    Expect.pass
+                                    Expect.fail
+                                        ("expected p|add3|1 at /a0 and p|add3|2 at /a0/r (in-item transport regressed?): "
+                                            ++ describePairs a
+                                        )
 
                     Err e ->
                         Expect.fail e
@@ -194,14 +196,20 @@ stepAnnos (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| Returns whether an annotation is an `LSet` with at least one member. An
-`LPartial`, an `LTop` or an `LVar` gives `False`.
+{-| Returns whether an annotation is an `LSet` whose one member the graph's
+`lssMemberOrigins` records as the global named `name` applied to `supplied`
+arguments.
 -}
-isSet : Mono.LambdaSetAnno -> Bool
-isSet a =
+isPapSingleton : String -> Int -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
+isPapSingleton name supplied (Mono.MonoGraph g) a =
     case a of
-        Mono.LSet (_ :: _) ->
-            True
+        Mono.LSet [ m ] ->
+            case Dict.get m g.lssMemberOrigins of
+                Just (Mono.OriginPap (Mono.Global _ n) k) ->
+                    n == name && k == supplied
+
+                _ ->
+                    False
 
         _ ->
             False

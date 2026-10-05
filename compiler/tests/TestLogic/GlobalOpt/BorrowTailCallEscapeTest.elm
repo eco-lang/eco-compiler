@@ -27,17 +27,19 @@ checks:
 
   - that every tail-call argument resource has an `ltA` that is not `LEmpty`
     and that `Lifetime.endsBefore` does not report dead at the end of the body;
-  - that at least one resource of the same definition does have an `ltA` that
-    `endsBefore` reports dead there, so the first check is not passing because
-    `endsBefore` answers `False` for everything.
+  - that at least one resource of the same definition has a local `ltA` (not
+    `LEmpty`) that `endsBefore` reports dead there, so the first check is not
+    passing because `endsBefore` answers `False` for every live resource. The
+    let-bound list `xs` in the fixture is that resource: the `case` reads it
+    inside the `else` arm, so its lifetime ends there.
 
 It fails if the pipeline fails or if no `MonoTailFunc` with tail-call argument
 resources is found.
 
 Among what is not tested: any `MonoTailFunc` other than the one taken, the
 precise lifetimes `ltP`, access modes, the escape analysis that the borrow
-census starts from the tail-call resources, which resource satisfies the
-second check (an `LEmpty` resource would), and whether any later stage places
+census starts from the tail-call resources, which local resource satisfies the
+second check, and whether any later stage places
 or omits a release after a tail call.
 
 -}
@@ -79,14 +81,25 @@ they are:
             acc
 
         else
-            loop (n - 1) (n :: acc)
+            let
+                xs =
+                    [ n, n ]
+            in
+            case xs of
+                x :: _ ->
+                    loop (n - 1) (x :: acc)
+
+                _ ->
+                    acc
 
     testValue : List Int
     testValue =
         loop 10 []
 
-The self-call in the `else` branch is the tail call. Of its two arguments, only
-`n :: acc` has a resource. `testValue` is there so that the test pipeline's
+The self-call in the `case` branch is the tail call. Of its two arguments, only
+`x :: acc` has a resource. `xs` is a heap value that is live only up to the
+`case`, which gives the negative control a resource that is dead at the end of
+the body. `testValue` is there so that the test pipeline's
 generated `main` reaches `loop`.
 
 -}
@@ -103,10 +116,17 @@ fixtureModule =
             B.ifExpr
                 (B.binopsExpr [ ( B.varExpr "n", "<=" ) ] (B.intExpr 0))
                 (B.varExpr "acc")
-                (B.callExpr (B.varExpr "loop")
-                    [ B.binopsExpr [ ( B.varExpr "n", "-" ) ] (B.intExpr 1)
-                    , B.binopsExpr [ ( B.varExpr "n", "::" ) ] (B.varExpr "acc")
-                    ]
+                (B.letExpr [ B.define "xs" [] (B.listExpr [ B.varExpr "n", B.varExpr "n" ]) ]
+                    (B.caseExpr (B.varExpr "xs")
+                        [ ( B.pCons (B.pVar "x") B.pAnything
+                          , B.callExpr (B.varExpr "loop")
+                                [ B.binopsExpr [ ( B.varExpr "n", "-" ) ] (B.intExpr 1)
+                                , B.binopsExpr [ ( B.varExpr "x", "::" ) ] (B.varExpr "acc")
+                                ]
+                          )
+                        , ( B.pAnything, B.varExpr "acc" )
+                        ]
+                    )
                 )
     in
     B.makeModuleWithTypedDefs "Test"
@@ -131,8 +151,8 @@ argument resources are not empty. Of those, it checks only the one with the
 highest `SpecId`, and fails if there is none. For that one, it expects both
 that no tail-call argument resource has an `ltA` that is `LEmpty` or that
 `Lifetime.endsBefore` reports dead at the empty path, and that some resource of
-the definition, any number below its resource count, does have an `ltA`
-that `endsBefore` reports dead there.
+the definition, any number below its resource count, has an `ltA` other than
+`LEmpty` that `endsBefore` reports dead there.
 
 -}
 checkGraph : Mono.MonoGraph -> Expect.Expectation
@@ -181,7 +201,10 @@ checkGraph graph =
 
                 someDies =
                     List.any
-                        (\r -> L.endsBefore (Solve.ltAOf r solved) [])
+                        (\r ->
+                            ltaNonEmpty (Solve.ltAOf r solved)
+                                && L.endsBefore (Solve.ltAOf r solved) []
+                        )
                         (List.range 0 (nRes - 1))
             in
             Expect.equal ( True, True ) ( escapeOk, someDies )

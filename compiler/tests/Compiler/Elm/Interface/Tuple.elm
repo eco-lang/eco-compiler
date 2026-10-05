@@ -47,8 +47,9 @@ tupleInterface =
 {-| Returns the names of the type variables that occur in `tipe`, including
 the extension variable of an extensible record.
 
-For an alias it collects from both the alias's arguments and its body, so the
-body of a `Holey` alias contributes the alias's own parameter names as well.
+For an alias it collects from the alias's arguments only, as
+`Compiler.Canonicalize.Type` does: a `Holey` body names the alias's own
+parameters, which the alias binds.
 
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
@@ -86,17 +87,8 @@ collectFreeVars tipe =
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
                 cs
 
-        Can.TAlias _ _ args aliasType ->
-            let
-                argVars =
-                    List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
-            in
-            case aliasType of
-                Can.Holey t ->
-                    Dict.union argVars (collectFreeVars t)
-
-                Can.Filled t ->
-                    Dict.union argVars (collectFreeVars t)
+        Can.TAlias _ _ args _ ->
+            List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
 
 
 {-| Builds the annotation of a value of type `tipe`, quantified over every type

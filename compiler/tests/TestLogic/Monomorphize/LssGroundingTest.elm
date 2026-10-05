@@ -47,19 +47,20 @@ What the tests establish:
     present, in ascending order.
   - A slot with no provisional member is returned unchanged, with nothing
     counted and the supply unchanged.
-  - The pipeline test requires at least three entries of the graph's
-    `lssMemberOrigins` to name a global called `myId`. The threshold is meant
-    as the provisional member plus one ground member per layout, but the test
-    does not tell the entries apart.
+  - In the pipeline test, `applyI` and `applyF` each have one registry row
+    whose parameter arrow carries a singleton `LSet`; the two members differ
+    (one ground member per layout) and both name `myId` in the graph's
+    `lssMemberOrigins`, which has at least three entries naming `myId` (the
+    provisional member and the two ground ones).
 
 Among what is not tested: constructor members, deferral when only the result
-type holds a type variable, the set-size cap itself, whether the pipeline's
-two ground members are distinct or appear in any annotation, and whether the
-`myId` entries come from grounding a reference or from the fold of `myId`'s own
-root lambda, which interns keys of the same shape.
+type holds a type variable, the set-size cap itself, and whether the `myId`
+members in the consumers' slots were minted by grounding a reference or by the
+fold of `myId`'s own root lambda, which interns keys of the same shape.
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
@@ -264,16 +265,33 @@ suite =
                             Expect.fail msg
 
                         Ok facts ->
-                            -- Meant as the provisional id plus one ground id per
-                            -- layout; the count does not tell them apart.
-                            if facts.myIdOrigins >= 3 then
-                                Expect.pass
+                            -- The count alone cannot tell the ground ids from
+                            -- the provisional one or from root-lambda fold
+                            -- keys, so also read the consumers' slots.
+                            case ( facts.applyISlots, facts.applyFSlots ) of
+                                ( [ Mono.LSet [ mI ] ], [ Mono.LSet [ mF ] ] ) ->
+                                    Expect.all
+                                        [ \_ -> Expect.notEqual mI mF
+                                        , \_ -> Expect.equal [ True, True ] (List.map (\m -> List.member m facts.myIdMembers) [ mI, mF ])
+                                        , \_ ->
+                                            if facts.myIdOrigins >= 3 then
+                                                Expect.pass
 
-                            else
-                                Expect.fail
-                                    ("expected ≥3 member ids resolving to myId (provisional + one ground per layout), got "
-                                        ++ String.fromInt facts.myIdOrigins
-                                    )
+                                            else
+                                                Expect.fail
+                                                    ("expected ≥3 member ids resolving to myId (provisional + one ground per layout), got "
+                                                        ++ String.fromInt facts.myIdOrigins
+                                                    )
+                                        ]
+                                        ()
+
+                                ( slotsI, slotsF ) ->
+                                    Expect.fail
+                                        ("expected one singleton slot on each of applyI's and applyF's parameter, got "
+                                            ++ Debug.toString slotsI
+                                            ++ " and "
+                                            ++ Debug.toString slotsF
+                                        )
             ]
         ]
 
@@ -343,11 +361,16 @@ mintProvisional key g ( table0, next0 ) =
 {-| What the pipeline test reads from the monomorphized graph.
 
 `myIdOrigins` counts the entries of `lssMemberOrigins` that resolve to a
-global called `myId`, in whatever module.
+global called `myId`, in whatever module, and `myIdMembers` lists their member
+ids. `applyISlots` and `applyFSlots` are the annotations on the parameter
+arrow of each registry row of `applyI` and of `applyF`.
 
 -}
 type alias Facts =
     { myIdOrigins : Int
+    , myIdMembers : List Int
+    , applyISlots : List Mono.LambdaSetAnno
+    , applyFSlots : List Mono.LambdaSetAnno
     }
 
 
@@ -374,23 +397,51 @@ run =
 -}
 factsOf : Mono.MonoGraph -> Facts
 factsOf (Mono.MonoGraph g) =
-    { myIdOrigins =
-        Dict.foldl
-            (\_ origin n ->
-                case origin of
-                    Mono.OriginGlobal (Mono.Global _ name) ->
-                        if name == "myId" then
-                            n + 1
+    let
+        myIdMembers =
+            Dict.foldl
+                (\m origin acc ->
+                    case origin of
+                        Mono.OriginGlobal (Mono.Global _ name) ->
+                            if name == "myId" then
+                                m :: acc
 
-                        else
-                            n
+                            else
+                                acc
 
-                    _ ->
-                        n
-            )
-            0
-            g.lssMemberOrigins
+                        _ ->
+                            acc
+                )
+                []
+                g.lssMemberOrigins
+    in
+    { myIdOrigins = List.length myIdMembers
+    , myIdMembers = myIdMembers
+    , applyISlots = paramSlots "applyI" g
+    , applyFSlots = paramSlots "applyF" g
     }
+
+
+{-| Returns the annotation on the arrow of the function parameter of every
+registry row of the global named `name`. Rows of any other shape are skipped.
+-}
+paramSlots : String -> { r | registry : Mono.SpecializationRegistry } -> List Mono.LambdaSetAnno
+paramSlots name g =
+    Array.foldl
+        (\entry acc ->
+            case entry of
+                Just ( Mono.Global _ n, Mono.MFunction _ _ [ Mono.MFunction _ anno _ _ ] _ ) ->
+                    if n == name then
+                        anno :: acc
+
+                    else
+                        acc
+
+                _ ->
+                    acc
+        )
+        []
+        g.registry.reverseMapping
 
 
 

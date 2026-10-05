@@ -325,42 +325,28 @@ checkNodeType funcName binders nodeId exprKind nodeTypes =
             Nothing ->
                 []
 
-            Just resolvedType ->
-                let
-                    freeVarsInType =
-                        collectFreeVars resolvedType
-
-                    spurious =
-                        Set.diff freeVarsInType binders
-                            |> Set.filter (\v -> not (isTypeClassVar v))
-                in
-                if Set.isEmpty spurious then
+            Just (Can.TVar varName) ->
+                if Set.member varName binders || isTypeClassVar varName then
                     []
 
                 else
-                    case resolvedType of
-                        Can.TVar varName ->
-                            if Set.member varName binders then
-                                []
+                    [ { nodeId = nodeId
+                      , exprKind = exprKind
+                      , spuriousVar = varName
+                      , functionName = funcName
+                      , binders = Set.toList binders
+                      }
+                    ]
 
-                            else
-                                [ { nodeId = nodeId
-                                  , exprKind = exprKind
-                                  , spuriousVar = varName
-                                  , functionName = funcName
-                                  , binders = Set.toList binders
-                                  }
-                                ]
-
-                        _ ->
-                            []
+            Just _ ->
+                []
 
 
-{-| Returns the names of the type variables in a type. A `Filled` alias is
-looked through to its body. A `Holey` alias is an exception: its body is written
-in the alias's own parameter names, so the result for it is the parameter names
-that body mentions, and the arguments are ignored. The extension variable of an
-extensible record is not collected either.
+{-| Returns the names of the type variables in a type, the extension variable
+of an extensible record included. A `Filled` alias is looked through to its
+body. A `Holey` alias's body is written in the alias's own parameter names, so
+for it the variables of its arguments are collected instead: those are what
+the parameters stand for at this use.
 -}
 collectFreeVars : Can.Type Name -> Set String
 collectFreeVars tipe =
@@ -374,8 +360,16 @@ collectFreeVars tipe =
         Can.TType _ _ args ->
             List.foldl (\arg acc -> Set.union (collectFreeVars arg) acc) Set.empty args
 
-        Can.TRecord fields _ ->
-            Dict.foldl (\_ (Can.FieldType _ ft) acc -> Set.union (collectFreeVars ft) acc) Set.empty fields
+        Can.TRecord fields maybeExt ->
+            Dict.foldl (\_ (Can.FieldType _ ft) acc -> Set.union (collectFreeVars ft) acc)
+                (case maybeExt of
+                    Just ext ->
+                        Set.singleton ext
+
+                    Nothing ->
+                        Set.empty
+                )
+                fields
 
         Can.TUnit ->
             Set.empty
@@ -385,8 +379,8 @@ collectFreeVars tipe =
                 (Set.union (collectFreeVars a) (collectFreeVars b))
                 extras
 
-        Can.TAlias _ _ _ (Can.Holey aliased) ->
-            collectFreeVars aliased
+        Can.TAlias _ _ args (Can.Holey _) ->
+            List.foldl (\( _, arg ) acc -> Set.union (collectFreeVars arg) acc) Set.empty args
 
         Can.TAlias _ _ _ (Can.Filled aliased) ->
             collectFreeVars aliased

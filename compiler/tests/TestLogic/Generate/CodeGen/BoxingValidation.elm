@@ -19,28 +19,30 @@ be held as `i1` is not checked here.
   - an `eco.unbox` whose operand is not `!eco.value`, or whose result is not a
     primitive.
 
-The operand type checked is the one the op records in its `_operand_types`
-attribute, as `TestLogic.Generate.CodeGen.Invariants` describes, not the type
-of the value the operand names.
-
-Among what is not checked: an op that does not record exactly one operand type,
-or that does not have exactly one result, is skipped without a violation.
+The operand type checked is the _defined_ type of the value the operand names:
+the type of the op result or block argument that introduces it within the
+enclosing top-level op (`TestLogic.Generate.CodeGen.Invariants.typeEnvOfOp`),
+not the type the op records in its `_operand_types` attribute. An op that does
+not have exactly one operand and one result, or whose operand has no
+definition in its top-level op, is a violation too.
 
 @docs expectBoxingValidation
 
 -}
 
 import Compiler.AST.Source as Src
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants
     exposing
-        ( Violation
-        , extractOperandTypes
+        ( TypeEnv
+        , Violation
         , extractResultTypes
-        , findOpsNamed
         , isEcoValueType
+        , typeEnvOfOp
         , violationsToExpectation
+        , walkOpAndChildren
         )
 import TestLogic.TestPipeline exposing (runToMlir)
 
@@ -49,11 +51,11 @@ import TestLogic.TestPipeline exposing (runToMlir)
 `TestLogic.TestPipeline.runToMlir` and passes when no `eco.box` or `eco.unbox`
 op in the result is a violation. An `eco.box` must take `i64`, `f64`, `i16` or
 `i1` and produce `!eco.value`; an `eco.unbox` must take `!eco.value` and
-produce one of those four types. Ops that do not record exactly one operand
-type in `_operand_types`, or that do not have exactly one result, are skipped.
+produce one of those four types, the operand's type being the defined type
+of the value it names.
 
 It fails with the compiler's message if compilation fails, and otherwise with
-the first violation, as `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation`
+the violations, as `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation`
 describes.
 
 -}
@@ -68,61 +70,30 @@ expectBoxingValidation srcModule =
 
 
 {-| Returns the violations among the `eco.box` and `eco.unbox` ops of
-`mlirModule`, those of `eco.box` ops first.
+`mlirModule`, top-level op by top-level op.
 -}
 checkBoxingValidation : MlirModule -> List Violation
 checkBoxingValidation mlirModule =
-    let
-        boxOps =
-            findOpsNamed "eco.box" mlirModule
+    List.concatMap
+        (\topOp ->
+            let
+                env =
+                    typeEnvOfOp topOp
+            in
+            walkOpAndChildren topOp
+                |> List.filterMap
+                    (\op ->
+                        if op.name == "eco.box" then
+                            checkConversion env op isPrimitiveForBoxing "primitive (i64, f64, i16, i1)" isEcoValueType "!eco.value"
 
-        unboxOps =
-            findOpsNamed "eco.unbox" mlirModule
+                        else if op.name == "eco.unbox" then
+                            checkConversion env op isEcoValueType "!eco.value" isPrimitiveForBoxing "primitive (i64, f64, i16, i1)"
 
-        boxViolations =
-            List.filterMap checkBoxOp boxOps
-
-        unboxViolations =
-            List.filterMap checkUnboxOp unboxOps
-    in
-    boxViolations ++ unboxViolations
-
-
-{-| Returns a violation if `op`, an `eco.box`, has an operand type that is not
-a primitive or a result that is not `!eco.value`. The operand is checked first,
-so an op wrong on both sides gives one violation, about its operand.
-
-Returns `Nothing` when `op` does not record exactly one operand type or does
-not have exactly one result.
-
--}
-checkBoxOp : MlirOp -> Maybe Violation
-checkBoxOp op =
-    case ( extractOperandTypes op, extractResultTypes op ) of
-        ( Just [ inputType ], [ resultType ] ) ->
-            if not (isPrimitiveForBoxing inputType) then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "eco.box input should be primitive (i64, f64, i16, i1), got "
-                            ++ typeToString inputType
-                    }
-
-            else if not (isEcoValueType resultType) then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "eco.box result should be !eco.value, got "
-                            ++ typeToString resultType
-                    }
-
-            else
-                Nothing
-
-        _ ->
-            Nothing
+                        else
+                            Nothing
+                    )
+        )
+        mlirModule.body
 
 
 {-| Returns whether `t` is `i1`, `i16`, `i64` or `f64`, the types an `eco.box`
@@ -147,41 +118,35 @@ isPrimitiveForBoxing t =
             False
 
 
-{-| Returns a violation if `op`, an `eco.unbox`, has an operand type that is not
-`!eco.value` or a result that is not a primitive. The operand is checked first,
-so an op wrong on both sides gives one violation, about its operand.
-
-Returns `Nothing` when `op` does not record exactly one operand type or does
-not have exactly one result.
-
+{-| Returns a violation if `op`, an `eco.box` or `eco.unbox`, does not have
+exactly one operand and one result, if its operand has no defined type in
+`env`, or if the operand's defined type or the result type is not of the kind
+the op requires. The operand is checked before the result.
 -}
-checkUnboxOp : MlirOp -> Maybe Violation
-checkUnboxOp op =
-    case ( extractOperandTypes op, extractResultTypes op ) of
-        ( Just [ inputType ], [ resultType ] ) ->
-            if not (isEcoValueType inputType) then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "eco.unbox input should be !eco.value, got "
-                            ++ typeToString inputType
-                    }
+checkConversion : TypeEnv -> MlirOp -> (MlirType -> Bool) -> String -> (MlirType -> Bool) -> String -> Maybe Violation
+checkConversion env op inputOk inputDesc resultOk resultDesc =
+    let
+        violation message =
+            Just { opId = op.id, opName = op.name, message = message }
+    in
+    case ( op.operands, extractResultTypes op ) of
+        ( [ operand ], [ resultType ] ) ->
+            case Dict.get operand env of
+                Nothing ->
+                    violation (op.name ++ " operand " ++ operand ++ " has no definition in its function")
 
-            else if not (isPrimitiveForBoxing resultType) then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "eco.unbox result should be primitive (i64, f64, i16, i1), got "
-                            ++ typeToString resultType
-                    }
+                Just inputType ->
+                    if not (inputOk inputType) then
+                        violation (op.name ++ " input should be " ++ inputDesc ++ ", got " ++ typeToString inputType)
 
-            else
-                Nothing
+                    else if not (resultOk resultType) then
+                        violation (op.name ++ " result should be " ++ resultDesc ++ ", got " ++ typeToString resultType)
+
+                    else
+                        Nothing
 
         _ ->
-            Nothing
+            violation (op.name ++ " should have exactly one operand and one result")
 
 
 {-| Returns the text of `t` for a violation message: the MLIR name of an integer

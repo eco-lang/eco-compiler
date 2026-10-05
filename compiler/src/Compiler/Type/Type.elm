@@ -441,13 +441,29 @@ toAnnotation variable =
 
 {-| Convert an array of solver Variables to Can.Types using a shared NameState.
 
-This ensures that type variables across different expressions get globally
-unique names, preventing collisions where e.g. two lambda parameters
-independently both get named "a".
+This ensures that type variables across different expressions get distinct
+names, preventing collisions where e.g. two lambda parameters independently
+both get named "a".
+
+`annotationNames` are the names `toAnnotation` has already given: every type
+variable of every top-level annotation (`Can.Forall`'s variables). Those
+variables keep their names, which the node types must share with the
+annotations, and the names are reserved, so that no other variable is given
+one of them. They must be passed in rather than found by `getVarNames`:
+`toAnnotation`'s own `getVarNames` walk left `getVarNamesMark` on each of
+those variables, so the walk below skips them and would not see their names.
+Without the reservation a let-polymorphic variable inside a definition could
+be given the same name as one of that definition's own variables, and
+monomorphization, which identifies type variables by name within a
+definition, would take one for the other.
+
+Names are unique within one top-level definition, its annotation and the node
+types of its body. Two definitions can still use one name, each for a variable
+of its own scheme, as their annotations do.
 
 -}
-toCanTypeBatch : Array (Maybe Variable) -> IO (Array (Maybe (Can.Type Name)))
-toCanTypeBatch nodeVars =
+toCanTypeBatch : Dict Name () -> Array (Maybe Variable) -> IO (Array (Maybe (Can.Type Name)))
+toCanTypeBatch annotationNames nodeVars =
     -- First pass: collect all user-provided names across all variables
     IO.foldMArray
         (\names maybeVar ->
@@ -463,8 +479,12 @@ toCanTypeBatch nodeVars =
         |> IO.andThen
             (\allUserNames ->
                 -- Second pass: convert all variables sharing one name state, so
-                -- names stay globally unique across the batch.
-                IO.withFreshNames (makeNameState allUserNames)
+                -- fresh names avoid every name already in use.
+                let
+                    nameState =
+                        makeNameState allUserNames
+                in
+                IO.withFreshNames { nameState | taken = Dict.union nameState.taken annotationNames }
                     (IO.traverseArrayMaybe variableToCanType nodeVars)
             )
 

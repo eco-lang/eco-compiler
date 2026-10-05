@@ -18,15 +18,15 @@ violation for each `eco.construct.record` op, at any depth in the module, whose
 `field_count`:
 
   - is absent or not an integer;
-  - is 0;
+  - is 0 or negative;
   - is larger than the op's number of operands.
 
 A failing test shows only the first violation, as
 `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
 
 Among what is not checked: that `field_count` equals the number of fields of
-the record's type, that the operands after the fields are GC-root hints, a
-negative `field_count`, and that an empty record is an `eco.constant` (only
+the record's type, that the operands after the fields are GC-root hints, and
+that an empty record is an `eco.constant` (only
 that no construction has a count of 0).
 
 @docs expectRecordConstruction
@@ -47,8 +47,8 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Compiles `srcModule` to MLIR and returns an expectation that passes when
-every `eco.construct.record` op in it has an integer `field_count` that is
-neither 0 nor larger than its number of operands.
+every `eco.construct.record` op in it has a positive integer `field_count` no
+larger than its number of operands.
 
 It fails, with a message starting `Compilation failed:`, when the program
 does not compile.
@@ -65,8 +65,8 @@ expectRecordConstruction srcModule =
 
 
 {-| Returns one violation for each `eco.construct.record` op in `mlirModule`, at
-any depth, whose `field_count` is absent, not an integer, 0, or larger than
-its operand count.
+any depth, whose `field_count` is absent, not an integer, 0, negative, or larger
+than its operand count.
 -}
 checkRecordConstruction : MlirModule -> List Violation
 checkRecordConstruction mlirModule =
@@ -78,8 +78,7 @@ checkRecordConstruction mlirModule =
 
 
 {-| Returns a violation saying what is wrong with `op`, or `Nothing` when its
-`field_count` is an integer that is not 0 and not larger than its operand
-count. A negative `field_count` gives `Nothing`.
+`field_count` is a positive integer not larger than its operand count.
 -}
 checkRecordOp : MlirOp -> Maybe Violation
 checkRecordOp op =
@@ -106,9 +105,16 @@ checkRecordOp op =
                 }
 
         Just fieldCount ->
-            -- Operands after the fields are GC-root hints, so only too few
-            -- operands is a violation.
-            if operandCount < fieldCount then
+            if fieldCount < 0 then
+                Just
+                    { opId = op.id
+                    , opName = op.name
+                    , message = "eco.construct.record with negative field_count=" ++ String.fromInt fieldCount
+                    }
+
+            else if operandCount < fieldCount then
+                -- Operands after the fields are GC-root hints (the op carries
+                -- no count of them), so only too few operands is a violation.
                 Just
                     { opId = op.id
                     , opName = op.name

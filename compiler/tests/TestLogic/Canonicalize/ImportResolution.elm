@@ -1,60 +1,62 @@
 module TestLogic.Canonicalize.ImportResolution exposing (expectImportsResolved)
 
-{-| A test expectation for the rule that every name a module takes from an
-import resolves to a definition, which in practice checks only that the module
-compiles as far as PostSolve.
+{-| A test expectation for the rule that every name a module takes from another
+module resolves to a definition that module's interface provides, with the
+interface's type.
 
 Canonicalization is the compiler stage that resolves each name in a module to
 the module that defines it, using the interfaces of the modules it imports. A
 name an import lists in its `exposing` clause that the imported module does not
 export, and a reference, qualified or not, to a name that nothing in scope
-provides, are canonicalization errors. So a module that canonicalizes has had
-its imported references resolved.
+provides, are canonicalization errors.
 
 `expectImportsResolved` runs a module through `TestLogic.TestPipeline.runToPostSolve`
-(canonicalization, type checking and PostSolve, against the mock interfaces that
-module describes) and fails if canonicalization or type checking fails;
-PostSolve reports no failure. After a success it walks the definitions of the
-canonical module looking for problems with references, but no case of the walk
-ever reports one. So the expectation passes exactly when the run through
-PostSolve succeeds, and it adds no check of its own to what those stages do.
+(canonicalization, type checking and PostSolve, against the mock interfaces of
+`Compiler.Elm.Interface.Basic.testIfaces`) and fails if canonicalization or
+type checking fails. After a success it walks every expression in the
+top-level definitions of the canonical module and checks each reference to
+another module against that module's interface in `testIfaces`:
+
+  - a `VarForeign` must name a value of the interface, carry its annotation,
+    and carry the interface's package in its home;
+  - a `VarCtor` whose home is another module must name a constructor of one of
+    the interface's custom types, at that constructor's index, or a record type
+    alias of the interface;
+  - a `VarOperator` or `Binop` must name an operator of the interface, and the
+    function it carries must be the one that operator stands for.
+
+Not checked: patterns (`PCtor` homes), type annotations, `VarDebug` and
+`VarKernel` references, and whether the reference is to the definition the
+programmer meant.
 
 An import of a module that has no interface crashes the canonicalizer when
-that import is reached, rather than failing the expectation. It is not reached
-if an earlier import has already failed. A kernel module's import without `as`
-is dropped instead, because the module under test belongs to `eco/example`,
-which is a kernel package.
+that import is reached, rather than failing the expectation.
 
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.Data.Index as Index
+import Compiler.Elm.Interface as I
+import Compiler.Elm.Interface.Basic as Basic
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Data.Map as DMap
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
 {-| Passes when `srcModule` gets through canonicalization, type checking and
-PostSolve.
-
-A failure fails with the pipeline's message, prefixed with
-"Import resolution failed: " when the message contains "import" in any case.
-`TestLogic.TestPipeline.runToPostSolve` reports these failures by a count of
-errors, so its messages do not name the imports involved. After a success the
-canonical module is walked for problems with references, and the walk never
-finds one.
-
+PostSolve and every reference to another module resolves as the module
+docstring describes. Fails with the pipeline's message when a stage fails, and
+with one line per unresolved reference otherwise.
 -}
 expectImportsResolved : Src.Module -> Expect.Expectation
 expectImportsResolved srcModule =
     case Pipeline.runToPostSolve srcModule of
         Err msg ->
-            if String.contains "import" (String.toLower msg) then
-                Expect.fail ("Import resolution failed: " ++ msg)
-
-            else
-                Expect.fail msg
+            Expect.fail msg
 
         Ok result ->
             let
@@ -74,124 +76,202 @@ expectImportsResolved srcModule =
 -- ============================================================================
 
 
-{-| Returns a message for each problem with a reference found in the top-level
-definitions of a canonical module. The list is always empty, because no case of
-the walk reports a problem.
+{-| Returns a message for each unresolved reference to another module in the
+top-level definitions of a canonical module.
 -}
 collectImportIssues : Can.Module -> List String
 collectImportIssues (Can.Module moduleData) =
-    collectDefsImportIssues moduleData.decls
+    collectDefsImportIssues moduleData.name moduleData.decls
 
 
 {-| Returns the problems found in every definition of a declaration list,
 including each definition of a recursive group.
 -}
-collectDefsImportIssues : Can.Decls -> List String
-collectDefsImportIssues decls =
+collectDefsImportIssues : ModuleName.Canonical -> Can.Decls -> List String
+collectDefsImportIssues self decls =
     case decls of
         Can.Declare def rest ->
-            collectDefImportIssues def
-                ++ collectDefsImportIssues rest
+            collectDefImportIssues self def
+                ++ collectDefsImportIssues self rest
 
         Can.DeclareRec def defs rest ->
-            collectDefImportIssues def
-                ++ List.concatMap collectDefImportIssues defs
-                ++ collectDefsImportIssues rest
+            List.concatMap (collectDefImportIssues self) (def :: defs)
+                ++ collectDefsImportIssues self rest
 
         Can.SaveTheEnvironment ->
             []
 
 
-{-| Returns the problems found in the body of a definition. Its argument
-patterns and type annotation are not looked at.
+{-| Returns the problems found in the body of a definition.
 -}
-collectDefImportIssues : Can.Def -> List String
-collectDefImportIssues def =
+collectDefImportIssues : ModuleName.Canonical -> Can.Def -> List String
+collectDefImportIssues self def =
     case def of
         Can.Def _ _ expr ->
-            collectExprImportIssues expr
+            collectExprImportIssues self expr
 
         Can.TypedDef _ _ _ expr _ ->
-            collectExprImportIssues expr
+            collectExprImportIssues self expr
 
 
 {-| Returns the problems found in an expression and the expressions inside it.
-
-No case adds a problem. The reference cases `VarForeign`, `VarCtor` and
-`VarOperator`, which can name another module's value, constructor or operator,
-contribute nothing, and every other case either collects from its
-subexpressions or contributes nothing. Patterns are not looked at.
-
 -}
-collectExprImportIssues : Can.Expr -> List String
-collectExprImportIssues (A.At _ exprInfo) =
+collectExprImportIssues : ModuleName.Canonical -> Can.Expr -> List String
+collectExprImportIssues self (A.At _ exprInfo) =
+    let
+        go =
+            collectExprImportIssues self
+    in
     case exprInfo.node of
-        Can.VarForeign _ _ _ ->
-            []
+        Can.VarForeign home name annotation ->
+            checkForeignValue home name annotation
 
-        Can.VarCtor _ _ _ _ _ ->
-            []
+        Can.VarCtor _ home name index _ ->
+            if home == self then
+                []
 
-        Can.VarOperator _ _ _ _ ->
-            []
+            else
+                checkForeignCtor home name index
 
-        Can.Binop _ _ _ _ left right ->
-            collectExprImportIssues left
-                ++ collectExprImportIssues right
+        Can.VarOperator op home name _ ->
+            checkForeignBinop op home name
+
+        Can.Binop op home name _ left right ->
+            checkForeignBinop op home name
+                ++ go left
+                ++ go right
 
         Can.Lambda _ body ->
-            collectExprImportIssues body
+            go body
 
         Can.Call fn args ->
-            collectExprImportIssues fn
-                ++ List.concatMap collectExprImportIssues args
+            List.concatMap go (fn :: args)
 
         Can.If branches else_ ->
-            List.concatMap (\( cond, then_ ) -> collectExprImportIssues cond ++ collectExprImportIssues then_) branches
-                ++ collectExprImportIssues else_
+            List.concatMap (\( cond, then_ ) -> go cond ++ go then_) branches
+                ++ go else_
 
         Can.Let def body ->
-            collectDefImportIssues def
-                ++ collectExprImportIssues body
+            collectDefImportIssues self def
+                ++ go body
 
         Can.LetRec defs body ->
-            List.concatMap collectDefImportIssues defs
-                ++ collectExprImportIssues body
+            List.concatMap (collectDefImportIssues self) defs
+                ++ go body
 
         Can.LetDestruct _ value body ->
-            collectExprImportIssues value
-                ++ collectExprImportIssues body
+            go value ++ go body
 
         Can.Case value branches ->
-            collectExprImportIssues value
-                ++ List.concatMap (\(Can.CaseBranch _ branchExpr) -> collectExprImportIssues branchExpr) branches
-
-        Can.Accessor _ ->
-            []
+            go value
+                ++ List.concatMap (\(Can.CaseBranch _ branchExpr) -> go branchExpr) branches
 
         Can.Access record _ ->
-            collectExprImportIssues record
+            go record
 
         Can.Update record fields ->
-            collectExprImportIssues record
-                ++ Dict.foldl (\_ (Can.FieldUpdate _ fieldExpr) acc -> collectExprImportIssues fieldExpr ++ acc) [] fields
+            go record
+                ++ DMap.foldl (\_ (Can.FieldUpdate _ fieldExpr) acc -> go fieldExpr ++ acc) [] fields
 
         Can.Record fields ->
-            Dict.foldl (\_ fieldExpr acc -> collectExprImportIssues fieldExpr ++ acc) [] fields
-
-        Can.Unit ->
-            []
+            DMap.foldl (\_ fieldExpr acc -> go fieldExpr ++ acc) [] fields
 
         Can.Tuple a b rest ->
-            collectExprImportIssues a
-                ++ collectExprImportIssues b
-                ++ List.concatMap collectExprImportIssues rest
+            List.concatMap go (a :: b :: rest)
 
         Can.List exprs ->
-            List.concatMap collectExprImportIssues exprs
+            List.concatMap go exprs
 
         Can.Negate negatedExpr ->
-            collectExprImportIssues negatedExpr
+            go negatedExpr
 
         _ ->
             []
+
+
+{-| Looks up the interface of `home` in `Basic.testIfaces`, and passes it to
+`check` when it is found and was built for the package `home` names.
+-}
+withInterface : String -> ModuleName.Canonical -> String -> (I.InterfaceData -> List String) -> List String
+withInterface kind (ModuleName.Canonical pkg moduleName) name check =
+    case Dict.get moduleName Basic.testIfaces of
+        Nothing ->
+            [ kind ++ " '" ++ moduleName ++ "." ++ name ++ "': no interface for module '" ++ moduleName ++ "'" ]
+
+        Just (I.Interface data) ->
+            if data.home /= pkg then
+                [ kind ++ " '" ++ moduleName ++ "." ++ name ++ "': home package does not match the interface's" ]
+
+            else
+                check data
+
+
+{-| Checks a `VarForeign` reference against its home's interface.
+-}
+checkForeignValue : ModuleName.Canonical -> String -> Can.Annotation String -> List String
+checkForeignValue home name annotation =
+    withInterface "VarForeign" home name <|
+        \data ->
+            case Dict.get name data.values of
+                Nothing ->
+                    [ "VarForeign '" ++ name ++ "': not a value of its home's interface" ]
+
+                Just ifaceAnnotation ->
+                    if ifaceAnnotation == annotation then
+                        []
+
+                    else
+                        [ "VarForeign '" ++ name ++ "': annotation differs from its home's interface" ]
+
+
+{-| Checks a `VarCtor` reference to another module against that module's
+interface: a constructor of one of its custom types at the same index, or a
+record type alias.
+-}
+checkForeignCtor : ModuleName.Canonical -> String -> Index.ZeroBased -> List String
+checkForeignCtor home name index =
+    withInterface "VarCtor" home name <|
+        \data ->
+            let
+                unionCtor (Can.Union u) =
+                    List.any (\(Can.Ctor c) -> c.name == name && c.index == index) u.alts
+
+                inUnions =
+                    Dict.values data.unions
+                        |> List.any
+                            (\u ->
+                                case u of
+                                    I.OpenUnion cu ->
+                                        unionCtor cu
+
+                                    I.ClosedUnion cu ->
+                                        unionCtor cu
+
+                                    I.PrivateUnion cu ->
+                                        unionCtor cu
+                            )
+            in
+            if inUnions || Dict.member name data.aliases then
+                []
+
+            else
+                [ "VarCtor '" ++ name ++ "': not a constructor (at that index) or record alias of its home's interface" ]
+
+
+{-| Checks an operator reference against its home's interface: the operator
+exists and stands for the function `name`.
+-}
+checkForeignBinop : String -> ModuleName.Canonical -> String -> List String
+checkForeignBinop op home name =
+    withInterface "Operator" home op <|
+        \data ->
+            case Dict.get op data.binops of
+                Nothing ->
+                    [ "Operator '" ++ op ++ "': not an operator of its home's interface" ]
+
+                Just (I.Binop binop) ->
+                    if binop.name == name then
+                        []
+
+                    else
+                        [ "Operator '" ++ op ++ "': carries function '" ++ name ++ "' but the interface maps it to '" ++ binop.name ++ "'" ]

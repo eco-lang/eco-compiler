@@ -47,9 +47,9 @@ variables; accessors; list, record and tuple literals; lambdas; and calls whose
 function is a kernel, top-level, foreign, operator or constructor variable. A
 call through any other function, such as a local variable, is checked.
 
-The variables of a type are collected from its `TVar`s only. A record's
-extension variable is never collected, and an alias contributes the variables
-of its body, not those of its arguments.
+The variables of a type are its `TVar`s and its records' extension variables.
+A `Filled` alias contributes the variables of its body, and a `Holey` alias
+those of its arguments, which its body's parameters stand for.
 
 -}
 
@@ -613,9 +613,10 @@ walkChildren funcName annotations nodeTypesPre nodeTypesPost env node =
             []
 
 
-{-| Returns the names of the `TVar`s in a type. A record's extension variable is
-not included, and an alias contributes the variables of its body, not those of
-its arguments.
+{-| Returns the names of the `TVar`s in a type, a record's extension variable
+included. A `Filled` alias contributes the variables of its body. A `Holey`
+alias's body is written in the alias's own parameter names, so it contributes
+the variables of its arguments, which those parameters stand for.
 -}
 collectFreeVars : Can.Type Name -> Set String
 collectFreeVars tipe =
@@ -629,8 +630,16 @@ collectFreeVars tipe =
         Can.TType _ _ args ->
             List.foldl (\arg acc -> Set.union (collectFreeVars arg) acc) Set.empty args
 
-        Can.TRecord fields _ ->
-            Dict.foldl (\_ (Can.FieldType _ ft) acc -> Set.union (collectFreeVars ft) acc) Set.empty fields
+        Can.TRecord fields maybeExt ->
+            Dict.foldl (\_ (Can.FieldType _ ft) acc -> Set.union (collectFreeVars ft) acc)
+                (case maybeExt of
+                    Just ext ->
+                        Set.singleton ext
+
+                    Nothing ->
+                        Set.empty
+                )
+                fields
 
         Can.TUnit ->
             Set.empty
@@ -640,8 +649,8 @@ collectFreeVars tipe =
                 (Set.union (collectFreeVars a) (collectFreeVars b))
                 extras
 
-        Can.TAlias _ _ _ (Can.Holey aliased) ->
-            collectFreeVars aliased
+        Can.TAlias _ _ args (Can.Holey _) ->
+            List.foldl (\( _, arg ) acc -> Set.union (collectFreeVars arg) acc) Set.empty args
 
         Can.TAlias _ _ _ (Can.Filled aliased) ->
             collectFreeVars aliased

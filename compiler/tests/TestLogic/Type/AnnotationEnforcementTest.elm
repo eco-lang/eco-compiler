@@ -22,8 +22,9 @@ The matching tests each hand their module to
   - `xs : List Int` with body `[ 1, 2 ]`.
   - `pair : ( Int, String )` with body `( 1, "a" )`.
 
-The mismatch tests each hand their module to `expectAnnotationMismatchError`,
-which requires at least one type error of any kind:
+The mismatch tests each hand their module and the annotated name to
+`expectAnnotationMismatchError`, which requires at least one type error whose
+expected type comes from that definition's annotation:
 
   - `x : Int` with body `"hello"`.
   - `x : String` with body `42`.
@@ -32,8 +33,11 @@ which requires at least one type error of any kind:
   - `pair : ( String, Int )` with body `( 1, "a" )`, the element types the
     other way round.
 
-A mismatch test therefore shows that the module canonicalizes and then fails to
-type-check, not that the error it produces concerns the annotation.
+A mismatch test therefore shows that the module is rejected because of the
+annotation, not merely that it fails to type-check.
+
+A negative control, `f : Int -> Int` with body `x + "a"`, checks that an error
+on the operand of `+` does not satisfy `expectAnnotationMismatchError`.
 
 Among what is not tested: type variables in annotations, records and custom
 types, annotations on let-bound definitions, modules with more than one
@@ -42,7 +46,9 @@ definition, and what a mismatch error reports.
 -}
 
 import Compiler.AST.SourceBuilder as SB
+import Expect
 import Test exposing (Test)
+import Test.Runner
 import TestLogic.Type.AnnotationEnforcement
     exposing
         ( expectAnnotationMismatchError
@@ -58,6 +64,7 @@ suite =
     Test.describe "Annotations are enforced, not ignored (TYPE_006)"
         [ matchingAnnotationTests
         , mismatchedAnnotationTests
+        , unrelatedErrorControl
         ]
 
 
@@ -144,7 +151,7 @@ matchingAnnotationTests =
 
 
 {-| Five tests, each giving one definition an annotation its body contradicts
-and expecting the module to fail to type-check, with any type error.
+and expecting a type error that comes from that annotation.
 -}
 mismatchedAnnotationTests : Test
 mismatchedAnnotationTests =
@@ -161,7 +168,7 @@ mismatchedAnnotationTests =
                               }
                             ]
                 in
-                expectAnnotationMismatchError modul
+                expectAnnotationMismatchError "x" modul
         , Test.test "String annotation on Int value" <|
             \_ ->
                 let
@@ -174,7 +181,7 @@ mismatchedAnnotationTests =
                               }
                             ]
                 in
-                expectAnnotationMismatchError modul
+                expectAnnotationMismatchError "x" modul
         , Test.test "wrong function return type" <|
             \_ ->
                 let
@@ -190,7 +197,7 @@ mismatchedAnnotationTests =
                               }
                             ]
                 in
-                expectAnnotationMismatchError modul
+                expectAnnotationMismatchError "f" modul
         , Test.test "wrong list element type" <|
             \_ ->
                 let
@@ -205,7 +212,7 @@ mismatchedAnnotationTests =
                               }
                             ]
                 in
-                expectAnnotationMismatchError modul
+                expectAnnotationMismatchError "xs" modul
         , Test.test "wrong tuple element type" <|
             \_ ->
                 let
@@ -221,5 +228,34 @@ mismatchedAnnotationTests =
                               }
                             ]
                 in
-                expectAnnotationMismatchError modul
+                expectAnnotationMismatchError "pair" modul
         ]
+
+
+{-| A negative control for `expectAnnotationMismatchError`: `f : Int -> Int`
+with body `x + "a"` is rejected, but for the operand of `+`, not because of
+the annotation, so the expectation must fail on it.
+-}
+unrelatedErrorControl : Test
+unrelatedErrorControl =
+    Test.test "an unrelated type error is not taken for an annotation mismatch" <|
+        \_ ->
+            let
+                modul =
+                    SB.makeModuleWithTypedDefs "UnrelatedError"
+                        [ { name = "f"
+                          , args = [ SB.pVar "x" ]
+                          , tipe =
+                                SB.tLambda
+                                    (SB.tType "Int" [])
+                                    (SB.tType "Int" [])
+                          , body = SB.binopsExpr [ ( SB.varExpr "x", "+" ) ] (SB.strExpr "a")
+                          }
+                        ]
+            in
+            case Test.Runner.getFailureReason (expectAnnotationMismatchError "f" modul) of
+                Just _ ->
+                    Expect.pass
+
+                Nothing ->
+                    Expect.fail "expectAnnotationMismatchError accepted an error that does not come from the annotation"

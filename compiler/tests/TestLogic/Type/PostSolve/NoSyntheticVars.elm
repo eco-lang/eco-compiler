@@ -1,147 +1,73 @@
 module TestLogic.Type.PostSolve.NoSyntheticVars exposing (expectNoSyntheticVars)
 
-{-| Gives tests a check that no node type left after PostSolve contains a
-type variable whose name looks generated rather than written.
+{-| Gives tests a check that no synthetic placeholder variable is left
+unconstrained, and so survives into the node types after PostSolve.
 
-A node is an expression or pattern of the canonical module that carries a
-node id. PostSolve produces an array of node types indexed by id, with
-`Nothing` for an id that has no type. The check runs the module under test to
-PostSolve and walks every type in that array.
+Constraint generation types some expressions through a _synthetic
+placeholder_: a fresh type variable recorded as the expression's type and tied
+to the type its context expects. Variable references, constructors, and
+string, character and float literals and unit are such expressions. A
+placeholder that no constraint reaches stays a variable of its own: it occurs
+at its node and nowhere else in the solved node types.
+`TestLogic.Type.PostSolve.PostSolveInvariantHelpers.orphanPlaceholderVars`
+finds those, and its docstring says why nothing else can look like one.
 
-A _synthetic_ variable here is decided by its name alone, as
-`isSyntheticVariable` does: a name that is empty, starts with a digit, or is
-an underscore followed by at least one more character. A lone `_` is not
-synthetic. The check sees only names, so a variable the solver invented under
-an ordinary name passes. A record's extension variable is not looked at. A
-module that fails to canonicalize or type check fails with the pipeline's
-message.
+`expectNoSyntheticVars` compiles the module through PostSolve with
+`TestLogic.Type.PostSolve.CompileThroughPostSolve.compileToPostSolveDetailed`
+and fails for each such orphan variable still present in the node's type
+after PostSolve, which replaces only the types of literals and unit. A module
+that fails to canonicalize or type check fails with the pipeline's message.
 
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
-import Dict
+import Data.Set as EverySet
 import Expect
-import TestLogic.TestPipeline as Pipeline
+import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
+import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
-{-| Runs `srcModule` through PostSolve and passes when no node type after
-PostSolve contains a synthetic variable.
+{-| Runs `srcModule` through PostSolve and passes when no node typed through a
+synthetic placeholder keeps an orphan placeholder variable in its type after
+PostSolve.
 
-It fails with one line per synthetic variable found, labelled with its node
-id, or with the pipeline's message when canonicalization or type checking
-fails.
+It fails with one line per such node, or with the pipeline's message when
+canonicalization or type checking fails.
 
 -}
 expectNoSyntheticVars : Src.Module -> Expect.Expectation
 expectNoSyntheticVars srcModule =
-    case Pipeline.runToPostSolve srcModule of
+    case Compile.compileToPostSolveDetailed srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok result ->
+        Ok artifacts ->
             let
                 issues =
-                    collectSyntheticVarIssues result.nodeTypesPost
+                    Helpers.orphanPlaceholderVars artifacts.canonical artifacts.syntheticExprIds artifacts.nodeTypesPre
+                        |> List.filterMap
+                            (\( nodeId, name ) ->
+                                case Array.get nodeId artifacts.nodeTypesPost |> Maybe.andThen identity of
+                                    Just postType ->
+                                        if EverySet.member identity name (Helpers.freeTypeVars postType) then
+                                            Just
+                                                ("NodeId "
+                                                    ++ String.fromInt nodeId
+                                                    ++ ": placeholder variable '"
+                                                    ++ name
+                                                    ++ "' is constrained by nothing"
+                                                )
+
+                                        else
+                                            Nothing
+
+                                    Nothing ->
+                                        Nothing
+                            )
             in
             if List.isEmpty issues then
                 Expect.pass
 
             else
                 Expect.fail (String.join "\n" issues)
-
-
-
--- ============================================================================
--- SYNTHETIC VARIABLE VERIFICATION
--- ============================================================================
-
-
-{-| Returns one message for each synthetic variable found in `nodeTypes`,
-labelled with the array index of the type it was found in, which is the node
-id. Record extension variables are not examined.
--}
-collectSyntheticVarIssues : Array.Array (Maybe (Can.Type Name)) -> List String
-collectSyntheticVarIssues nodeTypes =
-    Array.foldl
-        (\maybeType ( nodeId, acc ) ->
-            case maybeType of
-                Nothing ->
-                    ( nodeId + 1, acc )
-
-                Just canType ->
-                    let
-                        context =
-                            "NodeId " ++ String.fromInt nodeId
-                    in
-                    ( nodeId + 1, checkForSyntheticVars context canType ++ acc )
-        )
-        ( 0, [] )
-        nodeTypes
-        |> Tuple.second
-
-
-{-| Returns one message, starting with `context`, for each type variable in
-`canType` whose name `isSyntheticVariable` accepts.
-
-An alias is checked through both its arguments and its body. A record's
-extension variable is not examined.
-
--}
-checkForSyntheticVars : String -> Can.Type Name -> List String
-checkForSyntheticVars context canType =
-    case canType of
-        Can.TVar name ->
-            if isSyntheticVariable name then
-                [ context ++ ": Found unconstrained synthetic variable '" ++ name ++ "'" ]
-
-            else
-                []
-
-        Can.TLambda _ argType resultType ->
-            checkForSyntheticVars context argType
-                ++ checkForSyntheticVars context resultType
-
-        Can.TType _ _ args ->
-            List.concatMap (checkForSyntheticVars context) args
-
-        Can.TRecord fields _ ->
-            Dict.foldl
-                (\_ (Can.FieldType _ fieldType) acc ->
-                    checkForSyntheticVars context fieldType ++ acc
-                )
-                []
-                fields
-
-        Can.TUnit ->
-            []
-
-        Can.TTuple a b cs ->
-            checkForSyntheticVars context a
-                ++ checkForSyntheticVars context b
-                ++ List.concatMap (checkForSyntheticVars context) cs
-
-        Can.TAlias _ _ args aliasedType ->
-            List.concatMap (\( _, argType ) -> checkForSyntheticVars context argType) args
-                ++ (case aliasedType of
-                        Can.Holey t ->
-                            checkForSyntheticVars context t
-
-                        Can.Filled t ->
-                            checkForSyntheticVars context t
-                   )
-
-
-{-| Tells whether a type variable name looks generated: it is empty, starts
-with a digit, or is an underscore followed by at least one more character.
--}
-isSyntheticVariable : String -> Bool
-isSyntheticVariable name =
-    case String.uncons name of
-        Just ( first, rest ) ->
-            Char.isDigit first || (first == '_' && not (String.isEmpty rest))
-
-        Nothing ->
-            True

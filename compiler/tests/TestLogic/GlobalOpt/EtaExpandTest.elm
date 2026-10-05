@@ -67,28 +67,29 @@ What the tests establish:
   - For `prog s0 = andThen (\a s1 -> a) tick s0`, `conts` is 0 and the one
     lambda below `prog`'s own has two parameters.
   - For a recursive `sequence`, which becomes a function definition in a
-    `Cycle` node, `cycleDefs` is above zero, at least one call is found in the
-    Cycle's function definitions, and every one has at least two arguments.
+    `Cycle` node, `cycleDefs` is above zero, its `case` has a `jumps` entry,
+    and in the Cycle's function definitions each `andThen` call has three
+    arguments and each `pure` and `sequence` call has two, so every branch,
+    the shared one included, received the new argument.
   - For a self-tail-recursive `loop : Int -> St Int` written with one
     parameter, `tailDef` is above zero.
   - For `d = let big = expensive 1 in pure big`, and separately for
     `d = pure (expensive 1)`, `notCheap` is above zero and the body of `d` is
     not a lambda.
-  - For `d = 5`, with `d : Int`, `noSpine` is above zero and the body of `d` is
-    not a lambda. The first assertion does not depend on `d`, because
-    `testValue` is an `Int` in every fixture.
-  - On `chainModule`'s graph, `kernelAlias` is at least 2, a count the
-    harness's two kernel-alias nodes meet by themselves.
+  - For `d = 5`, with `d : Int`, `noSpine` is exactly one more than for the
+    same fixture without `d` (`testValue : Int` is itself declined as
+    `noSpine`), and the body of `d` is not a lambda.
+  - On `chainModule`'s graph, `kernelAlias` is exactly 2, the harness's two
+    kernel-alias nodes, and both still have a bare `VarKernel` body after the
+    pass.
   - For `mkU8 = U8` and `mkU32 = U32`, two constructors of a custom type,
     `ctorAlias` is at least 2 and neither body becomes a lambda.
   - With `etaExpand` off, on the first test's `prog`, the body of `prog` has the
     same parameter count before and after, and `defs` and `conts` are both
     still 1.
 
-Among what is not tested: a `case` branch shared through the decision tree's
-`jumps` list, since the decision tree of `sequence` reaches each of its branches
-once and so has no `jumps` entries, which leaves the pass's rewriting of `jumps`
-entries unexercised; that a declined tail-recursive definition's body is
+Among what is not tested: a kernel alias written in the fixture itself; that a
+declined tail-recursive definition's body is
 unchanged; the `etaOnly` allow-list; recursive values in a `Cycle`; and whether
 the expanded graph can still be monomorphized.
 
@@ -109,7 +110,7 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
-        , pCons
+        , pAnything
         , pList
         , pVar
         , qualVarExpr
@@ -260,8 +261,9 @@ continuationSuite =
 
 
 {-| The tests of the recursive definitions. For `sequenceModule`, `cycleDefs`
-is above zero, and the function definitions of the graph's `Cycle` nodes hold
-at least one call, each with at least two arguments. For `tailDefModule`,
+is above zero, the `Cycle`'s `case` has a `jumps` entry, and in its function
+definitions every `andThen` call has three arguments and every `pure` and
+`sequence` call two. For `tailDefModule`,
 `tailDef` is above zero.
 -}
 cycleSuite : Test
@@ -277,26 +279,33 @@ cycleSuite =
                         else
                             Expect.fail "expected the Cycle Def to be η-expanded"
                     )
+        , Test.test "F5: the fixture's case shares a branch through jumps" <|
+            \_ ->
+                -- Without a `jumps` entry the next test would check only the
+                -- decider's `Inline` leaves.
+                withGraph sequenceModule
+                    (\g ->
+                        if cycleJumpCount g > 0 then
+                            Expect.pass
+
+                        else
+                            Expect.fail "expected the Cycle's case to have a jumps entry"
+                    )
         , Test.test "F5: EVERY case branch is saturated, jumps included (R8)" <|
             \_ ->
                 -- A new argument pushed into the decider's `Inline` leaves but
                 -- not into `jumps` would leave a shared branch under-applied.
-                -- This fixture's decision tree reaches each branch once, so it
-                -- has no `jumps` entries and only the `Inline` leaves are
-                -- checked.
+                -- Saturated, `andThen` takes three arguments, and `pure` and
+                -- `sequence` take two; unexpanded, the branches give them two,
+                -- one and one.
                 withGraph sequenceModule
                     (\g ->
-                        case cycleBranchArgCounts g of
-                            [] ->
-                                Expect.fail "found no calls in the expanded Cycle body"
-
-                            counts ->
-                                if List.all (\n -> n >= 2) counts then
-                                    Expect.pass
-
-                                else
-                                    Expect.fail
-                                        ("an unsaturated branch survived: " ++ Debug.toString counts)
+                        Expect.equal
+                            { andThen = [ 3, 3 ], pure = [ 2, 2 ], sequence = [ 2 ] }
+                            { andThen = cycleCallArgCounts "andThen" g
+                            , pure = cycleCallArgCounts "pure" g
+                            , sequence = cycleCallArgCounts "sequence" g
+                            }
                     )
         , Test.test "F6: a TailDef with a deficit is declined" <|
             \_ ->
@@ -362,10 +371,10 @@ gateSuite =
 
 
 {-| The tests of the definitions refused by their shape. For `noSpineModule`,
-`noSpine` is above zero, a count the fixture's `testValue : Int` meets by
-itself, and the body of `d` is not a lambda. For `chainModule`, `kernelAlias`
-is at least 2, a count the harness's two kernel-alias nodes meet by themselves.
-For `ctorAliasModule`, `ctorAlias` is at least 2, and neither the body of
+`noSpine` is one more than for `noSpineControlModule`, which lacks only `d`,
+and the body of `d` is not a lambda. For `chainModule`, `kernelAlias` is
+exactly 2, the harness's two kernel-alias nodes, and both nodes still have a
+bare `VarKernel` body after the pass. For `ctorAliasModule`, `ctorAlias` is at least 2, and neither the body of
 `mkU8` nor that of `mkU32` is a lambda.
 -}
 scopeSuite : Test
@@ -373,28 +382,36 @@ scopeSuite =
     Test.describe "Scope"
         [ Test.test "F9: a type with no arrow spine is declined as noSpine" <|
             \_ ->
-                withMetrics noSpineModule
-                    (\m ->
-                        if m.noSpine > 0 then
-                            Expect.pass
-
-                        else
-                            Expect.fail "expected a non-arrow definition to decline as noSpine"
+                -- Every fixture's `testValue : Int` is itself declined as
+                -- noSpine, so the count is compared with that of the same
+                -- fixture without `d`.
+                withMetrics noSpineControlModule
+                    (\control ->
+                        withMetrics noSpineModule
+                            (\m -> Expect.equal (control.noSpine + 1) m.noSpine)
                     )
-        , Test.test "a kernel-alias node is refused (LSS_016)" <|
+        , Test.test "the harness's kernel-alias nodes are refused (LSS_016)" <|
             \_ ->
                 -- The harness adds `List.cons` and `List.map2` as kernel
-                -- aliases to every graph. `LssInfer.kernelAliasOf` recognises
-                -- one only by a node whose whole body is a `VarKernel`, so an
-                -- expanded alias would no longer be recognised.
-                withMetrics chainModule
-                    (\m ->
-                        if m.kernelAlias >= 2 then
-                            Expect.pass
+                -- aliases to every graph; the fixture has none of its own.
+                -- `LssInfer.kernelAliasOf` recognises one only by a node whose
+                -- whole body is a `VarKernel`, so an expanded alias would no
+                -- longer be recognised.
+                withMetrics chainModule (\m -> Expect.equal 2 m.kernelAlias)
+        , Test.test "the harness's kernel-alias nodes are never rewritten" <|
+            \_ ->
+                case Pipeline.runToAssigned chainModule of
+                    Err msg ->
+                        Expect.fail msg
 
-                        else
-                            Expect.fail "expected the graph's kernel aliases to be refused"
-                    )
+                    Ok assigned ->
+                        let
+                            ( after, _, _ ) =
+                                EtaExpand.run etaConfig assigned.mvarState assigned.graph
+                        in
+                        Expect.equal
+                            ( 2, kernelAliasNodeCount assigned.graph )
+                            ( kernelAliasNodeCount assigned.graph, kernelAliasNodeCount after )
         , Test.test "F9: a type with no arrow spine is never rewritten" <|
             \_ ->
                 withGraph noSpineModule
@@ -637,24 +654,41 @@ collectLambdas expr =
         ++ List.concatMap collectLambdas (children expr)
 
 
-{-| Returns the argument count of every call in the function definitions of
-every `Cycle` node in the graph. A `Cycle`'s recursive values are not read.
+{-| Returns the argument count of every call to the global named `name` in the
+function definitions of every `Cycle` node in the graph, in pre-order. A
+`Cycle`'s recursive values are not read.
 -}
-cycleBranchArgCounts : TOpt.GlobalGraph TypeIds.MVarId -> List Int
-cycleBranchArgCounts (TOpt.GlobalGraph nodes _ _ _ _) =
+cycleCallArgCounts : Name -> TOpt.GlobalGraph TypeIds.MVarId -> List Int
+cycleCallArgCounts name graph =
+    List.concatMap (collectCallsTo name) (cycleFuncBodies graph)
+
+
+{-| Returns the number of `jumps` entries of every `case` in the function
+definitions of every `Cycle` node in the graph.
+-}
+cycleJumpCount : TOpt.GlobalGraph TypeIds.MVarId -> Int
+cycleJumpCount graph =
+    List.sum (List.map countJumps (cycleFuncBodies graph))
+
+
+{-| Returns the bodies of the function definitions of every `Cycle` node in the
+graph.
+-}
+cycleFuncBodies : TOpt.GlobalGraph TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
+cycleFuncBodies (TOpt.GlobalGraph nodes _ _ _ _) =
     Data.Map.foldl
         (\_ node acc ->
             case node of
                 TOpt.Cycle _ _ funcDefs _ ->
                     acc
-                        ++ List.concatMap
+                        ++ List.map
                             (\def ->
                                 case def of
                                     TOpt.Def _ _ body _ ->
-                                        collectCalls body
+                                        body
 
                                     TOpt.TailDef _ _ _ body _ _ ->
-                                        collectCalls body
+                                        body
                             )
                             funcDefs
 
@@ -662,6 +696,58 @@ cycleBranchArgCounts (TOpt.GlobalGraph nodes _ _ _ _) =
                     acc
         )
         []
+        nodes
+
+
+{-| Returns the argument count of every call in `expr` whose function is the
+global named `name`, `expr` itself included, in pre-order.
+-}
+collectCallsTo : Name -> TOpt.Expr TypeIds.MVarId -> List Int
+collectCallsTo name expr =
+    (case expr of
+        TOpt.Call _ (TOpt.VarGlobal _ (TOpt.Global _ n) _) args _ ->
+            if n == name then
+                [ List.length args ]
+
+            else
+                []
+
+        _ ->
+            []
+    )
+        ++ List.concatMap (collectCallsTo name) (children expr)
+
+
+{-| Returns the number of `jumps` entries of every `case` in `expr`, `expr`
+itself included.
+-}
+countJumps : TOpt.Expr TypeIds.MVarId -> Int
+countJumps expr =
+    (case expr of
+        TOpt.Case _ _ _ jumps _ ->
+            List.length jumps
+
+        _ ->
+            0
+    )
+        + List.sum (List.map countJumps (children expr))
+
+
+{-| Returns the number of `Define` nodes in the graph whose whole body is a
+`VarKernel`, the shape `LssInfer.kernelAliasOf` recognises as a kernel alias.
+-}
+kernelAliasNodeCount : TOpt.GlobalGraph TypeIds.MVarId -> Int
+kernelAliasNodeCount (TOpt.GlobalGraph nodes _ _ _ _) =
+    Data.Map.foldl
+        (\_ node acc ->
+            case node of
+                TOpt.Define (TOpt.VarKernel _ _ _ _ _) _ _ ->
+                    acc + 1
+
+                _ ->
+                    acc
+        )
+        0
         nodes
 
 
@@ -1023,17 +1109,18 @@ it declares, and whose body is a `case`:
     sequence : List (St Int) -> St (List Int)
     sequence actions =
         case actions of
-            [] ->
-                pure []
-
             [ one ] ->
                 pure []
 
-            m :: rest ->
-                andThen (\x -> sequence rest) m
+            [ one, two ] ->
+                andThen (\x -> sequence [ two ]) one
 
-The decision tree for these patterns reaches each branch once, so its `jumps`
-list is empty.
+            _ ->
+                andThen (\x -> pure []) tick
+
+The decision tree reaches the `_` branch on two paths (an empty list, and a
+list of three or more), so that branch is shared through the `case`'s `jumps`
+list.
 
 -}
 sequenceModule : Src.Module
@@ -1046,12 +1133,17 @@ sequenceModule =
                     (tSt (tType "List" [ tInt ]))
           , body =
                 caseExpr (varExpr "actions")
-                    [ ( pList [], callExpr (varExpr "pure") [ listExpr [] ] )
-                    , ( pList [ pVar "one" ], callExpr (varExpr "pure") [ listExpr [] ] )
-                    , ( pCons (pVar "m") (pVar "rest")
+                    [ ( pList [ pVar "one" ], callExpr (varExpr "pure") [ listExpr [] ] )
+                    , ( pList [ pVar "one", pVar "two" ]
                       , callExpr (varExpr "andThen")
-                            [ lambdaExpr [ pVar "x" ] (callExpr (varExpr "sequence") [ varExpr "rest" ])
-                            , varExpr "m"
+                            [ lambdaExpr [ pVar "x" ] (callExpr (varExpr "sequence") [ listExpr [ varExpr "two" ] ])
+                            , varExpr "one"
+                            ]
+                      )
+                    , ( pAnything
+                      , callExpr (varExpr "andThen")
+                            [ lambdaExpr [ pVar "x" ] (callExpr (varExpr "pure") [ listExpr [] ])
+                            , varExpr "tick"
                             ]
                       )
                     ]
@@ -1120,6 +1212,14 @@ notCheapArgModule =
           }
         , testValueDef (callExpr (varExpr "d") [ intExpr 0 ])
         ]
+
+
+{-| `noSpineModule` without `d`: `testValue = 5`. Its `noSpine` count is the
+baseline that `d` adds one to.
+-}
+noSpineControlModule : Src.Module
+noSpineControlModule =
+    module_ [ testValueDef (intExpr 5) ]
 
 
 {-| A fixture whose definition has a type with no arrow, even after alias

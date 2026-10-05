@@ -29,10 +29,6 @@ top-level value and has no annotation, the module imports only `Basics` and
 `List`, and the pattern is in a `let`-bound function or in a `case` directly
 in `testValue`.
 
-Four cases use `pVar "_"` where Elm source would have a wildcard. That is a
-variable pattern binding the name `_`, which the parser never produces, since
-it reads `_` as a wildcard. Each such case says so in its docstring.
-
 What the tests establish: `expectSuite` returns one test that runs the forty
 cases below in order through `Compiler.BulkCheck.bulkCheck`, so it passes when
 `expectFn` passes on every module, and a failure names only the first case
@@ -73,7 +69,6 @@ Among what is not tested:
     case labels name them;
   - string literal patterns;
   - a record pattern in a `case` or inside another pattern;
-  - a wildcard in the four places `pVar "_"` stands;
   - a `case` that does not cover every value;
   - the value `testValue` evaluates to, unless `expectFn` checks it.
 
@@ -537,8 +532,7 @@ listPatternCases expectFn =
 
 {-| Applies `expectFn` to a module with `isSingleton : List Int -> Bool`, which
 matches a one-element list pattern to `True` and then a wildcard to `False`.
-The element of the list pattern is `pVar "_"`, a variable named `_`, not a
-wildcard. `testValue` is `isSingleton [ 1 ]`.
+`testValue` is `isSingleton [ 1 ]`.
 -}
 singletonListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singletonListPattern expectFn _ =
@@ -550,7 +544,7 @@ singletonListPattern expectFn _ =
             , tipe = tLambda (tType "List" [ tType "Int" [] ]) (tType "Bool" [])
             , body =
                 caseExpr (varExpr "xs")
-                    [ ( pList [ pVar "_" ], boolExpr True )
+                    [ ( pList [ pAnything ], boolExpr True )
                     , ( pAnything, boolExpr False )
                     ]
             }
@@ -609,8 +603,7 @@ twoElementListPattern expectFn _ =
 
 
 {-| Applies `expectFn` to a module with `sumFirstTwo : List Int -> Int`, which
-matches `a :: b :: _` to `a + b` and then a wildcard to 0. The innermost
-tail is `pVar "_"`, a variable named `_`, not a wildcard. `testValue` is
+matches `a :: b :: _` to `a + b` and then a wildcard to 0. `testValue` is
 `sumFirstTwo [ 5, 6, 7 ]`.
 -}
 multipleConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -623,7 +616,7 @@ multipleConsPattern expectFn _ =
             , tipe = tLambda (tType "List" [ tType "Int" [] ]) (tType "Int" [])
             , body =
                 caseExpr (varExpr "xs")
-                    [ ( pCons (pVar "a") (pCons (pVar "b") (pVar "_")), binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
+                    [ ( pCons (pVar "a") (pCons (pVar "b") pAnything), binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
                     , ( pAnything, intExpr 0 )
                     ]
             }
@@ -1312,10 +1305,9 @@ deeplyNestedConstructor expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a module with
-`firstPairSum : List ( Int, Int ) -> Int`, which matches `( a, b ) :: _` to
-`a + b` and then `[]` to 0. The tail is `pVar "_"`, a variable named `_`,
-not a wildcard. `testValue` is `firstPairSum [ ( 2, 3 ) ]`.
+{-| Applies `expectFn` to a module with `firstPairSum : List ( Int, Int ) ->
+Int`, which matches `( a, b ) :: _` to `a + b` and then `[]` to 0. `testValue`
+is `firstPairSum [ ( 2, 3 ) ]`.
 -}
 listOfTuplesPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 listOfTuplesPattern expectFn _ =
@@ -1327,7 +1319,7 @@ listOfTuplesPattern expectFn _ =
             , tipe = tLambda (tType "List" [ tTuple (tType "Int" []) (tType "Int" []) ]) (tType "Int" [])
             , body =
                 caseExpr (varExpr "xs")
-                    [ ( pCons (pTuple (pVar "a") (pVar "b")) (pVar "_"), binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
+                    [ ( pCons (pTuple (pVar "a") (pVar "b")) pAnything, binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
                     , ( pList [], intExpr 0 )
                     ]
             }
@@ -1388,11 +1380,10 @@ tupleOfListsPattern expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a module declaring
-`type Container = Container (List Int)` and
-`headOfContainer : Container -> Int`, which matches `Container (x :: _)` to
-`x` and then `Container []` to 0. The tail is `pVar "_"`, a variable named
-`_`, not a wildcard. `testValue` is `headOfContainer (Container [ 42 ])`.
+{-| Applies `expectFn` to a module declaring `type Container = Container (List
+Int)` and `headOfContainer : Container -> Int`, which matches `Container (x ::
+_)` to `x` and then `Container []` to 0. `testValue` is `headOfContainer
+(Container [ 42 ])`.
 -}
 constructorWithList : (Src.Module -> Expectation) -> (() -> Expectation)
 constructorWithList expectFn _ =
@@ -1411,7 +1402,7 @@ constructorWithList expectFn _ =
             , tipe = tLambda (tType "Container" []) (tType "Int" [])
             , body =
                 caseExpr (varExpr "c")
-                    [ ( pCtor "Container" [ pCons (pVar "x") (pVar "_") ], varExpr "x" )
+                    [ ( pCtor "Container" [ pCons (pVar "x") pAnything ], varExpr "x" )
                     , ( pCtor "Container" [ pList [] ], intExpr 0 )
                     ]
             }

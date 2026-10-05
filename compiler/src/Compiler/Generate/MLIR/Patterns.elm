@@ -1248,7 +1248,7 @@ testToTagInt test =
             -- return it — so the `effective` arm below is right for them with
             -- no special case, which is what keeps dispatch representation-
             -- agnostic (CGEN_079(c)).
-            if CtorTag.isEmbeddedConstantCtor ctorName then
+            if CtorTag.isEmbeddedConstantCtor home ctorName then
                 CtorTag.constantTag
 
             else

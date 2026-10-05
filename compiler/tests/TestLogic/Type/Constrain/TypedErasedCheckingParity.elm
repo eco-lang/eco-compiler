@@ -1,5 +1,6 @@
 module TestLogic.Type.Constrain.TypedErasedCheckingParity exposing
-    ( expectEquivalentTypeChecking
+    ( expectEquivalentRejection
+    , expectEquivalentTypeChecking
     , expectEquivalentTypeCheckingCanonical
     )
 
@@ -17,34 +18,31 @@ If the two paths disagreed, a module could be accepted on one and rejected on
 the other; these expectations exist to catch that, and to catch the typed path
 leaving an expression with no type.
 
-Both expectations run the two paths on one canonical module, and pass in
-exactly two cases:
+The expectations run the two paths on one canonical module. The paths
+_agree_ in exactly two cases:
 
-  - Both paths succeed, and every expression id in the module has a `Just`
-    entry in the typed path's `nodeTypes`. The ids are those of every
-    expression node reachable from the module's declarations, nested ones
-    included.
+  - Both paths succeed, they infer the same annotation for every top-level
+    name (compared as `Debug.toString` text), and every expression and pattern
+    id in the module has a `Just` entry in the typed path's `nodeTypes`. The
+    ids are those of every node reachable from the module's declarations,
+    nested ones included.
   - Both paths fail with the same number of errors, and the errors match
     pairwise in list order: the same constructor and the same region, and in
     addition the same category constructor for `BadExpr` and `BadPattern`
     (ignoring any payload the category carries) and the same variable name for
     `InfiniteType`.
 
-Any other outcome fails, with a message describing the difference.
-
-`expectEquivalentTypeChecking` starts from source and canonicalizes it first;
-`expectEquivalentTypeCheckingCanonical` starts from a canonical module.
+`expectEquivalentTypeChecking` (from source, canonicalizing first) and
+`expectEquivalentTypeCheckingCanonical` (from a canonical module) pass on
+either agreement. `expectEquivalentRejection` (from source) passes only on the
+second: it is for programs that must be rejected. Any other outcome fails, with
+a message describing the difference.
 
 Among what is not checked:
 
-  - When both paths succeed, their annotations are not compared, and neither
-    is any node type: only its presence.
-  - A pattern's own node id is never collected, so a pattern with no type
-    passes.
+  - When both paths succeed, the node types themselves: only their presence.
   - The types an error carries (actual, expected, or the infinite type), and
     the payload of a category.
-  - Whether the module is accepted: two matching failures pass as surely as
-    two successes.
 
 -}
 
@@ -149,175 +147,124 @@ the same way on the erased and the typed path.
 It canonicalizes as package `eco/example` against
 `Compiler.Elm.Interface.Basic.testIfaces`, and fails with the error count and
 a description of the first error if canonicalization fails. Otherwise it
-passes when both paths succeed and the typed path gives every expression id a
-node type, or when both fail with matching errors: the same count and,
-pairwise in order, the same constructor and region, the same category
-constructor for `BadExpr` and `BadPattern`, and the same variable name for
-`InfiniteType`. Annotations, and the types inside errors, are not compared.
+makes the comparison of `expectEquivalentTypeCheckingCanonical`.
 
 -}
 expectEquivalentTypeChecking : Src.Module -> Expect.Expectation
 expectEquivalentTypeChecking srcModule =
-    let
-        result =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
-    in
-    case Result.run result of
-        ( _, Err errors ) ->
-            let
-                errorList =
-                    OneOrMore.destruct (::) errors
+    case canonicalize srcModule of
+        Err msg ->
+            Expect.fail msg
 
-                errorCount =
-                    List.length errorList
+        Ok modul ->
+            expectFromParity (checkParity modul)
 
-                firstError =
-                    List.head errorList
-                        |> Maybe.map errorToString
-                        |> Maybe.withDefault "unknown"
-            in
-            Expect.fail
-                ("Canonicalization failed with "
-                    ++ String.fromInt errorCount
-                    ++ " error(s): "
-                    ++ firstError
-                )
 
-        ( _, Ok modul ) ->
-            let
-                standardResult =
-                    IO.unsafePerformIO (runStandardPath modul)
+{-| Creates an expectation that `srcModule`, once canonicalized, is rejected by
+both paths with matching errors. A program both paths accept fails it, so a
+catalogue of ill-typed programs checked with it fails if the type checker ever
+starts accepting one of them.
+-}
+expectEquivalentRejection : Src.Module -> Expect.Expectation
+expectEquivalentRejection srcModule =
+    case canonicalize srcModule of
+        Err msg ->
+            Expect.fail msg
 
-                withIdsResult =
-                    IO.unsafePerformIO (runWithIdsPath modul)
+        Ok modul ->
+            case checkParity modul of
+                Ok BothRejected ->
+                    Expect.pass
 
-                allExprIds =
-                    extractModuleExprIds modul
-            in
-            case ( standardResult, withIdsResult ) of
-                ( Ok _, Ok { nodeTypes } ) ->
-                    let
-                        nodeTypeIds =
-                            Array.foldl
-                                (\maybeType ( idx, acc ) ->
-                                    case maybeType of
-                                        Just _ ->
-                                            ( idx + 1, Set.insert idx acc )
+                Ok BothAccepted ->
+                    Expect.fail "Expected both paths to reject this program, but both accepted it"
 
-                                        Nothing ->
-                                            ( idx + 1, acc )
-                                )
-                                ( 0, Set.empty )
-                                nodeTypes
-                                |> Tuple.second
-
-                        missingIds =
-                            Set.diff allExprIds nodeTypeIds
-                    in
-                    if Set.isEmpty missingIds then
-                        Expect.pass
-
-                    else
-                        Expect.fail
-                            ("WithIds path succeeded but missing types for expression IDs: "
-                                ++ (Set.toList missingIds |> List.map String.fromInt |> String.join ", ")
-                                ++ "\nExpected IDs: "
-                                ++ (Set.toList allExprIds |> List.map String.fromInt |> String.join ", ")
-                                ++ "\nGot IDs: "
-                                ++ (Set.toList nodeTypeIds |> List.map String.fromInt |> String.join ", ")
-                            )
-
-                ( Err standardErrors, Err withIdsErrors ) ->
-                    let
-                        standardErrorList =
-                            NE.toList standardErrors
-
-                        withIdsErrorList =
-                            NE.toList withIdsErrors
-
-                        standardCount =
-                            List.length standardErrorList
-
-                        withIdsCount =
-                            List.length withIdsErrorList
-                    in
-                    if standardCount /= withIdsCount then
-                        Expect.fail
-                            ("Both paths failed but with different error counts. "
-                                ++ "Standard: "
-                                ++ String.fromInt standardCount
-                                ++ " error(s), WithIds: "
-                                ++ String.fromInt withIdsCount
-                                ++ " error(s)"
-                                ++ "\nStandard errors: "
-                                ++ (List.map typeErrorToString standardErrorList |> String.join "; ")
-                                ++ "\nWithIds errors: "
-                                ++ (List.map typeErrorToString withIdsErrorList |> String.join "; ")
-                            )
-
-                    else
-                        let
-                            mismatches =
-                                List.map2 compareTypeErrors standardErrorList withIdsErrorList
-                                    |> List.filterMap identity
-                        in
-                        if List.isEmpty mismatches then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("Both paths failed but with different error reasons:\n"
-                                    ++ String.join "\n" mismatches
-                                )
-
-                ( Ok _, Err withIdsErrors ) ->
-                    let
-                        errorList =
-                            NE.toList withIdsErrors
-                    in
-                    Expect.fail
-                        ("Standard path succeeded but WithIds path failed with "
-                            ++ String.fromInt (List.length errorList)
-                            ++ " error(s):\n"
-                            ++ (List.map typeErrorToString errorList |> String.join "\n")
-                        )
-
-                ( Err standardErrors, Ok _ ) ->
-                    let
-                        errorList =
-                            NE.toList standardErrors
-                    in
-                    Expect.fail
-                        ("WithIds path succeeded but standard path failed with "
-                            ++ String.fromInt (List.length errorList)
-                            ++ " error(s):\n"
-                            ++ (List.map typeErrorToString errorList |> String.join "\n")
-                        )
+                Err msg ->
+                    Expect.fail msg
 
 
 {-| Creates an expectation that the canonical module `modul` type-checks the
-same way on the erased and the typed path.
+same way on the erased and the typed path: both accept it, with the same
+annotations and a node type for every expression and pattern id, or both
+reject it with matching errors.
 
-It makes the same comparison as `expectEquivalentTypeChecking`, with no
-canonicalization step, so it suits a module built directly as canonical AST
-with its node ids already assigned.
+It suits a module built directly as canonical AST with its node ids already
+assigned.
 
 -}
 expectEquivalentTypeCheckingCanonical : Can.Module -> Expect.Expectation
 expectEquivalentTypeCheckingCanonical modul =
+    expectFromParity (checkParity modul)
+
+
+{-| How the two paths agreed: both accepted the module, or both rejected it with
+matching errors.
+-}
+type Agreement
+    = BothAccepted
+    | BothRejected
+
+
+{-| Turns the result of `checkParity` into an expectation that passes on either
+agreement.
+-}
+expectFromParity : Result String Agreement -> Expect.Expectation
+expectFromParity parity =
+    case parity of
+        Ok _ ->
+            Expect.pass
+
+        Err msg ->
+            Expect.fail msg
+
+
+{-| Canonicalizes `srcModule` as package `eco/example` against
+`Basic.testIfaces`, or describes the count and first error of a failure.
+-}
+canonicalize : Src.Module -> Result String Can.Module
+canonicalize srcModule =
+    case Result.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
+        ( _, Err errors ) ->
+            let
+                errorList =
+                    OneOrMore.destruct (::) errors
+            in
+            Err
+                ("Canonicalization failed with "
+                    ++ String.fromInt (List.length errorList)
+                    ++ " error(s): "
+                    ++ String.join "; " (List.map errorToString errorList)
+                )
+
+        ( _, Ok modul ) ->
+            Ok modul
+
+
+{-| Runs both paths on `modul` and compares them, giving how they agreed or a
+description of how they differ.
+
+When both accept, the annotations they infer must be equal, compared as
+printed `(name, annotation)` lists, and every expression and pattern id in the
+module must have a `Just` entry in the typed path's `nodeTypes`. When both
+reject, the errors must match pairwise as `compareTypeErrors` decides, and be
+as many.
+
+-}
+checkParity : Can.Module -> Result String Agreement
+checkParity modul =
     let
         standardResult =
             IO.unsafePerformIO (runStandardPath modul)
 
         withIdsResult =
             IO.unsafePerformIO (runWithIdsPath modul)
-
-        allExprIds =
-            extractModuleExprIds modul
     in
     case ( standardResult, withIdsResult ) of
-        ( Ok _, Ok { nodeTypes } ) ->
+        ( Ok standardAnnotations, Ok { annotations, nodeTypes } ) ->
             let
+                allIds =
+                    extractModuleNodeIds modul
+
                 nodeTypeIds =
                     Array.foldl
                         (\maybeType ( idx, acc ) ->
@@ -333,17 +280,26 @@ expectEquivalentTypeCheckingCanonical modul =
                         |> Tuple.second
 
                 missingIds =
-                    Set.diff allExprIds nodeTypeIds
+                    Set.diff allIds nodeTypeIds
+
+                annotationDiffs =
+                    compareAnnotations standardAnnotations annotations
             in
-            if Set.isEmpty missingIds then
-                Expect.pass
+            if not (List.isEmpty annotationDiffs) then
+                Err
+                    ("Both paths succeeded but inferred different annotations:\n"
+                        ++ String.join "\n" annotationDiffs
+                    )
+
+            else if Set.isEmpty missingIds then
+                Ok BothAccepted
 
             else
-                Expect.fail
-                    ("WithIds path succeeded but missing types for expression IDs: "
+                Err
+                    ("WithIds path succeeded but missing types for node IDs: "
                         ++ (Set.toList missingIds |> List.map String.fromInt |> String.join ", ")
                         ++ "\nExpected IDs: "
-                        ++ (Set.toList allExprIds |> List.map String.fromInt |> String.join ", ")
+                        ++ (Set.toList allIds |> List.map String.fromInt |> String.join ", ")
                         ++ "\nGot IDs: "
                         ++ (Set.toList nodeTypeIds |> List.map String.fromInt |> String.join ", ")
                     )
@@ -363,7 +319,7 @@ expectEquivalentTypeCheckingCanonical modul =
                     List.length withIdsErrorList
             in
             if standardCount /= withIdsCount then
-                Expect.fail
+                Err
                     ("Both paths failed but with different error counts. "
                         ++ "Standard: "
                         ++ String.fromInt standardCount
@@ -383,10 +339,10 @@ expectEquivalentTypeCheckingCanonical modul =
                             |> List.filterMap identity
                 in
                 if List.isEmpty mismatches then
-                    Expect.pass
+                    Ok BothRejected
 
                 else
-                    Expect.fail
+                    Err
                         ("Both paths failed but with different error reasons:\n"
                             ++ String.join "\n" mismatches
                         )
@@ -396,7 +352,7 @@ expectEquivalentTypeCheckingCanonical modul =
                 errorList =
                     NE.toList withIdsErrors
             in
-            Expect.fail
+            Err
                 ("Standard path succeeded but WithIds path failed with "
                     ++ String.fromInt (List.length errorList)
                     ++ " error(s):\n"
@@ -408,12 +364,41 @@ expectEquivalentTypeCheckingCanonical modul =
                 errorList =
                     NE.toList standardErrors
             in
-            Expect.fail
+            Err
                 ("WithIds path succeeded but standard path failed with "
                     ++ String.fromInt (List.length errorList)
                     ++ " error(s):\n"
                     ++ (List.map typeErrorToString errorList |> String.join "\n")
                 )
+
+
+{-| Returns one line for each name whose annotation differs between the two
+paths, or that only one path has. Annotations are compared by their
+`Debug.toString` text, which prints a `Dict` as its sorted entries.
+-}
+compareAnnotations : Dict Name.Name (Can.Annotation Name) -> Dict Name.Name (Can.Annotation Name) -> List String
+compareAnnotations standard withIds =
+    Dict.merge
+        (\name _ acc -> (name ++ ": only on the erased path") :: acc)
+        (\name a b acc ->
+            let
+                aStr =
+                    Debug.toString a
+
+                bStr =
+                    Debug.toString b
+            in
+            if aStr == bStr then
+                acc
+
+            else
+                (name ++ ": erased " ++ aStr ++ " vs typed " ++ bStr) :: acc
+        )
+        (\name _ acc -> (name ++ ": only on the typed path") :: acc)
+        standard
+        withIds
+        []
+        |> List.reverse
 
 
 {-| Returns a one-line description of a type error for a failure message: its
@@ -517,7 +502,11 @@ tTypeToString tType =
             "( " ++ String.join ", " (List.map tTypeToString (a :: b :: cs)) ++ " )"
 
         T.Alias _ name args _ ->
-            name ++ " " ++ String.join " " (List.map (\( _, t ) -> tTypeToString t) args)
+            if List.isEmpty args then
+                name
+
+            else
+                name ++ " " ++ String.join " " (List.map (\( _, t ) -> tTypeToString t) args)
 
 
 {-| Returns an expression's expected type as text for a failure message,
@@ -947,15 +936,16 @@ runWithIdsPath modul =
             )
 
 
-{-| Returns the node id of every expression in the module's declarations.
+{-| Returns the node id of every expression and pattern in the module's
+declarations.
 -}
-extractModuleExprIds : Can.Module -> Set Int
-extractModuleExprIds (Can.Module { decls }) =
+extractModuleNodeIds : Can.Module -> Set Int
+extractModuleNodeIds (Can.Module { decls }) =
     extractDeclsExprIds decls
 
 
-{-| Returns the expression ids of every definition in a chain of declarations,
-recursive groups included.
+{-| Returns the expression and pattern ids of every definition in a chain of
+declarations, recursive groups included.
 -}
 extractDeclsExprIds : Can.Decls -> Set Int
 extractDeclsExprIds decls =
@@ -973,8 +963,7 @@ extractDeclsExprIds decls =
             Set.empty
 
 
-{-| Returns the expression ids of a definition's body. Its argument patterns
-are walked too, but contribute none (see `extractPatternExprIds`).
+{-| Returns the ids of a definition's argument patterns and of its body.
 -}
 extractDefExprIds : Can.Def -> Set Int
 extractDefExprIds def =
@@ -1115,53 +1104,52 @@ extractExprNodeIds node =
             Set.empty
 
 
-{-| Returns the empty set for every pattern.
-
-It walks the nested sub-patterns, but a pattern contains no expression, and
-the node id each pattern carries is never collected.
-
+{-| Returns the id of a pattern together with the ids of every pattern nested
+inside it.
 -}
 extractPatternExprIds : Can.Pattern -> Set Int
-extractPatternExprIds (A.At _ { node }) =
-    case node of
-        Can.PAnything ->
-            Set.empty
+extractPatternExprIds (A.At _ { id, node }) =
+    Set.insert id
+        (case node of
+            Can.PAnything ->
+                Set.empty
 
-        Can.PVar _ ->
-            Set.empty
+            Can.PVar _ ->
+                Set.empty
 
-        Can.PRecord _ ->
-            Set.empty
+            Can.PRecord _ ->
+                Set.empty
 
-        Can.PAlias pattern _ ->
-            extractPatternExprIds pattern
+            Can.PAlias pattern _ ->
+                extractPatternExprIds pattern
 
-        Can.PUnit ->
-            Set.empty
+            Can.PUnit ->
+                Set.empty
 
-        Can.PTuple a b rest ->
-            List.foldl
-                (\p acc -> Set.union (extractPatternExprIds p) acc)
-                (Set.union (extractPatternExprIds a) (extractPatternExprIds b))
-                rest
+            Can.PTuple a b rest ->
+                List.foldl
+                    (\p acc -> Set.union (extractPatternExprIds p) acc)
+                    (Set.union (extractPatternExprIds a) (extractPatternExprIds b))
+                    rest
 
-        Can.PList patterns ->
-            List.foldl (\p acc -> Set.union (extractPatternExprIds p) acc) Set.empty patterns
+            Can.PList patterns ->
+                List.foldl (\p acc -> Set.union (extractPatternExprIds p) acc) Set.empty patterns
 
-        Can.PCons head tail ->
-            Set.union (extractPatternExprIds head) (extractPatternExprIds tail)
+            Can.PCons head tail ->
+                Set.union (extractPatternExprIds head) (extractPatternExprIds tail)
 
-        Can.PBool _ _ ->
-            Set.empty
+            Can.PBool _ _ ->
+                Set.empty
 
-        Can.PChr _ ->
-            Set.empty
+            Can.PChr _ ->
+                Set.empty
 
-        Can.PStr _ _ ->
-            Set.empty
+            Can.PStr _ _ ->
+                Set.empty
 
-        Can.PInt _ ->
-            Set.empty
+            Can.PInt _ ->
+                Set.empty
 
-        Can.PCtor { args } ->
-            List.foldl (\(Can.PatternCtorArg _ _ p) acc -> Set.union (extractPatternExprIds p) acc) Set.empty args
+            Can.PCtor { args } ->
+                List.foldl (\(Can.PatternCtorArg _ _ p) acc -> Set.union (extractPatternExprIds p) acc) Set.empty args
+        )

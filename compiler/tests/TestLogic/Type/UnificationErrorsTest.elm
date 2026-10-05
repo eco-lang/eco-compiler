@@ -7,8 +7,9 @@ mismatch where there is none would reject a correct one; these tests are built
 to catch either.
 
 Each test builds a small module with
-`Compiler.AST.SourceBuilder.makeModuleWithDefs`: unannotated top-level values,
-in a module that imports `Basics` and `List`. It passes the module to
+`Compiler.AST.SourceBuilder.makeModuleWithDefs`, unannotated top-level values,
+or, for the first test, `makeModuleWithTypedDefs`, annotated ones, in a module
+that imports `Basics` and `List`. It passes the module to
 `expectTypeMismatchError` or `expectNoTypeErrors` from
 `TestLogic.Type.UnificationErrors`, which describes how the module is checked
 and which errors count as a mismatch. A comment inside each test of the
@@ -24,7 +25,12 @@ never is.
 
 The mismatch group expects a mismatch error for:
 
+  - `f : String -> String` applied to `42`, in `x : String`;
   - an integer literal as the condition of an `if`;
+  - an integer literal as the condition of an `if` whose `else` branch is
+    another `if`;
+  - an `if` whose `else` branch is another `if`, used as an operand of `++`
+    while its branches are integer literals;
   - an `if` whose branches are an integer literal and a string;
   - a list of an integer literal and a string;
   - a `case` whose branches give an integer literal and a string;
@@ -33,9 +39,11 @@ The mismatch group expects a mismatch error for:
     pair, as the middle and as the first element of a triple, and as the last
     element of a pair.
 
-The group's first test is an exception. It applies the unannotated `f s = s`,
-whose type is `a -> a`, to `42`, and expects no type errors. Its label names
-an `Int` and `String` mismatch, but the program holds no string.
+The two nested-`if` tests check the outer level of an `if` chain: its
+condition and the tie between its type and its context. Both were once lost
+under the JavaScript backend, where the stack-safe `if` walk in
+`Compiler.Type.Constrain.Typed.Expression` built each level's constraint with
+the innermost level's conditions and expectation.
 
 The valid group expects no type errors for:
 
@@ -70,8 +78,7 @@ suite =
 
 
 {-| The mismatch group: tests that build an ill-typed module and expect a
-mismatch error, after a first test that builds a well-typed application and
-expects no type errors.
+mismatch error.
 -}
 typeMismatchTests : Test
 typeMismatchTests =
@@ -79,21 +86,25 @@ typeMismatchTests =
         [ Test.test "Int vs String in function argument" <|
             \_ ->
                 let
+                    -- f : String -> String
                     -- f s = s
+                    -- x : String
                     -- x = f 42
                     modul =
-                        SB.makeModuleWithDefs "TypeMismatch"
-                            [ ( "f"
-                              , [ SB.pVar "s" ]
-                              , SB.varExpr "s"
-                              )
-                            , ( "x"
-                              , []
-                              , SB.callExpr (SB.varExpr "f") [ SB.intExpr 42 ]
-                              )
+                        SB.makeModuleWithTypedDefs "TypeMismatch"
+                            [ { name = "f"
+                              , args = [ SB.pVar "s" ]
+                              , tipe = SB.tLambda (SB.tType "String" []) (SB.tType "String" [])
+                              , body = SB.varExpr "s"
+                              }
+                            , { name = "x"
+                              , args = []
+                              , tipe = SB.tType "String" []
+                              , body = SB.callExpr (SB.varExpr "f") [ SB.intExpr 42 ]
+                              }
                             ]
                 in
-                expectNoTypeErrors modul
+                expectTypeMismatchError modul
         , Test.test "Int in if condition" <|
             \_ ->
                 let
@@ -106,6 +117,45 @@ typeMismatchTests =
                                     (SB.intExpr 42)
                                     (SB.intExpr 1)
                                     (SB.intExpr 2)
+                              )
+                            ]
+                in
+                expectTypeMismatchError modul
+        , Test.test "Int in the outer condition of an if chain" <|
+            \_ ->
+                let
+                    -- x = if 42 then 1 else if True then 2 else 3
+                    modul =
+                        SB.makeModuleWithDefs "IfChainCondMismatch"
+                            [ ( "x"
+                              , []
+                              , SB.ifExpr
+                                    (SB.intExpr 42)
+                                    (SB.intExpr 1)
+                                    (SB.ifExpr (SB.boolExpr True) (SB.intExpr 2) (SB.intExpr 3))
+                              )
+                            ]
+                in
+                expectTypeMismatchError modul
+        , Test.test "if chain of numbers used as a String" <|
+            \_ ->
+                let
+                    -- x = (if True then 1 else if False then 2 else 3) ++ "a"
+                    modul =
+                        SB.makeModuleWithDefs "IfChainResultMismatch"
+                            [ ( "x"
+                              , []
+                              , SB.binopsExpr
+                                    [ ( SB.parensExpr
+                                            (SB.ifExpr
+                                                (SB.boolExpr True)
+                                                (SB.intExpr 1)
+                                                (SB.ifExpr (SB.boolExpr False) (SB.intExpr 2) (SB.intExpr 3))
+                                            )
+                                      , "++"
+                                      )
+                                    ]
+                                    (SB.strExpr "a")
                               )
                             ]
                 in

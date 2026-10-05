@@ -16,7 +16,8 @@ Each case builds one module named `Test` with
 a concrete type, any custom types that function matches on, and an annotated
 `testValue` that applies the function to its arguments. In every case but
 "Triple pattern" the function takes one argument and its body is a single
-`case` on it.
+`case` on it; in "Triple pattern" it takes three and its body is a `case` on a
+three-element tuple of them.
 
 The programs are built as Source AST rather than parsed, and two forms in them
 are ones the parser never gives. Sixteen of the twenty-six cases use
@@ -38,8 +39,8 @@ What the cases build, by section:
     followed by the wildcard, and three matches on integer literals followed by
     a variable branch. In two of these the variable is `x`, tested with `if`.
   - Tuple patterns: `( a, b )`, `( a, _ )` with the wildcard, and
-    `( ( a, b ), c )`, each the only branch. "Triple pattern" has no `case` and
-    no tuple: its function takes three `Int` arguments.
+    `( ( a, b ), c )`, each the only branch, and `( x, y, z )` matched against
+    a three-element tuple built from the function's three `Int` arguments.
   - List patterns: `[]`, `_ :: []`, `a :: b :: []`, `_ :: rest` in a recursive
     length, and `first :: _` on a `List (List Int)`, each made exhaustive by a
     `[]` branch or a trailing `_` variable.
@@ -47,7 +48,7 @@ What the cases build, by section:
 Among what is not tested:
 
   - The value a program computes. No case here checks it.
-  - Three-element tuple, record, unit and `as` patterns.
+  - Record, unit and `as` patterns.
   - Custom types with type parameters.
   - A character, string or integer literal pattern inside another pattern.
 
@@ -76,11 +77,13 @@ import Compiler.AST.SourceBuilder
         , pList
         , pStr
         , pTuple
+        , pTuple3
         , pVar
         , strExpr
         , tLambda
         , tTuple
         , tType
+        , tuple3Expr
         , tupleExpr
         , varExpr
         )
@@ -980,7 +983,7 @@ conditionalInFallbackTest expectFn _ =
 
 
 {-| Returns the cases labelled as tuple patterns, each to be checked with
-`expectFn`. One of them, "Triple pattern", matches no tuple.
+`expectFn`.
 -}
 tuplePatternCases : (Src.Module -> Expectation) -> List TestCase
 tuplePatternCases expectFn =
@@ -1109,9 +1112,9 @@ nestedTuplePatternTest expectFn _ =
 
 
 {-| Checks with `expectFn` a program whose
-`sumTriple : Int -> Int -> Int -> Int` binds its three arguments to variables
-and gives `a + b + c`. `testValue` is `sumTriple 1 2 3`. Despite the case's
-label, the program has no `case` and no tuple.
+`sumTriple : Int -> Int -> Int -> Int` matches the three-element tuple
+`( a, b, c )` of its arguments against the pattern `( x, y, z )` and gives
+`x + y + z`. `testValue` is `sumTriple 1 2 3`.
 -}
 triplePatternTest : (Src.Module -> Expectation) -> (() -> Expectation)
 triplePatternTest expectFn _ =
@@ -1126,7 +1129,11 @@ triplePatternTest expectFn _ =
                         (tLambda (tType "Int" []) (tType "Int" []))
                     )
             , body =
-                binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "c")
+                caseExpr (tuple3Expr (varExpr "a") (varExpr "b") (varExpr "c"))
+                    [ ( pTuple3 (pVar "x") (pVar "y") (pVar "z")
+                      , binopsExpr [ ( varExpr "x", "+" ), ( varExpr "y", "+" ) ] (varExpr "z")
+                      )
+                    ]
             }
 
         testValueDef : TypedDef

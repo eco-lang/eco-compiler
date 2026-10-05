@@ -19,8 +19,9 @@ Every program is built with `makeKernelModule`: a module `Test` whose one value,
   - Float division: `10.0 / 3.0`.
   - Integer division: `10 // 3`.
   - Power: `2 ^ 10`.
-  - Pipe: `5 |> Elm.Kernel.Basics.abs`, which pipes into the kernel-qualified
-    name `Elm.Kernel.Basics.abs` rather than into `Basics.abs`.
+  - Pipe: `5 |> Elm.Kernel.Basics.toFloat`, which pipes into the
+    kernel-qualified name `Elm.Kernel.Basics.toFloat`, a kernel the C++ kernel
+    exports, rather than into `Basics.toFloat`.
   - Cons: `0 :: [ 1, 2 ]`.
   - Append: `[ 1 ] ++ [ 2 ]`, on lists.
 
@@ -54,7 +55,7 @@ testCases expectFn =
     , { label = "Float division", run = \_ -> expectFn (makeKernelModule "testValue" (binopsExpr [ ( floatExpr 10.0, "/" ) ] (floatExpr 3.0))) }
     , { label = "Integer division", run = \_ -> expectFn (makeKernelModule "testValue" (binopsExpr [ ( intExpr 10, "//" ) ] (intExpr 3))) }
     , { label = "Power operator", run = \_ -> expectFn (makeKernelModule "testValue" (binopsExpr [ ( intExpr 2, "^" ) ] (intExpr 10))) }
-    , { label = "Pipe operator", run = \_ -> expectFn (makeKernelModule "testValue" (binopsExpr [ ( intExpr 5, "|>" ) ] (qualVarExpr "Elm.Kernel.Basics" "abs"))) }
+    , { label = "Pipe operator", run = \_ -> expectFn (makeKernelModule "testValue" (binopsExpr [ ( intExpr 5, "|>" ) ] (qualVarExpr "Elm.Kernel.Basics" "toFloat"))) }
     , { label = ":: cons operator", run = \_ -> expectFn (makeKernelModule "testValue" (binopsExpr [ ( intExpr 0, "::" ) ] (listExpr [ intExpr 1, intExpr 2 ]))) }
     , { label = "++ append operator", run = \_ -> expectFn (makeKernelModule "testValue" (binopsExpr [ ( listExpr [ intExpr 1 ], "++" ) ] (listExpr [ intExpr 2 ]))) }
     ]

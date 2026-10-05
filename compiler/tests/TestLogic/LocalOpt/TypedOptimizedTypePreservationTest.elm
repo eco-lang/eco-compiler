@@ -16,18 +16,19 @@ the same case module.
 What `suite` establishes, for each program it reaches:
 
   - Typed optimization completes.
-  - In the expressions the check visits, every local variable use has the type
-    recorded where the name is bound.
+  - In the expressions the check visits, every local variable use, and every
+    reference to a member of a recursive group, has the type recorded where
+    the name is bound.
   - Every kernel reference it visits has the type of that kernel's entry in
     the kernel type environment.
   - Every case branch it visits, whether held inline in the decision tree or
     reached by a jump, has the type of the case.
-  - Every unit literal it visits has type `()`; one typed by a type variable
-    also passes.
+  - Every literal it visits other than an `Int` has its fixed type: `()`,
+    `Basics.Bool`, `Basics.Float`, `Char.Char` or `String.String`.
 
-Among what is not tested: the types of literals other than unit, of global
-references, of functions, calls, `let`, `if` and destructuring. A local
-variable or kernel reference with no entry in the check's environment passes.
+Among what is not tested: the types of `Int` literals, of global references,
+of functions, calls, `let`, `if` and destructuring. A local variable or kernel
+reference with no entry in the check's environment passes.
 
 -}
 

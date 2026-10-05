@@ -21,17 +21,19 @@ inlined into `testValue` and its `a` is not renamed, `testValue`'s body binds
 and `InlineSimplify.optimize` is run on the resulting graph with
 `inlineConfig`.
 
-The test establishes:
+The tests establish:
 
   - "an inlined Destruct binder does not shadow a caller binder": after the
     pass, no `Define` or `TrackedDefine` body in the graph binds any name more
     than once, as `binders` counts binders. The check reads the names bound,
     not the value `testValue` computes.
+  - "split is inlined into testValue, ...": after the pass, `testValue`'s body
+    no longer refers to `split` and binds exactly two names beginning with
+    `a`, its own and the renamed copy of `split`'s. Without the inlining the
+    first test would have nothing to catch.
 
 Among what is not tested:
 
-  - That `split` is inlined at all. If the pass left the call in place, no
-    body would bind a name twice and the test would pass.
   - The value `testValue` computes after the pass.
   - Binders inside a `case`, a record, a record update or a tail call, which
     `binders` does not look at, and the bodies of `Cycle` nodes. The fixture
@@ -71,8 +73,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| The one test described in the module docstring. It fails with the
-pipeline's message if `runToAssigned` fails, and otherwise names each
+{-| The two tests described in the module docstring. Each fails with the
+pipeline's message if `runToAssigned` fails. The first otherwise names each
 top-level body that binds a name more than once, with the repeated names.
 -}
 suite : Test
@@ -100,6 +102,31 @@ suite =
                                 ("a name is bound twice in one top-level body after inlining: "
                                     ++ String.join ", " dupes
                                 )
+        , Test.test "split is inlined into testValue, so the capture check has a copy to look at" <|
+            \_ ->
+                -- Without the inlining there is nothing for the test above to
+                -- catch. After it, `testValue` binds its own `a` and split's
+                -- destructured `a` under a renamed name, and no longer calls
+                -- `split`.
+                case Pipeline.runToAssigned captureModule of
+                    Err msg ->
+                        Expect.fail msg
+
+                    Ok assigned ->
+                        let
+                            ( after, _, _ ) =
+                                InlineSimplify.optimize inlineConfig assigned.mvarState assigned.graph
+                        in
+                        case topLevelBody after "testValue" of
+                            Nothing ->
+                                Expect.fail "found no testValue body"
+
+                            Just body ->
+                                Expect.equal
+                                    { callsSplit = False, namesStartingWithA = 2 }
+                                    { callsSplit = mentionsGlobal "split" body
+                                    , namesStartingWithA = List.length (List.filter (String.startsWith "a") (binders body))
+                                    }
         ]
 
 
@@ -143,6 +170,76 @@ duplicateBinders (TOpt.GlobalGraph nodes _ _ _ _) =
         )
         []
         nodes
+
+
+{-| Returns the body of the `Define` or `TrackedDefine` node whose value name
+is `name`, in any module.
+-}
+topLevelBody : TOpt.GlobalGraph TypeIds.MVarId -> Name -> Maybe (TOpt.Expr TypeIds.MVarId)
+topLevelBody (TOpt.GlobalGraph nodes _ _ _ _) name =
+    Data.Map.foldl
+        (\(TOpt.Global _ n) node acc ->
+            if n == name then
+                case bodyExpr node of
+                    Just e ->
+                        Just e
+
+                    Nothing ->
+                        acc
+
+            else
+                acc
+        )
+        Nothing
+        nodes
+
+
+{-| Returns whether `expr` refers to the global whose value name is `name`,
+looking where `binders` looks.
+-}
+mentionsGlobal : Name -> TOpt.Expr TypeIds.MVarId -> Bool
+mentionsGlobal name expr =
+    case expr of
+        TOpt.VarGlobal _ (TOpt.Global _ n) _ ->
+            n == name
+
+        TOpt.Let def body _ ->
+            (case def of
+                TOpt.Def _ _ bound _ ->
+                    mentionsGlobal name bound
+
+                TOpt.TailDef _ _ _ b _ _ ->
+                    mentionsGlobal name b
+            )
+                || mentionsGlobal name body
+
+        TOpt.Destruct _ body _ ->
+            mentionsGlobal name body
+
+        TOpt.Function _ _ body _ ->
+            mentionsGlobal name body
+
+        TOpt.TrackedFunction _ _ body _ ->
+            mentionsGlobal name body
+
+        TOpt.Call _ f args _ ->
+            List.any (mentionsGlobal name) (f :: args)
+
+        TOpt.If branches final _ ->
+            List.any (\( c, t ) -> mentionsGlobal name c || mentionsGlobal name t) branches
+                || mentionsGlobal name final
+
+        TOpt.Tuple _ a b rest _ ->
+            List.any (mentionsGlobal name) (a :: b :: rest)
+
+        TOpt.List _ items _ ->
+            List.any (mentionsGlobal name) items
+
+        TOpt.Access inner _ _ _ ->
+            mentionsGlobal name inner
+
+        _ ->
+            False
 
 
 {-| Returns the body of a `Define` or `TrackedDefine` node, and `Nothing` for

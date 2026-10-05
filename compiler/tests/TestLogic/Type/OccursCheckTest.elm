@@ -17,18 +17,17 @@ definitions, importing `Basics` and `List`. The expectations come from
 type checking and PostSolve.
 
   - "self-referential through function application" builds module `SelfRef`
-    defining `f x = f`. `expectInfiniteTypeDetected` passes when the module
-    fails to canonicalize or type check, without looking at the error.
+    defining `f x = f`, and "self-application" builds module `SelfApply`
+    defining `apply x = x x`. `expectInfiniteTypeDetected` passes only when the
+    solver rejects the module with an infinite-type error naming `f`, or the
+    argument `x` respectively.
   - "simple identity function" (`id x = x`), "composition function"
     (`compose f g x = f (g x)`) and "nested data structures"
     (`nested = [ ( 1, "a" ), ( 2, "b" ) ]`) each pass under
-    `expectNoInfiniteTypes` when the module gets through PostSolve. That
-    expectation's walk of the node types never reports anything, so these tests
-    check only that the module is accepted.
+    `expectNoInfiniteTypes` when the module gets through PostSolve.
 
-Among what is not tested: that the rejection of `f x = f` is an infinite-type
-error rather than some other error, the name such an error carries, infinite
-types arising in a `let` or a lambda, and annotated definitions.
+Among what is not tested: infinite types arising in a `let` or a lambda, and
+annotated definitions.
 
 -}
 
@@ -37,7 +36,7 @@ import Test exposing (Test)
 import TestLogic.Type.OccursCheck exposing (expectInfiniteTypeDetected, expectNoInfiniteTypes)
 
 
-{-| The occurs-check tests: one program that must be rejected and three that
+{-| The occurs-check tests: two programs that must be rejected and three that
 must be accepted.
 -}
 suite : Test
@@ -48,8 +47,8 @@ suite =
         ]
 
 
-{-| The test that `f x = f` is rejected. The test passes when the module fails
-to canonicalize or type check, for any reason.
+{-| The tests that `f x = f` and `apply x = x x` are rejected with an
+infinite-type error.
 -}
 infiniteTypeTests : Test
 infiniteTypeTests =
@@ -66,7 +65,20 @@ infiniteTypeTests =
                               )
                             ]
                 in
-                expectInfiniteTypeDetected modul
+                expectInfiniteTypeDetected "f" modul
+        , -- x is applied to itself: x : a and a = a -> b.
+          Test.test "self-application" <|
+            \_ ->
+                let
+                    modul =
+                        SB.makeModuleWithDefs "SelfApply"
+                            [ ( "apply"
+                              , [ SB.pVar "x" ]
+                              , SB.callExpr (SB.varExpr "x") [ SB.varExpr "x" ]
+                              )
+                            ]
+                in
+                expectInfiniteTypeDetected "x" modul
         ]
 
 

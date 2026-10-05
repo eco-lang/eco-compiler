@@ -1,50 +1,54 @@
-module TestLogic.Generate.CodeGen.JumpTarget exposing (expectJumpTarget)
+module TestLogic.Generate.CodeGen.JumpTarget exposing (expectJumpTarget, checkJumpTargets)
 
-{-| A jump in generated MLIR that names no joinpoint, or passes it the wrong
-arguments, is a broken program that no type in `Mlir.Mlir` rules out. This
-module checks the jumps in the MLIR generated for one source module.
+{-| A jump in generated MLIR that names no enclosing joinpoint, or passes it
+the wrong arguments, is a broken program that no type in `Mlir.Mlir` rules
+out. This module checks the jumps in the MLIR generated for one source module.
 
 A _joinpoint_ is an `eco.joinpoint` op, identified by its integer `id`
 attribute. Its parameters are the arguments of the entry block of its first
-region. A _jump_ is an `eco.jump` op. Its `target` attribute names a joinpoint
-by `id`, and its operands are the arguments it passes to that joinpoint's
-parameters.
+(body) region. A _jump_ is an `eco.jump` op. Its `target` attribute names a
+joinpoint by `id`, and its operands are the arguments it passes to that
+joinpoint's parameters. A jump re-enters a joinpoint it is nested in (in its
+body or its continuation region), so the target must _enclose_ the jump.
 
 `expectJumpTarget` compiles the module with `runToMlir` and checks each
-top-level `func.func` on its own. It collects the joinpoints at any depth in the
-function by `id`, and then reports each jump in the function that:
+top-level `func.func` on its own, walking it with the joinpoints that enclose
+the current op. It reports each jump that:
 
   - has no integer `target` attribute;
-  - has a `target` that no joinpoint in the same function has as its `id`;
-  - has a different number of operands from the joinpoint's parameters;
-  - records in its `_operand_types` attribute a type that differs from the
+  - has a `target` that no enclosing joinpoint has as its `id`;
+  - has a different number of operands from that joinpoint's parameters
+    (the innermost enclosing one with the `id`);
+  - has an operand whose defined type (from the op result or block argument
+    that introduces it in the function,
+    `TestLogic.Generate.CodeGen.Invariants.typeEnvOfOp`) differs from the
     joinpoint's parameter type at the same position.
 
-The joinpoint need not enclose the jump: one with a matching `id` anywhere in
-the same function is accepted. When two joinpoints in a function share an `id`,
-a jump is checked against the one found last in a depth-first walk of the
-function. A jump without `_operand_types` has its argument types left
-unchecked.
+The code generator lowers tail recursion to `scf.while` loops
+(`Compiler.Generate.MLIR.TailRec`) and emits no `eco.joinpoint`, so on generated
+MLIR every `eco.jump` is reported: the only code that emits one,
+`Compiler.Generate.MLIR.Expr.generateTailCall`, is a fallback whose jump to
+joinpoint 0 has no joinpoint to land on.
 
 Among what is not checked: jumps and joinpoints outside a top-level
-`func.func`, whether a joinpoint id is unique, and whether a jump's operands
-really have the types its `_operand_types` attribute records.
+`func.func`, and whether a joinpoint id is unique.
 
-@docs expectJumpTarget
+@docs expectJumpTarget, checkJumpTargets
 
 -}
 
 import Compiler.AST.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import OrderedDict
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirRegion(..), MlirType)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
-        ( Violation
-        , extractOperandTypes
+        ( TypeEnv
+        , Violation
+        , allBlocks
         , findFuncOps
         , getIntAttr
+        , typeEnvOfOp
         , typesMatch
         , violationsToExpectation
         )
@@ -53,8 +57,8 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 {-| Returns an expectation that compiles `srcModule` to MLIR and passes when
 no jump in it breaks the rules in the module docstring. It fails with the
-compiler's message if compilation fails, and otherwise with the first violation
-found, as `violationsToExpectation` reports it.
+compiler's message if compilation fails, and otherwise with the violations
+found, as `violationsToExpectation` reports them.
 -}
 expectJumpTarget : Src.Module -> Expectation
 expectJumpTarget srcModule =
@@ -79,147 +83,69 @@ checkJumpTargets mlirModule =
 
 
 {-| Returns a violation for each jump at any depth in `funcOp` that does not fit
-the joinpoint it targets, looked up among the joinpoints of `funcOp`.
+the innermost joinpoint enclosing it with its target `id`.
 -}
 checkFunctionJumps : MlirOp -> List Violation
 checkFunctionJumps funcOp =
-    let
-        joinpointMap =
-            collectJoinpoints funcOp Dict.empty
-
-        jumps =
-            findJumpsInOp funcOp
-    in
-    List.filterMap (checkJumpTarget joinpointMap) jumps
+    checkOpJumps (typeEnvOfOp funcOp) Dict.empty funcOp
 
 
-{-| Adds `op`, if it is a joinpoint, and every joinpoint nested in its regions
-to `map`, keyed by `id`. Each is stored with its parameters, the arguments of
-its first region's entry block, or none if it has no region.
-
-A joinpoint without an integer `id` is left out. A joinpoint replaces one
-already in `map` with the same `id`, so the last one found wins.
-
+{-| Returns the jump violations of `op` and of every op nested in it, given the
+type environment of the function and the joinpoints enclosing `op`, by `id`,
+with their parameter types. A joinpoint encloses the ops of both its regions.
 -}
-collectJoinpoints : MlirOp -> Dict Int ( MlirOp, List ( String, Mlir.Mlir.MlirType ) ) -> Dict Int ( MlirOp, List ( String, Mlir.Mlir.MlirType ) )
-collectJoinpoints op map =
+checkOpJumps : TypeEnv -> Dict Int (List MlirType) -> MlirOp -> List Violation
+checkOpJumps env enclosing op =
     let
-        updatedMap =
+        inner =
             if op.name == "eco.joinpoint" then
                 case getIntAttr "id" op of
                     Just id ->
                         let
-                            argTypes =
+                            params =
                                 case List.head op.regions of
                                     Just (MlirRegion { entry }) ->
-                                        entry.args
+                                        List.map Tuple.second entry.args
 
                                     Nothing ->
                                         []
                         in
-                        Dict.insert id ( op, argTypes ) map
+                        Dict.insert id params enclosing
 
                     Nothing ->
-                        map
+                        enclosing
 
             else
-                map
-    in
-    List.foldl collectJoinpointsInRegion updatedMap op.regions
+                enclosing
 
-
-{-| Adds every joinpoint in the region to `map`, from the entry block first and
-then from the labelled blocks in order.
--}
-collectJoinpointsInRegion : MlirRegion -> Dict Int ( MlirOp, List ( String, Mlir.Mlir.MlirType ) ) -> Dict Int ( MlirOp, List ( String, Mlir.Mlir.MlirType ) )
-collectJoinpointsInRegion (MlirRegion { entry, blocks }) map =
-    let
-        entryMap =
-            collectJoinpointsInBlock entry map
-
-        allBlocks =
-            OrderedDict.values blocks
-    in
-    List.foldl collectJoinpointsInBlock entryMap allBlocks
-
-
-{-| Adds every joinpoint in the block to `map`, from its body ops first and then
-from its terminator.
--}
-collectJoinpointsInBlock : MlirBlock -> Dict Int ( MlirOp, List ( String, Mlir.Mlir.MlirType ) ) -> Dict Int ( MlirOp, List ( String, Mlir.Mlir.MlirType ) )
-collectJoinpointsInBlock block map =
-    let
-        bodyMap =
-            List.foldl collectJoinpoints map block.body
-    in
-    collectJoinpoints block.terminator bodyMap
-
-
-{-| Returns `op`, if it is an `eco.jump`, followed by every `eco.jump` nested in
-its regions.
--}
-findJumpsInOp : MlirOp -> List MlirOp
-findJumpsInOp op =
-    let
-        selfJumps =
+        selfViolations =
             if op.name == "eco.jump" then
-                [ op ]
+                checkJumpTarget env enclosing op |> Maybe.map List.singleton |> Maybe.withDefault []
 
             else
                 []
 
-        regionJumps =
-            List.concatMap findJumpsInRegion op.regions
+        nested =
+            List.concatMap
+                (\region ->
+                    allBlocks region
+                        |> List.concatMap (\block -> block.body ++ [ block.terminator ])
+                        |> List.concatMap (checkOpJumps env inner)
+                )
+                op.regions
     in
-    selfJumps ++ regionJumps
+    selfViolations ++ nested
 
 
-{-| Returns every `eco.jump` in the region, from the entry block first and then
-from the labelled blocks in order.
+{-| Returns the violation, if any, of `jumpOp` against the enclosing joinpoints
+in `enclosing`. In order, it reports a missing `target`, a `target` that no
+enclosing joinpoint has, or an operand count different from the joinpoint's
+parameter count, and otherwise the first type mismatch `checkJumpArgTypes`
+finds.
 -}
-findJumpsInRegion : MlirRegion -> List MlirOp
-findJumpsInRegion (MlirRegion { entry, blocks }) =
-    let
-        entryJumps =
-            findJumpsInBlock entry
-
-        allBlocks =
-            OrderedDict.values blocks
-
-        blockJumps =
-            List.concatMap findJumpsInBlock allBlocks
-    in
-    entryJumps ++ blockJumps
-
-
-{-| Returns every `eco.jump` in the block's body ops and then in its terminator.
-A jump that the block holds both in its body and as its terminator is listed
-twice.
--}
-findJumpsInBlock : MlirBlock -> List MlirOp
-findJumpsInBlock block =
-    let
-        bodyJumps =
-            List.concatMap findJumpsInOp block.body
-
-        terminatorJumps =
-            findJumpsInOp block.terminator
-    in
-    bodyJumps ++ terminatorJumps
-
-
-{-| Returns the violation, if any, of `jumpOp` against the joinpoints in
-`joinpointMap`. In order, it reports a missing `target`, a `target` not in the
-map, or an operand count different from the joinpoint's parameter count, and
-otherwise the first type mismatch `checkJumpArgTypes` finds.
--}
-checkJumpTarget : Dict Int ( MlirOp, List ( String, Mlir.Mlir.MlirType ) ) -> MlirOp -> Maybe Violation
-checkJumpTarget joinpointMap jumpOp =
-    let
-        maybeTargetId =
-            getIntAttr "target" jumpOp
-    in
-    case maybeTargetId of
+checkJumpTarget : TypeEnv -> Dict Int (List MlirType) -> MlirOp -> Maybe Violation
+checkJumpTarget env enclosing jumpOp =
+    case getIntAttr "target" jumpOp of
         Nothing ->
             Just
                 { opId = jumpOp.id
@@ -228,21 +154,21 @@ checkJumpTarget joinpointMap jumpOp =
                 }
 
         Just targetId ->
-            case Dict.get targetId joinpointMap of
+            case Dict.get targetId enclosing of
                 Nothing ->
                     Just
                         { opId = jumpOp.id
                         , opName = jumpOp.name
-                        , message = "eco.jump target " ++ String.fromInt targetId ++ " not found in enclosing joinpoints"
+                        , message = "eco.jump target " ++ String.fromInt targetId ++ " is not the id of any enclosing joinpoint"
                         }
 
-                Just ( _, expectedArgs ) ->
+                Just expectedTypes ->
                     let
                         jumpArgCount =
                             List.length jumpOp.operands
 
                         expectedArgCount =
-                            List.length expectedArgs
+                            List.length expectedTypes
                     in
                     if jumpArgCount /= expectedArgCount then
                         Just
@@ -258,64 +184,42 @@ checkJumpTarget joinpointMap jumpOp =
                             }
 
                     else
-                        checkJumpArgTypes jumpOp targetId expectedArgs
+                        checkJumpArgTypes env jumpOp targetId expectedTypes
 
 
-{-| Returns a violation for the first position at which the type recorded in
-`jumpOp`'s `_operand_types` attribute differs from the type of the parameter in
-`expectedArgs` at that position, or `Nothing` if none differs. `targetId` is
-used only in the message.
-
-A jump without `_operand_types` gets `Nothing`, since it has no recorded types
-to compare; nothing in this module reports the missing attribute. Positions
-past the end of the shorter of the two lists are not compared.
-
+{-| Returns a violation for the first operand of `jumpOp` whose defined type in
+`env` differs from the joinpoint parameter type in `expectedTypes` at that
+position, or that has no definition in `env`, or `Nothing` if none does.
+`targetId` is used only in the message.
 -}
-checkJumpArgTypes : MlirOp -> Int -> List ( String, Mlir.Mlir.MlirType ) -> Maybe Violation
-checkJumpArgTypes jumpOp targetId expectedArgs =
-    case extractOperandTypes jumpOp of
-        Nothing ->
-            Nothing
+checkJumpArgTypes : TypeEnv -> MlirOp -> Int -> List MlirType -> Maybe Violation
+checkJumpArgTypes env jumpOp targetId expectedTypes =
+    List.map2 Tuple.pair jumpOp.operands expectedTypes
+        |> List.indexedMap
+            (\i ( operand, expectedType ) ->
+                case Dict.get operand env of
+                    Nothing ->
+                        Just ("eco.jump arg " ++ String.fromInt i ++ " (" ++ operand ++ ") has no definition in its function")
 
-        Just jumpArgTypes ->
-            let
-                expectedTypes =
-                    List.map Tuple.second expectedArgs
+                    Just actual ->
+                        if typesMatch actual expectedType then
+                            Nothing
 
-                mismatches =
-                    List.indexedMap
-                        (\i ( jumpType, expectedType ) ->
-                            if typesMatch jumpType expectedType then
-                                Nothing
-
-                            else
-                                Just
-                                    { index = i
-                                    , jumpType = jumpType
-                                    , expectedType = expectedType
-                                    }
-                        )
-                        (List.map2 Tuple.pair jumpArgTypes expectedTypes)
-                        |> List.filterMap identity
-            in
-            case mismatches of
-                [] ->
-                    Nothing
-
-                first :: _ ->
-                    Just
-                        { opId = jumpOp.id
-                        , opName = jumpOp.name
-                        , message =
-                            "eco.jump arg "
-                                ++ String.fromInt first.index
-                                ++ " has type "
-                                ++ typeToString first.jumpType
-                                ++ " but joinpoint "
-                                ++ String.fromInt targetId
-                                ++ " expects "
-                                ++ typeToString first.expectedType
-                        }
+                        else
+                            Just
+                                ("eco.jump arg "
+                                    ++ String.fromInt i
+                                    ++ " has type "
+                                    ++ typeToString actual
+                                    ++ " but joinpoint "
+                                    ++ String.fromInt targetId
+                                    ++ " expects "
+                                    ++ typeToString expectedType
+                                )
+            )
+        |> List.filterMap identity
+        |> List.head
+        |> Maybe.map (\message -> { opId = jumpOp.id, opName = jumpOp.name, message = message })
 
 
 {-| Returns a short spelling of a type for a failure message: `i1` to `i64`

@@ -26,12 +26,29 @@ What the tests establish, for each program, through
 Among what is not tested:
 
   - an `eco.call` whose callee has no top-level `func.func` with a
-    `function_type`, or that has no `callee` or no `_operand_types` attribute;
+    `function_type`, that has no `callee`, or that has operands but no
+    `_operand_types` attribute;
   - the result types of a call;
-  - any program outside the catalogue.
+  - any program outside the catalogue, except `wideCtorCallTest`, which calls
+    the constructor function of a constructor whose field 24 is stored boxed.
 
 -}
 
+import Compiler.AST.SourceBuilder
+    exposing
+        ( TypedDef
+        , UnionDef
+        , callExpr
+        , caseExpr
+        , ctorExpr
+        , intExpr
+        , makeModuleWithTypedDefsUnionsAliases
+        , pCtor
+        , pVar
+        , tLambda
+        , tType
+        , varExpr
+        )
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.CodeGen.CallAbiConsistency exposing (expectCallAbiConsistency)
@@ -44,4 +61,47 @@ suite : Test
 suite =
     Test.describe "REP_ABI_001: Call ABI Consistency"
         [ StandardTestSuites.expectSuite expectCallAbiConsistency "passes call ABI consistency invariant"
+        , wideCtorCallTest
         ]
+
+
+{-| A call to the constructor function of a constructor with 25 `Int` fields.
+`computeCtorLayout` stores field 24 boxed, but by REP\_ABI\_001 every `Int`
+argument still crosses the call as `i64`, so the constructor function's
+parameter and the call's operand must agree. The program declares
+`type Wide = Wide Int ... Int` (25 fields), a `lastField : Wide -> Int` that
+matches it, and `testValue = lastField (Wide 0 1 ... 24)`.
+-}
+wideCtorCallTest : Test
+wideCtorCallTest =
+    Test.test "constructor with a field past the unboxed slot cap is called with matching operand types" <|
+        \_ ->
+            let
+                fieldNames =
+                    List.map (\i -> "f" ++ String.fromInt i) (List.range 0 24)
+
+                wideUnion : UnionDef
+                wideUnion =
+                    { name = "Wide"
+                    , args = []
+                    , ctors = [ { name = "Wide", args = List.map (\_ -> tType "Int" []) fieldNames } ]
+                    }
+
+                lastFieldDef : TypedDef
+                lastFieldDef =
+                    { name = "lastField"
+                    , args = [ pVar "w" ]
+                    , tipe = tLambda (tType "Wide" []) (tType "Int" [])
+                    , body = caseExpr (varExpr "w") [ ( pCtor "Wide" (List.map pVar fieldNames), varExpr "f24" ) ]
+                    }
+
+                testValueDef : TypedDef
+                testValueDef =
+                    { name = "testValue"
+                    , args = []
+                    , tipe = tType "Int" []
+                    , body = callExpr (varExpr "lastField") [ callExpr (ctorExpr "Wide") (List.map intExpr (List.range 0 24)) ]
+                    }
+            in
+            makeModuleWithTypedDefsUnionsAliases "Test" [ lastFieldDef, testValueDef ] [ wideUnion ] []
+                |> expectCallAbiConsistency

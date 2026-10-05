@@ -70,9 +70,11 @@ import Compiler.AST.SourceBuilder
         , pCons
         , pList
         , pVar
+        , qualVarExpr
         , tLambda
         , tType
         , tVar
+        , tupleExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -333,7 +335,7 @@ recursion.
 cycleWithValuesCases : (Src.Module -> Expectation) -> List TestCase
 cycleWithValuesCases expectFn =
     [ { label = "Value depending on recursive function", run = valueWithRecursiveFunction expectFn }
-    , { label = "Multiple values in recursive binding group", run = multipleValuesWithRecursion expectFn }
+    , { label = "Multiple values using a recursive function", run = multipleValuesWithRecursion expectFn }
     ]
 
 
@@ -385,7 +387,7 @@ valueWithRecursiveFunction expectFn _ =
 
 
 {-| Applies `expectFn` to a program with a self-recursive local function and
-two local values that call it, of which only `numbers` is used:
+two local values that call it, both used in the result:
 
     testValue =
         let
@@ -399,10 +401,10 @@ two local values that call it, of which only `numbers` is used:
             numbers =
                 countdown 5
 
-            sumVal =
+            shorter =
                 countdown 3
         in
-        numbers
+        ( numbers, shorter )
 
 -}
 multipleValuesWithRecursion : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -425,13 +427,13 @@ multipleValuesWithRecursion expectFn _ =
         numbers =
             define "numbers" [] (callExpr (varExpr "countdown") [ intExpr 5 ])
 
-        sumVal =
-            define "sumVal" [] (callExpr (varExpr "countdown") [ intExpr 3 ])
+        shorter =
+            define "shorter" [] (callExpr (varExpr "countdown") [ intExpr 3 ])
 
         modul =
             makeModule "testValue"
-                (letExpr [ countdown, numbers, sumVal ]
-                    (varExpr "numbers")
+                (letExpr [ countdown, numbers, shorter ]
+                    (tupleExpr (varExpr "numbers") (varExpr "shorter"))
                 )
     in
     expectFn modul
@@ -468,13 +470,14 @@ call each other:
                         transform nonEmpty
 
             transform xs =
-                process xs
+                process (List.drop 1 xs)
         in
         process [ 1, 2 ]
 
 Nothing in the two functions fixes the element type of the list they take or
 of the list they return, so both are polymorphic; `testValue` applies
-`process` to a list of integer literals.
+`process` to a list of integer literals. Each round drops one element, so the
+recursion ends.
 
 -}
 cycleWithPolymorphicFunctions : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -492,7 +495,9 @@ cycleWithPolymorphicFunctions expectFn _ =
         transformF =
             define "transform"
                 [ pVar "xs" ]
-                (callExpr (varExpr "process") [ varExpr "xs" ])
+                (callExpr (varExpr "process")
+                    [ callExpr (qualVarExpr "List" "drop") [ intExpr 1, varExpr "xs" ] ]
+                )
 
         modul =
             makeModule "testValue"
@@ -630,8 +635,8 @@ over a phantom type call each other:
 `Box a` is a phantom type: its constructor carries nothing, so a `Box a`
 holds no value of `a`, and nothing in the program fixes `a`. This makes `f` and
 `g` a benign polymorphic cycle. Unlike the other cases, the module is built with
-`makeModuleWithTypedDefsUnionsAliases`, which imports the standard set and
-names the module `testValue`.
+`makeModuleWithTypedDefsUnionsAliases`, which imports the standard set; the
+module is named `Test`, as in the other cases.
 
 -}
 mutualRecursionPhantomType : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -672,7 +677,7 @@ mutualRecursionPhantomType expectFn _ =
             }
 
         modul =
-            makeModuleWithTypedDefsUnionsAliases "testValue"
+            makeModuleWithTypedDefsUnionsAliases "Test"
                 [ fDef, gDef, mainDef ]
                 [ boxUnion ]
                 []

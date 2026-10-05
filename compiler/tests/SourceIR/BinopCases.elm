@@ -15,10 +15,8 @@ with no precedence applied.
 
 The programs, by section:
 
-  - Arithmetic: `1 + 2`, `5 - 3`, `4 * 5`, `10 // 3` and `10 % 3` on `Int`
-    literals, and `10.0 / 2.0` and `2.0 ^ 3.0` on `Float` literals. elm/core
-    has no `%` operator, so that program only resolves against a `Basics`
-    interface that declares one.
+  - Arithmetic: `1 + 2`, `5 - 3`, `4 * 5` and `10 // 3` on `Int` literals,
+    and `10.0 / 2.0` and `2.0 ^ 3.0` on `Float` literals.
   - Comparison: `1 == 1`, `1 /= 2`, `1 < 2`, `2 > 1`, `1 <= 1` and `2 >= 1`
     on `Int` literals, and `"a" < "b"`.
   - Logical: `True && False`, `True || False`, `True && True && True` and
@@ -121,7 +119,6 @@ arithmeticBinopCases expectFn =
     , { label = "Simple multiplication", run = simpleMultiplication expectFn }
     , { label = "Simple division", run = simpleDivision expectFn }
     , { label = "Integer division", run = integerDivision expectFn }
-    , { label = "Modulo", run = moduloOp expectFn }
     , { label = "Power", run = powerOp expectFn }
     ]
 
@@ -177,19 +174,6 @@ integerDivision expectFn _ =
     let
         modul =
             makeModule "testValue" (binopsExpr [ ( intExpr 10, "//" ) ] (intExpr 3))
-    in
-    expectFn modul
-
-
-{-| Applies `expectFn` to the program `10 % 3`. `%` is not an elm/core
-operator, so the program only resolves against a `Basics` interface that
-declares one.
--}
-moduloOp : (Src.Module -> Expectation) -> (() -> Expectation)
-moduloOp expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (binopsExpr [ ( intExpr 10, "%" ) ] (intExpr 3))
     in
     expectFn modul
 

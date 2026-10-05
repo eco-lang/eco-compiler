@@ -2,35 +2,43 @@ module TestLogic.Type.PostSolve.KernelTypes exposing (expectKernelTypesValid)
 
 {-| Gives tests a check on the kernel type environment that PostSolve
 produces, the table from which typed optimization later takes the types of
-kernel functions.
+kernel functions (POST\_002).
 
 A kernel function is one referenced as `Elm.Kernel.Home.name` (or with the
 `Eco` prefix). The kernel type environment is keyed by home module and
 function name; `Compiler.Type.KernelTypes` owns it and `Compiler.Type.PostSolve`
-builds it.
+builds it, recording for each kernel the type of its first usage.
 
-The check is much narrower than "kernel types are valid". It walks every
-entry's type and reports each type variable whose name is the empty string,
-labelled with the entry's `Home.name`. Any other type passes, including a bare
-type variable, and a record's extension variable is not looked at. A module
-that fails to canonicalize or type check fails with the pipeline's message.
+`expectKernelTypesValid` runs a module through PostSolve and looks at every
+call whose function is a kernel reference. Such a call is a usage PostSolve
+records a type from, so the environment must have an entry for the kernel, and
+the kernel reference's node type after PostSolve must be exactly that entry.
+A module with no direct kernel call fails, since there would be nothing to
+check. A module that fails to canonicalize or type check fails with the
+pipeline's message.
+
+Not checked: kernel references that are not the function of a call, and
+whether an entry agrees with the kernel's real type.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
+import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
-import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
-{-| Runs `srcModule` through PostSolve and passes when no entry of the
-resulting kernel type environment contains a type variable with an empty name.
+{-| Runs `srcModule` through PostSolve and passes when it calls at least one
+kernel function directly and every such call's kernel has an entry in the
+kernel type environment equal to the kernel reference's node type.
 
-It fails with one line per such variable outside a record's extension, or
-with the pipeline's message when canonicalization or type checking fails.
+It fails with one line per problem, or with the pipeline's message when
+canonicalization or type checking fails.
 
 -}
 expectKernelTypesValid : Src.Module -> Expect.Expectation
@@ -41,88 +49,58 @@ expectKernelTypesValid srcModule =
 
         Ok result ->
             let
+                kernelCalls =
+                    Helpers.walkExprs result.canonical
+                        |> List.filterMap
+                            (\exprNode ->
+                                case exprNode.node of
+                                    Can.Call (A.At _ funcInfo) _ ->
+                                        case funcInfo.node of
+                                            Can.VarKernel _ home name ->
+                                                Just ( funcInfo.id, home, name )
+
+                                            _ ->
+                                                Nothing
+
+                                    _ ->
+                                        Nothing
+                            )
+
                 issues =
-                    collectKernelTypeIssues result.kernelEnv
+                    List.filterMap (checkKernelCall result.kernelEnv result.nodeTypesPost) kernelCalls
             in
-            if List.isEmpty issues then
+            if List.isEmpty kernelCalls then
+                Expect.fail "The program calls no kernel function, so there is nothing to check"
+
+            else if List.isEmpty issues then
                 Expect.pass
 
             else
                 Expect.fail (String.join "\n" issues)
 
 
-
--- ============================================================================
--- KERNEL TYPE VERIFICATION
--- ============================================================================
-
-
-{-| Returns one message for each empty-named type variable, other than a
-record's extension variable, in any entry of `kernelEnv`, each labelled with
-the entry's `Home.name`.
+{-| Returns a description of what is wrong with one direct kernel call, whose
+function is the kernel reference with node id `funcId` to `home.name`, or
+`Nothing`.
 -}
-collectKernelTypeIssues : KernelTypes.KernelTypeEnv -> List String
-collectKernelTypeIssues kernelEnv =
-    Dict.foldl
-        (\( moduleName, funcName ) canType acc ->
-            let
-                context =
-                    moduleName ++ "." ++ funcName
-            in
-            checkKernelTypeWellFormed context canType ++ acc
-        )
-        []
-        kernelEnv
+checkKernelCall : KernelTypes.KernelTypeEnv -> Array.Array (Maybe (Can.Type Name)) -> ( Int, Name, Name ) -> Maybe String
+checkKernelCall kernelEnv nodeTypesPost ( funcId, home, name ) =
+    let
+        label =
+            home ++ "." ++ name ++ " (node " ++ String.fromInt funcId ++ "): "
+    in
+    case KernelTypes.lookup home name kernelEnv of
+        Nothing ->
+            Just (label ++ "no entry in the kernel type environment")
 
+        Just entry ->
+            case Array.get funcId nodeTypesPost |> Maybe.andThen identity of
+                Just nodeType ->
+                    if nodeType == entry then
+                        Nothing
 
-{-| Returns one message for each type variable with an empty name inside
-`canType`, each starting with `context`.
+                    else
+                        Just (label ++ "node type " ++ Debug.toString nodeType ++ " differs from the entry " ++ Debug.toString entry)
 
-The label gains " arg" or " result" on entering either side of a function
-type, and a dot and the field name on entering a record field; other nested
-types keep the label they were given. A record's extension variable is not
-examined. Nothing else about the type is checked.
-
--}
-checkKernelTypeWellFormed : String -> Can.Type Name -> List String
-checkKernelTypeWellFormed context canType =
-    case canType of
-        Can.TVar name ->
-            if String.isEmpty name then
-                [ context ++ ": Kernel type has empty type variable name" ]
-
-            else
-                []
-
-        Can.TLambda _ argType resultType ->
-            checkKernelTypeWellFormed (context ++ " arg") argType
-                ++ checkKernelTypeWellFormed (context ++ " result") resultType
-
-        Can.TType _ _ args ->
-            List.concatMap (checkKernelTypeWellFormed context) args
-
-        Can.TRecord fields _ ->
-            Dict.foldl
-                (\fieldName (Can.FieldType _ fieldType) acc ->
-                    checkKernelTypeWellFormed (context ++ "." ++ fieldName) fieldType ++ acc
-                )
-                []
-                fields
-
-        Can.TUnit ->
-            []
-
-        Can.TTuple a b cs ->
-            checkKernelTypeWellFormed context a
-                ++ checkKernelTypeWellFormed context b
-                ++ List.concatMap (checkKernelTypeWellFormed context) cs
-
-        Can.TAlias _ _ args aliasedType ->
-            List.concatMap (\( _, argType ) -> checkKernelTypeWellFormed context argType) args
-                ++ (case aliasedType of
-                        Can.Holey t ->
-                            checkKernelTypeWellFormed context t
-
-                        Can.Filled t ->
-                            checkKernelTypeWellFormed context t
-                   )
+                Nothing ->
+                    Just (label ++ "the kernel reference has no node type")

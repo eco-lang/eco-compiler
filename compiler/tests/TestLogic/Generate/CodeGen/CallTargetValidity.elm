@@ -1,42 +1,46 @@
 module TestLogic.Generate.CodeGen.CallTargetValidity exposing (expectCallTargetValidity)
 
 {-| A call in the generated MLIR that names a function the module does not
-define, or that reaches a trivial stub while another function with the same
-base name (both defined below) has a fuller body, is a code generation error.
-This module checks the MLIR generated for one test program for both.
+define, or that reaches an extern placeholder while a real definition of the
+same function exists, is a code generation error (CGEN\_044). This module checks
+the MLIR generated for one test program for both.
 
 The program is compiled to MLIR with `TestLogic.TestPipeline.runToMlir`. Every
 `eco.call` op, at any depth, is then looked up by its `callee` among the
 `func.func` ops at the top level of the module, keyed by their `sym_name`. A
 call is a violation when its callee names no top-level `func.func`, which
-includes a name that belongs to some other kind of op, or when its callee is a
-trivial stub and another function with the same base name is not.
+includes a name that belongs to some other kind of op, or when its callee is an
+extern placeholder and another function with the same base name is a real
+definition.
 
-A _trivial stub_ is a `func.func` whose first region's entry block has at
-most two body ops, all of them `arith.constant` or `eco.constant`, and an
-`eco.return` terminator. An empty entry block body qualifies, so a function
-whose entry block does nothing but return one of its arguments is a trivial
-stub too. A `func.func` with no region is not one.
+An _extern placeholder_ is the `func.func` that
+`Compiler.Generate.MLIR.Functions.generateExtern` emits for a `MonoExtern` node
+of the monomorphized graph: a body that only returns a default value, standing
+in for an implementation the linker provides. It is recognised through the
+graph, not by the shape of its body, so a real function whose body happens to
+fold to a constant is not mistaken for one. A function is matched to its node
+by the `_$_<SpecId>` suffix of its symbol; one that is not, such as a kernel
+declaration, is never a placeholder.
 
 The _base name_ of a symbol is the part before its last `_$_`, or the whole
 symbol when it has none. `Compiler.Generate.MLIR.Functions` names a
 specialized function with its module-qualified name, then `_$_`, then a
-specialization id, so functions that share a base name are usually
-specializations of one source function, possibly at different types, or
-`$cap`/`$clo` clones of one.
+specialization id, so functions that share a base name are specializations of
+one source function.
 
-An `eco.call` with no `callee` attribute is not checked. A failing expectation
-shows only the first violation, as
-`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
+An `eco.call` with no `callee` attribute is not checked.
 
 @docs expectCallTargetValidity
 
 -}
 
+import Array
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirRegion(..))
+import Mlir.Mlir exposing (MlirModule, MlirOp)
+import Set exposing (Set)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -50,8 +54,8 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 {-| Compiles `srcModule` to MLIR and returns an expectation that passes when
 no `eco.call` in the result is a violation, as the module docstring defines
-one: a callee that is not a top-level `func.func`, or a trivial stub whose
-base name is shared by a function that is not a stub.
+one: a callee that is not a top-level `func.func`, or an extern placeholder
+whose base name is shared by a real definition.
 
 When compilation fails, the expectation fails with a message that starts
 `Compilation failed:` and continues with the pipeline's message.
@@ -63,16 +67,34 @@ expectCallTargetValidity srcModule =
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 
-        Ok { mlirModule } ->
-            violationsToExpectation (checkCallTargetValidity mlirModule)
+        Ok { mlirModule, monoGraph } ->
+            violationsToExpectation (checkCallTargetValidity (externSpecIds monoGraph) mlirModule)
+
+
+{-| The SpecIds of the `MonoExtern` nodes of `monoGraph`.
+-}
+externSpecIds : Mono.MonoGraph -> Set Int
+externSpecIds (Mono.MonoGraph data) =
+    Array.toIndexedList data.nodes
+        |> List.filterMap
+            (\( specId, maybeNode ) ->
+                case maybeNode of
+                    Just (Mono.MonoExtern _) ->
+                        Just specId
+
+                    _ ->
+                        Nothing
+            )
+        |> Set.fromList
 
 
 {-| Returns one violation for each `eco.call` in `mlirModule` whose callee is
-undefined, or is a trivial stub while another function with its base name is
-not, in the order the calls are found.
+undefined, or is an extern placeholder (its SpecId is in `externs`) while a
+function with its base name is a real definition, in the order the calls are
+found.
 -}
-checkCallTargetValidity : MlirModule -> List Violation
-checkCallTargetValidity mlirModule =
+checkCallTargetValidity : Set Int -> MlirModule -> List Violation
+checkCallTargetValidity externs mlirModule =
     let
         funcDefs =
             buildFuncDefMap mlirModule
@@ -80,7 +102,7 @@ checkCallTargetValidity mlirModule =
         callOps =
             findOpsNamed "eco.call" mlirModule
     in
-    List.filterMap (checkCallOp funcDefs) callOps
+    List.filterMap (checkCallOp externs funcDefs) callOps
 
 
 {-| Returns the module's top-level `func.func` ops keyed by their `sym_name`.
@@ -111,8 +133,8 @@ A leading `@` is dropped from the callee before it is looked up. An op with no
 `callee` attribute gives `Nothing`.
 
 -}
-checkCallOp : Dict String MlirOp -> MlirOp -> Maybe Violation
-checkCallOp funcDefs op =
+checkCallOp : Set Int -> Dict String MlirOp -> MlirOp -> Maybe Violation
+checkCallOp externs funcDefs op =
     case getStringAttr "callee" op of
         Nothing ->
             Nothing
@@ -134,21 +156,21 @@ checkCallOp funcDefs op =
                         , message = "eco.call references undefined function '" ++ calleeName ++ "'"
                         }
 
-                Just targetFunc ->
-                    if isTrivialStub targetFunc then
-                        case findNonStubVersion calleeName funcDefs of
+                Just _ ->
+                    if isExternPlaceholder externs calleeName then
+                        case findRealDefinition externs calleeName funcDefs of
                             Nothing ->
                                 Nothing
 
-                            Just nonStubName ->
+                            Just realName ->
                                 Just
                                     { opId = op.id
                                     , opName = op.name
                                     , message =
-                                        "eco.call targets stub '"
+                                        "eco.call targets extern placeholder '"
                                             ++ calleeName
-                                            ++ "' but non-stub '"
-                                            ++ nonStubName
+                                            ++ "' but real definition '"
+                                            ++ realName
                                             ++ "' exists"
                                     }
 
@@ -156,67 +178,49 @@ checkCallOp funcDefs op =
                         Nothing
 
 
-{-| Returns `True` when `funcOp` is a trivial stub: the entry block of its first
-region has at most two body ops, all `arith.constant` or `eco.constant`, and an
-`eco.return` terminator. An empty entry block body counts. An op with no region
-is not a stub.
+{-| Returns `True` when the symbol `name` ends in `_$_<SpecId>` for a SpecId in
+`externs`.
 -}
-isTrivialStub : MlirOp -> Bool
-isTrivialStub funcOp =
-    case funcOp.regions of
-        [] ->
+isExternPlaceholder : Set Int -> String -> Bool
+isExternPlaceholder externs name =
+    case specIdOf name of
+        Just specId ->
+            Set.member specId externs
+
+        Nothing ->
             False
 
-        (MlirRegion { entry }) :: _ ->
-            let
-                bodyOps =
-                    entry.body
 
-                allConstants =
-                    List.all isConstantOp bodyOps
-
-                smallBody =
-                    List.length bodyOps <= 2
-            in
-            smallBody && allConstants && isReturnTerminator entry.terminator
-
-
-{-| Returns `True` when `op` is an `arith.constant` or an `eco.constant`.
+{-| The SpecId after the last `_$_` of `name`, if it is a number.
 -}
-isConstantOp : MlirOp -> Bool
-isConstantOp op =
-    List.member op.name [ "arith.constant", "eco.constant" ]
+specIdOf : String -> Maybe Int
+specIdOf name =
+    case List.reverse (String.split "_$_" name) of
+        last :: _ :: _ ->
+            String.toInt last
 
-
-{-| Returns `True` when `op` is an `eco.return`.
--}
-isReturnTerminator : MlirOp -> Bool
-isReturnTerminator op =
-    op.name == "eco.return"
+        _ ->
+            Nothing
 
 
 {-| Returns the name of a function in `funcDefs`, other than `stubName`, that
-has the same base name as `stubName` and is not a trivial stub. Of several, the
-first in name order is returned.
+has the same base name as `stubName` and is not an extern placeholder. Of
+several, the first in name order is returned.
 -}
-findNonStubVersion : String -> Dict String MlirOp -> Maybe String
-findNonStubVersion stubName funcDefs =
+findRealDefinition : Set Int -> String -> Dict String MlirOp -> Maybe String
+findRealDefinition externs stubName funcDefs =
     let
         baseName =
             extractBaseName stubName
     in
-    Dict.toList funcDefs
-        |> List.filterMap
-            (\( funcName, funcOp ) ->
-                if funcName /= stubName && extractBaseName funcName == baseName then
-                    if not (isTrivialStub funcOp) then
-                        Just funcName
-
-                    else
-                        Nothing
-
-                else
-                    Nothing
+    Dict.keys funcDefs
+        |> List.filter
+            (\funcName ->
+                funcName
+                    /= stubName
+                    && extractBaseName funcName
+                    == baseName
+                    && not (isExternPlaceholder externs funcName)
             )
         |> List.head
 

@@ -17,9 +17,10 @@ ordinal from 0 (`Engine.recordLocalInstance`). Two types that differ only in a
 lambda set give two instances. The body of each instance is translated again,
 and with LSS on, as in each pipeline run here, under an _instance tag_ from
 `Engine.localInstanceTagFor`: ordinal 0, and any ordinal at or past the
-_instance cap_ `stamp.maxInstances` (where a cap of 0 means none), keeps the
-tag of the enclosing instance, and any other ordinal gets that tag composed
-with the ordinal by `Engine.mixTag`. Tag 0 means no instance. Where
+_instance cap_ `stamp.maxInstances` (where a cap of 0 means none), keeps tag 0
+when the enclosing context is untagged and gets `mixTag tag 0` under an
+enclosing instance's tag `tag`; any other ordinal gets the enclosing tag
+composed with the ordinal by `Engine.mixTag`. Tag 0 means no instance. Where
 `Engine.lambdaInstanceMemberId` interns a key for a lambda's member id, a
 non-zero current tag is part of that key unless the lambda is folded onto its
 global's own member id, so the copies of one source lambda in differently
@@ -34,7 +35,7 @@ the default cap from `Compiler.Eco.Config.defaultLss`; test 1 runs only the
 cap-1 arm. Member ids are interned integers whose values depend on the order
 of interning, so the tests compare how many there are, not which they are.
 
-The tests are numbered 1 to 4, 6 and 7; there is no test 5.
+The tests are numbered 1 to 4 and 6 to 8; there is no test 5.
 
   - Test 1: at cap 1, the fixture's graph holds at least two closures that
     carry a member id, and at least two of those ids are equal.
@@ -44,14 +45,26 @@ The tests are numbered 1 to 4, 6 and 7; there is no test 5.
     `apply` at the default cap than at cap 1.
   - Test 4: for `plainModule`, which has no let-bound function, the sorted
     closure member ids are the same at both caps.
-  - Test 6: `mixTag` gives ordinal 1 different tags under the outer tags
-    `mixTag 0 0` and `mixTag 0 1`.
+  - Test 6: `mixTag` gives ordinal 1 three different tags under the tags the
+    engine gives top-level enclosing instances 0, 1 and 2: `0` (ordinal 0
+    stays untagged at top level), `mixTag 0 1` and `mixTag 0 2`.
   - Test 7: `mixTag 0 o` is not 0 for any `o` from 0 to 64.
+  - Test 8: in `nestedShapeModule`, where `inner` is let-bound inside the
+    let-bound `outer`, no member id is carried by two closures with different
+    capture lists. It guards a fixed collision: when ordinal 0 kept the
+    enclosing tag even under a tagged instance, `inner$1` inside `outer`
+    (outer 0, inner 1) and `inner` inside `outer$1` (outer 1, inner 0) both
+    ran under the tag `mixTag 0 1`, and the lambda `\t -> g (hashOf t)` got
+    the same member id in both although one closure captures `g` and the
+    other `hashOf` and `g` — the "singleton naming two different bodies"
+    shape instance qualification exists to prevent. `localInstanceTagFor`
+    now composes ordinal 0 under a tagged instance. It needs a full engine
+    state, which tests cannot build, so the test reads the graph instead.
 
 Among what is not tested: whether `Compiler.GlobalOpt.AbiCloning` stamps the
 calls once the ids are split; which closure carries the shared or split id;
 caps other than 1 and the default; let-bound functions nested inside one
-another, except through `mixTag` alone; and a lambda that is refused a tag
+another, except in test 8; and a lambda that is refused a tag
 because it is folded onto its global's own member id.
 
 -}
@@ -191,9 +204,36 @@ suite =
                         Expect.fail e
         , Test.test "6. mixTag composes rather than overwrites" <|
             \() ->
-                Expect.notEqual
-                    (Engine.mixTag (Engine.mixTag 0 0) 1)
-                    (Engine.mixTag (Engine.mixTag 0 1) 1)
+                let
+                    -- The tags the engine gives the enclosing instances 0, 1
+                    -- and 2: ordinal 0 keeps the top-level tag 0.
+                    outerTags =
+                        [ 0, Engine.mixTag 0 1, Engine.mixTag 0 2 ]
+
+                    innerTags =
+                        List.map (\outer -> Engine.mixTag outer 1) outerTags
+                in
+                Expect.equal 3 (List.length (distinct innerTags))
+        , Test.test "8. nested instances — outer 0/inner 1 and outer 1/inner 0 must not share a member id" <|
+            -- Guards `Compiler.MonoSolver.Engine.localInstanceTagFor`: if
+            -- ordinal 0 kept the enclosing tag under a tagged instance,
+            -- (outer 0, inner 1) and (outer 1, inner 0) would both run under
+            -- `mixTag 0 1` and mint the same member for one source lambda.
+            \() ->
+                case runWith nestedShapeModule of
+                    Err e ->
+                        Expect.fail e
+
+                    Ok g ->
+                        case sharedMembersWithDifferentCaptures g of
+                            [] ->
+                                Expect.pass
+
+                            clashes ->
+                                Expect.fail
+                                    ("member ids naming closures with different captures (two distinct instances under one id): "
+                                        ++ String.join "; " clashes
+                                    )
         , Test.test "7. mixTag never returns the no-instance sentinel" <|
             \() ->
                 Expect.equal [] (List.filter (\o -> Engine.mixTag 0 o == 0) (List.range 0 64))
@@ -257,6 +297,73 @@ foldShapeModule =
                     (binopsExpr
                         [ ( callExpr (varExpr "fold") [ varExpr "hashA" ], "+" ) ]
                         (callExpr (varExpr "fold") [ varExpr "hashB" ])
+                    )
+          }
+        ]
+
+
+{-| A module with two NESTED let-bound functions, each used at two instances:
+
+    testValue =
+        let
+            outer hashOf =
+                let
+                    inner g =
+                        apply (\t -> g (hashOf t)) 3
+                in
+                inner hashA + inner hashB
+        in
+        outer hashA + outer hashB
+
+`outer` splits into `outer` and `outer$1`, and inside each `inner` is
+re-translated per instance. The lambda `\t -> g (hashOf t)` therefore exists
+in several instances, and those inside different instances of `outer` capture
+different variables. Each instance should get its own member id.
+
+-}
+nestedShapeModule : Src.Module
+nestedShapeModule =
+    makeModuleWithTypedDefs "Test"
+        [ { name = "hashA"
+          , args = [ pVar "x" ]
+          , tipe = hInt
+          , body = binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "x")
+          }
+        , { name = "hashB"
+          , args = [ pVar "x" ]
+          , tipe = hInt
+          , body = binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)
+          }
+        , { name = "apply"
+          , args = [ pVar "f", pVar "n" ]
+          , tipe = tLambda hInt hInt
+          , body = callExpr (varExpr "f") [ varExpr "n" ]
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body =
+                letExpr
+                    [ define "outer"
+                        [ pVar "hashOf" ]
+                        (letExpr
+                            [ define "inner"
+                                [ pVar "g" ]
+                                (callExpr (varExpr "apply")
+                                    [ lambdaExpr [ pVar "t" ] (callExpr (varExpr "g") [ callExpr (varExpr "hashOf") [ varExpr "t" ] ])
+                                    , intExpr 3
+                                    ]
+                                )
+                            ]
+                            (binopsExpr
+                                [ ( callExpr (varExpr "inner") [ varExpr "hashA" ], "+" ) ]
+                                (callExpr (varExpr "inner") [ varExpr "hashB" ])
+                            )
+                        )
+                    ]
+                    (binopsExpr
+                        [ ( callExpr (varExpr "outer") [ varExpr "hashA" ], "+" ) ]
+                        (callExpr (varExpr "outer") [ varExpr "hashB" ])
                     )
           }
         ]
@@ -392,6 +499,75 @@ collectMembers expr acc =
         )
         acc
         expr
+
+
+{-| Returns one description for each member id that two closures in the graph
+carry although they capture different variables: two distinct instances of
+a lambda sharing one id. Each description is the id and the capture-name
+lists of the closures that carry it.
+-}
+sharedMembersWithDifferentCaptures : Mono.MonoGraph -> List String
+sharedMembersWithDifferentCaptures (Mono.MonoGraph g) =
+    let
+        closures =
+            Array.foldl
+                (\maybeNode acc ->
+                    case maybeNode of
+                        Just node ->
+                            List.foldl
+                                (\expr acc2 ->
+                                    MonoTraverse.foldExpr
+                                        (\e a ->
+                                            case e of
+                                                Mono.MonoClosure info _ _ ->
+                                                    case info.lssMember of
+                                                        Just m ->
+                                                            ( m, List.map (\( name, _, _ ) -> name) info.captures ) :: a
+
+                                                        Nothing ->
+                                                            a
+
+                                                _ ->
+                                                    a
+                                        )
+                                        acc2
+                                        expr
+                                )
+                                acc
+                                (nodeExprsOf node)
+
+                        Nothing ->
+                            acc
+                )
+                []
+                g.nodes
+    in
+    List.filterMap
+        (\m ->
+            let
+                captureLists =
+                    List.foldl
+                        (\( m2, caps ) acc ->
+                            if m2 == m && not (List.member caps acc) then
+                                caps :: acc
+
+                            else
+                                acc
+                        )
+                        []
+                        closures
+            in
+            if List.length captureLists > 1 then
+                Just
+                    (String.fromInt m
+                        ++ " captures "
+                        ++ String.join " vs " (List.map (\caps -> "[" ++ String.join "," caps ++ "]") captureLists)
+                    )
+
+            else
+                Nothing
+        )
+        (distinct (List.map Tuple.first closures))
 
 
 {-| Counts the registry entries still present whose global is named `target`,

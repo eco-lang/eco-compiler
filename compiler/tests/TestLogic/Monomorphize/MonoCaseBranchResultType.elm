@@ -1,4 +1,4 @@
-module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, Violation)
+module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, expectMonoCaseBranchResultTypesAfterGlobalOpt, Violation)
 
 {-| Checks that every branch of every `case` in a monomorphized program has
 exactly the type the case records for itself, so that `Mono.typeOf` of a case
@@ -20,13 +20,16 @@ ids of type variables must also agree.
 
 `expectMonoCaseBranchResultTypes` checks the graph that
 `TestLogic.TestPipeline.runToMono` produces: the substitution engine's output,
-before inlining or any GlobalOpt pass has run. Every expression in every node
+before inlining or any GlobalOpt pass has run (invariant MONO\_018).
+`expectMonoCaseBranchResultTypesAfterGlobalOpt` makes the same check on the
+graph `TestLogic.TestPipeline.runToGlobalOpt` produces, after the inliner and
+the global optimizer (invariant GOPT\_003). Every expression in every node
 that has a body is walked, so cases nested anywhere are checked too.
 
 Among what is not checked: the branches of an `if`, and the types on the
 decision tree's paths.
 
-@docs expectMonoCaseBranchResultTypes, Violation
+@docs expectMonoCaseBranchResultTypes, expectMonoCaseBranchResultTypesAfterGlobalOpt, Violation
 
 -}
 
@@ -68,6 +71,29 @@ expectMonoCaseBranchResultTypes srcModule =
             let
                 violations =
                     checkMonoCaseBranchResultTypes monoGraph
+            in
+            if List.isEmpty violations then
+                Expect.pass
+
+            else
+                Expect.fail (formatViolations violations)
+
+
+{-| Builds `srcModule` with `TestLogic.TestPipeline.runToGlobalOpt` and checks
+the optimized graph as `expectMonoCaseBranchResultTypes` checks the
+monomorphized one (invariant GOPT\_003). The violation messages still say
+MONO\_018, the name of the shared check.
+-}
+expectMonoCaseBranchResultTypesAfterGlobalOpt : Src.Module -> Expectation
+expectMonoCaseBranchResultTypesAfterGlobalOpt srcModule =
+    case Pipeline.runToGlobalOpt srcModule of
+        Err msg ->
+            Expect.fail ("Compilation failed: " ++ msg)
+
+        Ok { optimizedMonoGraph } ->
+            let
+                violations =
+                    checkMonoCaseBranchResultTypes optimizedMonoGraph
             in
             if List.isEmpty violations then
                 Expect.pass

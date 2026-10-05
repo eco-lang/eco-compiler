@@ -44,8 +44,12 @@ What the tests establish:
     at the empty path, the end of the whole body.
   - Pinned case 4: `endsBefore` is `True` for `LEmpty` and `False` for
     `LParams {3}` at each of `[]`, `[Seq 0 0]` and `[Arm 1 1]`.
-  - Pinned case 5: joining `fromPath` lifetimes that end on arms 0 and 1 of node
-    0 gives `eq` results in either order.
+  - Pinned case 5: joining the eight `fromPath` lifetimes that end on arms 0 to
+    7 of node 0 in ascending and in descending order gives `eq` results, not
+    dead at the end point on each of those arms, and dead on arm 8. The two orders build the arm
+    `Dict` by different insertion sequences; whether its internal shape
+    differs is not observable here, and Elm's `==` compares `Dict`s by
+    contents, so this does not single out a dependence on `Dict` shape.
 
 Among what is not tested: `joinAll`; no test states that `join LEmpty a` is
 `a` (only `join a LEmpty`); `onBoundary` of `LParams`; any law over `LParams`
@@ -197,31 +201,27 @@ sampleFuzzer =
                     probes =
                         SF.allProbes skel
                 in
-                Fuzz.map2
-                    (\subs p -> mkSample skel subs p)
-                    (Fuzz.listOfLength 3 (subsetFuzzer leaves))
+                Fuzz.map4
+                    (\sA sB sC p -> mkSample skel sA sB sC p)
+                    (subsetFuzzer leaves)
+                    (subsetFuzzer leaves)
+                    (subsetFuzzer leaves)
                     (Fuzz.oneOfValues probes)
             )
 
 
-{-| Builds a `Sample` from `skel`, the first three leaf subsets in `subs`, and
-probe `p`. Given fewer than three subsets it uses `LEmpty` and an empty live
-set instead; `sampleFuzzer` always supplies three.
+{-| Builds a `Sample` from `skel`, the leaf subsets `sA`, `sB` and `sC` (the
+live sets of `a`, `b` and `cc`; `sA` is also kept as `s`), and probe `p`.
 -}
-mkSample : Skel -> List (List Path) -> Path -> Sample
-mkSample skel subs p =
-    case subs of
-        sA :: sB :: sC :: _ ->
-            { skel = skel
-            , a = SF.fromPaths sA
-            , b = SF.fromPaths sB
-            , cc = SF.fromPaths sC
-            , s = sA
-            , p = p
-            }
-
-        _ ->
-            { skel = skel, a = LEmpty, b = LEmpty, cc = LEmpty, s = [], p = p }
+mkSample : Skel -> List Path -> List Path -> List Path -> Path -> Sample
+mkSample skel sA sB sC p =
+    { skel = skel
+    , a = SF.fromPaths sA
+    , b = SF.fromPaths sB
+    , cc = SF.fromPaths sC
+    , s = sA
+    , p = p
+    }
 
 
 {-| The fuzzed tests: the lattice laws of `join` and `leq`, agreement with the
@@ -325,16 +325,29 @@ regressions =
                     ( List.all (\p -> L.endsBefore LEmpty p) probes
                     , List.any (\p -> L.endsBefore lp p) probes
                     )
-        , Test.test "5: Dict-shape independence (join arms in either order)" <|
+        , Test.test "5: join of eight arms is independent of the order they are joined in" <|
             \_ ->
                 let
-                    x =
-                        L.fromPath [ Arm 0 0, Seq 1 0 ]
+                    point i =
+                        [ Arm 0 i, Seq (i + 1) 0 ]
 
-                    y =
-                        L.fromPath [ Arm 0 1, Seq 2 0 ]
+                    arm i =
+                        L.fromPath (point i)
+
+                    joinAllOf is =
+                        List.foldl (\i acc -> L.join (arm i) acc) LEmpty is
+
+                    up =
+                        joinAllOf (List.range 0 7)
+
+                    down =
+                        joinAllOf (List.reverse (List.range 0 7))
                 in
-                Expect.equal True (L.eq (L.join x y) (L.join y x))
+                Expect.equal ( True, True, True )
+                    ( L.eq up down
+                    , L.endsBefore up (point 8)
+                    , List.all (\i -> not (L.endsBefore up (point i))) (List.range 0 7)
+                    )
         ]
 
 

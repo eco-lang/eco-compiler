@@ -19,8 +19,9 @@ The risk is removing a spec that a live node still names, so most of these
 tests check what survives. A _dangling reference_ is a pair of a live spec and a
 spec that is not live but appears among its collected references. `danglingRefs`
 lists them, making the same check as `Builder.Generate.validatePruned`. It reads
-references with the same `collectSpecEdges` the prune uses, so a reference that
-function misses is invisible to both.
+references with a walk written out in this module (`nodeGlobalRefs`), not with
+the `collectSpecEdges` the prune uses, so a reference that function misses
+shows here as dangling.
 
 Each graph test builds a module with `Compiler.AST.SourceBuilder` and runs it
 through `withGraphs`: `TestPipeline.runToMono`, which uses the substitution
@@ -42,7 +43,9 @@ What the tests establish:
     random subset of its vertices. It checks that `restrictToSccEdges` leaves
     unchanged the vertices that lie on a cycle of the subgraph induced on the
     subset, the vertices that lie on a cycle of the whole graph, and which
-    vertices have an edge entry. This is the use the edges are kept for:
+    vertices have an edge entry, and that it keeps exactly the edges whose
+    two ends reach each other, in their order, dropping every edge between
+    components. The cyclic sets are the use the edges are kept for:
     `MonoInlineSimplify.buildBodyLookup` decides from them whether a spec is
     recursive, over the nodes the graph holds when it runs.
   - T1, on `inlineAwayModule`: the prune does not increase the number of live
@@ -51,17 +54,16 @@ What the tests establish:
     least one live spec.
   - T3, on `inlineAwayModule`: the spec of `main` is live after the prune. A
     graph with no `main` would pass unchecked.
-  - T4, on `inlineAwayModule`: no spec that is not live after the prune keeps
-    an entry in the registry's `reverseMapping`.
+  - T4, on `inlineAwayModule`: after the prune, a spec has an entry in the
+    registry's `reverseMapping` exactly when it is live.
   - T5: no dangling reference after the prune, on each of the three modules.
   - T6, on `inlineAwayModule`: the inliner alone, without the prune, leaves the
     number of live specs unchanged.
 
 Among what is not tested: the solver engine, which a default build uses; the
-port and flags-decoder roots; that `restrictToSccEdges` actually drops an edge
-between components, or that the pruned graph's `callEdges` are restricted; that
-any particular spec, such as `addOne`, is the one removed or kept; and that a
-live spec keeps its `reverseMapping` entry, although T4's label says so.
+port and flags-decoder roots; that the pruned graph's `callEdges` are
+restricted; and that any particular spec, such as `addOne`, is the one removed
+or kept.
 
 -}
 
@@ -86,7 +88,6 @@ import Compiler.Data.BitSet as BitSet
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.Graph as Graph
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.Prune as Prune
 import Expect
 import Fuzz
@@ -197,7 +198,7 @@ suite =
                                                             False
                                             in
                                             ( specId + 1
-                                            , if registered && not live then
+                                            , if registered /= live then
                                                 specId :: acc
 
                                               else
@@ -245,6 +246,121 @@ suite =
 -- ============================================================================
 -- ====== HELPERS ======
 -- ============================================================================
+
+
+{-| Returns the SpecId of every `MonoVarGlobal` in `node`'s body, or none for a
+node kind that has no body.
+
+It is written out here rather than taken from `MonoTraverse.collectSpecEdges`,
+which the prune itself uses, so that a reference shape that function missed
+would still be found here and show as dangling.
+
+-}
+nodeGlobalRefs : Mono.MonoNode -> List Int
+nodeGlobalRefs node =
+    case node of
+        Mono.MonoDefine body _ ->
+            exprGlobalRefs body
+
+        Mono.MonoTailFunc _ body _ ->
+            exprGlobalRefs body
+
+        Mono.MonoPortIncoming body _ ->
+            exprGlobalRefs body
+
+        Mono.MonoPortOutgoing body _ ->
+            exprGlobalRefs body
+
+        _ ->
+            []
+
+
+{-| Returns the SpecId of every `MonoVarGlobal` in `expr`, at any depth,
+including closure captures, `let` definitions and the case branches held in a
+decision tree as well as in its jump list.
+-}
+exprGlobalRefs : Mono.MonoExpr -> List Int
+exprGlobalRefs expr =
+    case expr of
+        Mono.MonoVarGlobal _ specId _ ->
+            [ specId ]
+
+        Mono.MonoClosure info body _ ->
+            List.concatMap (\( _, e, _ ) -> exprGlobalRefs e) info.captures ++ exprGlobalRefs body
+
+        Mono.MonoLet def body _ ->
+            (case def of
+                Mono.MonoDef _ bound ->
+                    exprGlobalRefs bound
+
+                Mono.MonoTailDef _ _ bound ->
+                    exprGlobalRefs bound
+            )
+                ++ exprGlobalRefs body
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            deciderGlobalRefs decider ++ List.concatMap (\( _, e ) -> exprGlobalRefs e) jumps
+
+        Mono.MonoIf branches final _ ->
+            List.concatMap (\( c, t ) -> exprGlobalRefs c ++ exprGlobalRefs t) branches ++ exprGlobalRefs final
+
+        Mono.MonoCall _ fn args _ _ ->
+            exprGlobalRefs fn ++ List.concatMap exprGlobalRefs args
+
+        Mono.MonoTailCall _ namedArgs _ ->
+            List.concatMap (\( _, a ) -> exprGlobalRefs a) namedArgs
+
+        Mono.MonoDestruct _ inner _ ->
+            exprGlobalRefs inner
+
+        Mono.MonoList _ items _ ->
+            List.concatMap exprGlobalRefs items
+
+        Mono.MonoRecordCreate fields _ ->
+            List.concatMap (\( _, e ) -> exprGlobalRefs e) fields
+
+        Mono.MonoRecordAccess inner _ _ ->
+            exprGlobalRefs inner
+
+        Mono.MonoRecordUpdate inner updates _ ->
+            exprGlobalRefs inner ++ List.concatMap (\( _, e ) -> exprGlobalRefs e) updates
+
+        Mono.MonoTupleCreate _ items _ ->
+            List.concatMap exprGlobalRefs items
+
+        Mono.MonoLiteral _ _ ->
+            []
+
+        Mono.MonoVarLocal _ _ ->
+            []
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            []
+
+        Mono.MonoUnit ->
+            []
+
+        Mono.MonoAccessorValue _ _ _ ->
+            []
+
+
+{-| Returns the references of the case branches held inline at the leaves of
+`decider`.
+-}
+deciderGlobalRefs : Mono.Decider Mono.MonoChoice -> List Int
+deciderGlobalRefs decider =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            exprGlobalRefs e
+
+        Mono.Leaf (Mono.Jump _) ->
+            []
+
+        Mono.Chain _ yes no ->
+            deciderGlobalRefs yes ++ deciderGlobalRefs no
+
+        Mono.FanOut _ edges fallback ->
+            List.concatMap (\( _, d ) -> deciderGlobalRefs d) edges ++ deciderGlobalRefs fallback
 
 
 {-| Returns what `check` makes of the graph before and after the prune, where
@@ -310,14 +426,14 @@ isLive (Mono.MonoGraph record) specId =
 
 
 {-| Returns the dangling references of a graph as `( from, to )` SpecId pairs:
-`from` is live, and `to` is among the references `MonoTraverse.collectSpecEdges`
-finds in its node but is not live.
+`from` is live, and `to` is among the references `nodeGlobalRefs` finds in its
+node but is not live.
 -}
 danglingRefs : Mono.MonoGraph -> List ( Int, Int )
 danglingRefs ((Mono.MonoGraph record) as graph) =
     let
         edges =
-            MonoTraverse.collectSpecEdges record.nodes
+            Array.map (Maybe.map nodeGlobalRefs) record.nodes
     in
     Array.foldl
         (\entry ( specId, acc ) ->
@@ -505,8 +621,40 @@ sccRestrictionTest =
                 [ \_ -> Expect.equal (cyclicSet n keep edges) (cyclicSet n keep restricted)
                 , \_ -> Expect.equal (cyclicSet n (always True) edges) (cyclicSet n (always True) restricted)
                 , \_ -> Expect.equal (Array.map (Maybe.map (always ())) edges) (Array.map (Maybe.map (always ())) restricted)
+                , \_ ->
+                    -- Exactly the edges whose two ends reach each other (one
+                    -- strongly connected component) are kept, in their order:
+                    -- an edge between components is dropped.
+                    Expect.equal
+                        (Array.indexedMap
+                            (\src entry -> Maybe.map (List.filter (\t -> reaches n edges t src)) entry)
+                            edges
+                        )
+                        restricted
                 ]
                 ()
+
+
+{-| Tells whether vertex `to` can be reached from vertex `from` in `edges`, a
+graph of `n` vertices, by a path of zero or more edges. A missing edge entry
+counts as no edges.
+-}
+reaches : Int -> Array.Array (Maybe (List Int)) -> Int -> Int -> Bool
+reaches n edges from to =
+    let
+        visit pending seen =
+            case pending of
+                [] ->
+                    List.member to seen
+
+                v :: rest ->
+                    if List.member v seen then
+                        visit rest seen
+
+                    else
+                        visit (Maybe.withDefault [] (Maybe.andThen identity (Array.get v edges)) ++ rest) (v :: seen)
+    in
+    from < n && visit [ from ] []
 
 
 {-| Returns, in ascending order, the vertices that lie on a cycle of the

@@ -15,16 +15,15 @@ position in that array, counting from 0. An `eco.dbg` op may carry an
 error, and when an `eco.dbg` op in the module, at any depth, carries an array
 `arg_type_ids` and:
 
-  - the module has no type table, or the first top-level `eco.type_table` has
-    no array `types` attribute or an empty one, all three reported as no type
-    table, even when `arg_type_ids` is empty;
+  - `arg_type_ids` is not empty and the module has no type table, or the
+    first top-level `eco.type_table` has no array `types` attribute;
   - an entry of `arg_type_ids` is not an integer;
-  - an entry is negative, or not less than the length of `types`.
+  - an entry is negative, or not less than the length of `types` (so every
+    entry is out of range when `types` is empty).
 
 Only the first top-level `eco.type_table` is consulted. An `eco.dbg` op with no
-`arg_type_ids`, or one that is not an array, is not checked. As
-`TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes, a
-failing test shows only the first violation.
+`arg_type_ids`, one that is not an array, or an empty one, cites no type and is
+not reported.
 
 Among what is not tested: whether a type ID names the type of the value being
 logged, anything about the type table beyond the length of its `types` array,
@@ -63,66 +62,50 @@ expectDbgTypeIds srcModule =
 
 
 {-| Returns the violations of every `eco.dbg` op in the module, at any depth,
-measured against the first top-level `eco.type_table`.
-
-The largest valid type ID handed to `checkDbgOp` is the length of that table's
-`types` array minus one. It is -1, which `checkDbgOp` reads as no type table,
-when the module has no such op, the op has no array `types` attribute, or the
-array is empty.
-
+measured against the first top-level `eco.type_table`: the length of its
+`types` array, or `Nothing` when the module has no type table or the table has
+no array `types` attribute.
 -}
 checkDbgTypeIds : MlirModule -> List Violation
 checkDbgTypeIds mlirModule =
     let
-        typeTableOps =
+        typeCount =
             List.filter (\op -> op.name == "eco.type_table") mlirModule.body
-
-        maxTypeId =
-            case List.head typeTableOps of
-                Just typeTable ->
-                    case getArrayAttr "types" typeTable of
-                        Just types ->
-                            List.length types - 1
-
-                        Nothing ->
-                            -1
-
-                Nothing ->
-                    -1
+                |> List.head
+                |> Maybe.andThen (getArrayAttr "types")
+                |> Maybe.map List.length
 
         dbgOps =
             findOpsNamed "eco.dbg" mlirModule
     in
-    List.concatMap (checkDbgOp maxTypeId) dbgOps
+    List.concatMap (checkDbgOp typeCount) dbgOps
 
 
-{-| Returns the violations of one `eco.dbg` op, given `maxTypeId`, the largest
-valid type ID. An op without an array `arg_type_ids` gives none. When
-`maxTypeId` is negative the op gives one violation saying the module has no
-type table, even if `arg_type_ids` is empty; otherwise it gives one violation
-for each entry that is not an integer or is out of range.
+{-| Returns the violations of one `eco.dbg` op, given `typeCount`, the number of
+types in the type table, or `Nothing` when there is no usable table. An op
+without an array `arg_type_ids`, or with an empty one, gives none. With no
+table, a non-empty `arg_type_ids` gives one violation; otherwise each entry
+that is not an integer or is out of range gives one.
 -}
-checkDbgOp : Int -> MlirOp -> List Violation
-checkDbgOp maxTypeId op =
-    let
-        maybeTypeIds =
-            getArrayAttr "arg_type_ids" op
-    in
-    case maybeTypeIds of
-        Nothing ->
+checkDbgOp : Maybe Int -> MlirOp -> List Violation
+checkDbgOp typeCount op =
+    case ( getArrayAttr "arg_type_ids" op, typeCount ) of
+        ( Nothing, _ ) ->
             []
 
-        Just typeIds ->
-            if maxTypeId < 0 then
-                [ { opId = op.id
-                  , opName = op.name
-                  , message = "eco.dbg has arg_type_ids but no eco.type_table in module"
-                  }
-                ]
+        ( Just [], _ ) ->
+            []
 
-            else
-                List.indexedMap (checkTypeId op maxTypeId) typeIds
-                    |> List.filterMap identity
+        ( Just _, Nothing ) ->
+            [ { opId = op.id
+              , opName = op.name
+              , message = "eco.dbg has arg_type_ids but the module has no eco.type_table with a types array"
+              }
+            ]
+
+        ( Just typeIds, Just count ) ->
+            List.indexedMap (checkTypeId op (count - 1)) typeIds
+                |> List.filterMap identity
 
 
 {-| Returns a violation of `op` when `attr`, the entry at position `index` of

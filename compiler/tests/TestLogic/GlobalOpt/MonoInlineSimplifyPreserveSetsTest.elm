@@ -18,43 +18,49 @@ for an inlined global, `beta` for an applied lambda literal), and its other keys
 count reshapes whose callee carried a member. `declinedPreserveSets` counts
 declines, and is counted whether or not `report` is on.
 
-Every test runs `TestLogic.TestPipeline.runToMono` and then the inliner, with
-`report` on, a size budget of 50 instead of the default 10, and one fixpoint
-iteration. A declined call is still there for any later iteration to visit and
-count again, while a reshaped call is gone after the first, so the single
-iteration is what lets a decline count be compared with a reshape count.
-`runToMono` uses the substitution engine, which gives no closure a lambda-set
-member, so no member-keyed entry of `clearedMembers` is ever recorded here: the
-tests rest on the `RESHAPES|` totals and on `declinedPreserveSets`.
+Every test except T3's monomorphizes its fixture as a default build does, with the solver
+engine and lambda-set specialization on (the `monoGraph` of
+`TestLogic.TestPipeline.runToGlobalOptLssOn`, taken before that pipeline's own
+inliner runs), so the closures carry lambda-set members and the member-keyed
+entries of `clearedMembers` are recorded. It then runs the inliner with
+`report` on and one fixpoint iteration. A declined call is still there for any
+later iteration to visit and count again, while a reshaped call is gone after
+the first, so the single iteration is what lets a decline count be compared
+with a reshape count.
 
-There are two fixtures. `globalPartialModule` binds `g = add3 1 k`, two of
-`add3`'s three arguments, and passes `g` to `List.map`. `localPartialModule`
-passes `h 3`, where `h` is a let-bound two-parameter lambda, to `List.map`.
+There are three fixtures. `globalPartialModule` binds `g = add3 1 k`, two of
+`add3`'s three arguments, and passes `g` to `List.map`; its tests use a size
+budget of 50 instead of the default 10, so that `add3` is within it.
+`hofPartialModule` binds `g = applyTwice inc k`, two of the three arguments of
+a function that calls its function parameter, and its tests use a size budget
+of 2 and a higher-order budget of 25, so that `applyTwice` is admitted only by
+the higher-order budget, the one case `partialHof` changes.
+`localPartialModule` passes `h 3`, where `h` is a let-bound two-parameter
+lambda, to `List.map`.
 
 The tests establish:
 
   - T1, with the option off on `globalPartialModule`: at least one reshape, a
-    `RESHAPES|tryInline` entry, and no declines.
+    `RESHAPES|tryInline` entry, and at least one member-keyed entry, so the
+    reshape does drop a callee's member.
   - T2, first test: with the option on, no member-keyed entries, no reshapes at
     any site, and a decline count equal to the reshape total of the run with
     the option off.
   - T2, second test: the option on gives a strictly lower `inlineCount` than
     the option off.
-  - T3, with `partialHof` also on: with `preserveSets` off there is at least one
-    reshape; with it on there are no member-keyed entries, no reshapes and at
-    least one decline.
-  - T4, on `localPartialModule`: `declinedPreserveSets` is zero with the option
-    off and with it on. With it off the count is zero whatever the input, so
-    only the run with the option on says anything: neither guarded site, the
-    one in `tryInlineCall` nor the one before `betaReduce`, declined.
+  - T3, on `hofPartialModule`, monomorphized with the substitution engine
+    instead (see `withSubstMetrics`): with both options off the partial call
+    is not reshaped (the higher-order candidate is exact-sites only); with
+    `partialHof` on and `preserveSets` off it is; with both on there are no
+    reshapes and at least one decline.
+  - T4, on `localPartialModule`, with the option on: `declinedPreserveSets` is
+    zero, so neither guarded site, the one in `tryInlineCall` nor the one
+    before `betaReduce`, declined.
 
-Among what is not tested: that a declined call keeps a lambda-set member, or
-that a reshape loses one, since no member exists under this pipeline; a
-decline at the guard before `betaReduce`, which no fixture produces; the effect
-of `partialHof` at all, since with a size budget of 50, above the default
-`hofThreshold` of 25, no candidate is admitted by the higher-order budget alone,
-which is the only case `partialHof` changes; runs of more than one iteration;
-and the code generated afterwards.
+Among what is not tested: that a declined call keeps a lambda-set member in the
+output graph; a decline at the guard before `betaReduce`, which no fixture
+produces; runs of more than one iteration; and the code generated
+afterwards.
 
 -}
 
@@ -108,7 +114,12 @@ suite =
 
                                     else
                                         Expect.fail ("expected bySite to name tryInline, got " ++ bySite m)
-                                , \_ -> Expect.equal 0 m.declinedPreserveSets
+                                , \_ ->
+                                    if clearedCount m > 0 then
+                                        Expect.pass
+
+                                    else
+                                        Expect.fail ("expected a reshape to drop a callee's member, got " ++ Debug.toString m.clearedMembers)
                                 ]
                                 ()
                         )
@@ -153,10 +164,15 @@ suite =
                         )
             ]
         , Test.describe "T3 — precedence over partialHof"
-            [ Test.test "partialHof alone reaches the clearing arm" <|
+            [ Test.test "without partialHof the higher-order candidate is not reshaped" <|
                 \_ ->
-                    withMetrics (partialHofConfig False)
-                        globalPartialModule
+                    withSubstMetrics (hofConfig False False)
+                        hofPartialModule
+                        (\m -> Expect.equal "" (bySite m))
+            , Test.test "partialHof alone reaches the clearing arm" <|
+                \_ ->
+                    withSubstMetrics (hofConfig True False)
+                        hofPartialModule
                         (\m ->
                             if reshapesTotal m > 0 then
                                 Expect.pass
@@ -166,8 +182,8 @@ suite =
                         )
             , Test.test "with both on, preserveSets wins" <|
                 \_ ->
-                    withMetrics (partialHofConfig True)
-                        globalPartialModule
+                    withSubstMetrics (hofConfig True True)
+                        hofPartialModule
                         (\m ->
                             Expect.all
                                 [ \_ -> Expect.equal 0 (clearedCount m)
@@ -183,17 +199,13 @@ suite =
                         )
             ]
         , Test.describe "T4 — the betaReduce partial arm is not reached"
-            [ Test.test "a partially applied LAMBDA LITERAL declines nothing in either arm" <|
+            [ Test.test "a partially applied LAMBDA LITERAL declines nothing with the flag on" <|
                 \_ ->
-                    withMetrics (partialConfig False)
+                    -- With the flag off the count is zero whatever the input,
+                    -- since both sites that bump it check the flag first.
+                    withMetrics (partialConfig True)
                         localPartialModule
-                        (\off ->
-                            withMetrics (partialConfig True)
-                                localPartialModule
-                                (\on ->
-                                    Expect.equal ( 0, 0 ) ( off.declinedPreserveSets, on.declinedPreserveSets )
-                                )
-                        )
+                        (\on -> Expect.equal 0 on.declinedPreserveSets)
             ]
         ]
 
@@ -269,29 +281,57 @@ partialConfig preserveSets =
     }
 
 
-{-| Returns `partialConfig preserveSets` with `partialHof` also on.
+{-| Returns the configuration of the T3 tests, with `partialHof` and
+`preserveSets` as given: `report` on, one fixpoint iteration, a
+`postMonoThreshold` of 2 and a `hofThreshold` of 25.
 
-`partialHof` lets a candidate admitted only by the higher-order budget inline at
-a strictly partial call. With a `postMonoThreshold` of 50, above the default
-`hofThreshold` of 25, no candidate is admitted that way, so here the setting
-changes nothing.
+`partialHof` lets a candidate admitted only by the higher-order budget inline
+at a strictly partial call, which without it such a candidate never does. The
+cost of `applyTwice` is above 2 and within 25, and its body calls its function
+parameter, so it is admitted only by the higher-order budget.
 
 -}
-partialHofConfig : Bool -> Config.InlineConfig
-partialHofConfig preserveSets =
+hofConfig : Bool -> Bool -> Config.InlineConfig
+hofConfig partialHof preserveSets =
     let
         base =
-            partialConfig preserveSets
+            Config.default.inline
     in
-    { base | partialHof = True }
+    { base
+        | postMonoThreshold = 2
+        , hofThreshold = 25
+        , report = True
+        , postMonoFixpointIterations = 1
+        , preserveSets = preserveSets
+        , partialHof = partialHof
+    }
 
 
-{-| Runs `srcModule` through `runToMono`, inlines the resulting graph with
-`inlineConfig`, and returns `check` applied to the inliner's metrics. If
-`runToMono` returns an error, the test fails with its message.
+{-| Monomorphizes `srcModule` with lambda-set specialization on (the
+`monoGraph` of `runToGlobalOptLssOn`, from before that pipeline's own inliner
+runs), inlines that graph with `inlineConfig`, and returns `check` applied to
+the inliner's metrics. If the pipeline returns an error, the test fails with
+its message.
 -}
 withMetrics : Config.InlineConfig -> Src.Module -> (MonoInlineSimplify.Metrics -> Expect.Expectation) -> Expect.Expectation
 withMetrics inlineConfig srcModule check =
+    case Pipeline.runToGlobalOptLssOn srcModule of
+        Err msg ->
+            Expect.fail msg
+
+        Ok artifacts ->
+            check (Tuple.second (MonoInlineSimplify.optimize inlineConfig artifacts.monoGraph))
+
+
+{-| Like `withMetrics`, but monomorphizes with the substitution engine
+(`runToMono`), under which `applyTwice` keeps its function parameter `f` and
+calls it. With lambda-set specialization on, `hofPartialModule`'s `applyTwice`
+is not admitted by the higher-order budget (its specialization no longer calls
+a function parameter), so the T3 tests use this engine. It records no
+member-keyed entries of `clearedMembers`.
+-}
+withSubstMetrics : Config.InlineConfig -> Src.Module -> (MonoInlineSimplify.Metrics -> Expect.Expectation) -> Expect.Expectation
+withSubstMetrics inlineConfig srcModule check =
     case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
@@ -352,6 +392,44 @@ globalPartialModule =
           , args = []
           , tipe = tIntList
           , body = callExpr (varExpr "partialShape") [ intExpr 4, listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ]
+          }
+        ]
+        []
+        []
+
+
+{-| A module named `Test` holding `inc n = n + 1`,
+`applyTwice f a b = f a + f b`, a `hofShape k xs` that binds
+`g = applyTwice inc k` and returns `List.map g xs`, and a `testValue` of
+`hofShape 4 [ 1, 2, 3 ]`.
+-}
+hofPartialModule : Src.Module
+hofPartialModule =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = "inc"
+          , args = [ pVar "n" ]
+          , tipe = tLambda tInt tInt
+          , body = binopsExpr [ ( varExpr "n", "+" ) ] (intExpr 1)
+          }
+        , { name = "applyTwice"
+          , args = [ pVar "f", pVar "a", pVar "b" ]
+          , tipe = tLambda (tLambda tInt tInt) (tLambda tInt (tLambda tInt tInt))
+          , body =
+                binopsExpr [ ( callExpr (varExpr "f") [ varExpr "a" ], "+" ) ]
+                    (callExpr (varExpr "f") [ varExpr "b" ])
+          }
+        , { name = "hofShape"
+          , args = [ pVar "k", pVar "xs" ]
+          , tipe = tLambda tInt (tLambda tIntList tIntList)
+          , body =
+                letExpr
+                    [ define "g" [] (callExpr (varExpr "applyTwice") [ varExpr "inc", varExpr "k" ]) ]
+                    (callExpr (qualVarExpr "List" "map") [ varExpr "g", varExpr "xs" ])
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tIntList
+          , body = callExpr (varExpr "hofShape") [ intExpr 4, listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ]
           }
         ]
         []

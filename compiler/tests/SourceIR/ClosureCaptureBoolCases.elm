@@ -38,21 +38,18 @@ The cases, in the order `testCases` lists them:
     that captures only a `Bool`, one `True` and one `False`, and apply it.
   - `closureCaptureBoolAndInt` makes a closure that captures a `Bool` and an
     integer, and applies it.
-  - `heteroClosureIntFloat` picks one of two closures of the same function,
-    capturing different integers, with an `if` on the constant `True`, and
-    applies it.
-  - `heteroClosureDynamicInt` does the same with closures bound to names and
-    an `if` on a `let`-bound comparison.
-  - `heteroClosureMixedOps` picks between closures of two different
-    functions, each capturing an integer.
-
-Two labels in `testCases` speak of a `Float` capture, but no case builds a
-`Float`.
+  - `heteroClosureIntFloat` picks, with an `if` on the constant `True`, one
+    of two closures of type `Int -> Int`, one capturing an integer and the
+    other a `Float`, and applies it.
+  - `heteroClosureDynamicInt` picks between two closures of one function,
+    capturing different integers and bound to names, with an `if` on a
+    `let`-bound comparison.
+  - `heteroClosureMixedOps` picks between `let`-bound closures of two
+    different functions, an `Int` addition capturing an integer and a `Float`
+    multiplication capturing a `Float`.
 
 Among what is not tested:
 
-  - a closure that captures a `Float`, or two closures with captures of
-    different types at one call site;
   - a `Bool` captured by a lambda rather than by partial application;
   - a `let`-bound function whose result is a `Bool`;
   - a top-level function: every function is `let`-bound.
@@ -67,6 +64,7 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , caseExpr
         , define
+        , floatExpr
         , ifExpr
         , intExpr
         , letExpr
@@ -412,6 +410,9 @@ closureCaptureBoolAndInt expectFn _ =
         let
             addN n x =
                 n + x
+
+            scaleBy s x =
+                round (s * toFloat x)
         in
         let
             f =
@@ -419,13 +420,13 @@ closureCaptureBoolAndInt expectFn _ =
                     addN 10
 
                 else
-                    addN 20
+                    scaleBy 2.5
         in
         f 3
 
-The two closures of `addN` capture different integers and meet in `f`, which
-is called once. `testValue` evaluates to 13. The case's label speaks of a
-`Float` capture, but both captures are integer literals.
+A closure of `addN` capturing an `Int` and a closure of `scaleBy` capturing a
+`Float` have the same type, `Int -> Int`, and meet in `f`, which is called
+once. `testValue` evaluates to 13.
 
 -}
 heteroClosureIntFloat : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -436,15 +437,24 @@ heteroClosureIntFloat expectFn _ =
                 [ pVar "n", pVar "x" ]
                 (binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "x"))
 
+        scaleBy =
+            define "scaleBy"
+                [ pVar "s", pVar "x" ]
+                (callExpr (varExpr "round")
+                    [ binopsExpr [ ( varExpr "s", "*" ) ]
+                        (callExpr (varExpr "toFloat") [ varExpr "x" ])
+                    ]
+                )
+
         modul =
             makeModule "testValue"
-                (letExpr [ addN ]
+                (letExpr [ addN, scaleBy ]
                     (letExpr
                         [ define "f"
                             []
                             (ifExpr (boolExpr True)
                                 (callExpr (varExpr "addN") [ intExpr 10 ])
-                                (callExpr (varExpr "addN") [ intExpr 20 ])
+                                (callExpr (varExpr "scaleBy") [ floatExpr 2.5 ])
                             )
                         ]
                         (callExpr (varExpr "f") [ intExpr 3 ])
@@ -479,9 +489,10 @@ heteroClosureIntFloat expectFn _ =
         in
         g 7
 
-Unlike `heteroClosureIntFloat`, the closures are bound to names before the
-choice, and the condition is a `let`-bound comparison rather than the
-constant `True`. `testValue` evaluates to 12.
+Unlike `heteroClosureIntFloat`, both closures are of one function and capture
+an `Int`, they are bound to names before the choice, and the condition is a
+`let`-bound comparison rather than the constant `True`. `testValue` evaluates
+to 12.
 
 -}
 heteroClosureDynamicInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -525,15 +536,15 @@ heteroClosureDynamicInt expectFn _ =
             addInt n x =
                 n + x
 
-            mulInt factor x =
-                factor * x
+            mulFloat factor x =
+                round (factor * toFloat x)
         in
         let
             useAdd =
                 addInt 10
 
             useMul =
-                mulInt 3
+                mulFloat 3.0
 
             f =
                 if True then
@@ -544,10 +555,9 @@ heteroClosureDynamicInt expectFn _ =
         in
         f 4
 
-Unlike the other two cases in this group, the closures that meet in `f` are of
-two different functions, each capturing an integer, and `testValue`
-evaluates to 14. The case's label speaks of a `Float` capture, but no `Float`
-appears.
+Unlike `heteroClosureIntFloat`, the closures are bound to names before the
+choice: `useAdd` captures the `Int` 10 and `useMul` the `Float` 3.0, and both
+are `Int -> Int`. `testValue` evaluates to 14.
 
 -}
 heteroClosureMixedOps : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -558,17 +568,21 @@ heteroClosureMixedOps expectFn _ =
                 [ pVar "n", pVar "x" ]
                 (binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "x"))
 
-        mulInt =
-            define "mulInt"
+        mulFloat =
+            define "mulFloat"
                 [ pVar "factor", pVar "x" ]
-                (binopsExpr [ ( varExpr "factor", "*" ) ] (varExpr "x"))
+                (callExpr (varExpr "round")
+                    [ binopsExpr [ ( varExpr "factor", "*" ) ]
+                        (callExpr (varExpr "toFloat") [ varExpr "x" ])
+                    ]
+                )
 
         modul =
             makeModule "testValue"
-                (letExpr [ addInt, mulInt ]
+                (letExpr [ addInt, mulFloat ]
                     (letExpr
                         [ define "useAdd" [] (callExpr (varExpr "addInt") [ intExpr 10 ])
-                        , define "useMul" [] (callExpr (varExpr "mulInt") [ intExpr 3 ])
+                        , define "useMul" [] (callExpr (varExpr "mulFloat") [ floatExpr 3.0 ])
                         , define "f"
                             []
                             (ifExpr (boolExpr True)

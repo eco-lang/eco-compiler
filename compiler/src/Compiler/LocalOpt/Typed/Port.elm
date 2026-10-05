@@ -114,12 +114,12 @@ toEncoder tipe =
                             (\encoder ->
                                 let
                                     tupleType =
-                                        Can.TTuple (Can.TType ModuleName.basics "String" []) valueType []
+                                        Can.TTuple (Can.TType ModuleName.string "String" []) valueType []
 
                                     value =
                                         TOpt.Call A.zero encoder [ TOpt.Access (TOpt.VarLocal Name.dollar { tipe = tipe, tvar = Nothing }) A.zero name { tipe = fieldType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing }
                                 in
-                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) { tipe = Can.TType ModuleName.basics "String" [], tvar = Nothing }) value [] { tipe = tupleType, tvar = Nothing }
+                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) { tipe = Can.TType ModuleName.string "String" [], tvar = Nothing }) value [] { tipe = tupleType, tvar = Nothing }
                             )
             in
             encode "object"
@@ -130,7 +130,7 @@ toEncoder tipe =
                                 (\keyValuePairs ->
                                     let
                                         listType =
-                                            Can.TType ModuleName.list "List" [ Can.TTuple (Can.TType ModuleName.basics "String" []) valueType [] ]
+                                            Can.TType ModuleName.list "List" [ Can.TTuple (Can.TType ModuleName.string "String" []) valueType [] ]
 
                                         funcType =
                                             Can.tLambda tipe valueType
@@ -621,7 +621,7 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
                                         TOpt.Call A.zero
                                             andThen
                                             [ TOpt.Function Nothing [ ( key, tipe ) ] decoder { tipe = funcType, tvar = Nothing }
-                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) { tipe = Can.TType ModuleName.basics "String" [], tvar = Nothing }, typeDecoder ] { tipe = subDecoderType, tvar = Nothing }
+                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) { tipe = Can.TType ModuleName.string "String" [], tvar = Nothing }, typeDecoder ] { tipe = subDecoderType, tvar = Nothing }
                                             ]
                                             { tipe = decoderResultType, tvar = Nothing }
                                     )

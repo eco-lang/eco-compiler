@@ -2,9 +2,10 @@ module TestLogic.Generate.MonoLayoutIntegrityTest exposing (suite)
 
 {-| Runs the four layout checks of `TestLogic.Generate.MonoLayoutIntegrity` on
 the standard catalogue of test programs, so that a monomorphized graph whose
-record accesses name fields their record types lack, or whose constructor tags
-are out of step with constructor order, fails a test on any of those programs,
-not only on a hand-picked few.
+record and tuple constructions do not match their types, whose record accesses
+name fields their record types lack, whose constructor tags are out of step
+with constructor order, or whose record and tuple types carry stale hashes,
+fails a test on any of those programs, not only on a hand-picked few.
 
 The programs are the ones `SourceIR.Suite.StandardTestSuites.expectSuite`
 gives to an expectation: the source programs built by each `SourceIR` case
@@ -18,23 +19,24 @@ the list of its constructors with their tags and field types.
 What the tests establish, one group per checker, as
 `TestLogic.Generate.MonoLayoutIntegrity` states each check in full:
 
-  - `expectRecordTupleLayoutsComplete`: only that each program monomorphizes.
-    The checker's only tests, for a record with a negative number of fields
-    and a tuple with a negative number of elements, cannot fail.
+  - `expectRecordTupleLayoutsComplete`: every record creation names exactly
+    its type's fields, every tuple creation matches its tuple type, every
+    record update keeps its record's type, and every tuple type has 2 or 3
+    elements.
   - `expectRecordAccessMatchesLayout`: each record access and record update
-    the checker visits is applied to an expression whose type is a record
-    with the named fields.
-  - `expectCtorLayoutsConsistent`: in every `ctorShapes` entry, the
-    constructor at position `i` of the list has tag `i`.
-  - `expectLayoutsCanonical`: only that each program monomorphizes. The group
-    is named for canonical layouts, but the checker inspects nothing in the
-    graph.
+    is applied to an expression whose type is a record with the named fields,
+    and an access has its field's type.
+  - `expectCtorLayoutsConsistent`: in every `ctorShapes` entry, each
+    constructor's tag is the one `CtorTag.effective` gives its position.
+  - `expectLayoutsCanonical`: every record and tuple type carries the packed
+    hash its structure gives.
+
+Every expression is visited, including those a case holds inline in its
+decision tree.
 
 Among what is not tested: programs from the `SourceIR` case modules that
 `StandardTestSuites` leaves out; graphs built by the solver engine or after
-global optimization; record accesses held inline in a case's decision tree;
-constructor field counts and field types; and whether structurally equal
-layouts are shared.
+global optimization; and constructor field counts and field types.
 
 -}
 
@@ -62,7 +64,7 @@ suite =
 
 
 {-| The group running `expectRecordTupleLayoutsComplete` over the standard
-catalogue of programs. Each of its tests passes when its programs monomorphize.
+catalogue of programs.
 -}
 recordTupleLayoutsSuite : Test
 recordTupleLayoutsSuite =
@@ -92,7 +94,7 @@ ctorLayoutsSuite =
 
 
 {-| The group running `expectLayoutsCanonical` over the standard catalogue of
-programs. Each of its tests passes when its programs monomorphize.
+programs.
 -}
 layoutCanonicalSuite : Test
 layoutCanonicalSuite =

@@ -44,21 +44,21 @@ The tests:
     `joinModule`'s graph, and checks that each is `LTop`, `LVar`, `LPartial`
     or an `LSet` of two or more members, never a singleton or empty `LSet`.
     Widening the position to `LTop` passes this test.
-  - Test 2 checks that at least one annotation below `useIt`'s outermost
-    arrow in `loneModule`'s graph is an `LSet` with at least one member.
-    Widening to `LTop` fails it.
-  - Test 4 checks only that `runWith papDevirtModule` returns `Ok`.
+  - Test 2 checks that `useIt` has at least one demand in `loneModule`'s
+    graph and that the head arrow of its parameter is, in every one, a
+    singleton `LSet` whose member `lssMemberOrigins` records as `OriginPap`
+    of `addTo` with one argument supplied. Widening to `LTop` fails it.
+  - Test 4 checks the same of `applyTwice`'s parameter in
+    `papDevirtModule`'s graph, so `addTo`'s own `g|` member there fails it.
   - Test 5 collects every annotation of every registry demand type in the
-    graphs of all three fixtures and checks that none is the empty `LSet`.
+    graphs of all three fixtures and checks that none is the empty `LSet`;
+    a fixture whose run fails fails the test.
 
 There is no test 3.
 
 Among what is not tested: which members test 1's sets name, only that each
-has at least two; which member test 2's set holds, so a set naming some other
-function would pass; whether the partial application's member is
-distinct from `addTo`'s, which test 4 never inspects; any fixture whose run
-fails in test 5, which skips it, so test 5 passes if all three runs fail;
-and anything after monomorphization, since global optimization is not run.
+has at least two; and anything after monomorphization, since global
+optimization is not run.
 
 -}
 
@@ -117,42 +117,59 @@ suite =
                         Expect.fail msg
 
                     Ok graph ->
-                        if List.any (annoAtLeast 1) (allAnnos "useIt" graph) then
-                            Expect.pass
+                        case paramHeadAnnos "useIt" graph of
+                            [] ->
+                                Expect.fail "no demand recorded for `useIt` — fixture broken"
 
-                        else
-                            Expect.fail
-                                ("expected the injected PAP member at the consumer's param, got: "
-                                    ++ describeAnnos (allAnnos "useIt" graph)
-                                )
+                            annos ->
+                                if List.all (isPapSingleton "addTo" 1 graph) annos then
+                                    Expect.pass
+
+                                else
+                                    Expect.fail
+                                        ("expected the injected `addTo 7` PAP member, alone, at the consumer's param, got: "
+                                            ++ describeAnnos annos
+                                        )
         , Test.test "4. the PAP member is NOT the callee's own `g|` identity" <|
             \() ->
                 case runWith papDevirtModule of
                     Err msg ->
                         Expect.fail ("PAP member licensed a bad devirt: " ++ msg)
 
-                    Ok _ ->
-                        Expect.pass
+                    Ok graph ->
+                        case paramHeadAnnos "applyTwice" graph of
+                            [] ->
+                                Expect.fail "no demand recorded for `applyTwice` — fixture broken"
+
+                            annos ->
+                                if List.all (isPapSingleton "addTo" 1 graph) annos then
+                                    Expect.pass
+
+                                else
+                                    Expect.fail
+                                        ("expected the `addTo 7` PAP member, not `addTo`'s own, at applyTwice's param, got: "
+                                            ++ describeAnnos annos
+                                            ++ " with origins "
+                                            ++ Debug.toString (List.map (originsOf graph) annos)
+                                        )
         , Test.test "5. LSS_001: injection never manufactures an EMPTY set" <|
             \() ->
-                let
-                    everyAnno =
-                        List.concatMap
-                            (\m ->
-                                case runWith m of
-                                    Ok g ->
-                                        List.concatMap annosOf (allDemands g)
-
-                                    Err _ ->
-                                        []
-                            )
+                case
+                    List.foldr (Result.map2 (++))
+                        (Ok [])
+                        (List.map (runWith >> Result.map (allDemands >> List.concatMap annosOf))
                             [ joinModule, loneModule, papDevirtModule ]
-                in
-                if List.any ((==) (Mono.LSet [])) everyAnno then
-                    Expect.fail "an empty LSet reached a demand annotation"
+                        )
+                of
+                    Err msg ->
+                        Expect.fail msg
 
-                else
-                    Expect.pass
+                    Ok everyAnno ->
+                        if List.any ((==) (Mono.LSet [])) everyAnno then
+                            Expect.fail "an empty LSet reached a demand annotation"
+
+                        else
+                            Expect.pass
         ]
 
 
@@ -369,6 +386,53 @@ annosOf t =
             []
 
 
+{-| Returns the annotation on the head arrow of the first parameter of every
+demand type of the globals named `target`, when that parameter is a function.
+-}
+paramHeadAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
+paramHeadAnnos target graph =
+    List.filterMap
+        (\t ->
+            case t of
+                Mono.MFunction _ _ ((Mono.MFunction _ anno _ _) :: _) _ ->
+                    Just anno
+
+                _ ->
+                    Nothing
+        )
+        (demandsOf target graph)
+
+
+{-| Returns whether `anno` is an `LSet` whose one member the graph's
+`lssMemberOrigins` records as a partial application of a global named `name`
+with `supplied` arguments.
+-}
+isPapSingleton : String -> Int -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
+isPapSingleton name supplied graph anno =
+    case ( anno, originsOf graph anno ) of
+        ( Mono.LSet [ _ ], [ Just (Mono.OriginPap (Mono.Global _ n) k) ] ) ->
+            n == name && k == supplied
+
+        _ ->
+            False
+
+
+{-| Returns the recorded origin of each member of an `LSet` or `LPartial`, for
+a reader or a failure message.
+-}
+originsOf : Mono.MonoGraph -> Mono.LambdaSetAnno -> List (Maybe Mono.MemberOrigin)
+originsOf (Mono.MonoGraph g) anno =
+    case anno of
+        Mono.LSet ms ->
+            List.map (\m -> Dict.get m g.lssMemberOrigins) ms
+
+        Mono.LPartial ms ->
+            List.map (\m -> Dict.get m g.lssMemberOrigins) ms
+
+        _ ->
+            []
+
+
 {-| Returns `False` when `anno` is an `LSet` of fewer than two members, a
 complete set naming one function or none, and `True` for every other
 annotation: `LTop`, `LVar`, `LPartial` and an `LSet` of two or more members.
@@ -387,19 +451,6 @@ neverFalselyComplete anno =
 
         Mono.LSet ms ->
             List.length ms >= 2
-
-
-{-| Returns whether `anno` is an `LSet` of at least `n` members. Every other
-form gives `False`.
--}
-annoAtLeast : Int -> Mono.LambdaSetAnno -> Bool
-annoAtLeast n anno =
-    case anno of
-        Mono.LSet ms ->
-            List.length ms >= n
-
-        _ ->
-            False
 
 
 {-| Renders `annos` for a failure message, as a bracketed, comma-separated list

@@ -82,8 +82,9 @@ listBinops =
 {-| Returns the set of every type variable named in `tipe`, including a
 record's extension variable.
 
-For an alias, the result also includes every variable named in the alias's
-argument types and in its body, whether the body is `Holey` or `Filled`.
+For an alias, only the alias's argument types are searched, as in
+`Compiler.Canonicalize.Type`: a `Holey` body names the alias's own parameters,
+which the alias binds.
 
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
@@ -121,17 +122,8 @@ collectFreeVars tipe =
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
                 cs
 
-        Can.TAlias _ _ args aliasType ->
-            let
-                argVars =
-                    List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
-            in
-            case aliasType of
-                Can.Holey t ->
-                    Dict.union argVars (collectFreeVars t)
-
-                Can.Filled t ->
-                    Dict.union argVars (collectFreeVars t)
+        Can.TAlias _ _ args _ ->
+            List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
 
 
 {-| Returns an annotation for `tipe` that is polymorphic in every type

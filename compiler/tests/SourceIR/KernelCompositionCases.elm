@@ -18,7 +18,11 @@ function.
 The program is a module named `Test`, built by `makeKernelModule`, whose one
 top-level value `testValue` is
 
-    Elm.Kernel.List.reverse (Elm.Kernel.List.map (\x -> x * 2) [ 1, 2, 3 ])
+    Elm.Kernel.List.reverse
+        (Elm.Kernel.List.map2 (\x y -> x * y) [ 1, 2, 3 ] [ 4, 5, 6 ])
+
+Both are kernel functions the C++ kernel exports (`Elm_Kernel_List_reverse`,
+`Elm_Kernel_List_map2`); the kernel has no one-list `map`.
 
 Among what is not tested: kernel modules other than `Elm.Kernel.List`, a chain
 of more than two kernel calls, and composition written with `>>`, `<<`, `|>` or
@@ -46,22 +50,23 @@ expectSuite expectFn condStr =
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
-    [ { label = "Chained List.map and List.reverse", run = chainedListOps expectFn }
+    [ { label = "Chained List.map2 and List.reverse", run = chainedListOps expectFn }
     ]
 
 
 {-| Applies `expectFn` to the program whose value is a call of
-`Elm.Kernel.List.reverse` on the result of calling `Elm.Kernel.List.map` with
-the lambda `\x -> x * 2` and the list `[ 1, 2, 3 ]`.
+`Elm.Kernel.List.reverse` on the result of calling `Elm.Kernel.List.map2` with
+the lambda `\x y -> x * y` and the lists `[ 1, 2, 3 ]` and `[ 4, 5, 6 ]`.
 -}
 chainedListOps : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedListOps expectFn _ =
     expectFn
         (makeKernelModule "testValue"
             (callExpr (qualVarExpr "Elm.Kernel.List" "reverse")
-                [ callExpr (qualVarExpr "Elm.Kernel.List" "map")
-                    [ lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
+                [ callExpr (qualVarExpr "Elm.Kernel.List" "map2")
+                    [ lambdaExpr [ pVar "x", pVar "y" ] (binopsExpr [ ( varExpr "x", "*" ) ] (varExpr "y"))
                     , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+                    , listExpr [ intExpr 4, intExpr 5, intExpr 6 ]
                     ]
                 ]
             )

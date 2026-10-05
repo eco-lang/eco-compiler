@@ -9,6 +9,7 @@ module TestLogic.TestPipeline exposing
     , expectCoverageRun
     , expectMLIRGeneration
     , expectMonomorphization
+    , interfaceAnnotations
     , runSolverMonoWithLimits
     , runSolverMonoWithReport
     , runSubstMonoWithLimits
@@ -22,6 +23,7 @@ module TestLogic.TestPipeline exposing
     , runToPostSolve
     , runToTypeCheck
     , runToTypedOpt
+    , stampLikeCompile
     )
 
 {-| Drives one test program through the compiler to a chosen stage, so that
@@ -68,8 +70,7 @@ substitution engine, `Compiler.Monomorphize.Monomorphize`.
 (`Compiler.Eco.Config`).
 
 The stages follow `Compiler.Compile` and `Builder.Generate`. Among the
-differences a test can observe: the typed optimizer is given no scheme roots,
-the pattern match checker is not run, neither alias forwarding nor
+differences a test can observe: the pattern match checker is not run, neither alias forwarding nor
 eta-expansion is run before monomorphization, no pruning follows the
 post-monomorphization inliner, global optimization runs with the default
 configuration, and MLIR comes from
@@ -140,6 +141,8 @@ module and what `Compiler.Type.Solve.runWithIds` returns for it.
 solver left it, before PostSolve. `solverState` is a snapshot of the solver's
 point store, taken when solving finished; it is what later resolves a
 variable in `nodeVars` or `annotationVars` to its union-find root.
+`schemeBinderVars` is what `constrainWithIds` records for each annotated
+definition: the solver variable of each type variable its annotation binds.
 
 -}
 type alias TypeCheckArtifacts =
@@ -149,6 +152,7 @@ type alias TypeCheckArtifacts =
     , nodeVars : Array (Maybe Vars.Variable)
     , solverState : { cells : Array Vars.PointCell }
     , annotationVars : Dict Name.Name Vars.Variable
+    , schemeBinderVars : Dict Name.Name (Dict Name.Name Vars.Variable)
     }
 
 
@@ -165,6 +169,7 @@ type alias PostSolveArtifacts =
     , nodeVars : Array (Maybe Vars.Variable)
     , solverState : { cells : Array Vars.PointCell }
     , annotationVars : Dict Name.Name Vars.Variable
+    , schemeBinderVars : Dict Name.Name (Dict Name.Name Vars.Variable)
     }
 
 
@@ -299,7 +304,7 @@ runToTypeCheck srcModule =
                 Err errCount ->
                     Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
 
-                Ok { annotations, nodeTypes, nodeVars, solverState, annotationVars } ->
+                Ok { annotations, nodeTypes, nodeVars, solverState, annotationVars, schemeBinderVars } ->
                     Ok
                         { canonical = canonical
                         , annotations = annotations
@@ -307,6 +312,7 @@ runToTypeCheck srcModule =
                         , nodeVars = nodeVars
                         , solverState = solverState
                         , annotationVars = annotationVars
+                        , schemeBinderVars = schemeBinderVars
                         }
 
 
@@ -319,7 +325,7 @@ runToPostSolve srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypes, nodeVars, solverState, annotationVars } ->
+        Ok { canonical, annotations, nodeTypes, nodeVars, solverState, annotationVars, schemeBinderVars } ->
             let
                 postSolveResult =
                     PostSolve.postSolve
@@ -336,6 +342,7 @@ runToPostSolve srcModule =
                 , nodeVars = nodeVars
                 , solverState = solverState
                 , annotationVars = annotationVars
+                , schemeBinderVars = schemeBinderVars
                 }
 
 
@@ -343,13 +350,12 @@ runToPostSolve srcModule =
 through PostSolve, and builds its typed local graph.
 
 Between PostSolve and the typed optimizer it does what `Compiler.Compile`
-does at that point: it resolves the node and annotation variables to their
-union-find roots and stamps solver roots into the arrows of the node types
-and annotations. Without this step every arrow in a test program would carry
-`NoArrow`, and the solver engine, which gives arrows that share a solver root
-one identity, would find none to share. The typed optimizer is given an empty
-scheme-roots table, where `Compiler.Compile` passes the roots of the solver's
-scheme variables.
+does at that point, through `stampLikeCompile`: it resolves the node and
+annotation variables to their union-find roots, stamps solver roots into the
+arrows of the node types and annotations, and gives the typed optimizer the
+normalized scheme roots of every definition. Without this step every arrow in
+a test program would carry `NoArrow`, and the solver engine, which gives
+arrows that share a solver root one identity, would find none to share.
 
 Any error from the typed optimizer gives the same `Err` message.
 
@@ -360,42 +366,28 @@ runToTypedOpt srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars } ->
+        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars, schemeBinderVars } ->
             let
-                rootedNodeVars =
-                    SolverRoots.normalizeNodeVars solverState nodeVars
-
-                rootedAnnotationVars =
-                    SolverRoots.normalizeAnnotationVars solverState annotationVars
-
-                stampedNodeTypes =
-                    Array.indexedMap
-                        (\i maybeType ->
-                            case ( maybeType, Maybe.withDefault Nothing (Array.get i rootedNodeVars) ) of
-                                ( Just t, Just v ) ->
-                                    Just (SolverRoots.stampArrowRoots solverState t v)
-
-                                _ ->
-                                    maybeType
-                        )
-                        nodeTypesPost
+                stamped =
+                    stampLikeCompile
+                        { solverState = solverState
+                        , annotations = annotations
+                        , annotationVars = annotationVars
+                        , nodeTypes = nodeTypesPost
+                        , nodeVars = nodeVars
+                        , schemeBinderVars = schemeBinderVars
+                        }
 
                 stampedAnnotations =
-                    Dict.map
-                        (\defName ann ->
-                            case Dict.get defName rootedAnnotationVars of
-                                Just annotVar ->
-                                    SolverRoots.stampArrowRootsInAnnotation solverState ann annotVar
+                    stamped.annotations
 
-                                Nothing ->
-                                    ann
-                        )
-                        annotations
+                stampedNodeTypes =
+                    stamped.nodeTypes
 
                 typedModule =
-                    TCanBuild.fromCanonical canonical stampedNodeTypes rootedNodeVars
+                    TCanBuild.fromCanonical canonical stampedNodeTypes stamped.nodeVars
             in
-            case RResult.run (TypedOptimize.optimizeTyped stampedAnnotations stampedNodeTypes rootedNodeVars kernelEnv rootedAnnotationVars Dict.empty typedModule) of
+            case RResult.run (TypedOptimize.optimizeTyped stampedAnnotations stampedNodeTypes stamped.nodeVars kernelEnv stamped.annotationVars stamped.schemeRoots typedModule) of
                 ( _, Ok localGraph ) ->
                     Ok
                         { canonical = canonical
@@ -407,6 +399,104 @@ runToTypedOpt srcModule =
 
                 ( _, Err _ ) ->
                     Err "Typed optimization produced an error"
+
+
+{-| Does what `Compiler.Compile.typeCheckTyped` does between PostSolve and the
+typed optimizer, which that module does not expose: resolves the node and
+annotation variables to their union-find roots, stamps each node type and each
+annotation with the solver roots of its arrows, and computes the scheme roots
+the typed optimizer is given. A definition's scheme roots are the normalized
+`schemeBinderVars` when its annotation is written, and otherwise the binder
+roots extracted from its inferred annotation, if there are any.
+
+`nodeTypes` are the node types after PostSolve. This must stay in step with
+`Compiler.Compile`; nothing checks that it does.
+
+-}
+stampLikeCompile :
+    { solverState : { cells : Array Vars.PointCell }
+    , annotations : Dict Name.Name (Can.Annotation Name)
+    , annotationVars : Dict Name.Name Vars.Variable
+    , nodeTypes : Array (Maybe (Can.Type Name))
+    , nodeVars : Array (Maybe Vars.Variable)
+    , schemeBinderVars : Dict Name.Name (Dict Name.Name Vars.Variable)
+    }
+    ->
+        { annotations : Dict Name.Name (Can.Annotation Name)
+        , annotationVars : Dict Name.Name Vars.Variable
+        , nodeTypes : Array (Maybe (Can.Type Name))
+        , nodeVars : Array (Maybe Vars.Variable)
+        , schemeRoots : SolverRoots.AllSchemeRoots
+        }
+stampLikeCompile input =
+    let
+        solverState =
+            input.solverState
+
+        rootedNodeVars =
+            SolverRoots.normalizeNodeVars solverState input.nodeVars
+
+        rootedAnnotationVars =
+            SolverRoots.normalizeAnnotationVars solverState input.annotationVars
+
+        annotatedSchemeRoots =
+            SolverRoots.normalizeAllSchemeRoots solverState input.schemeBinderVars
+
+        schemeRoots =
+            Dict.foldl
+                (\defName annotation acc ->
+                    if Dict.member defName annotatedSchemeRoots then
+                        acc
+
+                    else
+                        case Dict.get defName input.annotationVars of
+                            Just annotVar ->
+                                let
+                                    roots =
+                                        SolverRoots.extractBinderRootsFromInferred solverState annotation annotVar
+                                in
+                                if Dict.isEmpty roots then
+                                    acc
+
+                                else
+                                    Dict.insert defName roots acc
+
+                            Nothing ->
+                                acc
+                )
+                annotatedSchemeRoots
+                input.annotations
+
+        stampedNodeTypes =
+            Array.indexedMap
+                (\i maybeType ->
+                    case ( maybeType, Maybe.withDefault Nothing (Array.get i rootedNodeVars) ) of
+                        ( Just t, Just v ) ->
+                            Just (SolverRoots.stampArrowRoots solverState t v)
+
+                        _ ->
+                            maybeType
+                )
+                input.nodeTypes
+
+        stampedAnnotations =
+            Dict.map
+                (\defName ann ->
+                    case Dict.get defName rootedAnnotationVars of
+                        Just annotVar ->
+                            SolverRoots.stampArrowRootsInAnnotation solverState ann annotVar
+
+                        Nothing ->
+                            ann
+                )
+                input.annotations
+    in
+    { annotations = stampedAnnotations
+    , annotationVars = rootedAnnotationVars
+    , nodeTypes = stampedNodeTypes
+    , nodeVars = rootedNodeVars
+    , schemeRoots = schemeRoots
+    }
 
 
 {-| Runs `runToTypedOpt` on `srcModule` and monomorphizes the result with the
@@ -643,9 +733,9 @@ runSubstMonoWithLimits limits srcModule =
 {-| Runs `runToGlobalOpt` on `srcModule` and generates MLIR from the optimized
 graph in development mode.
 
-The text in `mlirOutput` comes from a second generation of the same graph.
-That generation always succeeds, so `runToMlir` fails only when an earlier
-stage does.
+The text in `mlirOutput` comes from a second generation of the same graph,
+through the back end's code generator interface. `runToMlir` fails only when
+an earlier stage does.
 
 -}
 runToMlir : Src.Module -> Result String MlirArtifacts
@@ -660,12 +750,7 @@ runToMlir srcModule =
                     MLIR.generateMlirModule (Mode.Dev Nothing) optimizedMonoGraph
 
                 mlirOutput =
-                    case runMLIRGeneration optimizedMonoGraph of
-                        Ok output ->
-                            output
-
-                        Err _ ->
-                            ""
+                    runMLIRGeneration optimizedMonoGraph
             in
             Ok
                 { canonical = canonical
@@ -691,15 +776,16 @@ runToMlir srcModule =
 recorded and solves them, giving the solver's results or the number of type
 errors.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe Vars.Variable), solverState : { cells : Array Vars.PointCell }, annotationVars : Dict Name.Name Vars.Variable })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe Vars.Variable), solverState : { cells : Array Vars.PointCell }, annotationVars : Dict Name.Name Vars.Variable, schemeBinderVars : Dict Name.Name (Dict Name.Name Vars.Variable) })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
-            (\( constraint, nodeVars, _ ) ->
+            (\( constraint, nodeVars, schemeBinderVars ) ->
                 Solve.runWithIds constraint nodeVars
+                    |> IO.map (\result -> ( result, schemeBinderVars ))
             )
         |> IO.map
-            (\result ->
+            (\( result, schemeBinderVars ) ->
                 case result of
                     Ok data ->
                         Ok
@@ -708,6 +794,7 @@ runWithIdsTypeCheck modul =
                             , nodeVars = data.nodeVars
                             , solverState = data.solverState
                             , annotationVars = data.annotationVars
+                            , schemeBinderVars = schemeBinderVars
                             }
 
                     Err (NE.Nonempty _ rest) ->
@@ -934,7 +1021,8 @@ monomorphizeAny globalTypeEnv globalGraph =
         Html.text "test main"
 
 It also appends `import Html exposing (text)` unless the module already has an
-import of `Html`. The `main` has no annotation; its type is that of the mock
+import of `Html`; when that import has an alias, `main` calls `text` through
+the alias instead of `Html`. The `main` has no annotation; its type is that of the mock
 `Html.text`'s result, a `VirtualDom.Node`, which the typed optimizer accepts as
 a static `main`.
 
@@ -946,51 +1034,62 @@ wrapWithMain : Src.Module -> Src.Module
 wrapWithMain (Src.Module data) =
     let
         valueNames =
-            List.filterMap
+            List.map
                 (\(A.At _ (Src.Value vdata)) ->
                     let
                         ( _, A.At _ name ) =
                             vdata.name
                     in
-                    if name == "main" then
-                        Nothing
-
-                    else
-                        Just name
+                    name
                 )
                 data.values
 
-        defs =
+        tvDef =
             if List.member "testValue" valueNames then
-                [ Src.Define
+                Src.Define
                     (A.At A.zero "_tv")
                     []
                     ( [], varRef "testValue" )
                     Nothing
-                ]
 
             else
                 Debug.todo "Test module must define 'testValue' — see SourceIR test standard"
 
+        -- The existing `import Html`, if any, and the alias it gives the module.
+        htmlImportAlias =
+            List.filterMap
+                (\(Src.Import ( _, A.At _ importName ) maybeAlias _) ->
+                    if importName == "Html" then
+                        Just (Maybe.map Tuple.second maybeAlias)
+
+                    else
+                        Nothing
+                )
+                data.imports
+                |> List.head
+
+        htmlQualifier =
+            case htmlImportAlias of
+                Just (Just alias) ->
+                    alias
+
+                _ ->
+                    "Html"
+
         body =
             A.At A.zero
                 (Src.Call
-                    (A.At A.zero (Src.VarQual Src.LowVar "Html" "text"))
+                    (A.At A.zero (Src.VarQual Src.LowVar htmlQualifier "text"))
                     [ ( [], A.At A.zero (Src.Str "test main" False) ) ]
                 )
 
         mainExpr =
-            case defs of
-                [] ->
+            A.At A.zero
+                (Src.Let
+                    [ ( ( [], [] ), A.At A.zero tvDef ) ]
+                    []
                     body
-
-                _ ->
-                    A.At A.zero
-                        (Src.Let
-                            (List.map (\d -> ( ( [], [] ), A.At A.zero d )) defs)
-                            []
-                            body
-                        )
+                )
 
         mainValue =
             Src.Value
@@ -1000,11 +1099,6 @@ wrapWithMain (Src.Module data) =
                 , body = ( [], mainExpr )
                 , tipe = Nothing
                 }
-
-        hasHtmlImport =
-            List.any
-                (\(Src.Import ( _, A.At _ importName ) _ _) -> importName == "Html")
-                data.imports
 
         htmlImport =
             Src.Import
@@ -1021,7 +1115,7 @@ wrapWithMain (Src.Module data) =
         { data
             | values = data.values ++ [ A.At A.zero mainValue ]
             , imports =
-                if hasHtmlImport then
+                if htmlImportAlias /= Nothing then
                     data.imports
 
                 else
@@ -1038,9 +1132,9 @@ varRef name =
 
 
 {-| Generates MLIR text for `monoGraph` through the MLIR back end's code
-generator interface, in development mode. It never returns `Err`.
+generator interface, in development mode.
 -}
-runMLIRGeneration : Mono.MonoGraph -> Result String String
+runMLIRGeneration : Mono.MonoGraph -> String
 runMLIRGeneration monoGraph =
     let
         config =
@@ -1053,7 +1147,7 @@ runMLIRGeneration monoGraph =
         output =
             MLIR.backend.generate config
     in
-    Ok (CodeGen.outputToString output)
+    CodeGen.outputToString output
 
 
 
@@ -1067,9 +1161,9 @@ then runs the rest of the substitution-engine pipeline on it (monomorphization,
 the inliner, global optimization and MLIR generation) only so that the code
 runs.
 
-It fails only when a stage up to typed optimization returns `Err`. A
-monomorphization `Err` passes, and so does any outcome after it; nothing is
-recorded about them. A stage that crashes still ends the test.
+It fails when a stage up to typed optimization or monomorphization returns
+`Err`. The later stages cannot return `Err`; what they produce is not checked.
+A stage that crashes still ends the test.
 
 -}
 expectCoverageRun : Src.Module -> Expect.Expectation
@@ -1090,8 +1184,8 @@ expectCoverageRun srcModule =
                     buildGlobalTypeEnv canonical
             in
             case monomorphizeAny globalTypeEnv globalGraph of
-                Err _ ->
-                    Expect.pass
+                Err msg ->
+                    Expect.fail ("Monomorphization failed: " ++ msg)
 
                 Ok monoGraph ->
                     let
@@ -1100,13 +1194,11 @@ expectCoverageRun srcModule =
 
                         optimizedMonoGraph =
                             MonoGlobalOptimize.globalOptimize simplifiedGraph
-                    in
-                    case runMLIRGeneration optimizedMonoGraph of
-                        Err _ ->
-                            Expect.pass
 
-                        Ok _ ->
-                            Expect.pass
+                        _ =
+                            runMLIRGeneration optimizedMonoGraph
+                    in
+                    Expect.pass
 
 
 {-| Creates an expectation that `runToMono` succeeds on `srcModule` and gives a

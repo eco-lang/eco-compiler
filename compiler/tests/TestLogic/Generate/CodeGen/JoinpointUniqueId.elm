@@ -1,40 +1,42 @@
 module TestLogic.Generate.CodeGen.JoinpointUniqueId exposing (expectJoinpointUniqueId)
 
-{-| An `eco.jump` names the joinpoint it transfers control to by an integer,
-so two joinpoints with the same integer in one function would make a jump
-ambiguous. This module checks that no generated function has such a pair.
+{-| Checks how tail recursion appears in generated MLIR. The `eco` dialect has
+an `eco.joinpoint` op (a loop head, identified within its function by an
+integer `id`) and an `eco.jump` that re-enters one by `id`; two joinpoints with
+the same `id` would make a jump ambiguous. The code generator does not use that
+pair for tail recursion: `Compiler.Generate.MLIR.TailRec` lowers every
+self-tail-recursive function (a `MonoTailFunc`) to an `scf.while` loop. So a
+check of joinpoint ids alone finds nothing to check on generated MLIR; this
+module checks the lowering that is generated, and keeps the id check for any
+joinpoint that does appear.
 
-A _joinpoint_ is an `eco.joinpoint` op, identified within its function by its
-integer `id` attribute. An `eco.jump` names its destination by that integer, in
-its `target` attribute.
+`expectJoinpointUniqueId` compiles a source module to MLIR with
+`TestLogic.TestPipeline.runToMlir` and reports:
 
-`expectJoinpointUniqueId` compiles a source module to MLIR and walks each
-top-level `func.func` of the result, including every op nested in its regions,
-in both the entry block and the other blocks, and in both block bodies and
-terminators. Within one function it reports:
+  - for each `MonoTailFunc` node of the monomorphized graph whose body holds a
+    `MonoTailCall`, when the module has a top-level `func.func` named for it
+    (`sym_name` ending in `_$_<SpecId>`): that function holds no `scf.while`
+    (the tail call was not lowered to a loop), or holds an `eco.jump` (the
+    fallback `Compiler.Generate.MLIR.Expr.generateTailCall` was reached; it
+    jumps to a joinpoint 0 that nothing defines);
+  - within any top-level `func.func`, an `eco.joinpoint` with no integer `id`,
+    or one whose `id` an earlier joinpoint of the same function already has.
 
-  - a joinpoint with no integer `id` attribute;
-  - a joinpoint whose `id` an earlier joinpoint of the same function already
-    has, with the op id of that earlier joinpoint in the message.
-
-Ids are compared only within one top-level `func.func`, so the same `id` in two
-different functions is not a violation.
-
-The code generator under `src/` builds no op named `eco.joinpoint`, so on
-generated MLIR this check finds no joinpoint and passes whenever compilation
-succeeds.
-
-Among what is not tested: that each `eco.jump` names a joinpoint that exists.
+Not checked: tail calls of let-bound tail functions (`MonoTailDef`), and
+whether the loop computes the right thing. `TestLogic.Generate.CodeGen.JumpTarget`
+checks every `eco.jump` against its enclosing joinpoints.
 
 @docs expectJoinpointUniqueId
 
 -}
 
+import Array
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Dict
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import OrderedDict
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -42,18 +44,16 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , getStringAttr
         , violationsToExpectation
+        , walkOpAndChildren
         )
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Returns an expectation that compiles `srcModule` to MLIR and passes when no
-top-level `func.func` contains an `eco.joinpoint` without an integer `id` or two
-`eco.joinpoint` ops with the same `id`.
-
-It fails when compilation fails. When there are violations, it fails with the
-message of one of them only. For a repeated `id` that message names the function
-and the op id of the joinpoint that first had the `id`.
-
+{-| Returns an expectation that compiles `srcModule` to MLIR and passes when
+every tail-recursive function is lowered to an `scf.while` with no `eco.jump`,
+and no top-level `func.func` contains an `eco.joinpoint` without an integer
+`id` or two `eco.joinpoint` ops with the same `id`. It fails when compilation
+fails, and otherwise with the violations.
 -}
 expectJoinpointUniqueId : Src.Module -> Expectation
 expectJoinpointUniqueId srcModule =
@@ -61,8 +61,80 @@ expectJoinpointUniqueId srcModule =
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 
-        Ok { mlirModule } ->
-            violationsToExpectation (checkJoinpointUniqueness mlirModule)
+        Ok { mlirModule, monoGraph } ->
+            violationsToExpectation
+                (checkTailLoops monoGraph mlirModule ++ checkJoinpointUniqueness mlirModule)
+
+
+{-| Returns a violation for each function generated for a tail-recursive
+`MonoTailFunc` that holds no `scf.while` or holds an `eco.jump`.
+-}
+checkTailLoops : Mono.MonoGraph -> MlirModule -> List Violation
+checkTailLoops (Mono.MonoGraph data) mlirModule =
+    let
+        funcsBySpec =
+            findFuncOps mlirModule
+                |> List.filterMap
+                    (\op ->
+                        getStringAttr "sym_name" op
+                            |> Maybe.andThen specIdOf
+                            |> Maybe.map (\specId -> ( specId, op ))
+                    )
+                |> Dict.fromList
+
+        isTailRecursive body =
+            MonoTraverse.foldExpr
+                (\e found ->
+                    case e of
+                        Mono.MonoTailCall _ _ _ ->
+                            True
+
+                        _ ->
+                            found
+                )
+                False
+                body
+    in
+    Array.toIndexedList data.nodes
+        |> List.filterMap
+            (\( specId, maybeNode ) ->
+                case ( maybeNode, Dict.get specId funcsBySpec ) of
+                    ( Just (Mono.MonoTailFunc _ body _), Just funcOp ) ->
+                        if isTailRecursive body then
+                            let
+                                opNames =
+                                    List.map .name (walkOpAndChildren funcOp)
+
+                                violation message =
+                                    Just { opId = funcOp.id, opName = funcOp.name, message = message }
+                            in
+                            if List.member "eco.jump" opNames then
+                                violation "tail-recursive function holds an eco.jump (Expr.generateTailCall fallback) instead of an scf.while loop"
+
+                            else if not (List.member "scf.while" opNames) then
+                                violation "tail-recursive function was not lowered to an scf.while loop"
+
+                            else
+                                Nothing
+
+                        else
+                            Nothing
+
+                    _ ->
+                        Nothing
+            )
+
+
+{-| The SpecId after the last `_$_` of a symbol, if it is a number.
+-}
+specIdOf : String -> Maybe Int
+specIdOf name =
+    case List.reverse (String.split "_$_" name) of
+        last :: _ :: _ ->
+            String.toInt last
+
+        _ ->
+            Nothing
 
 
 {-| Returns the joinpoint violations found in the top-level `func.func` ops of
@@ -144,48 +216,4 @@ checkFunctionJoinpoints funcOp =
 -}
 findJoinpointsInOp : MlirOp -> List MlirOp
 findJoinpointsInOp op =
-    let
-        selfJoinpoints =
-            if op.name == "eco.joinpoint" then
-                [ op ]
-
-            else
-                []
-
-        regionJoinpoints =
-            List.concatMap findJoinpointsInRegion op.regions
-    in
-    selfJoinpoints ++ regionJoinpoints
-
-
-{-| Returns every `eco.joinpoint` in a region, those in the entry block first
-and then those in the other blocks in their stored order.
--}
-findJoinpointsInRegion : MlirRegion -> List MlirOp
-findJoinpointsInRegion (MlirRegion { entry, blocks }) =
-    let
-        entryJoinpoints =
-            findJoinpointsInBlock entry
-
-        allBlocks =
-            OrderedDict.values blocks
-
-        blockJoinpoints =
-            List.concatMap findJoinpointsInBlock allBlocks
-    in
-    entryJoinpoints ++ blockJoinpoints
-
-
-{-| Returns every `eco.joinpoint` in a block, at any depth, those in the body
-ops first and then those in the terminator.
--}
-findJoinpointsInBlock : MlirBlock -> List MlirOp
-findJoinpointsInBlock block =
-    let
-        bodyJoinpoints =
-            List.concatMap findJoinpointsInOp block.body
-
-        terminatorJoinpoints =
-            findJoinpointsInOp block.terminator
-    in
-    bodyJoinpoints ++ terminatorJoinpoints
+    List.filter (\o -> o.name == "eco.joinpoint") (walkOpAndChildren op)

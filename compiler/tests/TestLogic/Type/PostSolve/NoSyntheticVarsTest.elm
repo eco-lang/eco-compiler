@@ -1,35 +1,33 @@
 module TestLogic.Type.PostSolve.NoSyntheticVarsTest exposing (suite)
 
-{-| Guards against a type variable with a generated-looking name surviving
-PostSolve in the node types of three small programs.
+{-| Guards against a synthetic placeholder variable that no constraint
+reached surviving PostSolve in the node types of four small programs.
 
-A node is an expression or pattern of the canonical module that carries a node
-id. PostSolve leaves an array of node types indexed by node id, with `Nothing`
-at an id that has no type. The check,
-`TestLogic.Type.PostSolve.NoSyntheticVars.expectNoSyntheticVars`, calls a type
-variable _synthetic_ by its name alone: a name that is empty, starts with a
-digit, or is an underscore followed by at least one more character. It fails
-on a synthetic variable anywhere in a node type, other than a record's
-extension variable, and on a program that fails to canonicalize or type check.
+The check, `TestLogic.Type.PostSolve.NoSyntheticVars.expectNoSyntheticVars`,
+says what a synthetic placeholder is and how one left unconstrained is
+recognised: a variable that is the whole type of a placeholder node and occurs
+nowhere else. It fails on such a variable left in a node type after PostSolve,
+and on a program that fails to canonicalize or type check.
 
 Each program is built with `Compiler.AST.SourceBuilder.makeModuleWithDefs`: a
 module importing `Basics` and `List` with one unannotated top-level value.
 
 The tests:
 
-  - `x = 1 + 2` in module `FullyConstrained`: two integer literals joined by
-    the operator `+` of the stand-in `Basics` interface the test pipeline
-    compiles against (`Compiler.Elm.Interface.Basic`), typed
-    `number -> number -> number`. Nothing pins the literals to `Int`.
-  - `id x = x` in module `Polymorphic`: a function whose argument's type is a
-    type variable. The test name says it "generalizes properly"; the assertion
-    reads only the names of the variables in the node types.
+  - `x = 1 + 2` in module `FullyConstrained`.
+  - `id x = x` in module `Polymorphic`: the reference to `x` is a placeholder
+    node whose type is a type variable, legitimately, since it is also the
+    argument's.
   - `f = let x = 1 in let y = x in y` in module `NestedLet`: a `let` that is
     the body of another, the inner one using the outer one's binding.
+  - `pick d = if True then 1 else (if d then 2 else 3)` in module
+    `IfChainVars`: `True` and the reference to `d` are placeholder nodes typed
+    only by being conditions. The outer condition's constraint was once dropped
+    under the JavaScript backend, leaving the placeholder of `True`
+    unconstrained.
 
-Among what is not tested: whether a variable is constrained at all, since the
-check reads only names and a variable the type checker invented under an
-ordinary name passes; record extension variables; annotated definitions.
+Among what is not tested: a placeholder left unconstrained inside a larger
+type, and annotated definitions.
 
 -}
 
@@ -47,7 +45,7 @@ suite =
         ]
 
 
-{-| The three programs, each run through `expectNoSyntheticVars`.
+{-| The four programs, each run through `expectNoSyntheticVars`.
 -}
 syntheticVarTests : Test
 syntheticVarTests =
@@ -85,6 +83,20 @@ syntheticVarTests =
                                         [ SB.define "y" [] (SB.varExpr "x") ]
                                         (SB.varExpr "y")
                                     )
+                              )
+                            ]
+                in
+                expectNoSyntheticVars modul
+        , Test.test "if chain conditions are constrained" <|
+            \_ ->
+                let
+                    modul =
+                        SB.makeModuleWithDefs "IfChainVars"
+                            [ ( "pick"
+                              , [ SB.pVar "d" ]
+                              , SB.ifExpr (SB.boolExpr True)
+                                    (SB.intExpr 1)
+                                    (SB.parensExpr (SB.ifExpr (SB.varExpr "d") (SB.intExpr 2) (SB.intExpr 3)))
                               )
                             ]
                 in

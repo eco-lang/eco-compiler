@@ -25,23 +25,27 @@ left unstamped.
 
 `runWith` runs a fixture module through the solver engine with LSS on, and
 the readers below collect annotations from the output graph's registry: the
-stored type of every specialization of a global with a given name. In these
-tests a _set_ is any `LSet`, of any size, including an empty one.
+stored type of every specialization of a global with a given name. A member's
+origin is read from the graph's `lssMemberOrigins`.
 
 The tests establish:
 
   - Test 1 (`plainModule`): every stored function type of `double`
-    (`Int -> Int`) has a set at its head, whatever its size. It fails if
-    `double` has no stored function type.
+    (`Int -> Int`) has at its head a singleton whose member is `double`
+    itself. It fails if `double` has no stored function type.
   - Test 2a (`plainModule`): every stored function type of `plus2`
-    (`Int -> Int -> Int`, two parameters) has a set at depth 0, and also at
-    depth 1 when the stored type has a second arrow. It fails if `plus2` has
-    no stored function type.
-  - Test 3 (`consModule`, whose `testValue` is `double :: []`): every head
-    annotation of a stored function type of a global named `cons` is `LTop`
-    or a set; `LVar` and `LPartial` fail. `List.cons` is a kernel alias in the
-    test pipeline's graph. The test passes when no such specialization is
-    registered.
+    (`Int -> Int -> Int`, two parameters) has at depth 0 the singleton of
+    `plus2` itself and at depth 1 the singleton of `plus2` applied to one
+    argument. It fails if `plus2` has no stored function type.
+  - Test 2b (`retModule`): `ret1 x = plus2 x`, one parameter under two
+    arrows, has its own singleton at depth 0, and at depth 1 the singleton of
+    `plus2` applied to one argument, which is what it returns; no member is
+    recorded as `ret1` applied to one argument, so the stamp stopped at the
+    declared arity.
+  - Test 3 (`consModule`, whose `testValue` is `double :: []`): a global
+    named `cons` is registered, and every head annotation of its stored
+    function types is `LTop` or the singleton of the `List.cons` kernel.
+    `List.cons` is a kernel alias in the test pipeline's graph.
   - Test 4 (`joinModule`): `useIt` takes an `Int -> Int` and is called with
     `if True then addTo 7 else idf`, so two different function values can
     reach its parameter. Every function-typed parameter of `useIt`'s stored
@@ -51,10 +55,7 @@ The tests establish:
 
 Among what is not tested:
 
-  - That the stamp stops at declared arity. `retModule` has a global, `ret1`,
-    whose type has more arrows than it has parameters, but no test runs it.
   - That the stamp leaves an existing `LSet` unchanged.
-  - Which members the stamp writes, or that a stamped arrow is a singleton.
   - The substitution engine, which `TestPipeline.runSubstMonoWithLimits` runs
     with no LSS configuration at all.
 
@@ -78,6 +79,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -88,7 +90,7 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "tautological self-identity at spec registration"
-        [ Test.test "1. a plain def's stored head anno is a COVERED SET" <|
+        [ Test.test "1. a plain def's stored head anno is its OWN SINGLETON" <|
             \() ->
                 case runWith plainModule of
                     Err e ->
@@ -100,11 +102,11 @@ suite =
                                 Expect.fail "no spec registered for `double` — fixture broken"
 
                             onHeads ->
-                                if List.all isSet onHeads then
+                                if List.all (isSingletonOf (isGlobalNamed "double") g) onHeads then
                                     Expect.pass
 
                                 else
-                                    Expect.fail ("head expected covered sets, got " ++ describe onHeads)
+                                    Expect.fail ("head expected double's own singleton, got " ++ describe onHeads)
         , Test.test "2a. ARITY: both spine depths of a 2-ary def are stamped" <|
             \() ->
                 case runWith plainModule of
@@ -119,15 +121,60 @@ suite =
                         if List.isEmpty spines then
                             Expect.fail "no spec registered for `plus2` — fixture broken"
 
-                        else if List.all (\( h, r ) -> isSet h && maybeSet r) spines then
+                        else if
+                            List.all
+                                (\( h, r ) ->
+                                    isSingletonOf (isGlobalNamed "plus2") g h
+                                        && (Maybe.map (isSingletonOf (isPapNamed "plus2" 1) g) r == Just True)
+                                )
+                                spines
+                        then
                             Expect.pass
 
                         else
                             Expect.fail
-                                ("expected covered sets at depths 0 and 1: "
+                                ("expected plus2's own singleton at depth 0 and p|plus2|1's at depth 1: "
                                     ++ String.join "; " (List.map (\( h, r ) -> describeAnno h ++ " / " ++ describeMaybe r) spines)
                                 )
-        , Test.test "3. KERNEL BOUNDARY: a kernel-alias spec's head stays ⊤ (documented residue)" <|
+        , Test.test "2b. ARITY BOUND: a 1-ary def under two arrows is stamped at depth 0 only" <|
+            \() ->
+                case runWith retModule of
+                    Err e ->
+                        Expect.fail e
+
+                    Ok g ->
+                        let
+                            spines =
+                                List.filterMap spineAnnos (demandsOf "ret1" g)
+                        in
+                        if List.isEmpty spines then
+                            Expect.fail "no spec registered for `ret1` — fixture broken"
+
+                        else
+                            Expect.all
+                                [ \_ ->
+                                    -- Depth 1 is what `ret1 x` returns, the partial
+                                    -- application `plus2 x`, never `ret1` applied to
+                                    -- one argument.
+                                    if
+                                        List.all
+                                            (\( h, r ) ->
+                                                isSingletonOf (isGlobalNamed "ret1") g h
+                                                    && (Maybe.map (isSingletonOf (isPapNamed "plus2" 1) g) r == Just True)
+                                            )
+                                            spines
+                                    then
+                                        Expect.pass
+
+                                    else
+                                        Expect.fail
+                                            ("expected ret1's own singleton at depth 0 and p|plus2|1's at depth 1: "
+                                                ++ String.join "; " (List.map (\( h, r ) -> describeAnno h ++ " / " ++ describeMaybe r) spines)
+                                            )
+                                , \_ -> Expect.equal [] (membersWhere (isPapNamed "ret1" 1) g)
+                                ]
+                                ()
+        , Test.test "3. KERNEL BOUNDARY: a kernel-alias spec's head is ⊤ or the kernel's own singleton" <|
             \() ->
                 case runWith consModule of
                     Err e ->
@@ -136,16 +183,15 @@ suite =
                     Ok g ->
                         case headAnnos "cons" g of
                             [] ->
-                                -- Unlike the other tests, finding nothing passes.
-                                Expect.pass
+                                Expect.fail "no spec registered for `cons` — fixture broken"
 
                             heads ->
-                                if List.all (\a -> isTop a || isSet a) heads then
+                                if List.all (\a -> Mono.isTopAnno a || isSingletonOf ((==) (Mono.OriginKernel "List" "cons")) g a) heads then
                                     Expect.pass
 
                                 else
                                     Expect.fail
-                                        ("kernel-alias head must be ⊤ or a set, got: "
+                                        ("kernel-alias head must be ⊤ or the List.cons kernel's singleton, got: "
                                             ++ describe heads
                                         )
         , Test.test "4. CO-GATE: a one-sided join is still never a false singleton" <|
@@ -261,6 +307,31 @@ joinModule =
         ]
 
 
+{-| A module in which `ret1 x = plus2 x` has one parameter under the two-arrow
+type `Int -> Int -> Int`, so its declared arity, 1, is less than its type's
+arrow count, and `testValue` is `ret1 1 2`.
+-}
+retModule : Src.Module
+retModule =
+    makeModuleWithTypedDefs "Test"
+        [ { name = "plus2"
+          , args = [ pVar "a", pVar "b" ]
+          , tipe = tLambda (tType "Int" []) hInt
+          , body = binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b")
+          }
+        , { name = "ret1"
+          , args = [ pVar "x" ]
+          , tipe = tLambda (tType "Int" []) hInt
+          , body = callExpr (varExpr "plus2") [ varExpr "x" ]
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body = callExpr (varExpr "ret1") [ intExpr 1, intExpr 2 ]
+          }
+        ]
+
+
 
 -- ====== HARNESS ======
 
@@ -369,33 +440,55 @@ paramAnnos target graph =
         (demandsOf target graph)
 
 
-{-| Tells whether an annotation is `LTop`.
+{-| Tells whether an annotation is an `LSet` of exactly one member whose
+origin, as the graph's `lssMemberOrigins` records it, satisfies `test`.
 -}
-isTop : Mono.LambdaSetAnno -> Bool
-isTop a =
-    Mono.isTopAnno a
-
-
-{-| Tells whether an optional annotation is an `LSet`. `Nothing`, which
-`spineAnnos` gives for a type with no arrow at depth 1, counts as passing.
--}
-maybeSet : Maybe Mono.LambdaSetAnno -> Bool
-maybeSet m =
-    case m of
-        Just a ->
-            isSet a
-
-        Nothing ->
-            True
-
-
-{-| Tells whether an annotation is an `LSet`, of any size, including empty.
--}
-isSet : Mono.LambdaSetAnno -> Bool
-isSet a =
+isSingletonOf : (Mono.MemberOrigin -> Bool) -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
+isSingletonOf test (Mono.MonoGraph g) a =
     case a of
-        Mono.LSet _ ->
-            True
+        Mono.LSet [ m ] ->
+            Maybe.map test (Dict.get m g.lssMemberOrigins) == Just True
+
+        _ ->
+            False
+
+
+{-| Returns every member whose recorded origin satisfies `test`.
+-}
+membersWhere : (Mono.MemberOrigin -> Bool) -> Mono.MonoGraph -> List Int
+membersWhere test (Mono.MonoGraph g) =
+    Dict.foldl
+        (\m origin acc ->
+            if test origin then
+                m :: acc
+
+            else
+                acc
+        )
+        []
+        g.lssMemberOrigins
+
+
+{-| Tells whether an origin is the global named `name` itself.
+-}
+isGlobalNamed : String -> Mono.MemberOrigin -> Bool
+isGlobalNamed name origin =
+    case origin of
+        Mono.OriginGlobal (Mono.Global _ n) ->
+            n == name
+
+        _ ->
+            False
+
+
+{-| Tells whether an origin is the global named `name` applied to `supplied`
+arguments.
+-}
+isPapNamed : String -> Int -> Mono.MemberOrigin -> Bool
+isPapNamed name supplied origin =
+    case origin of
+        Mono.OriginPap (Mono.Global _ n) k ->
+            n == name && k == supplied
 
         _ ->
             False

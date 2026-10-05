@@ -13,18 +13,17 @@ whole original record.
 `expectRecordUpdateDataflow` compiles a program to MLIR and looks for that
 symptom in each top-level `func.func`. Within one function it groups the
 results of every record projection by the record they were projected from.
-For each record construction it then picks the _source record_: the record from
-which the most of the construction's distinct field operands were projected.
-The construction is reported if the source record is also one of its field
+For each record construction it then takes its _source records_: every record
+from which at least one of the construction's field operands was projected.
+The construction is reported if any source record is also one of its field
 operands. Operands past the construction's `field_count` are GC-root hints,
 not fields, and are ignored.
 
 This is a heuristic. A construction that copies fields out of `r` and also
 holds `r` itself as a field, such as `{ a = r.a, orig = r }`, is reported
-although it is correct. A construction none of whose field operands is a
-projection is never reported, so the faulty form of an update to a one-field
-record goes unnoticed. Only the source record is checked; when two records
-supply equally many fields, the one whose SSA name sorts first is the source.
+although it is correct (no program in the catalogue builds one). A
+construction none of whose field operands is a projection is never reported,
+so the faulty form of an update to a one-field record goes unnoticed.
 
 -}
 
@@ -152,13 +151,14 @@ groupProjectionsBySource projections =
         projections
 
 
-{-| Returns a violation if the field operands of `constructOp` include its
-source record, the record from which the most of those operands were projected
-according to `projectionsBySource`. `funcName` is used only in the message.
+{-| Returns a violation if the field operands of `constructOp` include one of
+its source records, a record from which at least one of those operands was
+projected according to `projectionsBySource`. `funcName` is used only in the
+message.
 
 The field operands are the first `field_count` operands, or all of them when
 the attribute is absent or not an integer. A construction none of whose field
-operands is a projection has no source record and gives `Nothing`.
+operands is a projection has no source records and gives `Nothing`.
 
 -}
 checkConstructOp : String -> Dict String (Set String) -> MlirOp -> Maybe Violation
@@ -175,59 +175,36 @@ checkConstructOp funcName projectionsBySource constructOp =
         operandSet =
             Set.fromList operands
 
-        bestSource =
-            findMostProjectedSource operandSet projectionsBySource
+        storedSource =
+            sourceRecords operandSet projectionsBySource
+                |> List.filter (\source -> Set.member source operandSet)
+                |> List.head
     in
-    case bestSource of
+    case storedSource of
         Nothing ->
             Nothing
 
         Just sourceRecord ->
-            if List.member sourceRecord operands then
-                Just
-                    { opId = constructOp.id
-                    , opName = constructOp.name
-                    , message =
-                        "Record construction in function '"
-                            ++ funcName
-                            ++ "' stores whole record '"
-                            ++ sourceRecord
-                            ++ "' as a field. This is almost always a bug in record update codegen."
-                    }
-
-            else
-                Nothing
+            Just
+                { opId = constructOp.id
+                , opName = constructOp.name
+                , message =
+                    "Record construction in function '"
+                        ++ funcName
+                        ++ "' stores whole record '"
+                        ++ sourceRecord
+                        ++ "' as a field. This is almost always a bug in record update codegen."
+                }
 
 
-{-| Returns the record whose projections account for the most members of
-`operandSet`, or `Nothing` if no member is a projection.
-
-A tie goes to the record whose SSA name sorts first.
-
+{-| Returns every record, in SSA-name order, from which at least one member of
+`operandSet` was projected.
 -}
-findMostProjectedSource : Set String -> Dict String (Set String) -> Maybe String
-findMostProjectedSource operandSet projectionsBySource =
-    let
-        sourceCounts =
-            Dict.toList projectionsBySource
-                |> List.map
-                    (\( source, projResults ) ->
-                        let
-                            count =
-                                Set.intersect projResults operandSet
-                                    |> Set.size
-                        in
-                        ( source, count )
-                    )
-                |> List.filter (\( _, count ) -> count > 0)
-                |> List.sortBy (\( _, count ) -> negate count)
-    in
-    case sourceCounts of
-        ( source, _ ) :: _ ->
-            Just source
-
-        [] ->
-            Nothing
+sourceRecords : Set String -> Dict String (Set String) -> List String
+sourceRecords operandSet projectionsBySource =
+    Dict.toList projectionsBySource
+        |> List.filter (\( _, projResults ) -> not (Set.isEmpty (Set.intersect projResults operandSet)))
+        |> List.map Tuple.first
 
 
 {-| Returns every op nested in the regions of `op`, at any depth, not including

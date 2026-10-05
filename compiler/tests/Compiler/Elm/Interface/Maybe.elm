@@ -8,11 +8,10 @@ that is imported: its values, union types, aliases and operators, as
 `Compiler.Elm.Interface` describes. This one declares the union `Maybe a`,
 exported open so that its constructors are visible, and nothing else.
 
-It differs from the real module in two ways a test can notice. It has no
+It differs from the real module in one way a test can notice: it has no
 values, so `Maybe.withDefault`, `Maybe.map` and the module's other functions
-are absent. And it numbers the constructors `Nothing` 0 and `Just` 1, whereas
-elm/core declares `Just` first and the canonicalizer numbers constructors in
-declaration order, so a compiled elm/core `Maybe` has them the other way round.
+are absent. Its union is the one canonicalizing elm/core's declaration gives,
+with the constructors numbered in declaration order.
 
 -}
 
@@ -45,12 +44,12 @@ maybeInterface =
 
 
 {-| The unions of the mock `Maybe` module: only `Maybe` itself, exported open.
-It is the union a canonicalizer would build from this declaration, with
-`Nothing` at index 0 and `Just` at index 1.
+It is the union a canonicalizer builds from elm/core's declaration, with
+`Just` at index 0 and `Nothing` at index 1.
 
     type Maybe a
-        = Nothing
-        | Just a
+        = Just a
+        | Nothing
 
 -}
 maybeUnion : Dict Name I.Union
@@ -59,16 +58,16 @@ maybeUnion =
         aVar =
             Can.TVar "a"
 
-        nothingC =
-            Can.Ctor { name = "Nothing", index = Index.first, numArgs = 0, args = [] }
-
         justC =
-            Can.Ctor { name = "Just", index = Index.second, numArgs = 1, args = [ aVar ] }
+            Can.Ctor { name = "Just", index = Index.first, numArgs = 1, args = [ aVar ] }
+
+        nothingC =
+            Can.Ctor { name = "Nothing", index = Index.second, numArgs = 0, args = [] }
 
         union =
             Can.Union
                 { vars = [ "a" ]
-                , alts = [ nothingC, justC ]
+                , alts = [ justC, nothingC ]
                 , numAlts = 2
                 , opts = Can.Normal
                 }

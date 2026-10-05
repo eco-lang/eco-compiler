@@ -13,7 +13,7 @@ is referenced, how deeply closures nest, and what type a capture has.
 This module only builds programs; what is checked is decided by the
 expectation function each program is given. `expectSuite` gives every program
 to the caller's `expectFn`, and `suite` gives every program to
-`TestLogic.TestPipeline.expectMonomorphization`. Either way the 28 cases run as
+`TestLogic.TestPipeline.expectMonomorphization`. Either way the 29 cases run as
 one test through `Compiler.BulkCheck.bulkCheck`, which reports the first
 failing case by its label and does not run the cases after it. A case that
 crashes, as `computeClosureCaptures` does, ends the test without its label
@@ -38,8 +38,10 @@ The cases, by group:
     lambda whose own let-bound lambda captures both the outer lambda's
     parameter and the function's argument.
   - Closures in case expressions: a lambda in a `Just` branch capturing the
-    pattern variable; three lambdas chosen by an `if` chain inside a
-    single-branch case, none of which captures anything; a lambda in a `::`
+    pattern variable; three lambdas, each capturing the function's other
+    argument, returned by the three branches of a case on `Int` literals;
+    three lambdas chosen by an `if` chain inside a single-branch case, none of
+    which captures anything; a lambda in a `::`
     branch capturing the list head; and lambdas in both branches of a `Maybe`
     case, one capturing the pattern variable and the other the function's
     other argument.
@@ -93,6 +95,7 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
+        , pAnything
         , pCons
         , pCtor
         , pInt
@@ -633,7 +636,8 @@ tripleNestedClosure expectFn _ =
 closureInCaseCases : (Src.Module -> Expectation) -> List TestCase
 closureInCaseCases expectFn =
     [ { label = "Closure in case branch", run = closureInCaseBranch expectFn }
-    , { label = "Different closures per branch", run = differentClosuresPerBranch expectFn }
+    , { label = "Different capturing closures per case branch", run = capturingClosuresPerBranch expectFn }
+    , { label = "Different closures per if branch inside a case", run = differentClosuresPerBranch expectFn }
     , { label = "Closure capturing scrutinee", run = closureCapturingScrutinee expectFn }
     , { label = "Closure in Maybe case", run = closureInMaybeCase expectFn }
     ]
@@ -703,9 +707,76 @@ closureInCaseBranch expectFn _ =
     expectFn modul
 
 
+{-| Builds a program in which each of the three branches of a case on `Int`
+literals returns a different lambda capturing the function's second argument
+`k`, and gives it to `expectFn`.
+
+    capturingOp : Int -> Int -> (Int -> Int)
+    capturingOp op k =
+        case op of
+            0 ->
+                \x -> x + k
+
+            1 ->
+                \x -> x * k
+
+            _ ->
+                \x -> x - k
+
+-}
+capturingClosuresPerBranch : (Src.Module -> Expectation) -> (() -> Expectation)
+capturingClosuresPerBranch expectFn _ =
+    let
+        capturingOpDef : TypedDef
+        capturingOpDef =
+            { name = "capturingOp"
+            , args = [ pVar "op", pVar "k" ]
+            , tipe =
+                tLambda (tType "Int" [])
+                    (tLambda (tType "Int" [])
+                        (tLambda (tType "Int" []) (tType "Int" []))
+                    )
+            , body =
+                caseExpr (varExpr "op")
+                    [ ( pInt 0
+                      , lambdaExpr [ pVar "x" ]
+                            (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "k"))
+                      )
+                    , ( pInt 1
+                      , lambdaExpr [ pVar "x" ]
+                            (binopsExpr [ ( varExpr "x", "*" ) ] (varExpr "k"))
+                      )
+                    , ( pAnything
+                      , lambdaExpr [ pVar "x" ]
+                            (binopsExpr [ ( varExpr "x", "-" ) ] (varExpr "k"))
+                      )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr
+                    (callExpr (varExpr "capturingOp") [ intExpr 1, intExpr 3 ])
+                    [ intExpr 10 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ capturingOpDef, testValueDef ]
+                []
+                []
+    in
+    expectFn modul
+
+
 {-| Builds a program in which a case with a single variable branch chooses,
 through an `if` chain on that variable, one of three lambdas, and gives it to
-`expectFn`. None of the three lambdas captures anything.
+`expectFn`. None of the three lambdas captures anything; the branches of a case
+returning capturing closures are `capturingClosuresPerBranch`.
 -}
 differentClosuresPerBranch : (Src.Module -> Expectation) -> (() -> Expectation)
 differentClosuresPerBranch expectFn _ =
@@ -1704,8 +1775,7 @@ closureCaptureMaybeCaseDestruct expectFn _ =
 -- CLOSURE CAPTURING CASE SCRUTINEE ROOT TESTS
 -- ============================================================================
 -- A captured variable here is used in the closure body only as the scrutinee
--- of a case. In the Int case the fallback branch is built with pVar "_", a
--- variable named `_` rather than a wildcard, so that case also binds it.
+-- of a case.
 
 
 {-| Returns the cases in which a captured variable is referenced only as a case
@@ -1824,9 +1894,6 @@ refers to the enclosing `n`, an `Int`, only as the scrutinee of its case.
         in
         pick a b
 
-The fallback is built with `pVar "_"`, a variable named `_` rather than a
-wildcard, so it binds the value of `n`.
-
 -}
 closureCapturesCaseScrutineeInt : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCapturesCaseScrutineeInt expectFn _ =
@@ -1850,7 +1917,7 @@ closureCapturesCaseScrutineeInt expectFn _ =
                         [ pVar "x", pVar "y" ]
                         (caseExpr (varExpr "n")
                             [ ( pInt 0, varExpr "x" )
-                            , ( pVar "_", varExpr "y" )
+                            , ( pAnything, varExpr "y" )
                             ]
                         )
                     ]

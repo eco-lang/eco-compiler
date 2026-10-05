@@ -481,11 +481,11 @@ generateNodeInner ctx funcName specId node =
         Mono.MonoEnum tag monoType ->
             let
                 -- Look up the spec key to get the constructor name
-                maybeCtorName : Maybe String
-                maybeCtorName =
+                maybeCtor : Maybe ( ModuleName.Canonical, String )
+                maybeCtor =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global _ ctorName, _ ) ->
-                            Just (Name.toElmString ctorName)
+                        Just ( Mono.Global home ctorName, _ ) ->
+                            Just ( home, Name.toElmString ctorName )
 
                         Just ( Mono.Accessor _, _ ) ->
                             -- Accessors don't have constructor names
@@ -495,7 +495,7 @@ generateNodeInner ctx funcName specId node =
                             Nothing
 
                 ( ctx1, op ) =
-                    generateEnum ctx funcName tag monoType maybeCtorName
+                    generateEnum ctx funcName tag monoType maybeCtor
 
                 -- No CAF slot (amends M4/CGEN_068): every enum ctor now
                 -- compiles to an embedded null-cons (or legacy well-known)
@@ -1785,6 +1785,21 @@ generateCtor ctx funcName ctorLayout monoType =
         constructorName : Maybe String
         constructorName =
             Just (Name.toElmString ctorLayout.name)
+
+        -- Well-known constants are elm/core's True/False/Nothing only: the
+        -- ctor's home is the home of the custom type it builds.
+        wellKnownName : Maybe String
+        wellKnownName =
+            case ctorResultMonoType of
+                Mono.MCustom _ home _ _ ->
+                    if CtorTag.isEmbeddedConstantCtor home ctorLayout.name then
+                        constructorName
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
     in
     if arity == 0 then
         -- Nullary constructor - check for well-known constants first
@@ -1794,7 +1809,7 @@ generateCtor ctx funcName ctorLayout monoType =
 
             -- Check for well-known constants that must use eco.constant
             ( ctx2, valueOp ) =
-                case constructorName of
+                case wellKnownName of
                     Just "Nothing" ->
                         Ops.ecoConstantNothing ctx1 resultVar
 
@@ -1881,8 +1896,8 @@ generateCtor ctx funcName ctorLayout monoType =
 -- ====== GENERATE ENUM ======
 
 
-generateEnum : Ctx.Context -> String -> Int -> Mono.MonoType -> Maybe String -> ( Ctx.Context, MlirOp )
-generateEnum ctx funcName tag monoType maybeCtorName =
+generateEnum : Ctx.Context -> String -> Int -> Mono.MonoType -> Maybe ( ModuleName.Canonical, String ) -> ( Ctx.Context, MlirOp )
+generateEnum ctx funcName tag monoType maybeCtor =
     let
         -- Register the custom type and its constructor for the type graph
         ( _, ctxWithType ) =
@@ -1891,9 +1906,27 @@ generateEnum ctx funcName tag monoType maybeCtorName =
         ( resultVar, ctx1 ) =
             Ctx.freshVar ctxWithType
 
-        -- Check for well-known constants that must use eco.constant
+        maybeCtorName : Maybe String
+        maybeCtorName =
+            Maybe.map Tuple.second maybeCtor
+
+        -- Well-known constants (elm/core's True/False/Nothing only, matched
+        -- by home module too) must use eco.constant (CGEN_019).
+        wellKnownName : Maybe String
+        wellKnownName =
+            case maybeCtor of
+                Just ( home, name ) ->
+                    if CtorTag.isEmbeddedConstantCtor home name then
+                        Just name
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
         ( ctx2, valueOp ) =
-            case maybeCtorName of
+            case wellKnownName of
                 Just "True" ->
                     Ops.ecoConstantTrue ctx1 resultVar
 

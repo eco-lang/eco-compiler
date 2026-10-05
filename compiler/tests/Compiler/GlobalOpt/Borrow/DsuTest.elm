@@ -28,9 +28,10 @@ What the tests establish:
   - Unions of `0` with `1` and `1` with `2` put `0` and `2` in one class.
   - Unions of `2` with `3` and `0` with `1` leave `0` and `2` in different
     classes.
-  - Calling `find 0` twice returns the same root both times, the second call
-    leaves `parent` unchanged, and after the first call `parent` at `0` is the
-    root.
+  - On a chain `7 -> 6 -> 4 -> 0` built by unions that only join roots,
+    `find 7` returns `0`, repoints `7`, `6` and `4` at `0`, leaves keys off
+    the path and every key's root alone, and a second `find 7` changes
+    nothing.
   - Seven unions that pair up the eight keys of `empty 8` into one class leave
     no rank above 3, and the random unions on 12 keys leave no rank above 4.
   - `grow` to a smaller capacity leaves `parent` unchanged; `grow` to a larger
@@ -41,9 +42,7 @@ What the tests establish:
     `0 <= i < j <= 11`.
 
 Among what is not tested: keys outside the capacity, `size`, the `rank`
-array after `grow`, which of two roots `union` keeps, and path compression of
-a key below its root. The `find` test queries key `0`, which the unions before
-it leave as the root, so no pointer is moved there.
+array after `grow`, and which of two roots `union` keeps.
 
 -}
 
@@ -137,35 +136,56 @@ lawsTests =
 -- PATH COMPRESSION
 
 
-{-| Checks that repeating `find 0` gives the same root and no further change to
-`parent`, and that after one `find 0` the `parent` entry for `0` is that root.
+{-| Checks that `find` compresses the path it walks, and is idempotent.
 
-The unions `0`-`1`, `1`-`2`, `2`-`3` make `0` the root and point the other three
-keys straight at it, so `0` is already its own parent and the test does not
-exercise moving a pointer.
+The unions `0`-`1`, `2`-`3`, `0`-`2`, `4`-`5`, `6`-`7`, `4`-`6` and `0`-`4`
+build, by union by rank, the chain `7 -> 6 -> 4 -> 0` (and `5 -> 4`, `3 -> 2`,
+`2 -> 0`, `1 -> 0`); none of those unions walks that chain, because each one
+joins two roots. The test checks that the chain is really there before `find 7`
+(so a `find` that compresses nothing would fail), that afterwards `7`, `6` and
+`4` all have `0` as their parent, that keys off the path (`5`, `3`) keep their
+parents, that every key keeps its root, and that a second `find 7` returns the
+same root and changes nothing.
 
 -}
 compressionTest : Test
 compressionTest =
-    Test.test "find: idempotent, parent[x] points at root after find" <|
+    Test.test "find: compresses the path to the root, idempotent" <|
         \_ ->
             let
                 d0 =
                     List.foldl (\( a, b ) d -> Dsu.union a b d)
                         (Dsu.empty 8)
-                        [ ( 0, 1 ), ( 1, 2 ), ( 2, 3 ) ]
+                        [ ( 0, 1 ), ( 2, 3 ), ( 0, 2 ), ( 4, 5 ), ( 6, 7 ), ( 4, 6 ), ( 0, 4 ) ]
 
                 ( r1, d1 ) =
-                    Dsu.find 0 d0
+                    Dsu.find 7 d0
 
                 ( r2, d2 ) =
-                    Dsu.find 0 d1
+                    Dsu.find 7 d1
+
+                parents d keys =
+                    List.map (\k -> Array.get k d.parent) keys
+
+                roots d =
+                    List.map (\k -> Dsu.findRoot k d) (List.range 0 7)
             in
             Expect.equal
-                { sameRoot = True, unchanged = True, parentIsRoot = True }
-                { sameRoot = r1 == r2
+                { chainBefore = [ Just 6, Just 4, Just 0 ]
+                , root = 0
+                , pathAfter = [ Just 0, Just 0, Just 0 ]
+                , offPath = [ Just 4, Just 2 ]
+                , rootsKept = True
+                , sameRoot = True
+                , unchanged = True
+                }
+                { chainBefore = parents d0 [ 7, 6, 4 ]
+                , root = r1
+                , pathAfter = parents d1 [ 7, 6, 4 ]
+                , offPath = parents d1 [ 5, 3 ]
+                , rootsKept = roots d0 == roots d1
+                , sameRoot = r1 == r2
                 , unchanged = d2.parent == d1.parent
-                , parentIsRoot = Array.get 0 d1.parent == Just r1
                 }
 
 
@@ -248,7 +268,7 @@ pairs on which they disagree.
 -}
 modelTest : Test
 modelTest =
-    Test.fuzz opsFuzzer "Dsu agrees with a naive Dict reference on all 12×12 pairs" <|
+    Test.fuzz opsFuzzer "Dsu agrees with a naive Dict reference on all 66 pairs i < j of keys 0-11" <|
         \ops ->
             let
                 dsu =

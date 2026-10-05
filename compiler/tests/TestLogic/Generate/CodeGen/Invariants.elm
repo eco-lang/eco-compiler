@@ -7,7 +7,7 @@ module TestLogic.Generate.CodeGen.Invariants exposing
     , isEcoValueType
     , checkNone
     , allBlocks
-    , TypeEnv, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch
+    , TypeEnv, typeEnvOfOp, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch
     )
 
 {-| The MLIR that the code generator produces must obey rules that no type in
@@ -84,7 +84,7 @@ is `!eco.value`. Which values are unboxed where is decided by
 
 # Type Environment and Helpers
 
-@docs TypeEnv, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch
+@docs TypeEnv, typeEnvOfOp, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch
 
 -}
 
@@ -111,9 +111,9 @@ type alias Violation =
 {-| Returns an expectation that passes when `violations` is empty and fails
 otherwise.
 
-When `violations` is not empty, the expectation fails with the message of the
-first violation only, because `Expect.all` stops at the first failing check.
-That message reads `Violation in <opName> (<opId>): <message>`.
+When `violations` is not empty, the expectation fails with one line per
+violation, in list order, each reading
+`Violation in <opName> (<opId>): <message>`.
 
 -}
 violationsToExpectation : List Violation -> Expectation
@@ -123,11 +123,7 @@ violationsToExpectation violations =
             Expect.pass
 
         _ ->
-            let
-                checks =
-                    List.map (\v -> \() -> Expect.fail (formatViolation v)) violations
-            in
-            Expect.all checks ()
+            Expect.fail (String.join "\n" (List.map formatViolation violations))
 
 
 {-| Returns the failure message for one violation, in the form
@@ -513,9 +509,21 @@ findSymbolOps mod =
 {-| The types of SSA values, keyed by the names ops use for them in their
 operands and results.
 
-This is a name for a `Dict`, not a new type, and nothing in this module builds
-or reads one.
+This is a name for a `Dict`, not a new type. `typeEnvOfOp` builds one.
 
 -}
 type alias TypeEnv =
     Dict String MlirType
+
+
+{-| Returns the defined type of every SSA name introduced by `op` or anywhere
+inside it: the results of `op` and of every nested op, and the arguments of
+every block of every nested region. Where a name is defined twice, the later
+definition in walk order wins.
+-}
+typeEnvOfOp : MlirOp -> TypeEnv
+typeEnvOfOp op =
+    walkOpAndChildren op
+        |> List.concatMap
+            (\o -> o.results ++ List.concatMap (\r -> List.concatMap .args (allBlocks r)) o.regions)
+        |> Dict.fromList

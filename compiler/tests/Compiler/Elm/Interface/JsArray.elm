@@ -10,16 +10,12 @@ operators. `jsArrayInterface` is that record for `Elm.JsArray`, the elm/core
 module that defines the `JsArray` type.
 
 It is a mock, and it differs from the elm/core source that
-`Compiler.Elm.Source.JsArray` carries in three ways.
-
-  - It declares only eight functions: `empty`, `push`, `length`, `slice`,
-    `foldl`, `foldr`, `initializeFromList` and `map`. Others in that source,
-    such as `singleton`, `initialize` and `unsafeGet`, are not in it.
-  - Its `JsArray a` has a single constructor, `JsArray_elm_builtin`, which
-    takes no arguments, so the `a` appears in no constructor. The source
-    declares `type JsArray a = JsArray a`.
-  - The union is open, so a module importing this interface sees its
-    constructor. The source exposes `JsArray` without its constructor.
+`Compiler.Elm.Source.JsArray` carries in one way: it declares only eight
+functions, `empty`, `push`, `length`, `slice`, `foldl`, `foldr`,
+`initializeFromList` and `map`. Others in that source, such as `singleton`,
+`initialize` and `unsafeGet`, are not in it. Its `JsArray a` union is the one
+compiling that source gives: `type JsArray a = JsArray a`, exposed without its
+constructor.
 
 Each function's annotation quantifies over every type variable in its type,
 which `mkAnnotation` finds with `collectFreeVars`.
@@ -65,8 +61,9 @@ jsArrayInterface =
 
 
 {-| Returns the name of every type variable that occurs in `tipe`, including the
-extension variable of an extensible record. For an alias, the variables of its
-arguments and of its body are both collected.
+extension variable of an extensible record. For an alias, only the variables
+of its arguments are collected, as in `Compiler.Canonicalize.Type`: a `Holey`
+body names the alias's own parameters, which the alias binds.
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
@@ -103,17 +100,8 @@ collectFreeVars tipe =
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
                 cs
 
-        Can.TAlias _ _ args aliasType ->
-            let
-                argVars =
-                    List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
-            in
-            case aliasType of
-                Can.Holey t ->
-                    Dict.union argVars (collectFreeVars t)
-
-                Can.Filled t ->
-                    Dict.union argVars (collectFreeVars t)
+        Can.TAlias _ _ args _ ->
+            List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
 
 
 {-| Returns an annotation of `tipe` that quantifies over every type variable in
@@ -180,18 +168,19 @@ listA =
 -- ============================================================================
 
 
-{-| The unions of the mock module, of which there is one: `JsArray a`, open,
-with a single constructor `JsArray_elm_builtin` that takes no arguments.
+{-| The unions of the mock module, of which there is one: `JsArray a`, closed,
+holding the declaration `type JsArray a = JsArray a` with the `Unbox`
+representation that canonicalizing a single one-argument constructor chooses.
 -}
 jsArrayUnions : Dict Name I.Union
 jsArrayUnions =
     let
         jsArrayCtor =
             Can.Ctor
-                { name = "JsArray_elm_builtin"
+                { name = "JsArray"
                 , index = Index.first
-                , numArgs = 0
-                , args = []
+                , numArgs = 1
+                , args = [ aVar ]
                 }
 
         jsArrayUnion =
@@ -199,11 +188,11 @@ jsArrayUnions =
                 { vars = [ "a" ]
                 , alts = [ jsArrayCtor ]
                 , numAlts = 1
-                , opts = Can.Normal
+                , opts = Can.Unbox
                 }
     in
     Dict.fromList
-        [ ( "JsArray", I.OpenUnion jsArrayUnion )
+        [ ( "JsArray", I.ClosedUnion jsArrayUnion )
         ]
 
 

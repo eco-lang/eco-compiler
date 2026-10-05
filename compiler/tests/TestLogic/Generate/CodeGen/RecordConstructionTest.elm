@@ -15,12 +15,11 @@ The fixture is the catalogue of source programs that
 
 `suite` establishes, for each program in the catalogue, that it compiles to
 MLIR and that every `eco.construct.record` op in the result has an integer
-`field_count` that is neither 0 nor larger than its number of operands.
+`field_count` that is positive and no larger than its number of operands.
 
 Among what is not tested: that an empty record is built as an `eco.constant`
 (only that no construction has a `field_count` of 0); that `field_count`
-equals the number of fields in the record's type; a negative `field_count`;
-and programs outside the catalogue.
+equals the number of fields in the record's type; and programs outside the catalogue.
 
 -}
 

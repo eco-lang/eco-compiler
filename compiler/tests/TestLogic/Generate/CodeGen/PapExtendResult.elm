@@ -77,56 +77,45 @@ checkPapExtendResult mlirModule =
 result, a valid result type, then an integer `remaining_arity` present. An op
 with no `remaining_arity` passes when its `_call_kind` is `generic_apply` or
 `segmentation_unknown`.
-
-The failure message for a bad result type lists `!eco.value`, `i1`, `i64` and
-`f64` but not `i16`, which is accepted.
-
 -}
 checkPapExtendOp : MlirOp -> Maybe Violation
 checkPapExtendOp op =
     let
-        resultCount =
-            List.length op.results
-
         maybeRemainingArity =
             getIntAttr "remaining_arity" op
     in
-    if resultCount /= 1 then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message = "eco.papExtend should have exactly 1 result, got " ++ String.fromInt resultCount
-            }
+    case op.results of
+        [ ( _, resultType ) ] ->
+            if not (isValidPapExtendResultType resultType) then
+                Just
+                    { opId = op.id
+                    , opName = op.name
+                    , message = "eco.papExtend result should be !eco.value, i1, i16, i64, or f64, got " ++ typeToString resultType
+                    }
 
-    else
-        case List.head op.results of
-            Nothing ->
-                Nothing
-
-            Just ( _, resultType ) ->
-                if not (isValidPapExtendResultType resultType) then
-                    Just
-                        { opId = op.id
-                        , opName = op.name
-                        , message = "eco.papExtend result should be !eco.value, i1, i64, or f64, got " ++ typeToString resultType
-                        }
-
-                else
-                    case maybeRemainingArity of
-                        Nothing ->
-                            -- The generator builds these two kinds without remaining_arity.
-                            if getStringAttr "_call_kind" op == Just "generic_apply" || getStringAttr "_call_kind" op == Just "segmentation_unknown" then
-                                Nothing
-
-                            else
-                                Just
-                                    { opId = op.id
-                                    , opName = op.name
-                                    , message = "eco.papExtend missing remaining_arity attribute"
-                                    }
-
-                        Just _ ->
+            else
+                case maybeRemainingArity of
+                    Nothing ->
+                        -- The generator builds these two kinds without remaining_arity.
+                        if getStringAttr "_call_kind" op == Just "generic_apply" || getStringAttr "_call_kind" op == Just "segmentation_unknown" then
                             Nothing
+
+                        else
+                            Just
+                                { opId = op.id
+                                , opName = op.name
+                                , message = "eco.papExtend missing remaining_arity attribute"
+                                }
+
+                    Just _ ->
+                        Nothing
+
+        _ ->
+            Just
+                { opId = op.id
+                , opName = op.name
+                , message = "eco.papExtend should have exactly 1 result, got " ++ String.fromInt (List.length op.results)
+                }
 
 
 {-| Returns whether `t` is `!eco.value`, `i1`, `i16`, `i64` or `f64`, the

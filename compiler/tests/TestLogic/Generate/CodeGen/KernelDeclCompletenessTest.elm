@@ -9,7 +9,8 @@ A kernel is a function implemented by the runtime rather than compiled from
 Elm. Its implementation is not in the generated module, which instead holds a
 top-level `func.func` stub for it marked `is_kernel`. The check, as
 `TestLogic.Generate.CodeGen.KernelDeclCompleteness` describes, looks for
-references to `Elm_Kernel_` symbols that have no such declaration.
+references to `Elm_Kernel_` or `Eco_Kernel_` symbols that have no such
+declaration.
 
 The programs are those that `SourceIR.Suite.StandardTestSuites.expectSuite`
 supplies.
@@ -17,13 +18,11 @@ supplies.
 What the tests establish:
 
   - For each program, `expectKernelDeclCompleteness` passes: the program
-    compiles to MLIR, and every `Elm_Kernel_` symbol named by the `function`
-    attribute of an `eco.papCreate` or `eco.papExtend`, or by the `callee` of
-    an `eco.call`, is the `sym_name` of a top-level `func.func` with
-    `is_kernel` true.
+    compiles to MLIR, and every kernel symbol named by the `function`
+    attribute of an `eco.papCreate` or by the `callee` of an `eco.call` is the
+    `sym_name` of a top-level `func.func` with `is_kernel` true.
 
-Among what is not tested: kernel symbols with any other prefix, such as
-`Eco_Kernel_`; whether a declaration's type agrees with the references to it;
+Among what is not tested: symbols with any other prefix; whether a declaration's type agrees with the references to it;
 and programs outside the standard catalogue.
 
 -}

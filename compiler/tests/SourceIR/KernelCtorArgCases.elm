@@ -1,9 +1,9 @@
 module SourceIR.KernelCtorArgCases exposing (expectSuite)
 
 {-| Programs that put the results of kernel calls inside tuples, lists and
-custom-type values, or pass a value built from tuples to the kernel reference
-`Elm.Kernel.Basics.identity`, so that a compiler stage can be checked on kernel
-calls combined with data structures.
+custom-type values, or pass a tuple or a record to the kernel
+`Elm.Kernel.List.cons`, so that a compiler stage can be checked on kernel calls
+combined with data structures.
 
 A kernel function is one the runtime implements rather than Elm code, written
 as a qualified reference such as `Elm.Kernel.Basics.add`. When a module of a
@@ -26,28 +26,25 @@ arguments. Five are built with `makeKernelModule`, which leaves `testValue`
 unannotated. The two custom-type programs are built with
 `makeModuleWithTypedDefsUnionsAliases`, which annotates `testValue` and
 declares the type. In the list below, `add`, `sub` and `mul` are the
-`Elm.Kernel.Basics` kernels of those names, and `identity` stands for the
-reference `Elm.Kernel.Basics.identity`, which canonicalization accepts without
-checking the name although no runtime implements it.
+`Elm.Kernel.Basics` kernels of those names, and `cons` is
+`Elm.Kernel.List.cons`. Every kernel used is one the C++ kernel exports.
 
   - "Tuple with kernel result": `testValue` is `( add 1 2, mul 3 4 )`.
   - "List of kernel results": `testValue` is
     `[ add 1 2, sub 5 3, mul 2 2 ]`.
   - "Kernel result in let then ctor": `testValue : Wrapper Int` is
-    `Wrap (add 10 20)`, with `type Wrapper a = Wrap a`. Despite the label, the
-    program has no `let`.
+    `let n = add 10 20 in Wrap n`, with `type Wrapper a = Wrap a`.
   - "Custom ctor with kernel arg": `testValue : Pair Int String` is
     `MkPair (add 1 2) (Elm.Kernel.String.fromNumber 42)`, with
     `type Pair a b = MkPair a b`.
   - "Nested kernel in tuple": `testValue` is `( ( add 1 2, 3 ), mul 4 5 )`.
-  - "Kernel identity on tuple": `testValue` is `identity ( 1, "hello" )`.
-  - "Kernel identity on record-like tuple": `testValue` is
-    `identity [ ( 1, 2 ), ( 3, 4 ) ]`. Despite the label, the program has no
-    record.
+  - "Kernel cons of tuple": `testValue` is `cons ( 1, "hello" ) []`.
+  - "Kernel cons of record": `testValue` is
+    `cons { x = 1, y = ( 2, 3 ) } []`.
 
 Among what is not tested: a kernel function passed to a constructor without
 being called, which `Compiler.Type.PostSolve` handles separately from a kernel
-call's result, records, and kernel results inside `case` or `let` expressions.
+call's result, and kernel results inside `case` expressions.
 
 -}
 
@@ -56,15 +53,19 @@ import Compiler.AST.SourceBuilder
     exposing
         ( callExpr
         , ctorExpr
+        , define
         , intExpr
+        , letExpr
         , listExpr
         , makeKernelModule
         , makeModuleWithTypedDefsUnionsAliases
         , qualVarExpr
+        , recordExpr
         , strExpr
         , tType
         , tVar
         , tupleExpr
+        , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
@@ -91,8 +92,8 @@ testCases expectFn =
     , { label = "Kernel result in let then ctor", run = kernelInLetThenCtor expectFn }
     , { label = "Custom ctor with kernel arg", run = customCtorWithKernel expectFn }
     , { label = "Nested kernel in tuple", run = nestedKernelTuple expectFn }
-    , { label = "Kernel identity on tuple", run = kernelIdentityTuple expectFn }
-    , { label = "Kernel identity on record-like tuple", run = kernelIdentityRecordTuple expectFn }
+    , { label = "Kernel cons of tuple", run = kernelConsTuple expectFn }
+    , { label = "Kernel cons of record", run = kernelConsRecord expectFn }
     ]
 
 
@@ -127,9 +128,8 @@ listOfKernelResults expectFn _ =
 
 
 {-| Gives `expectFn` the program that declares `type Wrapper a = Wrap a` and
-defines `testValue : Wrapper Int` as `Wrap` applied to
-`Elm.Kernel.Basics.add 10 20`. The `let` is in this test code, not in the
-program.
+defines `testValue : Wrapper Int` as `let n = Elm.Kernel.Basics.add 10 20 in
+Wrap n`.
 -}
 kernelInLetThenCtor : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelInLetThenCtor expectFn _ =
@@ -140,8 +140,9 @@ kernelInLetThenCtor expectFn _ =
                   , args = []
                   , tipe = tType "Wrapper" [ tType "Int" [] ]
                   , body =
-                        callExpr (ctorExpr "Wrap")
-                            [ callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 10, intExpr 20 ] ]
+                        letExpr
+                            [ define "n" [] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 10, intExpr 20 ]) ]
+                            (callExpr (ctorExpr "Wrap") [ varExpr "n" ])
                   }
                 ]
                 [ { name = "Wrapper"
@@ -198,27 +199,34 @@ nestedKernelTuple expectFn _ =
         )
 
 
-{-| Gives `expectFn` the program whose `testValue` is
-`Elm.Kernel.Basics.identity` applied to the pair `( 1, "hello" )`.
+{-| Gives `expectFn` the program whose `testValue` is `Elm.Kernel.List.cons`
+applied to the pair `( 1, "hello" )` and the empty list.
 -}
-kernelIdentityTuple : (Src.Module -> Expectation) -> (() -> Expectation)
-kernelIdentityTuple expectFn _ =
+kernelConsTuple : (Src.Module -> Expectation) -> (() -> Expectation)
+kernelConsTuple expectFn _ =
     expectFn
         (makeKernelModule "testValue"
-            (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
-                [ tupleExpr (intExpr 1) (strExpr "hello") ]
+            (callExpr (qualVarExpr "Elm.Kernel.List" "cons")
+                [ tupleExpr (intExpr 1) (strExpr "hello")
+                , listExpr []
+                ]
             )
         )
 
 
-{-| Gives `expectFn` the program whose `testValue` is
-`Elm.Kernel.Basics.identity` applied to the list `[ ( 1, 2 ), ( 3, 4 ) ]`.
+{-| Gives `expectFn` the program whose `testValue` is `Elm.Kernel.List.cons`
+applied to the record `{ x = 1, y = ( 2, 3 ) }` and the empty list.
 -}
-kernelIdentityRecordTuple : (Src.Module -> Expectation) -> (() -> Expectation)
-kernelIdentityRecordTuple expectFn _ =
+kernelConsRecord : (Src.Module -> Expectation) -> (() -> Expectation)
+kernelConsRecord expectFn _ =
     expectFn
         (makeKernelModule "testValue"
-            (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
-                [ listExpr [ tupleExpr (intExpr 1) (intExpr 2), tupleExpr (intExpr 3) (intExpr 4) ] ]
+            (callExpr (qualVarExpr "Elm.Kernel.List" "cons")
+                [ recordExpr
+                    [ ( "x", intExpr 1 )
+                    , ( "y", tupleExpr (intExpr 2) (intExpr 3) )
+                    ]
+                , listExpr []
+                ]
             )
         )

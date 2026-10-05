@@ -3,8 +3,9 @@ module TestLogic.Monomorphize.MonoCtorLayoutIntegrityTest exposing (suite)
 {-| Runs the constructor-shape check of
 `TestLogic.Monomorphize.MonoCtorLayoutIntegrity` on every program in the
 standard `SourceIR` catalogue, so that a monomorphized constructor node whose
-name and tag are missing from the graph's table of constructor shapes fails a
-test on any of those programs, not only on a hand-picked few.
+shape is not the one listed for its own type, or a shape list that is not its
+custom type's constructors, fails a test on any of those programs, not only on
+a hand-picked few.
 
 The fixture is the set of programs that
 `SourceIR.Suite.StandardTestSuites.expectSuite` hands to an expectation; that
@@ -15,17 +16,16 @@ substitution engine.
 What `suite` establishes, for each of those programs:
 
   - `runToMono` returns no error.
-  - Every `MonoCtor` node's shape has the name and tag of some shape in the
-    graph's `ctorShapes`, under any type key; field types are not compared.
-  - Every shape in `ctorShapes`, given to `Types.computeCtorLayout`, yields a
-    layout with one field per field type that marks only `Int`, `Float` and
-    `Char` fields unboxed. As the checker's docstring notes, these two layout
-    checks cannot fail while `computeCtorLayout` stays as it is.
+  - The shapes listed under each key of the graph's `ctorShapes` are the
+    declared constructors of that custom type, in order, by name and field
+    count, with distinct tags.
+  - Every `MonoCtor` node's shape is listed under the custom type it
+    constructs, with the same name, tag and field types (lambda-set
+    annotations ignored).
 
-Among what is not tested: the order of a layout's fields, its unboxed bitmap,
-whether a shape agrees with the constructor's source definition, any
-construction of or pattern match on a constructor inside an expression, the
-solver engine, and the graph after global optimization.
+Among what is not tested: the heap layout code generation derives from a
+shape, any construction of or pattern match on a constructor inside an
+expression, the solver engine, and the graph after global optimization.
 
 -}
 

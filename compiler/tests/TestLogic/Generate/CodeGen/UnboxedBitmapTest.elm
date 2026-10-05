@@ -22,15 +22,20 @@ What the tests establish:
     operand holds the kind of that operand's recorded type, that each list
     cons's `head_unboxed` is true exactly when its head is `i64`, `f64` or
     `i16`, and that no compared operand is an `i1`.
+  - `wideRecord`: a record of 17 `Int` fields and 2 `String` fields, so that
+    the boxed fields sit in slots 17 and 18 after 17 unboxed ones, passes the
+    same check. A slot past 15 read with JavaScript's 32-bit `Bitwise` would
+    wrap to slot 1 or 2, an `Int`, and be misreported.
 
 Among what is not tested: the `head_kind` attribute of `eco.construct.list`,
-`eco.papCreateGroup` ops, any slot past the sixteenth (which the checker, run
-on JavaScript's 32-bit `Bitwise`, does not read correctly), whether a recorded
+`eco.papCreateGroup` ops, whether a recorded
 operand type matches the SSA value actually passed, and any program outside the
 catalogue.
 
 -}
 
+import Compiler.AST.Source as Src
+import Compiler.AST.SourceBuilder exposing (intExpr, makeModuleWithTypedDefs, recordExpr, strExpr, tRecord, tType)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap)
@@ -43,4 +48,35 @@ suite : Test
 suite =
     Test.describe "CGEN_026/027/003/049: Unboxed Bitmap Consistency"
         [ StandardTestSuites.expectSuite expectUnboxedBitmap "passes unboxed bitmap invariant"
+        , Test.test "a record with boxed fields past slot 15" (\_ -> expectUnboxedBitmap wideRecord)
+        ]
+
+
+{-| `testValue` is a record literal with Int fields `i00` to `i16` and String
+fields `s0` and `s1`. The record layout puts the unboxed fields first, so the
+two Strings land in slots 17 and 18.
+-}
+wideRecord : Src.Module
+wideRecord =
+    let
+        intNames =
+            List.map (\i -> "i" ++ String.padLeft 2 '0' (String.fromInt i)) (List.range 0 16)
+
+        strNames =
+            [ "s0", "s1" ]
+    in
+    makeModuleWithTypedDefs "TestMod"
+        [ { name = "testValue"
+          , args = []
+          , tipe =
+                tRecord
+                    (List.map (\n -> ( n, tType "Int" [] )) intNames
+                        ++ List.map (\n -> ( n, tType "String" [] )) strNames
+                    )
+          , body =
+                recordExpr
+                    (List.indexedMap (\i n -> ( n, intExpr i )) intNames
+                        ++ List.map (\n -> ( n, strExpr n )) strNames
+                    )
+          }
         ]

@@ -31,7 +31,9 @@ What the tests establish:
 
   - `abiModeTests`: `Int -> Int -> Int` gives `UseSubstitution`; the types of
     `List.cons`, of `Basics.add` (`number -> number -> number`) and of
-    `Debug.log` (`String -> a -> a`) give `PreserveVars`.
+    `Debug.log` (`String -> a -> a`) give `PreserveVars`; and
+    `String -> String` gives `PreserveVars` with home `Debug` but
+    `UseSubstitution` with home `String`.
   - `monomorphicKernelTests`: `canTypeToMonoType_preserveVars` converts three
     types with no variable to their concrete MonoTypes, one parameter per
     function.
@@ -50,8 +52,7 @@ What the tests establish:
     recorded for a variable of that name, only `number` makes a number
     variable, and a plain variable has none.
 
-Among what is not tested: a `Debug` kernel whose type has no type variable, the
-one case where the home decides the mode; any use of a kernel at concrete types,
+Among what is not tested: any use of a kernel at concrete types,
 since every test converts the kernel's own type; how the monomorphizers turn the
 mode into a call's type; the conversion of `Char`, records, tuples, unit,
 custom types and aliases; and super constraints that come from a type
@@ -76,6 +77,7 @@ import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
@@ -307,6 +309,15 @@ abiModeTests =
                         testDeriveAbiMode ( "Debug", "log" ) canType
                 in
                 Expect.equal result KernelAbi.PreserveVars
+        , Test.test "Debug kernel with no type variable still returns PreserveVars (the home decides)" <|
+            \_ ->
+                let
+                    canType =
+                        tFunc [ stringType ] stringType
+                in
+                Expect.equal
+                    ( testDeriveAbiMode ( "Debug", "todo" ) canType, testDeriveAbiMode ( "String", "todo" ) canType )
+                    ( KernelAbi.PreserveVars, KernelAbi.UseSubstitution )
         ]
 
 
@@ -615,9 +626,8 @@ listModuleTests =
 converted type of `equal` has `MVar 0 CEcoValue` for both arguments and
 `MBool` for the result.
 
-The `compare` test's result type is a type variable named `Order`, not the
-`Order` type, so its type is `comparable -> comparable -> Order`, with two
-type variables.
+The `compare` test's result type is `Basics.Order`, so its type is
+`comparable -> comparable -> Order`, with one type variable.
 
 -}
 utilsModuleTests : Test
@@ -664,7 +674,7 @@ utilsModuleTests =
             \_ ->
                 let
                     orderType =
-                        varType "Order"
+                        Can.TType ModuleName.basics "Order" []
 
                     canType =
                         tFunc [ varType "comparable", varType "comparable" ] orderType
@@ -765,23 +775,25 @@ charModuleTests =
 type variable.
 
 The first two convert the types of `List.cons` and `Utils.equal` and expect
-`MVar 0 CEcoValue` for every variable. Their labels speak of uses at particular
-types, but no use is built: each converts only the kernel's own type, as
-`polymorphicKernelTests` does.
+`MVar 0 CEcoValue` for every variable. No use at a particular type is built:
+each converts only the kernel's own type, as `polymorphicKernelTests` does.
 
 The next two convert a lone variable. Named `a`, it gives `MVar 0 CEcoValue`
 and is not a number variable. Named `number`, it also gives `MVar 0 CEcoValue`,
 not a `CNumber` variable, while the side table records it as a number variable.
 
 The last checks that `List.cons` with `a -> List a -> List a` has mode
-`PreserveVars` and that its converted type has no `MInt` inside a function or
-list type.
+`PreserveVars` and that its own converted type has no `MInt` inside a function
+or list type. This is not a property of every use: `List.cons` selects a
+kernel variant by its argument types, so `Specialize.deriveKernelAbiType`
+(not exposed, and not tested here) gives a fully `Int` call site the concrete
+`MInt` type.
 
 -}
 kernelAbiPreservationTests : Test
 kernelAbiPreservationTests =
     Test.describe "Kernel ABI type preservation"
-        [ Test.test "List.cons ABI is same whether called with Int or String" <|
+        [ Test.test "List.cons's own type converts with a boxed variable for its element" <|
             \_ ->
                 let
                     canType =
@@ -798,7 +810,7 @@ kernelAbiPreservationTests =
                             (Mono.mList (testMVarN 0 Mono.CEcoValue))
                         )
                     )
-        , Test.test "Utils.equal ABI is same whether called with Int or custom type" <|
+        , Test.test "Utils.equal's own type converts with a boxed variable for both operands" <|
             \_ ->
                 let
                     canType =
@@ -843,7 +855,7 @@ kernelAbiPreservationTests =
                     , \_ -> Expect.equal (isNumberVar 0 env) True
                     ]
                     ()
-        , Test.test "Polymorphic kernel ABI must NOT contain MInt even when used at Int type" <|
+        , Test.test "List.cons's own type is PreserveVars and converts with no MInt" <|
             \_ ->
                 let
                     canType =

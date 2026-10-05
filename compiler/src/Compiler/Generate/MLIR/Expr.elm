@@ -1692,9 +1692,16 @@ generateCall ctx func args resultType callInfo =
                             -- Known ABI + unknown staging: typed papExtend without remaining_arity.
                             -- Runtime reads closure header for saturation decisions.
                             -- Result is always !eco.value, so coerce back to expected ABI type.
+                            -- A call with no arguments applies nothing: its value is the
+                            -- callee's value, which need not be a closure (it may be an i1
+                            -- Bool), so no papExtend is emitted for it.
                             let
                                 unkRes =
-                                    generateUnknownSegmentationCall ctx func args resultType
+                                    if List.isEmpty args then
+                                        generateExpr ctx func
+
+                                    else
+                                        generateUnknownSegmentationCall ctx func args resultType
 
                                 expectedType =
                                     Types.monoTypeToAbi resultType

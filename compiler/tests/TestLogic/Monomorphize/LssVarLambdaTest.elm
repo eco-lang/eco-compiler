@@ -45,18 +45,17 @@ The tests establish:
     arrow of the function it returns. It passes only when at least one was
     found and every one is an `LSet` with at least one member; an `LTop`,
     `LVar`, `LPartial` or empty `LSet` fails it.
-  - Test 2 merges two records built in the test, a cell with a set and a cell
-    marked `var`, by or-ing their `top` and `var` flags and keeping the first
-    cell's members, and checks that the result has `var` set, `top` clear and
-    those members. No compiler code runs: it repeats by hand the flag merge
-    `varCellMerge` performs, without calling it.
-  - Test 3 checks a merge function defined in the test, which keeps two equal
-    parameter counts and gives `Nothing` otherwise, on three pairs. No
-    compiler code runs.
+  - Test 1b reads the same pairs and requires each to be two different
+    singletons: on the parameter's arrow the member the graph's
+    `lssMemberOrigins` records as `mkAdder`, and on the returned function's
+    arrow the member of another closure in `mkAdder`'s body, its inner lambda.
+    Both members must be closure members of `mkAdder`'s specialization.
 
-Among what is not tested: any of the write conditions above as the compiler
-applies them, which members the sets of test 1 hold, which stage wrote them,
-and the graph after global optimization.
+Among what is not tested: the write conditions above as the compiler applies
+them (the strict-cell rule of `varCellMerge` and the arity guard of
+`lambdaHomesOf`, which the module does not expose and no fixture here
+reaches), which stage wrote the sets, and the graph after global
+optimization.
 
 -}
 
@@ -77,18 +76,19 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| The three tests the module docstring lists.
+{-| The two tests the module docstring lists.
 -}
 suite : Test
 suite =
     Test.describe "lambda-home var writes"
-        [ -- The only test that runs the compiler.
-          Test.test "1. the lambda's result arrow is a set, never var or ⊤" <|
+        [ Test.test "1. the lambda's result arrow is a set, never var or ⊤" <|
             \() ->
                 case runWith fixture of
                     Ok onG ->
@@ -113,35 +113,42 @@ suite =
 
                     Err e ->
                         Expect.fail e
-        , Test.test "2. GUARD: a var cell never becomes a set (strict-cell rule)" <|
+        , Test.test "1b. the sets name mkAdder and the lambda it returns" <|
             \() ->
-                let
-                    setCell =
-                        { top = False, var = False, sets = Just [ 7 ] }
+                case runWith fixture of
+                    Ok onG ->
+                        let
+                            lambdaMembers =
+                                closureMembersOf "mkAdder" onG
 
-                    varCell =
-                        { top = False, var = True, sets = Nothing }
+                            pairs =
+                                annoPairs onG
 
-                    merged =
-                        { top = setCell.top || varCell.top
-                        , var = setCell.var || varCell.var
-                        , sets = setCell.sets
-                        }
-                in
-                Expect.equal ( merged.var, merged.top, merged.sets ) ( True, False, Just [ 7 ] )
-        , Test.test "3. GUARD: arity disagreement makes a mid unusable" <|
-            \() ->
-                let
-                    merge a b =
-                        if a == b then
-                            a
+                            names ( h, r ) =
+                                case ( h, r ) of
+                                    ( Mono.LSet [ outer ], Mono.LSet [ inner ] ) ->
+                                        outer
+                                            /= inner
+                                            && isGlobalMember "mkAdder" outer onG
+                                            && List.member outer lambdaMembers
+                                            && List.member inner lambdaMembers
+
+                                    _ ->
+                                        False
+                        in
+                        if not (List.isEmpty pairs) && List.all names pairs then
+                            Expect.pass
 
                         else
-                            Nothing
-                in
-                Expect.equal
-                    [ merge (Just 1) (Just 1), merge (Just 1) (Just 2), merge Nothing (Just 1) ]
-                    [ Just 1, Nothing, Nothing ]
+                            Expect.fail
+                                ("expected mkAdder's own singleton and its inner lambda's singleton, got "
+                                    ++ String.join "; " (List.map (\( h, r ) -> describe [ h, r ]) pairs)
+                                    ++ " with mkAdder's closure members "
+                                    ++ String.join "," (List.map String.fromInt lambdaMembers)
+                                )
+
+                    Err e ->
+                        Expect.fail e
         ]
 
 
@@ -209,14 +216,21 @@ runWith srcModule =
 -- ====== READERS ======
 
 
-{-| Returns two annotations for every registry row of `g` named `applyTwice`,
-in any module: the one on the arrow of the row's first parameter, and the one
-on the arrow of the function that parameter returns. A row whose first
-parameter is not a function returning a function contributes nothing, so the
-list can be empty.
+{-| Returns the annotations `annoPairs` pairs up, flattened.
 -}
 annos : Mono.MonoGraph -> List Mono.LambdaSetAnno
-annos (Mono.MonoGraph g) =
+annos g =
+    List.concatMap (\( h, r ) -> [ h, r ]) (annoPairs g)
+
+
+{-| Returns, for every registry row of `g` named `applyTwice`, in any module,
+the annotation on the arrow of the row's first parameter, and the one on the
+arrow of the function that parameter returns. A row whose first parameter is
+not a function returning a function contributes nothing, so the list can be
+empty.
+-}
+annoPairs : Mono.MonoGraph -> List ( Mono.LambdaSetAnno, Mono.LambdaSetAnno )
+annoPairs (Mono.MonoGraph g) =
     Array.foldl
         (\entry acc ->
             case entry of
@@ -224,7 +238,7 @@ annos (Mono.MonoGraph g) =
                     if name == "applyTwice" then
                         case monoType of
                             Mono.MFunction _ _ ((Mono.MFunction _ headA _ (Mono.MFunction _ resA _ _)) :: _) _ ->
-                                headA :: resA :: acc
+                                ( headA, resA ) :: acc
 
                             _ ->
                                 acc
@@ -237,6 +251,55 @@ annos (Mono.MonoGraph g) =
         )
         []
         g.registry.reverseMapping
+
+
+{-| Returns the member id of every closure, nested ones included, in the
+bodies of the specializations of the global named `name`.
+-}
+closureMembersOf : String -> Mono.MonoGraph -> List Int
+closureMembersOf name (Mono.MonoGraph g) =
+    List.concatMap
+        (\( specId, entry ) ->
+            case ( entry, Array.get specId g.nodes ) of
+                ( Just ( Mono.Global _ n, _ ), Just (Just (Mono.MonoDefine body _)) ) ->
+                    if n == name then
+                        MonoTraverse.foldExpr
+                            (\e acc ->
+                                case e of
+                                    Mono.MonoClosure info _ _ ->
+                                        case info.lssMember of
+                                            Just m ->
+                                                m :: acc
+
+                                            Nothing ->
+                                                acc
+
+                                    _ ->
+                                        acc
+                            )
+                            []
+                            body
+
+                    else
+                        []
+
+                _ ->
+                    []
+        )
+        (Array.toIndexedList g.registry.reverseMapping)
+
+
+{-| Reports whether the graph's `lssMemberOrigins` records member `m` as the
+global named `name`.
+-}
+isGlobalMember : String -> Int -> Mono.MonoGraph -> Bool
+isGlobalMember name m (Mono.MonoGraph g) =
+    case Dict.get m g.lssMemberOrigins of
+        Just (Mono.OriginGlobal (Mono.Global _ n)) ->
+            n == name
+
+        _ ->
+            False
 
 
 {-| Reports whether an annotation is `LTop`, whatever its provenance code.

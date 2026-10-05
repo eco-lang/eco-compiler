@@ -17,17 +17,14 @@ The programs are those of `SourceIR.Suite.StandardTestSuites`, each given in
 turn to `TestLogic.Generate.CodeGen.SsaUniqueness.expectSsaUniqueness`, whose
 module docstring states the rule as checked.
 
-  - `suite` compiles each program to MLIR and walks the first region of each
-    top-level `func.func`. An operation result whose name is already visible
-    fails the test. A program that does not compile to MLIR also fails.
+  - `suite` compiles each program to MLIR and walks every region of each
+    `func.func`, top-level or nested. A block argument or operation result
+    whose name is already visible, including one defined in an earlier block
+    of the same region, fails the test. A program that does not compile to
+    MLIR also fails.
 
-Among what is not tested:
-
-  - A block argument that repeats a visible name.
-  - A name defined in two blocks of the same region, or in two sibling
-    regions.
-  - The regions of a `func.func` nested inside another operation, and any
-    region of a `func.func` after the first.
+Among what is not tested: a name defined in two sibling regions, which MLIR
+allows.
 
 -}
 

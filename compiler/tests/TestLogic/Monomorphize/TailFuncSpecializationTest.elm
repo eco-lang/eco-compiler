@@ -22,19 +22,18 @@ adds makes `testValue` reachable.
 
 The tests establish:
 
-  - "sumHelper MonoTailFunc has nested ...": the first `MonoTailFunc` node in
-    the graph has two parameters, each of type `MInt`, and its function type
-    is `MFunction [MInt] (MFunction [MInt] MInt)`. Types are compared by
-    `monoTypesMatch`, which ignores lambda-set annotations.
-  - "MonoTailFunc arg count matches expected arity": the first `MonoTailFunc`
-    node in the graph has two parameters.
+  - "sumHelper MonoTailFunc has nested ...": the registry lists exactly one
+    `MonoTailFunc` node for `sumHelper`; it has two parameters, each of type
+    `MInt`, and its function type is `MFunction [MInt] (MFunction [MInt] MInt)`.
+    Types are compared by `monoTypesMatch` (`Mono.eqKeyLayout`), which
+    ignores lambda-set annotations.
+  - "MonoTailFunc arg count matches expected arity": `sumHelper`'s
+    `MonoTailFunc` node has two parameters.
 
-Both fail when the pipeline fails or the graph has no `MonoTailFunc` node.
+Both fail when the pipeline fails or the registry lists no `MonoTailFunc` node
+for `sumHelper`.
 
-Among what is not tested: that the node checked is `sumHelper`'s, since both
-take the first `MonoTailFunc` node whatever its name (`sumHelper` is the
-fixture's only tail-recursive definition); the lambda-set annotations on the
-arrows; the node's body; a polymorphic tail-recursive function, or one
+Among what is not tested: the lambda-set annotations on the arrows; the node's body; a polymorphic tail-recursive function, or one
 specialized at more than one type; the solver engine; and the graph after
 global optimization.
 
@@ -55,7 +54,6 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Data.Id as Id
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -163,38 +161,63 @@ checkMonoTailFuncArity =
 -- ============================================================================
 
 
-{-| Passes when the first `MonoTailFunc` node in the graph has the types of
-`sumHelper : Int -> Int -> Int`: exactly two parameters, each matching `MInt`,
-and a function type matching `MFunction [MInt] (MFunction [MInt] MInt)`.
-Otherwise it fails with every mismatch found, and a wrong parameter count
-skips the comparison of parameter types.
+{-| Returns the parameters and type of every `MonoTailFunc` node that the
+registry lists for a global named `funcName`.
+-}
+tailFuncNodesOf : String -> Mono.MonoGraph -> List ( List ( String, Mono.MonoType ), Mono.MonoType )
+tailFuncNodesOf funcName (Mono.MonoGraph data) =
+    List.filterMap
+        (\( specId, entry ) ->
+            case ( entry, Array.get specId data.nodes ) of
+                ( Just ( Mono.Global _ name, _ ), Just (Just (Mono.MonoTailFunc args _ monoType)) ) ->
+                    if name == funcName then
+                        Just ( args, monoType )
 
-The expected types are fixed here, not derived from an argument, and the node
-is the first `MonoTailFunc` in node order whatever its name: `funcName` is used
-only in the message when the graph has no such node. Types are compared with
-`monoTypesMatch`, so lambda-set annotations are ignored.
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+        )
+        (Array.toIndexedList data.registry.reverseMapping)
+
+
+{-| Tells whether two `MonoType`s are equal ignoring their lambda-set
+annotations.
+-}
+monoTypesMatch : Mono.MonoType -> Mono.MonoType -> Bool
+monoTypesMatch =
+    Mono.eqKeyLayout
+
+
+{-| Renders a `MonoType` for a failure message.
+-}
+monoTypeToString : Mono.MonoType -> String
+monoTypeToString =
+    Mono.monoTypeToDebugString
+
+
+{-| Passes when the graph has exactly one `MonoTailFunc` node registered for
+`funcName` and it has the types of `sumHelper : Int -> Int -> Int`: exactly two
+parameters, each `MInt`, and the function type
+`MFunction [MInt] (MFunction [MInt] MInt)`. Otherwise it fails with every
+mismatch found, and a wrong parameter count skips the comparison of parameter
+types.
+
+The expected types are fixed here, not derived from an argument. Types are
+compared with `monoTypesMatch`, so lambda-set annotations are ignored.
 
 -}
 checkMonoTailFuncType : String -> Mono.MonoGraph -> Expectation
-checkMonoTailFuncType funcName (Mono.MonoGraph data) =
-    let
-        tailFuncNodes =
-            Array.toList data.nodes
-                |> List.filterMap
-                    (\maybeNode ->
-                        case maybeNode of
-                            Just (Mono.MonoTailFunc args _ monoType) ->
-                                Just ( args, monoType )
-
-                            _ ->
-                                Nothing
-                    )
-    in
-    case tailFuncNodes of
+checkMonoTailFuncType funcName graph =
+    case tailFuncNodesOf funcName graph of
         [] ->
             Expect.fail ("No MonoTailFunc node found for " ++ funcName)
 
-        ( args, monoType ) :: _ ->
+        _ :: _ :: _ ->
+            Expect.fail ("More than one MonoTailFunc node for " ++ funcName)
+
+        [ ( args, monoType ) ] ->
             let
                 actualArgTypes =
                     List.map Tuple.second args
@@ -254,30 +277,13 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                 Expect.fail (String.join "; " allErrors)
 
 
-{-| Passes when the first `MonoTailFunc` node in the graph has `expectedCount`
-parameters, and fails when it has another number or the graph has no such
-node.
-
-The node is the first `MonoTailFunc` in node order whatever its name:
-`funcName` is used only in the failure messages.
-
+{-| Passes when the first `MonoTailFunc` node registered for `funcName` has
+`expectedCount` parameters, and fails when it has another number or the graph
+has no such node.
 -}
 checkMonoTailFuncArgCount : String -> Int -> Mono.MonoGraph -> Expectation
-checkMonoTailFuncArgCount funcName expectedCount (Mono.MonoGraph data) =
-    let
-        tailFuncNodes =
-            Array.toList data.nodes
-                |> List.filterMap
-                    (\maybeNode ->
-                        case maybeNode of
-                            Just (Mono.MonoTailFunc args _ _) ->
-                                Just (List.length args)
-
-                            _ ->
-                                Nothing
-                    )
-    in
-    case tailFuncNodes of
+checkMonoTailFuncArgCount funcName expectedCount graph =
+    case List.map (Tuple.first >> List.length) (tailFuncNodesOf funcName graph) of
         [] ->
             Expect.fail ("No MonoTailFunc node found for " ++ funcName)
 
@@ -295,106 +301,3 @@ checkMonoTailFuncArgCount funcName expectedCount (Mono.MonoGraph data) =
                         ++ String.fromInt actualCount
                         ++ ". This may indicate Bug 1 (pattern types as TVar) or Bug 2 (full func type as return type)"
                     )
-
-
-
--- ============================================================================
--- MONOTYPE UTILITIES
--- ============================================================================
-
-
-{-| Reports whether two `MonoType`s match, comparing the primitive types by
-constructor and lists and functions structurally, with lambda-set annotations
-ignored.
-
-Two custom types match when their home, name and number of arguments agree,
-whatever the arguments are. Tuples, records and type variables never match
-anything, not even themselves.
-
--}
-monoTypesMatch : Mono.MonoType -> Mono.MonoType -> Bool
-monoTypesMatch actual expected =
-    case ( actual, expected ) of
-        ( Mono.MInt, Mono.MInt ) ->
-            True
-
-        ( Mono.MFloat, Mono.MFloat ) ->
-            True
-
-        ( Mono.MBool, Mono.MBool ) ->
-            True
-
-        ( Mono.MChar, Mono.MChar ) ->
-            True
-
-        ( Mono.MString, Mono.MString ) ->
-            True
-
-        ( Mono.MUnit, Mono.MUnit ) ->
-            True
-
-        ( Mono.MList _ a, Mono.MList _ b ) ->
-            monoTypesMatch a b
-
-        ( Mono.MFunction _ _ args1 ret1, Mono.MFunction _ _ args2 ret2 ) ->
-            List.length args1
-                == List.length args2
-                && List.all identity (List.map2 monoTypesMatch args1 args2)
-                && monoTypesMatch ret1 ret2
-
-        ( Mono.MCustom _ home1 name1 args1, Mono.MCustom _ home2 name2 args2 ) ->
-            home1 == home2 && name1 == name2 && List.length args1 == List.length args2
-
-        ( Mono.MVar _ _, _ ) ->
-            -- A type variable left in a specialized type is a mismatch,
-            -- even against itself.
-            False
-
-        _ ->
-            False
-
-
-{-| Renders a `MonoType` for a failure message. Lambda-set annotations are
-left out, and record and tuple types are shown without their contents.
--}
-monoTypeToString : Mono.MonoType -> String
-monoTypeToString monoType =
-    case monoType of
-        Mono.MInt ->
-            "MInt"
-
-        Mono.MFloat ->
-            "MFloat"
-
-        Mono.MBool ->
-            "MBool"
-
-        Mono.MChar ->
-            "MChar"
-
-        Mono.MString ->
-            "MString"
-
-        Mono.MUnit ->
-            "MUnit"
-
-        Mono.MList _ inner ->
-            "Mono.mList (" ++ monoTypeToString inner ++ ")"
-
-        Mono.MFunction _ _ args ret ->
-            "Mono.mFunction ["
-                ++ String.join ", " (List.map monoTypeToString args)
-                ++ "] "
-                ++ monoTypeToString ret
-
-        Mono.MCustom _ _ name args ->
-            "Mono.mCustom " ++ name ++ " [" ++ String.join ", " (List.map monoTypeToString args) ++ "]"
-
-        Mono.MRecord _ _ ->
-            "Mono.mRecord {...}"
-
-        Mono.MTuple _ _ ->
-            "Mono.mTuple (...)"
-
-        Mono.MVar mvarId _ ->
-            "MVar \"" ++ String.fromInt (Id.toComparable mvarId) ++ "\""

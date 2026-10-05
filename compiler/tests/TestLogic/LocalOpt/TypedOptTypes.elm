@@ -1,36 +1,38 @@
 module TestLogic.LocalOpt.TypedOptTypes exposing (expectAllExprsHaveTypes)
 
-{-| A check that every expression the typed optimizer produces carries a type,
-which in practice passes for any program that reaches typed optimization:
-the walk visits the expressions, but the test it applies to each type reports
-nothing.
+{-| A check that every type the typed optimizer stores on an expression is well
+formed: every named type in it is a type that exists, applied to as many
+arguments as it declares, and every alias in it is applied to as many arguments
+as it has parameters.
 
 The subject is the _typed local graph_, the `TOpt.LocalGraph` that
 `TestLogic.TestPipeline.runToTypedOpt` builds for one test program: a map
 from global to node, in which the nodes for its definitions hold
 `Compiler.AST.TypedOptimized` expressions. Every such expression carries its
-type in its `Meta`, as a `Can.Type` rather than a `Maybe`, so a missing type
-cannot be built at all. What a check could still find is a malformed type,
-and nothing here tests a type's shape.
+type in its `Meta`, as a `Can.Type` rather than a `Maybe`, so a type cannot be
+missing; what can go wrong is its shape. The monomorphizer turns a named type
+applied to the wrong number of arguments into a wrong layout rather than an
+error, so a malformed type would otherwise travel on unnoticed.
 
-`expectAllExprsHaveTypes` runs the program to typed optimization and walks the
-graph. For each expression it reaches it takes `TOpt.typeOf` and hands it,
-labelled with the node it came from, to `checkTypeNotEmpty`, which returns no
-issues for any type. So the expectation fails only when `runToTypedOpt`
-returns `Err`.
+`expectAllExprsHaveTypes` runs the program to typed optimization and walks
+every expression of every definition, port and recursive group (functions and
+values), including the branches a `case` holds inline in its decision tree and
+those it jumps to. For each expression it checks `TOpt.typeOf`, and it also
+checks the parameter types of functions and tail-recursive definitions, the
+declared type of each `let` definition, and the type a `Destruct` stores. A
+named type is known when it is declared by one of the modules in
+`Compiler.Elm.Interface.Basic.testIfaces` or by the program's own module, or
+is one of two types no test interface declares: the built-in `List`, and
+elm/json's `Json.Decode.Decoder`, which the typed optimizer builds port decoders
+with but the test interface of `Json.Decode` leaves out. Its expected argument
+count is the number of variables of that declaration (one for each of those
+two). An
+alias's expected argument count comes from the same places.
 
-Among what is not walked, should the per-type test ever report anything:
-
-  - the value expressions of a `Cycle` node (only its definitions are walked);
-  - `Ctor`, `Enum`, `Box`, `Link`, `Manager` and `Kernel` nodes;
-  - branch bodies inlined into a `case`'s decision tree (only the bodies its
-    jumps target are walked);
-  - the graph's `main`, and the types a `Destruct` stores in its destructor.
-
-The second half of the file, from `checkDefTypeWellFormedness` on, is a second
-walk, starting from one definition, that follows the same expressions as the
-first and also recurses into each type it reaches. Nothing outside that walk
-calls it, and it too reports no issues for any input.
+Among what is not checked: that a type variable is bound by an enclosing
+annotation, the alias body an alias carries against its declaration, and the
+nodes that hold no expression (constructors, enums, boxes, links, kernels and
+effect managers).
 
 -}
 
@@ -38,21 +40,20 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.Interface as I
+import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Data.Map
-import Dict
+import Dict exposing (Dict)
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Runs `srcModule` to typed optimization and passes if no expression in its
-typed local graph is reported for its type.
-
-No expression ever is, so this passes exactly when
-`TestLogic.TestPipeline.runToTypedOpt` gives `Ok`, and otherwise fails with
-that function's message. The program must define `testValue`, as
-`TestLogic.TestPipeline` describes.
-
+{-| Runs `srcModule` to typed optimization and passes when every type the walk
+reaches is well formed, as the module docstring describes. Fails with
+`TestLogic.TestPipeline.runToTypedOpt`'s message when it returns `Err`, and
+otherwise with one line per malformed type. The program must define
+`testValue`, as `TestLogic.TestPipeline` describes.
 -}
 expectAllExprsHaveTypes : Src.Module -> Expect.Expectation
 expectAllExprsHaveTypes srcModule =
@@ -62,34 +63,236 @@ expectAllExprsHaveTypes srcModule =
 
         Ok result ->
             let
+                arities =
+                    knownArities result.canonical
+
                 issues =
-                    collectExprTypeIssues result.localGraph
+                    collectExprTypeIssues arities result.localGraph
             in
             if List.isEmpty issues then
                 Expect.pass
 
             else
-                Expect.fail (String.join "\n" issues)
+                Expect.fail (String.join "\n" (unique issues))
 
 
 
 -- ============================================================================
--- EXPRESSION TYPE VERIFICATION
+-- KNOWN TYPES
 -- ============================================================================
 
 
-{-| Returns the issues reported for the nodes of a typed local graph, each node
-labelled by its global as `Module.name`. The list is always empty.
+{-| The number of type variables of every custom type and every alias that a
+type may name, each keyed by `typeKey` of its home and name.
 -}
-collectExprTypeIssues : TOpt.LocalGraph Name -> List String
-collectExprTypeIssues (TOpt.LocalGraph data) =
+type alias Arities =
+    { unions : Dict String Int
+    , aliases : Dict String Int
+    }
+
+
+{-| Returns the arities of `List`, of `Json.Decode.Decoder`, and of the custom
+types and aliases declared by the interfaces in `Basic.testIfaces` and by the
+program's own canonical module.
+-}
+knownArities : Can.Module -> Arities
+knownArities (Can.Module moduleData) =
+    let
+        fromIfaces =
+            Dict.foldl
+                (\moduleName (I.Interface idata) acc ->
+                    let
+                        home =
+                            ModuleName.Canonical idata.home moduleName
+                    in
+                    { unions =
+                        Dict.foldl
+                            (\name union a -> Dict.insert (typeKey home name) (unionArity (ifaceUnion union)) a)
+                            acc.unions
+                            idata.unions
+                    , aliases =
+                        Dict.foldl
+                            (\name alias a -> Dict.insert (typeKey home name) (aliasArity (ifaceAlias alias)) a)
+                            acc.aliases
+                            idata.aliases
+                    }
+                )
+                { unions =
+                    Dict.fromList
+                        [ ( typeKey ModuleName.list "List", 1 )
+                        , ( typeKey ModuleName.jsonDecode "Decoder", 1 )
+                        ]
+                , aliases = Dict.empty
+                }
+                Basic.testIfaces
+    in
+    { unions =
+        Dict.foldl
+            (\name union a -> Dict.insert (typeKey moduleData.name name) (unionArity union) a)
+            fromIfaces.unions
+            moduleData.unions
+    , aliases =
+        Dict.foldl
+            (\name alias a -> Dict.insert (typeKey moduleData.name name) (aliasArity alias) a)
+            fromIfaces.aliases
+            moduleData.aliases
+    }
+
+
+{-| Returns the declaration an interface records for a custom type.
+-}
+ifaceUnion : I.Union -> Can.Union
+ifaceUnion union =
+    case union of
+        I.OpenUnion u ->
+            u
+
+        I.ClosedUnion u ->
+            u
+
+        I.PrivateUnion u ->
+            u
+
+
+{-| Returns the declaration an interface records for an alias.
+-}
+ifaceAlias : I.Alias -> Can.Alias
+ifaceAlias alias =
+    case alias of
+        I.PublicAlias a ->
+            a
+
+        I.PrivateAlias a ->
+            a
+
+
+{-| Returns the number of type variables a custom type declares.
+-}
+unionArity : Can.Union -> Int
+unionArity (Can.Union data) =
+    List.length data.vars
+
+
+{-| Returns the number of parameters an alias declares.
+-}
+aliasArity : Can.Alias -> Int
+aliasArity (Can.Alias vars _) =
+    List.length vars
+
+
+{-| Returns the key of a named type: its package, module and name.
+-}
+typeKey : ModuleName.Canonical -> Name -> String
+typeKey (ModuleName.Canonical ( author, project ) moduleName) name =
+    author ++ "/" ++ project ++ ":" ++ moduleName ++ "." ++ name
+
+
+
+-- ============================================================================
+-- TYPE CHECK
+-- ============================================================================
+
+
+{-| Returns a problem, prefixed with `context`, for every named type in
+`tipe` that is unknown or applied to the wrong number of arguments, and for
+every alias applied to the wrong number of arguments. It looks into function
+arguments and results, type arguments, record fields, tuple elements, alias
+arguments and alias bodies.
+-}
+typeIssues : Arities -> String -> Can.Type Name -> List String
+typeIssues arities context tipe =
+    case tipe of
+        Can.TLambda _ a b ->
+            typeIssues arities context a ++ typeIssues arities context b
+
+        Can.TVar _ ->
+            []
+
+        Can.TType home name args ->
+            let
+                key =
+                    typeKey home name
+            in
+            (case Dict.get key arities.unions of
+                Nothing ->
+                    [ context ++ ": unknown type " ++ key ]
+
+                Just arity ->
+                    if arity == List.length args then
+                        []
+
+                    else
+                        [ context
+                            ++ ": "
+                            ++ key
+                            ++ " applied to "
+                            ++ String.fromInt (List.length args)
+                            ++ " argument(s), declared with "
+                            ++ String.fromInt arity
+                        ]
+            )
+                ++ List.concatMap (typeIssues arities context) args
+
+        Can.TRecord fields _ ->
+            Dict.foldl (\_ (Can.FieldType _ t) acc -> typeIssues arities context t ++ acc) [] fields
+
+        Can.TUnit ->
+            []
+
+        Can.TTuple a b cs ->
+            List.concatMap (typeIssues arities context) (a :: b :: cs)
+
+        Can.TAlias home name args aliasType ->
+            let
+                key =
+                    typeKey home name
+
+                arityIssue =
+                    case Dict.get key arities.aliases of
+                        Nothing ->
+                            [ context ++ ": unknown alias " ++ key ]
+
+                        Just arity ->
+                            if arity == List.length args then
+                                []
+
+                            else
+                                [ context
+                                    ++ ": alias "
+                                    ++ key
+                                    ++ " applied to "
+                                    ++ String.fromInt (List.length args)
+                                    ++ " argument(s), declared with "
+                                    ++ String.fromInt arity
+                                ]
+
+                body =
+                    case aliasType of
+                        Can.Holey t ->
+                            t
+
+                        Can.Filled t ->
+                            t
+            in
+            arityIssue
+                ++ List.concatMap (\( _, t ) -> typeIssues arities context t) args
+                ++ typeIssues arities context body
+
+
+
+-- ============================================================================
+-- WALK
+-- ============================================================================
+
+
+{-| Returns the problems found in the nodes of a typed local graph, each node
+labelled by its global as `Module.name`.
+-}
+collectExprTypeIssues : Arities -> TOpt.LocalGraph Name -> List String
+collectExprTypeIssues arities (TOpt.LocalGraph data) =
     Data.Map.foldl
         (\global node acc ->
-            let
-                context =
-                    globalToString global
-            in
-            checkNodeExprsHaveTypes context node ++ acc
+            nodeIssues arities (globalToString global) node ++ acc
         )
         []
         data.nodes
@@ -104,283 +307,142 @@ globalToString (TOpt.Global home name) =
             moduleName ++ "." ++ name
 
 
-{-| Returns the issues for the expressions of one node: the body of a `Define`,
-`TrackedDefine`, `PortIncoming` or `PortOutgoing` node with the expressions
-nested in it that `collectExprNestedTypeIssues` follows, or the definitions of
-a `Cycle`. A `Cycle`'s value expressions and every other kind of node give no
-issues without being looked at.
+{-| Returns the problems in one node: in the body of a `Define`,
+`TrackedDefine`, `PortIncoming` or `PortOutgoing` node, or in the values and
+definitions of a `Cycle`. Every other kind of node gives none.
 -}
-checkNodeExprsHaveTypes : String -> TOpt.Node Name -> List String
-checkNodeExprsHaveTypes context node =
+nodeIssues : Arities -> String -> TOpt.Node Name -> List String
+nodeIssues arities context node =
     case node of
         TOpt.Define expr _ _ ->
-            checkTypeNotEmpty
-                ++ collectExprNestedTypeIssues context expr
+            exprIssues arities context expr
 
         TOpt.TrackedDefine _ expr _ _ ->
-            checkTypeNotEmpty
-                ++ collectExprNestedTypeIssues context expr
+            exprIssues arities context expr
 
-        TOpt.Cycle _ _ defs _ ->
-            List.concatMap (\def -> checkDefExprsHaveTypes context def) defs
+        TOpt.Cycle _ values defs _ ->
+            List.concatMap (\( name, e ) -> exprIssues arities (context ++ " value " ++ name) e) values
+                ++ List.concatMap (defIssues arities context) defs
 
         TOpt.PortIncoming expr _ _ ->
-            checkTypeNotEmpty
-                ++ collectExprNestedTypeIssues context expr
+            exprIssues arities context expr
 
         TOpt.PortOutgoing expr _ _ ->
-            checkTypeNotEmpty
-                ++ collectExprNestedTypeIssues context expr
+            exprIssues arities context expr
 
         _ ->
             []
 
 
-{-| Returns the issues for one local or cycle definition: the type of its body,
-the types of a `TailDef`'s parameters, and the expressions in the body that
-`collectExprNestedTypeIssues` follows.
+{-| Returns the problems in a definition: its declared type, the types of a
+`TailDef`'s parameters, and its body.
 -}
-checkDefExprsHaveTypes : String -> TOpt.Def Name -> List String
-checkDefExprsHaveTypes context def =
+defIssues : Arities -> String -> TOpt.Def Name -> List String
+defIssues arities context def =
     case def of
-        TOpt.Def _ _ expr _ ->
-            checkTypeNotEmpty
-                ++ collectExprNestedTypeIssues context expr
+        TOpt.Def _ name expr tipe ->
+            typeIssues arities (context ++ " Def " ++ name) tipe
+                ++ exprIssues arities (context ++ " Def " ++ name) expr
 
-        TOpt.TailDef _ _ params expr _ _ ->
-            checkTypeNotEmpty
-                ++ List.concatMap (\_ -> checkTypeNotEmpty) params
-                ++ collectExprNestedTypeIssues context expr
+        TOpt.TailDef _ name params expr tipe _ ->
+            typeIssues arities (context ++ " TailDef " ++ name) tipe
+                ++ List.concatMap (\( _, t ) -> typeIssues arities (context ++ " TailDef " ++ name ++ " param") t) params
+                ++ exprIssues arities (context ++ " TailDef " ++ name) expr
 
 
-{-| Returns the issues for the type of `expr` and of every expression nested in
-it, and for the parameter types of any function inside it.
-
-A `case` is followed only into the branch bodies its jumps target, not into
-bodies inlined in its decision tree, and a `Destruct` only into its body.
-
+{-| Returns the problems in the type of `expr` and of every expression inside
+it, together with the parameter types of functions, the definitions of `let`s
+and the types `Destruct`s store.
 -}
-collectExprNestedTypeIssues : String -> TOpt.Expr Name -> List String
-collectExprNestedTypeIssues context expr =
-    let
-        typeIssue =
-            checkTypeNotEmpty
-    in
-    typeIssue
+exprIssues : Arities -> String -> TOpt.Expr Name -> List String
+exprIssues arities context expr =
+    typeIssues arities context (TOpt.typeOf expr)
         ++ (case expr of
-                TOpt.Function _ params bodyExpr _ ->
-                    List.concatMap (\_ -> checkTypeNotEmpty) params
-                        ++ collectExprNestedTypeIssues context bodyExpr
+                TOpt.Function _ params body _ ->
+                    List.concatMap (\( _, t ) -> typeIssues arities (context ++ " param") t) params
+                        ++ exprIssues arities context body
 
-                TOpt.TrackedFunction _ params bodyExpr _ ->
-                    List.concatMap (\_ -> checkTypeNotEmpty) params
-                        ++ collectExprNestedTypeIssues context bodyExpr
+                TOpt.TrackedFunction _ params body _ ->
+                    List.concatMap (\( _, t ) -> typeIssues arities (context ++ " param") t) params
+                        ++ exprIssues arities context body
 
-                TOpt.Call _ fnExpr argExprs _ ->
-                    collectExprNestedTypeIssues context fnExpr
-                        ++ List.concatMap (collectExprNestedTypeIssues context) argExprs
+                TOpt.Call _ f args _ ->
+                    List.concatMap (exprIssues arities context) (f :: args)
 
                 TOpt.TailCall _ args _ ->
-                    List.concatMap (\( _, argExpr ) -> collectExprNestedTypeIssues context argExpr) args
+                    List.concatMap (\( _, e ) -> exprIssues arities context e) args
 
-                TOpt.If branches elseExpr _ ->
-                    List.concatMap (\( c, t ) -> collectExprNestedTypeIssues context c ++ collectExprNestedTypeIssues context t) branches
-                        ++ collectExprNestedTypeIssues context elseExpr
+                TOpt.If branches final _ ->
+                    List.concatMap (\( c, t ) -> exprIssues arities context c ++ exprIssues arities context t) branches
+                        ++ exprIssues arities context final
 
-                TOpt.Let def bodyExpr _ ->
-                    checkDefExprsHaveTypes context def
-                        ++ collectExprNestedTypeIssues context bodyExpr
+                TOpt.Let def body _ ->
+                    defIssues arities context def
+                        ++ exprIssues arities context body
 
-                TOpt.Destruct _ valueExpr _ ->
-                    collectExprNestedTypeIssues context valueExpr
+                TOpt.Destruct (TOpt.Destructor _ _ meta) body _ ->
+                    typeIssues arities (context ++ " destructor") meta.tipe
+                        ++ exprIssues arities context body
 
-                TOpt.Case _ _ _ branches _ ->
-                    List.concatMap (\( _, branchExpr ) -> collectExprNestedTypeIssues context branchExpr) branches
+                TOpt.Case _ _ decider jumps _ ->
+                    List.concatMap (exprIssues arities context) (inlineLeaves decider)
+                        ++ List.concatMap (\( _, e ) -> exprIssues arities context e) jumps
 
-                TOpt.List _ exprs _ ->
-                    List.concatMap (collectExprNestedTypeIssues context) exprs
+                TOpt.List _ items _ ->
+                    List.concatMap (exprIssues arities context) items
 
-                TOpt.Access recordExpr _ _ _ ->
-                    collectExprNestedTypeIssues context recordExpr
+                TOpt.Access record _ _ _ ->
+                    exprIssues arities context record
 
-                TOpt.Update _ recordExpr updates _ ->
-                    collectExprNestedTypeIssues context recordExpr
-                        ++ Data.Map.foldl (\_ updateExpr acc -> collectExprNestedTypeIssues context updateExpr ++ acc) [] updates
+                TOpt.Update _ record fields _ ->
+                    exprIssues arities context record
+                        ++ List.concatMap (exprIssues arities context) (Data.Map.values fields)
 
-                TOpt.Record fieldExprs _ ->
-                    Dict.foldl (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
+                TOpt.Record fields _ ->
+                    List.concatMap (exprIssues arities context) (Dict.values fields)
 
-                TOpt.TrackedRecord _ fieldExprs _ ->
-                    Data.Map.foldl (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
+                TOpt.TrackedRecord _ fields _ ->
+                    List.concatMap (exprIssues arities context) (Data.Map.values fields)
 
-                TOpt.Tuple _ e1 e2 rest _ ->
-                    collectExprNestedTypeIssues context e1
-                        ++ collectExprNestedTypeIssues context e2
-                        ++ List.concatMap (collectExprNestedTypeIssues context) rest
+                TOpt.Tuple _ a b rest _ ->
+                    List.concatMap (exprIssues arities context) (a :: b :: rest)
 
                 _ ->
                     []
            )
 
 
-{-| Returns no issues for any type: both the context label and the type are
-ignored.
+{-| Returns the expressions at the `Inline` leaves of a decision tree.
 -}
-checkTypeNotEmpty : List String
-checkTypeNotEmpty =
-    []
+inlineLeaves : TOpt.Decider (TOpt.Choice Name) -> List (TOpt.Expr Name)
+inlineLeaves decider =
+    case decider of
+        TOpt.Leaf (TOpt.Inline e) ->
+            [ e ]
 
-
-
--- ============================================================================
--- TYPE WELL-FORMEDNESS VERIFICATION
--- ============================================================================
-
-
-{-| Returns the well-formedness issues for one definition: its declared type,
-the types of a `TailDef`'s parameters, and the expressions in its body that
-`collectExprTypeWellFormedness` follows. The result is always empty.
--}
-checkDefTypeWellFormedness : String -> TOpt.Def Name -> List String
-checkDefTypeWellFormedness context def =
-    case def of
-        TOpt.Def _ name expr canType ->
-            checkTypeWellFormed (context ++ " Def " ++ name) canType
-                ++ collectExprTypeWellFormedness context expr
-
-        TOpt.TailDef _ name params expr canType _ ->
-            checkTypeWellFormed (context ++ " TailDef " ++ name) canType
-                ++ List.concatMap (\( _, paramType ) -> checkTypeWellFormed (context ++ " param") paramType) params
-                ++ collectExprTypeWellFormedness context expr
-
-
-{-| Returns the well-formedness issues for the type of `expr` and of the
-nested expressions it follows, and for the parameter types of the functions
-among them. A `case` is followed only into the branch bodies its jumps target,
-not into bodies inlined in its decision tree, and a `Destruct` only into its
-body. It follows the same parts of an expression as
-`collectExprNestedTypeIssues`, and is always empty.
--}
-collectExprTypeWellFormedness : String -> TOpt.Expr Name -> List String
-collectExprTypeWellFormedness context expr =
-    let
-        exprType =
-            TOpt.typeOf expr
-
-        typeIssue =
-            checkTypeWellFormed context exprType
-    in
-    typeIssue
-        ++ (case expr of
-                TOpt.Function _ params bodyExpr _ ->
-                    List.concatMap (\( _, paramType ) -> checkTypeWellFormed (context ++ " Function param") paramType) params
-                        ++ collectExprTypeWellFormedness context bodyExpr
-
-                TOpt.TrackedFunction _ params bodyExpr _ ->
-                    List.concatMap (\( _, paramType ) -> checkTypeWellFormed (context ++ " TrackedFunction param") paramType) params
-                        ++ collectExprTypeWellFormedness context bodyExpr
-
-                TOpt.Call _ fnExpr argExprs _ ->
-                    collectExprTypeWellFormedness context fnExpr
-                        ++ List.concatMap (collectExprTypeWellFormedness context) argExprs
-
-                TOpt.TailCall _ args _ ->
-                    List.concatMap (\( _, argExpr ) -> collectExprTypeWellFormedness context argExpr) args
-
-                TOpt.If branches elseExpr _ ->
-                    List.concatMap (\( c, t ) -> collectExprTypeWellFormedness context c ++ collectExprTypeWellFormedness context t) branches
-                        ++ collectExprTypeWellFormedness context elseExpr
-
-                TOpt.Let def bodyExpr _ ->
-                    checkDefTypeWellFormedness context def
-                        ++ collectExprTypeWellFormedness context bodyExpr
-
-                TOpt.Destruct _ valueExpr _ ->
-                    collectExprTypeWellFormedness context valueExpr
-
-                TOpt.Case _ _ _ branches _ ->
-                    List.concatMap (\( _, branchExpr ) -> collectExprTypeWellFormedness context branchExpr) branches
-
-                TOpt.List _ exprs _ ->
-                    List.concatMap (collectExprTypeWellFormedness context) exprs
-
-                TOpt.Access recordExpr _ _ _ ->
-                    collectExprTypeWellFormedness context recordExpr
-
-                TOpt.Update _ recordExpr updates _ ->
-                    collectExprTypeWellFormedness context recordExpr
-                        ++ Data.Map.foldl (\_ updateExpr acc -> collectExprTypeWellFormedness context updateExpr ++ acc) [] updates
-
-                TOpt.Record fieldExprs _ ->
-                    Dict.foldl (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
-
-                TOpt.TrackedRecord _ fieldExprs _ ->
-                    Data.Map.foldl (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
-
-                TOpt.Tuple _ e1 e2 rest _ ->
-                    collectExprTypeWellFormedness context e1
-                        ++ collectExprTypeWellFormedness context e2
-                        ++ List.concatMap (collectExprTypeWellFormedness context) rest
-
-                _ ->
-                    []
-           )
-
-
-{-| Returns the well-formedness issues for a type and every type inside it:
-function argument and result, type arguments, record field types, tuple
-elements, and an alias's arguments and body.
-
-Every leaf gives no issues, so the result is always empty. Nothing checks
-that a type variable is bound, that a type constructor exists or that it has
-the right number of arguments. A record's extension variable is not looked at.
-
--}
-checkTypeWellFormed : String -> Can.Type Name -> List String
-checkTypeWellFormed context canType =
-    case canType of
-        Can.TLambda _ argType resultType ->
-            checkTypeWellFormed context argType
-                ++ checkTypeWellFormed context resultType
-
-        Can.TVar _ ->
+        TOpt.Leaf (TOpt.Jump _) ->
             []
 
-        Can.TType _ _ args ->
-            List.concatMap (checkTypeWellFormed context) args
+        TOpt.Chain _ success failure ->
+            inlineLeaves success ++ inlineLeaves failure
 
-        Can.TRecord fields _ ->
-            Dict.foldl (\_ fieldType acc -> checkFieldTypeWellFormed context fieldType ++ acc) [] fields
-
-        Can.TUnit ->
-            []
-
-        Can.TTuple a b cs ->
-            checkTypeWellFormed context a
-                ++ checkTypeWellFormed context b
-                ++ List.concatMap (checkTypeWellFormed context) cs
-
-        Can.TAlias _ _ args aliasedType ->
-            List.concatMap (\( _, argType ) -> checkTypeWellFormed context argType) args
-                ++ checkAliasedTypeWellFormed context aliasedType
+        TOpt.FanOut _ edges fallback ->
+            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
 
 
-{-| Returns the well-formedness issues for an alias's body, `Holey` or
-`Filled` alike.
+{-| Returns `xs` without repeated elements, keeping the first of each.
 -}
-checkAliasedTypeWellFormed : String -> Can.AliasType Name -> List String
-checkAliasedTypeWellFormed context aliasType =
-    case aliasType of
-        Can.Holey canType ->
-            checkTypeWellFormed context canType
+unique : List String -> List String
+unique xs =
+    List.foldl
+        (\x ( seen, acc ) ->
+            if Dict.member x seen then
+                ( seen, acc )
 
-        Can.Filled canType ->
-            checkTypeWellFormed context canType
-
-
-{-| Returns the well-formedness issues for a record field's type, ignoring the
-field's index.
--}
-checkFieldTypeWellFormed : String -> Can.FieldType Name -> List String
-checkFieldTypeWellFormed context (Can.FieldType _ canType) =
-    checkTypeWellFormed context canType
+            else
+                ( Dict.insert x () seen, x :: acc )
+        )
+        ( Dict.empty, [] )
+        xs
+        |> Tuple.second
+        |> List.reverse

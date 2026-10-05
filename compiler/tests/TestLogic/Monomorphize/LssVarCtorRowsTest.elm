@@ -33,10 +33,9 @@ never constructed at `PS String`. `fixtureFlex` keeps `fixtureClean`'s
 construction whose payload is a function parameter rather than a literal
 lambda. Both are run by `runWith`.
 
-  - Test 1 requires `fixtureClean` to give at least one readable `Mk` payload
-    annotation, and none of them to be `LVar`.
-  - Test 2 requires none of `fixtureFlex`'s `Mk` payload annotations to be
-    `LVar`. It does not require any to be found.
+  - Tests 1 and 2 require `fixtureClean` and `fixtureFlex` each to give at
+    least one `Mk` row, every `Mk` row to have a readable payload annotation
+    (curried or flat), and none of them to be `LVar`.
   - Test 3 calls `Mono.enrichAnnotationsTopOnly` on one-arrow `Int -> Int`
     types: an `LVar 3` base stays `LVar 3` against an `LSet [ 7 ]` source,
     an `LTop` base becomes `LSet [ 7 ]`, and an `LSet [ 7 ]` base stays as it
@@ -44,8 +43,7 @@ lambda. Both are run by `runWith`.
 
 Among what is not tested: whether a payload was never a variable or was
 filled by settling, so the completeness rule's refusals are not exercised;
-`Mk` rows whose type does not have the shape `mkPayloadAnnos` reads; payloads
-that are `LTop` or `LPartial`; and `Mono.enrichAnnotationsTopOnly` on nested
+payloads that are `LTop` or `LPartial`; and `Mono.enrichAnnotationsTopOnly` on nested
 arrows or on types other than functions.
 
 -}
@@ -84,19 +82,7 @@ suite =
             \() ->
                 case runWith fixtureClean of
                     Ok g ->
-                        case mkPayloadAnnos g of
-                            [] ->
-                                Expect.fail "no Mk /a1 payload positions — fixture broken"
-
-                            a ->
-                                if List.any isVar a then
-                                    Expect.fail
-                                        ("fixture manufactured a var row after all — UPGRADE this pin to a real differential: "
-                                            ++ describe a
-                                        )
-
-                                else
-                                    Expect.pass
+                        expectNoVarPayload g
 
                     Err e ->
                         Expect.fail e
@@ -104,11 +90,7 @@ suite =
             \() ->
                 case runWith fixtureFlex of
                     Ok g ->
-                        if List.any isVar (mkPayloadAnnos g) then
-                            Expect.fail ("expected no var row, got " ++ describe (mkPayloadAnnos g))
-
-                        else
-                            Expect.pass
+                        expectNoVarPayload g
 
                     Err e ->
                         Expect.fail e
@@ -134,6 +116,28 @@ suite =
                     , Mono.LSet [ 7 ]
                     ]
         ]
+
+
+{-| Passes when the graph has at least one `Mk` row, the payload of every one
+can be read, and none of the payloads is an `LVar`.
+-}
+expectNoVarPayload : Mono.MonoGraph -> Expect.Expectation
+expectNoVarPayload g =
+    case mkPayloadAnnos g of
+        [] ->
+            Expect.fail "no Mk rows — fixture broken"
+
+        rows ->
+            case List.foldr (Maybe.map2 (::)) (Just []) rows of
+                Nothing ->
+                    Expect.fail "a Mk row's payload is not an arrow at the second parameter — reader or fixture broken"
+
+                Just annos ->
+                    if List.any isVar annos then
+                        Expect.fail ("expected no var row, got " ++ describe annos)
+
+                    else
+                        Expect.pass
 
 
 
@@ -316,15 +320,13 @@ runWith srcModule =
 -- ====== READERS ======
 
 
-{-| Returns the lambda-set annotation of `Mk`'s function payload from every
-registry row named `Mk`.
-
-A row is read only when its type is two curried one-parameter arrows whose
-second parameter is a function; any other row named `Mk` is skipped.
-Removed specializations are skipped too.
-
+{-| Returns, for every registry row named `Mk`, the lambda-set annotation of
+its function payload, or `Nothing` when the row's type does not have a
+function as its second parameter. Both the curried shape (two one-parameter
+arrows) and the flat one (one two-parameter arrow) are read. Removed
+specializations are skipped.
 -}
-mkPayloadAnnos : Mono.MonoGraph -> List Mono.LambdaSetAnno
+mkPayloadAnnos : Mono.MonoGraph -> List (Maybe Mono.LambdaSetAnno)
 mkPayloadAnnos (Mono.MonoGraph g) =
     Array.foldl
         (\entry acc ->
@@ -333,10 +335,13 @@ mkPayloadAnnos (Mono.MonoGraph g) =
                     if name == "Mk" then
                         case monoType of
                             Mono.MFunction _ _ [ _ ] (Mono.MFunction _ _ [ Mono.MFunction _ anno _ _ ] _) ->
-                                anno :: acc
+                                Just anno :: acc
+
+                            Mono.MFunction _ _ [ _, Mono.MFunction _ anno _ _ ] _ ->
+                                Just anno :: acc
 
                             _ ->
-                                acc
+                                Nothing :: acc
 
                     else
                         acc

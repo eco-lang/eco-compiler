@@ -28,13 +28,11 @@ programs is an `Int`. The cases fall into six groups:
   - Complex: a destructure between two plain definitions; a destructure in a
     `let` that is the body of an outer `let` defining the pair it matches; a
     destructure of a name bound by an earlier destructure in the same `let`;
-    and a destructure of a call to a `let`-defined value.
+    and a destructure of the result of calling a `let`-defined function.
 
 Not every program is valid Elm. The three list patterns do not match every
 list, and the pattern-match checker (`Compiler.Nitpick.PatternMatches`) reports
-a `let` destructure whose pattern can fail. In the last complex case `makePair`
-is defined with no arguments, so it is a pair rather than a function, and the
-call to it has no arguments, which is a `Src.Call` the parser never produces.
+a `let` destructure whose pattern can fail.
 
 Among what is not tested: constructor, literal and unit patterns; destructuring
 in a function argument or a `case`; and values holding anything but `Int`s.
@@ -44,7 +42,8 @@ in a function argument or a `case`; and values holding anything but `Int`s.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
+        ( binopsExpr
+        , callExpr
         , define
         , destruct
         , intExpr
@@ -590,23 +589,20 @@ chainOfDestructs expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a program whose `let` defines `makePair = ( 1, 2 )` and
-destructures a call of `makePair` with no arguments as `( a, b )`, returning
-`( a, b )`.
-
-`makePair` is a pair, not a function, and a call with no arguments is not
-something the parser produces, so this program has no counterpart in Elm
-source.
-
+{-| Applies `expectFn` to a program whose `let` defines the function
+`makePair n = ( n, n + 1 )` and destructures the call `makePair 1` as
+`( a, b )`, returning `( a, b )`.
 -}
 destructWithFunctionCallResult : (Src.Module -> Expectation) -> (() -> Expectation)
 destructWithFunctionCallResult expectFn _ =
     let
         fnDef =
-            define "makePair" [] (tupleExpr (intExpr 1) (intExpr 2))
+            define "makePair"
+                [ pVar "n" ]
+                (tupleExpr (varExpr "n") (binopsExpr [ ( varExpr "n", "+" ) ] (intExpr 1)))
 
         destructDef =
-            destruct (pTuple (pVar "a") (pVar "b")) (callExpr (varExpr "makePair") [])
+            destruct (pTuple (pVar "a") (pVar "b")) (callExpr (varExpr "makePair") [ intExpr 1 ])
 
         modul =
             makeModule "testValue" (letExpr [ fnDef, destructDef ] (tupleExpr (varExpr "a") (varExpr "b")))

@@ -24,11 +24,13 @@ annotated top-level definitions. `caseFunc` names one or two parameters and
 its body is a `case` on the first of them. Except in 1.6, its annotation has
 more arrows than it names parameters, and the remaining arguments are taken by
 the lambdas its branches return. Every argument and result is an `Int`, except
-the scrutinee in `customTypeBranches` (a `MaybeInt`, the one union any case
-declares) and in `listPatternBranches` (a `List Int`). `testValue : Int`
-applies `caseFunc` to integer literals, sometimes in one call and sometimes in
-several, except for those two scrutinees, `JustInt 10` in 5.5 and
-`[ 10, 20 ]` in 5.6. Where a docstring gives `testValue` as
+the second parameter of `ifInCaseBranch` (a `Bool`) and the scrutinee in
+`recordPatternBranches` (a record `{ tag : Int, k : Int }`),
+`customTypeBranches` (a `MaybeInt`, the one union any case declares) and
+`listPatternBranches` (a `List Int`). `testValue : Int` applies `caseFunc` to
+literals, sometimes in one call and sometimes in several: integer literals
+except for `True` in 4.2 and those three scrutinees,
+`{ tag = 0, k = 1 }` in 5.4, `JustInt 10` in 5.5 and `[ 10, 20 ]` in 5.6. Where a docstring gives `testValue` as
 `(caseFunc 0 5) 3`, the built tree holds one call as the function of another,
 with no `Parens` node.
 
@@ -38,10 +40,11 @@ What the tests establish:
     by `condStr`, that hands all 25 programs to `expectFn` in turn through
     `Compiler.BulkCheck.bulkCheck`, which stops at the first failure and
     reports that case's label. What is checked is up to `expectFn`.
-  - `suite` runs the same 25 programs with
-    `TestLogic.TestPipeline.expectMonomorphization`, which checks only that each
-    one monomorphizes to a graph with a `main` and a non-empty node array. It
-    runs no global optimization, so it never reaches the staging pass.
+  - `suite` runs the same 25 programs through
+    `TestLogic.TestPipeline.runToGlobalOpt`, which monomorphizes, inlines and
+    runs the global optimizer, staging pass included, and checks that each
+    gives an optimized graph with a `main` and a non-empty node array. It does
+    not check which segmentation the staging pass chose.
   - Category 1 (cases 1.1 to 1.6): every branch has the same segmentation,
     one of `[2]`, `[1, 1]`, `[3]`, `[1, 1, 1]` and `[2, 1]`, and in 1.6 every
     branch returns an `Int`.
@@ -51,30 +54,35 @@ What the tests establish:
     In 3.1 to 3.3 the tied segmentations have different numbers of stages; in
     3.4, `[2, 1]` against `[1, 2]`, they have the same number.
   - Category 4 (4.1 to 4.6): a function value reaches the outer `case` through
-    a `case` nested in a branch (4.1, 4.2, 4.5, 4.6) or a `let`-bound name
-    (4.3), and in 4.4 a branch lambda's body is a `let` around a second lambda.
+    a `case` nested in a branch (4.1, 4.5, 4.6), an `if` in a branch (4.2) or a
+    `let`-bound name (4.3), and in 4.4 a branch lambda's body is a `let` around
+    a second lambda.
   - Category 5 (5.2 to 5.6, there is no 5.1): a lone wildcard branch (5.2),
     five lambda parameters in four segmentations (5.3), a `[2]` branch against
-    a `[1, 1]` branch (5.4), and `case`s on a custom type (5.5) and on a list
-    (5.6).
+    a `[1, 1]` branch under a record pattern (5.4), and `case`s on a custom
+    type (5.5) and on a list (5.6).
 
 Among what is not tested: no case checks which segmentation is chosen, that a
-wrapper is built, or what `testValue` evaluates to; no branch value is an `if`
-expression, a kernel function or a top-level function; no `caseFunc` is
+wrapper is built, or what `testValue` evaluates to; no branch value is a kernel
+function or a top-level function; no `caseFunc` is
 polymorphic.
 
 -}
 
+import Array
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
         , UnionDef
         , binopsExpr
+        , boolExpr
         , callExpr
         , caseExpr
         , ctorExpr
         , define
+        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr
@@ -85,24 +93,54 @@ import Compiler.AST.SourceBuilder
         , pCtor
         , pInt
         , pList
+        , pRecord
         , pVar
+        , recordExpr
         , tLambda
+        , tRecord
         , tType
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
-import TestLogic.TestPipeline exposing (expectMonomorphization)
+import TestLogic.TestPipeline exposing (runToGlobalOpt)
 
 
-{-| A test that every program in this module monomorphizes, with
-`TestLogic.TestPipeline.expectMonomorphization` as the expectation.
+{-| A test that every program in this module gets through global optimization,
+with `expectGlobalOpt` as the expectation.
 -}
 suite : Test
 suite =
-    Test.test "JoinpointABI coverage monomorphizes case branches" <|
-        \_ -> bulkCheck (testCases expectMonomorphization)
+    Test.test "JoinpointABI coverage gets case branches through global optimization" <|
+        \_ -> bulkCheck (testCases expectGlobalOpt)
+
+
+{-| Creates an expectation that `TestLogic.TestPipeline.runToGlobalOpt`, whose
+global optimizer includes `Compiler.GlobalOpt.Staging`, succeeds on `srcModule`
+and gives an optimized graph with a `main` and a node array that is not empty.
+-}
+expectGlobalOpt : Src.Module -> Expectation
+expectGlobalOpt srcModule =
+    case runToGlobalOpt srcModule of
+        Err msg ->
+            Expect.fail msg
+
+        Ok { optimizedMonoGraph } ->
+            let
+                (Mono.MonoGraph data) =
+                    optimizedMonoGraph
+            in
+            case data.main of
+                Nothing ->
+                    Expect.fail "Optimized graph has no main entry point"
+
+                Just _ ->
+                    if Array.isEmpty data.nodes then
+                        Expect.fail "Optimized graph has no nodes"
+
+                    else
+                        Expect.pass
 
 
 {-| Creates one test, named `"JoinpointABI "` followed by `condStr`, that applies
@@ -1221,9 +1259,26 @@ nestedCaseInBranch expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to the same program as `nestedCaseInBranch` with its
-parameters named `n` and `m`. Despite the name it contains no `if`: the inner
-expression is a `case`.
+{-| Applies `expectFn` to a program whose outer `case` has an `if` as one
+branch, so two of the function values meet at the `if` before the `case`. Every
+function value is a `[1]` lambda.
+
+    caseFunc : Int -> Bool -> Int -> Int
+    caseFunc n flag =
+        case n of
+            0 ->
+                if flag then
+                    \a -> a + 1
+
+                else
+                    \a -> a - 1
+
+            _ ->
+                \a -> a * 2
+
+    testValue =
+        caseFunc 0 True 5
+
 -}
 ifInCaseBranch : (Src.Module -> Expectation) -> (() -> Expectation)
 ifInCaseBranch expectFn _ =
@@ -1231,23 +1286,18 @@ ifInCaseBranch expectFn _ =
         caseFuncDef : TypedDef
         caseFuncDef =
             { name = "caseFunc"
-            , args = [ pVar "n", pVar "m" ]
+            , args = [ pVar "n", pVar "flag" ]
             , tipe =
                 tLambda (tType "Int" [])
-                    (tLambda (tType "Int" [])
+                    (tLambda (tType "Bool" [])
                         (tLambda (tType "Int" []) (tType "Int" []))
                     )
             , body =
                 caseExpr (varExpr "n")
                     [ ( pInt 0
-                      , caseExpr (varExpr "m")
-                            [ ( pInt 0
-                              , lambdaExpr [ pVar "a" ] (binopsExpr [ ( varExpr "a", "+" ) ] (intExpr 1))
-                              )
-                            , ( pAnything
-                              , lambdaExpr [ pVar "a" ] (binopsExpr [ ( varExpr "a", "-" ) ] (intExpr 1))
-                              )
-                            ]
+                      , ifExpr (varExpr "flag")
+                            (lambdaExpr [ pVar "a" ] (binopsExpr [ ( varExpr "a", "+" ) ] (intExpr 1)))
+                            (lambdaExpr [ pVar "a" ] (binopsExpr [ ( varExpr "a", "-" ) ] (intExpr 1)))
                       )
                     , ( pAnything
                       , lambdaExpr [ pVar "a" ] (binopsExpr [ ( varExpr "a", "*" ) ] (intExpr 2))
@@ -1260,7 +1310,7 @@ ifInCaseBranch expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "caseFunc") [ intExpr 0, intExpr 0, intExpr 5 ]
+            , body = callExpr (varExpr "caseFunc") [ intExpr 0, boolExpr True, intExpr 5 ]
             }
 
         modul =
@@ -1750,47 +1800,56 @@ highArityFunction expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a program with one `[2]` branch and one `[1, 1]` branch
-in a `case` on an `Int`, called in one application. Despite the name there is no
-record pattern; the program has the shape of `tieBreakBinary`, with the
-lambdas' parameters named `x` and `y`.
+{-| Applies `expectFn` to a program whose `case` destructures a record with a
+record pattern and then cases on one of its fields, with one `[2]` branch and one
+`[1, 1]` branch, both capturing the other field. It is called in one
+application.
 
-    caseFunc : Int -> Int -> Int -> Int
-    caseFunc n =
-        case n of
-            0 ->
-                \x y -> x + y
+    caseFunc : { tag : Int, k : Int } -> Int -> Int -> Int
+    caseFunc r =
+        case r of
+            { tag, k } ->
+                case tag of
+                    0 ->
+                        \x y -> x + y + k
 
-            _ ->
-                \x -> \y -> x - y
+                    _ ->
+                        \x -> \y -> x - y - k
 
     testValue =
-        caseFunc 0 5 3
+        caseFunc { tag = 0, k = 1 } 5 3
 
 -}
 recordPatternBranches : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternBranches expectFn _ =
     let
+        recordType =
+            tRecord [ ( "tag", tType "Int" [] ), ( "k", tType "Int" [] ) ]
+
         caseFuncDef : TypedDef
         caseFuncDef =
             { name = "caseFunc"
-            , args = [ pVar "n" ]
+            , args = [ pVar "r" ]
             , tipe =
-                tLambda (tType "Int" [])
+                tLambda recordType
                     (tLambda (tType "Int" [])
                         (tLambda (tType "Int" []) (tType "Int" []))
                     )
             , body =
-                caseExpr (varExpr "n")
-                    [ ( pInt 0
-                      , lambdaExpr [ pVar "x", pVar "y" ]
-                            (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y"))
-                      )
-                    , ( pAnything
-                      , lambdaExpr [ pVar "x" ]
-                            (lambdaExpr [ pVar "y" ]
-                                (binopsExpr [ ( varExpr "x", "-" ) ] (varExpr "y"))
-                            )
+                caseExpr (varExpr "r")
+                    [ ( pRecord [ "tag", "k" ]
+                      , caseExpr (varExpr "tag")
+                            [ ( pInt 0
+                              , lambdaExpr [ pVar "x", pVar "y" ]
+                                    (binopsExpr [ ( varExpr "x", "+" ), ( varExpr "y", "+" ) ] (varExpr "k"))
+                              )
+                            , ( pAnything
+                              , lambdaExpr [ pVar "x" ]
+                                    (lambdaExpr [ pVar "y" ]
+                                        (binopsExpr [ ( varExpr "x", "-" ), ( varExpr "y", "-" ) ] (varExpr "k"))
+                                    )
+                              )
+                            ]
                       )
                     ]
             }
@@ -1800,7 +1859,12 @@ recordPatternBranches expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "caseFunc") [ intExpr 0, intExpr 5, intExpr 3 ]
+            , body =
+                callExpr (varExpr "caseFunc")
+                    [ recordExpr [ ( "tag", intExpr 0 ), ( "k", intExpr 1 ) ]
+                    , intExpr 5
+                    , intExpr 3
+                    ]
             }
 
         modul =

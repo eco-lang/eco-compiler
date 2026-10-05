@@ -72,15 +72,13 @@ particular call does.
     definition) has a right-hand side whose type is a function with a
     singleton head set. The only function-typed `let` the fixture writes is
     `g`, so this is the evidence of steps 1 and 2.
-  - The use-site test checks that some call's callee is a local variable whose
-    type is a function with a singleton head set and a result type that is not
-    a function. It is aimed at step 3: the result condition is there to leave
-    out `f 10`, whose result is a function while `f`'s type keeps its curried
-    form.
+  - The use-site test checks that some call's callee is the local variable
+    `g` with a type that is a function with a singleton head set. It is aimed
+    at step 3; naming `g` leaves out `f 10`.
   - The stamp test checks that some call carries `fastPapPrefix == Just 1`.
 
-Among what is not tested: which expression satisfies each assertion, or that
-it is the same call for the second and third; that the singleton's member is the
+Among what is not tested: which expression satisfies the first and third
+assertions, or that the third is a call of `g`; that the singleton's member is the
 lambda's, since any one-member set passes; the stamp's other fields; the MLIR
 generated for the call; and the value `testValue` computes.
 
@@ -295,13 +293,13 @@ hasSingletonFnLetDef =
         )
 
 
-{-| Returns whether some call in the graph has as its callee a local variable
-whose type is a function with a singleton head set and a result that is not a
-function.
+{-| Returns whether some call in the graph has as its callee the local
+variable `g`, the fixture's partial application, with a type that is a
+function with a singleton head set.
 
-The result condition leaves out a call such as `f 10`, whose callee's result is
-itself a function while the callee's type is curried, so that, in this
-fixture, the match is a use of `g` rather than the call that defines it.
+Matching on the name keeps out `f 10`, whose callee `f` gets its singleton head
+from spine injection alone (and may have been flattened by staging), so the
+match is a use of `g`, the step-3 evidence.
 
 -}
 hasSingletonCalleeUse : Mono.MonoGraph -> Bool
@@ -309,13 +307,8 @@ hasSingletonCalleeUse =
     anyGraphExpr
         (\e ->
             case e of
-                Mono.MonoCall _ (Mono.MonoVarLocal _ t) _ _ _ ->
-                    case t of
-                        Mono.MFunction _ (Mono.LSet [ _ ]) _ ret ->
-                            not (isFn ret)
-
-                        _ ->
-                            False
+                Mono.MonoCall _ (Mono.MonoVarLocal "g" t) _ _ _ ->
+                    isSingletonFn t
 
                 _ ->
                     False
@@ -345,18 +338,6 @@ isSingletonFn : Mono.MonoType -> Bool
 isSingletonFn t =
     case t of
         Mono.MFunction _ (Mono.LSet [ _ ]) _ _ ->
-            True
-
-        _ ->
-            False
-
-
-{-| Returns whether a type is a function type.
--}
-isFn : Mono.MonoType -> Bool
-isFn t =
-    case t of
-        Mono.MFunction _ _ _ _ ->
             True
 
         _ ->

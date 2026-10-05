@@ -7,8 +7,9 @@ rather than going unnoticed into the later phases.
 A reference's _home_ is the module it resolves to: a package author, a package
 project and a module name. `TestLogic.Canonicalize.GlobalNames` owns the check
 and states what it walks and what it skips; here it is enough that a home is
-complete when none of those three parts is empty, and that `VarLocal` and
-`VarKernel` references, which have no home, are not checked.
+complete when none of those three parts is empty. A `VarKernel` reference,
+which has no home, must have a kernel prefix of `Elm` or `Eco` and a non-empty
+kernel module and name; `VarLocal` references are not checked.
 
 `suite` has four parts:
 
@@ -19,9 +20,9 @@ complete when none of those three parts is empty, and that `VarLocal` and
   - Every program of `SourceIR.TypeCheckFailsCases`, in the same way. No type
     checking runs here, so these programs must only canonicalize without error.
   - The canonical modules of `SourceIR.KernelCases`, given directly to
-    `expectGlobalNamesQualifiedCanonical`. Their only references are
-    `VarKernel` and `VarLocal`, so the check has nothing to look at and this
-    part passes.
+    `expectGlobalNamesQualifiedCanonical`. Their references are `VarKernel`
+    and `VarLocal`, so this part checks the kernel prefix, module and name of
+    each `VarKernel`.
   - The canonical modules of `SourceIR.ForeignCases`, given directly to
     `expectGlobalNamesQualifiedCanonical`, which checks the homes of the
     `VarForeign` references built into them.

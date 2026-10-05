@@ -9,7 +9,7 @@ module TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants exposing
 
 {-| Checks that PostSolve leaves alone the node types the solver had already
 worked out, so that a PostSolve that overwrites a solved type is caught, within
-the exemptions and the loose matching described below.
+the exemptions and the matching described below.
 
 Expressions and patterns in a canonical module carry node ids, and the two
 share one id space. The solver records an optional type per id, held in a
@@ -24,18 +24,18 @@ There are two checks, and each returns a list of `Violation`s, empty when the
 check passes.
 
 `checkPost005` looks at every node with a structured pre-type, except kernel
-references, and requires a post-type that matches it. Matching is loose: any
-type variable matches any other type variable, with no consistent renaming
-required, so `a -> a` matches `a -> b`. Record extension variables only need to
-be present on both sides or absent on both, and arrow slots, record field
-indices and alias argument names are ignored. A PostSolve that renames or
-splits the variables inside a structured type therefore passes this check.
+references, and requires a post-type that is alpha-equivalent to it: the same
+shape under one consistent, one-to-one renaming of type variables, record
+extension variables included, so `a -> a` matches `b -> b` but not `a -> b`.
+Arrow slots, record field indices and alias argument names are ignored. A
+PostSolve that splits or merges the variables inside a structured type fails
+this check; one that only renames them consistently passes it.
 
 `checkPost006` looks at every node with a structured pre-type and a post-type,
 except kernel references and record accessors, and requires that every type
 variable name in the post-type also occurs in the pre-type. A `Can.Type` has no
 binders, so every variable name counts, including record extension variables
-and the variables inside an alias's arguments and its body.
+the variables of an alias's arguments, and those of a `Filled` alias's body.
 
 `collectNodeKinds` builds the node kinds both checks take, and
 `formatViolations` renders a list of violations as a failure message.
@@ -88,9 +88,9 @@ type NodeKind
 `nodeTypesPre`, was changed or dropped in `nodeTypesPost`.
 
 Kernel references in `nodeKinds` are skipped, and a node with no recorded kind
-is checked. Types are compared with the loose matching the module docstring
-describes, so a renaming of type variables is not reported. The violations come
-highest node id first.
+is checked. Types are compared up to alpha-equivalence, as `alphaEq`
+describes, so only a consistent renaming of type variables is not reported.
+The violations come highest node id first.
 
 -}
 checkPost005 :
@@ -107,44 +107,40 @@ checkPost005 nodeKinds nodeTypesPre nodeTypesPost =
 
                 Just preType ->
                     ( nodeId + 1
-                    , if nodeId < 0 then
-                        acc
+                    , case Dict.get identity nodeId nodeKinds of
+                        Just KVarKernel ->
+                            acc
 
-                      else
-                        case Dict.get identity nodeId nodeKinds of
-                            Just KVarKernel ->
-                                acc
+                        _ ->
+                            case preType of
+                                Can.TVar _ ->
+                                    acc
 
-                            _ ->
-                                case preType of
-                                    Can.TVar _ ->
-                                        acc
+                                _ ->
+                                    case Array.get nodeId nodeTypesPost |> Maybe.andThen identity of
+                                        Nothing ->
+                                            { invariant = "POST_005"
+                                            , nodeId = nodeId
+                                            , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
+                                            , preType = preType
+                                            , postType = Can.TUnit
+                                            , details = "Node disappeared from nodeTypesPost"
+                                            }
+                                                :: acc
 
-                                    _ ->
-                                        case Array.get nodeId nodeTypesPost |> Maybe.andThen identity of
-                                            Nothing ->
+                                        Just postType ->
+                                            if alphaEq preType postType then
+                                                acc
+
+                                            else
                                                 { invariant = "POST_005"
                                                 , nodeId = nodeId
                                                 , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
                                                 , preType = preType
-                                                , postType = Can.TUnit
-                                                , details = "Node disappeared from nodeTypesPost"
+                                                , postType = postType
+                                                , details = "PostSolve changed structured type"
                                                 }
                                                     :: acc
-
-                                            Just postType ->
-                                                if alphaEq preType postType then
-                                                    acc
-
-                                                else
-                                                    { invariant = "POST_005"
-                                                    , nodeId = nodeId
-                                                    , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
-                                                    , preType = preType
-                                                    , postType = postType
-                                                    , details = "PostSolve changed structured type"
-                                                    }
-                                                        :: acc
                     )
         )
         ( 0, [] )
@@ -175,55 +171,51 @@ checkPost006 nodeKinds nodeTypesPre nodeTypesPost =
 
                 Just postType ->
                     ( nodeId + 1
-                    , if nodeId < 0 then
-                        acc
+                    , case Dict.get identity nodeId nodeKinds of
+                        Just KVarKernel ->
+                            acc
 
-                      else
-                        case Dict.get identity nodeId nodeKinds of
-                            Just KVarKernel ->
-                                acc
+                        Just KAccessor ->
+                            acc
 
-                            Just KAccessor ->
-                                acc
+                        _ ->
+                            case Array.get nodeId nodeTypesPre |> Maybe.andThen identity of
+                                Nothing ->
+                                    acc
 
-                            _ ->
-                                case Array.get nodeId nodeTypesPre |> Maybe.andThen identity of
-                                    Nothing ->
-                                        acc
+                                Just preType ->
+                                    case preType of
+                                        Can.TVar _ ->
+                                            acc
 
-                                    Just preType ->
-                                        case preType of
-                                            Can.TVar _ ->
+                                        _ ->
+                                            let
+                                                postVars =
+                                                    freeTypeVars postType
+
+                                                preVars =
+                                                    freeTypeVars preType
+                                            in
+                                            if isSubset postVars preVars then
                                                 acc
 
-                                            _ ->
+                                            else
                                                 let
-                                                    postVars =
-                                                        freeTypeVars postType
-
-                                                    preVars =
-                                                        freeTypeVars preType
+                                                    newVars =
+                                                        EverySet.diff postVars preVars
+                                                            |> EverySet.toList
                                                 in
-                                                if isSubset postVars preVars then
-                                                    acc
-
-                                                else
-                                                    let
-                                                        newVars =
-                                                            EverySet.diff postVars preVars
-                                                                |> EverySet.toList
-                                                    in
-                                                    { invariant = "POST_006"
-                                                    , nodeId = nodeId
-                                                    , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
-                                                    , preType = preType
-                                                    , postType = postType
-                                                    , details =
-                                                        "New free vars introduced: ["
-                                                            ++ String.join ", " newVars
-                                                            ++ "]"
-                                                    }
-                                                        :: acc
+                                                { invariant = "POST_006"
+                                                , nodeId = nodeId
+                                                , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
+                                                , preType = preType
+                                                , postType = postType
+                                                , details =
+                                                    "New free vars introduced: ["
+                                                        ++ String.join ", " newVars
+                                                        ++ "]"
+                                                }
+                                                    :: acc
                     )
         )
         ( 0, [] )
@@ -241,135 +233,146 @@ isSubset setA setB =
 
 
 -- ============================================================================
--- LOOSE TYPE MATCHING
+-- ALPHA EQUIVALENCE
 -- ============================================================================
 
 
-{-| Returns whether two types have the same shape, treating every type variable
-as matching every other.
+{-| A renaming between the type variables of two types, kept in both
+directions so that it stays one-to-one.
+-}
+type alias Renaming =
+    ( StdDict.Dict Name.Name Name.Name, StdDict.Dict Name.Name Name.Name )
 
-This is weaker than alpha-equivalence: no consistent renaming is required, so
-`a -> a` matches `a -> b`. A type variable never matches a non-variable type.
-Arrow slots are ignored. Type constructors and aliases must have the same home
-module and name.
 
+{-| Returns whether two types are alpha-equivalent: the same shape, with one
+consistent one-to-one renaming between their type variables, record
+extension variables included. So `a -> b` matches `x -> y` but not `x -> x`.
+Arrow slots, record field indices and alias argument names are ignored. Type
+constructors and aliases must have the same home module and name; an alias
+matches only an alias, and two `Holey` aliases are compared by their
+arguments, since the same alias has the same body.
 -}
 alphaEq : Can.Type Name -> Can.Type Name -> Bool
 alphaEq a b =
+    alphaEqWith ( StdDict.empty, StdDict.empty ) a b /= Nothing
+
+
+{-| Extends `renaming` to cover `v1` standing for `v2`, or gives `Nothing` when
+either is already paired with something else.
+-}
+bindVar : Name.Name -> Name.Name -> Renaming -> Maybe Renaming
+bindVar v1 v2 (( forward, backward ) as renaming) =
+    case ( StdDict.get v1 forward, StdDict.get v2 backward ) of
+        ( Nothing, Nothing ) ->
+            Just ( StdDict.insert v1 v2 forward, StdDict.insert v2 v1 backward )
+
+        ( Just w2, Just w1 ) ->
+            if w2 == v2 && w1 == v1 then
+                Just renaming
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| `alphaEq`, threading the renaming built so far.
+-}
+alphaEqWith : Renaming -> Can.Type Name -> Can.Type Name -> Maybe Renaming
+alphaEqWith renaming a b =
     case ( a, b ) of
-        ( Can.TVar _, Can.TVar _ ) ->
-            True
+        ( Can.TVar v1, Can.TVar v2 ) ->
+            bindVar v1 v2 renaming
 
         ( Can.TType h1 n1 as1, Can.TType h2 n2 as2 ) ->
-            h1 == h2 && n1 == n2 && alphaEqList as1 as2
+            if h1 == h2 && n1 == n2 then
+                alphaEqList renaming as1 as2
+
+            else
+                Nothing
 
         ( Can.TLambda _ a1 r1, Can.TLambda _ a2 r2 ) ->
-            alphaEq a1 a2 && alphaEq r1 r2
+            alphaEqWith renaming a1 a2
+                |> Maybe.andThen (\r -> alphaEqWith r r1 r2)
 
         ( Can.TRecord fields1 ext1, Can.TRecord fields2 ext2 ) ->
-            alphaEqExt ext1 ext2 && alphaEqFields fields1 fields2
+            let
+                extRenaming =
+                    case ( ext1, ext2 ) of
+                        ( Nothing, Nothing ) ->
+                            Just renaming
+
+                        ( Just e1, Just e2 ) ->
+                            bindVar e1 e2 renaming
+
+                        _ ->
+                            Nothing
+            in
+            extRenaming |> Maybe.andThen (\r -> alphaEqFields r fields1 fields2)
 
         ( Can.TUnit, Can.TUnit ) ->
-            True
+            Just renaming
 
         ( Can.TTuple a1 b1 cs1, Can.TTuple a2 b2 cs2 ) ->
-            alphaEq a1 a2 && alphaEq b1 b2 && alphaEqList cs1 cs2
+            alphaEqList renaming (a1 :: b1 :: cs1) (a2 :: b2 :: cs2)
 
         ( Can.TAlias h1 n1 args1 at1, Can.TAlias h2 n2 args2 at2 ) ->
-            h1 == h2 && n1 == n2 && alphaEqArgs args1 args2 && alphaEqAlias at1 at2
+            if h1 == h2 && n1 == n2 then
+                alphaEqList renaming (List.map Tuple.second args1) (List.map Tuple.second args2)
+                    |> Maybe.andThen
+                        (\r ->
+                            case ( at1, at2 ) of
+                                ( Can.Holey _, Can.Holey _ ) ->
+                                    Just r
+
+                                ( Can.Filled t1, Can.Filled t2 ) ->
+                                    alphaEqWith r t1 t2
+
+                                _ ->
+                                    Nothing
+                        )
+
+            else
+                Nothing
 
         _ ->
-            False
+            Nothing
 
 
-{-| Returns whether two lists of types have the same length and match
-element by element under `alphaEq`.
+{-| Returns the renaming under which two lists of types have the same length
+and match element by element, if there is one.
 -}
-alphaEqList : List (Can.Type Name) -> List (Can.Type Name) -> Bool
-alphaEqList xs ys =
+alphaEqList : Renaming -> List (Can.Type Name) -> List (Can.Type Name) -> Maybe Renaming
+alphaEqList renaming xs ys =
     case ( xs, ys ) of
         ( [], [] ) ->
-            True
+            Just renaming
 
         ( x :: xr, y :: yr ) ->
-            alphaEq x y && alphaEqList xr yr
+            alphaEqWith renaming x y
+                |> Maybe.andThen (\r -> alphaEqList r xr yr)
 
         _ ->
-            False
+            Nothing
 
 
-{-| Returns whether two record extensions are both absent or both present,
-whatever the extension variables are called.
--}
-alphaEqExt : Maybe Name.Name -> Maybe Name.Name -> Bool
-alphaEqExt ext1 ext2 =
-    case ( ext1, ext2 ) of
-        ( Nothing, Nothing ) ->
-            True
-
-        ( Just _, Just _ ) ->
-            True
-
-        _ ->
-            False
-
-
-{-| Returns whether two records have the same field names, with each field's
-type matching under `alphaEq`. Field indices are ignored.
+{-| Returns the renaming under which two records have the same field names,
+with each field's type matching. Field indices are ignored.
 -}
 alphaEqFields :
-    StdDict.Dict Name.Name (Can.FieldType Name)
+    Renaming
     -> StdDict.Dict Name.Name (Can.FieldType Name)
-    -> Bool
-alphaEqFields fields1 fields2 =
-    let
-        list1 =
-            StdDict.toList fields1
-
-        list2 =
-            StdDict.toList fields2
-    in
-    if List.length list1 /= List.length list2 then
-        False
+    -> StdDict.Dict Name.Name (Can.FieldType Name)
+    -> Maybe Renaming
+alphaEqFields renaming fields1 fields2 =
+    if StdDict.keys fields1 /= StdDict.keys fields2 then
+        Nothing
 
     else
-        List.all
-            (\( ( k1, Can.FieldType _ t1 ), ( k2, Can.FieldType _ t2 ) ) ->
-                k1 == k2 && alphaEq t1 t2
-            )
-            (List.map2 Tuple.pair list1 list2)
-
-
-{-| Returns whether two alias argument lists have the same length and their
-types match position by position under `alphaEq`. Argument names are ignored.
--}
-alphaEqArgs : List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Bool
-alphaEqArgs args1 args2 =
-    case ( args1, args2 ) of
-        ( [], [] ) ->
-            True
-
-        ( ( _, t1 ) :: r1, ( _, t2 ) :: r2 ) ->
-            alphaEq t1 t2 && alphaEqArgs r1 r2
-
-        _ ->
-            False
-
-
-{-| Returns whether two alias bodies are both `Holey` or both `Filled`, with
-matching types under `alphaEq`.
--}
-alphaEqAlias : Can.AliasType Name -> Can.AliasType Name -> Bool
-alphaEqAlias at1 at2 =
-    case ( at1, at2 ) of
-        ( Can.Holey t1, Can.Holey t2 ) ->
-            alphaEq t1 t2
-
-        ( Can.Filled t1, Can.Filled t2 ) ->
-            alphaEq t1 t2
-
-        _ ->
-            False
+        alphaEqList renaming
+            (List.map (\(Can.FieldType _ t) -> t) (StdDict.values fields1))
+            (List.map (\(Can.FieldType _ t) -> t) (StdDict.values fields2))
 
 
 
@@ -378,10 +381,11 @@ alphaEqAlias at1 at2 =
 -- ============================================================================
 
 
-{-| Returns every type variable name that occurs anywhere in `tipe`.
+{-| Returns every type variable name that occurs in `tipe`.
 
-That includes record extension variables, and both the arguments and the body
-of an alias, so a parameter name inside a `Holey` alias body is counted too.
+That includes record extension variables, the arguments of an alias, and the
+body of a `Filled` alias. A `Holey` alias body is written in the alias's own
+parameter names, which its arguments stand for, so it is not read.
 
 -}
 freeTypeVars : Can.Type Name -> EverySet.EverySet String String
@@ -438,8 +442,8 @@ freeTypeVars tipe =
 
                 aliasVars =
                     case aliasType of
-                        Can.Holey t ->
-                            freeTypeVars t
+                        Can.Holey _ ->
+                            EverySet.empty
 
                         Can.Filled t ->
                             freeTypeVars t

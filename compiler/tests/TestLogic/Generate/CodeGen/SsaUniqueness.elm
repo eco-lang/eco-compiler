@@ -12,20 +12,17 @@ of those names again inside the region is a redefinition. This check treats the
 regions of every op other than `func.func` as not isolated.
 
 `expectSsaUniqueness` compiles a source module with
-`TestLogic.TestPipeline.runToMlir` and checks the first region of each
-top-level `func.func`, starting from no names. Within a block the names are
-collected in order: the block's arguments, then the results of each op in its
-body, then the results of its terminator. An op result whose name has already
-been collected is a violation. An op's own regions are checked against the
-names collected up to and including that op's results, and the names defined
-inside them are not visible to the ops that follow.
+`TestLogic.TestPipeline.runToMlir` and checks every region of each `func.func`,
+top-level or nested, starting from no names. All blocks of a region share one
+scope. Within a block the names are collected in order: the block's arguments,
+then the results of each op in its body, then the results of its terminator.
+A block argument or op result whose name has already been collected is a
+violation. An op's own regions are checked against the names collected up to
+and including that op's results, and the names defined inside them are not
+visible to the ops that follow.
 
-Among what is not checked: a block argument that repeats a visible name; a name
-defined in two blocks of the same region, because each block starts from the
-names of the enclosing scope only; a name defined in two sibling regions; the
-regions of a `func.func` nested inside another op, which are skipped rather than
-checked as a scope of their own; and any region of a `func.func` after the
-first.
+Two sibling regions, such as two `eco.case` alternatives, may each define the
+same name, as MLIR allows, since neither sees the other's names.
 
 @docs expectSsaUniqueness
 
@@ -47,7 +44,7 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Compiles `srcModule` to MLIR and returns an expectation that passes when no
-top-level function in it redefines a visible SSA name, under the rules in the
+function in it redefines a visible SSA name, under the rules in the
 module docstring.
 
 If `runToMlir` returns `Err`, the expectation fails with a message that starts
@@ -69,7 +66,7 @@ expectSsaUniqueness srcModule =
 
 
 {-| Returns the redefinitions found in the top-level `func.func` ops of
-`mlirModule`, function by function.
+`mlirModule` and the functions nested in them, function by function.
 -}
 checkSsaUniqueness : MlirModule -> List Violation
 checkSsaUniqueness mlirModule =
@@ -80,9 +77,8 @@ checkSsaUniqueness mlirModule =
     List.concatMap checkFunction funcOps
 
 
-{-| Returns the redefinitions in the first region of `funcOp`, starting from no
-visible names, because a `func.func` region is isolated. A function with no
-region gives none, and any region after the first is not checked.
+{-| Returns the redefinitions in every region of `funcOp`, each starting from
+no visible names, because a `func.func` region is isolated.
 -}
 checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
@@ -90,43 +86,43 @@ checkFunction funcOp =
         funcName =
             getFuncName funcOp
     in
-    case funcOp.regions of
-        [] ->
-            []
-
-        region :: _ ->
-            checkRegionSsa funcName Set.empty region
+    List.concatMap (checkRegionSsa funcName Set.empty) funcOp.regions
 
 
 {-| Returns the redefinitions in each block of a region, entry block first,
 given the names `parentDefs` visible from the enclosing scopes.
 
-Every block is checked against `parentDefs` alone, so a name defined in one
-block is not visible when another block of the region is checked.
+All blocks of a region share one scope, so the names each block defines stay
+visible while the later blocks are checked.
 
 -}
 checkRegionSsa : String -> Set String -> MlirRegion -> List Violation
 checkRegionSsa funcName parentDefs (MlirRegion { entry, blocks }) =
-    let
-        allBlocks =
-            entry :: OrderedDict.values blocks
-    in
-    List.concatMap (checkBlockSsa funcName parentDefs) allBlocks
+    List.foldl
+        (\block ( accViolations, accDefs ) ->
+            let
+                ( blockViolations, defsAfterBlock ) =
+                    checkBlockSsa funcName accDefs block
+            in
+            ( accViolations ++ blockViolations, defsAfterBlock )
+        )
+        ( [], parentDefs )
+        (entry :: OrderedDict.values blocks)
+        |> Tuple.first
 
 
-{-| Returns the redefinitions in `block`, given the names `parentDefs` visible
-from the enclosing scopes.
+{-| Returns the redefinitions in `block`, given the names `defs` visible
+where it starts, paired with the names visible at its end.
 
-The block's arguments are added to the visible names without being checked.
-Each op of the body, and then the terminator, is checked against the names
-defined before it.
+The block's arguments are checked and added first; then each op of the body,
+and the terminator, is checked against the names defined before it.
 
 -}
-checkBlockSsa : String -> Set String -> MlirBlock -> List Violation
-checkBlockSsa funcName parentDefs block =
+checkBlockSsa : String -> Set String -> MlirBlock -> ( List Violation, Set String )
+checkBlockSsa funcName defs block =
     let
-        argDefs =
-            List.foldl (\( name, _ ) acc -> Set.insert name acc) parentDefs block.args
+        ( argViolations, argDefs ) =
+            defineNames funcName "block argument" ("block argument of " ++ funcName) (List.map Tuple.first block.args) defs
 
         ( bodyViolations, defsAfterBody ) =
             List.foldl
@@ -137,13 +133,42 @@ checkBlockSsa funcName parentDefs block =
                     in
                     ( accViolations ++ opViolations, newDefs )
                 )
-                ( [], argDefs )
+                ( argViolations, argDefs )
                 block.body
 
-        ( termViolations, _ ) =
+        ( termViolations, defsAfterTerm ) =
             checkOpSsa funcName defsAfterBody block.terminator
     in
-    bodyViolations ++ termViolations
+    ( bodyViolations ++ termViolations, defsAfterTerm )
+
+
+{-| Adds `names` to the visible names `defs` one by one, giving a violation,
+with `opId` and `opName` as given, for each name already visible (including
+one repeated earlier in `names`).
+-}
+defineNames : String -> String -> String -> List String -> Set String -> ( List Violation, Set String )
+defineNames funcName opId opName names defs =
+    List.foldl
+        (\varName ( accViolations, accDefs ) ->
+            if Set.member varName accDefs then
+                ( accViolations
+                    ++ [ { opId = opId
+                         , opName = opName
+                         , message =
+                            "SSA redefinition of '"
+                                ++ varName
+                                ++ "' in function "
+                                ++ funcName
+                         }
+                       ]
+                , accDefs
+                )
+
+            else
+                ( accViolations, Set.insert varName accDefs )
+        )
+        ( [], defs )
+        names
 
 
 {-| Checks `op` against the visible names `defs`, returning the redefinitions
@@ -152,40 +177,20 @@ found and `defs` extended with the op's results.
 A result whose name is already visible, including one repeated earlier in the
 same op's results, is a violation on `op` with the message
 `SSA redefinition of '<name>' in function <funcName>`. The op's regions are
-then checked against the extended names, except that the regions of a
-`func.func` are skipped. Names defined inside the regions are not in the
-returned set.
+then checked against the extended names; a nested `func.func` is isolated, so
+its regions are checked from no names, as a function of its own. Names defined
+inside the regions are not in the returned set.
 
 -}
 checkOpSsa : String -> Set String -> MlirOp -> ( List Violation, Set String )
 checkOpSsa funcName defs op =
     let
         ( resultViolations, defsWithResults ) =
-            List.foldl
-                (\( varName, _ ) ( accViolations, accDefs ) ->
-                    if Set.member varName accDefs then
-                        ( { opId = op.id
-                          , opName = op.name
-                          , message =
-                                "SSA redefinition of '"
-                                    ++ varName
-                                    ++ "' in function "
-                                    ++ funcName
-                          }
-                            :: accViolations
-                        , accDefs
-                        )
+            defineNames funcName op.id op.name (List.map Tuple.first op.results) defs
 
-                    else
-                        ( accViolations, Set.insert varName accDefs )
-                )
-                ( [], defs )
-                op.results
-
-        -- A nested func.func's regions are not checked: only top-level functions are walked.
         regionViolations =
             if op.name == "func.func" then
-                []
+                checkFunction op
 
             else
                 List.concatMap (checkRegionSsa funcName defsWithResults) op.regions

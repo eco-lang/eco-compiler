@@ -26,7 +26,7 @@ _match_ a function's instances when there is at least one annotation, every
 annotation is a singleton `LSet [m]` whose `m` is the member id of one of the
 instances, and every instance's member id is named by some annotation.
 
-Each fixture is compiled with `runWith` or `runWithPap`: the solver engine
+Each fixture is compiled with `runWith`: the solver engine
 with LSS enabled and default specialization limits, stopping at the
 monomorphized graph. Three fixtures are used. In `twoInstances`, `ident x = x`
 is passed to `applyI` with an `Int` and to `applyS` with a `String`. In
@@ -38,8 +38,8 @@ The tests are numbered 2, 3, 4 and 7 in their names. They establish:
 
   - Test 2: `twoInstances` yields exactly two instances of `ident`, and the
     callback annotations of every `applyI` and `applyS` row match them.
-  - Test 3: the member ids of the instances of `ident` in `twoInstances`
-    include exactly two distinct values.
+  - Test 3: `twoInstances` yields exactly two instances of `ident`, and their
+    member ids differ.
   - Test 4: `selfReference` yields at least one instance of `go`, and the
     callback annotations of every `applyI` row match them.
   - Test 7: `papRhs` yields exactly one `useF` row, its callback annotation is
@@ -117,11 +117,11 @@ suite =
                             ids =
                                 List.map Tuple.second (instanceMembers "ident" g)
                         in
-                        if List.length (distinct ids) == 2 then
+                        if List.length ids == 2 && List.length (distinct ids) == 2 then
                             Expect.pass
 
                         else
-                            Expect.fail ("expected 2 distinct instance ids, got " ++ describeInts ids)
+                            Expect.fail ("expected 2 instances with distinct ids, got " ++ describeInts ids)
         , Test.test "4. F2.b: a self-reference inside the instance RHS names the instance too" <|
             \() ->
                 case runWith selfReference of
@@ -143,7 +143,7 @@ suite =
                             expectJoin heads instances
         , Test.test "7. F2.c: a local whose RHS is a PARTIAL APPLICATION names the PAP member at its use" <|
             \() ->
-                case runWithPap papRhs of
+                case runWith papRhs of
                     Err e ->
                         Expect.fail e
 
@@ -322,21 +322,6 @@ papRhs =
 
 
 -- ====== HARNESS ======
-
-
-{-| Compiles a fixture with the solver engine, lambda-set specialization
-enabled and default specialization limits, and returns the monomorphized graph
-or the error message the pipeline returns. It does exactly what `runWith` does.
--}
-runWithPap : Src.Module -> Result String Mono.MonoGraph
-runWithPap srcModule =
-    let
-        defaults =
-            Config.defaultLss
-    in
-    Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True }
-        srcModule
 
 
 {-| Compiles a fixture with the solver engine, lambda-set specialization

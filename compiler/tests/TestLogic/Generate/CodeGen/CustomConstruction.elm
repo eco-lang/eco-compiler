@@ -12,29 +12,37 @@ Each `eco.construct.custom` op is reported as a violation, in the sense of
 
   - it has no integer `tag` attribute;
   - it has no integer `size` attribute;
-  - its `size` differs from its number of operands;
-  - its `constructor` attribute is `Cons` or `Nil`.
+  - its `size` is greater than its number of operands, or an operand after the
+    first `size` is not recorded as `!eco.value` in `_operand_types`
+    (`Compiler.Generate.MLIR.Ops.ecoConstructCustom` appends GC-root hint
+    operands, always boxed values, after the `size` fields);
+  - its `constructor` attribute is `Cons` or `Nil` and no custom type of the
+    program has a constructor of that name (the monomorphized graph's
+    constructor shapes, which never include `List`, are consulted), so the op
+    builds a list.
 
-Only the presence of `tag` is checked, not its value. The operand count
-includes any GC-root hint operands appended after the fields. The list check
-goes by the constructor's name alone, so a constructor named `Cons` or `Nil` in
-a program's own type is reported too, and an op with no `constructor`
-attribute is never reported by it. Other built-in types, such as `Maybe`, are
-not checked for.
+Only the presence of `tag` is checked, not its value. An op with no
+`constructor` attribute is never reported by the list check. Other built-in
+types, such as `Maybe`, are not checked for.
 
 @docs expectCustomConstruction
 
 -}
 
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Name as Name
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
+import Set exposing (Set)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
+        , extractOperandTypes
         , findOpsNamed
         , getIntAttr
         , getStringAttr
+        , isEcoValueType
         , violationsToExpectation
         )
 import TestLogic.TestPipeline exposing (runToMlir)
@@ -45,7 +53,7 @@ import TestLogic.TestPipeline exposing (runToMlir)
 in the result breaks one of the four rules listed in the module docstring.
 
 It fails with the pipeline's error if compilation fails, and otherwise with the
-first violation found.
+violations found.
 
 -}
 expectCustomConstruction : Src.Module -> Expectation
@@ -54,27 +62,39 @@ expectCustomConstruction srcModule =
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 
-        Ok { mlirModule } ->
-            violationsToExpectation (checkCustomConstruction mlirModule)
+        Ok { mlirModule, monoGraph } ->
+            violationsToExpectation (checkCustomConstruction (userCtorNames monoGraph) mlirModule)
+
+
+{-| The names of the constructors of the program's custom types, from the
+constructor shapes of `monoGraph`.
+-}
+userCtorNames : Mono.MonoGraph -> Set String
+userCtorNames (Mono.MonoGraph { ctorShapes }) =
+    Mono.layoutMapValues ctorShapes
+        |> List.concat
+        |> List.map (\shape -> Name.toElmString shape.name)
+        |> Set.fromList
 
 
 {-| Returns every violation found on the `eco.construct.custom` ops of the
-module, at any depth.
+module, at any depth, given the constructor names of the program's custom
+types.
 -}
-checkCustomConstruction : MlirModule -> List Violation
-checkCustomConstruction mlirModule =
+checkCustomConstruction : Set String -> MlirModule -> List Violation
+checkCustomConstruction ctorNames mlirModule =
     let
         customOps =
             findOpsNamed "eco.construct.custom" mlirModule
     in
-    List.concatMap checkCustomOp customOps
+    List.concatMap (checkCustomOp ctorNames) customOps
 
 
 {-| Returns the violations of one `eco.construct.custom` op: at most three, in
 the order missing `tag`, missing or mismatched `size`, list constructor.
 -}
-checkCustomOp : MlirOp -> List Violation
-checkCustomOp op =
+checkCustomOp : Set String -> MlirOp -> List Violation
+checkCustomOp ctorNames op =
     let
         maybeTag =
             getIntAttr "tag" op
@@ -109,7 +129,7 @@ checkCustomOp op =
                     }
 
             Just size ->
-                if size /= operandCount then
+                if size > operandCount then
                     Just
                         { opId = op.id
                         , opName = op.name
@@ -120,11 +140,21 @@ checkCustomOp op =
                                 ++ String.fromInt operandCount
                         }
 
+                else if not (List.all isEcoValueType (List.drop size (Maybe.withDefault [] (extractOperandTypes op)))) then
+                    Just
+                        { opId = op.id
+                        , opName = op.name
+                        , message =
+                            "eco.construct.custom size="
+                                ++ String.fromInt size
+                                ++ " but an operand after the fields (a GC-root hint) is not !eco.value"
+                        }
+
                 else
                     Nothing
         , case maybeConstructorName of
             Just name ->
-                if List.member name [ "Cons", "Nil" ] then
+                if List.member name [ "Cons", "Nil" ] && not (Set.member name ctorNames) then
                     Just
                         { opId = op.id
                         , opName = op.name

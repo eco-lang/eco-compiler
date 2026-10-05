@@ -34,7 +34,7 @@ The cases, in the order they run, by label:
   - "apply higher-order at two types": `apply : (a -> b) -> a -> b` with
     `a` and `b` both `Int`, then both `String`.
   - "compose at two type combos": `compose : (b -> c) -> (a -> b) -> a -> c`
-    called twice with every type `Int`.
+    called once with every type `Int` and once with every type `String`.
   - "recursive length at two list types": a non-tail-recursive
     `length : List a -> Int` on a list of integer literals and a list of
     strings.
@@ -57,8 +57,6 @@ The cases, in the order they run, by label:
 
 Among what is not tested:
 
-  - `compose` at two different types: both of its uses are at `Int`, although
-    the case's label says "two type combos".
   - A function used at three or more types.
   - A polymorphic top-level function passed as a value: each one is only ever
     called, though `map` is called with too few arguments in one case.
@@ -270,8 +268,8 @@ applyMulti expectFn _ =
     expectFn modul
 
 
-{-| Runs `expectFn` on a program that calls `compose` twice, both times at the
-same types. In Elm source:
+{-| Runs `expectFn` on a program that calls `compose` twice, once with every type
+variable `Int` and once with every type variable `String`. In Elm source:
 
     compose : (b -> c) -> (a -> b) -> a -> c
     compose f g x =
@@ -281,12 +279,13 @@ same types. In Elm source:
     addOne n =
         n + 1
 
-    testValue : ( Int, Int )
-    testValue =
-        ( compose addOne addOne 1, compose addOne addOne 2 )
+    exclaim : String -> String
+    exclaim s =
+        s ++ "!"
 
-Every type variable is `Int` in both calls, which differ only in the last
-argument, so `compose` is used at one type here, not two.
+    testValue : ( Int, String )
+    testValue =
+        ( compose addOne addOne 1, compose exclaim exclaim "hi" )
 
 -}
 composeMulti : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -312,24 +311,32 @@ composeMulti expectFn _ =
             , body = binopsExpr [ ( varExpr "n", "+" ) ] (intExpr 1)
             }
 
+        exclaimDef : TypedDef
+        exclaimDef =
+            { name = "exclaim"
+            , args = [ pVar "s" ]
+            , tipe = tLambda (tType "String" []) (tType "String" [])
+            , body = binopsExpr [ ( varExpr "s", "++" ) ] (strExpr "!")
+            }
+
         testValueDef : TypedDef
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tTuple (tType "Int" []) (tType "Int" [])
+            , tipe = tTuple (tType "Int" []) (tType "String" [])
             , body =
                 tupleExpr
                     (callExpr (varExpr "compose")
                         [ varExpr "addOne", varExpr "addOne", intExpr 1 ]
                     )
                     (callExpr (varExpr "compose")
-                        [ varExpr "addOne", varExpr "addOne", intExpr 2 ]
+                        [ varExpr "exclaim", varExpr "exclaim", strExpr "hi" ]
                     )
             }
 
         modul =
             makeModuleWithTypedDefs "Test"
-                [ composeDef, addOneDef, testValueDef ]
+                [ composeDef, addOneDef, exclaimDef, testValueDef ]
     in
     expectFn modul
 

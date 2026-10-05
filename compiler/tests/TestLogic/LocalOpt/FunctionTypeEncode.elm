@@ -1,9 +1,9 @@
 module TestLogic.LocalOpt.FunctionTypeEncode exposing (expectFunctionTypesEncoded)
 
-{-| Checks that each function expression the walk reaches in the typed
-optimizer's output has a type with an arrow for each of its parameters.
-Without the check, a function whose own type has fewer arrows than it has
-parameters would leave typed optimization unnoticed.
+{-| Checks that each function expression in the typed optimizer's output has
+the type its parameters and body give it. Without the check, a function whose
+own type disagrees with its parameters or its body, for instance one with
+fewer arrows than it has parameters, would leave typed optimization unnoticed.
 
 A _function expression_ is a `Function` or `TrackedFunction` in the
 typed-optimized IR (`Compiler.AST.TypedOptimized`). It carries its parameters,
@@ -22,18 +22,19 @@ would duplicate.
 What the check establishes, for that one module:
 
   - If the pipeline reports an error, the check fails with that message.
-  - Each function expression the walk reaches has at least as many nested
-    `Can.TLambda` layers in its type as it has parameters. A failure names the
+  - The type of each function expression, with `p1 ... pn` its parameter
+    types and `r` its body's type, matches `p1 -> ... -> pn -> r` under
+    `TestLogic.LocalOpt.Typed.TypeEq.alphaEqStrict` (aliases are expanded, and
+    type variables may be renamed consistently). A failure names the
     top-level definition it was found in and, when it lies in a let or cycle
     def, that def's kind and name.
 
+Every expression is walked: the bodies of definitions and ports, the function
+definitions and the values of a `Cycle`, and in a `case` both the branches its
+decision tree holds inline and its jump targets.
+
 Among what is not tested:
 
-  - Whether each parameter type equals the argument type of its arrow, or
-    whether what is left after the last parameter is the body's type. Arrows
-    are counted, not compared.
-  - Function expressions in a `Cycle` node's values, and in the branches a
-    `Case` inlines into its decision tree. The walk does not visit either.
   - The parameters of a `TailDef` against the def's type. Only function
     expressions in its body are checked.
 
@@ -47,17 +48,16 @@ import Compiler.Elm.ModuleName as ModuleName
 import Data.Map
 import Dict
 import Expect
+import TestLogic.LocalOpt.Typed.TypeEq as TypeEq
 import TestLogic.TestPipeline as Pipeline
 
 
 {-| Runs `srcModule` to typed optimization and expects each function expression
-in its local graph to have a type with at least one `Can.TLambda` layer per
-parameter. Parameters are counted; their types are not compared with the arrows.
+in its local graph to have the type its parameters and body give it, as the
+module docstring describes.
 
 Fails with the pipeline's message if the pipeline reports an error; a module
-that defines no `testValue` crashes the run instead. Function expressions in a
-`Cycle` node's values, or inlined into a `Case`'s decision tree, are not
-examined.
+that defines no `testValue` crashes the run instead.
 
 -}
 expectFunctionTypesEncoded : Src.Module -> Expect.Expectation
@@ -85,11 +85,9 @@ expectFunctionTypesEncoded srcModule =
 -- ============================================================================
 
 
-{-| Returns one failing expectation for each function expression the walk
-reaches in the graph's nodes whose type has too few arrows. Function
-expressions in a `Cycle`'s values and in a `Case`'s inlined choices are not
-reached. A function that passes adds nothing, so an empty list means every
-function examined passed.
+{-| Returns one failing expectation for each function expression in the
+graph's nodes whose type does not match its parameters and body. A function
+that passes adds nothing, so an empty list means every function passed.
 -}
 collectFunctionTypeChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectFunctionTypeChecks (TOpt.LocalGraph data) =
@@ -116,9 +114,8 @@ globalToString (TOpt.Global home name) =
 
 
 {-| Returns the failures for the function expressions in one node: the body of
-a `Define`, `TrackedDefine`, `PortIncoming` or `PortOutgoing`, and the body of
-each def of a `Cycle`. A `Cycle`'s values, and every other kind of node, give
-none.
+a `Define`, `TrackedDefine`, `PortIncoming` or `PortOutgoing`, and each value
+and the body of each def of a `Cycle`. Every other kind of node gives none.
 -}
 checkNodeFunctionTypes : String -> TOpt.Node Name -> List (() -> Expect.Expectation)
 checkNodeFunctionTypes context node =
@@ -129,8 +126,9 @@ checkNodeFunctionTypes context node =
         TOpt.TrackedDefine _ expr _ _ ->
             collectExprFunctionTypeChecks context expr
 
-        TOpt.Cycle _ _ defs _ ->
-            List.concatMap (\def -> checkDefFunctionTypes context def) defs
+        TOpt.Cycle _ values defs _ ->
+            List.concatMap (\( name, valueExpr ) -> collectExprFunctionTypeChecks (context ++ " value " ++ name) valueExpr) values
+                ++ List.concatMap (\def -> checkDefFunctionTypes context def) defs
 
         TOpt.PortIncoming expr _ _ ->
             collectExprFunctionTypeChecks context expr
@@ -158,8 +156,8 @@ checkDefFunctionTypes context def =
 {-| Returns the failures for `expr` itself and for every function expression
 nested in it, each message prefixed with `context`.
 
-A `Case` is searched only through its jump targets, not through the
-expressions inlined in its decision tree.
+A `Case` is searched through the expressions inlined in its decision tree and
+through its jump targets.
 
 -}
 collectExprFunctionTypeChecks : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
@@ -171,11 +169,7 @@ collectExprFunctionTypeChecks context expr =
                     List.map Tuple.second params
 
                 typeCheck =
-                    if not (functionTypeMatches paramTypes fnMeta.tipe) then
-                        [ \() -> Expect.fail (context ++ ": Function expression type does not match parameter types") ]
-
-                    else
-                        []
+                    functionTypeCheck context "Function" paramTypes bodyExpr fnMeta.tipe
             in
             typeCheck ++ collectExprFunctionTypeChecks context bodyExpr
 
@@ -185,11 +179,7 @@ collectExprFunctionTypeChecks context expr =
                     List.map Tuple.second params
 
                 typeCheck =
-                    if not (functionTypeMatches paramTypes fnMeta.tipe) then
-                        [ \() -> Expect.fail (context ++ ": TrackedFunction expression type does not match parameter types") ]
-
-                    else
-                        []
+                    functionTypeCheck context "TrackedFunction" paramTypes bodyExpr fnMeta.tipe
             in
             typeCheck ++ collectExprFunctionTypeChecks context bodyExpr
 
@@ -211,8 +201,9 @@ collectExprFunctionTypeChecks context expr =
         TOpt.Destruct _ valueExpr _ ->
             collectExprFunctionTypeChecks context valueExpr
 
-        TOpt.Case _ _ _ branches _ ->
-            List.concatMap (\( _, branchExpr ) -> collectExprFunctionTypeChecks context branchExpr) branches
+        TOpt.Case _ _ decider branches _ ->
+            List.concatMap (collectExprFunctionTypeChecks context) (inlineLeaves decider)
+                ++ List.concatMap (\( _, branchExpr ) -> collectExprFunctionTypeChecks context branchExpr) branches
 
         TOpt.List _ exprs _ ->
             List.concatMap (collectExprFunctionTypeChecks context) exprs
@@ -239,23 +230,46 @@ collectExprFunctionTypeChecks context expr =
             []
 
 
-{-| Returns whether `fnType` has at least one nested `Can.TLambda` layer for
-each entry of `paramTypes`, following each arrow into its result.
-
-The parameter types are only counted, never compared with the arrows, and
-whatever type remains after the last parameter is accepted. Where an arrow is
-still needed, any other type gives `False`, including a `TAlias` whose
-definition is a function type.
-
+{-| Returns the expressions at the `Inline` leaves of a decision tree.
 -}
-functionTypeMatches : List (Can.Type Name) -> Can.Type Name -> Bool
-functionTypeMatches paramTypes fnType =
-    case ( paramTypes, fnType ) of
-        ( [], _ ) ->
-            True
+inlineLeaves : TOpt.Decider (TOpt.Choice Name) -> List (TOpt.Expr Name)
+inlineLeaves decider =
+    case decider of
+        TOpt.Leaf (TOpt.Inline e) ->
+            [ e ]
 
-        ( _ :: restParams, Can.TLambda _ _ restType ) ->
-            functionTypeMatches restParams restType
+        TOpt.Leaf (TOpt.Jump _) ->
+            []
 
-        _ ->
-            False
+        TOpt.Chain _ success failure ->
+            inlineLeaves success ++ inlineLeaves failure
+
+        TOpt.FanOut _ edges fallback ->
+            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
+
+
+{-| Returns a failure, labelled `context` and `kind`, when `fnType` does not
+match the type built from `paramTypes` and the type of `body`,
+`p1 -> ... -> pn -> r`, under `TypeEq.alphaEqStrict`.
+-}
+functionTypeCheck : String -> String -> List (Can.Type Name) -> TOpt.Expr Name -> Can.Type Name -> List (() -> Expect.Expectation)
+functionTypeCheck context kind paramTypes body fnType =
+    let
+        expected =
+            List.foldr Can.tLambda (TOpt.typeOf body) paramTypes
+    in
+    if TypeEq.alphaEqStrict fnType expected then
+        []
+
+    else
+        [ \() ->
+            Expect.fail
+                (context
+                    ++ ": "
+                    ++ kind
+                    ++ " expression type does not match its parameters and body:\n  stored:   "
+                    ++ Debug.toString fnType
+                    ++ "\n  expected: "
+                    ++ Debug.toString expected
+                )
+        ]

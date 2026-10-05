@@ -2756,20 +2756,20 @@ specializeExpr expr subst state =
                 canType =
                     meta.tipe
 
-                funcMonoType =
-                    deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( "Debug", name ) canType subst
+                ( funcMonoType, state1 ) =
+                    freshenDebugAbi "Debug" (deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( "Debug", name ) canType subst) state
             in
-            ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, state )
+            ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, state1 )
 
         TOpt.VarKernel region kernelPrefix home name meta ->
             let
                 canType =
                     meta.tipe
 
-                funcMonoType =
-                    deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( home, name ) canType subst
+                ( funcMonoType, state1 ) =
+                    freshenDebugAbi home (deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( home, name ) canType subst) state
             in
-            ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, state )
+            ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, state1 )
 
         TOpt.List region exprs meta ->
             let
@@ -2946,12 +2946,12 @@ specializeExpr expr subst state =
                         ( callSubst, _, callEnv ) =
                             TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
-                        state1e =
-                            setMVarEnv callEnv state1a
-
-                        -- Kernel ABI derivation uses funcCanType directly (no renaming)
-                        funcMonoType =
-                            deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( home, name ) funcCanType callSubst
+                        -- Kernel ABI derivation uses funcCanType directly (no renaming);
+                        -- a Debug kernel's variables get fresh ids (MONO_009).
+                        ( funcMonoType, state1e ) =
+                            freshenDebugAbi home
+                                (deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( home, name ) funcCanType callSubst)
+                                (setMVarEnv callEnv state1a)
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -2996,12 +2996,12 @@ specializeExpr expr subst state =
                         ( callSubst, _, callEnv ) =
                             TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
-                        state1e =
-                            setMVarEnv callEnv state1a
-
-                        -- Kernel ABI derivation uses funcCanType directly (no renaming)
-                        funcMonoType =
-                            deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( "Debug", name ) funcCanType callSubst
+                        -- Kernel ABI derivation uses funcCanType directly (no renaming);
+                        -- its variables get fresh, taint-proof ids (MONO_009).
+                        ( funcMonoType, state1e ) =
+                            freshenDebugAbi "Debug"
+                                (deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( "Debug", name ) funcCanType callSubst)
+                                (setMVarEnv callEnv state1a)
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -5421,6 +5421,36 @@ isFullyMonomorphicType monoType =
 
 
 -- ========== KERNEL ABI TYPE DERIVATION ==========
+
+
+{-| For a kernel of an always-polymorphic home module (`Debug`), gives the
+`CEcoValue` variables of its ABI type fresh ids from the state's `MVarEnv`
+(MONO\_009); any other kernel's ABI type is returned unchanged. Kept at their
+source ids the variables may be number variables of the enclosing definition
+(`bump n = Debug.log "n" (n + 1)`), which `Compiler.Monomorphize.Prune` would
+close to `MInt` even in a `Float` specialization, giving the kernel an unboxed
+`Int` parameter. The solver engine does the same in
+`Compiler.MonoSolver.Translate.deriveKernelAbiTypeWith`.
+-}
+freshenDebugAbi : String -> Mono.MonoType -> MonoState -> ( Mono.MonoType, MonoState )
+freshenDebugAbi home abiType state =
+    if not (EverySet.member List.singleton home KernelAbi.alwaysPolymorphicModules) then
+        ( abiType, state )
+
+    else
+        freshenKernelAbiVars abiType state
+
+
+freshenKernelAbiVars : Mono.MonoType -> MonoState -> ( Mono.MonoType, MonoState )
+freshenKernelAbiVars abiType state =
+    let
+        env =
+            state.ctx.mvarEnv
+
+        ( freshAbi, nextId ) =
+            KernelAbi.remapEcoVarsFresh env.nextId abiType
+    in
+    ( freshAbi, setMVarEnv { env | nextId = nextId } state )
 
 
 {-| Derive the MonoType for a kernel function's ABI.

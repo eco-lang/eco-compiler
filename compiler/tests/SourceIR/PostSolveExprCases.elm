@@ -37,10 +37,10 @@ The groups, each a `Test.describe`, are:
     destructuring of a pair and of a record, and three definitions used in one
     sum.
   - Control flow: an `if`, an `if` nested in a `then` branch, an `if` whose two
-    branches are records of the same type `{ value : Int }` (although the
-    test's name says "different result types"), and three `case` expressions:
-    on an integer with two literal branches and a wildcard, on an integer with
-    five literal branches and a wildcard, and on a pair with tuple patterns.
+    branches are records of the same type `{ value : Int }`, and three `case`
+    expressions: on an integer with two literal branches and a wildcard, on an
+    integer with five literal branches and a wildcard, and on a pair with tuple
+    patterns.
   - Record update: one field replaced, two fields of three replaced, a field
     replaced by a value computed from its old value, and a field holding a
     record replaced by a new record.
@@ -793,16 +793,14 @@ multipleLetBindingsType expectFn _ =
 -- ============================================================================
 
 
-{-| Groups the `if` and `case` tests, with `condStr` appended to every name. The
-test named "If with different result types" runs `ifWithRecordResultType`,
-whose branches have the same type.
+{-| Groups the `if` and `case` tests, with `condStr` appended to every name.
 -}
 controlFlowTypeTests : (Src.Module -> Expectation) -> String -> Test
 controlFlowTypeTests expectFn condStr =
     Test.describe ("Control flow types " ++ condStr)
         [ Test.test ("Simple if type " ++ condStr) (simpleIfType expectFn)
         , Test.test ("Nested if type " ++ condStr) (nestedIfType expectFn)
-        , Test.test ("If with different result types " ++ condStr) (ifWithRecordResultType expectFn)
+        , Test.test ("If with record result type " ++ condStr) (ifWithRecordResultType expectFn)
         , Test.test ("Simple case type " ++ condStr) (simpleCaseType expectFn)
         , Test.test ("Multi-branch case type " ++ condStr) (multiBranchCaseType expectFn)
         , Test.test ("Case with nested patterns type " ++ condStr) (caseWithNestedPatternsType expectFn)

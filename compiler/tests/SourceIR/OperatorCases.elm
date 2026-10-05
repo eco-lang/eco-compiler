@@ -333,22 +333,18 @@ together.
 -}
 combinedCases : (Src.Module -> Expectation) -> List TestCase
 combinedCases expectFn =
-    [ { label = "If with negate condition", run = ifWithNegateCondition expectFn }
-    , { label = "Negate inside if branches", run = negateInsideIfBranches expectFn }
+    [ { label = "If with both branches negated", run = ifWithNegatedBranches expectFn }
+    , { label = "Negate inside if then branch", run = negateInsideIfBranches expectFn }
     , { label = "If inside tuple with negate", run = ifInsideTupleWithNegate expectFn }
     , { label = "Multiple ifs and negates in list", run = multipleIfsAndNegatesInList expectFn }
     ]
 
 
 {-| Returns the check that applies `expectFn` to a program whose `testValue` is
-`if True then -1 else -2`.
-
-The condition is not negated, whatever the label says: both negations are in
-the branches.
-
+`if True then -1 else -2`, both of whose branches are negations.
 -}
-ifWithNegateCondition : (Src.Module -> Expectation) -> (() -> Expectation)
-ifWithNegateCondition expectFn _ =
+ifWithNegatedBranches : (Src.Module -> Expectation) -> (() -> Expectation)
+ifWithNegatedBranches expectFn _ =
     let
         modul =
             makeModule "testValue"

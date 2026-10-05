@@ -31,23 +31,24 @@ two-argument function, or a one-argument one, as their first parameter.
 `testValue` calls `useIt plus2 1`, `useIt2 (plus2 1) 2` and `useIt3 mk 3`, which
 makes all of them reachable from the `main` that `TestLogic.TestPipeline` adds.
 `mk` has an `Int -> Int -> Int` annotation but one parameter, so its declared
-arity is less than its type's arrow count; no test reads `useIt3` or `mk`. The
-readers find a global's specializations by unqualified name in the graph's
-registry.
+arity is less than its type's arrow count, and the walk writes no `p|mk|d`
+member for it. The readers find a global's specializations by unqualified name
+in the graph's registry, and a member's origin in its `lssMemberOrigins`.
 
 The tests establish:
 
   - Test 1: at least one specialization of `useIt` has a `/a0/r` position, and
-    at every one that has, the annotation is a singleton `LSet`.
-  - Test 2: the member of the first singleton found at `useIt`'s `/a0/r` equals
-    the member of the first singleton found at `useIt2`'s `/a0`, and both
-    positions hold at least one singleton among `useIt`'s and `useIt2`'s
-    specializations.
-  - Test 3: the same assertion as test 1.
+    at every one that has, the annotation is a singleton `LSet` whose member
+    is recorded as `plus2` applied to one argument (`p|plus2|1`).
+  - Test 2: every singleton found at `useIt`'s `/a0/r` and at `useIt2`'s `/a0`
+    names one and the same member, and both positions hold at least one
+    singleton.
+  - Test 3: `useIt3`'s `/a0/r` is, in every specialization, the singleton
+    `p|plus2|1` (what `mk x` returns), and no member is recorded as a partial
+    application of `mk`: the walk stops at `mk`'s declared arity.
 
-Among what is not tested: that the singleton's member is the `p|plus2|1` key
-rather than some other single member, what `/a0` of `useIt` holds, anything
-about `useIt3` or `mk`, and the graph after global optimization.
+Among what is not tested: what `/a0` of `useIt` holds, and the graph after
+global optimization.
 
 -}
 
@@ -66,6 +67,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -85,11 +87,11 @@ suite =
                                 Expect.fail "no /a0/r position for `useIt` — fixture broken"
 
                             onAnnos ->
-                                if List.all isSingleton onAnnos then
+                                if List.all (isPapSingleton "plus2" 1 onG) onAnnos then
                                     Expect.pass
 
                                 else
-                                    Expect.fail ("/a0/r expected SINGLETON, got " ++ describe onAnnos)
+                                    Expect.fail ("/a0/r expected the SINGLETON p|plus2|1 member, got " ++ describe onAnnos)
 
                     Err e ->
                         Expect.fail e
@@ -101,16 +103,16 @@ suite =
 
                     Ok g ->
                         case ( singletonIds (a0rAnnos "useIt" g), singletonIds (a0Annos "useIt2" g) ) of
-                            ( spineId :: _, prodId :: _ ) ->
-                                if spineId == prodId then
+                            ( spineId :: spineRest, prodId :: prodRest ) ->
+                                if List.all ((==) spineId) (spineRest ++ prodId :: prodRest) then
                                     Expect.pass
 
                                 else
                                     Expect.fail
-                                        ("spine id "
-                                            ++ String.fromInt spineId
-                                            ++ " /= producer id "
-                                            ++ String.fromInt prodId
+                                        ("spine ids "
+                                            ++ String.join ", " (List.map String.fromInt (spineId :: spineRest))
+                                            ++ " /= producer ids "
+                                            ++ String.join ", " (List.map String.fromInt (prodId :: prodRest))
                                             ++ " — the two p| mints diverged"
                                         )
 
@@ -121,23 +123,29 @@ suite =
                                         ++ " producer="
                                         ++ String.fromInt (List.length pr)
                                     )
-        , Test.test "3. NO MULTI-SETS: /a0/r is a strict singleton" <|
+        , Test.test "3. DECLARED-ARITY BOUND: a one-parameter global under two arrows mints no p| successor of its own" <|
             \() ->
                 case runWith fixture of
                     Err e ->
                         Expect.fail e
 
                     Ok g ->
-                        case a0rAnnos "useIt" g of
+                        case a0rAnnos "useIt3" g of
                             [] ->
-                                Expect.fail "no /a0/r position flag-on"
+                                Expect.fail "no /a0/r position for `useIt3` — fixture broken"
 
                             annos ->
-                                if List.all isSingleton annos then
-                                    Expect.pass
+                                Expect.all
+                                    [ \_ ->
+                                        -- `mk x` is the partial application `plus2 x`.
+                                        if List.all (isPapSingleton "plus2" 1 g) annos then
+                                            Expect.pass
 
-                                else
-                                    Expect.fail ("expected singletons, got " ++ describe annos)
+                                        else
+                                            Expect.fail ("useIt3's /a0/r expected the SINGLETON p|plus2|1 member, got " ++ describe annos)
+                                    , \_ -> Expect.equal [] (papMembersOf "mk" g)
+                                    ]
+                                    ()
         ]
 
 
@@ -301,16 +309,45 @@ singletonIds =
         )
 
 
-{-| Tells whether an annotation is an `LSet` of exactly one member.
+{-| Tells whether an annotation is an `LSet` whose one member the graph's
+`lssMemberOrigins` records as the global named `name` applied to `supplied`
+arguments.
 -}
-isSingleton : Mono.LambdaSetAnno -> Bool
-isSingleton a =
+isPapSingleton : String -> Int -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
+isPapSingleton name supplied (Mono.MonoGraph g) a =
     case a of
-        Mono.LSet [ _ ] ->
-            True
+        Mono.LSet [ m ] ->
+            case Dict.get m g.lssMemberOrigins of
+                Just (Mono.OriginPap (Mono.Global _ n) k) ->
+                    n == name && k == supplied
+
+                _ ->
+                    False
 
         _ ->
             False
+
+
+{-| Returns every member the graph's `lssMemberOrigins` records as a partial
+application of a global named `name`, with any number of arguments supplied.
+-}
+papMembersOf : String -> Mono.MonoGraph -> List Int
+papMembersOf name (Mono.MonoGraph g) =
+    Dict.foldl
+        (\m origin acc ->
+            case origin of
+                Mono.OriginPap (Mono.Global _ n) _ ->
+                    if n == name then
+                        m :: acc
+
+                    else
+                        acc
+
+                _ ->
+                    acc
+        )
+        []
+        g.lssMemberOrigins
 
 
 {-| Renders annotations for a failure message, each as its constructor name,

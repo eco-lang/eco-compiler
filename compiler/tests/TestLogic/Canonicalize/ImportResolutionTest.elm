@@ -1,38 +1,36 @@
 module TestLogic.Canonicalize.ImportResolutionTest exposing (suite)
 
-{-| Tests that small modules importing `Basics` and `List` compile as far as
-PostSolve, the pass after type checking that fixes up some of the types type
-checking recorded for expression nodes, so that a change which stopped such a
-module from canonicalizing or type checking would be noticed.
+{-| Tests that the references a module takes from its imports resolve to
+definitions of the imported modules, so that a change which resolved an
+imported name to the wrong module, name, constructor or operator would be
+noticed.
 
 Canonicalization is the compiler stage that resolves each name a module uses to
-the definition it refers to, including names taken from imports. The rule these
-tests are named for is that this resolution succeeds. Each test hands one module
-to `TestLogic.Canonicalize.ImportResolution.expectImportsResolved`, which
-passes exactly when the module gets through canonicalization, type checking and
-PostSolve; that module's docstring says what the expectation does and does not
-check.
+the definition it refers to, including names taken from imports. Each test hands
+one module to `TestLogic.Canonicalize.ImportResolution.expectImportsResolved`,
+which runs it through PostSolve and then checks every reference to another
+module against that module's interface; that module's docstring says what it
+checks.
 
 Every module is built with `Compiler.AST.SourceBuilder.makeModuleWithDefs`, so
 it imports `Basics` and `List`, each exposing everything, and its top-level
-definitions have no type annotations. No definition uses an imported name: each
-body is a literal, a reference to an argument, or a call of another top-level
-definition of the same module.
+definitions have no type annotations.
 
 The tests establish:
 
-  - "module without imports compiles": a module `NoImports` declaring
-    `x = 42` passes. Despite the test's name, the module has the two imports
-    every `makeModuleWithDefs` module has.
-  - "simple function definition": a module `Simple` declaring `id x = x`
-    passes.
-  - "nested function calls": a module `Nested` declaring `f x = x` and
-    `g y = f y` passes. Its one call is of `f` from `g`; no call is nested
-    inside another.
+  - "module with no foreign references": a module `NoImports` declaring
+    `x = 42` passes.
+  - "local function calls": a module `Nested` declaring `f x = x` and
+    `g y = f y` passes.
+  - "qualified imported function": `xs = List.map negate [ 1, 2 ]`, a
+    qualified and an unqualified `VarForeign`.
+  - "imported operators": `n = 1 + 2 * 3` and `ys = 1 :: []`, `Binop`s of
+    `Basics` and `List`.
+  - "imported constructor": `t = True`, a `VarCtor` of `Basics`.
 
-Among what is not tested: a reference to an imported name, qualified or not; an
-import with an alias or an explicit `exposing` list; an import of a module or a
-name that does not exist; and any module whose resolution should fail.
+Among what is not tested: an import with an alias or an explicit `exposing`
+list; an import of a module or a name that does not exist; and any module
+whose resolution should fail.
 
 -}
 
@@ -57,30 +55,36 @@ module, each passing when `expectImportsResolved` passes on its module.
 validImportTests : Test
 validImportTests =
     Test.describe "Valid import resolution"
-        [ Test.test "module without imports compiles" <|
+        [ Test.test "module with no foreign references" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "NoImports"
-                            [ ( "x", [], SB.intExpr 42 ) ]
-                in
-                expectImportsResolved modul
-        , Test.test "simple function definition" <|
+                SB.makeModuleWithDefs "NoImports" [ ( "x", [], SB.intExpr 42 ) ]
+                    |> expectImportsResolved
+        , Test.test "local function calls" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "Simple"
-                            [ ( "id", [ SB.pVar "x" ], SB.varExpr "x" ) ]
-                in
-                expectImportsResolved modul
-        , Test.test "nested function calls" <|
+                SB.makeModuleWithDefs "Nested"
+                    [ ( "f", [ SB.pVar "x" ], SB.varExpr "x" )
+                    , ( "g", [ SB.pVar "y" ], SB.callExpr (SB.varExpr "f") [ SB.varExpr "y" ] )
+                    ]
+                    |> expectImportsResolved
+        , Test.test "qualified imported function" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "Nested"
-                            [ ( "f", [ SB.pVar "x" ], SB.varExpr "x" )
-                            , ( "g", [ SB.pVar "y" ], SB.callExpr (SB.varExpr "f") [ SB.varExpr "y" ] )
-                            ]
-                in
-                expectImportsResolved modul
+                SB.makeModuleWithDefs "QualifiedFn"
+                    [ ( "xs"
+                      , []
+                      , SB.callExpr (SB.qualVarExpr "List" "map")
+                            [ SB.varExpr "negate", SB.listExpr [ SB.intExpr 1, SB.intExpr 2 ] ]
+                      )
+                    ]
+                    |> expectImportsResolved
+        , Test.test "imported operators" <|
+            \_ ->
+                SB.makeModuleWithDefs "Operators"
+                    [ ( "n", [], SB.binopsExpr [ ( SB.intExpr 1, "+" ), ( SB.intExpr 2, "*" ) ] (SB.intExpr 3) )
+                    , ( "ys", [], SB.binopsExpr [ ( SB.intExpr 1, "::" ) ] (SB.listExpr []) )
+                    ]
+                    |> expectImportsResolved
+        , Test.test "imported constructor" <|
+            \_ ->
+                SB.makeModuleWithDefs "Ctor" [ ( "t", [], SB.ctorExpr "True" ) ]
+                    |> expectImportsResolved
         ]

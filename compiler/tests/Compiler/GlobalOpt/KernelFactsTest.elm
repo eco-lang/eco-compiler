@@ -34,15 +34,20 @@ The tests establish:
     `Eco_Kernel_MVar_put_Int` to the `( "MVar", "put" )` row, and
     `Elm_Kernel_Bytes_read_u32`, whose name itself contains an underscore, to
     the `( "Bytes", "read_u32" )` row; it returns `Nothing` for
-    `eco_gc_alloc_region_fast`, which has neither kernel prefix.
+    `eco_gc_alloc_region_fast`, which has neither kernel prefix. The expected
+    rows are looked up in the table, so the test also checks that each of them
+    exists.
   - Test 6: `gcLeafEligibleFor` is True for `( "String", "length" )` and False
     for `( "List", "cons" )`, which is listed but allocates, and for
     `( "Platform", "sendToApp" )`, which is not listed; `droppableFor` is False
-    for `( "Debug", "log" )`. The expected values are written out, not computed
-    from the record forms.
+    for `( "Debug", "log" )` (values written out). For every row,
+    `gcLeafEligibleFor` and `droppableFor` of its key agree with
+    `gcLeafEligible` and `droppable` of its record, and all three key forms
+    (with `hoistableFor`) are False for the unlisted `( "Platform", "sendToApp" )`.
   - Test 7: the table has 57 rows and 57 distinct keys.
 
-Among what is not tested: `hoistable`, `hoistableFor`, `costClass` and
+Among what is not tested: `hoistableFor` on a listed key (`hoistable` is not
+exposed, so it cannot be compared with a record form), `costClass` and
 `devirtOf`; the `_Char` suffix in `lookupSymbol`; a key form answering True for
 `droppableFor`; the signatures the shim returns for `wave3BorrowAdditions`; and
 whether any row is true of the C++ kernel it describes.
@@ -83,23 +88,54 @@ suite =
                     |> Expect.equal (List.sort (List.map Tuple.first legacyBorrowGolden ++ wave3BorrowAdditions))
         , Test.test "5. lookupSymbol strips the ABI prefix and _Int/_Float/_Char" <|
             \_ ->
-                Expect.equal
-                    [ KF.lookup ( "Utils", "compare" ), KF.lookup ( "Utils", "compare" ), KF.lookup ( "MVar", "put" ), KF.lookup ( "Bytes", "read_u32" ), Nothing ]
-                    [ KF.lookupSymbol "Elm_Kernel_Utils_compare"
-                    , KF.lookupSymbol "Elm_Kernel_Utils_compare_Float"
-                    , KF.lookupSymbol "Eco_Kernel_MVar_put_Int"
-                    , KF.lookupSymbol "Elm_Kernel_Bytes_read_u32"
-                    , KF.lookupSymbol "eco_gc_alloc_region_fast"
+                let
+                    expectedRows =
+                        [ KF.lookup ( "Utils", "compare" ), KF.lookup ( "Utils", "compare" ), KF.lookup ( "MVar", "put" ), KF.lookup ( "Bytes", "read_u32" ) ]
+                in
+                Expect.all
+                    [ \_ ->
+                        -- The expected values come from the table, so a missing row
+                        -- would make both sides Nothing; pin that every row exists.
+                        Expect.equal [] (List.filter ((==) Nothing) expectedRows)
+                    , \_ ->
+                        Expect.equal
+                            (expectedRows ++ [ Nothing ])
+                            [ KF.lookupSymbol "Elm_Kernel_Utils_compare"
+                            , KF.lookupSymbol "Elm_Kernel_Utils_compare_Float"
+                            , KF.lookupSymbol "Eco_Kernel_MVar_put_Int"
+                            , KF.lookupSymbol "Elm_Kernel_Bytes_read_u32"
+                            , KF.lookupSymbol "eco_gc_alloc_region_fast"
+                            ]
                     ]
+                    ()
         , Test.test "6. the key-form derived helpers agree with the record form and default False" <|
             \_ ->
-                Expect.equal
-                    [ True, False, False, False ]
-                    [ KF.gcLeafEligibleFor ( "String", "length" )
-                    , KF.gcLeafEligibleFor ( "List", "cons" )
-                    , KF.gcLeafEligibleFor ( "Platform", "sendToApp" )
-                    , KF.droppableFor ( "Debug", "log" )
+                Expect.all
+                    [ \_ ->
+                        Expect.equal
+                            [ True, False, False, False ]
+                            [ KF.gcLeafEligibleFor ( "String", "length" )
+                            , KF.gcLeafEligibleFor ( "List", "cons" )
+                            , KF.gcLeafEligibleFor ( "Platform", "sendToApp" )
+                            , KF.droppableFor ( "Debug", "log" )
+                            ]
+                    , \_ ->
+                        KF.rows
+                            |> List.filter
+                                (\( k, f ) ->
+                                    (KF.gcLeafEligibleFor k /= KF.gcLeafEligible f)
+                                        || (KF.droppableFor k /= KF.droppable f)
+                                )
+                            |> List.map Tuple.first
+                            |> Expect.equal []
+                    , \_ ->
+                        Expect.equal ( False, False, False )
+                            ( KF.gcLeafEligibleFor ( "Platform", "sendToApp" )
+                            , KF.droppableFor ( "Platform", "sendToApp" )
+                            , KF.hoistableFor ( "Platform", "sendToApp" )
+                            )
                     ]
+                    ()
         , Test.test "7. the table has the expected size and no duplicate keys" <|
             \_ -> Expect.equal ( 57, 57 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
         ]

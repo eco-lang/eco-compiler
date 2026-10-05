@@ -4,88 +4,62 @@ module TestLogic.Generate.MonoNumericResolution exposing
     )
 
 {-| A `number` type variable stands for either `Int` or `Float`, and the two
-are represented differently in generated code. `Compiler.AST.Monomorphized`
-treats such a variable, an `MVar _ CNumber`, as a compiler bug if it reaches
-MLIR code generation. The checks here look for one in a monomorphized program.
-Any other type variable is an `MVar _ CEcoValue`, a variable whose values are
-always boxed, and which may remain; both checks pass it, as they pass every
-concrete type.
+are represented differently in generated code. The checks here look for a
+number type that monomorphization left unresolved, or resolved differently on
+the two sides of a call.
 
-Each check runs one source module through `TestLogic.TestPipeline.runToMono`,
-which needs the module to define `testValue`. The graph checked is the output
-of the substitution engine, which is not the engine a default build uses, and
-it is taken before any global optimization or MLIR generation. A pipeline
-failure fails the check with the pipeline's message.
+  - `expectNoNumericPolymorphism` (MONO\_002) runs a source module through
+    `TestLogic.TestPipeline.runToGlobalOpt`, the graph `runToMlir` hands to
+    MLIR generation, and fails if any type stored in it, at any position
+    `MonoTraverse.anyNodeType` reaches (node, expression, parameter, capture
+    and call-metadata types, case branches held inline included) and at any
+    depth (inside lists, tuples, records, custom type arguments and
+    functions), is an `MVar _ CNumber`. The substitution engine's
+    `Compiler.Monomorphize.Prune` closes such variables before the
+    post-monomorphization inliner and the global optimizer run, so this
+    guards those later passes: nothing after the prune would catch a number
+    variable they introduce.
+  - `expectNumericTypesResolved` (MONO\_008) runs a source module through
+    `TestLogic.TestPipeline.runToMono` and, at every call in the graph (any
+    depth, case branches held inline included), pairs the callee's parameter
+    types (the parameters of all its stages, in order) with the arguments'
+    types, and fails where one says `Int` and the other `Float` at the same
+    position, at any depth of the two types. Prune closes a residual number
+    variable to `Int` wherever it occurs, so a variable that stood for the
+    `Float` an argument has would show up here as an `Int` parameter.
 
-The substitution engine already enforces the rule. It finishes with
-`Compiler.Monomorphize.Prune.pruneUnreachableSpecs`, which rewrites every
-`MVar _ CNumber` in the types of the nodes it keeps to `MInt`, and crashes if
-one survives. Every type these checks inspect is among those, so on a graph
-`runToMono` returns they find nothing, and they pass whenever `runToMono`
-succeeds.
+A pipeline failure fails the check with the pipeline's message. Each check
+reports every problem found, one per line, with the SpecId of its node.
 
-  - `expectNoNumericPolymorphism` inspects the type of every node, of the
-    expressions in it, of the parameters of tail functions, closures and tail
-    definitions, and of each `let` definition. It skips expressions held inline
-    in a case's decision tree and the type of an accessor value, except as a
-    `let` definition's body.
-  - `expectNumericTypesResolved` inspects only the type of each argument of
-    each call and tail call.
-
-Inside a type, both look through list element types, custom type arguments,
-and function parameter and result types. A failing check reports one variable,
-with the SpecId of the node it was found in, not every variable found.
-
-Among what is not tested: a variable inside a tuple or record type, the field
-types of a constructor node, the types in a case's decision tree, case branch
-bodies held inline in the decision tree and the calls in them, the types in a
-destructuring path or in a call's metadata, an accessor value's type except as
-a `let` definition's body in the first check or as a call argument in the
-second, the graph after global optimization, the generated MLIR, and the
-solver engine.
+Among what is not tested: tail calls (`MonoTailCall` carries no callee type),
+and the solver engine (see `TestLogic.Generate.MonoTypeShape`).
 
 -}
 
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Compiler.Data.Id as Id
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Checks that the monomorphized graph of `srcModule` holds no
-`MVar _ CNumber` in the type of any node or expression, in any tail function,
-closure or tail definition parameter type, or in the type of any `let`
-definition. A variable inside a tuple or record type, or inside a case branch
-body held inline in the decision tree, is not reported, nor is one in an
-accessor value's type unless the accessor is a `let` definition's body. It
-fails with the pipeline's message when `runToMono` fails.
+{-| Checks that the globally optimized graph of `srcModule` holds no
+`MVar _ CNumber` anywhere, as the module documentation describes.
 -}
 expectNoNumericPolymorphism : Src.Module -> Expect.Expectation
 expectNoNumericPolymorphism srcModule =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok { monoGraph } ->
-            let
-                checks =
-                    collectCNumberChecks monoGraph
-            in
-            case checks of
-                [] ->
-                    Expect.pass
-
-                _ ->
-                    Expect.all checks ()
+        Ok { optimizedMonoGraph } ->
+            expectNoIssues (numberVarIssues optimizedMonoGraph)
 
 
-{-| Checks that the monomorphized graph of `srcModule` holds no
-`MVar _ CNumber` in the type of any argument of a call or tail call. Calls in
-case branch bodies held inline in the decision tree are not searched, and tuple
-and record types are not looked into. It fails with the pipeline's message when
-`runToMono` fails.
+{-| Checks that no call in the monomorphized graph of `srcModule` passes an
+`Int` where its callee's type says `Float`, or the reverse.
 -}
 expectNumericTypesResolved : Src.Module -> Expect.Expectation
 expectNumericTypesResolved srcModule =
@@ -94,402 +68,216 @@ expectNumericTypesResolved srcModule =
             Expect.fail msg
 
         Ok { monoGraph } ->
-            let
-                checks =
-                    collectCallSiteNumericChecks monoGraph
-            in
-            case checks of
-                [] ->
-                    Expect.pass
+            expectNoIssues (callSiteIssues monoGraph)
 
-                _ ->
-                    Expect.all checks ()
+
+expectNoIssues : List String -> Expect.Expectation
+expectNoIssues issues =
+    if List.isEmpty issues then
+        Expect.pass
+
+    else
+        Expect.fail (String.join "\n" issues)
 
 
 
 -- ============================================================================
--- CHECKS OVER NODE AND EXPRESSION TYPES
+-- NO NUMBER VARIABLES (MONO_002)
 -- ============================================================================
 
 
-{-| Returns a failing check for each `MVar _ CNumber` found in the graph's
-nodes, labelled with the SpecId of its node, which is the node's index in
-`nodes`.
+{-| One line per node of the graph holding a number variable in some type.
 -}
-collectCNumberChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
-collectCNumberChecks (Mono.MonoGraph data) =
-    Array.foldl
-        (\maybeNode ( specId, acc ) ->
-            case maybeNode of
-                Nothing ->
-                    ( specId + 1, acc )
+numberVarIssues : Mono.MonoGraph -> List String
+numberVarIssues (Mono.MonoGraph data) =
+    Array.toIndexedList data.nodes
+        |> List.filterMap
+            (\( specId, maybeNode ) ->
+                case maybeNode of
+                    Just node ->
+                        if MonoTraverse.anyNodeType hasNumberVar node then
+                            Just ("SpecId " ++ String.fromInt specId ++ ": a type holds an MVar with CNumber constraint (MONO_002)")
 
-                Just node ->
-                    ( specId + 1, collectNodeCNumberChecks specId node ++ acc )
-        )
-        ( 0, [] )
-        data.nodes
-        |> Tuple.second
+                        else
+                            Nothing
+
+                    Nothing ->
+                        Nothing
+            )
 
 
-{-| Returns a failing check for each `MVar _ CNumber` in `node`'s own type, in
-a tail function's parameter types, and in the node's body as
-`collectExprCNumberChecks` walks it.
-`specId` only labels the failures.
+{-| Returns whether `monoType` holds an `MVar _ CNumber` at any depth.
 -}
-collectNodeCNumberChecks : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
-collectNodeCNumberChecks specId node =
-    let
-        context =
-            "SpecId " ++ String.fromInt specId
-    in
-    case node of
-        Mono.MonoDefine expr monoType ->
-            checkForCNumber context monoType
-                ++ collectExprCNumberChecks context expr
-
-        Mono.MonoTailFunc params expr monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (\( _, paramType ) -> checkForCNumber context paramType) params
-                ++ collectExprCNumberChecks context expr
-
-        Mono.MonoCtor _ monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoEnum _ monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoExtern monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoManagerLeaf _ monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoPortIncoming expr monoType ->
-            checkForCNumber context monoType
-                ++ collectExprCNumberChecks context expr
-
-        Mono.MonoPortOutgoing expr monoType ->
-            checkForCNumber context monoType
-                ++ collectExprCNumberChecks context expr
-
-
-{-| Returns a failing check for each `MVar _ CNumber` in the type of `expr` or
-of any expression inside it, in closure parameter types, and in `let`
-definitions. A case is followed only into the branch bodies in its jump list;
-bodies held inline in its decision tree are not visited. The types in a
-case's decision tree, a destructuring path or a call's metadata, and an
-accessor value's type unless it is a `let` definition's body, are not
-inspected.
--}
-collectExprCNumberChecks : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
-collectExprCNumberChecks context expr =
-    case expr of
-        Mono.MonoLiteral _ monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoVarLocal _ monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoVarGlobal _ _ monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoVarKernel _ _ _ _ monoType ->
-            checkForCNumber context monoType
-
-        Mono.MonoList _ exprs monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (collectExprCNumberChecks context) exprs
-
-        Mono.MonoClosure closureInfo bodyExpr monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (\( _, paramType ) -> checkForCNumber context paramType) closureInfo.params
-                ++ List.concatMap (\( _, captureExpr, _ ) -> collectExprCNumberChecks context captureExpr) closureInfo.captures
-                ++ collectExprCNumberChecks context bodyExpr
-
-        Mono.MonoCall _ fnExpr argExprs monoType _ ->
-            checkForCNumber context monoType
-                ++ collectExprCNumberChecks context fnExpr
-                ++ List.concatMap (collectExprCNumberChecks context) argExprs
-
-        Mono.MonoTailCall _ args monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (\( _, argExpr ) -> collectExprCNumberChecks context argExpr) args
-
-        Mono.MonoIf branches elseExpr monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (\( condExpr, thenExpr ) -> collectExprCNumberChecks context condExpr ++ collectExprCNumberChecks context thenExpr) branches
-                ++ collectExprCNumberChecks context elseExpr
-
-        Mono.MonoLet def bodyExpr monoType ->
-            checkForCNumber context monoType
-                ++ collectDefCNumberChecks context def
-                ++ collectExprCNumberChecks context bodyExpr
-
-        Mono.MonoDestruct _ valueExpr monoType ->
-            checkForCNumber context monoType
-                ++ collectExprCNumberChecks context valueExpr
-
-        Mono.MonoCase _ _ _ branches monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (\( _, branchExpr ) -> collectExprCNumberChecks context branchExpr) branches
-
-        Mono.MonoRecordCreate fieldExprs monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (\( _, e ) -> collectExprCNumberChecks context e) fieldExprs
-
-        Mono.MonoRecordAccess recordExpr _ monoType ->
-            checkForCNumber context monoType
-                ++ collectExprCNumberChecks context recordExpr
-
-        Mono.MonoRecordUpdate recordExpr updates monoType ->
-            checkForCNumber context monoType
-                ++ collectExprCNumberChecks context recordExpr
-                ++ List.concatMap (\( _, updateExpr ) -> collectExprCNumberChecks context updateExpr) updates
-
-        Mono.MonoTupleCreate _ elementExprs monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (collectExprCNumberChecks context) elementExprs
-
-        Mono.MonoUnit ->
-            []
-
-        Mono.MonoAccessorValue _ _ _ ->
-            []
-
-
-{-| Returns a failing check for each `MVar _ CNumber` in a `let` definition's
-type, in a tail definition's parameter types, and in its body.
-
-The definition's type is taken to be its body's type, which
-`collectExprCNumberChecks` also inspects, so a variable there is reported
-twice, except when the body is an accessor value, whose type only this function
-checks.
-
--}
-collectDefCNumberChecks : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
-collectDefCNumberChecks context def =
-    case def of
-        Mono.MonoDef _ expr ->
-            checkForCNumber context (Mono.typeOf expr)
-                ++ collectExprCNumberChecks context expr
-
-        Mono.MonoTailDef _ params expr ->
-            checkForCNumber context (Mono.typeOf expr)
-                ++ List.concatMap (\( _, paramType ) -> checkForCNumber context paramType) params
-                ++ collectExprCNumberChecks context expr
-
-
-{-| Returns one failing check, labelled with `context` and the variable's id,
-for each `MVar _ CNumber` in `monoType`. It looks through list element types,
-custom type arguments, and function parameter and result types, but not into
-tuple or record types.
--}
-checkForCNumber : String -> Mono.MonoType -> List (() -> Expect.Expectation)
-checkForCNumber context monoType =
+hasNumberVar : Mono.MonoType -> Bool
+hasNumberVar monoType =
     case monoType of
-        Mono.MVar mvarId Mono.CNumber ->
-            [ \() -> Expect.fail (context ++ ": Unresolved numeric type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' with CNumber constraint") ]
-
-        Mono.MVar _ Mono.CEcoValue ->
-            []
+        Mono.MVar _ Mono.CNumber ->
+            True
 
         Mono.MList _ elemType ->
-            checkForCNumber context elemType
+            hasNumberVar elemType
+
+        Mono.MTuple _ elemTypes ->
+            List.any hasNumberVar elemTypes
+
+        Mono.MRecord _ fields ->
+            List.any hasNumberVar (Dict.values fields)
 
         Mono.MCustom _ _ _ typeArgs ->
-            List.concatMap (checkForCNumber context) typeArgs
+            List.any hasNumberVar typeArgs
 
         Mono.MFunction _ _ paramTypes returnType ->
-            List.concatMap (checkForCNumber context) paramTypes
-                ++ checkForCNumber context returnType
+            List.any hasNumberVar paramTypes || hasNumberVar returnType
 
         _ ->
-            []
+            False
 
 
 
 -- ============================================================================
--- CHECKS OVER CALL ARGUMENT TYPES
+-- CALL-SITE NUMERIC AGREEMENT (MONO_008)
 -- ============================================================================
 
 
-{-| Returns a failing check for each `MVar _ CNumber` in the type of a call or
-tail-call argument in the graph's nodes, except calls in case bodies held
-inline in a decision tree, labelled with the SpecId of its node, which is the
-node's index in `nodes`.
+{-| One line per call argument whose type disagrees with its parameter on
+`Int` versus `Float`.
 -}
-collectCallSiteNumericChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
-collectCallSiteNumericChecks (Mono.MonoGraph data) =
-    Array.foldl
-        (\maybeNode ( specId, acc ) ->
-            case maybeNode of
-                Nothing ->
-                    ( specId + 1, acc )
+callSiteIssues : Mono.MonoGraph -> List String
+callSiteIssues (Mono.MonoGraph data) =
+    Array.toIndexedList data.nodes
+        |> List.concatMap
+            (\( specId, maybeNode ) ->
+                case maybeNode |> Maybe.andThen nodeBody of
+                    Just body ->
+                        MonoTraverse.foldExpr (checkCall ("SpecId " ++ String.fromInt specId)) [] body
 
-                Just node ->
-                    ( specId + 1, collectNodeCallSiteChecks specId node ++ acc )
-        )
-        ( 0, [] )
-        data.nodes
-        |> Tuple.second
+                    Nothing ->
+                        []
+            )
 
 
-{-| Returns the failing call-argument checks for the body of `node`. A
-constructor, enum, extern or manager-leaf node has no body and gives none.
-`specId` only labels the failures.
+{-| Returns the expression of a node that has one.
 -}
-collectNodeCallSiteChecks : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
-collectNodeCallSiteChecks specId node =
-    let
-        context =
-            "SpecId " ++ String.fromInt specId
-    in
+nodeBody : Mono.MonoNode -> Maybe Mono.MonoExpr
+nodeBody node =
     case node of
         Mono.MonoDefine expr _ ->
-            collectExprCallSiteChecks context expr
+            Just expr
 
         Mono.MonoTailFunc _ expr _ ->
-            collectExprCallSiteChecks context expr
-
-        Mono.MonoCtor _ _ ->
-            []
-
-        Mono.MonoEnum _ _ ->
-            []
-
-        Mono.MonoExtern _ ->
-            []
-
-        Mono.MonoManagerLeaf _ _ ->
-            []
+            Just expr
 
         Mono.MonoPortIncoming expr _ ->
-            collectExprCallSiteChecks context expr
+            Just expr
 
         Mono.MonoPortOutgoing expr _ ->
-            collectExprCallSiteChecks context expr
+            Just expr
+
+        _ ->
+            Nothing
 
 
-{-| Returns a failing check for each `MVar _ CNumber` in the type of an
-argument of a call or tail call within `expr`. Each failure names the argument
-by its position in the call or, for a tail call, by its parameter name. The
-search for calls goes into closures, `if`s, `let`s, destructuring, the case
-branch bodies in a case's jump list (not those inline in its decision tree),
-records, tuples and lists, into the function and arguments of a call, and into
-tail-call arguments.
+{-| Adds a line for each argument of a call whose type disagrees with the
+callee's parameter type on `Int` versus `Float`.
 -}
-collectExprCallSiteChecks : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
-collectExprCallSiteChecks context expr =
+checkCall : String -> Mono.MonoExpr -> List String -> List String
+checkCall context expr acc =
     case expr of
-        Mono.MonoCall _ fnExpr argExprs _ _ ->
-            let
-                argChecks =
-                    List.indexedMap
-                        (\idx argExpr ->
-                            let
-                                argType =
-                                    Mono.typeOf argExpr
-                            in
-                            checkNumericTypeResolved (context ++ ", call arg " ++ String.fromInt idx) argType
-                        )
-                        argExprs
-                        |> List.concat
-            in
-            argChecks
-                ++ collectExprCallSiteChecks context fnExpr
-                ++ List.concatMap (collectExprCallSiteChecks context) argExprs
+        Mono.MonoCall _ fnExpr args _ _ ->
+            List.map2 Tuple.pair (flattenParams (Mono.typeOf fnExpr)) args
+                |> List.indexedMap
+                    (\idx ( paramType, arg ) ->
+                        if numericConflict paramType (Mono.typeOf arg) then
+                            Just
+                                (context
+                                    ++ ": call argument "
+                                    ++ String.fromInt idx
+                                    ++ " of "
+                                    ++ calleeLabel fnExpr
+                                    ++ " disagrees with its parameter on Int versus Float (MONO_008)"
+                                )
 
-        Mono.MonoTailCall _ args _ ->
-            let
-                argChecks =
-                    List.concatMap
-                        (\( name, argExpr ) ->
-                            let
-                                argType =
-                                    Mono.typeOf argExpr
-                            in
-                            checkNumericTypeResolved (context ++ ", tail call arg " ++ name) argType
-                        )
-                        args
-            in
-            argChecks
-                ++ List.concatMap (\( _, argExpr ) -> collectExprCallSiteChecks context argExpr) args
-
-        Mono.MonoList _ exprs _ ->
-            List.concatMap (collectExprCallSiteChecks context) exprs
-
-        Mono.MonoClosure closureInfo bodyExpr _ ->
-            List.concatMap (\( _, captureExpr, _ ) -> collectExprCallSiteChecks context captureExpr) closureInfo.captures
-                ++ collectExprCallSiteChecks context bodyExpr
-
-        Mono.MonoIf branches elseExpr _ ->
-            List.concatMap (\( condExpr, thenExpr ) -> collectExprCallSiteChecks context condExpr ++ collectExprCallSiteChecks context thenExpr) branches
-                ++ collectExprCallSiteChecks context elseExpr
-
-        Mono.MonoLet def bodyExpr _ ->
-            collectDefCallSiteChecks context def
-                ++ collectExprCallSiteChecks context bodyExpr
-
-        Mono.MonoDestruct _ valueExpr _ ->
-            collectExprCallSiteChecks context valueExpr
-
-        Mono.MonoCase _ _ _ branches _ ->
-            List.concatMap (\( _, branchExpr ) -> collectExprCallSiteChecks context branchExpr) branches
-
-        Mono.MonoRecordCreate fieldExprs _ ->
-            List.concatMap (\( _, e ) -> collectExprCallSiteChecks context e) fieldExprs
-
-        Mono.MonoRecordAccess recordExpr _ _ ->
-            collectExprCallSiteChecks context recordExpr
-
-        Mono.MonoRecordUpdate recordExpr updates _ ->
-            collectExprCallSiteChecks context recordExpr
-                ++ List.concatMap (\( _, updateExpr ) -> collectExprCallSiteChecks context updateExpr) updates
-
-        Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectExprCallSiteChecks context) elementExprs
+                        else
+                            Nothing
+                    )
+                |> List.filterMap identity
+                |> (\issues -> issues ++ acc)
 
         _ ->
-            []
+            acc
 
 
-{-| Returns the failing call-argument checks for the body of a `let`
-definition.
+{-| Names a callee for a problem line.
 -}
-collectDefCallSiteChecks : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
-collectDefCallSiteChecks context def =
-    case def of
-        Mono.MonoDef _ expr ->
-            collectExprCallSiteChecks context expr
+calleeLabel : Mono.MonoExpr -> String
+calleeLabel fnExpr =
+    case fnExpr of
+        Mono.MonoVarGlobal _ specId _ ->
+            "SpecId " ++ String.fromInt specId
 
-        Mono.MonoTailDef _ _ expr ->
-            collectExprCallSiteChecks context expr
+        Mono.MonoVarLocal name _ ->
+            name
+
+        Mono.MonoVarKernel _ _ home name _ ->
+            home ++ "." ++ name
+
+        _ ->
+            "a computed function"
 
 
-{-| Returns one failing check, labelled with `context` and the variable's id,
-for each `MVar _ CNumber` in `monoType`. It looks into types exactly as
-`checkForCNumber` does, not into tuple or record types, and differs from it
-only in the failure message.
+{-| Returns the parameter types of every stage of a function type, outermost
+first.
 -}
-checkNumericTypeResolved : String -> Mono.MonoType -> List (() -> Expect.Expectation)
-checkNumericTypeResolved context monoType =
+flattenParams : Mono.MonoType -> List Mono.MonoType
+flattenParams monoType =
     case monoType of
-        Mono.MVar mvarId Mono.CNumber ->
-            [ \() -> Expect.fail (context ++ ": Numeric type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' not resolved to MInt or MFloat") ]
-
-        Mono.MVar _ Mono.CEcoValue ->
-            []
-
-        Mono.MList _ elemType ->
-            checkNumericTypeResolved context elemType
-
-        Mono.MCustom _ _ _ typeArgs ->
-            List.concatMap (checkNumericTypeResolved context) typeArgs
-
-        Mono.MFunction _ _ paramTypes returnType ->
-            List.concatMap (checkNumericTypeResolved context) paramTypes
-                ++ checkNumericTypeResolved context returnType
+        Mono.MFunction _ _ paramTypes resultType ->
+            paramTypes ++ flattenParams resultType
 
         _ ->
             []
+
+
+{-| Returns whether two types, walked in parallel through the constructors
+they share, have `Int` on one side and `Float` on the other somewhere.
+Where their shapes differ otherwise (a type variable, say), nothing is
+compared below that point.
+-}
+numericConflict : Mono.MonoType -> Mono.MonoType -> Bool
+numericConflict a b =
+    case ( a, b ) of
+        ( Mono.MInt, Mono.MFloat ) ->
+            True
+
+        ( Mono.MFloat, Mono.MInt ) ->
+            True
+
+        ( Mono.MList _ x, Mono.MList _ y ) ->
+            numericConflict x y
+
+        ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
+            List.any identity (List.map2 numericConflict xs ys)
+
+        ( Mono.MRecord _ xs, Mono.MRecord _ ys ) ->
+            Dict.foldl
+                (\name x found ->
+                    found
+                        || (case Dict.get name ys of
+                                Just y ->
+                                    numericConflict x y
+
+                                Nothing ->
+                                    False
+                           )
+                )
+                False
+                xs
+
+        ( Mono.MCustom _ _ _ xs, Mono.MCustom _ _ _ ys ) ->
+            List.any identity (List.map2 numericConflict xs ys)
+
+        ( Mono.MFunction _ _ xs x, Mono.MFunction _ _ ys y ) ->
+            List.any identity (List.map2 numericConflict xs ys) || numericConflict x y
+
+        _ ->
+            False

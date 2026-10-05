@@ -76,8 +76,14 @@ Each test asserts that its module's fingerprint equals the recorded pair:
     `Elm.Kernel.List.foldr`, which contributes no constraint of its own (on
     the erased pathway its constraint is `CTrue`).
 
-The `if-chain` pair does not match what the generator produces now,
-`( 1208837591, 366174875 )`, so that test fails.
+The `if-chain` pair is the output of the plain recursive walk of an `if`
+whose `else` branch is another `if`. Under the JavaScript backend these tests
+run on, `ifSpineGo` in `Compiler.Type.Constrain.Typed.Expression` is compiled
+to a `while` loop, and the closures it used to build for a level captured that
+loop's reassigned variables: every outer level then assembled its constraint
+with the innermost level's conditions and expectation, giving
+`( 1208837591, 366174875 )`. Building those closures outside the loop
+(`ifLevelExpectations`) restores the recorded pair.
 
 When a fingerprint moves, the hashes do not say where. Comparing the two
 `Debug.toString` strings that `fingerprints` hashes, from before and after the

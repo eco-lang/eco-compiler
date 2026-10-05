@@ -7,16 +7,17 @@ generic operation for a value of a custom type.
 
 It compiles a source module to MLIR and looks at every `eco.construct.custom`
 op in it. The op's `constructor` attribute, a string, names the constructor it
-builds, and the op is a violation when that name is `Cons`, `Nil`, `List.Cons`,
-`List.Nil` or `::`.
+builds, and the op is a violation when that name is `::` or `[]`, the names of
+elm/core's list constructors. The attribute holds the bare constructor name
+with no module, so names a program could declare itself, such as `Cons` or
+`Nil`, are not treated as list constructors: no Elm program can declare a
+constructor named `::` or `[]`.
 
 Among what is not checked:
 
   - that cons cells are built with `eco.construct.list`, or that the empty
     list is an `eco.constant`;
-  - an `eco.construct.custom` op with no `constructor` attribute;
-  - where a matching constructor comes from: the test is by name only, so a
-    program's own constructor named `Cons` or `Nil` is reported too.
+  - an `eco.construct.custom` op with no `constructor` attribute.
 
 @docs expectListConstruction
 
@@ -36,8 +37,7 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Returns an expectation that `srcModule` compiles to MLIR with no
-`eco.construct.custom` op whose `constructor` attribute is `Cons`, `Nil`,
-`List.Cons`, `List.Nil` or `::`.
+`eco.construct.custom` op whose `constructor` attribute is `::` or `[]`.
 
 The module is compiled with `TestLogic.TestPipeline.runToMlir`. If compilation
 fails, the expectation fails with the pipeline's message. If there are
@@ -93,9 +93,9 @@ checkForListConstructorMisuse op =
             Nothing
 
 
-{-| Returns whether `name` is one of the names this check treats as a list
-constructor: `Cons`, `Nil`, `List.Cons`, `List.Nil` or `::`.
+{-| Returns whether `name` is the name of one of elm/core's list constructors,
+`::` or `[]`.
 -}
 isListConstructorName : String -> Bool
 isListConstructorName name =
-    List.member name [ "Cons", "Nil", "List.Cons", "List.Nil", "::" ]
+    List.member name [ "::", "[]" ]

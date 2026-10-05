@@ -33,9 +33,8 @@ nesting depth:
     head operand is `i64`, `f64` or `i16`.
 
 A missing bitmap reads as 0 (every slot boxed) and a missing `head_unboxed` as
-false. An op with no `_operand_types` attribute is not checked. On the
-JavaScript back end, where `Bitwise` is 32-bit, only slots 0 to 15 are read
-correctly; a slot N past 15 is read as slot N modulo 16.
+false. An op with no `_operand_types` attribute is not checked. Slots are read
+with exact arithmetic, so every slot a 52-bit bitmap holds is compared.
 
 Among what is not tested: the `head_kind` attribute of `eco.construct.list`,
 `eco.papCreateGroup` ops, the types of function parameters and results, and
@@ -46,7 +45,6 @@ passed.
 
 -}
 
-import Bitwise
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
@@ -161,14 +159,15 @@ checkBitmapBit op bitmap index operandType =
 
 {-| Returns the slot kind held in slot `index` of `bitmap`.
 
-On the JavaScript back end, `Bitwise` works on 32-bit values and wraps shift
-counts at 32, so only slots 0 to 15 are read correctly there. For a higher
-`index` it returns the kind in slot `index` modulo 16.
+`Bitwise` (and `//`) work on 32-bit values on the JavaScript back end, which
+would wrap a slot past 15, so the slot is read with float arithmetic, exact up
+to the 52 bits a bitmap uses, as `Compiler.Generate.MLIR.Types.bitmapSetKind`
+writes it.
 
 -}
 slotKind : Int -> Int -> Int
 slotKind bitmap index =
-    Bitwise.and (Bitwise.shiftRightZfBy (2 * index) bitmap) 3
+    modBy 4 (floor (toFloat bitmap / toFloat (4 ^ index)))
 
 
 {-| Returns the slot kind an operand of type `ty` requires: 1 for `i64`, 2 for

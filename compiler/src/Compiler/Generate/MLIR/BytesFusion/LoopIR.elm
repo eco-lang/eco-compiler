@@ -1,6 +1,7 @@
 module Compiler.Generate.MLIR.BytesFusion.LoopIR exposing
     ( Endianness(..), WidthExpr(..), Op(..), DecoderOp(..)
     , simplifyWidth
+    , ListOrder(..), LoopCount(..)
     )
 
 {-| The small vocabulary in which a fused `elm/bytes` encoder or decoder is
@@ -149,16 +150,19 @@ last. They are how `map` to `map5` combine their decoders' results.
 `PushValue` produces the value of its expression without reading anything,
 which is what `succeed` does.
 
-`LoopDecodeList` decodes a list of a given number of items, each decoded by
-its item operations. Its arguments are the count, the cursor name, the item
-operations and the result placeholder. The count is a string: one of the form
-`"const:N"` is the literal count `N`, and anything else is the placeholder of
-an earlier result.
+`LoopDecodeList` decodes a list of a given number of items (none when the count
+is zero or negative), each decoded by its item operations, which must be one
+fixed-width read: the bytes for every item are checked once before the loop,
+and the decoder fails if they are not all there. Its arguments are the count,
+the cursor name, the item operations, the order of the resulting list and the
+result placeholder.
 
-`LoopSentinelDecodeList` decodes items with its item operations until one equals
-the integer sentinel. The value the item operations produce is the one
-compared, and the sentinel itself is not put in the list. Its arguments are the
-sentinel, the cursor name, the item operations and the result placeholder.
+`LoopSentinelDecodeList` decodes items with its item operations, which must be
+one fixed-width integer read, until one equals the integer sentinel. Each read
+is bounds-checked, and running out of input before the sentinel fails the
+decoder. The sentinel itself is consumed but not put in the list. Its arguments
+are the sentinel, the cursor name, the item operations, the order of the
+resulting list and the result placeholder.
 
 `ReturnJust` ends the decoder with `Just` the result named by its placeholder,
 and `ReturnNothing` ends it with `Nothing`.
@@ -184,10 +188,30 @@ type DecoderOp
     | Apply4 Mono.MonoExpr String String String String String
     | Apply5 Mono.MonoExpr String String String String String String
     | PushValue Mono.MonoExpr String
-    | LoopDecodeList String String (List DecoderOp) String
-    | LoopSentinelDecodeList Int String (List DecoderOp) String
+    | LoopDecodeList LoopCount String (List DecoderOp) ListOrder String
+    | LoopSentinelDecodeList Int String (List DecoderOp) ListOrder String
     | ReturnJust String
     | ReturnNothing
+
+
+{-| How many items a `LoopDecodeList` decodes: a literal count, the result of
+an earlier operation named by its placeholder, or the value of an expression
+(an `Int`), compiled where the loop is emitted.
+-}
+type LoopCount
+    = CountLiteral Int
+    | CountPlaceholder String
+    | CountExpression Mono.MonoExpr
+
+
+{-| The order of the list a decoding loop produces. `InReadOrder` has the items
+in the order they were read, the result of `List.reverse acc` for a loop that
+accumulates with `::`; `ReverseReadOrder` has the last item read first, the
+accumulator `acc` itself.
+-}
+type ListOrder
+    = InReadOrder
+    | ReverseReadOrder
 
 
 {-| Returns `expr` with the sums of constant widths folded into single

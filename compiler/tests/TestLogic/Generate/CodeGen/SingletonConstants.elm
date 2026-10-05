@@ -15,21 +15,23 @@ its callers.
 compilation fails or if any of these is found among the module's ops, at any
 depth:
 
-  - an `eco.constant` with no integer `kind`, or with a kind outside 1 to 7.
-    `Compiler.Generate.MLIR.Ops` gives True kind 1, and gives kind 2 to the
-    single empty constant that Unit, the empty record, the empty list,
-    `Nothing` and the empty string all share; both pass. It gives False kind 0,
-    so an `eco.constant` for False is reported;
-  - an `eco.construct.custom` whose `constructor` attribute is `True`, `False`,
-    `Nothing`, `Nil` or `Unit`;
+  - an `eco.constant` with no integer `kind`, or with a kind other than the
+    three `Compiler.Generate.MLIR.Ops` emits, which match the runtime's
+    constant codes: 0 for False, 1 for True, and 2 for the single empty
+    constant that Unit, the empty record, the empty list, `Nothing` and the
+    empty string all share;
+  - an `eco.construct.custom` whose `size` is 0, that is, a nullary
+    constructor built on the heap. Every nullary constructor must be an
+    embedded constant (`eco.constant` or `eco.constant.null_cons`, CGEN\_079),
+    whatever its name;
   - an `eco.string_literal` whose `value` is the empty string.
 
 Each such op is one violation, and a failure shows only the first, as
 `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
 
-Among what is not checked: ops with any other name, such as
-`eco.constant.null_cons` or `eco.make.custom`, are not examined, so a singleton
-built by one of them is not reported.
+Among what is not checked: that a constant's kind is the right one for the
+value it stands for, the `tag` of an `eco.constant.null_cons`, and ops with
+any other name, such as `eco.make.custom`.
 
 @docs expectSingletonConstants
 
@@ -63,17 +65,12 @@ expectSingletonConstants srcModule =
             violationsToExpectation (checkSingletonConstants mlirModule)
 
 
-{-| The `kind` values an `eco.constant` may carry without being reported.
-
-`Compiler.Generate.MLIR.Ops` gives True kind 1, and gives kind 2 to the single
-empty constant shared by Unit, the empty record, the empty list, `Nothing` and
-the empty string, both in this list. It gives False kind 0, which is not, so an
-`eco.constant` for False is reported as having an unknown kind.
-
+{-| The `kind` values an `eco.constant` may carry: 0 (False), 1 (True) and 2
+(the shared empty constant), as `Compiler.Generate.MLIR.Ops` emits them.
 -}
 knownSingletonKinds : List Int
 knownSingletonKinds =
-    [ 1, 2, 3, 4, 5, 6, 7 ]
+    [ 0, 1, 2 ]
 
 
 {-| Returns every violation in `mlirModule`: those of `eco.constant` ops first,
@@ -133,29 +130,23 @@ checkConstantKind op =
                 Nothing
 
 
-{-| Returns a violation for an op whose `constructor` attribute is `True`,
-`False`, `Nothing`, `Nil` or `Unit`, and `Nothing` otherwise, including when
-the op has no `constructor` attribute.
+{-| Returns a violation for an `eco.construct.custom` whose `size` attribute is
+0, and `Nothing` otherwise.
 -}
 checkForSingletonMisuse : MlirOp -> Maybe Violation
 checkForSingletonMisuse op =
-    let
-        maybeConstructorName =
-            getStringAttr "constructor" op
-    in
-    case maybeConstructorName of
-        Just name ->
-            if List.member name [ "True", "False", "Nothing", "Nil", "Unit" ] then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message = "eco.construct.custom used for singleton '" ++ name ++ "', should use eco.constant"
-                    }
+    case getIntAttr "size" op of
+        Just 0 ->
+            Just
+                { opId = op.id
+                , opName = op.name
+                , message =
+                    "eco.construct.custom with size 0 for nullary constructor '"
+                        ++ (getStringAttr "constructor" op |> Maybe.withDefault "<unnamed>")
+                        ++ "', should be an embedded constant (eco.constant / eco.constant.null_cons)"
+                }
 
-            else
-                Nothing
-
-        Nothing ->
+        _ ->
             Nothing
 
 

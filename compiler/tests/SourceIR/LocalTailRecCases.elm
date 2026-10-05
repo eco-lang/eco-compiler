@@ -32,8 +32,8 @@ The cases, in the order they run:
     `process`'s argument `x`.
   - Two local tail-recursive functions, `countDown` and `sumUp`, in one `let`,
     both called in its body.
-  - A local tail-recursive `inner` inside a local `outer` that calls itself, but
-    not in tail position, so `outer` is not a tail definition.
+  - A local tail-recursive `inner` inside the body of a local `outer` that is
+    itself tail-recursive.
 
 Among what is not tested: a local tail-recursive function whose parameters or
 result are anything other than numbers, a local tail-recursive function that is
@@ -79,10 +79,6 @@ expectSuite expectFn condStr =
 
 
 {-| Builds the five labelled cases, each passing its program to `expectFn`.
-
-The label of the last case says the inner function is tail-recursive inside a
-tail-recursive body, but its `outer` is not tail-recursive.
-
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
@@ -327,12 +323,12 @@ multipleLocalTailRecs expectFn _ =
 
 
 {-| Builds and checks a module `Test` whose `testValue` defines a local
-recursive function `outer` with a local tail-recursive function `inner` in its
-body:
+tail-recursive function `outer` with a local tail-recursive function `inner` in
+its body:
 
     testValue =
         let
-            outer n =
+            outer n total =
                 let
                     inner i acc =
                         if i <= 0 then
@@ -342,15 +338,15 @@ body:
                             inner (i - 1) (acc + 1)
                 in
                 if n <= 0 then
-                    0
+                    total
 
                 else
-                    inner n 0 + outer (n - 1)
+                    outer (n - 1) (total + inner n 0)
         in
-        outer 5
+        outer 5 0
 
-`outer`'s call to itself is an operand of `+`, not a tail call, so only `inner`
-is a tail definition. Nothing is annotated.
+Both self-calls are in tail position, so both `outer` and `inner` are tail
+definitions, one nested in the other. Nothing is annotated.
 
 -}
 nestedLocalTailRec : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -371,18 +367,20 @@ nestedLocalTailRec expectFn _ =
                 [ define "inner" [ pVar "i", pVar "acc" ] innerBody ]
                 (ifExpr
                     (binopsExpr [ ( varExpr "n", "<=" ) ] (intExpr 0))
-                    (intExpr 0)
-                    (binopsExpr
-                        [ ( callExpr (varExpr "inner") [ varExpr "n", intExpr 0 ], "+" ) ]
-                        (callExpr (varExpr "outer") [ binopsExpr [ ( varExpr "n", "-" ) ] (intExpr 1) ])
+                    (varExpr "total")
+                    (callExpr (varExpr "outer")
+                        [ binopsExpr [ ( varExpr "n", "-" ) ] (intExpr 1)
+                        , binopsExpr [ ( varExpr "total", "+" ) ]
+                            (callExpr (varExpr "inner") [ varExpr "n", intExpr 0 ])
+                        ]
                     )
                 )
 
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "outer" [ pVar "n" ] outerBody ]
-                    (callExpr (varExpr "outer") [ intExpr 5 ])
+                    [ define "outer" [ pVar "n", pVar "total" ] outerBody ]
+                    (callExpr (varExpr "outer") [ intExpr 5, intExpr 0 ])
                 )
     in
     expectFn modul

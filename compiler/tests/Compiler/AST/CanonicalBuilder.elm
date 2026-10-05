@@ -157,9 +157,10 @@ makeTypedDef name args body resultType =
 
 
 {-| Returns the names of the type variables that occur in `tipe`, record
-extension variables included. An alias application is searched in both its
-arguments and its body, so a `Holey` body contributes the alias's own parameter
-names.
+extension variables included. An alias application is searched in its
+arguments only, as `Compiler.Canonicalize.Type` does: a `Holey` body is written
+in the alias's own parameter names, which the alias binds, and a `Filled` body
+holds nothing the arguments do not.
 -}
 extractFreeTypeVars : Can.Type Name -> Dict Name.Name ()
 extractFreeTypeVars tipe =
@@ -205,23 +206,11 @@ extractFreeTypeVars tipe =
         Can.TUnit ->
             Dict.empty
 
-        Can.TAlias _ _ args aliasedType ->
-            let
-                argVars =
-                    List.foldl
-                        (\( _, t ) acc -> Dict.union acc (extractFreeTypeVars t))
-                        Dict.empty
-                        args
-
-                aliasVars =
-                    case aliasedType of
-                        Can.Holey t ->
-                            extractFreeTypeVars t
-
-                        Can.Filled t ->
-                            extractFreeTypeVars t
-            in
-            Dict.union argVars aliasVars
+        Can.TAlias _ _ args _ ->
+            List.foldl
+                (\( _, t ) acc -> Dict.union acc (extractFreeTypeVars t))
+                Dict.empty
+                args
 
 
 

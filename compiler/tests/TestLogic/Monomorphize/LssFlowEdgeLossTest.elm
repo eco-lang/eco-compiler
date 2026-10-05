@@ -14,7 +14,7 @@ the type of what a two-stage function returns once it has its first argument.
 Without this test, such an inner arrow could be left as a variable with
 nothing failing.
 
-The fixture is the module `fixtureRef`:
+The first fixture is the module `fixtureRef`:
 
     mkAdder =
         \a -> \b -> a + b
@@ -28,26 +28,25 @@ The fixture is the module `fixtureRef`:
 `mkAdder` is a value with no declared parameters whose body is two nested
 lambdas, and it reaches `useStep` as a bare reference, not as the result of a
 call. `useStep` applies its parameter `f` to one argument and the result to a
-second, so both arrows of `f`'s type are used. The module is compiled with the
-solver engine at the default lambda-set configuration and the default
-specialization limits, and the annotations are read from the specialization
-registry, one row per specialization.
+second, so both arrows of `f`'s type are used. The second fixture,
+`fixtureCall`, hands `useStep` the result of a call instead:
+`mkAdderC k = \a -> \b -> k + a + b` and `testValue = useStep (mkAdderC 1) 5`.
+Each module is compiled with the solver engine at the default lambda-set
+configuration and the default specialization limits, and the annotations are
+read from the specialization registry, one row per specialization.
 
-What the test establishes:
+What the tests establish, for each fixture:
 
-  - The one test passes when at least one `useStep` row has a non-empty `LSet`
-    both on the arrow of its function parameter and on the arrow of that
-    parameter's result, and no `mkAdder` row has an `LVar` on the arrow of the
-    function it returns. It does not compare the members of the two rows, and
-    any other annotation on `mkAdder`'s inner arrow, such as `LTop` (widened,
-    naming no members) or `LPartial` (some members, possibly more), also
-    passes. If `mkAdder` has no row whose type has a nested arrow, the second
-    half passes without checking anything.
+  - The producer (`mkAdder`, or `mkAdderC` after its one parameter) has
+    exactly one row, and the two arrows of the function it hands over carry
+    non-empty `LSet`s.
+  - There is at least one `useStep` row, and every one carries exactly those
+    two annotations on the arrow of its function parameter and on the arrow
+    of that parameter's result, so the consumer and the producer were healed
+    consistently.
 
-Among what is not tested: the same consumer given a function produced by a
-call (`fixtureCall`, with `useStep (mkAdderC 1) 5`, is built but no test uses
-it), which of the solver's passes fills the inner arrows, and what members
-they hold.
+Among what is not tested: which of the solver's passes fills the inner
+arrows, and which members they hold.
 
 -}
 
@@ -72,34 +71,64 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| The lambda-set test for a curried function passed by bare reference,
-described in the module docstring.
+{-| The lambda-set tests for a curried function passed by bare reference and
+as the result of a call, described in the module docstring.
 -}
 suite : Test
 suite =
     Test.describe "flow edge loss — the §9 pinned examples"
         [ Test.test "BARE-REF arg at shipped defaults: settle heals both rows consistently" <|
             \() ->
-                case runDefaults fixtureRef of
-                    Ok g ->
-                        let
-                            xs =
-                                useStepAnnos g
-                        in
-                        if List.any (\( h, r ) -> isSet h && isSet r) xs && not (List.any isVar (mkAdderInner g)) then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("expected settle-healed sets in BOTH rows, got useStep "
-                                    ++ describePairs xs
-                                    ++ " / mkAdder inner "
-                                    ++ describe (mkAdderInner g)
-                                )
-
-                    Err e ->
-                        Expect.fail e
+                expectConsistentRows fixtureRef "mkAdder" 0
+        , Test.test "CALL-RESULT arg at shipped defaults: settle heals both rows consistently" <|
+            \() ->
+                expectConsistentRows fixtureCall "mkAdderC" 1
         ]
+
+
+{-| Compiles `fixture` and passes when the producer `producer` has exactly one
+registry row and every `useStep` row (at least one) carries on its function
+parameter's two arrows the same two annotations, both non-empty `LSet`s, as
+the producer's row carries on the two arrows of the function it hands over:
+its own type's arrows after dropping `skip` leading ones, the parameters
+applied before the function is passed.
+-}
+expectConsistentRows : Src.Module -> String -> Int -> Expect.Expectation
+expectConsistentRows fixture producer skip =
+    case runDefaults fixture of
+        Ok g ->
+            let
+                consumer =
+                    useStepAnnos g
+
+                produced =
+                    List.map (curriedAnnos >> List.drop skip) (rowTypes producer g)
+            in
+            case produced of
+                [ [ h, r ] ] ->
+                    if isSet h && isSet r && not (List.isEmpty consumer) && List.all (\pair -> pair == ( h, r )) consumer then
+                        Expect.pass
+
+                    else
+                        Expect.fail
+                            ("expected every useStep row to carry the "
+                                ++ producer
+                                ++ " row's sets "
+                                ++ describePairs [ ( h, r ) ]
+                                ++ ", got useStep "
+                                ++ describePairs consumer
+                            )
+
+                _ ->
+                    Expect.fail
+                        ("fixture broken: expected one "
+                            ++ producer
+                            ++ " row handing over a two-arrow function, got "
+                            ++ String.join ", " (List.map describe produced)
+                        )
+
+        Err e ->
+            Expect.fail e
 
 
 
@@ -144,6 +173,31 @@ fixtureRef =
           , args = []
           , tipe = hInt
           , body = callExpr (varExpr "useStep") [ varExpr "mkAdder", intExpr 5 ]
+          }
+        ]
+        []
+        []
+
+
+{-| The module in which `useStep` is given the function a call returns:
+`mkAdderC k = \a -> \b -> k + a + b`, annotated `Int -> Int -> Int -> Int`,
+and `testValue` is `useStep (mkAdderC 1) 5`.
+-}
+fixtureCall : Src.Module
+fixtureCall =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = "mkAdderC"
+          , args = [ pVar "k" ]
+          , tipe = tLambda hInt (tLambda hInt (tLambda hInt hInt))
+          , body =
+                lambdaExpr [ pVar "a" ]
+                    (lambdaExpr [ pVar "b" ] (binopsExpr [ ( varExpr "k", "+" ), ( varExpr "a", "+" ) ] (varExpr "b")))
+          }
+        , useStepDef
+        , { name = "testValue"
+          , args = []
+          , tipe = hInt
+          , body = callExpr (varExpr "useStep") [ callExpr (varExpr "mkAdderC") [ intExpr 1 ], intExpr 5 ]
           }
         ]
         []
@@ -206,23 +260,16 @@ useStepAnnos (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| Returns, for each registry row of `mkAdder` whose type returns a function,
-the annotation on the arrow of the function it returns: the second arrow of
-`Int -> Int -> Int`. Rows of any other shape are skipped.
+{-| Returns the type of every registry row of the global named `name`.
 -}
-mkAdderInner : Mono.MonoGraph -> List Mono.LambdaSetAnno
-mkAdderInner (Mono.MonoGraph g) =
+rowTypes : String -> Mono.MonoGraph -> List Mono.MonoType
+rowTypes name (Mono.MonoGraph g) =
     Array.foldl
         (\entry acc ->
             case entry of
-                Just ( Mono.Global _ name, monoType ) ->
-                    if name == "mkAdder" then
-                        case monoType of
-                            Mono.MFunction _ _ _ (Mono.MFunction _ inner _ _) ->
-                                inner :: acc
-
-                            _ ->
-                                acc
+                Just ( Mono.Global _ n, monoType ) ->
+                    if n == name then
+                        monoType :: acc
 
                     else
                         acc
@@ -234,16 +281,18 @@ mkAdderInner (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
-{-| Tells whether an annotation is a set variable, `LVar`.
+{-| Returns the annotations on the arrows of a curried function type, the
+outermost first, following each arrow's result. A flattened arrow with more
+than one parameter ends the walk, so it shows as a shorter list.
 -}
-isVar : Mono.LambdaSetAnno -> Bool
-isVar a =
-    case a of
-        Mono.LVar _ ->
-            True
+curriedAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
+curriedAnnos t =
+    case t of
+        Mono.MFunction _ anno [ _ ] result ->
+            anno :: curriedAnnos result
 
         _ ->
-            False
+            []
 
 
 {-| Tells whether an annotation is an `LSet` with at least one member.

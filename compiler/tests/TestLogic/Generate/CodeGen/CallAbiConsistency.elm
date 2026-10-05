@@ -26,7 +26,8 @@ Among what is not checked:
 
   - a call whose callee has no top-level `func.func` with a `function_type` in
     the module;
-  - an `eco.call` with no `callee` or no `_operand_types` attribute;
+  - an `eco.call` with no `callee`, or with operands but no `_operand_types`
+    attribute;
   - the types of a call's results.
 
 @docs expectCallAbiConsistency
@@ -138,7 +139,9 @@ extractParamTypes mlirType =
 of the module's functions by name.
 
 The call is not checked, and `Nothing` is returned, when it has no `callee`,
-when the callee is not in `funcParamTypes`, or when it has no `_operand_types`.
+when the callee is not in `funcParamTypes`, or when it has operands but no
+`_operand_types`. A call with no operands and no `_operand_types` (the
+generator omits the attribute then) is checked as passing no arguments.
 Otherwise the last `eco.gc_roots_count` operand types, the GC-root hints, are
 dropped before the comparison.
 
@@ -165,7 +168,13 @@ checkCallOp funcParamTypes op =
                 Just expectedParamTypes ->
                     case extractOperandTypes op of
                         Nothing ->
-                            Nothing
+                            -- The generator omits `_operand_types` from a call
+                            -- with no operands; that call passes no arguments.
+                            if List.isEmpty op.operands then
+                                checkTypesMatch op calleeName expectedParamTypes []
+
+                            else
+                                Nothing
 
                         Just allOperandTypes ->
                             let

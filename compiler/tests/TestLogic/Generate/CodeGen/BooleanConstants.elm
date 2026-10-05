@@ -1,48 +1,54 @@
 module TestLogic.Generate.CodeGen.BooleanConstants exposing (expectBooleanConstants)
 
-{-| Checks how a Bool is represented in generated MLIR, so that a Bool recorded
-as a raw `i1` operand of an op that builds a heap object (`eco.construct.*`) or
-a closure (`eco.papCreate`) fails a test instead of going unnoticed.
+{-| Checks how a Bool is represented in generated MLIR (CGEN\_009, REP\_ABI\_001,
+REP\_CLOSURE\_001, FORBID\_CLOSURE\_001), so that a Bool passed as a raw `i1` into
+a heap object, a closure or a call boundary fails a test instead of going
+unnoticed.
 
 A Bool has two representations in the MLIR the code generator emits. In SSA
 operand context it is `i1`, a one-bit integer, which is what an `eco.case`
 with `case_kind` `"bool"` branches on. In a heap object, in a closure capture
-and at a function boundary it is `!eco.value`, a boxed value.
-`Compiler.Generate.MLIR.Types` decides which representation applies where.
+and at a function boundary it is `!eco.value`, a boxed value (True and False
+are embedded constants, HEAP\_010). `Compiler.Generate.MLIR.Types` decides which
+representation applies where.
 
-`expectBooleanConstants` compiles a program to MLIR and fails when it finds
-either of two kinds of violation, showing the first one found:
+`expectBooleanConstants` compiles a program to MLIR and fails, with one line
+per violation, on either of two kinds:
 
-  - An `eco.constant` op whose `value` attribute, a string or a symbol
-    reference, is `"True"` or `"False"` and whose one result is not
+  - A True or False `eco.constant`, recognised by its integer `kind` attribute
+    (1 for True, 0 for False, as `Compiler.Generate.MLIR.Ops.ecoConstantTrue`
+    and `ecoConstantFalse` build it), whose results are not exactly one
     `!eco.value`.
-  - An `eco.construct.*` or `eco.papCreate` op with `i1` among the types listed
-    in its `_operand_types` attribute.
+  - An operand of type `i1` given to an op that crosses a heap, closure or
+    call boundary: `eco.construct.*`, `eco.papCreate`, `eco.papCreateGroup`,
+    `eco.papExtend`, `eco.call` and `eco.return`. The operand's type is its
+    defined type, the type of the op result or block argument that introduces
+    the SSA name within the enclosing top-level op, not the op's
+    `_operand_types` record (`eco.papCreateGroup` has none).
 
-Among what is not checked: an op with no `_operand_types` attribute; the
-operands of `eco.papExtend`, `eco.papCreateGroup`, `eco.to_heap`, `eco.call`
-and any other op; an `i1` used anywhere else; and an `eco.constant` with no
-result or more than one. The `eco.constant` ops that `Compiler.Generate.MLIR.Ops`
-builds carry an integer `kind` attribute and no `value` attribute, so none of
-them is counted as a Bool constant.
+Among what is not checked: an `i1` stored inside an SSA aggregate that
+`eco.to_heap` moves to the heap; and `i1` operands of any other op, such as
+`eco.yield` or the arithmetic and comparison ops where `i1` is legitimate.
 
 @docs expectBooleanConstants
 
 -}
 
 import Compiler.AST.Source as Src
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants
     exposing
-        ( Violation
-        , extractOperandTypes
+        ( TypeEnv
+        , Violation
         , extractResultTypes
         , findOpsNamed
-        , getStringAttr
+        , getIntAttr
         , isEcoValueType
+        , typeEnvOfOp
         , violationsToExpectation
-        , walkAllOps
+        , walkOpAndChildren
         )
 import TestLogic.TestPipeline exposing (runToMlir)
 
@@ -64,53 +70,48 @@ expectBooleanConstants srcModule =
             violationsToExpectation (checkBooleanConstants mlirModule)
 
 
-{-| Returns the violations in `mlirModule`: first each Bool `eco.constant` whose
-result is not `!eco.value`, then each `i1` in the `_operand_types` of an
-`eco.construct.*` or `eco.papCreate` op.
+{-| Returns the violations in `mlirModule`: first each True/False
+`eco.constant` whose results are not one `!eco.value`, then each `i1` operand of
+a boundary op.
 -}
 checkBooleanConstants : MlirModule -> List Violation
 checkBooleanConstants mlirModule =
     let
-        constantOps =
-            findOpsNamed "eco.constant" mlirModule
-
-        boolConstants =
-            List.filter isBoolConstant constantOps
-
         constantViolations =
-            List.filterMap checkBoolConstantType boolConstants
-
-        i1Violations =
-            checkI1Usage mlirModule
+            findOpsNamed "eco.constant" mlirModule
+                |> List.filter isBoolConstant
+                |> List.filterMap checkBoolConstantType
     in
-    constantViolations ++ i1Violations
+    constantViolations ++ checkI1Usage mlirModule
 
 
-{-| Returns whether `op`'s `value` attribute, a string or a symbol reference, is
-`"True"` or `"False"`. Other attributes, including an integer `kind`, are not
-looked at.
+{-| Returns whether `op` is a True or False `eco.constant`: its integer `kind`
+attribute is 1 (True) or 0 (False).
 -}
 isBoolConstant : MlirOp -> Bool
 isBoolConstant op =
-    case getStringAttr "value" op of
-        Just "True" ->
+    case getIntAttr "kind" op of
+        Just 0 ->
             True
 
-        Just "False" ->
+        Just 1 ->
             True
 
         _ ->
             False
 
 
-{-| Returns a violation when `op` has exactly one result and its type is not
-`!eco.value`. An op with no result or several results gives `Nothing`.
+{-| Returns a violation unless `op` has exactly one result, of type
+`!eco.value`.
 -}
 checkBoolConstantType : MlirOp -> Maybe Violation
 checkBoolConstantType op =
     case extractResultTypes op of
         [ resultType ] ->
-            if not (isEcoValueType resultType) then
+            if isEcoValueType resultType then
+                Nothing
+
+            else
                 Just
                     { opId = op.id
                     , opName = op.name
@@ -119,81 +120,68 @@ checkBoolConstantType op =
                             ++ typeToString resultType
                     }
 
-            else
-                Nothing
+        resultTypes ->
+            Just
+                { opId = op.id
+                , opName = op.name
+                , message =
+                    "Bool constant must have exactly one result, has "
+                        ++ String.fromInt (List.length resultTypes)
+                }
 
-        _ ->
-            Nothing
 
-
-{-| Returns a violation for each `i1` recorded in the `_operand_types` attribute
-of an `eco.construct.*` op, which builds a heap object, and then of an
-`eco.papCreate` op, which builds a closure. No other op is examined.
+{-| Returns a violation for each `i1` operand of a boundary op, for every
+top-level op of the module; operand types are looked up in the defined types of
+that top-level op.
 -}
 checkI1Usage : MlirModule -> List Violation
 checkI1Usage mlirModule =
-    let
-        allOps =
-            walkAllOps mlirModule
-
-        constructOps =
-            List.filter isConstructOp allOps
-
-        constructViolations =
-            List.concatMap checkNoI1Operands constructOps
-
-        papCreateOps =
-            List.filter (\op -> op.name == "eco.papCreate") allOps
-
-        papViolations =
-            List.concatMap checkNoI1Operands papCreateOps
-    in
-    constructViolations ++ papViolations
+    List.concatMap
+        (\topOp ->
+            let
+                env =
+                    typeEnvOfOp topOp
+            in
+            walkOpAndChildren topOp
+                |> List.filter isBoundaryOp
+                |> List.concatMap (checkNoI1Operands env)
+        )
+        mlirModule.body
 
 
-{-| Returns whether `op`'s name starts with `eco.construct.`.
+{-| Returns whether `op` passes its operands across a heap, closure or call
+boundary.
 -}
-isConstructOp : MlirOp -> Bool
-isConstructOp op =
+isBoundaryOp : MlirOp -> Bool
+isBoundaryOp op =
     String.startsWith "eco.construct." op.name
+        || List.member op.name [ "eco.papCreate", "eco.papCreateGroup", "eco.papExtend", "eco.call", "eco.return" ]
 
 
-{-| Returns a violation for each `i1` among the types in `op`'s `_operand_types`
-attribute, or none when the attribute is absent.
-
-An entry of that attribute that is not a type attribute is dropped before the
-entries are numbered, so the operand index in a message counts type entries
-only.
-
+{-| Returns a violation for each operand of `op` whose defined type in `env` is
+`i1`. An operand with no defined type in `env` is not reported.
 -}
-checkNoI1Operands : MlirOp -> List Violation
-checkNoI1Operands op =
-    case extractOperandTypes op of
-        Just operandTypes ->
-            List.indexedMap (checkNotI1 op) operandTypes
-                |> List.filterMap identity
+checkNoI1Operands : TypeEnv -> MlirOp -> List Violation
+checkNoI1Operands env op =
+    op.operands
+        |> List.indexedMap
+            (\index name ->
+                if Dict.get name env == Just I1 then
+                    Just
+                        { opId = op.id
+                        , opName = op.name
+                        , message =
+                            "operand "
+                                ++ String.fromInt index
+                                ++ " ("
+                                ++ name
+                                ++ ") is i1 (Bool) but must be !eco.value at a heap/closure/call boundary"
+                        }
 
-        Nothing ->
-            []
-
-
-{-| Returns a violation against `op` when `operandType` is `i1`, naming the
-operand by `index`, its zero-based position.
--}
-checkNotI1 : MlirOp -> Int -> MlirType -> Maybe Violation
-checkNotI1 op index operandType =
-    if operandType == I1 then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "operand "
-                    ++ String.fromInt index
-                    ++ " is i1 (Bool) but must be !eco.value at heap/closure boundary"
-            }
-
-    else
-        Nothing
+                else
+                    Nothing
+            )
+        |> List.filterMap identity
 
 
 {-| Returns a short name for `t` for a violation message: the MLIR spelling of

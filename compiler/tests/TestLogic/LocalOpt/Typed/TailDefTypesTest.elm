@@ -1,39 +1,42 @@
 module TestLogic.LocalOpt.Typed.TailDefTypesTest exposing (suite)
 
 {-| Tests that the typed optimizer gives a tail-recursive function's `TailDef`
-the parameter types that the function's annotation declares. The substitution
-monomorphizer gives a tail-recursive function's parameters the types stored in
-its `TailDef`, so without these tests a parameter could carry a wrong type, or
-a type variable the solver left unconstrained, into monomorphization
-unnoticed.
+the parameter types that the function's annotation declares, and a body whose
+type is the annotation's result type. The substitution monomorphizer gives a
+tail-recursive function's parameters the types stored in its `TailDef`, so
+without these tests a parameter could carry a wrong type, or a type variable
+the solver left unconstrained, into monomorphization unnoticed.
 
 A `TailDef` is the typed optimizer's form of a definition that calls itself in
-tail position. It holds each parameter with the type of its pattern, and the
-type of the whole definition. A recursive top-level `TailDef` sits among the
-functions of a `Cycle` node, the node that holds a group of mutually recursive
-top-level definitions, which may be one definition that refers to itself.
+tail position. It holds each parameter with the type of its pattern, its body,
+and the type of the whole definition. A recursive top-level `TailDef` sits
+among the functions of a `Cycle` node, the node that holds a group of mutually
+recursive top-level definitions, which may be one definition that refers to
+itself.
 
-The fixture, `sumHelperModule`, defines the annotated, self-recursive
-`sumHelper : Int -> Int -> Int`, whose two parameters are plain variables, and
-a `testValue` that calls it. It is compiled with
-`TestLogic.TestPipeline.runToTypedOpt`, which requires `testValue` because the
-synthetic `main` it adds to the module refers to it.
+There are two fixtures, each compiled with `TestLogic.TestPipeline.runToTypedOpt`,
+which requires `testValue` because the synthetic `main` it adds to the module
+refers to it. `sumHelperModule` defines `sumHelper : Int -> Int -> Int`, and
+`sumListModule` defines `sumList : List Int -> Int -> Int`, which matches on
+its list; both are annotated, self-recursive, with plain-variable parameters,
+and called from `testValue`.
 
-Types are compared with `typesMatch`, which is not equality. A type
-constructor matches on its home module, its name and its number of arguments,
-without comparing the arguments, and a type variable on the optimizer's side
-never matches.
+Types are compared with `TestLogic.LocalOpt.Typed.TypeEq.alphaEqStrict`, so a
+type's arguments are compared too, and a type variable never matches a concrete
+type.
 
-The one test finds the `TailDef` named `sumHelper` in a `Cycle` node of the
-typed local graph and checks:
+Each test finds the `TailDef` of its function in a `Cycle` node of the typed
+local graph and checks:
 
-  - that the `TailDef` exists, and that `sumHelper` has an annotation;
+  - that the `TailDef` exists, and that the function has an annotation;
   - that the `TailDef` has as many parameters as the annotation has arrows;
   - that each parameter's type matches the annotation's type at that position;
-  - that the result type left after every arrow of the `TailDef`'s stored type
-    matches what is left of the annotation after every arrow. The stored type
-    is the annotation itself, taken from the same table of annotations, so
-    this comparison cannot fail for this fixture.
+  - that the type stored on the `TailDef` matches the whole annotation, so the
+    field holds the definition's type and not only its result type. The stored
+    type is taken from the same table of annotations, so this guards the
+    field's meaning rather than the optimizer's typing;
+  - that the type of the `TailDef`'s body, which the optimizer computes,
+    matches what is left of the annotation after every arrow.
 
 Among what is not tested: parameters bound by destructuring patterns, type
 variables or aliases in the annotation, a `TailDef` local to a `let`, a cycle
@@ -47,9 +50,13 @@ import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
         , callExpr
+        , caseExpr
         , ifExpr
         , intExpr
+        , listExpr
         , makeModuleWithTypedDefs
+        , pCons
+        , pList
         , pVar
         , tLambda
         , tType
@@ -61,17 +68,20 @@ import Data.Map
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.LocalOpt.Typed.TypeEq as TypeEq
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| A suite of one test, which checks the `TailDef` of `sumHelper` against its
+{-| The two tests, each checking one fixture's `TailDef` against its
 annotation.
 -}
 suite : Test
 suite =
     Test.describe "TailDef type invariants (TOPT_TAILDEF_001)"
         [ Test.test "TailDef args and return type match annotation for sumHelper (Int -> Int -> Int)" <|
-            \_ -> checkSumHelper
+            \_ -> checkFixture "sumHelper" sumHelperModule
+        , Test.test "TailDef args and return type match annotation for sumList (List Int -> Int -> Int)" <|
+            \_ -> checkFixture "sumList" sumListModule
         ]
 
 
@@ -128,19 +138,65 @@ sumHelperModule =
         ]
 
 
-{-| The expectation of the one test: `sumHelperModule` compiles to a typed
-local graph whose `TailDef` for `sumHelper` agrees with its annotation, as
+{-| A module with an annotated, tail-recursive `sumList` that matches on its
+list, and a `testValue` that calls it. As Elm source:
+
+    sumList : List Int -> Int -> Int
+    sumList xs acc =
+        case xs of
+            [] ->
+                acc
+
+            x :: rest ->
+                sumList rest (acc + x)
+
+    testValue : Int
+    testValue =
+        sumList [ 1, 2, 3 ] 0
+
+-}
+sumListModule : Src.Module
+sumListModule =
+    let
+        intType =
+            tType "Int" []
+    in
+    makeModuleWithTypedDefs "Test"
+        [ { name = "sumList"
+          , args = [ pVar "xs", pVar "acc" ]
+          , tipe = tLambda (tType "List" [ intType ]) (tLambda intType intType)
+          , body =
+                caseExpr (varExpr "xs")
+                    [ ( pList [], varExpr "acc" )
+                    , ( pCons (pVar "x") (pVar "rest")
+                      , callExpr (varExpr "sumList")
+                            [ varExpr "rest"
+                            , binopsExpr [ ( varExpr "acc", "+" ) ] (varExpr "x")
+                            ]
+                      )
+                    ]
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = intType
+          , body = callExpr (varExpr "sumList") [ listExpr [ intExpr 1, intExpr 2, intExpr 3 ], intExpr 0 ]
+          }
+        ]
+
+
+{-| The expectation of one test: `srcModule` compiles to a typed local graph
+whose `TailDef` for `funcName` agrees with its annotation, as
 `checkTailDefTypes` decides. A pipeline failure fails the test with the
 pipeline's message.
 -}
-checkSumHelper : Expectation
-checkSumHelper =
-    case Pipeline.runToTypedOpt sumHelperModule of
+checkFixture : String -> Src.Module -> Expectation
+checkFixture funcName srcModule =
+    case Pipeline.runToTypedOpt srcModule of
         Err msg ->
             Expect.fail ("Pipeline failed: " ++ msg)
 
         Ok { localGraph, annotations } ->
-            checkTailDefTypes "sumHelper" localGraph annotations
+            checkTailDefTypes funcName localGraph annotations
 
 
 
@@ -153,11 +209,11 @@ checkSumHelper =
 graph against the annotation for `funcName` in `annotations`.
 
 It fails if no such `TailDef` or annotation exists, if the parameter count
-differs from the annotation's arrow count, or if a parameter type or the
-result type does not match by `typesMatch`. The result type compared is what
-is left of the `TailDef`'s stored type, the type of the whole definition,
-after every arrow. A count mismatch is reported alone; the type mismatches
-are reported together.
+differs from the annotation's arrow count, if a parameter type does not match
+the annotation's, if the stored type does not match the whole annotation, or
+if the body's type does not match the annotation's result type, all under
+`TypeEq.alphaEqStrict`. A count mismatch is reported alone; the type
+mismatches are reported together.
 
 -}
 checkTailDefTypes : String -> TOpt.LocalGraph Name -> Dict Name.Name (Can.Annotation Name) -> Expectation
@@ -172,9 +228,9 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                                 List.filterMap
                                     (\def ->
                                         case def of
-                                            TOpt.TailDef _ name args _ returnType _ ->
+                                            TOpt.TailDef _ name args body defType _ ->
                                                 if name == funcName then
-                                                    Just ( args, returnType )
+                                                    Just ( args, body, defType )
 
                                                 else
                                                     Nothing
@@ -197,13 +253,13 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
         ( Nothing, _ ) ->
             Expect.fail "TailDef not found in any Cycle node"
 
-        ( Just ( args, defType ), Just (Can.Forall _ annType) ) ->
+        ( Just ( args, body, defType ), Just (Can.Forall _ annType) ) ->
             let
                 ( expectedArgTypes, expectedReturnType ) =
                     splitFunctionType annType
 
-                ( _, actualReturnType ) =
-                    splitFunctionType defType
+                actualReturnType =
+                    TOpt.typeOf body
 
                 actualArgTypes =
                     List.map (\( _, t ) -> t) args
@@ -214,7 +270,7 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                 argTypeErrors =
                     List.map2
                         (\actual expected ->
-                            if typesMatch actual expected then
+                            if TypeEq.alphaEqStrict actual expected then
                                 Nothing
 
                             else
@@ -229,20 +285,30 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                         expectedArgTypes
                         |> List.filterMap identity
 
-                returnTypeError =
-                    if typesMatch actualReturnType expectedReturnType then
-                        Nothing
+                defTypeError =
+                    if TypeEq.alphaEqStrict defType annType then
+                        []
 
                     else
-                        Just
-                            ("Return type mismatch: expected "
-                                ++ typeToString expectedReturnType
-                                ++ ", got "
-                                ++ typeToString actualReturnType
-                            )
+                        [ "Stored TailDef type mismatch: expected the whole annotation "
+                            ++ typeToString annType
+                            ++ ", got "
+                            ++ typeToString defType
+                        ]
+
+                returnTypeError =
+                    if TypeEq.alphaEqStrict actualReturnType expectedReturnType then
+                        []
+
+                    else
+                        [ "Body type mismatch: expected "
+                            ++ typeToString expectedReturnType
+                            ++ ", got "
+                            ++ typeToString actualReturnType
+                        ]
 
                 allErrors =
-                    argTypeErrors ++ Maybe.withDefault [] (Maybe.map List.singleton returnTypeError)
+                    argTypeErrors ++ defTypeError ++ returnTypeError
             in
             if not argTypesMatch then
                 Expect.fail
@@ -284,42 +350,6 @@ splitFunctionType tipe =
 
         _ ->
             ( [], tipe )
-
-
-{-| Returns whether the optimizer's type `actual` matches the annotation's type
-`expected`. This is a loose structural comparison, sufficient for `Int`.
-
-Two type constructors match when their home modules, names and numbers of
-arguments agree; the arguments themselves are not compared. Two functions
-match when their parameter and result types match, whatever their arrow
-slots. A `Filled` alias on either side is replaced by its expansion. Unit
-matches unit. Everything else fails, including a type variable in `actual`,
-a `Holey` alias, and any record or tuple, even an identical one.
-
--}
-typesMatch : Can.Type Name -> Can.Type Name -> Bool
-typesMatch actual expected =
-    case ( actual, expected ) of
-        ( Can.TType home1 name1 args1, Can.TType home2 name2 args2 ) ->
-            home1 == home2 && name1 == name2 && List.length args1 == List.length args2
-
-        ( Can.TLambda _ from1 to1, Can.TLambda _ from2 to2 ) ->
-            typesMatch from1 from2 && typesMatch to1 to2
-
-        ( Can.TVar _, _ ) ->
-            False
-
-        ( Can.TUnit, Can.TUnit ) ->
-            True
-
-        ( Can.TAlias _ _ _ (Can.Filled inner1), _ ) ->
-            typesMatch inner1 expected
-
-        ( _, Can.TAlias _ _ _ (Can.Filled inner2) ) ->
-            typesMatch actual inner2
-
-        _ ->
-            False
 
 
 {-| Renders a type for a failure message. Records render as `{...}`, an alias

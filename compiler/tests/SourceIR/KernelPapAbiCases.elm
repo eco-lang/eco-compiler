@@ -23,16 +23,15 @@ Every program is built with `makeModule`: a module `Test` whose one value,
 The cases are:
 
   - `equalityOnIntWithStringCase`: a `case` with a string-literal branch
-    beside an unused `==` on two integer literals.
-  - `equalityOnMultipleTypes`: `==` on integer literals and on strings, of
-    which only the integer comparison's result is used.
+    beside an `==` on two integer literals, both results returned.
+  - `equalityOnMultipleTypes`: `==` on integer literals and on strings, both
+    results returned.
   - `equalityLambdaPassedToMap`: `==` inside a lambda passed to `List.map`.
   - `appendOnLists`: `++` on two lists.
 
 Among what is not tested: `/=` and the comparison operators, `++` on strings,
 and an operator used as a function value, such as `(==)`, or partially
-applied. Two cases leave an equality unused, so a stage that drops unused
-`let` bindings may never see it.
+applied.
 
 -}
 
@@ -53,6 +52,7 @@ import Compiler.AST.SourceBuilder
         , pVar
         , qualVarExpr
         , strExpr
+        , tupleExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -82,10 +82,8 @@ testCases expectFn =
 
 {-| Applies `expectFn` to a program whose `let` defines `classify`, a `case` on
 its `String` argument with a branch for the literal `"foo"` and a wildcard
-branch, and `result = 1 == 2`, and whose body is `classify "foo"`.
-
-`result` is never used.
-
+branch, and `result = 1 == 2`, and whose body is the pair
+`( classify "foo", result )`.
 -}
 equalityOnIntWithStringCase : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityOnIntWithStringCase expectFn _ =
@@ -104,14 +102,14 @@ equalityOnIntWithStringCase expectFn _ =
                         []
                         (binopsExpr [ ( intExpr 1, "==" ) ] (intExpr 2))
                     ]
-                    (callExpr (varExpr "classify") [ strExpr "foo" ])
+                    (tupleExpr (callExpr (varExpr "classify") [ strExpr "foo" ]) (varExpr "result"))
                 )
     in
     expectFn modul
 
 
 {-| Applies `expectFn` to a program whose `let` binds `intEq = 1 == 2` and
-`strEq = "a" == "b"`, and whose body is `intEq`, so `strEq` is never used.
+`strEq = "a" == "b"`, and whose body is the pair `( intEq, strEq )`.
 -}
 equalityOnMultipleTypes : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityOnMultipleTypes expectFn _ =
@@ -122,7 +120,7 @@ equalityOnMultipleTypes expectFn _ =
                     [ define "intEq" [] (binopsExpr [ ( intExpr 1, "==" ) ] (intExpr 2))
                     , define "strEq" [] (binopsExpr [ ( strExpr "a", "==" ) ] (strExpr "b"))
                     ]
-                    (varExpr "intEq")
+                    (tupleExpr (varExpr "intEq") (varExpr "strEq"))
                 )
     in
     expectFn modul

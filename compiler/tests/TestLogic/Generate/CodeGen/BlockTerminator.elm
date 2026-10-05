@@ -100,9 +100,8 @@ checkRegion parentOp regionIdx region =
 
 The message names the region by `regionIdx` and the block as `entry block` when
 `blockIdx` is 0, or as `block` followed by `blockIdx`, its position in the
-region rather than its label. The branch for a terminator with an empty name is
-never taken, because an empty name is not on the accepted list and is caught by
-the first branch.
+region rather than its label. A terminator with an empty name is reported as
+missing; any other name not on the accepted list as not a valid terminator.
 
 -}
 checkBlock : MlirOp -> Int -> Int -> MlirBlock -> List Violation
@@ -118,7 +117,19 @@ checkBlock parentOp regionIdx blockIdx block =
             else
                 "block " ++ String.fromInt blockIdx
     in
-    if not (isValidTerminator terminator) then
+    if terminator.name == "" then
+        [ { opId = parentOp.id
+          , opName = parentOp.name
+          , message =
+                "region "
+                    ++ String.fromInt regionIdx
+                    ++ " "
+                    ++ blockDesc
+                    ++ " has empty/missing terminator"
+          }
+        ]
+
+    else if not (isValidTerminator terminator) then
         [ { opId = parentOp.id
           , opName = parentOp.name
           , message =
@@ -129,18 +140,6 @@ checkBlock parentOp regionIdx blockIdx block =
                     ++ " terminator '"
                     ++ terminator.name
                     ++ "' is not a valid terminator"
-          }
-        ]
-
-    else if terminator.name == "" then
-        [ { opId = parentOp.id
-          , opName = parentOp.name
-          , message =
-                "region "
-                    ++ String.fromInt regionIdx
-                    ++ " "
-                    ++ blockDesc
-                    ++ " has empty/missing terminator"
           }
         ]
 

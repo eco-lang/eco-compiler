@@ -8,13 +8,15 @@ constraint governs. This is invariant POST\_008.
 A node's _pre-type_ and _post-type_ are its entries in the node types before and
 after PostSolve, as `TestLogic.Type.PostSolve.CompileThroughPostSolve` returns
 them. A lambda's _context variables_ are the type variable names of its
-pre-type or, when it has none, the variables quantified by the annotation that
-the solver's annotations hold under the name of the definition the lambda sits
-in, as `TestLogic.Type.PostSolve.PostSolveInvariantHelpers.walkExprs` tags it.
+pre-type or, when it has none, the variables quantified by the scheme of the
+top-level definition the lambda sits in and those declared by the annotations
+of the definitions around it, as
+`TestLogic.Type.PostSolve.PostSolveInvariantHelpers.enclosingAnnotationVars`
+gives them.
 POST\_008 requires every type variable name in a lambda's post-type to be a
 context variable. Names are read with `PostSolveInvariantHelpers.freeTypeVars`,
-which includes record extension variables and, for an alias with a `Holey`
-body, the alias's own parameter names, and they are compared by name only.
+which includes record extension variables and, for an alias, the variables of
+its arguments, and they are compared by name only.
 
 The programs are those of `SourceIR.Suite.StandardTestSuites.expectSuite`, under
 the description `"lambda-context-vars"`.
@@ -36,10 +38,8 @@ Among what is not tested:
     post-type with a different shape, or with fewer variables, passes.
   - The enclosing definition's annotation, for a lambda that has a pre-type; only
     the pre-type is used.
-  - A lambda with no pre-type inside a let-bound definition against the
-    annotation around it. Its context comes from an annotation under the
-    let-bound name, so it is empty unless the solver's annotations hold one,
-    and then any type variable in its post-type fails.
+  - For a lambda with no pre-type, the type variables an unannotated let-bound
+    definition around it is generalized over, which are not in its context.
   - Nodes other than lambdas.
 
 -}
@@ -139,8 +139,9 @@ isLambda node =
 
 The context variables are the type variable names of its type in
 `nodeTypesPre` if it has one, and otherwise the variables quantified by the
-annotation `annotations` holds under its `enclosingDef`. With neither, the
-context is empty, so the node fails if its post-type names any type variable.
+annotation `annotations` holds for its top-level definition, together with
+those declared by the annotations around it
+(`PostSolveInvariantHelpers.enclosingAnnotationVars`).
 
 -}
 checkLambdaContextVars :
@@ -162,11 +163,11 @@ checkLambdaContextVars exprNode nodeTypesPre nodeTypesPost annotations =
                 ( contextVars, preTypeForReport ) =
                     case Array.get exprNode.id nodeTypesPre |> Maybe.andThen identity of
                         Just preType ->
-                            ( computeContextVars preType, Just preType )
+                            ( Helpers.freeTypeVars preType, Just preType )
 
                         Nothing ->
                             ( Helpers.enclosingAnnotationVars
-                                exprNode.enclosingDef
+                                exprNode
                                 annotations
                             , Nothing
                             )
@@ -196,20 +197,6 @@ checkLambdaContextVars exprNode nodeTypesPre nodeTypesPost annotations =
                                         " (no enclosing def)"
                                )
                     }
-
-
-{-| Returns the type variable names of a pre-type, as
-`PostSolveInvariantHelpers.freeTypeVars` reads them. The bare `TVar` case gives
-the same one-name set that `freeTypeVars` would.
--}
-computeContextVars : Can.Type Name -> EverySet String String
-computeContextVars preType =
-    case preType of
-        Can.TVar name ->
-            EverySet.insert identity name EverySet.empty
-
-        _ ->
-            Helpers.freeTypeVars preType
 
 
 

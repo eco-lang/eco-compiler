@@ -20,8 +20,8 @@ case that fails.
 The programs, in four groups:
 
   - Equality partially applied: `List.filter` with `eq` applied to an `Int`, a
-    `Float`, a `Char` and a `String`, one case each, and one case with two
-    such functions, one applied to an `Int` and one to a `String`.
+    `Float`, a `Char` and a `String`, one case each, and one case with a
+    single `eq` partially applied to an `Int` and to a `String`.
   - `List.any` and `List.all` over a `Bool` list, with `Basics.identity` and
     with `Basics.not` as the predicate.
   - `Basics.compare` on two `Char`s, two `Float`s and two `String`s, and a
@@ -30,9 +30,7 @@ The programs, in four groups:
     a `Bool` list, and the anonymous function `\x -> x == 5` over an `Int`
     list.
 
-Among what is not tested: `(==)` passed directly as a value; one equality
-function used at two types, since the two-type case defines a separate function
-for each type and its value uses only the `Int` one; and the values the
+Among what is not tested: `(==)` passed directly as a value; and the values the
 programs compute, which only a caller's expectation function could check.
 
 -}
@@ -56,6 +54,7 @@ import Compiler.AST.SourceBuilder
         , pVar
         , qualVarExpr
         , strExpr
+        , tupleExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -75,10 +74,6 @@ expectSuite expectFn condStr =
 
 
 {-| Returns the sixteen labelled cases, each applying `expectFn` to one program.
-
-The labels of the `Float`, `Char` and `String` equality cases list fewer
-elements than the programs' lists hold.
-
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
@@ -86,13 +81,13 @@ testCases expectFn =
       { label = "Equality PAP on Int: List.filter (eq 5) [1,2,5,3,5]"
       , run = equalityPapInt expectFn
       }
-    , { label = "Equality PAP on Float: List.filter (eq 2.5) [1.0,2.5,3.0]"
+    , { label = "Equality PAP on Float: List.filter (eq 2.5) [1.0,2.5,3.0,2.5]"
       , run = equalityPapFloat expectFn
       }
-    , { label = "Equality PAP on Char: List.filter (eq 'a') ['a','b','a']"
+    , { label = "Equality PAP on Char: List.filter (eq 'a') ['a','b','a','c']"
       , run = equalityPapChar expectFn
       }
-    , { label = "Equality PAP on String: List.filter (eq \"hello\") [\"hi\",\"hello\"]"
+    , { label = "Equality PAP on String: List.filter (eq \"hello\") [\"hi\",\"hello\",\"world\",\"hello\"]"
       , run = equalityPapString expectFn
       }
     , { label = "Equality PAP used at multiple types in same module"
@@ -242,24 +237,27 @@ equalityPapString expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a program with two equality functions in one `let`:
-`ints` is `List.filter (eqI 5) [ 1, 5, 3 ]` and `strs` is
-`List.filter (eqS "x") [ "x", "y" ]`, where `eqI a b` and `eqS a b` are each
-`a == b`.
+{-| Applies `expectFn` to a program with one unannotated, `let`-bound equality
+function partially applied at two types, whose value uses both results:
 
-The program's value is `ints` alone; `strs` is defined but not used.
+    let
+        eq a b =
+            a == b
+
+        ints =
+            List.filter (eq 5) [ 1, 5, 3 ]
+
+        strs =
+            List.filter (eq "x") [ "x", "y" ]
+    in
+    ( ints, strs )
 
 -}
 equalityPapMultiType : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapMultiType expectFn _ =
     let
-        eqI =
-            define "eqI"
-                [ pVar "a", pVar "b" ]
-                (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
-
-        eqS =
-            define "eqS"
+        eqFn =
+            define "eq"
                 [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
@@ -267,7 +265,7 @@ equalityPapMultiType expectFn _ =
             define "ints"
                 []
                 (callExpr (qualVarExpr "List" "filter")
-                    [ callExpr (varExpr "eqI") [ intExpr 5 ]
+                    [ callExpr (varExpr "eq") [ intExpr 5 ]
                     , listExpr [ intExpr 1, intExpr 5, intExpr 3 ]
                     ]
                 )
@@ -276,15 +274,15 @@ equalityPapMultiType expectFn _ =
             define "strs"
                 []
                 (callExpr (qualVarExpr "List" "filter")
-                    [ callExpr (varExpr "eqS") [ strExpr "x" ]
+                    [ callExpr (varExpr "eq") [ strExpr "x" ]
                     , listExpr [ strExpr "x", strExpr "y" ]
                     ]
                 )
     in
     expectFn
         (makeModule "testValue"
-            (letExpr [ eqI, eqS, ints, strs ]
-                (varExpr "ints")
+            (letExpr [ eqFn, ints, strs ]
+                (tupleExpr (varExpr "ints") (varExpr "strs"))
             )
         )
 

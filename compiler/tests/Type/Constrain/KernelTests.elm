@@ -781,17 +781,17 @@ varKernelCallTests =
 -- ============================================================================
 
 
-{-| The tests of kernel-bound definitions used inside other expressions, and
-declared without being used.
+{-| The tests of kernel-bound definitions used inside other expressions, alone
+and several together.
 
 The uses are `\x -> singleton x`, `let result = singleton 1 in result`,
 `pair ( 1, 2 ) [ 3, 4 ]` with `pair` bound to `Elm.Kernel.Utils.pair` as
 `a -> b -> ( a, b )`, and `head (tail (singleton 1))`; the other kernels in
-these four tests are from `Elm.Kernel.List`. Two tests declare kernel-bound
-definitions that `testValue` does not use: `cons`, `singleton` and `append`
-from `Elm.Kernel.List` beside `testValue = [ 1, 2, 3 ]`, and kernels from
-`Elm.Kernel.List`, `Elm.Kernel.Platform` and `Elm.Kernel.Scheduler` beside
-`testValue = 42`.
+these four tests are from `Elm.Kernel.List`. Two tests use several kernel-bound
+definitions together: `testValue = append (singleton 1) (cons 2 [ 3 ])` with
+`cons`, `singleton` and `append` from `Elm.Kernel.List`, and
+`testValue = ( cons 1 [ 2 ], batch [ succeed 42 ] )` with kernels from
+`Elm.Kernel.List`, `Elm.Kernel.Platform` and `Elm.Kernel.Scheduler`.
 
 -}
 varKernelContextTests : Test
@@ -872,10 +872,16 @@ varKernelContextTests =
                             (varKernelExpr 3 "List" "append")
                             (funType (listType (varType "a")) (funType (listType (varType "a")) (listType (varType "a"))))
 
+                    -- append (singleton 1) (cons 2 [ 3 ])
                     testDef =
                         makeDef "testValue"
                             []
-                            (listExpr 5 [ intExpr 6 1, intExpr 7 2, intExpr 8 3 ])
+                            (callExpr 5
+                                (varLocalExpr 6 "append")
+                                [ callExpr 7 (varLocalExpr 8 "singleton") [ intExpr 9 1 ]
+                                , callExpr 10 (varLocalExpr 11 "cons") [ intExpr 12 2, listExpr 13 [ intExpr 14 3 ] ]
+                                ]
+                            )
 
                     modul =
                         makeModuleWithDecls
@@ -909,10 +915,17 @@ varKernelContextTests =
                             (varKernelExpr 3 "Scheduler" "succeed")
                             (funType (varType "a") (varType "a"))
 
+                    -- ( cons 1 [ 2 ], batch [ succeed 42 ] )
                     testDef =
                         makeDef "testValue"
                             []
-                            (intExpr 5 42)
+                            (tupleExpr 5
+                                (callExpr 6 (varLocalExpr 7 "cons") [ intExpr 8 1, listExpr 9 [ intExpr 10 2 ] ])
+                                (callExpr 11
+                                    (varLocalExpr 12 "batch")
+                                    [ listExpr 13 [ callExpr 14 (varLocalExpr 15 "succeed") [ intExpr 16 42 ] ] ]
+                                )
+                            )
 
                     modul =
                         makeModuleWithDecls

@@ -20,10 +20,13 @@ function type is flattened by collecting the parameters of each nested
 `TestLogic.TestPipeline.runToMono`, which uses the substitution engine, not the
 solver engine, and checks every SpecId whose registry entry is present and
 whose node exists. Only two kinds of node are checked: a `MonoDefine` whose
-body is a `MonoClosure`, and a `MonoTailFunc`. For each, when the key type
-flattens to at least one parameter:
+body is a `MonoClosure`, and a `MonoTailFunc`. For each:
 
-  - the closure may not have more parameters than the flattened key type;
+  - the closure may not have more parameters than the flattened key type, so
+    a closure with parameters whose key type is not a function is reported;
+
+and, when the key type flattens to at least one parameter:
+
   - each closure parameter's type must equal the key parameter at the same
     position;
   - when the closure takes every key parameter, the type of its body must equal
@@ -37,8 +40,7 @@ alone, without their constraint.
 
 Among what is not checked: closures nested inside a body; a `MonoDefine` whose
 body is not a closure literal; the MonoType stored on the closure itself, as
-opposed to its parameters and body; and any node whose key type is not a
-function, even if the node is a closure with parameters. The node's own type is
+opposed to its parameters and body. The node's own type is
 not read directly, though under the substitution engine it is normally what the
 key type is.
 
@@ -168,9 +170,10 @@ checkNodeAgainstKey specId global keyMonoType node =
 {-| Returns the violations of a closure with parameters `closureParams` and body
 type `bodyType` against the key type `keyMonoType`, labelled with `ctx`.
 
-A key type that flattens to no parameters gives no violations, whatever the
-closure takes. A closure with more parameters than the flattened key gives one
-violation and nothing else is compared. Otherwise each parameter is compared
+A closure with more parameters than the flattened key gives one violation and
+nothing else is compared; this includes a closure with parameters whose key
+type is not a function. Otherwise a key type that flattens to no parameters
+gives no violations. Otherwise each parameter is compared
 with the key parameter at its position, and the body type with the flattened
 key result when the closure takes every key parameter, or, when it takes fewer,
 with a function of the remaining key parameters returning that result, both
@@ -192,10 +195,7 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
         keyParamCount =
             List.length keyParamTypes
     in
-    if keyParamCount == 0 then
-        []
-
-    else if closureParamCount > keyParamCount then
+    if closureParamCount > keyParamCount then
         [ { context = ctx
           , message =
                 "MONO_025 violation: closure has more params than key function type\n"
@@ -209,6 +209,9 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
                     ++ String.fromInt closureParamCount
           }
         ]
+
+    else if keyParamCount == 0 then
+        []
 
     else
         let

@@ -7,10 +7,10 @@ worked out, or adds type variables to it, is caught.
 PostSolve rewrites some of the _node types_ the solver produced, the types
 recorded for each expression and pattern. Both checks concern only nodes whose
 type before PostSolve is _structured_, meaning anything other than a bare type
-variable. POST\_005 requires such a node to keep a matching type after
-PostSolve, and POST\_006 requires its type after PostSolve to name no type
+variable. POST\_005 requires such a node to keep an alpha-equivalent type
+after PostSolve, and POST\_006 requires its type after PostSolve to name no type
 variable that its type before did not. The checks, the exempted kinds of node
-and the loose matching POST\_005 uses belong to
+and the alpha-equivalence POST\_005 uses belong to
 `TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants`.
 
 The fixture is every program that `SourceIR.Suite.StandardTestSuites.expectSuite`
@@ -25,10 +25,8 @@ What the tests establish:
 
 Among what is not tested:
 
-  - A PostSolve that rearranges the type variables inside a structured type
-    using only names its type before PostSolve already had, such as swapping
-    two of them or merging two into one: POST\_005 lets any type variable
-    match any other, and POST\_006 only looks for new names.
+  - A PostSolve that consistently renames the type variables of a structured
+    type, such as swapping two of them throughout.
   - Nodes whose type before PostSolve is missing or a bare type variable.
   - Kernel references, which both checks skip, and record accessors, which
     POST\_006 skips.

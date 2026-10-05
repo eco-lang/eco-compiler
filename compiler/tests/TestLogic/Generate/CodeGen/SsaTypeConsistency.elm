@@ -13,10 +13,12 @@ function at a time.
 top-level `func.func` of the in-memory module; the MLIR text is not read.
 Every block argument and operation result inside it, at any depth of nesting,
 is recorded under its name. Two definitions of the same name with the same type
-pass; two with different types are a violation. The scope is the whole
-function, so a name defined in two sibling regions of it must also have one
-type in both. MLIR allows sibling regions to reuse a name with another type,
-so this check is stricter than MLIR requires.
+pass; two with different types are a violation when the first is still in
+scope at the second. Scopes follow MLIR's: all blocks of a region share one
+scope, a nested region sees the names of the regions around it, and the names
+defined inside a region go out of scope at its end. So two sibling regions,
+such as two `eco.case` alternatives, may each define a name at a type of their
+own, as MLIR allows.
 
 Among what is not checked:
 
@@ -107,25 +109,46 @@ checkFunction funcOp =
             Just violation
 
 
-{-| Returns the type of every SSA name defined in the regions of `op`, or the
-first name found with two different types. `op`'s own results are not
-included. `funcName` is used only in the violation's message.
+{-| Walks the regions of `op` from an empty scope and returns the first name
+defined with a type other than that of a definition in scope, or `Ok` with the
+last scope walked. `op`'s own results are not included. `funcName` is used
+only in the violation's message.
 -}
 buildTypeEnvWithConflictCheck : String -> MlirOp -> TypeEnvResult
 buildTypeEnvWithConflictCheck funcName op =
-    let
-        initial =
-            Ok Dict.empty
-    in
-    List.foldl (collectFromRegionChecked funcName) initial op.regions
+    walkRegions funcName op.regions (Ok Dict.empty)
+
+
+{-| Walks each region in `regions` from the scope in `result`, discarding what
+each defines, so siblings do not see each other's names. Returns `result`
+unchanged unless a region has a conflict.
+-}
+walkRegions : String -> List MlirRegion -> TypeEnvResult -> TypeEnvResult
+walkRegions funcName regions result =
+    List.foldl
+        (\region acc ->
+            case acc of
+                Err v ->
+                    Err v
+
+                Ok _ ->
+                    case collectFromRegionChecked funcName region acc of
+                        Err v ->
+                            Err v
+
+                        Ok _ ->
+                            acc
+        )
+        result
+        regions
 
 
 {-| Records that `name` is defined with `newType`.
 
-A name not yet seen is added, and one already seen with the same type leaves
-`result` unchanged. One already seen with another type gives a violation whose
+A name not in scope is added, and one in scope with the same type leaves
+`result` unchanged. One in scope with another type gives a violation whose
 `opId` is the SSA name, not an operation's id, and whose message shows the
-type recorded first, then `newType`. An `Err` is passed on unchanged.
+type in scope, then `newType`. An `Err` is passed on unchanged.
 
 -}
 recordSsa : String -> String -> MlirType -> TypeEnvResult -> TypeEnvResult
@@ -159,25 +182,13 @@ recordSsa funcName name newType result =
                             }
 
 
-{-| Records every SSA name defined in a region: the entry block's arguments,
-operations and terminator, then each further block in order.
+{-| Records every SSA name defined in a region, starting from the scope in
+`result`: each block's arguments, operations and terminator, entry block
+first. All blocks share the region's scope.
 -}
 collectFromRegionChecked : String -> MlirRegion -> TypeEnvResult -> TypeEnvResult
 collectFromRegionChecked funcName (MlirRegion { entry, blocks }) result =
-    let
-        withEntryArgs =
-            List.foldl
-                (\( name, t ) acc -> recordSsa funcName name t acc)
-                result
-                entry.args
-
-        withEntryBody =
-            List.foldl (collectFromOpChecked funcName) withEntryArgs entry.body
-
-        withEntryTerm =
-            collectFromOpChecked funcName entry.terminator withEntryBody
-    in
-    List.foldl (collectFromBlockChecked funcName) withEntryTerm (OrderedDict.values blocks)
+    List.foldl (collectFromBlockChecked funcName) result (entry :: OrderedDict.values blocks)
 
 
 {-| Records every SSA name defined in `block`: its arguments, then the names
@@ -198,22 +209,33 @@ collectFromBlockChecked funcName block result =
     collectFromOpChecked funcName block.terminator withBody
 
 
-{-| Records the results of `op`, then every SSA name defined in its regions.
+{-| Checks the names defined in the regions of `op`, each region in its own
+scope, then records the results of `op`. A nested `func.func` is isolated from
+above, so its regions start from an empty scope.
 -}
 collectFromOpChecked : String -> MlirOp -> TypeEnvResult -> TypeEnvResult
 collectFromOpChecked funcName op result =
     let
-        withResults =
-            List.foldl
-                (\( name, t ) acc -> recordSsa funcName name t acc)
-                result
-                op.results
+        afterRegions =
+            if op.name == "func.func" then
+                case walkRegions funcName op.regions (Ok Dict.empty) of
+                    Err v ->
+                        Err v
+
+                    Ok _ ->
+                        result
+
+            else
+                walkRegions funcName op.regions result
     in
-    List.foldl (collectFromRegionChecked funcName) withResults op.regions
+    List.foldl
+        (\( name, t ) acc -> recordSsa funcName name t acc)
+        afterRegions
+        op.results
 
 
-{-| Returns a short name for `t` for a violation message. Every function type
-is shown as `function`, without its inputs or results.
+{-| Returns `t` in MLIR's textual style for a violation message, with a
+function type's inputs and results spelled out.
 -}
 typeToString : MlirType -> String
 typeToString t =
@@ -239,5 +261,9 @@ typeToString t =
         NamedStruct name ->
             "!" ++ name
 
-        FunctionType _ ->
-            "function"
+        FunctionType { inputs, results } ->
+            "("
+                ++ String.join ", " (List.map typeToString inputs)
+                ++ ") -> ("
+                ++ String.join ", " (List.map typeToString results)
+                ++ ")"

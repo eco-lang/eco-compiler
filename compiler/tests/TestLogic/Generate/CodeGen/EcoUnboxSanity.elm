@@ -22,6 +22,8 @@ It then reports an `eco.unbox` nested in the function, at any depth:
 
   - that does not have exactly one operand;
   - that does not have exactly one result;
+  - whose operand is not in the environment: a function's body is isolated
+    from the rest of the module, so every value it uses is defined in it;
   - whose operand's type in the environment is not `!eco.value`; or
   - whose result type is not `i1`, `i16`, `i64` or `f64`, so an `i8` or `i32`
     result is reported.
@@ -30,8 +32,6 @@ Only the first of these that applies is reported for an op.
 
 Among what is not tested:
 
-  - an `eco.unbox` whose operand is not in the type environment, which passes
-    without its result type being checked;
   - an `eco.unbox` outside every top-level `func.func`;
   - whether the result type matches the kind of value that was boxed.
 
@@ -44,8 +44,7 @@ last.
 import Compiler.AST.Source as Src
 import Dict
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
-import OrderedDict
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( TypeEnv
@@ -53,6 +52,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , findFuncOps
         , isEcoPrimitive
         , isEcoValueType
+        , typeEnvOfOp
         , violationsToExpectation
         , walkOpsInRegion
         )
@@ -93,7 +93,7 @@ checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
     let
         typeEnv =
-            buildTypeEnvFromOp funcOp
+            typeEnvOfOp funcOp
 
         allOps =
             walkOpsInOp funcOp
@@ -108,8 +108,8 @@ checkFunction funcOp =
 
 The checks are made in this order, and only the first that fails is reported:
 exactly one operand, exactly one result, an operand whose type in `typeEnv` is
-`!eco.value`, and a result type that `isEcoPrimitive` accepts. An op whose
-operand is not in `typeEnv` passes without its result type being checked.
+`!eco.value` (an operand not in `typeEnv` is reported as undefined), and a
+result type that `isEcoPrimitive` accepts.
 
 -}
 checkUnboxOp : TypeEnv -> MlirOp -> Maybe Violation
@@ -120,7 +120,14 @@ checkUnboxOp typeEnv op =
                 [ ( _, resultType ) ] ->
                     case Dict.get operandName typeEnv of
                         Nothing ->
-                            Nothing
+                            Just
+                                { opId = op.id
+                                , opName = op.name
+                                , message =
+                                    "eco.unbox operand '"
+                                        ++ operandName
+                                        ++ "' has no definition in its function"
+                                }
 
                         Just operandType ->
                             if not (isEcoValueType operandType) then
@@ -163,85 +170,6 @@ checkUnboxOp typeEnv op =
                     "eco.unbox should have exactly 1 operand, has "
                         ++ String.fromInt (List.length op.operands)
                 }
-
-
-{-| Builds the type environment of `op`: the types of its own results and of
-every block argument and op result in its regions, at any depth. A name defined
-more than once keeps the type of the definition visited last.
--}
-buildTypeEnvFromOp : MlirOp -> TypeEnv
-buildTypeEnvFromOp op =
-    let
-        withResults =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                Dict.empty
-                op.results
-    in
-    List.foldl collectFromRegion withResults op.regions
-
-
-{-| Returns `env` extended with the types of every block argument and op result
-in the region, at any depth, visiting the entry block first and then the other
-blocks in the order the region holds them.
--}
-collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
-collectFromRegion (MlirRegion { entry, blocks }) env =
-    let
-        withEntryArgs =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                env
-                entry.args
-
-        withEntryBody =
-            collectFromOps entry.body withEntryArgs
-
-        withEntryTerm =
-            collectFromOp entry.terminator withEntryBody
-    in
-    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
-
-
-{-| Returns `env` extended with the types of the block's arguments and of the
-results of its body ops and terminator, at any depth.
--}
-collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
-collectFromBlock block env =
-    let
-        withArgs =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                env
-                block.args
-
-        withBody =
-            collectFromOps block.body withArgs
-    in
-    collectFromOp block.terminator withBody
-
-
-{-| Returns `env` extended with the types of the results of `ops`, and of
-everything nested in them, visiting the ops in list order.
--}
-collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
-collectFromOps ops env =
-    List.foldl collectFromOp env ops
-
-
-{-| Returns `env` extended with the types of `op`'s results and of every block
-argument and op result in its regions, at any depth.
--}
-collectFromOp : MlirOp -> TypeEnv -> TypeEnv
-collectFromOp op env =
-    let
-        withResults =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                env
-                op.results
-    in
-    List.foldl collectFromRegion withResults op.regions
 
 
 {-| Returns every op nested in `op`'s regions, at any depth, not including `op`

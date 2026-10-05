@@ -29,8 +29,8 @@ For each program the test checks that:
     original;
   - re-encoding the decoded global graph gives the same bytes as encoding the
     original;
-  - encoding the local graph a second time gives the same bytes as the first;
   - the decoded local graph's annotations equal the original's;
+  - the decoded global graph's annotations equal the original's;
   - the string table and type table at the start of the local encoding decode
     on their own;
   - every constrained name among the type-variable names, record extension
@@ -43,8 +43,9 @@ Among what is not tested:
     decoder fills some parts with fixed values, the local graph's `main` and
     `fields` among them, and a part the encoder does not write passes the
     re-encoding checks;
-  - that encoding the global graph twice gives the same bytes, or that its
-    annotations survive;
+  - that encoding a graph is deterministic: encoding is a pure function, so
+    encoding the same graph twice in one run cannot differ, and nothing here
+    compares encodings made in different runs;
   - a global graph built from more than one module;
   - the `varSupers` stored in the graph, as distinct from what
     `computeVarSupers` returns, and whether `computeVarSupers` returns names
@@ -64,6 +65,7 @@ import Compiler.AST.StringTable as StringTable
 import Compiler.AST.TypeTable as TypeTable
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as N exposing (Name)
+import Data.Map
 import Dict
 import Expect exposing (Expectation)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
@@ -189,6 +191,12 @@ expectCodec srcModule =
                         (TOpt.LocalGraph d2) =
                             g2
 
+                        (TOpt.GlobalGraph _ _ gAnns1 _ _) =
+                            global
+
+                        (TOpt.GlobalGraph _ _ gAnns2 _ _) =
+                            global2
+
                         supers =
                             TOpt.computeVarSupers g
 
@@ -201,8 +209,8 @@ expectCodec srcModule =
                     Expect.all
                         [ \_ -> Expect.equal (toList bytes) (toList (BE.encode (TOpt.localGraphEncoder g2)))
                         , \_ -> Expect.equal (toList gbytes) (toList (BE.encode (TOpt.globalGraphEncoder global2)))
-                        , \_ -> Expect.equal (toList bytes) (toList (BE.encode (TOpt.localGraphEncoder g)))
                         , \_ -> Expect.equal d1.annotations d2.annotations
+                        , \_ -> Expect.equal (Data.Map.toList gAnns1) (Data.Map.toList gAnns2)
                         , \_ -> Expect.notEqual Nothing (tableTypes bytes)
                         , \_ -> Expect.equal [] missing
                         ]

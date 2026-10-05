@@ -45,10 +45,10 @@ expectSymbolUniqueness srcModule =
             violationsToExpectation (checkSymbolUniqueness mlirModule)
 
 
-{-| Returns a violation for every top-level op whose `sym_name` another
-top-level op also carries, except the last op of each name in module order,
-whose id every other op's message gives as where the name is already defined.
-Violations are ordered by name.
+{-| Returns a violation for every top-level op whose `sym_name` an earlier
+top-level op already carries, each giving the id of the first op of that name
+in module order as where the name is already defined. Violations are ordered
+by name.
 -}
 checkSymbolUniqueness : MlirModule -> List Violation
 checkSymbolUniqueness mlirModule =
@@ -56,7 +56,8 @@ checkSymbolUniqueness mlirModule =
         symbolOps =
             findSymbolOps mlirModule
 
-        -- Prepending leaves each name's ops in reverse module order.
+        -- Ops are prepended, so each name's list is reversed afterwards to
+        -- restore module order.
         grouped =
             List.foldl
                 (\( name, op ) acc ->
@@ -75,11 +76,11 @@ checkSymbolUniqueness mlirModule =
                 symbolOps
     in
     Dict.toList grouped
-        |> List.concatMap checkDuplicates
+        |> List.concatMap (\( name, ops ) -> checkDuplicates ( name, List.reverse ops ))
 
 
-{-| Returns a violation for every op in `ops` after the first, each naming
-`symName` and the first op's id. A list of fewer than two ops gives none.
+{-| Returns a violation for every op in `ops`, which are in module order, after
+the first, each naming `symName` and the first op's id. A list of fewer than two ops gives none.
 -}
 checkDuplicates : ( String, List MlirOp ) -> List Violation
 checkDuplicates ( symName, ops ) =

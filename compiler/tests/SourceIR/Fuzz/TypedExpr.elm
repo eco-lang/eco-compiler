@@ -41,18 +41,13 @@ fuzzer of the form chosen is built, not the fuzzers of every form down to the
 end of the budget.
 
 The expressions are built with `Compiler.AST.SourceBuilder`, and some are
-shapes the parser never produces: an `Int` literal can be negative, a negation
-can wrap a `let`, `if`, `case` or another negation, a `Float` literal can be
-infinite or NaN (`Fuzz.float` produces both), and a `String` literal holds the
-text `Fuzz.string` gave without escaping, so it can contain a raw `"`, `\` or
-newline. `Bool` literals are the qualified constructors `Basics.True` and
-`Basics.False`.
-
-The module also holds fuzzers for a pattern of each type, paired with the names
-and types the pattern binds. They are not exposed and nothing outside them calls
-them. A record pattern binds the record's field names; every other variable in
-a pattern is named from a fixed list, with no check against the scope or the
-pattern's other variables, so one pattern can bind a name twice.
+shapes the parser never produces: an `Int` or `Float` literal can be negative,
+and a negation can wrap a `let`, `if`, `case` or another negation. A `Float`
+literal comes from `Fuzz.niceFloat`, so it is never infinite or NaN, which no
+Elm literal can spell. A `String` literal holds the text `Fuzz.string` gave in
+the escaped form the parser keeps (see `escapeString`), so it is the literal a
+parse of the same text written in source would give. `Bool` literals are the
+qualified constructors `Basics.True` and `Basics.False`.
 
 -}
 
@@ -170,29 +165,6 @@ varsOfType tipe scope =
 -- =============================================================================
 -- UTILITY FUZZERS
 -- =============================================================================
-
-
-{-| A fuzzer for one of fourteen fixed lower-case names, with no check against
-any scope. Only the pattern fuzzers use it.
--}
-nameFuzzer : Fuzzer Name
-nameFuzzer =
-    Fuzz.oneOfValues
-        [ "x"
-        , "y"
-        , "z"
-        , "a"
-        , "b"
-        , "c"
-        , "n"
-        , "m"
-        , "foo"
-        , "bar"
-        , "baz"
-        , "val"
-        , "tmp"
-        , "res"
-        ]
 
 
 {-| Produces a fuzzer for a name that `scope` neither lists as a variable nor
@@ -409,8 +381,8 @@ floatExprFuzzer scope =
             ]
 
 
-{-| Produces a fuzzer for a `Float` literal from `Fuzz.float`, which includes
-infinities and NaN, or, with equal chance when `scope` has one, a `Float`
+{-| Produces a fuzzer for a `Float` literal from `Fuzz.niceFloat`, which leaves
+out infinities and NaN, or, with equal chance when `scope` has one, a `Float`
 variable of `scope`.
 -}
 floatLeafFuzzer : Scope -> Fuzzer Src.Expr
@@ -421,11 +393,11 @@ floatLeafFuzzer scope =
     in
     case availableVars of
         [] ->
-            Fuzz.map B.floatExpr Fuzz.float
+            Fuzz.map B.floatExpr Fuzz.niceFloat
 
         _ ->
             Fuzz.oneOf
-                [ Fuzz.map B.floatExpr Fuzz.float
+                [ Fuzz.map B.floatExpr Fuzz.niceFloat
                 , Fuzz.oneOfValues availableVars |> Fuzz.map B.varExpr
                 ]
 
@@ -500,8 +472,8 @@ stringExprFuzzer scope =
             ]
 
 
-{-| Produces a fuzzer for a `String` literal holding `Fuzz.string`'s text
-unescaped or, with equal chance when `scope` has one, a `String` variable of
+{-| Produces a fuzzer for a `String` literal holding `Fuzz.string`'s text,
+escaped by `escapeString`, or with equal chance when `scope` has one, a `String` variable of
 `scope`.
 -}
 stringLeafFuzzer : Scope -> Fuzzer Src.Expr
@@ -512,11 +484,11 @@ stringLeafFuzzer scope =
     in
     case availableVars of
         [] ->
-            Fuzz.map B.strExpr Fuzz.string
+            Fuzz.map (escapeString >> B.strExpr) Fuzz.string
 
         _ ->
             Fuzz.oneOf
-                [ Fuzz.map B.strExpr Fuzz.string
+                [ Fuzz.map (escapeString >> B.strExpr) Fuzz.string
                 , Fuzz.oneOfValues availableVars |> Fuzz.map B.varExpr
                 ]
 
@@ -923,132 +895,6 @@ exprFuzzerForType scope tipe =
 
 
 -- =============================================================================
--- PATTERN FUZZERS
--- =============================================================================
-
-
-{-| A fuzzer for an `Int` pattern, paired with what it binds: an integer
-literal, which binds nothing and can be negative, a variable from `nameFuzzer`,
-or `_`.
--}
-intPatternFuzzer : Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
-intPatternFuzzer =
-    Fuzz.oneOf
-        [ Fuzz.map (\n -> ( B.pInt n, [] )) Fuzz.int
-        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TInt ) ] )) nameFuzzer
-        , Fuzz.constant ( B.pAnything, [] )
-        ]
-
-
-{-| A fuzzer for a `String` pattern, paired with what it binds: one of four
-fixed string literals, a variable from `nameFuzzer`, or `_`.
--}
-stringPatternFuzzer : Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
-stringPatternFuzzer =
-    Fuzz.oneOf
-        [ Fuzz.map (\s -> ( B.pStr s, [] )) (Fuzz.oneOfValues [ "", "a", "hello", "test" ])
-        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TString ) ] )) nameFuzzer
-        , Fuzz.constant ( B.pAnything, [] )
-        ]
-
-
-{-| Produces a fuzzer for a pattern of the pair type of `typeA` and `typeB`,
-paired with what it binds: a pair of patterns for the two element types, a
-variable, or `_`. The bindings of a pair pattern are the first element's then
-the second's, and nothing stops the two binding the same name.
--}
-tuplePatternFuzzer : SimpleType -> SimpleType -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
-tuplePatternFuzzer typeA typeB =
-    Fuzz.oneOf
-        [ Fuzz.map2
-            (\( patA, bindingsA ) ( patB, bindingsB ) ->
-                ( B.pTuple patA patB, bindingsA ++ bindingsB )
-            )
-            (patternFuzzerForType typeA)
-            (patternFuzzerForType typeB)
-        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TTuple typeA typeB ) ] )) nameFuzzer
-        , Fuzz.constant ( B.pAnything, [] )
-        ]
-
-
-{-| Produces a fuzzer for a pattern of a list of `elemType`, paired with what
-it binds: `[]`, `head :: tail` with a pattern of `elemType` for the head and a
-variable for the tail, a variable, or `_`. Nothing stops the head and the tail
-binding the same name.
--}
-listPatternFuzzer : SimpleType -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
-listPatternFuzzer elemType =
-    Fuzz.oneOf
-        [ Fuzz.constant ( B.pList [], [] )
-        , Fuzz.map2
-            (\( headPat, headBindings ) tailName ->
-                ( B.pCons headPat (B.pVar tailName)
-                , headBindings ++ [ ( tailName, TList elemType ) ]
-                )
-            )
-            (patternFuzzerForType elemType)
-            nameFuzzer
-        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TList elemType ) ] )) nameFuzzer
-        , Fuzz.constant ( B.pAnything, [] )
-        ]
-
-
-{-| Produces a fuzzer for a pattern of the record type with `fields`, paired
-with what it binds: a record pattern binding every field under its own name, a
-variable, or `_`.
--}
-recordPatternFuzzer : List ( Name, SimpleType ) -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
-recordPatternFuzzer fields =
-    let
-        fieldNames =
-            List.map Tuple.first fields
-    in
-    Fuzz.oneOf
-        [ Fuzz.constant ( B.pRecord fieldNames, fields )
-        , Fuzz.map (\name -> ( B.pVar name, [ ( name, TRecord fields ) ] )) nameFuzzer
-        , Fuzz.constant ( B.pAnything, [] )
-        ]
-
-
-{-| Produces a fuzzer for a pattern of type `tipe`, paired with the names and
-types it binds. A `Bool` or `Float` pattern is only a variable or `_`. Variable
-names other than a record pattern's field names come from `nameFuzzer`, with no
-check against any scope.
--}
-patternFuzzerForType : SimpleType -> Fuzzer ( Src.Pattern, List ( Name, SimpleType ) )
-patternFuzzerForType tipe =
-    case tipe of
-        TInt ->
-            intPatternFuzzer
-
-        TString ->
-            stringPatternFuzzer
-
-        TBool ->
-            Fuzz.oneOf
-                [ Fuzz.map (\name -> ( B.pVar name, [ ( name, TBool ) ] )) nameFuzzer
-                , Fuzz.constant ( B.pAnything, [] )
-                ]
-
-        TList elemType ->
-            listPatternFuzzer elemType
-
-        TTuple a b ->
-            tuplePatternFuzzer a b
-
-        TRecord fields ->
-            recordPatternFuzzer fields
-
-        _ ->
-            -- Only TFloat reaches here.
-            Fuzz.oneOf
-                [ Fuzz.map (\name -> ( B.pVar name, [ ( name, tipe ) ] )) nameFuzzer
-                , Fuzz.constant ( B.pAnything, [] )
-                ]
-
-
-
--- =============================================================================
 -- HELPERS
 -- =============================================================================
 
@@ -1064,3 +910,36 @@ fuzzSequence fuzzers =
 
         first :: rest ->
             Fuzz.map2 (::) first (fuzzSequence rest)
+
+
+{-| Returns `text` in the escaped form a `Src.Str` holds, which is how the text
+would be written inside a `"` literal and how the parser keeps it: a backslash
+becomes `\\`, a double quote `\"`, a single quote `\'` (the parser escapes a
+bare `'` itself), a newline `\n` (a raw one ends a `"` literal) and a carriage
+return `\r`. Every other character is kept as it is.
+-}
+escapeString : String -> String
+escapeString text =
+    String.foldr
+        (\c acc ->
+            case c of
+                '\\' ->
+                    "\\\\" ++ acc
+
+                '"' ->
+                    "\\\"" ++ acc
+
+                '\'' ->
+                    "\\'" ++ acc
+
+                '\n' ->
+                    "\\n" ++ acc
+
+                '\u{000D}' ->
+                    "\\r" ++ acc
+
+                _ ->
+                    String.cons c acc
+        )
+        ""
+        text

@@ -1141,69 +1141,7 @@ ifSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
                     constrainExprsWithIds rtv conditions boolExpect [] s0
 
                 ( s2, ( mkExpected, assemble ) ) =
-                    (case expected of
-                        FromAnnotation name arity _ tipe ->
-                            -- Record ID with the expected type (tipe is the type var)
-                            (case tipe of
-                                VarN v ->
-                                    NodeIds.recordNodeVar exprInfo.id v
-                                        |> IO.map (\() -> Nothing)
-
-                                _ ->
-                                    -- Need to create a var for tracking, and constrain it to equal the annotation type
-                                    Type.mkFlexVar
-                                        |> IO.andThen
-                                            (\v ->
-                                                NodeIds.recordNodeVar exprInfo.id v
-                                                    |> IO.map (\() -> Just v)
-                                            )
-                            )
-                                |> IO.map
-                                    (\maybeFlexVar ->
-                                        ( \index -> FromAnnotation name arity (TypedIfBranch index) tipe
-                                        , \branchCons ->
-                                            case maybeFlexVar of
-                                                Just flexVar ->
-                                                    Type.exists [ flexVar ]
-                                                        (CAnd
-                                                            [ CAnd condCons
-                                                            , CAnd branchCons
-                                                            , CEqual region If (VarN flexVar) (NoExpectation tipe)
-                                                            ]
-                                                        )
-
-                                                Nothing ->
-                                                    CAnd (CAnd condCons :: branchCons)
-                                        )
-                                    )
-
-                        _ ->
-                            Type.mkFlexVar
-                                |> IO.andThen
-                                    (\branchVar ->
-                                        -- Record branchVar for this if expression
-                                        NodeIds.recordNodeVar exprInfo.id branchVar
-                                            |> IO.map
-                                                (\() ->
-                                                    let
-                                                        branchType : Type
-                                                        branchType =
-                                                            VarN branchVar
-                                                    in
-                                                    ( \index -> FromContext region (IfBranch index) branchType
-                                                    , \branchCons ->
-                                                        Type.exists [ branchVar ]
-                                                            (CAnd
-                                                                [ CAnd condCons
-                                                                , CAnd branchCons
-                                                                , CEqual region If branchType expected
-                                                                ]
-                                                            )
-                                                    )
-                                                )
-                                    )
-                    )
-                        s1
+                    ifLevelExpectations region exprInfo.id condCons expected s1
 
                 ( s3, outcome ) =
                     ifSpineBranchesGo rtv mkExpected assemble Index.first exprs [] s2
@@ -1246,6 +1184,89 @@ ifSpineBranchesGo rtv mkExpected assemble index remaining accCons s0 =
                     constrainWithIds rtv branchExpr (mkExpected index) s0
             in
             ifSpineBranchesGo rtv mkExpected assemble (Index.next index) rest (con :: accCons) s1
+
+
+{-| The expectation for each branch of one `if` level, and the closure that
+assembles the level's constraint once all its branch constraints are known,
+for an `if` with node id `exprId` at `region` whose conditions gave
+`condCons`, under `expected`. On the typed pathway it records the level's node
+variable.
+
+This is a separate, non-recursive function on purpose: the two closures it
+returns outlive one step of `ifSpineGo`, and `ifSpineGo` is self-tail-recursive.
+Elm's JavaScript backend compiles such a function into a `while` loop whose
+parameters and `let` variables are reassigned on each step, and a closure
+created inside the loop sees the variables, not their values at creation. Built
+inside `ifSpineGo`, an outer level's `assemble` would read the innermost
+level's `condCons` and `expected`: the outer conditions would be dropped and
+the outer `if` tied to its own branch variable instead of its expectation.
+Closures built here capture this function's own parameters, which nothing
+reassigns.
+
+-}
+ifLevelExpectations : A.Region -> Int -> List Constraint -> E.Expected Type -> IO ( Index.ZeroBased -> E.Expected Type, List Constraint -> Constraint )
+ifLevelExpectations region exprId condCons expected =
+    case expected of
+        FromAnnotation name arity _ tipe ->
+            -- Record ID with the expected type (tipe is the type var)
+            (case tipe of
+                VarN v ->
+                    NodeIds.recordNodeVar exprId v
+                        |> IO.map (\() -> Nothing)
+
+                _ ->
+                    -- Need to create a var for tracking, and constrain it to equal the annotation type
+                    Type.mkFlexVar
+                        |> IO.andThen
+                            (\v ->
+                                NodeIds.recordNodeVar exprId v
+                                    |> IO.map (\() -> Just v)
+                            )
+            )
+                |> IO.map
+                    (\maybeFlexVar ->
+                        ( \index -> FromAnnotation name arity (TypedIfBranch index) tipe
+                        , \branchCons ->
+                            case maybeFlexVar of
+                                Just flexVar ->
+                                    Type.exists [ flexVar ]
+                                        (CAnd
+                                            [ CAnd condCons
+                                            , CAnd branchCons
+                                            , CEqual region If (VarN flexVar) (NoExpectation tipe)
+                                            ]
+                                        )
+
+                                Nothing ->
+                                    CAnd (CAnd condCons :: branchCons)
+                        )
+                    )
+
+        _ ->
+            Type.mkFlexVar
+                |> IO.andThen
+                    (\branchVar ->
+                        -- Record branchVar for this if expression
+                        NodeIds.recordNodeVar exprId branchVar
+                            |> IO.map
+                                (\() ->
+                                    let
+                                        branchType : Type
+                                        branchType =
+                                            VarN branchVar
+                                    in
+                                    ( \index -> FromContext region (IfBranch index) branchType
+                                    , \branchCons ->
+                                        Type.exists [ branchVar ]
+                                            (CAnd
+                                                [ CAnd condCons
+                                                , CAnd branchCons
+                                                , CEqual region If branchType expected
+                                                ]
+                                            )
+                                    )
+                                )
+                    )
 
 
 applyIfFrame : Constraint -> IfFrame -> IO Constraint

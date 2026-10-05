@@ -1,20 +1,24 @@
-module TestLogic.Type.PostSolve.GroupBTypes exposing (expectGroupBTypesValid)
+module TestLogic.Type.PostSolve.GroupBTypes exposing
+    ( checkGroupBLiterals
+    , expectGroupBTypesValid
+    )
 
-{-| Checks that no node type left by PostSolve holds a type variable whose name
-starts with a digit.
+{-| Checks that PostSolve types every string, character and float literal and
+every unit with the type its form implies, in agreement with the solver
+(POST\_001).
 
 Constraint generation types some expressions, its _Group B_, through a
-_synthetic placeholder_: a fresh type variable it allocates for an expression
-with no result variable of its own, such as a string, character, float or unit
-literal (`Compiler.Type.Constrain.Typed.Expression` makes the split).
-`Compiler.Type.PostSolve` then rewrites the types of some of those expressions.
+_synthetic placeholder_: a fresh type variable tied to the type its context
+expects (`Compiler.Type.Constrain.Typed.Expression` makes the split).
+`Compiler.Type.PostSolve` then writes the structural type of the literals among
+them, `String`, `Char`, `Float` or `()`, over whatever the solver recorded.
 
-`expectGroupBTypesValid` runs the program to PostSolve and searches every
-node type PostSolve returns, not only those of Group B expressions. This
-module takes a placeholder to be a `TVar` whose name starts with a digit, and
-fails on any such variable. The names the solver generates for type variables
-start with a letter (`Compiler.Data.Name.fromTypeVariableScheme`), so no
-variable the solver named can fail the check.
+`checkGroupBLiterals` finds every `Str`, `Chr`, `Float` and `Unit` expression
+in the module and reports one whose type after PostSolve is missing or not
+exactly its form's type, and one whose type before PostSolve, when it has one,
+is a different type. The second catches a placeholder that the solver left
+unconstrained or tied to a contradicting type, which PostSolve's overwrite
+would otherwise hide.
 
 -}
 
@@ -22,17 +26,17 @@ import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
-import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
-{-| Passes when `srcModule` compiles through PostSolve and no node type after
-PostSolve holds a `TVar` whose name starts with a digit.
+{-| Passes when `srcModule` compiles through PostSolve, holds at least one
+string, character or float literal or unit, and `checkGroupBLiterals` reports
+nothing for it. A program with no such expression fails, since the check would
+look at nothing.
 
-A canonicalization or type error fails with the pipeline's message. When
-several variables are found, the failure names only one of them, with the id
-of the node whose type holds it.
+A canonicalization or type error fails with the pipeline's message.
 
 -}
 expectGroupBTypesValid : Src.Module -> Expect.Expectation
@@ -43,114 +47,58 @@ expectGroupBTypesValid srcModule =
 
         Ok result ->
             let
-                checks =
-                    collectGroupBTypeChecks result.nodeTypesPost
+                literalCount =
+                    Helpers.walkExprs result.canonical
+                        |> List.filter (\n -> Helpers.groupBLiteralType n.node /= Nothing)
+                        |> List.length
             in
-            case checks of
-                -- Expect.all fails when it is given no checks.
-                [] ->
-                    Expect.pass
-
-                _ ->
-                    Expect.all checks ()
-
-
-
--- ============================================================================
--- GROUP B TYPE VERIFICATION
--- ============================================================================
-
-
-{-| Returns one failing check for each digit-named `TVar` in `nodeTypes`,
-labelled with the id of the node whose type holds it.
-
-The array index is the node id. Every node with a type is searched, whatever
-its expression or pattern form.
-
--}
-collectGroupBTypeChecks : Array.Array (Maybe (Can.Type Name)) -> List (() -> Expect.Expectation)
-collectGroupBTypeChecks nodeTypes =
-    Array.foldl
-        (\maybeType ( nodeId, acc ) ->
-            case maybeType of
-                Nothing ->
-                    ( nodeId + 1, acc )
-
-                Just canType ->
-                    ( nodeId + 1, checkTypeForSyntheticVars ("NodeId " ++ String.fromInt nodeId) canType ++ acc )
-        )
-        ( 0, [] )
-        nodeTypes
-        |> Tuple.second
-
-
-{-| Returns one failing check, labelled with `context`, for each occurrence of
-a digit-named `TVar` in `canType`.
-
-The search goes through function types, the arguments of a named type,
-record-field and tuple types, and through both an alias's arguments and its
-body. A record's extension variable is not looked at.
-
--}
-checkTypeForSyntheticVars : String -> Can.Type Name -> List (() -> Expect.Expectation)
-checkTypeForSyntheticVars context canType =
-    case canType of
-        Can.TVar name ->
-            if isSyntheticVarName name then
-                [ \() -> Expect.fail (context ++ ": Found synthetic type variable '" ++ name ++ "'") ]
+            if literalCount == 0 then
+                Expect.fail "The program has no string, character or float literal or unit to check"
 
             else
-                []
+                case checkGroupBLiterals result.canonical result.nodeTypesPre result.nodeTypesPost of
+                    [] ->
+                        Expect.pass
 
-        Can.TLambda _ argType resultType ->
-            checkTypeForSyntheticVars context argType
-                ++ checkTypeForSyntheticVars context resultType
-
-        Can.TType _ _ args ->
-            List.concatMap (checkTypeForSyntheticVars context) args
-
-        Can.TRecord fields _ ->
-            Dict.foldl
-                (\_ (Can.FieldType _ fieldType) acc ->
-                    checkTypeForSyntheticVars context fieldType ++ acc
-                )
-                []
-                fields
-
-        Can.TUnit ->
-            []
-
-        Can.TTuple a b cs ->
-            checkTypeForSyntheticVars context a
-                ++ checkTypeForSyntheticVars context b
-                ++ List.concatMap (checkTypeForSyntheticVars context) cs
-
-        Can.TAlias _ _ args aliasedType ->
-            List.concatMap (\( _, argType ) -> checkTypeForSyntheticVars context argType) args
-                ++ checkAliasedTypeForSyntheticVars context aliasedType
+                    issues ->
+                        Expect.fail (String.join "\n" issues)
 
 
-{-| Returns the checks `checkTypeForSyntheticVars` gives for the body of an
-alias, whether `Holey` or `Filled`.
+{-| Returns one line for each string, character or float literal or unit in
+`canonical` whose type in `nodeTypesPost` is not exactly its form's type, or
+whose type in `nodeTypesPre`, when present, differs from it.
 -}
-checkAliasedTypeForSyntheticVars : String -> Can.AliasType Name -> List (() -> Expect.Expectation)
-checkAliasedTypeForSyntheticVars context aliasType =
-    case aliasType of
-        Can.Holey canType ->
-            checkTypeForSyntheticVars context canType
+checkGroupBLiterals : Can.Module -> Array.Array (Maybe (Can.Type Name)) -> Array.Array (Maybe (Can.Type Name)) -> List String
+checkGroupBLiterals canonical nodeTypesPre nodeTypesPost =
+    Helpers.walkExprs canonical
+        |> List.filterMap
+            (\exprNode ->
+                Helpers.groupBLiteralType exprNode.node
+                    |> Maybe.andThen
+                        (\expected ->
+                            let
+                                label =
+                                    "NodeId " ++ String.fromInt exprNode.id ++ ": "
 
-        Can.Filled canType ->
-            checkTypeForSyntheticVars context canType
+                                pre =
+                                    Array.get exprNode.id nodeTypesPre |> Maybe.andThen identity
 
+                                post =
+                                    Array.get exprNode.id nodeTypesPost |> Maybe.andThen identity
+                            in
+                            if post /= Just expected then
+                                Just (label ++ "type after PostSolve is " ++ Debug.toString post ++ ", expected " ++ Debug.toString expected)
 
-{-| Tells whether `name` starts with a digit, which is what this module takes
-to mark a solver placeholder. The empty name does not.
--}
-isSyntheticVarName : String -> Bool
-isSyntheticVarName name =
-    case String.uncons name of
-        Just ( first, _ ) ->
-            Char.isDigit first
+                            else
+                                case pre of
+                                    Just preType ->
+                                        if preType /= expected then
+                                            Just (label ++ "the solver typed it " ++ Debug.toString preType ++ ", not " ++ Debug.toString expected)
 
-        Nothing ->
-            False
+                                        else
+                                            Nothing
+
+                                    Nothing ->
+                                        Nothing
+                        )
+            )

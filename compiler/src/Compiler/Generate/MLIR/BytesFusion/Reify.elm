@@ -127,8 +127,8 @@ type DecoderNode
     | DLengthPrefixedBytes LengthDecoder -- Read length, then bytes
     | DAndThen DecoderNode String DecoderNode -- firstDecoder, paramName, bodyDecoder
       -- Phase 4: loop support
-    | DCountLoop CountSource DecoderNode -- count source, item decoder
-    | DSentinelLoop Int DecoderNode -- sentinel value (e.g. 0), item decoder
+    | DCountLoop CountSource IR.ListOrder DecoderNode -- count source, result order, item decoder
+    | DSentinelLoop Int IR.ListOrder DecoderNode -- sentinel value (e.g. 0), result order, item decoder
 
 
 {-| How to decode the length value for length-prefixed patterns.
@@ -145,8 +145,8 @@ type LengthDecoder
 {-| Source of count for count-based loops.
 -}
 type CountSource
-    = CountFromVar String -- Count from previously decoded variable
-    | CountConst Int -- Fixed count (rare)
+    = CountFromVar String -- Count from a local variable (an andThen parameter or one in scope)
+    | CountConst Int -- Fixed count
 
 
 {-| Like `reifyEncoder` but with the inliner's body-lookup table.
@@ -1256,9 +1256,9 @@ reifyBytesDecodeCall registry exprCache name args =
             reifyAndThen registry exprCache lambdaExpr firstDecoderExpr
 
         -- Phase 4: loop support
-        -- loop : (state -> Decoder (Step state a)) -> state -> Decoder a
-        ( "loop", [ stepFnExpr, initialStateExpr ] ) ->
-            reifyLoop registry exprCache stepFnExpr initialStateExpr
+        -- loop : state -> (state -> Decoder (Step state a)) -> Decoder a
+        ( "loop", [ initialStateExpr, stepFnExpr ] ) ->
+            reifyLoop registry exprCache initialStateExpr stepFnExpr
 
         _ ->
             Nothing
@@ -1435,310 +1435,200 @@ decoderToLengthDecoder node =
 -- ============================================================================
 
 
-{-| Try to reify a loop expression.
+{-| Try to reify a `Bytes.Decode.loop` call, given its two arguments in
+elm/bytes order:
 
-Decode.loop : (state -> Decoder (Step state a)) -> state -> Decoder a
+    loop : state -> (state -> Decoder (Step state a)) -> Decoder a
 
-This is complex because we need to analyze the step function to understand:
+Only two loop shapes are fused, and only when the whole idiom matches, so that
+the fused decoder computes exactly what the loop does (BFUSE\_001, BFOPS\_018).
+In both, the accumulator starts as `[]`, each item is prepended with `::`, the
+item decoder is one fixed-width primitive read, and the `Done` result is
+either the accumulator itself (the items in reverse read order) or
+`List.reverse` of it (in read order); any other `Done` result, condition or
+state update is not fused.
 
-1.  The loop termination condition
-2.  The item decoder for each iteration
-3.  The accumulator update pattern
+  - Count loop:
 
-For Phase 4, we support the most common pattern: count-based loops where
-the initial state is a tuple (count, []) and the step function decrements
-the count.
+        loop ( count, [] )
+            (\( n, acc ) ->
+                if n <= 0 then
+                    succeed (Done acc)
+                    -- or (List.reverse acc)
+
+                else
+                    map (\x -> Loop ( n - 1, x :: acc )) item
+            )
+
+  - Sentinel loop (`item` an integer read, `s` an integer literal, `b == s`
+    or `s == b`):
+
+        loop []
+            (\acc ->
+                andThen
+                    (\b ->
+                        if b == s then
+                            succeed (Done acc)
+                            -- or (List.reverse acc)
+
+                        else
+                            succeed (Loop (b :: acc))
+                    )
+                    item
+            )
+
+`succeed`, `map` and `andThen` are recognised both as calls and in the form the
+post-monomorphization inliner leaves them in (it always inlines them,
+`MonoInlineSimplify.defaultWhitelist`): a `Decoder` constructor applied to the
+closure of their elm/bytes body. `<=`, `==`, `-`, `::` and `List.reverse` are
+recognised as the elm/core globals or as the kernels they are aliases of.
 
 -}
 reifyLoop : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-reifyLoop registry exprCache stepFnExpr initialStateExpr =
-    -- Try count-based pattern first:
-    -- Decode.loop ( count, [] ) (\( n, acc ) -> if n <= 0 then ... else Decode.map ... itemDecoder)
-    case extractCountFromInitialState initialStateExpr of
-        Just countSource ->
-            case extractItemDecoderFromStepFn registry exprCache stepFnExpr of
-                Just itemDecoder ->
-                    Just (DCountLoop countSource itemDecoder)
+reifyLoop registry exprCache initialStateExpr stepFnExpr =
+    let
+        env =
+            { lets = exprCache, paths = Dict.empty }
+    in
+    case resolveLocal env initialStateExpr of
+        Mono.MonoTupleCreate _ [ countExpr, accInit ] _ ->
+            if isEmptyList (resolveLocal env accInit) then
+                Maybe.map2 (\count ( order, item ) -> DCountLoop count order item)
+                    (countSourceOf env countExpr)
+                    (matchCountStep registry env stepFnExpr)
 
-                Nothing ->
-                    -- Count source found but item decoder extraction failed
-                    trySentinelLoop registry exprCache stepFnExpr initialStateExpr
+            else
+                Nothing
 
-        Nothing ->
-            -- Not a count-based loop, try sentinel pattern
-            trySentinelLoop registry exprCache stepFnExpr initialStateExpr
+        initial ->
+            if isEmptyList initial then
+                matchSentinelStep registry env stepFnExpr
+                    |> Maybe.map (\( sentinel, order, item ) -> DSentinelLoop sentinel order item)
+
+            else
+                Nothing
 
 
-{-| Try to recognize sentinel-terminated loop patterns:
-Decode.loop [] (\\acc ->
-Decode.unsignedInt8
-|> Decode.andThen (\\byte ->
-if byte == 0 then Decode.succeed (Done ...)
-else Decode.succeed (Loop ...)
-)
-)
-
-Key characteristics:
-
-  - Initial state is empty list []
-  - Step function reads a value, then uses andThen to check sentinel
-
+{-| What is known about the names in scope where a loop is recognised: the
+expression each `let` binds, and the path each destructuring binds.
 -}
-trySentinelLoop : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-trySentinelLoop registry exprCache stepFnExpr initialStateExpr =
-    -- Check if initial state is empty list []
-    case initialStateExpr of
+type alias LoopEnv =
+    { lets : Dict String Mono.MonoExpr
+    , paths : Dict String Mono.MonoPath
+    }
+
+
+{-| Strips the `let`s and destructurings at the top of `expr`, recording what
+they bind in `env`, and returns the expression under them.
+-}
+peelBindings : LoopEnv -> Mono.MonoExpr -> ( LoopEnv, Mono.MonoExpr )
+peelBindings env expr =
+    case expr of
+        Mono.MonoLet (Mono.MonoDef name bound) body _ ->
+            peelBindings { env | lets = Dict.insert name bound env.lets } body
+
+        Mono.MonoDestruct (Mono.MonoDestructor name path _) body _ ->
+            peelBindings { env | paths = Dict.insert name path env.paths } body
+
+        _ ->
+            ( env, expr )
+
+
+{-| Follows a local variable to the expression a `let` bound it to, as many
+times as needed, and strips any `let`s in front of the result.
+-}
+resolveLocal : LoopEnv -> Mono.MonoExpr -> Mono.MonoExpr
+resolveLocal env expr =
+    resolveLocalHelp 32 env expr
+
+
+resolveLocalHelp : Int -> LoopEnv -> Mono.MonoExpr -> Mono.MonoExpr
+resolveLocalHelp fuel env expr =
+    if fuel <= 0 then
+        expr
+
+    else
+        case expr of
+            Mono.MonoVarLocal name _ ->
+                case Dict.get name env.lets of
+                    Just bound ->
+                        resolveLocalHelp (fuel - 1) env bound
+
+                    Nothing ->
+                        expr
+
+            _ ->
+                expr
+
+
+{-| Whether `expr` is the empty list literal.
+-}
+isEmptyList : Mono.MonoExpr -> Bool
+isEmptyList expr =
+    case expr of
         Mono.MonoList _ [] _ ->
-            -- Try to extract sentinel and item decoder from step function
-            extractSentinelFromStepFn registry exprCache stepFnExpr
+            True
 
         _ ->
-            Nothing
+            False
 
 
-{-| Extract sentinel value and item decoder from a sentinel-terminated step function.
-
-Pattern:
-\\acc -> itemDecoder |> Decode.andThen (\\val -> if val == SENTINEL then ... else ...)
-
+{-| The count of a count loop: an `Int` literal, or a local variable.
 -}
-extractSentinelFromStepFn : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-extractSentinelFromStepFn registry exprCache stepFnExpr =
-    case stepFnExpr of
-        Mono.MonoClosure _ bodyExpr _ ->
-            extractSentinelFromBody registry exprCache bodyExpr
-
-        _ ->
-            Nothing
-
-
-{-| Extract sentinel from the body of a sentinel loop step function.
--}
-extractSentinelFromBody : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-extractSentinelFromBody registry exprCache bodyExpr =
-    case bodyExpr of
-        Mono.MonoLet _ innerExpr _ ->
-            extractSentinelFromBody registry exprCache innerExpr
-
-        -- Look for: decoder |> andThen (\val -> if val == sentinel then ...)
-        -- This is MonoCall to andThen with [decoderExpr, lambdaExpr]
-        Mono.MonoCall _ func [ decoderExpr, lambdaExpr ] _ _ ->
-            case func of
-                Mono.MonoVarGlobal _ specId _ ->
-                    -- Check if this is Decode.andThen
-                    case Registry.lookupSpecKey specId registry of
-                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
-                            if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "andThen" then
-                                -- Found andThen, now extract sentinel and item decoder
-                                extractSentinelFromAndThenBody registry exprCache decoderExpr lambdaExpr
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
-{-| Extract sentinel value from the andThen body.
-
-The lambda has pattern: \\val -> if val == SENTINEL then Done else Loop
-We need to find the sentinel value and confirm the decoder type.
-
--}
-extractSentinelFromAndThenBody : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-extractSentinelFromAndThenBody registry exprCache decoderExpr lambdaExpr =
-    -- First try to reify the decoder (typically DU8 for null-terminated)
-    case reifyDecoder registry exprCache decoderExpr of
-        Just itemDecoder ->
-            -- Now extract sentinel value from the lambda body
-            case extractSentinelValue lambdaExpr of
-                Just sentinel ->
-                    Just (DSentinelLoop sentinel itemDecoder)
-
-                Nothing ->
-                    Nothing
-
-        Nothing ->
-            Nothing
-
-
-{-| Extract the sentinel value from a lambda body containing an if expression.
-
-Pattern: \\val -> if val == SENTINEL then ...
-
--}
-extractSentinelValue : Mono.MonoExpr -> Maybe Int
-extractSentinelValue lambdaExpr =
-    case lambdaExpr of
-        Mono.MonoClosure _ bodyExpr _ ->
-            extractSentinelFromIfExpr bodyExpr
-
-        _ ->
-            Nothing
-
-
-{-| Extract sentinel from an if expression that compares against a literal.
--}
-extractSentinelFromIfExpr : Mono.MonoExpr -> Maybe Int
-extractSentinelFromIfExpr bodyExpr =
-    case bodyExpr of
-        Mono.MonoLet _ innerExpr _ ->
-            extractSentinelFromIfExpr innerExpr
-
-        Mono.MonoIf branches _ _ ->
-            -- Look at the condition of the first branch
-            case branches of
-                [ ( condExpr, _ ) ] ->
-                    extractSentinelFromCondition condExpr
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
-{-| Extract sentinel value from a comparison condition.
-
-Pattern: val == SENTINEL (typically 0 for null-terminated)
-
--}
-extractSentinelFromCondition : Mono.MonoExpr -> Maybe Int
-extractSentinelFromCondition condExpr =
-    case condExpr of
-        -- Look for equality comparison: var == literal or literal == var
-        Mono.MonoCall _ func [ arg1, arg2 ] _ _ ->
-            case func of
-                Mono.MonoVarKernel _ _ _ "eq" _ ->
-                    -- Check if one arg is a literal int
-                    case ( arg1, arg2 ) of
-                        ( Mono.MonoLiteral (Mono.LInt n) _, _ ) ->
-                            Just n
-
-                        ( _, Mono.MonoLiteral (Mono.LInt n) _ ) ->
-                            Just n
-
-                        _ ->
-                            Nothing
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
-{-| Extract count source from initial state tuple ( count, [] ).
--}
-extractCountFromInitialState : Mono.MonoExpr -> Maybe CountSource
-extractCountFromInitialState expr =
-    case expr of
-        Mono.MonoTupleCreate _ [ countExpr, listExpr ] _ ->
-            -- Check that listExpr is an empty list
-            case listExpr of
-                Mono.MonoList _ [] _ ->
-                    -- Extract count from countExpr
-                    extractCountSource countExpr
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
-{-| Extract count source from a count expression.
--}
-extractCountSource : Mono.MonoExpr -> Maybe CountSource
-extractCountSource expr =
-    case expr of
-        Mono.MonoVarLocal name _ ->
-            -- Count from a bound variable (e.g., from andThen)
-            Just (CountFromVar name)
-
+countSourceOf : LoopEnv -> Mono.MonoExpr -> Maybe CountSource
+countSourceOf env countExpr =
+    case countExpr of
         Mono.MonoLiteral (Mono.LInt n) _ ->
-            -- Constant count
             Just (CountConst n)
 
-        _ ->
-            Nothing
-
-
-{-| Try to extract the item decoder from a loop step function.
-
-The step function has the pattern:
-( n, acc ) -> if n <= 0 then ... else Decode.map (\\item -> ...) itemDecoder
-
-We need to find the Decode.map call and extract its second argument (itemDecoder).
-
--}
-extractItemDecoderFromStepFn : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-extractItemDecoderFromStepFn registry exprCache stepFnExpr =
-    case stepFnExpr of
-        Mono.MonoClosure _ bodyExpr _ ->
-            -- Body may have destructs for tuple extraction, then an if
-            extractItemDecoderFromBody registry exprCache bodyExpr
-
-        _ ->
-            Nothing
-
-
-{-| Extract item decoder from the step function body.
-
-This recursively looks through Let/Destruct nodes to find the MonoIf,
-then extracts the item decoder from the else branch's Decode.map call.
-
--}
-extractItemDecoderFromBody : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-extractItemDecoderFromBody registry exprCache bodyExpr =
-    case bodyExpr of
-        Mono.MonoLet _ innerExpr _ ->
-            extractItemDecoderFromBody registry exprCache innerExpr
-
-        Mono.MonoDestruct _ innerExpr _ ->
-            extractItemDecoderFromBody registry exprCache innerExpr
-
-        Mono.MonoIf branches elseExpr _ ->
-            -- The else branch (or last branch if/else) contains Decode.map ... itemDecoder
-            -- In Elm's MonoIf, branches is a list of (condition, thenExpr) pairs
-            -- The elseExpr is the final else branch
-            -- For count-based loops, the else branch is the "continue" path with item decoding
-            case branches of
-                [ _ ] ->
-                    -- Single if-then-else: else branch has the item decoder
-                    extractItemDecoderFromMapCall registry exprCache elseExpr
+        Mono.MonoVarLocal name _ ->
+            case resolveLocal env countExpr of
+                Mono.MonoLiteral (Mono.LInt n) _ ->
+                    Just (CountConst n)
 
                 _ ->
-                    Nothing
+                    Just (CountFromVar name)
 
         _ ->
-            -- Also check if this is directly a Decode.map call (simpler patterns)
-            extractItemDecoderFromMapCall registry exprCache bodyExpr
+            Nothing
 
 
-{-| Extract item decoder from a Decode.map call.
-
-Pattern: Decode.map (\\item -> Loop ...) itemDecoder
-The itemDecoder is the second argument.
-
+{-| Matches the step function of a count loop (see `reifyLoop`), returning the
+order of the list it builds and its item decoder.
 -}
-extractItemDecoderFromMapCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-extractItemDecoderFromMapCall registry exprCache expr =
-    case expr of
-        Mono.MonoCall _ func [ _, itemDecoderExpr ] _ _ ->
-            -- Check if func is Decode.map
-            case func of
-                Mono.MonoVarGlobal _ specId _ ->
-                    case Registry.lookupSpecKey specId registry of
-                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
-                            if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "map" then
-                                reifyDecoder registry exprCache itemDecoderExpr
+matchCountStep : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( IR.ListOrder, DecoderNode )
+matchCountStep registry env0 stepFnExpr =
+    case resolveLocal env0 stepFnExpr of
+        Mono.MonoClosure info body _ ->
+            case info.params of
+                [ ( stateName, _ ) ] ->
+                    let
+                        ( env, inner ) =
+                            peelBindings env0 body
+
+                        componentName index =
+                            Dict.foldl
+                                (\name path found ->
+                                    case path of
+                                        Mono.MonoIndex i Mono.Tuple2Container _ (Mono.MonoRoot root _) ->
+                                            if i == index && root == stateName then
+                                                Just name
+
+                                            else
+                                                found
+
+                                        _ ->
+                                            found
+                                )
+                                Nothing
+                                env.paths
+                    in
+                    case ( componentName 0, componentName 1, inner ) of
+                        ( Just n, Just acc, Mono.MonoIf [ ( cond, thenExpr ) ] elseExpr _ ) ->
+                            if isCountExhausted registry env n cond then
+                                Maybe.map2 Tuple.pair
+                                    (matchDoneSucceed registry env acc thenExpr)
+                                    (matchCountContinue registry env n acc elseExpr)
 
                             else
                                 Nothing
@@ -1751,6 +1641,688 @@ extractItemDecoderFromMapCall registry exprCache expr =
 
         _ ->
             Nothing
+
+
+{-| Whether `cond` is `n <= 0`.
+-}
+isCountExhausted : Mono.SpecializationRegistry -> LoopEnv -> String -> Mono.MonoExpr -> Bool
+isCountExhausted registry env n cond =
+    case flatCall (resolveLocal env cond) of
+        Just ( fn, [ lhs, rhs ] ) ->
+            isCoreFunction registry [ ( "Utils", "le" ), ( "Basics", "le" ) ] ( "Basics", "le" ) fn
+                && isLocalNamed env n lhs
+                && isIntLiteral env 0 rhs
+
+        _ ->
+            False
+
+
+{-| Matches the `else` branch of a count loop,
+`map (\x -> Loop ( n - 1, x :: acc )) item`, returning the item decoder.
+-}
+matchCountContinue : Mono.SpecializationRegistry -> LoopEnv -> String -> String -> Mono.MonoExpr -> Maybe DecoderNode
+matchCountContinue registry env0 n acc expr =
+    viewMap registry env0 expr
+        |> Maybe.andThen
+            (\( env, fnExpr, itemExpr ) ->
+                case resolveLocal env fnExpr of
+                    Mono.MonoClosure info fnBody _ ->
+                        case info.params of
+                            [ ( x, _ ) ] ->
+                                let
+                                    ( fnEnv, loopExpr ) =
+                                        peelBindings env fnBody
+                                in
+                                case viewCtorArg registry fnEnv "Loop" loopExpr |> Maybe.map (resolveLocal fnEnv) of
+                                    Just (Mono.MonoTupleCreate _ [ nextCount, nextAcc ] _) ->
+                                        if isDecrement registry fnEnv n nextCount && isConsOnto registry fnEnv x acc nextAcc then
+                                            fixedWidthItem registry env itemExpr
+
+                                        else
+                                            Nothing
+
+                                    _ ->
+                                        Nothing
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+            )
+
+
+{-| Whether `expr` is `n - 1`.
+-}
+isDecrement : Mono.SpecializationRegistry -> LoopEnv -> String -> Mono.MonoExpr -> Bool
+isDecrement registry env n expr =
+    case flatCall (resolveLocal env expr) of
+        Just ( fn, [ lhs, rhs ] ) ->
+            isCoreFunction registry [ ( "Basics", "sub" ) ] ( "Basics", "sub" ) fn
+                && isLocalNamed env n lhs
+                && isIntLiteral env 1 rhs
+
+        _ ->
+            False
+
+
+{-| Whether `expr` is `x :: acc`.
+-}
+isConsOnto : Mono.SpecializationRegistry -> LoopEnv -> String -> String -> Mono.MonoExpr -> Bool
+isConsOnto registry env x acc expr =
+    case flatCall (resolveLocal env expr) of
+        Just ( fn, [ hd, tl ] ) ->
+            isCoreListFunction registry "cons" fn
+                && isLocalNamed env x hd
+                && isLocalNamed env acc tl
+
+        _ ->
+            False
+
+
+{-| Matches `succeed (Done result)` where `result` is `acc` or
+`List.reverse acc`, returning the order of the list it returns.
+-}
+matchDoneSucceed : Mono.SpecializationRegistry -> LoopEnv -> String -> Mono.MonoExpr -> Maybe IR.ListOrder
+matchDoneSucceed registry env0 acc expr =
+    viewSucceed registry env0 expr
+        |> Maybe.andThen
+            (\( env, value ) ->
+                viewCtorArg registry env "Done" value
+                    |> Maybe.andThen
+                        (\result ->
+                            if isLocalNamed env acc result then
+                                Just IR.ReverseReadOrder
+
+                            else
+                                case flatCall (resolveLocal env result) of
+                                    Just ( fn, [ arg ] ) ->
+                                        if isCoreListFunction registry "reverse" fn && isLocalNamed env acc arg then
+                                            Just IR.InReadOrder
+
+                                        else
+                                            Nothing
+
+                                    _ ->
+                                        Nothing
+                        )
+            )
+
+
+{-| Matches the step function of a sentinel loop (see `reifyLoop`), returning
+the sentinel, the order of the list it builds and its item decoder.
+-}
+matchSentinelStep : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( Int, IR.ListOrder, DecoderNode )
+matchSentinelStep registry env0 stepFnExpr =
+    case resolveLocal env0 stepFnExpr of
+        Mono.MonoClosure info body _ ->
+            case info.params of
+                [ ( acc, _ ) ] ->
+                    viewAndThen registry env0 body
+                        |> Maybe.andThen (matchSentinelCallback registry acc)
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Matches the callback and item decoder of a sentinel loop's `andThen`.
+-}
+matchSentinelCallback : Mono.SpecializationRegistry -> String -> ( LoopEnv, Mono.MonoExpr, Mono.MonoExpr ) -> Maybe ( Int, IR.ListOrder, DecoderNode )
+matchSentinelCallback registry acc ( env, callbackExpr, itemExpr ) =
+    case resolveLocal env callbackExpr of
+        Mono.MonoClosure info cbBody _ ->
+            case info.params of
+                [ ( b, _ ) ] ->
+                    let
+                        ( cbEnv, inner ) =
+                            peelBindings env cbBody
+                    in
+                    case inner of
+                        Mono.MonoIf [ ( cond, thenExpr ) ] elseExpr _ ->
+                            Maybe.map3 (\sentinel order item -> ( sentinel, order, item ))
+                                (sentinelOf registry cbEnv b cond)
+                                (matchDoneSucceed registry cbEnv acc thenExpr)
+                                (if matchSentinelContinue registry cbEnv b acc elseExpr then
+                                    integerItem registry env itemExpr
+
+                                 else
+                                    Nothing
+                                )
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| The sentinel `s` of a condition `b == s` or `s == b`, `s` an `Int` literal.
+-}
+sentinelOf : Mono.SpecializationRegistry -> LoopEnv -> String -> Mono.MonoExpr -> Maybe Int
+sentinelOf registry env b cond =
+    case flatCall (resolveLocal env cond) of
+        Just ( fn, [ lhs, rhs ] ) ->
+            if isCoreFunction registry [ ( "Utils", "equal" ), ( "Utils", "eq" ), ( "Basics", "eq" ) ] ( "Basics", "eq" ) fn then
+                if isLocalNamed env b lhs then
+                    intLiteral env rhs
+
+                else if isLocalNamed env b rhs then
+                    intLiteral env lhs
+
+                else
+                    Nothing
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Whether `expr` is `succeed (Loop (b :: acc))`.
+-}
+matchSentinelContinue : Mono.SpecializationRegistry -> LoopEnv -> String -> String -> Mono.MonoExpr -> Bool
+matchSentinelContinue registry env0 b acc expr =
+    case viewSucceed registry env0 expr of
+        Just ( env, value ) ->
+            case viewCtorArg registry env "Loop" value of
+                Just next ->
+                    isConsOnto registry env b acc next
+
+                Nothing ->
+                    False
+
+        Nothing ->
+            False
+
+
+{-| The item decoder of a count loop: one fixed-width primitive read.
+-}
+fixedWidthItem : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe DecoderNode
+fixedWidthItem registry env itemExpr =
+    case reifyDecoder registry env.lets (resolveLocal env itemExpr) of
+        Just node ->
+            if isFixedWidthRead node then
+                Just node
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| The item decoder of a sentinel loop: one fixed-width integer read.
+-}
+integerItem : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe DecoderNode
+integerItem registry env itemExpr =
+    fixedWidthItem registry env itemExpr
+        |> Maybe.andThen
+            (\node ->
+                case node of
+                    DF32 _ ->
+                        Nothing
+
+                    DF64 _ ->
+                        Nothing
+
+                    _ ->
+                        Just node
+            )
+
+
+{-| Whether `node` is a single fixed-width primitive read.
+-}
+isFixedWidthRead : DecoderNode -> Bool
+isFixedWidthRead node =
+    case node of
+        DU8 ->
+            True
+
+        DS8 ->
+            True
+
+        DU16 _ ->
+            True
+
+        DS16 _ ->
+            True
+
+        DU32 _ ->
+            True
+
+        DS32 _ ->
+            True
+
+        DF32 _ ->
+            True
+
+        DF64 _ ->
+            True
+
+        _ ->
+            False
+
+
+
+-- DECODER COMBINATOR VIEWS
+--
+-- Each view recognises one elm/bytes combinator both as a call of the
+-- `Bytes.Decode` global and in its inlined form, a `Decoder` constructor
+-- applied to the closure of the combinator's body. They return the
+-- environment extended with the bindings they looked through.
+
+
+{-| `succeed value`, inlined as `Decoder (\_ offset -> ( offset, value ))`.
+-}
+viewSucceed : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( LoopEnv, Mono.MonoExpr )
+viewSucceed registry env0 expr =
+    let
+        ( env, inner ) =
+            peelBindings env0 (resolveLocal env0 expr)
+    in
+    case flatCall inner of
+        Just ( fn, [ arg ] ) ->
+            if isBytesDecodeGlobal registry "succeed" fn then
+                Just ( env, arg )
+
+            else if isBytesDecodeGlobal registry "Decoder" fn then
+                case resolveLocal env arg of
+                    Mono.MonoClosure info body _ ->
+                        case info.params of
+                            [ _, ( offset, _ ) ] ->
+                                let
+                                    ( bodyEnv, result ) =
+                                        peelBindings env body
+                                in
+                                case result of
+                                    Mono.MonoTupleCreate _ [ off, value ] _ ->
+                                        if isLocalNamed bodyEnv offset off then
+                                            Just ( bodyEnv, value )
+
+                                        else
+                                            Nothing
+
+                                    _ ->
+                                        Nothing
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| `map fn decoder`, inlined as
+
+    let
+        (Decoder decodeA) =
+            decoder
+    in
+    Decoder
+        (\bites offset ->
+            let
+                ( aOffset, a ) =
+                    decodeA bites offset
+            in
+            ( aOffset, fn a )
+        )
+
+Returns the function and the decoder.
+
+-}
+viewMap : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( LoopEnv, Mono.MonoExpr, Mono.MonoExpr )
+viewMap registry env0 expr =
+    let
+        ( env, inner ) =
+            peelBindings env0 (resolveLocal env0 expr)
+    in
+    case flatCall inner of
+        Just ( fn, [ fnExpr, decoderExpr ] ) ->
+            if isBytesDecodeGlobal registry "map" fn then
+                Just ( env, fnExpr, decoderExpr )
+
+            else
+                Nothing
+
+        Just ( fn, [ arg ] ) ->
+            if isBytesDecodeGlobal registry "Decoder" fn then
+                viewInlinedRun env arg
+                    |> Maybe.andThen
+                        (\run ->
+                            case run.result of
+                                Mono.MonoTupleCreate _ [ off, applied ] _ ->
+                                    if isLocalNamed run.env run.offsetName off then
+                                        case flatCall (resolveLocal run.env applied) of
+                                            Just ( mapFn, [ a ] ) ->
+                                                if isLocalNamed run.env run.valueName a then
+                                                    Just ( run.env, mapFn, run.decoder )
+
+                                                else
+                                                    Nothing
+
+                                            _ ->
+                                                Nothing
+
+                                    else
+                                        Nothing
+
+                                _ ->
+                                    Nothing
+                        )
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| `andThen callback decoder`, inlined as
+
+    let
+        (Decoder decodeA) =
+            decoder
+    in
+    Decoder
+        (\bites offset ->
+            let
+                ( aOffset, a ) =
+                    decodeA bites offset
+
+                (Decoder decodeB) =
+                    callback a
+            in
+            decodeB bites aOffset
+        )
+
+Returns the callback and the decoder.
+
+-}
+viewAndThen : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( LoopEnv, Mono.MonoExpr, Mono.MonoExpr )
+viewAndThen registry env0 expr =
+    let
+        ( env, inner ) =
+            peelBindings env0 (resolveLocal env0 expr)
+    in
+    case flatCall inner of
+        Just ( fn, [ callbackExpr, decoderExpr ] ) ->
+            if isBytesDecodeGlobal registry "andThen" fn then
+                Just ( env, callbackExpr, decoderExpr )
+
+            else
+                Nothing
+
+        Just ( fn, [ arg ] ) ->
+            if isBytesDecodeGlobal registry "Decoder" fn then
+                viewInlinedRun env arg
+                    |> Maybe.andThen
+                        (\run ->
+                            case flatCall run.result of
+                                Just ( Mono.MonoVarLocal decodeB _, [ bites, off ] ) ->
+                                    case ( unboxedRoot run.env decodeB, isLocalNamed run.env run.bitesName bites, isLocalNamed run.env run.offsetName off ) of
+                                        ( Just nextDecoder, True, True ) ->
+                                            case flatCall (resolveLocal run.env (Mono.MonoVarLocal nextDecoder Mono.MUnit)) of
+                                                Just ( callback, [ a ] ) ->
+                                                    if isLocalNamed run.env run.valueName a then
+                                                        Just ( run.env, callback, run.decoder )
+
+                                                    else
+                                                        Nothing
+
+                                                _ ->
+                                                    Nothing
+
+                                        _ ->
+                                            Nothing
+
+                                _ ->
+                                    Nothing
+                        )
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| The common head of an inlined `map` or `andThen`: a closure
+`\bites offset -> let ( aOffset, a ) = decodeA bites offset in ...` whose
+`decodeA` is the function inside a decoder. Returns the decoder, the names of
+`bites`, `aOffset` and `a`, the expression under the bindings and the
+environment.
+-}
+viewInlinedRun :
+    LoopEnv
+    -> Mono.MonoExpr
+    ->
+        Maybe
+            { env : LoopEnv
+            , decoder : Mono.MonoExpr
+            , bitesName : String
+            , offsetName : String
+            , valueName : String
+            , result : Mono.MonoExpr
+            }
+viewInlinedRun env arg =
+    case resolveLocal env arg of
+        Mono.MonoClosure info body _ ->
+            case info.params of
+                [ ( bites, _ ), ( offset, _ ) ] ->
+                    let
+                        -- The destructurings made inside the closure, kept
+                        -- apart so that a tuple destructured outside it (a
+                        -- loop's state) cannot be mistaken for this one.
+                        ( localEnv, result ) =
+                            peelBindings { env | paths = Dict.empty } body
+
+                        bodyEnv =
+                            { localEnv | paths = Dict.union localEnv.paths env.paths }
+
+                        tupleComponent index =
+                            Dict.foldl
+                                (\name path found ->
+                                    case path of
+                                        Mono.MonoIndex i Mono.Tuple2Container _ (Mono.MonoRoot root _) ->
+                                            if i == index then
+                                                Just ( name, root )
+
+                                            else
+                                                found
+
+                                        _ ->
+                                            found
+                                )
+                                Nothing
+                                localEnv.paths
+                    in
+                    case ( tupleComponent 0, tupleComponent 1 ) of
+                        ( Just ( aOffset, root0 ), Just ( a, root1 ) ) ->
+                            if root0 == root1 then
+                                case flatCall (resolveLocal bodyEnv (Mono.MonoVarLocal root0 Mono.MUnit)) of
+                                    Just ( Mono.MonoVarLocal decodeA _, [ bitesArg, offsetArg ] ) ->
+                                        case unboxedRoot bodyEnv decodeA of
+                                            Just decoderName ->
+                                                if isLocalNamed bodyEnv bites bitesArg && isLocalNamed bodyEnv offset offsetArg then
+                                                    Just
+                                                        { env = bodyEnv
+                                                        , decoder = Mono.MonoVarLocal decoderName Mono.MUnit
+                                                        , bitesName = bites
+                                                        , offsetName = aOffset
+                                                        , valueName = a
+                                                        , result = result
+                                                        }
+
+                                                else
+                                                    Nothing
+
+                                            Nothing ->
+                                                Nothing
+
+                                    _ ->
+                                        Nothing
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| When `name` was bound by destructuring the `Decoder` constructor of a
+variable, `let (Decoder name) = var`, returns that variable's name.
+-}
+unboxedRoot : LoopEnv -> String -> Maybe String
+unboxedRoot env name =
+    case Dict.get name env.paths of
+        Just (Mono.MonoUnbox _ (Mono.MonoRoot root _)) ->
+            Just root
+
+        _ ->
+            Nothing
+
+
+{-| The argument of a call of the `Bytes.Decode` constructor `ctorName`
+(`Done` or `Loop`).
+-}
+viewCtorArg : Mono.SpecializationRegistry -> LoopEnv -> String -> Mono.MonoExpr -> Maybe Mono.MonoExpr
+viewCtorArg registry env ctorName expr =
+    case flatCall (resolveLocal env expr) of
+        Just ( fn, [ arg ] ) ->
+            if isBytesDecodeGlobal registry ctorName fn then
+                Just arg
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+
+-- SMALL MATCHERS
+
+
+{-| A call as its function and all its arguments, with a curried call
+`(f a) b` flattened to `f a b`.
+-}
+flatCall : Mono.MonoExpr -> Maybe ( Mono.MonoExpr, List Mono.MonoExpr )
+flatCall expr =
+    case expr of
+        Mono.MonoCall _ fn args _ _ ->
+            case flatCall fn of
+                Just ( innerFn, innerArgs ) ->
+                    Just ( innerFn, innerArgs ++ args )
+
+                Nothing ->
+                    Just ( fn, args )
+
+        _ ->
+            Nothing
+
+
+{-| Whether `expr` is the local variable `name`, directly or through `let`s.
+-}
+isLocalNamed : LoopEnv -> String -> Mono.MonoExpr -> Bool
+isLocalNamed env name expr =
+    case expr of
+        Mono.MonoVarLocal n _ ->
+            n == name || isLocalNamedVia env name n
+
+        _ ->
+            False
+
+
+isLocalNamedVia : LoopEnv -> String -> String -> Bool
+isLocalNamedVia env name n =
+    case Dict.get n env.lets of
+        Just (Mono.MonoVarLocal m _) ->
+            m == name
+
+        _ ->
+            False
+
+
+{-| The value of an `Int` literal, directly or through `let`s.
+-}
+intLiteral : LoopEnv -> Mono.MonoExpr -> Maybe Int
+intLiteral env expr =
+    case resolveLocal env expr of
+        Mono.MonoLiteral (Mono.LInt n) _ ->
+            Just n
+
+        _ ->
+            Nothing
+
+
+isIntLiteral : LoopEnv -> Int -> Mono.MonoExpr -> Bool
+isIntLiteral env value expr =
+    intLiteral env expr == Just value
+
+
+{-| Whether `fn` is the `Bytes.Decode` global `name`.
+-}
+isBytesDecodeGlobal : Mono.SpecializationRegistry -> String -> Mono.MonoExpr -> Bool
+isBytesDecodeGlobal registry name fn =
+    case fn of
+        Mono.MonoVarGlobal _ specId _ ->
+            case Registry.lookupSpecKey specId registry of
+                Just ( Mono.Global (ModuleName.Canonical pkg moduleName) globalName, _ ) ->
+                    pkg == Pkg.bytes && moduleName == "Bytes.Decode" && globalName == name
+
+                _ ->
+                    False
+
+        _ ->
+            False
+
+
+{-| Whether `fn` is the elm/core global `( moduleName, name )` or one of the
+kernels `( kernelHome, kernelName )` it is an alias of.
+-}
+isCoreFunction : Mono.SpecializationRegistry -> List ( String, String ) -> ( String, String ) -> Mono.MonoExpr -> Bool
+isCoreFunction registry kernels ( moduleName, name ) fn =
+    case fn of
+        Mono.MonoVarKernel _ _ home kernelName _ ->
+            List.member ( home, kernelName ) kernels
+
+        Mono.MonoVarGlobal _ specId _ ->
+            case Registry.lookupSpecKey specId registry of
+                Just ( Mono.Global (ModuleName.Canonical pkg globalModule) globalName, _ ) ->
+                    pkg == Pkg.core && globalModule == moduleName && globalName == name
+
+                _ ->
+                    False
+
+        _ ->
+            False
+
+
+{-| Whether `fn` is `List.name` (`cons` or `reverse`), as the elm/core global
+or the `List` kernel of that name.
+-}
+isCoreListFunction : Mono.SpecializationRegistry -> String -> Mono.MonoExpr -> Bool
+isCoreListFunction registry name fn =
+    isCoreFunction registry [ ( "List", name ) ] ( "List", name ) fn
 
 
 {-| Maybe.map4 helper.
@@ -2119,7 +2691,7 @@ compileDecoderNode node state =
             in
             compileDecoderNode bodyDecoder stateWithBinding
 
-        DCountLoop countSource itemDecoder ->
+        DCountLoop countSource order itemDecoder ->
             -- Count-based loop: decode a fixed number of items into a list
             -- The count comes from either a bound variable or a constant
             let
@@ -2143,28 +2715,31 @@ compileDecoderNode node state =
                 ( resultVar, state1 ) =
                     freshVar "list" { state | varCounter = itemStateAfter.varCounter }
 
-                -- Create the loop op
-                -- For CountConst, we need to communicate the constant value somehow
-                -- We'll use the countVarName field with a special prefix
-                actualCountVar =
+                -- A variable bound by an enclosing andThen is the result of an
+                -- earlier read; any other variable is compiled where the loop
+                -- is emitted.
+                count =
                     case countSource of
                         CountFromVar varName ->
-                            Dict.get varName state.paramBindings
-                                |> Maybe.withDefault varName
+                            case Dict.get varName state.paramBindings of
+                                Just placeholder ->
+                                    IR.CountPlaceholder placeholder
+
+                                Nothing ->
+                                    IR.CountExpression (Mono.MonoVarLocal varName Mono.MInt)
 
                         CountConst n ->
-                            -- Encode constant as special name that emitter can recognize
-                            "const:" ++ String.fromInt n
+                            IR.CountLiteral n
             in
             ( resultVar
             , { state1
                 | ops =
-                    IR.LoopDecodeList actualCountVar state.cursorName itemOps resultVar
+                    IR.LoopDecodeList count state.cursorName itemOps order resultVar
                         :: state1.ops
               }
             )
 
-        DSentinelLoop sentinel itemDecoder ->
+        DSentinelLoop sentinel order itemDecoder ->
             -- Sentinel-terminated loop: decode items until sentinel is read
             -- Each item is checked against sentinel before being added to list
             let
@@ -2190,7 +2765,7 @@ compileDecoderNode node state =
             ( resultVar
             , { state1
                 | ops =
-                    IR.LoopSentinelDecodeList sentinel state.cursorName itemOps resultVar
+                    IR.LoopSentinelDecodeList sentinel state.cursorName itemOps order resultVar
                         :: state1.ops
               }
             )

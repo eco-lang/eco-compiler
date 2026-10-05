@@ -1,38 +1,44 @@
-module TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping)
+module TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping, expectCharTypeMappingWithOps)
 
-{-| Checks that the ops converting between `Char` and `Int` in the MLIR
-generated for a program give the `Char` side the type `i16`, so that a
-conversion emitted with some other width is caught.
+{-| Checks that the `eco.char.*` ops in the MLIR generated for a program give
+the `Char` side the type `i16`, so that a conversion or comparison emitted with
+some other width is caught (CGEN\_015).
 
 The code generator's type for a `Char` is `i16`
-(`Compiler.Generate.MLIR.Types.ecoChar`). The ops that convert between a `Char`
-and an `Int` are where that width meets the `i64` of an `Int`, and they are what
-this module inspects. An op's operand types are read from its `_operand_types`
-attribute, the list of operand types the code generator records on an op.
+(`Compiler.Generate.MLIR.Types.ecoChar`), and for an `Int` it is `i64`. An
+operand's type here is its _defined_ type: the type of the op result or block
+argument that introduces the SSA name within the enclosing top-level op
+(`TestLogic.Generate.CodeGen.Invariants.typeEnvOfOp`), not the op's
+`_operand_types` record. A violation is reported for:
 
-Among the ops whose names start with `eco.char.`, a violation is reported for:
+  - an `eco.char.toInt` that does not take one `i16` operand and give one
+    `i64` result;
+  - an `eco.char.fromInt` that does not take one `i64` operand and give one
+    `i16` result;
+  - any other `eco.char.*` op (the comparisons) with an operand that is not
+    `i16`;
+  - an `eco.char.*` operand with no definition in its top-level op.
 
-  - an `eco.char.toInt` whose first recorded operand type is not `i16`;
-  - an `eco.char.fromInt` whose first result type is not `i16`.
+Among what is not checked: a `Char` constant, a case on a `Char`, and the
+result types of the comparisons.
 
-Among what is not checked: every other `eco.char.` op, including the
-comparisons; a `Char` constant; a case on a `Char`; the `Int` side of either
-conversion; and an `eco.char.toInt` with no `_operand_types` attribute.
-
-@docs expectCharTypeMapping
+@docs expectCharTypeMapping, expectCharTypeMappingWithOps
 
 -}
 
 import Compiler.AST.Source as Src
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants
     exposing
-        ( Violation
-        , extractOperandTypes
+        ( TypeEnv
+        , Violation
         , extractResultTypes
-        , findOpsWithPrefix
+        , typeEnvOfOp
         , violationsToExpectation
+        , walkAllOps
+        , walkOpAndChildren
         )
 import TestLogic.TestPipeline exposing (runToMlir)
 
@@ -41,8 +47,8 @@ import TestLogic.TestPipeline exposing (runToMlir)
 `eco.char.toInt` operands and `eco.char.fromInt` results are `i16`.
 
 The expectation fails with the test pipeline's error message, prefixed
-`Compilation failed:`, if compilation fails. When several ops break the rule,
-the failure reports only the first of them.
+`Compilation failed:`, if compilation fails, and otherwise with every
+violation.
 
 -}
 expectCharTypeMapping : Src.Module -> Expectation
@@ -55,67 +61,118 @@ expectCharTypeMapping srcModule =
             violationsToExpectation (checkCharTypeMapping mlirModule)
 
 
-{-| Returns a violation for each op of `mlirModule`, at any depth, whose name
-starts with `eco.char.` and that `checkCharOp` rejects.
+{-| Like `expectCharTypeMapping`, and also fails unless the generated MLIR
+holds at least one op of each name in `opNames`, so that a focused test cannot
+pass because the ops it is about were folded away.
+-}
+expectCharTypeMappingWithOps : List String -> Src.Module -> Expectation
+expectCharTypeMappingWithOps opNames srcModule =
+    case runToMlir srcModule of
+        Err err ->
+            Expect.fail ("Compilation failed: " ++ err)
+
+        Ok { mlirModule } ->
+            let
+                present =
+                    List.map .name (walkAllOps mlirModule)
+
+                missing =
+                    List.filter (\n -> not (List.member n present)) opNames
+            in
+            if List.isEmpty missing then
+                violationsToExpectation (checkCharTypeMapping mlirModule)
+
+            else
+                Expect.fail ("Expected ops not generated: " ++ String.join ", " missing)
+
+
+{-| Returns the violations of every `eco.char.*` op of `mlirModule`, at any
+depth, top-level op by top-level op.
 -}
 checkCharTypeMapping : MlirModule -> List Violation
 checkCharTypeMapping mlirModule =
-    let
-        charOps =
-            findOpsWithPrefix "eco.char." mlirModule
-    in
-    List.filterMap checkCharOp charOps
+    List.concatMap
+        (\topOp ->
+            let
+                env =
+                    typeEnvOfOp topOp
+            in
+            walkOpAndChildren topOp
+                |> List.filter (\op -> String.startsWith "eco.char." op.name)
+                |> List.concatMap (checkCharOp env)
+        )
+        mlirModule.body
 
 
-{-| Returns a violation if `op` is an `eco.char.toInt` whose first recorded
-operand type is not `i16`, or an `eco.char.fromInt` whose first result type is
-not `i16`.
-
-An `eco.char.toInt` without the `_operand_types` attribute, or with an empty
-one, and an `eco.char.fromInt` with no result pass. Any other op passes.
-
+{-| Returns the violations of one `eco.char.*` op, its operand types looked up
+in `env`.
 -}
-checkCharOp : MlirOp -> Maybe Violation
-checkCharOp op =
-    case op.name of
-        "eco.char.toInt" ->
-            case extractOperandTypes op of
-                Just (operandType :: _) ->
-                    if operandType /= I16 then
-                        Just
-                            { opId = op.id
-                            , opName = op.name
-                            , message = "eco.char.toInt operand should be i16, got " ++ typeToString operandType
-                            }
+checkCharOp : TypeEnv -> MlirOp -> List Violation
+checkCharOp env op =
+    let
+        violation message =
+            { opId = op.id, opName = op.name, message = message }
+
+        operandTypes =
+            List.map (\name -> ( name, Dict.get name env )) op.operands
+
+        undefinedOperands =
+            List.filterMap
+                (\( name, t ) ->
+                    if t == Nothing then
+                        Just (violation (op.name ++ " operand " ++ name ++ " has no definition in its function"))
 
                     else
                         Nothing
+                )
+                operandTypes
+
+        conversion inputType resultType =
+            case ( operandTypes, extractResultTypes op ) of
+                ( [ ( _, Just actualInput ) ], [ actualResult ] ) ->
+                    (if actualInput /= inputType then
+                        [ violation (op.name ++ " operand should be " ++ typeToString inputType ++ ", got " ++ typeToString actualInput) ]
+
+                     else
+                        []
+                    )
+                        ++ (if actualResult /= resultType then
+                                [ violation (op.name ++ " result should be " ++ typeToString resultType ++ ", got " ++ typeToString actualResult) ]
+
+                            else
+                                []
+                           )
+
+                ( [ ( _, Nothing ) ], _ ) ->
+                    []
 
                 _ ->
-                    Nothing
+                    [ violation (op.name ++ " should have exactly one operand and one result") ]
+    in
+    undefinedOperands
+        ++ (case op.name of
+                "eco.char.toInt" ->
+                    conversion I16 I64
 
-        "eco.char.fromInt" ->
-            let
-                resultTypes =
-                    extractResultTypes op
-            in
-            case List.head resultTypes of
-                Just resultType ->
-                    if resultType /= I16 then
-                        Just
-                            { opId = op.id
-                            , opName = op.name
-                            , message = "eco.char.fromInt result should be i16, got " ++ typeToString resultType
-                            }
+                "eco.char.fromInt" ->
+                    conversion I64 I16
 
-                    else
-                        Nothing
+                _ ->
+                    List.filterMap
+                        (\( name, t ) ->
+                            case t of
+                                Just actual ->
+                                    if actual /= I16 then
+                                        Just (violation (op.name ++ " operand " ++ name ++ " should be i16, got " ++ typeToString actual))
 
-                Nothing ->
-                    Nothing
+                                    else
+                                        Nothing
 
-        _ ->
-            Nothing
+                                Nothing ->
+                                    Nothing
+                        )
+                        operandTypes
+           )
 
 
 {-| Returns the MLIR spelling of an integer or float type, as in `i16`, for use

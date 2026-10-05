@@ -32,16 +32,15 @@ The cases, by group:
     `Vec3`.
   - Constructors with type parameters: `Identity a`, `Either a b`, and three
     types whose single constructor's field is an alias applied to the type's
-    own parameter (`Pair b`, `Id x` and `Phantom b`). The alias's formal
-    parameter has a different name from the type's parameter, so it can only
-    be resolved through the alias, not among the type's own variables; the
-    monomorphizer does this with
-    `Compiler.Monomorphize.Analysis.convertCanTypeNameToMVarId`.
+    own parameter (`Pair b`, `Id x` and `Opt b`). The alias's formal parameter
+    has a different name from the type's parameter, so it can only be resolved
+    through the alias, not among the type's own variables; the monomorphizer
+    does this with `Compiler.Monomorphize.Analysis.convertCanTypeNameToMVarId`.
 
 Among what is not tested: the value any `testValue` would compute, since no
-case evaluates it; a phantom alias whose body does not mention its parameter,
-since the `Phantom` alias here is `Maybe a`; an alias with more than one
-parameter in a constructor field; record and recursive constructor fields; and
+case evaluates it; a phantom alias, one whose body does not mention its
+parameter, which canonicalization rejects (`TypeVarsMessedUpInAlias`), as Elm
+does; an alias with more than one parameter in a constructor field; record and recursive constructor fields; and
 under `suite`, the solver monomorphizer, since `expectMonomorphization` runs
 the substitution engine.
 
@@ -652,11 +651,6 @@ threeFieldCtor expectFn _ =
 
 {-| Returns the cases whose custom types have type parameters, checked with
 `expectFn`.
-
-The label "Ctor field referencing phantom alias (body ignores param)" does not
-describe its program: that alias's body is `Maybe a`, which mentions the
-parameter.
-
 -}
 polymorphicCtorCases : (Src.Module -> Expectation) -> List TestCase
 polymorphicCtorCases expectFn =
@@ -664,7 +658,7 @@ polymorphicCtorCases expectFn =
     , { label = "Either-like polymorphic type", run = eitherLikeType expectFn }
     , { label = "Ctor field referencing parameterized alias (Pair)", run = ctorFieldReferencingPairAlias expectFn }
     , { label = "Ctor field referencing identity alias", run = ctorFieldReferencingIdAlias expectFn }
-    , { label = "Ctor field referencing phantom alias (body ignores param)", run = ctorFieldReferencingPhantomAlias expectFn }
+    , { label = "Ctor field referencing alias of Maybe", run = ctorFieldReferencingMaybeAlias expectFn }
     ]
 
 
@@ -672,11 +666,11 @@ polymorphicCtorCases expectFn =
 alias applied to the type's own parameter, where the alias's parameter has a
 different name:
 
-    type alias Phantom a =
+    type alias Opt a =
         Maybe a
 
     type Marker b
-        = Marker (Phantom b)
+        = Marker (Opt b)
 
     unmark : Marker Int -> Int
     unmark m =
@@ -691,17 +685,16 @@ different name:
     testValue =
         unmark (Marker (Just 5))
 
-Despite the alias's name, its body mentions its parameter, so this is not a
-phantom alias. What it adds to the other two alias cases is the parameter
-sitting inside `Maybe`, and a match on nested constructors.
+What it adds to the `Pair` and `Id` alias cases is the parameter sitting inside
+`Maybe`, and a match on nested constructors.
 
 -}
-ctorFieldReferencingPhantomAlias : (Src.Module -> Expectation) -> (() -> Expectation)
-ctorFieldReferencingPhantomAlias expectFn _ =
+ctorFieldReferencingMaybeAlias : (Src.Module -> Expectation) -> (() -> Expectation)
+ctorFieldReferencingMaybeAlias expectFn _ =
     let
-        phantomAlias : AliasDef
-        phantomAlias =
-            { name = "Phantom"
+        optAlias : AliasDef
+        optAlias =
+            { name = "Opt"
             , args = [ "a" ]
             , tipe = tType "Maybe" [ tVar "a" ]
             }
@@ -711,7 +704,7 @@ ctorFieldReferencingPhantomAlias expectFn _ =
             { name = "Marker"
             , args = [ "b" ]
             , ctors =
-                [ { name = "Marker", args = [ tType "Phantom" [ tVar "b" ] ] } ]
+                [ { name = "Marker", args = [ tType "Opt" [ tVar "b" ] ] } ]
             }
 
         unmarkDef : TypedDef
@@ -740,7 +733,7 @@ ctorFieldReferencingPhantomAlias expectFn _ =
             makeModuleWithTypedDefsUnionsAliases "Test"
                 [ unmarkDef, testValueDef ]
                 [ markerUnion ]
-                [ phantomAlias ]
+                [ optAlias ]
     in
     expectFn modul
 

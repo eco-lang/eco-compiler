@@ -29,12 +29,13 @@ alias name `Set` of the first test, which implies none.
 The tests establish:
 
   - On an alias `Set` whose one argument is named `comparable`, with the unit
-    type as its argument type and as its `Holey` body, `reference` and `actual`
-    are equal. The argument name is the only string there that implies a super.
-    Only equality is asserted, so the test passes whether or not the argument
-    name is collected, as long as both sides agree.
+    type as its argument type and as its `Holey` body, `actual` is exactly
+    `comparable` mapped to Comparable, and equals `reference`. The argument
+    name is the only string there that implies a super, so this pins that alias
+    argument names are collected.
   - On a type `numbers!` applied to the type variables `number` and `msg`,
-    `reference` and `actual` are equal. The type name implies number.
+    `actual` is exactly `number` and `numbers!` mapped to Number, and equals
+    `reference`. The type name implies number.
   - On fuzzed types from `typeFuzzer 3`, `reference` and `actual` are equal.
 
 Among what is not tested:
@@ -191,14 +192,22 @@ suite =
                     t =
                         Can.TAlias home "Set" [ ( "comparable", Can.TUnit ) ] (Can.Holey Can.TUnit)
                 in
-                Expect.equal (reference t) (actual t)
+                Expect.all
+                    [ \_ -> Expect.equal [ ( "comparable", "Comparable" ) ] (actual t)
+                    , \_ -> Expect.equal (reference t) (actual t)
+                    ]
+                    ()
         , Test.test "spurious non-type-variable names are kept (byte identity)" <|
             \_ ->
                 let
                     t =
                         Can.TType home "numbers!" [ Can.TVar "number", Can.TVar "msg" ]
                 in
-                Expect.equal (reference t) (actual t)
+                Expect.all
+                    [ \_ -> Expect.equal [ ( "number", "Number" ), ( "numbers!", "Number" ) ] (actual t)
+                    , \_ -> Expect.equal (reference t) (actual t)
+                    ]
+                    ()
         , Test.fuzz (typeFuzzer 3) "equals the collect-all-then-filter reference" <|
             \t -> Expect.equal (reference t) (actual t)
         ]

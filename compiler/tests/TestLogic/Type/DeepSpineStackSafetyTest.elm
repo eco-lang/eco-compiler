@@ -24,8 +24,14 @@ nothing binds (`f`, `r` and `xs`), and the `if` fixture tests an `Int` as its
 condition. Generation does not look names up or check types, so this does not
 stop it.
 
-Each test runs `ConstrainTyped.constrainWithIdsDetailed`, the pathway that
-records a solver variable for each node id, and passes if generation returns.
+Each test runs both pathways of the one generator over its fixture:
+`ConstrainTyped.constrainWithIdsDetailed`, the typed pathway, which records a
+solver variable for each node id, and `ConstrainTyped.constrainErased`, the
+erased pathway, which runs with recording off and so takes the recording-off
+branches of the spines. A test passes when both return, the erased constraint
+is not the empty `CTrue`, and the typed pathway recorded a variable for at
+least as many node ids as the fixture has levels, so that the walk reached
+the bottom of the chain rather than stopping early.
 The chains are:
 
   - a `let` chain 10,000 deep, nesting down the body: `let x = 0 in let x = 0 in ... x`;
@@ -40,21 +46,22 @@ The chains are:
     chain, whose body is a 2,000-deep chain of calls of `f` nesting down the
     last argument.
 
-Among what is not tested: the erased pathway (`ConstrainTyped.constrainErased`,
-recording off), which `expectGenerationCompletes` never runs; `let` chains built
-from `Can.LetRec` or `Can.LetDestruct` nodes, which the let spine handles
-separately from `Can.Let`; anything about the constraints produced or the
-variables recorded; solving the constraints; and parsing or canonicalizing deep
-source.
+Among what is not tested: `let` chains built from `Can.LetRec` or
+`Can.LetDestruct` nodes, which the let spine handles separately from
+`Can.Let`; anything about the constraints produced or the variables recorded
+beyond their count; solving the constraints; and parsing or canonicalizing
+deep source.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder as CB
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.Type as Type
 import Expect
 import System.TypeCheck.IO as IO
 import Test exposing (Test)
@@ -67,25 +74,47 @@ depth =
     10000
 
 
-{-| Runs typed constraint generation over `canonical` and returns a passing
-expectation once it has finished.
-
-The assertion is that the returned state has recording on, which
-`constrainWithIdsDetailed` always starts with and generation never changes, so
-it passes whenever generation returns. `erasedDone` is the constant `True`: the
-erased pathway is not run.
-
+{-| Runs constraint generation over `canonical` on both pathways, and passes
+when the erased constraint is not `CTrue` and the typed pathway recorded a
+solver variable for at least `minRecorded` node ids.
 -}
-expectGenerationCompletes : Can.Module -> Expect.Expectation
-expectGenerationCompletes canonical =
+expectGenerationCompletes : Int -> Can.Module -> Expect.Expectation
+expectGenerationCompletes minRecorded canonical =
     let
         ( _, typedState ) =
             IO.unsafePerformIO (ConstrainTyped.constrainWithIdsDetailed canonical)
 
-        erasedDone =
-            True
+        erasedConstraint =
+            IO.unsafePerformIO (ConstrainTyped.constrainErased canonical)
+
+        recorded =
+            Array.foldl
+                (\maybeVar n ->
+                    case maybeVar of
+                        Just _ ->
+                            n + 1
+
+                        Nothing ->
+                            n
+                )
+                0
+                typedState.mapping
     in
-    Expect.equal ( True, True ) ( typedState.recording, erasedDone )
+    Expect.all
+        [ \() ->
+            case erasedConstraint of
+                Type.CTrue ->
+                    Expect.fail "the erased pathway produced no constraint"
+
+                _ ->
+                    Expect.pass
+        , \() ->
+            recorded
+                |> Expect.atLeast minRecorded
+                |> Expect.onFail
+                    ("the typed pathway recorded " ++ String.fromInt recorded ++ " node variables, fewer than the " ++ String.fromInt minRecorded ++ " levels of the fixture")
+        ]
+        ()
 
 
 
@@ -169,42 +198,42 @@ suite =
                 chain (\i body -> CB.letExpr i (CB.makeDef "x" [] (CB.intExpr (i + 200000) 0)) body)
                     (CB.varLocalExpr 0 "x")
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "binop chain nesting left (1 + 2 + 3 + ...)" <|
             \_ ->
                 chain (\i acc -> binop i acc (CB.intExpr (i + 300000) i))
                     (CB.intExpr 0 0)
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "binop chain nesting right (a ++ (b ++ (c ++ ...)))" <|
             \_ ->
                 chain (\i acc -> binop i (CB.intExpr (i + 300000) i) acc)
                     (CB.intExpr 0 0)
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "call chain nesting down the func (curried application)" <|
             \_ ->
                 chain (\i acc -> CB.callExpr i acc [ CB.intExpr (i + 300000) i ])
                     (CB.varLocalExpr 0 "f")
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "call chain nesting down the last argument (f (f (f ...)))" <|
             \_ ->
                 chain (\i acc -> CB.callExpr i (CB.varLocalExpr (i + 300000) "f") [ acc ])
                     (CB.intExpr 0 0)
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "if/else-if ladder (final-branch axis)" <|
             \_ ->
                 chain (\i acc -> ifNode i (CB.intExpr (i + 200000) i) acc)
                     (CB.intExpr 0 0)
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "record access chain (r.f.f.f...)" <|
             \_ ->
                 chain accessNode (CB.varLocalExpr 0 "r")
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "cons-pattern chain (h :: h :: ... :: t)" <|
             \_ ->
                 let
@@ -225,7 +254,7 @@ suite =
                             )
                 in
                 CB.makeModule "testValue" caseNode
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes depth
         , Test.test "mixed spines: lets containing binop chains containing calls" <|
             \_ ->
                 -- 2k lets, each def RHS a 5-long binop chain, body ends in a 2k call chain
@@ -247,5 +276,5 @@ suite =
                     callTail
                     (List.range 1 2000)
                     |> CB.makeModule "testValue"
-                    |> expectGenerationCompletes
+                    |> expectGenerationCompletes 4000
         ]

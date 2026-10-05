@@ -1,54 +1,49 @@
 module TestLogic.Generate.DebugPolymorphism exposing (expectDebugPolymorphismResolved)
 
 {-| A `Debug` kernel function such as `Debug.log` or `Debug.toString` accepts a
-value of any type, so once a program is monomorphized the type variables left
-in its uses should be boxed values or have become concrete types. This module
-holds the check that none of them is still a number variable.
-
-In a `MonoType`, a type variable that monomorphization has not replaced is an
-`MVar` carrying a constraint, as `Compiler.AST.Monomorphized` describes. A
-`CEcoValue` variable stands for a value that is always boxed, and may remain
-until code generation. A `CNumber` variable is known only to be `Int` or
-`Float`, and has to be resolved before code generation.
+value of any type. MONO\_009 says monomorphization keeps such a kernel
+polymorphic: the type of a `Debug` kernel reference is derived from its
+canonical type with an empty substitution, its type variables kept as
+`CEcoValue` variables (always-boxed values) that do not affect the calling
+convention.
 
 `expectDebugPolymorphismResolved` runs a test program to the monomorphized
-graph with `TestLogic.TestPipeline.runToMono` and walks the expression of
-every node that has one. It examines two kinds of type: the function type of
-each reference to a kernel function whose home module is `Debug`, and the type
-of each argument of a call whose function is such a reference. In those types it
-reports every `MVar _ CNumber`, looking inside list element types, the
-arguments of custom types, and the parameter and result types of functions. A
-`CEcoValue` variable and a concrete type both pass, and a program with no
-`Debug` kernel reference passes as long as it compiles.
+graph with `TestLogic.TestPipeline.runToMono` and visits every expression of
+every node that has one, at any depth (including the branches held inline in a
+`case` decision tree, through `MonoTraverse.foldExpr`). At each call whose
+function is a `Debug` kernel reference it pairs the parameter types of the
+reference's type (all stages, in order) with the call's arguments, and reports
+a parameter that does not agree with the argument's type, where a `CEcoValue`
+variable, at any depth of the parameter's type, agrees with anything and every
+other part must be what is actually passed.
 
-The graph `runToMono` returns has already been through
-`Compiler.Monomorphize.Prune`, which closes residual number variables to
-`MInt` in the nodes it keeps, so a `CNumber` found here is one that closing
-did not reach.
+A violation is what a `number` variable kept at a `Debug` reference turns into:
+`Compiler.Monomorphize.Prune` closes every variable whose id is a number
+variable to `MInt`, so in a specialization at `Float` the reference would claim
+an `Int` parameter while a `Float` is passed.
 
-Among what is not checked: the element types of tuples and the field types of
-records are not looked inside; the branch expressions held inline in a `case`
-expression's decision tree are not walked, only its jump targets; and nothing
-is run, so the values `Debug` functions print or return are not examined.
+Among what is not checked: `Debug` references that are not called directly
+(passed as a function value), whose parameters meet no argument here; and the
+values `Debug` functions print or return, since nothing is run.
 
 -}
 
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Compiler.Data.Id as Id
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Checks that, in the monomorphized graph of `srcModule`, no reference to a
-`Debug` kernel function and no argument of a call to one has a `CNumber` type
-variable in its type, looking where the module docstring describes.
+{-| Checks that, in the monomorphized graph of `srcModule`, every call of a
+`Debug` kernel agrees with the kernel reference's type, as the module
+documentation describes.
 
 It fails with the pipeline's message if `runToMono` fails. Otherwise it passes
-when there is no such variable, and fails with one line per occurrence of one,
-naming the node's `SpecId`, the `Debug` function, and the parameter, result or
-call argument the variable is in, with positions counted from 0.
+when every call agrees, and fails with one line per disagreeing parameter,
+naming the node's `SpecId`, the `Debug` function, the parameter and both types.
 
 -}
 expectDebugPolymorphismResolved : Src.Module -> Expect.Expectation
@@ -76,204 +71,164 @@ expectDebugPolymorphismResolved srcModule =
 
 
 {-| Returns the problem lines for every node of the graph, labelling each node
-with its index in the node array, which is its `SpecId`. Empty slots are
-skipped. The lines of a later node come before those of an earlier one.
+with its index in the node array, which is its `SpecId`.
 -}
 collectDebugPolymorphismIssues : Mono.MonoGraph -> List String
 collectDebugPolymorphismIssues (Mono.MonoGraph data) =
-    Array.foldl
-        (\maybeNode ( specId, acc ) ->
-            case maybeNode of
-                Nothing ->
-                    ( specId + 1, acc )
+    Array.toIndexedList data.nodes
+        |> List.concatMap
+            (\( specId, maybeNode ) ->
+                case maybeNode |> Maybe.andThen nodeBody of
+                    Just body ->
+                        MonoTraverse.foldExpr (checkExpr ("SpecId " ++ String.fromInt specId)) [] body
 
-                Just node ->
-                    ( specId + 1, checkNodeDebugPolymorphism specId node ++ acc )
-        )
-        ( 0, [] )
-        data.nodes
-        |> Tuple.second
+                    Nothing ->
+                        []
+            )
 
 
-{-| Returns the problem lines for the expression of one node, each prefixed with
-`SpecId` followed by the value of `specId`. A node with no expression (a
-constructor, enum, extern or effect-manager leaf) gives none.
+{-| Returns the expression of a node that has one: a define, a tail-recursive
+function or a port.
 -}
-checkNodeDebugPolymorphism : Int -> Mono.MonoNode -> List String
-checkNodeDebugPolymorphism specId node =
-    let
-        context =
-            "SpecId " ++ String.fromInt specId
-    in
+nodeBody : Mono.MonoNode -> Maybe Mono.MonoExpr
+nodeBody node =
     case node of
         Mono.MonoDefine expr _ ->
-            collectExprDebugIssues context expr
+            Just expr
 
         Mono.MonoTailFunc _ expr _ ->
-            collectExprDebugIssues context expr
+            Just expr
 
         Mono.MonoPortIncoming expr _ ->
-            collectExprDebugIssues context expr
+            Just expr
 
         Mono.MonoPortOutgoing expr _ ->
-            collectExprDebugIssues context expr
+            Just expr
 
         _ ->
-            []
+            Nothing
 
 
-{-| Returns the problem lines for `expr` and every expression inside it: those
-for the type of each `Debug` kernel reference, and those for the argument types
-of each call whose function is a `Debug` kernel reference.
-
-The branch expressions held inline in a `case` decision tree are not visited,
-only the `case`'s jump targets.
-
+{-| Adds the problem lines for `expr` when it is a call of a `Debug` kernel
+reference: one for each parameter that does not agree with the type of the
+argument passed for it, as `agrees` decides.
 -}
-collectExprDebugIssues : String -> Mono.MonoExpr -> List String
-collectExprDebugIssues context expr =
+checkExpr : String -> Mono.MonoExpr -> List String -> List String
+checkExpr context expr acc =
     case expr of
-        Mono.MonoVarKernel _ _ moduleName name monoType ->
-            if moduleName == "Debug" then
-                checkDebugKernelType context name monoType
+        Mono.MonoCall _ (Mono.MonoVarKernel _ _ "Debug" name monoType) args _ _ ->
+            List.map2 Tuple.pair (flattenParams monoType) args
+                |> List.indexedMap
+                    (\idx ( paramType, arg ) ->
+                        if agrees paramType (Mono.typeOf arg) then
+                            Nothing
 
-            else
-                []
+                        else
+                            Just
+                                (context
+                                    ++ ": Debug."
+                                    ++ name
+                                    ++ " param "
+                                    ++ String.fromInt idx
+                                    ++ " has type "
+                                    ++ typeLabel paramType
+                                    ++ " but the argument passed is "
+                                    ++ typeLabel (Mono.typeOf arg)
+                                    ++ " (MONO_009: a Debug kernel's variables must stay CEcoValue)"
+                                )
+                    )
+                |> List.filterMap identity
+                |> (\issues -> issues ++ acc)
 
-        Mono.MonoCall _ fnExpr argExprs _ _ ->
-            let
-                debugCallIssues =
-                    case fnExpr of
-                        Mono.MonoVarKernel _ _ moduleName name _ ->
-                            if moduleName == "Debug" then
-                                checkDebugCallArgs context name argExprs
+        _ ->
+            acc
 
-                            else
-                                []
 
-                        _ ->
-                            []
-            in
-            debugCallIssues
-                ++ collectExprDebugIssues context fnExpr
-                ++ List.concatMap (collectExprDebugIssues context) argExprs
-
-        Mono.MonoList _ exprs _ ->
-            List.concatMap (collectExprDebugIssues context) exprs
-
-        Mono.MonoClosure closureInfo bodyExpr _ ->
-            List.concatMap (\( _, e, _ ) -> collectExprDebugIssues context e) closureInfo.captures
-                ++ collectExprDebugIssues context bodyExpr
-
-        Mono.MonoTailCall _ args _ ->
-            List.concatMap (\( _, e ) -> collectExprDebugIssues context e) args
-
-        Mono.MonoIf branches elseExpr _ ->
-            List.concatMap (\( c, t ) -> collectExprDebugIssues context c ++ collectExprDebugIssues context t) branches
-                ++ collectExprDebugIssues context elseExpr
-
-        Mono.MonoLet def bodyExpr _ ->
-            collectDefDebugIssues context def
-                ++ collectExprDebugIssues context bodyExpr
-
-        Mono.MonoDestruct _ valueExpr _ ->
-            collectExprDebugIssues context valueExpr
-
-        Mono.MonoCase _ _ _ branches _ ->
-            List.concatMap (\( _, e ) -> collectExprDebugIssues context e) branches
-
-        Mono.MonoRecordCreate fieldExprs _ ->
-            List.concatMap (\( _, e ) -> collectExprDebugIssues context e) fieldExprs
-
-        Mono.MonoRecordAccess recordExpr _ _ ->
-            collectExprDebugIssues context recordExpr
-
-        Mono.MonoRecordUpdate recordExpr updates _ ->
-            collectExprDebugIssues context recordExpr
-                ++ List.concatMap (\( _, e ) -> collectExprDebugIssues context e) updates
-
-        Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectExprDebugIssues context) elementExprs
+{-| Returns the parameter types of every stage of a function type, outermost
+first.
+-}
+flattenParams : Mono.MonoType -> List Mono.MonoType
+flattenParams monoType =
+    case monoType of
+        Mono.MFunction _ _ paramTypes resultType ->
+            paramTypes ++ flattenParams resultType
 
         _ ->
             []
 
 
-{-| Returns the problem lines for the body of a `let` definition.
+{-| Returns whether the parameter type `param` agrees with the argument type
+`arg`: a `CEcoValue` variable in `param` agrees with any type, and otherwise
+the two must have the same constructors with agreeing parts. Packed hashes and
+lambda-set annotations are not compared.
 -}
-collectDefDebugIssues : String -> Mono.MonoDef -> List String
-collectDefDebugIssues context def =
-    case def of
-        Mono.MonoDef _ expr ->
-            collectExprDebugIssues context expr
+agrees : Mono.MonoType -> Mono.MonoType -> Bool
+agrees param arg =
+    case ( param, arg ) of
+        ( Mono.MVar _ Mono.CEcoValue, _ ) ->
+            True
 
-        Mono.MonoTailDef _ _ expr ->
-            collectExprDebugIssues context expr
+        ( Mono.MList _ p, Mono.MList _ a ) ->
+            agrees p a
 
+        ( Mono.MTuple _ ps, Mono.MTuple _ as_ ) ->
+            List.length ps == List.length as_ && List.all identity (List.map2 agrees ps as_)
 
-{-| Returns the problem lines for the type of a reference to the `Debug` kernel
-function `name`: one for each `CNumber` variable that `checkNoCNumberInDebugArg`
-finds in its result type and in each of its parameter types. A type that is not
-a function type gives none.
--}
-checkDebugKernelType : String -> String -> Mono.MonoType -> List String
-checkDebugKernelType context name monoType =
-    case monoType of
-        Mono.MFunction _ _ paramTypes returnType ->
-            checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " return") returnType
-                ++ (List.indexedMap
-                        (\idx paramType ->
-                            checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " param " ++ String.fromInt idx) paramType
-                        )
-                        paramTypes
-                        |> List.concat
-                   )
+        ( Mono.MRecord _ ps, Mono.MRecord _ as_ ) ->
+            Dict.keys ps
+                == Dict.keys as_
+                && List.all identity (List.map2 agrees (Dict.values ps) (Dict.values as_))
+
+        ( Mono.MCustom _ ph pn ps, Mono.MCustom _ ah an as_ ) ->
+            ph == ah && pn == an && List.length ps == List.length as_ && List.all identity (List.map2 agrees ps as_)
+
+        ( Mono.MFunction _ _ ps pr, Mono.MFunction _ _ as_ ar ) ->
+            List.length ps == List.length as_ && List.all identity (List.map2 agrees ps as_) && agrees pr ar
 
         _ ->
-            []
+            param == arg
 
 
-{-| Returns the problem lines for the arguments of a call to the `Debug` kernel
-function `name`: one for each `CNumber` variable that `checkNoCNumberInDebugArg`
-finds in each argument's type.
+{-| Returns a short rendering of a type for a problem message.
 -}
-checkDebugCallArgs : String -> String -> List Mono.MonoExpr -> List String
-checkDebugCallArgs context name argExprs =
-    List.indexedMap
-        (\idx argExpr ->
-            let
-                argType =
-                    Mono.typeOf argExpr
-            in
-            checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " call arg " ++ String.fromInt idx) argType
-        )
-        argExprs
-        |> List.concat
-
-
-{-| Returns one problem line, prefixed with `context`, for each `CNumber`
-variable in `monoType`, looking inside list element types, custom-type
-arguments, and function parameter and result types. Tuple element and record
-field types are not looked inside.
--}
-checkNoCNumberInDebugArg : String -> Mono.MonoType -> List String
-checkNoCNumberInDebugArg context monoType =
+typeLabel : Mono.MonoType -> String
+typeLabel monoType =
     case monoType of
-        Mono.MVar mvarId Mono.CNumber ->
-            [ context ++ ": Found CNumber constraint on type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' in Debug call (should be CEcoValue or concrete type)" ]
+        Mono.MInt ->
+            "Int"
 
-        Mono.MVar _ Mono.CEcoValue ->
-            []
+        Mono.MFloat ->
+            "Float"
+
+        Mono.MBool ->
+            "Bool"
+
+        Mono.MChar ->
+            "Char"
+
+        Mono.MString ->
+            "String"
+
+        Mono.MUnit ->
+            "()"
 
         Mono.MList _ elemType ->
-            checkNoCNumberInDebugArg context elemType
+            "List (" ++ typeLabel elemType ++ ")"
 
-        Mono.MCustom _ _ _ typeArgs ->
-            List.concatMap (checkNoCNumberInDebugArg context) typeArgs
+        Mono.MTuple _ elemTypes ->
+            "( " ++ String.join ", " (List.map typeLabel elemTypes) ++ " )"
+
+        Mono.MRecord _ fields ->
+            "{ " ++ String.join ", " (List.map (\( n, t ) -> n ++ " : " ++ typeLabel t) (Dict.toList fields)) ++ " }"
+
+        Mono.MCustom _ _ name typeArgs ->
+            String.join " " (name :: List.map (\t -> "(" ++ typeLabel t ++ ")") typeArgs)
 
         Mono.MFunction _ _ paramTypes returnType ->
-            List.concatMap (checkNoCNumberInDebugArg context) paramTypes
-                ++ checkNoCNumberInDebugArg context returnType
+            "(" ++ String.join ", " (List.map typeLabel paramTypes) ++ ") -> " ++ typeLabel returnType
 
-        _ ->
-            []
+        Mono.MVar _ Mono.CEcoValue ->
+            "a"
+
+        Mono.MVar _ Mono.CNumber ->
+            "number"

@@ -1,160 +1,140 @@
-module TestLogic.Type.RankPolymorphism exposing (expectRankPolymorphismValid)
+module TestLogic.Type.RankPolymorphism exposing
+    ( expectInferredType
+    , expectRejected
+    )
 
-{-| An expectation for tests of let-polymorphism to apply to a source module
-they build. Without one, a module whose polymorphic definitions should type
-check could be rejected unnoticed.
+{-| Expectations for tests of let-polymorphism (TYPE\_005): which definitions
+the type checker generalizes, and the types it infers for them.
 
-Elm's polymorphism is rank-1: a polymorphic type quantifies its type
-variables once, at the outside of the whole type, so no argument of a function
-can itself be required to be polymorphic. A type whose argument is polymorphic
-in that sense is _higher-rank_. In the canonical AST the quantifier is the
-`Can.Forall` around an annotation, and `Can.Type` has no constructor for one,
-so a canonical type cannot express a higher-rank type at all.
+Elm's polymorphism is rank-1 with let-generalization. A let-bound definition is
+generalized over the type variables that belong to it alone, so it can be used
+at several types in the body of the `let`; a variable that also belongs to an
+enclosing scope, such as the type of a lambda-bound argument, stays
+monomorphic. A function argument is never polymorphic.
 
-The expectation runs a module through PostSolve with
-`TestLogic.TestPipeline.runToPostSolve`, which fails only when canonicalizing or
-type checking fails, and then walks the type of each top-level annotation the
-type checker returned. Let-bound definitions have no entry there. The walk
-reports nothing for any type: a type variable gives no issue, and the
-higher-rank check made on each function argument type gives none in every
-case. So the expectation's outcome is decided by the pipeline alone.
-
-What `expectRankPolymorphismValid` establishes:
-
-  - A module that fails to canonicalize or type check fails, with the
-    pipeline's message, which gives only the number of errors.
-  - A module that type checks passes.
-
-Among what is not tested: the rank at which any type variable is generalized,
-whether a let-bound definition is generalized, monomorphization, and the
-rejection of higher-rank types.
+  - `expectInferredType name expected` runs the module through type checking
+    (`TestLogic.TestPipeline.runToTypeCheck`) and passes when the top-level
+    definition `name` gets a type that prints as `expected`, as `typeToString`
+    prints it: type names unqualified, `->` between function parts, tuples as
+    `( a, b )`, and type variables by the names the solver gives them.
+  - `expectRejected` passes when the module canonicalizes and the solver
+    rejects it with a type mismatch (`BadExpr` or `BadPattern`), and fails when
+    it type checks, fails to canonicalize, or is rejected only for an infinite
+    type.
 
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
+import Compiler.Reporting.Error.Type as TypeError
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import TestLogic.Type.TypeCheckErrors as TypeCheckErrors
 
 
-{-| Runs `srcModule` through PostSolve and passes if it gets there.
-
-A failure to canonicalize or type check fails with the pipeline's message. The
-walk over the module's top-level annotations finds no issue in any type, so a
-module that type checks always passes.
-
+{-| Passes when `srcModule` type checks and the top-level definition `name` is
+given a type that prints as `expected`.
 -}
-expectRankPolymorphismValid : Src.Module -> Expect.Expectation
-expectRankPolymorphismValid srcModule =
-    case Pipeline.runToPostSolve srcModule of
+expectInferredType : Name -> String -> Src.Module -> Expect.Expectation
+expectInferredType name expected srcModule =
+    case Pipeline.runToTypeCheck srcModule of
         Err msg ->
-            Expect.fail msg
+            Expect.fail (msg ++ ": " ++ TypeCheckErrors.describeOutcome (TypeCheckErrors.typeCheck srcModule))
 
         Ok result ->
-            let
-                issues =
-                    collectRankIssues result.annotations
-            in
-            if List.isEmpty issues then
-                Expect.pass
+            case Dict.get name result.annotations of
+                Just (Can.Forall _ tipe) ->
+                    Expect.equal expected (typeToString tipe)
 
-            else
-                Expect.fail (String.join "\n" issues)
+                Nothing ->
+                    Expect.fail ("No annotation was inferred for " ++ name)
 
 
-
--- ============================================================================
--- ANNOTATION WALK
--- ============================================================================
-
-
-{-| Returns the issues `checkAnnotationRank` finds in each of `annotations`,
-keyed by name, joined into one list. It is always empty.
+{-| Passes when `srcModule` canonicalizes and the solver rejects it with a type
+mismatch.
 -}
-collectRankIssues : Dict.Dict String (Can.Annotation Name) -> List String
-collectRankIssues annotations =
-    Dict.foldl
-        (\_ annotation acc ->
-            checkAnnotationRank annotation ++ acc
+expectRejected : Src.Module -> Expect.Expectation
+expectRejected srcModule =
+    TypeCheckErrors.expectTypeErrorWhere "a type mismatch"
+        (\error ->
+            case error of
+                TypeError.InfiniteType _ _ _ ->
+                    False
+
+                _ ->
+                    True
         )
-        []
-        annotations
+        srcModule
 
 
-{-| Returns the issues `checkTypeForRankIssues` finds in the type of
-`annotation`, given `name` as its context. The annotation's quantified
-variables are not looked at. The result is always empty.
+{-| Prints a type as Elm source, with type names unqualified. A function
+argument that is itself a function is parenthesized.
 -}
-checkAnnotationRank : Can.Annotation Name -> List String
-checkAnnotationRank annotation =
-    case annotation of
-        Can.Forall _ canType ->
-            checkTypeForRankIssues canType
+typeToString : Can.Type Name -> String
+typeToString tipe =
+    case tipe of
+        Can.TLambda _ arg result ->
+            let
+                argString =
+                    case arg of
+                        Can.TLambda _ _ _ ->
+                            "(" ++ typeToString arg ++ ")"
 
+                        _ ->
+                            typeToString arg
+            in
+            argString ++ " -> " ++ typeToString result
 
-{-| Returns the issues found in `canType` and every type inside it. The only
-source of an issue is `checkForHigherRank`, made on the argument type of each
-function type, and that never finds one, so the result is always empty.
+        Can.TVar name ->
+            name
 
-For an alias the walk covers both the alias's arguments and the type it stands
-for. `context` is passed on unchanged.
+        Can.TType _ name [] ->
+            name
 
--}
-checkTypeForRankIssues : Can.Type Name -> List String
-checkTypeForRankIssues canType =
-    case canType of
-        Can.TVar _ ->
-            []
+        Can.TType _ name args ->
+            name ++ " " ++ String.join " " (List.map argToString args)
 
-        Can.TLambda _ argType resultType ->
-            checkForHigherRank argType
-                ++ checkTypeForRankIssues argType
-                ++ checkTypeForRankIssues resultType
+        Can.TRecord fields ext ->
+            "{ "
+                ++ (case ext of
+                        Just e ->
+                            e ++ " | "
 
-        Can.TType _ _ args ->
-            List.concatMap checkTypeForRankIssues args
-
-        Can.TRecord fields _ ->
-            Dict.foldl
-                (\_ (Can.FieldType _ fieldType) acc ->
-                    checkTypeForRankIssues fieldType ++ acc
-                )
-                []
-                fields
+                        Nothing ->
+                            ""
+                   )
+                ++ String.join ", " (List.map (\( f, Can.FieldType _ t ) -> f ++ " : " ++ typeToString t) (Dict.toList fields))
+                ++ " }"
 
         Can.TUnit ->
-            []
+            "()"
 
         Can.TTuple a b cs ->
-            checkTypeForRankIssues a
-                ++ checkTypeForRankIssues b
-                ++ List.concatMap checkTypeForRankIssues cs
+            "( " ++ String.join ", " (List.map typeToString (a :: b :: cs)) ++ " )"
 
-        Can.TAlias _ _ args aliasedType ->
-            List.concatMap (\( _, argType ) -> checkTypeForRankIssues argType) args
-                ++ (case aliasedType of
-                        Can.Holey t ->
-                            checkTypeForRankIssues t
+        Can.TAlias _ name [] _ ->
+            name
 
-                        Can.Filled t ->
-                            checkTypeForRankIssues t
-                   )
+        Can.TAlias _ name args _ ->
+            name ++ " " ++ String.join " " (List.map (Tuple.second >> argToString) args)
 
 
-{-| Returns the higher-rank issues in a function's argument type `canType`,
-which are always none, whatever the type and the context.
-
-A higher-rank type would need a quantifier inside the argument type, and
-`Can.Type` has no constructor for one.
-
+{-| Prints a type argument, parenthesizing it when it has spaces of its own and
+is not already bracketed.
 -}
-checkForHigherRank : Can.Type Name -> List String
-checkForHigherRank canType =
-    case canType of
+argToString : Can.Type Name -> String
+argToString tipe =
+    case tipe of
         Can.TLambda _ _ _ ->
-            []
+            "(" ++ typeToString tipe ++ ")"
+
+        Can.TType _ _ (_ :: _) ->
+            "(" ++ typeToString tipe ++ ")"
+
+        Can.TAlias _ _ (_ :: _) _ ->
+            "(" ++ typeToString tipe ++ ")"
 
         _ ->
-            []
+            typeToString tipe

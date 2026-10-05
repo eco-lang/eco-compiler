@@ -51,8 +51,8 @@ unboxed when it is an `Int`, `Float` or `Char`, and boxed otherwise, `Bool` and
 `String` included (`Compiler.Generate.MLIR.Types`). Each pair puts two such
 types with different field types in one module: in five pairs one field is
 stored unboxed and the other boxed, in three both are unboxed, and in the
-`String`/`Bool` pair both are boxed. Only one of the two functions is called
-from `testValue`; the other is defined and never called.
+`String`/`Bool` pair both are boxed. `testValue` is a pair that calls both
+functions, so both types stay reachable from it and reach code generation.
 
 Among what is not tested: `Char` patterns, the unit pattern, three-element
 tuple patterns, and constructor patterns on a custom type with type parameters.
@@ -71,6 +71,7 @@ import Compiler.AST.SourceBuilder
         , chrExpr
         , ctorExpr
         , define
+        , floatExpr
         , ifExpr
         , intExpr
         , letExpr
@@ -91,6 +92,7 @@ import Compiler.AST.SourceBuilder
         , recordExpr
         , strExpr
         , tLambda
+        , tTuple
         , tType
         , tupleExpr
         , varExpr
@@ -1004,8 +1006,8 @@ singleCtorPairCases expectFn =
 {-| Gives `expectFn` a module that declares `WrapBool`, holding a `Bool`, and
 `WrapInt`, holding an `Int`. `matchBool b` wraps `b` in a `WrapBool` and matches
 it against `WrapBool True` and `WrapBool False`, and `unwrapInt` takes the `Int`
-out of a `WrapInt`. `testValue` is `matchBool True`, so `unwrapInt` is never
-called.
+out of a `WrapInt`. `testValue` is the pair of `matchBool True` and `unwrapInt
+(WrapInt 7)`, so both types' fields are read.
 -}
 singleCtorPairBoolInt : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairBoolInt expectFn _ =
@@ -1045,8 +1047,11 @@ singleCtorPairBoolInt expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "String" []
-            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            , tipe = tTuple (tType "String" []) (tType "Int" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "matchBool") [ boolExpr True ])
+                    (callExpr (varExpr "unwrapInt") [ callExpr (ctorExpr "WrapInt") [ intExpr 7 ] ])
             }
 
         modul =
@@ -1061,8 +1066,8 @@ singleCtorPairBoolInt expectFn _ =
 {-| Gives `expectFn` a module that declares `WrapBool`, holding a `Bool`, and
 `WrapChar`, holding a `Char`. `matchBool b` wraps `b` in a `WrapBool` and
 matches it against `WrapBool True` and `WrapBool False`, and `unwrapChar` takes
-the `Char` out of a `WrapChar`. `testValue` is `matchBool True`, so `unwrapChar`
-is never called.
+the `Char` out of a `WrapChar`. `testValue` is the pair of `matchBool True` and
+`unwrapChar (WrapChar 'c')`, so both types' fields are read.
 -}
 singleCtorPairBoolChar : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairBoolChar expectFn _ =
@@ -1102,8 +1107,11 @@ singleCtorPairBoolChar expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "String" []
-            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            , tipe = tTuple (tType "String" []) (tType "Char" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "matchBool") [ boolExpr True ])
+                    (callExpr (varExpr "unwrapChar") [ callExpr (ctorExpr "WrapChar") [ chrExpr "c" ] ])
             }
 
         modul =
@@ -1118,8 +1126,8 @@ singleCtorPairBoolChar expectFn _ =
 {-| Gives `expectFn` a module that declares `WrapBool`, holding a `Bool`, and
 `WrapFloat`, holding a `Float`. `matchBool b` wraps `b` in a `WrapBool` and
 matches it against `WrapBool True` and `WrapBool False`, and `unwrapFloat` takes
-the `Float` out of a `WrapFloat`. `testValue` is `matchBool True`, so
-`unwrapFloat` is never called.
+the `Float` out of a `WrapFloat`. `testValue` is the pair of `matchBool True`
+and `unwrapFloat (WrapFloat 2.5)`, so both types' fields are read.
 -}
 singleCtorPairBoolFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairBoolFloat expectFn _ =
@@ -1159,8 +1167,11 @@ singleCtorPairBoolFloat expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "String" []
-            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            , tipe = tTuple (tType "String" []) (tType "Float" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "matchBool") [ boolExpr True ])
+                    (callExpr (varExpr "unwrapFloat") [ callExpr (ctorExpr "WrapFloat") [ floatExpr 2.5 ] ])
             }
 
         modul =
@@ -1174,8 +1185,8 @@ singleCtorPairBoolFloat expectFn _ =
 
 {-| Gives `expectFn` a module that declares `WrapInt`, holding an `Int`, and
 `WrapFloat`, holding a `Float`, with `unwrapInt` and `unwrapFloat` taking each
-field out. `testValue` is `unwrapInt (WrapInt 42)`, so `unwrapFloat` is never
-called.
+field out. `testValue` is the pair of `unwrapInt (WrapInt 42)` and `unwrapFloat
+(WrapFloat 2.5)`, so both types' fields are read.
 -}
 singleCtorPairIntFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairIntFloat expectFn _ =
@@ -1210,8 +1221,11 @@ singleCtorPairIntFloat expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "Int" []
-            , body = callExpr (varExpr "unwrapInt") [ callExpr (ctorExpr "WrapInt") [ intExpr 42 ] ]
+            , tipe = tTuple (tType "Int" []) (tType "Float" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "unwrapInt") [ callExpr (ctorExpr "WrapInt") [ intExpr 42 ] ])
+                    (callExpr (varExpr "unwrapFloat") [ callExpr (ctorExpr "WrapFloat") [ floatExpr 2.5 ] ])
             }
 
         modul =
@@ -1224,9 +1238,9 @@ singleCtorPairIntFloat expectFn _ =
 
 
 {-| Gives `expectFn` a module that declares `WrapString`, holding a `String`,
-and `WrapInt`, holding an `Int`, with `unwrapString` and `unwrapInt` taking
-each field out. `testValue` is `unwrapString (WrapString "hello")`, so
-`unwrapInt` is never called.
+and `WrapInt`, holding an `Int`, with `unwrapString` and `unwrapInt` taking each
+field out. `testValue` is the pair of `unwrapString (WrapString "hello")` and
+`unwrapInt (WrapInt 7)`, so both types' fields are read.
 -}
 singleCtorPairStringInt : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairStringInt expectFn _ =
@@ -1261,8 +1275,11 @@ singleCtorPairStringInt expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "String" []
-            , body = callExpr (varExpr "unwrapString") [ callExpr (ctorExpr "WrapString") [ strExpr "hello" ] ]
+            , tipe = tTuple (tType "String" []) (tType "Int" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "unwrapString") [ callExpr (ctorExpr "WrapString") [ strExpr "hello" ] ])
+                    (callExpr (varExpr "unwrapInt") [ callExpr (ctorExpr "WrapInt") [ intExpr 7 ] ])
             }
 
         modul =
@@ -1276,9 +1293,9 @@ singleCtorPairStringInt expectFn _ =
 
 {-| Gives `expectFn` a module that declares `WrapString`, holding a `String`,
 and `WrapBool`, holding a `Bool`. `unwrapString` takes the `String` out of a
-`WrapString`, and `matchBool b` wraps `b` in a `WrapBool` and matches it
-against `WrapBool True` and `WrapBool False`. `testValue` is `matchBool True`,
-so `unwrapString` is never called.
+`WrapString`, and `matchBool b` wraps `b` in a `WrapBool` and matches it against
+`WrapBool True` and `WrapBool False`. `testValue` is the pair of `matchBool
+True` and `unwrapString (WrapString "s")`, so both types' fields are read.
 -}
 singleCtorPairStringBool : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairStringBool expectFn _ =
@@ -1318,8 +1335,11 @@ singleCtorPairStringBool expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "String" []
-            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            , tipe = tTuple (tType "String" []) (tType "String" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "matchBool") [ boolExpr True ])
+                    (callExpr (varExpr "unwrapString") [ callExpr (ctorExpr "WrapString") [ strExpr "s" ] ])
             }
 
         modul =
@@ -1332,9 +1352,9 @@ singleCtorPairStringBool expectFn _ =
 
 
 {-| Gives `expectFn` a module that declares `WrapChar`, holding a `Char`, and
-`WrapInt`, holding an `Int`, with `unwrapChar` and `unwrapInt` taking each
-field out. `testValue` is `unwrapChar (WrapChar 'A')`, so `unwrapInt` is never
-called.
+`WrapInt`, holding an `Int`, with `unwrapChar` and `unwrapInt` taking each field
+out. `testValue` is the pair of `unwrapChar (WrapChar 'A')` and `unwrapInt
+(WrapInt 7)`, so both types' fields are read.
 -}
 singleCtorPairCharInt : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairCharInt expectFn _ =
@@ -1369,8 +1389,11 @@ singleCtorPairCharInt expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "Char" []
-            , body = callExpr (varExpr "unwrapChar") [ callExpr (ctorExpr "WrapChar") [ chrExpr "A" ] ]
+            , tipe = tTuple (tType "Char" []) (tType "Int" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "unwrapChar") [ callExpr (ctorExpr "WrapChar") [ chrExpr "A" ] ])
+                    (callExpr (varExpr "unwrapInt") [ callExpr (ctorExpr "WrapInt") [ intExpr 7 ] ])
             }
 
         modul =
@@ -1384,8 +1407,8 @@ singleCtorPairCharInt expectFn _ =
 
 {-| Gives `expectFn` a module that declares `WrapChar`, holding a `Char`, and
 `WrapFloat`, holding a `Float`, with `unwrapChar` and `unwrapFloat` taking each
-field out. `testValue` is `unwrapChar (WrapChar 'Z')`, so `unwrapFloat` is
-never called.
+field out. `testValue` is the pair of `unwrapChar (WrapChar 'Z')` and
+`unwrapFloat (WrapFloat 2.5)`, so both types' fields are read.
 -}
 singleCtorPairCharFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairCharFloat expectFn _ =
@@ -1420,8 +1443,11 @@ singleCtorPairCharFloat expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "Char" []
-            , body = callExpr (varExpr "unwrapChar") [ callExpr (ctorExpr "WrapChar") [ chrExpr "Z" ] ]
+            , tipe = tTuple (tType "Char" []) (tType "Float" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "unwrapChar") [ callExpr (ctorExpr "WrapChar") [ chrExpr "Z" ] ])
+                    (callExpr (varExpr "unwrapFloat") [ callExpr (ctorExpr "WrapFloat") [ floatExpr 2.5 ] ])
             }
 
         modul =
@@ -1433,11 +1459,11 @@ singleCtorPairCharFloat expectFn _ =
     expectFn modul
 
 
-{-| Gives `expectFn` a module that declares `WrapFloat`, holding a `Float`,
-and `WrapBool`, holding a `Bool`. `unwrapFloat` takes the `Float` out of a
-`WrapFloat`, and `matchBool b` wraps `b` in a `WrapBool` and matches it
-against `WrapBool True` and `WrapBool False`. `testValue` is
-`matchBool False`, so `unwrapFloat` is never called.
+{-| Gives `expectFn` a module that declares `WrapFloat`, holding a `Float`, and
+`WrapBool`, holding a `Bool`. `unwrapFloat` takes the `Float` out of a
+`WrapFloat`, and `matchBool b` wraps `b` in a `WrapBool` and matches it against
+`WrapBool True` and `WrapBool False`. `testValue` is the pair of `matchBool
+False` and `unwrapFloat (WrapFloat 2.5)`, so both types' fields are read.
 -}
 singleCtorPairFloatBool : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorPairFloatBool expectFn _ =
@@ -1477,8 +1503,11 @@ singleCtorPairFloatBool expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "String" []
-            , body = callExpr (varExpr "matchBool") [ boolExpr False ]
+            , tipe = tTuple (tType "String" []) (tType "Float" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "matchBool") [ boolExpr False ])
+                    (callExpr (varExpr "unwrapFloat") [ callExpr (ctorExpr "WrapFloat") [ floatExpr 2.5 ] ])
             }
 
         modul =

@@ -15,33 +15,28 @@ nothing defined outside it.
 GC root hints are trailing operands the code generator may append to some ops,
 naming values the garbage collector must treat as live across the op. The code
 generator builds them with `emitSafepointHints` in
-`Compiler.Generate.MLIR.Expr`. This check treats eight ops as _GC root
-carriers_: `eco.call`, `eco.papExtend`, `eco.papCreate` and
-`eco.construct.list`, `.tuple2`, `.tuple3`, `.record` and `.custom`. The code
-generator builds `eco.papCreate` without hints. The code generator builds the
-alternatives of a `case` one after another, passing a context along, so a
-context that kept one alternative's variables into the next would give a
-carrier in the later alternative a sibling region's value.
+`Compiler.Generate.MLIR.Expr`. This check treats ten ops as _GC root
+carriers_: `eco.call`, `eco.papExtend`, `eco.to_heap`, `eco.papCreateGroup`,
+`eco.papCreate` and `eco.construct.list`, `.tuple2`, `.tuple3`, `.record` and
+`.custom`. The code generator builds `eco.papCreate` without hints. The code
+generator builds the alternatives of a `case` one after another, passing a
+context along, so a context that kept one alternative's variables into the
+next would give a carrier in the later alternative a sibling region's value.
 
 `expectSafepointRegionScoping` compiles a program to MLIR and walks each
-top-level `func.func` from an empty scope. Each block sees the values in scope
-in the enclosing region, its own arguments and the results of the ops before it
-in the block. Every operand of a carrier, hint or not, must be among those. The
-regions of any other op, except a nested `func.func`, are walked from the
-values visible at that op, so sibling regions never see each other's values.
+`func.func`, top-level or nested, from an empty scope. Each block sees the
+values in scope in the enclosing region, its own arguments and the results of
+the ops before it in the block; a block other than the region's entry block
+also sees what the entry block defines, since the entry block dominates it.
+Every operand of a carrier, hint or not, must be among those. The regions of
+any other op are walked from the values visible before that op (its own results
+are not in scope inside its regions), so sibling regions never see each
+other's values.
 
-Among what is not checked:
-
-  - the operands of ops that are not carriers, among them `eco.to_heap` and
-    `eco.papCreateGroup`, which can also carry hints;
-  - a `func.func` nested inside another op;
-  - any region of a top-level `func.func` after its first.
-
-Two details of the walk differ from MLIR's scoping. A block other than a
-region's entry block does not see the values defined in the entry block, so a
-carrier in such a block that uses one is reported. And an op's own results are
-treated as in scope inside its regions, so a carrier there that uses one is not
-reported.
+Among what is not checked: the operands of ops that are not carriers. A value
+defined in a non-entry block that dominates another non-entry block is not
+treated as visible there, which would be reported; the code generator does not
+produce that shape today.
 
 @docs expectSafepointRegionScoping
 
@@ -89,12 +84,11 @@ checkAllFunctions mlirModule =
     List.concatMap checkFunction (findFuncOps mlirModule)
 
 
-{-| Returns the violations in the first region of `funcOp`, which is walked
-from an empty scope because a `func.func` sees nothing defined outside it.
+{-| Returns the violations in every region of `funcOp`, each walked from an
+empty scope because a `func.func` sees nothing defined outside it.
 
 Violation messages name the function by its `sym_name` attribute, or by the
-op's `id` when it has no string `sym_name`. A `funcOp` with no region has no
-violations.
+op's `id` when it has no string `sym_name`.
 
 -}
 checkFunction : MlirOp -> List Violation
@@ -108,37 +102,36 @@ checkFunction funcOp =
                 _ ->
                     funcOp.id
     in
-    case funcOp.regions of
-        [] ->
-            []
-
-        region :: _ ->
-            checkRegion funcName Set.empty region
+    List.concatMap (checkRegion funcName Set.empty) funcOp.regions
 
 
 {-| Returns the violations in every block of a region, entry block first,
 where `ancestorDefs` is the set of SSA values in scope where the region sits.
 
-Each block is checked from `ancestorDefs` alone, so a later block does not see
-values defined in the entry block.
+The entry block dominates every other block of the region, so each later block
+is checked from `ancestorDefs` plus everything the entry block defines (its
+arguments and its ops' results). A value defined in one later block is not
+taken to be visible in another.
 
 -}
 checkRegion : String -> Set String -> MlirRegion -> List Violation
 checkRegion funcName ancestorDefs (MlirRegion { entry, blocks }) =
     let
-        allBlocks =
-            entry :: OrderedDict.values blocks
+        ( entryViolations, entryDefs ) =
+            checkBlock funcName ancestorDefs entry
     in
-    List.concatMap (checkBlock funcName ancestorDefs) allBlocks
+    entryViolations
+        ++ List.concatMap (checkBlock funcName entryDefs >> Tuple.first) (OrderedDict.values blocks)
 
 
-{-| Returns the violations in a block's ops and its terminator, in order.
+{-| Returns the violations in a block's ops and its terminator, in order,
+paired with the values in scope at the end of the block.
 
 The block starts from `ancestorDefs` plus its own arguments, and each op sees
 the results of the ops before it.
 
 -}
-checkBlock : String -> Set String -> MlirBlock -> List Violation
+checkBlock : String -> Set String -> MlirBlock -> ( List Violation, Set String )
 checkBlock funcName ancestorDefs block =
     let
         argDefs =
@@ -156,10 +149,10 @@ checkBlock funcName ancestorDefs block =
                 ( [], argDefs )
                 block.body
 
-        ( termV, _ ) =
+        ( termV, defsAfterTerm ) =
             checkOp funcName defsAfterBody block.terminator
     in
-    bodyViolations ++ termV
+    ( bodyViolations ++ termV, defsAfterTerm )
 
 
 {-| Returns the violations in `op` and its nested regions, paired with
@@ -170,9 +163,10 @@ For a GC root carrier, every operand not in `visibleDefs` is a violation. All
 operands are checked, not only the trailing hints, since an ordinary operand
 from a sibling region is the same fault.
 
-Every region of `op` is walked from `visibleDefs` plus `op`'s own results, so
-sibling regions are each walked from the same scope. The regions of a nested
-`func.func` are not walked.
+Every region of `op` is walked from `visibleDefs`, without `op`'s own results,
+which are not in scope inside its regions; sibling regions are each walked from
+the same scope. A nested `func.func` is isolated from above, so its regions are
+walked from an empty scope.
 
 -}
 checkOp : String -> Set String -> MlirOp -> ( List Violation, Set String )
@@ -208,18 +202,18 @@ checkOp funcName visibleDefs op =
 
         regionViolations =
             if op.name == "func.func" then
-                -- Isolated from above, and not checked: only top-level functions are.
-                []
+                checkFunction op
 
             else
-                List.concatMap (checkRegion funcName defsWithResults) op.regions
+                List.concatMap (checkRegion funcName visibleDefs) op.regions
     in
     ( carrierViolations ++ regionViolations, defsWithResults )
 
 
 {-| Returns whether an op name is one of the ops this check treats as GC root
-carriers: `eco.call`, `eco.papExtend`, `eco.papCreate`, or one of the five
-`eco.construct` ops.
+carriers: the ops the code generator may give GC root hints, `eco.call`,
+`eco.papExtend`, `eco.to_heap`, `eco.papCreateGroup` and the five
+`eco.construct` ops, plus `eco.papCreate`.
 -}
 isCarrierOp : String -> Bool
 isCarrierOp name =
@@ -227,6 +221,8 @@ isCarrierOp name =
         [ "eco.call"
         , "eco.papExtend"
         , "eco.papCreate"
+        , "eco.papCreateGroup"
+        , "eco.to_heap"
         , "eco.construct.list"
         , "eco.construct.tuple2"
         , "eco.construct.tuple3"

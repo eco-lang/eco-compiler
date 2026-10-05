@@ -1,35 +1,29 @@
 module TestLogic.Type.PostSolve.KernelTypesTest exposing (suite)
 
-{-| Runs the kernel type environment check on four programs made of a single
-literal each. As built, these tests catch a literal-only program that fails to
-canonicalize or type check, and nothing about kernel types.
+{-| Runs the kernel type environment check on three programs that call kernel
+functions (POST\_002).
 
 The kernel type environment is the table, keyed by home module and function
 name, that PostSolve builds and typed optimization reads the types of kernel
-functions from (`Compiler.Type.KernelTypes`). PostSolve adds an entry only
-where the program refers to a kernel function. The check,
-`TestLogic.Type.PostSolve.KernelTypes.expectKernelTypesValid`, fails on a type
-variable with an empty name in any entry, other than a record's extension
-variable, and on a program that fails to canonicalize or type check.
+functions from (`Compiler.Type.KernelTypes`). The check,
+`TestLogic.Type.PostSolve.KernelTypes.expectKernelTypesValid`, requires every
+directly called kernel to have an entry, equal to the kernel reference's node
+type after PostSolve.
 
-Each program is built with `Compiler.AST.SourceBuilder.makeModuleWithDefs`: a
-module importing `Basics` and `List` with one unannotated top-level value. None
-of the four refers to a kernel function, so the environment the check walks is
-empty, and each test passes whenever its program canonicalizes and type checks.
+The programs are built with `Compiler.AST.SourceBuilder` as modules of the
+kernel package the test pipeline compiles as, so kernel references are
+accepted:
 
-The tests:
+  - `useFromArray : List String -> List String`, which returns
+    `Elm.Kernel.List.fromArray` applied to its argument.
+  - `sumBoth n = Elm.Kernel.Basics.add n n` and `y = sumBoth 1`, unannotated,
+    so the kernel's entry comes from types the solver inferred.
+  - two calls of `Elm.Kernel.List.fromArray` at different element types,
+    `[ 1 ]` and `[ "a" ]`: the first usage wins, so the second kernel
+    reference must still carry the first usage's entry.
 
-  - `x = 42`, an integer literal, in module `IntLit`.
-  - `x = 3.14`, a float literal, in module `FloatLit`.
-  - `x = "hello"`, a string literal, in module `StrLit`.
-  - `xs = [ 1, 2, 3 ]`, a list of integer literals, in module `ListInt`.
-
-Each test name states a type for its literal, but no assertion reads the type
-of any node.
-
-Among what is not tested: a program that refers to a kernel function, so no
-entry of the environment is ever examined; the types PostSolve gives the
-literals.
+Among what is not tested: kernel references that are not called, kernel
+aliases, and whether an entry agrees with the kernel's real type.
 
 -}
 
@@ -47,41 +41,38 @@ suite =
         ]
 
 
-{-| The four literal programs, each run through `expectKernelTypesValid`.
+{-| The three kernel programs, each run through `expectKernelTypesValid`.
 -}
 kernelTypeTests : Test
 kernelTypeTests =
     Test.describe "Kernel type resolution"
-        [ Test.test "Int literals have Int type" <|
+        [ Test.test "annotated kernel call has its entry" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "IntLit"
-                            [ ( "x", [], SB.intExpr 42 ) ]
-                in
-                expectKernelTypesValid modul
-        , Test.test "Float literals have Float type" <|
+                SB.makeModuleWithTypedDefs "AnnotatedKernel"
+                    [ { name = "useFromArray"
+                      , args = [ SB.pVar "x" ]
+                      , tipe =
+                            SB.tLambda (SB.tType "List" [ SB.tType "String" [] ])
+                                (SB.tType "List" [ SB.tType "String" [] ])
+                      , body = SB.callExpr (SB.qualVarExpr "Elm.Kernel.List" "fromArray") [ SB.varExpr "x" ]
+                      }
+                    ]
+                    |> expectKernelTypesValid
+        , Test.test "inferred kernel call has its entry" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "FloatLit"
-                            [ ( "x", [], SB.floatExpr 3.14 ) ]
-                in
-                expectKernelTypesValid modul
-        , Test.test "String literals have String type" <|
+                SB.makeModuleWithDefs "InferredKernel"
+                    [ ( "sumBoth"
+                      , [ SB.pVar "n" ]
+                      , SB.callExpr (SB.qualVarExpr "Elm.Kernel.Basics" "add") [ SB.varExpr "n", SB.varExpr "n" ]
+                      )
+                    , ( "y", [], SB.callExpr (SB.varExpr "sumBoth") [ SB.intExpr 1 ] )
+                    ]
+                    |> expectKernelTypesValid
+        , Test.test "the first usage of a kernel gives every reference its entry" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "StrLit"
-                            [ ( "x", [], SB.strExpr "hello" ) ]
-                in
-                expectKernelTypesValid modul
-        , Test.test "List of Ints has List Int type" <|
-            \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "ListInt"
-                            [ ( "xs", [], SB.listExpr [ SB.intExpr 1, SB.intExpr 2, SB.intExpr 3 ] ) ]
-                in
-                expectKernelTypesValid modul
+                SB.makeModuleWithDefs "TwoUsages"
+                    [ ( "ints", [], SB.callExpr (SB.qualVarExpr "Elm.Kernel.List" "fromArray") [ SB.listExpr [ SB.intExpr 1 ] ] )
+                    , ( "strs", [], SB.callExpr (SB.qualVarExpr "Elm.Kernel.List" "fromArray") [ SB.listExpr [ SB.strExpr "a" ] ] )
+                    ]
+                    |> expectKernelTypesValid
         ]

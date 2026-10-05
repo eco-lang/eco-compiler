@@ -1,8 +1,10 @@
 module TestLogic.Generate.CodeGen.CustomConstructionTest exposing (suite)
 
 {-| This suite looks, across many programs, for an `eco.construct.custom` op
-that lacks its `tag` or `size` attribute, whose `size` differs from its operand
-count, or whose `constructor` attribute is `Cons` or `Nil`. It is the only
+that lacks its `tag` or `size` attribute, whose `size` exceeds its operand
+count or whose trailing GC-root hint operands are not boxed, or that builds a
+list (`constructor` `Cons` or `Nil` with no such constructor in the program's
+own types). It is the only
 module that runs
 `TestLogic.Generate.CodeGen.CustomConstruction.expectCustomConstruction`, so
 without it that check would not run at all.
@@ -17,15 +19,17 @@ What the tests establish:
   - `suite` runs `expectCustomConstruction` on the programs in the
     catalogue. A program passes when it compiles to MLIR and
     every `eco.construct.custom` op in it has integer `tag` and `size`
-    attributes, a `size` equal to its number of operands, and no `constructor`
-    attribute equal to `Cons` or `Nil`.
+    attributes, at least `size` operands with every operand after the first
+    `size` recorded as `!eco.value`, and no `constructor` attribute equal to
+    `Cons` or `Nil` unless the program defines a constructor of that name.
 
 Among what is not tested:
 
   - The value of `tag`, only its presence.
   - Whether the op builds a value of a built-in type other than `List`, such
-    as `Maybe`: only the constructor names `Cons` and `Nil` are rejected, and
-    an op with no `constructor` attribute is not checked for them.
+    as `Maybe`: only the list constructor names `Cons` and `Nil` are
+    rejected, and an op with no `constructor` attribute is not checked for
+    them.
 
 -}
 

@@ -18,9 +18,7 @@ field indices and extension variables, alias arguments and alias bodies. The
 arrow slot that every `Can.TLambda` carries is not compared.
 
 Among what is not checked: the annotations, the node types before PostSolve and
-the kernel type environment of the two runs; a node that has a type in the
-second run and none in the first, when both arrays have the same length; and
-whether a run in another process, or another build, gives the same types.
+the kernel type environment of the two runs; and whether a run in another process, or another build, gives the same types.
 
 -}
 
@@ -37,8 +35,8 @@ import TestLogic.TestPipeline as Pipeline
 structurally equal node types.
 
 It fails if either run fails, naming which one. Otherwise it fails if the two
-arrays differ in length, or if a node typed in the first run has no type or a
-different type in the second, listing each such difference on its own line.
+arrays differ in length, or if a node is typed in one run and not the other or
+typed differently in the two, listing each such difference on its own line.
 
 -}
 expectDeterministicTypes : Src.Module -> Expect.Expectation
@@ -72,11 +70,9 @@ expectDeterministicTypes srcModule =
 first run, `types1`, and a second run, `types2`, or an empty list if there is
 none.
 
-A difference in length is reported first. Then each node typed in `types1`
-whose type in `types2` is missing or not structurally equal is reported by its
-node id, the highest id first. The comparison goes one way: a node typed only in
-`types2` is not reported, though when it lies past the end of `types1` the
-difference in length is.
+A difference in length is reported first. Then every node id below the longer
+length is compared, and a node typed in one run but not the other, or typed
+differently in the two, is reported by its node id, the highest id first.
 
 -}
 compareNodeTypes : Array.Array (Maybe (Can.Type Name)) -> Array.Array (Maybe (Can.Type Name)) -> List String
@@ -89,28 +85,31 @@ compareNodeTypes types1 types2 =
             else
                 []
 
+        typeAt nodeId types =
+            Array.get nodeId types |> Maybe.andThen identity
+
         typeIssues =
-            Array.foldl
-                (\maybeType1 ( nodeId, acc ) ->
-                    case maybeType1 of
-                        Nothing ->
-                            ( nodeId + 1, acc )
+            List.foldl
+                (\nodeId acc ->
+                    case ( typeAt nodeId types1, typeAt nodeId types2 ) of
+                        ( Nothing, Nothing ) ->
+                            acc
 
-                        Just type1 ->
-                            case Array.get nodeId types2 |> Maybe.andThen identity of
-                                Nothing ->
-                                    ( nodeId + 1, ("NodeId " ++ String.fromInt nodeId ++ " missing in second run") :: acc )
+                        ( Just _, Nothing ) ->
+                            ("NodeId " ++ String.fromInt nodeId ++ " missing in second run") :: acc
 
-                                Just type2 ->
-                                    if not (typesStructurallyEqual type1 type2) then
-                                        ( nodeId + 1, ("NodeId " ++ String.fromInt nodeId ++ " has different type") :: acc )
+                        ( Nothing, Just _ ) ->
+                            ("NodeId " ++ String.fromInt nodeId ++ " missing in first run") :: acc
 
-                                    else
-                                        ( nodeId + 1, acc )
+                        ( Just type1, Just type2 ) ->
+                            if typesStructurallyEqual type1 type2 then
+                                acc
+
+                            else
+                                ("NodeId " ++ String.fromInt nodeId ++ " has different type") :: acc
                 )
-                ( 0, [] )
-                types1
-                |> Tuple.second
+                []
+                (List.range 0 (max (Array.length types1) (Array.length types2) - 1))
     in
     keyIssues ++ typeIssues
 

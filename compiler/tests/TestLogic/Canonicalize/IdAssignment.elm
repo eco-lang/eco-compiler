@@ -20,10 +20,11 @@ module and canonicalizes it as a module of the package `eco/example` against
 the stand-in interfaces of `Compiler.Elm.Interface.Basic.testIfaces`.
 `expectUniqueIdsCanonical` takes a canonical module that is already built.
 
-The ids checked are those of every expression in the module's top-level
-declarations, and of every pattern among the arguments of a top-level
-definition, nested patterns included. Each repeat is kept, so that a duplicate
-can be found.
+The ids checked are those of every expression and every pattern in the
+module's top-level declarations: definition arguments (top-level and
+`let`-bound), lambda arguments, `case` branch patterns and `let`
+destructuring patterns, nested patterns included. Each repeat is kept, so that
+a duplicate can be found.
 
   - `expectUniqueIds` fails if canonicalization reports any error. Otherwise it
     applies the checks below to the canonical module it produced.
@@ -36,9 +37,6 @@ id is both an expression id and a pattern id.
 
 Among what is not tested:
 
-  - The patterns of lambdas, of `case` branches and of `let` destructuring, and
-    the arguments of `let`-bound definitions. Their ids are not collected, so a
-    duplicate, negative or shared id among them passes.
   - Anything outside the module's top-level declarations, such as its ports.
   - That ids start at 0 or have no gaps. Only negative ids are rejected.
 
@@ -100,57 +98,7 @@ expectUniqueIds modul =
                 )
 
         ( _, Ok canModule ) ->
-            let
-                ( exprIdsList, patternIdsList ) =
-                    collectModuleIdsAsList canModule
-
-                allIdsList =
-                    exprIdsList ++ patternIdsList
-
-                exprDuplicates =
-                    findDuplicates exprIdsList
-
-                patternDuplicates =
-                    findDuplicates patternIdsList
-
-                exprIdsSet =
-                    Set.fromList exprIdsList
-
-                patternIdsSet =
-                    Set.fromList patternIdsList
-
-                overlap =
-                    Set.toList (Set.intersect exprIdsSet patternIdsSet)
-
-                negativeIds =
-                    List.filter (\id -> id < 0) allIdsList
-            in
-            if not (List.isEmpty negativeIds) then
-                Expect.fail
-                    ("Found negative IDs: "
-                        ++ String.join ", " (List.map String.fromInt negativeIds)
-                    )
-
-            else if not (List.isEmpty exprDuplicates) then
-                Expect.fail
-                    ("Duplicate expression IDs found: "
-                        ++ String.join ", " (List.map String.fromInt exprDuplicates)
-                    )
-
-            else if not (List.isEmpty patternDuplicates) then
-                Expect.fail
-                    ("Duplicate pattern IDs found: "
-                        ++ String.join ", " (List.map String.fromInt patternDuplicates)
-                    )
-
-            else if not (List.isEmpty overlap) then
-                Expect.fail
-                    ("Expression and pattern IDs overlap: "
-                        ++ String.join ", " (List.map String.fromInt overlap)
-                    )
-
-            else
-                Expect.pass
+            expectUniqueIdsCanonical canModule
 
 
 {-| Returns each value that occurs more than once in `ids`, listed once, in
@@ -281,147 +229,141 @@ collectDeclsIdsAsList decls =
             ( [], [] )
 
 
-{-| Returns the ids of the expressions in a definition's body, and the ids of
-the patterns among its arguments.
+{-| Returns the ids of the expressions in a definition's body and the ids of
+the patterns among its arguments and inside its body.
 -}
 collectDefIdsAsList : Can.Def -> ( List Int, List Int )
 collectDefIdsAsList def =
     case def of
         Can.Def _ patterns expr ->
-            let
-                patternIds =
-                    List.concatMap collectPatternIdsAsList patterns
-            in
-            ( collectExprIdsAsList expr, patternIds )
+            withPatterns patterns (collectExprIdsAsList expr)
 
         Can.TypedDef _ _ patternsWithTypes expr _ ->
-            let
-                patternIds =
-                    List.concatMap (\( p, _ ) -> collectPatternIdsAsList p) patternsWithTypes
-            in
-            ( collectExprIdsAsList expr, patternIds )
+            withPatterns (List.map Tuple.first patternsWithTypes) (collectExprIdsAsList expr)
 
 
-{-| Returns the id of an expression followed by the ids of every expression
-nested in it.
+{-| Adds the ids of `patterns`, nested ones included, to the pattern ids of
+`ids`.
 -}
-collectExprIdsAsList : Can.Expr -> List Int
+withPatterns : List Can.Pattern -> ( List Int, List Int ) -> ( List Int, List Int )
+withPatterns patterns ( exprIds, patternIds ) =
+    ( exprIds, List.concatMap collectPatternIdsAsList patterns ++ patternIds )
+
+
+{-| Concatenates the expression ids and the pattern ids of several results.
+-}
+concatIds : List ( List Int, List Int ) -> ( List Int, List Int )
+concatIds parts =
+    ( List.concatMap Tuple.first parts, List.concatMap Tuple.second parts )
+
+
+{-| Returns the ids of an expression and every expression nested in it, and the
+ids of every pattern nested in it.
+-}
+collectExprIdsAsList : Can.Expr -> ( List Int, List Int )
 collectExprIdsAsList (A.At _ { id, node }) =
-    id :: collectExprNodeIdsAsList node
+    let
+        ( exprIds, patternIds ) =
+            collectExprNodeIdsAsList node
+    in
+    ( id :: exprIds, patternIds )
 
 
-{-| Returns the ids of every expression nested in one expression node, not
-counting the node itself.
-
-No pattern ids are collected here. The patterns of lambdas, `case` branches
-and `let` destructuring are skipped, and so are the arguments of `let`-bound
-definitions, whose pattern ids `collectDefIdsAsList` returns and this function
-drops.
-
+{-| Returns the ids of every expression and pattern nested in one expression
+node, not counting the node itself.
 -}
-collectExprNodeIdsAsList : Can.Expr_ -> List Int
+collectExprNodeIdsAsList : Can.Expr_ -> ( List Int, List Int )
 collectExprNodeIdsAsList node =
     case node of
-        Can.VarLocal _ ->
-            []
-
-        Can.VarTopLevel _ _ ->
-            []
-
-        Can.VarKernel _ _ _ ->
-            []
-
-        Can.VarForeign _ _ _ ->
-            []
-
-        Can.VarCtor _ _ _ _ _ ->
-            []
-
-        Can.VarDebug _ _ _ ->
-            []
-
-        Can.VarOperator _ _ _ _ ->
-            []
-
-        Can.Chr _ ->
-            []
-
-        Can.Str _ ->
-            []
-
-        Can.Int _ ->
-            []
-
-        Can.Float _ ->
-            []
-
         Can.List exprs ->
-            List.concatMap collectExprIdsAsList exprs
+            concatIds (List.map collectExprIdsAsList exprs)
 
         Can.Negate expr ->
             collectExprIdsAsList expr
 
         Can.Binop _ _ _ _ left right ->
-            collectExprIdsAsList left ++ collectExprIdsAsList right
+            concatIds [ collectExprIdsAsList left, collectExprIdsAsList right ]
 
-        Can.Lambda _ body ->
-            collectExprIdsAsList body
+        Can.Lambda patterns body ->
+            withPatterns patterns (collectExprIdsAsList body)
 
         Can.Call func args ->
-            collectExprIdsAsList func ++ List.concatMap collectExprIdsAsList args
+            concatIds (List.map collectExprIdsAsList (func :: args))
 
         Can.If branches final ->
-            List.concatMap
-                (\( cond, then_ ) ->
-                    collectExprIdsAsList cond ++ collectExprIdsAsList then_
-                )
-                branches
-                ++ collectExprIdsAsList final
+            concatIds (List.map collectExprIdsAsList (final :: List.concatMap (\( c, t ) -> [ c, t ]) branches))
 
         Can.Let def body ->
-            Tuple.first (collectDefIdsAsList def) ++ collectExprIdsAsList body
+            concatIds [ collectDefIdsAsList def, collectExprIdsAsList body ]
 
         Can.LetRec defs body ->
-            List.concatMap (\d -> Tuple.first (collectDefIdsAsList d)) defs
-                ++ collectExprIdsAsList body
+            concatIds (collectExprIdsAsList body :: List.map collectDefIdsAsList defs)
 
-        Can.LetDestruct _ expr body ->
-            collectExprIdsAsList expr ++ collectExprIdsAsList body
+        Can.LetDestruct pattern expr body ->
+            withPatterns [ pattern ] (concatIds [ collectExprIdsAsList expr, collectExprIdsAsList body ])
 
         Can.Case subject branches ->
-            collectExprIdsAsList subject
-                ++ List.concatMap
-                    (\(Can.CaseBranch _ branchBody) ->
-                        collectExprIdsAsList branchBody
-                    )
-                    branches
-
-        Can.Accessor _ ->
-            []
+            concatIds
+                (collectExprIdsAsList subject
+                    :: List.map (\(Can.CaseBranch pattern branchBody) -> withPatterns [ pattern ] (collectExprIdsAsList branchBody)) branches
+                )
 
         Can.Access record _ ->
             collectExprIdsAsList record
 
         Can.Update record fields ->
-            collectExprIdsAsList record
-                ++ DMap.foldl
-                    (\_ (Can.FieldUpdate _ expr) acc -> collectExprIdsAsList expr ++ acc)
-                    []
-                    fields
+            concatIds
+                (collectExprIdsAsList record
+                    :: DMap.foldl (\_ (Can.FieldUpdate _ expr) acc -> collectExprIdsAsList expr :: acc) [] fields
+                )
 
         Can.Record fields ->
-            DMap.foldl (\_ expr acc -> collectExprIdsAsList expr ++ acc) [] fields
-
-        Can.Unit ->
-            []
+            concatIds (DMap.foldl (\_ expr acc -> collectExprIdsAsList expr :: acc) [] fields)
 
         Can.Tuple a b rest ->
-            collectExprIdsAsList a
-                ++ collectExprIdsAsList b
-                ++ List.concatMap collectExprIdsAsList rest
+            concatIds (List.map collectExprIdsAsList (a :: b :: rest))
+
+        Can.VarLocal _ ->
+            ( [], [] )
+
+        Can.VarTopLevel _ _ ->
+            ( [], [] )
+
+        Can.VarKernel _ _ _ ->
+            ( [], [] )
+
+        Can.VarForeign _ _ _ ->
+            ( [], [] )
+
+        Can.VarCtor _ _ _ _ _ ->
+            ( [], [] )
+
+        Can.VarDebug _ _ _ ->
+            ( [], [] )
+
+        Can.VarOperator _ _ _ _ ->
+            ( [], [] )
+
+        Can.Chr _ ->
+            ( [], [] )
+
+        Can.Str _ ->
+            ( [], [] )
+
+        Can.Int _ ->
+            ( [], [] )
+
+        Can.Float _ ->
+            ( [], [] )
+
+        Can.Accessor _ ->
+            ( [], [] )
+
+        Can.Unit ->
+            ( [], [] )
 
         Can.Shader _ _ ->
-            []
+            ( [], [] )
 
 
 {-| Returns the id of a pattern followed by the ids of every pattern nested in
@@ -506,14 +448,8 @@ expectUniqueIdsCanonical canModule =
         patternDuplicates =
             findDuplicates patternIdsList
 
-        exprIdsSet =
-            Set.fromList exprIdsList
-
-        patternIdsSet =
-            Set.fromList patternIdsList
-
         overlap =
-            Set.toList (Set.intersect exprIdsSet patternIdsSet)
+            Set.toList (Set.intersect (Set.fromList exprIdsList) (Set.fromList patternIdsList))
 
         negativeIds =
             List.filter (\id -> id < 0) allIdsList

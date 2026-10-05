@@ -18,19 +18,17 @@ gathers from its case modules. Each is compiled to MLIR with
 engine and then runs the post-monomorphization optimizations.
 
   - `suite` passes for a program when it compiles to MLIR and every
-    `eco.call`, `eco.papCreate` and `eco.papExtend` naming a declared
-    `Elm_Kernel_` kernel agrees with that kernel's declaration. A program that
-    does not compile fails.
+    `eco.call` and `eco.papCreate` naming a declared kernel (`Elm_Kernel_` or
+    `Eco_Kernel_`) agrees with that kernel's declaration. A program that does
+    not compile fails.
 
 Among what is not tested:
 
   - The uses and kernels the checker's own docstring lists as not tested, among
-    them kernels whose symbol starts with `Eco_Kernel_` and uses of a kernel
-    that has no declaration.
-  - Kernel uses through partial application. No `eco.papExtend` the code
-    generator emits names its function, so none is compared with a
-    declaration, and the `eco.papCreate` it builds for a kernel captures
-    nothing, so it has no operand types to compare.
+    them uses of a kernel that has no declaration.
+  - The arguments a kernel closure is later extended with. An `eco.papExtend`
+    names no function, so only the closure's `eco.papCreate` (its arity and
+    result kind) is compared with the declaration.
   - MLIR produced by the solver monomorphization engine.
   - Programs of the `SourceIR` case modules that the standard catalogue leaves
     out.

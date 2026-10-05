@@ -16,8 +16,8 @@ Each case builds one module, `TestMod`, with
 types it declares, one annotated function taking a value of the recursive type
 and returning an `Int`, and an annotated `testValue : Int` that applies that
 function to a value built with one of the type's constructors. None of these
-functions recurses, and none looks inside its argument beyond a `case` whose
-patterns are plain variables, so the recursion is in the types alone. The
+functions recurses, and none looks inside its argument beyond a `case` that
+tells its constructors apart, so the recursion is in the types alone. The
 module is handed to the caller's expectation function, which decides what is
 checked; the cases are run with `Compiler.BulkCheck.bulkCheck`.
 
@@ -28,15 +28,13 @@ The cases, by the module each builds:
     `LinkedList a`.
   - `mutualForestTree`: `Forest a` holding a `List (RoseTree a)`, and
     `RoseTree a` holding a `Forest a`.
-  - `recursiveInTuple`: `Crumb a` holding a `List (Pair a)`, and `Pair a`
-    holding a `Crumb a`, so these two are mutually recursive too. Its label
-    says "tuple", but `Pair` is a custom type and no tuple is built.
+  - `recursiveInTuple`: `Crumb a`, whose constructor holds a
+    `List ( Crumb a, Int )`, so the recursion passes through a tuple.
   - `recursiveInRecord`: `Expr a`, whose `Compound` holds a record with a
     `List (Expr a)` field.
-  - `recursiveViaAlias`: `Container a`, whose `Box` holds a record with a
-    `Maybe (Container a)` field, `Maybe` being a union the module declares
-    itself. Its label says "type alias", but no alias is declared; the record
-    is written out in the constructor.
+  - `recursiveViaAlias`: `Container a`, whose `Box` holds a `Node a`, a type
+    alias for a record with a `Maybe (Container a)` field, `Maybe` being a
+    union the module declares itself.
 
 `suite` runs the six cases in order against
 `TestLogic.TestPipeline.expectMonomorphization`, stopping at the first failure.
@@ -45,16 +43,17 @@ nothing here observes which functions of the monomorphizer run. For each case,
 `expectMonomorphization` passes when monomorphization succeeds and the
 resulting graph has a `main` and at least one node.
 
-Among what is not tested: any recursive function over these types, a `case`
-with constructor patterns, a value that holds another value of its own type, a
-type alias in the recursive path, and a tuple in the recursive path.
+Among what is not tested: any recursive function over these types, a pattern
+that binds the recursive part of a value, and a value that holds another value
+of its own type.
 
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
+        ( AliasDef
+        , TypedDef
         , UnionDef
         , callExpr
         , caseExpr
@@ -62,10 +61,13 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
+        , pAnything
+        , pCtor
         , pVar
         , recordExpr
         , tLambda
         , tRecord
+        , tTuple
         , tType
         , tVar
         , varExpr
@@ -157,19 +159,15 @@ Elm source:
     depth : Tree a -> Int
     depth t =
         case t of
-            leaf ->
+            Leaf _ ->
                 0
 
-            branch ->
+            Branch _ _ ->
                 1
 
     testValue : Int
     testValue =
         depth (Leaf 42)
-
-The `case` patterns are variables, not constructors, so the second branch can
-never be taken. `Compiler.Nitpick.PatternMatches` reports such a branch as
-`Redundant`; `TestLogic.TestPipeline` does not run that check.
 
 -}
 directBinaryTree : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -195,8 +193,8 @@ directBinaryTree expectFn _ =
             , tipe = tLambda (tTree (tVar "a")) tInt
             , body =
                 caseExpr (varExpr "t")
-                    [ ( pVar "leaf", intExpr 0 )
-                    , ( pVar "branch", intExpr 1 )
+                    [ ( pCtor "Leaf" [ pAnything ], intExpr 0 )
+                    , ( pCtor "Branch" [ pAnything, pAnything ], intExpr 1 )
                     ]
             }
 
@@ -229,19 +227,18 @@ reference is the second argument of `Cons`, written here as Elm source:
     len : LinkedList a -> Int
     len xs =
         case xs of
-            nil ->
+            Empty ->
                 0
 
-            cons ->
+            Cons _ _ ->
                 1
 
     testValue : Int
     testValue =
         len Empty
 
-As in `directBinaryTree`, the `case` patterns are variables and the second
-branch is unreachable. The argument `Empty` is built as a call with no
-arguments, which source text cannot express.
+The argument `Empty` is built as a call with no arguments, which source text
+cannot express.
 
 -}
 directLinkedList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -267,8 +264,8 @@ directLinkedList expectFn _ =
             , tipe = tLambda (tLinkedList (tVar "a")) tInt
             , body =
                 caseExpr (varExpr "xs")
-                    [ ( pVar "nil", intExpr 0 )
-                    , ( pVar "cons", intExpr 1 )
+                    [ ( pCtor "Empty" [], intExpr 0 )
+                    , ( pCtor "Cons" [ pAnything, pAnything ], intExpr 1 )
                     ]
             }
 
@@ -384,11 +381,9 @@ mutualForestTree expectFn _ =
 -- ============================================================================
 
 
-{-| Returns three cases: one whose type holds a `List` of a second custom type
-that refers back to it (so the two are mutually recursive), one whose recursive
-reference is in a `List` in a record field, and one whose recursive reference
-is in a `Maybe` in a record field. The labels of the first and third name a
-tuple and a type alias, neither of which those cases build.
+{-| Returns three cases whose recursive reference is nested: in a tuple in a
+`List`, in a `List` in a record field, and in a `Maybe` in a field of a record
+named by a type alias.
 -}
 nestedRecursionCases : (Src.Module -> Expectation) -> List TestCase
 nestedRecursionCases expectFn =
@@ -398,14 +393,11 @@ nestedRecursionCases expectFn =
     ]
 
 
-{-| Applies `expectFn` to a module whose recursion passes through a list of a
-second custom type, written here as Elm source:
+{-| Applies `expectFn` to a module whose recursion passes through a tuple in a
+list, written here as Elm source:
 
     type Crumb a
-        = Crumb a (List (Pair a))
-
-    type Pair a
-        = MkPair (Crumb a) Int
+        = Crumb a (List ( Crumb a, Int ))
 
     size : Crumb a -> Int
     size c =
@@ -415,9 +407,6 @@ second custom type, written here as Elm source:
     testValue =
         size (Crumb 1 [])
 
-The case is labelled "Recursive type nested in tuple", but `Pair` is a custom
-type; no tuple type or tuple value appears.
-
 -}
 recursiveInTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 recursiveInTuple expectFn _ =
@@ -425,27 +414,13 @@ recursiveInTuple expectFn _ =
         tCrumb a =
             tType "Crumb" [ a ]
 
-        tPair a =
-            tType "Pair" [ a ]
-
         crumbUnion : UnionDef
         crumbUnion =
             { name = "Crumb"
             , args = [ "a" ]
             , ctors =
                 [ { name = "Crumb"
-                  , args = [ tVar "a", tList (tPair (tVar "a")) ]
-                  }
-                ]
-            }
-
-        pairUnion : UnionDef
-        pairUnion =
-            { name = "Pair"
-            , args = [ "a" ]
-            , ctors =
-                [ { name = "MkPair"
-                  , args = [ tCrumb (tVar "a"), tInt ]
+                  , args = [ tVar "a", tList (tTuple (tCrumb (tVar "a")) tInt) ]
                   }
                 ]
             }
@@ -471,7 +446,7 @@ recursiveInTuple expectFn _ =
         modul =
             makeModuleWithTypedDefsUnionsAliases "TestMod"
                 [ sizeDef, mainDef ]
-                [ crumbUnion, pairUnion ]
+                [ crumbUnion ]
                 []
     in
     expectFn modul
@@ -487,18 +462,15 @@ record that is a constructor's argument, written here as Elm source:
     eval : Expr a -> Int
     eval e =
         case e of
-            lit ->
+            Lit _ ->
                 0
 
-            compound ->
+            Compound _ ->
                 1
 
     testValue : Int
     testValue =
         eval (Lit 42)
-
-As in `directBinaryTree`, the `case` patterns are variables and the second
-branch is unreachable.
 
 -}
 recursiveInRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -531,8 +503,8 @@ recursiveInRecord expectFn _ =
             , tipe = tLambda (tExpr (tVar "a")) tInt
             , body =
                 caseExpr (varExpr "e")
-                    [ ( pVar "lit", intExpr 0 )
-                    , ( pVar "compound", intExpr 1 )
+                    [ ( pCtor "Lit" [ pAnything ], intExpr 0 )
+                    , ( pCtor "Compound" [ pAnything ], intExpr 1 )
                     ]
             }
 
@@ -556,10 +528,14 @@ recursiveInRecord expectFn _ =
 
 
 {-| Applies `expectFn` to a module whose recursion passes through a `Maybe`
-inside a record that is a constructor's argument, written here as Elm source:
+inside a record named by a type alias that is a constructor's argument, written
+here as Elm source:
+
+    type alias Node a =
+        { value : a, next : Maybe (Container a) }
 
     type Container a
-        = Box { value : a, next : Maybe (Container a) }
+        = Box (Node a)
 
     type Maybe a
         = Just a
@@ -574,9 +550,7 @@ inside a record that is a constructor's argument, written here as Elm source:
         depth (Box { value = 1, next = Nothing })
 
 `Nothing` is built as a call with no arguments, which source text cannot
-express. The module declares its own `Maybe` alongside the imported one. The
-case is labelled "Recursive type nested in type alias", but the module declares
-no alias; the record type is written out as `Box`'s argument.
+express. The module declares its own `Maybe` alongside the imported one.
 
 -}
 recursiveViaAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -593,15 +567,19 @@ recursiveViaAlias expectFn _ =
             { name = "Container"
             , args = [ "a" ]
             , ctors =
-                [ { name = "Box"
-                  , args =
-                        [ tRecord
-                            [ ( "value", tVar "a" )
-                            , ( "next", tMaybe (tContainer (tVar "a")) )
-                            ]
-                        ]
-                  }
+                [ { name = "Box", args = [ tType "Node" [ tVar "a" ] ] }
                 ]
+            }
+
+        nodeAlias : AliasDef
+        nodeAlias =
+            { name = "Node"
+            , args = [ "a" ]
+            , tipe =
+                tRecord
+                    [ ( "value", tVar "a" )
+                    , ( "next", tMaybe (tContainer (tVar "a")) )
+                    ]
             }
 
         maybeUnion : UnionDef
@@ -642,6 +620,6 @@ recursiveViaAlias expectFn _ =
             makeModuleWithTypedDefsUnionsAliases "TestMod"
                 [ depthDef, mainDef ]
                 [ containerUnion, maybeUnion ]
-                []
+                [ nodeAlias ]
     in
     expectFn modul

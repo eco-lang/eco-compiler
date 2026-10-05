@@ -35,13 +35,15 @@ line per broken rule, naming the `SpecId` of the node the call is in:
 
 The calls reached are those in the bodies of `MonoDefine`, `MonoTailFunc` and
 port nodes, at any depth, including calls inside a call's function or argument
-expressions, closure captures, `let` definitions and the branch bodies a `case`
-jumps to. Calls whose `callModel` is `FlattenedExternal` are not checked, though
+expressions, closure captures, `let` definitions, and the branch bodies of a
+`case`, both those its decision tree holds inline (an `Inline` leaf) and those
+it jumps to. Calls whose `callModel` is `FlattenedExternal` are not checked, though
 the expressions inside them are walked.
 
-Among what is not checked: calls in a branch that a `case` decision tree holds
-inline (an `Inline` leaf) rather than jumps to, and the `CallInfo` fields not
-named above.
+Among what is not checked: the `CallInfo` fields not named above. The fifth
+rule is narrow in practice: the global optimizer gives every callee whose arity
+it knows only from its type one of the two exempt kinds, so the rule fires only
+for a callee with a producer whose recorded arity is 0 or less.
 
 -}
 
@@ -130,8 +132,8 @@ checkNode specId node =
 {-| Returns the problems found in every call within `expr`, at any depth, each
 prefixed with `ctx`.
 
-Within a `case`, only the branch bodies the decision tree jumps to are walked,
-because `collectDeciderIssues` returns nothing for a leaf.
+Within a `case`, both the branch bodies the decision tree holds inline and
+those it jumps to are walked.
 
 -}
 collectExprIssues : String -> Mono.MonoExpr -> List String
@@ -155,7 +157,7 @@ collectExprIssues ctx expr =
                 ++ collectExprIssues ctx elseExpr
 
         Mono.MonoCase _ _ decider branches _ ->
-            collectDeciderIssues decider
+            collectDeciderIssues ctx decider
                 ++ List.concatMap (\( _, e ) -> collectExprIssues ctx e) branches
 
         Mono.MonoDestruct _ valueExpr _ ->
@@ -196,23 +198,26 @@ collectDefIssues ctx def =
             collectExprIssues ctx expr
 
 
-{-| Returns no problems for any decision tree. It recurses through the tree's
-subtrees and returns nothing at a leaf, so a call inside an `Inline` leaf is
-never examined. The context argument is ignored.
+{-| Returns the problems found in the branch bodies a decision tree holds
+inline, each prefixed with `ctx`. A `Jump` leaf yields none here: its body is
+one of the `case`'s jump targets, which `collectExprIssues` walks.
 -}
-collectDeciderIssues : Mono.Decider Mono.MonoChoice -> List String
-collectDeciderIssues decider =
+collectDeciderIssues : String -> Mono.Decider Mono.MonoChoice -> List String
+collectDeciderIssues ctx decider =
     case decider of
-        Mono.Leaf _ ->
+        Mono.Leaf (Mono.Inline e) ->
+            collectExprIssues ctx e
+
+        Mono.Leaf (Mono.Jump _) ->
             []
 
         Mono.Chain _ success failure ->
-            collectDeciderIssues success
-                ++ collectDeciderIssues failure
+            collectDeciderIssues ctx success
+                ++ collectDeciderIssues ctx failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderIssues d) edges
-                ++ collectDeciderIssues fallback
+            List.concatMap (\( _, d ) -> collectDeciderIssues ctx d) edges
+                ++ collectDeciderIssues ctx fallback
 
 
 

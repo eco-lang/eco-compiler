@@ -1,20 +1,19 @@
 module TestLogic.Generate.CodeGen.CallTargetValidityTest exposing (suite)
 
 {-| A call in generated MLIR that names a function the module does not define,
-or that reaches a trivial stub while a function sharing its base name (both
-defined below) is not one, is a code generation error. These tests look for
+or that reaches an extern placeholder while a real definition sharing its base
+name exists (both defined below), is a code generation error. These tests look for
 both in the MLIR generated for each program of the standard catalogue.
 
 The fixture is that catalogue: the programs built by the case modules that
 `SourceIR.Suite.StandardTestSuites` lists, each compiled with
 `TestLogic.TestPipeline.runToMlir`.
 
-A _trivial stub_ and a _base name_ are as
-`TestLogic.Generate.CodeGen.CallTargetValidity` defines them. In short, a
-trivial stub is a `func.func` whose entry block holds at most two constant ops
-and ends in `eco.return`, so a function that only returns an argument is one
-too, and the base name of a symbol is the part before its last `_$_`, or the
-whole symbol when it has none.
+An _extern placeholder_ and a _base name_ are as
+`TestLogic.Generate.CodeGen.CallTargetValidity` defines them. In short, an
+extern placeholder is the `func.func` generated for a `MonoExtern` node of the
+monomorphized graph, and the base name of a symbol is the part before its last
+`_$_`, or the whole symbol when it has none.
 
 What the tests establish, for each program, through
 `TestLogic.Generate.CodeGen.CallTargetValidity.expectCallTargetValidity`:
@@ -23,8 +22,8 @@ What the tests establish, for each program, through
     with the test pipeline's error message;
   - each `eco.call` with a `callee` attribute names a top-level `func.func` of
     the module;
-  - no such call targets a trivial stub while another top-level `func.func`
-    with the same base name is not one.
+  - no such call targets an extern placeholder while another top-level
+    `func.func` with the same base name is a real definition.
 
 Among what is not tested:
 

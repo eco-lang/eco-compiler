@@ -36,18 +36,19 @@ The tests:
 
   - Test 1 asserts that at least one `useIt` row has an `/a0/r`, and that every
     `/a0/r` found is a singleton. That arrow is the second stage of `add3 10`.
-  - Test 2 asserts that the first singleton id found at `useIt`'s `/a0/r`
-    equals the first singleton id found at `useOne`'s `/a0`, and fails if
-    either side has none. Both positions hold `add3` with two arguments
+  - Test 2 asserts that every singleton id found at `useIt`'s `/a0/r` and at
+    `useOne`'s `/a0` is one and the same id, and fails if either side has
+    none. Both positions hold `add3` with two arguments
     supplied, reached once as the second stage of `add3 10` and once built
     directly as `(add3 10) 1`, so the assertion is that the two routes give
     that value one member id.
   - Test 3 asserts that at least one `useF` row has an `/a0`, and that every
-    `/a0` found is a singleton. The argument there is the accessor `.name`.
+    `/a0` found is a singleton whose member the graph's `lssMemberOrigins`
+    records as the accessor `.name`, the argument there.
 
-Among what is not tested: which member the singletons in tests 1 and 3 hold,
-although test 3's name says the accessor's; the `mk` and `useMk` part of the
-fixture, which no test reads; and any position of `useIt` other than `/a0/r`.
+Among what is not tested: which member the singletons in test 1 hold; the
+`mk` and `useMk` part of the fixture, which no test reads; and any position of
+`useIt` other than `/a0/r`.
 
 -}
 
@@ -68,6 +69,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -103,16 +105,16 @@ suite =
 
                     Ok g ->
                         case ( singletonIds (a0rAnnos "useIt" g), singletonIds (a0Annos "useOne" g) ) of
-                            ( deepId :: _, prodId :: _ ) ->
-                                if deepId == prodId then
+                            ( deepId :: deepRest, prodId :: prodRest ) ->
+                                if List.all ((==) deepId) (deepRest ++ prodId :: prodRest) then
                                     Expect.pass
 
                                 else
                                     Expect.fail
-                                        ("deep id "
-                                            ++ String.fromInt deepId
-                                            ++ " /= producer id "
-                                            ++ String.fromInt prodId
+                                        ("deep ids "
+                                            ++ describeInts (deepId :: deepRest)
+                                            ++ " /= producer ids "
+                                            ++ describeInts (prodId :: prodRest)
                                         )
 
                             ( ds, ps ) ->
@@ -131,11 +133,11 @@ suite =
                                 Expect.fail "no /a0 for useF — fixture broken"
 
                             onA ->
-                                if List.all isSingleton onA then
+                                if List.all (isAccessorSingleton "name" onG) onA then
                                     Expect.pass
 
                                 else
-                                    Expect.fail ("accessor /a0 expected SINGLETON, got " ++ describe onA)
+                                    Expect.fail ("accessor /a0 expected the SINGLETON a|name member, got " ++ describe onA)
 
                     Err e ->
                         Expect.fail e
@@ -337,6 +339,27 @@ singletonIds =
                 _ ->
                     Nothing
         )
+
+
+{-| Returns whether an annotation is an `LSet` whose one member the graph's
+`lssMemberOrigins` records as the accessor `.field`.
+-}
+isAccessorSingleton : String -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
+isAccessorSingleton field (Mono.MonoGraph g) a =
+    case a of
+        Mono.LSet [ m ] ->
+            Dict.get m g.lssMemberOrigins == Just (Mono.OriginAccessor field)
+
+        _ ->
+            False
+
+
+{-| Renders a list of ids as a bracketed, comma-separated list for a failure
+message.
+-}
+describeInts : List Int -> String
+describeInts ids =
+    "[" ++ String.join ", " (List.map String.fromInt ids) ++ "]"
 
 
 {-| Returns whether an annotation is an `LSet` with exactly one member. An

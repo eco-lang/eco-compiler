@@ -5,16 +5,16 @@ generated MLIR declares each kernel it uses as a `func.func` and refers to it
 by symbol from calls and closures, so a use whose MLIR types differ from the
 declaration's makes the module disagree with itself at the kernel boundary.
 Nothing in the types of `Mlir.Mlir` prevents that. This module checks, for one
-program, that the uses of its declared `Elm_Kernel_` kernels described below
-agree with their declarations.
+program, that the uses of its declared kernels (symbols starting `Elm_Kernel_`
+or `Eco_Kernel_`) described below agree with their declarations.
 
 `expectKernelDeclInstanceConsistency` compiles the source module it is given to
 an `MlirModule` with `TestLogic.TestPipeline.runToMlir`, and fails if that does
 not compile. It then finds the _kernel declarations_: the module's top-level
-`func.func` ops whose `is_kernel` attribute is true, whose `sym_name` starts
-with `Elm_Kernel_`, and whose `function_type` has exactly one result. The
-inputs and the result of that function type are the _declared signature_.
-An op's operand types are read from its `_operand_types` attribute.
+`func.func` ops whose `is_kernel` attribute is true, whose `sym_name` has a
+kernel prefix, and whose `function_type` has exactly one result. The inputs and
+the result of that function type are the _declared signature_. An op's operand
+types are read from its `_operand_types` attribute.
 
 Every op in the module, at any depth, is checked against the declared
 signatures:
@@ -24,28 +24,25 @@ signatures:
     equal to the declared inputs, in number and position by position, and
     exactly one result, of the declared result type. A call with no
     `_operand_types` is compared as having no operands.
-  - An `eco.papCreate` whose `function` names a declared kernel must record
-    exactly `num_captured` operand types, `num_captured` must not exceed the
-    number of declared inputs, and each recorded type must equal the declared
-    input at the same position. Its result is not compared.
-  - An `eco.papExtend` whose `function` names a declared kernel must have, less
-    the GC root hints, no more operand types than there are declared inputs,
-    each equal to the declared input at the same position. The first operand,
-    the closure being extended, is compared against the first input. When it is
-    saturated, meaning `remaining_arity` is 0, or is absent and the operand
-    types are as many as the inputs, it must also have exactly one result, of
-    the declared result type.
+  - An `eco.papCreate` whose `function` names a declared kernel must have an
+    `arity` equal to the number of declared inputs and a `_result_kind` (0
+    when absent) equal to the kind of the declared result; it must also record
+    exactly `num_captured` operand types, no more than the declared inputs,
+    each equal to the declared input at the same position. Kernel closures are
+    built with no captures today, so that last part compares nothing.
+
+An `eco.papExtend` names no function, only the closure it extends, so a kernel
+reached by partial application is checked at the `eco.papCreate` that made the
+closure.
 
 Among what is not tested:
 
   - A use of a kernel that has no declaration, which is skipped here.
-  - Kernels whose symbol starts with `Eco_Kernel_`, and declarations whose
-    function type has other than one result.
+  - Declarations whose function type has other than one result.
   - Whether `_operand_types` matches the types of the values the op is actually
     given; the recorded types are trusted.
-  - Any op other than the three above.
-  - An `eco.papCreate` or `eco.papExtend` with no `function` attribute, which
-    is skipped.
+  - Any op other than the two above, and an `eco.papCreate` with no `function`
+    attribute.
 
 -}
 
@@ -68,8 +65,8 @@ import TestLogic.Generate.CodeGen.Invariants
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Compiles `srcModule` to MLIR and passes if every `eco.call`,
-`eco.papCreate` and `eco.papExtend` naming a declared `Elm_Kernel_` kernel
+{-| Compiles `srcModule` to MLIR and passes if every `eco.call` and
+`eco.papCreate` naming a declared kernel
 agrees with that kernel's declared signature, as the module docstring sets out.
 Fails with the pipeline's message if the module does not compile to MLIR.
 -}
@@ -92,8 +89,8 @@ type alias KernelDeclSig =
     }
 
 
-{-| Returns the violations of every `eco.call`, `eco.papCreate` and
-`eco.papExtend` in `mlirModule`, at any depth, against the declared signatures
+{-| Returns the violations of every `eco.call` and `eco.papCreate` in
+`mlirModule`, at any depth, against the declared signatures
 of the module's kernel declarations, by the rules the module docstring sets
 out.
 -}
@@ -113,7 +110,7 @@ checkKernelDeclInstanceConsistency mlirModule =
 
 {-| Returns the declared signature of each kernel declared in `mlirModule`,
 keyed by symbol name. Only a top-level `func.func` with `is_kernel` true, a
-`sym_name` starting with `Elm_Kernel_`, and a `function_type` with exactly one
+`sym_name` with a kernel prefix, and a `function_type` with exactly one
 result is included.
 -}
 buildKernelDeclSigs : MlirModule -> Dict String KernelDeclSig
@@ -156,7 +153,7 @@ getFunctionType op =
 
 
 {-| Returns the violations of `op` against the declared signatures when it is
-an `eco.call`, `eco.papCreate` or `eco.papExtend`, and none for any other op.
+an `eco.call` or `eco.papCreate`, and none for any other op.
 -}
 checkOp : Dict String KernelDeclSig -> MlirOp -> List Violation
 checkOp kernelDeclSigs op =
@@ -165,9 +162,6 @@ checkOp kernelDeclSigs op =
 
     else if op.name == "eco.papCreate" then
         checkPapCreateOp kernelDeclSigs op
-
-    else if op.name == "eco.papExtend" then
-        checkPapExtendOp kernelDeclSigs op
 
     else
         []
@@ -209,10 +203,13 @@ checkCallOp kernelDeclSigs op =
 
 
 {-| Returns the violations of an `eco.papCreate` whose `function` is a
-declared kernel. It must record exactly `num_captured` operand types,
-`num_captured` must not exceed the declared inputs, and each recorded type must
-equal the declared input at the same position. Without `num_captured`, every
-recorded type is taken as captured. The result, a closure, is not compared.
+declared kernel. Its `arity` must equal the number of declared inputs (a kernel
+closure is saturated by calling the kernel with all of them), its
+`_result_kind` (0 when absent) must be the kind of the declared result, it must
+record exactly `num_captured` operand types, `num_captured` must not exceed
+the declared inputs, and each recorded type must equal the declared input at
+the same position. Without `num_captured`, every recorded type is taken as
+captured.
 -}
 checkPapCreateOp : Dict String KernelDeclSig -> MlirOp -> List Violation
 checkPapCreateOp kernelDeclSigs op =
@@ -236,69 +233,85 @@ checkPapCreateOp kernelDeclSigs op =
 
                             numCaptured =
                                 getIntAttr "num_captured" op |> Maybe.withDefault (List.length captureTypes)
-                        in
-                        prefixViolations op funcName "eco.papCreate" sig.inputs captureTypes numCaptured
 
+                            declArity =
+                                List.length sig.inputs
 
-{-| Returns the violations of an `eco.papExtend` whose `function` is a
-declared kernel. Its operand types, less the trailing GC root hints, must be no
-more than the declared inputs and must equal them position by position,
-starting from the first input. When it is saturated, meaning `remaining_arity`
-is 0, or is absent and the operand types are as many as the inputs, it must
-also have exactly one result, of the declared result type.
+                            arityViolations =
+                                case getIntAttr "arity" op of
+                                    Just arity ->
+                                        if arity == declArity then
+                                            []
 
-The first operand of an `eco.papExtend` is the closure being extended, and it
-is compared against the kernel's first input like the rest.
-
--}
-checkPapExtendOp : Dict String KernelDeclSig -> MlirOp -> List Violation
-checkPapExtendOp kernelDeclSigs op =
-    case getStringAttr "function" op of
-        Nothing ->
-            []
-
-        Just funcName ->
-            if not (isKernelName funcName) then
-                []
-
-            else
-                case Dict.get funcName kernelDeclSigs of
-                    Nothing ->
-                        []
-
-                    Just sig ->
-                        let
-                            allOperandTypes =
-                                extractOperandTypes op |> Maybe.withDefault []
-
-                            rootCount =
-                                Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
-                            operandTypes =
-                                List.take (List.length allOperandTypes - rootCount) allOperandTypes
-
-                            prefixOk =
-                                prefixViolations op funcName "eco.papExtend" sig.inputs operandTypes (List.length operandTypes)
-
-                            isSaturated =
-                                case getIntAttr "remaining_arity" op of
-                                    Just 0 ->
-                                        True
-
-                                    Just _ ->
-                                        False
+                                        else
+                                            [ papCreateViolation op
+                                                funcName
+                                                ("has arity "
+                                                    ++ String.fromInt arity
+                                                    ++ " but the decl declares "
+                                                    ++ String.fromInt declArity
+                                                    ++ " inputs"
+                                                )
+                                            ]
 
                                     Nothing ->
-                                        List.length operandTypes == List.length sig.inputs
+                                        [ papCreateViolation op funcName "has no arity attribute" ]
 
-                            resultOk =
-                                if isSaturated then
-                                    resultViolations op funcName "eco.papExtend" (Just sig.result) (extractResultTypes op)
+                            resultKind =
+                                getIntAttr "_result_kind" op |> Maybe.withDefault 0
+
+                            declResultKind =
+                                mlirTypeKind sig.result
+
+                            resultKindViolations =
+                                if resultKind == declResultKind then
+                                    []
 
                                 else
-                                    []
+                                    [ papCreateViolation op
+                                        funcName
+                                        ("has _result_kind "
+                                            ++ String.fromInt resultKind
+                                            ++ " but the decl's result "
+                                            ++ Debug.toString sig.result
+                                            ++ " has kind "
+                                            ++ String.fromInt declResultKind
+                                        )
+                                    ]
                         in
-                        prefixOk ++ resultOk
+                        arityViolations
+                            ++ resultKindViolations
+                            ++ prefixViolations op funcName "eco.papCreate" sig.inputs captureTypes numCaptured
+
+
+{-| A violation of an `eco.papCreate` on kernel `symName`, with `detail` after
+the kernel name in the message.
+-}
+papCreateViolation : MlirOp -> String -> String -> Violation
+papCreateViolation op symName detail =
+    { opId = op.id
+    , opName = "eco.papCreate"
+    , message = "eco.papCreate on kernel '" ++ symName ++ "' " ++ detail ++ " (CGEN_038)"
+    }
+
+
+{-| The `_result_kind` code of an ABI type, as `Types.mlirTypeToKind` gives it:
+1 for `i64`, 2 for `f64`, 3 for `i16` and 0 for anything else.
+-}
+mlirTypeKind : MlirType -> Int
+mlirTypeKind t =
+    case t of
+        I64 ->
+            1
+
+        F64 ->
+            2
+
+        I16 ->
+            3
+
+        _ ->
+            0
 
 
 {-| Returns the violations of the `observed` operand types against the
@@ -465,7 +478,7 @@ stripLeadingAt s =
 
 
 {-| Returns the `callee` of an `eco.call`, without a leading `@`, when it is
-an `Elm_Kernel_` symbol, and `Nothing` otherwise.
+a kernel symbol, and `Nothing` otherwise.
 -}
 getKernelCallee : MlirOp -> Maybe String
 getKernelCallee op =
@@ -485,9 +498,9 @@ getKernelCallee op =
                 Nothing
 
 
-{-| Returns whether `name` starts with `Elm_Kernel_`. A kernel symbol starting
-with `Eco_Kernel_` does not count.
+{-| Returns whether `name` starts with `Elm_Kernel_` or `Eco_Kernel_`, the two
+kernel prefixes `Ops.ecoCallNamed` registers.
 -}
 isKernelName : String -> Bool
 isKernelName name =
-    String.startsWith "Elm_Kernel_" name
+    String.startsWith "Elm_Kernel_" name || String.startsWith "Eco_Kernel_" name

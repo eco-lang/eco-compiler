@@ -16,6 +16,7 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
+import Utils.Crash as Crash
 
 
 {-| Result of compiling an expression.
@@ -911,17 +912,6 @@ type alias DecoderEmitState =
     }
 
 
-{-| Result of emitting item decoder ops in a loop body.
-Contains ops, result variable, updated cursor, and context.
--}
-type alias ItemDecoderResult =
-    { ops : List MlirOp
-    , resultVar : String
-    , newCursor : String
-    , ctx : Context
-    }
-
-
 {-| Emit a complete fused decoder from Loop IR operations.
 Takes the pre-compiled bytesVar (SSA value for the input bytes).
 Returns (ops, resultVar, context) where resultVar contains Maybe a.
@@ -1066,11 +1056,11 @@ emitDecoderOpsNested ops state =
         (PushValue valueExpr placeholderVar) :: rest ->
             emitPushValueNested valueExpr placeholderVar rest state
 
-        (LoopDecodeList countVarName _ itemOps resultPlaceholder) :: rest ->
-            emitLoopDecodeListNested countVarName itemOps resultPlaceholder rest state
+        (LoopDecodeList count _ itemOps order resultPlaceholder) :: rest ->
+            emitLoopDecodeListNested count itemOps order resultPlaceholder rest state
 
-        (LoopSentinelDecodeList sentinel _ itemOps resultPlaceholder) :: rest ->
-            emitLoopSentinelDecodeListNested sentinel itemOps resultPlaceholder rest state
+        (LoopSentinelDecodeList sentinel _ itemOps order resultPlaceholder) :: rest ->
+            emitLoopSentinelDecodeListNested sentinel itemOps order resultPlaceholder rest state
 
         (ReturnJust resultPlaceholder) :: _ ->
             -- Explicit return - look up actual SSA var from mapping
@@ -1921,494 +1911,67 @@ emitNothingResult state =
     ( [ nothingOp ], nothingVar, ctx2 )
 
 
-{-| Emit a count-based decode loop using scf.while.
-
-Loop structure:
-
-  - Loop variables: (counter: i64, cursor: bf.cursor, accumulator: eco.value)
-  - Before region: check counter > 0, emit scf.condition
-  - After region: decode item, decrement counter, cons to accumulator, yield
-
+{-| The single fixed-width read a decoding loop's item operations must be: the
+`bf.read.*` op, its byte order, its width in bytes and the type of the value it
+produces (`i64` for integers, `f64` for floats). `Nothing` for anything else.
 -}
-emitLoopDecodeListNested : String -> List DecoderOp -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
-emitLoopDecodeListNested countVarName itemOps resultPlaceholder restOps state =
-    let
-        -- Parse countVarName: either "const:N" or an SSA variable name
-        ( countInitOps, countVar, ctxAfterCount ) =
-            if String.startsWith "const:" countVarName then
-                -- It's a constant - extract the number and create arith.constant
-                let
-                    countVal =
-                        String.dropLeft 6 countVarName
-                            |> String.toInt
-                            |> Maybe.withDefault 0
-
-                    ( cVar, ctxConst1 ) =
-                        Context.freshVar state.ctx
-
-                    ( ctxConst2, constOp ) =
-                        Ops.mlirOp ctxConst1 "arith.constant"
-                            |> Ops.opBuilder.withResults [ ( cVar, I64 ) ]
-                            |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I64) countVal))
-                            |> Ops.opBuilder.build
-                in
-                ( [ constOp ], cVar, ctxConst2 )
-
-            else
-                -- It's an SSA variable - look up in varMapping
-                let
-                    actualVar =
-                        Dict.get countVarName state.varMapping
-                            |> Maybe.withDefault countVarName
-                in
-                ( [], actualVar, state.ctx )
-
-        -- Create initial empty list (eco.nil)
-        ( initListVar, ctx1 ) =
-            Context.freshVar ctxAfterCount
-
-        ( ctx2, nilOp ) =
-            Ops.mlirOp ctx1 "eco.nil"
-                |> Ops.opBuilder.withResults [ ( initListVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
-
-        -- Create zero constant for comparison
-        ( zeroVar, ctx3 ) =
-            Context.freshVar ctx2
-
-        ( ctx4, zeroOp ) =
-            Ops.mlirOp ctx3 "arith.constant"
-                |> Ops.opBuilder.withResults [ ( zeroVar, I64 ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I64) 0))
-                |> Ops.opBuilder.build
-
-        -- Build the before region: check counter > 0
-        -- Block args: (counter: i64, cursor: bf.cursor, acc: eco.value)
-        ( beforeCounterArg, ctx5 ) =
-            Context.freshVar ctx4
-
-        ( beforeCursorArg, ctx6 ) =
-            Context.freshVar ctx5
-
-        ( beforeAccArg, ctx7 ) =
-            Context.freshVar ctx6
-
-        -- Compare: counter > 0
-        ( condVar, ctx8 ) =
-            Context.freshVar ctx7
-
-        ( ctx9, cmpOp ) =
-            Ops.mlirOp ctx8 "arith.cmpi"
-                |> Ops.opBuilder.withOperands [ beforeCounterArg, zeroVar ]
-                |> Ops.opBuilder.withResults [ ( condVar, I1 ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "predicate" (IntAttr Nothing 4))
-                |> Ops.opBuilder.build
-
-        -- sgt = 4 in arith.CmpIPredicate
-        -- scf.condition with carry values
-        ( ctx10, conditionOp ) =
-            Ops.scfCondition ctx9
-                condVar
-                [ ( beforeCounterArg, I64 )
-                , ( beforeCursorArg, bfCursorType )
-                , ( beforeAccArg, Types.ecoValue )
-                ]
-
-        beforeRegion =
-            Ops.mkRegion
-                [ ( beforeCounterArg, I64 )
-                , ( beforeCursorArg, bfCursorType )
-                , ( beforeAccArg, Types.ecoValue )
-                ]
-                [ cmpOp ]
-                conditionOp
-
-        -- Build the after region: decode item, decrement, cons, yield
-        -- Block args: (counter: i64, cursor: bf.cursor, acc: eco.value)
-        ( afterCounterArg, ctx11 ) =
-            Context.freshVar ctx10
-
-        ( afterCursorArg, ctx12 ) =
-            Context.freshVar ctx11
-
-        ( afterAccArg, ctx13 ) =
-            Context.freshVar ctx12
-
-        -- Create a fresh state for emitting item decoder ops
-        itemState =
-            { state
-                | ctx = ctx13
-                , cursor = afterCursorArg
-                , decodedVars = []
-            }
-
-        -- Emit item decoder ops - now returns ItemDecoderResult record
-        itemResult =
-            emitItemDecoderOps itemOps itemState
-
-        -- Decrement counter
-        ( oneVar, ctx15 ) =
-            Context.freshVar itemResult.ctx
-
-        ( ctx16, oneOp ) =
-            Ops.mlirOp ctx15 "arith.constant"
-                |> Ops.opBuilder.withResults [ ( oneVar, I64 ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I64) 1))
-                |> Ops.opBuilder.build
-
-        ( newCounterVar, ctx17 ) =
-            Context.freshVar ctx16
-
-        ( ctx18, subOp ) =
-            Ops.mlirOp ctx17 "arith.subi"
-                |> Ops.opBuilder.withOperands [ afterCounterArg, oneVar ]
-                |> Ops.opBuilder.withResults [ ( newCounterVar, I64 ) ]
-                |> Ops.opBuilder.build
-
-        -- Cons item to accumulator
-        ( newAccVar, ctx19 ) =
-            Context.freshVar ctx18
-
-        ( ctx20, consOp ) =
-            Ops.mlirOp ctx19 "eco.cons"
-                |> Ops.opBuilder.withOperands [ itemResult.resultVar, afterAccArg ]
-                |> Ops.opBuilder.withResults [ ( newAccVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
-
-        -- Use the cursor returned from item decoder ops (properly threaded now!)
-        newCursorVar =
-            itemResult.newCursor
-
-        -- Yield new loop values
-        ( ctx21, yieldOp ) =
-            Ops.mlirOp ctx20 "scf.yield"
-                |> Ops.opBuilder.withOperands [ newCounterVar, newCursorVar, newAccVar ]
-                |> Ops.opBuilder.build
-
-        afterRegion =
-            Ops.mkRegion
-                [ ( afterCounterArg, I64 )
-                , ( afterCursorArg, bfCursorType )
-                , ( afterAccArg, Types.ecoValue )
-                ]
-                (itemResult.ops ++ [ oneOp, subOp, consOp ])
-                yieldOp
-
-        -- Build the scf.while
-        ( whileCounterResult, ctx22 ) =
-            Context.freshVar ctx21
-
-        ( whileCursorResult, ctx23 ) =
-            Context.freshVar ctx22
-
-        ( whileAccResult, ctx24 ) =
-            Context.freshVar ctx23
-
-        ( ctx25, whileOp ) =
-            Ops.scfWhile ctx24
-                [ ( whileCounterResult, countVar, I64 )
-                , ( whileCursorResult, state.cursor, bfCursorType )
-                , ( whileAccResult, initListVar, Types.ecoValue )
-                ]
-                beforeRegion
-                afterRegion
-
-        -- Reverse the accumulated list (it was built in reverse order via cons)
-        ( reversedListVar, ctx26 ) =
-            Context.freshVar ctx25
-
-        ( ctx27, reverseOp ) =
-            Ops.mlirOp ctx26 "func.call"
-                |> Ops.opBuilder.withOperands [ whileAccResult ]
-                |> Ops.opBuilder.withResults [ ( reversedListVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.withAttrs
-                    (Dict.fromList
-                        [ ( "callee", SymbolRefAttr "elm_list_reverse" )
-                        , ( "_operand_types", ArrayAttr Nothing [ TypeAttr Types.ecoValue ] )
-                        ]
-                    )
-                |> Ops.opBuilder.build
-
-        -- Update state with reversed loop result
-        updatedState =
-            { state
-                | ctx = ctx27
-                , cursor = whileCursorResult
-                , decodedVars = reversedListVar :: state.decodedVars
-                , varMapping = Dict.insert resultPlaceholder reversedListVar state.varMapping
-                , varTypes = Dict.insert reversedListVar Types.ecoValue state.varTypes
-            }
-
-        -- Continue with remaining ops
-        ( restBodyOps, resultVar, finalCtx ) =
-            emitDecoderOpsNested restOps updatedState
-    in
-    ( countInitOps ++ [ nilOp, zeroOp, whileOp, reverseOp ] ++ restBodyOps, resultVar, finalCtx )
-
-
-{-| Emit sentinel-terminated loop decode (e.g., null-terminated list).
-
-This generates an scf.while that:
-
-1.  Reads a value
-2.  Checks if it equals sentinel
-3.  If not sentinel, conses to accumulator and continues
-4.  If sentinel, exits loop
-5.  Reverses the accumulated list
-
--}
-emitLoopSentinelDecodeListNested : Int -> List DecoderOp -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
-emitLoopSentinelDecodeListNested sentinel itemOps resultPlaceholder restOps state =
-    let
-        -- Create initial empty list (eco.nil)
-        ( initListVar, ctx1 ) =
-            Context.freshVar state.ctx
-
-        ( ctx2, nilOp ) =
-            Ops.mlirOp ctx1 "eco.nil"
-                |> Ops.opBuilder.withResults [ ( initListVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
-
-        -- Create sentinel constant for comparison
-        ( sentinelVar, ctx3 ) =
-            Context.freshVar ctx2
-
-        ( ctx4, sentinelOp ) =
-            Ops.mlirOp ctx3 "arith.constant"
-                |> Ops.opBuilder.withResults [ ( sentinelVar, I64 ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I64) sentinel))
-                |> Ops.opBuilder.build
-
-        -- Build the before region: read value, check if == sentinel
-        -- Block args: (cursor: bf.cursor, acc: eco.value)
-        ( beforeCursorArg, ctx5 ) =
-            Context.freshVar ctx4
-
-        ( beforeAccArg, ctx6 ) =
-            Context.freshVar ctx5
-
-        -- Emit item decoder ops in before region to get the value
-        beforeItemState =
-            { state
-                | ctx = ctx6
-                , cursor = beforeCursorArg
-                , decodedVars = []
-            }
-
-        beforeItemResult =
-            emitItemDecoderOps itemOps beforeItemState
-
-        -- Compare: value != sentinel (we continue while NOT sentinel)
-        ( condVar, ctx7 ) =
-            Context.freshVar beforeItemResult.ctx
-
-        ( ctx8, cmpOp ) =
-            Ops.mlirOp ctx7 "arith.cmpi"
-                |> Ops.opBuilder.withOperands [ beforeItemResult.resultVar, sentinelVar ]
-                |> Ops.opBuilder.withResults [ ( condVar, I1 ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "predicate" (IntAttr Nothing 1))
-                |> Ops.opBuilder.build
-
-        -- ne = 1 in arith.CmpIPredicate (not equal)
-        -- scf.condition with carry values: (cursor, acc, value)
-        -- We carry the read value so we don't have to read again in the after region
-        ( ctx9, conditionOp ) =
-            Ops.scfCondition ctx8
-                condVar
-                [ ( beforeItemResult.newCursor, bfCursorType )
-                , ( beforeAccArg, Types.ecoValue )
-                , ( beforeItemResult.resultVar, Types.ecoValue )
-                ]
-
-        beforeRegion =
-            Ops.mkRegion
-                [ ( beforeCursorArg, bfCursorType )
-                , ( beforeAccArg, Types.ecoValue )
-                ]
-                (beforeItemResult.ops ++ [ cmpOp ])
-                conditionOp
-
-        -- Build the after region: cons value to acc, yield
-        -- Block args: (cursor: bf.cursor, acc: eco.value, value: eco.value)
-        ( afterCursorArg, ctx10 ) =
-            Context.freshVar ctx9
-
-        ( afterAccArg, ctx11 ) =
-            Context.freshVar ctx10
-
-        ( afterValueArg, ctx12 ) =
-            Context.freshVar ctx11
-
-        -- Cons value to accumulator
-        ( newAccVar, ctx13 ) =
-            Context.freshVar ctx12
-
-        ( ctx14, consOp ) =
-            Ops.mlirOp ctx13 "eco.cons"
-                |> Ops.opBuilder.withOperands [ afterValueArg, afterAccArg ]
-                |> Ops.opBuilder.withResults [ ( newAccVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
-
-        -- Yield new cursor and acc (value is not yielded, it was consumed)
-        ( ctx15, yieldOp ) =
-            Ops.mlirOp ctx14 "scf.yield"
-                |> Ops.opBuilder.withOperands [ afterCursorArg, newAccVar ]
-                |> Ops.opBuilder.build
-
-        afterRegion =
-            Ops.mkRegion
-                [ ( afterCursorArg, bfCursorType )
-                , ( afterAccArg, Types.ecoValue )
-                , ( afterValueArg, Types.ecoValue )
-                ]
-                [ consOp ]
-                yieldOp
-
-        -- Build the scf.while
-        ( whileCursorResult, ctx16 ) =
-            Context.freshVar ctx15
-
-        ( whileAccResult, ctx17 ) =
-            Context.freshVar ctx16
-
-        ( ctx18, whileOp ) =
-            Ops.scfWhile ctx17
-                [ ( whileCursorResult, state.cursor, bfCursorType )
-                , ( whileAccResult, initListVar, Types.ecoValue )
-                ]
-                beforeRegion
-                afterRegion
-
-        -- Reverse the accumulated list
-        ( reversedListVar, ctx19 ) =
-            Context.freshVar ctx18
-
-        ( ctx20, reverseOp ) =
-            Ops.mlirOp ctx19 "func.call"
-                |> Ops.opBuilder.withOperands [ whileAccResult ]
-                |> Ops.opBuilder.withResults [ ( reversedListVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.withAttrs
-                    (Dict.fromList
-                        [ ( "callee", SymbolRefAttr "elm_list_reverse" )
-                        , ( "_operand_types", ArrayAttr Nothing [ TypeAttr Types.ecoValue ] )
-                        ]
-                    )
-                |> Ops.opBuilder.build
-
-        -- Update state with reversed loop result
-        updatedState =
-            { state
-                | ctx = ctx20
-                , cursor = whileCursorResult
-                , decodedVars = reversedListVar :: state.decodedVars
-                , varMapping = Dict.insert resultPlaceholder reversedListVar state.varMapping
-                , varTypes = Dict.insert reversedListVar Types.ecoValue state.varTypes
-            }
-
-        -- Continue with remaining ops
-        ( restBodyOps, resultVar, finalCtx ) =
-            emitDecoderOpsNested restOps updatedState
-    in
-    ( [ nilOp, sentinelOp, whileOp, reverseOp ] ++ restBodyOps, resultVar, finalCtx )
-
-
-{-| Emit item decoder ops for loop body.
-This is a simplified version that doesn't handle nested scf.if properly yet.
-For now, it assumes single non-failing reads.
--}
-emitItemDecoderOps : List DecoderOp -> DecoderEmitState -> ItemDecoderResult
-emitItemDecoderOps ops state =
-    case ops of
-        [] ->
-            -- No ops - return unit with unchanged cursor
-            let
-                ( unitVar, ctx1 ) =
-                    Context.freshVar state.ctx
-
-                ( ctx2, unitOp ) =
-                    Ops.mlirOp ctx1 "eco.unit"
-                        |> Ops.opBuilder.withResults [ ( unitVar, Types.ecoValue ) ]
-                        |> Ops.opBuilder.build
-            in
-            { ops = [ unitOp ]
-            , resultVar = unitVar
-            , newCursor = state.cursor
-            , ctx = ctx2
-            }
-
-        -- Single primitive reads
+type alias FixedRead =
+    { opName : String
+    , endian : Maybe Endianness
+    , width : Int
+    , valueType : MlirType
+    }
+
+
+fixedReadOf : List DecoderOp -> Maybe FixedRead
+fixedReadOf itemOps =
+    case itemOps of
         [ ReadU8 _ _ ] ->
-            emitSimpleRead "bf.read.u8" Nothing I64 state
+            Just { opName = "bf.read.u8", endian = Nothing, width = 1, valueType = I64 }
 
         [ ReadI8 _ _ ] ->
-            emitSimpleRead "bf.read.i8" Nothing I64 state
+            Just { opName = "bf.read.i8", endian = Nothing, width = 1, valueType = I64 }
 
         [ ReadU16 _ endian _ ] ->
-            emitSimpleRead "bf.read.u16" (Just endian) I64 state
+            Just { opName = "bf.read.u16", endian = Just endian, width = 2, valueType = I64 }
 
         [ ReadI16 _ endian _ ] ->
-            emitSimpleRead "bf.read.i16" (Just endian) I64 state
+            Just { opName = "bf.read.i16", endian = Just endian, width = 2, valueType = I64 }
 
         [ ReadU32 _ endian _ ] ->
-            emitSimpleRead "bf.read.u32" (Just endian) I64 state
+            Just { opName = "bf.read.u32", endian = Just endian, width = 4, valueType = I64 }
 
         [ ReadI32 _ endian _ ] ->
-            emitSimpleRead "bf.read.i32" (Just endian) I64 state
+            Just { opName = "bf.read.i32", endian = Just endian, width = 4, valueType = I64 }
 
         [ ReadF32 _ endian _ ] ->
-            emitSimpleRead "bf.read.f32" (Just endian) F64 state
+            Just { opName = "bf.read.f32", endian = Just endian, width = 4, valueType = F64 }
 
         [ ReadF64 _ endian _ ] ->
-            emitSimpleRead "bf.read.f64" (Just endian) F64 state
-
-        -- Read + Apply1 (map pattern): decode item, then apply function
-        [ ReadU8 _ _, Apply1 fnExpr _ _ ] ->
-            emitReadThenApply1 "bf.read.u8" Nothing I64 fnExpr state
-
-        [ ReadU16 _ endian _, Apply1 fnExpr _ _ ] ->
-            emitReadThenApply1 "bf.read.u16" (Just endian) I64 fnExpr state
-
-        [ ReadU32 _ endian _, Apply1 fnExpr _ _ ] ->
-            emitReadThenApply1 "bf.read.u32" (Just endian) I64 fnExpr state
-
-        [ ReadI32 _ endian _, Apply1 fnExpr _ _ ] ->
-            emitReadThenApply1 "bf.read.i32" (Just endian) I64 fnExpr state
-
-        [ ReadF32 _ endian _, Apply1 fnExpr _ _ ] ->
-            emitReadThenApply1 "bf.read.f32" (Just endian) F64 fnExpr state
-
-        [ ReadF64 _ endian _, Apply1 fnExpr _ _ ] ->
-            emitReadThenApply1 "bf.read.f64" (Just endian) F64 fnExpr state
-
-        -- Two reads + Apply2 (map2 pattern)
-        [ read1, read2, Apply2 fnExpr _ _ _ ] ->
-            emitTwoReadsThenApply2 read1 read2 fnExpr state
+            Just { opName = "bf.read.f64", endian = Just endian, width = 8, valueType = F64 }
 
         _ ->
-            -- Unhandled pattern - emit sequential ops with cursor threading
-            emitItemOpsSequentially ops state
+            Nothing
 
 
-{-| Emit a simple read without nested scf.if (for use inside loop body).
-Assumes bounds have already been checked or will be checked at higher level.
+{-| Emits `read` at `cursor`, returning the ops, the value and the new cursor.
+The caller must already have checked that `read.width` bytes are there
+(BFOPS\_012).
 -}
-emitSimpleRead : String -> Maybe Endianness -> MlirType -> DecoderEmitState -> ItemDecoderResult
-emitSimpleRead readOpName maybeEndian resultType state =
+emitFixedRead : FixedRead -> String -> Context -> ( List MlirOp, ( String, String ), Context )
+emitFixedRead read cursor ctx0 =
     let
         ( valueVar, ctx1 ) =
-            Context.freshVar state.ctx
+            Context.freshVar ctx0
 
         ( newCursor, ctx2 ) =
             Context.freshVar ctx1
 
-        -- Always include _operand_types for the cursor input
-        -- Use "endianness" to match BFOps.td definition
-        endianAttrs =
-            let
-                baseAttrs =
-                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bfCursorType ])
-            in
-            case maybeEndian of
+        baseAttrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bfCursorType ])
+
+        attrs =
+            case read.endian of
                 Just endian ->
                     Dict.insert "endianness" (endianToAttr endian) baseAttrs
 
@@ -2416,297 +1979,517 @@ emitSimpleRead readOpName maybeEndian resultType state =
                     baseAttrs
 
         ( ctx3, readOp ) =
-            Ops.mlirOp ctx2 readOpName
-                |> Ops.opBuilder.withOperands [ state.cursor ]
-                |> Ops.opBuilder.withAttrs endianAttrs
-                |> Ops.opBuilder.withResults [ ( valueVar, resultType ), ( newCursor, bfCursorType ) ]
-                |> Ops.opBuilder.build
-
-        -- Box the value into eco.value
-        ( boxedVar, ctx4 ) =
-            Context.freshVar ctx3
-
-        boxOpName =
-            case resultType of
-                I64 ->
-                    "eco.box.i64"
-
-                F64 ->
-                    "eco.box.f64"
-
-                _ ->
-                    "eco.box.i64"
-
-        ( ctx5, boxOp ) =
-            Ops.mlirOp ctx4 boxOpName
-                |> Ops.opBuilder.withOperands [ valueVar ]
-                |> Ops.opBuilder.withResults [ ( boxedVar, Types.ecoValue ) ]
+            Ops.mlirOp ctx2 read.opName
+                |> Ops.opBuilder.withOperands [ cursor ]
+                |> Ops.opBuilder.withAttrs attrs
+                |> Ops.opBuilder.withResults [ ( valueVar, read.valueType ), ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.build
     in
-    { ops = [ readOp, boxOp ]
-    , resultVar = boxedVar
-    , newCursor = newCursor
-    , ctx = ctx5
-    }
+    ( [ readOp ], ( valueVar, newCursor ), ctx3 )
 
 
-{-| Emit read + Apply1 pattern (map) for loop item.
-Returns (ops, resultVar, newCursor, ctx).
+{-| Emits an `i64` constant.
 -}
-emitReadThenApply1 : String -> Maybe Endianness -> MlirType -> Mono.MonoExpr -> DecoderEmitState -> ItemDecoderResult
-emitReadThenApply1 readOpName maybeEndian resultType fnExpr state =
+emitI64Const : Int -> Context -> ( MlirOp, String, Context )
+emitI64Const value ctx0 =
     let
-        -- First emit the read
-        readResult =
-            emitSimpleRead readOpName maybeEndian resultType state
+        ( var, ctx1 ) =
+            Context.freshVar ctx0
 
-        -- Compile the function expression
-        fnResult =
-            state.compileExpr fnExpr readResult.ctx
-
-        -- Determine the return type for a saturated call
-        saturatedResultType =
-            fnExprReturnType fnExpr 1
-
-        -- Apply the function to the read result
-        ( resVar, ctx2 ) =
-            Context.freshVar fnResult.ctx
-
-        -- 2-bit-per-slot unboxed bitmap for the single decoded value.
-        newargsUnboxedBitmap =
-            Types.bitmapSetKind 0 0 (Types.mlirTypeToKind resultType)
-
-        papExtendAttrs =
-            Dict.fromList
-                [ ( "_operand_types"
-                  , ArrayAttr Nothing
-                        [ TypeAttr Types.ecoValue -- fn
-                        , TypeAttr resultType -- arg (actual decoded type)
-                        ]
-                  )
-                , ( "remaining_arity", IntAttr Nothing 1 )
-                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                ]
-
-        ( ctx3, applyOp ) =
-            Ops.mlirOp ctx2 "eco.papExtend"
-                |> Ops.opBuilder.withOperands [ fnResult.resultVar, readResult.resultVar ]
-                |> Ops.opBuilder.withResults [ ( resVar, saturatedResultType ) ]
-                |> Ops.opBuilder.withAttrs papExtendAttrs
-                |> Ops.opBuilder.build
+        ( ctx2, op ) =
+            Ops.arithConstantInt ctx1 var value
     in
-    { ops = readResult.ops ++ fnResult.ops ++ [ applyOp ]
-    , resultVar = resVar
-    , newCursor = readResult.newCursor
-    , ctx = ctx3
-    }
+    ( op, var, ctx2 )
 
 
-{-| Emit two reads + Apply2 pattern (map2) for loop item.
-Returns (ops, resultVar, newCursor, ctx).
+{-| Emits a binary `arith` op on two operands of type `operandType`.
 -}
-emitTwoReadsThenApply2 : DecoderOp -> DecoderOp -> Mono.MonoExpr -> DecoderEmitState -> ItemDecoderResult
-emitTwoReadsThenApply2 read1 read2 fnExpr state =
+emitArith : String -> MlirType -> MlirType -> String -> String -> Context -> ( MlirOp, String, Context )
+emitArith opName operandType resultType lhs rhs ctx0 =
     let
-        -- Emit first read
-        read1Result =
-            emitSingleReadOp read1 state
+        ( var, ctx1 ) =
+            Context.freshVar ctx0
 
-        read1Type =
-            readOpResultType read1
-
-        -- Emit second read with updated cursor
-        state2 =
-            { state | ctx = read1Result.ctx, cursor = read1Result.newCursor }
-
-        read2Result =
-            emitSingleReadOp read2 state2
-
-        read2Type =
-            readOpResultType read2
-
-        -- Compile the function expression
-        fnResult =
-            state.compileExpr fnExpr read2Result.ctx
-
-        -- Determine the return type for a saturated call
-        saturatedResultType =
-            fnExprReturnType fnExpr 2
-
-        -- Apply the function to both results
-        ( resVar, ctx3 ) =
-            Context.freshVar fnResult.ctx
-
-        argTypes =
-            [ read1Type, read2Type ]
-
-        newargsUnboxedBitmap =
-            List.indexedMap Tuple.pair argTypes
-                |> List.foldl
-                    (\( i, ty ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind ty)
+        ( ctx2, op ) =
+            Ops.mlirOp ctx1 opName
+                |> Ops.opBuilder.withOperands [ lhs, rhs ]
+                |> Ops.opBuilder.withResults [ ( var, resultType ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr operandType, TypeAttr operandType ])
                     )
-                    0
-
-        papExtendAttrs =
-            Dict.fromList
-                [ ( "_operand_types"
-                  , ArrayAttr Nothing
-                        (TypeAttr Types.ecoValue :: List.map TypeAttr argTypes)
-                  )
-                , ( "remaining_arity", IntAttr Nothing 2 )
-                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                ]
-
-        ( ctx4, applyOp ) =
-            Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands [ fnResult.resultVar, read1Result.resultVar, read2Result.resultVar ]
-                |> Ops.opBuilder.withResults [ ( resVar, saturatedResultType ) ]
-                |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
     in
-    { ops = read1Result.ops ++ read2Result.ops ++ fnResult.ops ++ [ applyOp ]
-    , resultVar = resVar
-    , newCursor = read2Result.newCursor
-    , ctx = ctx4
-    }
+    ( op, var, ctx2 )
 
 
-{-| Get the result type of a decoder read op.
+{-| Emits `value :: tail` with the value stored unboxed (an `Int` or `Float`
+item, REP rules: only Int, Float and Char are unboxed in heap fields).
 -}
-readOpResultType : DecoderOp -> MlirType
-readOpResultType op =
-    case op of
-        ReadU8 _ _ ->
-            I64
+emitConsUnboxed : ( String, MlirType ) -> String -> Context -> ( MlirOp, String, Context )
+emitConsUnboxed head tail ctx0 =
+    let
+        ( var, ctx1 ) =
+            Context.freshVar ctx0
 
-        ReadI8 _ _ ->
-            I64
-
-        ReadU16 _ _ _ ->
-            I64
-
-        ReadI16 _ _ _ ->
-            I64
-
-        ReadU32 _ _ _ ->
-            I64
-
-        ReadI32 _ _ _ ->
-            I64
-
-        ReadF32 _ _ _ ->
-            F64
-
-        ReadF64 _ _ _ ->
-            F64
-
-        ReadBytes _ _ _ ->
-            Types.ecoValue
-
-        ReadUtf8 _ _ _ ->
-            Types.ecoValue
-
-        ReadBytesVar _ _ _ ->
-            Types.ecoValue
-
-        ReadUtf8Var _ _ _ ->
-            Types.ecoValue
-
-        _ ->
-            Types.ecoValue
+        ( ctx2, op ) =
+            Ops.ecoConstructList ctx1 [] var head ( tail, Types.ecoValue ) True
+    in
+    ( op, var, ctx2 )
 
 
-{-| Emit a single read op, returns (ops, resultVar, newCursor, ctx).
-Helper for multi-read patterns.
+{-| Emits the reversal of `list` with the `List.reverse` kernel, keeping the
+fused decoder to one loop (BFOPS\_035). Returns the ops and the reversed list.
 -}
-emitSingleReadOp : DecoderOp -> DecoderEmitState -> ItemDecoderResult
-emitSingleReadOp op state =
-    case op of
-        ReadU8 _ _ ->
-            emitSimpleRead "bf.read.u8" Nothing I64 state
+emitReverseList : String -> Context -> ( List MlirOp, String, Context )
+emitReverseList list ctx0 =
+    let
+        ( reversed, ctx1 ) =
+            Context.freshVar ctx0
 
-        ReadI8 _ _ ->
-            emitSimpleRead "bf.read.i8" Nothing I64 state
+        ( ctx2, callOp ) =
+            Ops.ecoCallNamed ctx1 [] reversed "Elm_Kernel_List_reverse" [ ( list, Types.ecoValue ) ] Types.ecoValue
+    in
+    ( [ callOp ], reversed, ctx2 )
 
-        ReadU16 _ endian _ ->
-            emitSimpleRead "bf.read.u16" (Just endian) I64 state
 
-        ReadI16 _ endian _ ->
-            emitSimpleRead "bf.read.i16" (Just endian) I64 state
+{-| Emits the empty list.
+-}
+emitEmptyList : Context -> ( MlirOp, String, Context )
+emitEmptyList ctx0 =
+    let
+        ( var, ctx1 ) =
+            Context.freshVar ctx0
 
-        ReadU32 _ endian _ ->
-            emitSimpleRead "bf.read.u32" (Just endian) I64 state
+        ( ctx2, op ) =
+            Ops.ecoConstantNil ctx1 var
+    in
+    ( op, var, ctx2 )
 
-        ReadI32 _ endian _ ->
-            emitSimpleRead "bf.read.i32" (Just endian) I64 state
 
-        ReadF32 _ endian _ ->
-            emitSimpleRead "bf.read.f32" (Just endian) F64 state
+{-| Finishes a decoding loop whose accumulated list (items consed, so in reverse
+read order) is `acc` and whose cursor is `cursor`: puts the list in `order`,
+binds it to `resultPlaceholder` and emits the remaining operations. Returns the
+ops and the result of the remaining operations.
+-}
+emitLoopResultThenRest : IR.ListOrder -> String -> String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
+emitLoopResultThenRest order acc cursor resultPlaceholder restOps state =
+    let
+        ( reverseOps, listVar, ctx1 ) =
+            case order of
+                IR.ReverseReadOrder ->
+                    ( [], acc, state.ctx )
 
-        ReadF64 _ endian _ ->
-            emitSimpleRead "bf.read.f64" (Just endian) F64 state
+                IR.InReadOrder ->
+                    emitReverseList acc state.ctx
 
-        _ ->
-            -- Unsupported op - return unit with unchanged cursor
+        updatedState =
+            { state
+                | ctx = ctx1
+                , cursor = cursor
+                , decodedVars = listVar :: state.decodedVars
+                , varMapping = Dict.insert resultPlaceholder listVar state.varMapping
+                , varTypes = Dict.insert listVar Types.ecoValue state.varTypes
+            }
+
+        ( restOpsEmitted, resultVar, ctx2 ) =
+            emitDecoderOpsNested restOps updatedState
+    in
+    ( reverseOps ++ restOpsEmitted, resultVar, ctx2 )
+
+
+{-| Emits `scf.if %ok` whose then-branch is `thenBody` (its ops and result) and
+whose else-branch is `Nothing`. Returns the op and its result.
+-}
+emitIfElseNothing : String -> ( List MlirOp, String, Context ) -> ( MlirOp, String, Context )
+emitIfElseNothing okVar ( thenOps, thenResult, ctx0 ) =
+    let
+        ( ctx1, thenYield ) =
+            Ops.scfYieldMany ctx0 [ ( thenResult, Types.ecoValue ) ]
+
+        ( nothingVar, ctx2 ) =
+            Context.freshVar ctx1
+
+        ( ctx3, nothingOp ) =
+            Ops.ecoConstantNothing ctx2 nothingVar
+
+        ( ctx4, elseYield ) =
+            Ops.scfYieldMany ctx3 [ ( nothingVar, Types.ecoValue ) ]
+
+        ( ifVar, ctx5 ) =
+            Context.freshVar ctx4
+
+        ( ctx6, ifOp ) =
+            Ops.mlirOp ctx5 "scf.if"
+                |> Ops.opBuilder.withOperands [ okVar ]
+                |> Ops.opBuilder.withResults [ ( ifVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withRegions
+                    [ Ops.mkRegion [] thenOps thenYield
+                    , Ops.mkRegion [] [ nothingOp ] elseYield
+                    ]
+                |> Ops.opBuilder.build
+    in
+    ( ifOp, ifVar, ctx6 )
+
+
+{-| Emit a count-based decode loop (`LoopDecodeList`).
+
+The count is clamped at zero, and the bytes of every item are checked once
+before the loop (`bf.require` of count \* width, with the product checked to fit
+in 32 bits), so the reads inside the loop are all covered by that check
+(BFOPS\_012); when they are not all there the decoder gives `Nothing`, as the
+loop would when a read fails. Then an `scf.while` over (counter, cursor,
+accumulator) reads an item and conses it until the counter reaches zero.
+
+-}
+emitLoopDecodeListNested : IR.LoopCount -> List DecoderOp -> IR.ListOrder -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
+emitLoopDecodeListNested count itemOps order resultPlaceholder restOps state =
+    case fixedReadOf itemOps of
+        Nothing ->
+            Crash.crash "BytesFusion.Emit: LoopDecodeList item is not one fixed-width read (Reify must not produce this)"
+
+        Just read ->
             let
-                ( unitVar, ctx1 ) =
-                    Context.freshVar state.ctx
+                ( countOps, countVar, ctx1 ) =
+                    emitLoopCount count state
 
-                ( ctx2, unitOp ) =
-                    Ops.mlirOp ctx1 "eco.unit"
-                        |> Ops.opBuilder.withResults [ ( unitVar, Types.ecoValue ) ]
+                ( zeroOp, zeroVar, ctx2 ) =
+                    emitI64Const 0 ctx1
+
+                ( clampOp, clampedVar, ctx3 ) =
+                    emitArith "arith.maxsi" I64 I64 countVar zeroVar ctx2
+
+                ( limitOp, limitVar, ctx4 ) =
+                    emitI64Const (2147483647 // read.width) ctx3
+
+                ( fitsVar, ctx5 ) =
+                    Context.freshVar ctx4
+
+                ( ctx6, fitsOp ) =
+                    Ops.arithCmpI ctx5 "sle" fitsVar ( clampedVar, I64 ) ( limitVar, I64 )
+
+                ( widthOp, widthVar, ctx7 ) =
+                    emitI64Const read.width ctx6
+
+                ( totalOp, totalVar, ctx8 ) =
+                    emitArith "arith.muli" I64 I64 clampedVar widthVar ctx7
+
+                ( total32Var, ctx9 ) =
+                    Context.freshVar ctx8
+
+                ( ctx10, truncOp ) =
+                    Ops.mlirOp ctx9 "arith.trunci"
+                        |> Ops.opBuilder.withOperands [ totalVar ]
+                        |> Ops.opBuilder.withResults [ ( total32Var, I32 ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr I64 ]))
                         |> Ops.opBuilder.build
-            in
-            { ops = [ unitOp ]
-            , resultVar = unitVar
-            , newCursor = state.cursor
-            , ctx = ctx2
-            }
 
+                ( requireVar, ctx11 ) =
+                    Context.freshVar ctx10
 
-{-| Emit item ops sequentially with cursor threading.
-Fallback for complex patterns not handled by specific cases.
--}
-emitItemOpsSequentially : List DecoderOp -> DecoderEmitState -> ItemDecoderResult
-emitItemOpsSequentially ops state =
-    case ops of
-        [] ->
-            -- Return unit with unchanged cursor
-            let
-                ( unitVar, ctx1 ) =
-                    Context.freshVar state.ctx
-
-                ( ctx2, unitOp ) =
-                    Ops.mlirOp ctx1 "eco.unit"
-                        |> Ops.opBuilder.withResults [ ( unitVar, Types.ecoValue ) ]
+                ( ctx12, requireOp ) =
+                    Ops.mlirOp ctx11 "bf.require"
+                        |> Ops.opBuilder.withOperands [ state.cursor, total32Var ]
+                        |> Ops.opBuilder.withResults [ ( requireVar, I1 ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.singleton "_operand_types"
+                                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
+                            )
                         |> Ops.opBuilder.build
+
+                ( okOp, okVar, ctx13 ) =
+                    emitArith "arith.andi" I1 I1 fitsVar requireVar ctx12
+
+                -- The loop, inside the then-branch.
+                ( nilOp, nilVar, ctx14 ) =
+                    emitEmptyList ctx13
+
+                ( beforeCounter, ctx15 ) =
+                    Context.freshVar ctx14
+
+                ( beforeCursor, ctx16 ) =
+                    Context.freshVar ctx15
+
+                ( beforeAcc, ctx17 ) =
+                    Context.freshVar ctx16
+
+                ( moreVar, ctx18 ) =
+                    Context.freshVar ctx17
+
+                ( ctx19, moreOp ) =
+                    Ops.arithCmpI ctx18 "sgt" moreVar ( beforeCounter, I64 ) ( zeroVar, I64 )
+
+                loopTypes =
+                    [ I64, bfCursorType, Types.ecoValue ]
+
+                ( ctx20, conditionOp ) =
+                    Ops.scfCondition ctx19 moreVar (List.map2 Tuple.pair [ beforeCounter, beforeCursor, beforeAcc ] loopTypes)
+
+                beforeRegion =
+                    Ops.mkRegion (List.map2 Tuple.pair [ beforeCounter, beforeCursor, beforeAcc ] loopTypes)
+                        [ moreOp ]
+                        conditionOp
+
+                ( afterCounter, ctx21 ) =
+                    Context.freshVar ctx20
+
+                ( afterCursor, ctx22 ) =
+                    Context.freshVar ctx21
+
+                ( afterAcc, ctx23 ) =
+                    Context.freshVar ctx22
+
+                ( readOps, ( valueVar, nextCursor ), ctx24 ) =
+                    emitFixedRead read afterCursor ctx23
+
+                ( oneOp, oneVar, ctx25 ) =
+                    emitI64Const 1 ctx24
+
+                ( decOp, nextCounter, ctx26 ) =
+                    emitArith "arith.subi" I64 I64 afterCounter oneVar ctx25
+
+                ( consOp, nextAcc, ctx27 ) =
+                    emitConsUnboxed ( valueVar, read.valueType ) afterAcc ctx26
+
+                ( ctx28, yieldOp ) =
+                    Ops.scfYieldMany ctx27 (List.map2 Tuple.pair [ nextCounter, nextCursor, nextAcc ] loopTypes)
+
+                afterRegion =
+                    Ops.mkRegion (List.map2 Tuple.pair [ afterCounter, afterCursor, afterAcc ] loopTypes)
+                        (readOps ++ [ oneOp, decOp, consOp ])
+                        yieldOp
+
+                ( whileCounter, ctx29 ) =
+                    Context.freshVar ctx28
+
+                ( whileCursor, ctx30 ) =
+                    Context.freshVar ctx29
+
+                ( whileAcc, ctx31 ) =
+                    Context.freshVar ctx30
+
+                ( ctx32, whileOp ) =
+                    Ops.scfWhile ctx31
+                        [ ( whileCounter, clampedVar, I64 )
+                        , ( whileCursor, state.cursor, bfCursorType )
+                        , ( whileAcc, nilVar, Types.ecoValue )
+                        ]
+                        beforeRegion
+                        afterRegion
+
+                ( restOps_, restResult, ctx33 ) =
+                    emitLoopResultThenRest order whileAcc whileCursor resultPlaceholder restOps { state | ctx = ctx32 }
+
+                ( ifOp, ifVar, ctx34 ) =
+                    emitIfElseNothing okVar ( [ nilOp, whileOp ] ++ restOps_, restResult, ctx33 )
             in
-            { ops = [ unitOp ]
-            , resultVar = unitVar
-            , newCursor = state.cursor
-            , ctx = ctx2
-            }
+            ( countOps
+                ++ [ zeroOp, clampOp, limitOp, fitsOp, widthOp, totalOp, truncOp, requireOp, okOp, ifOp ]
+            , ifVar
+            , ctx34
+            )
 
-        [ singleOp ] ->
-            -- Single op - dispatch to appropriate handler
-            emitSingleReadOp singleOp state
 
-        firstOp :: restOps ->
-            -- Emit first op, then recurse with updated cursor
+{-| Emits the count of a `LoopDecodeList` as an `i64`.
+-}
+emitLoopCount : IR.LoopCount -> DecoderEmitState -> ( List MlirOp, String, Context )
+emitLoopCount count state =
+    case count of
+        IR.CountLiteral n ->
             let
-                firstResult =
-                    emitSingleReadOp firstOp state
-
-                newState =
-                    { state | ctx = firstResult.ctx, cursor = firstResult.newCursor }
-
-                restResult =
-                    emitItemOpsSequentially restOps newState
+                ( op, var, ctx1 ) =
+                    emitI64Const n state.ctx
             in
-            -- Return the last result var
-            { ops = firstResult.ops ++ restResult.ops
-            , resultVar = restResult.resultVar
-            , newCursor = restResult.newCursor
-            , ctx = restResult.ctx
-            }
+            ( [ op ], var, ctx1 )
+
+        IR.CountPlaceholder placeholder ->
+            case Dict.get placeholder state.varMapping of
+                Just var ->
+                    ( [], var, state.ctx )
+
+                Nothing ->
+                    Crash.crash ("BytesFusion.Emit: loop count placeholder " ++ placeholder ++ " has no value")
+
+        IR.CountExpression expr ->
+            let
+                result =
+                    state.compileExpr expr state.ctx
+            in
+            if result.resultType == I64 then
+                ( result.ops, result.resultVar, result.ctx )
+
+            else
+                let
+                    ( unboxedVar, ctx1 ) =
+                        Context.freshVar result.ctx
+
+                    ( ctx2, unboxOp ) =
+                        Ops.mlirOp ctx1 "eco.unbox"
+                            |> Ops.opBuilder.withOperands [ result.resultVar ]
+                            |> Ops.opBuilder.withResults [ ( unboxedVar, I64 ) ]
+                            |> Ops.opBuilder.withAttrs
+                                (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr result.resultType ]))
+                            |> Ops.opBuilder.build
+                in
+                ( result.ops ++ [ unboxOp ], unboxedVar, ctx2 )
+
+
+{-| Emit a sentinel-terminated decode loop (`LoopSentinelDecodeList`).
+
+An `scf.while` over (cursor, accumulator, found). The before region continues
+while the sentinel has not been found and `bf.require` shows the next item's
+bytes are there, so the read in the after region only runs once that check has
+passed (BFOPS\_012). The after region reads the item; the sentinel sets found
+(consumed, not put in the list), any other item is consed. When the loop
+stops, found tells the two cases apart: the sentinel was read, or input ran out
+before one and the decoder gives `Nothing`.
+
+-}
+emitLoopSentinelDecodeListNested : Int -> List DecoderOp -> IR.ListOrder -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
+emitLoopSentinelDecodeListNested sentinel itemOps order resultPlaceholder restOps state =
+    case fixedReadOf itemOps of
+        Nothing ->
+            Crash.crash "BytesFusion.Emit: LoopSentinelDecodeList item is not one fixed-width read (Reify must not produce this)"
+
+        Just read ->
+            let
+                ( nilOp, nilVar, ctx1 ) =
+                    emitEmptyList state.ctx
+
+                ( sentinelOp, sentinelVar, ctx2 ) =
+                    emitI64Const sentinel ctx1
+
+                ( falseVar, ctx3 ) =
+                    Context.freshVar ctx2
+
+                ( ctx4, falseOp ) =
+                    Ops.arithConstantBool ctx3 falseVar False
+
+                ( trueVar, ctx5 ) =
+                    Context.freshVar ctx4
+
+                ( ctx6, trueOp ) =
+                    Ops.arithConstantBool ctx5 trueVar True
+
+                ( widthVar, ctx7 ) =
+                    Context.freshVar ctx6
+
+                ( ctx8, widthOp ) =
+                    Ops.arithConstantInt32 ctx7 widthVar read.width
+
+                loopTypes =
+                    [ bfCursorType, Types.ecoValue, I1 ]
+
+                -- Before region: continue while not found and the item fits.
+                ( beforeCursor, ctx9 ) =
+                    Context.freshVar ctx8
+
+                ( beforeAcc, ctx10 ) =
+                    Context.freshVar ctx9
+
+                ( beforeFound, ctx11 ) =
+                    Context.freshVar ctx10
+
+                ( requireVar, ctx12 ) =
+                    Context.freshVar ctx11
+
+                ( ctx13, requireOp ) =
+                    Ops.mlirOp ctx12 "bf.require"
+                        |> Ops.opBuilder.withOperands [ beforeCursor, widthVar ]
+                        |> Ops.opBuilder.withResults [ ( requireVar, I1 ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.singleton "_operand_types"
+                                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
+                            )
+                        |> Ops.opBuilder.build
+
+                ( notFoundOp, notFoundVar, ctx14 ) =
+                    emitArith "arith.xori" I1 I1 beforeFound trueVar ctx13
+
+                ( continueOp, continueVar, ctx15 ) =
+                    emitArith "arith.andi" I1 I1 notFoundVar requireVar ctx14
+
+                ( ctx16, conditionOp ) =
+                    Ops.scfCondition ctx15 continueVar (List.map2 Tuple.pair [ beforeCursor, beforeAcc, beforeFound ] loopTypes)
+
+                beforeRegion =
+                    Ops.mkRegion (List.map2 Tuple.pair [ beforeCursor, beforeAcc, beforeFound ] loopTypes)
+                        [ requireOp, notFoundOp, continueOp ]
+                        conditionOp
+
+                -- After region: read the item; the sentinel sets found, any
+                -- other item is consed.
+                ( afterCursor, ctx17 ) =
+                    Context.freshVar ctx16
+
+                ( afterAcc, ctx18 ) =
+                    Context.freshVar ctx17
+
+                ( afterFound, ctx19 ) =
+                    Context.freshVar ctx18
+
+                ( readOps, ( valueVar, nextCursor ), ctx20 ) =
+                    emitFixedRead read afterCursor ctx19
+
+                ( isSentinelVar, ctx21 ) =
+                    Context.freshVar ctx20
+
+                ( ctx22, isSentinelOp ) =
+                    Ops.arithCmpI ctx21 "eq" isSentinelVar ( valueVar, I64 ) ( sentinelVar, I64 )
+
+                ( ctx23, keepYield ) =
+                    Ops.scfYieldMany ctx22 [ ( afterAcc, Types.ecoValue ) ]
+
+                ( consOp, consVar, ctx24 ) =
+                    emitConsUnboxed ( valueVar, read.valueType ) afterAcc ctx23
+
+                ( ctx25, consYield ) =
+                    Ops.scfYieldMany ctx24 [ ( consVar, Types.ecoValue ) ]
+
+                ( nextAcc, ctx26 ) =
+                    Context.freshVar ctx25
+
+                ( ctx27, accIfOp ) =
+                    Ops.mlirOp ctx26 "scf.if"
+                        |> Ops.opBuilder.withOperands [ isSentinelVar ]
+                        |> Ops.opBuilder.withResults [ ( nextAcc, Types.ecoValue ) ]
+                        |> Ops.opBuilder.withRegions
+                            [ Ops.mkRegion [] [] keepYield
+                            , Ops.mkRegion [] [ consOp ] consYield
+                            ]
+                        |> Ops.opBuilder.build
+
+                ( ctx28, yieldOp ) =
+                    Ops.scfYieldMany ctx27 (List.map2 Tuple.pair [ nextCursor, nextAcc, isSentinelVar ] loopTypes)
+
+                afterRegion =
+                    Ops.mkRegion (List.map2 Tuple.pair [ afterCursor, afterAcc, afterFound ] loopTypes)
+                        (readOps ++ [ isSentinelOp, accIfOp ])
+                        yieldOp
+
+                ( whileCursor, ctx29 ) =
+                    Context.freshVar ctx28
+
+                ( whileAcc, ctx30 ) =
+                    Context.freshVar ctx29
+
+                ( whileFound, ctx31 ) =
+                    Context.freshVar ctx30
+
+                ( ctx32, whileOp ) =
+                    Ops.scfWhile ctx31
+                        [ ( whileCursor, state.cursor, bfCursorType )
+                        , ( whileAcc, nilVar, Types.ecoValue )
+                        , ( whileFound, falseVar, I1 )
+                        ]
+                        beforeRegion
+                        afterRegion
+
+                ( restOps_, restResult, ctx33 ) =
+                    emitLoopResultThenRest order whileAcc whileCursor resultPlaceholder restOps { state | ctx = ctx32 }
+
+                ( ifOp, ifVar, ctx34 ) =
+                    emitIfElseNothing whileFound ( restOps_, restResult, ctx33 )
+            in
+            ( [ nilOp, sentinelOp, falseOp, trueOp, widthOp, whileOp, ifOp ], ifVar, ctx34 )

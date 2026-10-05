@@ -22,12 +22,12 @@ fixed argument.
 A string literal in the Source AST holds the text between the quotes in its
 escaped source form: the parser keeps an escape such as `\n` as the two
 characters it was written with, and rejects a raw newline in a single-line
-string. `strExpr` stores its argument unchanged, and the Elm literals passed to
-it in this module are decoded by Elm before it sees them. So the newline and
-tab cases hold a real newline and a real tab character, the backslash case
-holds single backslashes, and the quote case holds bare `"` characters. None
-of these four holds the text the parser would make from the same source; the
-unicode case's character is one the parser also keeps as itself.
+string. `strExpr` stores its argument unchanged, so the escape cases pass it
+the escaped text, with each backslash doubled in the Elm literal that spells
+it: the newline case holds the two characters `\n`, the tab case `\t`, the
+backslash case `\\`, and the quote case `\"`. Each is the text the parser would
+make from the same source. The unicode case's character is one the parser also
+keeps as itself.
 
 The cases, in the order `bulkCheck` runs them:
 
@@ -39,9 +39,10 @@ The cases, in the order `bulkCheck` runs them:
     whose `else` is a second `if` on `n == 0`, applied to 5.
   - "If with complex branches": `pick : Bool -> Int`, an `if` on its argument
     whose branches are `10 + 20` and `5 * 3`, applied to `True`.
-  - "Bool case returning different types": `choose : Bool -> List Int`, an
-    `if` (not a `case`) whose branches are `[ 1, 2, 3 ]` and `[]`, applied to
-    `True`. Both branches have the same type.
+  - "Bool case returning different expressions": `choose : Bool -> List Int`,
+    a `case` on its argument whose `True` branch is the list literal
+    `[ 1, 2, 3 ]` and whose `False` branch is the empty list `[]`, applied to
+    `True`.
   - "Multi-branch int case (fanout)": `label : Int -> String`, a `case` with
     branches for 0, 1, 2 and 3 and a wildcard, applied to 2.
   - "Case with record results": an unannotated `pick` with a `case` on its
@@ -49,13 +50,13 @@ The cases, in the order `bulkCheck` runs them:
     applied to 1.
   - "String escape newline", "String escape tab", "String escape backslash",
     "String escape quote" and "String with unicode": a `testValue` that is a
-    single string literal, holding a newline, a tab, two backslashes, two
-    `"` characters, or a character outside the Basic Multilingual Plane
+    single string literal, holding the escape `\n`, `\t`, two `\\` escapes,
+    two `\"` escapes, or a character outside the Basic Multilingual Plane
     written as itself.
 
 Among what is not tested: a branch that ends in a tail call; a `case` on a
-`Bool` with a wildcard branch; string literals in the escaped form the parser
-produces, or written with a `\u{...}` escape.
+`Bool` with a wildcard branch; a string literal written with a `\u{...}`
+escape.
 
 -}
 
@@ -107,7 +108,7 @@ testCases expectFn =
     , { label = "Case on Bool with function", run = caseOnBoolFunc expectFn }
     , { label = "Nested if-else chain", run = nestedIfElse expectFn }
     , { label = "If with complex branches", run = ifComplexBranches expectFn }
-    , { label = "Bool case returning different types", run = boolCaseDifferentExprs expectFn }
+    , { label = "Bool case returning different expressions", run = boolCaseDifferentExprs expectFn }
     , { label = "Multi-branch int case (fanout)", run = multiBranchIntCase expectFn }
     , { label = "Case with record results", run = caseWithRecordResults expectFn }
     , { label = "String escape newline", run = stringEscapeNewline expectFn }
@@ -227,8 +228,8 @@ ifComplexBranches expectFn _ =
     expectFn modul
 
 
-{-| Builds the module of the "Bool case returning different types" case, an `if`
-whose two branches are both `List Int`, and gives it to `expectFn`.
+{-| Builds the module of the "Bool case returning different expressions" case,
+described in the module docstring, and gives it to `expectFn`.
 -}
 boolCaseDifferentExprs : (Src.Module -> Expectation) -> (() -> Expectation)
 boolCaseDifferentExprs expectFn _ =
@@ -239,9 +240,10 @@ boolCaseDifferentExprs expectFn _ =
                   , args = [ pVar "flag" ]
                   , tipe = tLambda (tType "Bool" []) (tType "List" [ tType "Int" [] ])
                   , body =
-                        ifExpr (varExpr "flag")
-                            (listExpr [ intExpr 1, intExpr 2, intExpr 3 ])
-                            (listExpr [])
+                        caseExpr (varExpr "flag")
+                            [ ( pCtor "True" [], listExpr [ intExpr 1, intExpr 2, intExpr 3 ] )
+                            , ( pCtor "False" [], listExpr [] )
+                            ]
                   }
                 , { name = "testValue"
                   , args = []
@@ -310,36 +312,38 @@ caseWithRecordResults expectFn _ =
 -- ============================================================================
 
 
-{-| Builds a module whose `testValue` is a string literal holding a real newline
-character, and gives it to `expectFn`.
+{-| Builds a module whose `testValue` is the string literal `"line1\nline2"`,
+holding the escape `\n`, and gives it to `expectFn`.
 -}
 stringEscapeNewline : (Src.Module -> Expectation) -> (() -> Expectation)
 stringEscapeNewline expectFn _ =
-    expectFn (makeKernelModule "testValue" (strExpr "line1\nline2"))
+    expectFn (makeKernelModule "testValue" (strExpr "line1\\nline2"))
 
 
-{-| Builds a module whose `testValue` is a string literal holding a real tab
-character, and gives it to `expectFn`.
+{-| Builds a module whose `testValue` is the string literal `"col1\tcol2"`,
+holding the escape `\t`, and gives it to `expectFn`.
 -}
 stringEscapeTab : (Src.Module -> Expectation) -> (() -> Expectation)
 stringEscapeTab expectFn _ =
-    expectFn (makeKernelModule "testValue" (strExpr "col1\tcol2"))
+    expectFn (makeKernelModule "testValue" (strExpr "col1\\tcol2"))
 
 
-{-| Builds a module whose `testValue` is a string literal holding two single
-backslashes, `path\to\file`, and gives it to `expectFn`.
+{-| Builds a module whose `testValue` is the string literal
+`"path\\to\\file"`, holding two escaped backslashes, and gives it to
+`expectFn`.
 -}
 stringEscapeBackslash : (Src.Module -> Expectation) -> (() -> Expectation)
 stringEscapeBackslash expectFn _ =
-    expectFn (makeKernelModule "testValue" (strExpr "path\\to\\file"))
+    expectFn (makeKernelModule "testValue" (strExpr "path\\\\to\\\\file"))
 
 
-{-| Builds a module whose `testValue` is a string literal holding two bare `"`
-characters, and gives it to `expectFn`.
+{-| Builds a module whose `testValue` is the string literal
+`"she said \"hello\""`, holding two escaped `"` characters, and gives it to
+`expectFn`.
 -}
 stringEscapeQuote : (Src.Module -> Expectation) -> (() -> Expectation)
 stringEscapeQuote expectFn _ =
-    expectFn (makeKernelModule "testValue" (strExpr "she said \"hello\""))
+    expectFn (makeKernelModule "testValue" (strExpr "she said \\\"hello\\\""))
 
 
 {-| Builds a module whose `testValue` is a string literal holding U+1F600, a

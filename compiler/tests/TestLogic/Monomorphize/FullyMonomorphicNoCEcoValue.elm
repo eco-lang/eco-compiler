@@ -1,7 +1,8 @@
 module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyMonomorphicNoCEcoValue, Violation)
 
-{-| Checks a monomorphized test program for numeric type variables left
-unresolved in specializations whose key types are concrete.
+{-| Checks that a specialization whose key type is concrete has a concrete
+signature: no type variable, of either constraint, in the types that the key
+determines.
 
 A _specialization_ is one copy of a definition made for one type, its _key
 type_, and the graph's specialization registry records each by its SpecId. A
@@ -10,28 +11,25 @@ either constraint. Only those specializations are checked; one whose key still
 holds a variable is skipped.
 
 `expectFullyMonomorphicNoCEcoValue` compiles a program with
-`TestLogic.TestPipeline.runToMono` and searches each such specialization for an
-`MVar _ CNumber`, a variable known to be a number but not yet resolved to `Int`
-or `Float`. Despite the module's name, an `MVar _ CEcoValue`, a variable whose
-values are always boxed, is accepted wherever it appears.
+`TestLogic.TestPipeline.runToMono` and, in each such specialization, searches
+its _signature_ for an `MVar _ CEcoValue` (a variable whose values are always
+boxed) or an `MVar _ CNumber` (a variable known only to be a number): the
+node's own type, the parameter types of a `MonoTailFunc`, and, for a
+`MonoDefine` whose body is a closure, that closure's type and parameter types.
+A constructor or enum node has its own type checked. A variable in any of
+these means the specialization's key was computed wrongly or its substitution
+was not applied to the node, which invariant MONO\_024 rules out. Each type is
+searched to any depth.
 
-Most of the module is one walk over a node and its body. It looks at the node's
-type and parameter types, and in the body at the type of each expression,
-closure and tail-recursive local parameter types, and expressions inlined into
-a case's decision tree. Each type is searched to any depth. `MonoExtern` nodes
-(what a kernel definition, among others, becomes), effect-manager leaf nodes,
-kernel variables and accessor values are exempt, and constructor and enum nodes
-have only their own type checked.
-
-Among what is not checked: the types in destructuring paths and decision-tree
-paths, and the ABI types recorded on closures and calls.
-
-On the graph `runToMono` returns, this check finds nothing. The substitution
-engine's `Compiler.Monomorphize.Prune.pruneUnreachableSpecs` turns every
-`MVar _ CNumber` in each kept node into `MInt`, at every position this walk
-visits, and crashes if one survives. So the expectation passes whenever
-compilation succeeds, and a failed resolution shows as a crash rather than a
-test failure.
+Among what is not checked: the types inside a body. MONO\_024 as written asks
+for no `CEcoValue` variable anywhere in the node, but correct output has them
+there: an empty list or a `let`-bound function whose type is never constrained
+(`let add x y = x`, whose `y` stays a variable), and the result of a comparison
+operator in the programs that hit the known TYPE\_007/POST\_010 typing gap. A
+`CNumber` variable cannot survive anywhere, because
+`Compiler.Monomorphize.Prune.pruneUnreachableSpecs` turns each one into `MInt`
+and crashes if one is left. `MonoExtern` nodes and effect-manager leaves are
+not checked.
 
 @docs expectFullyMonomorphicNoCEcoValue, Violation
 
@@ -46,14 +44,12 @@ import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| One type found holding an `MVar _ CNumber`.
+{-| One signature type found holding a type variable.
 
-`context` names the specialization by its SpecId and key type, then any
-enclosing closure, tail-recursive local definition or inlined decision-tree
-leaf, then the position the type was found in. `message` gives the position,
-the whole type and the ids of the offending variables, under a heading that
-speaks of a `CEcoValue` variable although the variables listed are `CNumber`
-ones.
+`context` names the specialization by its SpecId and key type, then `closure`
+for a type of the node's closure, then the position the type was found in.
+`message` gives the position, the whole type and the ids of the variables, a
+`CNumber` one marked `(number)`.
 
 -}
 type alias Violation =
@@ -63,11 +59,10 @@ type alias Violation =
 
 
 {-| Compiles `srcModule` with `TestLogic.TestPipeline.runToMono` and passes
-when no specialization with a fully monomorphic key type holds an
-`MVar _ CNumber` in any position checked; an `MVar _ CEcoValue` is accepted.
-If `runToMono` returns an error, it fails with that error, and otherwise with a
-count and list of the violations. As the module docstring explains, on a
-graph from `runToMono` it finds no violation.
+when no specialization with a fully monomorphic key type holds a type variable
+in its signature, as the module docstring describes. If `runToMono` returns an
+error, it fails with that error, and otherwise with a count and list of the
+violations.
 -}
 expectFullyMonomorphicNoCEcoValue : Src.Module -> Expectation
 expectFullyMonomorphicNoCEcoValue srcModule =
@@ -110,7 +105,7 @@ checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
                                     acc
 
                                 Just node ->
-                                    acc ++ checkNodeAllTypes specId keyMonoType node
+                                    acc ++ checkNodeSignature specId keyMonoType node
             )
             []
 
@@ -134,17 +129,19 @@ isFullyMonomorphic monoType =
 -- ============================================================================
 
 
-{-| Returns the violations in `node`, the node of specialization `specId` with key
-type `keyType`, each with a context naming both.
+{-| Returns the violations in the signature of `node`, the node of
+specialization `specId` with key type `keyType`, each with a context naming
+both.
 
 A `MonoExtern` node (what a kernel definition, among others, becomes) or an
-effect-manager leaf is not checked. A constructor or enum node has only its own
-type checked. Any other node has its type, its parameter types if it is a
-tail-recursive function, and its body checked.
+effect-manager leaf is not checked. A constructor or enum node has its own type
+checked. Any other node has its type checked, with the parameter types of a
+`MonoTailFunc`, and the type and parameter types of the closure a `MonoDefine`
+is, when it is one.
 
 -}
-checkNodeAllTypes : Int -> Mono.MonoType -> Mono.MonoNode -> List Violation
-checkNodeAllTypes specId keyType node =
+checkNodeSignature : Int -> Mono.MonoType -> Mono.MonoNode -> List Violation
+checkNodeSignature specId keyType node =
     let
         ctx =
             "SpecId " ++ String.fromInt specId ++ " (key: " ++ monoTypeToString keyType ++ ")"
@@ -152,20 +149,24 @@ checkNodeAllTypes specId keyType node =
     case node of
         Mono.MonoDefine expr monoType ->
             checkType ctx "node type" monoType
-                ++ checkExprAllTypes ctx expr
+                ++ (case expr of
+                        Mono.MonoClosure info _ closureType ->
+                            checkType (ctx ++ " closure") "closure type" closureType
+                                ++ checkParamTypes (ctx ++ " closure") info.params
 
-        Mono.MonoTailFunc params expr monoType ->
+                        _ ->
+                            []
+                   )
+
+        Mono.MonoTailFunc params _ monoType ->
             checkType ctx "node type" monoType
                 ++ checkParamTypes ctx params
-                ++ checkExprAllTypes ctx expr
 
-        Mono.MonoPortIncoming expr monoType ->
+        Mono.MonoPortIncoming _ monoType ->
             checkType ctx "node type" monoType
-                ++ checkExprAllTypes ctx expr
 
-        Mono.MonoPortOutgoing expr monoType ->
+        Mono.MonoPortOutgoing _ monoType ->
             checkType ctx "node type" monoType
-                ++ checkExprAllTypes ctx expr
 
         Mono.MonoExtern _ ->
             []
@@ -182,175 +183,34 @@ checkNodeAllTypes specId keyType node =
 
 
 -- ============================================================================
--- EXPRESSION-LEVEL CHECK
--- ============================================================================
-
-
-{-| Returns the violations in `expr` and all of its subexpressions. Their context
-is `ctx`, followed by the word `closure` inside a closure, by `taildef=` and
-the name inside a tail-recursive local definition, and by `inline-leaf` inside
-an expression inlined into a case's decision tree.
-
-It checks each expression's own type, closure and tail-recursive parameter
-types, and expressions inlined into a case's decision tree. A kernel variable,
-an accessor value and `()` contribute nothing, and destructuring paths are not
-looked into. A let-bound value's type and a case branch's type are checked both
-as such and as the expression's own type, so one variable can be reported twice.
-
--}
-checkExprAllTypes : String -> Mono.MonoExpr -> List Violation
-checkExprAllTypes ctx expr =
-    case expr of
-        Mono.MonoClosure info body closureType ->
-            let
-                closureCtx =
-                    ctx ++ " closure"
-            in
-            checkType closureCtx "closure type" closureType
-                ++ checkParamTypes closureCtx info.params
-                ++ List.concatMap (\( _, e, _ ) -> checkExprAllTypes closureCtx e) info.captures
-                ++ checkExprAllTypes closureCtx body
-
-        Mono.MonoLet def body letType ->
-            let
-                defViolations =
-                    case def of
-                        Mono.MonoDef _ bound ->
-                            checkType ctx "let-bound type" (Mono.typeOf bound)
-                                ++ checkExprAllTypes ctx bound
-
-                        Mono.MonoTailDef name params bound ->
-                            checkParamTypes (ctx ++ " taildef=" ++ name) params
-                                ++ checkExprAllTypes (ctx ++ " taildef=" ++ name) bound
-            in
-            checkType ctx "let type" letType
-                ++ defViolations
-                ++ checkExprAllTypes ctx body
-
-        Mono.MonoCase _ _ decider jumps caseType ->
-            checkType ctx "case type" caseType
-                ++ checkDeciderAllTypes ctx decider
-                ++ List.concatMap
-                    (\( _, branchExpr ) ->
-                        checkType ctx "branch type" (Mono.typeOf branchExpr)
-                            ++ checkExprAllTypes ctx branchExpr
-                    )
-                    jumps
-
-        Mono.MonoIf branches final ifType ->
-            checkType ctx "if type" ifType
-                ++ List.concatMap (\( c, t ) -> checkExprAllTypes ctx c ++ checkExprAllTypes ctx t) branches
-                ++ checkExprAllTypes ctx final
-
-        Mono.MonoCall _ fn args callType _ ->
-            checkType ctx "call type" callType
-                ++ checkExprAllTypes ctx fn
-                ++ List.concatMap (checkExprAllTypes ctx) args
-
-        Mono.MonoTailCall _ namedArgs tailCallType ->
-            checkType ctx "tailcall type" tailCallType
-                ++ List.concatMap (\( _, a ) -> checkExprAllTypes ctx a) namedArgs
-
-        Mono.MonoDestruct _ inner destructType ->
-            checkType ctx "destruct type" destructType
-                ++ checkExprAllTypes ctx inner
-
-        Mono.MonoList _ items listType ->
-            checkType ctx "list type" listType
-                ++ List.concatMap (checkExprAllTypes ctx) items
-
-        Mono.MonoRecordCreate fields recType ->
-            checkType ctx "record-create type" recType
-                ++ List.concatMap (\( _, e ) -> checkExprAllTypes ctx e) fields
-
-        Mono.MonoRecordAccess inner _ accessType ->
-            checkType ctx "record-access type" accessType
-                ++ checkExprAllTypes ctx inner
-
-        Mono.MonoRecordUpdate inner updates updateType ->
-            checkType ctx "record-update type" updateType
-                ++ checkExprAllTypes ctx inner
-                ++ List.concatMap (\( _, e ) -> checkExprAllTypes ctx e) updates
-
-        Mono.MonoTupleCreate _ items tupleType ->
-            checkType ctx "tuple-create type" tupleType
-                ++ List.concatMap (checkExprAllTypes ctx) items
-
-        Mono.MonoLiteral _ litType ->
-            checkType ctx "literal type" litType
-
-        Mono.MonoVarLocal _ varType ->
-            checkType ctx "local-var type" varType
-
-        Mono.MonoVarGlobal _ _ varType ->
-            checkType ctx "global-var type" varType
-
-        Mono.MonoVarKernel _ _ _ _ _ ->
-            -- Exempt, unlike every other variable reference.
-            []
-
-        Mono.MonoUnit ->
-            []
-
-        Mono.MonoAccessorValue _ _ _ ->
-            []
-
-
-{-| Returns the violations in the expressions inlined at the leaves of `decider`,
-with the word `inline-leaf` added to `ctx`. A jump leaf contributes nothing, since
-its branch is in the case's branch list, and the paths the tree tests are not
-checked.
--}
-checkDeciderAllTypes : String -> Mono.Decider Mono.MonoChoice -> List Violation
-checkDeciderAllTypes ctx decider =
-    case decider of
-        Mono.Leaf choice ->
-            case choice of
-                Mono.Jump _ ->
-                    []
-
-                Mono.Inline expr ->
-                    checkExprAllTypes (ctx ++ " inline-leaf") expr
-
-        Mono.Chain _ yes no ->
-            checkDeciderAllTypes ctx yes
-                ++ checkDeciderAllTypes ctx no
-
-        Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> checkDeciderAllTypes ctx d) edges
-                ++ checkDeciderAllTypes ctx fallback
-
-
-
--- ============================================================================
 -- TYPE CHECK HELPERS
 -- ============================================================================
 
 
-{-| Returns one violation if `monoType` holds an `MVar _ CNumber` at any depth,
-and none otherwise. Its context is `ctx` followed by `position`.
+{-| Returns one violation if `monoType` holds an `MVar` of either constraint at
+any depth, and none otherwise. Its context is `ctx` followed by `position`.
 -}
 checkType : String -> String -> Mono.MonoType -> List Violation
 checkType ctx position monoType =
     let
-        cEcoVars =
-            collectCEcoValueVars monoType
+        vars =
+            collectTypeVars monoType
     in
-    if List.isEmpty cEcoVars then
+    if List.isEmpty vars then
         []
 
     else
         [ { context = ctx ++ " " ++ position
           , message =
-                "MONO_024 violation: CEcoValue MVar in fully monomorphic specialization\n"
+                "MONO_024 violation: type variable in the signature of a fully monomorphic specialization\n"
                     ++ "  position: "
                     ++ position
                     ++ "\n"
                     ++ "  type: "
                     ++ monoTypeToString monoType
                     ++ "\n"
-                    ++ "  CEcoValue vars: "
-                    ++ String.join ", " cEcoVars
+                    ++ "  type variables: "
+                    ++ String.join ", " vars
           }
         ]
 
@@ -367,39 +227,34 @@ checkParamTypes ctx params =
         params
 
 
-{-| Returns the ids of the `MVar _ CNumber` variables in `monoType`, searched
-through lists, functions, tuples, records and custom type arguments, one entry
-per occurrence.
-
-Despite the name, an `MVar _ CEcoValue` is not collected: it stands for a boxed
-value and may remain in a type. A `CNumber` variable is one that the closing in
-`Compiler.Monomorphize.Prune.pruneUnreachableSpecs` should have made `MInt`.
-
+{-| Returns the ids of the type variables in `monoType`, searched through lists,
+functions, tuples, records and custom type arguments, one entry per
+occurrence. A `CNumber` variable's id is followed by `(number)`.
 -}
-collectCEcoValueVars : Mono.MonoType -> List String
-collectCEcoValueVars monoType =
+collectTypeVars : Mono.MonoType -> List String
+collectTypeVars monoType =
     case monoType of
-        Mono.MVar _ Mono.CEcoValue ->
-            []
-
-        Mono.MVar mvarId Mono.CNumber ->
+        Mono.MVar mvarId Mono.CEcoValue ->
             [ String.fromInt (Id.toComparable mvarId) ]
 
+        Mono.MVar mvarId Mono.CNumber ->
+            [ String.fromInt (Id.toComparable mvarId) ++ " (number)" ]
+
         Mono.MList _ inner ->
-            collectCEcoValueVars inner
+            collectTypeVars inner
 
         Mono.MFunction _ _ args result ->
-            List.concatMap collectCEcoValueVars args
-                ++ collectCEcoValueVars result
+            List.concatMap collectTypeVars args
+                ++ collectTypeVars result
 
         Mono.MTuple _ elems ->
-            List.concatMap collectCEcoValueVars elems
+            List.concatMap collectTypeVars elems
 
         Mono.MRecord _ fields ->
-            Dict.foldl (\_ fieldType acc -> acc ++ collectCEcoValueVars fieldType) [] fields
+            Dict.foldl (\_ fieldType acc -> acc ++ collectTypeVars fieldType) [] fields
 
         Mono.MCustom _ _ _ args ->
-            List.concatMap collectCEcoValueVars args
+            List.concatMap collectTypeVars args
 
         _ ->
             []

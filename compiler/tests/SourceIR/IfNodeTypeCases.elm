@@ -96,7 +96,7 @@ testCases expectFn =
     [ { label = "If returning List a in polymorphic fn", run = ifReturningListA expectFn }
     , { label = "If returning Maybe a with constructors", run = ifReturningMaybeA expectFn }
     , { label = "Nested if with parameterized type", run = nestedIfParameterized expectFn }
-    , { label = "If in let with structured annotation", run = ifInLetStructuredAnnotation expectFn }
+    , { label = "If in unannotated let binding", run = ifInUnannotatedLet expectFn }
     , { label = "If returning function type", run = ifReturningFunctionType expectFn }
     , { label = "Polymorphic if body specialized at Int", run = polyIfBodySpecialized expectFn }
     ]
@@ -328,8 +328,8 @@ type annotation:
         pick True
 
 -}
-ifInLetStructuredAnnotation : (Src.Module -> Expectation) -> (() -> Expectation)
-ifInLetStructuredAnnotation expectFn _ =
+ifInUnannotatedLet : (Src.Module -> Expectation) -> (() -> Expectation)
+ifInUnannotatedLet expectFn _ =
     let
         pickDef : TypedDef
         pickDef =

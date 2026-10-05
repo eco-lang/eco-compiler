@@ -30,8 +30,8 @@ counters from the report's `layoutQual` line: `shared`, mints whose id was
 first minted under a different spec; `fallback`, mints keyed by a `SpecId`;
 and `tieBypass`, mints where the id carried in by the spec's demand equals
 the id the mint interns, so that nothing is recorded as tied. The tests
-read `shared` only as at least one, so it does not show which lambda's id
-was shared.
+read `shared` only as at least one; since folded root-lambda mints also bump
+it, they also read the closure member ids in each spec's body directly.
 
 The _spiral_ fixture is `loop n f`, which calls itself, outside tail
 position, with a new lambda wrapping `f`, and `testValue`, which calls
@@ -54,31 +54,37 @@ The tests establish:
     different member sets, and for a callback slot carrying top and one
     carrying a set variable, but different keys when the callback's argument
     type differs (`Int` against `Float`).
-  - One widened key, of an arrow type, does not start with a digit, so it
-    cannot equal a `SpecId` written in the same position.
+  - No widened key, for a type of each `MonoType` constructor and each arrow
+    annotation, starts with a digit, so none can equal a `SpecId` written in
+    the same position.
   - `layoutQualKey` gives `l|42|A(I->I)` and `False` when spec 7's widened
-    key is recorded, and `l|42|8` and `True` for spec 8, which has none. A
-    second test makes the same call as the first, for instance tag 0.
+    key is recorded (instance tag 0, which adds nothing), and `l|42|8` and
+    `True` for spec 8, which has none.
   - With instance tag 513 the key ends in `|#513`, and tags 0, 1, 2 and 513
     give four different keys.
-  - `Engine.mixTag (mixTag 0 0) 1` differs from `mixTag (mixTag 0 1) 1`:
-    ordinal 1 under these two enclosing tags gives two tags. `mixTag 0 0`
+  - `Engine.mixTag 0 1` differs from `mixTag (mixTag 0 1) 1`: ordinal 1
+    under the tags the engine gives enclosing instances 0 and 1 (ordinal 0
+    keeps the enclosing tag, 0 at top level) gives two tags. `mixTag 0 0`
     is not 0, the tag that means no instance.
   - Interning one key twice with `Engine.internMemberKey` gives the same id
     and leaves the next free id unchanged.
   - The spiral fixture finishes with no blocked members, at most three specs
-    of `loop`, `tieBypass` and `shared` at least one, and `fallback` zero.
+    of `loop`, `tieBypass` and `shared` at least one, `fallback` zero, and
+    every `loop` spec carrying the same two closure member ids (its root
+    lambda and the inner lambda).
   - The split fixture gives two specs of `mid` and one of `applyHof`, with
-    `shared` at least one and `fallback` zero.
+    `shared` at least one, `fallback` zero, and both `mid` specs carrying
+    the same two closure member ids.
   - The split fixture with a budget of one spec per global
     (`maxSpecsPerGlobal = 1`), past which a global's new specs are keyed by
-    their widened type, gives `shared` at least one, `fallback` zero and two
-    specs of `applyHof`.
+    their widened type, gives `shared` at least one, `fallback` zero, both
+    `mid` specs carrying the same two closure member ids, and two specs of
+    `applyHof`.
 
 Among what is not tested: a tie to a different id, which records the member
 as blocked; the folding of a definition's own root lambda into its global's
 `g|` key; instance tags produced by translating a real let-bound function;
-which ids the split fixture's lambdas actually get; and the generated code.
+the values of the ids the fixtures' lambdas get; and the generated code.
 
 -}
 
@@ -99,8 +105,11 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.Data.Id as Id
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Dict
 import Expect
 import Test exposing (Test)
@@ -139,6 +148,31 @@ widenedKey t =
     Mono.toComparableMonoType (Mono.widenSets t)
 
 
+{-| One type of every `MonoType` constructor, both `MVar` constraints and every
+arrow annotation, the shapes whose widened keys the leading-character test
+reads.
+-}
+everyTypeShape : List Mono.MonoType
+everyTypeShape =
+    [ Mono.MInt
+    , Mono.MFloat
+    , Mono.MBool
+    , Mono.MChar
+    , Mono.MString
+    , Mono.MUnit
+    , Mono.MVar Id.first Mono.CEcoValue
+    , Mono.MVar Id.first Mono.CNumber
+    , Mono.mList Mono.MInt
+    , Mono.mTuple [ Mono.MInt, Mono.MString ]
+    , Mono.mRecord (Dict.fromList [ ( "a", Mono.MInt ) ])
+    , Mono.mCustom ModuleName.maybe "Maybe" [ Mono.MInt ]
+    , arrowWith Mono.topLegacy
+    , arrowWith (Mono.LVar 0)
+    , arrowWith (Mono.LSet [ 101 ])
+    , arrowWith (Mono.LPartial [ 101 ])
+    ]
+
+
 {-| The tests of widened keys, `Engine.layoutQualKey`, `Engine.mixTag` and
 `Engine.internMemberKey`, which run no pipeline.
 -}
@@ -167,10 +201,6 @@ purePins =
         \() ->
             Expect.equal ( "l|42|8", True )
                 (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 0 8)
-    , Test.test "layoutQualKey: instance tag 0 reproduces the pre-instanceQual string byte for byte" <|
-        \() ->
-            Expect.equal ( "l|42|A(I->I)", False )
-                (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 0 7)
     , Test.test "layoutQualKey: a non-zero instance tag appends an unambiguous #-marked component" <|
         \() ->
             Expect.equal ( "l|42|A(I->I)|#513", False )
@@ -197,18 +227,28 @@ purePins =
                 )
     , Test.test "mixTag: composition, not overwrite — the same ordinal under different outer tags differs" <|
         \() ->
-            Expect.notEqual (Engine.mixTag (Engine.mixTag 0 0) 1) (Engine.mixTag (Engine.mixTag 0 1) 1)
+            -- Ordinal 0 keeps the enclosing tag, so the engine's outer tags
+            -- for instances 0 and 1 are 0 and `mixTag 0 1`.
+            Expect.notEqual (Engine.mixTag 0 1) (Engine.mixTag (Engine.mixTag 0 1) 1)
     , Test.test "mixTag: a leading ordinal 0 is not absorbed into the no-instance sentinel" <|
         \() ->
             Expect.notEqual 0 (Engine.mixTag 0 0)
     , Test.test "fallback-vs-widened collisions impossible: widened keys never start with a digit" <|
         \() ->
-            case String.uncons (widenedKey (arrowWith Mono.topLegacy)) of
-                Just ( c, _ ) ->
-                    Expect.equal False (Char.isDigit c)
+            let
+                badKeys =
+                    List.filter
+                        (\k ->
+                            case String.uncons k of
+                                Just ( c, _ ) ->
+                                    Char.isDigit c
 
-                Nothing ->
-                    Expect.fail "empty widened key"
+                                Nothing ->
+                                    True
+                        )
+                        (List.map widenedKey everyTypeShape)
+            in
+            Expect.equal [] badKeys
     , Test.test "internMemberKey: re-mint of one key is idempotent (same id, no growth)" <|
         \() ->
             let
@@ -222,6 +262,81 @@ purePins =
     ]
 
 
+{-| Returns, for each spec of the global named `name` that has a node, the
+member ids carried by the closures in its body, nested closures included, in
+no particular order. A closure with no member id is left out.
+-}
+closureMembersPerSpec : String -> { r | registry : Mono.SpecializationRegistry, nodes : Array.Array (Maybe Mono.MonoNode) } -> List (List Int)
+closureMembersPerSpec name g =
+    List.filterMap
+        (\( specId, entry ) ->
+            case ( entry, Array.get specId g.nodes ) of
+                ( Just ( Mono.Global _ n, _ ), Just (Just (Mono.MonoDefine body _)) ) ->
+                    if n == name then
+                        Just (closureMembersIn body)
+
+                    else
+                        Nothing
+
+                ( Just ( Mono.Global _ n, _ ), Just (Just (Mono.MonoTailFunc _ body _)) ) ->
+                    if n == name then
+                        Just (closureMembersIn body)
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+        )
+        (Array.toIndexedList g.registry.reverseMapping)
+
+
+{-| Returns the member id of every closure in `expr` that carries one.
+-}
+closureMembersIn : Mono.MonoExpr -> List Int
+closureMembersIn expr =
+    MonoTraverse.foldExpr
+        (\e acc ->
+            case e of
+                Mono.MonoClosure info _ _ ->
+                    case info.lssMember of
+                        Just m ->
+                            m :: acc
+
+                        Nothing ->
+                            acc
+
+                _ ->
+                    acc
+        )
+        []
+        expr
+
+
+{-| Passes when there are `count` lists in `perSpec`, each holding two
+distinct member ids, and all of them are equal as sets. Each spec of the
+fixtures here holds two closures with member ids, the definition's own root
+lambda and the inner lambda, so this says that every spec minted both under
+the same ids.
+-}
+expectSameMembers : Int -> List (List Int) -> Expect.Expectation
+expectSameMembers count perSpec =
+    let
+        sorted =
+            List.map List.sort perSpec
+    in
+    case sorted of
+        [ a, b ] :: rest ->
+            if a /= b && List.length sorted == count && List.all (\ms -> ms == [ a, b ]) rest then
+                Expect.pass
+
+            else
+                Expect.fail ("expected " ++ String.fromInt count ++ " specs carrying the same two closure members, got " ++ Debug.toString perSpec)
+
+        _ ->
+            Expect.fail ("expected " ++ String.fromInt count ++ " specs carrying two closure members each, got " ++ Debug.toString perSpec)
+
+
 
 -- ====== 2. SPIRAL PINS (MuTieTest fixture) ======
 
@@ -233,6 +348,7 @@ text of the lambda-set report, empty when the solver returned none.
 type alias Facts =
     { blockedCount : Int
     , loopSpecs : Int
+    , loopInner : List (List Int)
     , report : String
     }
 
@@ -262,13 +378,15 @@ runSpiral =
             )
 
 
-{-| Reads the blocked-member count and the number of `loop` specs from
-a monomorphized graph, leaving `report` empty.
+{-| Reads the blocked-member count, the number of `loop` specs and the
+closure member ids of each `loop` spec from a monomorphized graph, leaving
+`report` empty.
 -}
 factsOf : Mono.MonoGraph -> Facts
 factsOf (Mono.MonoGraph g) =
     { blockedCount = Dict.size g.lssBlockedMembers
     , loopSpecs = specCount "loop" g
+    , loopInner = closureMembersPerSpec "loop" g
     , report = ""
     }
 
@@ -358,6 +476,10 @@ spiralPins =
                             else
                                 Expect.fail ("expected shared >= 1 in: " ++ x.report)
                         , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
+
+                        -- What `shared` shows only in part: every spec of
+                        -- `loop` minted its inner lambda under one id.
+                        , \x -> expectSameMembers x.loopSpecs x.loopInner
                         ]
                         f
     ]
@@ -367,11 +489,23 @@ spiralPins =
 -- ====== 3. SPLIT-COLLAPSE PINS ======
 
 
+{-| What the split tests read from one run of the split fixture: the spec
+counts of `mid` and `applyHof`, the closure member ids of each `mid` spec,
+and the report text, empty when the solver returned none.
+-}
+type alias SplitFacts =
+    { midSpecs : Int
+    , hofSpecs : Int
+    , midInner : List (List Int)
+    , report : String
+    }
+
+
 {-| The spec counts of `mid` and `applyHof` and the report text for the
 split fixture under the default spec budget, which is unlimited, or the
 pipeline's error.
 -}
-runSplit : Result String { midSpecs : Int, hofSpecs : Int, report : String }
+runSplit : Result String SplitFacts
 runSplit =
     runSplitWithBudget Config.defaultLss.maxSpecsPerGlobal
 
@@ -386,7 +520,7 @@ created under the budget, so with a budget of 1 the two specs of `mid` still
 mint the inner lambda under one key.
 
 -}
-runSplitWithBudget : Int -> Result String { midSpecs : Int, hofSpecs : Int, report : String }
+runSplitWithBudget : Int -> Result String SplitFacts
 runSplitWithBudget budget =
     let
         defaults =
@@ -400,6 +534,7 @@ runSplitWithBudget budget =
             (\( Mono.MonoGraph g, maybeReport ) ->
                 { midSpecs = specCount "mid" g
                 , hofSpecs = specCount "applyHof" g
+                , midInner = closureMembersPerSpec "mid" g
                 , report = Maybe.withDefault "" maybeReport
                 }
             )
@@ -427,6 +562,10 @@ splitPins =
                             else
                                 Expect.fail ("expected shared >= 1 in: " ++ x.report)
                         , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
+
+                        -- `shared` is also bumped by root-lambda folds, so
+                        -- read the inner lambda's ids directly.
+                        , \x -> expectSameMembers 2 x.midInner
                         ]
                         f
     , Test.test "budget twins share: annotation-created + budget-widened specs of one global mint ONE id" <|
@@ -444,6 +583,7 @@ splitPins =
                             else
                                 Expect.fail ("expected shared >= 1 in: " ++ x.report)
                         , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
+                        , \x -> expectSameMembers 2 x.midInner
 
                         -- Two, not one: past its budget of one spec,
                         -- `applyHof`'s next demand is keyed by its widened

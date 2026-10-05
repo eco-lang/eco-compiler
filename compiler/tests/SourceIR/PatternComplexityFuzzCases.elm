@@ -19,22 +19,22 @@ in the overlapping-integer test the subject is a random `Int` expression from
 itself be a `let`, an `if`, a negation or a one-branch `case`.
 
 Below, programs are sketched as Elm source, with `v1`, `v2` and `v3` for the
-random literals, and branches listed in order. Not every program is one Elm
-would accept. Several have a branch after others that already match everything,
-which the pattern-match checker in `Compiler.Nitpick.PatternMatches` reports as
-redundant. `Fuzz.int` can give negative literals, which the parser builds as a
+random literals, and branches listed in order. In each, a more specific branch
+comes before a more general one that overlaps it, and no branch is redundant
+(none is matched only by subjects an earlier branch already takes), so the
+pattern-match checker in `Compiler.Nitpick.PatternMatches` would accept every
+`case`. `Fuzz.int` can give negative literals, which the parser builds as a
 negation instead, and one pattern is a negative `Int`, which the parser never
 builds.
 
   - "Nested tuple patterns": subject `((v1, v2), (v1, v2))`, branches
-    `((a, b), (c, d))`, `((0, x), (y, _))` and `_`.
+    `((0, x), (y, _))` and `((a, b), (c, d))`.
   - "Nested list patterns": subject `[[v1], [v2]]`, branches
-    `(h :: t) :: rest`, `[x] :: ys`, `[]` and `_`.
+    `[x] :: ys`, `(h :: t) :: rest`, `[]` and `_`.
   - "Mixed nested patterns": subject `([v1, v2], (v2, v3))`, branches
-    `(x :: xs, (a, b))`, `([], (_, _))`, `([y], t)` and `_`.
+    `([y], t)`, `(x :: xs, (a, b))` and `([], (_, _))`.
   - "As-patterns with nested inner": subject `(v1, v2)`, branches
-    `(a, b) as pair`, `(0, x) as zeroPair` and `_ as whole`, each returning
-    its alias.
+    `(0, x) as zeroPair` and `(a, b) as pair`, each returning its alias.
   - "Overlapping int patterns": a random `Int` subject, branches `0`, `1`,
     `2`, `-1` and `n`.
   - "Overlapping tuple patterns": subject `(v1, v2)`, branches `(0, _)`,
@@ -102,11 +102,10 @@ nestedPatternTests expectFn condStr =
 
 
 {-| Produces a fuzzer for a `case` of `((v1, v2), (v1, v2))`, with `v1` and
-`v2` random integer literals, whose branches are `((a, b), (c, d))`,
-`((0, x), (y, _))` and `_`, returning 1, 2 and 0. The scope is ignored.
+`v2` random integer literals, whose branches are `((0, x), (y, _))` and
+`((a, b), (c, d))`, returning 2 and 1.
 
-The first pattern matches every subject, so the other two branches are
-redundant.
+The second pattern matches every subject, including those the first takes.
 
 -}
 nestedTuplePatternCaseFuzzer : Fuzzer Src.Expr
@@ -132,22 +131,19 @@ nestedTuplePatternCaseFuzzer =
                         (B.pTuple (B.pVar "y") B.pAnything)
                     , B.intExpr 2
                     )
-
-                catchAll =
-                    ( B.pAnything, B.intExpr 0 )
             in
-            B.caseExpr subject [ branch1, branch2, catchAll ]
+            B.caseExpr subject [ branch2, branch1 ]
         )
         Fuzz.int
         Fuzz.int
 
 
 {-| Produces a fuzzer for a `case` of `[[v1], [v2]]`, with `v1` and `v2`
-random integer literals, whose branches are `(h :: t) :: rest`, `[x] :: ys`,
-`[]` and `_`, returning 1, 2, 3 and 0. The scope is ignored.
+random integer literals, whose branches are `[x] :: ys`, `(h :: t) :: rest`,
+`[]` and `_`, returning 2, 1, 3 and 0.
 
-The second pattern matches only lists the first already matches, so its branch
-is redundant.
+The second pattern matches every list the first takes, and `_` is left with
+the lists whose first element is `[]`.
 
 -}
 nestedListPatternCaseFuzzer : Fuzzer Src.Expr
@@ -181,19 +177,18 @@ nestedListPatternCaseFuzzer =
                 catchAll =
                     ( B.pAnything, B.intExpr 0 )
             in
-            B.caseExpr subject [ branch1, branch2, branch3, catchAll ]
+            B.caseExpr subject [ branch2, branch1, branch3, catchAll ]
         )
         Fuzz.int
         Fuzz.int
 
 
 {-| Produces a fuzzer for a `case` of `([v1, v2], (v2, v3))`, with `v1`, `v2`
-and `v3` random integer literals, whose branches are `(x :: xs, (a, b))`,
-`([], (_, _))`, `([y], t)` and `_`, returning 1, 2, 3 and 0. The scope is
-ignored.
+and `v3` random integer literals, whose branches are `([y], t)`,
+`(x :: xs, (a, b))` and `([], (_, _))`, returning 3, 1 and 2.
 
-The first two patterns between them match every subject, so the last two
-branches are redundant.
+The second pattern matches every subject the first takes, and the last two
+between them match every subject.
 
 -}
 mixedNestedPatternCaseFuzzer : Fuzzer Src.Expr
@@ -226,11 +221,8 @@ mixedNestedPatternCaseFuzzer =
                         (B.pVar "t")
                     , B.intExpr 3
                     )
-
-                catchAll =
-                    ( B.pAnything, B.intExpr 0 )
             in
-            B.caseExpr subject [ branch1, branch2, branch3, catchAll ]
+            B.caseExpr subject [ branch3, branch1, branch2 ]
         )
         Fuzz.int
         Fuzz.int
@@ -256,11 +248,10 @@ asPatternTests expectFn condStr =
 
 
 {-| Produces a fuzzer for a `case` of `(v1, v2)`, with `v1` and `v2` random
-integer literals, whose branches are `(a, b) as pair`, `(0, x) as zeroPair` and
-`_ as whole`, each returning the value its alias names. The scope is ignored.
+integer literals, whose branches are `(0, x) as zeroPair` and
+`(a, b) as pair`, each returning the value its alias names.
 
-The first pattern matches every subject, so the other two branches are
-redundant.
+The second pattern matches every subject, including those the first takes.
 
 -}
 asPatternCaseFuzzer : Fuzzer Src.Expr
@@ -284,13 +275,8 @@ asPatternCaseFuzzer =
                         "zeroPair"
                     , B.varExpr "zeroPair"
                     )
-
-                catchAll =
-                    ( B.pAlias B.pAnything "whole"
-                    , B.varExpr "whole"
-                    )
             in
-            B.caseExpr subject [ branch1, branch2, catchAll ]
+            B.caseExpr subject [ branch2, branch1 ]
         )
         Fuzz.int
         Fuzz.int
@@ -352,7 +338,7 @@ overlappingIntPatternCaseFuzzer scope =
 
 {-| Produces a fuzzer for a `case` of `(v1, v2)`, with `v1` and `v2` random
 `Int` literals, whose branches are `(0, _)`, `(_, 0)`, `(1, 1)` and `(x, y)`,
-returning 1, 2, 3 and `x + y`. The scope is ignored.
+returning 1, 2, 3 and `x + y`.
 
 The first two patterns both match `(0, 0)`, and the last matches every subject.
 

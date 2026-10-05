@@ -24,9 +24,11 @@ Each test runs `AbiCloning.abiCloningPass True` over a graph built by `run`.
 The `True` switches on the pass's census, extra diagnostic tallies that none
 of the counters asserted here depends on. The graph is one `MonoDefine` whose
 body is a list holding one call. The callee is the local variable `h`,
-annotated `LSet [member]`, applied to integer literals. The graph holds no
-closures, so every call is a no-instance site. The origin table maps `member`
-to `targetGlobal`, and the registry entries are listed in SpecId order.
+annotated `LSet [member]`, applied to integer literals. No closure in any
+graph carries `member`, so every call is a no-instance site; one test puts a
+closure of another member in the list before the call, so the pass's closure
+index is not empty. The origin table maps `member` to `targetGlobal`, and the
+registry entries are listed in SpecId order.
 Registry types carry an unknown-set annotation, except `intFnMember`, which is
 the site's own type.
 
@@ -51,6 +53,9 @@ the site's own type.
   - Two layout-equal specs of the target, the higher-numbered one equal to the
     site's type: `devirtPost.fn` is 1, `devirtPost.ambiguous` is 0, and the
     callee is SpecId 2, not the lower SpecId 1.
+  - The first case with a closure of another member in the list before the
+    call: the same outcome, `devirtPost.fn` 1, `declinedNoInstance` 0, callee
+    SpecId 0.
 
 Among what is not tested: members of other origins (partial applications,
 kernels, accessors), over-application, a callee that is not a local variable,
@@ -185,6 +190,22 @@ suite =
                     , \( g, _ ) -> Expect.equal (Just 2) (firstCalleeSpec g)
                     ]
                     ( graph, stats )
+        , Test.test "a closure of ANOTHER member in the graph: the site is still no-instance and REWRITTEN" <|
+            \() ->
+                let
+                    ( graph, stats ) =
+                        run
+                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (registryOf [ Just ( targetGlobal, intFnPlain ) ])
+                            [ otherClosure, callSite 1 intRet ]
+                in
+                Expect.all
+                    [ \( _, s ) -> Expect.equal 1 s.devirtPost.fn
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.noSpec
+                    , \( _, s ) -> Expect.equal 0 s.declinedNoInstance
+                    , \( g, _ ) -> Expect.equal (Just 0) (firstCalleeSpec g)
+                    ]
+                    ( graph, stats )
         ]
 
 
@@ -200,7 +221,7 @@ member =
     99991
 
 
-{-| The module that the fixture globals and `dummyClosure`'s lambda belong to.
+{-| The module that the fixture globals and `otherClosure`'s lambda belong to.
 -}
 home : ModuleName.Canonical
 home =
@@ -288,6 +309,25 @@ callSiteTyped argCount calleeTy retTy =
         (List.repeat argCount (Mono.MonoLiteral (Mono.LInt 1) Mono.MInt))
         retTy
         Mono.defaultCallInfo
+
+
+{-| A closure `\x -> x` of type `Int -> Int` carrying the member `member + 1`,
+not `member`: it makes the graph's closure index non-empty without giving the
+call site's member an instance.
+-}
+otherClosure : Mono.MonoExpr
+otherClosure =
+    Mono.MonoClosure
+        { captureAbi = Nothing
+        , captures = []
+        , closureKind = Nothing
+        , lambdaId = Mono.AnonymousLambda home 1
+        , lssMember = Just (member + 1)
+        , params = [ ( "x", Mono.MInt ) ]
+        , srcLambda = Nothing
+        }
+        (Mono.MonoVarLocal "x" Mono.MInt)
+        (Mono.mFunction (Mono.LSet [ member + 1 ]) [ Mono.MInt ] Mono.MInt)
 
 
 {-| Builds a member-origin table from (member, origin) pairs.

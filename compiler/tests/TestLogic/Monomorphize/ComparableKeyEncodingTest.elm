@@ -25,23 +25,26 @@ builds the specialization key and `referenceKey False` the layout key. The
 tests check `toComparableMonoType` against `referenceKey True`, and take every
 layout key from `referenceKey False`.
 
-The fixture is a _corpus_ of 435 types: the 23 types of `goldens`, 12 more
+The fixture is a _corpus_ of 438 types: the 24 types of `goldens`, 14 more
 `handwritten` types, and 400 `generated` from fixed seeds. The pair tests use
-`pairs`, every ordered pair of the first 90 corpus types. The corpus holds no
-`LPartial` annotation.
+`pairs`, every ordered pair of the first 90 corpus types, which include every
+handwritten type. Only handwritten types carry `LPartial` annotations.
 
 What the tests establish:
 
   - `toComparableMonoType` equals `referenceKey True` on every corpus type.
   - `toComparableMonoType` gives the literal string `goldens` lists for each of
-    its 23 types, so a change made to both `toComparableMonoType` and
+    its 24 types, so a change made to both `toComparableMonoType` and
     `referenceKey` that alters any of those 23 keys still fails.
   - For one function type annotated `LSet [ 2, 5 ]`, the specialization key is
     `A[2,5](I->S)` and `referenceKey False` gives `A(I->S)`.
   - For one type whose only arrow is `LTop`, `toComparableMonoType` equals
     `referenceKey False`.
-  - On every pair, `eqKeySpec` is true exactly when the specialization keys are
-    equal, and `eqKeyLayout` exactly when the `referenceKey False` keys are.
+  - On every pair with no `LPartial` arrow, `eqKeySpec` is true exactly when
+    the specialization keys are equal; on every pair, it is never true when
+    they differ (with `LPartial` it is stricter than the key, as
+    `Mono.eqKeySpec` documents). `eqKeyLayout` is true exactly when the
+    `referenceKey False` keys are equal.
   - On every pair, equal specialization keys give equal `specHashOf` and equal
     layout keys give equal `layoutHashOf`.
   - On every corpus type, `specHashOf` and `layoutHashOf` lie in [0, 2^26).
@@ -49,7 +52,9 @@ What the tests establish:
     90 % of the number of distinct specialization keys.
   - On every corpus type, `Intern.widenSets` with an empty table gives a type
     `eqKeySpec`-equal to `Mono.widenSets`'s.
-  - Each corpus type hash-consed into an empty table comes back `==` to itself.
+  - Each corpus type, hash-consed twice in turn through one table, comes back
+    `==` to itself, on the misses of the first pass and the hits of the
+    second.
   - After hash-consing the whole corpus into one table, hash-consing the
     results again leaves its `size` unchanged, and a `disabled` table returns
     every corpus type `==` to itself.
@@ -58,18 +63,16 @@ What the tests establish:
     unchanged by each probe and by hash-consing the whole corpus through it.
   - `readOnly disabled` has `size` 0 and returns every corpus type `==` to
     itself; `readOnly` applied twice to a populated table keeps its `size`.
-  - Each of fifteen marker fragments occurs somewhere in the concatenated
-    specialization and layout keys of the corpus: one per primitive, the
-    `CEcoValue` variable's, and `L(`, `T2(`, `T4(`, `R(`, `X`, `A(`, `A[` and
-    `->`. A fragment counts if it occurs anywhere in that text, so finding one
-    does not show that the encoder arm which writes it ran: `S` can also come
-    from a module name such as `Some.Nested.Module`, and every arrow of a
-    layout key is written `A(`. There is no marker for `Av`.
+  - The corpus holds, somewhere in its types, every constructor of
+    `MonoType` (each primitive, a variable of each constraint, a list, tuples
+    of two and four elements, a record, a custom type and a function) and
+    every form of arrow annotation (`LTop`, `LVar`, `LSet`, `LPartial`), so
+    every arm of the encoder runs.
   - On every pair, `Intern.eqExact` agrees with `==`, and on the record pairs
     of `recordProbeCases` both give the expected answer.
 
-Among what is not tested: `LPartial` annotations, including the `LPartial` arm
-of `referenceKey`; how well `layoutHashOf` discriminates; whether a hit returns
+Among what is not tested: `eqKeySpec` and `LPartial` beyond the soundness
+direction above; how well `layoutHashOf` discriminates; whether a hit returns
 the stored object rather than an equal one, which Elm cannot observe; a memo
 hit carried over from an earlier `Intern.widenSets` call, and
 `Intern.widenSets` on a read-only or disabled table; `Intern.entries`.
@@ -122,13 +125,27 @@ suite =
                 Expect.equal
                     (Mono.toComparableMonoType ltopOnly)
                     (referenceKey False ltopOnly)
-        , Test.test "K4: eqKeySpec is EXACTLY specialization-key equality" <|
+        , Test.test "K4: eqKeySpec is EXACTLY specialization-key equality (pairs without LPartial)" <|
+            \_ ->
+                pairs
+                    |> List.filter (\( a, b ) -> not (hasPartial a || hasPartial b))
+                    |> List.filter
+                        (\( a, b ) ->
+                            Mono.eqKeySpec a b
+                                /= (Mono.toComparableMonoType a == Mono.toComparableMonoType b)
+                        )
+                    |> List.map describePair
+                    |> Expect.equalLists []
+        , Test.test "K4: eqKeySpec never equates types whose specialization keys differ (all pairs)" <|
+            -- With `LPartial` arrows `eqKeySpec` is stricter than the key, as
+            -- `Mono.eqKeySpec` documents (`annoKeyEq` has no `LPartial`
+            -- case), so only this direction holds on every pair.
             \_ ->
                 pairs
                     |> List.filter
                         (\( a, b ) ->
                             Mono.eqKeySpec a b
-                                /= (Mono.toComparableMonoType a == Mono.toComparableMonoType b)
+                                && (Mono.toComparableMonoType a /= Mono.toComparableMonoType b)
                         )
                     |> List.map describePair
                     |> Expect.equalLists []
@@ -208,10 +225,25 @@ suite =
                     |> List.map Mono.monoTypeToDebugString
                     |> Expect.equalLists []
         , Test.test "K6: hash-consing returns a type EQUAL to the one handed in (canonicalisation is not rewriting)" <|
+            -- The corpus goes through one table twice, so the first pass runs
+            -- the miss path (and the hit path for repeated types) and the
+            -- second pass the hit path for every type.
             \_ ->
-                corpus
-                    |> List.filter (\t -> Tuple.first (Intern.hashCons t Intern.empty) /= t)
-                    |> List.map Mono.monoTypeToDebugString
+                (corpus ++ corpus)
+                    |> List.foldl
+                        (\t ( bad, table ) ->
+                            let
+                                ( t1, table1 ) =
+                                    Intern.hashCons t table
+                            in
+                            if t1 == t then
+                                ( bad, table1 )
+
+                            else
+                                ( Mono.monoTypeToDebugString t :: bad, table1 )
+                        )
+                        ( [], Intern.empty )
+                    |> Tuple.first
                     |> Expect.equalLists []
         , Test.test "K6: a disabled table is the identity, and an empty one shares equal structures" <|
             \_ ->
@@ -303,14 +335,11 @@ suite =
         , Test.test "the corpus exercises every encoder arm (guards the differential tests against passing vacuously)" <|
             \_ ->
                 let
-                    allKeys =
-                        String.concat
-                            (List.map Mono.toComparableMonoType corpus
-                                ++ List.map (referenceKey False) corpus
-                            )
+                    present =
+                        List.concatMap shapeTags corpus
                 in
-                [ "I", "F", "B", "C", "S", "U", "V0\u{0000}ecovalue", "L(", "T2(", "T4(", "R(", "X", "A(", "A[", "->" ]
-                    |> List.filter (\marker -> not (String.contains marker allKeys))
+                [ "MInt", "MFloat", "MBool", "MChar", "MString", "MUnit", "MVar CEcoValue", "MVar CNumber", "MList", "MTuple 2", "MTuple 4", "MRecord", "MCustom", "LTop", "LSet", "LVar", "LPartial" ]
+                    |> List.filter (\tag -> not (List.member tag present))
                     |> Expect.equalLists []
         , Test.test "K6: Intern.eqExact decides exactly (==) over the pair corpus" <|
             \_ ->
@@ -385,8 +414,7 @@ recordProbeCases =
 
 {-| Ordered pairs of corpus types for the equality and hash tests: every
 ordered pair, each type with itself included, of the first 90 corpus types,
-followed by every ordered pair of the `handwritten` types. The handwritten types
-open the corpus, so the second block repeats pairs already in the first.
+which include all the `handwritten` types.
 -}
 pairs : List ( MonoType, MonoType )
 pairs =
@@ -395,7 +423,78 @@ pairs =
             List.take 90 corpus
     in
     List.concatMap (\a -> List.map (\b -> ( a, b )) sample) sample
-        ++ List.concatMap (\a -> List.map (\b -> ( a, b )) handwritten) handwritten
+
+
+{-| Returns a tag for each node of `monoType` and each arrow annotation in it:
+the constructor's name, with the constraint of a variable and the arity of a
+tuple, and `LTop`, `LVar`, `LSet` or `LPartial` for an arrow.
+-}
+shapeTags : MonoType -> List String
+shapeTags monoType =
+    case monoType of
+        MInt ->
+            [ "MInt" ]
+
+        MFloat ->
+            [ "MFloat" ]
+
+        MBool ->
+            [ "MBool" ]
+
+        MChar ->
+            [ "MChar" ]
+
+        MString ->
+            [ "MString" ]
+
+        MUnit ->
+            [ "MUnit" ]
+
+        MVar _ CEcoValue ->
+            [ "MVar CEcoValue" ]
+
+        MVar _ CNumber ->
+            [ "MVar CNumber" ]
+
+        MList _ inner ->
+            "MList" :: shapeTags inner
+
+        MTuple _ elements ->
+            ("MTuple " ++ String.fromInt (List.length elements)) :: List.concatMap shapeTags elements
+
+        MRecord _ fields ->
+            "MRecord" :: List.concatMap shapeTags (Dict.values fields)
+
+        MCustom _ _ _ args ->
+            "MCustom" :: List.concatMap shapeTags args
+
+        MFunction _ anno args ret ->
+            annoTag anno :: List.concatMap shapeTags (ret :: args)
+
+
+{-| Returns the name of an arrow annotation's form.
+-}
+annoTag : LambdaSetAnno -> String
+annoTag anno =
+    case anno of
+        LTop _ ->
+            "LTop"
+
+        LVar _ ->
+            "LVar"
+
+        LSet _ ->
+            "LSet"
+
+        LPartial _ ->
+            "LPartial"
+
+
+{-| Returns whether any arrow in `monoType` carries an `LPartial` annotation.
+-}
+hasPartial : MonoType -> Bool
+hasPartial monoType =
+    List.member "LPartial" (shapeTags monoType)
 
 
 {-| Renders a pair as the two types' debug strings separated by `VS`, for
@@ -451,8 +550,9 @@ Between them the strings pin these parts of the encoding: a `CEcoValue`
 variable with id 3 keys as `V0\u{0000}ecovalue`, and a `CNumber` variable as
 `I`, like `MInt`; tuple elements and custom-type arguments are written last
 to first, and record fields in descending name order; an `LTop` arrow is `A(`,
-an `LVar n` arrow `Av<n>(`, so `LVar 0` and `LVar 1` key apart, and an `LSet`
-arrow lists its members in brackets, `A[](` when there are none.
+an `LVar n` arrow `Av<n>(`, so `LVar 0` and `LVar 1` key apart, an `LSet`
+arrow lists its members in brackets, `A[](` when there are none, and an
+`LPartial` arrow is written as the `LSet` with the same members.
 
 -}
 goldens : List ( MonoType, String )
@@ -484,6 +584,7 @@ goldens =
     , ( Mono.mFunction (LTop 7) [] MInt, "A(->I)" )
     , ( Mono.mFunction (LSet [ 1, 2 ]) [ MInt ] MString, "A[1,2](I->S)" )
     , ( Mono.mFunction (LSet []) [] MUnit, "A[](->U)" )
+    , ( Mono.mFunction (LPartial [ 1, 2 ]) [ MInt ] MString, "A[1,2](I->S)" )
     ]
 
 
@@ -499,7 +600,7 @@ corpus =
     handwritten ++ generated
 
 
-{-| The handwritten part of the corpus: the 23 `goldens` types, then twelve
+{-| The handwritten part of the corpus: the 24 `goldens` types, then fourteen
 more.
 
 The first seven add deep list nesting, a six-element tuple, a four-field
@@ -507,11 +608,14 @@ record, a record whose one field is itself a record, a custom type applied to
 itself, and two function types with `LSet` annotations, one of them on a
 function inside a record field.
 
-The last five are function types that differ from one of those two, or from
+The next five are function types that differ from one of those two, or from
 each other, only in their annotations: an `LVar` head against an `LSet` head,
 an `LVar` against an `LTop` on an inner arrow, inner arrows `LVar 0` against
 `LVar 1`, and the record-argument type with `LVar 0` in place of its `LTop`
 and `LSet`.
+
+The last two put an inner arrow annotated `LPartial [ 3 ]` against the same
+type with `LSet [ 3 ]`, whose keys are equal.
 
 -}
 handwritten : List MonoType
@@ -529,6 +633,8 @@ handwritten =
            , Mono.mFunction (LVar 0) [ Mono.mFunction (LVar 0) [ MChar ] MBool ] MUnit
            , Mono.mFunction (LVar 0) [ Mono.mFunction (LVar 1) [ MChar ] MBool ] MUnit
            , Mono.mFunction (LVar 0) [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LVar 0) [ MChar ] MBool ) ]) ] MUnit
+           , Mono.mFunction (LTop 7) [ Mono.mFunction (LPartial [ 3 ]) [ MChar ] MBool ] MUnit
+           , Mono.mFunction (LTop 7) [ Mono.mFunction (LSet [ 3 ]) [ MChar ] MBool ] MUnit
            ]
 
 
@@ -627,19 +733,19 @@ genTypeWith compositeOnly depth seed0 =
         11 ->
             let
                 ( args, s ) =
-                    genTypes (modBy 3 seed) (depth - 1) seed
+                    genTypes (modBy 3 (seed // 97)) (depth - 1) seed
             in
-            ( Mono.mCustom (canonicalAt seed) (nameAt seed) args, s )
+            ( Mono.mCustom (canonicalAt (seed // 7)) (nameAt (seed // 13)) args, s )
 
         _ ->
             let
                 ( args, s1 ) =
-                    genTypes (modBy 3 seed) (depth - 1) seed
+                    genTypes (modBy 3 (seed // 97)) (depth - 1) seed
 
                 ( ret, s2 ) =
                     genType (depth - 1) s1
             in
-            ( Mono.mFunction (annoAt seed) args ret, s2 )
+            ( Mono.mFunction (annoAt (seed // 5)) args ret, s2 )
 
 
 {-| Generates `n` types at `depth` with `genType`, passing the seed from each to
@@ -710,9 +816,9 @@ canonicalAt seed =
 
 
 {-| Picks one of three type names from `seed`: `Maybe`, `Tree` or `Wrapper`.
-It chooses by `modBy 3 seed`, as `canonicalAt` does, so for one seed the two
-give `Maybe` in `Maybe`, `Tree` in `Some.Nested.Module`, or `Wrapper` in
-`Eco.Kernel`.
+`genTypeWith` hands it and `canonicalAt` different parts of its seed, so a
+name is not tied to one module, and the argument count is drawn from a third
+part, so a name is not tied to one arity either.
 -}
 nameAt : Int -> String
 nameAt seed =
@@ -731,8 +837,9 @@ nameAt seed =
 to 7, `LSet []`, `LSet [ 7 ]`, `LSet [ 1, 2, 3 ]`, or `LVar` 0, 1 or 2. It never
 gives `LPartial`.
 
-The provenance code is taken from the seed, so generated `LTop` arrows can
-differ in it; the keys and hashes ignore it. `LVar` is included so that
+The provenance code and the `LVar` number are taken from a different part of
+the seed than the choice of form, so generated `LTop` arrows can differ in
+their code (which the keys and hashes ignore) and every `LVar` number occurs. `LVar` is included so that
 generated types, and not only the handwritten ones, carry set variables into
 the key, equality and hash tests.
 
@@ -741,7 +848,7 @@ annoAt : Int -> LambdaSetAnno
 annoAt seed =
     case modBy 5 seed of
         0 ->
-            LTop (modBy 8 seed)
+            LTop (modBy 8 (seed // 5))
 
         1 ->
             LSet []
@@ -750,7 +857,7 @@ annoAt seed =
             LSet [ 7 ]
 
         3 ->
-            LVar (modBy 3 seed)
+            LVar (modBy 3 (seed // 5))
 
         _ ->
             LSet [ 1, 2, 3 ]

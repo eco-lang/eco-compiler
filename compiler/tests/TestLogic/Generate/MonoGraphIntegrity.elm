@@ -29,23 +29,26 @@ What the checks establish:
   - `expectMonoGraphClosed`: every SpecId named by a `MonoVarGlobal` in a node
     body has a node, and every `MonoVarLocal` is in scope where it occurs,
     under the scope rules that function's docstring gives.
-  - `expectMonoGraphComplete`: nothing beyond the pipeline reaching a
-    monomorphized graph; its list of checks is always empty.
+  - `expectMonoGraphComplete`: every custom type the graph uses has an entry
+    in its `ctorShapes` table, and so does every custom type in the field
+    types of those entries.
 
 The failures a check finds are combined with `Expect.all`, so a failing test
 reports only the first of them.
 
 Among what is not checked: that every node has a registry entry; SpecIds named
-by the graph's `main`, `flagsDecoder` or `ports` fields, or from the leaves a
-case's decision tree holds inline; a case's root variable and the paths in its
-decision tree; and that a closure body names only its parameters and captures.
+by the graph's `main`, `flagsDecoder` or `ports` fields; the paths in a case's
+decision tree; and that a `ctorShapes` entry lists all of a type's
+constructors.
 
 -}
 
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Data.Set as Set exposing (EverySet)
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -57,11 +60,9 @@ and that each `MonoTailFunc` has a function type.
 A `MonoDefine` whose type is a function passes when its expression is
 callable: a closure; a local, global or kernel variable whose type is a
 function; a call whose result type is a function; a `let` or destructuring
-whose body is callable; an `if` whose `else` branch is callable; or a `case`
-whose first jump branch is callable. A jump branch is one the case's decision
-tree reaches by `Jump` instead of holding it inline. Only that one branch of
-an `if` or `case` is looked at, and a `case` with no jump branches counts as
-not callable. A `MonoTailFunc` passes when its type is a function. Every other
+whose body is callable; an `if` all of whose branches are callable; or a
+`case` all of whose branches, jumped to or held inline in its decision tree,
+are callable. A `MonoTailFunc` passes when its type is a function. Every other
 node passes, as does a `MonoDefine` whose type is not a function.
 
 -}
@@ -85,9 +86,10 @@ expectCallableMonoNodes srcModule =
                     Expect.all checks ()
 
 
-{-| Runs `srcModule` through monomorphization and passes whenever that
-succeeds. It is named for the type completeness of the graph, but it checks
-nothing in the graph: its list of checks is always empty.
+{-| Runs `srcModule` through monomorphization and checks the graph's type
+completeness (MONO\_010): every custom type used by a node, and every custom
+type in a constructor field of the `ctorShapes` table, has an entry in that
+table, as `collectCompletenessChecks` describes.
 -}
 expectMonoGraphComplete : Src.Module -> Expect.Expectation
 expectMonoGraphComplete srcModule =
@@ -114,19 +116,18 @@ dangling references: every SpecId named by a `MonoVarGlobal` in a node body
 must have a node, and every `MonoVarLocal` must be in scope where it occurs.
 
 A `MonoTailFunc` node's body starts with its parameters in scope, and a
-`MonoDefine` or port body with nothing. A name comes into scope from a closure's
-parameters and captures, a tail-recursive local definition's parameters, a
-destructuring's bound name, and a case's label (the first `Name` of
-`MonoCase`, not the second, which names the variable the case matches on). The
-definitions of a chain of directly nested `let`s are all in scope throughout
-the chain, so a definition may name a later one in the same chain. A
-destructuring's path must start from a name in scope. A closure body also sees
-every name in scope around the closure, so a body that names an enclosing
-variable it does not capture passes.
+`MonoDefine` or port body with nothing. A name comes into scope from a
+tail-recursive local definition's parameters and a destructuring's bound name.
+A closure is closed: its body sees only its parameters and captures, so a body
+that names an enclosing variable it does not capture fails. The definitions of
+a chain of directly nested `let`s are all in scope throughout the chain, but a
+definition may name a later one only when the two are mutually recursive (the
+later one leads back to it). A destructuring's path, and a case's root
+variable (the second `Name` of `MonoCase`; the first is only a label), must be
+in scope.
 
-SpecIds are not collected from the leaves a case's decision tree holds inline,
-and neither a case's root variable nor the paths in its decision tree are
-checked.
+SpecIds are collected from every expression, including the branches a case's
+decision tree holds inline; the paths in a decision tree are not checked.
 
 -}
 expectMonoGraphClosed : Src.Module -> Expect.Expectation
@@ -254,10 +255,10 @@ checkNodeCallability specId node =
 
 It does when `expr` is a closure; a local, global or kernel variable whose own
 type is a function; or a call whose result type is a function. A `let` or
-destructuring counts when its body does, an `if` when its `else` branch does,
-and a `case` when the first of its jump branches does, so a `case` whose
-branches are all held inline in its decision tree does not count. No other
-expression counts, whatever its type.
+destructuring counts when its body does, an `if` when every one of its
+branches does, and a `case` when it has at least one branch and every branch
+does, both those its decision tree jumps to and those it holds inline. No
+other expression counts, whatever its type.
 
 -}
 isCallableExpression : Mono.MonoExpr -> Bool
@@ -281,22 +282,40 @@ isCallableExpression expr =
         Mono.MonoLet _ body _ ->
             isCallableExpression body
 
-        Mono.MonoIf _ final _ ->
-            isCallableExpression final
+        Mono.MonoIf branches final _ ->
+            List.all (\( _, branch ) -> isCallableExpression branch) branches
+                && isCallableExpression final
 
-        Mono.MonoCase _ _ _ branches _ ->
-            case branches of
-                ( _, branchExpr ) :: _ ->
-                    isCallableExpression branchExpr
-
-                [] ->
-                    False
+        Mono.MonoCase _ _ decider jumps _ ->
+            let
+                branchExprs =
+                    List.map Tuple.second jumps ++ inlineLeaves decider
+            in
+            not (List.isEmpty branchExprs) && List.all isCallableExpression branchExprs
 
         Mono.MonoDestruct _ inner _ ->
             isCallableExpression inner
 
         _ ->
             False
+
+
+{-| Returns the branch bodies a decision tree holds `Inline` at its leaves.
+-}
+inlineLeaves : Mono.Decider Mono.MonoChoice -> List Mono.MonoExpr
+inlineLeaves decider =
+    case decider of
+        Mono.Leaf (Mono.Inline expr) ->
+            [ expr ]
+
+        Mono.Leaf (Mono.Jump _) ->
+            []
+
+        Mono.Chain _ success failure ->
+            inlineLeaves success ++ inlineLeaves failure
+
+        Mono.FanOut _ edges fallback ->
+            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
 
 
 {-| Returns whether `monoType` is a function type (`MFunction`).
@@ -317,129 +336,94 @@ isFunctionType monoType =
 -- ============================================================================
 
 
-{-| Returns no checks, whatever the graph. This is the whole of the type
-completeness check.
+{-| Returns one failing check for each custom type the graph uses that has no
+entry in its `ctorShapes` table. (An entry may be empty: a type implemented by
+the runtime, such as `Html`, declares no constructors.)
+
+A custom type is used when it occurs, at any depth (inside lists, tuples,
+records, functions and other custom types' arguments), in a type stored in a
+node, at the positions `MonoTraverse.anyNodeType` reaches, or in a field type
+of a constructor shape already in the table, so the table must be closed under
+the types of the fields it describes.
+
 -}
 collectCompletenessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
-collectCompletenessChecks (Mono.MonoGraph _) =
-    []
+collectCompletenessChecks (Mono.MonoGraph data) =
+    let
+        hasShapes monoType =
+            Mono.layoutMapMember monoType data.ctorShapes
+
+        missingIn monoType =
+            List.filter (not << hasShapes) (customTypesIn monoType [])
+
+        nodeIssues =
+            Array.toIndexedList data.nodes
+                |> List.filterMap
+                    (\( specId, maybeNode ) ->
+                        maybeNode
+                            |> Maybe.andThen
+                                (\node ->
+                                    if MonoTraverse.anyNodeType (\t -> not (List.isEmpty (missingIn t))) node then
+                                        Just
+                                            (\() ->
+                                                Expect.fail
+                                                    ("MONO_010: SpecId "
+                                                        ++ String.fromInt specId
+                                                        ++ " uses a custom type with no constructor shapes in ctorShapes"
+                                                    )
+                                            )
+
+                                    else
+                                        Nothing
+                                )
+                    )
+
+        shapeIssues =
+            Mono.layoutMapFoldl
+                (\owner shapes acc ->
+                    List.concatMap (.fieldTypes >> List.concatMap missingIn) shapes
+                        |> List.map
+                            (\missing ->
+                                \() ->
+                                    Expect.fail
+                                        ("MONO_010: a constructor field of "
+                                            ++ Mono.monoTypeToDebugString owner
+                                            ++ " has type "
+                                            ++ Mono.monoTypeToDebugString missing
+                                            ++ ", which has no constructor shapes in ctorShapes"
+                                        )
+                            )
+                        |> (\issues -> issues ++ acc)
+                )
+                []
+                data.ctorShapes
+    in
+    nodeIssues ++ shapeIssues
 
 
-{-| Returns the custom type references found in `monoType`, which is always
-the empty list. It walks into custom type arguments, list elements, and
-function parameters and results, but contributes nothing for a custom type
-itself, and it does not look inside tuples or records. No check in this module
-uses it.
+{-| Adds to `acc` every `MCustom` type in `monoType`, the type itself included,
+at any depth.
 -}
-collectCustomTypeRefsFromType : Mono.MonoType -> List ( List String, String )
-collectCustomTypeRefsFromType monoType =
+customTypesIn : Mono.MonoType -> List Mono.MonoType -> List Mono.MonoType
+customTypesIn monoType acc =
     case monoType of
         Mono.MCustom _ _ _ typeArgs ->
-            List.concatMap collectCustomTypeRefsFromType typeArgs
+            List.foldl customTypesIn (monoType :: acc) typeArgs
 
         Mono.MList _ elemType ->
-            collectCustomTypeRefsFromType elemType
+            customTypesIn elemType acc
+
+        Mono.MTuple _ elemTypes ->
+            List.foldl customTypesIn acc elemTypes
+
+        Mono.MRecord _ fields ->
+            List.foldl customTypesIn acc (Dict.values fields)
 
         Mono.MFunction _ _ paramTypes returnType ->
-            List.concatMap collectCustomTypeRefsFromType paramTypes
-                ++ collectCustomTypeRefsFromType returnType
+            List.foldl customTypesIn (customTypesIn returnType acc) paramTypes
 
         _ ->
-            []
-
-
-{-| Returns the custom type references found in the types of `expr` and its
-subexpressions with `collectCustomTypeRefsFromType`, which is always the empty
-list. No check in this module uses it.
--}
-collectCustomTypeRefsFromExpr : Mono.MonoExpr -> List ( List String, String )
-collectCustomTypeRefsFromExpr expr =
-    case expr of
-        Mono.MonoLiteral _ monoType ->
-            collectCustomTypeRefsFromType monoType
-
-        Mono.MonoVarLocal _ monoType ->
-            collectCustomTypeRefsFromType monoType
-
-        Mono.MonoVarGlobal _ _ monoType ->
-            collectCustomTypeRefsFromType monoType
-
-        Mono.MonoVarKernel _ _ _ _ monoType ->
-            collectCustomTypeRefsFromType monoType
-
-        Mono.MonoList _ exprs monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap collectCustomTypeRefsFromExpr exprs
-
-        Mono.MonoClosure closureInfo bodyExpr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap (\( _, t ) -> collectCustomTypeRefsFromType t) closureInfo.params
-                ++ List.concatMap (\( _, e, _ ) -> collectCustomTypeRefsFromExpr e) closureInfo.captures
-                ++ collectCustomTypeRefsFromExpr bodyExpr
-
-        Mono.MonoCall _ fnExpr argExprs monoType _ ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromExpr fnExpr
-                ++ List.concatMap collectCustomTypeRefsFromExpr argExprs
-
-        Mono.MonoTailCall _ args monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap (\( _, e ) -> collectCustomTypeRefsFromExpr e) args
-
-        Mono.MonoIf branches elseExpr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap (\( c, t ) -> collectCustomTypeRefsFromExpr c ++ collectCustomTypeRefsFromExpr t) branches
-                ++ collectCustomTypeRefsFromExpr elseExpr
-
-        Mono.MonoLet def bodyExpr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromDef def
-                ++ collectCustomTypeRefsFromExpr bodyExpr
-
-        Mono.MonoDestruct _ valueExpr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromExpr valueExpr
-
-        Mono.MonoCase _ _ _ branches monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap (\( _, e ) -> collectCustomTypeRefsFromExpr e) branches
-
-        Mono.MonoRecordCreate fieldExprs monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap (\( _, e ) -> collectCustomTypeRefsFromExpr e) fieldExprs
-
-        Mono.MonoRecordAccess recordExpr _ monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromExpr recordExpr
-
-        Mono.MonoRecordUpdate recordExpr updates monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromExpr recordExpr
-                ++ List.concatMap (\( _, e ) -> collectCustomTypeRefsFromExpr e) updates
-
-        Mono.MonoTupleCreate _ elementExprs monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap collectCustomTypeRefsFromExpr elementExprs
-
-        Mono.MonoUnit ->
-            []
-
-        Mono.MonoAccessorValue _ _ _ ->
-            []
-
-
-{-| Returns the custom type references found in `def`'s parameter types and
-body, which is always the empty list. No check in this module uses it.
--}
-collectCustomTypeRefsFromDef : Mono.MonoDef -> List ( List String, String )
-collectCustomTypeRefsFromDef def =
-    case def of
-        Mono.MonoDef _ expr ->
-            collectCustomTypeRefsFromExpr expr
-
-        Mono.MonoTailDef _ params expr ->
-            List.concatMap (\( _, t ) -> collectCustomTypeRefsFromType t) params
-                ++ collectCustomTypeRefsFromExpr expr
+            acc
 
 
 
@@ -546,13 +530,13 @@ neither in `inScope` nor bound around it inside `expr`, and for each
 destructuring path whose root is out of scope. `context` names the node in the
 failure messages.
 
-A closure body sees `inScope` together with the closure's parameters and
-captures, while the capture expressions themselves are checked against
-`inScope`. The definitions of a chain of directly nested `let`s, gathered by
-`collectLetChain`, are in scope in every definition of the chain and in its
-final body. A destructuring's name is in scope in its body. A case's label, the
-first `Name` of `MonoCase`, is in scope in its decision tree and its jump
-branches; the case's root variable is not checked.
+A closure body sees only the closure's parameters and captures, while the
+capture expressions themselves are checked against `inScope`. The definitions
+of a chain of directly nested `let`s, gathered by `collectLetChain`, are in
+scope in every definition of the chain and in its final body, and
+`checkLetChainOrder` checks their forward references. A destructuring's name
+is in scope in its body. A case's root variable, the second `Name` of
+`MonoCase`, must be in scope.
 
 -}
 checkExprLocalVarScoping : String -> Set.EverySet String String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
@@ -578,8 +562,10 @@ checkExprLocalVarScoping context inScope expr =
                     List.map (\( name, _, _ ) -> name) closureInfo.captures
                         |> Set.fromList identity
 
+                -- A closure is closed: its body sees only its parameters and
+                -- captures, not the scope around it.
                 bodyScope =
-                    Set.union inScope (Set.union paramNames captureNames)
+                    Set.union paramNames captureNames
 
                 captureIssues =
                     List.concatMap (\( _, e, _ ) -> checkExprLocalVarScoping context inScope e) closureInfo.captures
@@ -617,11 +603,15 @@ checkExprLocalVarScoping context inScope expr =
                     defs
                         |> List.concatMap (checkDefLocalVarScoping context groupScope)
 
+                forwardViolations : List (() -> Expect.Expectation)
+                forwardViolations =
+                    checkLetChainOrder context defs
+
                 bodyViolations : List (() -> Expect.Expectation)
                 bodyViolations =
                     checkExprLocalVarScoping context groupScope finalBody
             in
-            defViolations ++ bodyViolations
+            defViolations ++ forwardViolations ++ bodyViolations
 
         Mono.MonoDestruct (Mono.MonoDestructor name path _) bodyExpr _ ->
             let
@@ -633,13 +623,18 @@ checkExprLocalVarScoping context inScope expr =
             in
             pathRootIssues ++ checkExprLocalVarScoping context destructScope bodyExpr
 
-        Mono.MonoCase scrutName _ decider branches _ ->
+        Mono.MonoCase _ rootName decider branches _ ->
             let
-                caseScope =
-                    Set.insert identity scrutName inScope
+                rootIssues =
+                    if Set.member identity rootName inScope then
+                        []
+
+                    else
+                        [ \() -> Expect.fail ("MONO_011: case root variable '" ++ rootName ++ "' is not in scope at " ++ context) ]
             in
-            checkDeciderLocalVarScoping context caseScope decider
-                ++ List.concatMap (\( _, e ) -> checkExprLocalVarScoping context caseScope e) branches
+            rootIssues
+                ++ checkDeciderLocalVarScoping context inScope decider
+                ++ List.concatMap (\( _, e ) -> checkExprLocalVarScoping context inScope e) branches
 
         Mono.MonoRecordCreate fieldExprs _ ->
             List.concatMap (\( _, e ) -> checkExprLocalVarScoping context inScope e) fieldExprs
@@ -709,8 +704,8 @@ getDefName def =
 position, outermost first, together with the body the chain ends in.
 
 The typed optimizer turns a group of mutually recursive local definitions
-into directly nested `let`s, so the chain is treated as one scope. A chain of
-lets that are not mutually recursive is treated as one scope too.
+into directly nested `let`s, so the chain is treated as one scope, and
+`checkLetChainOrder` rejects a forward reference outside such a group.
 
 -}
 collectLetChain :
@@ -728,6 +723,117 @@ collectLetChain firstDef firstBody =
                     ( defs, expr )
     in
     go [ firstDef ] firstBody
+
+
+{-| Returns one failing check for each definition of a `let` chain that names
+a later definition of the chain which does not, directly or through others,
+name it back.
+
+The typed optimizer orders local definitions by dependency, so a definition
+may name a later one only when the two are mutually recursive, that is, when
+the later one leads back to it.
+
+-}
+checkLetChainOrder : String -> List Mono.MonoDef -> List (() -> Expect.Expectation)
+checkLetChainOrder context defs =
+    let
+        names : List String
+        names =
+            List.map getDefName defs
+
+        refsOf : Mono.MonoDef -> EverySet String String
+        refsOf def =
+            MonoTraverse.foldExpr
+                (\e acc ->
+                    case e of
+                        Mono.MonoVarLocal name _ ->
+                            if List.member name names then
+                                Set.insert identity name acc
+
+                            else
+                                acc
+
+                        _ ->
+                            acc
+                )
+                Set.empty
+                (defBody def)
+
+        refs : Dict.Dict String (EverySet String String)
+        refs =
+            Dict.fromList (List.map (\def -> ( getDefName def, refsOf def )) defs)
+
+        reaches : String -> String -> Bool
+        reaches from target =
+            reachesHelp refs [ from ] Set.empty target
+
+        laterNames : Int -> List String
+        laterNames i =
+            List.drop (i + 1) names
+    in
+    List.indexedMap
+        (\i def ->
+            let
+                name =
+                    getDefName def
+
+                myRefs =
+                    Dict.get name refs |> Maybe.withDefault Set.empty
+            in
+            laterNames i
+                |> List.filter (\later -> Set.member identity later myRefs && not (reaches later name))
+                |> List.map
+                    (\later ->
+                        \() ->
+                            Expect.fail
+                                ("MONO_011: let definition '"
+                                    ++ name
+                                    ++ "' names the later definition '"
+                                    ++ later
+                                    ++ "', which does not name it back, at "
+                                    ++ context
+                                )
+                    )
+        )
+        defs
+        |> List.concat
+
+
+{-| Returns whether `target` can be reached from the names in `frontier` by
+following `refs`, not revisiting the names in `seen`.
+-}
+reachesHelp : Dict.Dict String (EverySet String String) -> List String -> EverySet String String -> String -> Bool
+reachesHelp refs frontier seen target =
+    case frontier of
+        [] ->
+            False
+
+        next :: rest ->
+            if Set.member identity next seen then
+                reachesHelp refs rest seen target
+
+            else
+                let
+                    nextRefs =
+                        Dict.get next refs |> Maybe.withDefault Set.empty
+                in
+                if Set.member identity target nextRefs then
+                    True
+
+                else
+                    reachesHelp refs (Set.toList nextRefs ++ rest) (Set.insert identity next seen) target
+
+
+{-| Returns the body of `def`.
+-}
+defBody : Mono.MonoDef -> Mono.MonoExpr
+defBody def =
+    case def of
+        Mono.MonoDef _ expr ->
+            expr
+
+        Mono.MonoTailDef _ _ expr ->
+            expr
 
 
 {-| Returns the out-of-scope failures `checkExprLocalVarScoping` gives for
@@ -812,97 +918,22 @@ collectSpecIdRefsFromNode node =
 
 
 {-| Returns the SpecIds named by `MonoVarGlobal` in `expr` and its
-subexpressions. A case contributes only its jump branches: the expressions its
-decision tree holds inline are not searched.
+subexpressions, at any depth, including the branches a case's decision tree
+holds inline.
 -}
 collectSpecIdRefsFromExpr : Mono.MonoExpr -> EverySet Int Int
 collectSpecIdRefsFromExpr expr =
-    case expr of
-        Mono.MonoVarGlobal _ specId _ ->
-            Set.insert identity specId Set.empty
+    MonoTraverse.foldExpr
+        (\e acc ->
+            case e of
+                Mono.MonoVarGlobal _ specId _ ->
+                    Set.insert identity specId acc
 
-        Mono.MonoList _ exprs _ ->
-            List.foldl
-                (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                Set.empty
-                exprs
-
-        Mono.MonoClosure closureInfo bodyExpr _ ->
-            List.foldl
-                (\( _, e, _ ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (collectSpecIdRefsFromExpr bodyExpr)
-                closureInfo.captures
-
-        Mono.MonoCall _ fnExpr argExprs _ _ ->
-            List.foldl
-                (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (collectSpecIdRefsFromExpr fnExpr)
-                argExprs
-
-        Mono.MonoTailCall _ args _ ->
-            List.foldl
-                (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                Set.empty
-                args
-
-        Mono.MonoIf branches elseExpr _ ->
-            List.foldl
-                (\( c, t ) acc ->
-                    Set.union acc (collectSpecIdRefsFromExpr c)
-                        |> Set.union (collectSpecIdRefsFromExpr t)
-                )
-                (collectSpecIdRefsFromExpr elseExpr)
-                branches
-
-        Mono.MonoLet def bodyExpr _ ->
-            Set.union
-                (collectSpecIdRefsFromDef def)
-                (collectSpecIdRefsFromExpr bodyExpr)
-
-        Mono.MonoDestruct _ valueExpr _ ->
-            collectSpecIdRefsFromExpr valueExpr
-
-        Mono.MonoCase _ _ _ branches _ ->
-            List.foldl
-                (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                Set.empty
-                branches
-
-        Mono.MonoRecordCreate fieldExprs _ ->
-            List.foldl
-                (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                Set.empty
-                fieldExprs
-
-        Mono.MonoRecordAccess recordExpr _ _ ->
-            collectSpecIdRefsFromExpr recordExpr
-
-        Mono.MonoRecordUpdate recordExpr updates _ ->
-            List.foldl
-                (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (collectSpecIdRefsFromExpr recordExpr)
-                updates
-
-        Mono.MonoTupleCreate _ elementExprs _ ->
-            List.foldl
-                (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                Set.empty
-                elementExprs
-
-        _ ->
-            Set.empty
-
-
-{-| Returns the SpecIds named by `MonoVarGlobal` in the body of `def`.
--}
-collectSpecIdRefsFromDef : Mono.MonoDef -> EverySet Int Int
-collectSpecIdRefsFromDef def =
-    case def of
-        Mono.MonoDef _ expr ->
-            collectSpecIdRefsFromExpr expr
-
-        Mono.MonoTailDef _ _ expr ->
-            collectSpecIdRefsFromExpr expr
+                _ ->
+                    acc
+        )
+        Set.empty
+        expr
 
 
 

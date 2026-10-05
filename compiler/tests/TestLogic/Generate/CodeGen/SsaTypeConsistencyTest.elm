@@ -14,8 +14,9 @@ turn to `TestLogic.Generate.CodeGen.SsaTypeConsistency.expectSsaTypeConsistency`
 
   - `suite` compiles each program to MLIR and checks every top-level
     `func.func`: each block argument and operation result inside it, at any
-    depth of nesting and in sibling regions alike, is recorded under its name,
-    and a name recorded with two different types fails the test. A program that
+    depth of nesting, is recorded under its name, and a name defined with a
+    type other than that of a definition still in scope (by MLIR's region
+    scoping, so sibling regions are separate) fails the test. A program that
     does not compile to MLIR also fails.
 
 Among what is not tested:

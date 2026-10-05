@@ -23,12 +23,13 @@ canonicalization reports an error. Otherwise it checks the result as
 `expectGlobalNamesQualifiedCanonical` takes a canonical module, walks every
 expression and pattern in its declarations, and fails, with one line per empty
 part, when the home of a `VarTopLevel`, `VarForeign`, `VarCtor`, `VarDebug`,
-`VarOperator`, `Binop` or `PCtor` node is not complete.
+`VarOperator`, `Binop` or `PCtor` node is not complete. A `VarKernel`, which
+carries no `ModuleName.Canonical`, is checked instead for a kernel prefix of
+`Elm` or `Eco` and a non-empty kernel module and name.
 
 Among what is not checked:
 
-  - `VarLocal` and `VarKernel` references, which carry no
-    `ModuleName.Canonical`;
+  - `VarLocal` references, which carry no home;
   - the type annotations of definitions, and the module's unions, aliases,
     infix declarations and effects.
 
@@ -161,9 +162,10 @@ collectExprIssues (A.At _ { node }) =
 {-| Returns the issues found in an expression node and everything inside it.
 
 The home of a `VarTopLevel`, `VarForeign`, `VarCtor`, `VarDebug`, `VarOperator`
-or `Binop` is checked by `validateHome`. `VarLocal` and `VarKernel` have no
-`ModuleName.Canonical` home and add nothing. A `Binop`'s messages name it as
-`operator`, not by the operator itself.
+or `Binop` is checked by `validateHome`; a `Binop`'s messages name it by its
+operator. A `VarKernel` has no `ModuleName.Canonical` home; its kernel prefix,
+kernel module and name are checked by `validateKernel`. `VarLocal` adds
+nothing.
 
 -}
 collectExprNodeIssues : Can.Expr_ -> List String
@@ -175,8 +177,8 @@ collectExprNodeIssues node =
         Can.VarTopLevel home name ->
             validateHome "VarTopLevel" name home
 
-        Can.VarKernel _ _ _ ->
-            []
+        Can.VarKernel kernelPrefix kernelHome name ->
+            validateKernel kernelPrefix kernelHome name
 
         Can.VarForeign home name _ ->
             validateHome "VarForeign" name home
@@ -208,8 +210,8 @@ collectExprNodeIssues node =
         Can.Negate expr ->
             collectExprIssues expr
 
-        Can.Binop _ home _ _ left right ->
-            validateHome "Binop" "operator" home
+        Can.Binop op home _ _ left right ->
+            validateHome "Binop" op home
                 ++ collectExprIssues left
                 ++ collectExprIssues right
 
@@ -356,6 +358,21 @@ validateHome context name home =
                     (context ++ " '" ++ name ++ "': empty package project")
                 |> addIssueIf (String.isEmpty moduleName)
                     (context ++ " '" ++ name ++ "': empty module name")
+
+
+{-| Returns the issues of a `VarKernel` reference: a kernel prefix other than
+`Elm` or `Eco` (the two `Name.getKernel` yields), or an empty kernel module or
+function name.
+-}
+validateKernel : String -> String -> String -> List String
+validateKernel kernelPrefix kernelHome name =
+    []
+        |> addIssueIf (kernelPrefix /= "Elm" && kernelPrefix /= "Eco")
+            ("VarKernel '" ++ name ++ "': kernel prefix '" ++ kernelPrefix ++ "' is neither Elm nor Eco")
+        |> addIssueIf (String.isEmpty kernelHome)
+            ("VarKernel '" ++ name ++ "': empty kernel module")
+        |> addIssueIf (String.isEmpty name)
+            ("VarKernel in kernel module '" ++ kernelHome ++ "': empty name")
 
 
 {-| Returns `issues` with `issue` added at the front when `condition` holds, and

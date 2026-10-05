@@ -35,14 +35,15 @@ fixture with the solver engine under the default lambda-set configuration, in
 which the fold has no switch of its own, and the readers take the types of a
 global's specializations, by name, from the graph's registry.
 
-  - Test 1 (`refModule`, where `testValue` is `useIt double 3`): the first
-    singleton among `double`'s head annotations and the first singleton among
-    the annotations of `useIt`'s function-typed parameter are the same member
-    id. It fails if either side has no singleton.
-  - Test 3 (`consModule`, where `testValue` is `double :: []`): no head
-    annotation of a specialization named `cons` is an `LSet` of more than two
-    members. `LTop`, `LVar` and `LPartial` pass, and so does finding no `cons`
-    specialization.
+  - Test 1 (`refModule`, where `testValue` is `useIt double 3`): every
+    singleton among `double`'s head annotations and among the annotations of
+    `useIt`'s function-typed parameter is one and the same member id, which
+    the graph's `lssMemberOrigins` records as `double`. It fails if either
+    side has no singleton.
+  - Test 3 (`consModule`, where `testValue` is `double :: []`): a
+    specialization named `cons` is registered, every one of its head
+    annotations is `LTop` or the singleton of the `List.cons` kernel, and no
+    member is recorded as the global `cons` itself.
   - Test 4 (`plainModule`): no member id of an `LSet` at `plus2`'s head appears
     in an `LSet` at its depth 1. It fails if `plus2`'s head annotations hold no
     `LSet` member. It compares ids rather than set sizes, because sets of equal
@@ -56,8 +57,7 @@ global's specializations, by name, from the graph's registry.
 
 Among what is not tested: the subst engine and lambda-set specialization
 switched off; let-bound functions; a definition specialized at more than one
-type; arrows deeper than depth 1; and, in test 3, an `LVar` head, which the
-check accepts.
+type; and arrows deeper than depth 1.
 
 -}
 
@@ -79,6 +79,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -97,17 +98,17 @@ suite =
 
                     Ok g ->
                         case ( singletonIds (headAnnos "double" g), singletonIds (paramAnnos "useIt" g) ) of
-                            ( headId :: _, paramId :: _ ) ->
-                                if headId == paramId then
+                            ( headId :: headRest, paramId :: paramRest ) ->
+                                if List.all ((==) headId) (headRest ++ paramId :: paramRest) && originOf headId g == Just "double" then
                                     Expect.pass
 
                                 else
                                     Expect.fail
-                                        ("stored head id "
-                                            ++ String.fromInt headId
-                                            ++ " /= reference-flow id "
-                                            ++ String.fromInt paramId
-                                            ++ " — the fold and the reference path diverged"
+                                        ("stored head ids "
+                                            ++ String.join "," (List.map String.fromInt (headId :: headRest))
+                                            ++ " /= reference-flow ids "
+                                            ++ String.join "," (List.map String.fromInt (paramId :: paramRest))
+                                            ++ ", or not double's own member — the fold and the reference path diverged"
                                         )
 
                             ( hs, ps ) ->
@@ -126,14 +127,22 @@ suite =
                     Ok g ->
                         case headAnnos "cons" g of
                             [] ->
-                                Expect.pass
+                                Expect.fail "no spec registered for `cons` — fixture broken"
 
                             heads ->
-                                if List.all (\a -> Mono.isTopAnno a || sizeAtMost 2 a) heads then
-                                    Expect.pass
+                                Expect.all
+                                    [ \_ ->
+                                        if List.all (\a -> Mono.isTopAnno a || isKernelSingleton "List" "cons" g a) heads then
+                                            Expect.pass
 
-                                else
-                                    Expect.fail ("kernel-alias head grew a new identity: " ++ describe heads)
+                                        else
+                                            Expect.fail ("kernel-alias head grew a new identity: " ++ describe heads)
+                                    , \_ ->
+                                        -- The alias was not folded: no member names
+                                        -- the global `cons` itself.
+                                        Expect.equal [] (globalMembersOf "cons" g)
+                                    ]
+                                    ()
         , Test.test "4. DEEP SPINE: the folded head id is absent from depth 1" <|
             \() ->
                 case runWith plainModule of
@@ -434,17 +443,52 @@ singletonIds =
         )
 
 
-{-| Tells whether an annotation is anything but an `LSet` of more than `n`
-members, so `LTop`, `LVar` and `LPartial` always pass.
+{-| Tells whether an annotation is an `LSet` whose one member the graph's
+`lssMemberOrigins` records as the kernel `home.name`.
 -}
-sizeAtMost : Int -> Mono.LambdaSetAnno -> Bool
-sizeAtMost n a =
+isKernelSingleton : String -> String -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
+isKernelSingleton home name (Mono.MonoGraph g) a =
     case a of
-        Mono.LSet ms ->
-            List.length ms <= n
+        Mono.LSet [ m ] ->
+            Dict.get m g.lssMemberOrigins == Just (Mono.OriginKernel home name)
 
         _ ->
-            True
+            False
+
+
+{-| Returns the name of the global the graph's `lssMemberOrigins` records as
+member `m`'s origin, or `Nothing` when `m` is not recorded as a global.
+-}
+originOf : Int -> Mono.MonoGraph -> Maybe String
+originOf m (Mono.MonoGraph g) =
+    case Dict.get m g.lssMemberOrigins of
+        Just (Mono.OriginGlobal (Mono.Global _ n)) ->
+            Just n
+
+        _ ->
+            Nothing
+
+
+{-| Returns every member the graph's `lssMemberOrigins` records as the global
+named `name` itself.
+-}
+globalMembersOf : String -> Mono.MonoGraph -> List Int
+globalMembersOf name (Mono.MonoGraph g) =
+    Dict.foldl
+        (\m origin acc ->
+            case origin of
+                Mono.OriginGlobal (Mono.Global _ n) ->
+                    if n == name then
+                        m :: acc
+
+                    else
+                        acc
+
+                _ ->
+                    acc
+        )
+        []
+        g.lssMemberOrigins
 
 
 {-| Tells whether an annotation is anything but an `LSet` of fewer than two

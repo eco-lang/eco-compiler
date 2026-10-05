@@ -11,7 +11,7 @@ reference only in a module of a kernel package, one authored by `elm`,
 `elm-explorations` or `eco`; anywhere else the name is reported as not found.
 It does not check that the name exists (`findVarQual`), and for some names
 used here `elm-kernel-cpp` exports no function and there is no intrinsic:
-`Basics.fadd`, `fsub`, `fmul`, `fpow`, `identity`, `always` and `clamp`;
+`Basics.identity`, `always` and `clamp`;
 `List.map`, `foldl`, `foldr`, `singleton`, `length` and `range`; and every
 `Tuple` name. Their cases exercise only the compiler's handling of the
 reference.
@@ -39,8 +39,8 @@ cases, by group:
 
   - `Basics` on `Int`: `add`, `sub`, `mul`, `idiv`, `remainderBy`, `negate`,
     `abs`, `pow`, `min` and `max`.
-  - `Basics` on `Float`: `fadd`, `fsub`, `fmul`, `fdiv`, `fpow`, `sqrt`, `log`
-    and `logBase`, and `negate`, `abs`, `min`, `max` and `pow`.
+  - `Basics` on `Float`: `add`, `sub`, `mul`, `fdiv`, `sqrt`, `log` and
+    `logBase`, and `negate`, `abs`, `min`, `max` and `pow`.
   - `Basics` comparisons `eq`, `neq`, `lt`, `le`, `gt` and `ge`, each on two
     `Int`s and on two `Float`s.
   - `Basics` `not`, `and`, `or` and `xor` on `True` and `False`.
@@ -65,13 +65,12 @@ cases, by group:
   - `String.fromNumber` on two `Int` literals and on a `Float`, `Char.fromCode`,
     and `Char.toCode` applied to the result of `Char.fromCode`.
   - `Bytes.encode` and `Bytes.decode` on `Int` literals.
-  - `Basics.identity` applied to a pair of `Int`s and to an application of
-    `Tuple.pair`, `Debug.log` on a `String` and an `Int`, and `Debug.todo` on a
-    `String`.
+  - `Debug.log` with a `String` tag on a unit value and on a record, so that
+    the kernel's result is a unit and a record, and on an `Int`, and
+    `Debug.todo` on a `String`.
 
 Among what is not tested: a kernel module outside these, such as `Json`, and
-arguments of a unit or record type, or of a custom type other than `Bool`,
-which no case passes.
+arguments of a custom type other than `Bool`, which no case passes.
 
 -}
 
@@ -87,8 +86,10 @@ import Compiler.AST.SourceBuilder
         , makeKernelModule
         , pVar
         , qualVarExpr
+        , recordExpr
         , strExpr
         , tupleExpr
+        , unitExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -164,17 +165,16 @@ basicsIntArithCases expectFn =
 -- ============================================================================
 
 
-{-| Returns the cases that apply the `Elm.Kernel.Basics` names `fadd`, `fsub`,
-`fmul`, `fdiv`, `fpow`, `sqrt`, `log` and `logBase`, and `negate`, `abs`, `min`,
-`max` and `pow`, to `Float` literals.
+{-| Returns the cases that apply the `Elm.Kernel.Basics` names `add`, `sub`,
+`mul`, `fdiv`, `sqrt`, `log` and `logBase`, and `negate`, `abs`, `min`, `max`
+and `pow`, to `Float` literals.
 -}
 basicsFloatArithCases : (Src.Module -> Expectation) -> List TestCase
 basicsFloatArithCases expectFn =
-    [ { label = "K Basics.fadd", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "fadd") [ floatExpr 1.5, floatExpr 2.5 ])) }
-    , { label = "K Basics.fsub", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "fsub") [ floatExpr 10.0, floatExpr 3.0 ])) }
-    , { label = "K Basics.fmul", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "fmul") [ floatExpr 3.0, floatExpr 4.0 ])) }
+    [ { label = "K Basics.add Float", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ floatExpr 1.5, floatExpr 2.5 ])) }
+    , { label = "K Basics.sub Float", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "sub") [ floatExpr 10.0, floatExpr 3.0 ])) }
+    , { label = "K Basics.mul Float", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ floatExpr 3.0, floatExpr 4.0 ])) }
     , { label = "K Basics.fdiv", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "fdiv") [ floatExpr 10.0, floatExpr 3.0 ])) }
-    , { label = "K Basics.fpow", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "fpow") [ floatExpr 2.0, floatExpr 8.0 ])) }
     , { label = "K Basics.negate Float", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "negate") [ floatExpr 3.14 ])) }
     , { label = "K Basics.abs Float", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "abs") [ floatExpr -3.14 ])) }
     , { label = "K Basics.sqrt", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "sqrt") [ floatExpr 25.0 ])) }
@@ -641,32 +641,30 @@ bytesCases expectFn =
 -- ============================================================================
 
 
-{-| Returns the cases that apply `Elm.Kernel.Basics.identity` to a pair of
-`Int`s and to an application of `Elm.Kernel.Tuple.pair`, and call
-`Elm.Kernel.Debug.log` on a `String` and an `Int` and `Elm.Kernel.Debug.todo`
-on a `String`.
-
-The labels of the first two speak of a unit result and a record, but neither
-program contains a unit or a record value.
-
+{-| Returns the cases that call `Elm.Kernel.Debug.log` with a `String` tag on
+the unit value, on a record and on an `Int`, so that the kernel's result is of
+those types, and `Elm.Kernel.Debug.todo` on a `String`.
 -}
 kernelAbiTypeCases : (Src.Module -> Expectation) -> List TestCase
 kernelAbiTypeCases expectFn =
-    [ { label = "K kernel with unit result", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity") [ tupleExpr (intExpr 1) (intExpr 2) ])) }
+    [ { label = "K kernel with unit result", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Debug" "log") [ strExpr "unit", unitExpr ])) }
     , { label = "K kernel returning record", run = kernelReturningRecord expectFn }
     , { label = "K Debug.log kernel", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Debug" "log") [ strExpr "tag", intExpr 42 ])) }
     , { label = "K Debug.todo kernel", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Debug" "todo") [ strExpr "not implemented" ])) }
     ]
 
 
-{-| Applies `expectFn` to a program that applies `Elm.Kernel.Basics.identity`
-to an application of `Elm.Kernel.Tuple.pair` to 1 and "hi", not to a record.
+{-| Applies `expectFn` to a program that calls `Elm.Kernel.Debug.log` with the
+tag "record" on the record `{ n = 1, s = "hi" }`, so that the kernel returns a
+record.
 -}
 kernelReturningRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelReturningRecord expectFn _ =
     expectFn
         (makeKernelModule "testValue"
-            (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
-                [ callExpr (qualVarExpr "Elm.Kernel.Tuple" "pair") [ intExpr 1, strExpr "hi" ] ]
+            (callExpr (qualVarExpr "Elm.Kernel.Debug" "log")
+                [ strExpr "record"
+                , recordExpr [ ( "n", intExpr 1 ), ( "s", strExpr "hi" ) ]
+                ]
             )
         )

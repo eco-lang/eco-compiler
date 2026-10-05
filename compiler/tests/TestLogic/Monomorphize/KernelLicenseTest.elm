@@ -34,8 +34,9 @@ and the scalar test is `noScalars` unless a test says otherwise.
 What the tests establish:
 
   - Test 1: with `consInc = List.cons inc` applying `List.cons` to one
-    argument, at least one annotation on the specialization types recorded for
-    `cons` is an `LSet` with exactly one member.
+    argument, some specialization type recorded for `cons` has, on the arrow
+    of its first parameter (the `Int -> Int` element), an `LSet` whose one
+    member is one the graph records as standing for the global `inc`.
   - Test 2: the same, for `List.cons inc []`.
   - Test 3: no kernel in `neverLicensable` has a row.
   - Test 4: `factFor` gives `Nothing` for a home and name that no kernel has.
@@ -70,18 +71,19 @@ What the tests establish:
     is not an arrow.
   - Test 12: every `TransportsAs` shape is a function shape.
   - Test 13: every `TransportsAs` shape equals the shape of the kernel's
-    annotation in `Compiler.Type.KernelIntrinsics`, where `intrinsicShapeFor`
-    finds one.
+    annotation in `Compiler.Type.KernelIntrinsics`, under each of the `Elm`
+    and `Eco` prefixes that has one; an annotation `shapeOfAnnotation` cannot
+    express fails the test. At least one row has an annotation to compare
+    with.
   - Test 14: a `TransportsAs` license with the shape `a -> a` accepts `p -> p`
     and refuses `p -> q`.
 
-Among what is not tested: that the one-member set in tests 1 and 2 holds
-`inc`'s member, or which arrow carries it; the transport of a kernel with no
+Among what is not tested: the transport of a kernel with no
 license, since the test pipeline builds alias nodes only for `List.cons` and
 `List.map2`, and both are licensed; a `Transports` license, which
 `licenseApplies` accepts at any occurrence; whether any row's evidence is true;
-and a `TransportsAs` row whose intrinsic annotation `shapeOfAnnotation` cannot
-express, which test 13 skips.
+and a `TransportsAs` row whose kernel has no intrinsic annotation, which test
+13 skips.
 
 -}
 
@@ -133,13 +135,16 @@ suite =
                         if List.isEmpty annos then
                             Expect.fail "no List.cons demand reached the registry — the fixture is not exercising the kernel boundary"
 
-                        else if List.any (annoHasSize 1) annos then
+                        else if elementCarriesIncOnly graph then
                             Expect.pass
 
                         else
                             Expect.fail
-                                ("expected `inc`'s member to survive the partially applied boundary, got: "
-                                    ++ describeAnnos annos
+                                ("expected `inc`'s member, alone, on the element arrow of a List.cons demand, got: "
+                                    ++ describeAnnos (elementAnnos graph)
+                                    ++ " (inc's members: "
+                                    ++ String.join "," (List.map String.fromInt (incMembers graph))
+                                    ++ ")"
                                 )
         , Test.test "2. transport pin: the licensed cheap-class `List.cons` transports its element too" <|
             \() ->
@@ -155,13 +160,16 @@ suite =
                         if List.isEmpty annos then
                             Expect.fail "no List.cons demand reached the registry — the fixture is not exercising the kernel boundary"
 
-                        else if List.any (annoHasSize 1) annos then
+                        else if elementCarriesIncOnly graph then
                             Expect.pass
 
                         else
                             Expect.fail
-                                ("expected a singleton LSet on some List.cons demand arrow, got: "
-                                    ++ describeAnnos annos
+                                ("expected `inc`'s member, alone, on the element arrow of a List.cons demand, got: "
+                                    ++ describeAnnos (elementAnnos graph)
+                                    ++ " (inc's members: "
+                                    ++ String.join "," (List.map String.fromInt (incMembers graph))
+                                    ++ ")"
                                 )
         , Test.test "3. containment: the REJECTED classes are not licensed" <|
             \() ->
@@ -451,17 +459,14 @@ suite =
                                     KernelSetFacts.TypeFaithful license ->
                                         case license.scope of
                                             KernelSetFacts.TransportsAs shape ->
-                                                case intrinsicShapeFor home name of
-                                                    Nothing ->
-                                                        -- No annotation, or one shapes cannot express.
-                                                        Nothing
+                                                -- Every prefix's annotation must have a shape, and
+                                                -- that shape must be the declared one. A kernel with
+                                                -- no annotation under either prefix is skipped.
+                                                if List.all (\annotationShape -> annotationShape == Just shape) (intrinsicShapesFor home name) then
+                                                    Nothing
 
-                                                    Just annotationShape ->
-                                                        if annotationShape == shape then
-                                                            Nothing
-
-                                                        else
-                                                            Just (keyName ( home, name ))
+                                                else
+                                                    Just (keyName ( home, name ))
 
                                             _ ->
                                                 Nothing
@@ -470,8 +475,27 @@ suite =
                                         Nothing
                             )
                             KernelSetFacts.rows
+
+                    -- Rows that have an annotation to compare with, so the
+                    -- check is not passing because it skipped everything.
+                    compared =
+                        List.filter
+                            (\( ( home, name ), fact ) ->
+                                case fact of
+                                    KernelSetFacts.TypeFaithful { scope } ->
+                                        case scope of
+                                            KernelSetFacts.TransportsAs _ ->
+                                                not (List.isEmpty (intrinsicShapesFor home name))
+
+                                            _ ->
+                                                False
+
+                                    KernelSetFacts.Positional _ ->
+                                        False
+                            )
+                            KernelSetFacts.rows
                 in
-                Expect.equal [] mismatched
+                Expect.equal ( [], True ) ( mismatched, not (List.isEmpty compared) )
         , Test.test "14. a TsVar claim is load-bearing: two DIFFERENT variables do not satisfy it" <|
             \() ->
                 -- Two type variables are the same type only when they are the
@@ -488,17 +512,17 @@ suite =
         ]
 
 
-{-| Returns the shape of the annotation `Compiler.Type.KernelIntrinsics` holds
-for the kernel `home`.`name`, looking under the `Elm` prefix and then under
-`Eco`. It is `Nothing` when neither has a row, and also when the annotation has
-a form `shapeOfAnnotation` cannot express.
+{-| Returns, for each of the `Elm` and `Eco` prefixes under which
+`Compiler.Type.KernelIntrinsics` has a row for the kernel `home`.`name`, the
+shape of that row's annotation, or `Nothing` when the annotation has a form
+`shapeOfAnnotation` cannot express. The list is empty when neither prefix has
+a row.
 -}
-intrinsicShapeFor : String -> String -> Maybe KernelSetFacts.TypeShape
-intrinsicShapeFor home name =
+intrinsicShapesFor : String -> String -> List (Maybe KernelSetFacts.TypeShape)
+intrinsicShapesFor home name =
     [ "Elm", "Eco" ]
         |> List.filterMap (\prefix -> KernelIntrinsics.lookup prefix home name)
-        |> List.head
-        |> Maybe.andThen (\row -> KernelSetFacts.shapeOfAnnotation (annotationType row.annotation))
+        |> List.map (\row -> KernelSetFacts.shapeOfAnnotation (annotationType row.annotation))
 
 
 {-| Returns the type inside an annotation, without its set of quantified
@@ -745,23 +769,62 @@ allAnnos target graph =
     List.concatMap annosOf (demandsOf target graph)
 
 
-{-| Tells whether `anno` is an `LSet` with exactly `n` members. An `LTop`, an
-`LVar` or an `LPartial` never is.
+{-| Returns the members the graph records as standing for the global `inc`
+(`OriginGlobal` of a global named `inc`).
 -}
-annoHasSize : Int -> Mono.LambdaSetAnno -> Bool
-annoHasSize n anno =
-    case anno of
-        Mono.LSet members ->
-            List.length members == n
+incMembers : Mono.MonoGraph -> List Int
+incMembers (Mono.MonoGraph g) =
+    Dict.foldl
+        (\member origin acc ->
+            case origin of
+                Mono.OriginGlobal (Mono.Global _ "inc") ->
+                    member :: acc
 
-        Mono.LTop _ ->
-            False
+                _ ->
+                    acc
+        )
+        []
+        g.lssMemberOrigins
 
-        Mono.LVar _ ->
-            False
 
-        Mono.LPartial _ ->
-            False
+{-| Returns the annotation on the element arrow of each specialization type the
+registry records for `cons`: the arrow of its first parameter's type, the
+`Int -> Int` element. A demand whose first parameter is not a function gives
+none.
+-}
+elementAnnos : Mono.MonoGraph -> List Mono.LambdaSetAnno
+elementAnnos graph =
+    List.filterMap
+        (\demand ->
+            case demand of
+                Mono.MFunction _ _ ((Mono.MFunction _ anno _ _) :: _) _ ->
+                    Just anno
+
+                _ ->
+                    Nothing
+        )
+        (demandsOf "cons" graph)
+
+
+{-| Tells whether some `cons` demand's element arrow is annotated with a
+one-member `LSet` whose member stands for `inc`.
+-}
+elementCarriesIncOnly : Mono.MonoGraph -> Bool
+elementCarriesIncOnly graph =
+    let
+        members =
+            incMembers graph
+    in
+    List.any
+        (\anno ->
+            case anno of
+                Mono.LSet [ m ] ->
+                    List.member m members
+
+                _ ->
+                    False
+        )
+        (elementAnnos graph)
 
 
 {-| Renders annotations as a comma-separated list, such as `LTop, LSet[3,7]`, for

@@ -7,9 +7,10 @@ literals Elm does not allow, such as ones containing an underscore.
 
 Each test hands one literal, as the whole input, to `singleNumber` and compares
 the result. A successful result carries the value and the literal's source text.
-A failure carries only the `E.Number` error: its row and column are discarded,
-and `singleNumber` also reports input left over after the literal, and input
-the parser does not take as a number, as `NumberEnd`.
+A failure carries the parser's `E.Number` error, without its row and column;
+input left over after a literal, and input the parser does not take as a number,
+are reported as separate failures, so they cannot be mistaken for a parser
+error.
 
 What the tests establish:
 
@@ -21,10 +22,9 @@ What the tests establish:
   - Hexadecimal: `0xDEADBEEF`, `0x002B` and `0xFF` read as `Int` 3735928559,
     43 and 255, with the literal, `0x` included, as source text.
   - Invalid numbers: `1_000`, `111_000.602`, `1000.4_205` and `0b1010` fail
-    with `NumberEnd`, and `0xDE_AD_BE_EF` fails with `NumberHexDigit`. Because
-    left-over input is also reported as `NumberEnd`, the four `NumberEnd` tests
-    would pass equally if the parser stopped before the `_` or the `b` and
-    succeeded.
+    with the parser's own `NumberEnd` error, and `0xDE_AD_BE_EF` with its
+    `NumberHexDigit` error; a parser that stopped before the `_` or the `b` and
+    succeeded would leave input over and fail these tests.
 
 Among what is not tested: lower-case hexadecimal digits, a leading zero
 (`NumberNoLeadingZero`), a `.` with no digit after it (`NumberDot`), an
@@ -105,42 +105,47 @@ suite =
         , Test.describe "Invalid numbers"
             [ (\_ ->
                 singleNumber "1_000"
-                    |> Expect.equal (Err E.NumberEnd)
+                    |> Expect.equal (Err (NumberError E.NumberEnd))
               )
                 |> Test.test "Underscores not allowed in integers 1_000"
             , (\_ ->
                 singleNumber "111_000.602"
-                    |> Expect.equal (Err E.NumberEnd)
+                    |> Expect.equal (Err (NumberError E.NumberEnd))
               )
                 |> Test.test "Underscores not allowed before decimal point 111_000.602"
             , (\_ ->
                 singleNumber "1000.4_205"
-                    |> Expect.equal (Err E.NumberEnd)
+                    |> Expect.equal (Err (NumberError E.NumberEnd))
               )
                 |> Test.test "Underscores not allowed after decimal point 1000.4_205"
             , (\_ ->
                 singleNumber "0xDE_AD_BE_EF"
-                    |> Expect.equal (Err E.NumberHexDigit)
+                    |> Expect.equal (Err (NumberError E.NumberHexDigit))
               )
                 |> Test.test "Underscores not allowed in hex 0xDE_AD_BE_EF"
             , (\_ ->
                 singleNumber "0b1010"
-                    |> Expect.equal (Err E.NumberEnd)
+                    |> Expect.equal (Err (NumberError E.NumberEnd))
               )
                 |> Test.test "Binary literals not supported 0b1010"
             ]
         ]
 
 
-{-| Runs `number` over the whole of the given source and returns the literal it
-reads, or the error.
-
-Three failures besides the parser's own `E.Number` error are reported as
-`NumberEnd`: input that does not start with a digit, a float that
-`String.toFloat` rejects, and text left after the literal. The row and column
-of every error are dropped.
-
+{-| Why `singleNumber` failed: the parser's own `E.Number` error, input the
+parser does not take as a number at all, or input left over after a literal
+the parser read successfully. Keeping the three apart means a parser that
+stopped early and succeeded cannot pass for one that rejected the literal.
 -}
-singleNumber : String -> Result E.Number N.Number
+type SingleError
+    = NumberError E.Number
+    | NotANumber
+    | LeftOver
+
+
+{-| Runs `number` over the whole of the given source and returns the literal it
+reads, or why it failed. The row and column of every error are dropped.
+-}
+singleNumber : String -> Result SingleError N.Number
 singleNumber =
-    P.fromByteString (N.number (\_ _ -> E.NumberEnd) (\x _ _ -> x)) (\_ _ -> E.NumberEnd)
+    P.fromByteString (N.number (\_ _ -> NotANumber) (\x _ _ -> NumberError x)) (\_ _ -> LeftOver)

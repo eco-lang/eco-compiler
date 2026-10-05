@@ -31,17 +31,9 @@ constraint from the name alone, as `Compiler.Data.Name` describes.
 These interfaces are not elm/core 1.0.5 or elm/json, and a test that passes
 against them says nothing about the places where they differ:
 
-  - `/` and `//` are typed `number -> number -> number`; elm/core types them
-    `Float -> Float -> Float` and `Int -> Int -> Int`.
-  - There is a `%` operator, standing for `modBy`, which elm/core does not
-    have; `modBy` itself is not a value here.
-  - `>>` is left-associative and `<<` right-associative; elm/core has them the
-    other way round.
   - `::` is not in `Basics`; it is in the `List` interface.
   - `Basics` has only the values listed in `basicsValues`, and no `Never`
     type.
-  - `Bool` declares `False` before `True`, so `False` has constructor index 0;
-    elm/core declares `True | False`.
   - `Json.Decode.Value` is a separate type from `Json.Encode.Value`; elm/json
     makes the first an alias of the second.
 
@@ -88,8 +80,8 @@ basicsInterface =
 {-| The unions of the mock `Basics`, keyed by type name.
 
 `Bool` and `Order` are open, so an importer can use their constructors, and
-both are enumerations (`Can.Enum`). `Bool`'s constructors are `False` (index 0)
-and `True` (index 1); `Order`'s are `LT`, `EQ` and `GT`, indexed 0 to 2.
+both are enumerations (`Can.Enum`). `Bool`'s constructors are `True` (index 0)
+and `False` (index 1), as elm/core declares them; `Order`'s are `LT`, `EQ` and `GT`, indexed 0 to 2.
 
 `Int` and `Float` are closed and have no constructors at all, so an importer
 can name the types but has no constructor to build or match one with.
@@ -100,16 +92,16 @@ can name the types but has no constructor to build or match one with.
 basicsUnions : Dict Name I.Union
 basicsUnions =
     let
-        falseC =
-            Can.Ctor { name = "False", index = Index.first, numArgs = 0, args = [] }
-
         trueC =
-            Can.Ctor { name = "True", index = Index.second, numArgs = 0, args = [] }
+            Can.Ctor { name = "True", index = Index.first, numArgs = 0, args = [] }
+
+        falseC =
+            Can.Ctor { name = "False", index = Index.second, numArgs = 0, args = [] }
 
         boolUnion =
             Can.Union
                 { vars = []
-                , alts = [ falseC, trueC ]
+                , alts = [ trueC, falseC ]
                 , numAlts = 2
                 , opts = Can.Enum
                 }
@@ -156,13 +148,9 @@ basicsUnions =
 
 
 {-| Returns the names of the type variables in `tipe`: every `TVar`, every
-record extension variable, and, for an alias, those of its arguments and of its
-body.
-
-For a `Holey` alias, the result includes the names of the alias's own
-parameters that the body mentions, which are bound by the alias rather than
-free in `tipe`. No type built in this module contains an alias.
-
+record extension variable, and, for an alias, those of its arguments. An
+alias's body is not searched, as in `Compiler.Canonicalize.Type`: a `Holey`
+body names the alias's own parameters, which the alias binds.
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
@@ -199,28 +187,16 @@ collectFreeVars tipe =
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
                 cs
 
-        Can.TAlias _ _ args aliasType ->
-            let
-                argVars =
-                    List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
-            in
-            case aliasType of
-                Can.Holey t ->
-                    Dict.union argVars (collectFreeVars t)
-
-                Can.Filled t ->
-                    Dict.union argVars (collectFreeVars t)
+        Can.TAlias _ _ args _ ->
+            List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
 
 
 {-| The operators of the mock `Basics`, keyed by operator symbol. Each names the
 `Basics` function it stands for and carries an annotation, an associativity and
 a precedence.
 
-Names, precedences and associativities are elm/core's, except that `>>` and
-`<<` have their associativities swapped and `%`, standing for `modBy`, has no
-counterpart in elm/core. The types differ from elm/core's only for `/` and
-`//`, both `number -> number -> number` here. `%` is also typed
-`number -> number -> number`.
+Names, types, precedences and associativities are elm/core 1.0.5's, and
+elm/core has no other operators in `Basics`.
 
 -}
 standardBinops : Dict Name I.Binop
@@ -257,6 +233,20 @@ standardBinops =
         -- number -> number -> number
         numBinType =
             Can.tLambda numberVar (Can.tLambda numberVar numberVar)
+
+        intType =
+            Can.TType ModuleName.basics "Int" []
+
+        floatType =
+            Can.TType ModuleName.basics "Float" []
+
+        -- Int -> Int -> Int (for //)
+        intBinType =
+            Can.tLambda intType (Can.tLambda intType intType)
+
+        -- Float -> Float -> Float (for /)
+        floatBinType =
+            Can.tLambda floatType (Can.tLambda floatType floatType)
 
         -- a -> a -> Bool
         eqType =
@@ -298,10 +288,9 @@ standardBinops =
           binop "+" "add" numBinType Binop.Left 6
         , binop "-" "sub" numBinType Binop.Left 6
         , binop "*" "mul" numBinType Binop.Left 7
-        , binop "/" "fdiv" numBinType Binop.Left 7
-        , binop "//" "idiv" numBinType Binop.Left 7
+        , binop "/" "fdiv" floatBinType Binop.Left 7
+        , binop "//" "idiv" intBinType Binop.Left 7
         , binop "^" "pow" numBinType Binop.Right 8
-        , binop "%" "modBy" numBinType Binop.Left 7
 
         -- Comparison
         , binop "==" "eq" eqType Binop.Non 4
@@ -323,8 +312,8 @@ standardBinops =
         , binop "<|" "apL" pipeLType Binop.Right 0
 
         -- Composition
-        , binop ">>" "composeR" composeRType Binop.Left 9
-        , binop "<<" "composeL" composeLType Binop.Right 9
+        , binop ">>" "composeR" composeRType Binop.Right 9
+        , binop "<<" "composeL" composeLType Binop.Left 9
         ]
 
 
@@ -542,7 +531,7 @@ mkAnnotation tipe =
 annotations. Each annotation has the type elm/core gives that value.
 
 These are the only `Basics` values a test program can use. Among those absent
-are `modBy`, `xor`, `degrees`, `radians`, `turns`, `toPolar`, `fromPolar` and
+are `xor`, `degrees`, `radians`, `turns`, `toPolar`, `fromPolar` and
 `never`.
 
 -}
@@ -568,8 +557,13 @@ basicsValues =
             Can.TType ModuleName.basics "Bool" []
     in
     Dict.fromList
-        [ -- remainderBy : Int -> Int -> Int
-          ( "remainderBy"
+        [ -- modBy : Int -> Int -> Int
+          ( "modBy"
+          , mkAnnotation (Can.tLambda intType (Can.tLambda intType intType))
+          )
+
+        -- remainderBy : Int -> Int -> Int
+        , ( "remainderBy"
           , mkAnnotation (Can.tLambda intType (Can.tLambda intType intType))
           )
 

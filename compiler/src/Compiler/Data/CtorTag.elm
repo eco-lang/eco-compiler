@@ -28,7 +28,8 @@ constant word, and `isEmbeddedConstantCtor` picks them out. `Nothing` shares its
 word with the other empty values, such as `()` and `[]`, so its value cannot
 say which constructor it is, and the runtime reports `constantTag` as the tag
 of that shared word. `isEmbeddedConstantCtor` and `embedsAsNullCons` go by the
-constructor's name alone, not by the module that declares it.
+constructor's name and the module that declares it, so a program's own
+constructor named `Nothing`, `True` or `False` is an ordinary one.
 
 The numbers here must equal the runtime's: 0xFFFF its `CTOR_DICT_RBNODE`,
 0xFFFD its `CONSTANT_TAG`, and 1023 its `NULL_CONS_MAX`. Nothing in the compiler
@@ -75,14 +76,28 @@ constantTag =
     0xFFFD
 
 
-{-| Returns whether `name` is `Nothing`, `True` or `False`, the constructors
-represented by a fixed constant word rather than a null-cons constant. `Nothing`
-uses the shared empty word, and `True` and `False` the Bool constants. The test
-is by name alone, so a constructor with one of these names in any module counts.
+{-| Returns whether the constructor `name` declared in module `home` is
+`elm/core`'s `Maybe.Nothing`, `Basics.True` or `Basics.False`, the constructors
+represented by a fixed constant word rather than a null-cons constant.
+`Nothing` uses the shared empty word, and `True` and `False` the Bool
+constants. A program's own constructor with one of these names is an ordinary
+constructor: it must not share those words, or a `case` on its type could not
+tell it from its siblings.
 -}
-isEmbeddedConstantCtor : Name -> Bool
-isEmbeddedConstantCtor name =
-    name == "Nothing" || name == "True" || name == "False"
+isEmbeddedConstantCtor : ModuleName.Canonical -> Name -> Bool
+isEmbeddedConstantCtor home name =
+    case name of
+        "Nothing" ->
+            home == ModuleName.maybe
+
+        "True" ->
+            home == ModuleName.basics
+
+        "False" ->
+            home == ModuleName.basics
+
+        _ ->
+            False
 
 
 
@@ -100,13 +115,13 @@ nullConsCapacity =
     1023
 
 
-{-| Returns whether the nullary constructor `name` is represented as a
-null-cons constant, which it is unless `isEmbeddedConstantCtor` picks it out.
-The tag argument is ignored.
+{-| Returns whether the nullary constructor `name` declared in module `home` is
+represented as a null-cons constant, which it is unless
+`isEmbeddedConstantCtor` picks it out.
 -}
-embedsAsNullCons : Name -> Bool
-embedsAsNullCons name =
-    not (isEmbeddedConstantCtor name)
+embedsAsNullCons : ModuleName.Canonical -> Name -> Bool
+embedsAsNullCons home name =
+    not (isEmbeddedConstantCtor home name)
 
 
 {-| Returns `tag` unchanged when it fits in a null-cons constant, that is when

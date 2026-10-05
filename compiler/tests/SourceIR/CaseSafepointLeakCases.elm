@@ -334,8 +334,7 @@ and passing it to a call, and whose `testValue` is `describe (Greet "World")`.
         msg :: []
 
 `append : String -> String -> String` is a top-level function of the program,
-not `String.append`. Its body calls `a` with no arguments, which source text
-cannot write, so it ignores `b` and does not concatenate.
+`append a b = a ++ b`, not `String.append`.
 
 -}
 caseWithCallThenAlloc : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -381,7 +380,7 @@ caseWithCallThenAlloc expectFn _ =
             { name = "append"
             , tipe = tLambda (tType "String" []) (tLambda (tType "String" []) (tType "String" []))
             , args = [ pVar "a", pVar "b" ]
-            , body = callExpr (varExpr "a") []
+            , body = binopsExpr [ ( varExpr "a", "++" ) ] (varExpr "b")
             }
 
         testValueDef : TypedDef

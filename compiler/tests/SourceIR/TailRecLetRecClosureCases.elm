@@ -13,28 +13,27 @@ by the expectation function the caller passes to `expectSuite`.
 
 Each case builds a module named `Test` with
 `makeModuleWithTypedDefsUnionsAliases`. It holds an annotated two-argument
-function whose first branch returns `[]`, whose second branch defines the local
-function in a `let`, and whose third branch is the tail call; and a `testValue`
-that calls it. In both cases the local function's self-call is not in tail
-position (it is the right operand of `::`), the local function refers to
-nothing from the enclosing function, and the enclosing function's first
-parameter, `threshold`, is only passed on unchanged in the tail call. The
-programs are given as Elm source in each case's docstring.
+function whose `case` has a branch returning `[]`, a branch defining the local
+function in a `let`, and a branch that is the tail call; and a `testValue` that
+calls it on a list whose first element takes the tail call, so the loop runs at
+least twice. In both cases the local function's self-call is not in tail
+position (it is the right operand of `::`). The programs are given as Elm
+source in each case's docstring.
 
 What the cases are:
 
   - "Local recursive closure in tail-rec case branch" (`tailRecWithLocalRecClosure`)
     declares `type Item = Num Int | Blank`. The local function `takeMore`
     collects the `Int`s from the leading `Num`s of a list, and its result is
-    bound to a second `let` name before use.
+    bound to a second `let` name before use. It refers to nothing from the
+    enclosing function, whose first parameter, `threshold`, is only passed on
+    unchanged in the tail call.
   - "Local recursive closure capturing outer param" (`tailRecWithCapturingClosure`)
-    works on `List Int`. Despite its label, its local function `helper` captures
-    nothing. Its tail call is in a `_` branch that follows `[]` and `x :: rest`,
-    so it can never be reached; it still makes `process` tail-recursive.
+    works on `List Int`. Its local function `helper` adds the enclosing
+    function's parameter `threshold` to each element, so it captures it.
 
-Among what is not tested: a local function that uses a variable of the
-enclosing function, a local function that is itself tail-recursive, and local
-functions that call each other.
+Among what is not tested: a local function that is itself tail-recursive, and
+local functions that call each other.
 
 -}
 
@@ -55,6 +54,7 @@ import Compiler.AST.SourceBuilder
         , pAnything
         , pCons
         , pCtor
+        , pInt
         , pList
         , pVar
         , tLambda
@@ -119,10 +119,10 @@ source:
 
     testValue : List Int
     testValue =
-        processItems 0 [ Num 1, Num 2, Blank ]
+        processItems 0 [ Blank, Num 1, Num 2, Blank ]
 
-The tail call is in the `Blank` branch; `takeMore` is defined in the `Num`
-branch, which ends the loop.
+The tail call is in the `Blank` branch, which the first element takes;
+`takeMore` is defined in the `Num` branch, which ends the loop.
 
 -}
 tailRecWithLocalRecClosure : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -189,7 +189,8 @@ tailRecWithLocalRecClosure expectFn _ =
                 callExpr (varExpr "processItems")
                     [ intExpr 0
                     , listExpr
-                        [ callExpr (ctorExpr "Num") [ intExpr 1 ]
+                        [ ctorExpr "Blank"
+                        , callExpr (ctorExpr "Num") [ intExpr 1 ]
                         , callExpr (ctorExpr "Num") [ intExpr 2 ]
                         , ctorExpr "Blank"
                         ]
@@ -214,29 +215,27 @@ source:
             [] ->
                 []
 
+            0 :: rest ->
+                process threshold rest
+
             x :: rest ->
                 let
                     helper ys =
                         case ys of
                             y :: zs ->
-                                y :: helper zs
+                                (y + threshold) :: helper zs
 
                             _ ->
                                 []
                 in
                 x :: helper rest
 
-            _ ->
-                process threshold []
-
     testValue : List Int
     testValue =
-        process 0 [ 1, 2, 3 ]
+        process 10 [ 0, 1, 2, 3 ]
 
-`helper` uses nothing of `process`: it refers to its own name, its argument
-and the names its patterns bind. The tail call is in the last branch, which
-the first two already cover, so it is never taken; the call still makes
-`process` tail-recursive.
+`helper` captures `threshold`, a parameter of the loop function `process`. The
+first element, 0, takes the tail call, and the second ends the loop.
 
 -}
 tailRecWithCapturingClosure : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -246,7 +245,7 @@ tailRecWithCapturingClosure expectFn _ =
             caseExpr (varExpr "ys")
                 [ ( pCons (pVar "y") (pVar "zs")
                   , binopsExpr
-                        [ ( varExpr "y", "::" ) ]
+                        [ ( binopsExpr [ ( varExpr "y", "+" ) ] (varExpr "threshold"), "::" ) ]
                         (callExpr (varExpr "helper") [ varExpr "zs" ])
                   )
                 , ( pAnything, listExpr [] )
@@ -258,15 +257,15 @@ tailRecWithCapturingClosure expectFn _ =
         processBody =
             caseExpr (varExpr "items")
                 [ ( pList [], listExpr [] )
+                , ( pCons (pInt 0) (pVar "rest")
+                  , callExpr (varExpr "process") [ varExpr "threshold", varExpr "rest" ]
+                  )
                 , ( pCons (pVar "x") (pVar "rest")
                   , letExpr [ helperDef ]
                         (binopsExpr
                             [ ( varExpr "x", "::" ) ]
                             (callExpr (varExpr "helper") [ varExpr "rest" ])
                         )
-                  )
-                , ( pAnything
-                  , callExpr (varExpr "process") [ varExpr "threshold", listExpr [] ]
                   )
                 ]
 
@@ -286,8 +285,8 @@ tailRecWithCapturingClosure expectFn _ =
                   , tipe = tType "List" [ tType "Int" [] ]
                   , body =
                         callExpr (varExpr "process")
-                            [ intExpr 0
-                            , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+                            [ intExpr 10
+                            , listExpr [ intExpr 0, intExpr 1, intExpr 2, intExpr 3 ]
                             ]
                   }
                 ]

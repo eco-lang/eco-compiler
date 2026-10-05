@@ -45,7 +45,7 @@ Among what is not checked:
 
   - references to a SpecId with no node in the graph (out of range, or an
     empty slot);
-  - references to constructor, enum, extern and manager-leaf nodes;
+  - references to constructor and enum nodes;
   - calls with fewer arguments than the node takes, which are partial
     applications;
   - calls whose innermost callee is not a `MonoVarGlobal`;
@@ -307,10 +307,9 @@ A call chain is a call whose callee is itself a call, as in `(f a) b`. When
 `f` is a `MonoVarGlobal`, the arguments of every call in the chain are added
 together and compared with the flattened arity of `f`'s node. This finds an
 over-application even when the reference and the node agree on a type with
-too few parameters, where each call alone is within the arity. A chain of
-three or more calls is checked again at each shorter chain inside it, so one
-over-application can be reported more than once. Messages from higher SpecIds
-come first.
+too few parameters, where each call alone is within the arity. A chain is
+checked once, at its outermost call. Messages from higher SpecIds come
+first.
 
 -}
 collectCallChainOverApplication : Mono.MonoGraph -> List String
@@ -353,13 +352,17 @@ checkNodeCallChains graph ctx node =
 
 {-| Returns the call-chain messages for every call in `expr`, at any depth, each
 prefixed with `ctx`. It visits the same subexpressions as `collectExprIssues`.
+A chain is checked only at its outermost call: the shorter chains inside it
+supply fewer arguments to the same innermost callee, so they cannot exceed an
+arity the whole chain stays within, and checking them too would repeat its
+message.
 -}
 collectCallChainExprIssues : Mono.MonoGraph -> String -> Mono.MonoExpr -> List String
 collectCallChainExprIssues graph ctx expr =
     case expr of
         Mono.MonoCall _ funcExpr args _ _ ->
             checkCallChain graph ctx funcExpr (List.length args)
-                ++ collectCallChainExprIssues graph ctx funcExpr
+                ++ collectCallChainCalleeIssues graph ctx funcExpr
                 ++ List.concatMap (collectCallChainExprIssues graph ctx) args
 
         Mono.MonoClosure closureInfo bodyExpr _ ->
@@ -402,6 +405,23 @@ collectCallChainExprIssues graph ctx expr =
 
         _ ->
             []
+
+
+{-| Returns the call-chain messages inside `funcExpr`, the callee of a call
+whose chain has already been checked: when `funcExpr` is itself a call, the
+calls further down the same chain are not checked again, but their arguments
+are walked; otherwise `funcExpr` is walked as `collectCallChainExprIssues`
+walks it.
+-}
+collectCallChainCalleeIssues : Mono.MonoGraph -> String -> Mono.MonoExpr -> List String
+collectCallChainCalleeIssues graph ctx funcExpr =
+    case funcExpr of
+        Mono.MonoCall _ innerFuncExpr innerArgs _ _ ->
+            collectCallChainCalleeIssues graph ctx innerFuncExpr
+                ++ List.concatMap (collectCallChainExprIssues graph ctx) innerArgs
+
+        _ ->
+            collectCallChainExprIssues graph ctx funcExpr
 
 
 {-| Returns the call-chain messages for the body of a `let` definition.
@@ -686,12 +706,12 @@ checkDirectCallArgs (Mono.MonoGraph data) ctx funcExpr args =
 
 
 {-| Tells whether references to `node` are checked at all: `False` for
-constructor, enum, extern and manager-leaf nodes, `True` for the rest.
+constructor and enum nodes, `True` for the rest.
 
 A constructor or enum node stores the type of the value it builds, not a
 function type. An extern or manager-leaf node stores the type it was requested
-at, which can be a function type; references to those nodes nevertheless go
-unchecked.
+at, which is a function type for a function-valued kernel or effect-manager
+leaf, so references to those are checked like any other.
 
 -}
 isArityCheckableNode : Mono.MonoNode -> Bool
@@ -701,12 +721,6 @@ isArityCheckableNode node =
             False
 
         Mono.MonoEnum _ _ ->
-            False
-
-        Mono.MonoExtern _ ->
-            False
-
-        Mono.MonoManagerLeaf _ _ ->
             False
 
         _ ->

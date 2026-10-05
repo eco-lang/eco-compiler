@@ -42,15 +42,14 @@ run:
     2.5.
   - Special values: `isNaN (0.0 / 0.0)` and `isInfinite (1.0 / 0.0)`.
   - Combined: `sin x * sin x + cos x * cos x` at 1.0; a quadratic root built
-    from `negate`, `sqrt`, `/` and a helper `discriminant`; and
-    `Basics.clamp 0.0 1.0 1.5`.
+    from `negate`, `sqrt`, `/` and a helper `discriminant`; and a user-defined
+    `clampF` built from `Basics.min` and `Basics.max`, compared with
+    `Basics.clamp`.
 
 Among what is not tested:
 
   - the value any program computes: the cases only build programs, and
     `expectMonomorphization` does not evaluate them;
-  - a call to a user-defined `clamp`: `clampTest` defines one, but `testValue`
-    calls `Basics.clamp`, so no program calls the module's own;
   - `==`, `/=`, `abs` and `^` on `Float`.
 
 -}
@@ -67,7 +66,9 @@ import Compiler.AST.SourceBuilder
         , pVar
         , qualVarExpr
         , tLambda
+        , tTuple
         , tType
+        , tupleExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -995,10 +996,10 @@ pythagoreanIdentityTest expectFn _ =
 {-| Returns a thunk that applies `expectFn` to a program whose
 `testValue : Float` is `quadraticRoot 1.0 -3.0 2.0`, with two helpers:
 `discriminant a b c` is `b * b - 4.0 * a * c`, and `quadraticRoot a b c` is
-`(negate b + sqrt (discriminant a b c)) / 2.0 * a`.
+`(negate b + sqrt (discriminant a b c)) / (2.0 * a)`.
 
-`/` and `*` have equal precedence and group to the left, so `quadraticRoot`
-divides by 2.0 and then multiplies by `a`; it does not divide by `2.0 * a`. The
+The divisor `2.0 * a` is its own nested `Binops` operand, as a parenthesised
+product parses; a flat chain would group `/` and `*` to the left. The
 `-3.0` is built directly as a negative `Float` literal, which the parser never
 produces; it would parse `-3.0` as a negation.
 
@@ -1046,9 +1047,8 @@ quadraticFormulaTest expectFn _ =
                             )
                       , "/"
                       )
-                    , ( floatExpr 2.0, "*" )
                     ]
-                    (varExpr "a")
+                    (binopsExpr [ ( floatExpr 2.0, "*" ) ] (varExpr "a"))
             }
 
         testValueDef : TypedDef
@@ -1069,19 +1069,17 @@ quadraticFormulaTest expectFn _ =
 
 
 {-| Returns a thunk that applies `expectFn` to a program whose
-`testValue : Float` is `Basics.clamp 0.0 1.0 1.5`.
-
-The program also defines a top-level `clamp lo hi x` as `min hi (max lo x)`, but
-`testValue` names `Basics.clamp`, so nothing calls the module's own `clamp`.
-
+`testValue : ( Float, Float )` is
+`( clampF 0.0 1.0 1.5, Basics.clamp 0.0 1.0 1.5 )`, where the program's own
+`clampF lo hi x` is `min hi (max lo x)`.
 -}
 clampTest : (Src.Module -> Expectation) -> (() -> Expectation)
 clampTest expectFn _ =
     let
-        -- clamp : Float -> Float -> Float -> Float
+        -- clampF : Float -> Float -> Float -> Float
         clampDef : TypedDef
         clampDef =
-            { name = "clamp"
+            { name = "clampF"
             , args = [ pVar "lo", pVar "hi", pVar "x" ]
             , tipe =
                 tLambda (tType "Float" [])
@@ -1099,8 +1097,11 @@ clampTest expectFn _ =
         testValueDef =
             { name = "testValue"
             , args = []
-            , tipe = tType "Float" []
-            , body = callExpr (qualVarExpr "Basics" "clamp") [ floatExpr 0.0, floatExpr 1.0, floatExpr 1.5 ]
+            , tipe = tTuple (tType "Float" []) (tType "Float" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "clampF") [ floatExpr 0.0, floatExpr 1.0, floatExpr 1.5 ])
+                    (callExpr (qualVarExpr "Basics" "clamp") [ floatExpr 0.0, floatExpr 1.0, floatExpr 1.5 ])
             }
 
         modul =

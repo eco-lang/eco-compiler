@@ -6,8 +6,7 @@ into something other than a primitive, does not go unnoticed on any of those
 programs.
 
 `eco.unbox` is the MLIR op that takes a boxed value, of type `!eco.value`, and
-produces the primitive it holds. The rules checked, and the cases that pass
-without being checked, are stated in
+produces the primitive it holds. The rules checked are stated in
 `TestLogic.Generate.CodeGen.EcoUnboxSanity`.
 
 The fixture is the set of source programs built by the case modules that
@@ -18,15 +17,13 @@ What the tests establish:
 
   - `suite`: for each program in the catalogue,
     `TestLogic.TestPipeline.runToMlir` succeeds, and each `eco.unbox` in a
-    top-level `func.func` of the generated MLIR has one operand and one result.
-    Where the checker finds the operand's type, it is `!eco.value` and the
+    top-level `func.func` of the generated MLIR has one operand and one result,
+    the operand is defined in the function with type `!eco.value`, and the
     result type is `i1`, `i16`, `i64` or `f64`.
 
 Among what is not tested:
 
   - programs outside the standard catalogue;
-  - the result type of an `eco.unbox` whose operand's type the checker cannot
-    find;
   - MLIR from the monomorphization engine a default build uses, since
     `runToMlir` uses the substitution engine.
 

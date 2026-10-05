@@ -49,32 +49,32 @@ The numbers in the test names are labels; there are no tests 2, 3 or 5.
     only the member it could see would claim `inc` as the only function
     reaching the result.
   - 6: `mk2 s` returns one of two lambdas written in its body, run with
-    `maxSetSize = 1` and the report on. The report contains `bySigSize=1`, and
-    there is at least one result arrow of `mk2` and every one is `LTop`.
+    `maxSetSize = 1` and the report on. The report's `bySigSize=` count is
+    exactly 1, and there is at least one result arrow of `mk2` and every one
+    is `LTop`.
   - 7: `chain b c f g h = if b then f else (if c then g else h)`, called with
     three different lambdas. The inner hub is a branch of the outer one.
     Some result arrow is a three-member `LSet`, and the parameter arrows are
     exactly three one-member `LSet`s.
   - 8: `choosePair b p q = if b then p else q` over pairs of `Int -> Int`
     functions, called with two tuple literals of lambdas, with the report on.
-    The result tuple has at least one function element, and the report's
-    `degraded=` count is not zero. That shows a degrade somewhere in the
-    program, not necessarily at the hub; the test does not check what the
-    elements' annotations are.
+    Both parameter tuples and the result tuple carry the same two two-member
+    `LSet`s (the hub joined `p` and `q` in both directions), and the report's
+    `degraded=` count is at least 1. The control `firstPairModule`, where
+    `choosePair b p q = p` has no hub, degrades nothing and keeps a
+    one-member `LSet` on every tuple element, so the degrade is the hub's.
   - 9: `useH b hof1 hof2 k = let h = if b then hof1 else hof2 in h k`, where
     `hof1` and `hof2` each take an `Int -> Int`. Flow into a parameter runs
     backwards: `k` flows into `h`'s parameter, and from there into the
     parameters of `hof1` and `hof2`. Across the demand types there are exactly
     two such inner arrows; each is an `LVar`, an `LTop`, or equal to the
-    annotation on `k`'s arrow in some demand type; and neither carries a member
-    found on the arrows of `hof1` or `hof2` themselves. Flow in the wrong
-    direction would put those members there.
+    annotation on `k`'s arrow in some demand type; and neither carries, in an
+    `LSet` or an `LPartial`, a member found on the arrows of `hof1` or `hof2`
+    themselves. Flow in the wrong direction would put those members there.
 
 Among what is not tested: a `case` as a hub; degrades of record and custom
-types; which members a set holds, except in test 9; `LPartial` annotations,
-which the size checks of tests 1a and 7 do not count as a match.
-`applyModule` (a polymorphic `apply`) and `countdownModule` (a tail-recursive
-`countdown` that returns a function) are built but no test uses them.
+types; which members a set holds, except in tests 8 and 9; `LPartial`
+annotations, which the size checks of tests 1a and 7 do not count as a match.
 
 -}
 
@@ -83,7 +83,8 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( binopsExpr
+        ( TypedDef
+        , binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
@@ -205,7 +206,7 @@ suite =
                         in
                         Expect.all
                             [ \() ->
-                                if String.contains "bySigSize=1" report then
+                                if counterOf "bySigSize=" report == 1 then
                                     Expect.pass
 
                                 else
@@ -252,42 +253,68 @@ suite =
                             ()
         , Test.test "8. container degrade: a Tuple hub goes symmetric and the report counts it" <|
             \() ->
-                let
-                    defaults =
-                        Config.defaultLss
-                in
-                case
-                    Pipeline.runSolverMonoWithReport Config.defaultLimits
-                        { defaults | enabled = True }
-                        choosePairModule
-                of
-                    Err msg ->
+                case ( runWithReport choosePairModule, runWithReport firstPairModule ) of
+                    ( Err msg, _ ) ->
                         Expect.fail msg
 
-                    Ok ( graph, maybeReport ) ->
-                        let
-                            report =
-                                Maybe.withDefault "" maybeReport
+                    ( _, Err msg ) ->
+                        Expect.fail msg
 
-                            tupleElementAnnos =
-                                demandsOf "choosePair" graph
-                                    |> List.filterMap deepestRetTuple
-                                    |> List.concatMap identity
+                    ( Ok ( hubGraph, hubReport ), Ok ( ctlGraph, ctlReport ) ) ->
+                        let
+                            hubTuples =
+                                List.concatMap tupleAnnosOnSpine (demandsOf "choosePair" hubGraph)
+
+                            ctlTuples =
+                                List.concatMap tupleAnnosOnSpine (demandsOf "choosePair" ctlGraph)
                         in
                         Expect.all
                             [ \() ->
-                                if List.isEmpty tupleElementAnnos then
-                                    Expect.fail "no tuple element annos found"
+                                -- The hub joins p and q both ways, so both
+                                -- parameters and the result read the same two
+                                -- 2-member sets.
+                                case hubTuples of
+                                    (first :: _) as tuples ->
+                                        if
+                                            List.length tuples
+                                                == 3
+                                                && List.all ((==) first) tuples
+                                                && List.map (annoHasSize 2) first
+                                                == [ True, True ]
+                                        then
+                                            Expect.pass
 
-                                else
-                                    Expect.pass
+                                        else
+                                            Expect.fail ("expected p, q and the result to read the same pair of 2-sets, got: " ++ String.join " / " (List.map describeAnnos tuples))
+
+                                    [] ->
+                                        Expect.fail "no choosePair tuple annos found"
                             , \() ->
-                                -- The report always prints `degraded=`, so the test checks its value, not its presence.
-                                if String.contains "degraded=0" report then
-                                    Expect.fail ("expected a nonzero degrade count, report says: " ++ report)
+                                if counterOf "degraded=" hubReport >= 1 then
+                                    Expect.pass
 
                                 else
+                                    Expect.fail ("expected a nonzero degrade count, report says: " ++ hubReport)
+                            , \() ->
+                                -- Control: without the hub nothing degrades (the
+                                -- tuple-literal arguments do not), and each
+                                -- parameter keeps its own singletons.
+                                if
+                                    counterOf "degraded=" ctlReport
+                                        == 0
+                                        && List.length ctlTuples
+                                        == 3
+                                        && List.all (List.all (annoHasSize 1)) ctlTuples
+                                then
                                     Expect.pass
+
+                                else
+                                    Expect.fail
+                                        ("expected the hub-less control to keep singletons and degrade nothing, got: "
+                                            ++ String.join " / " (List.map describeAnnos ctlTuples)
+                                            ++ " with report "
+                                            ++ ctlReport
+                                        )
                             ]
                             ()
         , Test.test "9. contravariance pin: a HOF param's inner arrow is LTop or carries k — never a k-less non-⊤ set" <|
@@ -340,6 +367,46 @@ run srcModule =
         -- `enabled` is already True in `defaultLss`.
         { defaults | enabled = True }
         srcModule
+
+
+{-| Monomorphizes `srcModule` like `run`, with the lambda-set report on, giving
+the output graph and the report text, empty when the solver returned none.
+-}
+runWithReport : Src.Module -> Result String ( Mono.MonoGraph, String )
+runWithReport srcModule =
+    Pipeline.runSolverMonoWithReport Config.defaultLimits Config.defaultLss srcModule
+        |> Result.map (Tuple.mapSecond (Maybe.withDefault ""))
+
+
+{-| Returns the number written straight after the first occurrence of
+`label` in `report`, where `label` includes the `=`, as in `"degraded="`.
+Gives -1 when `label` does not occur or is not followed by a digit, so a
+`bySigSize=1` check does not also accept 10 to 19.
+-}
+counterOf : String -> String -> Int
+counterOf label report =
+    case String.split label report |> List.drop 1 |> List.head of
+        Just rest ->
+            Maybe.withDefault -1 (String.toInt (String.fromList (takeDigits (String.toList rest))))
+
+        Nothing ->
+            -1
+
+
+{-| Returns the leading decimal digits of `chars`.
+-}
+takeDigits : List Char -> List Char
+takeDigits chars =
+    case chars of
+        c :: rest ->
+            if Char.isDigit c then
+                c :: takeDigits rest
+
+            else
+                []
+
+        [] ->
+            []
 
 
 {-| Returns the demand type of every specialization in `graph` whose global is
@@ -408,15 +475,26 @@ deepestRetAnno t =
             Nothing
 
 
-{-| Returns the head annotations of the function elements of the tuple at the
-end of `t`'s return spine, or `Nothing` when the spine does not end in a tuple.
+{-| Returns, for every tuple argument down `t`'s return spine and the tuple
+the spine ends in, the head annotations of its function elements, in that
+order.
 -}
-deepestRetTuple : Mono.MonoType -> Maybe (List Mono.LambdaSetAnno)
-deepestRetTuple t =
+tupleAnnosOnSpine : Mono.MonoType -> List (List Mono.LambdaSetAnno)
+tupleAnnosOnSpine t =
     case t of
-        Mono.MFunction _ _ _ ret ->
-            deepestRetTuple ret
+        Mono.MFunction _ _ args ret ->
+            List.filterMap tupleFnAnnos args ++ tupleAnnosOnSpine ret
 
+        _ ->
+            List.filterMap tupleFnAnnos [ t ]
+
+
+{-| Returns the head annotations of the function elements of a tuple type, or
+`Nothing` for any other type.
+-}
+tupleFnAnnos : Mono.MonoType -> Maybe (List Mono.LambdaSetAnno)
+tupleFnAnnos t =
+    case t of
         Mono.MTuple _ els ->
             Just
                 (List.filterMap
@@ -529,13 +607,16 @@ hofParamOuterAnnos t =
             []
 
 
-{-| Returns the members an `LSet` lists, and nothing for any other annotation,
-an `LPartial` included.
+{-| Returns the members an `LSet` or an `LPartial` lists, and nothing for
+`LTop` or `LVar`.
 -}
 membersOf : Mono.LambdaSetAnno -> List Int
 membersOf anno =
     case anno of
         Mono.LSet ms ->
+            ms
+
+        Mono.LPartial ms ->
             ms
 
         _ ->
@@ -739,31 +820,55 @@ literals of lambdas and applies the first element of the result to 5.
 -}
 choosePairModule : Src.Module
 choosePairModule =
+    makeModuleWithTypedDefs "Test" choosePairDefs
+
+
+{-| The definitions of `choosePairModule`.
+-}
+choosePairDefs : List TypedDef
+choosePairDefs =
+    [ { name = "choosePair"
+      , args = [ pVar "b", pVar "p", pVar "q" ]
+      , tipe =
+            tLambda (tType "Bool" [])
+                (tLambda (tTuple hInt hInt) (tLambda (tTuple hInt hInt) (tTuple hInt hInt)))
+      , body = ifExpr (varExpr "b") (varExpr "p") (varExpr "q")
+      }
+    , { name = "testValue"
+      , args = []
+      , tipe = tType "Int" []
+      , body =
+            caseFirst
+                (callExpr (varExpr "choosePair")
+                    [ boolExpr True
+                    , tupleExpr
+                        (lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)))
+                        (lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 2)))
+                    , tupleExpr
+                        (lambdaExpr [ pVar "u" ] (binopsExpr [ ( varExpr "u", "+" ) ] (intExpr 3)))
+                        (lambdaExpr [ pVar "v" ] (binopsExpr [ ( varExpr "v", "+" ) ] (intExpr 4)))
+                    ]
+                )
+      }
+    ]
+
+
+{-| The control of test 8: `choosePairModule` with `choosePair b p q = p`,
+so no hub joins `p` and `q`.
+-}
+firstPairModule : Src.Module
+firstPairModule =
     makeModuleWithTypedDefs "Test"
-        [ { name = "choosePair"
-          , args = [ pVar "b", pVar "p", pVar "q" ]
-          , tipe =
-                tLambda (tType "Bool" [])
-                    (tLambda (tTuple hInt hInt) (tLambda (tTuple hInt hInt) (tTuple hInt hInt)))
-          , body = ifExpr (varExpr "b") (varExpr "p") (varExpr "q")
-          }
-        , { name = "testValue"
-          , args = []
-          , tipe = tType "Int" []
-          , body =
-                caseFirst
-                    (callExpr (varExpr "choosePair")
-                        [ boolExpr True
-                        , tupleExpr
-                            (lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)))
-                            (lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 2)))
-                        , tupleExpr
-                            (lambdaExpr [ pVar "u" ] (binopsExpr [ ( varExpr "u", "+" ) ] (intExpr 3)))
-                            (lambdaExpr [ pVar "v" ] (binopsExpr [ ( varExpr "v", "+" ) ] (intExpr 4)))
-                        ]
-                    )
-          }
-        ]
+        (List.map
+            (\def ->
+                if def.name == "choosePair" then
+                    { def | body = varExpr "p" }
+
+                else
+                    def
+            )
+            choosePairDefs
+        )
 
 
 {-| Builds a `case` that applies the first element of `pairExpr`, a pair of

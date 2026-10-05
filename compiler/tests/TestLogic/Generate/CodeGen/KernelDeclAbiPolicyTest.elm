@@ -7,11 +7,11 @@ programs rather than on a hand-picked few.
 A kernel is a function implemented by the runtime rather than compiled from
 Elm. The generated MLIR declares each kernel it uses as a top-level `func.func`
 marked `is_kernel`, and `TestLogic.Generate.CodeGen.KernelDeclAbiPolicy`
-checks those declarations against the backend ABI policy that
-`Compiler.Generate.MLIR.KernelAbi.kernelBackendAbiPolicy` assigns to each
-kernel. That policy is `ElmDerived` for every kernel, and for it the check
-reports nothing, so at present this suite fails only when a program does not
-compile to MLIR.
+checks those declarations against the `ElmDerived` backend ABI policy that
+`Compiler.Generate.MLIR.KernelAbi.kernelBackendAbiPolicy` assigns to every
+kernel: every parameter and result type is `i64`, `f64`, `i16` or
+`!eco.value`, there is one result, and a `_Int`/`_Float`/`_Char` instance
+symbol has a parameter of that primitive type.
 
 The programs are those that `SourceIR.Suite.StandardTestSuites.expectSuite`
 supplies.
@@ -19,10 +19,11 @@ supplies.
 What the tests establish:
 
   - For each program, `expectKernelDeclAbiPolicy` passes: the program compiles
-    to MLIR, and no kernel declaration in it is reported against the policy.
+    to MLIR, and every kernel declaration in it, `Elm_Kernel_` or
+    `Eco_Kernel_`, has types the `ElmDerived` policy can produce.
 
-Among what is not tested: the argument and result types of any kernel
-declaration, and programs outside the standard catalogue.
+Among what is not tested: that a kernel's declared types match its call sites,
+and programs outside the standard catalogue.
 
 -}
 

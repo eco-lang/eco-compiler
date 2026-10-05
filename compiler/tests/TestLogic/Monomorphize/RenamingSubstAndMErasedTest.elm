@@ -1,25 +1,17 @@
 module TestLogic.Monomorphize.RenamingSubstAndMErasedTest exposing (suite)
 
-{-| Runs the substitution engine on three small programs, so that a change
-making it return an error on one of them fails a test here.
+{-| Runs the substitution engine on three small programs and checks the types
+it gives them: no residual number variable anywhere, and the concrete types
+that the programs' annotations fix.
 
 The programs are monomorphized with `TestLogic.TestPipeline.runToMono`, which
 uses the substitution engine (`Compiler.Monomorphize.Monomorphize`), not the
-solver engine the compiler uses by default. A _specialization_ is one copy of a
-definition, held as a node of the resulting graph. Call a specialization _fully
-monomorphic_ when its own type holds no type variable (`MVar`) at all. A
-_number variable_ is an `MVar _ CNumber`, a type variable constrained to
-`number` that has not been resolved; an `MVar _ CEcoValue` is an unconstrained
-one, which may survive monomorphization as a boxed value.
-
-Each test looks for number variables inside the fully monomorphic
-`MonoDefine` and `MonoTailFunc` specializations. Despite the names
-(`findCEcoValueInFullyMonomorphicSpecs`, "has no CEcoValue"), a `CEcoValue`
-variable is never reported. The check cannot fail: the substitution engine ends
-with `Compiler.Monomorphize.Prune.pruneUnreachableSpecs`, which turns every
-number variable in the kept nodes' types into `MInt` and crashes if one
-remains. So each test passes exactly when `runToMono` returns `Ok`, and a
-leftover number variable would show as a crash, not a test failure.
+solver engine the compiler uses by default. A _number variable_ is an
+`MVar _ CNumber`, a type variable constrained to `number` that has not been
+resolved; it must not reach code generation. An `MVar _ CEcoValue` is an
+unconstrained one, which may survive monomorphization as a boxed value: the
+let-bound record `r` of the first program and the element type `a` of the
+third keep one, and that is not checked against.
 
 The fixtures are built with `makeModuleWithTypedDefs` as module `Test`, and
 every top-level definition is annotated. The test pipeline adds a `main` that
@@ -35,15 +27,20 @@ uses `testValue`, which is what makes the definitions reachable.
     `myFoldl (\entry acc -> acc + 1) 0 []` by `testValue : Int`. Nothing in
     the program fixes the element type `a`.
 
-Each of the three tests runs its fixture through `runToMono`, fails with the
-pipeline's message on `Err`, and otherwise fails if the walk reports a number
-variable, which it cannot.
+Each test runs its fixture through `runToMono`, fails with the pipeline's
+message on `Err`, and checks with
+`TestLogic.Monomorphize.NoCEcoValueInUserFunctions` that no node type,
+expression type or parameter type in the graph holds a number variable. It
+then checks, ignoring lambda-set annotations:
 
-Among what is not tested: the solver engine; `CEcoValue` variables anywhere;
-specializations whose own type holds a variable; the types of expressions
-nested under anything other than a closure, a call or a let (case and if
-branches, record fields, list and tuple elements); closure captures; and the
-actual MonoTypes the specializations receive.
+  - the first program's call through `r.fn` has result type `Int`;
+  - `makeAdder` has one specialization, of type `Int -> Int -> ( Int, Int )`;
+  - `myFoldl` has one specialization, of type
+    `(a -> Int -> Int) -> Int -> List a -> Int` with `a` a `CEcoValue`
+    variable: `b` is fixed to `Int` even though `a` is not fixed.
+
+Among what is not tested: the solver engine, and the types of anything other
+than the positions listed.
 
 -}
 
@@ -73,10 +70,11 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
-import Compiler.Data.Id as Id
-import Dict
+import Compiler.AST.TypeIds as TypeIds
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.Monomorphize.NoCEcoValueInUserFunctions as NoNumberVars
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -84,10 +82,10 @@ import TestLogic.TestPipeline as Pipeline
 -}
 suite : Test
 suite =
-    Test.describe "Renaming substitution alignment & CEcoValue poisoning"
-        [ Test.test "Bug 1: polymorphic identity in record field has no CEcoValue" <|
+    Test.describe "Renaming substitution alignment & number-variable closing"
+        [ Test.test "Bug 1: polymorphic identity in record field: the call through it is Int" <|
             \_ -> checkIdentityInRecordField
-        , Test.test "Bug 1: makeAdder curried call has no CEcoValue" <|
+        , Test.test "Bug 1: makeAdder curried call is specialized at Int -> Int -> ( Int, Int )" <|
             \_ -> checkMakeAdderCurried
         , Test.test "Bug 2: fold with empty list retains concrete types" <|
             \_ -> checkFoldWithEmptyList
@@ -131,28 +129,21 @@ identityInRecordModule =
         ]
 
 
-{-| The expectation that `identityInRecordModule` monomorphizes and that
-`findCEcoValueInFullyMonomorphicSpecs` reports nothing in the graph.
+{-| The expectation that `identityInRecordModule` monomorphizes with no residual
+number variable and that every call in `testValue`'s body has result type
+`Int`.
 -}
 checkIdentityInRecordField : Expectation
 checkIdentityInRecordField =
-    case Pipeline.runToMono identityInRecordModule of
-        Err msg ->
-            Expect.fail ("Pipeline failed: " ++ msg)
+    withGraph identityInRecordModule
+        (\graph ->
+            case List.concatMap (Maybe.map callResultTypes >> Maybe.withDefault []) (specBodies "testValue" graph) of
+                [] ->
+                    Expect.fail "no call in testValue — fixture broken"
 
-        Ok { monoGraph } ->
-            let
-                violations =
-                    findCEcoValueInFullyMonomorphicSpecs monoGraph
-            in
-            if List.isEmpty violations then
-                Expect.pass
-
-            else
-                Expect.fail
-                    ("Found CEcoValue in fully monomorphic specs (Bug 1 - renaming disconnect):\n"
-                        ++ String.join "\n" violations
-                    )
+                resultTypes ->
+                    Expect.equal [] (List.filter (\t -> not (Mono.eqKeyLayout t Mono.MInt)) resultTypes)
+        )
 
 
 
@@ -199,28 +190,21 @@ makeAdderModule =
         ]
 
 
-{-| The expectation that `makeAdderModule` monomorphizes and that
-`findCEcoValueInFullyMonomorphicSpecs` reports nothing in the graph.
+{-| The expectation that `makeAdderModule` monomorphizes with no residual number
+variable and that `makeAdder` has one specialization, of type
+`Int -> Int -> ( Int, Int )`.
 -}
 checkMakeAdderCurried : Expectation
 checkMakeAdderCurried =
-    case Pipeline.runToMono makeAdderModule of
-        Err msg ->
-            Expect.fail ("Pipeline failed: " ++ msg)
-
-        Ok { monoGraph } ->
-            let
-                violations =
-                    findCEcoValueInFullyMonomorphicSpecs monoGraph
-            in
-            if List.isEmpty violations then
-                Expect.pass
-
-            else
-                Expect.fail
-                    ("Found CEcoValue in fully monomorphic specs (Bug 1 - curried renaming):\n"
-                        ++ String.join "\n" violations
-                    )
+    withGraph makeAdderModule
+        (\graph ->
+            expectOneSpecOfLayout "makeAdder"
+                (Mono.mFunction Mono.topLegacy
+                    [ Mono.MInt ]
+                    (Mono.mFunction Mono.topLegacy [ Mono.MInt ] (Mono.mTuple [ Mono.MInt, Mono.MInt ]))
+                )
+                graph
+        )
 
 
 
@@ -299,28 +283,46 @@ foldWithEmptyListModule =
         ]
 
 
-{-| The expectation that `foldWithEmptyListModule` monomorphizes and that
-`findCEcoValueInFullyMonomorphicSpecs` reports nothing in the graph.
+{-| The expectation that `foldWithEmptyListModule` monomorphizes with no residual
+number variable and that `myFoldl` has one specialization, of type
+`(a -> Int -> Int) -> Int -> List a -> Int` with one `CEcoValue` variable `a`.
 -}
 checkFoldWithEmptyList : Expectation
 checkFoldWithEmptyList =
-    case Pipeline.runToMono foldWithEmptyListModule of
-        Err msg ->
-            Expect.fail ("Pipeline failed: " ++ msg)
+    withGraph foldWithEmptyListModule
+        (\graph ->
+            case specTypes "myFoldl" graph of
+                [ t ] ->
+                    case List.filterMap ecoVarOf (elementTypes t) of
+                        [ v ] ->
+                            let
+                                a =
+                                    Mono.MVar v Mono.CEcoValue
+                            in
+                            if Mono.eqKeyLayout t (expectedFoldl a) then
+                                Expect.pass
 
-        Ok { monoGraph } ->
-            let
-                violations =
-                    findCEcoValueInFullyMonomorphicSpecs monoGraph
-            in
-            if List.isEmpty violations then
-                Expect.pass
+                            else
+                                Expect.fail ("myFoldl specialized at " ++ Debug.toString t)
 
-            else
-                Expect.fail
-                    ("Found CEcoValue in fully monomorphic specs (Bug 2 - CEcoValue poisoning):\n"
-                        ++ String.join "\n" violations
-                    )
+                        _ ->
+                            Expect.fail ("expected one CEcoValue list element type in " ++ Debug.toString t)
+
+                types ->
+                    Expect.fail ("expected one myFoldl specialization, got " ++ Debug.toString types)
+        )
+
+
+{-| The type `(a -> Int -> Int) -> Int -> List a -> Int`, curried, with
+unknown lambda sets.
+-}
+expectedFoldl : Mono.MonoType -> Mono.MonoType
+expectedFoldl a =
+    let
+        fn arg res =
+            Mono.mFunction Mono.topLegacy [ arg ] res
+    in
+    fn (fn a (fn Mono.MInt Mono.MInt)) (fn Mono.MInt (fn (Mono.mList a) Mono.MInt))
 
 
 
@@ -329,268 +331,130 @@ checkFoldWithEmptyList =
 -- ============================================================================
 
 
-{-| Returns one message for each type in the graph's fully monomorphic
-`MonoDefine` and `MonoTailFunc` nodes that holds a number variable
-(`MVar _ CNumber`), as `findCEcoValueInNode` looks for them.
-
-A node is fully monomorphic when its own type holds no `MVar` of either
-constraint. Removed specializations (`Nothing` in `nodes`) are skipped, and
-each message names its node by its index in `nodes`, which is its SpecId.
-
+{-| Monomorphizes `srcModule` with `runToMono` and passes when the graph holds no
+residual number variable and `check` passes on it. Fails with the pipeline's
+message if `runToMono` fails.
 -}
-findCEcoValueInFullyMonomorphicSpecs : Mono.MonoGraph -> List String
-findCEcoValueInFullyMonomorphicSpecs (Mono.MonoGraph data) =
-    Array.toList data.nodes
-        |> List.indexedMap Tuple.pair
-        |> List.concatMap
-            (\( specId, maybeNode ) ->
-                case maybeNode of
-                    Just node ->
-                        let
-                            keyType =
-                                nodeType node
-                        in
-                        if isFullyMonomorphic keyType then
-                            findCEcoValueInNode specId node
+withGraph : Src.Module -> (Mono.MonoGraph -> Expectation) -> Expectation
+withGraph srcModule check =
+    case Pipeline.runToMono srcModule of
+        Err msg ->
+            Expect.fail ("Pipeline failed: " ++ msg)
 
-                        else
-                            []
-
-                    Nothing ->
-                        []
-            )
+        Ok { monoGraph } ->
+            Expect.all
+                [ \_ -> NoNumberVars.expectNoResidualNumberVars srcModule
+                , \_ -> check monoGraph
+                ]
+                ()
 
 
-{-| Returns whether `monoType` holds no type variable of either constraint.
+{-| Returns the registry type of every specialization of the global named
+`name`.
 -}
-isFullyMonomorphic : Mono.MonoType -> Bool
-isFullyMonomorphic monoType =
-    not (containsAnyMVar monoType)
+specTypes : String -> Mono.MonoGraph -> List Mono.MonoType
+specTypes name (Mono.MonoGraph data) =
+    List.filterMap
+        (\entry ->
+            case entry of
+                Just ( Mono.Global _ n, t ) ->
+                    if n == name then
+                        Just t
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+        )
+        (Array.toList data.registry.reverseMapping)
 
 
-{-| Returns whether `monoType` holds an `MVar` of either constraint at any
-depth.
+{-| Returns, for every specialization of the global named `name`, the body of
+its node when the node is a `MonoDefine` or `MonoTailFunc`.
 -}
-containsAnyMVar : Mono.MonoType -> Bool
-containsAnyMVar monoType =
-    case monoType of
-        Mono.MVar _ _ ->
-            True
+specBodies : String -> Mono.MonoGraph -> List (Maybe Mono.MonoExpr)
+specBodies name (Mono.MonoGraph data) =
+    List.filterMap
+        (\( specId, entry ) ->
+            case entry of
+                Just ( Mono.Global _ n, _ ) ->
+                    if n == name then
+                        case Array.get specId data.nodes of
+                            Just (Just (Mono.MonoDefine body _)) ->
+                                Just (Just body)
 
-        Mono.MList _ inner ->
-            containsAnyMVar inner
+                            Just (Just (Mono.MonoTailFunc _ body _)) ->
+                                Just (Just body)
 
-        Mono.MFunction _ _ args ret ->
-            List.any containsAnyMVar args || containsAnyMVar ret
+                            _ ->
+                                Just Nothing
 
-        Mono.MRecord _ fields ->
-            Dict.foldl (\_ fieldType acc -> acc || containsAnyMVar fieldType) False fields
+                    else
+                        Nothing
 
-        Mono.MCustom _ _ _ args ->
-            List.any containsAnyMVar args
-
-        Mono.MTuple _ elems ->
-            List.any containsAnyMVar elems
-
-        _ ->
-            False
+                _ ->
+                    Nothing
+        )
+        (Array.toIndexedList data.registry.reverseMapping)
 
 
-{-| Returns the number-variable messages for one node, labelled with
-`specId`. A `MonoDefine` contributes its type and its body as
-`findCEcoValueInExpr` walks it; a `MonoTailFunc` also contributes its
-parameter types. Any other kind of node contributes nothing.
+{-| Returns the result type of every call in `expr`, at any depth.
 -}
-findCEcoValueInNode : Int -> Mono.MonoNode -> List String
-findCEcoValueInNode specId node =
-    let
-        ctx =
-            "SpecId " ++ String.fromInt specId
-    in
-    case node of
-        Mono.MonoDefine expr monoType ->
-            collectCEcoValue ctx "node type" monoType
-                ++ findCEcoValueInExpr ctx expr
+callResultTypes : Mono.MonoExpr -> List Mono.MonoType
+callResultTypes expr =
+    MonoTraverse.foldExpr
+        (\e acc ->
+            case e of
+                Mono.MonoCall _ _ _ t _ ->
+                    t :: acc
 
-        Mono.MonoTailFunc params expr monoType ->
-            collectCEcoValue ctx "node type" monoType
-                ++ List.concatMap (\( _, t ) -> collectCEcoValue ctx "param" t) params
-                ++ findCEcoValueInExpr ctx expr
-
-        _ ->
-            []
-
-
-{-| Returns the number-variable messages for `expr`, labelled with `ctx`.
-
-A closure contributes its type, its parameter types and its body, but not its
-captures. A call contributes its result type, the function and the arguments.
-A let contributes its type, its definition and its body. Any other expression
-contributes only its own type, so nothing nested inside it is examined.
-
--}
-findCEcoValueInExpr : String -> Mono.MonoExpr -> List String
-findCEcoValueInExpr ctx expr =
-    case expr of
-        Mono.MonoClosure info body closureType ->
-            collectCEcoValue ctx "closure type" closureType
-                ++ List.concatMap (\( _, t ) -> collectCEcoValue ctx "closure param" t) info.params
-                ++ findCEcoValueInExpr ctx body
-
-        Mono.MonoCall _ func args resultType _ ->
-            collectCEcoValue ctx "call result" resultType
-                ++ findCEcoValueInExpr ctx func
-                ++ List.concatMap (findCEcoValueInExpr ctx) args
-
-        Mono.MonoLet def body letType ->
-            collectCEcoValue ctx "let type" letType
-                ++ findCEcoValueInDefExpr ctx def
-                ++ findCEcoValueInExpr ctx body
-
-        _ ->
-            collectCEcoValue ctx "expr" (Mono.typeOf expr)
-
-
-{-| Returns the number-variable messages for a let definition: the bound
-expression and, for a tail definition, its parameter types.
--}
-findCEcoValueInDefExpr : String -> Mono.MonoDef -> List String
-findCEcoValueInDefExpr ctx def =
-    case def of
-        Mono.MonoDef _ bound ->
-            findCEcoValueInExpr ctx bound
-
-        Mono.MonoTailDef _ params bound ->
-            List.concatMap (\( _, t ) -> collectCEcoValue ctx "taildef param" t) params
-                ++ findCEcoValueInExpr ctx bound
-
-
-{-| Returns one message if `monoType` holds a number variable, naming `ctx`,
-`location`, the variables' ids and the type, and no message otherwise. The
-message calls them "CEcoValue vars", but they are the `CNumber` variables that
-`collectCEcoValueVars` finds.
--}
-collectCEcoValue : String -> String -> Mono.MonoType -> List String
-collectCEcoValue ctx location monoType =
-    let
-        vars =
-            collectCEcoValueVars monoType
-    in
-    if List.isEmpty vars then
+                _ ->
+                    acc
+        )
         []
-
-    else
-        [ ctx ++ " " ++ location ++ ": CEcoValue vars " ++ String.join ", " vars ++ " in " ++ monoTypeToString monoType ]
+        expr
 
 
-{-| Returns the ids of the number variables (`MVar _ CNumber`) in `monoType`,
-one per occurrence, with record fields taken in field-name order.
-
-Despite the name, a `CEcoValue` variable gives nothing: it may survive
-monomorphization as a boxed value, while a number variable should already have
-been closed to `MInt` by `Compiler.Monomorphize.Prune`.
-
+{-| Passes when the global named `name` has exactly one specialization and its
+type equals `expected`, ignoring lambda-set annotations.
 -}
-collectCEcoValueVars : Mono.MonoType -> List String
-collectCEcoValueVars monoType =
-    case monoType of
-        Mono.MVar _ Mono.CEcoValue ->
-            []
+expectOneSpecOfLayout : String -> Mono.MonoType -> Mono.MonoGraph -> Expectation
+expectOneSpecOfLayout name expected graph =
+    case specTypes name graph of
+        [ t ] ->
+            if Mono.eqKeyLayout t expected then
+                Expect.pass
 
-        Mono.MVar mvarId Mono.CNumber ->
-            [ String.fromInt (Id.toComparable mvarId) ]
+            else
+                Expect.fail (name ++ " specialized at " ++ Debug.toString t)
 
+        types ->
+            Expect.fail ("expected one " ++ name ++ " specialization, got " ++ Debug.toString types)
+
+
+{-| Returns the element types of every list type in `t`, at any depth.
+-}
+elementTypes : Mono.MonoType -> List Mono.MonoType
+elementTypes t =
+    case t of
         Mono.MList _ inner ->
-            collectCEcoValueVars inner
+            inner :: elementTypes inner
 
         Mono.MFunction _ _ args ret ->
-            List.concatMap collectCEcoValueVars args ++ collectCEcoValueVars ret
-
-        Mono.MRecord _ fields ->
-            Dict.foldl (\_ fieldType acc -> acc ++ collectCEcoValueVars fieldType) [] fields
-
-        Mono.MCustom _ _ _ args ->
-            List.concatMap collectCEcoValueVars args
-
-        Mono.MTuple _ elems ->
-            List.concatMap collectCEcoValueVars elems
+            List.concatMap elementTypes args ++ elementTypes ret
 
         _ ->
             []
 
 
-{-| Returns the MonoType stored on `node`, for every kind of node.
+{-| Returns the id of `t` when it is a `CEcoValue` variable.
 -}
-nodeType : Mono.MonoNode -> Mono.MonoType
-nodeType node =
-    case node of
-        Mono.MonoDefine _ t ->
-            t
+ecoVarOf : Mono.MonoType -> Maybe TypeIds.MVarId
+ecoVarOf t =
+    case t of
+        Mono.MVar v Mono.CEcoValue ->
+            Just v
 
-        Mono.MonoTailFunc _ _ t ->
-            t
-
-        Mono.MonoCtor _ t ->
-            t
-
-        Mono.MonoEnum _ t ->
-            t
-
-        Mono.MonoExtern t ->
-            t
-
-        Mono.MonoManagerLeaf _ t ->
-            t
-
-        Mono.MonoPortIncoming _ t ->
-            t
-
-        Mono.MonoPortOutgoing _ t ->
-            t
-
-
-{-| Renders `monoType` for a failure message, mostly in the form of the `Mono`
-smart-constructor call that would build it. A record is shown without its
-fields, and a variable by its id alone, without its constraint.
--}
-monoTypeToString : Mono.MonoType -> String
-monoTypeToString monoType =
-    case monoType of
-        Mono.MInt ->
-            "MInt"
-
-        Mono.MFloat ->
-            "MFloat"
-
-        Mono.MBool ->
-            "MBool"
-
-        Mono.MChar ->
-            "MChar"
-
-        Mono.MString ->
-            "MString"
-
-        Mono.MUnit ->
-            "MUnit"
-
-        Mono.MList _ inner ->
-            "Mono.mList (" ++ monoTypeToString inner ++ ")"
-
-        Mono.MFunction _ _ args ret ->
-            "Mono.mFunction ["
-                ++ String.join ", " (List.map monoTypeToString args)
-                ++ "] "
-                ++ monoTypeToString ret
-
-        Mono.MCustom _ _ name args ->
-            "Mono.mCustom " ++ name ++ " [" ++ String.join ", " (List.map monoTypeToString args) ++ "]"
-
-        Mono.MRecord _ _ ->
-            "Mono.mRecord {...}"
-
-        Mono.MTuple _ elems ->
-            "Mono.mTuple [" ++ String.join ", " (List.map monoTypeToString elems) ++ "]"
-
-        Mono.MVar mvarId _ ->
-            "MVar \"" ++ String.fromInt (Id.toComparable mvarId) ++ "\""
+        _ ->
+            Nothing

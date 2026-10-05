@@ -3,13 +3,13 @@ module SourceIR.AccessorFuzzCases exposing (expectSuite)
 {-| Fuzz tests that put record accessors and field access through whatever
 check the caller supplies, on programs that vary from run to run in their field
 names, list lengths, record sizes or field values, rather than only on programs
-fixed in advance. One of the seven tests is the exception, as listed below.
+fixed in advance.
 
 An accessor is a field name written with a leading dot, such as `.name`. It is
 a function that takes a record and returns that field. Field access is the form
 `record.name`, which reads the field in place. The first group of tests passes
-accessors around as function values; the other two groups use field access, and
-build no accessor at all.
+accessors around as function values; the second uses field access only; the
+third has one test of each.
 
 Each test is a `Test.fuzz` whose fuzzer generates one expression. The test
 wraps it with `makeModule "testValue"`, which, as `Compiler.AST.SourceBuilder`
@@ -21,10 +21,13 @@ passing, are up to `expectFn`.
 
 The fixture is generated. Field names come from a fixed list of twelve
 lower-case names, except in the two multi-field programs, which use fixed
-letters and fixed words. Every field that does not hold another record holds
-an integer literal, apart from two fields of one record, which hold a string and
-`Basics.True`. A fuzzed integer can be negative, and `SourceBuilder.intExpr`
-stores it as a negative literal, a form the parser never produces.
+letters and fixed words. In the three accessor-as-function programs each field
+value is an `Int` expression from `SourceIR.Fuzz.TypedExpr` at a depth budget of
+1, so it is a literal or a `let`, `if`, negation or one-branch `case` around
+literals. The chained-access and many-field programs hold integer literals, and
+the last program holds a fuzzed integer, string and `Bool`. A fuzzed integer can
+be negative, and `SourceBuilder.intExpr` stores it as a negative literal, a form
+the parser never produces.
 
 The tests, by the program each one builds:
 
@@ -40,13 +43,12 @@ The tests, by the program each one builds:
   - "Three-level chained access": the same with three nested records.
   - "Access on record with many fields": one field, chosen at random, read from
     a record literal of five to eight fields.
-  - "Multiple accessors on same record": three field accesses on one `let`-bound
-    record, each field of a different type. Every run builds the same program.
+  - "Multiple accessors on same record": three accessors applied directly to one
+    `let`-bound record of three fields, each field of a different type,
+    `( .alpha r, .beta r, .gamma r )`.
 
-Among what is not tested: an accessor applied directly to a record (`.f r`), an
-accessor on a record of more than one field, a field value that is not a
-literal in the accessor and chained-access programs, record update, record
-patterns and type annotations.
+Among what is not tested: a field value that is not a literal in the
+chained-access programs, record update, record patterns and type annotations.
 
 -}
 
@@ -114,9 +116,10 @@ accessorAsFirstClassTests expectFn condStr =
 one field is `f`.
 
 Each field value is an expression `SourceIR.Fuzz.TypedExpr` generates for
-`TInt`, at the depth budget of `scope` less two. With the empty scope of budget
-2 that the tests pass, that budget is 0 and there are no variables, so the value
-is always an integer literal.
+`TInt`, at the depth budget of `scope` less one. With the empty scope of budget
+2 that the tests pass, that budget is 1 and there are no variables, so the value
+is an integer literal or a `let`, `if`, negation or one-branch `case` whose
+parts are literals or the variables those forms bind.
 
 -}
 accessorWithMapFuzzer : Scope -> Fuzzer Src.Expr
@@ -176,8 +179,7 @@ accessorInPipelineFuzzer scope =
 where `x` is a name from `fieldNameFuzzer` and `record` is a record literal
 whose one field is `x`. `applyAccessor` is a local function with no annotation.
 
-The field value is made as in `accessorWithMapFuzzer`, so with the empty scope
-of budget 2 the tests pass it is always an integer literal.
+The field value is made as in `accessorWithMapFuzzer`.
 
 -}
 accessorPassedToFunctionFuzzer : Scope -> Fuzzer Src.Expr
@@ -340,11 +342,11 @@ manyFieldAccessFuzzer =
             )
 
 
-{-| Produces a fuzzer that always gives
-`let r = { alpha = 1, beta = "hello", gamma = Basics.True } in ( r.alpha, r.beta, r.gamma )`:
-three field accesses on one `let`-bound record, reading an integer literal, a
-string and a `Bool`. The field names are fixed and distinct.
-It uses field access, not accessor functions. `scope` is not used.
+{-| Produces a fuzzer for
+`let r = { alpha = n, beta = s, gamma = b } in ( .alpha r, .beta r, .gamma r )`:
+three accessor functions, each applied directly to one `let`-bound record of
+three fields of different types. `n` is a fuzzed integer, `s` one of a few
+fixed strings and `b` a fuzzed `Bool`. The field names are fixed and distinct.
 -}
 multipleAccessorsFuzzer : Fuzzer Src.Expr
 multipleAccessorsFuzzer =
@@ -358,25 +360,30 @@ multipleAccessorsFuzzer =
         fieldC =
             "gamma"
 
-        record =
-            B.recordExpr
-                [ ( fieldA, B.intExpr 1 )
-                , ( fieldB, B.strExpr "hello" )
-                , ( fieldC, B.boolExpr True )
-                ]
-
         recordVar =
             B.varExpr "r"
+
+        build n str bool =
+            B.letExpr
+                [ B.define "r"
+                    []
+                    (B.recordExpr
+                        [ ( fieldA, B.intExpr n )
+                        , ( fieldB, B.strExpr str )
+                        , ( fieldC, B.boolExpr bool )
+                        ]
+                    )
+                ]
+                (B.tuple3Expr
+                    (B.callExpr (B.accessorExpr fieldA) [ recordVar ])
+                    (B.callExpr (B.accessorExpr fieldB) [ recordVar ])
+                    (B.callExpr (B.accessorExpr fieldC) [ recordVar ])
+                )
     in
-    Fuzz.constant
-        (B.letExpr
-            [ B.define "r" [] record ]
-            (B.tuple3Expr
-                (B.accessExpr recordVar fieldA)
-                (B.accessExpr recordVar fieldB)
-                (B.accessExpr recordVar fieldC)
-            )
-        )
+    Fuzz.map3 build
+        Fuzz.int
+        (Fuzz.oneOfValues [ "", "hello", "a b c" ])
+        Fuzz.bool
 
 
 
@@ -419,7 +426,7 @@ generateFieldNames count =
 
 {-| Produces a fuzzer for a record literal whose one field is `fieldName`,
 holding an expression that `SourceIR.Fuzz.TypedExpr` generates for
-`fieldType`, at the depth budget of `scope` less one.
+`fieldType` in `scope`. The callers pass their own scope with one less budget.
 
 The record has no other field, so records made with the same name and type all
 have the same type and can share a list.
@@ -427,7 +434,7 @@ have the same type and can share a list.
 -}
 recordWithFieldFuzzer : Scope -> Name -> SimpleType -> Fuzzer Src.Expr
 recordWithFieldFuzzer scope fieldName fieldType =
-    TE.exprFuzzerForType (decrementDepth scope) fieldType
+    TE.exprFuzzerForType scope fieldType
         |> Fuzz.map
             (\fieldValue ->
                 B.recordExpr [ ( fieldName, fieldValue ) ]

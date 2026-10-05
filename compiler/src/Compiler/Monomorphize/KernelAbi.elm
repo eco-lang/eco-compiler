@@ -1,6 +1,6 @@
 module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
-    , canTypeToMonoType_preserveVars
+    , canTypeToMonoType_preserveVars, remapEcoVarsFresh
     , suffixSelectingKernels, comparePair
     , freeVarIds
     , alwaysPolymorphicModules, hasAnyFreeVar
@@ -33,7 +33,7 @@ kernel instantiation to a C symbol and `MlirType` ABI lives in
 
 # Type Converters
 
-@docs canTypeToMonoType_preserveVars
+@docs canTypeToMonoType_preserveVars, remapEcoVarsFresh
 
 
 # Suffix-Selecting Kernels
@@ -460,3 +460,115 @@ convertTType convert env canonical name args =
 
     else
         ( Mono.mCustom canonical name monoArgs, env1 )
+
+
+{-| Replace every `MVar _ CEcoValue` in a kernel ABI with a fresh id (one per
+distinct source id, sharing preserved), starting at `nextId0`, and return the
+next unused id.
+
+The variables of a preserved-vars kernel ABI are layout placeholders (always
+boxed). Kept at their source ids they can be number-tainted (`superVars`) by
+the program's own unification, and `Compiler.Monomorphize.Prune` would then
+close them to `MInt`; fresh ids make them immune (MONO\_009 for `Debug`).
+Both monomorphization engines use this.
+
+-}
+remapEcoVarsFresh : MVarId -> Mono.MonoType -> ( Mono.MonoType, MVarId )
+remapEcoVarsFresh nextId0 abiType =
+    let
+        go t ( mapping, nextId ) =
+            case t of
+                Mono.MVar mid Mono.CEcoValue ->
+                    case Dict.get (Id.toComparable mid) mapping of
+                        Just fresh ->
+                            ( Mono.MVar fresh Mono.CEcoValue, ( mapping, nextId ) )
+
+                        Nothing ->
+                            ( Mono.MVar nextId Mono.CEcoValue
+                            , ( Dict.insert (Id.toComparable mid) nextId mapping, Id.succ nextId )
+                            )
+
+                Mono.MVar _ _ ->
+                    ( t, ( mapping, nextId ) )
+
+                Mono.MFunction _ anno args r ->
+                    let
+                        ( args1, acc1 ) =
+                            List.foldr
+                                (\a ( accL, accS ) ->
+                                    let
+                                        ( a1, accS1 ) =
+                                            go a accS
+                                    in
+                                    ( a1 :: accL, accS1 )
+                                )
+                                ( [], ( mapping, nextId ) )
+                                args
+
+                        ( r1, acc2 ) =
+                            go r acc1
+                    in
+                    ( Mono.mFunction anno args1 r1, acc2 )
+
+                Mono.MList _ e ->
+                    let
+                        ( e1, acc1 ) =
+                            go e ( mapping, nextId )
+                    in
+                    ( Mono.mList e1, acc1 )
+
+                Mono.MTuple _ es ->
+                    let
+                        ( es1, acc1 ) =
+                            List.foldr
+                                (\a ( accL, accS ) ->
+                                    let
+                                        ( a1, accS1 ) =
+                                            go a accS
+                                    in
+                                    ( a1 :: accL, accS1 )
+                                )
+                                ( [], ( mapping, nextId ) )
+                                es
+                    in
+                    ( Mono.mTuple es1, acc1 )
+
+                Mono.MCustom _ h n args ->
+                    let
+                        ( args1, acc1 ) =
+                            List.foldr
+                                (\a ( accL, accS ) ->
+                                    let
+                                        ( a1, accS1 ) =
+                                            go a accS
+                                    in
+                                    ( a1 :: accL, accS1 )
+                                )
+                                ( [], ( mapping, nextId ) )
+                                args
+                    in
+                    ( Mono.mCustom h n args1, acc1 )
+
+                Mono.MRecord _ fields ->
+                    let
+                        ( fields1, acc1 ) =
+                            Dict.foldr
+                                (\k v ( accD, accS ) ->
+                                    let
+                                        ( v1, accS1 ) =
+                                            go v accS
+                                    in
+                                    ( Dict.insert k v1 accD, accS1 )
+                                )
+                                ( Dict.empty, ( mapping, nextId ) )
+                                fields
+                    in
+                    ( Mono.mRecord fields1, acc1 )
+
+                _ ->
+                    ( t, ( mapping, nextId ) )
+
+        ( result, ( _, finalNext ) ) =
+            go abiType ( Dict.empty, nextId0 )
+    in
+    ( result, finalNext )

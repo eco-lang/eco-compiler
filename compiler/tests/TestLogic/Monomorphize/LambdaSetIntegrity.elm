@@ -1,4 +1,4 @@
-module TestLogic.Monomorphize.LambdaSetIntegrity exposing (expectLambdaSetIntegrity, expectLambdaSetIntegrityArrowId)
+module TestLogic.Monomorphize.LambdaSetIntegrity exposing (expectLambdaSetIntegrity, expectLambdaSetIntegrityBeforeOpt)
 
 {-| Checks that no closure in a monomorphized program is missing from the
 lambda set its own type claims for it.
@@ -12,11 +12,13 @@ A closure whose own member id is missing from the `LSet` on its type is a
 _lost member_, and such a pass treats calls to it as calls to something else.
 The failure messages name this check `LSS_002`.
 
-The check compiles the test program it is given with
+Both checks compile the test program they are given with
 `TestLogic.TestPipeline.runToGlobalOptLssOn`: the solver engine with
 lambda-set specialization on, then the post-monomorphization inliner and
-global optimization. It inspects `optimizedMonoGraph`, the graph those last
-two passes produce.
+global optimization. `expectLambdaSetIntegrity` inspects `optimizedMonoGraph`,
+the graph those last two passes produce, and
+`expectLambdaSetIntegrityBeforeOpt` inspects `monoGraph`, the graph the solver
+engine produced before them.
 
 In every node of that graph it visits every closure (`MonoClosure`), including
 closures nested in other closures' bodies and captures, in let definitions and
@@ -35,8 +37,7 @@ Among what is not checked:
     inliner builds for a partial inline;
   - whether an `LSet` holds a member that cannot actually flow there;
   - annotations on arrows other than the head of a closure's own type, and on
-    function values that are not closures, such as references to globals;
-  - the graph as it was before the inliner and global optimization.
+    function values that are not closures, such as references to globals.
 
 -}
 
@@ -56,33 +57,33 @@ one line per lost member.
 -}
 expectLambdaSetIntegrity : Src.Module -> Expect.Expectation
 expectLambdaSetIntegrity =
-    integrityWith Pipeline.runToGlobalOptLssOn
+    integrityWith .optimizedMonoGraph
 
 
-{-| Does what `expectLambdaSetIntegrity` does, through
-`runToGlobalOptLssArrowIdOn`. `TestLogic.TestPipeline` binds that name to the
-same function as `runToGlobalOptLssOn`, so the two checks compile and inspect
-the program identically.
+{-| Does what `expectLambdaSetIntegrity` does, on the graph as the solver engine
+produced it, before the inliner and global optimization (the `monoGraph` of
+`runToGlobalOptLssOn`).
 -}
-expectLambdaSetIntegrityArrowId : Src.Module -> Expect.Expectation
-expectLambdaSetIntegrityArrowId =
-    integrityWith Pipeline.runToGlobalOptLssArrowIdOn
+expectLambdaSetIntegrityBeforeOpt : Src.Module -> Expect.Expectation
+expectLambdaSetIntegrityBeforeOpt =
+    integrityWith .monoGraph
 
 
-{-| Runs `runner` on `srcModule` and passes when its `optimizedMonoGraph` has
-no lost members. It fails with the runner's message when the runner fails, and
-otherwise with the violation messages joined one per line.
+{-| Compiles `srcModule` with `runToGlobalOptLssOn` and passes when the graph
+`pick` takes from the result has no lost members. It fails with the pipeline's
+message when compilation fails, and otherwise with the violation messages
+joined one per line.
 -}
-integrityWith : (Src.Module -> Result String Pipeline.GlobalOptArtifacts) -> Src.Module -> Expect.Expectation
-integrityWith runner srcModule =
-    case runner srcModule of
+integrityWith : (Pipeline.GlobalOptArtifacts -> Mono.MonoGraph) -> Src.Module -> Expect.Expectation
+integrityWith pick srcModule =
+    case Pipeline.runToGlobalOptLssOn srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok { optimizedMonoGraph } ->
+        Ok artifacts ->
             let
                 issues =
-                    collectViolations optimizedMonoGraph
+                    collectViolations (pick artifacts)
             in
             if List.isEmpty issues then
                 Expect.pass
@@ -157,8 +158,8 @@ checkExprTree specId root acc =
 member id is missing from the `LSet` at the head of its own type. Any other
 expression or annotation leaves `acc` unchanged.
 
-The message labels the member id `srcLambda` even when it is the closure's
-`lssMember`.
+The message gives the member id checked and, separately, the closure's
+`srcLambda` id; the two differ whenever the closure has an `lssMember`.
 
 -}
 checkOne : Int -> Mono.MonoExpr -> List String -> List String
@@ -196,9 +197,11 @@ checkOne specId expr acc =
                             else
                                 ("LSS_002 violation in spec "
                                     ++ String.fromInt specId
-                                    ++ ": closure with srcLambda #"
+                                    ++ ": closure with member "
                                     ++ String.fromInt mid
-                                    ++ " has head annotation LSet ["
+                                    ++ " (srcLambda #"
+                                    ++ String.fromInt (Id.toComparable m)
+                                    ++ ") has head annotation LSet ["
                                     ++ String.join "," (List.map String.fromInt members)
                                     ++ "] which does not contain it"
                                 )

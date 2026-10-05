@@ -2,24 +2,30 @@ module TestLogic.Generate.CodeGen.KernelDeclAbiPolicy exposing (expectKernelDecl
 
 {-| A kernel is a function implemented by the runtime rather than in Elm, and
 the generated MLIR declares kernels as top-level `func.func` ops marked
-`is_kernel`. This module checks those declarations against the backend
-ABI policy that `Compiler.Generate.MLIR.KernelAbi.kernelBackendAbiPolicy`
-assigns to each kernel.
+`is_kernel`. This module checks the types on those declarations against the
+backend ABI policy (KERN\_006).
 
+`Compiler.Generate.MLIR.KernelAbi.kernelBackendAbiPolicy` is `ElmDerived` for
+every kernel: each parameter and the result get `Types.monoTypeToAbi` of their
+Mono type. That function only ever yields `i64` (Int), `f64` (Float), `i16`
+(Char) or `!eco.value` (everything else, Bool included, REP\_ABI\_001). So
 `expectKernelDeclAbiPolicy` compiles a source module to MLIR, takes every
-top-level `func.func` whose `is_kernel` attribute is true, and reads the
-kernel's home module and name from its `sym_name`. A symbol of the form
-`Elm_Kernel_<home>_<name>` or `eco_Elm_Kernel_<home>_<name>` is parsed, where
-`<home>` runs to the first underscore and `<name>` is the rest. A declaration
-with no `sym_name`, or with a symbol in any other form, such as one starting
-`Eco_Kernel_`, is skipped.
+top-level `func.func` whose `is_kernel` attribute is true, whatever its symbol
+prefix (`Elm_Kernel_` or `Eco_Kernel_`), and reports a declaration
 
-The policy has the single value `ElmDerived`, and for it this check reports
-nothing. So the expectation passes whenever compilation succeeds, and no
-declaration's types are examined.
+  - that has no `function_type` attribute, or one that is not a function type,
+  - whose function type does not have exactly one result,
+  - with a parameter or result type outside `i64`, `f64`, `i16` and
+    `!eco.value` (an `i1` Bool, for instance), or
+  - whose symbol carries one of the per-instance primitive suffixes `_Int`,
+    `_Float` or `_Char` that `KernelAbi.kernelInstanceSymbol` adds, but has no
+    parameter of the matching primitive type `i64`, `f64` or `i16`. Every
+    suffixed instance is chosen because one of its parameters is that
+    primitive, and `ElmDerived` must then type that parameter unboxed.
 
-Among what is not tested: the argument and result types of any kernel
-declaration.
+Among what is not tested: which parameter the suffix refers to, that an
+unsuffixed kernel's types match the Mono types at its call sites (that is
+`KernelDeclInstanceConsistency`), and the LLVM lowering of the declarations.
 
 @docs expectKernelDeclAbiPolicy
 
@@ -28,25 +34,23 @@ declaration.
 import Compiler.AST.Source as Src
 import Compiler.Generate.MLIR.KernelAbi exposing (KernelBackendAbiPolicy(..), kernelBackendAbiPolicy)
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , getBoolAttr
         , getStringAttr
+        , getTypeAttr
         , violationsToExpectation
         )
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
-{-| Returns an expectation that compiles `srcModule` to MLIR and checks each
-top-level kernel declaration whose symbol has the form
-`Elm_Kernel_<home>_<name>` or `eco_Elm_Kernel_<home>_<name>` against
-`Compiler.Generate.MLIR.KernelAbi.kernelBackendAbiPolicy`. Other kernel
-declarations are skipped.
+{-| Returns an expectation that compiles `srcModule` to MLIR and checks the
+type of each top-level kernel declaration against the `ElmDerived` policy, as
+described in the module documentation.
 
-It fails when compilation fails. Otherwise it passes, because the only policy,
-`ElmDerived`, imposes nothing this check tests.
+It fails when compilation fails or when any kernel declaration is reported.
 
 -}
 expectKernelDeclAbiPolicy : Src.Module -> Expectation
@@ -74,57 +78,128 @@ checkKernelDeclAbiPolicy mlirModule =
     List.concatMap checkKernelFunc kernelFuncOps
 
 
-{-| Returns the policy violations of one kernel declaration. This is always the
-empty list: a declaration whose `sym_name` is missing or does not parse is
-skipped, and the `ElmDerived` policy reports nothing.
+{-| Returns the policy violations of one kernel declaration. The case on
+`kernelBackendAbiPolicy` makes this check revisit its rules if a second policy
+is ever added.
 -}
 checkKernelFunc : MlirOp -> List Violation
 checkKernelFunc op =
-    case getStringAttr "sym_name" op of
-        Nothing ->
-            []
-
-        Just symName ->
-            case parseKernelName symName of
-                Nothing ->
-                    []
-
-                Just _ ->
-                    case kernelBackendAbiPolicy of
-                        ElmDerived ->
-                            []
-
-
-{-| Returns the home module and name of a kernel symbol, so
-`Elm_Kernel_Utils_equal` and `eco_Elm_Kernel_Utils_equal` both give
-`( "Utils", "equal" )`.
-
-The home is the text up to the first underscore after the prefix, and the name
-is everything after it, so any suffix such as `_Int` stays in the name. Returns
-`Nothing` for a symbol without one of the two prefixes, or with no underscore
-after the home.
-
--}
-parseKernelName : String -> Maybe ( String, String )
-parseKernelName symName =
     let
-        stripped =
-            if String.startsWith "eco_Elm_Kernel_" symName then
-                String.dropLeft 15 symName
+        symName =
+            getStringAttr "sym_name" op |> Maybe.withDefault "<no sym_name>"
 
-            else if String.startsWith "Elm_Kernel_" symName then
-                String.dropLeft 11 symName
-
-            else
-                ""
+        violation msg =
+            [ { opId = op.id, opName = op.name, message = symName ++ ": " ++ msg } ]
     in
-    case String.split "_" stripped of
-        home :: rest ->
-            if List.isEmpty rest then
-                Nothing
+    case kernelBackendAbiPolicy of
+        ElmDerived ->
+            case getTypeAttr "function_type" op of
+                Just (FunctionType { inputs, results }) ->
+                    case results of
+                        [ result ] ->
+                            let
+                                badTypes =
+                                    List.filter (not << isElmDerivedAbiType) (inputs ++ [ result ])
+                            in
+                            if not (List.isEmpty badTypes) then
+                                violation
+                                    ("kernel ABI type(s) "
+                                        ++ String.join ", " (List.map typeToString badTypes)
+                                        ++ " are not produced by monoTypeToAbi (expected i64, f64, i16 or !eco.value)"
+                                    )
 
-            else
-                Just ( home, String.join "_" rest )
+                            else
+                                case suffixPrimitive symName of
+                                    Just ( suffix, prim ) ->
+                                        if List.member prim inputs then
+                                            []
 
-        [] ->
-            Nothing
+                                        else
+                                            violation
+                                                ("per-instance suffix "
+                                                    ++ suffix
+                                                    ++ " but no "
+                                                    ++ typeToString prim
+                                                    ++ " parameter in ("
+                                                    ++ String.join ", " (List.map typeToString inputs)
+                                                    ++ ")"
+                                                )
+
+                                    Nothing ->
+                                        []
+
+                        _ ->
+                            violation ("expected exactly one result, got " ++ String.fromInt (List.length results))
+
+                Just other ->
+                    violation ("function_type is not a function type: " ++ typeToString other)
+
+                Nothing ->
+                    violation "missing function_type attribute"
+
+
+{-| Whether `t` is in the image of `Types.monoTypeToAbi`.
+-}
+isElmDerivedAbiType : MlirType -> Bool
+isElmDerivedAbiType t =
+    case t of
+        I64 ->
+            True
+
+        F64 ->
+            True
+
+        I16 ->
+            True
+
+        NamedStruct "eco.value" ->
+            True
+
+        _ ->
+            False
+
+
+{-| Returns the per-instance primitive suffix of a kernel symbol and the MLIR
+type it stands for, so `Elm_Kernel_Utils_compare_Int` gives `( "_Int", I64 )`.
+-}
+suffixPrimitive : String -> Maybe ( String, MlirType )
+suffixPrimitive symName =
+    if String.endsWith "_Int" symName then
+        Just ( "_Int", I64 )
+
+    else if String.endsWith "_Float" symName then
+        Just ( "_Float", F64 )
+
+    else if String.endsWith "_Char" symName then
+        Just ( "_Char", I16 )
+
+    else
+        Nothing
+
+
+typeToString : MlirType -> String
+typeToString t =
+    case t of
+        I1 ->
+            "i1"
+
+        I8 ->
+            "i8"
+
+        I16 ->
+            "i16"
+
+        I32 ->
+            "i32"
+
+        I64 ->
+            "i64"
+
+        F64 ->
+            "f64"
+
+        NamedStruct name ->
+            "!" ++ name
+
+        FunctionType _ ->
+            "function"

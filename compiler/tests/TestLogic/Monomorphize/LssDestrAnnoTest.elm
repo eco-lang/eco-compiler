@@ -232,13 +232,7 @@ graph before global optimization, or an error message.
 -}
 runWith : Src.Module -> Result String Mono.MonoGraph
 runWith srcModule =
-    let
-        defaults =
-            Config.defaultLss
-    in
-    Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True }
-        srcModule
+    Pipeline.runSolverMonoWithLimits Config.defaultLimits Config.defaultLss srcModule
 
 
 

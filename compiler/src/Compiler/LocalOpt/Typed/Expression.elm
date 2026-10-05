@@ -427,14 +427,18 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             -- This is needed for the monomorphizer to correctly derive the kernel ABI
             Names.registerDebug name debugHome region debugType tvar
 
-        Can.VarOperator _ opHome name (Can.Forall _ funcType) ->
-            Names.registerGlobal region opHome name funcType tvar
+        Can.VarOperator _ opHome name _ ->
+            -- Typed at its use site like any other global reference, not with
+            -- the operator's scheme: the scheme's variables (`number` for `*`)
+            -- would be read as the enclosing definition's variables of the
+            -- same name downstream.
+            Names.registerGlobal region opHome name tipe tvar
 
         Can.Chr chr ->
-            Names.registerKernel Name.utils (TOpt.Chr region chr { tipe = Can.TType ModuleName.basics "Char" [], tvar = tvar })
+            Names.registerKernel Name.utils (TOpt.Chr region chr { tipe = Can.TType ModuleName.char "Char" [], tvar = tvar })
 
         Can.Str str ->
-            Names.pure (TOpt.Str region str { tipe = Can.TType ModuleName.basics "String" [], tvar = tvar })
+            Names.pure (TOpt.Str region str { tipe = Can.TType ModuleName.string "String" [], tvar = tvar })
 
         Can.Int int ->
             -- Use the canonical type `tipe` computed by PostSolve / type inference
@@ -481,7 +485,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
         -- `Can.VarOperator`, not `Can.Binop`, and still reaches the real
         -- definitions — exactly like the `and` / `or` note above. This is a
         -- saturated-application peephole, never a deletion.
-        Can.Binop _ binopHome name (Can.Forall _ funcType) left right ->
+        Can.Binop _ binopHome name _ left right ->
             let
                 optimizeArg =
                     optimize kernelEnv annotations exprTypes exprVars home cycle << TCanBuild.toTypedExpr exprTypes exprVars
@@ -529,15 +533,33 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                         )
 
             else
-                Names.registerGlobal region binopHome name funcType Nothing
+                -- The operator reference is typed at this use, from the type
+                -- checker's types for the two operand occurrences and the
+                -- result type, as every other global reference is; its scheme
+                -- (`number -> number -> number` for `*`) names variables that
+                -- downstream passes would read as the enclosing definition's
+                -- variables of the same name. The operand types come from the
+                -- typed canonical nodes, not the optimized operands: a
+                -- let-bound polymorphic local's optimized reference carries
+                -- the local's generalized type, not its type at this use.
+                let
+                    useType =
+                        Can.tLambda (typedExprType left) (Can.tLambda (typedExprType right) tipe)
+
+                    typedExprType operand =
+                        case TCanBuild.toTypedExpr exprTypes exprVars operand of
+                            A.At _ (TCan.TypedExpr typed) ->
+                                typed.tipe
+                in
+                optimizeArg left
                     |> Names.andThen
-                        (\optFunc ->
-                            optimizeArg left
+                        (\optLeft ->
+                            optimizeArg right
                                 |> Names.andThen
-                                    (\optLeft ->
-                                        optimizeArg right
+                                    (\optRight ->
+                                        Names.registerGlobal region binopHome name useType Nothing
                                             |> Names.map
-                                                (\optRight ->
+                                                (\optFunc ->
                                                     TOpt.Call region optFunc [ optLeft, optRight ] { tipe = tipe, tvar = tvar }
                                                 )
                                     )

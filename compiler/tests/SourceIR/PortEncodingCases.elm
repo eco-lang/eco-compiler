@@ -26,11 +26,9 @@ one that function rejects; the caller decides what is checked.
 
   - Fifteen programs each declare one outgoing port `out`, with value type
     `Int`, `Float`, `Bool`, `String`, `Maybe Int`, `Maybe String`,
-    `List Int`, `List String`, `( Int, String )`, `( Int, ( String, Bool ) )`,
+    `List Int`, `List String`, `( Int, String )`, `( Int, String, Bool )`,
     `{ x : Int, y : Int }`, `{ pos : { x : Int, y : Int } }`,
-    `{ items : List Int }`, `List { x : Int }` or `Maybe { x : Int }`. The
-    case labelled "Encode Tuple3" is the nested pair, not a three-element
-    tuple.
+    `{ items : List Int }`, `List { x : Int }` or `Maybe { x : Int }`.
   - Thirteen programs each declare one incoming port `inp`, with value type
     `Int`, `Float`, `Bool`, `String`, `Maybe Int`, `List Int`,
     `( Int, String )`, `{ x : Int }`, `{ pos : { x : Int } }`,
@@ -42,7 +40,7 @@ one that function rejects; the caller decides what is checked.
     that holds a record and a list of records.
 
 Among what is not tested: a `Json.Encode.Value` or `Json.Decode.Value` value
-type, a three-element tuple, an incoming `Array`, and a program that sends on
+type, an incoming three-element tuple, an incoming `Array`, and a program that sends on
 a port or subscribes to one.
 
 -}
@@ -62,6 +60,7 @@ import Compiler.AST.SourceBuilder
         , tVar
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.Reporting.Annotation as A
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
@@ -285,8 +284,8 @@ encodeTuple2 expectFn _ =
 
 
 {-| Passes `expectFn` a module declaring the outgoing port
-`out : ( Int, ( String, Bool ) ) -> Cmd msg`. The value type is a pair whose
-second element is a pair, because `tTuple` builds only pairs.
+`out : ( Int, String, Bool ) -> Cmd msg`, whose value type is a three-element
+tuple built by `tTuple3`.
 -}
 encodeTuple3 : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeTuple3 expectFn _ =
@@ -294,7 +293,7 @@ encodeTuple3 expectFn _ =
         outPort : PortDef
         outPort =
             { name = "out"
-            , tipe = tLambda (tTuple (tType "Int" []) (tTuple (tType "String" []) (tType "Bool" []))) (tCmd (tVar "msg"))
+            , tipe = tLambda (tTuple3 (tType "Int" []) (tType "String" []) (tType "Bool" [])) (tCmd (tVar "msg"))
             }
 
         modul =
@@ -844,3 +843,15 @@ portWithMultipleRecords expectFn _ =
             makePortModule "testValue" [ outPort ] (intExpr 0)
     in
     expectFn modul
+
+
+{-| Builds the three-element tuple type `( a, b, c )`, which
+`Compiler.AST.SourceBuilder` has no builder for, with empty comment slots.
+-}
+tTuple3 : Src.Type -> Src.Type -> Src.Type -> Src.Type
+tTuple3 a b c =
+    let
+        eol t =
+            ( ( [], [], Nothing ), t )
+    in
+    A.At A.zero (Src.TTuple (eol a) (eol b) [ eol c ])

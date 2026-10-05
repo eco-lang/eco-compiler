@@ -17,6 +17,7 @@ not reported.
 
 import Expect exposing (Expectation)
 import Test.Runner
+import Test.Runner.Failure as Failure
 
 
 {-| One test case: a name for it, and the check to run.
@@ -37,7 +38,8 @@ empty list passes.
 
 Cases run in order, and the first failure ends the run. The failure reported is
 `label: description`, where `description` is the description elm-test gives that
-case's failure; any other detail of the failure is not carried over.
+case's failure, followed by the compared values when the failure carries them
+(see `reasonDetail`). For `Expect.fail` the description is the message itself.
 
 -}
 bulkCheck : List TestCase -> Expectation
@@ -52,4 +54,45 @@ bulkCheck cases =
                     bulkCheck rest
 
                 Just failure ->
-                    Expect.fail (label ++ ": " ++ failure.description)
+                    Expect.fail (label ++ ": " ++ failure.description ++ reasonDetail failure.reason)
+
+
+{-| Returns the values a failure compared, as text to append to its description,
+or `""` when its reason carries none.
+
+A comparison expectation such as `Expect.equal` describes itself only by its
+own name (`"Expect.equal"`) and keeps the values it compared in the reason, so
+without this a failure would be reported with no values.
+
+-}
+reasonDetail : Failure.Reason -> String
+reasonDetail reason =
+    case reason of
+        Failure.Custom ->
+            ""
+
+        Failure.Equality expected actual ->
+            "\n    expected: " ++ expected ++ "\n    actual:   " ++ actual
+
+        Failure.Comparison first second ->
+            "\n    first:  " ++ first ++ "\n    second: " ++ second
+
+        Failure.ListDiff expected actual ->
+            "\n    expected: [" ++ String.join ", " expected ++ "]\n    actual:   [" ++ String.join ", " actual ++ "]"
+
+        Failure.CollectionDiff diff ->
+            "\n    expected: "
+                ++ diff.expected
+                ++ "\n    actual:   "
+                ++ diff.actual
+                ++ "\n    extra:    ["
+                ++ String.join ", " diff.extra
+                ++ "]\n    missing:  ["
+                ++ String.join ", " diff.missing
+                ++ "]"
+
+        Failure.TODO ->
+            ""
+
+        Failure.Invalid _ ->
+            ""

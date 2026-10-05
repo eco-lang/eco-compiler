@@ -22,17 +22,18 @@ What the tests establish, one group per checker, as
     checker counts as callable, and every `MonoTailFunc` has a function type.
   - `expectSpecRegistryComplete`: every SpecId with an entry in the
     specialization registry's `reverseMapping` has a node.
-  - `expectMonoGraphComplete`: only that each program monomorphizes. The
-    group is named for type completeness, but the checker inspects nothing in
-    the graph.
+  - `expectMonoGraphComplete`: every custom type the graph uses, including in
+    the constructor fields of its `ctorShapes` table, has an entry in that
+    table.
   - `expectMonoGraphClosed`: every SpecId named by a `MonoVarGlobal` has a
-    node, and every `MonoVarLocal` is in scope where it occurs, under the
-    checker's scope rules.
+    node, every `MonoVarLocal` is in scope where it occurs (closures see only
+    their parameters and captures, a case's root variable must be in scope),
+    and a `let` definition names a later one only when they are mutually
+    recursive.
 
 Among what is not tested: programs from the `SourceIR` case modules that
-`StandardTestSuites` leaves out; graphs built by the solver engine; that every
-type in the graph is complete; and the references the checkers do not visit,
-such as those held inline in a case's decision tree.
+`StandardTestSuites` leaves out; graphs built by the solver engine; and that a
+`ctorShapes` entry lists all of its type's constructors.
 
 -}
 

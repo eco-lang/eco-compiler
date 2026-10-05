@@ -10,9 +10,9 @@ defined in one of those regions is out of scope in the others. The check is
 `TestLogic.Generate.CodeGen.SafepointRegionScoping.expectSafepointRegionScoping`,
 whose module docstring defines its terms and lists what it leaves out. It
 compiles a program to MLIR and fails if compilation fails, or if an operand of
-a _GC root carrier_ (`eco.call`, `eco.papExtend`, `eco.papCreate` or one of
-five `eco.construct` ops) in a top-level `func.func` is out of scope where the
-op sits.
+a _GC root carrier_ (`eco.call`, `eco.papExtend`, `eco.papCreate`,
+`eco.papCreateGroup`, `eco.to_heap` or one of five `eco.construct` ops) in any
+`func.func` is out of scope where the op sits.
 
 A _GC root hint_ is an extra operand the code generator may append to a
 carrier, naming a value the garbage collector must keep alive across it. The

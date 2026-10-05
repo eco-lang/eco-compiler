@@ -1,27 +1,26 @@
 module TestLogic.Type.PostSolve.GroupBTypesTest exposing (suite)
 
-{-| Tests that the node types PostSolve leaves for two small programs hold no
-type variable whose name starts with a digit.
+{-| Tests that PostSolve types the string, character and float literals and
+the unit values of small programs with their own types, in agreement with the
+solver (POST\_001).
 
-These are the only tests in this suite that run
-`TestLogic.Type.PostSolve.GroupBTypes.expectGroupBTypesValid`, whose
-docstring says what it searches and which names it takes to be solver
-placeholders. As that docstring says, no variable the solver names starts with
-a digit, so a test here fails only when its program does not get through
-PostSolve, or when a digit-named variable reaches a node type some other way.
+These tests run `TestLogic.Type.PostSolve.GroupBTypes.expectGroupBTypesValid`,
+whose docstring says what it checks. Each program holds such literals in a
+different context, so that the placeholder each literal is typed through is
+tied to a different kind of expected type. Each test builds a module with
+`Compiler.AST.SourceBuilder.makeModuleWithDefs`, whose top-level definitions
+have no annotations and which imports only `Basics` and `List`:
 
-Each test builds a module with `Compiler.AST.SourceBuilder.makeModuleWithDefs`,
-whose top-level definitions have no annotations and which imports only
-`Basics` and `List`, and passes it to `expectGroupBTypesValid`:
+  - "literals at top level" uses `s = "hi"`, `c = 'x'`, `f = 1.5` and
+    `u = ()`.
+  - "literals in containers" uses
+    `pairs = [ ( "a", 'b' ), ( "c", 'd' ) ]` and `triple = ( 2.5, (), "e" )`.
+  - "literals as call arguments and branches" uses `greet name = name` and
+    `msg flag = if flag then greet "yes" else "no"`.
+  - "literals in let and case" uses
+    `g n = let z = 0.5 in case n of 0 -> ( z, "zero" ) _ -> ( 1.5, "other" )`.
 
-  - "simple function has resolved type" uses a module `SimpleFunc` with
-    `add x y = x + y`.
-  - "function calling another function" uses a module `CallChain` with
-    `double x = x + x` and `quadruple x = double (double x)`.
-
-Among what is not tested: any program with a string, character, float or unit
-literal, or with a list, tuple, record, `case`, `let`, lambda or type
-annotation.
+Among what is not tested: shader literals, and annotated definitions.
 
 -}
 
@@ -39,38 +38,57 @@ suite =
         ]
 
 
-{-| The two tests, each running one small module through PostSolve.
+{-| The four tests, each running one small module through PostSolve.
 -}
 groupBTests : Test
 groupBTests =
     Test.describe "GroupB type resolution"
-        [ Test.test "simple function has resolved type" <|
+        [ Test.test "literals at top level" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "SimpleFunc"
-                            [ ( "add"
-                              , [ SB.pVar "x", SB.pVar "y" ]
-                              , SB.binopsExpr [ ( SB.varExpr "x", "+" ) ] (SB.varExpr "y")
-                              )
-                            ]
-                in
-                expectGroupBTypesValid modul
-        , Test.test "function calling another function" <|
+                SB.makeModuleWithDefs "TopLiterals"
+                    [ ( "s", [], SB.strExpr "hi" )
+                    , ( "c", [], SB.chrExpr "x" )
+                    , ( "f", [], SB.floatExpr 1.5 )
+                    , ( "u", [], SB.unitExpr )
+                    ]
+                    |> expectGroupBTypesValid
+        , Test.test "literals in containers" <|
             \_ ->
-                let
-                    modul =
-                        SB.makeModuleWithDefs "CallChain"
-                            [ ( "double"
-                              , [ SB.pVar "x" ]
-                              , SB.binopsExpr [ ( SB.varExpr "x", "+" ) ] (SB.varExpr "x")
-                              )
-                            , ( "quadruple"
-                              , [ SB.pVar "x" ]
-                              , SB.callExpr (SB.varExpr "double")
-                                    [ SB.callExpr (SB.varExpr "double") [ SB.varExpr "x" ] ]
-                              )
+                SB.makeModuleWithDefs "ContainerLiterals"
+                    [ ( "pairs"
+                      , []
+                      , SB.listExpr
+                            [ SB.tupleExpr (SB.strExpr "a") (SB.chrExpr "b")
+                            , SB.tupleExpr (SB.strExpr "c") (SB.chrExpr "d")
                             ]
-                in
-                expectGroupBTypesValid modul
+                      )
+                    , ( "triple", [], SB.tuple3Expr (SB.floatExpr 2.5) SB.unitExpr (SB.strExpr "e") )
+                    ]
+                    |> expectGroupBTypesValid
+        , Test.test "literals as call arguments and branches" <|
+            \_ ->
+                SB.makeModuleWithDefs "CallLiterals"
+                    [ ( "greet", [ SB.pVar "name" ], SB.varExpr "name" )
+                    , ( "msg"
+                      , [ SB.pVar "flag" ]
+                      , SB.ifExpr (SB.varExpr "flag")
+                            (SB.callExpr (SB.varExpr "greet") [ SB.strExpr "yes" ])
+                            (SB.strExpr "no")
+                      )
+                    ]
+                    |> expectGroupBTypesValid
+        , Test.test "literals in let and case" <|
+            \_ ->
+                SB.makeModuleWithDefs "LetCaseLiterals"
+                    [ ( "g"
+                      , [ SB.pVar "n" ]
+                      , SB.letExpr [ SB.define "z" [] (SB.floatExpr 0.5) ]
+                            (SB.caseExpr (SB.varExpr "n")
+                                [ ( SB.pInt 0, SB.tupleExpr (SB.varExpr "z") (SB.strExpr "zero") )
+                                , ( SB.pAnything, SB.tupleExpr (SB.floatExpr 1.5) (SB.strExpr "other") )
+                                ]
+                            )
+                      )
+                    ]
+                    |> expectGroupBTypesValid
         ]

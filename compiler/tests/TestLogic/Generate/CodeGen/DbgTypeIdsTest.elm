@@ -18,11 +18,11 @@ What the tests establish:
     `TestLogic.Generate.CodeGen.DbgTypeIds.expectDbgTypeIds`, which passes when
     the program compiles to MLIR and every entry of each `eco.dbg` op's array
     `arg_type_ids` is an integer from 0 to one less than the length of the
-    first top-level type table's `types` array. An `eco.dbg` op carrying an
-    array `arg_type_ids` in a module with no type table, or an empty one,
-    fails.
+    first top-level type table's `types` array. An `eco.dbg` op carrying a
+    non-empty `arg_type_ids` in a module with no type table fails.
 
-A program whose MLIR has no `eco.dbg` op carrying `arg_type_ids` passes.
+A program whose MLIR has no `eco.dbg` op carrying a non-empty `arg_type_ids`
+passes.
 
 Among what is not tested: whether a type ID names the type of the value being
 logged, and anything about the type table beyond the length of its `types`

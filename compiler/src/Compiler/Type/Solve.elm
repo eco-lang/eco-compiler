@@ -116,8 +116,9 @@ runWithIds constraint nodeVars =
                                     traverseDictIO Type.toAnnotation env
                                         |> IO.andThen
                                             (\annotations ->
-                                                -- Convert nodeVars to Can.Types with shared naming
-                                                Type.toCanTypeBatch nodeVars
+                                                -- Convert nodeVars to Can.Types with shared naming,
+                                                -- reserving the names the annotations hold
+                                                Type.toCanTypeBatch (annotationVarNames annotations) nodeVars
                                                     |> IO.andThen
                                                         (\nodeTypes ->
                                                             -- Snapshot the solver state before returning
@@ -1261,3 +1262,10 @@ traverseDictIOWithKey f dict =
     Dict.toList dict
         |> IO.traverseList (\( k, v ) -> f k v |> IO.map (\b -> ( k, b )))
         |> IO.map Dict.fromList
+
+
+{-| Every type variable name the top-level annotations use.
+-}
+annotationVarNames : Dict Name.Name (Can.Annotation Name) -> Dict Name ()
+annotationVarNames annotations =
+    Dict.foldl (\_ (Can.Forall freeVars _) acc -> Dict.union freeVars acc) Dict.empty annotations

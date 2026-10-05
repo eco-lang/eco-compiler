@@ -1125,110 +1125,6 @@ portGlobalContext s =
             ( Engine.crashFailure (EngineBug "specializePort: currentGlobal must be a Global"), s )
 
 
-{-| Replace every `MVar _ CEcoValue` in a kernel ABI with a fresh id (one per
-distinct source id, sharing preserved), returning the next unused id.
--}
-remapEcoVarsFresh : TypeIds.MVarId -> Mono.MonoType -> ( Mono.MonoType, TypeIds.MVarId )
-remapEcoVarsFresh nextId0 abiType =
-    let
-        go t ( mapping, nextId ) =
-            case t of
-                Mono.MVar mid Mono.CEcoValue ->
-                    case Dict.get (Engine.mvarIdKey mid) mapping of
-                        Just fresh ->
-                            ( Mono.MVar fresh Mono.CEcoValue, ( mapping, nextId ) )
-
-                        Nothing ->
-                            ( Mono.MVar nextId Mono.CEcoValue
-                            , ( Dict.insert (Engine.mvarIdKey mid) nextId mapping, Id.succ nextId )
-                            )
-
-                Mono.MVar _ _ ->
-                    ( t, ( mapping, nextId ) )
-
-                Mono.MFunction _ anno args r ->
-                    let
-                        ( args1, acc1 ) =
-                            List.foldr
-                                (\a ( accL, accS ) ->
-                                    let
-                                        ( a1, accS1 ) =
-                                            go a accS
-                                    in
-                                    ( a1 :: accL, accS1 )
-                                )
-                                ( [], ( mapping, nextId ) )
-                                args
-
-                        ( r1, acc2 ) =
-                            go r acc1
-                    in
-                    ( Mono.mFunction anno args1 r1, acc2 )
-
-                Mono.MList _ e ->
-                    let
-                        ( e1, acc1 ) =
-                            go e ( mapping, nextId )
-                    in
-                    ( Mono.mList e1, acc1 )
-
-                Mono.MTuple _ es ->
-                    let
-                        ( es1, acc1 ) =
-                            List.foldr
-                                (\a ( accL, accS ) ->
-                                    let
-                                        ( a1, accS1 ) =
-                                            go a accS
-                                    in
-                                    ( a1 :: accL, accS1 )
-                                )
-                                ( [], ( mapping, nextId ) )
-                                es
-                    in
-                    ( Mono.mTuple es1, acc1 )
-
-                Mono.MCustom _ h n args ->
-                    let
-                        ( args1, acc1 ) =
-                            List.foldr
-                                (\a ( accL, accS ) ->
-                                    let
-                                        ( a1, accS1 ) =
-                                            go a accS
-                                    in
-                                    ( a1 :: accL, accS1 )
-                                )
-                                ( [], ( mapping, nextId ) )
-                                args
-                    in
-                    ( Mono.mCustom h n args1, acc1 )
-
-                Mono.MRecord _ fields ->
-                    let
-                        ( fields1, acc1 ) =
-                            Dict.foldr
-                                (\k v ( accD, accS ) ->
-                                    let
-                                        ( v1, accS1 ) =
-                                            go v accS
-                                    in
-                                    ( Dict.insert k v1 accD, accS1 )
-                                )
-                                ( Dict.empty, ( mapping, nextId ) )
-                                fields
-                    in
-                    ( Mono.mRecord fields1, acc1 )
-
-                _ ->
-                    ( t, ( mapping, nextId ) )
-
-        ( result, ( _, finalNext ) ) =
-            go abiType ( Dict.empty, nextId0 )
-    in
-    ( result, finalNext )
-
-
 monoKind : Mono.MonoType -> String
 monoKind mt =
     case mt of
@@ -3604,7 +3500,8 @@ write it into the first `arity` result-spine arrows of the stashed var
 arrow). The id is a deterministic function of (source lambda, instance tag,
 spec id, item-static tables), and interning is get-or-create by key, so the
 two mints agree by construction (the v4 join measured it: one id per (def,
-ordinal) on every both-sided pair). Ordinal 0 is never tagged. RHSs without a
+ordinal) on every both-sided pair). Ordinal 0 is tagged only inside a tagged
+enclosing instance (`localInstanceTagFor`). RHSs without a
 `SrcLambdaId` take the PAP route (`injectLocalMultiUsePap`) or inject nothing.
 -}
 injectLocalMultiUseMember : Name -> Int -> Vars.Variable -> Engine.S -> Engine.S
@@ -4482,7 +4379,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                                 -- close-to-MInt — the intended same-item taint.
                                                 let
                                                     ( abi2, nextId2 ) =
-                                                        remapEcoVarsFresh sD.nextMVarId monoAfterSubst
+                                                        KernelAbi.remapEcoVarsFresh sD.nextMVarId monoAfterSubst
                                                 in
                                                 ( abi2, { sD | nextMVarId = nextId2 } )
 
@@ -4501,21 +4398,15 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                                     ( abiType, env1 ) =
                                                         KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType
 
-                                                    -- Debug WANTS the taint (it closes to Int like
-                                                    -- the original refreshConstraints); only
-                                                    -- genuinely-generic kernels get taint-proof
-                                                    -- fresh ids. (Suffix-selecting kernels take the
-                                                    -- store-truth branch above and never reach
-                                                    -- here.)
-                                                    remapWanted =
-                                                        Tuple.first kernelId /= "Debug"
-
+                                                    -- Debug kernels included: MONO_009 keeps
+                                                    -- their variables CEcoValue, and a tainted id
+                                                    -- would let Prune close one to MInt, giving
+                                                    -- e.g. Debug.toString an i64 parameter in a
+                                                    -- Float specialization. (Suffix-selecting
+                                                    -- kernels take the store-truth branch above
+                                                    -- and never reach here.)
                                                     ( finalAbi, nextId2 ) =
-                                                        if remapWanted then
-                                                            remapEcoVarsFresh env1.nextId abiType
-
-                                                        else
-                                                            ( abiType, env1.nextId )
+                                                        KernelAbi.remapEcoVarsFresh env1.nextId abiType
                                                 in
                                                 ( finalAbi, { sD | nextMVarId = nextId2 } )
 

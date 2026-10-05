@@ -28,12 +28,8 @@ it:
     float decoders matching those encoders, `bytes`, `string`, `succeed`,
     `fail`, `map` to `map4`, `andThen` and `loop`.
 
-Three things differ from elm/bytes itself. `loop` takes the step function first
-and the initial state second, where elm/bytes takes the state first.
-`Endianness` declares `BE` before `LE`, the reverse of elm/bytes, so the two
-constructor indices are swapped. And `Endianness` is given the `Normal`
-constructor representation, where canonicalizing a declaration whose
-constructors are all nullary chooses `Enum`.
+Every annotation and union present has the type and constructor numbering
+that elm/bytes 1.0.8 gives it.
 
 -}
 
@@ -54,7 +50,8 @@ import Dict exposing (Dict)
 
 {-| Returns the names of the type variables that occur anywhere in `tipe`,
 including a record's extension variable. For an alias it collects from the
-argument types and from the alias body, whether `Holey` or `Filled`.
+argument types only, as `Compiler.Canonicalize.Type` does: a `Holey` body names
+the alias's own parameters, which the alias binds.
 -}
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
@@ -88,17 +85,8 @@ collectFreeVars tipe =
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
                 cs
 
-        Can.TAlias _ _ args aliasType ->
-            let
-                argVars =
-                    List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
-            in
-            case aliasType of
-                Can.Holey t ->
-                    Dict.union argVars (collectFreeVars t)
-
-                Can.Filled t ->
-                    Dict.union argVars (collectFreeVars t)
+        Can.TAlias _ _ args _ ->
+            List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
 
 
 {-| Builds the annotation of `tipe`, quantified over every type variable in it.
@@ -192,7 +180,7 @@ stringType =
 
 
 {-| The interface of the `Bytes` module: the closed type `Bytes`, the open type
-`Endianness` with constructors `BE` and `LE`, and no values.
+`Endianness` with constructors `LE` and `BE`, and no values.
 -}
 bytesInterface : I.Interface
 bytesInterface =
@@ -206,8 +194,9 @@ bytesInterface =
 
 
 {-| The union types of the `Bytes` module, keyed by name. `Bytes` is closed and
-has no constructors. `Endianness` is open, with `BE` at index 0 and `LE` at
-index 1.
+has no constructors. `Endianness` is open, with `LE` at index 0 and `BE` at
+index 1, and is an enumeration (`Can.Enum`), as canonicalizing elm/bytes's
+`type Endianness = LE | BE` gives.
 -}
 bytesUnions : Dict Name I.Union
 bytesUnions =
@@ -220,18 +209,18 @@ bytesUnions =
                 , opts = Can.Normal
                 }
 
-        beC =
-            Can.Ctor { name = "BE", index = Index.first, numArgs = 0, args = [] }
-
         leC =
-            Can.Ctor { name = "LE", index = Index.second, numArgs = 0, args = [] }
+            Can.Ctor { name = "LE", index = Index.first, numArgs = 0, args = [] }
+
+        beC =
+            Can.Ctor { name = "BE", index = Index.second, numArgs = 0, args = [] }
 
         endiannessUnion =
             Can.Union
                 { vars = []
-                , alts = [ beC, leC ]
+                , alts = [ leC, beC ]
                 , numAlts = 2
-                , opts = Can.Normal
+                , opts = Can.Enum
                 }
     in
     Dict.fromList
@@ -351,9 +340,8 @@ open type `Step state a` with constructors `Loop` and `Done`, and annotations
 for `decode`, the integer and float decoders matching those of `Bytes.Encode`,
 `bytes`, `string`, `succeed`, `fail`, `map` to `map4`, `andThen` and `loop`.
 
-Every annotation has the same type as in elm/bytes except `loop`, whose two
-arguments are the other way round:
-`(state -> Decoder (Step state a)) -> state -> Decoder a`.
+Every annotation has the same type as in elm/bytes, including
+`loop : state -> (state -> Decoder (Step state a)) -> Decoder a`.
 
 -}
 bytesDecodeInterface : I.Interface
@@ -409,8 +397,7 @@ bytesDecodeUnions =
 
 
 {-| The annotations of the `Bytes.Decode` values, keyed by name. Each has the
-same type as in elm/bytes except `loop`, which takes the step function before
-the initial state.
+same type as in elm/bytes.
 -}
 bytesDecodeValues : Dict Name (Can.Annotation Name)
 bytesDecodeValues =
@@ -506,8 +493,8 @@ bytesDecodeValues =
             Can.TType bytesDecodeHome "Step" [ stateVar_, aVar ]
 
         loopType =
-            Can.tLambda (Can.tLambda stateVar_ (decoderType stepType))
-                (Can.tLambda stateVar_ decoderA)
+            Can.tLambda stateVar_
+                (Can.tLambda (Can.tLambda stateVar_ (decoderType stepType)) decoderA)
     in
     Dict.fromList
         [ ( "decode", mkAnnotation decodeType )

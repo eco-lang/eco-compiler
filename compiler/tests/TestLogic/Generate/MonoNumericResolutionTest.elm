@@ -1,37 +1,30 @@
 module TestLogic.Generate.MonoNumericResolutionTest exposing (suite)
 
-{-| Monomorphization must leave no number variable in the program it produces.
-A number variable is an `MVar` with the `CNumber` constraint, and it stands for
-an `Int` or a `Float` not yet chosen; the `MonoType` and `Constraint`
-docstrings in `Compiler.AST.Monomorphized` own that rule. This module runs the
-two checks for it in `TestLogic.Generate.MonoNumericResolution` on the programs
-of the standard test catalogue.
+{-| Monomorphization must leave no number variable in the program it hands to
+code generation, and must resolve a number type the same way on both sides of
+a call. A number variable is an `MVar` with the `CNumber` constraint, and it
+stands for an `Int` or a `Float` not yet chosen. This module runs the two
+checks in `TestLogic.Generate.MonoNumericResolution` on the programs of the
+standard test catalogue, those `SourceIR.Suite.StandardTestSuites.expectSuite`
+gathers from its case modules.
 
-The programs are those `SourceIR.Suite.StandardTestSuites.expectSuite` gathers
-from its case modules. Each check monomorphizes a program with
-`TestLogic.TestPipeline.runToMono`, which uses the substitution engine, not the
-engine a default build uses, and stops before global optimization and MLIR
-generation.
+  - `noNumericPolymorphismSuite` applies `expectNoNumericPolymorphism`: the
+    graph after the post-monomorphization inliner and the global optimizer
+    (`TestLogic.TestPipeline.runToGlobalOpt`, what MLIR generation receives)
+    holds no number variable in any type, at any depth.
+  - `numericTypesResolvedSuite` applies `expectNumericTypesResolved`: in the
+    monomorphized graph (`runToMono`), no call passes an `Int` where its
+    callee's type says `Float`, or the reverse. It also runs on
+    `double n = n + n` used as `double 2` and `double 2.5`, whose two
+    specializations must each agree with their calls.
 
-  - `noNumericPolymorphismSuite` applies `expectNoNumericPolymorphism`, which
-    looks for a number variable in the types of nodes, of the expressions in
-    them, of tail function, closure and tail definition parameters, and of
-    `let` definitions, with the exceptions its own docstring lists.
-  - `numericTypesResolvedSuite` applies `expectNumericTypesResolved`, which
-    looks only in the types of call and tail-call arguments.
-
-As the `MonoNumericResolution` docstring explains, the substitution engine
-already closes every number variable these checks can reach, so on a graph
-`runToMono` returns they find nothing. A test here passes whenever its program
-gets through monomorphization in the test pipeline.
-
-Among what is not tested: a number variable inside a tuple or record type or
-in a case branch body held inline in its decision tree, the graph after global
-optimization, the generated MLIR, the engine a default build uses, and the
-`SourceIR` case modules the standard catalogue leaves out.
+Both use the substitution engine. Among what is not tested: tail calls, the
+engine a default build uses, and the `SourceIR` case modules the standard
+catalogue leaves out.
 
 -}
 
+import Compiler.AST.SourceBuilder as SB
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.MonoNumericResolution
@@ -53,8 +46,7 @@ suite =
 
 
 {-| The group that applies `expectNoNumericPolymorphism` to the programs of the
-standard catalogue. Its name says "at MLIR entry", but the graph checked is
-taken before MLIR generation.
+standard catalogue, on the graph MLIR generation receives.
 -}
 noNumericPolymorphismSuite : Test
 noNumericPolymorphismSuite =
@@ -63,12 +55,24 @@ noNumericPolymorphismSuite =
         ]
 
 
-{-| The group that applies `expectNumericTypesResolved`, which inspects only the
-types of call and tail-call arguments, to the programs of the standard
-catalogue.
+{-| The group that applies `expectNumericTypesResolved`, which compares call
+arguments with their parameters, to the programs of the standard catalogue.
 -}
 numericTypesResolvedSuite : Test
 numericTypesResolvedSuite =
     Test.describe "Numeric types fixed at call sites (MONO_008)"
         [ StandardTestSuites.expectSuite expectNumericTypesResolved "has resolved numeric types"
+        , Test.test "a number function used at Int and at Float" <|
+            \_ ->
+                expectNumericTypesResolved
+                    (SB.makeModuleWithDefs "NumBoth"
+                        [ ( "double", [ SB.pVar "n" ], SB.binopsExpr [ ( SB.varExpr "n", "+" ) ] (SB.varExpr "n") )
+                        , ( "testValue"
+                          , []
+                          , SB.tupleExpr
+                                (SB.callExpr (SB.varExpr "double") [ SB.intExpr 2 ])
+                                (SB.callExpr (SB.varExpr "double") [ SB.floatExpr 2.5 ])
+                          )
+                        ]
+                    )
         ]

@@ -30,15 +30,18 @@ reports:
     tree;
   - a `MonoDefine` node whose body is itself a `MonoClosure` with a parameter
     count different from the stage arity of the node's type;
-  - a `MonoTailFunc` node whose parameter count differs from the flattened
-    arity of its type;
+  - a `MonoTailFunc` node whose parameter count differs from the stage arity
+    of its type. The global optimizer re-types a tail function so that its
+    first stage holds exactly its parameters (GOPT\_001,
+    `Staging.Rewriter.flattenTypeToArity`), so a tail function that returns a
+    function has a later stage of its own;
   - a `MonoCall` with more arguments than the flattened arity of its callee's
     type, when that arity is above 0. A call with fewer arguments, a partial
     application, is accepted.
 
 Each message names the SpecId of the node it was found in. A closure that is
-the whole body of a `MonoDefine` is compared with both the node's type and its
-own, so one mismatch there can be reported twice.
+the whole body of a `MonoDefine` is compared with the node's type only when
+that differs from its own type, so one mismatch is reported once.
 
 Among what is not checked:
 
@@ -112,8 +115,8 @@ collectArityIssues (Mono.MonoGraph data) =
 {-| Returns a message for every arity mismatch in `node`, the node at `specId`.
 
 A `MonoDefine` is checked with `checkTypeExprArityConsistency` and then walked;
-a `MonoTailFunc`'s parameter count is compared with the flattened arity of its
-type and its body is walked; a port node's expression is walked. Any other node
+a `MonoTailFunc`'s parameter count is compared with the stage arity of its type
+and its body is walked; a port node's expression is walked. Any other node
 gives nothing.
 
 -}
@@ -134,11 +137,11 @@ checkNodeArity specId node =
                     List.length params
 
                 typeArity =
-                    getFlattenedArity monoType
+                    getStageArity monoType
 
                 arityIssue =
                     if typeArity /= paramCount then
-                        [ context ++ ": MonoTailFunc has " ++ String.fromInt paramCount ++ " params but type has arity " ++ String.fromInt typeArity ]
+                        [ context ++ ": MonoTailFunc has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt typeArity ++ " (GOPT_001 violation)" ]
 
                     else
                         []
@@ -208,28 +211,41 @@ getStageArity monoType =
 
 {-| Returns a message when `expr` is a `MonoClosure` whose parameter count
 differs from the stage arity of `monoType`, the type it is declared with
-outside the expression. Any other expression gives nothing, and nothing inside
-`expr` is examined.
+outside the expression. A closure whose own type is `monoType` gives nothing,
+since `collectExprArityIssues` compares it with its own type already. Any
+other expression gives nothing, and nothing inside `expr` is examined.
 -}
 checkTypeExprArityConsistency : String -> Mono.MonoType -> Mono.MonoExpr -> List String
 checkTypeExprArityConsistency context monoType expr =
     case expr of
-        Mono.MonoClosure closureInfo _ _ ->
-            let
-                paramCount =
-                    List.length closureInfo.params
-
-                stageArity =
-                    getStageArity monoType
-            in
-            if paramCount /= stageArity then
-                [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_001 violation)" ]
+        Mono.MonoClosure closureInfo _ closureType ->
+            if closureType == monoType then
+                []
 
             else
-                []
+                checkClosureAgainst context monoType closureInfo
 
         _ ->
             []
+
+
+{-| Returns a message when the closure described by `closureInfo` has a
+parameter count different from the stage arity of `monoType`.
+-}
+checkClosureAgainst : String -> Mono.MonoType -> Mono.ClosureInfo -> List String
+checkClosureAgainst context monoType closureInfo =
+    let
+        paramCount =
+            List.length closureInfo.params
+
+        stageArity =
+            getStageArity monoType
+    in
+    if paramCount /= stageArity then
+        [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_001 violation)" ]
+
+    else
+        []
 
 
 {-| Returns a message, prefixed with `context`, for every arity mismatch in

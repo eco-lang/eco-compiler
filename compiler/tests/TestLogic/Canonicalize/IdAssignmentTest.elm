@@ -10,8 +10,8 @@ expression and pattern in the canonical AST.
 `TestLogic.Canonicalize.IdAssignment` owns the check and states which ids it
 collects and what it rejects; in short, it fails on a negative id,
 a repeated expression id, a repeated pattern id, or an id used by both an
-expression and a pattern, and it collects pattern ids only from the arguments
-of top-level definitions.
+expression and a pattern, and it collects the ids of every expression and
+pattern in a module's top-level declarations.
 
 `suite` has four parts:
 
@@ -31,9 +31,8 @@ Among what is not tested:
     `KernelCases` and `ForeignCases`. Those modules are built by hand, with ids
     chosen by hand, and never canonicalized, so the last two parts check those
     choices, not the canonicalizer.
-  - The ids of patterns that are not arguments of a top-level definition, and
-    anything outside a module's top-level declarations, which the check does not
-    collect.
+  - Anything outside a module's top-level declarations, which the check does
+    not collect.
   - The programs of `SourceIR.CaseSafepointLeakCases`, which
     `StandardTestSuites` does not include.
 

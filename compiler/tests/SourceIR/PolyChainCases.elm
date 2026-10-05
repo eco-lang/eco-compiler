@@ -36,8 +36,7 @@ arguments, so what matters in a program is its types rather than what it
 computes. The sketches in the docstrings below are Elm source, not the trees
 as built: for example, a constructor with no arguments is built as a call with
 no arguments, which source text cannot express, and a parenthesised argument
-has no `Parens` node around it. The `case` in `sizeTree` and `size`, as sketched
-and as built, has two variable branches, the second of which can never match.
+has no `Parens` node around it.
 
 The fourteen cases fall into four groups:
 
@@ -77,6 +76,8 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
+        , pAnything
+        , pCtor
         , pVar
         , strExpr
         , tLambda
@@ -221,10 +222,10 @@ terms of `a`. The type variable sits inside the custom type `Tree a`.
     sizeTree : Tree a -> Int
     sizeTree t =
         case t of
-            leaf ->
+            Leaf ->
                 0
 
-            node ->
+            Node _ _ _ ->
                 1
 
     testValue : Int
@@ -296,8 +297,8 @@ treeInsertFromPolyCaller expectFn _ =
             , tipe = tLambda (tTree (tVar "a")) tInt
             , body =
                 caseExpr (varExpr "t")
-                    [ ( pVar "leaf", intExpr 0 )
-                    , ( pVar "node", intExpr 1 )
+                    [ ( pCtor "Leaf" [], intExpr 0 )
+                    , ( pCtor "Node" [ pAnything, pAnything, pAnything ], intExpr 1 )
                     ]
             }
 
@@ -517,10 +518,10 @@ the two functions share two.
     size : MyDict k v -> Int
     size d =
         case d of
-            empty ->
+            Empty ->
                 0
 
-            entry ->
+            Entry _ _ _ ->
                 1
 
     testValue : Int
@@ -601,8 +602,8 @@ dictInsertFromPolyCaller expectFn _ =
             , tipe = tLambda (tMyDict (tVar "k") (tVar "v")) tInt
             , body =
                 caseExpr (varExpr "d")
-                    [ ( pVar "empty", intExpr 0 )
-                    , ( pVar "entry", intExpr 1 )
+                    [ ( pCtor "Empty" [], intExpr 0 )
+                    , ( pCtor "Entry" [ pAnything, pAnything, pAnything ], intExpr 1 )
                     ]
             }
 
@@ -854,9 +855,8 @@ nestedWrapperFromPolyCaller expectFn _ =
 
 
 {-| Returns the three cases that insert into a `MyDict` several times in a row
-from `testValue`, each checking its program with `expectFn`. All three use keys
-of the same tuple type: the third case's label speaks of `List String` keys, but
-`dictInsertChainN` ignores the key type it is given.
+from `testValue`, each checking its program with `expectFn`. The first two use
+`( String, Int )` keys and the third `List String` keys.
 -}
 chainedInsertCases : (Src.Module -> Expectation) -> List TestCase
 chainedInsertCases expectFn =
@@ -876,32 +876,45 @@ chainedInsertCases expectFn =
 -}
 dictInsertChain5 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChain5 expectFn _ =
-    dictInsertChainN 5 expectFn
+    dictInsertChainN 5 tupleKey expectFn
 
 
 {-| Applies `expectFn` to the `dictInsertChainN` program with ten inserts.
 -}
 dictInsertChain10 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChain10 expectFn _ =
-    dictInsertChainN 10 expectFn
+    dictInsertChainN 10 tupleKey expectFn
 
 
-{-| Applies `expectFn` to the `dictInsertChainN` program with five inserts. The
-`List String` key type it passes is ignored, so the program is the same as the
-one `dictInsertChain5` checks.
+{-| Applies `expectFn` to the `dictInsertChainN` program with five inserts and
+`List String` keys.
 -}
 dictInsertChainListKey5 : (Src.Module -> Expectation) -> (() -> Expectation)
 dictInsertChainListKey5 expectFn _ =
-    dictInsertChainN 5 expectFn
+    dictInsertChainN 5 listKey expectFn
+
+
+{-| The key of insert `i` in the tuple-key chains, `( "k<i>", i )`.
+-}
+tupleKey : Int -> Src.Expr
+tupleKey i =
+    tupleExpr (strExpr ("k" ++ String.fromInt i)) (intExpr i)
+
+
+{-| The key of insert `i` in the `List String`-key chain, `[ "k<i>" ]`.
+-}
+listKey : Int -> Src.Expr
+listKey i =
+    listExpr [ strExpr ("k" ++ String.fromInt i) ]
 
 
 {-| Applies `expectFn` to a program whose `testValue` inserts `n` entries into an
 empty `MyDict`, each insert taking the previous dictionary, and returns the
 `size` of the last.
 
-The second argument, a key type, is not used. The insert numbered `i`, counting
-from 0, has the key `( "k<i>", i )` and the value `i * 10`, written as integer
-literals. `MyDict`, `insert` and `size` are as in `dictInsertFromPolyCaller`.
+The insert numbered `i`, counting from 0, has the key `keyFor i` and the value
+`i * 10`, written as an integer literal. `MyDict`, `insert` and `size` are as in
+`dictInsertFromPolyCaller`. With `tupleKey` as `keyFor`:
 
     testValue : Int
     testValue =
@@ -920,8 +933,8 @@ literals. `MyDict`, `insert` and `size` are as in `dictInsertFromPolyCaller`.
         size dn
 
 -}
-dictInsertChainN : Int -> (Src.Module -> Expectation) -> Expectation
-dictInsertChainN n expectFn =
+dictInsertChainN : Int -> (Int -> Src.Expr) -> (Src.Module -> Expectation) -> Expectation
+dictInsertChainN n keyFor expectFn =
     let
         tMyDict k v =
             tType "MyDict" [ k, v ]
@@ -973,7 +986,7 @@ dictInsertChainN n expectFn =
                         define currName
                             []
                             (callExpr (varExpr "insert")
-                                [ tupleExpr (strExpr ("k" ++ String.fromInt i)) (intExpr i)
+                                [ keyFor i
                                 , intExpr (i * 10)
                                 , varExpr prevName
                                 ]
@@ -991,8 +1004,8 @@ dictInsertChainN n expectFn =
             , tipe = tLambda (tMyDict (tVar "k") (tVar "v")) tInt
             , body =
                 caseExpr (varExpr "d")
-                    [ ( pVar "empty", intExpr 0 )
-                    , ( pVar "entry", intExpr 1 )
+                    [ ( pCtor "Empty" [], intExpr 0 )
+                    , ( pCtor "Entry" [ pAnything, pAnything, pAnything ], intExpr 1 )
                     ]
             }
 
@@ -1348,13 +1361,6 @@ foldlChain8 expectFn _ =
                 :: List.indexedMap
                     (\i _ ->
                         let
-                            prevName =
-                                if i == 0 then
-                                    "0"
-
-                                else
-                                    "r" ++ String.fromInt i
-
                             currName =
                                 "r" ++ String.fromInt (i + 1)
 
@@ -1363,7 +1369,7 @@ foldlChain8 expectFn _ =
                                     intExpr 0
 
                                 else
-                                    varExpr prevName
+                                    varExpr ("r" ++ String.fromInt i)
                         in
                         define currName
                             []

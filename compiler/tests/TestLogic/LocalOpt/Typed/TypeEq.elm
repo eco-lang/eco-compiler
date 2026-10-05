@@ -16,20 +16,18 @@ comparison where a variable matches anything would accept.
 
 The comparison walks both types together, carrying the renaming found so far
 from one part of the type to the next. Record extension variables, such as
-the `r` in `{ r | x : Int }`, have a renaming of their own, kept apart from
-that of ordinary type variables. So a name used both as an extension variable
-and as a type variable may be paired with different variables in each role.
+the `r` in `{ r | x : Int }`, share that renaming with ordinary type
+variables: a name used in both roles is one variable.
 
 Some differences are not seen at all. The arrow slot a function type carries
 and the indices on record fields are ignored. A named type is identified by
-its package and name, not its module. An alias is compared by its body, with
-its arguments substituted for the body's type variables, so its own name does
-not count; the exception is an alias set against a bare type variable, which
-never matches, whatever the alias's body. An argument is not substituted for a
-record extension variable in the body, so an alias whose parameter is used as
-one, such as `type alias R a = { a | x : Int }`, is compared with that
-parameter's name left in place. An alias argument that the body does not use is
-not compared at all.
+its home (package and module) and name. Aliases are transparent, as they are
+to Elm's type checker: an alias is compared by its expansion, so its own name
+does not count, and an alias argument that its body does not use (a phantom
+parameter) is not compared, since `Tagged Int` and `Tagged String` are the same
+type when `type alias Tagged a = Int`. A `Holey` alias body has the arguments
+substituted for its parameters, record extension variables included; a
+`Filled` body is already expanded and is used as it is.
 
 -}
 
@@ -46,17 +44,12 @@ import Dict exposing (Dict)
 
 
 {-| The renaming found so far between the variables of the left type and those
-of the right, kept in both directions so that it stays one-to-one.
-
-`tvarsL2R` and `tvarsR2L` are for ordinary type variables, and `extL2R` and
-`extR2L` for record extension variables.
-
+of the right, kept in both directions so that it stays one-to-one. It covers
+ordinary type variables and record extension variables alike.
 -}
 type alias AlphaState =
     { tvarsL2R : Dict Name.Name Name.Name
     , tvarsR2L : Dict Name.Name Name.Name
-    , extL2R : Dict Name.Name Name.Name
-    , extR2L : Dict Name.Name Name.Name
     }
 
 
@@ -66,8 +59,6 @@ emptyState : AlphaState
 emptyState =
     { tvarsL2R = Dict.empty
     , tvarsR2L = Dict.empty
-    , extL2R = Dict.empty
-    , extR2L = Dict.empty
     }
 
 
@@ -78,18 +69,14 @@ emptyState =
 
 
 {-| Returns whether `t1` and `t2` are alpha-equivalent: whether a one-to-one
-renaming of type variables, held across every part of the types that is
-compared, turns one into the other. Record extension variables are renamed
-separately from ordinary type variables, so the renaming is one-to-one within
-each kind, not across them.
+renaming of type variables, record extension variables included, held across
+every part of the types that is compared, turns one into the other.
 
 A type variable never matches a concrete type. Its name is not inspected, so a
 constrained variable such as `number` can be paired with an unconstrained one
-such as `a`. Arrow slots, record field indices, the module of a named type and
-the name of an alias are ignored. An alias is compared by its body, except
-that an alias against a bare type variable is never a match. Alias arguments
-are not substituted into record extension variables in the body. An alias
-argument its body does not use is ignored.
+such as `a`. Arrow slots, record field indices and the name of an alias are
+ignored: an alias is compared by its expansion, so an alias argument its body
+does not use is ignored too.
 
 -}
 alphaEqStrict : Can.Type Name -> Can.Type Name -> Bool
@@ -111,14 +98,20 @@ alphaEqStrict t1 t2 =
 {-| Returns the renaming `state` extended by what makes `t1` and `t2`
 alpha-equivalent, or `Nothing` if no extension does.
 
-The type-variable cases come before the alias cases, so an alias against a
-bare type variable fails without its body being looked at. Two non-alias
-types with different outer shapes, such as a tuple against a record, fail.
+The alias cases come first, so an alias is expanded before anything else is
+compared, even against a bare type variable. Two non-alias types with different
+outer shapes, such as a tuple against a record, fail.
 
 -}
 alphaEqStrictHelp : AlphaState -> Can.Type Name -> Can.Type Name -> Maybe AlphaState
 alphaEqStrictHelp state t1 t2 =
     case ( t1, t2 ) of
+        ( Can.TAlias _ _ args1 at1, _ ) ->
+            alphaEqStrictHelp state (unwrapAliasWithSubst args1 at1) t2
+
+        ( _, Can.TAlias _ _ args2 at2 ) ->
+            alphaEqStrictHelp state t1 (unwrapAliasWithSubst args2 at2)
+
         ( Can.TVar a, Can.TVar b ) ->
             matchTVars state a b
 
@@ -153,22 +146,6 @@ alphaEqStrictHelp state t1 t2 =
 
             else
                 Nothing
-
-        ( Can.TAlias _ _ args1 at1, Can.TAlias _ _ args2 at2 ) ->
-            let
-                body1 =
-                    unwrapAliasWithSubst args1 at1
-
-                body2 =
-                    unwrapAliasWithSubst args2 at2
-            in
-            alphaEqStrictHelp state body1 body2
-
-        ( Can.TAlias _ _ args at, other ) ->
-            alphaEqStrictHelp state (unwrapAliasWithSubst args at) other
-
-        ( other, Can.TAlias _ _ args at ) ->
-            alphaEqStrictHelp state other (unwrapAliasWithSubst args at)
 
         _ ->
             Nothing
@@ -277,10 +254,9 @@ alphaEqStrictRecord state fields1 ext1 fields2 ext2 =
             |> Maybe.andThen (\s -> alphaEqStrictFields s keys1 fields1 fields2)
 
 
-{-| Pairs the extension variables of two records as `matchTVars` pairs type
-variables, but in the renaming kept for extension variables. Two closed
-records match with the renaming unchanged; an open record never matches a
-closed one.
+{-| Pairs the extension variables of two records with `matchTVars`, in the
+renaming ordinary type variables use. Two closed records match with the
+renaming unchanged; an open record never matches a closed one.
 -}
 matchExtVars : AlphaState -> Maybe Name.Name -> Maybe Name.Name -> Maybe AlphaState
 matchExtVars state ext1 ext2 =
@@ -289,34 +265,7 @@ matchExtVars state ext1 ext2 =
             Just state
 
         ( Just a, Just b ) ->
-            case ( Dict.get a state.extL2R, Dict.get b state.extR2L ) of
-                ( Just mappedB, Just mappedA ) ->
-                    if mappedB == b && mappedA == a then
-                        Just state
-
-                    else
-                        Nothing
-
-                ( Just mappedB, Nothing ) ->
-                    if mappedB == b then
-                        Just { state | extR2L = Dict.insert b a state.extR2L }
-
-                    else
-                        Nothing
-
-                ( Nothing, Just mappedA ) ->
-                    if mappedA == a then
-                        Just { state | extL2R = Dict.insert a b state.extL2R }
-
-                    else
-                        Nothing
-
-                ( Nothing, Nothing ) ->
-                    Just
-                        { state
-                            | extL2R = Dict.insert a b state.extL2R
-                            , extR2L = Dict.insert b a state.extR2L
-                        }
+            matchTVars state a b
 
         _ ->
             Nothing
@@ -357,37 +306,28 @@ alphaEqStrictFields state keys fields1 fields2 =
 -- ============================================================================
 
 
-{-| Returns the body of an alias with each of its parameters replaced by the
-argument `args` pairs it with.
-
-The substitution is applied to a `Filled` body as well as a `Holey` one. It
-does not reach a record's extension variable.
-
+{-| Returns the expansion of an alias: a `Holey` body with each of its
+parameters replaced by the argument `args` pairs it with, or a `Filled` body,
+which already has the arguments in place, as it is.
 -}
 unwrapAliasWithSubst : List ( Name.Name, Can.Type Name ) -> Can.AliasType Name -> Can.Type Name
 unwrapAliasWithSubst args aliasType =
-    let
-        subst =
-            Dict.fromList args
+    case aliasType of
+        Can.Filled t ->
+            t
 
-        body =
-            case aliasType of
-                Can.Filled t ->
-                    t
-
-                Can.Holey t ->
-                    t
-    in
-    applySubst subst body
+        Can.Holey t ->
+            applySubst (Dict.fromList args) t
 
 
 {-| Returns `tipe` with every type variable named in `subst` replaced by the
 type it maps to, in one pass, so a replacement is not itself substituted
 into.
 
-A record's extension variable is left as it is. A function type is rebuilt
-with no arrow slot, and an alias keeps its body untouched while its arguments
-are substituted.
+A record's extension variable named in `subst` is replaced as
+`substituteExtension` describes. A function type is rebuilt with no arrow
+slot, and an alias keeps its body untouched while its arguments are
+substituted.
 
 -}
 applySubst : Dict Name.Name (Can.Type Name) -> Can.Type Name -> Can.Type Name
@@ -408,9 +348,21 @@ applySubst subst tipe =
             Can.tLambda (applySubst subst a) (applySubst subst b)
 
         Can.TRecord fields ext ->
-            Can.TRecord
-                (Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (applySubst subst t)) fields)
-                ext
+            let
+                substFields =
+                    Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (applySubst subst t)) fields
+            in
+            case ext of
+                Just extName ->
+                    case Dict.get extName subst of
+                        Just replacement ->
+                            substituteExtension substFields extName replacement
+
+                        Nothing ->
+                            Can.TRecord substFields ext
+
+                Nothing ->
+                    Can.TRecord substFields Nothing
 
         Can.TUnit ->
             Can.TUnit
@@ -425,6 +377,28 @@ applySubst subst tipe =
                 at
 
 
+{-| Returns the record `{ ext | fields }` with the type `replacement` put in
+place of its extension variable `ext`. A record replacement contributes its
+fields and its own extension variable, a type variable becomes the new
+extension variable, and an alias is expanded first. Any other replacement
+cannot stand for a record; the record is then returned with `ext` unchanged.
+-}
+substituteExtension : Dict Name.Name (Can.FieldType Name) -> Name.Name -> Can.Type Name -> Can.Type Name
+substituteExtension fields ext replacement =
+    case replacement of
+        Can.TRecord moreFields moreExt ->
+            Can.TRecord (Dict.union fields moreFields) moreExt
+
+        Can.TVar n ->
+            Can.TRecord fields (Just n)
+
+        Can.TAlias _ _ args at ->
+            substituteExtension fields ext (unwrapAliasWithSubst args at)
+
+        _ ->
+            Can.TRecord fields (Just ext)
+
+
 
 -- ============================================================================
 -- CANONICAL TYPE EQUALITY
@@ -432,12 +406,8 @@ applySubst subst tipe =
 
 
 {-| Returns whether two named types, each given as its home module and name,
-are the same for this comparison: same package and same name.
-
-The module within the package is ignored, so two different types that share a
-name in two modules of one package compare equal.
-
+are the same: same package, same module and same name.
 -}
 canonicalTypesEqual : ModuleName.Canonical -> String -> ModuleName.Canonical -> String -> Bool
-canonicalTypesEqual (ModuleName.Canonical pkg1 _) name1 (ModuleName.Canonical pkg2 _) name2 =
-    pkg1 == pkg2 && name1 == name2
+canonicalTypesEqual home1 name1 home2 name2 =
+    home1 == home2 && name1 == name2

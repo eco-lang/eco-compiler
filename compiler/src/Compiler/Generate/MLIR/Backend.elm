@@ -1434,23 +1434,18 @@ buildConstCtorBySpec registry nodes =
                 ( specId + 1
                 , case maybeNode of
                     Just (Mono.MonoCtor shape _) ->
-                        if List.isEmpty shape.fieldTypes && shape.name == "Nothing" then
+                        if List.isEmpty shape.fieldTypes && isMaybeNothing registry specId then
                             Dict.insert specId "Nothing" acc
 
                         else
                             acc
 
                     Just (Mono.MonoEnum _ _) ->
-                        case Registry.lookupSpecKey specId registry of
-                            Just ( Mono.Global _ ctorName, _ ) ->
-                                if ctorName == "Nothing" then
-                                    Dict.insert specId "Nothing" acc
+                        if isMaybeNothing registry specId then
+                            Dict.insert specId "Nothing" acc
 
-                                else
-                                    acc
-
-                            _ ->
-                                acc
+                        else
+                            acc
 
                     _ ->
                         acc
@@ -1461,9 +1456,24 @@ buildConstCtorBySpec registry nodes =
         )
 
 
+{-| Whether the spec `specId` is `elm/core`'s `Maybe.Nothing`, by its
+registry key (module and name), not by its name alone: a program's own
+`Nothing` constructor is an ordinary null-cons constructor.
+-}
+isMaybeNothing : Mono.SpecializationRegistry -> Int -> Bool
+isMaybeNothing registry specId =
+    case Registry.lookupSpecKey specId registry of
+        Just ( Mono.Global home ctorName, _ ) ->
+            ctorName == "Nothing" && CtorTag.isEmbeddedConstantCtor home ctorName
+
+        _ ->
+            False
+
+
 {-| HEAP\_044/CGEN\_079: SpecId → effective tag for every spec that embeds as
 a null-cons constant — nullary `MonoCtor`s and `MonoEnum`s, excluding the
-legacy True/False/Nothing set (their bit patterns predate the mechanism).
+legacy elm/core True/False/Nothing set (their bit patterns predate the
+mechanism; a program's own constructors of those names are ordinary).
 `Expr.generateVarGlobal` consults this to emit the constant directly instead
 of an arity-0 call. Tags are already effective (CtorShape.tag / MonoEnum's
 tag are minted through `CtorTag.effective`); the capacity check runs at the
@@ -1477,16 +1487,21 @@ buildNullConsBySpec registry nodes =
                 ( specId + 1
                 , case maybeNode of
                     Just (Mono.MonoCtor shape _) ->
-                        if List.isEmpty shape.fieldTypes && CtorTag.embedsAsNullCons shape.name then
-                            Dict.insert specId shape.tag acc
+                        case Registry.lookupSpecKey specId registry of
+                            Just ( Mono.Global home _, _ ) ->
+                                if List.isEmpty shape.fieldTypes && CtorTag.embedsAsNullCons home shape.name then
+                                    Dict.insert specId shape.tag acc
 
-                        else
-                            acc
+                                else
+                                    acc
+
+                            _ ->
+                                acc
 
                     Just (Mono.MonoEnum tag _) ->
                         case Registry.lookupSpecKey specId registry of
-                            Just ( Mono.Global _ ctorName, _ ) ->
-                                if CtorTag.embedsAsNullCons ctorName then
+                            Just ( Mono.Global home ctorName, _ ) ->
+                                if CtorTag.embedsAsNullCons home ctorName then
                                     Dict.insert specId tag acc
 
                                 else

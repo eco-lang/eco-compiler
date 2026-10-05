@@ -16,7 +16,7 @@ The fixture is the source text of `Elm.JsArray`, from
 `Elm.Kernel.JsArray`, and of `Array`, from `Compiler.Elm.Source.Array`, which
 imports `Elm.JsArray`, `Basics`, `Bitwise`, `List`, `Maybe` and `Tuple`. Both
 are compiled as modules of elm/core (`Pkg.core`), against
-`extendedTestIfaces`. Where `Array` is compiled it is compiled after
+`testIfaces`. Where `Array` is compiled it is compiled after
 `Elm.JsArray` with `compileModulesInOrder`, which adds the compiled
 `Elm.JsArray` interface to the interfaces `Array` is compiled against.
 
@@ -31,31 +31,30 @@ The tests establish:
   - Compiling `Elm.JsArray` then `Array` succeeds and gives results named
     `Elm.JsArray` and `Array`, in that order.
   - The `Array` result's annotations include `repeat`, `push` and `map`.
-  - The test named for `Array` using the `Elm.JsArray` interface asserts that
-    compiling the two gives two results. `compileModulesInOrder` returns one
-    result per source whenever it succeeds, so this checks nothing the first
-    multi-module test does not.
-  - `monomorphize` succeeds on the `Elm.JsArray` result, and on the `Array`
-    result of compiling the two in order.
-  - `generateMLIRFromResult` gives non-empty text containing `func.func` or
-    `eco.` for the `Elm.JsArray` result, and for the `Array` result of compiling
-    the two in order.
+  - Compiling `Array` on its own, against the mock `Elm.JsArray` (which lacks
+    functions `Array` uses), fails in canonicalization, so the in-order
+    compilation succeeding shows `Array` was compiled against the compiled
+    `Elm.JsArray` interface.
+  - Both pathways infer the same annotations for each module (checked by
+    `compileModule` itself).
+  - `monomorphize` succeeds from each of the `Elm.JsArray` values in
+    `jsArrayEntries`, and, over both compiled modules, from each of the `Array`
+    values in `arrayEntries`.
+  - `generateMLIRFromResult` from `Elm.JsArray.initializeFromList` gives MLIR
+    with a function for that entry, and from `Array.fromList` (over both
+    modules) gives MLIR with functions for `fromList`, `fromListHelp`,
+    `builderToArray` and `treeFromBuilder`.
 
 Among what is not tested: the types in any annotation, only the presence of
-names; whether `Array` was compiled against the compiled `Elm.JsArray`
-interface rather than the mock one in `extendedTestIfaces`; monomorphization
-from any entry point other than the one
-`Compiler.PackageCompilation.monomorphize` chooses, which for `Array` is the
-constructor of its `Builder` record alias; anything in the MLIR beyond the two
-substrings; and any source that fails to compile.
+names; anything in the MLIR beyond those function names; the CSE, CAF dedupe
+and hoisting steps of the build, which `generateMLIRFromResult` does not run;
+and any source that fails to compile.
 
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Interface.Bitwise as Bitwise
-import Compiler.Elm.Interface.Tuple as TupleInterface
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Source.Array as ArraySource
@@ -66,19 +65,14 @@ import Expect
 import Test exposing (Test)
 
 
-{-| The interfaces every module here is compiled against, keyed by module name.
-
-This is exactly `Compiler.Elm.Interface.Basic.testIfaces`: the `Bitwise` and
-`Tuple` interfaces it inserts are the ones `testIfaces` already holds under
-those names. `testIfaces` also holds a mock `Elm.JsArray`, which
-`compileModulesInOrder` replaces with the compiled one before compiling `Array`.
-
+{-| The interfaces every module here is compiled against, keyed by module name:
+`Compiler.Elm.Interface.Basic.testIfaces`, which already holds `Bitwise` and
+`Tuple`. It also holds a mock `Elm.JsArray`, which `compileModulesInOrder`
+replaces with the compiled one before compiling `Array`.
 -}
-extendedTestIfaces : Dict ModuleName.Raw I.Interface
-extendedTestIfaces =
+testIfaces : Dict ModuleName.Raw I.Interface
+testIfaces =
     Basic.testIfaces
-        |> Dict.insert "Bitwise" Bitwise.bitwiseInterface
-        |> Dict.insert "Tuple" TupleInterface.tupleInterface
 
 
 {-| The tests of this module, in five groups.
@@ -144,7 +138,7 @@ jsArrayCompilationTests =
                         Expect.fail ("Parse failed: " ++ PC.errorToString (PC.ParseError err))
 
                     Ok srcModule ->
-                        case PC.compileModule Pkg.core extendedTestIfaces srcModule of
+                        case PC.compileModule Pkg.core testIfaces srcModule of
                             Err err ->
                                 Expect.fail ("Compile failed: " ++ PC.errorToString err)
 
@@ -157,7 +151,7 @@ jsArrayCompilationTests =
                         Expect.fail ("Parse failed: " ++ PC.errorToString (PC.ParseError err))
 
                     Ok srcModule ->
-                        case PC.compileModule Pkg.core extendedTestIfaces srcModule of
+                        case PC.compileModule Pkg.core testIfaces srcModule of
                             Err err ->
                                 Expect.fail ("Compile failed: " ++ PC.errorToString err)
 
@@ -217,7 +211,7 @@ multiModuleCompilationTests =
             \() ->
                 case
                     PC.compileModulesInOrder Pkg.core
-                        extendedTestIfaces
+                        testIfaces
                         [ JsArraySource.source
                         , ArraySource.source
                         ]
@@ -233,7 +227,7 @@ multiModuleCompilationTests =
             \() ->
                 case
                     PC.compileModulesInOrder Pkg.core
-                        extendedTestIfaces
+                        testIfaces
                         [ JsArraySource.source
                         , ArraySource.source
                         ]
@@ -270,20 +264,27 @@ multiModuleCompilationTests =
 
                             _ ->
                                 Expect.fail "Array module not found in results"
-        , Test.test "Array.elm uses JsArray interface correctly" <|
+        , Test.test "Array.elm needs the compiled JsArray interface, not the mock" <|
             \() ->
-                case
-                    PC.compileModulesInOrder Pkg.core
-                        extendedTestIfaces
-                        [ JsArraySource.source
-                        , ArraySource.source
-                        ]
-                of
-                    Err ( err, moduleName ) ->
-                        Expect.fail (moduleName ++ ": " ++ PC.errorToString err)
+                -- Compiled alone, `Array` sees only the mock `Elm.JsArray`, which
+                -- lacks functions `Array` uses (`unsafeGet`, `initialize`, ...),
+                -- so canonicalization must fail. The in-order compilation above
+                -- succeeding therefore shows `Array` was compiled against the
+                -- compiled `Elm.JsArray` interface.
+                case PC.parseModule Pkg.core ArraySource.source of
+                    Err err ->
+                        Expect.fail ("Parse failed: " ++ PC.errorToString (PC.ParseError err))
 
-                    Ok results ->
-                        Expect.equal (List.length results) 2
+                    Ok srcModule ->
+                        case PC.compileModule Pkg.core testIfaces srcModule of
+                            Err (PC.CanonicalizeError _) ->
+                                Expect.pass
+
+                            Err err ->
+                                Expect.fail ("expected a canonicalization error, got: " ++ PC.errorToString err)
+
+                            Ok _ ->
+                                Expect.fail "Array compiled against the mock Elm.JsArray, which lacks functions it uses"
         ]
 
 
@@ -320,17 +321,12 @@ typedPathwayTests =
                         Expect.fail ("Parse failed: " ++ PC.errorToString (PC.ParseError err))
 
                     Ok srcModule ->
-                        case PC.compileModule Pkg.core extendedTestIfaces srcModule of
+                        case PC.compileModule Pkg.core testIfaces srcModule of
                             Err err ->
                                 Expect.fail ("Compile failed: " ++ PC.errorToString err)
 
                             Ok result ->
-                                case PC.monomorphize result of
-                                    Err err ->
-                                        Expect.fail ("Monomorphization failed: " ++ PC.errorToString err)
-
-                                    Ok _ ->
-                                        Expect.pass
+                                expectMonomorphizeAll [ result ] jsArrayEntries
         , Test.test "JsArray.elm typed path generates MLIR successfully" <|
             \() ->
                 case PC.parseModule Pkg.core JsArraySource.source of
@@ -338,12 +334,12 @@ typedPathwayTests =
                         Expect.fail ("Parse failed: " ++ PC.errorToString (PC.ParseError err))
 
                     Ok srcModule ->
-                        case PC.compileModule Pkg.core extendedTestIfaces srcModule of
+                        case PC.compileModule Pkg.core testIfaces srcModule of
                             Err err ->
                                 Expect.fail ("Compile failed: " ++ PC.errorToString err)
 
                             Ok result ->
-                                case PC.generateMLIRFromResult result of
+                                case PC.generateMLIRFromResult "initializeFromList" [ result ] of
                                     Err err ->
                                         Expect.fail ("MLIR generation failed: " ++ PC.errorToString err)
 
@@ -351,8 +347,8 @@ typedPathwayTests =
                                         if String.isEmpty mlirOutput then
                                             Expect.fail "MLIR output is empty"
 
-                                        else if not (String.contains "func.func" mlirOutput || String.contains "eco." mlirOutput) then
-                                            Expect.fail "MLIR output doesn't contain expected operations"
+                                        else if not (String.contains "sym_name = \"Elm_JsArray_initializeFromList_$_" mlirOutput) then
+                                            Expect.fail "MLIR output has no function for the entry Elm.JsArray.initializeFromList"
 
                                         else
                                             Expect.pass
@@ -360,7 +356,7 @@ typedPathwayTests =
             \() ->
                 case
                     PC.compileModulesInOrder Pkg.core
-                        extendedTestIfaces
+                        testIfaces
                         [ JsArraySource.source
                         , ArraySource.source
                         ]
@@ -371,12 +367,7 @@ typedPathwayTests =
                     Ok results ->
                         case List.filter (\r -> r.moduleName == "Array") results of
                             [ arrayResult ] ->
-                                case PC.monomorphize arrayResult of
-                                    Err err ->
-                                        Expect.fail ("Array monomorphization failed: " ++ PC.errorToString err)
-
-                                    Ok _ ->
-                                        Expect.pass
+                                expectMonomorphizeAll results arrayEntries
 
                             _ ->
                                 Expect.fail "Array module not found in results"
@@ -384,7 +375,7 @@ typedPathwayTests =
             \() ->
                 case
                     PC.compileModulesInOrder Pkg.core
-                        extendedTestIfaces
+                        testIfaces
                         [ JsArraySource.source
                         , ArraySource.source
                         ]
@@ -395,7 +386,7 @@ typedPathwayTests =
                     Ok results ->
                         case List.filter (\r -> r.moduleName == "Array") results of
                             [ arrayResult ] ->
-                                case PC.generateMLIRFromResult arrayResult of
+                                case PC.generateMLIRFromResult "fromList" results of
                                     Err err ->
                                         Expect.fail ("Array MLIR generation failed: " ++ PC.errorToString err)
 
@@ -403,8 +394,8 @@ typedPathwayTests =
                                         if String.isEmpty mlirOutput then
                                             Expect.fail "MLIR output is empty"
 
-                                        else if not (String.contains "func.func" mlirOutput || String.contains "eco." mlirOutput) then
-                                            Expect.fail "MLIR output doesn't contain expected operations"
+                                        else if not (List.all (\f -> String.contains ("sym_name = \"Array_" ++ f ++ "_$_") mlirOutput) [ "fromList", "fromListHelp", "builderToArray", "treeFromBuilder" ]) then
+                                            Expect.fail "MLIR output lacks a function for Array.fromList or one of the Array functions it calls"
 
                                         else
                                             Expect.pass
@@ -412,3 +403,41 @@ typedPathwayTests =
                             _ ->
                                 Expect.fail "Array module not found in results"
         ]
+
+
+{-| The `Elm.JsArray` values the monomorphization test starts from, one run
+each.
+-}
+jsArrayEntries : List String
+jsArrayEntries =
+    [ "initializeFromList", "foldl", "map", "slice", "appendN" ]
+
+
+{-| The `Array` values the monomorphization test starts from, one run each.
+Between them they reach most of the module: building from a list, indexing,
+updating, pushing, folding, mapping, appending and slicing.
+-}
+arrayEntries : List String
+arrayEntries =
+    [ "fromList", "initialize", "get", "set", "push", "foldl", "map", "indexedMap", "append", "slice", "toIndexedList", "filter" ]
+
+
+{-| Passes when `PC.monomorphize` succeeds from each of `entries`, and fails
+naming every entry it failed from.
+-}
+expectMonomorphizeAll : List PC.CompileResult -> List String -> Expect.Expectation
+expectMonomorphizeAll results entries =
+    let
+        failures =
+            List.filterMap
+                (\entry ->
+                    case PC.monomorphize entry results of
+                        Ok _ ->
+                            Nothing
+
+                        Err err ->
+                            Just (entry ++ ": " ++ PC.errorToString err)
+                )
+                entries
+    in
+    Expect.equal [] failures
