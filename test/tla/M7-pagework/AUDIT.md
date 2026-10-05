@@ -612,3 +612,14 @@ memory order was added, removed or reordered. The six added lines move every lat
 +6; the line citations in MAPPING.md and `test/genmc/w_pool_done.cpp` were already about 15 lines out
 (`runJob` is cited at `:50-63` and sat at `:65`) and are left as they are. **Verdict: no model change
 needed.**
+
+## 2026-10-05 — Windows link: the probe page's alignment under _WIN32 is 4096 (GC_MODEL_001)
+
+Pin fired: file `PageWork.cpp` (**2dc7a9205c9a**).
+
+Change: `g_probe_page` under `_WIN32` is `alignas(4096)`, not `alignas(8192)` (this morning's entry):
+the object compiled, but linking `eco-compiler.exe` failed with LNK1164, because a PE image's
+sections align to at most `/ALIGN` (4096 by default). Linux and macOS keep `alignas(65536)`. As
+before, the probe is one `ops_.populate` call in the constructor, before any job can be posted, on a
+page no other thread touches; MAPPING.md maps no step to it, and no atomic step, lock, shared location
+or memory order changed. **Verdict: no model change needed.**

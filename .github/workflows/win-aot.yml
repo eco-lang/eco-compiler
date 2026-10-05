@@ -171,7 +171,14 @@ jobs:
             -NoNewWindow -Wait -PassThru `
             -RedirectStandardOutput $log -RedirectStandardError "$log.err"
           $rc = $proc.ExitCode
-          Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Select-Object -Last 30 | Write-Host
+          # The hex form shows a crash's NTSTATUS (e.g. 0xC0000005). stdout and stderr are
+          # printed apart: RapidCheck's "OK, passed" lines would otherwise fill the tail.
+          Write-Host ("test.exe exit code: {0} (0x{0:X8})" -f $rc)
+          Write-Host "--- stdout, last 30 lines ---"
+          Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 30 | Write-Host
+          Write-Host "--- stderr without RapidCheck 'OK, passed' lines, last 40 ---"
+          Get-Content "$log.err" -ErrorAction SilentlyContinue |
+            Where-Object { $_ -notmatch '^OK, passed' } | Select-Object -Last 40 | Write-Host
           exit $rc
 
       # ---- Gateway 4: the full Stage 6-9 self-host chain. Split into
@@ -288,6 +295,7 @@ jobs:
             ${{ runner.temp }}/help.txt
             ${{ runner.temp }}/help.txt.err
             ${{ runner.temp }}/test_output.txt
+            ${{ runner.temp }}/test_output.txt.err
             ${{ runner.temp }}/elm-tests.log
           if-no-files-found: warn
           retention-days: 7

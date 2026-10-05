@@ -532,3 +532,12 @@ and `alignas(65536)` elsewhere, as before. **w_pool_done**: `runJob`, `reapDone`
 the driver reduces are untouched, and the driver builds without `_WIN32`, so it sees the same code. Later
 `PageWork.cpp` lines move by +6; the driver's comment citations were already stale and are left as they
 are. GenMC is not installed here; audited by reading. **Verdict: no driver change needed.**
+
+## 2026-10-05 — Windows link: the PageWork probe page's alignment is 4096 (w_pool_done) (GC_MODEL_001)
+
+Pin fired: file `PageWork.cpp` (**2dc7a9205c9a**).
+
+Change: `g_probe_page` is `alignas(4096)` under `_WIN32` (a PE image's `/ALIGN` limit; 8192 failed to
+link with LNK1164) and `alignas(65536)` elsewhere, as before. **w_pool_done**: the driver builds
+without `_WIN32` and the code it reduces is untouched. GenMC is not installed here; audited by
+reading. **Verdict: no driver change needed.**
