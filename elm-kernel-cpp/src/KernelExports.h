@@ -312,7 +312,8 @@ HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array);
 
 HPtr Elm_Kernel_Debug_log(HPtr tag, HPtr value);
 HPtr Elm_Kernel_Debug_todo(HPtr message);
-HPtr Elm_Kernel_Debug_toString(HPtr value, int64_t type_id);
+HPtr Elm_Kernel_Debug_toString(HPtr value);
+HPtr Elm_Kernel_Debug_toString_typed(HPtr value, int64_t type_id);
 
 //===----------------------------------------------------------------------===//
 // Platform Module (elm/core)

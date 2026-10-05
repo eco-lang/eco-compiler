@@ -1,12 +1,13 @@
 module TestLogic.Generate.CodeGen.UnboxedBitmapTest exposing (suite)
 
-{-| These tests exist so that a construct or closure op whose unboxed bitmap
-misdescribes its operands is caught in the MLIR the code generator produces.
+{-| These tests exist so that a construct or closure op whose slot kinds
+misdescribe its operands is caught in the MLIR the code generator produces.
 
 An _unboxed bitmap_ is the integer attribute in which a tuple, record or custom
-construct op, an `eco.papCreate` or an `eco.papExtend` records how its stored
-operands are kept, as one 2-bit _slot kind_ per slot: boxed, or an unboxed Int,
-Float or Char. A list cons records only whether its head is
+construct op records how its stored operands are kept, as one 2-bit _slot
+kind_ per slot: boxed, or an unboxed Int, Float or Char. An `eco.papCreate` or
+`eco.papExtend` records the same kinds in a `slot_kinds` array, one entry per
+captured operand or new argument. A list cons records only whether its head is
 unboxed, in the boolean `head_unboxed`. The rules that the check applies, and
 the operands each op's bitmap covers, are set out in the module docstring of
 `TestLogic.Generate.CodeGen.UnboxedBitmap`.
@@ -30,11 +31,22 @@ What the tests establish:
 
   - `closureKindLimits`: a function `mk` of 26 `Int` parameters returning a
     lambda, partially applied to all 26 and passed to `List.map`, generates
-    closure ops whose kind attributes stay within the backend's slot limits,
-    as `checkClosureKindLimits` sets them out. Today it fails (bug B4 of
-    `plans/wide-object-tail-kind-words.md`): the generator emits a
-    `newargs_unboxed_bitmap` of 26 Int kinds, which needs 52 bits where the
-    backend's u64 bitmap holds 25 slots (50 bits).
+    closure ops whose kind attributes have the post-Phase-2 form, as
+    `checkClosureKindLimits` sets it out: `slot_kinds` arrays of at most 2047
+    entries and no u64 closure bitmap (bug B4 of
+    `plans/wide-object-tail-kind-words.md`: before Phase 2 the generator
+    emitted a `newargs_unboxed_bitmap` of 26 Int kinds, 52 bits, where the
+    backend's u64 bitmap held 25 slots).
+
+  - `pap26`: a function `mk` of 27 `Int` parameters applied to 26 of them and
+    passed to `List.map` passes `expectUnboxedBitmap` and
+    `checkClosureKindLimits`, and the `eco.papExtend` that applies `mk` to the
+    26 arguments carries a `slot_kinds` array of 26 entries, all 1 (Int).
+
+  - `captures27`: a function `mk` of 27 `Int` parameters returning a list
+    holding one lambda that uses all 27 passes `expectUnboxedBitmap` and
+    `checkClosureKindLimits`, and the lambda's `eco.papCreate` has
+    `num_captured` 27 and a `slot_kinds` array of 27 entries, all 1 (Int).
 
 Among what is not tested: the `head_kind` attribute of `eco.construct.list`,
 `eco.papCreateGroup` ops, whether a recorded
@@ -61,11 +73,13 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Dict
 import Expect
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Generate.CodeGen.Invariants exposing (violationsToExpectation)
-import TestLogic.Generate.CodeGen.UnboxedBitmap exposing (checkClosureKindLimits, expectUnboxedBitmap)
+import TestLogic.Generate.CodeGen.Invariants exposing (findOpsNamed, getArrayAttr, getIntAttr, violationsToExpectation)
+import TestLogic.Generate.CodeGen.UnboxedBitmap exposing (checkClosureKindLimits, checkUnboxedBitmap, expectUnboxedBitmap)
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
@@ -78,6 +92,8 @@ suite =
         [ StandardTestSuites.expectSuite expectUnboxedBitmap "passes unboxed bitmap invariant"
         , Test.test "a record with boxed fields past slot 15" (\_ -> expectUnboxedBitmap wideRecord)
         , Test.test "closure kind attributes stay within the backend's slot limits" (\_ -> expectClosureKindLimits closureKindLimits)
+        , Test.test "papExtend with 26 Int newargs carries 26 slot_kinds" (\_ -> expectIntSlotKinds "eco.papExtend" 26 pap26)
+        , Test.test "papCreate with 27 captures carries 27 slot_kinds" (\_ -> expectIntSlotKinds "eco.papCreate" 27 captures27)
         ]
 
 
@@ -145,6 +161,172 @@ closureKindLimits =
                 callExpr (qualVarExpr "List" "map")
                     [ callExpr (varExpr "mk") (List.map (\i -> intExpr (i + 1)) indices)
                     , listExpr [ intExpr 1, intExpr 2 ]
+                    ]
+          }
+        ]
+
+
+{-| Compiles `srcModule` and passes when it passes the `expectUnboxedBitmap`
+and `checkClosureKindLimits` checks and some op named `opName` with `n`
+compared slots (captures for papCreate, real new arguments for papExtend)
+carries a `slot_kinds` array of `n` entries, all 1 (Int).
+-}
+expectIntSlotKinds : String -> Int -> Src.Module -> Expect.Expectation
+expectIntSlotKinds opName n srcModule =
+    case runToMlir srcModule of
+        Err err ->
+            Expect.fail ("Compilation failed: " ++ err)
+
+        Ok { mlirModule } ->
+            let
+                compared : MlirOp -> Int
+                compared op =
+                    if opName == "eco.papCreate" then
+                        getIntAttr "num_captured" op |> Maybe.withDefault 0
+
+                    else
+                        List.length op.operands - 1 - (getIntAttr "eco.gc_roots_count" op |> Maybe.withDefault 0)
+
+                candidates =
+                    findOpsNamed opName mlirModule |> List.filter (\op -> compared op == n)
+
+                kindsOf op =
+                    getArrayAttr "slot_kinds" op
+                        |> Maybe.map
+                            (List.map
+                                (\a ->
+                                    case a of
+                                        IntAttr _ k ->
+                                            k
+
+                                        _ ->
+                                            -1
+                                )
+                            )
+            in
+            Expect.all
+                [ \_ -> violationsToExpectation (checkUnboxedBitmap mlirModule ++ checkClosureKindLimits mlirModule)
+                , \_ ->
+                    if List.isEmpty candidates then
+                        Expect.fail
+                            ("no "
+                                ++ opName
+                                ++ " with "
+                                ++ String.fromInt n
+                                ++ " compared slots; found: "
+                                ++ String.join ", " (List.map (\op -> String.fromInt (compared op) ++ " " ++ Debug.toString (Dict.get "slot_kinds" op.attrs) ++ " " ++ Debug.toString (Dict.get "_operand_types" op.attrs)) (findOpsNamed opName mlirModule))
+                            )
+
+                    else
+                        List.map kindsOf candidates
+                            |> Expect.equal (List.map (\_ -> Just (List.repeat n 1)) candidates)
+                ]
+                ()
+
+
+{-| The `CloP26I` shape as a partial application: `mk` takes 27 `Int`
+parameters and is applied to the first 26 of them, so the generator extends
+`mk`'s closure with 26 Int new arguments,
+
+    mk : Int -> Int -> ... -> Int -> Int
+    mk a0 a1 ... a25 x =
+        x * 7 + a0 * 1 + a1 * 2 + ... + a25 * 26
+
+    testValue : List Int
+    testValue =
+        List.map (mk 1 2 ... 26) [ 1, 2 ]
+
+-}
+pap26 : Src.Module
+pap26 =
+    let
+        indices =
+            List.range 0 25
+
+        intT =
+            tType "Int" []
+
+        body =
+            binopsExpr
+                (( varExpr "x", "*" )
+                    :: ( intExpr 7, "+" )
+                    :: List.concatMap
+                        (\i -> [ ( varExpr ("a" ++ String.fromInt i), "*" ), ( intExpr (i + 1), "+" ) ])
+                        (List.range 0 24)
+                    ++ [ ( varExpr "a25", "*" ) ]
+                )
+                (intExpr 26)
+    in
+    makeModuleWithTypedDefs "TestMod"
+        [ { name = "mk"
+          , args = List.map (\i -> pVar ("a" ++ String.fromInt i)) indices ++ [ pVar "x" ]
+          , tipe = List.foldr (\_ acc -> tLambda intT acc) (tLambda intT intT) indices
+          , body = body
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "List" [ intT ]
+          , body =
+                callExpr (qualVarExpr "List" "map")
+                    [ callExpr (varExpr "mk") (List.map (\i -> intExpr (i + 1)) indices)
+                    , listExpr [ intExpr 1, intExpr 2 ]
+                    ]
+          }
+        ]
+
+
+{-| The 27-capture shape: `mk` takes 27 `Int` parameters `a0` to `a26` and
+returns a list holding one lambda that uses all of them, so the lambda is a
+closure value capturing 27 Ints,
+
+    mk : Int -> Int -> ... -> Int -> List (Int -> Int)
+    mk a0 a1 ... a26 =
+        [ \x -> x * 7 + a0 * 1 + a1 * 2 + ... + a26 * 27 ]
+
+    testValue : List Int
+    testValue =
+        List.map (\f -> f 1) (mk 1 2 ... 27)
+
+-}
+captures27 : Src.Module
+captures27 =
+    let
+        indices =
+            List.range 0 26
+
+        paramNames =
+            List.map (\i -> "a" ++ String.fromInt i) indices
+
+        intT =
+            tType "Int" []
+
+        mkType =
+            List.foldr (\_ acc -> tLambda intT acc) (tType "List" [ tLambda intT intT ]) indices
+
+        lambdaBody =
+            binopsExpr
+                (( varExpr "x", "*" )
+                    :: ( intExpr 7, "+" )
+                    :: List.concatMap
+                        (\i -> [ ( varExpr ("a" ++ String.fromInt i), "*" ), ( intExpr (i + 1), "+" ) ])
+                        (List.range 0 25)
+                    ++ [ ( varExpr "a26", "*" ) ]
+                )
+                (intExpr 27)
+    in
+    makeModuleWithTypedDefs "TestMod"
+        [ { name = "mk"
+          , args = List.map pVar paramNames
+          , tipe = mkType
+          , body = listExpr [ lambdaExpr [ pVar "x" ] lambdaBody ]
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "List" [ intT ]
+          , body =
+                callExpr (qualVarExpr "List" "map")
+                    [ lambdaExpr [ pVar "f" ] (callExpr (varExpr "f") [ intExpr 1 ])
+                    , callExpr (varExpr "mk") (List.map (\i -> intExpr (i + 1)) indices)
                     ]
           }
         ]

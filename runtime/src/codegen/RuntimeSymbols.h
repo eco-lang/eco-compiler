@@ -23,7 +23,7 @@ class EcoJIT;
 /// This includes:
 ///   - Heap allocation functions (eco_alloc_*)
 ///   - Field store functions (eco_store_field*, eco_set_unboxed)
-///   - Closure operations (eco_apply_closure, eco_pap_extend, etc.)
+///   - Closure operations (eco_apply_closure, eco_pap_extend_l, etc.)
 ///   - Runtime utilities (eco_crash, eco_dbg_print*)
 ///   - GC interface (eco_safepoint, eco_minor_gc, eco_major_gc, etc.)
 ///   - Tag extraction (eco_get_header_tag, eco_get_custom_ctor)

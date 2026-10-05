@@ -3,6 +3,7 @@
 **Status:** READY FOR IMPLEMENTATION (draft 5, consolidated, 2026-10-05).
 **Progress:** Phase 0 DONE (2026-10-05; see the phase-0 file for the recorded baselines and pin results).
 Phase 1 DONE (2026-10-05; gate results in the phase-1 file §7.1).
+Phase 2 DONE (2026-10-05; gate results in the phase-2 file, "Phase 2 gate result").
 
 **Scheme (user choice):** layout C, *tail kind words*, for Custom, Record and Closure, plus fixes for
 every known boxing/unboxing bug.

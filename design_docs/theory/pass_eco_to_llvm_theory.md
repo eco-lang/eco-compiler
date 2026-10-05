@@ -255,12 +255,15 @@ eco.project.custom %c, index -> inttoptr -> gep[16 + index*8] -> load
 
 **Closure Layout:**
 ```
-[Header:8][packed:8][evaluator:8][values:N*8]
-packed = n_values:6 | max_values:6 | unboxed:52
+[Header:8][packed:8][evaluator:8][values:N*8][ext kind words:K*8]
+packed = n_values:11 | max_values:11 | result_kind:2 | unboxed:40
 ```
-`unboxed` is 2-bit-per-slot encoding kinds for captured values (max 26 typed
-captures). Kind 00=boxed HPointer, 01=Int, 10=Float, 11=Char. Slot i's kind
-lives at bits [2i, 2i+1].
+`unboxed` is 2-bit-per-slot encoding of the kinds of slots 0..19. Kind 00=boxed HPointer,
+01=Int, 10=Float, 11=Char; slot i's kind lives at bits [2i, 2i+1]. Slots 20.. (stage arity up
+to 2047) take their kinds from the K = extWords(max_values, 20) extension kind words at the end of
+the object (HEAP_019/HEAP_078). The lowering derives every kind from operand types (captures) and
+the target signature (uncaptured params), packs the word with `packClosureWord` and stores the K
+words (`slot_kinds` on the closure ops, CGEN_049; updated Oct 2026, wide-object plan Phase 2).
 
 **papCreate (create partial application):**
 ```

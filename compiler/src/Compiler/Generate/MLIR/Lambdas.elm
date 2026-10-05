@@ -221,14 +221,6 @@ generateLambdaFuncNamed ctx lambda =
                             captureMlirTypes =
                                 List.map (\( _, monoTy ) -> Types.monoTypeToAbi monoTy) lambda.captures
 
-                            selfUnboxedBitmap =
-                                List.indexedMap Tuple.pair captureMlirTypes
-                                    |> List.foldl
-                                        (\( i, mlirTy ) acc ->
-                                            Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                                        )
-                                        0
-
                             selfOperandTypesAttr =
                                 if List.isEmpty captureMlirTypes then
                                     Dict.empty
@@ -265,10 +257,10 @@ generateLambdaFuncNamed ctx lambda =
                                         (Dict.union selfOperandTypesAttr
                                             (Dict.fromList
                                                 [ ( "function", SymbolRefAttr selfFunctionName )
-                                                , ( "arity", IntAttr Nothing selfArity )
+                                                , ( "arity", IntAttr Nothing (Ops.assertStageArity selfArity) )
                                                 , ( "num_captured", IntAttr Nothing selfNumCaptured )
-                                                , ( "unboxed_bitmap", IntAttr Nothing selfUnboxedBitmap )
                                                 ]
+                                                |> Ops.withSlotKinds captureMlirTypes
                                             )
                                         )
                                     )

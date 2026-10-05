@@ -83,6 +83,7 @@ rebuilt EXISTING lambdas keep the id they had.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.HeapLimits as HeapLimits
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
@@ -142,6 +143,11 @@ type alias Metrics =
     -- the expected value; a nonzero one means the node meta and the body type
     -- disagree, and the site is declined rather than mis-typed.
     , noPeel : Int
+
+    -- a site whose expanded parameter count would exceed the closure stage
+    -- arity limit (`HeapLimits.maxStageArity`, HEAP_078). Compiler-generated
+    -- arity never produces a user-visible limit error; the pass declines.
+    , declinedArityCap : Int
     }
 
 
@@ -170,6 +176,7 @@ emptyMetrics =
     , byName = CoreDict.empty
     , notCheapByName = CoreDict.empty
     , noPeel = 0
+    , declinedArityCap = 0
     }
 
 
@@ -467,6 +474,9 @@ expandDefinition ctx site maybeRegion declType body =
 
     else if deficit <= 0 then
         ( body, bump (\m -> { m | noDeficit = m.noDeficit + 1 }) ctx )
+
+    else if declared > HeapLimits.maxStageArity then
+        ( body, bump (\m -> { m | declinedArityCap = m.declinedArityCap + 1 }) ctx )
 
     else
         let
@@ -951,6 +961,9 @@ expandOneLambda ctx callee expected arg =
             in
             if deficit <= 0 then
                 ( arg, ctx )
+
+            else if List.length expectedParams > HeapLimits.maxStageArity then
+                ( arg, bump (\m -> { m | declinedArityCap = m.declinedArityCap + 1 }) ctx )
 
             else
                 let
@@ -1652,6 +1665,7 @@ willExpand ctx declType body =
     not (isKernelAlias body)
         && (declared > 0)
         && (declared - syntactic > 0)
+        && (declared <= HeapLimits.maxStageArity)
         && (peelType (declared - syntactic) (TOpt.typeOf inner) /= Nothing)
         && cheap ctx inner
 

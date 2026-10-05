@@ -231,7 +231,7 @@ bool callCensusKindCounted(uint8_t k) {
 
 // The dispatch-machinery entry points emitted into generated code
 // (EcoToLLVMClosures.cpp: emitInlineClosureCall / the generic funnel).
-// eco_pap_extend is deliberately ABSENT: it never dispatches
+// eco_pap_extend_l is deliberately ABSENT: it never dispatches
 // (RuntimeExports.cpp "No dispatch here — this grows a PAP") => runtime.
 bool callCensusIsTrampoline(StringRef n) {
     return n == "eco_apply_closure" || n == "eco_apply_closure_eval" ||
@@ -1691,15 +1691,16 @@ static void expandRootRangeOps(Module &m, bool allowTls) {
 // loop is one) and EcoToLLVM runs BEFORE SCFToControlFlow, so the lowering
 // cannot create blocks there. Same reason `__eco_get_tag_inline` is a marker.
 //
-//   entry:  %W   = load i64, %clo+8                ; n:6|max:6|rk:2|unboxed:50
-//           %n   = W & 63 ; %mx = (W>>6)&63 ; %rk = (W>>12)&3 ; %ub = W>>14
+//   entry:  %W   = load i64, %clo+8                ; n:11|max:11|rk:2|unboxed:40
+//           %n   = W & 0x7FF ; %mx = (W>>11)&0x7FF ; %rk = (W>>22)&3 ; %ub = W>>24
 //           %c1  = (%mx - %n) == N
-//           %c1b = %mx <= 25                       ; every slot described by %ub
+//           %c1b = %mx <= SAT_MAX_ARITY (20)       ; every slot described by %ub
 //           %c2  = %rk == RC
-//           %c3  = ((%ub >> 2*%n) & ((1<<2N)-1)) == KC
+//           %c3  = ((%ub >> 2*(%c1b ? %n : 0)) & ((1<<2N)-1)) == KC
 //           br %c1&%c1b&%c2&%c3, maybe, slow
 //   maybe:  %d   = load ptr, %clo+16               ; the EvaluatorDesc
-//           %sat = load ptr, %d+satByteOff         ; in bounds: %c1 proved N<=P
+//           %sat = load ptr, %d+satByteOff         ; in bounds: %c1 proved N<=P,
+//                                                  ; %c1b proved P<=SAT_MAX_ARITY
 //           br %sat != null, fast, slow
 //   fast:   %rf  = call <R> %sat(ptr as1 %clo, %a0..%aN-1)
 //   slow:   ... the generic sequence ...
@@ -1709,7 +1710,9 @@ static void expandRootRangeOps(Module &m, bool allowTls) {
 // it proves the closure's declared slot kinds for the remaining slots equal the
 // site's static assumption. `%c1b` is the guard §5.3 does not state but needs —
 // `unboxed` describes only 25 slots, so a wider closure's kind bits must not be
-// compared at all, or the mask test could pass on unrelated bits.
+// compared at all, or the mask test could pass on unrelated bits. It also makes
+// sat[] readable: a descriptor has sat[] only when stage_arity <= SAT_MAX_ARITY
+// (empty above it), and every compiled closure has max_values == stage_arity.
 //
 // Everything the fast edge skips is exactly what §5.5 lists. The pointer args
 // stay `ptr addrspace(1)` into the call, so RS4GC covers them as ordinary SSA
@@ -1813,18 +1816,24 @@ static void expandSatMarkers(Module &m) {
         IRBuilder<> b(entryTerm);
         Value *packedSlot = b.CreateGEP(i8Ty, clo, {b.getInt64(8)}, "eco.clo.packed");
         Value *W = b.CreateAlignedLoad(i64Ty, packedSlot, Align(8), "eco.clo.w");
-        Value *n = b.CreateAnd(W, b.getInt64(63), "eco.clo.n");
-        Value *mx = b.CreateAnd(b.CreateLShr(W, b.getInt64(6)), b.getInt64(63),
+        // Packed word (HEAP_078): n_values:11 | max_values:11 | rk:2 | unboxed:40.
+        Value *n = b.CreateAnd(W, b.getInt64(0x7FF), "eco.clo.n");
+        Value *mx = b.CreateAnd(b.CreateLShr(W, b.getInt64(11)), b.getInt64(0x7FF),
                                 "eco.clo.max");
-        Value *rk = b.CreateAnd(b.CreateLShr(W, b.getInt64(12)), b.getInt64(3),
+        Value *rk = b.CreateAnd(b.CreateLShr(W, b.getInt64(22)), b.getInt64(3),
                                 "eco.clo.rk");
-        Value *ub = b.CreateLShr(W, b.getInt64(14), "eco.clo.ub");
+        Value *ub = b.CreateLShr(W, b.getInt64(24), "eco.clo.ub");
         Value *rem = b.CreateSub(mx, n, "eco.clo.rem");
         Value *c1 = b.CreateICmpEQ(rem, b.getInt64(N));
-        // `unboxed` describes 25 slots; a wider closure's kinds are not readable.
-        Value *c1b = b.CreateICmpULE(mx, b.getInt64(25));
+        // `unboxed` describes 20 slots; a wider closure's kinds are not
+        // readable, and its descriptor's sat[] is empty (2.6.8).
+        Value *c1b = b.CreateICmpULE(mx, b.getInt64(Elm::SAT_MAX_ARITY));
         Value *c2 = b.CreateICmpEQ(rk, b.getInt64(rcC->getZExtValue()));
-        Value *shift = b.CreateShl(n, b.getInt64(1));
+        // B20: a shift >= 64 gives poison, and `and(false, poison)` is poison;
+        // branching on it is UB. Clamp the shift operand so it is in range even
+        // when the guard fails.
+        Value *nSafe = b.CreateSelect(c1b, n, b.getInt64(0), "eco.clo.nsafe");
+        Value *shift = b.CreateShl(nSafe, b.getInt64(1));
         // Sat sites carry at most 8 newargs, sat entries at most 16 params
         // (getOrCreateSatEntry), so the 2N-bit mask never shifts past 63.
         assert(N <= 16 && "sat marker: newarg count past the entry bound");
@@ -1841,8 +1850,9 @@ static void expandSatMarkers(Module &m) {
         (void)br0;
         entryTerm->eraseFromParent();
 
-        // maybe: the descriptor load. `%c1` already proved N <= stage_arity, and
-        // sat[] is sized stage_arity + 1, so this load is always in bounds.
+        // maybe: the descriptor load. `%c1` proved N <= stage_arity and `%c1b`
+        // proved stage_arity <= SAT_MAX_ARITY, so sat[] has stage_arity + 1
+        // slots here and the load is in bounds.
         IRBuilder<> bm(maybe);
         Value *descSlot = bm.CreateGEP(i8Ty, clo, {bm.getInt64(16)}, "eco.clo.desc");
         Value *desc = bm.CreateAlignedLoad(as0, descSlot, Align(8), "eco.evaldesc");

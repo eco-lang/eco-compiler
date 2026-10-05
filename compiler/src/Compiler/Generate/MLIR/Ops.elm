@@ -8,7 +8,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfWhile, scfCondition
     , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
-    , ecoPapCreateGroup, GroupSibling
+    , ecoPapCreateGroup, GroupSibling, slotKindsAttr, withSlotKinds, assertStageArity
     , aggCustomType, aggTupleType, ecoCallNamedMulti, ecoFromHeap, ecoGlobal, ecoMakeCustom, ecoMakeTuple2, ecoMakeTuple3, ecoProjectCustomAgg, ecoProjectTuple2Agg, ecoProjectTuple3Agg, ecoReturnMulti, ecoToHeap, funcFuncMulti
     )
 
@@ -65,11 +65,12 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # PAP Group Creation
 
-@docs ecoPapCreateGroup, GroupSibling
+@docs ecoPapCreateGroup, GroupSibling, slotKindsAttr, withSlotKinds, assertStageArity
 @docs aggCustomType, aggTupleType, ecoCallNamedMulti, ecoFromHeap, ecoGlobal, ecoMakeCustom, ecoMakeTuple2, ecoMakeTuple3, ecoProjectCustomAgg, ecoProjectTuple2Agg, ecoProjectTuple3Agg, ecoReturnMulti, ecoToHeap, funcFuncMulti
 
 -}
 
+import Compiler.Data.HeapLimits as HeapLimits
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
@@ -1442,6 +1443,53 @@ scfCondition ctx condVar args =
 
 
 
+-- ====== CLOSURE KINDS AND LIMITS ======
+
+
+{-| One kind per slot (0 boxed, 1 Int, 2 Float, 3 Char), as a dense i8 array:
+the `slot_kinds` attribute of papCreate (one per capture), papExtend (one per
+newarg) and each papCreateGroup sibling. The kind of each slot is
+`Types.mlirTypeToKind` of its operand type.
+-}
+slotKindsAttr : List MlirType -> MlirAttr
+slotKindsAttr tys =
+    ArrayAttr (Just I8) (List.map (\t -> IntAttr Nothing (Types.mlirTypeToKind t)) tys)
+
+
+{-| Adds `slot_kinds = slotKindsAttr tys` to an op's attributes, unless `tys`
+is empty: an op with no captures or newargs carries no `slot_kinds`.
+-}
+withSlotKinds : List MlirType -> Dict.Dict String MlirAttr -> Dict.Dict String MlirAttr
+withSlotKinds tys attrs =
+    if List.isEmpty tys then
+        attrs
+
+    else
+        Dict.insert "slot_kinds" (slotKindsAttr tys) attrs
+
+
+{-| Returns a closure's stage `arity` unchanged, and crashes when it exceeds
+`HeapLimits.maxStageArity` (HEAP\_078). Canonicalization reports user-written
+functions over the limit and `Compiler.Monomorphize.ValidateLimits` reports
+specialized closures over it, so reaching this crash is an internal compiler
+error.
+-}
+assertStageArity : Int -> Int
+assertStageArity arity =
+    if arity > HeapLimits.maxStageArity then
+        crash
+            ("internal compiler error: closure stage arity "
+                ++ String.fromInt arity
+                ++ " > "
+                ++ String.fromInt HeapLimits.maxStageArity
+                ++ " reached the generator (validated by ValidateLimits)"
+            )
+
+    else
+        arity
+
+
+
 -- ====== ECO papCreateGroup ======
 
 
@@ -1463,7 +1511,7 @@ type alias GroupSibling =
     , fastEvaluator : String
     , arity : Int
     , numCaptured : Int
-    , unboxedBitmap : Int
+    , slotKinds : List MlirType
     , resultKind : Int
     , captureVars : List String
     , captureTypes : List MlirType
@@ -1504,13 +1552,14 @@ ecoPapCreateGroup ctx gcRootHints siblings crossEdges resultVars =
             ArrayAttr Nothing (List.map (\i -> IntAttr (Just I64) i) ints)
 
         arities =
-            siblings |> List.map .arity |> i64Array
+            siblings |> List.map (.arity >> assertStageArity) |> i64Array
 
         numCaptured =
             siblings |> List.map .numCaptured |> i64Array
 
-        unboxedBitmaps =
-            siblings |> List.map .unboxedBitmap |> i64Array
+        -- One dense i8 array per sibling, one kind per values[] slot (S.5).
+        slotKinds =
+            siblings |> List.map (.slotKinds >> slotKindsAttr) |> ArrayAttr Nothing
 
         -- Per-sibling result kinds (REP_ABI_001). The op spec declares
         -- `_result_kinds` as `OptionalAttr<I64ArrayAttr>`, so emit values
@@ -1579,7 +1628,7 @@ ecoPapCreateGroup ctx gcRootHints siblings crossEdges resultVars =
                             , ( "fast_evaluators", fastEvaluators )
                             , ( "arities", arities )
                             , ( "num_captured", numCaptured )
-                            , ( "unboxed_bitmaps", unboxedBitmaps )
+                            , ( "slot_kinds", slotKinds )
                             , ( "capture_counts", captureCounts )
                             , ( "cross_edges", flatCrossEdges )
                             ]

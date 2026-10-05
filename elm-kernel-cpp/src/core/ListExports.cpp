@@ -203,7 +203,7 @@ inline void listStepAt(HPointer& node, uint32_t& idx) {
 // potentially-allocating call to avoid stale fields after GC moves the
 // closure object.
 struct ClosureMeta {
-    uint64_t unboxed;     // 2-bit-per-slot ParamKind bitmap (covers all params)
+    Elm::ClosureKinds ks; // kinds snapshot: inline 20 + the closure's ext words
     uint8_t  result_kind; // ParamKind: closure evaluator's return ABI
     uint32_t max_values;  // total stage arity (captures + remaining params)
     uint32_t n_values;    // applied/captured count
@@ -213,7 +213,7 @@ inline ClosureMeta readClosureMeta(HPointer closureHP) {
     auto* cl = static_cast<Closure*>(
         Elm::Allocator::instance().resolve(closureHP));
     ClosureMeta m;
-    m.unboxed     = cl->unboxed;
+    Elm::snapshotClosureKinds(cl, m.ks);
     m.result_kind = static_cast<uint8_t>(cl->result_kind);
     m.max_values  = static_cast<uint32_t>(cl->max_values);
     m.n_values    = static_cast<uint32_t>(cl->n_values);
@@ -221,11 +221,9 @@ inline ClosureMeta readClosureMeta(HPointer closureHP) {
 }
 
 // Kind of the i-th *new* arg slot the closure expects (skipping captures).
-// `meta.unboxed` is indexed by absolute slot, so add `meta.n_values`.
-// Slots past the inline kinds read boxed (D semantics; Phase 2: ClosureKinds).
+// `meta.ks` is indexed by absolute slot, so add `meta.n_values`.
 inline uint8_t closureNewArgKind(const ClosureMeta& meta, uint32_t i) {
-    uint32_t slot = meta.n_values + i;
-    return slot < Elm::CLOSURE_HDR_SLOTS ? static_cast<uint8_t>(Elm::kindInWord(meta.unboxed, slot)) : 0;
+    return static_cast<uint8_t>(Elm::closureKindAt(meta.ks, meta.n_values + i));
 }
 
 // Append one closure result onto the rolling per-iteration result vector.
@@ -541,12 +539,12 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
             }
         }
 
-        // Layout descriptor: { num=n_args, result_kind, kinds[0..n-1] }.
-        // Stack-allocate just enough bytes for this arity.
-        unsigned char layoutBuf[2 + kMaxArgs];
-        layoutBuf[0] = static_cast<unsigned char>(n_args);
-        layoutBuf[1] = resultKind;
-        for (int i = 0; i < n_args; ++i) layoutBuf[2 + i] = deliveryKinds[i];
+        // Layout descriptor: { num=n_args, result_kind, kinds[0..n-1] }
+        // (layout-compatible with EvalParamLayout; kinds past n_args unused).
+        Elm::EvalParamLayoutN<kMaxArgs> lb{};
+        lb.num_params = static_cast<unsigned short>(n_args);
+        lb.result_kind = resultKind;
+        for (int i = 0; i < n_args; ++i) lb.kinds[i] = deliveryKinds[i];
 
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, n_args, /*hpointer_mask=*/~uint64_t(0));
@@ -558,8 +556,7 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
         }
 
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        const auto* layout =
-            reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+        const auto* layout = Elm::asLayout(&lb);
         // Use the PAP-aware typed-result entry so partially-applied or
         // multi-stage user mappers (e.g. a closure with `n_values` captures
         // and `max_values - n_values < n_args` remaining at this stage) are

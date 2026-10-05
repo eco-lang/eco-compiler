@@ -419,8 +419,8 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     // composing combinators, so the runtime closure may be a multi-stage
     // wrapper rather than a flat 2-arg function, and the strict-arity
     // entry would assert on those.
-    static constexpr unsigned char kLayoutBoxedInt[4] = { 2, 0, 0, 1 };
-    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutBoxedInt);
+    static constexpr auto kLayoutBoxedInt = Elm::makeEvalParamLayout<2>(0, {0, 1});
+    const auto* layout = Elm::asLayout(&kLayoutBoxedInt);
     int64_t args[2] = { static_cast<int64_t>(bytes.toBits()), 0 };
     uint64_t result = eco_apply_closure_typed(decoder, args, 2, layout).toBits();
 

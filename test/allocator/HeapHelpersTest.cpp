@@ -1542,13 +1542,14 @@ Testing::TestCase testFieldGroupSurvivesMinorGC("FieldGroup survives minor GC", 
 // ============================================================================
 // 2-bit bitmap overflow policy (§0.3 of the 2-bit migration plan; B6 of
 // plans/wide-object-tail-kind-words-phase-1.md step 1c.3).
-// Closure.unboxed is 50 bits wide → 25 typed slots max. Slots 25+ read boxed
-// (closureSlotKind); a boxed capture there is allowed, a typed one aborts
-// (the `wide B6` pin in WideObjectPinsTest.cpp).
+// Closure.unboxed is 40 bits wide → params 0..19 have inline kinds; kernel
+// closures keep slots 20+ boxed (closureCapture never writes an ext kind word,
+// HEAP_077): a boxed capture there is allowed, a typed one aborts (the
+// `WideClosure: closureCapture of a typed kind at idx 20` test).
 // ============================================================================
 
 Testing::UnitTest testClosureCaptureBoxedBeyond25Allowed(
-    "closureCapture of a boxed value at slot 25..29 is allowed",
+    "closureCapture of a boxed value at slot 20..29 is allowed",
     []() {
         initAllocator();
 
@@ -1556,19 +1557,19 @@ Testing::UnitTest testClosureCaptureBoxedBeyond25Allowed(
         HPointer cl = allocClosure(nullptr, capacity);
         void* clObj = Allocator::instance().resolve(cl);
 
-        for (u32 i = 0; i < 25; ++i) {
+        for (u32 i = 0; i < CLOSURE_HDR_SLOTS; ++i) {
             TEST_ASSERT(closureCapture(clObj, unboxedInt(static_cast<i64>(i)), PK_Int));
         }
-        for (u32 i = 25; i < capacity; ++i) {
+        for (u32 i = CLOSURE_HDR_SLOTS; i < capacity; ++i) {
             TEST_ASSERT(closureCapture(clObj, boxed(listNil()), PK_Boxed));
         }
 
         Closure* cp = static_cast<Closure*>(clObj);
         TEST_ASSERT(cp->n_values == capacity);
-        for (u32 i = 0; i < 25; ++i) {
+        for (u32 i = 0; i < CLOSURE_HDR_SLOTS; ++i) {
             TEST_ASSERT(closureSlotKind(cp, i) == 1);
         }
-        for (u32 i = 25; i < capacity; ++i) {
+        for (u32 i = CLOSURE_HDR_SLOTS; i < capacity; ++i) {
             TEST_ASSERT(closureSlotKind(cp, i) == 0);
         }
     });

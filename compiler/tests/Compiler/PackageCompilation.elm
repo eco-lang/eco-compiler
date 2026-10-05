@@ -1074,3 +1074,6 @@ canonicalizeErrorToString error =
 
         CanonicalizeError.TypeVarsMessedUpInAlias _ name _ _ _ ->
             "Type variables messed up in alias: " ++ name
+
+        CanonicalizeError.TooLarge _ _ actual limit ->
+            "Too large: " ++ String.fromInt actual ++ " exceeds the limit " ++ String.fromInt limit

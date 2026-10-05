@@ -364,18 +364,19 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureSlow(OpBuilder &builder) con
     return getOrCreateFunc(builder, "eco_alloc_closure_slow", funcTy);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureGroupSlow(OpBuilder &builder) const {
-    // eco_alloc_closure_group_slow(
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureGroupL(OpBuilder &builder) const {
+    // eco_alloc_closure_group_l(
     //   numSiblings: i64,
     //   evaluators: ptr, arities: ptr, numCaptured: ptr,
-    //   unboxedBitmaps: ptr, resultKinds: ptr, captureOffsets: ptr,
-    //   captures: ptr, crossEdges: ptr, numCrossEdges: i64,
-    //   outClosures: ptr
+    //   hdrKinds: ptr, extKinds: ptr, extOffsets: ptr, resultKinds: ptr,
+    //   captureOffsets: ptr, captures: ptr, crossEdges: ptr,
+    //   numCrossEdges: i64, outClosures: ptr
     // ) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(
         LLVM::LLVMVoidType::get(builder.getContext()),
-        {I64_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, I64_TY, PTR_TY});
-    return getOrCreateFunc(builder, "eco_alloc_closure_group_slow", funcTy);
+        {I64_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY,
+         PTR_TY, PTR_TY, PTR_TY, I64_TY, PTR_TY});
+    return getOrCreateFunc(builder, "eco_alloc_closure_group_l", funcTy);
 }
 
 //===----------------------------------------------------------------------===//
@@ -556,10 +557,10 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreConsTail(OpBuilder &builder) const 
 // Closure Functions
 //===----------------------------------------------------------------------===//
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreatePapExtend(OpBuilder &builder) const {
-    // eco_pap_extend(closure_hptr: hptr, args: ptr, num_args: i32, new_unboxed_bitmap: i64) -> hptr
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, I64_TY});
-    return getOrCreateFunc(builder, "eco_pap_extend", funcTy);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreatePapExtendL(OpBuilder &builder) const {
+    // eco_pap_extend_l(closure: hptr, args: ptr, num_args: i32, layout: ptr) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, PTR_TY});
+    return getOrCreateFunc(builder, "eco_pap_extend_l", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateClosureCallSaturated(OpBuilder &builder) const {
@@ -1305,7 +1306,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateAllocIntSlow(b); getOrCreateAllocFloatSlow(b); getOrCreateAllocCharSlow(b);
     getOrCreateAllocConsSlow(b); getOrCreateAllocTuple2Slow(b); getOrCreateAllocTuple3Slow(b);
     getOrCreateAllocRecordSlow(b); getOrCreateAllocCustomSlow(b); getOrCreateAllocStringSlow(b);
-    getOrCreateAllocClosureSlow(b); getOrCreateAllocClosureGroupSlow(b);
+    getOrCreateAllocClosureSlow(b); getOrCreateAllocClosureGroupL(b);
     getOrCreateAllocRegionFast(b); getOrCreateAllocRegionSlow(b);
     getOrCreateInitIntAt(b); getOrCreateInitFloatAt(b); getOrCreateInitCharAt(b);
     getOrCreateInitConsAt(b); getOrCreateInitTuple2At(b); getOrCreateInitTuple3At(b);
@@ -1317,7 +1318,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateStoreTupleField(b); getOrCreateStoreTupleFieldI64(b); getOrCreateStoreTupleFieldF64(b);
     getOrCreateStoreConsHead(b); getOrCreateStoreConsHeadI64(b); getOrCreateStoreConsHeadF64(b);
     getOrCreateStoreConsTail(b);
-    getOrCreatePapExtend(b); getOrCreateClosureCallSaturated(b);
+    getOrCreatePapExtendL(b); getOrCreateClosureCallSaturated(b);
     getOrCreateClosureCallSaturatedEval(b); getOrCreateApplyClosure(b);
     getOrCreateApplyClosureTyped(b); getOrCreateApplyClosureEval(b);
     getOrCreateResolveHPtr(b); getOrCreateGetTag(b);

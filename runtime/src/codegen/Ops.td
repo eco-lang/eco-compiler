@@ -1351,13 +1351,14 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
     with some captured arguments. The remaining arity after creation is
     (arity - num_captured).
 
-    Each captured slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed
-    HPointer, `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives
-    at bits [2i, 2i+1]. The 50-bit bitmap supports at most 25 typed
-    captures (captures beyond that are stored boxed). The upper 2 bits of
-    the 52-bit packed field hold per-closure capability flags
-    (Closure::flags), not bitmap data.
-    This is the source-of-truth; lowering trusts this value.
+    `slot_kinds[i]` in {0 boxed, 1 Int, 2 Float, 3 Char} is the kind of
+    captured operand i; it must equal the operand's MLIR type kind (i64 -> 1,
+    f64 -> 2, i16 -> 3, !eco.value -> 0). When absent, the kinds are derived
+    from the operand types. The legacy u64 `unboxed_bitmap` (2 bits per
+    slot, slot i at bits [2i, 2i+1]) is advisory and verified only for the
+    slots it can describe (0..31). The closure's kinds for uncaptured
+    params come from the target signature. Stage arity <= 2047, captures
+    <= 2046 (HEAP_078).
 
     For typed closure calling, closures with captures have:
     - `function`: References the generic clone (funcName$clo)
@@ -1385,6 +1386,7 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
     I64Attr:$arity,
     I64Attr:$num_captured,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
+    OptionalAttr<DenseI8ArrayAttr>:$slot_kinds,        // one kind per captured operand
     OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,
     OptionalAttr<AnyAttr>:$_closure_kind,
     DefaultValuedAttr<I8Attr, "0">:$_result_kind
@@ -1432,12 +1434,19 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
       sibling's Closure.n_values. Must satisfy
       `num_captured[i] == capture_counts[i] +
         count{(p,c,s) in cross_edges | c == i}`.
-    - `unboxed_bitmaps`: I64 ArrayAttr of per-sibling unboxed_bitmap.
+    - `slot_kinds`: optional ArrayAttr with one DenseI8ArrayAttr per
+      sibling, of length capture_counts[i] (the non-sibling captures):
+      kind of each capture operand (0 boxed, 1 Int, 2 Float, 3 Char); it
+      must equal the operand's MLIR type kind. Absent = derived from the
+      operand types.
+    - `unboxed_bitmaps`: optional (legacy, advisory) I64 ArrayAttr of
+      per-sibling unboxed_bitmap; verified only for slots 0..31.
     - `capture_counts`: I64 ArrayAttr, non-sibling capture count per
       sibling, used to partition the operand list.
     - `cross_edges`: I64 ArrayAttr, flat triples of
       [producer, consumer, slot]. Cross-edge slots must be boxed
-      (bit 2*slot of unboxed_bitmap[consumer] is zero).
+      (slot_kinds[consumer][slot] == 0 when present, else bit 2*slot of
+      unboxed_bitmap[consumer] is zero for slot < 32).
     - `_operand_types`: optional ArrayAttr of TypeAttr, one per capture
       operand (before roots), mirroring the papCreate convention.
   }];
@@ -1448,7 +1457,8 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
     ArrayAttr:$fast_evaluators,
     I64ArrayAttr:$arities,
     I64ArrayAttr:$num_captured,
-    I64ArrayAttr:$unboxed_bitmaps,
+    OptionalAttr<I64ArrayAttr>:$unboxed_bitmaps,
+    OptionalAttr<ArrayAttr>:$slot_kinds,               // per sibling: DenseI8ArrayAttr, length capture_counts[i]
     I64ArrayAttr:$capture_counts,
     I64ArrayAttr:$cross_edges,
     OptionalAttr<I64ArrayAttr>:$_result_kinds
@@ -1497,12 +1507,11 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     straight into the result slot. CGEN_052/CGEN_056 do not apply. Typed
     closure calling attributes are ignored.
 
-    Each new-arg slot occupies 2 bits of `newargs_unboxed_bitmap`: `00` =
-    boxed HPointer, `01` = Int, `10` = Float, `11` = Char. Slot i's kind
-    lives at bits [2i, 2i+1]. At most 25 typed new-args fit in the
-    resulting closure's 50-bit bitmap (the remaining 2 bits of the 52-bit
-    field hold per-closure capability flags; see Closure::flags).
-    This is the source-of-truth; lowering trusts this value.
+    `slot_kinds[i]` in {0 boxed, 1 Int, 2 Float, 3 Char} is the kind of
+    new-arg i; it must equal the operand's MLIR type kind. When absent, the
+    kinds are derived from the operand types. The legacy u64
+    `newargs_unboxed_bitmap` (2 bits per slot) is advisory and verified only
+    for the slots it can describe (0..31). At most 2047 new-args.
 
     For typed closure calling (typed mode only):
     - `_closure_kind`: Propagated from source closure (int or "heterogeneous")
@@ -1531,6 +1540,7 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     Variadic<Eco_AnyValue>:$newargs,
     OptionalAttr<I64Attr>:$remaining_arity,
     DefaultValuedAttr<I64Attr, "0">:$newargs_unboxed_bitmap,
+    OptionalAttr<DenseI8ArrayAttr>:$slot_kinds,        // one kind per real newarg
     OptionalAttr<AnyAttr>:$_closure_kind,
     OptionalAttr<StrAttr>:$_dispatch_mode,
     OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,

@@ -192,9 +192,9 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_slow),
                 llvm::JITSymbolFlags::Exported);
-        symbolMap[interner("eco_alloc_closure_group_slow")] =
+        symbolMap[interner("eco_alloc_closure_group_l")] =
             llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_group_slow),
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_group_l),
                 llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_alloc_int_slow")] =
             llvm::orc::ExecutorSymbolDef(
@@ -351,9 +351,9 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure_eval),
                 llvm::JITSymbolFlags::Exported);
-        symbolMap[interner("eco_pap_extend")] =
+        symbolMap[interner("eco_pap_extend_l")] =
             llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&eco_pap_extend),
+                llvm::orc::ExecutorAddr::fromPtr(&eco_pap_extend_l),
                 llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_closure_call_saturated")] =
             llvm::orc::ExecutorSymbolDef(
@@ -831,6 +831,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Debug_log)
         KERNEL_SYM(Elm_Kernel_Debug_todo)
         KERNEL_SYM(Elm_Kernel_Debug_toString)
+        KERNEL_SYM(Elm_Kernel_Debug_toString_typed)
 
         // Scheduler module
         KERNEL_SYM(Elm_Kernel_Scheduler_succeed)

@@ -64,7 +64,7 @@ module {
     } : (i64) -> !eco.value
 
     // Grow the PAP with one applied arg (5): non-saturating typed extend
-    // (remaining 2, 1 newarg) -> runtime eco_pap_extend appends slot 1.
+    // (remaining 2, 1 newarg) -> runtime eco_pap_extend_l appends slot 1.
     %pap1 = "eco.papExtend"(%pap0, %c5) {
       remaining_arity = 2 : i64,
       newargs_unboxed_bitmap = 1 : i64

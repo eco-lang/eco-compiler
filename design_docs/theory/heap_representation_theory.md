@@ -175,7 +175,7 @@ Header.unboxed was widened from 3 bits → **6 bits** to hold up to 3 per-slot k
 |---|---|
 | Custom (ADT) | 24 fields (2×24 = 48 bits within `ctor_unboxed`) |
 | Record | 32 fields (64-bit `unboxed`) |
-| Closure | 26 captures (52-bit `unboxed` field of `packed`) |
+| Closure | 20 slots in the packed word (40-bit `unboxed`); slots 20.. in tail extension kind words (stage arity <= 2047, *Oct 2026*) |
 
 New runtime helpers:
 - `fieldKind(bitmap, idx)` — extract the 2-bit kind for slot `idx`
@@ -383,11 +383,20 @@ struct Custom {
 ```cpp
 struct Closure {
     Header header;           // tag = Tag_Closure
-    uint64_t packed;         // n_values:6 | max_values:6 | result_kind:2 | unboxed:50
-    EvalFunction evaluator;  // Function pointer
-    Unboxable values[];      // Captured values
+    uint64_t packed;         // n_values:11 | max_values:11 | result_kind:2 | unboxed:40
+    const EvaluatorDesc* evaluator;  // static descriptor
+    Unboxable values[];      // Captured values, then K extension kind words
 };
 ```
+
+*(Oct 5, 2026, wide-object plan Phase 2; HEAP_019 / HEAP_077 / HEAP_078)*: the packed word is
+`n_values:11 | max_values:11 | result_kind:2 | unboxed:40`, so stage arity goes up to 2047 and
+the word holds the kinds of slots 0..19. Kinds of slots 20.. live in
+`K = extWords(max_values, 20)` extension kind words (32 slots per word), the **last** K words of
+the object; `header.size` counts the allocated value slots plus K, so object sizing is unchanged.
+Every allocation writes all K words. Readers use `closureSlotKind` (non-allocating code) or a
+`ClosureKinds` snapshot (loops that allocate). Closures of arity > 20 are not interned and take no
+`sat[]` fast path (their `EvaluatorDesc` has an empty `sat[]`).
 
 *(May 8-10, 2026)*: The `packed` word's `unboxed` field was narrowed from 52 bits to 50 to make room for a 2-bit `result_kind` (00 = boxed, 01 = Int, 10 = Float, 11 = Char). This drops the capture cap 26 → 25 captures but lets closures returning primitive Int / Float / Char return them **unboxed** end-to-end through `eco_apply_closure_eval` / `eco_closure_call_saturated_eval`. See [Kernel ABI Theory §Per-Instance ABI](kernel_abi_theory.md#per-instance-abi-replaces-numberboxed-may-6-8-2026) and the corresponding ops attrs `_result_kind` / `_result_kinds` on `PapCreate{,Group}` / `PapExtend`.
 

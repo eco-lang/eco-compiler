@@ -205,7 +205,6 @@ ShadowRootFrame eco::detail::installShadowRootPrologue(
         return frame;
 
     int64_t N = static_cast<int64_t>(gcArgs.size());
-    assert(N <= 64 && "shadow root frame supports at most 64 slots");
 
     auto loc = func.getLoc();
     auto *ctx = builder.getContext();
@@ -242,14 +241,11 @@ ShadowRootFrame eco::detail::installShadowRootPrologue(
         frame.slotForArg[gcArgs[i]] = slot;
     }
 
-    // Register the range: eco_gc_push_stack_range(basePtr, N, mask)
-    uint64_t mask = (N >= 64) ? ~0ULL : ((1ULL << N) - 1);
-    auto pushFunc = runtime.getOrCreateGcPushStackRange(builder);
-    auto nConst = builder.create<LLVM::ConstantOp>(loc, i64Ty, N);
-    auto maskConst = builder.create<LLVM::ConstantOp>(
-        loc, i64Ty, static_cast<int64_t>(mask));
-    builder.create<LLVM::CallOp>(loc, pushFunc,
-                                 ValueRange{frame.basePtr, nConst, maskConst});
+    // Register the range: eco_gc_push_stack_range(basePtr + 64c, <=64, mask)
+    // per 64-slot chunk (B23: the runtime asserts count <= 64), every slot
+    // an HPointer.
+    SmallVector<bool> allBoxed(static_cast<size_t>(N), true);
+    emitChunkedRootPush(builder, loc, runtime, frame.basePtr, allBoxed);
 
     return frame;
 }

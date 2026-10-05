@@ -23,6 +23,8 @@
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 
+#include "mlir/IR/Verifier.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -30,6 +32,35 @@
 #include "BF/BFDialect.h"
 
 using namespace mlir;
+
+namespace {
+/// Full-module verify right after EcoPAPSimplify (plans/wide-object-tail-kind-
+/// words-phase-2.md 2.7). eco-boot / the native driver disable the
+/// after-each-pass verifier in release; this pass restores the check for the
+/// closure rewrites (slot_kinds, the 2047/2046 caps) in validate builds and
+/// when ECO_VERIFY_AFTER_PAPSIMPLIFY=1. ecoc verifies after every pass anyway.
+struct VerifyAfterPAPSimplifyPass
+    : public PassWrapper<VerifyAfterPAPSimplifyPass, OperationPass<ModuleOp>> {
+    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(VerifyAfterPAPSimplifyPass)
+    StringRef getArgument() const final { return "eco-verify-after-pap-simplify"; }
+    StringRef getDescription() const final {
+        return "Verify the module after EcoPAPSimplify";
+    }
+    void runOnOperation() override {
+        if (failed(mlir::verify(getOperation())))
+            signalPassFailure();
+    }
+};
+
+bool verifyAfterPAPSimplifyEnabled() {
+#if ECO_HEAP_VALIDATE
+    return true;
+#else
+    const char *e = ::getenv("ECO_VERIFY_AFTER_PAPSIMPLIFY");
+    return e && *e && *e != '0';
+#endif
+}
+} // namespace
 
 namespace eco {
 
@@ -63,6 +94,8 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
 
     // PAP simplification: fuse closures, convert saturated PAPs to direct calls
     pm.addPass(eco::createEcoPAPSimplifyPass());
+    if (verifyAfterPAPSimplifyEnabled())
+        pm.addPass(std::make_unique<VerifyAfterPAPSimplifyPass>());
 
     // compare + case-on-Order -> direct comparisons (deletes the Order
     // round-trip). After PAPSimplify so closure-mediated compares are already

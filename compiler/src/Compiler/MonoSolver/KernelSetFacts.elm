@@ -814,175 +814,175 @@ facts =
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_decodeFailure:463-465 | type: elm/bytes/1.0.8/src/Bytes/Decode.elm (the failure marker behind `fail : Decoder a`) | B1: vacuous - NO arguments, returns a constant marker; `a` is phantom AND nothing can ever be written to it from here | B2: no store | B3: no allocClosure | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_decodeFailure:463-465 | type: elm/bytes/1.0.8/src/Bytes/Decode.elm (the failure marker behind `fail : Decoder a`) | B1: vacuous - NO arguments, returns a constant marker; `a` is phantom AND nothing can ever be written to it from here | B2: no store | B3: no allocClosure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "encode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_encode:389-410 | helpers: encoderSize:118-136, writeEncoder:138-272 | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:96 (Encoder -> Bytes) | B1: vacuous (no function-capable position) | B2: result alloc only :401-403 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_encode:389-410 | helpers: encoderSize:118-136, writeEncoder:138-272 | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:96 (Encoder -> Bytes) | B1: vacuous (no function-capable position) | B2: result alloc only :401-403 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "getHostEndianness" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getHostEndianness:297-301 | type: elm/bytes/1.0.8/src/Bytes.elm (Endianness) | B1: vacuous - NO arguments; returns fromBits(isLE ? 0 : 1), a concrete enum | B2: no store | B3: no allocClosure | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getHostEndianness:297-301 | type: elm/bytes/1.0.8/src/Bytes.elm (Endianness) | B1: vacuous - NO arguments; returns fromBits(isLE ? 0 : 1), a concrete enum | B2: no store | B3: no allocClosure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "getStringWidth" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getStringWidth:303-360 | helpers: none | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:250 (String -> Int) | B1: vacuous (no function-capable position) | B2: C++-stack u16string :331, no Elm retention | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getStringWidth:303-360 | helpers: none | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:250 (String -> Int) | B1: vacuous (no function-capable position) | B2: C++-stack u16string :331, no Elm retention | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_bytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_bytes:567-578 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:146 (Int -> Bytes -> Int -> (Int, Bytes)) | B1: vacuous (no function-capable position) | B2: slice + Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_bytes:567-578 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:146 (Int -> Bytes -> Int -> (Int, Bytes)) | B1: vacuous (no function-capable position) | B2: slice + Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_f32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f32:543-553 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:128 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f32:543-553 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:128 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_f64" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f64:555-565 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:135 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f64:555-565 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:135 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_i16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i16:501-510 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:85 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i16:501-510 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:85 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_i32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i32:512-521 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:92 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i32:512-521 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:92 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_i8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i8:486-491 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:78 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only :46-47 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i8:486-491 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:78 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only :46-47 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_string" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_string:580-707 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:175 (Int -> Bytes -> Int -> (Int, String)) | B1: vacuous (no function-capable position) | B2: body + Tuple2 result rooted :664-666 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_string:580-707 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:175 (Int -> Bytes -> Int -> (Int, String)) | B1: vacuous (no function-capable position) | B2: body + Tuple2 result rooted :664-666 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_u16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u16:523-531 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:110 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u16:523-531 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:110 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_u32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u32:533-541 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:117 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u32:533-541 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:117 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "read_u8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u8:493-497 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:103 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u8:493-497 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:103 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "width" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_width:293-295 | helpers: ElmBytesRuntime.cpp:elm_bytebuffer_len:78-85 | type: elm/bytes/1.0.8/src/Bytes.elm:77 (Bytes -> Int) | B1: vacuous (no function-capable position) | B2: read-only length probe, no statics | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_width:293-295 | helpers: ElmBytesRuntime.cpp:elm_bytebuffer_len:78-85 | type: elm/bytes/1.0.8/src/Bytes.elm:77 (Bytes -> Int) | B1: vacuous (no function-capable position) | B2: read-only length probe, no statics | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_bytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_bytes:865-867 | helpers: makeEncoderBytes:815-831 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:298 (C++ Bytes -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg into result :829, rooted :821-825 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_bytes:865-867 | helpers: makeEncoderBytes:815-831 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:298 (C++ Bytes -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg into result :829, rooted :821-825 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_f32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f32:857-859 | helpers: makeEncoder2_pf:751-768 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:294 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :757-761 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f32:857-859 | helpers: makeEncoder2_pf:751-768 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:294 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :757-761 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_f64" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f64:861-863 | helpers: makeEncoder2_pf:751-768 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:295 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :757-761 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f64:861-863 | helpers: makeEncoder2_pf:751-768 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:295 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :757-761 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_i16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i16:837-839 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:289 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i16:837-839 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:289 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_i32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i32:841-843 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:290 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i32:841-843 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:290 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_i8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i8:833-835 | helpers: makeEncoder1:713-723 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:288 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :716-717 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i8:833-835 | helpers: makeEncoder1:713-723 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:288 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :716-717 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_string" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_string:869-871 | helpers: makeEncoderUtf8:790-810 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:297 (C++ String -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg+width into result :807-808, rooted :798-803 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_string:869-871 | helpers: makeEncoderUtf8:790-810 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:297 (C++ String -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg+width into result :807-808, rooted :798-803 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_u16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u16:849-851 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:292 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u16:849-851 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:292 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_u32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u32:853-855 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:293 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u32:853-855 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:293 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Bytes", "write_u8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u8:845-847 | helpers: makeEncoder1:713-723 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:291 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :716-717 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u8:845-847 | helpers: makeEncoder1:713-723 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:291 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :716-717 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Char", "fromCode" )
@@ -1297,98 +1297,98 @@ facts =
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_appendN:358-416 | helpers: elm_array_append_n:1036-1087 | type: elm/core/1.0.5/src/Elm/JsArray.elm:179 | B1: :382-387 copy element words verbatim, B1(b) along shared a | B2: writes confined to fresh resultArr | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_appendN:358-416 | helpers: elm_array_append_n:1036-1087 | type: elm/core/1.0.5/src/Elm/JsArray.elm:179 | B1: :382-387 copy element words verbatim, B1(b) along shared a | B2: writes confined to fresh resultArr | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "empty" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_empty:192-195 | type: elm/core/1.0.5/src/Elm/JsArray.elm:53 (JsArray a) | B1: no argument (zero-arg CAF) | B2: one allocation, no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_empty:192-195 | type: elm/core/1.0.5/src/Elm/JsArray.elm:53 (JsArray a) | B1: no argument (zero-arg CAF) | B2: one allocation, no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "foldl" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_foldl:651-653 | helpers: foldImpl:576-649 | type: elm/core/1.0.5/src/Elm/JsArray.elm:129 | B1: apply-only via eco_apply_closure_eval :184; acc by identity :638-639 | B2: roots + stack locals only :598-623 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_foldl:651-653 | helpers: foldImpl:576-649 | type: elm/core/1.0.5/src/Elm/JsArray.elm:129 | B1: apply-only via eco_apply_closure_eval :184; acc by identity :638-639 | B2: roots + stack locals only :598-623 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "foldr" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_foldr:655-657 | helpers: foldImpl:576-649 (dir :603) | type: elm/core/1.0.5/src/Elm/JsArray.elm:136 | B1: apply-only via eco_apply_closure_eval :184; acc by identity :638 | B2: roots + stack locals only :598-623 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_foldr:655-657 | helpers: foldImpl:576-649 (dir :603) | type: elm/core/1.0.5/src/Elm/JsArray.elm:136 | B1: apply-only via eco_apply_closure_eval :184; acc by identity :638 | B2: roots + stack locals only :598-623 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "indexedMap" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_indexedMap:519-560 | helpers: callBinaryIndexMapClosureTyped:152 | type: elm/core/1.0.5/src/Elm/JsArray.elm:153 | B1: apply-only via eco_apply_closure_eval :161; elems are args only | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_indexedMap:519-560 | helpers: callBinaryIndexMapClosureTyped:152 | type: elm/core/1.0.5/src/Elm/JsArray.elm:153 | B1: apply-only via eco_apply_closure_eval :161; elems are args only | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "initialize" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_initialize:422-455 | helpers: callUnaryInitClosureTyped:80, pushTypedResult:126 | type: elm/core/1.0.5/src/Elm/JsArray.elm:80 | B1: apply-only via eco_apply_closure_eval :89 | B2: only the result builder mutated | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_initialize:422-455 | helpers: callUnaryInitClosureTyped:80, pushTypedResult:126 | type: elm/core/1.0.5/src/Elm/JsArray.elm:80 | B1: apply-only via eco_apply_closure_eval :89 | B2: only the result builder mutated | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "initializeFromList" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp", "elm-kernel-cpp/src/core/JsArray.cpp", "elm-kernel-cpp/src/core/JsArray.hpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_initializeFromList:457-461 | helpers: JsArray.cpp:initializeFromList:14 | type: elm/core/1.0.5/src/Elm/JsArray.elm:95 | B1: no closure param; heads by identity :40, suffix view :54-72 | B2: writes only fresh arr | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_initializeFromList:457-461 | helpers: JsArray.cpp:initializeFromList:14 | type: elm/core/1.0.5/src/Elm/JsArray.elm:95 | B1: no closure param; heads by identity :40, suffix view :54-72 | B2: writes only fresh arr | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "length" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_length:204-208 | type: elm/core/1.0.5/src/Elm/JsArray.elm:67 (JsArray a -> Int) | B1: elements never read, only ElmArray::length :207 | B2: no writes of any kind | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_length:204-208 | type: elm/core/1.0.5/src/Elm/JsArray.elm:67 (JsArray a -> Int) | B1: elements never read, only ElmArray::length :207 | B2: no writes of any kind | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "map" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_map:463-517 | helpers: pushTypedResult:126 | type: elm/core/1.0.5/src/Elm/JsArray.elm:143 | B1: apply-only via eco_apply_closure_eval :509; elems are args only :494-497 | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_map:463-517 | helpers: pushTypedResult:126 | type: elm/core/1.0.5/src/Elm/JsArray.elm:143 | B1: apply-only via eco_apply_closure_eval :509; elems are args only :494-497 | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "push" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_push:268-318 | helpers: copyAndExtendForPush:711 | type: elm/core/1.0.5/src/Elm/JsArray.elm:122 | B1: :297-299 copy words verbatim, :306 stores value unchanged | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_push:268-318 | helpers: copyAndExtendForPush:711 | type: elm/core/1.0.5/src/Elm/JsArray.elm:122 | B1: :297-299 copy words verbatim, :306 stores value unchanged | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "singleton" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_singleton:197-202 | helpers: elm_array_singleton_box:694 | type: elm/core/1.0.5/src/Elm/JsArray.elm:60 (a -> JsArray a) | B1: :199-200 move the arg word unchanged into elements[0] | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_singleton:197-202 | helpers: elm_array_singleton_box:694 | type: elm/core/1.0.5/src/Elm/JsArray.elm:60 (a -> JsArray a) | B1: :199-200 move the arg word unchanged into elements[0] | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "slice" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_slice:320-356 | helpers: elm_array_slice:800-833 | type: elm/core/1.0.5/src/Elm/JsArray.elm:169 | B1: :342-344 copy a contiguous run of element words verbatim, B1(b) | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_slice:320-356 | helpers: elm_array_slice:800-833 | type: elm/core/1.0.5/src/Elm/JsArray.elm:169 | B1: :342-344 copy a contiguous run of element words verbatim, B1(b) | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "unsafeGet" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_unsafeGet:210-223 | type: elm/core/1.0.5/src/Elm/JsArray.elm:105 (Int -> JsArray a -> a) | B1: :215 reads the slot, :221 returns the stored word unchanged, B1(b) | B2: read-only apart from primitive boxing | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_unsafeGet:210-223 | type: elm/core/1.0.5/src/Elm/JsArray.elm:105 (Int -> JsArray a -> a) | B1: :215 reads the slot, :221 returns the stored word unchanged, B1(b) | B2: read-only apart from primitive boxing | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "JsArray", "unsafeSet" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_unsafeSet:225-266 | helpers: copyForUnsafeSet:888 | type: elm/core/1.0.5/src/Elm/JsArray.elm:115 | B1: :244-246 copy words verbatim, :253 stores value unchanged, B1(b) | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_unsafeSet:225-266 | helpers: copyForUnsafeSet:888 | type: elm/core/1.0.5/src/Elm/JsArray.elm:115 | B1: :244-246 copy words verbatim, :253 stores value unchanged, B1(b) | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Json", "addField" )
@@ -1620,63 +1620,63 @@ facts =
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp", "elm-kernel-cpp/src/core/List.cpp" ]
-                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_cons:276-283 (ABI :288-304) | helpers: List.cpp:cons:18-20 | type: elm/core/1.0.5/src/List.elm:106 | B1: head word stored verbatim in the fresh cell, B1(b) MOVE along a | B2: no static/global/cache/task write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_cons:276-283 (ABI :288-304) | helpers: List.cpp:cons:18-20 | type: elm/core/1.0.5/src/List.elm:106 | B1: head word stored verbatim in the fresh cell, B1(b) MOVE along a | B2: no static/global/cache/task write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "fromArray" )
           , TypeFaithful
                 { scope = TransportsAs (TsFun (tsList (TsVar "a")) (tsList (TsVar "a")))
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_fromArray:306-354 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001) which is what SOLVES the occurrence -- the earlier Array/JsArray shapes matched nothing because the non-List side was an unsolved var | B1: B1(b)/B1(c) only -- Nil and already-Cons inputs return the ARGUMENT by identity :310-330, and the conversion copies element words verbatim | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure; allocation is list cells | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_fromArray:306-354 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001) which is what SOLVES the occurrence -- the earlier Array/JsArray shapes matched nothing because the non-List side was an unsolved var | B1: B1(b)/B1(c) only -- Nil and already-Cons inputs return the ARGUMENT by identity :310-330, and the conversion copies element words verbatim | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure; allocation is list cells | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map2" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map2:592-600 | helpers: kernelListMapN:432-590, appendClosureResult:233 | type: elm/core/1.0.5/src/List.elm:437 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map2:592-600 | helpers: kernelListMapN:432-590, appendClosureResult:233 | type: elm/core/1.0.5/src/List.elm:437 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map3" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map3:602-611 | helpers: kernelListMapN:432-590 (n=3 at :609) | type: elm/core/1.0.5/src/List.elm:443 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map3:602-611 | helpers: kernelListMapN:432-590 (n=3 at :609) | type: elm/core/1.0.5/src/List.elm:443 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map4" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map4:613-623 | helpers: kernelListMapN:432-590 (n=4 at :621) | type: elm/core/1.0.5/src/List.elm:449 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map4:613-623 | helpers: kernelListMapN:432-590 (n=4 at :621) | type: elm/core/1.0.5/src/List.elm:449 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map5" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map5:625-637 | helpers: kernelListMapN:432-590 (n=5 at :635) | type: elm/core/1.0.5/src/List.elm:455 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map5:625-637 | helpers: kernelListMapN:432-590 (n=5 at :635) | type: elm/core/1.0.5/src/List.elm:455 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "toArray" )
           , TypeFaithful
                 { scope = TransportsAs (TsFun (tsList (TsVar "a")) (tsList (TsVar "a")))
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_toArray:356-392 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001); the consumer StringOps::join takes a cons list (StringOps.cpp:659) | B1: B1(b)/B1(c) only -- Nil and Cons inputs return the ARGUMENT by identity :362-375; the fallback copies element words via listToVectorU64 | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_toArray:356-392 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001); the consumer StringOps::join takes a cons list (StringOps.cpp:659) | B1: B1(b)/B1(c) only -- Nil and Cons inputs return the ARGUMENT by identity :362-375; the fallback copies element words via listToVectorU64 | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "sortBy" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortBy:759-830 | helpers: listFromPermutation:741, Utils.cpp:compare:437 | type: elm/core/1.0.5/src/List.elm:484 | B1: apply-only via eco_apply_closure :787; result = permutation :828 | B2: no retention; cmp read-only | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortBy:759-830 | helpers: listFromPermutation:741, Utils.cpp:compare:437 | type: elm/core/1.0.5/src/List.elm:484 | B1: apply-only via eco_apply_closure :787; result = permutation :828 | B2: no retention; cmp read-only | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "sortWith" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortWith:832-887 | helpers: listFromPermutation:741 | type: elm/core/1.0.5/src/List.elm:502 | B1: apply-only via eco_apply_closure :873; result = permutation :885 | B2: call-local buffers, roots balanced :868-883 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortWith:832-887 | helpers: listFromPermutation:741 | type: elm/core/1.0.5/src/List.elm:502 | B1: apply-only via eco_apply_closure :873; result = permutation :885 | B2: call-local buffers, roots balanced :868-883 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "MVar", "drop" )
@@ -1711,49 +1711,49 @@ facts =
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
-                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_chompBase10:284-295 | helpers: resolveString:81-86 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:755 | B1: vacuous (no function-capable position) | B2: no cross-call storage; returns a raw int64_t | B3: grep clean (no allocClosure) | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_chompBase10:284-295 | helpers: resolveString:81-86 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:755 | B1: vacuous (no function-capable position) | B2: no cross-call storage; returns a raw int64_t | B3: grep clean (no allocClosure) | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Parser", "consumeBase" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
-                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_consumeBase:299-312 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:659 | B1: vacuous (no function-capable position) | B2: no cross-call storage in ParserExports.cpp | B3: grep clean (no allocClosure) | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_consumeBase:299-312 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:659 | B1: vacuous (no function-capable position) | B2: no cross-call storage in ParserExports.cpp | B3: grep clean (no allocClosure) | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Parser", "consumeBase16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
-                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_consumeBase16:316-336 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:664 | B1: vacuous (no function-capable position) | B2: no cross-call storage in ParserExports.cpp | B3: grep clean (no allocClosure) | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_consumeBase16:316-336 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:664 | B1: vacuous (no function-capable position) | B2: no cross-call storage in ParserExports.cpp | B3: grep clean (no allocClosure) | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Parser", "findSubString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
-                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_findSubString:240-281 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1131 | B1: vacuous (no function-capable position) | B2: no cross-call storage; StackRootGuard :246 is call-scoped | B3: grep clean (no allocClosure) | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_findSubString:240-281 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1131 | B1: vacuous (no function-capable position) | B2: no cross-call storage; StackRootGuard :246 is call-scoped | B3: grep clean (no allocClosure) | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Parser", "isAsciiCode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
-                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_isAsciiCode:129-134 | helpers: resolveString:81-86 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1118 | B1: vacuous (no function-capable position) | B2: no cross-call storage; result is a boxed Bool :133 | B3: grep clean (no allocClosure) | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_isAsciiCode:129-134 | helpers: resolveString:81-86 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1118 | B1: vacuous (no function-capable position) | B2: no cross-call storage; result is a boxed Bool :133 | B3: grep clean (no allocClosure) | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Parser", "isSubChar" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
-                , evidence = "class: full | entry: ParserExports.cpp:Elm_Kernel_Parser_isSubChar:142-189 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1110 ((Char -> Bool) -> Int -> String -> Int) | B1: apply-only via eco_apply_closure_typed :179 (sole eco_apply site); decode :147, root :148 | B2: only static is the const layout array :175 | B3: grep clean (no allocClosure) | audited: 2026-08-20"
+                , evidence = "class: full | entry: ParserExports.cpp:Elm_Kernel_Parser_isSubChar:142-189 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1110 ((Char -> Bool) -> Int -> String -> Int) | B1: apply-only via eco_apply_closure_typed :179 (sole eco_apply site); decode :147, root :148 | B2: only static is the const layout array :175 | B3: grep clean (no allocClosure) | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Parser", "isSubString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
-                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_isSubString:195-233 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1090 | B1: vacuous (no function-capable position) | B2: no cross-call storage; StackRootGuard :203 is call-scoped | B3: grep clean (no allocClosure) | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_isSubString:195-233 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1090 | B1: vacuous (no function-capable position) | B2: no cross-call storage; StackRootGuard :203 is call-scoped | B3: grep clean (no allocClosure) | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Platform", "batch" )
@@ -1879,259 +1879,259 @@ facts =
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
-                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_andThen:30-37 | helpers: Scheduler.cpp:taskAndThen:149-152 | type: elm/core/1.0.5/src/Task.elm:207 ((a -> Task x b) -> Task x a -> Task x b) | B1: BOTH words stored VERBATIM (:33-35 decode, taskAndThen :151 allocTask(Task_AndThen, nil, callback, nil, task)); the scheduler later applies THAT callback to THAT task's value - the callback is never substituted, wrapped or re-created, so param1's `a` = param2's `a` and param1's result `Task x b` = the result, exactly as the type's variable-sharing graph states | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_andThen:30-37 | helpers: Scheduler.cpp:taskAndThen:149-152 | type: elm/core/1.0.5/src/Task.elm:207 ((a -> Task x b) -> Task x a -> Task x b) | B1: BOTH words stored VERBATIM (:33-35 decode, taskAndThen :151 allocTask(Task_AndThen, nil, callback, nil, task)); the scheduler later applies THAT callback to THAT task's value - the callback is never substituted, wrapped or re-created, so param1's `a` = param2's `a` and param1's result `Task x b` = the result, exactly as the type's variable-sharing graph states | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Scheduler", "fail" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
-                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_fail:23-28 | helpers: Scheduler.cpp:taskFail:139-142 | type: elm/core/1.0.5/src/Task.elm:92 (x -> Task x a) | B1: the arg word is stored unchanged (:26, taskFail :141 allocTask(Task_Fail, error, nil, nil, nil)) and handed back at the SAME `x` the type names | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_fail:23-28 | helpers: Scheduler.cpp:taskFail:139-142 | type: elm/core/1.0.5/src/Task.elm:92 (x -> Task x a) | B1: the arg word is stored unchanged (:26, taskFail :141 allocTask(Task_Fail, error, nil, nil, nil)) and handed back at the SAME `x` the type names | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Scheduler", "kill" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
-                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_kill:55-60 | helpers: Scheduler.cpp:killTask | type: elm/core/1.0.5/src/Process.elm:103 (Id -> Task x ()) | B1: captures only a process Id; Id and () are concrete, so nothing function-capable enters or leaves | B2: no store outside the returned Task | B3: binding closure only, payload an Id | audited: 2026-08-25"
+                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_kill:55-60 | helpers: Scheduler.cpp:killTask | type: elm/core/1.0.5/src/Process.elm:103 (Id -> Task x ()) | B1: captures only a process Id; Id and () are concrete, so nothing function-capable enters or leaves | B2: no store outside the returned Task | B3: binding closure only, payload an Id | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Scheduler", "onError" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
-                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_onError:39-46 | helpers: Scheduler.cpp:taskOnError:154-157 | type: elm/core/1.0.5/src/Task.elm:227 ((x -> Task y a) -> Task x a -> Task y a) | B1: both words stored VERBATIM (:42-44, taskOnError :156); the handler is applied to the inner task's error and never substituted, and on the SUCCESS path the inner `a` passes straight through to the result's `a` - both edges are the type's shared variables | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_onError:39-46 | helpers: Scheduler.cpp:taskOnError:154-157 | type: elm/core/1.0.5/src/Task.elm:227 ((x -> Task y a) -> Task x a -> Task y a) | B1: both words stored VERBATIM (:42-44, taskOnError :156); the handler is applied to the inner task's error and never substituted, and on the SUCCESS path the inner `a` passes straight through to the result's `a` - both edges are the type's shared variables | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Scheduler", "spawn" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
-                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_spawn:48-53 | helpers: Scheduler.cpp:spawnTask:472-474 | type: elm/core/1.0.5/src/Process.elm:82 (Task x a -> Task y Id) | B1: the captured task MAY contain closures, but `a` is ABSENT FROM THE RESULT (Task y Id) - the type creates an EMPTY flow obligation, so there is nothing a licence can get wrong. The scheduler consumes the task; nothing function-valued is handed back to Elm at a typed position | B2: no store outside the returned Task | B3: makeBinding mints a closure, but it lands in Task.callback where no type variable names it | audited: 2026-08-25"
+                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_spawn:48-53 | helpers: Scheduler.cpp:spawnTask:472-474 | type: elm/core/1.0.5/src/Process.elm:82 (Task x a -> Task y Id) | B1: the captured task MAY contain closures, but `a` is ABSENT FROM THE RESULT (Task y Id) - the type creates an EMPTY flow obligation, so there is nothing a licence can get wrong. The scheduler consumes the task; nothing function-valued is handed back to Elm at a typed position | B2: no store outside the returned Task | B3: makeBinding mints a closure, but it lands in Task.callback where no type variable names it | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Scheduler", "succeed" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
-                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_succeed:16-21 | helpers: Scheduler.cpp:taskSucceed:123-126 | type: elm/core/1.0.5/src/Task.elm:78 (a -> Task x a) | B1: the arg word is stored unchanged (:18, taskSucceed :125 allocTask(Task_Succeed, value, nil, nil, nil)) and handed back at the SAME `a` the type names - structurally JsArray.singleton with an opaque carrier | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_succeed:16-21 | helpers: Scheduler.cpp:taskSucceed:123-126 | type: elm/core/1.0.5/src/Task.elm:78 (a -> Task x a) | B1: the arg word is stored unchanged (:18, taskSucceed :125 allocTask(Task_Succeed, value, nil, nil, nil)) and handed back at the SAME `a` the type names - structurally JsArray.singleton with an opaque carrier | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "all" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
-                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_all:317-334 | helpers: callCharToBoolClosure:217, snapshotChars:237 | type: elm/core/1.0.5/src/String.elm:615 ((Char -> Bool) -> String -> Bool) | B1: apply-only via eco_apply_closure_typed :329 | B2: no retention | B3: embedded Bool consts | audited: 2026-08-20"
+                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_all:317-334 | helpers: callCharToBoolClosure:217, snapshotChars:237 | type: elm/core/1.0.5/src/String.elm:615 ((Char -> Bool) -> String -> Bool) | B1: apply-only via eco_apply_closure_typed :329 | B2: no retention | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "any" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
-                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_any:299-315 | helpers: callCharToBoolClosure:217, snapshotChars:237 | type: elm/core/1.0.5/src/String.elm:604 ((Char -> Bool) -> String -> Bool) | B1: apply-only via eco_apply_closure_typed :310 | B2: no retention | B3: embedded Bool consts | audited: 2026-08-20"
+                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_any:299-315 | helpers: callCharToBoolClosure:217, snapshotChars:237 | type: elm/core/1.0.5/src/String.elm:604 ((Char -> Bool) -> String -> Bool) | B1: apply-only via eco_apply_closure_typed :310 | B2: no retention | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "append" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_append:41-44 | helpers: String.cpp:append:26-28 | type: elm/core/1.0.5/src/String.elm:169 (String -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_append:41-44 | helpers: String.cpp:append:26-28 | type: elm/core/1.0.5/src/String.elm:169 (String -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "cons" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_cons:52-56 | helpers: String.cpp:cons:38-40 | type: elm/core/1.0.5/src/String.elm:542 (Char -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_cons:52-56 | helpers: String.cpp:cons:38-40 | type: elm/core/1.0.5/src/String.elm:542 (Char -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "contains" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_contains:126-128 | helpers: String.cpp:contains:431-433 | type: elm/core/1.0.5/src/String.elm:299 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_contains:126-128 | helpers: String.cpp:contains:431-433 | type: elm/core/1.0.5/src/String.elm:299 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "endsWith" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_endsWith:122-124 | helpers: String.cpp:endsWith:427-429 | type: elm/core/1.0.5/src/String.elm:319 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_endsWith:122-124 | helpers: String.cpp:endsWith:427-429 | type: elm/core/1.0.5/src/String.elm:319 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "filter" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
-                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_filter:281-297 | helpers: callCharToBoolClosure:217, materializeString:250 | type: elm/core/1.0.5/src/String.elm:575 ((Char -> Bool) -> String -> String) | B1: apply-only via eco_apply_closure_typed :294 | B2: C-stack only | B3: string alloc only | audited: 2026-08-20"
+                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_filter:281-297 | helpers: callCharToBoolClosure:217, materializeString:250 | type: elm/core/1.0.5/src/String.elm:575 ((Char -> Bool) -> String -> String) | B1: apply-only via eco_apply_closure_typed :294 | B2: C-stack only | B3: string alloc only | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "foldl" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
-                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_foldl:336-350 | type: elm/core/1.0.5/src/String.elm:584 ((Char -> b -> b) -> b -> String -> b) | B1: apply-only :346 via callFoldClosure:226 -> eco_apply_closure_typed; acc PK_Boxed :199 -> result :338/:349, shared b | B2: accHP :347 | B3: no alloc | audited: 2026-08-20"
+                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_foldl:336-350 | type: elm/core/1.0.5/src/String.elm:584 ((Char -> b -> b) -> b -> String -> b) | B1: apply-only :346 via callFoldClosure:226 -> eco_apply_closure_typed; acc PK_Boxed :199 -> result :338/:349, shared b | B2: accHP :347 | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "foldr" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
-                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_foldr:352-366 | type: elm/core/1.0.5/src/String.elm:593 ((Char -> b -> b) -> b -> String -> b) | B1: apply-only :362 via callFoldClosure:226 -> eco_apply_closure_typed; acc PK_Boxed :199 -> result :354/:365, shared b | B2: accHP :363 | B3: no alloc | audited: 2026-08-20"
+                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_foldr:352-366 | type: elm/core/1.0.5/src/String.elm:593 ((Char -> b -> b) -> b -> String -> b) | B1: apply-only :362 via callFoldClosure:226 -> eco_apply_closure_typed; acc PK_Boxed :199 -> result :354/:365, shared b | B2: accHP :363 | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "fromList" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_fromList:63-66 | helpers: String.cpp:fromList:63-107 | type: elm/core/1.0.5/src/String.elm:520 (List Char -> String; elem type concrete) | B1: vacuous (no function-capable position) | B2: StackRootGuard :84/:99 RAII | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_fromList:63-66 | helpers: String.cpp:fromList:63-107 | type: elm/core/1.0.5/src/String.elm:520 (List Char -> String; elem type concrete) | B1: vacuous (no function-capable position) | B2: StackRootGuard :84/:99 RAII | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "fromNumber" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_fromNumber:145-151 | helpers: String.cpp:fromNumber:451 | type: 2 aliasing defs, both arrow/var-free: String.elm:458 fromInt Int->String; :494 fromFloat Float->String | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_fromNumber:145-151 | helpers: String.cpp:fromNumber:451 | type: 2 aliasing defs, both arrow/var-free: String.elm:458 fromInt Int->String; :494 fromFloat Float->String | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "indexes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_indexes:130-133 | helpers: String.cpp:indexes:435 | type: elm/core/1.0.5/src/String.elm:330 (String -> String -> List Int); alias indices :336 | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_indexes:130-133 | helpers: String.cpp:indexes:435 | type: elm/core/1.0.5/src/String.elm:330 (String -> String -> List Int); alias indices :336 | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "join" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_join:46-49 | helpers: String.cpp:join:30 | type: inferred-from-usage; use-site String.elm:202 (String -> Array String -> String); arrow/var-free | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_join:46-49 | helpers: String.cpp:join:30 | type: inferred-from-usage; use-site String.elm:202 (String -> Array String -> String); arrow/var-free | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "length" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_length:18-27 | helpers: String.cpp:length:18-20 | type: elm/core/1.0.5/src/String.elm:112 (String -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_length:18-27 | helpers: String.cpp:length:18-20 | type: elm/core/1.0.5/src/String.elm:112 (String -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "lines" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_lines:78-81 | helpers: String.cpp:lines:179-284 (2 arms) | type: elm/core/1.0.5/src/String.elm:218 (String -> List String) | B1: vacuous (no function-capable position) | B2: root ranges :211/:272 restored :222/:282 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_lines:78-81 | helpers: String.cpp:lines:179-284 (2 arms) | type: elm/core/1.0.5/src/String.elm:218 (String -> List String) | B1: vacuous (no function-capable position) | B2: root ranges :211/:272 restored :222/:282 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "map" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
-                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_map:263-279 | helpers: callCharToCharClosure:206, materializeString:250 | type: elm/core/1.0.5/src/String.elm:566 ((Char -> Char) -> String -> String) | B1: apply-only via eco_apply_closure_eval :276 | B2: C-stack only | B3: string alloc only | audited: 2026-08-20"
+                , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_map:263-279 | helpers: callCharToCharClosure:206, materializeString:250 | type: elm/core/1.0.5/src/String.elm:566 ((Char -> Char) -> String -> String) | B1: apply-only via eco_apply_closure_eval :276 | B2: C-stack only | B3: string alloc only | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "reverse" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_reverse:88-91 | helpers: String.cpp:reverse:395-397 | type: elm/core/1.0.5/src/String.elm:121 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_reverse:88-91 | helpers: String.cpp:reverse:395-397 | type: elm/core/1.0.5/src/String.elm:121 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "slice" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_slice:68-71 | helpers: String.cpp:slice:167-169 | type: elm/core/1.0.5/src/String.elm:235 (Int -> Int -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_slice:68-71 | helpers: String.cpp:slice:167-169 | type: elm/core/1.0.5/src/String.elm:235 (Int -> Int -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "split" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_split:73-76 | helpers: String.cpp:split:175 | type: inferred-from-usage; use-site String.elm:191 (String -> String -> Array String); arrow/var-free | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_split:73-76 | helpers: String.cpp:split:175 | type: inferred-from-usage; use-site String.elm:191 (String -> String -> Array String); arrow/var-free | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "startsWith" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_startsWith:118-120 | helpers: String.cpp:startsWith:423-425 | type: elm/core/1.0.5/src/String.elm:309 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts, no alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_startsWith:118-120 | helpers: String.cpp:startsWith:423-425 | type: elm/core/1.0.5/src/String.elm:309 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts, no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "toFloat" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toFloat:140-143 | helpers: String.cpp:toFloat:447-449 | type: elm/core/1.0.5/src/String.elm:480 (String -> Maybe Float) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toFloat:140-143 | helpers: String.cpp:toFloat:447-449 | type: elm/core/1.0.5/src/String.elm:480 (String -> Maybe Float) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "toInt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toInt:135-138 | helpers: String.cpp:toInt:443-445 | type: elm/core/1.0.5/src/String.elm:445 (String -> Maybe Int) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toInt:135-138 | helpers: String.cpp:toInt:443-445 | type: elm/core/1.0.5/src/String.elm:445 (String -> Maybe Int) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "toLower" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toLower:98-101 | helpers: String.cpp:toLower:403-405 | type: elm/core/1.0.5/src/String.elm:359 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toLower:98-101 | helpers: String.cpp:toLower:403-405 | type: elm/core/1.0.5/src/String.elm:359 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "toUpper" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toUpper:93-96 | helpers: String.cpp:toUpper:399-401 | type: elm/core/1.0.5/src/String.elm:350 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toUpper:93-96 | helpers: String.cpp:toUpper:399-401 | type: elm/core/1.0.5/src/String.elm:350 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "trim" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trim:103-106 | helpers: String.cpp:trim:407-409 | type: elm/core/1.0.5/src/String.elm:405 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trim:103-106 | helpers: String.cpp:trim:407-409 | type: elm/core/1.0.5/src/String.elm:405 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "trimLeft" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trimLeft:108-111 | helpers: String.cpp:trimLeft:411-413 | type: elm/core/1.0.5/src/String.elm:414 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trimLeft:108-111 | helpers: String.cpp:trimLeft:411-413 | type: elm/core/1.0.5/src/String.elm:414 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "trimRight" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trimRight:113-116 | helpers: String.cpp:trimRight:415-417 | type: elm/core/1.0.5/src/String.elm:423 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trimRight:113-116 | helpers: String.cpp:trimRight:415-417 | type: elm/core/1.0.5/src/String.elm:423 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "uncons" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_uncons:58-61 | helpers: String.cpp:uncons:42-44 | type: elm/core/1.0.5/src/String.elm:553 (String -> Maybe (Char, String); slots concrete) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_uncons:58-61 | helpers: String.cpp:uncons:42-44 | type: elm/core/1.0.5/src/String.elm:553 (String -> Maybe (Char, String); slots concrete) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "String", "words" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
-                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_words:83-86 | helpers: String.cpp:words:286-389 (two arms) | type: elm/core/1.0.5/src/String.elm:209 (String -> List String) | B1: vacuous (no function-capable position) | B2: root ranges :321/:372 restored :334/:387 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_words:83-86 | helpers: String.cpp:words:286-389 (two arms) | type: elm/core/1.0.5/src/String.elm:209 (String -> List String) | B1: vacuous (no function-capable position) | B2: root ranges :321/:372 restored :334/:387 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Time", "getZoneName" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/time/TimeExports.cpp" ]
-                , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_getZoneName:286-293 | type: elm/time/1.0.0/src/Time.elm (Task x ZoneName) | B1: same binding shape as Time.here - unit capture, concrete result | B2: no store outside the returned Task | B3: binding closure only, payload unit | audited: 2026-08-25"
+                , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_getZoneName:286-293 | type: elm/time/1.0.0/src/Time.elm (Task x ZoneName) | B1: same binding shape as Time.here - unit capture, concrete result | B2: no store outside the returned Task | B3: binding closure only, payload unit | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Time", "here" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/time/TimeExports.cpp" ]
-                , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_here:279-284 | type: elm/time/1.0.0/src/Time.elm (Task x Zone) | B1: makeBinding<timeHereBody>(unit()) - the ONLY capture is unit; Zone is concrete, so no function value can enter or leave | B2: no store outside the returned Task | B3: mints a binding closure, but it lands in Task.callback where NO type variable names it and its payload is unit | audited: 2026-08-25"
+                , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_here:279-284 | type: elm/time/1.0.0/src/Time.elm (Task x Zone) | B1: makeBinding<timeHereBody>(unit()) - the ONLY capture is unit; Zone is concrete, so no function value can enter or leave | B2: no store outside the returned Task | B3: mints a binding closure, but it lands in Task.callback where NO type variable names it and its payload is unit | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Url", "percentDecode" )

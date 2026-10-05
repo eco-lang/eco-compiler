@@ -472,3 +472,24 @@ arm; the tail adds slots of the same object in field order, each through `E_Read
 unchanged. The same split is in the unpinned shared walkers (`NurseryChildWalk.hpp`, which
 `scanEntryR` and the tenure engine reach through `forEachChildSlot`). The prefetch arms
 (`NP.MinorEnv`, `NR.RegionEnv`, `i < 4`) are untouched.
+
+
+## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (GC_MODEL_001)
+
+Pins fired: none (`NP.scanEntryP` text is unchanged: its Closure arm already reads kinds through
+`closureSlotKind` since Phase 1d). Voluntary entry, because the accessor's semantics changed
+(plans/wide-object-tail-kind-words-phase-2.md 2.6.6).
+
+Changed: `closureSlotKind` (Heap.hpp) reads params 0..19 from the 40-bit inline field and params 20..
+from K = extWords(max_values, 20) extension kind words at the object's tail; n_values/max_values are
+11-bit fields. Object size remains a function of the header word alone (Closure header.size = value
+slots + K), so `NP.copyClaimed` / `NR.copyClaimedR` / the CR-019 sweep are untouched. Kinds and
+n_values are written only at allocation (HEAP_077, HEAP_SNAPSHOT_001). MAPPING.md check: `SC_Loop` /
+`SC_Next` (one slot per step, field order) still describe the arm; each kind read is a plain read of
+the frozen object, like the inline-bitmap read it extends. The serial minor scan
+(NurserySpace::scanObject) gains a validate-only `closureWellFormed` check (no shared write).
+Verdict: no model change needed (a closure's children are read from a frozen object; the packed word
+is one existing location; no atomic, lock or memory order added). Region hash unchanged
+(e06ed77f04e5).
+`test/tla/run_traces.py --model M3` after the change: 15/15 rows as expected (accept/reject
+controls included).

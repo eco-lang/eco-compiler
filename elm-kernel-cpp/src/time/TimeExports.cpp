@@ -203,9 +203,9 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
         // straight to wrappers that accept unboxed Int, or boxes it once at
         // the boundary for legacy wrappers — strictly less work than always
         // boxing here, and tolerates curried/partially-applied user code.
-        static constexpr unsigned char kLayoutInt1[3] = { 1, 0, 1 };
+        static constexpr auto kLayoutInt1 = Elm::makeEvalParamLayout<1>(0, {1});
         const auto* layout =
-            reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutInt1);
+            Elm::asLayout(&kLayoutInt1);
         int64_t msArg = ms;
         uint64_t posixEnc = eco_apply_closure_typed(
             HPtr::fromBits(Export::encode(mtpHP)), &msArg, 1, layout).toBits();

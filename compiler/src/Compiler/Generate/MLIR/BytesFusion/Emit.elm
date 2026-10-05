@@ -1671,20 +1671,11 @@ emitApplyNested fnExpr argPlaceholders resultPlaceholder restOps state =
         allOperandTypes =
             fnResult.resultType :: actualArgTypes
 
-        -- 2-bit-per-slot unboxed bitmap from actual arg types.
-        newargsUnboxedBitmap =
-            List.indexedMap Tuple.pair actualArgTypes
-                |> List.foldl
-                    (\( i, ty ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind ty)
-                    )
-                    0
-
         papExtendAttrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                 , ( "remaining_arity", IntAttr Nothing (List.length argPlaceholders) )
-                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                , ( "slot_kinds", Ops.slotKindsAttr actualArgTypes ) -- one kind per newarg (S.5)
                 ]
 
         ( ctx2, papExtendOp ) =

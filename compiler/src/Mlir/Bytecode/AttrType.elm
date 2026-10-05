@@ -101,7 +101,8 @@ the value, then its type.
 
 `EArrayAttr` is a list of attributes, written as their indices.
 `EDenseArrayAttr` carries an element type and the integers, which are written
-as raw bytes.
+as raw bytes, each in the width of the element type (1 byte for `i1` and `i8`,
+2 for `i16`, 4 for `i32`, 8 for `i64`).
 
 `ESymbolRefAttr` refers to a symbol by name, and is written as the index of the
 string attribute holding that name.
@@ -251,21 +252,30 @@ attrToKey attr =
             "ta:" ++ typeToKey t
 
         ArrayAttr (Just t) items ->
-            "da:"
-                ++ typeToKey t
-                ++ ":"
-                ++ String.join ","
-                    (List.map
-                        (\item ->
-                            case item of
-                                IntAttr _ v ->
-                                    String.fromInt v
+            case singleDigitValues items of
+                Just digits ->
+                    -- One flat segment for arrays of single digits (every
+                    -- `slot_kinds` array): keys are compared on every table
+                    -- lookup, and a key joined from one piece per element
+                    -- costs a walk over all those pieces per comparison.
+                    "da#" ++ typeToKey t ++ ":" ++ String.fromList digits
 
-                                _ ->
-                                    "?"
-                        )
-                        items
-                    )
+                Nothing ->
+                    "da:"
+                        ++ typeToKey t
+                        ++ ":"
+                        ++ String.join ","
+                            (List.map
+                                (\item ->
+                                    case item of
+                                        IntAttr _ v ->
+                                            String.fromInt v
+
+                                        _ ->
+                                            "?"
+                                )
+                                items
+                            )
 
         ArrayAttr Nothing items ->
             "aa:" ++ String.join "," (List.map attrToKey items)
@@ -278,6 +288,29 @@ attrToKey attr =
 
         UnitAttr ->
             "u:"
+
+
+{-| The elements of a dense array as digit characters, when every element is an
+`IntAttr` between 0 and 9 (always the case for `slot_kinds`); `Nothing`
+otherwise.
+-}
+singleDigitValues : List MlirAttr -> Maybe (List Char)
+singleDigitValues items =
+    List.foldr
+        (\item acc ->
+            case ( item, acc ) of
+                ( IntAttr _ v, Just cs ) ->
+                    if v >= 0 && v <= 9 then
+                        Just (Char.fromCode (48 + v) :: cs)
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+        )
+        (Just [])
+        items
 
 
 {-| Returns the entry key of the attribute dictionary `d`, made from each name
@@ -1001,6 +1034,47 @@ computeEncodedGroups st ((AttrTypeTable tbl) as table) =
     attrGroups ++ typeGroups
 
 
+{-| The width in bytes of one element of a dense array of `ty`: 1 for `i1`
+and `i8`, 2 for `i16`, 4 for `i32`, and 8 otherwise (`i64`).
+-}
+denseElemBytes : MlirType -> Int
+denseElemBytes ty =
+    case ty of
+        I1 ->
+            1
+
+        I8 ->
+            1
+
+        I16 ->
+            2
+
+        I32 ->
+            4
+
+        _ ->
+            8
+
+
+{-| One dense array element `v` in `w` bytes, little-endian. Byte k is
+`(v >> 8k) & 0xFF` for k < 4, and bytes 4..7 are 0: every value written is
+non-negative and below 2^31, so an `i64` element is written as it always was.
+-}
+encodeDenseElem : Int -> Int -> BE.Encoder
+encodeDenseElem w v =
+    BE.sequence
+        (List.map
+            (\k ->
+                if k < 4 then
+                    BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy (8 * k) v) 0xFF)
+
+                else
+                    BE.unsignedInt8 0
+            )
+            (List.range 0 (w - 1))
+        )
+
+
 {-| Returns the contents of the attribute and type data section and of its
 offset section, in that order, for the entries of `table`. Neither includes the
 id and length that frame a section.
@@ -1147,24 +1221,7 @@ encodeEntry st tbl entry =
                     List.length vals
 
                 blob =
-                    BE.encode
-                        (BE.sequence
-                            (List.map
-                                (\v ->
-                                    BE.sequence
-                                        [ BE.unsignedInt8 (Bitwise.and v 0xFF)
-                                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 8 v) 0xFF)
-                                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 16 v) 0xFF)
-                                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 24 v) 0xFF)
-                                        , BE.unsignedInt8 0
-                                        , BE.unsignedInt8 0
-                                        , BE.unsignedInt8 0
-                                        , BE.unsignedInt8 0
-                                        ]
-                                )
-                                vals
-                            )
-                        )
+                    BE.encode (BE.sequence (List.map (encodeDenseElem (denseElemBytes ty)) vals))
             in
             BE.sequence
                 [ encodeVarInt 17

@@ -104,6 +104,7 @@ add_executable(test
         allocator/GenericApplyBoxingTest.cpp
         allocator/WideObjectPinsTest.cpp
         allocator/WideKindsTest.cpp
+        allocator/WideClosureTest.cpp
         allocator/EcoApplyClosureTypedTest.cpp
         allocator/GCPressureTest.cpp
         allocator/EnsureHeadroomTest.cpp

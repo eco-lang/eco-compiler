@@ -800,15 +800,27 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
         // beside the target by the serial pre-pass.
         Value funcPtr = eco::detail::emitEvalDescAddrForFuncSymbol(
             rewriter, loc, runtime, op.getFunction());
+
+        // Kinds (B13, HEAP_078): the evaluator is the bare-function descriptor
+        // (legacy args-array convention, like papCreate's untyped path), so
+        // the kinds are the capture kinds, padded boxed to arity; params
+        // 20.. go to the K ext words at the object's tail.
+        SmallVector<uint8_t> capKinds;
+        for (Type t : captures)
+            capKinds.push_back(slotKindOf(t));
+        capKinds.resize(static_cast<size_t>(arity), 0);
+        PackedKinds pk = packKinds(capKinds, layout::ClosureHdrSlots);
+        const int64_t numExt = static_cast<int64_t>(pk.ext.size());
+
         Value closureHPtr;
         uint64_t cloByteSize = layout::ClosureBaseSize +
-            static_cast<uint64_t>(arity) * layout::PtrSize;
+            static_cast<uint64_t>(arity + numExt) * layout::PtrSize;
         if (inlineAllocEnabled() && cloByteSize <= 4096) {
             // Inline nursery allocation (HEAP_034): see papCreate's arm
             // (EcoToLLVMClosures.cpp). The packed word store below is the
             // sole +8 init on this path.
             uint64_t header = value_enc::composeHeader(
-                value_enc::TagClosure, 0, static_cast<uint64_t>(arity));
+                value_enc::TagClosure, 0, static_cast<uint64_t>(arity + numExt));
             closureHPtr = emitInlineAllocWithHeader(
                 rewriter, loc, runtime, cloByteSize, header);
             auto evOff = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
@@ -851,21 +863,15 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
         }
 
         // Store the packed header field at offset 8, papCreate's encoding
-        // (B13): n_values:6 | max_values:6 | result_kind:2 | unboxed:50.
-        // The evaluator is the bare-function descriptor (legacy args-array
-        // convention, like papCreate's untyped path), so the kinds are the
-        // capture kinds only. result_kind comes from the optional
-        // discardable `_result_kind` (default 0 = boxed), the papCreate
-        // convention. MakeClosureOp::verify caps captures at 25.
-        SmallVector<uint8_t> capKinds;
-        for (Type t : captures)
-            capKinds.push_back(slotKindOf(t));
+        // (B13, HEAP_078): n_values:11 | max_values:11 | result_kind:2 |
+        // unboxed:40. result_kind comes from the optional discardable
+        // `_result_kind` (default 0 = boxed), the papCreate convention.
         uint8_t resultKind = 0;
         if (auto a = op->getAttrOfType<IntegerAttr>("_result_kind"))
             resultKind = static_cast<uint8_t>(a.getInt() & 3);
         uint64_t packed = packClosureWord(
             static_cast<uint32_t>(numCaptured), static_cast<uint32_t>(arity),
-            resultKind, packKinds(capKinds, layout::ClosureHdrSlots).hdrBits);
+            resultKind, pk.hdrBits);
         auto packedConst = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, rewriter.getI64IntegerAttr(static_cast<int64_t>(packed)));
         auto offset8 = rewriter.create<LLVM::ConstantOp>(
@@ -895,6 +901,19 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             auto slotPtr = rewriter.create<LLVM::GEPOp>(
                 loc, storeGepTy, i8Ty, closurePtr, ValueRange{offConst});
             rewriter.create<LLVM::StoreOp>(loc, cap, slotPtr);
+        }
+
+        // Ext kind words (zeros included, HEAP_077) at values[arity ..
+        // arity+K), in the same no-safepoint window.
+        for (int64_t j = 0; j < numExt; ++j) {
+            int64_t off = layout::ClosureValuesOffset + (arity + j) * layout::PtrSize;
+            auto offConst = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, rewriter.getI64IntegerAttr(off));
+            auto slotPtr = rewriter.create<LLVM::GEPOp>(
+                loc, storeGepTy, i8Ty, closurePtr, ValueRange{offConst});
+            auto w = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, rewriter.getI64IntegerAttr(static_cast<int64_t>(pk.ext[j])));
+            rewriter.create<LLVM::StoreOp>(loc, w, slotPtr);
         }
 
         rewriter.replaceOp(op, closureHPtr);

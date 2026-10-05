@@ -209,8 +209,8 @@ Testing::TestCase testHeaderWordComposition(
             memcpy(&w, reinterpret_cast<char*>(&c2) + sizeof(Header), sizeof(w));
             TEST_ASSERT(w == (0xABCDull | (0x123456789ABCull << 16)));
         }
-        // Closure's packed word: n_values | max_values<<6 | result_kind<<12 |
-        // unboxed<<14 (the Phase-C layout papCreate already emits).
+        // Closure's packed word (HEAP_078): n_values | max_values<<11 |
+        // result_kind<<22 | unboxed<<24 (the layout papCreate emits).
         {
             Closure cl;
             memset(&cl, 0, sizeof(cl));
@@ -220,6 +220,31 @@ Testing::TestCase testHeaderWordComposition(
             cl.unboxed = 0x155ull;
             uint64_t w;
             memcpy(&w, reinterpret_cast<char*>(&cl) + sizeof(Header), sizeof(w));
-            TEST_ASSERT(w == (3ull | (7ull << 6) | (2ull << 12) | (0x155ull << 14)));
+            TEST_ASSERT(w == (3ull | (7ull << 11) | (2ull << 22) | (0x155ull << 24)));
         }
+    });
+
+// plans/wide-object-tail-kind-words-phase-2.md 2.4 / 2.3: descriptor and
+// layout offsets the codegen emitters hard-code (EvaluatorDesc stage_arity is
+// a u16 at +18, sat at +24; EvalParamLayout kinds at +4).
+Testing::TestCase testEvaluatorDescOffsets(
+    "EvaluatorDesc offsets", []() {
+        TEST_ASSERT(offsetof(EvaluatorDesc, generic) == 0);
+        TEST_ASSERT(offsetof(EvaluatorDesc, kinds) == 8);
+        TEST_ASSERT(offsetof(EvaluatorDesc, result_kind) == 17);
+        TEST_ASSERT(offsetof(EvaluatorDesc, stage_arity) == 18);
+        TEST_ASSERT(offsetof(EvaluatorDesc, sat) == 24);
+        TEST_ASSERT(sizeof(EvaluatorDesc) == 24);
+        TEST_ASSERT(sizeof(EvaluatorDesc{}.stage_arity) == 2);
+        TEST_ASSERT(offsetof(EvalParamLayout, num_params) == 0);
+        TEST_ASSERT(offsetof(EvalParamLayout, result_kind) == 2);
+        TEST_ASSERT(offsetof(EvalParamLayout, kinds) == 4);
+        TEST_ASSERT(sizeof(EvalParamLayout{}.num_params) == 2);
+        TEST_ASSERT(sizeof(Closure) == 24);
+        // A u16 stage_arity round-trips the full arity range.
+        EvaluatorDesc d{};
+        d.stage_arity = CLOSURE_MAX_ARITY;
+        uint16_t raw;
+        memcpy(&raw, reinterpret_cast<char*>(&d) + 18, sizeof(raw));
+        TEST_ASSERT(raw == CLOSURE_MAX_ARITY);
     });

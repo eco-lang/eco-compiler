@@ -193,10 +193,10 @@ HPtr elm_string_from_double(double f) {
 
 // Layout descriptors for the closure invocations below. Each declares the
 // per-arg ParamKind so the runtime can hand unboxed primitives straight to
-// wrappers that accept them. Layout bytes match `EvalParamLayout`:
-//   { num_params, result_kind, kinds... }
-static constexpr unsigned char kLayoutChar1[3]      = { 1, 0, 3 };       // (Char)
-static constexpr unsigned char kLayoutCharBoxed[4]  = { 2, 0, 3, 0 };    // (Char, a)
+// wrappers that accept them. Built with `Elm::makeEvalParamLayout`
+// (`EvalParamLayout` = { u16 num_params, u8 result_kind, u8 pad, kinds... }).
+static constexpr auto kLayoutChar1     = Elm::makeEvalParamLayout<1>(0, {3});      // (Char)
+static constexpr auto kLayoutCharBoxed = Elm::makeEvalParamLayout<2>(0, {3, 0});   // (Char, a)
 
 // Call a closure with a single Char argument and Char result.
 // Both argument and result travel as unboxed `uint16_t`: `eco_apply_closure_eval`
@@ -204,7 +204,7 @@ static constexpr unsigned char kLayoutCharBoxed[4]  = { 2, 0, 3, 0 };    // (Cha
 // (modern Char-returning wrapper) or unboxes a returned ElmChar exactly once on
 // our behalf — strictly less work than the previous boxed round-trip.
 static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
-    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
+    const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(c) };
     uint16_t result = 0;
     eco_apply_closure_eval(closure_hptr, args, 1, layout, &result, /*desired_kind=*/3);
@@ -215,7 +215,7 @@ static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
 // Bool is an embedded HPointer constant (Const_True / Const_False) so the result
 // stays in PK_Boxed form; only the Char argument is passed unboxed.
 static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
-    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
+    const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(c) };
     HPtr result_hptr = eco_apply_closure_typed(closure_hptr, args, 1, layout);
     return Export::decodeBoxedBool(result_hptr.toBits());
@@ -224,7 +224,7 @@ static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
 // Call a fold closure: `(Char, acc) -> acc`. Char goes through unboxed; the
 // accumulator stays HPointer-encoded.
 static uint64_t callFoldClosure(HPtr closure_hptr, uint16_t c, uint64_t acc) {
-    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutCharBoxed);
+    const auto* layout = Elm::asLayout(&kLayoutCharBoxed);
     int64_t args[2] = { static_cast<int64_t>(c), static_cast<int64_t>(acc) };
     return eco_apply_closure_typed(closure_hptr, args, 2, layout).toBits();
 }

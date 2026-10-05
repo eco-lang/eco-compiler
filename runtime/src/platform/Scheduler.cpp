@@ -666,18 +666,13 @@ namespace {
 // One-arg `EvalParamLayout`s used by the typed Task-dispatch path. Each
 // row describes a closure callback whose first stage takes a single
 // primitive arg of kind k (0=Boxed unused here, 1=Int, 2=Float, 3=Char)
-// and returns a boxed Task. Stored as a memory-compatible struct so we
-// can pass `&one_arg_layouts[k]` through `EvalParamLayout*`.
-struct OneArgLayoutHolder {
-    unsigned char num_params;
-    unsigned char result_kind;
-    unsigned char kinds[1];
-};
-static const OneArgLayoutHolder one_arg_layouts[4] = {
-    {1, 0, {0}},  // PK_Boxed (unused — boxed-value dispatch keeps callClosure1)
-    {1, 0, {1}},  // PK_Int
-    {1, 0, {2}},  // PK_Float
-    {1, 0, {3}},  // PK_Char
+// and returns a boxed Task. `EvalParamLayoutN<1>` is layout-compatible with
+// `EvalParamLayout`, so `asLayout(&one_arg_layouts[k])` passes it through.
+static constexpr EvalParamLayoutN<1> one_arg_layouts[4] = {
+    makeEvalParamLayout<1>(0, {0}),  // PK_Boxed (unused — boxed-value dispatch keeps callClosure1)
+    makeEvalParamLayout<1>(0, {1}),  // PK_Int
+    makeEvalParamLayout<1>(0, {2}),  // PK_Float
+    makeEvalParamLayout<1>(0, {3}),  // PK_Char
 };
 
 struct EncodedStackRootGuard {
@@ -791,8 +786,7 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                         HPtr::fromBits(encodeHP(popRes.callback));
                     eco_apply_closure_eval(
                         callbackHPtr, &typed_arg, /*num_args=*/1,
-                        reinterpret_cast<const EvalParamLayout*>(
-                            &one_arg_layouts[valKind]),
+                        asLayout(&one_arg_layouts[valKind]),
                         &resultBits, /*desired_kind=*/0);
                     newTask = decodeHP(resultBits.toBits());
                 }

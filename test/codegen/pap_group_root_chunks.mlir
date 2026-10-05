@@ -55,5 +55,5 @@ module {
 // CHECK-NEXT: llvm.mlir.constant(11 : i64)
 // CHECK-NEXT: llvm.mlir.constant(2047 : i64)
 // CHECK-NEXT: llvm.call @eco_gc_push_stack_range
-// CHECK: llvm.call @eco_alloc_closure_group_slow
+// CHECK: llvm.call @eco_alloc_closure_group_l
 // CHECK: llvm.call @eco_gc_restore_stack_range_point

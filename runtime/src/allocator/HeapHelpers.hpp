@@ -2016,19 +2016,34 @@ inline u32 arrayElementKind(void* arr) {
  */
 inline HPointer allocClosureK(EvalFunction evaluator, u32 max_values,
                                u8 result_kind) {
-    size_t total_size = sizeof(Closure) + max_values * sizeof(Unboxable);
-    total_size = (total_size + 7) & ~7;
+    if (max_values > CLOSURE_MAX_ARITY) {
+        std::fprintf(stderr, "[eco] FATAL: allocClosureK: closure arity %u exceeds %u\n",
+                     max_values, CLOSURE_MAX_ARITY);
+        std::abort();
+    }
+    // Closure layout v2 (HEAP_078): max_values value slots, then
+    // K = extWords(max_values, CLOSURE_HDR_SLOTS) ext kind words.
+    const u32 K = extWords(max_values, CLOSURE_HDR_SLOTS);
+    size_t total_size = sizeof(Closure) + (static_cast<size_t>(max_values) + K) * sizeof(Unboxable);
 
     // Captures are filled later via closureCapture; nothing to root here
     // (evaluator is a code pointer).
     Closure* cl = static_cast<Closure*>(
         eco_alloc_with_roots(Tag_Closure, total_size, nullptr, 0, 0));
-    cl->header.size = max_values;
+    cl->header.size = max_values + K;
     cl->n_values = 0;
     cl->max_values = max_values;
     cl->result_kind = result_kind & 0x3;
     cl->unboxed = 0;
     cl->evaluator = ecoDescForKernelEvaluator(evaluator, max_values, result_kind);
+    // Kernel closure slots >= CLOSURE_HDR_SLOTS are boxed (closureCapture never
+    // writes an ext word, HEAP_077): all K words are zero.
+    u64* ext = reinterpret_cast<u64*>(&cl->values[max_values]);
+    for (u32 j = 0; j < K; ++j) ext[j] = 0;
+#if ECO_HEAP_VALIDATE
+    assert(cl->evaluator->stage_arity == max_values &&
+           "allocClosureK: max_values != evaluator->stage_arity");
+#endif
     return Allocator::instance().wrap(cl);
 }
 
@@ -2045,9 +2060,10 @@ inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
  * @return True if successful, false if at capacity.
  */
 // `kind`: 2-bit slot kind. 0 = boxed HPointer, 1 = Int, 2 = Float, 3 = Char.
-// Only the first CLOSURE_HDR_SLOTS (25) slots have a kind in the 50-bit
-// inline field; later slots read boxed (D semantics), so a typed capture
-// there aborts (B6 / HEAP_077) instead of being traced as a pointer.
+// Only the first CLOSURE_HDR_SLOTS (20) slots have a kind in the 40-bit
+// inline field; closureCapture never writes an ext word, so a typed capture
+// past them aborts (B6 / HEAP_077, release builds too) instead of being
+// traced as a pointer.
 inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     Closure* cl = static_cast<Closure*>(closure);
     if (cl->n_values >= cl->max_values) {
@@ -2065,7 +2081,7 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     size_t idx = cl->n_values;
     if (kind != PK_Boxed && idx >= CLOSURE_HDR_SLOTS) {
         // B6 / HEAP_077: kernel closures keep slots past the inline kinds boxed; a typed
-        // capture here would be traced as a pointer. Permanent (Phase 2 lowers the bound to 20).
+        // capture here would be traced as a pointer. Permanent.
         std::fprintf(stderr, "[eco] FATAL: closureCapture of a typed value at slot %zu "
                              "(inline kinds cover %u)\n", idx, CLOSURE_HDR_SLOTS);
         std::abort();

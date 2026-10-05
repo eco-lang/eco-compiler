@@ -858,9 +858,8 @@ generateVarGlobal ctx specId monoType =
                         Dict.union globalResultKindAttr
                             (Dict.fromList
                                 [ ( "function", SymbolRefAttr funcName )
-                                , ( "arity", IntAttr Nothing arity )
+                                , ( "arity", IntAttr Nothing (Ops.assertStageArity arity) )
                                 , ( "num_captured", IntAttr Nothing 0 )
-                                , ( "unboxed_bitmap", IntAttr Nothing 0 ) -- No captures, so bitmap is 0
                                 ]
                             )
 
@@ -1076,7 +1075,7 @@ instanceClosureResult ctx var kernelPrefix home name monoType arity =
             Dict.union kernelResultKindAttr
                 (Dict.fromList
                     [ ( "function", SymbolRefAttr instanceAbi.symbolName )
-                    , ( "arity", IntAttr Nothing arity )
+                    , ( "arity", IntAttr Nothing (Ops.assertStageArity arity) )
                     , ( "num_captured", IntAttr Nothing 0 )
                     ]
                 )
@@ -1245,16 +1244,6 @@ generateClosure ctx closureInfo body monoType =
         captureTypes =
             List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
 
-        -- Compute 2-bit-per-slot unboxed_bitmap from capture SSA types.
-        unboxedBitmap : Int
-        unboxedBitmap =
-            List.indexedMap Tuple.pair boxedCaptureVarsWithTypes
-                |> List.foldl
-                    (\( i, ( _, mlirTy ) ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                    )
-                    0
-
         -- Use currentLetSiblings only for mutually recursive let bindings.
         -- Do NOT fall back to varMappings; non-recursive closures must capture
         -- all free variables explicitly (CGEN_CLOSURE_003).
@@ -1354,6 +1343,7 @@ generateClosure ctx closureInfo body monoType =
                 else
                     Dict.singleton "_result_kind" (IntAttr (Just I8) bodyResultKind)
 
+            -- slot_kinds: one kind per capture, from the capture SSA types (S.5).
             papAttrs =
                 Dict.union resultKindAttr
                     (Dict.union closureKindAttr
@@ -1361,10 +1351,10 @@ generateClosure ctx closureInfo body monoType =
                             (Dict.union operandTypesAttr
                                 (Dict.fromList
                                     [ ( "function", SymbolRefAttr functionName )
-                                    , ( "arity", IntAttr Nothing arity )
+                                    , ( "arity", IntAttr Nothing (Ops.assertStageArity arity) )
                                     , ( "num_captured", IntAttr Nothing numCaptured )
-                                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
                                     ]
+                                    |> Ops.withSlotKinds captureTypesList
                                 )
                             )
                         )
@@ -1845,14 +1835,9 @@ generateGenericApply ctx func args resultType =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        -- 2-bit-per-slot bitmap: each slot's kind (0=boxed, 1=Int, 2=Float, 3=Char).
-        newargsUnboxedBitmap =
-            List.indexedMap Tuple.pair argsForClosure
-                |> List.foldl
-                    (\( i, ( _, mlirTy ) ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                    )
-                    0
+        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
+        newargsSlotKinds =
+            Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
@@ -1910,7 +1895,7 @@ generateGenericApply ctx func args resultType =
                    , ArrayAttr Nothing
                         (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes1)
                    )
-                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "generic_apply" )
                  ]
                     ++ genericApplyResultKindAttr
@@ -1985,14 +1970,9 @@ generateUnknownSegmentationCall ctx func args resultType =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        -- 2-bit-per-slot bitmap: each slot's kind (0=boxed, 1=Int, 2=Float, 3=Char).
-        newargsUnboxedBitmap =
-            List.indexedMap Tuple.pair argsForClosure
-                |> List.foldl
-                    (\( i, ( _, mlirTy ) ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                    )
-                    0
+        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
+        newargsSlotKinds =
+            Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
@@ -2050,7 +2030,7 @@ generateUnknownSegmentationCall ctx func args resultType =
                    , ArrayAttr Nothing
                         (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes2)
                    )
-                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "segmentation_unknown" )
                  ]
                     ++ unknownSegResultKindAttr
@@ -2151,13 +2131,9 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
         allOperandTypes =
             funcMlirType :: List.map Tuple.second argsForClosure
 
-        newargsUnboxedBitmap =
-            List.indexedMap Tuple.pair argsForClosure
-                |> List.foldl
-                    (\( i, ( _, mlirTy ) ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                    )
-                    0
+        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
+        newargsSlotKinds =
+            Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
@@ -2201,7 +2177,7 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
                    , ArrayAttr Nothing
                         (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypesT)
                    )
-                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "segmentation_unknown" )
                  ]
                     ++ segResultKindAttr
@@ -2353,14 +2329,9 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second coercedArgs
 
-        -- 2-bit-per-slot bitmap over newargs (GC root mask derivation)
-        newargsUnboxedBitmap =
-            List.indexedMap Tuple.pair coercedArgs
-                |> List.foldl
-                    (\( i, ( _, mlirTy ) ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                    )
-                    0
+        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
+        newargsSlotKinds =
+            Ops.slotKindsAttr (List.map Tuple.second coercedArgs)
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
@@ -2384,7 +2355,7 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
                    , ArrayAttr Nothing
                         (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypesF)
                    )
-                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "slot_kinds", newargsSlotKinds )
                  , ( "remaining_arity", IntAttr Nothing (List.length args) )
                  , ( "_call_kind", StringAttr "singleton_fast" )
                  , ( "_fast_evaluator", SymbolRefAttr fastSymbol )
@@ -2495,14 +2466,9 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     rest =
                         List.drop batchSize args
 
-                    -- 2-bit-per-slot bitmap for this batch.
-                    newargsUnboxedBitmap =
-                        List.indexedMap Tuple.pair batch
-                            |> List.foldl
-                                (\( i, ( _, mlirTy ) ) acc ->
-                                    Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                                )
-                                0
+                    -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
+                    newargsSlotKinds =
+                        Ops.slotKindsAttr (List.map Tuple.second batch)
 
                     ( resVar, ctx1 ) =
                         Ctx.freshVar ctx
@@ -2614,7 +2580,7 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                           , ArrayAttr Nothing
                                 (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes3)
                           )
-                        , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                        , ( "slot_kinds", newargsSlotKinds )
                         ]
                             ++ (if isCrossStage then
                                     []
@@ -2738,13 +2704,9 @@ generateFlattenedPartialApplication ctx func args resultType =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second boxedArgsWithTypes
 
-        newargsUnboxedBitmap =
-            List.indexedMap Tuple.pair boxedArgsWithTypes
-                |> List.foldl
-                    (\( i, ( _, mlirTy ) ) acc ->
-                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                    )
-                    0
+        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
+        newargsSlotKinds =
+            Ops.slotKindsAttr (List.map Tuple.second boxedArgsWithTypes)
 
         -- CGEN_052: remaining_arity is the SOURCE PAP's remaining, not the result's
         remainingArity =
@@ -2783,7 +2745,7 @@ generateFlattenedPartialApplication ctx func args resultType =
                         (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes4)
                    )
                  , ( "remaining_arity", IntAttr Nothing remainingArity )
-                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "slot_kinds", newargsSlotKinds )
                  ]
                     ++ flatPapResultKindAttr
                     ++ gcRootsCountAttr4
@@ -4296,6 +4258,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                 ( "Debug", "toString", [ ( valueVar, valueType ) ] ) ->
                     -- Special handling for Debug.toString: pass type_id for constructor names
+                    -- (Elm_Kernel_Debug_toString_typed; the one-parameter Elm_Kernel_Debug_toString
+                    -- is the kernel a Debug.toString closure value calls)
                     let
                         valueMonoType : Mono.MonoType
                         valueMonoType =
@@ -4345,7 +4309,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             Ops.ecoCallNamed ctx2c
                                 emitSafepointHints
                                 resultVar
-                                "Elm_Kernel_Debug_toString"
+                                "Elm_Kernel_Debug_toString_typed"
                                 [ ( boxedValueVar, Types.ecoValue )
                                 , ( typeIdVar, Types.ecoInt )
                                 ]
@@ -6011,14 +5975,6 @@ generateLetSingle ctx def body =
                 ( resultVar, ctx2 ) =
                     Ctx.freshVar ctx1
 
-                unboxedBitmap =
-                    List.indexedMap Tuple.pair captureMlirTypes
-                        |> List.foldl
-                            (\( i, mlirTy ) acc ->
-                                Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
-                            )
-                            0
-
                 operandTypesAttr =
                     if List.isEmpty captureMlirTypes then
                         Dict.empty
@@ -6055,10 +6011,10 @@ generateLetSingle ctx def body =
                             (Dict.union operandTypesAttr
                                 (Dict.fromList
                                     [ ( "function", SymbolRefAttr functionName )
-                                    , ( "arity", IntAttr Nothing arity )
+                                    , ( "arity", IntAttr Nothing (Ops.assertStageArity arity) )
                                     , ( "num_captured", IntAttr Nothing numCaptured )
-                                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
                                     ]
+                                    |> Ops.withSlotKinds captureMlirTypes
                                 )
                             )
                         )
@@ -6240,16 +6196,11 @@ generateLetGroup ctx members body =
                 numCaptured =
                     nonSiblingCount + List.length siblingCaptures
 
-                -- unboxed_bitmap: only non-sibling slots may be unboxed.
-                -- Sibling (cross-edge consumer) slots stay boxed (bits = 00).
-                unboxedBitmap =
-                    capVarsBoxed
-                        |> List.indexedMap Tuple.pair
-                        |> List.foldl
-                            (\( i, ( _, mlirTy ) ) ub ->
-                                Types.bitmapSetKind ub i (Types.mlirTypeToKind mlirTy)
-                            )
-                            0
+                -- slot_kinds: one kind per values[] slot. Only non-sibling
+                -- slots may be unboxed; the sibling (cross-edge consumer)
+                -- slots after them stay boxed (kind 0).
+                slotKinds =
+                    captureTypes ++ List.repeat (List.length siblingCaptures) Types.ecoValue
 
                 baseFuncName =
                     lambdaIdToString closureInfo.lambdaId
@@ -6270,7 +6221,7 @@ generateLetGroup ctx members body =
                     , fastEvaluator = baseFuncName ++ "$cap"
                     , arity = numCaptured + List.length closureInfo.params
                     , numCaptured = numCaptured
-                    , unboxedBitmap = unboxedBitmap
+                    , slotKinds = slotKinds
                     , resultKind = siblingResultKind
                     , captureVars = captureVarNames
                     , captureTypes = captureTypes

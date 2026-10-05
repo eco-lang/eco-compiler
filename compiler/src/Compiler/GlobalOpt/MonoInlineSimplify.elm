@@ -27,6 +27,7 @@ Key optimizations:
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
 import Compiler.Data.BitSet as BitSet
+import Compiler.Data.HeapLimits as HeapLimits
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
@@ -87,6 +88,11 @@ type alias Metrics =
     -- zero readable: flag ON must show `cleared=0` AND this equal to the
     -- flag-OFF `cleared` count on the same input.
     , declinedPreserveSets : Int
+
+    -- Partial inlines and beta reductions refused because the residual
+    -- closure's parameters plus captures could exceed the closure stage arity
+    -- limit (`HeapLimits.maxStageArity`, HEAP_078; wide-object Phase 2).
+    , declinedArityCap : Int
 
     -- P0 census (plans/lss-inline-member-propagation.md §7): every reshape that
     -- CLEARED an LSS member, keyed `<newLambdaUid>|<clearedMemberId>|<site>`.
@@ -706,7 +712,9 @@ raiseStagedSpecs allowSpec nodes =
                             -- the applied-share predicate decides whether its
                             -- site profile pays for raising. Refused specs
                             -- stay staged (identical to flag-off treatment).
-                            if allowSpec specId then
+                            -- HEAP_078: so does a spec whose raised arity
+                            -- would exceed the closure stage arity cap.
+                            if allowSpec specId && not (raisedExceedsStageArity raised) then
                                 ( Array.push (Just raised) acc, specId + 1, ( nRaised + 1, nSkipped ) )
 
                             else
@@ -721,6 +729,19 @@ raiseStagedSpecs allowSpec nodes =
         ( Array.empty, 0, ( 0, 0 ) )
         nodes
         |> (\( acc, _, counters ) -> ( acc, counters ))
+
+
+{-| Whether a raised spec's closure has more parameters plus captures than the
+closure stage arity limit allows (HEAP\_078).
+-}
+raisedExceedsStageArity : MonoNode -> Bool
+raisedExceedsStageArity node =
+    case node of
+        MonoDefine (MonoClosure info _ _) _ ->
+            exceedsStageArity info.params info.captures
+
+        _ ->
+            False
 
 
 raiseOne : Int -> Mono.ClosureInfo -> MonoExpr -> Mono.MonoType -> Mono.MonoType -> Maybe MonoNode
@@ -1473,6 +1494,9 @@ type alias InternalMetrics =
     -- Mirrors `Metrics.declinedPreserveSets`.
     , declinedPreserveSets : Int
 
+    -- Mirrors `Metrics.declinedArityCap`.
+    , declinedArityCap : Int
+
     -- P0 census, mirrors `Metrics.clearedMembers`.
     , clearedMembers : Dict String Int
 
@@ -1533,6 +1557,7 @@ emptyMetrics =
     , arityRaiseSkipped = 0
     , inlinedByCallee = Dict.empty
     , declinedPreserveSets = 0
+    , declinedArityCap = 0
     , clearedMembers = Dict.empty
     , inlineSourceSites = Dict.empty
     }
@@ -1559,6 +1584,29 @@ bumpDeclinedPreserveSets ctx =
             ctx.metrics
     in
     { ctx | metrics = { m | declinedPreserveSets = m.declinedPreserveSets + 1 } }
+
+
+{-| One partial inline or beta reduction refused by the stage arity cap
+(`Metrics.declinedArityCap`).
+-}
+bumpDeclinedArityCap : RewriteCtx -> RewriteCtx
+bumpDeclinedArityCap ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | declinedArityCap = m.declinedArityCap + 1 } }
+
+
+{-| Whether a closure with `params` parameters and `captures` captured values
+exceeds the closure stage arity limit (HEAP\_078). Passes that rebuild a
+closure's captures decline any rewrite for which this holds, so
+compiler-generated arity never reaches the limit check of
+`Compiler.Monomorphize.ValidateLimits`.
+-}
+exceedsStageArity : List a -> List b -> Bool
+exceedsStageArity params captures =
+    List.length params + List.length captures > HeapLimits.maxStageArity
 
 
 {-| P0 census: record one identity-clearing reshape (see `Metrics.clearedMembers`).
@@ -2597,6 +2645,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         , arityRaiseSkipped = 0
         , inlinedByCallee = Dict.empty
         , declinedPreserveSets = 0
+        , declinedArityCap = 0
         , clearedMembers = Dict.empty
         , inlineSourceSites = Dict.empty
         }
@@ -2804,6 +2853,26 @@ rewriteExpr ctx expr =
                 let
                     ( rewrittenFunc, ctx1 ) =
                         rewriteExpr (bumpDeclinedPreserveSets ctx) closureExpr
+
+                    ( rewrittenArgs, ctx2 ) =
+                        rewriteExprs ctx1 args
+                in
+                ( MonoCall region rewrittenFunc rewrittenArgs resultType callInfo, ctx2 )
+
+            else if
+                not (List.isEmpty args)
+                    && (List.length args < List.length info.params)
+                    && exceedsStageArity info.params info.captures
+            then
+                -- HEAP_078: a strictly-partial beta rebuilds the closure with
+                -- the remaining params and recomputed captures (at most one
+                -- per bound arg on top of the original captures), so its
+                -- slots are bounded by the original closure's. Decline when
+                -- that bound is over the cap, reproducing the call verbatim
+                -- as the preserveSets arm does.
+                let
+                    ( rewrittenFunc, ctx1 ) =
+                        rewriteExpr (bumpDeclinedArityCap ctx) closureExpr
 
                     ( rewrittenArgs, ctx2 ) =
                         rewriteExprs ctx1 args
@@ -4932,10 +5001,16 @@ tryInlineCall callRegion ctx specId args resultType =
                         inlined =
                             wrapInLetsForInline bindings newClosure newClosureType
                     in
-                    ( Just inlined
-                    , recordInline specId
-                        (bumpClearedMember (lambdaUid newLambdaId) calleeMember "tryInline" ctx3)
-                    )
+                    if exceedsStageArity remainingParams newCaptures then
+                        -- HEAP_078: the residual closure would exceed the
+                        -- stage arity cap; keep the call.
+                        ( Nothing, bumpDeclinedArityCap ctx )
+
+                    else
+                        ( Just inlined
+                        , recordInline specId
+                            (bumpClearedMember (lambdaUid newLambdaId) calleeMember "tryInline" ctx3)
+                        )
 
                 else if numArgs > numParams then
                     -- Over-application: apply all params, then call result with extra args

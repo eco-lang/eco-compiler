@@ -172,8 +172,8 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
     // or partially-applied predicate is handled correctly — the strict-
     // arity entries assume the closure is exactly saturated by these
     // newargs, which isn't a contract user code is bound by.
-    static constexpr unsigned char kLayoutChar1[3] = { 1, 0, 3 };
-    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
+    static constexpr auto kLayoutChar1 = Elm::makeEvalParamLayout<1>(0, {3});
+    const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(codePoint & 0xFFFFu) };
     HPtr cl = HPtr::fromBits(Export::encode(closureHP));
     HPtr result = eco_apply_closure_typed(cl, args, 1, layout);

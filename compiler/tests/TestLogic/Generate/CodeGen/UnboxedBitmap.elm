@@ -1,22 +1,23 @@
-module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap, checkClosureKindLimits)
+module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap, checkUnboxedBitmap, checkClosureKindLimits)
 
 {-| Checks that the unboxed bitmaps in generated MLIR agree with the operand
 types of the ops that carry them, so that a heap object or closure whose bitmap
 misdescribes the values stored in it is caught in the MLIR the code generator
 produces.
 
-The tuple, record and custom construct ops and the closure ops `eco.papCreate`
-and `eco.papExtend` record which of their operands are stored unboxed in an
-integer attribute, their _unboxed bitmap_. The bitmap holds one 2-bit
-_slot kind_ per operand position, slot N in bits 2N and 2N+1: 0 for a boxed
-value (`!eco.value`), 1 for an Int (`i64`), 2 for a Float (`f64`) and 3 for a
-Char (`i16`). The operand types compared against it are the ones the op records
-in its `_operand_types` attribute, read with
-`TestLogic.Generate.CodeGen.Invariants.extractOperandTypes`.
+The tuple, record and custom construct ops record which of their operands
+are stored unboxed in an integer attribute, their _unboxed bitmap_. The bitmap
+holds one 2-bit _slot kind_ per operand position, slot N in bits 2N and 2N+1:
+0 for a boxed value (`!eco.value`), 1 for an Int (`i64`), 2 for a Float (`f64`)
+and 3 for a Char (`i16`). The closure ops `eco.papCreate` and `eco.papExtend`
+record the same kinds in a `slot_kinds` array (a dense `i8` array, one entry
+per captured operand or new argument; wide-object Phase 2). The operand types
+compared against them are the ones the op records in its `_operand_types`
+attribute, read with `TestLogic.Generate.CodeGen.Invariants.extractOperandTypes`.
 
 A Bool is `!eco.value` when it is stored in a heap object or captured by a
 closure, so an `i1` in any operand position that is compared (for a list cons,
-the head) is a violation whatever the bitmap or flag says.
+the head) is a violation whatever the bitmap, kind or flag says.
 
 `expectUnboxedBitmap` compiles the given module to MLIR and checks, at any
 nesting depth:
@@ -24,45 +25,53 @@ nesting depth:
   - `eco.construct.tuple2`, `eco.construct.tuple3`, `eco.construct.record` and
     `eco.construct.custom`: slot N of `unboxed_bitmap` holds the kind of
     operand N, for every recorded operand, trailing GC root hints included.
-  - `eco.papCreate`: the same, over its captured operands.
-  - `eco.papExtend`: slot N of `newargs_unboxed_bitmap` holds the kind of
-    operand N+1. Operand 0 is the closure being extended, and the trailing
-    operands that `eco.gc_roots_count` counts are GC root hints, so neither is
-    compared.
+  - `eco.papCreate`: `slot_kinds` has one entry per captured operand, and entry
+    N is the kind of operand N.
+  - `eco.papExtend`: `slot_kinds` has one entry per new argument, and entry N
+    is the kind of operand N+1. Operand 0 is the closure being extended, and
+    the trailing operands that `eco.gc_roots_count` counts are GC root hints,
+    so neither is compared.
   - `eco.construct.list`: the boolean `head_unboxed` is true exactly when the
     head operand is `i64`, `f64` or `i16`.
 
-A missing bitmap reads as 0 (every slot boxed) and a missing `head_unboxed` as
-false. An op with no `_operand_types` attribute is not checked. Slots are read
-with exact arithmetic, so every slot a 52-bit bitmap holds is compared.
+A closure op without `slot_kinds` passes when it has no compared operands. A
+hand-built fixture may still carry the legacy u64 bitmap instead
+(`unboxed_bitmap` on papCreate, `newargs_unboxed_bitmap` on papExtend), which
+is then checked slot by slot like a construct op's; with neither attribute and
+some compared operand, the op is a violation. A missing construct bitmap reads
+as 0 (every slot boxed) and a missing `head_unboxed` as false. An op with no
+`_operand_types` attribute is not checked. Bitmap slots are read with exact
+arithmetic, so no slot wraps the way 32-bit `Bitwise` would.
 
 `checkClosureKindLimits` checks a separate property of the closure ops: that
-their kind attributes stay within the backend's slot limits. Every
-`eco.papExtend` must have a `newargs_unboxed_bitmap` below 2^50 and at most 25
-real new arguments (operand 0, the closure, and the trailing GC root hints are
-not counted), and every `eco.papCreate` an `unboxed_bitmap` below 2^50 and a
-`num_captured` of at most 25. From Phase 2 of
-`plans/wide-object-tail-kind-words.md` the closure ops carry a `slot_kinds`
-array instead, and this check becomes "`slot_kinds` length at most 2047, no
-u64 bitmap present".
+their kind attributes have the post-Phase-2 form the backend expects. No
+`eco.papCreate`, `eco.papExtend` or `eco.papCreateGroup` carries a u64 kind
+bitmap (`unboxed_bitmap`, `newargs_unboxed_bitmap`, `unboxed_bitmaps`); every
+`slot_kinds` array (per sibling for a group) has at most 2047 entries
+(`HeapLimits.maxStageArity`, HEAP\_078); and a papExtend has at most 2047 real
+new arguments (operand 0, the closure, and the trailing GC root hints are not
+counted).
 
 Among what is not tested: the `head_kind` attribute of `eco.construct.list`,
-`eco.papCreateGroup` ops, the types of function parameters and results, and
-whether a recorded operand type matches the type of the SSA value actually
-passed.
+the kinds of `eco.papCreateGroup` siblings, the types of function parameters
+and results, and whether a recorded operand type matches the type of the SSA
+value actually passed.
 
-@docs expectUnboxedBitmap, checkClosureKindLimits
+@docs expectUnboxedBitmap, checkUnboxedBitmap, checkClosureKindLimits
 
 -}
 
 import Compiler.AST.Source as Src
+import Compiler.Data.HeapLimits as HeapLimits
+import Dict
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
+import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , extractOperandTypes
         , findOpsNamed
+        , getArrayAttr
         , getBoolAttr
         , getIntAttr
         , isUnboxable
@@ -310,58 +319,35 @@ checkListHeadUnboxed op =
                 Nothing
 
 
-{-| Returns the violations in the `unboxed_bitmap` of an `eco.papCreate`,
-comparing slot N with operand N. Every operand is a captured value. A missing
-bitmap reads as 0, and an op with no recorded operand types gives none.
+{-| Returns the violations in the kinds of an `eco.papCreate`, comparing kind
+N with operand N, as `checkClosureKinds` decides them. Every operand is a
+captured value. An op with no recorded operand types gives none.
 -}
 checkPapCreateBitmap : MlirOp -> List Violation
 checkPapCreateBitmap op =
-    let
-        unboxedBitmap =
-            getIntAttr "unboxed_bitmap" op |> Maybe.withDefault 0
-
-        maybeOperandTypes =
-            extractOperandTypes op
-    in
-    case maybeOperandTypes of
+    case extractOperandTypes op of
         Nothing ->
             []
 
         Just operandTypes ->
-            List.indexedMap (checkPapCreateBit op unboxedBitmap) operandTypes
-                |> List.filterMap identity
+            checkClosureKinds op "unboxed_bitmap" "captured operand" operandTypes
 
 
-{-| Returns the violation, if any, for captured operand `index` of an
-`eco.papCreate`, as `checkBitmapKind` decides it.
--}
-checkPapCreateBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
-checkPapCreateBit op bitmap index operandType =
-    checkBitmapKind op bitmap index operandType "unboxed_bitmap" "captured operand"
-
-
-{-| Returns the violations in the `newargs_unboxed_bitmap` of an
-`eco.papExtend`, comparing slot N with operand N+1.
+{-| Returns the violations in the kinds of an `eco.papExtend`, comparing kind
+N with operand N+1, as `checkClosureKinds` decides them.
 
 Operand 0 is the closure being extended and is not compared. The last
 `eco.gc_roots_count` operands are GC root hints and are dropped first; a
-missing count drops none. A missing bitmap reads as 0, and an op with no
-recorded operand types gives none.
+missing count drops none. An op with no recorded operand types gives none.
 
 -}
 checkPapExtendBitmap : MlirOp -> List Violation
 checkPapExtendBitmap op =
     let
-        newargsBitmap =
-            getIntAttr "newargs_unboxed_bitmap" op |> Maybe.withDefault 0
-
-        maybeOperandTypes =
-            extractOperandTypes op
-
         rootCount =
             Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
     in
-    case maybeOperandTypes of
+    case extractOperandTypes op of
         Nothing ->
             []
 
@@ -375,96 +361,157 @@ checkPapExtendBitmap op =
                     []
 
                 Just newArgTypes ->
-                    List.indexedMap (checkPapExtendBit op newargsBitmap) newArgTypes
-                        |> List.filterMap identity
+                    checkClosureKinds op "newargs_unboxed_bitmap" "new arg operand" newArgTypes
 
 
-{-| Returns the violation, if any, for new argument `index` of an
-`eco.papExtend`, as `checkBitmapKind` decides it.
+{-| Returns the violations of a closure op whose compared operands have the
+types `types`.
+
+With a `slot_kinds` array, its length must equal the number of compared
+operands, and entry N must be the kind of operand N (an `i1` operand is
+reported whatever the entry holds). Without one, the legacy u64 bitmap named
+`legacyName` is checked slot by slot, as `checkBitmapKind` decides it. With
+neither, the op is a violation unless `types` is empty. `operandLabel` only
+words the messages.
+
 -}
-checkPapExtendBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
-checkPapExtendBit op bitmap index operandType =
-    checkBitmapKind op bitmap index operandType "newargs_unboxed_bitmap" "new arg operand"
-
-
-{-| Returns one violation for each closure-op kind attribute that exceeds the
-backend's slot limits, as the module docstring sets them out: the
-`eco.papExtend` ops first, then the `eco.papCreate` ops. A missing bitmap reads
-as 0 and a missing `num_captured` as 0.
--}
-checkClosureKindLimits : MlirModule -> List Violation
-checkClosureKindLimits mlirModule =
-    List.concatMap checkPapExtendLimits (findOpsNamed "eco.papExtend" mlirModule)
-        ++ List.concatMap checkPapCreateLimits (findOpsNamed "eco.papCreate" mlirModule)
-
-
-{-| The number of bits a closure op's u64 kind bitmap may use: 25 slots of
-2 bits each.
--}
-maxBitmapBits : Int
-maxBitmapBits =
-    50
-
-
-{-| The number of slots a closure op's u64 kind bitmap can describe.
--}
-maxBitmapSlots : Int
-maxBitmapSlots =
-    25
-
-
-{-| Returns the number of bits a kind bitmap `n` occupies in whole 2-bit
-slots: twice the least slot count `k` with `n < 4^k`, so a bitmap whose last
-non-boxed slot is slot 25 needs 52 bits. It uses float arithmetic, which is
-exact here, because `Bitwise` works on 32-bit values on the JavaScript back end.
--}
-bitsNeeded : Int -> Int
-bitsNeeded n =
-    let
-        go k =
-            if toFloat n < 4 ^ toFloat k then
-                2 * k
+checkClosureKinds : MlirOp -> String -> String -> List MlirType -> List Violation
+checkClosureKinds op legacyName operandLabel types =
+    case getArrayAttr "slot_kinds" op of
+        Just kindAttrs ->
+            let
+                kinds =
+                    List.map (extractKind >> Maybe.withDefault -1) kindAttrs
+            in
+            if List.length kinds /= List.length types then
+                [ { opId = op.id
+                  , opName = op.name
+                  , message =
+                        "slot_kinds has "
+                            ++ String.fromInt (List.length kinds)
+                            ++ " entries but the op has "
+                            ++ String.fromInt (List.length types)
+                            ++ " "
+                            ++ operandLabel
+                            ++ "s"
+                  }
+                ]
 
             else
-                go (k + 1)
-    in
-    go 0
+                List.map2 Tuple.pair kinds types
+                    |> List.indexedMap (\i ( k, t ) -> checkSlotKind op i k t operandLabel)
+                    |> List.filterMap identity
+
+        Nothing ->
+            case getIntAttr legacyName op of
+                Just bitmap ->
+                    List.indexedMap (\i t -> checkBitmapKind op bitmap i t legacyName operandLabel) types
+                        |> List.filterMap identity
+
+                Nothing ->
+                    if List.isEmpty types then
+                        []
+
+                    else
+                        [ { opId = op.id
+                          , opName = op.name
+                          , message =
+                                "no slot_kinds (and no legacy "
+                                    ++ legacyName
+                                    ++ ") for "
+                                    ++ String.fromInt (List.length types)
+                                    ++ " "
+                                    ++ operandLabel
+                                    ++ "s"
+                          }
+                        ]
 
 
-{-| Returns the violation, if any, for a closure-op bitmap `bitmap` named
-`label`, when it needs more than `maxBitmapBits` bits.
+{-| The integer held by one `slot_kinds` entry, or `Nothing` for an entry that
+is not an integer.
 -}
-checkBitmapWidth : MlirOp -> String -> Int -> Maybe Violation
-checkBitmapWidth op label bitmap =
-    let
-        bits =
-            bitsNeeded bitmap
-    in
-    if bits > maxBitmapBits then
+extractKind : MlirAttr -> Maybe Int
+extractKind attr =
+    case attr of
+        IntAttr _ k ->
+            Just k
+
+        _ ->
+            Nothing
+
+
+{-| Returns the violation, if any, for operand `index` of a closure op, whose
+type is `operandType`, against its `slot_kinds` entry `kind`. An `i1` operand
+is reported whatever the entry holds; otherwise the operand is reported when
+the entry differs from the kind its type requires.
+-}
+checkSlotKind : MlirOp -> Int -> Int -> MlirType -> String -> Maybe Violation
+checkSlotKind op index kind operandType operandLabel =
+    if operandType == I1 then
         Just
             { opId = op.id
             , opName = op.name
             , message =
-                label
+                operandLabel
                     ++ " "
-                    ++ String.fromInt bitmap
-                    ++ " needs "
-                    ++ String.fromInt bits
-                    ++ " bits (limit "
-                    ++ String.fromInt maxBitmapBits
-                    ++ ")"
+                    ++ String.fromInt index
+                    ++ " is i1 (Bool) but must be !eco.value at heap boundary"
+            }
+
+    else if kind /= typeToKind operandType then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "slot_kinds entry "
+                    ++ String.fromInt index
+                    ++ " is "
+                    ++ String.fromInt kind
+                    ++ " but "
+                    ++ operandLabel
+                    ++ " type "
+                    ++ typeToString operandType
+                    ++ " requires kind "
+                    ++ String.fromInt (typeToKind operandType)
             }
 
     else
         Nothing
 
 
-{-| Returns the violation, if any, for a slot count `count` named `label`, when
-it exceeds `maxBitmapSlots`.
+{-| Returns one violation for each closure-op kind attribute that breaks the
+post-Phase-2 form the module docstring sets out: the `eco.papExtend` ops
+first, then the `eco.papCreate` ops, then the `eco.papCreateGroup` ops.
+-}
+checkClosureKindLimits : MlirModule -> List Violation
+checkClosureKindLimits mlirModule =
+    List.concatMap checkPapExtendLimits (findOpsNamed "eco.papExtend" mlirModule)
+        ++ List.concatMap checkPapCreateLimits (findOpsNamed "eco.papCreate" mlirModule)
+        ++ List.concatMap checkPapCreateGroupLimits (findOpsNamed "eco.papCreateGroup" mlirModule)
+
+
+{-| Returns the violation, if any, for a u64 closure kind bitmap `name` that
+`op` still carries.
+-}
+checkNoLegacyBitmap : MlirOp -> String -> Maybe Violation
+checkNoLegacyBitmap op name =
+    if Dict.member name op.attrs then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message = name ++ " is present; closure ops carry slot_kinds instead (wide-object Phase 2)"
+            }
+
+    else
+        Nothing
+
+
+{-| Returns the violation, if any, for a count `count` named `label`, when it
+exceeds `HeapLimits.maxStageArity`.
 -}
 checkSlotCount : MlirOp -> String -> Int -> Maybe Violation
 checkSlotCount op label count =
-    if count > maxBitmapSlots then
+    if count > HeapLimits.maxStageArity then
         Just
             { opId = op.id
             , opName = op.name
@@ -473,18 +520,25 @@ checkSlotCount op label count =
                     ++ " "
                     ++ String.fromInt count
                     ++ " exceeds "
-                    ++ String.fromInt maxBitmapSlots
-                    ++ " (limit of the u64 kind bitmap)"
+                    ++ String.fromInt HeapLimits.maxStageArity
+                    ++ " (closure stage arity limit, HEAP_078)"
             }
 
     else
         Nothing
 
 
-{-| Returns the limit violations of one `eco.papExtend`: its
-`newargs_unboxed_bitmap` width, then its number of real new arguments, which
-leaves out operand 0 (the closure) and the trailing `eco.gc_roots_count`
-operands.
+{-| The number of entries of the `slot_kinds` array of `op`; 0 when absent.
+-}
+slotKindsLength : MlirOp -> Int
+slotKindsLength op =
+    getArrayAttr "slot_kinds" op |> Maybe.map List.length |> Maybe.withDefault 0
+
+
+{-| Returns the limit violations of one `eco.papExtend`: a legacy
+`newargs_unboxed_bitmap`, then its `slot_kinds` length, then its number of
+real new arguments, which leaves out operand 0 (the closure) and the trailing
+`eco.gc_roots_count` operands.
 -}
 checkPapExtendLimits : MlirOp -> List Violation
 checkPapExtendLimits op =
@@ -496,20 +550,50 @@ checkPapExtendLimits op =
             List.length op.operands - 1 - rootCount
     in
     List.filterMap identity
-        [ checkBitmapWidth op "papExtend newargs_unboxed_bitmap" (getIntAttr "newargs_unboxed_bitmap" op |> Maybe.withDefault 0)
+        [ checkNoLegacyBitmap op "newargs_unboxed_bitmap"
+        , checkSlotCount op "papExtend slot_kinds length" (slotKindsLength op)
         , checkSlotCount op "papExtend real newargs" newArgCount
         ]
 
 
-{-| Returns the limit violations of one `eco.papCreate`: its `unboxed_bitmap`
-width, then its `num_captured`.
+{-| Returns the limit violations of one `eco.papCreate`: a legacy
+`unboxed_bitmap`, then its `slot_kinds` length, then its `arity`.
 -}
 checkPapCreateLimits : MlirOp -> List Violation
 checkPapCreateLimits op =
     List.filterMap identity
-        [ checkBitmapWidth op "papCreate unboxed_bitmap" (getIntAttr "unboxed_bitmap" op |> Maybe.withDefault 0)
-        , checkSlotCount op "papCreate num_captured" (getIntAttr "num_captured" op |> Maybe.withDefault 0)
+        [ checkNoLegacyBitmap op "unboxed_bitmap"
+        , checkSlotCount op "papCreate slot_kinds length" (slotKindsLength op)
+        , checkSlotCount op "papCreate arity" (getIntAttr "arity" op |> Maybe.withDefault 0)
         ]
+
+
+{-| Returns the limit violations of one `eco.papCreateGroup`: a legacy
+`unboxed_bitmaps`, then the length of each sibling's `slot_kinds` array.
+-}
+checkPapCreateGroupLimits : MlirOp -> List Violation
+checkPapCreateGroupLimits op =
+    checkNoLegacyBitmap op "unboxed_bitmaps"
+        :: List.map
+            (\sibling ->
+                checkSlotCount op
+                    "papCreateGroup sibling slot_kinds length"
+                    (extractArrayLength sibling)
+            )
+            (getArrayAttr "slot_kinds" op |> Maybe.withDefault [])
+        |> List.filterMap identity
+
+
+{-| The number of items of an array attribute; 0 for any other attribute.
+-}
+extractArrayLength : MlirAttr -> Int
+extractArrayLength attr =
+    case attr of
+        ArrayAttr _ items ->
+            List.length items
+
+        _ ->
+            0
 
 
 {-| Returns how `t` is written in a violation message. A named struct gives its

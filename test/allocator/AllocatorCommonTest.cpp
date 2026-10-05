@@ -473,18 +473,20 @@ Testing::TestCase testGetObjectSizeArrayEdgeCases("getObjectSize handles ElmArra
 });
 
 // ============================================================================
-// Closure Tests (uses hdr->size = allocated capacity, NOT n_values)
+// Closure Tests (uses hdr->size = allocated capacity + K ext kind words, NOT
+// n_values; closure layout v2, HEAP_078)
 // ============================================================================
 
 Testing::TestCase testGetObjectSizeClosure("getObjectSize returns correct size for Closure based on hdr->size (allocated capacity)", []() {
     rc::check([](u32 max_values) {
-        // Limit to 63 (max for 6-bit field)
+        // Limit to 63 (the test object's capacity); the field holds 11 bits.
         max_values = max_values % 64;
+        const u32 K = extWords(max_values, CLOSURE_HDR_SLOTS);
 
         void* obj = getTestObject();
         Header* hdr = getHeader(obj);
         hdr->tag = Tag_Closure;
-        hdr->size = max_values;
+        hdr->size = max_values + K;   // physical-size rule
 
         // n_values may be less than max_values (partially applied closure).
         // getObjectSize must use hdr->size (allocated capacity), not n_values.
@@ -493,7 +495,7 @@ Testing::TestCase testGetObjectSizeClosure("getObjectSize returns correct size f
         cl->max_values = max_values;
 
         size_t base_size = sizeof(Closure);  // Header + n_values/max_values/unboxed + evaluator
-        size_t expected = (base_size + max_values * sizeof(Unboxable) + 7) & ~7;
+        size_t expected = (base_size + (max_values + K) * sizeof(Unboxable) + 7) & ~7;
         RC_ASSERT(getObjectSize(obj) == expected);
     });
 });
@@ -520,12 +522,12 @@ Testing::TestCase testGetObjectSizeClosureEdgeCases("getObjectSize handles Closu
         RC_ASSERT(getObjectSize(obj) == ((sizeof(Closure) + 1 * sizeof(Unboxable) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 32);  // 24 + 8 = 32
 
-        // Maximum slots (63)
-        hdr->size = 63;
+        // 63 slots: K = extWords(63, 20) = 2 ext kind words at the tail
+        hdr->size = 63 + 2;
         cl->n_values = 63;
         cl->max_values = 63;
-        RC_ASSERT(getObjectSize(obj) == ((sizeof(Closure) + 63 * sizeof(Unboxable) + 7) & ~7));
-        RC_ASSERT(getObjectSize(obj) == 528);  // 24 + 504 = 528
+        RC_ASSERT(getObjectSize(obj) == ((sizeof(Closure) + 65 * sizeof(Unboxable) + 7) & ~7));
+        RC_ASSERT(getObjectSize(obj) == 544);  // 24 + 520 = 544
     });
 });
 
@@ -534,11 +536,12 @@ Testing::TestCase testGetObjectSizeClosurePartialApplication("getObjectSize uses
         // max_values in [1..63], n_values in [0..max_values-1]
         max_values = (max_values % 63) + 1;
         n_values = n_values % max_values;  // strictly less than max_values
+        const u32 K = extWords(max_values, CLOSURE_HDR_SLOTS);
 
         void* obj = getTestObject();
         Header* hdr = getHeader(obj);
         hdr->tag = Tag_Closure;
-        hdr->size = max_values;  // allocated capacity
+        hdr->size = max_values + K;  // allocated capacity + ext kind words
 
         Closure* cl = static_cast<Closure*>(obj);
         cl->n_values = n_values;      // fewer values applied
@@ -547,7 +550,7 @@ Testing::TestCase testGetObjectSizeClosurePartialApplication("getObjectSize uses
         // Must use hdr->size (allocated capacity), not n_values (current fill).
         // A partially-applied closure has allocated room for max_values slots;
         // the GC must copy all of them to avoid truncating the object.
-        size_t expected = (sizeof(Closure) + max_values * sizeof(Unboxable) + 7) & ~7;
+        size_t expected = (sizeof(Closure) + (max_values + K) * sizeof(Unboxable) + 7) & ~7;
         RC_ASSERT(getObjectSize(obj) == expected);
     });
 });

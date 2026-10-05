@@ -45,14 +45,12 @@ static int64_t unboxInt(HPtr val) {
 // Layout descriptors for the closure invocations below: each declares the
 // per-arg ParamKind so the runtime can pass unboxed Int arguments straight
 // through to wrappers that accept them, instead of forcing an `eco_alloc_int`
-// per call here. Layout bytes match `EvalParamLayout`:
-//   { num_params, result_kind, kinds... }
+// per call here. Layouts are built with `Elm::makeEvalParamLayout`
+// (`EvalParamLayout` = { u16 num_params, u8 result_kind, u8 pad, kinds... }).
 //
-// The result_kind byte is patched per-call from `closure->result_kind` so
+// The result_kind byte is set per-call from `closure->result_kind` so
 // we can route through `eco_apply_closure_eval` and skip the dispatch-side
 // box on PK_Int/Float/Char-returning mappers (REP_ABI_001).
-static constexpr unsigned char kLayoutInt1[3]      = { 1, 0, 1 };       // (Int)
-static constexpr unsigned char kLayoutIntBoxed[4]  = { 2, 0, 1, 0 };    // (Int, a)
 
 // Read the closure's `result_kind` field once. Used by the typed-result
 // helpers below to set both the EvalParamLayout's result_kind byte and the
@@ -81,9 +79,8 @@ static uint8_t callUnaryInitClosureTyped(HPointer closureHP,
                                           int64_t index,
                                           ResultSlot* slot) {
     uint8_t resultKind = readClosureResultKind(closureHP);
-    unsigned char layoutBuf[3] = { 1, resultKind, 1 };
-    const auto* layout =
-        reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+    const auto lb = Elm::makeEvalParamLayout<1>(resultKind, {1});   // (Int)
+    const auto* layout = Elm::asLayout(&lb);
     uint64_t args[1] = { static_cast<uint64_t>(index) };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
     eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(args), 1, layout, slot, resultKind);
@@ -153,9 +150,8 @@ static uint8_t callBinaryIndexMapClosureTyped(HPointer closureHP,
                                               int64_t index, uint64_t elem,
                                               ResultSlot* slot) {
     uint8_t resultKind = readClosureResultKind(closureHP);
-    unsigned char layoutBuf[4] = { 2, resultKind, 1, 0 };
-    const auto* layout =
-        reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+    const auto lb = Elm::makeEvalParamLayout<2>(resultKind, {1, 0});   // (Int, a)
+    const auto* layout = Elm::asLayout(&lb);
     uint64_t args[2] = { static_cast<uint64_t>(index), elem };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
     eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(args), 2, layout, slot, resultKind);
@@ -176,9 +172,8 @@ static uint8_t callBinaryFoldClosureTyped(HPointer closureHP,
                                           uint64_t acc, uint8_t accKind,
                                           ResultSlot* slot) {
     uint8_t resultKind = readClosureResultKind(closureHP);
-    unsigned char layoutBuf[4] = { 2, resultKind, /*elem*/0, accKind };
-    const auto* layout =
-        reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+    const auto lb = Elm::makeEvalParamLayout<2>(resultKind, {/*elem*/0, accKind});
+    const auto* layout = Elm::asLayout(&lb);
     uint64_t args[2] = { elem, acc };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
     eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(args), 2, layout, slot, resultKind);
@@ -500,9 +495,8 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
         // Use `eco_apply_closure_eval` (PAP-aware) so curried/partially-
         // applied user mappers don't trip the strict-arity assertion.
         uint8_t resultKind = readClosureResultKind(closureHP);
-        unsigned char layoutBuf[3] = { 1, resultKind, 0 };
-        const auto* layout =
-            reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+        const auto lb = Elm::makeEvalParamLayout<1>(resultKind, {0});
+        const auto* layout = Elm::asLayout(&lb);
         uint64_t args[1] = { elem };
         Elm::HPtr cl =
             Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));

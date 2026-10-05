@@ -2,6 +2,7 @@ module Compiler.Canonicalize.Expression exposing
     ( EResult, FreeLocals, Uses(..), IdState
     , canonicalizeWithIds, gatherTypedArgsWithIds
     , verifyBindingsWithIds
+    , tooManyParams
     )
 
 {-| Canonicalize Elm expressions from source AST to canonical AST.
@@ -25,6 +26,7 @@ performs binary operator precedence resolution, and validates pattern bindings.
 # Validation
 
 @docs verifyBindingsWithIds
+@docs tooManyParams
 
 -}
 
@@ -38,6 +40,7 @@ import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Ids as Ids
 import Compiler.Canonicalize.Pattern as Pattern
 import Compiler.Canonicalize.Type as Type
+import Compiler.Data.HeapLimits as HeapLimits
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -215,27 +218,37 @@ canonicalizeNode env state0 region expression =
                 ( lambdaId, stateAfterLambda ) =
                     Ids.allocId state0
             in
-            delayedUsageWithIds <|
-                (Pattern.verifyWithIds Error.DPLambdaArgs
-                    (Pattern.traverseWithIds env stateAfterLambda (List.map Src.c1Value srcArgs))
-                    |> ReportingResult.andThen
-                        (\( args, andThenings, stateAfterPatterns ) ->
-                            Env.addLocals andThenings env
-                                |> ReportingResult.andThen
-                                    (\newEnv ->
-                                        verifyBindingsWithIds W.Pattern andThenings (canonicalizeWithIds newEnv stateAfterPatterns body)
-                                            |> ReportingResult.map
-                                                (\( ( cbody, finalState ), freeLocals ) ->
-                                                    let
-                                                        lambdaExpr : Can.Expr
-                                                        lambdaExpr =
-                                                            A.At region { id = lambdaId, node = Can.Lambda args cbody }
-                                                    in
-                                                    ( ( lambdaExpr, finalState ), freeLocals )
-                                                )
-                                    )
+            case tooManyParams region Error.TooManyLambdaParams srcArgs of
+                Just err ->
+                    ReportingResult.throw err
+
+                Nothing ->
+                    delayedUsageWithIds <|
+                        (Pattern.verifyWithIds Error.DPLambdaArgs
+                            (Pattern.traverseWithIds env stateAfterLambda (List.map Src.c1Value srcArgs))
+                            |> ReportingResult.andThen
+                                (\( args, andThenings, stateAfterPatterns ) ->
+                                    Env.addLocals andThenings env
+                                        |> ReportingResult.andThen
+                                            (\newEnv ->
+                                                verifyBindingsWithIds W.Pattern andThenings (canonicalizeWithIds newEnv stateAfterPatterns body)
+                                                    |> ReportingResult.andThen
+                                                        (\( ( cbody, finalState ), freeLocals ) ->
+                                                            let
+                                                                lambdaExpr : Can.Expr
+                                                                lambdaExpr =
+                                                                    A.At region { id = lambdaId, node = Can.Lambda args cbody }
+                                                            in
+                                                            checkClosureSlots env
+                                                                region
+                                                                Nothing
+                                                                srcArgs
+                                                                freeLocals
+                                                                ( ( lambdaExpr, finalState ), freeLocals )
+                                                        )
+                                            )
+                                )
                         )
-                )
 
         Src.Call func args ->
             let
@@ -929,63 +942,13 @@ type Binding
 addDefNodesWithIds : Env.Env -> IdState -> List Node -> A.Located Src.Def -> EResult FreeLocals (List W.Warning) ( List Node, IdState )
 addDefNodesWithIds env state nodes (A.At _ def) =
     case def of
-        Src.Define ((A.At _ name) as aname) srcArgs ( _, body ) maybeType ->
-            case maybeType of
+        Src.Define ((A.At nameRegion name) as aname) srcArgs ( _, body ) maybeType ->
+            case tooManyParams nameRegion (Error.TooManyParams name) srcArgs of
+                Just err ->
+                    ReportingResult.throw err
+
                 Nothing ->
-                    Pattern.verifyWithIds (Error.DPFuncArgs name)
-                        (Pattern.traverseWithIds env state (List.map Src.c1Value srcArgs))
-                        |> ReportingResult.andThen
-                            (\( args, argBindings, stateAfterArgs ) ->
-                                Env.addLocals argBindings env
-                                    |> ReportingResult.andThen
-                                        (\newEnv ->
-                                            verifyBindingsWithIds W.Pattern argBindings (canonicalizeWithIds newEnv stateAfterArgs body)
-                                                |> ReportingResult.andThen
-                                                    (\( ( cbody, stateAfterBody ), freeLocals ) ->
-                                                        let
-                                                            cdef : Can.Def
-                                                            cdef =
-                                                                Can.Def aname args cbody
-
-                                                            node : ( Binding, Name, List Name )
-                                                            node =
-                                                                ( Define cdef, name, Dict.keys freeLocals )
-                                                        in
-                                                        logLetLocalsWithIds args freeLocals ( node :: nodes, stateAfterBody )
-                                                    )
-                                        )
-                            )
-
-                Just ( _, ( _, tipe ) ) ->
-                    Type.toAnnotation env tipe
-                        |> ReportingResult.andThen
-                            (\(Can.Forall freeVars ctipe) ->
-                                -- Use Pattern.verify (not verifyWithIds) because gatherTypedArgsWithIds
-                                -- already threads IdState internally and returns it in the result tuple
-                                Pattern.verify (Error.DPFuncArgs name)
-                                    (gatherTypedArgsWithIds env name state (List.map Src.c1Value srcArgs) ctipe Index.first [])
-                                    |> ReportingResult.andThen
-                                        (\( ( ( args, resultType ), stateAfterArgs ), argBindings ) ->
-                                            Env.addLocals argBindings env
-                                                |> ReportingResult.andThen
-                                                    (\newEnv ->
-                                                        verifyBindingsWithIds W.Pattern argBindings (canonicalizeWithIds newEnv stateAfterArgs body)
-                                                            |> ReportingResult.andThen
-                                                                (\( ( cbody, stateAfterBody ), freeLocals ) ->
-                                                                    let
-                                                                        cdef : Can.Def
-                                                                        cdef =
-                                                                            Can.TypedDef aname freeVars args cbody resultType
-
-                                                                        node : ( Binding, Name, List Name )
-                                                                        node =
-                                                                            ( Define cdef, name, Dict.keys freeLocals )
-                                                                    in
-                                                                    logLetLocalsWithIds args freeLocals ( node :: nodes, stateAfterBody )
-                                                                )
-                                                    )
-                                        )
-                            )
+                    addDefineNodesWithIds env state nodes aname srcArgs body maybeType
 
         Src.Destruct pattern ( _, body ) ->
             Pattern.verifyWithIds Error.DPDestruct
@@ -1020,6 +983,121 @@ addDefNodesWithIds env state nodes (A.At _ def) =
                                                 ReportingResult.RErr (Utils.dictUnionWith combineUses freeLocals fs) warnings errors
                             )
                     )
+
+
+{-| The `Src.Define` arm of `addDefNodesWithIds`, once the definition's
+parameter count is known to be within `HeapLimits.maxStageArity`.
+-}
+addDefineNodesWithIds : Env.Env -> IdState -> List Node -> A.Located Name -> List (Src.C1 Src.Pattern) -> Src.Expr -> Maybe (Src.C1 (Src.C2 Src.Type)) -> EResult FreeLocals (List W.Warning) ( List Node, IdState )
+addDefineNodesWithIds env state nodes ((A.At nameRegion name) as aname) srcArgs body maybeType =
+    case maybeType of
+        Nothing ->
+            Pattern.verifyWithIds (Error.DPFuncArgs name)
+                (Pattern.traverseWithIds env state (List.map Src.c1Value srcArgs))
+                |> ReportingResult.andThen
+                    (\( args, argBindings, stateAfterArgs ) ->
+                        Env.addLocals argBindings env
+                            |> ReportingResult.andThen
+                                (\newEnv ->
+                                    verifyBindingsWithIds W.Pattern argBindings (canonicalizeWithIds newEnv stateAfterArgs body)
+                                        |> ReportingResult.andThen
+                                            (\( ( cbody, stateAfterBody ), freeLocals ) ->
+                                                let
+                                                    cdef : Can.Def
+                                                    cdef =
+                                                        Can.Def aname args cbody
+
+                                                    node : ( Binding, Name, List Name )
+                                                    node =
+                                                        ( Define cdef, name, Dict.keys freeLocals )
+                                                in
+                                                checkClosureSlots env nameRegion (Just name) srcArgs freeLocals ( node :: nodes, stateAfterBody )
+                                                    |> ReportingResult.andThen (logLetLocalsWithIds args freeLocals)
+                                            )
+                                )
+                    )
+
+        Just ( _, ( _, tipe ) ) ->
+            Type.toAnnotation env tipe
+                |> ReportingResult.andThen
+                    (\(Can.Forall freeVars ctipe) ->
+                        -- Use Pattern.verify (not verifyWithIds) because gatherTypedArgsWithIds
+                        -- already threads IdState internally and returns it in the result tuple
+                        Pattern.verify (Error.DPFuncArgs name)
+                            (gatherTypedArgsWithIds env name state (List.map Src.c1Value srcArgs) ctipe Index.first [])
+                            |> ReportingResult.andThen
+                                (\( ( ( args, resultType ), stateAfterArgs ), argBindings ) ->
+                                    Env.addLocals argBindings env
+                                        |> ReportingResult.andThen
+                                            (\newEnv ->
+                                                verifyBindingsWithIds W.Pattern argBindings (canonicalizeWithIds newEnv stateAfterArgs body)
+                                                    |> ReportingResult.andThen
+                                                        (\( ( cbody, stateAfterBody ), freeLocals ) ->
+                                                            let
+                                                                cdef : Can.Def
+                                                                cdef =
+                                                                    Can.TypedDef aname freeVars args cbody resultType
+
+                                                                node : ( Binding, Name, List Name )
+                                                                node =
+                                                                    ( Define cdef, name, Dict.keys freeLocals )
+                                                            in
+                                                            checkClosureSlots env nameRegion (Just name) srcArgs freeLocals ( node :: nodes, stateAfterBody )
+                                                                |> ReportingResult.andThen (logLetLocalsWithIds args freeLocals)
+                                                        )
+                                            )
+                                )
+                    )
+
+
+{-| The `TooLarge` error for a function or lambda whose parameter list
+`srcArgs` is longer than `HeapLimits.maxStageArity` (HEAP\_078), located at
+`region` and describing it as `what`; `Nothing` when it is within the limit.
+-}
+tooManyParams : A.Region -> Error.TooLargeWhat -> List arg -> Maybe Error.Error
+tooManyParams region what srcArgs =
+    let
+        n =
+            List.length srcArgs
+    in
+    if n > HeapLimits.maxStageArity then
+        Just (Error.TooLarge region what n HeapLimits.maxStageArity)
+
+    else
+        Nothing
+
+
+{-| Passes `value` through when a closure with the parameters `srcArgs` and
+the free locals `freeLocals` (its own parameters already removed) fits in a
+closure stage, and throws `TooLarge region (TooManyClosureSlots name)`
+otherwise. Its captured variables are the free locals that `env`, the scope
+around the closure, binds as locals (`Env.Local`), so top-level values do not
+count; a local function's own name counts when it is free (self-recursion),
+which overcounts by one at most. A definition with no parameters is not a
+closure and always passes.
+-}
+checkClosureSlots : Env.Env -> A.Region -> Maybe Name -> List arg -> FreeLocals -> a -> EResult i w a
+checkClosureSlots env region name srcArgs freeLocals value =
+    let
+        nArgs =
+            List.length srcArgs
+
+        isCaptured k _ =
+            case Dict.get k env.vars of
+                Just (Env.Local _) ->
+                    True
+
+                _ ->
+                    False
+
+        slots =
+            nArgs + Dict.size (Dict.filter isCaptured freeLocals)
+    in
+    if nArgs > 0 && slots > HeapLimits.maxStageArity then
+        ReportingResult.throw (Error.TooLarge region (Error.TooManyClosureSlots name) slots HeapLimits.maxStageArity)
+
+    else
+        ReportingResult.ok value
 
 
 {-| Like logLetLocals but preserves IdState in the result.

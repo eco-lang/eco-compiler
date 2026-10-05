@@ -295,11 +295,15 @@ inline u64 pointerMaskFromKindBitmap(u64 kindBitmap, unsigned numSlots) {
 // The accessors that dereference Custom/Record/Closure follow the Closure typedef below.
 constexpr u32 CUSTOM_HDR_SLOTS   = 24;    // Custom::unboxed:48
 constexpr u32 RECORD_HDR_SLOTS   = 32;    // Record::unboxed:64
-constexpr u32 CLOSURE_HDR_SLOTS  = 25;    // Closure::unboxed:50 (Phase 2 -> 20)
+constexpr u32 CLOSURE_HDR_SLOTS  = 20;    // Closure::unboxed:40 (Phase 2)
 constexpr u32 SLOTS_PER_EXT_WORD = 32;
 constexpr u32 CUSTOM_MAX_FIELDS  = 2040;
 constexpr u32 RECORD_MAX_FIELDS  = 2047;
-constexpr u32 CLOSURE_MAX_ARITY  = 63;    // Phase 2 -> 2047
+constexpr u32 CLOSURE_MAX_ARITY  = 2047;  // n_values:11 / max_values:11 (HEAP_078)
+// Sat fast path serves only closures whose kinds are all inline; the guard (EcoBackend.cpp)
+// and the descriptor emitters must use this one constant. sat[] is empty above it.
+constexpr u32 SAT_MAX_ARITY      = CLOSURE_HDR_SLOTS;
+static_assert(SAT_MAX_ARITY <= CLOSURE_HDR_SLOTS, "c3 reads kinds from the header word only");
 
 constexpr u32 extWords(u32 n, u32 hdrSlots) {
     return n > hdrSlots ? (n - hdrSlots + SLOTS_PER_EXT_WORD - 1) / SLOTS_PER_EXT_WORD : 0;
@@ -623,37 +627,42 @@ typedef void *(*EvalFunction)(void *[]);
 /// `sat[N]` is the arity-monomorphised entry for a call supplying exactly N new
 /// arguments: it loads the closure's C = stage_arity - N captures in place and
 /// tail-calls the typed target, so the caller needs no args array, no root
-/// range, and no runtime splice. `sat` always has `stage_arity + 1` slots, so a
-/// load of `sat[N]` is in bounds for every N the `rem == N` guard can admit;
-/// slots with no generated entry are null and fail the guard closed.
+/// range, and no runtime splice. `sat` has `stage_arity + 1` slots when
+/// `stage_arity <= SAT_MAX_ARITY`, else it is empty. The
+/// `max_values <= SAT_MAX_ARITY` guard makes it unreadable, so every load the
+/// guards admit is in bounds; slots with no generated entry are null and fail
+/// the guard closed.
 struct EvaluatorDesc {
-    EvalFunction  generic;      // +0   the __closure_wrapper_* address
-    u64           kinds;        // +8   2 bits/param, params 0..31
-    unsigned char stage_arity;  // +16  P
-    unsigned char result_kind;  // +17  ParamKind of the wrapper's compiled return
-    unsigned short _pad0;       // +18
-    unsigned int   _pad1;       // +20
-    void*         sat[];        // +24  sat[0..stage_arity]; sat[0] unused
+    EvalFunction   generic;      // +0   the __closure_wrapper_* address
+    u64            kinds;        // +8   advisory: 2 bits/param, params 0..31 only
+    unsigned char  _pad_sa;      // +16  (was stage_arity:u8; always 0 now)
+    unsigned char  result_kind;  // +17  ParamKind of the wrapper's compiled return
+    unsigned short stage_arity;  // +18  P (<= CLOSURE_MAX_ARITY)
+    unsigned int   _pad1;        // +20
+    void*          sat[];        // +24  sat[0..stage_arity] if stage_arity <= SAT_MAX_ARITY, else empty; sat[0] unused
 };
 
+/// Layout v2 (plans/wide-object-tail-kind-words.md §2.1/§2.2, HEAP_019/HEAP_078):
+///   packed word = n_values:11 | max_values:11 | result_kind:2 | unboxed:40
+/// Kinds of params 0..19 live inline in `unboxed`; params 20.. live in
+/// K = extWords(max_values, CLOSURE_HDR_SLOTS) extension kind words (32 slots
+/// per word), which are the LAST K words of the object. header.size counts the
+/// allocated value slots plus K (the physical-size rule), so the object size is
+/// a function of the header word alone. Read kinds only through
+/// closureSlotKind / ClosureKinds.
 typedef struct {
-    Header header;
-    u64 n_values   : 6;    // Applied arity: args already captured for this stage (0-63).
-    u64 max_values : 6;    // Stage arity: total args this evaluator expects (0-63).
-    u64 result_kind: 2;    // ParamKind: real C-ABI return kind of `evaluator`
-                           //   0 = PK_Boxed (HPtr return, status quo)
-                           //   1 = PK_Int   (int64_t return)
-                           //   2 = PK_Float (double return)
-                           //   3 = PK_Char  (uint16_t return)
-                           // Read by every closure-invocation entry point so
-                           // C++ kernel callers (List_arity_N, JsArray_*, etc.)
-                           // can dispatch the function-pointer cast without
-                           // needing per-call-site K plumbing.
-    u64 unboxed    : 50;   // 2-bit kinds for slots 0..24 (25 slots); slots 25+ read
-                           // boxed until the Phase 2 widening
-                           // (plans/wide-object-tail-kind-words.md).
+    Header header;           // header.size = allocated value slots + K
+    u64 n_values   : 11;     // Applied arity: args already captured for this stage (0..2047).
+    u64 max_values : 11;     // Stage arity: total args this evaluator expects (0..2047).
+    u64 result_kind: 2;      // ParamKind: real C-ABI return kind of `evaluator`
+                             //   0 = PK_Boxed (HPtr return), 1 = PK_Int (int64_t),
+                             //   2 = PK_Float (double), 3 = PK_Char (uint16_t).
+                             // Read by every closure-invocation entry point so
+                             // C++ kernel callers can dispatch the function-pointer
+                             // cast without per-call-site K plumbing.
+    u64 unboxed    : 40;     // inline 2-bit kinds for params 0..19
     const EvaluatorDesc* evaluator;   // static descriptor, NOT a heap pointer
-    Unboxable values[];
+    Unboxable values[];      // [0 .. header.size - K) values, then K ext kind words
 } Closure;
 
 #ifdef __cplusplus
@@ -662,8 +671,10 @@ static_assert(sizeof(EvaluatorDesc) == 24,
               "backend hard-codes that (EvaluatorDescSatOffset)");
 static_assert(offsetof(EvaluatorDesc, generic) == 0, "generic at +0");
 static_assert(offsetof(EvaluatorDesc, kinds) == 8, "kinds at +8");
-static_assert(offsetof(EvaluatorDesc, stage_arity) == 16, "stage_arity at +16");
+static_assert(offsetof(EvaluatorDesc, stage_arity) == 18, "stage_arity at +18");
 static_assert(offsetof(EvaluatorDesc, result_kind) == 17, "result_kind at +17");
+static_assert(offsetof(EvaluatorDesc, sat) == 24, "sat at +24");
+static_assert(sizeof(Closure) == 24, "Closure base is 24 bytes");
 #endif
 
 // ---- Wide-object slot-kind accessors (plans/wide-object-tail-kind-words.md §S.1; Phase 1) ----
@@ -675,25 +686,52 @@ inline u32 customSlotKind(const Custom* c, u32 i) {
 inline u32 recordSlotKind(const Record* r, u32 i) {
     return i < RECORD_HDR_SLOTS ? kindInWord(r->unboxed, i) : 0u;
 }
+// Closure extension kind words: the LAST K words of the object (physical-size rule).
+inline const u64* closureExtWords(const Closure* cl) {
+    return reinterpret_cast<const u64*>(
+        &cl->values[cl->header.size - extWords(cl->max_values, CLOSURE_HDR_SLOTS)]);
+}
 // Direct closure accessor for NON-allocating readers (GC walkers, validate checks,
-// printers). Allocating loops must use ClosureKinds (below). Phase 2 adds the ext branch.
+// printers). Allocating loops must use ClosureKinds (below).
 inline u32 closureSlotKind(const Closure* cl, u32 i) {
-    return i < CLOSURE_HDR_SLOTS ? kindInWord(cl->unboxed, i) : 0u;
+    if (i < CLOSURE_HDR_SLOTS) return kindInWord(cl->unboxed, i);
+    const u32 j = (i - CLOSURE_HDR_SLOTS) / SLOTS_PER_EXT_WORD;
+    if (j >= extWords(cl->max_values, CLOSURE_HDR_SLOTS)) return 0u;
+    return kindInWord(closureExtWords(cl)[j], (i - CLOSURE_HDR_SLOTS) % SLOTS_PER_EXT_WORD);
 }
 // Snapshot of a closure's kinds for every loop that can allocate (the closure may move).
 struct ClosureKinds {
-    u64 hdr;        // Phase 1: the 50-bit inline field (25 slots)
+    u64 hdr;        // the 40-bit inline field (20 slots)
     u32 max;        // max_values
-    u32 k;          // ext words copied; Phase 1: always 0
-    u64 ext[64];    // used from Phase 2
+    u32 k;          // ext words copied into ext[] = extWords(max, CLOSURE_HDR_SLOTS) <= 64
+    u64 ext[64];
 };
+static_assert(extWords(CLOSURE_MAX_ARITY, CLOSURE_HDR_SLOTS) <= 64, "ClosureKinds::ext holds every ext word");
 inline void snapshotClosureKinds(const Closure* cl, ClosureKinds& out) {
     out.hdr = cl->unboxed;
     out.max = cl->max_values;
-    out.k = 0;
+    out.k = extWords(out.max, CLOSURE_HDR_SLOTS);
+    const u64* ext = out.k ? closureExtWords(cl) : nullptr;
+    for (u32 j = 0; j < out.k; ++j) out.ext[j] = ext[j];
 }
 inline u32 closureKindAt(const ClosureKinds& ks, u32 slot) {
-    return slot < CLOSURE_HDR_SLOTS ? kindInWord(ks.hdr, slot) : 0u;   // Phase 2: ext[]
+    if (slot < CLOSURE_HDR_SLOTS) return kindInWord(ks.hdr, slot);
+    const u32 j = (slot - CLOSURE_HDR_SLOTS) / SLOTS_PER_EXT_WORD;
+    return j < ks.k ? kindInWord(ks.ext[j], (slot - CLOSURE_HDR_SLOTS) % SLOTS_PER_EXT_WORD) : 0u;
+}
+// Validate-only well-formedness: header.size covers the values and the K ext
+// words, n_values <= max_values <= CLOSURE_MAX_ARITY, and no ext kind bits are
+// set past slot max_values - 1.
+inline bool closureWellFormed(const Closure* cl) {
+    const u32 n = cl->n_values, max = cl->max_values;
+    const u32 K = extWords(max, CLOSURE_HDR_SLOTS);
+    if (n > max || max > CLOSURE_MAX_ARITY) return false;
+    if (cl->header.size < n + K) return false;
+    if (K == 0) return true;
+    const u64* ext = closureExtWords(cl);
+    const u32 lastSlots = (max - CLOSURE_HDR_SLOTS) - (K - 1) * SLOTS_PER_EXT_WORD;  // 1..32
+    if (lastSlots < SLOTS_PER_EXT_WORD && (ext[K - 1] >> (2 * lastSlots)) != 0) return false;
+    return true;
 }
 inline const u64* customExtWords(const Custom* c) { return reinterpret_cast<const u64*>(&c->values[c->header.size]); }
 inline const u64* recordExtWords(const Record* r) { return reinterpret_cast<const u64*>(&r->values[r->header.size]); }
@@ -733,12 +771,39 @@ enum ParamKind : unsigned char {
 /// lives on `Closure::flags`, not here — the caller cannot statically know
 /// what evaluator a dynamically-dispatched closure has, so the gate must
 /// be readable from the closure header.
-/// Memory layout: { num_params: u8, result_kind: u8, kinds[num_params]: u8[] }
+/// Memory layout: { num_params: u16, result_kind: u8, _pad: u8, kinds[num_params]: u8[] }
 struct EvalParamLayout {
-    unsigned char num_params;
-    unsigned char result_kind;  // ParamKind: closure evaluator's return kind
-    unsigned char kinds[];      // flexible array member, length = num_params
+    unsigned short num_params;   // +0
+    unsigned char  result_kind;  // +2  ParamKind: closure evaluator's return kind
+    unsigned char  _pad;         // +3
+    unsigned char  kinds[];      // +4  flexible array member, length = num_params
 };
+#ifdef __cplusplus
+static_assert(offsetof(EvalParamLayout, num_params) == 0, "num_params at +0");
+static_assert(offsetof(EvalParamLayout, result_kind) == 2, "result_kind at +2");
+static_assert(offsetof(EvalParamLayout, kinds) == 4, "kinds at +4");
+/// Static layouts for kernels: EvalParamLayoutN<N> is layout-compatible with EvalParamLayout.
+template <unsigned N> struct EvalParamLayoutN {
+    unsigned short num_params;
+    unsigned char  result_kind;
+    unsigned char  _pad;
+    unsigned char  kinds[N];
+};
+template <unsigned N>
+constexpr EvalParamLayoutN<N> makeEvalParamLayout(unsigned char rk, const unsigned char (&k)[N]) {
+    EvalParamLayoutN<N> l{};
+    l.num_params = static_cast<unsigned short>(N);
+    l.result_kind = rk;
+    for (unsigned i = 0; i < N; ++i) l.kinds[i] = k[i];
+    return l;
+}
+template <unsigned N>
+inline const EvalParamLayout* asLayout(const EvalParamLayoutN<N>* p) {
+    static_assert(offsetof(EvalParamLayoutN<N>, kinds) == offsetof(EvalParamLayout, kinds),
+                  "EvalParamLayoutN is layout-compatible with EvalParamLayout");
+    return reinterpret_cast<const EvalParamLayout*>(p);
+}
+#endif
 
 typedef struct {
     Header header;

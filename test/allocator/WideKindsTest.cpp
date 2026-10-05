@@ -118,12 +118,15 @@ void test_accessors_boxed_past_header() {
     TEST_ASSERT(recordSlotKind(r, 31) == 1);
     for (u32 i = 32; i < 40; ++i) TEST_ASSERT(recordSlotKind(r, i) == 0);
 
-    Closure* k = inBuffer<Closure>(kb, 40);
+    // Phase 2: 20 inline kinds, then K = extWords(40, 20) = 1 ext word at the
+    // object's tail (header.size = 40 + 1); a zero ext word reads boxed.
+    Closure* k = inBuffer<Closure>(kb, 41);
     k->header.tag = Tag_Closure;
+    k->header.size = 41;
     k->max_values = 40;
-    k->unboxed = allInt & ((1ULL << 50) - 1);
-    TEST_ASSERT(closureSlotKind(k, 24) == 1);
-    for (u32 i = 25; i < 40; ++i) TEST_ASSERT(closureSlotKind(k, i) == 0);
+    k->unboxed = allInt & ((1ULL << 40) - 1);
+    TEST_ASSERT(closureSlotKind(k, 19) == 1);
+    for (u32 i = 20; i < 40; ++i) TEST_ASSERT(closureSlotKind(k, i) == 0);
 }
 
 // ---- 1c.2 ----
@@ -153,13 +156,14 @@ void test_debug_to_string_40_field_record_slot_32() {
 void test_closure_kinds_past_31_snapshot() {
     initAllocator();
     std::vector<u64> kb;
-    Closure* k = inBuffer<Closure>(kb, 40);
+    Closure* k = inBuffer<Closure>(kb, 41);
     k->header.tag = Tag_Closure;
+    k->header.size = 41;   // 40 value slots + 1 ext word (Phase 2)
     k->max_values = 40;
-    k->unboxed = 1;   // slot 0 Int, every other slot boxed
+    k->unboxed = 1;   // slot 0 Int, every other slot boxed (ext word 0)
     ClosureKinds ks;
     snapshotClosureKinds(k, ks);
-    TEST_ASSERT(ks.max == 40 && ks.k == 0);
+    TEST_ASSERT(ks.max == 40 && ks.k == 1 && ks.ext[0] == 0);
     TEST_ASSERT(closureKindAt(ks, 0) == 1);
     TEST_ASSERT(closureKindAt(ks, 31) == 0);
     TEST_ASSERT(closureKindAt(ks, 32) == 0);

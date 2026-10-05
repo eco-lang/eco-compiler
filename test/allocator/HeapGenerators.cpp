@@ -320,14 +320,17 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             }
 
             case HeapObjectDesc::Closure: {
-                size_t num_values = std::min(desc.closure_values_boxed.size(), desc.closure_child_values.size());
+                // At most CLOSURE_HDR_SLOTS (20) values: all kinds inline, K = 0,
+                // so header.size == num_values (closure layout v2).
+                size_t num_values = std::min({desc.closure_values_boxed.size(), desc.closure_child_values.size(),
+                                              size_t{CLOSURE_HDR_SLOTS}});
                 size_t size = sizeof(Closure) + num_values * sizeof(Unboxable);
                 obj = alloc.allocate(size, Tag_Closure);
                 Closure *closure = static_cast<Closure *>(obj);
 
                 closure->n_values = num_values;
                 closure->max_values = num_values;
-                closure->unboxed = buildUnboxedBitmap(desc.closure_values_boxed, 52);
+                closure->unboxed = buildUnboxedBitmap(desc.closure_values_boxed, 40);
                 closure->evaluator = reinterpret_cast<const EvaluatorDesc *>(desc.closure_evaluator_dummy);
 
                 for (size_t i = 0; i < num_values; i++) {
@@ -543,7 +546,10 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
             }
 
             case HeapObjectDesc::Closure: {
-                size_t num_values = std::min(desc.closure_values_boxed.size(), desc.closure_child_values.size());
+                // At most CLOSURE_HDR_SLOTS (20) values: all kinds inline, K = 0,
+                // so header.size == num_values (closure layout v2).
+                size_t num_values = std::min({desc.closure_values_boxed.size(), desc.closure_child_values.size(),
+                                              size_t{CLOSURE_HDR_SLOTS}});
                 size_t size = sizeof(Closure) + num_values * sizeof(Unboxable);
                 obj = allocInOldGen(size, Tag_Closure);
                 if (!obj) break;
@@ -551,7 +557,7 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
 
                 closure->n_values = num_values;
                 closure->max_values = num_values;
-                closure->unboxed = buildUnboxedBitmap(desc.closure_values_boxed, 52);
+                closure->unboxed = buildUnboxedBitmap(desc.closure_values_boxed, 40);
                 closure->evaluator = reinterpret_cast<const EvaluatorDesc *>(desc.closure_evaluator_dummy);
 
                 for (size_t i = 0; i < num_values; i++) {

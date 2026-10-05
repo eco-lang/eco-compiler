@@ -8,6 +8,8 @@ design), §5 (GC concurrency procedure), §6 (test mechanics) and §7 (performan
 references are against the tree of 2026-10-05, **before** Phases 0–1 land. Phase 1 moves some
 lines, so re-anchor on the named function.
 
+**Status:** DONE (2026-10-05): all steps implemented; gate green ("Phase 2 gate result" below).
+
 **Precondition (Phase 1 done):**
 - `ClosureKinds` / `snapshotClosureKinds` / `closureKindAt` exist (header-only, 25 slots);
 - the closure walkers use them;
@@ -1170,19 +1172,105 @@ messages, which Phase 3D lifts):
 - the unit and fixture pins of steps 2.1–2.7 (the B13 and B16 fixtures stay green with their
   updated CHECKs).
 
+## Phase 2 gate result (recorded 2026-10-05)
+
+**Gate (second run, after the integration fixes below; each command once, after the cache wipe):**
+- elm-tests: 14,073 pass / 2 fail (the 2 GOPT_003 pins only). The step 2.0 encoder test, the B4
+  closure-limits case and the six `LimitErrorsTest` cases are green.
+- `full`: 2,105 run, 2,095 pass, 10 fail: exactly the expected list, each with its Custom/Record cap
+  reason (`WideRecordDecoder70Test` / `…300Test` now fail on the RECORD cap, not the arity cap).
+  Newly green: `WideClosurePap27bTest`, `…Sat26Test`, `…Boxed27Test`, `…Capture27Test`,
+  `WideRecordDecoder26Test`, `…30Test`, `WideClosureArity63Test`, `…300Test`, `…2047Test`,
+  `eco-kernel/WideClosureGcTest`, plus the 8 new codegen fixtures and the new unit tests.
+- Validate tree (one run per substring): `WideClosure` 21/21, `Closure` 48/48, `apply` 9/9, `wide` 19/19.
+- register-guards green; tla-canary strict green (the C++ agent's M1 audit for the new leaf mutex in
+  `RuntimeExports.cpp`, prefix `7b4ec951a253`; voluntary M3/M5; M3 trace 15/15).
+- AOT: 922/934; failures = the Phase 0 baseline (`FlagsRecordTest`, `PortEchoTest`) plus the 10 cap pins.
+- Bootstrap: Stage 4b and 8c fixed points hold; `eco-verify` rc 0.
+- Step 2.0 / 2.8.6 checks: `WideClosureSat26Test` passes through `ECO_TEXT_MLIR=1` (15 `slot_kinds
+  = array<i8…>`) and the default bytecode path; the `Arity2048.elm` CLI compile exits 1 with a
+  located `TOO MANY PARAMETERS` (line 6, `big`, 2047).
+- **E10:** a native self-compile (`eco-optP2b`) with an `eco-config.json` `"inline"` object setting
+  15 fields to non-default values (all of positions 20..26 included) persists the config hash
+  `…|mpf=999|preFpi=3|postFpi=5|hthr=26|…|kcc=2/5/9/33|afwd=0|…`: `kernelCostHof` (field 25) = 33 and
+  `aliasForward` (field 26) = false, exactly the file's values. `kernelCostClasses` stays `true`
+  (the token is printed only then); earlier boolean switches stay default so experimental pass
+  combinations cannot confound a decoding check.
+- **Census** (`eco-optP2` output): one papCreate of arity 26..63 (the compiler's own `InlineConfig`,
+  arity 27, now with extension words), 2 of arity 21..25, construct.record boxed primitive at >= 26: 5.
+
+**Integration fixes found by the first gate run** (the C++ and front-end halves were built
+separately):
+1. `tests/Compiler/PackageCompilation.elm` matched `CanonicalizeError` exhaustively without
+   `TooLarge`: branch added.
+2. `PapCreateGroupOp::verify` required each sibling's `slot_kinds` to have length
+   `capture_counts[i]`; step 2.1 (and the front end) say `num_captured[i]`. The verifier now
+   requires length `num_captured[i]`, checks the first `capture_counts[i]` against the operand
+   types and requires the sibling (cross-edge) slots to be boxed; `pap_slot_kinds_verify.mlir`
+   updated. (This one bug also broke the bootstrap, the `MutualLetRec*` tests and
+   `WideClosureGroupTest`.)
+3. **Pre-existing ABI bug surfaced:** `Elm_Kernel_Debug_toString(HPtr, int64_t type_id)` was
+   declared to MLIR with one parameter, so a `Debug.toString` closure value called it with one
+   argument and `type_id` was a stale register; Phase 2 changed that register's contents and the
+   printer chose a wrong type (`[]`). Split into `Elm_Kernel_Debug_toString(HPtr)` (untyped, the
+   closure path) and `Elm_Kernel_Debug_toString_typed(HPtr, int64_t)` (the generator's saturated
+   call, `Expr.elm`); `KernelExports.h`, `RuntimeSymbols.cpp` updated.
+
+**Kernel licenses (LSS_022):** the 2.3/2.6 kernel edits re-hashed 94 licensed rows (7 files). The
+diffs are `EvalParamLayout` encoding only (`makeEvalParamLayout` values with the same kinds; u16
+`num_params`) plus `ListExports` kind snapshots; re-audited, `audited:` dates advanced with a
+re-audit note, manifest `--update`d.
+
+**Deviations recorded:**
+- No `eco_pap_extend` shim phase: every caller moved to `eco_pap_extend_l` at once (2.5 + 2.9).
+- Legacy u64 closure bitmaps: a zero word carries no claim (absent and zero are indistinguishable
+  for property attributes), and a non-zero word is checked for slots 0..25 only (the front end
+  packed at most 26).
+- B16 fixture: PAPSimplify P6 folds the fused 30-newarg extend into the papCreate, so the fixture
+  pins one papCreate with 31 captures plus a parameter-based function showing the fused extend.
+- 2.8.4: the `MonoGlobalOptimize` wrapper sites and `Staging/Rewriter` do not decline (their
+  wrappers are required for a correct calling convention); a violation there is reported as a
+  located error by the post-GlobalOpt `ValidateLimits` run.
+- `testHeaderWordComposition` (packed-word golden) was not registered in `test/main.cpp`; now it is.
+
+**Perf** (`benchmarks/fe-opt-loop.md` procedure):
+- First triple (`eco-optP2`): wall median 72.23 s vs Phase 1 67.62 s. Same-source cross-check
+  (Phase 1 binary on the Phase 2 source: 68.4 s) put +3.8 s on the binary, +3.2 s of it in MLIR
+  codegen. A DWARF profile showed it in `StringOps::collectSegs` under
+  `Mlir.Bytecode.AttrType.attrIndex` → `Dict.get`: the encoder interns attributes under rope `String`
+  keys joined from one piece per element, and every new `slot_kinds` array (and the attribute-dict
+  key containing it) added long, shared-prefix keys that each comparison re-walks.
+- **Fix:** `attrToKey` builds a dense array of single digits (every `slot_kinds`) as ONE flat
+  segment (`"da#" … String.fromList`). Keys only deduplicate the encoder's attribute table:
+  bytecode output byte-identical (4 sample programs; the candidate also reproduced the whole
+  compiler's output, fixed point).
+- Second triple (`eco-optP2b`, sha256 `8a057ab40d5d24e2…`): 69.78 / 69.65 / 69.49 s (median 69.65);
+  MLIR codegen 12.3 s (= Phase 1); minor 1336, major 6, promoted 6393 MiB, objects ≈ 304,349,750,
+  GC 2.82–2.84 s; deterministic + fixed point.
+- **Remaining cost:** +1.2 s (+1.8 %) over the Phase 1 binary on the same source: parse/check +0.5 s
+  (the canonicalization limit checks) and monomorphization +0.8 s (mostly the two `ValidateLimits`
+  graph walks). Ships (correctness); follow-up: cheapen `ValidateLimits` (e.g. fold it into an
+  existing walk) and the free-local count in canonicalization.
+
+**New finding (pre-existing, NOT fixed, not part of this plan):** with
+`eco-config.json` `{"inline": {"postMonoFixpointIterations": 5}}` (default 4) the self-compile
+crashes in MLIR codegen with `lookupVar: unbound variable mono_inline_67908 [in
+Terminal_Main_lambda_31224]`: a fifth post-mono inline round leaves a reference to an unbound
+`mono_inline` variable. Identical with the Phase 0 and Phase 1 binaries.
+
 ## Checklist
 
-- [ ] 2.0 bytecode encoder element widths; elm-test; bytecode-vs-text run after 2.8
-- [ ] 2.1 `slot_kinds` optional on the three ops; papCreateGroup `unboxed_bitmaps` optional; `verifyClosureKinds`; 2 fixtures
-- [ ] 2.2 `emitChunkedRootPush`; all 9 push sites; `EcoToLLVMFunc` shadow frame chunked (B23)
-- [ ] 2.3 `EvalParamLayout` u16; `makeEvalParamLayout`; 11 hand-built layouts converted; `getAllBoxedLayout` clamp removed (B19); `evalLayoutName`
-- [ ] 2.4 `EvaluatorDesc.stage_arity` u16 @+18; two emitters + runtime writer; sat filter reject moved first
-- [ ] 2.5 `eco_pap_extend_l` + shim; 3 C++ callers + lowering + tests moved; JIT map
-- [ ] 2.6 Closure struct v2; constants; snapshot; every allocator (8) writes `S+K` and the ext words; every reader (walkers ×9 sites, splice, saturated, ListExports); `eco_alloc_closure_group_l`; papCreate/group/make.closure lowering; `deriveAllParamKinds`; interning ≤ 20; sat guard + B20; `SAT_MAX_ARITY` + empty `sat[]` for wide evaluators (2.6.8, 3 emitters, fixture ×2, unit); HPointerLayoutTest golden; `closureCapture` threshold 20; B13 fixture CHECKs → 16783362 / 20977666; TLA audit M3 (+M1/M5 voluntary)
-- [ ] 2.7 verifier caps 2047/2046; PAPSimplify `slot_kinds` + caps; B16 fixture rewritten (one 30-arg extend); verify-after-PAPSimplify in validate/ecoc
-- [ ] 2.8 `Ops.slotKindsAttr`; 13 emitter sites; `GroupSibling.slotKinds`; 2.8.1 `HeapLimits`; 2.8.2 `TooLarge` + report; 2.8.3 five canonicalization sites; 2.8.4 decline rules (EtaExpand, raiseStagedSpecs, six capture-rebuild sites); 2.8.5 `ValidateLimits` after mono and after GlobalOpt + generator internal assert; 2.8.6 `LimitErrorsTest` ×6 + CLI check; UnboxedBitmap checker (closure part, `checkClosureKindLimits` post-P2 form) + 2 tests
-- [ ] 2.9 shim / old group / old helpers deleted; [P2] invariants; theory docs
-- [ ] Phase 2 gate recorded (expected-failure list matched exactly; census numbers; perf entry; E10 run)
+- [x] 2.0 bytecode encoder element widths; elm-test; bytecode-vs-text run after 2.8
+- [x] 2.1 `slot_kinds` optional on the three ops; papCreateGroup `unboxed_bitmaps` optional; `verifyClosureKinds`; 2 fixtures
+- [x] 2.2 `emitChunkedRootPush`; all 9 push sites; `EcoToLLVMFunc` shadow frame chunked (B23)
+- [x] 2.3 `EvalParamLayout` u16; `makeEvalParamLayout`; 11 hand-built layouts converted; `getAllBoxedLayout` clamp removed (B19); `evalLayoutName`
+- [x] 2.4 `EvaluatorDesc.stage_arity` u16 @+18; two emitters + runtime writer; sat filter reject moved first
+- [x] 2.5 `eco_pap_extend_l` + shim; 3 C++ callers + lowering + tests moved; JIT map
+- [x] 2.6 Closure struct v2; constants; snapshot; every allocator (8) writes `S+K` and the ext words; every reader (walkers ×9 sites, splice, saturated, ListExports); `eco_alloc_closure_group_l`; papCreate/group/make.closure lowering; `deriveAllParamKinds`; interning ≤ 20; sat guard + B20; `SAT_MAX_ARITY` + empty `sat[]` for wide evaluators (2.6.8, 3 emitters, fixture ×2, unit); HPointerLayoutTest golden; `closureCapture` threshold 20; B13 fixture CHECKs → 16783362 / 20977666; TLA audit M3 (+M1/M5 voluntary)
+- [x] 2.7 verifier caps 2047/2046; PAPSimplify `slot_kinds` + caps; B16 fixture rewritten (one 30-arg extend); verify-after-PAPSimplify in validate/ecoc
+- [x] 2.8 `Ops.slotKindsAttr`; 13 emitter sites; `GroupSibling.slotKinds`; 2.8.1 `HeapLimits`; 2.8.2 `TooLarge` + report; 2.8.3 five canonicalization sites; 2.8.4 decline rules (EtaExpand, raiseStagedSpecs, six capture-rebuild sites); 2.8.5 `ValidateLimits` after mono and after GlobalOpt + generator internal assert; 2.8.6 `LimitErrorsTest` ×6 + CLI check; UnboxedBitmap checker (closure part, `checkClosureKindLimits` post-P2 form) + 2 tests
+- [x] 2.9 shim / old group / old helpers deleted; [P2] invariants; theory docs
+- [x] Phase 2 gate recorded (expected-failure list matched exactly; census numbers; perf entry; E10 run)
 
 ## Open questions (with defaults; none block)
 

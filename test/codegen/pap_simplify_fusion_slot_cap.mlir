@@ -2,10 +2,14 @@
 //
 // B16 (plans/wide-object-tail-kind-words-phase-0.md): EcoPAPSimplify's chain fusion
 // (P2) must not build a papExtend with more newargs than the verifier allows. Two
-// typed extends of 15 Int args each (arity 32, 1 capture, result escapes) would fuse
-// into one 30-newarg extend whose 60-bit bitmap exceeds the 50-bit / 25-slot cap.
-// Phase 1: fusion declines (both extends survive). Phase 2: the cap becomes 2047 and
-// this fixture's CHECKs are rewritten to expect ONE fused 30-newarg extend.
+// typed extends of 15 Int args each (arity 32) fuse into one 30-newarg extend.
+// Phase 1: fusion declined above 25 (both extends survived). Phase 2 (step 2.7): the
+// cap is 2047 and the fused op carries `slot_kinds` (30 entries), no legacy bitmap.
+//
+// @partial: the base is a papCreate, so P6 (create+extend fusion) then folds the
+// fused extend into the create: ONE papCreate with 31 captures, 31 slot_kinds.
+// @partial_param: the base is a parameter, so P6 cannot apply and the P2 result is
+// visible: ONE fused 30-newarg papExtend.
 
 module {
   func.func @sum32(%a0: i64, %a1: i64, %a2: i64, %a3: i64, %a4: i64, %a5: i64, %a6: i64, %a7: i64, %a8: i64, %a9: i64, %a10: i64, %a11: i64, %a12: i64, %a13: i64, %a14: i64, %a15: i64, %a16: i64, %a17: i64, %a18: i64, %a19: i64, %a20: i64, %a21: i64, %a22: i64, %a23: i64, %a24: i64, %a25: i64, %a26: i64, %a27: i64, %a28: i64, %a29: i64, %a30: i64, %a31: i64) -> i64 {
@@ -92,9 +96,25 @@ module {
     } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     return %p2 : !eco.value
   }
+  func.func @partial_param(%f: !eco.value) -> !eco.value {
+    %c1 = arith.constant 1 : i64
+    %p1 = "eco.papExtend"(%f, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1) {
+      remaining_arity = 31 : i64,
+      newargs_unboxed_bitmap = 357913941 : i64
+    } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
+    %p2 = "eco.papExtend"(%p1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1) {
+      remaining_arity = 16 : i64,
+      newargs_unboxed_bitmap = 357913941 : i64
+    } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
+    return %p2 : !eco.value
+  }
 }
 
-// CHECK-LABEL: func.func @partial
-// CHECK: eco.papExtend
-// CHECK: eco.papExtend
+// The harness is order-insensitive (CHECK-NOT = absent from the whole output).
+// The whole property dict is pinned, so no legacy bitmap is present; no op keeps the
+// second extend's remaining_arity (16), so both chains fused.
 // CHECK-NOT: error
+// CHECK-NOT: unboxed_bitmap
+// CHECK-NOT: remaining_arity = 16
+// CHECK: "eco.papCreate"{{.*}}<{_result_kind = 0 : i8, arity = 32 : i64, function = @sum32, num_captured = 31 : i64, slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>}>
+// CHECK: "eco.papExtend"(%arg0{{.*}}<{_result_kind = 0 : i8, remaining_arity = 31 : i64, slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>}>

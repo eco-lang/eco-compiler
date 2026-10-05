@@ -12,8 +12,8 @@ function and the limit.
 Each test builds a small source module with `Compiler.AST.SourceBuilder`,
 whose parameter lists are built with `List.range`, and hands it to an
 expectation from `TestLogic.Canonicalize.LimitErrors`, which canonicalizes it
-and looks only at the errors. This is the Phase 0 form: `TooLarge` does not
-exist yet, so it is matched by `Debug.toString`.
+and looks only at the errors, matching the `TooLarge` constructor and its
+`TooLargeWhat`, actual count and limit.
 
 The tests establish:
 
@@ -27,9 +27,6 @@ The tests establish:
   - the report of the 2048-parameter error is titled `TOO MANY PARAMETERS`
     and names `big` and the limit 2047.
 
-Today no `TooLarge` error exists, so canonicalization succeeds: the five
-non-boundary tests fail and the boundary test passes (green at Phase 2).
-
 Among what is not tested: the region the error carries, record and constructor
 field limits (added by Phase 3D), and compiler-generated arity.
 
@@ -37,6 +34,7 @@ field limits (added by Phase 3D), and compiler-generated arity.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
+import Compiler.Reporting.Error.Canonicalize as CanError
 import Test exposing (Test)
 import TestLogic.Canonicalize.LimitErrors
     exposing
@@ -53,16 +51,16 @@ suite =
     Test.describe "Front-end limit diagnostics (B18, D5)"
         [ Test.test "a top-level function with 2048 parameters is TooLarge TooManyParams" <|
             \_ ->
-                expectTooLarge "TooManyParams \"big\"" 2048 2047 (topLevelBig 2048)
+                expectTooLarge (CanError.TooManyParams "big") 2048 2047 (topLevelBig 2048)
         , Test.test "a let-defined function with 2048 parameters is TooLarge TooManyParams" <|
             \_ ->
-                expectTooLarge "TooManyParams \"big\"" 2048 2047 (letBig 2048)
+                expectTooLarge (CanError.TooManyParams "big") 2048 2047 (letBig 2048)
         , Test.test "a lambda with 2048 parameters is TooLarge TooManyLambdaParams" <|
             \_ ->
-                expectTooLarge "TooManyLambdaParams" 2048 2047 (lambdaOf 2048)
+                expectTooLarge CanError.TooManyLambdaParams 2048 2047 (lambdaOf 2048)
         , Test.test "a lambda with 2000 parameters capturing 48 locals is TooLarge TooManyClosureSlots" <|
             \_ ->
-                expectTooLarge "TooManyClosureSlots Nothing" 2048 2047 (capturingLambda 48 2000)
+                expectTooLarge (CanError.TooManyClosureSlots Nothing) 2048 2047 (capturingLambda 48 2000)
         , Test.test "a function with 2047 parameters is accepted" <|
             \_ ->
                 expectCanonicalizes (topLevelBig 2047)

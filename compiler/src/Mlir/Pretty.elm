@@ -682,7 +682,7 @@ A finite float whose `String.fromFloat` text has no `.` is instead formatted
 with exactly one decimal place, so that a whole number reads as a float; this
 rounds a value that `String.fromFloat` writes in exponent form without a `.`.
 NaN and the infinities print as nothing before the `: type`. An
-`ArrayAttr (Just t)` prints as `array<t: ...>` and an `ArrayAttr Nothing` as
+`ArrayAttr (Just t)` prints as `array<t: ...>` (`array<t>` when empty) and an `ArrayAttr Nothing` as
 `[...]`, with each element spelled by this function. A `SymbolRefAttr` gets
 MLIR's leading `@`, a `UnitAttr` prints as nothing, and a `VisibilityAttr`
 of `Private` prints as the quoted string `"private"`.
@@ -737,7 +737,11 @@ ppAttr attr =
         ArrayAttr maybeType xs ->
             case maybeType of
                 Just t ->
-                    "array<" ++ ppType t ++ ": " ++ (xs |> List.map ppAttr |> String.join ", ") ++ ">"
+                    if List.isEmpty xs then
+                        "array<" ++ ppType t ++ ">"
+
+                    else
+                        "array<" ++ ppType t ++ ": " ++ (xs |> List.map ppAttr |> String.join ", ") ++ ">"
 
                 Nothing ->
                     "[" ++ (xs |> List.map ppAttr |> String.join ", ") ++ "]"

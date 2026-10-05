@@ -995,3 +995,16 @@ caps; builder asserts). **Verdict: no model change needed.**
 
 The mark pass (`OldGenSpace` scanChildren) and the compaction fix pass use the same accessors, so
 they still visit exactly the same slots.
+
+
+## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (GC_MODEL_001)
+
+Pins fired: none (unpinned shared walker `NurseryChildWalk.hpp`, reached by `scanEntryR` and the
+tenure engine through `forEachChildSlot`). Voluntary entry (plans/wide-object-tail-kind-words.md §5).
+
+Change: the walker's Closure arm is textually unchanged; `closureSlotKind` now reads params 20.. from
+the closure's K = extWords(max_values, 20) tail extension kind words (inline kinds cover params
+0..19). The object is frozen when tenured (HEAP_SNAPSHOT_001), the ext words are written only at
+allocation (HEAP_077), and the object's size is still a function of its header word (header.size =
+value slots + K), so promotion copies the ext words with the body. No atomic, lock, memory order or
+step is added or reordered. **Verdict: no model change needed.**

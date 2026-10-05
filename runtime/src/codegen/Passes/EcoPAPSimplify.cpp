@@ -26,6 +26,22 @@ using namespace eco;
 
 namespace {
 
+/// HEAP_078: stage arity <= CLOSURE_MAX_ARITY (Heap.hpp), so a fused extend
+/// has at most 2047 newargs and a fused create at most 2046 captures.
+constexpr size_t kClosureMaxArity = 2047;
+
+/// `slot_kinds` (§S.5) of closure operands from their SSA types:
+/// i64 -> 1, f64 -> 2, i16 -> 3, everything else -> 0 (codegen slotKindOf).
+static SmallVector<int8_t> slotKindsOf(ValueRange vals) {
+    SmallVector<int8_t> kinds;
+    kinds.reserve(vals.size());
+    for (Value v : vals) {
+        Type ty = v.getType();
+        kinds.push_back(ty.isInteger(64) ? 1 : ty.isF64() ? 2 : ty.isInteger(16) ? 3 : 0);
+    }
+    return kinds;
+}
+
 //===----------------------------------------------------------------------===//
 // Pattern P1: Saturated papCreate + papExtend -> direct eco.call
 //===----------------------------------------------------------------------===//
@@ -342,23 +358,16 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         fusedNewargs.append(prevRealNewargs.begin(), prevRealNewargs.end());
         fusedNewargs.append(curRealNewargs.begin(), curRealNewargs.end());
 
-        // Verifier limit (PapExtendOp::verify: newargs <= 25 under the 50-bit
-        // bitmap). Release builds do not re-verify after passes, so the
+        // Verifier limit (PapExtendOp::verify: newargs <= CLOSURE_MAX_ARITY,
+        // HEAP_078). Release builds do not re-verify after passes, so the
         // pattern must not exceed it (B16; mirrors FuseCreateIntoExtend's cap).
-        if (fusedNewargs.size() > 25)
+        if (fusedNewargs.size() > kClosureMaxArity)
             return failure();
 
-        // Compute 2-bit-per-slot bitmap from SSA types (source-of-truth approach).
-        // Kind: 0=boxed (!eco.value), 1=Int (i64), 2=Float (f64), 3=Char (i16).
-        uint64_t fusedBitmap = 0;
-        for (size_t i = 0; i < fusedNewargs.size(); ++i) {
-            Type ty = fusedNewargs[i].getType();
-            uint64_t kind = 0;
-            if (ty.isInteger(64)) kind = 1;
-            else if (ty.isF64()) kind = 2;
-            else if (ty.isInteger(16)) kind = 3;
-            fusedBitmap |= (kind << (2 * i));
-        }
+        // Per-slot kinds from SSA types (source-of-truth approach), as
+        // `slot_kinds` (§S.5): 0=boxed (!eco.value), 1=Int (i64),
+        // 2=Float (f64), 3=Char (i16).
+        SmallVector<int8_t> fusedKinds = slotKindsOf(fusedNewargs);
 
         // Append GC root hints from BOTH chained extends after the fused
         // real newargs. The new papExtend's eco.gc_roots_count covers the
@@ -379,18 +388,23 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         // no remaining_arity, no typed closure claims (the intermediate's
         // identity is a runtime value), segmentation_unknown call kind, and
         // the CURRENT extend's _result_kind (the final result's ABI claim).
-        // PapExtendOp build signature: (result, closure, newargs, remaining_arity, newargs_unboxed_bitmap,
-        //                               _closure_kind, _dispatch_mode, _fast_evaluator)
+        // PapExtendOp build signature: (result, closure, newargs, remaining_arity,
+        //   newargs_unboxed_bitmap, slot_kinds, _closure_kind, _dispatch_mode,
+        //   _fast_evaluator). The legacy u64 bitmap cannot describe more than
+        //   26 slots, so the fused op carries `slot_kinds` only.
         auto fusedOp = rewriter.create<PapExtendOp>(
             extendOp.getLoc(),
             resultType,                             // Result type
             prevExtend.getClosure(),                // Original closure (skip intermediate)
             allOperands,                            // Fused real newargs + appended GC root hints
             bothTyped ? prevRemainingAttr : IntegerAttr(),
-            fusedBitmap,                            // Computed bitmap
+            /*newargs_unboxed_bitmap=*/0,           // removed below
+            rewriter.getDenseI8ArrayAttr(fusedKinds),
             bothTyped ? prevExtend->getAttr("_closure_kind") : Attribute(),
             bothTyped ? prevExtend->getAttrOfType<StringAttr>("_dispatch_mode") : StringAttr(),
             bothTyped ? prevExtend->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator") : FlatSymbolRefAttr());
+
+        fusedOp->removeAttr("newargs_unboxed_bitmap");
 
         if (bothTyped) {
             // Propagate _call_kind from the first extend
@@ -440,7 +454,7 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
 // slots uniformly — `values[0..n_values)` are spliced with the call's
 // args and the evaluator receives all `max_values` args
 // (invokeSaturatedTyped / spliceArgsForSaturatedCall), and
-// eco_pap_extend COPIES the base values and appends. So
+// eco_pap_extend_l COPIES the base values and appends. So
 // create(caps)+extend(args) and create(caps++args) produce identical
 // heap objects; the fused form performs ONE plain allocation instead of
 // a create (interned or real) plus an alloc+copy+kind-convert extend.
@@ -458,11 +472,11 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
 //   self slot is wired at create-lowering; stay conservative — the
 //   raised-partial target population is zero-capture anyway).
 // - Fused count must stay a strict PAP (< arity; guaranteed by
-//   non-saturation) and fit the 25-slot 2-bit bitmap
-//   (PapCreateOp::verify limits).
-// - The fused bitmap is recomputed from operand SSA types (P2's
+//   non-saturation) and fit the 2046-capture limit
+//   (PapCreateOp::verify limits, HEAP_078).
+// - The fused `slot_kinds` are recomputed from operand SSA types (P2's
 //   source-of-truth rule; PapCreateOp::verify enforces kind == SSA type
-//   per slot).
+//   per slot); the clone's legacy `unboxed_bitmap` is removed.
 //
 struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
@@ -509,22 +523,14 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         int64_t fusedCaptured =
             static_cast<int64_t>(caps.size()) + static_cast<int64_t>(newargs.size());
         if (fusedCaptured >= static_cast<int64_t>(createOp.getArity()) ||
-            fusedCaptured > 25)
-            return failure();  // Verifier limits (strict PAP, bitmap slots)
+            fusedCaptured > static_cast<int64_t>(kClosureMaxArity) - 1)
+            return failure();  // Verifier limits (strict PAP, 2046 captures)
 
-        // Fused values: caps ++ newargs; bitmap from SSA types.
+        // Fused values: caps ++ newargs; kinds from SSA types.
         SmallVector<Value> allOperands;
         allOperands.append(caps.begin(), caps.end());
         allOperands.append(newargs.begin(), newargs.end());
-        uint64_t fusedBitmap = 0;
-        for (size_t i = 0; i < allOperands.size(); ++i) {
-            Type ty = allOperands[i].getType();
-            uint64_t kind = 0;
-            if (ty.isInteger(64)) kind = 1;
-            else if (ty.isF64()) kind = 2;
-            else if (ty.isInteger(16)) kind = 3;
-            fusedBitmap |= (kind << (2 * i));
-        }
+        SmallVector<int8_t> fusedKinds = slotKindsOf(allOperands);
 
         // GC root hints from BOTH ops trail the real operands (duplicates
         // are harmless — EcoGCPrepare dedupes during liveness unioning).
@@ -539,8 +545,8 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         Operation *cloned = rewriter.clone(*createOp.getOperation());
         cloned->setOperands(allOperands);
         cloned->setAttr("num_captured", rewriter.getI64IntegerAttr(fusedCaptured));
-        cloned->setAttr("unboxed_bitmap",
-                        rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedBitmap)));
+        cloned->setAttr("slot_kinds", rewriter.getDenseI8ArrayAttr(fusedKinds));
+        cloned->removeAttr("unboxed_bitmap");
         if (fusedRootCount > 0)
             cloned->setAttr("eco.gc_roots_count",
                 rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedRootCount)));

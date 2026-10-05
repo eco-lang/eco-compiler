@@ -86,6 +86,7 @@ import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
+import Compiler.Monomorphize.ValidateLimits as ValidateLimits
 import Compiler.Nitpick.Debug as Nitpick
 import Data.Map
 import Dict exposing (Dict)
@@ -1017,6 +1018,9 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
                         Nothing ->
                             Task.succeed monoGraph0
                     )
+                        -- HEAP_078 stage arity backstop: unconditional, not
+                        -- behind mono.validate.
+                        |> Task.andThen validateStageArityLimit
                         |> Task.andThen
                             (\g ->
                                 -- MONO_029 layout-agreement validator
@@ -1043,6 +1047,30 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
         )
         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
+        -- HEAP_078 again after inlining and GlobalOpt: those passes decline
+        -- any rewrite over the limit, so a violation here is a compiler bug.
+        |> Task.andThen
+            (\result ->
+                validateStageArityLimit result.monoGraph
+                    |> Task.map (\_ -> result)
+            )
+
+
+{-| HEAP\_078 backstop (`Compiler.Monomorphize.ValidateLimits`): fails the
+build with a located `STAGE ARITY LIMIT` error when some closure has more
+parameters plus captured variables than a closure stage can hold.
+-}
+validateStageArityLimit : Mono.MonoGraph -> Task Exit.Generate Mono.MonoGraph
+validateStageArityLimit g =
+    case ValidateLimits.check g of
+        [] ->
+            Task.succeed g
+
+        violations ->
+            Task.throw
+                (Exit.GenerateMonomorphizationError
+                    ("STAGE ARITY LIMIT\n" ++ String.join "\n" violations)
+                )
 
 
 {-| Choose the monomorphizer engine per `eco-config.json` / `ECO_MONO_ENGINE`.
@@ -1308,6 +1336,8 @@ renderPreEtaReport enabled m =
         ++ String.fromInt m.ctorAlias
         ++ " declined.noPeel="
         ++ String.fromInt m.noPeel
+        ++ " declined.arityCap="
+        ++ String.fromInt m.declinedArityCap
         ++ " bodiesSeen="
         ++ String.fromInt m.bodiesSeen
         ++ "\n  deficit: 1="
@@ -1589,6 +1619,8 @@ renderInlineReportWith inlineConfig m graph =
             ++ String.fromInt m.arityRaiseSkipped
             ++ " declinedPreserveSets="
             ++ String.fromInt m.declinedPreserveSets
+            ++ " declinedArityCap="
+            ++ String.fromInt m.declinedArityCap
             ++ " closuresRemaining="
             ++ String.fromInt (MonoInlineSimplify.countClosures graph)
 

@@ -3602,7 +3602,8 @@ void OldGenSpace::scanChildren(MarkWorker& w, void* obj) {
         }
         case Tag_Closure: {
             // GC scans APPLIED slots only: `n_values`, not `hdr->size`
-            // (== max_values, the capacity). Slots [n_values, max_values) are
+            // (== max_values + K: the capacity plus the K ext kind words at
+            // the object's tail, HEAP_078). Slots [n_values, max_values) are
             // unapplied argument space that no code reads, so tracing them
             // only exposed uninitialised memory — the reason the closure
             // payload had to be zeroed at all

@@ -301,7 +301,25 @@ Now also threads IdState through to ensure unique IDs across all definitions.
 
 -}
 toNodeOne : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
-toNodeOne env idState (A.At _ (Src.Value valueData)) =
+toNodeOne env idState ((A.At _ (Src.Value valueData)) as value) =
+    let
+        ( _, A.At nameRegion name ) =
+            valueData.name
+    in
+    -- HEAP_078: a top-level function captures nothing, so only its parameters count.
+    case Expr.tooManyParams nameRegion (Error.TooManyParams name) valueData.args of
+        Just err ->
+            ReportingResult.throw err
+
+        Nothing ->
+            toNodeOneHelp env idState value
+
+
+{-| `toNodeOne` once the definition's parameter count is known to be within
+`Compiler.Data.HeapLimits.maxStageArity`.
+-}
+toNodeOneHelp : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
+toNodeOneHelp env idState (A.At _ (Src.Value valueData)) =
     let
         ( _, (A.At _ name) as aname ) =
             valueData.name

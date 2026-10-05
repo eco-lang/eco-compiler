@@ -15,15 +15,9 @@ as package `eco/example`, against the stand-in interfaces of
 `Compiler.Elm.Interface.Basic.testIfaces`, and then looks only at the errors.
 Warnings are ignored.
 
-This is the Phase 0 form: the `TooLarge` constructor does not exist yet, so
-`expectTooLarge` matches an error by its `Debug.toString` rendering rather than
-by pattern. Phase 2 (step 2.8.6) switches it to a predicate over
-`CanError.TooLargeWhat` once the constructor exists.
-
   - `expectTooLarge` passes when canonicalization fails with exactly one error,
-    whose `Debug.toString` starts with `TooLarge`, contains the given variant
-    tag (such as `TooManyParams`), and ends with the given actual and limit
-    numbers.
+    a `CanError.TooLarge` whose `CanError.TooLargeWhat` is the given one and
+    whose actual and limit numbers are the given ones.
   - `expectCanonicalizes` passes when canonicalization succeeds; it is for the
     boundary case at exactly the limit.
   - `expectFirstReportContains` renders the first error with `CanError.toReport`
@@ -45,33 +39,29 @@ import Expect
 
 
 {-| Returns an expectation that canonicalizing `modul` fails with exactly one
-error, a `TooLarge` whose rendering contains `whatTag` and ends with `actual`
-then `limit`.
+error, `TooLarge _ what actual limit`.
 -}
-expectTooLarge : String -> Int -> Int -> Src.Module -> Expect.Expectation
-expectTooLarge whatTag actual limit modul =
+expectTooLarge : CanError.TooLargeWhat -> Int -> Int -> Src.Module -> Expect.Expectation
+expectTooLarge what actual limit modul =
     let
         description =
-            "exactly one TooLarge (" ++ whatTag ++ ") " ++ String.fromInt actual ++ " " ++ String.fromInt limit
+            "exactly one TooLarge (" ++ Debug.toString what ++ ") " ++ String.fromInt actual ++ " " ++ String.fromInt limit
     in
     case canonicalizeErrors modul of
         Nothing ->
             Expect.fail ("Expected " ++ description ++ " but canonicalization succeeded")
 
         Just [ error ] ->
-            let
-                rendered =
-                    Debug.toString error
-            in
-            if
-                String.startsWith "TooLarge" rendered
-                    && String.contains whatTag rendered
-                    && String.endsWith (" " ++ String.fromInt actual ++ " " ++ String.fromInt limit) rendered
-            then
-                Expect.pass
+            case error of
+                CanError.TooLarge _ gotWhat gotActual gotLimit ->
+                    if gotWhat == what && gotActual == actual && gotLimit == limit then
+                        Expect.pass
 
-            else
-                Expect.fail ("Expected " ++ description ++ " but got: " ++ shorten rendered)
+                    else
+                        Expect.fail ("Expected " ++ description ++ " but got: " ++ shorten (Debug.toString error))
+
+                _ ->
+                    Expect.fail ("Expected " ++ description ++ " but got: " ++ shorten (Debug.toString error))
 
         Just errors ->
             Expect.fail

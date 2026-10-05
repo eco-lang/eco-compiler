@@ -1933,7 +1933,8 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         }
         case Tag_Closure: {
             // GC scans APPLIED slots only: `n_values`, not `hdr->size`
-            // (== max_values, the capacity). Slots [n_values, max_values) are
+            // (== max_values + K: the capacity plus the K ext kind words at
+            // the object's tail, HEAP_078). Slots [n_values, max_values) are
             // unapplied argument space that no code reads, so tracing them
             // only exposed uninitialised memory — the reason the closure
             // payload had to be zeroed at all
@@ -1941,7 +1942,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             //
             // INVARIANT every writer of a value slot must keep: at any
             // safepoint, slots below n_values are written. closureCapture
-            // stores then increments; papCreate codegen and eco_pap_extend
+            // stores then increments; papCreate codegen and eco_pap_extend_l
             // publish the count first and fill after, with no safepoint in
             // between (HEAP_034). eco_store_field* does NOT maintain it and
             // must never be used on a Closure — its Tag_Closure arm asserts.
@@ -1951,6 +1952,16 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             // GCPressureTest's "eco_alloc_closure captures stay valid across
             // minor and major GCs" pins it.
             Closure *cl = static_cast<Closure *>(obj);
+#if ECO_HEAP_VALIDATE
+            if (!Elm::closureWellFormed(cl)) {
+                std::fprintf(stderr, "[heap-validate] malformed closure %p: size=%u n_values=%u "
+                                     "max_values=%u (needs size >= n + extWords(max, 20), "
+                                     "no ext kind bits past max_values)\n",
+                             obj, cl->header.size, unsigned(cl->n_values), unsigned(cl->max_values));
+                std::fflush(stderr);
+                std::abort();
+            }
+#endif
             for (u32 i = 0; i < cl->n_values; i++) {
                 bool is_boxed = Elm::closureSlotKind(cl, i) == 0;
 #if ECO_HEAP_VALIDATE

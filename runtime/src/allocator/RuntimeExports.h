@@ -316,13 +316,19 @@ HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures);
 /// `resultKinds[i]` is the ParamKind value (0..3) recording the C-ABI
 /// return type of `evaluators[i]`. Stored on each sibling's closure
 /// header so dispatch paths can cast `closure->evaluator` correctly.
-void eco_alloc_closure_group_slow(
+/// Closure layout v2 (HEAP_078): `hdrKinds[i]` is the inline 40-bit kind
+/// field (params 0..19); the K_i = extWords(arities[i], 20) ext kind words of
+/// sibling i are extKinds[extOffsets[i] .. extOffsets[i+1]) and are written
+/// to the last K_i words of the object (header.size = arities[i] + K_i).
+void eco_alloc_closure_group_l(
     uint64_t numSiblings,
     const void* const* evaluators,
     const uint32_t* arities,
     const uint32_t* numCaptured,
-    const uint64_t* unboxedBitmaps,
-    const uint8_t* resultKinds,
+    const uint64_t* hdrKinds,
+    const uint64_t* extKinds,
+    const uint32_t* extOffsets,
+    const uint8_t*  resultKinds,
     const uint32_t* captureOffsets,
     const uint64_t* captures,
     const uint64_t* crossEdges,
@@ -447,13 +453,17 @@ void eco_apply_closure_eval(HPtr closure, int64_t* typed_args,
                             uint8_t desired_kind);
 
 /// Extends a PAP with more arguments (partial application).
-/// Creates a new closure with the combined captured values.
-/// @param closure HPointer (as uint64_t) to the Closure object
-/// @param args Array of new arguments
+/// Creates a new closure with the combined captured values; each new arg is
+/// converted from its caller kind to the closure's slot kind (REP_CLOSURE_002),
+/// and the closure's ext kind words are copied to the new object's tail
+/// (closure layout v2, HEAP_078).
+/// @param closure HPointer to the Closure object
+/// @param args Array of new arguments (raw i64 slots)
 /// @param num_newargs Number of new arguments
-/// @param new_unboxed_bitmap Bitmap indicating which new args are unboxed primitives
-/// @return New closure with additional captured values (as HPointer uint64_t)
-HPtr eco_pap_extend(HPtr closure, uint64_t* args, uint32_t num_newargs, uint64_t new_unboxed_bitmap);
+/// @param caller_layout Caller kind of each new arg (null = all boxed)
+/// @return New closure with additional captured values
+HPtr eco_pap_extend_l(HPtr closure, uint64_t* args, uint32_t num_newargs,
+                      const Elm::EvalParamLayout* caller_layout);
 
 /// Calls a fully saturated closure.
 /// Combines captured values with new args and invokes the evaluator.
@@ -476,7 +486,7 @@ void eco_closure_call_saturated_eval(
 
 /// Applies arguments to a closure with known ABI but unknown staging.
 /// Reads the closure header to determine saturation at runtime, then routes:
-///   - under-saturated → eco_pap_extend (typed args + bitmap derived from layout)
+///   - under-saturated → eco_pap_extend_l (typed args + their layout)
 ///   - saturated/over → eco_apply_closure_typed (centralises any re-boxing)
 /// @param closure HPointer (as uint64_t) to the Closure object
 /// @param typed_args Array of typed args (raw i64 storage; per-slot kind in `args_layout`)
@@ -764,6 +774,12 @@ HPtr eco_clone_array(HPtr array_hptr);
 void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind);
 
 } // extern "C"
+
+namespace Elm {
+/// All-PK_Boxed EvalParamLayout with `n` params (n <= CLOSURE_MAX_ARITY) and
+/// result kind K: a static table for n <= 64, an interned cache above (B19).
+const EvalParamLayout* getAllBoxedLayout(unsigned n, uint8_t K);
+}
 
 /// Pushes GC roots for a buffer of n slots whose kinds come from kindOf(i)
 /// (plans/wide-object-tail-kind-words.md §S.2): chunks of 64, because

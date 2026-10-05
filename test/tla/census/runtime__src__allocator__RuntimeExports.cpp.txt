@@ -46,10 +46,12 @@ std::lock_guard<std::mutex> l(g_consSiteMu);
 std::lock_guard<std::mutex> l(g_consSiteMu);
 std::lock_guard<std::mutex> l(g_consSiteMu);
 std::lock_guard<std::mutex> lock(g_kernel_desc_mutex);
+std::lock_guard<std::mutex> lock(g_wide_boxed_layout_mutex);
 std::memory_order_relaxed)) {
 std::memory_order_relaxed)) {
 std::mutex g_consSiteMu;
 std::mutex g_kernel_desc_mutex;
+std::mutex g_wide_boxed_layout_mutex;
 uint64_t cur = entry.fp.load(std::memory_order_relaxed);
 uint64_t cur = entry.fp.load(std::memory_order_relaxed);
 uint64_t fp = g_closure_stats_table[i].fp.load(std::memory_order_relaxed);

@@ -29,15 +29,15 @@ using namespace Elm::TestHelpers;
 
 namespace {
 
-// Backing storage for a stack-built EvalParamLayout. The struct has two
-// header bytes (num_params + result_kind) BEFORE the flexible kinds[] array,
-// so we need `2 + MaxN` bytes — not `1 + MaxN`. The earlier off-by-one let
-// the final kinds[] write spill past the buffer; the runtime then read an
-// uninitialized byte for that slot's kind and silently treated it as
-// PK_Boxed, leaking raw primitive bits straight through to the evaluator.
+// Backing storage for a stack-built EvalParamLayout. The struct has four
+// header bytes (u16 num_params, u8 result_kind, u8 pad) BEFORE the flexible
+// kinds[] array, so we need `4 + MaxN` bytes. (An earlier off-by-one in the
+// header size let the final kinds[] write spill past the buffer; the runtime
+// then read an uninitialized byte for that slot's kind and silently treated
+// it as PK_Boxed, leaking raw primitive bits straight through.)
 template <unsigned MaxN>
 struct LayoutStorage {
-    alignas(EvalParamLayout) unsigned char buf[2 + MaxN] = {};
+    alignas(EvalParamLayout) unsigned char buf[4 + MaxN] = {};
 
     EvalParamLayout* layout() {
         return reinterpret_cast<EvalParamLayout*>(buf);
@@ -46,7 +46,7 @@ struct LayoutStorage {
     static LayoutStorage build(std::initializer_list<unsigned char> kinds) {
         LayoutStorage s;
         EvalParamLayout* l = s.layout();
-        l->num_params = static_cast<unsigned char>(kinds.size());
+        l->num_params = static_cast<unsigned short>(kinds.size());
         unsigned i = 0;
         for (unsigned char k : kinds) l->kinds[i++] = k;
         return s;

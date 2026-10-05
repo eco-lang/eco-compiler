@@ -37,7 +37,7 @@ static void* hptrToRaw(uint64_t hptr) {
 
 
 // Declare the closure's full-arity slot kinds, as the compiler's papCreate
-// lowering does for typed wrappers (deriveAllParamKindsBitmap). The
+// lowering does for typed wrappers (deriveAllParamKinds). The
 // asymmetric mock evaluators below model a typed wrapper whose slot 0 is
 // an unboxed Int, so the create must declare it — since the pap_extend
 // kind-conversion fix, extends CONVERT args to the slot's declared kind
@@ -111,8 +111,8 @@ static void test_generic_apply_boxes_captured_unboxed_int_equal() {
     // Step 2: Partially apply with unboxed i64 value 5.
     // This simulates ((==) 5) — the 5 is stored unboxed in the PAP.
     uint64_t raw_5 = static_cast<uint64_t>(5);
-    uint64_t unboxed_bitmap = 1; // bit 0 set → arg[0] is unboxed
-    HPtr eq5_pap = eco_pap_extend(eq_closure, &raw_5, 1, unboxed_bitmap);
+    static constexpr auto kIntArg = makeEvalParamLayout<1>(0, {PK_Int});  // arg[0] is unboxed
+    HPtr eq5_pap = eco_pap_extend_l(eq_closure, &raw_5, 1, asLayout(&kIntArg));
     TEST_ASSERT(eq5_pap.toBits() != 0);
 
     // Verify the PAP has 1 captured value, 1 remaining.
@@ -154,8 +154,8 @@ static void test_generic_apply_boxes_captured_unboxed_int_not_equal() {
     declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
     uint64_t raw_5 = static_cast<uint64_t>(5);
-    uint64_t unboxed_bitmap = 1;
-    HPtr eq5_pap = eco_pap_extend(eq_closure, &raw_5, 1, unboxed_bitmap);
+    static constexpr auto kIntArg = makeEvalParamLayout<1>(0, {PK_Int});
+    HPtr eq5_pap = eco_pap_extend_l(eq_closure, &raw_5, 1, asLayout(&kIntArg));
 
     uint64_t boxed_7 = eco_alloc_int(7).toBits();
     HPtr result = eco_apply_closure(eq5_pap, &boxed_7, 1);
@@ -200,8 +200,8 @@ static void test_generic_apply_with_real_kernel_equal() {
     declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
     uint64_t raw_42 = static_cast<uint64_t>(42);
-    uint64_t bitmap = 1;
-    HPtr eq42_pap = eco_pap_extend(eq_closure, &raw_42, 1, bitmap);
+    static constexpr auto kIntArg = makeEvalParamLayout<1>(0, {PK_Int});
+    HPtr eq42_pap = eco_pap_extend_l(eq_closure, &raw_42, 1, asLayout(&kIntArg));
 
     // Apply with boxed 42 → should be True.
     uint64_t boxed_42 = eco_alloc_int(42).toBits();
@@ -210,7 +210,7 @@ static void test_generic_apply_with_real_kernel_equal() {
 
     // Apply with boxed 99 → should be False.
     // Need a fresh PAP since the old one was consumed by saturated call.
-    HPtr eq42_pap2 = eco_pap_extend(eq_closure, &raw_42, 1, bitmap);
+    HPtr eq42_pap2 = eco_pap_extend_l(eq_closure, &raw_42, 1, asLayout(&kIntArg));
     uint64_t boxed_99 = eco_alloc_int(99).toBits();
     HPtr result_neq = eco_apply_closure(eq42_pap2, &boxed_99, 1);
     TEST_ASSERT(Elm::Kernel::Export::decodeBoxedBool(result_neq.toBits()) == false);
@@ -245,6 +245,53 @@ static void test_generic_apply_both_args_boxed_at_callsite() {
 }
 
 // ============================================================================
+// Test: generic apply of 70 args roots slots >= 64
+// (plans/wide-object-tail-kind-words-phase-2.md 2.2, B23)
+//
+// eco_apply_closure reaches eco_apply_closure_eval with a 70-slot all-boxed
+// layout (getAllBoxedLayout no longer clamps at 63, B19); the args buffer and
+// the spliced combined_args are rooted in 64-slot chunks. The evaluator forces
+// a minor GC and then checks that every arg, including slots 64..69, still
+// resolves to its Int.
+// ============================================================================
+
+static bool g_eval70_ok = false;
+static uint64_t g_eval70_minors = 0;
+
+static void* eval70(void* args[]) {
+    for (int i = 0; i < 20000; ++i) (void)alloc::allocInt(i);   // churn
+    Allocator::instance().minorGC();
+    g_eval70_minors = Allocator::instance().getCombinedStats().minor_gc_count;
+    bool ok = true;
+    for (int i = 0; i < 70; ++i) {
+        void* o = hptrToRaw(reinterpret_cast<uint64_t>(args[i]));
+        ok = ok && o && getHeader(o)->tag == Tag_Int &&
+             static_cast<ElmInt*>(o)->value == 1000 + i;
+    }
+    g_eval70_ok = ok;
+    return reinterpret_cast<void*>(eco_alloc_int(ok ? 1 : 0).toBits());
+}
+
+static void test_generic_apply_70_args_roots_slots_beyond_64() {
+    initAllocator();
+    HPointer c = alloc::allocClosureK(eval70, 70, PK_Boxed);
+    StackRootGuard guard(&c);
+    uint64_t args[70] = {0};
+    const size_t saved = eco_gc_stack_range_point();
+    pushRootsByKinds(args, 70, [](uint32_t) { return 0u; });
+    for (int i = 0; i < 70; ++i) args[i] = eco_alloc_int(1000 + i).toBits();
+    const uint64_t minorsBefore = Allocator::instance().getCombinedStats().minor_gc_count;
+    uint64_t cbits;
+    std::memcpy(&cbits, &c, sizeof(cbits));
+    HPtr result = eco_apply_closure(HPtr::fromBits(cbits), args, 70);
+    eco_gc_restore_stack_range_point(saved);
+    TEST_ASSERT(g_eval70_minors > minorsBefore);   // not vacuous: a GC ran inside
+    TEST_ASSERT(g_eval70_ok);
+    void* r = hptrToRaw(result.toBits());
+    TEST_ASSERT(r && static_cast<ElmInt*>(r)->value == 1);
+}
+
+// ============================================================================
 // Registration
 // ============================================================================
 
@@ -261,4 +308,7 @@ void registerGenericApplyBoxingTests(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase(
         "generic apply both args boxed at callsite",
         test_generic_apply_both_args_boxed_at_callsite));
+    suite.add(Testing::TestCase(
+        "generic apply of 70 args roots slots >= 64",
+        test_generic_apply_70_args_roots_slots_beyond_64));
 }

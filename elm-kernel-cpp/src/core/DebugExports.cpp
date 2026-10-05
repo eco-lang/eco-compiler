@@ -53,9 +53,16 @@ HPtr Elm_Kernel_Debug_todo(HPtr message) {
     return HPtr::fromBits(0);
 }
 
-HPtr Elm_Kernel_Debug_toString(HPtr value, int64_t type_id) {
-    // Convert the value to its string representation using type info
-    // eco_value_to_string_typed returns HPtr
+// Debug.toString as a function VALUE (a kernel closure): its MLIR declaration has one
+// parameter, so it must take exactly one. Prints without type information.
+HPtr Elm_Kernel_Debug_toString(HPtr value) {
+    return eco_value_to_string_typed(value, -1);
+}
+
+// Saturated Debug.toString call: the code generator passes the argument's type id so
+// constructor names print. A separate symbol, so the closure path above never reads a
+// type id it was not given (a one-argument call into a two-parameter function).
+HPtr Elm_Kernel_Debug_toString_typed(HPtr value, int64_t type_id) {
     return eco_value_to_string_typed(value, type_id);
 }
 

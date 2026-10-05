@@ -32,8 +32,12 @@ static uint8_t mlirTypeToParamKind(Type ty);
 static SmallVector<uint8_t> deriveAllParamKinds(const EcoRuntime &runtime,
                                                 StringRef funcSymbol,
                                                 int64_t arity);
-static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
-                                          StringRef funcSymbol, int64_t arity);
+static SmallVector<uint8_t> closureKindsFor(const EcoRuntime &runtime,
+                                            StringRef funcSymbol, int64_t arity,
+                                            bool isTyped, TypeRange captureTypes);
+static void emitClosureExtStores(ConversionPatternRewriter &rewriter, Location loc,
+                                 Value closurePtr, Type gepTy, int64_t valueSlots,
+                                 ArrayRef<uint64_t> ext);
 // plans/gc-root-registration-cost.md Phase 2/3.
 static Value emitEvalDescAddr(OpBuilder &b, Location loc,
                               const EcoRuntime &runtime,
@@ -68,12 +72,13 @@ static std::pair<ValueRange, ValueRange> splitAdaptedRoots(
 // GC root range helpers for args-array call sites
 //===----------------------------------------------------------------------===//
 
-/// Zero-initializes an alloca'd args array and registers it as a GC root range.
-/// Returns the saved range depth for later restoration.
+/// Zero-initializes an alloca'd args array and registers it as a GC root range
+/// (one push per 64-slot chunk, B23). Returns the saved range depth for later
+/// restoration.
 static Value emitPushArgsRootRange(
     ConversionPatternRewriter &rewriter, Location loc,
     const EcoRuntime &runtime,
-    Value argsArray, int64_t numSlots, uint64_t hpointerMask) {
+    Value argsArray, int64_t numSlots, ArrayRef<bool> boxed) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i64Ty = IntegerType::get(ctx, 64);
@@ -87,13 +92,9 @@ static Value emitPushArgsRootRange(
     auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
     auto saved = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{});
 
-    // Register the array as a root range.
-    auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
-    auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numSlots);
-    auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-        rewriter.getI64IntegerAttr(static_cast<int64_t>(hpointerMask)));
-    rewriter.create<LLVM::CallOp>(loc, pushFunc,
-        ValueRange{argsArray, countConst, maskConst});
+    // Register the array as a root range, chunked.
+    assert(static_cast<int64_t>(boxed.size()) == numSlots);
+    emitChunkedRootPush(rewriter, loc, runtime, argsArray, boxed);
 
     return saved.getResult();
 }
@@ -771,18 +772,24 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 
         // H4.2 (HEAP_033): a zero-capture, non-self-capturing closure is
         // immutable after construction (capture writes only happen for
-        // num_captured > 0; eco_pap_extend copies) — intern one permanent
+        // num_captured > 0; eco_pap_extend_l copies) — intern one permanent
         // singleton per wrapper instead of allocating per execution. The
         // packed header word (same Phase-C layout as the store below) is a
         // compile-time constant per site and a pure function of the wrapper
         // symbol, so cache hits always agree with it.
-        if (numCaptured == 0 && !op->hasAttr("self_capture_indices")) {
-            bool isTyped0 = wrapperWillBeTypedNewargs(runtime, funcSymbol);
-            uint64_t bitmap0 =
-                isTyped0 ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity)
-                         : op.getUnboxedBitmap();
+        // Kinds of every param (HEAP_078): the target signature when the
+        // wrapper is typed, else the capture operand kinds padded boxed.
+        bool isTyped = wrapperWillBeTypedNewargs(runtime, funcSymbol);
+        auto realCapturedOrig =
+            op.getCaptured().take_front(static_cast<size_t>(numCaptured));
+        SmallVector<uint8_t> allKinds = closureKindsFor(
+            runtime, funcSymbol, arity, isTyped, realCapturedOrig.getTypes());
+        PackedKinds pk = packKinds(allKinds, layout::ClosureHdrSlots);
+        // Interned only when every kind is inline (HEAP_033: arity <= 20).
+        if (numCaptured == 0 && !op->hasAttr("self_capture_indices") &&
+            arity <= static_cast<int64_t>(layout::ClosureHdrSlots)) {
             uint64_t packed0 = packClosureWord(
-                0, static_cast<uint32_t>(arity), closureResultKind, bitmap0);
+                0, static_cast<uint32_t>(arity), closureResultKind, pk.hdrBits);
             auto internFunc = runtime.getOrCreateInternClosure0(rewriter);
             auto arityConst32 = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(arity));
@@ -798,9 +805,14 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // result_kind matching the wrapper's return ABI. The runtime stores
         // result_kind on the closure header so every dispatch path can cast
         // `closure->evaluator` correctly.
+        // Layout v2: `arity` value slots, then K ext kind words (header.size
+        // = arity + K, the physical-size rule).
+        const int64_t numExt = static_cast<int64_t>(pk.ext.size());
+        assert(numExt == layout::extWordsFor(static_cast<unsigned>(arity),
+                                             layout::ClosureHdrSlots));
         Value closureHPtr;
         uint64_t cloByteSize = layout::ClosureBaseSize +
-            static_cast<uint64_t>(arity) * layout::PtrSize;
+            static_cast<uint64_t>(arity + numExt) * layout::PtrSize;
         if (inlineAllocEnabled() && cloByteSize <= 4096) {
             // Inline nursery allocation (HEAP_034): marker + header
             // (sizeField = value slot count) + evaluator store. The packed
@@ -811,7 +823,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             // eco_alloc_closure_k and is bypassed here — census workflows
             // must run with ECO_INLINE_ALLOC=0.
             uint64_t header = value_enc::composeHeader(
-                value_enc::TagClosure, 0, static_cast<uint64_t>(arity));
+                value_enc::TagClosure, 0, static_cast<uint64_t>(arity + numExt));
             closureHPtr = emitInlineAllocWithHeader(
                 rewriter, loc, runtime, cloByteSize, header);
             // Evaluator slot at +16: a CODE pointer (never GC-scanned; the
@@ -852,24 +864,20 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             papGepTy = ptrTy;
         }
 
-        // Closure bitmap covers ALL params (captures + remaining newargs)
-        // so the runtime can read slot N's kind from `closure->unboxed`
+        // The closure's kinds cover ALL params (captures + remaining
+        // newargs) so the runtime can read slot N's kind from the closure
         // alone — no separate layout descriptor is needed at apply sites.
-        // The captures portion must agree with op.getUnboxedBitmap() (the
-        // verifier already ties op.unboxed_bitmap to capture SSA types and
+        // The captures portion agrees with the capture operand types (the
+        // verifier ties slot_kinds / the legacy bitmap to them and
         // CLONE_RELATION_001 ties capture types to the target's first
         // num_captured params).
-        bool isTyped = wrapperWillBeTypedNewargs(runtime, funcSymbol);
-        uint64_t unboxedBitmap =
-            isTyped ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity)
-                    : op.getUnboxedBitmap();
         auto f64Ty = Float64Type::get(ctx);
 
-        // Phase C bit-pack layout (matching runtime/src/allocator/Heap.hpp):
-        //   bits  0..5   n_values     (6 bits)
-        //   bits  6..11  max_values   (6 bits)
-        //   bits 12..13  result_kind  (2 bits, ParamKind)
-        //   bits 14..63  unboxed      (50 bits, 25 typed-capture slots)
+        // Packed word layout (matching runtime/src/allocator/Heap.hpp, HEAP_078):
+        //   bits  0..10  n_values     (11 bits)
+        //   bits 11..21  max_values   (11 bits)
+        //   bits 22..23  result_kind  (2 bits, ParamKind)
+        //   bits 24..63  unboxed      (40 bits, params 0..19)
         //
         // Storing the packed field at offset 8 in one i64 write avoids the
         // GC barrier window that bit-by-bit writes would create. Match the
@@ -881,7 +889,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // `eco_alloc_closure_k` initialised at the same offset.
         uint64_t packedValue = packClosureWord(
             static_cast<uint32_t>(numCaptured), static_cast<uint32_t>(arity),
-            closureResultKind, unboxedBitmap);
+            closureResultKind, pk.hdrBits);
 
         auto packedConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(packedValue));
 
@@ -915,6 +923,10 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             rewriter.create<LLVM::StoreOp>(loc, capturedValue, valuePtr);
         }
 
+        // Ext kind words (zeros included, HEAP_077) at values[arity ..
+        // arity+K), in the same no-safepoint window (HEAP_031).
+        emitClosureExtStores(rewriter, loc, closurePtr, papGepTy, arity, pk.ext);
+
         // Handle self-capturing closures: if self_capture_indices is present,
         // store the closure's own HPointer at the specified capture slots.
         // This implements recursive closure backpatching.
@@ -938,7 +950,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.papCreateGroup -> one eco_alloc_closure_group_slow call
+// eco.papCreateGroup -> one eco_alloc_closure_group_l call
 //===----------------------------------------------------------------------===//
 
 struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
@@ -973,8 +985,8 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 
         // Resolve wrapper-function pointer for each sibling. Group members
         // always have captures so we use the fast_evaluator ($cap) form.
-        // Phase E: typed-newargs wrappers; the typed flag and full-params
-        // kinds bitmap are written by eco_alloc_closure_group_slow.
+        // Phase E: typed-newargs wrappers; the full-params kinds (inline
+        // word + ext words, HEAP_078) are written by eco_alloc_closure_group_l.
         auto module = op->getParentOfType<ModuleOp>();
         SmallVector<Value> wrapperPtrs;
         wrapperPtrs.reserve(numSiblings);
@@ -1018,14 +1030,57 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             loc, ptrTy, i32Ty, numSiblingsConst);
         Value numCapturedArrAlloca = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i32Ty, numSiblingsConst);
-        Value unboxedBitmapsArr = rewriter.create<LLVM::AllocaOp>(
+        Value hdrKindsArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i64Ty, numSiblingsConst);
+        Value extOffsetsArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i32Ty, numSiblingsPlus1Const);
         Value resultKindsArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i8Ty, numSiblingsConst);
         Value captureOffsetsArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i32Ty, numSiblingsPlus1Const);
         Value outClosuresArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i64Ty, numSiblingsConst);
+
+        // Per-sibling kinds: every param, from the target's typed signature
+        // (Phase E), padded boxed to arity. Subsumes the captures-only
+        // slot_kinds / legacy attribute on the op, which is verified for
+        // SSA-type consistency at MLIR level but not used here.
+        SmallVector<PackedKinds> siblingKinds;
+        SmallVector<uint64_t> allExt;
+        SmallVector<uint32_t> extOffsets;
+        for (unsigned i = 0; i < numSiblings; ++i) {
+            StringRef funcSymbol =
+                cast<FlatSymbolRefAttr>(fastEvaluators[i]).getValue();
+            int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
+            SmallVector<uint8_t> kinds = deriveAllParamKinds(runtime, funcSymbol, arity);
+            kinds.resize(static_cast<size_t>(arity), 0);
+            siblingKinds.push_back(packKinds(kinds, layout::ClosureHdrSlots));
+            extOffsets.push_back(static_cast<uint32_t>(allExt.size()));
+            allExt.append(siblingKinds.back().ext.begin(), siblingKinds.back().ext.end());
+        }
+        extOffsets.push_back(static_cast<uint32_t>(allExt.size()));
+        auto extCountConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            rewriter.getI64IntegerAttr(allExt.empty() ? 1 : allExt.size()));
+        Value extKindsArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i64Ty, extCountConst);
+        for (size_t j = 0; j < allExt.size(); ++j) {
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(j)));
+            auto wConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(allExt[j])));
+            auto wPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
+                extKindsArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, wConst, wPtr);
+        }
+        for (unsigned i = 0; i <= numSiblings; ++i) {
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(i));
+            auto oConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                rewriter.getI32IntegerAttr(static_cast<int32_t>(extOffsets[i])));
+            auto oPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i32Ty,
+                extOffsetsArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, oConst, oPtr);
+        }
 
         // Store per-sibling static metadata.
         uint32_t runningOffset = 0;
@@ -1034,14 +1089,7 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
                 cast<IntegerAttr>(arities[i]).getInt());
             uint32_t nc = static_cast<uint32_t>(
                 cast<IntegerAttr>(numCapturedArr[i]).getInt());
-            // All-params bitmap derived from the target's typed signature
-            // (Phase E). Subsumes the captures-only attribute on the op,
-            // which is still verified for SSA-type consistency at MLIR
-            // level but not used here.
-            StringRef funcSymbol =
-                cast<FlatSymbolRefAttr>(fastEvaluators[i]).getValue();
-            uint64_t bitmap = deriveAllParamKindsBitmap(runtime, funcSymbol,
-                                                        static_cast<int64_t>(arity));
+            uint64_t hdrBits = siblingKinds[i].hdrBits;
             uint32_t cc = static_cast<uint32_t>(
                 cast<IntegerAttr>(captureCounts[i]).getInt());
 
@@ -1067,11 +1115,11 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
                 numCapturedArrAlloca, ValueRange{idxConst});
             rewriter.create<LLVM::StoreOp>(loc, ncConst, ncPtr);
 
-            // unboxedBitmaps[i] = bitmap
+            // hdrKinds[i] = the inline 40-bit kind field (params 0..19)
             auto bmConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(bitmap)));
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(hdrBits)));
             auto bmPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
-                unboxedBitmapsArr, ValueRange{idxConst});
+                hdrKindsArr, ValueRange{idxConst});
             rewriter.create<LLVM::StoreOp>(loc, bmConst, bmPtr);
 
             // resultKinds[i] — sibling i's evaluator return kind, stored
@@ -1119,27 +1167,21 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         Value capturesArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i64Ty, totalCapturesConst);
 
-        // Compute the HPointer masks for the FLAT captures array, one per
-        // 64-slot chunk (B15: a group may hold more than 64 captures in all).
-        // Bit k of chunk c is set iff captures[64*c + k] is a boxed HPointer
-        // slot, i.e. its capture operand's slot kind is 0 (equal to the kind
-        // in the sibling's unboxed bitmap, by the verifier). These are the
-        // masks we must hand to eco_gc_push_stack_range so a major GC firing
-        // inside eco_alloc_closure_group_slow scans the captures correctly:
-        // without them, RS4GC sees the i64 stores into the array but stops
-        // tracking the source ptr addrspace(1) values once they go through
-        // ptrtoint, and the captures the runtime copies into the new closures
-        // are stale (post-GC) addresses — see Stage 7 unsafeIndex crash report.
-        const uint32_t numChunks = (totalCaptures + 63) / 64;
-        SmallVector<uint64_t, 2> hpointerMasks(numChunks, 0);
+        // GC roots for the FLAT captures array, one push per 64-slot chunk
+        // (B15/B23: a group may hold more than 64 captures in all). Slot k is
+        // a boxed HPointer iff its capture operand's slot kind is 0 (equal to
+        // slot_kinds / the legacy attribute, by the verifier). Without these
+        // ranges a major GC firing inside eco_alloc_closure_group_l would
+        // leave the captures the runtime copies into the new closures stale:
+        // RS4GC stops tracking the source ptr addrspace(1) values once they
+        // go through ptrtoint (see Stage 7 unsafeIndex crash report).
+        SmallVector<bool> boxedCaptures(totalCaptures, false);
         for (uint32_t k = 0; k < totalCaptures; ++k)
-            if (slotKindOf(op->getOperand(k).getType()) == 0)
-                hpointerMasks[k / 64] |= (1ULL << (k % 64));
+            boxedCaptures[k] = slotKindOf(op->getOperand(k).getType()) == 0;
 
         // Zero the captures array, save the GC range stack point, and push
         // the array as GC root ranges BEFORE storing any values into it. The
-        // runtime asserts count <= 64 per range, so push one range per chunk;
-        // the single restore below pops them all.
+        // single restore below pops them all.
         Value savedRangeDepth;
         const bool needRootRange = totalCaptures > 0;
         if (needRootRange) {
@@ -1151,24 +1193,7 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
             savedRangeDepth = rewriter.create<LLVM::CallOp>(
                 loc, rangePointFunc, ValueRange{}).getResult();
-            auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
-            for (uint32_t c = 0; c < numChunks; ++c) {
-                const uint32_t first = 64 * c;
-                const uint32_t count = std::min<uint32_t>(64, totalCaptures - first);
-                Value base = capturesArr;
-                if (c > 0) {
-                    auto firstConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                        rewriter.getI64IntegerAttr(first));
-                    base = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
-                        capturesArr, ValueRange{firstConst});
-                }
-                auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                    rewriter.getI64IntegerAttr(count));
-                auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                    rewriter.getI64IntegerAttr(static_cast<int64_t>(hpointerMasks[c])));
-                rewriter.create<LLVM::CallOp>(loc, pushFunc,
-                    ValueRange{base, countConst, maskConst});
-            }
+            emitChunkedRootPush(rewriter, loc, runtime, capturesArr, boxedCaptures);
         }
 
         // Convert each capture to i64 and store in captures[].
@@ -1212,13 +1237,15 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 
         emitSafepointMarker(op, rewriter, runtime, liveRoots);
 
-        auto groupFunc = runtime.getOrCreateAllocClosureGroupSlow(rewriter);
+        auto groupFunc = runtime.getOrCreateAllocClosureGroupL(rewriter);
         rewriter.create<LLVM::CallOp>(loc, groupFunc, ValueRange{
             numSiblingsConst,
             evaluatorsArr,
             aritiesArr,
             numCapturedArrAlloca,
-            unboxedBitmapsArr,
+            hdrKindsArr,
+            extKindsArr,
+            extOffsetsArr,
             resultKindsArr,
             captureOffsetsArr,
             capturesArr,
@@ -1484,14 +1511,40 @@ static SmallVector<uint8_t> deriveAllParamKinds(const EcoRuntime &runtime,
     return kinds;
 }
 
-/// The closure-header part of deriveAllParamKinds: kinds of params
-/// 0..ClosureHdrSlots-1. Params past the header read boxed (B5, until the
-/// Phase 2 tail words), exactly as the old 50-bit masks dropped them.
-static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
-                                          StringRef funcSymbol, int64_t arity) {
-    return packKinds(deriveAllParamKinds(runtime, funcSymbol, arity),
-                     layout::ClosureHdrSlots)
-        .hdrBits;
+/// Every param's kind for a closure over `funcSymbol` at stage arity `arity`
+/// (HEAP_078, CGEN_049): with a typed wrapper, the target signature (padded
+/// boxed to `arity`); otherwise the capture operand kinds (slotKindOf) padded
+/// boxed — legacy wrappers box every uncaptured param.
+static SmallVector<uint8_t> closureKindsFor(const EcoRuntime &runtime,
+                                            StringRef funcSymbol, int64_t arity,
+                                            bool isTyped, TypeRange captureTypes) {
+    SmallVector<uint8_t> kinds;
+    if (isTyped) {
+        kinds = deriveAllParamKinds(runtime, funcSymbol, arity);
+    } else {
+        for (Type t : captureTypes) kinds.push_back(slotKindOf(t));
+    }
+    kinds.resize(static_cast<size_t>(arity), 0);
+    return kinds;
+}
+
+/// Stores a closure's ext kind words (zeros included, HEAP_077) at
+/// values[valueSlots .. valueSlots + ext.size()), the last K words.
+static void emitClosureExtStores(ConversionPatternRewriter &rewriter, Location loc,
+                                 Value closurePtr, Type gepTy, int64_t valueSlots,
+                                 ArrayRef<uint64_t> ext) {
+    auto *ctx = rewriter.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i64Ty = IntegerType::get(ctx, 64);
+    for (size_t j = 0; j < ext.size(); ++j) {
+        int64_t off = layout::ClosureValuesOffset +
+                      (valueSlots + static_cast<int64_t>(j)) * layout::PtrSize;
+        auto offC = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(off));
+        auto ptr = rewriter.create<LLVM::GEPOp>(loc, gepTy, i8Ty, closurePtr, ValueRange{offC});
+        auto w = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(static_cast<int64_t>(ext[j])));
+        rewriter.create<LLVM::StoreOp>(loc, w, ptr);
+    }
 }
 
 //===----------------------------------------------------------------------===//
@@ -1797,12 +1850,21 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
     auto i32Ty = IntegerType::get(ctx, 32);
     auto i64Ty = IntegerType::get(ctx, 64);
 
-    // sat[] always has stageArity + 1 slots so `sat[N]` is in bounds for every
-    // N the `rem == N` guard can admit. Slots stay null unless Phase 3 fills them.
-    const unsigned satCount = static_cast<unsigned>(stageArity) + 1;
+    // sat[] has stageArity + 1 slots when the sat fast path can serve this
+    // evaluator (stageArity <= SAT_MAX_ARITY), so `sat[N]` is in bounds for
+    // every N the `rem == N` guard can admit; otherwise it is EMPTY: the
+    // guard (EcoBackend.cpp, max_values <= SAT_MAX_ARITY) makes it
+    // unreadable, and a 2047-arity descriptor stays 24 bytes. Slots stay null
+    // unless Phase 3 fills them.
+    const unsigned satCount =
+        stageArity <= static_cast<int64_t>(layout::SatMaxArity)
+            ? static_cast<unsigned>(stageArity) + 1 : 0;
     SmallVector<StringRef> satSyms(satCount);
     SmallVector<llvm::SmallString<64>> satNameStorage(satCount);
-    if (satFastEnabled() && !targetSymbol.empty()) {
+    // B7: getOrCreateSatEntry admits stageArity <= 16 only; reject first so
+    // the kinds shift below is never computed past one word.
+    if (satFastEnabled() && !targetSymbol.empty() && satCount > 0 &&
+        stageArity <= 16) {
         // `n_values` starts at the smallest num_captured this target is ever
         // created with and only grows, so rem can never exceed P - minC0.
         unsigned minC0 = 0;
@@ -1875,9 +1937,9 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
                                                       ArrayRef<int64_t>{idx});
         };
         put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
-        put(2, i8Ty, static_cast<int64_t>(stageArity & 0xFF));
+        put(2, i8Ty, 0);                                       // _pad_sa
         put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
-        put(4, i16Ty, 0);
+        put(4, i16Ty, static_cast<int64_t>(stageArity));       // stage_arity:u16 @+18
         put(5, i32Ty, 0);
         Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
         for (unsigned i = 0; i < satCount; ++i) {
@@ -2023,7 +2085,10 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
     auto i16Ty = IntegerType::get(ctx, 16);
     auto i32Ty = IntegerType::get(ctx, 32);
     auto i64Ty = IntegerType::get(ctx, 64);
-    const unsigned satCount = static_cast<unsigned>(arity) + 1;
+    // Same sizing rule as getOrCreateEvalDesc: empty above SAT_MAX_ARITY.
+    const unsigned satCount =
+        arity <= static_cast<int64_t>(layout::SatMaxArity)
+            ? static_cast<unsigned>(arity) + 1 : 0;
     auto satArrTy = LLVM::LLVMArrayType::get(ptrTy, satCount);
     auto descTy = LLVM::LLVMStructType::getLiteral(
         ctx, {ptrTy, i64Ty, i8Ty, i8Ty, i16Ty, i32Ty, satArrTy});
@@ -2044,9 +2109,9 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
                                                       ArrayRef<int64_t>{idx});
         };
         put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
-        put(2, i8Ty, static_cast<int64_t>(arity & 0xFF));
+        put(2, i8Ty, 0);                                       // _pad_sa
         put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
-        put(4, i16Ty, 0);
+        put(4, i16Ty, static_cast<int64_t>(arity));            // stage_arity:u16 @+18
         put(5, i32Ty, 0);
         Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
         for (unsigned i = 0; i < satCount; ++i)
@@ -2120,10 +2185,30 @@ static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
     return true;
 }
 
+/// Name of the eval-layout global for (kinds, resultKind):
+/// `__eco_eval_layout_r<K>_<k0>_..._<n>` for n <= 64, and
+/// `__eco_eval_layout_r<K>_h<fnv1a64(kinds)>_<n>` above (names stay short).
+static void evalLayoutName(ArrayRef<uint8_t> kinds, uint8_t resultKind,
+                           llvm::SmallVectorImpl<char> &out) {
+    llvm::raw_svector_ostream os(out);
+    os << "__eco_eval_layout_r" << unsigned(resultKind) << "_";
+    if (kinds.size() <= 64) {
+        for (uint8_t k : kinds) os << unsigned(k) << "_";
+    } else {
+        uint64_t h = 0xcbf29ce484222325ULL;   // FNV-1a 64
+        for (uint8_t k : kinds) { h ^= k; h *= 0x100000001b3ULL; }
+        os << "h";
+        os.write_hex(h);
+        os << "_";
+    }
+    os << unsigned(kinds.size());
+}
+
 /// Emit (or reuse) an LLVM global constant for an EvalParamLayout with the
-/// given kind sequence. Layout is `{ i8 num_params, i8 result_kind, [N x i8] kinds }`,
-/// matching `EvalParamLayout` in `Heap.hpp`. Deduplicates by encoding the
-/// kinds and result kind into the global's name.
+/// given kind sequence. Layout is
+/// `{ i16 num_params, i8 result_kind, i8 pad, [N x i8] kinds }`, matching
+/// `EvalParamLayout` in `Heap.hpp`. Deduplicates by encoding the kinds and
+/// result kind into the global's name (evalLayoutName).
 ///
 /// `resultKind` is the closure evaluator's real C-ABI return kind
 /// (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char). Existing callers that
@@ -2137,14 +2222,10 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
     auto *ctx = builder.getContext();
     ModuleOp module = runtime.module;
     auto i8Ty = IntegerType::get(ctx, 8);
+    auto i16Ty = IntegerType::get(ctx, 16);
     uint32_t n = kinds.size();
     llvm::SmallString<48> nameBuf;
-    {
-        llvm::raw_svector_ostream os(nameBuf);
-        os << "__eco_eval_layout_r" << unsigned(resultKind) << "_";
-        for (uint8_t k : kinds) os << unsigned(k) << "_";
-        os << n;
-    }
+    evalLayoutName(kinds, resultKind, nameBuf);
     StringRef name = nameBuf;
     // Eval-layouts used to be created on demand from call sites — during
     // PARALLEL Stage 2 — behind their own mutex, on the stated grounds that
@@ -2164,19 +2245,22 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
     if (!runtime.evalLayoutNames.insert(name).second)
         return;  // already created
     auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
-    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, i8Ty, arrayTy});
+    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i16Ty, i8Ty, i8Ty, arrayTy});
     std::string nameStr = name.str();
     SmallVector<uint8_t> kindsCopy(kinds.begin(), kinds.end());
     auto buildBody = [=](OpBuilder &builder, LLVM::GlobalOp globalOp) mutable {
         Block *initBlock = builder.createBlock(&globalOp.getInitializerRegion());
         builder.setInsertionPointToStart(initBlock);
         Value structVal = builder.create<LLVM::UndefOp>(loc, structTy);
-        auto numParamsConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
+        auto numParamsConst = builder.create<LLVM::ConstantOp>(loc, i16Ty, static_cast<int64_t>(n));
         structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
                                                         ArrayRef<int64_t>{0});
         auto resultKindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(resultKind));
         structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, resultKindConst,
                                                         ArrayRef<int64_t>{1});
+        auto padConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, 0);
+        structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, padConst,
+                                                        ArrayRef<int64_t>{2});
         Value arrayVal = builder.create<LLVM::UndefOp>(loc, arrayTy);
         for (uint32_t i = 0; i < n; ++i) {
             auto kindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kindsCopy[i]));
@@ -2184,7 +2268,7 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
                                                            ArrayRef<int64_t>{static_cast<int64_t>(i)});
         }
         structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
-                                                        ArrayRef<int64_t>{2});
+                                                        ArrayRef<int64_t>{3});
         builder.create<LLVM::ReturnOp>(loc, structVal);
     };
     // Not cached: layouts are deduped by evalLayoutNames, never looked up.
@@ -2208,12 +2292,7 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
     auto *ctx = rewriter.getContext();
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     llvm::SmallString<48> nameBuf;
-    {
-        llvm::raw_svector_ostream os(nameBuf);
-        os << "__eco_eval_layout_r" << unsigned(resultKind) << "_";
-        for (uint8_t k : kinds) os << unsigned(k) << "_";
-        os << unsigned(kinds.size());
-    }
+    evalLayoutName(kinds, resultKind, nameBuf);
     // Referenced BY NAME only — the serial pre-pass minted it. A miss is not
     // silent: LLVM::AddressOfOp carries SymbolUserOpInterface, so a reference
     // to a global that does not exist is an MLIR verifier error here.
@@ -2375,19 +2454,15 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     // pointers, primitive slots are skipped. Compute statically from
     // origNewArgTypes (the SSA types pre-conversion) so the mask reflects
     // the typed convention rather than the old all-boxed assumption.
-    uint64_t hptrMask = 0;
-    for (size_t j = 0; j < newArgs.size() && j < 64; ++j) {
+    // B23: every slot, chunked by 64 (the old mask loop stopped at 64 and
+    // left later boxed slots unrooted).
+    SmallVector<bool> boxedSlots(newArgs.size(), false);
+    for (size_t j = 0; j < newArgs.size(); ++j) {
         Type t = (hasOrigNewArgTypes && j < origNewArgTypes.size())
                      ? origNewArgTypes[j] : newArgs[j].getType();
-        bool isBoxed = false;
-        if (isa<eco::ValueType>(t)) {
-            isBoxed = true;
-        } else if (isa<LLVM::LLVMPointerType>(t)) {
-            isBoxed = true;
-        }
-        if (isBoxed) hptrMask |= (uint64_t{1} << j);
+        boxedSlots[j] = isa<eco::ValueType>(t) || isa<LLVM::LLVMPointerType>(t);
     }
-    Value savedRange = emitPushArgsRootRange(rewriter, loc, runtime, newArgsArray, numNewArgs, hptrMask);
+    Value savedRange = emitPushArgsRootRange(rewriter, loc, runtime, newArgsArray, numNewArgs, boxedSlots);
 
     // Store each arg as a raw 64-bit slot. Primitive Int/Char slots are
     // zero-extended to i64; Float slots are bitcast through i64; HPointer
@@ -2563,7 +2638,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     /// `EvalParamLayout` describing each slot's primitive kind, then calls
     /// `eco_apply_segmentation_unknown`, which reads the closure header at
     /// runtime to dispatch:
-    ///   - Under-saturated: derives bitmap from layout, calls `eco_pap_extend`.
+    ///   - Under-saturated: passes the layout to `eco_pap_extend_l`.
     ///   - Saturated/over: forwards to `eco_apply_closure_typed`, which
     ///     centralises any required primitive re-boxing.
     LogicalResult lowerSegmentationUnknown(PapExtendOp op, OpAdaptor adaptor,
@@ -2620,11 +2695,12 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         // === 2. Compute per-slot kinds + HPointer-only GC mask ===
         SmallVector<uint8_t> kinds;
         kinds.reserve(numNewArgs);
-        uint64_t hptrMask = 0;
+        SmallVector<bool> boxedSlots;
+        boxedSlots.reserve(numNewArgs);
         for (size_t i = 0; i < origNewArgTypes.size(); ++i) {
             uint8_t k = mlirTypeToParamKind(origNewArgTypes[i]);
             kinds.push_back(k);
-            if (k == 0) hptrMask |= (uint64_t{1} << i);
+            boxedSlots.push_back(k == 0);
         }
 
         // === 3. Populate typed args (no boxing, no safepoints) ===
@@ -2649,12 +2725,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         if (numNewArgs > 0) {
             auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
             typedSavedDepth = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
-            auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
-            auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
-            auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(hptrMask)));
-            rewriter.create<LLVM::CallOp>(loc, pushFunc,
-                ValueRange{typedArgsArray, countConst, maskConst});
+            emitChunkedRootPush(rewriter, loc, runtime, typedArgsArray, boxedSlots);
         }
 
         // === 5. Build (or reuse) the EvalParamLayout global ===
@@ -2758,11 +2829,12 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         // GC mask (1-bit per slot, set iff slot is HPointer) for rooting.
         SmallVector<uint8_t> kinds;
         kinds.reserve(numNewArgs);
-        uint64_t hptrMask = 0;
+        SmallVector<bool> boxedSlots;
+        boxedSlots.reserve(numNewArgs);
         for (size_t i = 0; i < origNewArgTypes.size(); ++i) {
             uint8_t k = mlirTypeToParamKind(origNewArgTypes[i]);
             kinds.push_back(k);
-            if (k == 0) hptrMask |= (uint64_t{1} << i);
+            boxedSlots.push_back(k == 0);
         }
 
         // Populate slots with typed values directly (no boxing here).
@@ -2788,12 +2860,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         if (numNewArgs > 0) {
             auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
             savedDepth = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
-            auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
-            auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
-            auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(hptrMask)));
-            rewriter.create<LLVM::CallOp>(loc, pushFunc,
-                ValueRange{typedArgsArray, countConst, maskConst});
+            emitChunkedRootPush(rewriter, loc, runtime, typedArgsArray, boxedSlots);
         }
 
         // Build (or reuse) an EvalParamLayout global describing the new args.
@@ -2915,8 +2982,11 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             }
             rewriter.replaceOp(op, result);
         } else {
-            // Partial application: use runtime helper to create extended closure
-            auto helperFunc = runtime.getOrCreatePapExtend(rewriter);
+            // Partial application: use runtime helper to create extended
+            // closure. The newargs' caller kinds travel as an EvalParamLayout
+            // (pre-materialized by the serial pre-pass: the papExtend arm
+            // mints this kinds vector at result kind 0).
+            auto helperFunc = runtime.getOrCreatePapExtendL(rewriter);
 
             // Build args array on stack — hoisted to entry block
             Value argsArray;
@@ -2940,8 +3010,17 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
             Value savedRange = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
 
-            // Bitmap from the attribute, handed to eco_pap_extend below.
-            uint64_t newargsBitmap = op.getNewargsUnboxedBitmap();
+            // Caller kinds from the newarg operand types (slotKindOf; equal
+            // to slot_kinds / the legacy attribute by the verifier;
+            // getNewargs() also holds the GC roots, which follow the real
+            // newargs).
+            SmallVector<uint8_t> newargKinds;
+            SmallVector<bool> boxedSlots;
+            for (int64_t i = 0; i < numNewArgs; ++i) {
+                uint8_t k = mlirTypeToParamKind(op.getNewargs()[i].getType());
+                newargKinds.push_back(k);
+                boxedSlots.push_back(k == 0);
+            }
 
             for (size_t i = 0; i < newargs.size(); ++i) {
                 auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(i));
@@ -2964,30 +3043,15 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
             }
 
-            // HPointer slots are those of kind 0, read from the newarg
-            // operand types (equal to the attribute's kinds by the verifier;
-            // getNewargs() also holds the GC roots, which follow the real
-            // newargs). numNewArgs <= 25 by PapExtendOp::verify.
-            uint64_t hptrMask = 0;
-            assert(numNewArgs <= 64 && "papExtend: args range exceeds one mask");
-            for (int64_t i = 0; i < numNewArgs; ++i) {
-                if (slotKindOf(op.getNewargs()[i].getType()) == 0)
-                    hptrMask |= (1ULL << i);
-            }
-            {
-                auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
-                auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
-                auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                    rewriter.getI64IntegerAttr(static_cast<int64_t>(hptrMask)));
-                rewriter.create<LLVM::CallOp>(loc, pushFunc,
-                    ValueRange{argsArray, countConst, maskConst});
-            }
+            // Root the HPointer slots, one push per 64-slot chunk (B23).
+            emitChunkedRootPush(rewriter, loc, runtime, argsArray, boxedSlots);
 
+            Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, runtime,
+                                                    newargKinds, /*resultKind=*/0);
             auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
-            auto bitmapConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(newargsBitmap));
             emitSafepointMarker(op, rewriter, runtime, liveRoots);
             auto call = rewriter.create<LLVM::CallOp>(
-                loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst, bitmapConst});
+                loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst, layoutPtr});
 
             // Restore GC root range stack.
             emitRestoreArgsRootRange(rewriter, loc, runtime, savedRange);

@@ -1,5 +1,5 @@
 module Compiler.Reporting.Error.Canonicalize exposing
-    ( Error(..)
+    ( Error(..), TooLargeWhat(..)
     , BadArityContext(..), DuplicatePatternContext(..), VarKind(..)
     , InvalidPayload(..), PortProblem(..), PossibleNames
     , toReport
@@ -27,13 +27,15 @@ an operator).
 
 The rest is a binary codec for `Error`. An error is written as a one-byte tag,
 its constructor's position in the declaration of `Error` (0 to 37), followed by
-its fields, and an unknown tag fails to decode. The tags are written as
-literals, so reordering or inserting a constructor changes the format.
+its fields, and an unknown tag fails to decode. `TooLarge`, added later, is
+declared beside `Shadowing` but takes the next free tag, 38, so the older tags
+keep their values. The tags are written as literals, so reordering or inserting
+a constructor changes the format.
 
 
 # Errors
 
-@docs Error
+@docs Error, TooLargeWhat
 
 
 # Supporting Types
@@ -144,6 +146,10 @@ itself directly. `RecursiveDecl` and `RecursiveLet` are a value, at the top
 level or in a `let`, defined in terms of itself, with the other definitions on
 the cycle, empty when it refers to itself directly.
 
+`TooLarge` is a function, lambda or local function over one of Eco's heap
+limits (HEAP\_078). It carries the region to underline, what is too large, the
+actual count and the limit.
+
 `TupleLargerThanThree` is a tuple of more than three elements.
 
 `TypeVarsUnboundInUnion` is a custom type whose variants use type variables it
@@ -190,9 +196,22 @@ type Error
     | RecursiveDecl A.Region Name (List Name)
     | RecursiveLet (A.Located Name) (List Name)
     | Shadowing Name A.Region A.Region
+    | TooLarge A.Region TooLargeWhat Int Int
     | TupleLargerThanThree A.Region
     | TypeVarsUnboundInUnion A.Region Name (List Name) ( Name, A.Region ) (List ( Name, A.Region ))
     | TypeVarsMessedUpInAlias A.Region Name (List Name) (List ( Name, A.Region )) (List ( Name, A.Region ))
+
+
+{-| What a `TooLarge` error is about. `TooManyParams` is a top-level or
+let-defined function with too many parameters, named; `TooManyLambdaParams` an
+anonymous function with too many parameters; and `TooManyClosureSlots` a local
+function (named) or anonymous function (`Nothing`) whose parameters plus
+captured variables exceed the closure stage arity.
+-}
+type TooLargeWhat
+    = TooManyParams Name
+    | TooManyLambdaParams
+    | TooManyClosureSlots (Maybe Name)
 
 
 {-| What was given the wrong number of arguments in a `BadArity` error: a type,
@@ -1073,6 +1092,39 @@ toReport source err =
                     , advice
                     )
 
+        TooLarge region what actual limit ->
+            let
+                ( title, subject, unit ) =
+                    case what of
+                        TooManyParams name ->
+                            ( "TOO MANY PARAMETERS", "The function `" ++ name ++ "`", "parameters" )
+
+                        TooManyLambdaParams ->
+                            ( "TOO MANY PARAMETERS", "This anonymous function", "parameters" )
+
+                        TooManyClosureSlots (Just name) ->
+                            ( "TOO MANY CAPTURED VARIABLES", "The local function `" ++ name ++ "`", "parameters and captured variables" )
+
+                        TooManyClosureSlots Nothing ->
+                            ( "TOO MANY CAPTURED VARIABLES", "This anonymous function", "parameters and captured variables" )
+            in
+            Report.report title region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        (subject
+                            ++ " has "
+                            ++ String.fromInt actual
+                            ++ " "
+                            ++ unit
+                            ++ ", but Eco supports at most "
+                            ++ String.fromInt limit
+                            ++ " (HEAP_078)."
+                        )
+                    , D.reflow "Pass the values in a record instead, or split the function into smaller ones."
+                    )
+
         TupleLargerThanThree region ->
             Report.report "BAD TUPLE" region [] <|
                 Code.toSnippet source
@@ -1882,6 +1934,15 @@ errorEncoder error =
                 , A.regionEncoder r2
                 ]
 
+        TooLarge region what actual limit ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 38
+                , A.regionEncoder region
+                , tooLargeWhatEncoder what
+                , BE.int actual
+                , BE.int limit
+                ]
+
         TupleLargerThanThree region ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 35
@@ -2161,6 +2222,51 @@ errorDecoder =
                             (BD.list BD.string)
                             (BD.list (BD.jsonPair BD.string A.regionDecoder))
                             (BD.list (BD.jsonPair BD.string A.regionDecoder))
+
+                    38 ->
+                        Bytes.Decode.map4 TooLarge
+                            A.regionDecoder
+                            tooLargeWhatDecoder
+                            BD.int
+                            BD.int
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Encodes a `TooLargeWhat` as a one-byte tag (0 `TooManyParams`, 1
+`TooManyLambdaParams`, 2 `TooManyClosureSlots`) followed by its name, if any.
+-}
+tooLargeWhatEncoder : TooLargeWhat -> Bytes.Encode.Encoder
+tooLargeWhatEncoder what =
+    case what of
+        TooManyParams name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 0, BE.string name ]
+
+        TooManyLambdaParams ->
+            Bytes.Encode.unsignedInt8 1
+
+        TooManyClosureSlots maybeName ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 2, BE.maybe BE.string maybeName ]
+
+
+{-| Decodes a `TooLargeWhat` written by `tooLargeWhatEncoder`.
+-}
+tooLargeWhatDecoder : Bytes.Decode.Decoder TooLargeWhat
+tooLargeWhatDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\tag ->
+                case tag of
+                    0 ->
+                        Bytes.Decode.map TooManyParams BD.string
+
+                    1 ->
+                        Bytes.Decode.succeed TooManyLambdaParams
+
+                    2 ->
+                        Bytes.Decode.map TooManyClosureSlots (BD.maybe BD.string)
 
                     _ ->
                         Bytes.Decode.fail

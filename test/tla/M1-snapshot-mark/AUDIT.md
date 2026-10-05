@@ -605,3 +605,24 @@ caps; builder asserts). **Verdict: no model change needed.**
 
 The mark pass (`OldGenSpace` scanChildren) and the compaction fix pass use the same accessors, so
 they still visit exactly the same slots.
+
+
+## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (GC_MODEL_001)
+
+Pins fired: census `runtime/src/allocator/RuntimeExports.cpp` (**7b4ec951a253**).
+
+Census lines added: `std::mutex g_wide_boxed_layout_mutex` and its `std::lock_guard` in
+`Elm::getAllBoxedLayout` (plans/wide-object-tail-kind-words-phase-2.md 2.3, B19): an interned cache
+of all-boxed `EvalParamLayout`s for n > 64. It is a leaf lock around an `unordered_map` lookup and a
+`new[]`; nothing inside it allocates on the Elm heap, reaches a safepoint, touches a GC-shared
+location or takes another lock, and no collector thread calls it. None of M1's actions, variables or
+footprint rows (MAPPING.md) involves it.
+
+Also in this commit (voluntary, unpinned walkers): the Closure arms of `HeapChildWalk.hpp`,
+`OldGenSpace` scanChildren (mark) and the compaction fix pass read kinds through `closureSlotKind`,
+whose body now adds the extension-word branch (inline kinds for params 0..19; params 20.. in
+K = extWords(max_values, 20) ext words, the LAST K words of the object; header.size = value slots +
+K). Kinds and n_values are written only at allocation (HEAP_077, HEAP_SNAPSHOT_001); the walkers read
+a frozen object and visit exactly the slots below n_values, as before. Object size is still a
+function of the header word alone. No atomic, lock or memory order is added on a GC path.
+**Verdict: no model change needed.**

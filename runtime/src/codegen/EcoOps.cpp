@@ -515,6 +515,79 @@ LogicalResult RecordConstructOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// Closure slot kinds (plans/wide-object-tail-kind-words.md §S.5, Phase 2)
+//===----------------------------------------------------------------------===//
+
+/// Kind of a closure operand's MLIR type (same mapping as codegen slotKindOf):
+/// i64 -> 1 Int, f64 -> 2 Float, i16 -> 3 Char, everything else -> 0 boxed.
+static uint8_t operandKind(Type t) {
+  if (t.isInteger(64)) return 1;
+  if (t.isF64()) return 2;
+  if (t.isInteger(16)) return 3;
+  return 0;
+}
+
+/// Slots of a legacy u64 closure bitmap the front end can describe exactly:
+/// it computes the word with Elm Int arithmetic (exact to 2^53) and records no
+/// kind at index >= 26 (Types.maxTypedSlots), so those slots read 0 there.
+static constexpr unsigned kLegacyClosureBitmapSlots = 26;
+
+/// CGEN_003: every closure operand is !eco.value, i64, f64 or i16 (Bool is
+/// boxed, REP_CLOSURE_001; closure ops never take aggregates). `slot_kinds`,
+/// when present, must have one entry per operand equal to the operand's type
+/// kind. A legacy u64 attribute is advisory and verified only for the slots it
+/// can describe. It is DefaultValued and stored as a property, so the parser
+/// materialises an absent one as 0 and hasAttr cannot tell the two apart: a
+/// zero word carries no claim (absent = derive from operand types, §S.5) and
+/// is not checked; a non-zero word must agree slot by slot.
+static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
+                                        std::optional<ArrayRef<int8_t>> kinds,
+                                        StringRef legacyName, const char *what) {
+  for (auto [i, v] : llvm::enumerate(operands)) {
+    Type ty = v.getType();
+    if (ty.isInteger(1))
+      return op->emitOpError(StringRef(what) == "capture" ? "captured" : what)
+             << " Bool (i1) at index " << i
+             << " violates REP_CLOSURE_001: Bool must be boxed to !eco.value "
+                "at closure boundary";
+    if (operandKind(ty) == 0 && !isa<eco::ValueType>(ty))
+      return op->emitOpError(what) << " " << i
+             << " has kind=boxed but non-boxed SSA type " << ty;
+  }
+  if (kinds) {
+    if (kinds->size() != operands.size())
+      return op->emitOpError("slot_kinds length (") << kinds->size()
+             << ") != " << what << " count (" << operands.size() << ")";
+    for (auto [i, v] : llvm::enumerate(operands)) {
+      int k = (*kinds)[i];
+      if (k < 0 || k > 3 || uint8_t(k) != operandKind(v.getType()))
+        return op->emitOpError(what) << " " << i << " slot_kinds " << k
+               << " does not match SSA type " << v.getType();
+    }
+  }
+  uint64_t w = 0;
+  if (!legacyName.empty() && op->hasAttr(legacyName))
+    w = cast<IntegerAttr>(op->getAttr(legacyName)).getValue().getZExtValue();
+  if (w != 0) {
+    const unsigned n = static_cast<unsigned>(operands.size());
+    const unsigned described = std::min(n, kLegacyClosureBitmapSlots);
+    if (described < 32 && (w >> (2 * described)) != 0)
+      return op->emitOpError(legacyName) << " has bits set beyond " << what
+             << " count";
+    for (unsigned i = 0; i < described; ++i)
+      if (((w >> (2 * i)) & 3) != operandKind(operands[i].getType()))
+        return op->emitOpError(legacyName) << " slot " << i
+               << " disagrees with SSA type " << operands[i].getType();
+  }
+  return success();
+}
+
+/// HEAP_078 limits: stage arity <= CLOSURE_MAX_ARITY (2047), so at most 2046
+/// captured values (a PAP has at least one parameter left).
+static constexpr int64_t kClosureMaxArity = Elm::CLOSURE_MAX_ARITY;
+static constexpr int64_t kClosureMaxCaptures = Elm::CLOSURE_MAX_ARITY - 1;
+
 LogicalResult PapCreateOp::verify() {
   // Verify that num_captured matches the number of captured operands.
   // Subtract appended GC roots from operand count.
@@ -537,100 +610,30 @@ LogicalResult PapCreateOp::verify() {
            << arity << ")";
   }
 
-  // Verify closure struct limits (6-bit fields).
-  if (numCaptured > 63) {
+  // Closure limits (HEAP_078: n_values:11 | max_values:11).
+  if (numCaptured > kClosureMaxCaptures) {
     return emitOpError("num_captured (")
            << numCaptured
-           << ") exceeds 6-bit n_values limit (63)";
+           << ") exceeds closure capture limit (" << kClosureMaxCaptures << ")";
   }
-  if (arity > 63) {
+  if (arity > kClosureMaxArity) {
     return emitOpError("arity (")
            << arity
-           << ") exceeds 6-bit max_values limit (63)";
+           << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
 
-  // Verify unboxed_bitmap constraints (2-bit-per-slot kinds).
-  uint64_t bitmap = getUnboxedBitmap();
-
-  // Bitmap must fit in 50 bits (runtime Closure struct: unboxed:50, flags:2).
-  if (bitmap >= (1ULL << 50)) {
-    return emitOpError("unboxed_bitmap exceeds 50-bit capacity");
-  }
-
-  // At most 25 typed captures fit in 50 bits (2 bits each).
-  if (numCaptured > 25) {
-    return emitOpError("num_captured (")
-           << numCaptured
-           << ") exceeds 25-slot limit under 2-bit kind encoding";
-  }
-
-  // No bits should be set beyond num_captured's slot range (2 bits/slot).
-  if (numCaptured > 0) {
-    const unsigned usedBits = 2 * static_cast<unsigned>(numCaptured);
-    if (usedBits < 64) {
-      const uint64_t validMask = (1ULL << usedBits) - 1;
-      if (bitmap & ~validMask) {
-        return emitOpError("unboxed_bitmap has bits set beyond num_captured");
-      }
-    }
-  } else if (bitmap != 0) {
-    return emitOpError("unboxed_bitmap must be 0 when num_captured is 0");
-  }
-
-  // Verify per-slot kind matches operand SSA type. B22: only the real
-  // captures; getCaptured() also holds the GC-root operands EcoGCPrepare
-  // appends (always !eco.value), and slots past num_captured (<= 25) would
-  // shift past the bitmap.
-  auto captured = getCaptured();
-  const size_t realCaptured = static_cast<size_t>(numCaptured);
-  for (size_t i = 0; i < realCaptured; ++i) {
-    const uint64_t shift = 2ULL * i;
-    const uint64_t kind = (bitmap >> shift) & 0x3ULL;
-    Type ty = captured[i].getType();
-    switch (kind) {
-      case 0:
-        if (!isa<eco::ValueType>(ty)) {
-          return emitOpError("capture ") << i
-                 << " has kind=boxed but non-boxed SSA type " << ty;
-        }
-        break;
-      case 1:
-        if (!ty.isInteger(64)) {
-          return emitOpError("capture ") << i
-                 << " has kind=Int but SSA type " << ty;
-        }
-        break;
-      case 2:
-        if (!ty.isF64()) {
-          return emitOpError("capture ") << i
-                 << " has kind=Float but SSA type " << ty;
-        }
-        break;
-      case 3:
-        if (!ty.isInteger(16)) {
-          return emitOpError("capture ") << i
-                 << " has kind=Char but SSA type " << ty;
-        }
-        break;
-    }
-  }
+  // Per-slot kinds (CGEN_003). B22: only the real captures; getCaptured()
+  // also holds the GC-root operands EcoGCPrepare appends.
+  auto realCaptured = getCaptured().take_front(static_cast<size_t>(numCaptured));
+  if (failed(verifyClosureKinds(getOperation(), realCaptured, getSlotKinds(),
+                                "unboxed_bitmap", "capture")))
+    return failure();
 
   // CGEN_057 kernel existence check is now in verifySymbolUses (O(1) cached).
-
-  // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary
-  for (size_t i = 0; i < realCaptured; ++i) {
-    Type ty = captured[i].getType();
-    if (ty.isInteger(1)) {
-      return emitOpError("captured Bool (i1) at index ") << i
-             << " violates REP_CLOSURE_001: Bool must be boxed to !eco.value at closure boundary";
-    }
-  }
-
   return success();
 }
 
 LogicalResult PapExtendOp::verify() {
-  uint64_t bitmap = getNewargsUnboxedBitmap();
   auto allNewargs = getNewargs();
 
   // Subtract appended GC roots from newargs count.
@@ -639,72 +642,18 @@ LogicalResult PapExtendOp::verify() {
   // so the real newargs count is allNewargs.size() - rootCount.
   size_t realNewargsCount = allNewargs.size() - rootCount;
 
-  // Bitmap must fit in 50 bits (runtime Closure struct: unboxed:50, flags:2).
-  if (bitmap >= (1ULL << 50)) {
-    return emitOpError("newargs_unboxed_bitmap exceeds 50-bit capacity");
-  }
-
-  // At most 25 typed newargs fit in 50 bits (2 bits each).
-  if (realNewargsCount > 25) {
+  if (realNewargsCount > static_cast<size_t>(kClosureMaxArity)) {
     return emitOpError("newargs count (")
            << realNewargsCount
-           << ") exceeds 25-slot limit under 2-bit kind encoding";
+           << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
 
-  // No bits should be set beyond newargs size's slot range.
-  if (realNewargsCount > 0) {
-    const unsigned usedBits = 2 * static_cast<unsigned>(realNewargsCount);
-    if (usedBits < 64) {
-      const uint64_t validMask = (1ULL << usedBits) - 1;
-      if (bitmap & ~validMask) {
-        return emitOpError("newargs_unboxed_bitmap has bits set beyond newargs count");
-      }
-    }
-  } else if (bitmap != 0) {
-    return emitOpError("newargs_unboxed_bitmap must be 0 when there are no newargs");
-  }
-
-  // Verify per-slot kind matches operand SSA type (only real newargs, not roots).
-  for (size_t i = 0; i < realNewargsCount; ++i) {
-    const uint64_t shift = 2ULL * i;
-    const uint64_t kind = (bitmap >> shift) & 0x3ULL;
-    Type ty = allNewargs[i].getType();
-    switch (kind) {
-      case 0:
-        if (!isa<eco::ValueType>(ty)) {
-          return emitOpError("newarg ") << i
-                 << " has kind=boxed but non-boxed SSA type " << ty;
-        }
-        break;
-      case 1:
-        if (!ty.isInteger(64)) {
-          return emitOpError("newarg ") << i
-                 << " has kind=Int but SSA type " << ty;
-        }
-        break;
-      case 2:
-        if (!ty.isF64()) {
-          return emitOpError("newarg ") << i
-                 << " has kind=Float but SSA type " << ty;
-        }
-        break;
-      case 3:
-        if (!ty.isInteger(16)) {
-          return emitOpError("newarg ") << i
-                 << " has kind=Char but SSA type " << ty;
-        }
-        break;
-    }
-  }
-
-  // === REP_CLOSURE_001: Bool must not be passed at closure boundary ===
-  for (size_t i = 0; i < realNewargsCount; ++i) {
-    Type ty = allNewargs[i].getType();
-    if (ty.isInteger(1)) {
-      return emitOpError("newarg Bool (i1) at index ") << i
-             << " violates REP_CLOSURE_001: Bool must be boxed to !eco.value at closure boundary";
-    }
-  }
+  // Per-slot kinds (CGEN_003) and REP_CLOSURE_001, real newargs only.
+  if (failed(verifyClosureKinds(getOperation(),
+                                allNewargs.take_front(realNewargsCount),
+                                getSlotKinds(), "newargs_unboxed_bitmap",
+                                "newarg")))
+    return failure();
 
   // === Generic mode: remaining_arity absent ===
   // In generic mode, saturation is determined at runtime from the closure header.
@@ -749,7 +698,8 @@ LogicalResult PapCreateGroupOp::verify() {
   auto fastEvaluators = getFastEvaluators();
   auto arities = getArities();
   auto numCaptured = getNumCaptured();
-  auto unboxedBitmaps = getUnboxedBitmaps();
+  auto unboxedBitmaps = getUnboxedBitmaps();   // optional (legacy, advisory)
+  auto slotKinds = getSlotKinds();             // optional
   auto captureCounts = getCaptureCounts();
   auto crossEdges = getCrossEdges();
 
@@ -758,11 +708,20 @@ LogicalResult PapCreateGroupOp::verify() {
       fastEvaluators.size() != numSiblings ||
       arities.size() != numSiblings ||
       numCaptured.size() != numSiblings ||
-      unboxedBitmaps.size() != numSiblings ||
+      (unboxedBitmaps && unboxedBitmaps->size() != numSiblings) ||
+      (slotKinds && slotKinds->size() != numSiblings) ||
       captureCounts.size() != numSiblings) {
     return emitOpError("per-sibling attribute arrays must all have length ")
            << numSiblings;
   }
+  if (slotKinds)
+    for (size_t i = 0; i < numSiblings; ++i)
+      if (!isa<DenseI8ArrayAttr>((*slotKinds)[i]))
+        return emitOpError("slot_kinds[") << i << "] must be a DenseI8ArrayAttr";
+  auto siblingKinds = [&](size_t i) -> std::optional<ArrayRef<int8_t>> {
+    if (!slotKinds) return std::nullopt;
+    return cast<DenseI8ArrayAttr>((*slotKinds)[i]).asArrayRef();
+  };
 
   // cross_edges must be flat triples of I64 attrs.
   if (crossEdges.size() % 3 != 0)
@@ -784,16 +743,22 @@ LogicalResult PapCreateGroupOp::verify() {
       return emitOpError("cross_edges slot ") << slot
              << " out of range for consumer " << consumer
              << " with num_captured " << consumerCap;
-    // num_captured <= 25 is checked per sibling below; reject a slot past it
-    // here, before it becomes a shift.
-    if (slot >= 25)
-      return emitOpError("cross_edges slot ") << slot
-             << " exceeds 25-slot limit under 2-bit kind encoding";
-    // Cross-edge slot must be boxed (bit 2*slot of unboxed_bitmap[consumer] == 0).
-    uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[consumer]).getInt();
-    if (((bitmap >> (2ULL * static_cast<uint64_t>(slot))) & 0x3ULL) != 0)
-      return emitOpError("cross-edge consumer ") << consumer
-             << " slot " << slot << " must be boxed (unboxed_bitmap bit is set)";
+    // Cross-edge slot must be boxed. slot_kinds has one kind per slot,
+    // [0, num_captured): the non-sibling captures [0, capture_counts), then
+    // the sibling captures, which are boxed.
+    if (auto ks = siblingKinds(consumer)) {
+      if (slot < static_cast<int64_t>(ks->size()) && (*ks)[slot] != 0)
+        return emitOpError("cross-edge consumer ") << consumer
+               << " slot " << slot << " must be boxed (slot_kinds is "
+               << int((*ks)[slot]) << ")";
+    } else if (unboxedBitmaps && slot < kLegacyClosureBitmapSlots) {
+      // A zero legacy word carries no claim (see verifyClosureKinds); a
+      // non-zero bit pair at the slot is a typed claim on a sibling capture.
+      uint64_t bitmap = cast<IntegerAttr>((*unboxedBitmaps)[consumer]).getInt();
+      if (((bitmap >> (2ULL * static_cast<uint64_t>(slot))) & 0x3ULL) != 0)
+        return emitOpError("cross-edge consumer ") << consumer
+               << " slot " << slot << " must be boxed (unboxed_bitmap bit is set)";
+    }
     crossEdgeInDegree[consumer] += 1;
   }
 
@@ -812,19 +777,12 @@ LogicalResult PapCreateGroupOp::verify() {
     if (cap >= arity)
       return emitOpError("sibling ") << i << " num_captured (" << cap
              << ") must be less than arity (" << arity << ")";
-    if (cap > 63)
+    if (cap > kClosureMaxCaptures)
       return emitOpError("sibling ") << i << " num_captured (" << cap
-             << ") exceeds 6-bit n_values limit (63)";
-    if (arity > 63)
+             << ") exceeds closure capture limit (" << kClosureMaxCaptures << ")";
+    if (arity > kClosureMaxArity)
       return emitOpError("sibling ") << i << " arity ("
-             << arity << ") exceeds 6-bit max_values limit (63)";
-    if (cap > 25)
-      return emitOpError("sibling ") << i << " num_captured (" << cap
-             << ") exceeds 25-slot limit under 2-bit kind encoding";
-    uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[i]).getInt();
-    if (bitmap >= (1ULL << 50))
-      return emitOpError("sibling ") << i
-             << " unboxed_bitmap exceeds 50-bit capacity";
+             << arity << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
     totalCaptures += cc;
   }
 
@@ -839,43 +797,42 @@ LogicalResult PapCreateGroupOp::verify() {
            << totalCaptures << ")";
 
   // Per-slot kind check on the captures prefix (mirrors papCreate).
+  // Non-sibling captures occupy the low slots [0..cc); sibling captures
+  // (cross-edge consumers) live at the remaining slots and are boxed.
   auto captures = getOperands().take_front(totalCaptures);
   size_t operandCursor = 0;
   for (size_t i = 0; i < numSiblings; ++i) {
     int64_t cc = cast<IntegerAttr>(captureCounts[i]).getInt();
-    uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[i]).getInt();
-    for (int64_t j = 0; j < cc; ++j) {
-      // Non-sibling captures occupy the low slots [0..cc); sibling captures
-      // (cross-edge consumers) live at the remaining slots.
-      assert(j < 25 && "cc <= num_captured <= 25, checked above");
-      const uint64_t shift = 2ULL * static_cast<uint64_t>(j);
-      const uint64_t kind = (bitmap >> shift) & 0x3ULL;
-      Type ty = captures[operandCursor + j].getType();
-      switch (kind) {
-        case 0:
-          if (!isa<eco::ValueType>(ty))
-            return emitOpError("sibling ") << i << " capture " << j
-                   << " has kind=boxed but non-boxed SSA type " << ty;
-          break;
-        case 1:
-          if (!ty.isInteger(64))
-            return emitOpError("sibling ") << i << " capture " << j
-                   << " has kind=Int but SSA type " << ty;
-          break;
-        case 2:
-          if (!ty.isF64())
-            return emitOpError("sibling ") << i << " capture " << j
-                   << " has kind=Float but SSA type " << ty;
-          break;
-        case 3:
-          if (!ty.isInteger(16))
-            return emitOpError("sibling ") << i << " capture " << j
-                   << " has kind=Char but SSA type " << ty;
-          break;
-      }
-      if (ty.isInteger(1))
-        return emitOpError("sibling ") << i << " captured Bool (i1) at slot "
-               << j << " violates REP_CLOSURE_001: Bool must be boxed";
+    auto sibCaptures = captures.slice(operandCursor, static_cast<size_t>(cc));
+    if (unboxedBitmaps) {
+      // Legacy per-sibling word: advisory, verified for the slots it can
+      // describe when non-zero (same rule as verifyClosureKinds).
+      uint64_t w = cast<IntegerAttr>((*unboxedBitmaps)[i]).getInt();
+      const unsigned described = w == 0 ? 0u :
+          std::min<unsigned>(static_cast<unsigned>(cc), kLegacyClosureBitmapSlots);
+      for (unsigned j = 0; j < described; ++j)
+        if (((w >> (2 * j)) & 3) != operandKind(sibCaptures[j].getType()))
+          return emitOpError("sibling ") << i << " capture " << j
+                 << " unboxed_bitmap kind " << ((w >> (2 * j)) & 3)
+                 << " disagrees with SSA type " << sibCaptures[j].getType();
+    }
+    if (auto ks = siblingKinds(i)) {
+      // plans/wide-object-tail-kind-words-phase-2.md step 2.1: one kind per
+      // closure slot, length num_captured; the non-sibling captures are
+      // checked against their operand types, the sibling slots are boxed.
+      int64_t cap = cast<IntegerAttr>(numCaptured[i]).getInt();
+      if (static_cast<int64_t>(ks->size()) != cap)
+        return emitOpError("slot_kinds[") << i << "] length (" << ks->size()
+               << ") != num_captured (" << cap << ")";
+      if (failed(verifyClosureKinds(getOperation(), sibCaptures,
+                                    ks->take_front(static_cast<size_t>(cc)),
+                                    StringRef(), "capture")))
+        return failure();
+      for (int64_t j = cc; j < cap; ++j)
+        if ((*ks)[j] != 0)
+          return emitOpError("sibling ") << i << " slot " << j
+                 << " holds a sibling closure and must be boxed (slot_kinds is "
+                 << int((*ks)[j]) << ")";
     }
     operandCursor += cc;
   }
@@ -1464,13 +1421,13 @@ LogicalResult MakeClosureOp::verify() {
     return emitOpError("env captures (") << numCaptures
            << ") must be less than arity (" << arity << ")";
   }
-  if (numCaptures > 25) {
-    return emitOpError("env captures (") << numCaptures
-           << ") exceeds 25-slot limit under 2-bit kind encoding";
+  if (numCaptures > kClosureMaxCaptures) {
+    return emitOpError("num_captured (") << numCaptures
+           << ") exceeds closure capture limit (" << kClosureMaxCaptures << ")";
   }
-  if (arity > 63) {
+  if (arity > kClosureMaxArity) {
     return emitOpError("arity (") << arity
-           << ") exceeds 6-bit max_values limit (63)";
+           << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
   // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary.
   for (size_t i = 0; i < envTy.getCaptures().size(); ++i) {

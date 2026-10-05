@@ -375,20 +375,24 @@ constexpr uint64_t CustomFieldsOffset = HeaderSize + PtrSize;
 constexpr uint64_t ArrayLengthOffset = HeaderSize;          // 8
 constexpr uint64_t ArrayElementsOffset = HeaderSize + PtrSize; // 16 (length:4 + padding:4 = 8)
 
-// Closure layout: [Header:8][packed:8][evaluator:8][values:N*8]
-// packed = n_values:6 | max_values:6 | result_kind:2 | unboxed:50 (packClosureWord)
+// Closure layout v2 (HEAP_078): [Header:8][packed:8][evaluator:8][values:S*8][ext:K*8]
+// packed = n_values:11 | max_values:11 | result_kind:2 | unboxed:40 (packClosureWord);
+// kinds of params 20.. live in K = extWords(max_values, 20) ext words, the last K
+// words of the object (header.size = S + K).
 constexpr uint64_t ClosurePackedOffset = HeaderSize;
 constexpr uint64_t ClosureEvaluatorOffset = HeaderSize + PtrSize;
 constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
 
 // EvaluatorDesc layout (plans/gc-root-registration-cost.md Phase 2; the struct
 // lives in runtime/src/allocator/Heap.hpp and static_asserts these offsets):
-//   [generic:8][kinds:8][stage_arity:1][result_kind:1][pad:6][sat:(P+1)*8]
-// `sat` holds stage_arity+1 slots, so `sat[N]` behind the `rem == N` guard is
-// always in bounds; a slot with no generated entry is null.
+//   [generic:8][kinds:8][pad:1][result_kind:1][stage_arity:2][pad:4][sat]
+// `sat` holds stage_arity+1 slots when stage_arity <= SAT_MAX_ARITY (20) and is
+// EMPTY otherwise: the backend sat guard (max_values <= SAT_MAX_ARITY) makes it
+// unreadable, so `sat[N]` behind the guards is always in bounds; a slot with no
+// generated entry is null.
 constexpr uint64_t EvaluatorDescGenericOffset = 0;
 constexpr uint64_t EvaluatorDescKindsOffset = 8;
-constexpr uint64_t EvaluatorDescStageArityOffset = 16;
+constexpr uint64_t EvaluatorDescStageArityOffset = 18;
 constexpr uint64_t EvaluatorDescResultKindOffset = 17;
 constexpr uint64_t EvaluatorDescSatOffset = 24;
 
@@ -405,9 +409,18 @@ constexpr uint64_t CustomBaseSize = 16;  // Header + ctor/unboxed (+ N*8)
 constexpr uint64_t ClosureBaseSize = 24; // Header + packed + evaluator (+ N*8)
 
 // Slots whose 2-bit kinds the object header itself can hold (Heap.hpp:
-// Custom unboxed:48, Record unboxed:64, Closure unboxed:50). Kinds past these
-// read boxed (D semantics, plans/wide-object-tail-kind-words.md).
-constexpr unsigned CustomHdrSlots = 24, RecordHdrSlots = 32, ClosureHdrSlots = 25; // P2: 20
+// Custom unboxed:48, Record unboxed:64, Closure unboxed:40). Closure kinds past
+// these live in ext words; Custom/Record ones read boxed until Phase 3A.
+constexpr unsigned CustomHdrSlots = 24, RecordHdrSlots = 32, ClosureHdrSlots = 20;
+// Closure packed word: n_values:11 | max_values:11 | result_kind:2 | unboxed:40.
+constexpr unsigned ClosureMaxShift = 11, ClosureRkShift = 22, ClosureKindsShift = 24;
+constexpr uint64_t ClosureCountMask = 0x7FF;            // 11 bits
+constexpr unsigned ClosureMaxArity = 2047;              // CLOSURE_MAX_ARITY
+constexpr unsigned SatMaxArity = ClosureHdrSlots;       // SAT_MAX_ARITY
+/// Number of 64-bit ext kind words for `n` slots past `hdrSlots` (Heap.hpp extWords).
+constexpr unsigned extWordsFor(unsigned n, unsigned hdrSlots) {
+    return n > hdrSlots ? (n - hdrSlots + 31) / 32 : 0;
+}
 
 } // namespace layout
 
@@ -439,7 +452,7 @@ inline uint64_t kindsWord(llvm::ArrayRef<uint8_t> kinds, size_t first,
 }
 
 /// Header bits for the first `hdrSlots` kinds, then 32 kinds per extension
-/// word. Phase 1 consumes only `hdrBits` (no object stores extension words).
+/// word (closures store every ext word, zeros included, HEAP_077).
 struct PackedKinds {
     uint64_t hdrBits;
     llvm::SmallVector<uint64_t, 2> ext;
@@ -453,14 +466,17 @@ inline PackedKinds packKinds(llvm::ArrayRef<uint8_t> kinds, unsigned hdrSlots) {
     return p;
 }
 
-/// The closure's packed word at +8, Phase 1 layout (Heap.hpp Closure):
-///   n_values:6 | max_values:6 | result_kind:2 | unboxed:50.
+/// The closure's packed word at +8 (Heap.hpp Closure, HEAP_078):
+///   n_values:11 | max_values:11 | result_kind:2 | unboxed:40.
 inline uint64_t packClosureWord(uint32_t nValues, uint32_t maxValues,
                                 uint8_t resultKind, uint64_t hdrBits) {
-    assert(nValues < 64 && maxValues < 64 && resultKind < 4 &&
-           (hdrBits >> 50) == 0 && "packClosureWord: field out of range");
-    return uint64_t(nValues) | (uint64_t(maxValues) << 6) |
-           (uint64_t(resultKind & 3) << 12) | (hdrBits << 14);
+    assert(nValues <= layout::ClosureCountMask &&
+           maxValues <= layout::ClosureCountMask && resultKind < 4 &&
+           (hdrBits >> 40) == 0 && "packClosureWord: field out of range");
+    return uint64_t(nValues) |
+           (uint64_t(maxValues) << layout::ClosureMaxShift) |
+           (uint64_t(resultKind & 3) << layout::ClosureRkShift) |
+           (hdrBits << layout::ClosureKindsShift);
 }
 
 //===----------------------------------------------------------------------===//
@@ -668,7 +684,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateAllocCustomSlow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocStringSlow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocClosureSlow(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateAllocClosureGroupSlow(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateAllocClosureGroupL(mlir::OpBuilder &builder) const;
 
     // Region allocation (fast returns nullptr, slow may GC)
     mlir::LLVM::LLVMFuncOp getOrCreateAllocRegionFast(mlir::OpBuilder &builder) const;
@@ -710,7 +726,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateStoreConsTail(mlir::OpBuilder &builder) const;
 
     // Closure functions
-    mlir::LLVM::LLVMFuncOp getOrCreatePapExtend(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreatePapExtendL(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateClosureCallSaturated(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateClosureCallSaturatedEval(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateApplyClosure(mlir::OpBuilder &builder) const;
@@ -1467,6 +1483,35 @@ mlir::Value emitEvalDescAddrForFuncSymbol(mlir::OpBuilder &b, mlir::Location loc
                                           const EcoRuntime &runtime,
                                           mlir::StringRef funcSymbol);
 
+
+/// Pushes GC root ranges for an i64 buffer of `boxed.size()` slots, one
+/// `eco_gc_push_stack_range` call per 64-slot chunk (the runtime asserts
+/// count <= 64 and takes one u64 mask; B23). Chunks with no boxed slot are
+/// skipped. The caller brackets it with one range-point save before the first
+/// chunk and one restore after the call (plans/wide-object-tail-kind-words-phase-2.md 2.2).
+inline void emitChunkedRootPush(mlir::OpBuilder &b, mlir::Location loc,
+                                const EcoRuntime &rt, mlir::Value base,
+                                llvm::ArrayRef<bool> boxed) {
+    auto i64 = b.getI64Type();
+    auto push = rt.getOrCreateGcPushStackRange(b);
+    for (size_t off = 0; off < boxed.size(); off += 64) {
+        size_t c = std::min<size_t>(64, boxed.size() - off);
+        uint64_t m = 0;
+        for (size_t i = 0; i < c; ++i)
+            if (boxed[off + i]) m |= uint64_t{1} << i;
+        if (!m) continue;
+        mlir::Value p = base;
+        if (off) {
+            auto offC = b.create<mlir::LLVM::ConstantOp>(loc, i64, static_cast<int64_t>(off));
+            p = b.create<mlir::LLVM::GEPOp>(loc, base.getType(), i64, base,
+                                            mlir::ValueRange{offC});
+        }
+        auto cnt = b.create<mlir::LLVM::ConstantOp>(loc, i64, static_cast<int64_t>(c));
+        auto mask = b.create<mlir::LLVM::ConstantOp>(
+            loc, i64, b.getI64IntegerAttr(static_cast<int64_t>(m)));
+        b.create<mlir::LLVM::CallOp>(loc, push, mlir::ValueRange{p, cnt, mask});
+    }
+}
 
 } // namespace detail
 } // namespace eco
