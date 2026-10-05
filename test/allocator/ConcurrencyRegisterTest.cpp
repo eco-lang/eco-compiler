@@ -2389,13 +2389,25 @@ HeapConfig cr012Config(uint32_t mode) {
     return cfg;
 }
 
-// Resident 4 KiB pages of [p, p + n).
+// Resident 4 KiB pages of [p, p + n), counted in 4 KiB units whatever the system page size
+// (16 KiB on arm64 macOS).
 size_t residentPages(char* p, size_t n) {
-    std::vector<unsigned char> v(n / 4096);
+#if defined(_WIN32)
+    (void)p;
+    (void)n;
+    return SIZE_MAX;   // only the fork-based scenarios call this, and they are POSIX only
+#else
+    const size_t pg = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+#if defined(__APPLE__)
+    std::vector<char> v((n + pg - 1) / pg);   // macOS declares mincore's vector char*
+#else
+    std::vector<unsigned char> v((n + pg - 1) / pg);
+#endif
     if (mincore(p, n, v.data()) != 0) return SIZE_MAX;
     size_t r = 0;
-    for (unsigned char c : v) r += c & 1;
-    return r;
+    for (auto c : v) r += c & 1;
+    return r * (pg / 4096);
+#endif
 }
 
 // Page work from an earlier test (another mode) is quiesced first, and the

@@ -1,0 +1,11 @@
+# Check text files out with LF on every platform. The TLA+ canary (test/tla/manifest.txt) and the
+# kernel license manifest hash source files byte for byte, so a CRLF checkout on Windows fails both.
+* text=auto eol=lf
+
+# cmd.exe misparses labels in LF-only batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Committed with CRLF: keep them byte for byte instead of renormalizing them.
+design_docs/elm_kernel_functions.csv -text
+benchmarks/l3-corunner-results/*.stdout -text

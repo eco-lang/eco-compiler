@@ -594,3 +594,18 @@ it no longer collides with `src/Eco` on case-insensitive filesystems. The grep s
 two `fork()` calls in Process.cpp with identical text; only the path prefix in the census lines
 changed. No fork site, fork handler or lifecycle state changed.
 **Verdict: no model change needed.**
+
+## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (GC_MODEL_001)
+
+Pin fired: region `OGS.runCycleStepConcurrent` (**d618e7fcb354**).
+
+Change: the paced assist's `expected = cycle_predicted_ * num / H` (P§3.5, GC_DET_001) was computed
+in `unsigned __int128`, whose divide lowers to `__udivti3`, which the MSVC runtime lacks (`ecoc.exe`
+failed to link on Windows). It is now `q * num + (r * num) / H` with `q, r = predicted / H,
+predicted % H`: exact, because `num <= H` keeps `q * num <= predicted`, and `T` is a `uint32_t`, so
+`r * num < H * H < 2^62`. Checked against the `__int128` form on 20,000,075 cases, the edges included
+(predicted = 2^64 - 1, H = 2^31): no mismatch. Same value on every platform, so the decision stays
+deterministic. No atomic step, lock, shared location or memory order changed. M6 maps
+`runCycleStepConcurrent` for `U_Reap` and `U_Relaunch` (`reapBackground`, the relaunch, `bg_ep_`), which
+this edit does not touch.
+**Verdict: no model change needed.**

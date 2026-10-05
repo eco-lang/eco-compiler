@@ -449,3 +449,18 @@ Drain). New A6 mutant `member_exits_undone` (an idle member leaves with neither 
 M2`: 34/34 as expected. A refused launch never starts a member (no marker loop runs), so the Drain
 contract is unaffected; `tenureConcLaunch`'s refusal leaves the L3 job to `tenureConcFinish` in the
 pause (M2's `MC_quick_tenure_l3` help path). **Verdict: model updated (ClosingFinished, mutant).**
+
+## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (GC_MODEL_001)
+
+Pin fired: region `OGS.runCycleStepConcurrent` (**d618e7fcb354**).
+
+Change: the paced assist's `expected = cycle_predicted_ * num / H` (P§3.5, GC_DET_001) was computed
+in `unsigned __int128`, whose divide lowers to `__udivti3`, which the MSVC runtime lacks (`ecoc.exe`
+failed to link on Windows). It is now `q * num + (r * num) / H` with `q, r = predicted / H,
+predicted % H`: exact, because `num <= H` keeps `q * num <= predicted`, and `T` is a `uint32_t`, so
+`r * num < H * H < 2^62`. Checked against the `__int128` form on 20,000,075 cases, the edges included
+(predicted = 2^64 - 1, H = 2^31): no mismatch. Same value on every platform, so the decision stays
+deterministic. No atomic step, lock, shared location or memory order changed. M2 takes the assist count
+`k` as owner-only and models what an assist does (`J_Start`, `J_AssistCheck`), not how its budget is
+computed; the decision and `k` are unchanged.
+**Verdict: no model change needed.**

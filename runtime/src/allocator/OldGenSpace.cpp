@@ -5211,8 +5211,11 @@ size_t OldGenSpace::runCycleStepConcurrent() {
         uint64_t expected = 0;
         if (k > L && H > 0) {
             const uint64_t num = std::min<uint64_t>(k - L, H);
-            expected = static_cast<uint64_t>(
-                (static_cast<unsigned __int128>(cycle_predicted_) * num) / H);
+            // predicted * num / H exactly, without a 128-bit divide (__udivti3 is not in
+            // the MSVC runtime): with predicted = q*H + r, q*num <= predicted, and
+            // r*num < H*H < 2^62 because T is a uint32_t.
+            const uint64_t q = cycle_predicted_ / H, r = cycle_predicted_ % H;
+            expected = q * num + (r * num) / H;
         }
         const uint64_t deficit = expected > U ? expected - U : 0;
         if (deficit >= config_->incremental_mark_min_slice_units && markWorkApprox()) {

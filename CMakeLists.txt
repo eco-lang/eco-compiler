@@ -1260,6 +1260,9 @@ endif()
 # (default build-validate beside this tree's source), configured here if it has no cache.
 set(ECO_REGISTER_VALIDATE_DIR "${CMAKE_SOURCE_DIR}/build-validate" CACHE PATH
     "Build tree with ECO_HEAP_VALIDATE=ON used by register-guards for the validate-only guards")
+# No `test` target in ECO_GLIBC_OUTPUT_RUNTIME or ECO_FRONTEND_ONLY trees (the static bundle's
+# runtime stage, the *-frontend presets), so no register-guards there either.
+if(TARGET test)
 add_custom_target(register-guards
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/run_register_guards.sh
             $<TARGET_FILE:test> ${ECO_REGISTER_VALIDATE_DIR} ${CMAKE_SOURCE_DIR} ${CMAKE_COMMAND}
@@ -1267,6 +1270,7 @@ add_custom_target(register-guards
     DEPENDS test
     COMMENT "Register guards: unit xfail CR- guards, CR-028 in the validate tree, harness arms (fork, trace, TSan)"
     USES_TERMINAL VERBATIM)
+endif()
 add_custom_target(register-guards-stress
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/gc-heap-tsan/run_fork_arms.py --tier stress
             --build-dir=${CMAKE_BINARY_DIR}/fork-det
