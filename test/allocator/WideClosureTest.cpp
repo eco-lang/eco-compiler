@@ -19,8 +19,10 @@
 #include "../TestSuite.hpp"
 #include <csignal>
 #include <cstring>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 using namespace Elm;
@@ -42,6 +44,7 @@ static_assert(extWords(20, CLOSURE_HDR_SLOTS) == 0 && extWords(21, CLOSURE_HDR_S
 static_assert(extWords(52, CLOSURE_HDR_SLOTS) == 1 && extWords(53, CLOSURE_HDR_SLOTS) == 2);
 static_assert(extWords(2047, CLOSURE_HDR_SLOTS) == 64);
 
+#if !defined(_WIN32)   // fork()ed children: POSIX only; those tests are no-ops on Windows
 template <class F> int runInChild(F f) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -52,6 +55,7 @@ template <class F> int runInChild(F f) {
     waitpid(pid, &st, 0);
     return WIFSIGNALED(st) ? -WTERMSIG(st) : WEXITSTATUS(st);
 }
+#endif
 
 // Slot i's kind, and the value it carries.
 u8 kindFor(u32 i) {
@@ -163,7 +167,7 @@ void checkClosure(uint64_t bits, u32 n, u32 max) {
 
 // Grows a closure of stage arity `max` by `step` args at a time, GCs between
 // the extends, and saturates the last chunk into evalCheck.
-void runChain(u32 max, u32 step) {
+[[maybe_unused]] void runChain(u32 max, u32 step) {
     uint64_t clo = makeCompiledClosure(max);
     StackRootGuard guard(reinterpret_cast<HPointer*>(&clo));
     checkClosure(clo, 0, max);
@@ -213,12 +217,17 @@ void runChain(u32 max, u32 step) {
 }
 
 void runArity(u32 max, const HeapConfig* cfg) {
+#if defined(_WIN32)
+    (void)max;
+    (void)cfg;
+#else
     int r = runInChild([&] {
         if (cfg) initAllocator(*cfg);
         else initAllocator(pressureHeapConfig());
         for (u32 step : {1u, 7u, 20u, 63u}) runChain(max, step);
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 void test_wide_closure_20() { runArity(20, nullptr); }
@@ -247,6 +256,7 @@ void test_wide_closure_1100_ylos() {
 
 // eco_alloc_closure_k / allocClosureK write all K ext words, zeros included.
 void test_alloc_writes_zero_ext_words() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         initAllocator();
         for (u32 max : {0u, 19u, 20u, 21u, 52u, 53u, 2047u}) {
@@ -264,10 +274,12 @@ void test_alloc_writes_zero_ext_words() {
         if (rr != -SIGABRT) _exit(6);
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 // HEAP_077: kernel closure slots >= 20 are boxed; a typed capture at idx 20 aborts.
 void test_closure_capture_typed_at_20_aborts() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         initAllocator();
         HPointer c = alloc::allocClosureK(evalCheck, 30, PK_Boxed);
@@ -281,12 +293,13 @@ void test_closure_capture_typed_at_20_aborts() {
         alloc::closureCapture(Allocator::instance().resolve(c), v, PK_Int);
     });
     TEST_ASSERT(r == -SIGABRT);
+#endif
 }
 
 // 2.6.8: a kernel descriptor above SAT_MAX_ARITY has no sat slots.
 u32 g_sumArity = 0;
 i64 g_sum = 0;
-void* evalSumBoxed(void** args) {
+[[maybe_unused]] void* evalSumBoxed(void** args) {
     i64 s = 0;
     for (u32 i = 0; i < g_sumArity; ++i) s += boxedInt(reinterpret_cast<uint64_t>(args[i]));
     g_sum = s;
@@ -294,6 +307,7 @@ void* evalSumBoxed(void** args) {
 }
 
 void test_kernel_desc_above_sat_max() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         initAllocator();
         const EvaluatorDesc* d20 = ecoDescForKernelEvaluator(evalSumBoxed, 20, 0);
@@ -323,6 +337,7 @@ void test_kernel_desc_above_sat_max() {
         }
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 // B19: getAllBoxedLayout no longer clamps n to 63.
