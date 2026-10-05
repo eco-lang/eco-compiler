@@ -92,20 +92,26 @@ RUN git clone --depth=1 https://github.com/brendangregg/FlameGraph.git /opt/Flam
 #                               --build-arg INSTALL_TLAPS=1
 #   graphviz                    renders TLC -dump dot state graphs
 #
-# Every download except TLAPS is SHA256-pinned, like compiler/cmake/toolchain.cmake.
-# SHAs computed from the upstream release assets on 2026-09-28.
+# --build-arg INSTALL_TLA=0 skips all of the above. GitHub CI builds the image
+# that way (linux-aot.yml): it runs no model checks, and tla-canary in ALL is a
+# plain sh hash check that needs none of these tools.
+#
+# tla2tools.jar is VENDORED (docker/vendor/tla2tools.jar). Every other download
+# except TLAPS is SHA256-pinned, like compiler/cmake/toolchain.cmake. SHAs
+# computed from the upstream release assets on 2026-09-28.
 #
 # tla2tools is 1.8.0, NOT the last stable release (1.7.4): current
 # CommunityModules fail on 1.7.4 with NoClassDefFoundError
 # (tlc2/value/impl/KSubsetValue), and trace validation needs them. Tested
 # 2026-09-28: TLC "2026.09.25.163503 (rev: 8f4bc8b)" + CommunityModules
 # 202609120237 model-checks the smoke spec below. v1.8.0 is a ROLLING
-# pre-release whose asset upstream re-uploads in place, so this pin WILL fail
-# the build some day. When it does, re-download, re-hash, bump the SHA on
-# purpose, and re-run `cmake --build build --target tla-check`.
+# pre-release whose asset upstream re-uploads in place, so a download pin broke
+# the build each time it moved (first on 2026-10-03); the vendored jar is that
+# tested build. To move to a newer TLC: replace docker/vendor/tla2tools.jar,
+# bump TLA2TOOLS_SHA256 on purpose, and re-run `cmake --build build --target tla-check`.
 # CMake finds the jars through TLA_TOOLS_DIR (plans/threaded-gc-tla-verification.md §6).
 # ============================================================
-ARG TLA2TOOLS_VERSION=1.8.0
+ARG INSTALL_TLA=1
 ARG TLA2TOOLS_SHA256=ab4694601923fd5ac06452abbf847c366a5054a3d739552085edd6ed986c29ec
 ARG TLA_COMMUNITY_MODULES_VERSION=202609120237
 ARG TLA_COMMUNITY_MODULES_SHA256=3d9a282c360e90d55e9bbe99caa2987d508fef1556d652760b4af4455e283733
@@ -116,12 +122,14 @@ ARG TEMURIN_VERSION=21.0.12.1+1
 ARG TEMURIN_SHA256_AMD64=2413149700df0f7d440500a84a8f764c535f21e5a5e87d38328b64eec2c5b500
 ARG TEMURIN_SHA256_ARM64=14be1f35ebdbd1f6e8d57eb911a3ffb74d6d9aa255abc5daf2b1302002cf2cf2
 
-RUN apt-get update && apt-get install -y --no-install-recommends graphviz \
+RUN [ "${INSTALL_TLA}" = "1" ] || exit 0; \
+    apt-get update && apt-get install -y --no-install-recommends graphviz \
  && rm -rf /var/lib/apt/lists/*
 
 # Symlinked into /usr/local/bin rather than put on PATH, because the ENV PATH
 # near the end of this file replaces PATH wholesale.
 RUN set -eu; \
+    [ "${INSTALL_TLA}" = "1" ] || exit 0; \
     case "$(dpkg --print-architecture)" in \
       amd64) JRE_ARCH=x64;     JRE_SHA256="${TEMURIN_SHA256_AMD64}" ;; \
       arm64) JRE_ARCH=aarch64; JRE_SHA256="${TEMURIN_SHA256_ARM64}" ;; \
@@ -139,11 +147,12 @@ RUN set -eu; \
     java -version
 ENV JAVA_HOME=/opt/java
 
+COPY docker/vendor/tla2tools.jar /tmp/tla2tools.jar
 RUN set -eu; \
+    [ "${INSTALL_TLA}" = "1" ] || { rm -f /tmp/tla2tools.jar; exit 0; }; \
     mkdir -p /opt/tlaplus; \
     cd /opt/tlaplus; \
-    curl -fsSL -o tla2tools.jar \
-      "https://github.com/tlaplus/tlaplus/releases/download/v${TLA2TOOLS_VERSION}/tla2tools.jar"; \
+    mv /tmp/tla2tools.jar tla2tools.jar; \
     echo "${TLA2TOOLS_SHA256}  tla2tools.jar" | sha256sum -c -; \
     curl -fsSL -o CommunityModules-deps.jar \
       "https://github.com/tlaplus/CommunityModules/releases/download/${TLA_COMMUNITY_MODULES_VERSION}/CommunityModules-deps-${TLA_COMMUNITY_MODULES_VERSION}.jar"; \

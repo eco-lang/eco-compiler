@@ -28,8 +28,10 @@ Apalache rows (the deep tier) also need `apalache-mc` on PATH. To run only the l
 checks at once: `test/tla/run_models.py --tier deep --config lemma/ --jobs 10`.
 
 Tools: `java` on PATH and `tla2tools.jar`, found through `--jar`, `$TLA2TOOLS_JAR` or
-`$TLA_TOOLS_DIR/tla2tools.jar`. The dev image (`docker/eco-dev.Dockerfile`) has both, at the pinned
-versions. The targets fail with a clear message when the tools are missing; they never skip.
+`$TLA_TOOLS_DIR/tla2tools.jar`. The dev image (`docker/eco-dev.Dockerfile`) has both: the jar is
+vendored at `docker/vendor/tla2tools.jar` (TLC 2026.09.25, rev 8f4bc8b) and the rest are pinned
+downloads. Images built with `--build-arg INSTALL_TLA=0`, as GitHub CI's are, have neither.
+The targets fail with a clear message when the tools are missing; they never skip.
 `-DECO_TLA=OFF` leaves them undefined.
 
 ## What `tla-check` checks
