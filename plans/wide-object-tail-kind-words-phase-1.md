@@ -2,7 +2,7 @@
 
 **Parent:** `plans/wide-object-tail-kind-words.md`. Its §S (shared definitions, commands, test
 switch) is binding; §2 (layout), §3 (bugs), §5 (GC concurrency procedure) and §6 (test mechanics)
-are the context. **Status:** READY FOR IMPLEMENTATION (draft 5, consolidated).
+are the context. **Status:** DONE (2026-10-05): all steps implemented, gate green (§7.1).
 
 **Scope:** B1, B2, B3, B6, B7, B8, B9, B10, B11, B13, B14, B15, B16, B17, B21 and B22, plus the
 D-semantics walker split (1d). **No object layout changes.**
@@ -1098,7 +1098,7 @@ are overview §S.7.
    | `elm/WideClosureArity63Test.elm` | crash or CHECK `res: [72873]` missing | P2 |
    | `elm/WideClosureArity300Test.elm` | `arity (300) exceeds 6-bit max_values limit (63)` | P2 |
    | `elm/WideClosureArity2047Test.elm` | `arity (2047) exceeds 6-bit max_values limit (63)` | P2 |
-   | `eco-kernel/WideClosureGcTest.elm` | CHECK `WideClosureGcTest value: 8956201` missing | P2 |
+   | `eco-kernel/WideClosureGcTest.elm` | CHECK `WideClosureGcTest value: 8956201` missing (in Phase 0 a fused 27-newarg extend failed the verifier; B16's fusion cap removes that) | P2 |
    | `elm/WideRecordDecoder70Test.elm` | `arity (70) exceeds 6-bit max_values limit (63)` | P3D |
    | `elm/WideRecordDecoder300Test.elm` | `arity (300) exceeds 6-bit max_values limit (63)` | P3D |
    | `elm/WideRecord33Test.elm`, `…40…`, `…600…`, `…1100…` | `field_count (N) exceeds Record's 32-slot GC scan limit` | P3D |
@@ -1113,7 +1113,9 @@ are overview §S.7.
      `pap_create_verify_ignores_roots.mlir`;
    - unit pins `wide B6 …`, `wide B7: pointerMask…`, `wide B7: equality…`, `wide B8 …`,
      `wide B11 …`, every `WideKindsTest` case, and the changed `HeapHelpersTest` cases.
-4. **Validate tree** (overview §S.7): `/work/build-validate/test/test --filter "wide|closureCapture|HeapHelpers|GCPressure" 2>&1 | tee /tmp/test_output_validate.txt`.
+4. **Validate tree** (overview §S.7): `--filter` is a plain substring match on test names (not a
+   regex, not suite names), so run `/work/build-validate/test/test --filter <p>` once per pattern
+   `wide`, `closureCapture`, `GCPressure`, `generic apply`, each tee'd.
    All pass, including `wide B7: boxed captures 32..39 …` and `wide B8b …`, which are only
    deterministic here. `ECO_PERSITE_ZERO` is unset, so the 0xD8 poison is active.
 5. `cmake --build build --target register-guards 2>&1 | tee /tmp/test_output_rg.txt`: the Phase 0
@@ -1129,34 +1131,69 @@ are overview §S.7.
 
 ---
 
+### 7.1 Gate result (recorded 2026-10-05)
+
+- **Build + strict tla-canary:** green (the canary fired only on `NP.scanEntryP`, new prefix
+  `e06ed77f04e5`; M3 AUDIT entry plus voluntary M1/M5 entries; manifest updated).
+- **LSS_022 kernel licenses** (not foreseen by this plan): the 1c edits to `Utils.cpp` and
+  `ListExports.cpp` re-hashed 19 licensed rows. Re-audited (kind reads only; no application,
+  retention, fabrication or type change), `audited:` dates advanced with a re-audit note
+  (17 `KernelSetFacts` rows, 2 `KernelIntrinsics` rows), manifest `--update`d.
+- **elm-tests:** 14,063 pass / 8 fail, exactly the 8 listed in step 2.
+- **full** (after the cache wipe): 2,082 run, 2,062 pass, 20 fail, exactly the 20 listed in step 3,
+  each with its listed reason. `WideClosureArity63Test` is a CHECK miss (not a crash) and
+  `WideClosureGcTest` a CHECK miss (B16's fusion cap removed Phase 0's fused 27-newarg extend).
+  Green: `WideRecordPatternTest`, `WideClosureGroupTest`, all six fixtures, every `wide B…` and
+  `WideKindsTest` case, the changed `HeapHelpersTest` case.
+- **Fixture not foreseen:** `test/codegen/allocate_ctor_max_size.mlir` allocated a 50-field
+  Custom through `eco.allocate_ctor` (uninitialised fields) and aborted on 1c.7's
+  `assertNarrowContainer`, correctly. Its stress case was lowered to 24 fields (Phase 3A deletes
+  `AllocateCtorOp`).
+- **Validate tree** (one run per substring): `wide` 18/18, `closureCapture` 2/2, `GCPressure` 1/1,
+  `generic apply` 4/4.
+- **register-guards:** green. **Bootstrap:** Stage 4b and Stage 8c fixed points hold; `eco-verify`
+  rc 0.
+- **Perf triple** (`eco-optP1`, sha256 `4044c08c2ae82ef3…`, built like `eco-optP0`): deterministic +
+  fixed point; wall 67.62 / 67.12 / 67.86 s (median 67.62, Phase 0 68.12); minor 1335, major 7,
+  promoted 6384 MiB, objects ≈ 304,480,819, GC time 2.88–2.96 s.
+  - The counters are **not** bit-identical to Phase 0, but the workload changed: the triple
+    compiles the compiler's own source, which Phase 1 edited (out.mlir +8.6 KB). Cross-check on
+    the SAME source: the Phase 0 binary (`eco-optP0`) compiling the Phase 1 source gives
+    byte-identical output to `eco-optP1` and counters minor 1334, objects ≈ 304,452,955, promoted
+    6384 MiB, wall median 68.85 s. The binary-only difference is +27,864 objects (+0.009 %) and one
+    minor GC, from the compiler's own new code (most likely B1's `generateCtor` building ABI and
+    slot type lists per constructor). No wall regression. Recorded; ships (correctness).
+- **Gate command fix:** step 4's `--filter "a|b|c"` matched nothing (substring filter); the step now
+  says to run one filter per pattern.
+
 ## 8. Phase 1 checklist
 
-- [ ] 1c.1 helpers + `WideKindsTest.cpp` registered; `fieldKind` / `bitmapSetKind` /
+- [x] 1c.1 helpers + `WideKindsTest.cpp` registered; `fieldKind` / `bitmapSetKind` /
       `pointerMaskFromKindBitmap` asserts.
-- [ ] 1c.2 equality and printers use the accessors (6 sites); `wide B7: equality…` green.
-- [ ] 1c.3 `closureCapture` abort; `wide B6` green; `HeapHelpersTest.cpp:1551` removed, boxed-past-25
+- [x] 1c.2 equality and printers use the accessors (6 sites); `wide B7: equality…` green.
+- [x] 1c.3 `closureCapture` abort; `wide B6` green; `HeapHelpersTest.cpp:1551` removed, boxed-past-25
       test added; kernel census checked.
-- [ ] 1c.4 apply paths: 10 rows (`ClosureKinds` snapshots, `pushRootsByKinds`, release checks).
-- [ ] 1c.5 `custom()` / `record()` chunked rooting; `wide B8` green; `record()` extras.
-- [ ] 1c.6 `eco_set_unboxed` abort; `wide B11` green.
-- [ ] 1c.7 `scalar_bytes` / narrow-container asserts.
-- [ ] 1d walker split, 29 rows (24 runtime, 5 test oracles); M3 audit plus voluntary M1/M5;
+- [x] 1c.4 apply paths: 10 rows (`ClosureKinds` snapshots, `pushRootsByKinds`, release checks).
+- [x] 1c.5 `custom()` / `record()` chunked rooting; `wide B8` green; `record()` extras.
+- [x] 1c.6 `eco_set_unboxed` abort; `wide B11` green.
+- [x] 1c.7 `scalar_bytes` / narrow-container asserts.
+- [x] 1d walker split, 29 rows (24 runtime, 5 test oracles); M3 audit plus voluntary M1/M5;
       manifest `--update`.
-- [ ] 1b.1 codegen helpers; `deriveAllParamKinds`; `EvaluatorDesc.kinds` params 0..31.
-- [ ] 1b.2 papCreate uses `packClosureWord` (IR byte-identical).
-- [ ] 1b.3 make.closure fixed; fixture extended with `@make_closure_rk1`; verifier 26 → 25.
-- [ ] 1b.4 `i1` construct operands rejected (`has i1 type`); 2 Phase 0 fixtures green.
-- [ ] 1b.5 codegen UB sites (13 rows).
-- [ ] 1b.6 PAPSimplify chain cap; `pap_simplify_fusion_slot_cap.mlir` green.
-- [ ] 1b.7 group roots chunked; `WideClosureGroupTest` green; extra fixture.
-- [ ] 1b.8 B22 papCreate verifier loops bounded by `num_captured`; extra fixture.
-- [ ] 1a.1 B1 plus B9; AbiCloning test 9 green (or the stats-counter fallback).
-- [ ] 1a.2 B2.
-- [ ] 1a.3 B3; the record-pattern elm-test pin and `WideRecordPatternTest` green; the Expr.elm crash
+- [x] 1b.1 codegen helpers; `deriveAllParamKinds`; `EvaluatorDesc.kinds` params 0..31.
+- [x] 1b.2 papCreate uses `packClosureWord` (IR byte-identical).
+- [x] 1b.3 make.closure fixed; fixture extended with `@make_closure_rk1`; verifier 26 → 25.
+- [x] 1b.4 `i1` construct operands rejected (`has i1 type`); 2 Phase 0 fixtures green.
+- [x] 1b.5 codegen UB sites (13 rows).
+- [x] 1b.6 PAPSimplify chain cap; `pap_simplify_fusion_slot_cap.mlir` green.
+- [x] 1b.7 group roots chunked; `WideClosureGroupTest` green; extra fixture.
+- [x] 1b.8 B22 papCreate verifier loops bounded by `num_captured`; extra fixture.
+- [x] 1a.1 B1 plus B9; AbiCloning test 9 green (or the stats-counter fallback).
+- [x] 1a.2 B2.
+- [x] 1a.3 B3; the record-pattern elm-test pin and `WideRecordPatternTest` green; the Expr.elm crash
       default.
-- [ ] 1a.4 B21 driver exit status; checked by hand once.
-- [ ] 1e comments.
-- [ ] Gate §7 green against its lists; results recorded in the parent plan's Phase 1 entry.
+- [x] 1a.4 B21 driver exit status; checked by hand once.
+- [x] 1e comments.
+- [x] Gate §7 green against its lists; results recorded in the parent plan's Phase 1 entry.
 
 ## 9. Open questions (with defaults; none blocks)
 

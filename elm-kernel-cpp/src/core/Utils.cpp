@@ -653,8 +653,8 @@ static bool eqHelp(void* a, void* b, int depth) {
             if (fieldCount != bc->header.size) return false;
 
             for (u32 i = 0; i < fieldCount; ++i) {
-                uint32_t aKind = static_cast<uint32_t>(Elm::fieldKind(ac->unboxed, i));
-                uint32_t bKind = static_cast<uint32_t>(Elm::fieldKind(bc->unboxed, i));
+                uint32_t aKind = static_cast<uint32_t>(Elm::customSlotKind(ac, i));
+                uint32_t bKind = static_cast<uint32_t>(Elm::customSlotKind(bc, i));
                 if (!eqUnboxableSlot(allocator, ac->values[i], bc->values[i], aKind, bKind, depth)) return false;
             }
 
@@ -669,8 +669,8 @@ static bool eqHelp(void* a, void* b, int depth) {
             if (fieldCount != br->header.size) return false;
 
             for (u32 i = 0; i < fieldCount; ++i) {
-                uint32_t aKind = static_cast<uint32_t>(Elm::fieldKind(ar->unboxed, i));
-                uint32_t bKind = static_cast<uint32_t>(Elm::fieldKind(br->unboxed, i));
+                uint32_t aKind = static_cast<uint32_t>(Elm::recordSlotKind(ar, i));
+                uint32_t bKind = static_cast<uint32_t>(Elm::recordSlotKind(br, i));
                 if (!eqUnboxableSlot(allocator, ar->values[i], br->values[i], aKind, bKind, depth)) return false;
             }
 

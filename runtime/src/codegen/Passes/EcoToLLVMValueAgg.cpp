@@ -73,17 +73,14 @@ static Value widenFieldToI64Local(Value val, Location loc,
 
 /// Compute the 2-bit per-slot kind bitmap for a sequence of element types.
 /// Matches the encoding used by eco.construct.* heap ops: 00 = boxed
-/// HPointer, 01 = Int (i64), 10 = Float (f64), 11 = Char (i16).
+/// HPointer, 01 = Int (i64), 10 = Float (f64), 11 = Char (i16). One word:
+/// callers build containers of at most 32 (record) / 24 (custom) slots.
 static int64_t kindBitmapFor(ArrayRef<Type> elements) {
-    int64_t bits = 0;
-    for (auto [i, t] : llvm::enumerate(elements)) {
-        int64_t kind = 0;
-        if (t.isInteger(64)) kind = 1;
-        else if (t.isF64())  kind = 2;
-        else if (t.isInteger(16)) kind = 3;
-        bits |= (kind & 0x3LL) << (2LL * static_cast<int64_t>(i));
-    }
-    return bits;
+    assert(elements.size() <= 32 && "kindBitmapFor: more kinds than one word");
+    SmallVector<uint8_t> kinds;
+    for (Type t : elements)
+        kinds.push_back(slotKindOf(t));
+    return static_cast<int64_t>(kindsWord(kinds, 0, elements.size()));
 }
 
 /// Extract field i from a converted aggregate struct as an LLVM Value.
@@ -793,7 +790,6 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
         ArrayRef<Type> captures = envTy.getCaptures();
         int64_t numCaptured = static_cast<int64_t>(captures.size());
         int64_t arity = op.getArity();
-        int64_t unboxedBitmap = kindBitmapFor(captures);
 
         Value envAgg = adaptor.getEnv();
 
@@ -854,12 +850,22 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             storeGepTy = ptrTy;
         }
 
-        // Store the packed header field at offset 8:
-        //   n_values:6 | max_values:6 | unboxed:52
-        // mirroring papCreate's encoding.
-        uint64_t packed = static_cast<uint64_t>(numCaptured)
-                        | (static_cast<uint64_t>(arity) << 6)
-                        | (static_cast<uint64_t>(unboxedBitmap) << 12);
+        // Store the packed header field at offset 8, papCreate's encoding
+        // (B13): n_values:6 | max_values:6 | result_kind:2 | unboxed:50.
+        // The evaluator is the bare-function descriptor (legacy args-array
+        // convention, like papCreate's untyped path), so the kinds are the
+        // capture kinds only. result_kind comes from the optional
+        // discardable `_result_kind` (default 0 = boxed), the papCreate
+        // convention. MakeClosureOp::verify caps captures at 25.
+        SmallVector<uint8_t> capKinds;
+        for (Type t : captures)
+            capKinds.push_back(slotKindOf(t));
+        uint8_t resultKind = 0;
+        if (auto a = op->getAttrOfType<IntegerAttr>("_result_kind"))
+            resultKind = static_cast<uint8_t>(a.getInt() & 3);
+        uint64_t packed = packClosureWord(
+            static_cast<uint32_t>(numCaptured), static_cast<uint32_t>(arity),
+            resultKind, packKinds(capKinds, layout::ClosureHdrSlots).hdrBits);
         auto packedConst = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, rewriter.getI64IntegerAttr(static_cast<int64_t>(packed)));
         auto offset8 = rewriter.create<LLVM::ConstantOp>(

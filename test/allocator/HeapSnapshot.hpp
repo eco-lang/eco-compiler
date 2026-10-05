@@ -126,8 +126,8 @@ struct HeapSnapshot {
                 }
                 case Tag_Custom: {
                     Custom *custom = static_cast<Custom *>(obj);
-                    for (size_t i = 0; i < hdr->size && i < 48; i++) {
-                        if (Elm::fieldKind(custom->unboxed, i) == 0 && custom->values[i].p.ptr_ind == 0) {
+                    for (size_t i = 0; i < hdr->size; i++) {
+                        if (Elm::customSlotKind(custom, static_cast<u32>(i)) == 0 && custom->values[i].p.ptr_ind == 0) {
                             void *child = AllocatorTestAccess::fromPointer(custom->values[i].p);
                             if (child && allocated_set.count(child) && reachable.insert(child).second) {
                                 worklist.push_back(child);
@@ -138,8 +138,8 @@ struct HeapSnapshot {
                 }
                 case Tag_Record: {
                     Record *record = static_cast<Record *>(obj);
-                    for (size_t i = 0; i < hdr->size && i < 64; i++) {
-                        if (Elm::fieldKind(record->unboxed, i) == 0 && record->values[i].p.ptr_ind == 0) {
+                    for (size_t i = 0; i < hdr->size; i++) {
+                        if (Elm::recordSlotKind(record, static_cast<u32>(i)) == 0 && record->values[i].p.ptr_ind == 0) {
                             void *child = AllocatorTestAccess::fromPointer(record->values[i].p);
                             if (child && allocated_set.count(child) && reachable.insert(child).second) {
                                 worklist.push_back(child);
@@ -168,8 +168,8 @@ struct HeapSnapshot {
                 }
                 case Tag_Closure: {
                     Closure *closure = static_cast<Closure *>(obj);
-                    for (size_t i = 0; i < closure->n_values && i < 52; i++) {
-                        if (Elm::fieldKind(closure->unboxed, i) == 0 && closure->values[i].p.ptr_ind == 0) {
+                    for (size_t i = 0; i < closure->n_values; i++) {
+                        if (Elm::closureSlotKind(closure, static_cast<u32>(i)) == 0 && closure->values[i].p.ptr_ind == 0) {
                             void *child = AllocatorTestAccess::fromPointer(closure->values[i].p);
                             if (child && allocated_set.count(child) && reachable.insert(child).second) {
                                 worklist.push_back(child);
@@ -298,8 +298,8 @@ struct HeapSnapshot {
                 }
                 case Tag_Custom: {
                     Custom *custom = static_cast<Custom *>(obj);
-                    for (size_t i = 0; i < hdr->size && i < 48; i++) {
-                        if (Elm::fieldKind(custom->unboxed, i) == 0 && custom->values[i].p.ptr_ind == 0) {
+                    for (size_t i = 0; i < hdr->size; i++) {
+                        if (Elm::customSlotKind(custom, static_cast<u32>(i)) == 0 && custom->values[i].p.ptr_ind == 0) {
                             void *child = AllocatorTestAccess::fromPointer(custom->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
@@ -310,8 +310,8 @@ struct HeapSnapshot {
                 }
                 case Tag_Record: {
                     Record *record = static_cast<Record *>(obj);
-                    for (size_t i = 0; i < hdr->size && i < 64; i++) {
-                        if (Elm::fieldKind(record->unboxed, i) == 0 && record->values[i].p.ptr_ind == 0) {
+                    for (size_t i = 0; i < hdr->size; i++) {
+                        if (Elm::recordSlotKind(record, static_cast<u32>(i)) == 0 && record->values[i].p.ptr_ind == 0) {
                             void *child = AllocatorTestAccess::fromPointer(record->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
@@ -342,8 +342,8 @@ struct HeapSnapshot {
                 }
                 case Tag_Closure: {
                     Closure *closure = static_cast<Closure *>(obj);
-                    for (size_t i = 0; i < closure->n_values && i < 52; i++) {
-                        if (Elm::fieldKind(closure->unboxed, i) == 0 && closure->values[i].p.ptr_ind == 0) {
+                    for (size_t i = 0; i < closure->n_values; i++) {
+                        if (Elm::closureSlotKind(closure, static_cast<u32>(i)) == 0 && closure->values[i].p.ptr_ind == 0) {
                             void *child = AllocatorTestAccess::fromPointer(closure->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);

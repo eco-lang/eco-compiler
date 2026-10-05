@@ -399,14 +399,18 @@ LogicalResult CustomConstructOp::verify() {
     const uint64_t kind = (static_cast<uint64_t>(unboxedBits) >> shift) & 0x3ULL;
     Type fieldType = fields[i].getType();
 
+    // B14: Bool is boxed in heap fields (REP_CLOSURE_001 / FORBID_CLOSURE_001).
+    if (fieldType.isInteger(1))
+      return emitOpError("field ") << i
+             << " has i1 type: Bool must be boxed to !eco.value before construction";
+
     switch (kind) {
       case 0:  // Boxed HPointer (!eco.value)
         // Aggregate-typed fields are accepted under kind=0: the Eco→LLVM
         // construct lowering boxes them via eco.to_heap so the slot ends up
         // holding a boxed HPointer like any other kind=0 field.
         if (!isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
-                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType) &&
-            !fieldType.isInteger(1)) {
+                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType)) {
           return emitOpError("field ") << i
                  << " has kind=boxed but non-boxed SSA type " << fieldType;
         }
@@ -470,15 +474,19 @@ LogicalResult RecordConstructOp::verify() {
         i < 32 ? (static_cast<uint64_t>(unboxedBits) >> shift) & 0x3ULL : 0;
     Type fieldType = fields[i].getType();
 
+    // B14: Bool is boxed in heap fields (REP_CLOSURE_001 / FORBID_CLOSURE_001).
+    if (fieldType.isInteger(1))
+      return emitOpError("field ") << i
+             << " has i1 type: Bool must be boxed to !eco.value before construction";
+
     switch (kind) {
       case 0:  // Boxed HPointer (!eco.value)
         // Aggregate-typed fields are accepted under kind=0: the Eco→LLVM
         // construct lowering boxes them via eco.to_heap so the slot ends up
-        // holding a boxed HPointer like any other kind=0 field. i1 (Bool)
-        // is accepted because Bool lowers to an embedded-constant HPointer.
+        // holding a boxed HPointer like any other kind=0 field. Bool (i1)
+        // is rejected above: the front end boxes it to !eco.value first.
         if (!isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
-                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType) &&
-            !fieldType.isInteger(1)) {
+                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType)) {
           return emitOpError("field ") << i
                  << " has kind=boxed but non-boxed SSA type " << fieldType;
         }
@@ -569,9 +577,13 @@ LogicalResult PapCreateOp::verify() {
     return emitOpError("unboxed_bitmap must be 0 when num_captured is 0");
   }
 
-  // Verify per-slot kind matches operand SSA type.
+  // Verify per-slot kind matches operand SSA type. B22: only the real
+  // captures; getCaptured() also holds the GC-root operands EcoGCPrepare
+  // appends (always !eco.value), and slots past num_captured (<= 25) would
+  // shift past the bitmap.
   auto captured = getCaptured();
-  for (size_t i = 0; i < captured.size(); ++i) {
+  const size_t realCaptured = static_cast<size_t>(numCaptured);
+  for (size_t i = 0; i < realCaptured; ++i) {
     const uint64_t shift = 2ULL * i;
     const uint64_t kind = (bitmap >> shift) & 0x3ULL;
     Type ty = captured[i].getType();
@@ -606,7 +618,7 @@ LogicalResult PapCreateOp::verify() {
   // CGEN_057 kernel existence check is now in verifySymbolUses (O(1) cached).
 
   // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary
-  for (size_t i = 0; i < captured.size(); ++i) {
+  for (size_t i = 0; i < realCaptured; ++i) {
     Type ty = captured[i].getType();
     if (ty.isInteger(1)) {
       return emitOpError("captured Bool (i1) at index ") << i
@@ -772,6 +784,11 @@ LogicalResult PapCreateGroupOp::verify() {
       return emitOpError("cross_edges slot ") << slot
              << " out of range for consumer " << consumer
              << " with num_captured " << consumerCap;
+    // num_captured <= 25 is checked per sibling below; reject a slot past it
+    // here, before it becomes a shift.
+    if (slot >= 25)
+      return emitOpError("cross_edges slot ") << slot
+             << " exceeds 25-slot limit under 2-bit kind encoding";
     // Cross-edge slot must be boxed (bit 2*slot of unboxed_bitmap[consumer] == 0).
     uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[consumer]).getInt();
     if (((bitmap >> (2ULL * static_cast<uint64_t>(slot))) & 0x3ULL) != 0)
@@ -830,6 +847,7 @@ LogicalResult PapCreateGroupOp::verify() {
     for (int64_t j = 0; j < cc; ++j) {
       // Non-sibling captures occupy the low slots [0..cc); sibling captures
       // (cross-edge consumers) live at the remaining slots.
+      assert(j < 25 && "cc <= num_captured <= 25, checked above");
       const uint64_t shift = 2ULL * static_cast<uint64_t>(j);
       const uint64_t kind = (bitmap >> shift) & 0x3ULL;
       Type ty = captures[operandCursor + j].getType();
@@ -1446,9 +1464,9 @@ LogicalResult MakeClosureOp::verify() {
     return emitOpError("env captures (") << numCaptures
            << ") must be less than arity (" << arity << ")";
   }
-  if (numCaptures > 26) {
+  if (numCaptures > 25) {
     return emitOpError("env captures (") << numCaptures
-           << ") exceeds 26-slot limit under 2-bit kind encoding";
+           << ") exceeds 25-slot limit under 2-bit kind encoding";
   }
   if (arity > 63) {
     return emitOpError("arity (") << arity

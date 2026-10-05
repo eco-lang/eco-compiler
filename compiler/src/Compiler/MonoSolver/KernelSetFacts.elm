@@ -1620,63 +1620,63 @@ facts =
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp", "elm-kernel-cpp/src/core/List.cpp" ]
-                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_cons:276-283 (ABI :288-304) | helpers: List.cpp:cons:18-20 | type: elm/core/1.0.5/src/List.elm:106 | B1: head word stored verbatim in the fresh cell, B1(b) MOVE along a | B2: no static/global/cache/task write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_cons:276-283 (ABI :288-304) | helpers: List.cpp:cons:18-20 | type: elm/core/1.0.5/src/List.elm:106 | B1: head word stored verbatim in the fresh cell, B1(b) MOVE along a | B2: no static/global/cache/task write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "fromArray" )
           , TypeFaithful
                 { scope = TransportsAs (TsFun (tsList (TsVar "a")) (tsList (TsVar "a")))
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_fromArray:306-354 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001) which is what SOLVES the occurrence -- the earlier Array/JsArray shapes matched nothing because the non-List side was an unsolved var | B1: B1(b)/B1(c) only -- Nil and already-Cons inputs return the ARGUMENT by identity :310-330, and the conversion copies element words verbatim | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure; allocation is list cells | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_fromArray:306-354 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001) which is what SOLVES the occurrence -- the earlier Array/JsArray shapes matched nothing because the non-List side was an unsolved var | B1: B1(b)/B1(c) only -- Nil and already-Cons inputs return the ARGUMENT by identity :310-330, and the conversion copies element words verbatim | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure; allocation is list cells | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map2" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map2:592-600 | helpers: kernelListMapN:432-590, appendClosureResult:233 | type: elm/core/1.0.5/src/List.elm:437 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map2:592-600 | helpers: kernelListMapN:432-590, appendClosureResult:233 | type: elm/core/1.0.5/src/List.elm:437 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map3" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map3:602-611 | helpers: kernelListMapN:432-590 (n=3 at :609) | type: elm/core/1.0.5/src/List.elm:443 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map3:602-611 | helpers: kernelListMapN:432-590 (n=3 at :609) | type: elm/core/1.0.5/src/List.elm:443 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map4" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map4:613-623 | helpers: kernelListMapN:432-590 (n=4 at :621) | type: elm/core/1.0.5/src/List.elm:449 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map4:613-623 | helpers: kernelListMapN:432-590 (n=4 at :621) | type: elm/core/1.0.5/src/List.elm:449 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "map5" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map5:625-637 | helpers: kernelListMapN:432-590 (n=5 at :635) | type: elm/core/1.0.5/src/List.elm:455 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map5:625-637 | helpers: kernelListMapN:432-590 (n=5 at :635) | type: elm/core/1.0.5/src/List.elm:455 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "toArray" )
           , TypeFaithful
                 { scope = TransportsAs (TsFun (tsList (TsVar "a")) (tsList (TsVar "a")))
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_toArray:356-392 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001); the consumer StringOps::join takes a cons list (StringOps.cpp:659) | B1: B1(b)/B1(c) only -- Nil and Cons inputs return the ARGUMENT by identity :362-375; the fallback copies element words via listToVectorU64 | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_toArray:356-392 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001); the consumer StringOps::join takes a cons list (StringOps.cpp:659) | B1: B1(b)/B1(c) only -- Nil and Cons inputs return the ARGUMENT by identity :362-375; the fallback copies element words via listToVectorU64 | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "sortBy" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortBy:759-830 | helpers: listFromPermutation:741, Utils.cpp:compare:437 | type: elm/core/1.0.5/src/List.elm:484 | B1: apply-only via eco_apply_closure :787; result = permutation :828 | B2: no retention; cmp read-only | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortBy:759-830 | helpers: listFromPermutation:741, Utils.cpp:compare:437 | type: elm/core/1.0.5/src/List.elm:484 | B1: apply-only via eco_apply_closure :787; result = permutation :828 | B2: no retention; cmp read-only | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "List", "sortWith" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortWith:832-887 | helpers: listFromPermutation:741 | type: elm/core/1.0.5/src/List.elm:502 | B1: apply-only via eco_apply_closure :873; result = permutation :885 | B2: call-local buffers, roots balanced :868-883 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortWith:832-887 | helpers: listFromPermutation:741 | type: elm/core/1.0.5/src/List.elm:502 | B1: apply-only via eco_apply_closure :873; result = permutation :885 | B2: call-local buffers, roots balanced :868-883 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "MVar", "drop" )
@@ -2152,56 +2152,56 @@ facts =
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_append:161-171 | helpers: Utils.cpp:append:809-833 | type: elm/core/1.0.5/src/Basics.elm:510 | B1: B1(b)/(c); slots copied verbatim, b aliased as tail, no apply | B2: result is sole write target; roots balanced | B3: no closure alloc; slots unwrapped | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_append:161-171 | helpers: Utils.cpp:append:809-833 | type: elm/core/1.0.5/src/Basics.elm:510 | B1: B1(b)/(c); slots copied verbatim, b aliased as tail, no apply | B2: result is sole write target; roots balanced | B3: no closure alloc; slots unwrapped | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Utils", "compare" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_compare:14-17 | helpers: Utils.cpp:compare:437-443, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:418 (comparable -> comparable -> Order) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_compare:14-17 | helpers: Utils.cpp:compare:437-443, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:418 (comparable -> comparable -> Order) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Utils", "equal" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_equal:108-110 | helpers: Utils.cpp:eqHelp:507-720 | type: elm/core/1.0.5/src/Basics.elm:348 (a -> a -> Bool) | B1: reads only :557-696; Tag_Closure arm :713-715 | B2: no static mutable storage; dictEq scratch frame-local | B3: no allocClosure/papCreate | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_equal:108-110 | helpers: Utils.cpp:eqHelp:507-720 | type: elm/core/1.0.5/src/Basics.elm:348 (a -> a -> Bool) | B1: reads only :557-696; Tag_Closure arm :713-715 | B2: no static mutable storage; dictEq scratch frame-local | B3: no allocClosure/papCreate | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Utils", "ge" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_ge:128-130 | helpers: Utils.cpp:ge:801-803, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:385 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_ge:128-130 | helpers: Utils.cpp:ge:801-803, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:385 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Utils", "gt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_gt:124-126 | helpers: Utils.cpp:gt:797-799, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:373 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_gt:124-126 | helpers: Utils.cpp:gt:797-799, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:373 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Utils", "le" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_le:120-122 | helpers: Utils.cpp:le:793-795, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:379 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_le:120-122 | helpers: Utils.cpp:le:793-795, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:379 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Utils", "lt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_lt:116-118 | helpers: Utils.cpp:lt:789-791, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:367 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_lt:116-118 | helpers: Utils.cpp:lt:789-791, :cmp:288-431 | type: elm/core/1.0.5/src/Basics.elm:367 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         , ( ( "Utils", "notEqual" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
-                , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_notEqual:112-114 | helpers: Utils.cpp:eqHelp:507-720 (shared with equal) | type: elm/core/1.0.5/src/Basics.elm:357 (a -> a -> Bool) | B1: reads only :557-696; Tag_Closure arm :713-715 | B2: no static mutable storage | B3: no allocClosure/papCreate | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_notEqual:112-114 | helpers: Utils.cpp:eqHelp:507-720 (shared with equal) | type: elm/core/1.0.5/src/Basics.elm:357 (a -> a -> Bool) | B1: reads only :557-696; Tag_Closure arm :713-715 | B2: no static mutable storage | B3: no allocClosure/papCreate | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change)"
                 }
           )
         ]

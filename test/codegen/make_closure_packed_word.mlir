@@ -19,7 +19,19 @@ module {
          : (!eco.closure_env<i64, !eco.value>) -> !eco.value
     return %clo : !eco.value
   }
+
+  func.func @make_closure_rk1(%cap0: i64, %cap1: !eco.value) -> !eco.value {
+    %env = eco.make.closure_env(%cap0, %cap1)
+         : (i64, !eco.value) -> !eco.closure_env<i64, !eco.value>
+    %clo = eco.make.closure @stub_evaluator, %env {arity = 3 : i64, _result_kind = 1 : i8}
+         : (!eco.closure_env<i64, !eco.value>) -> !eco.value
+    return %clo : !eco.value
+  }
 }
 
 // CHECK-LABEL: llvm.func @make_closure_packed
 // CHECK: llvm.mlir.constant(16578 : i64)
+
+// rk=1: 16578 | 1<<12 = 20674
+// CHECK-LABEL: llvm.func @make_closure_rk1
+// CHECK: llvm.mlir.constant(20674 : i64)

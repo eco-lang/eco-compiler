@@ -140,14 +140,14 @@ struct Workload {
                 Custom* c = static_cast<Custom*>(obj);
                 mix(c->ctor);
                 for (u32 i = 0; i < hd->size; ++i)
-                    if (Elm::fieldKind(c->unboxed, i) == 0) mix(hashValue(c->values[i].p, depth + 1));
+                    if (Elm::customSlotKind(c, i) == 0) mix(hashValue(c->values[i].p, depth + 1));
                     else mix(c->values[i].i);
                 break;
             }
             case Tag_Record: {
                 Record* r = static_cast<Record*>(obj);
                 for (u32 i = 0; i < hd->size; ++i)
-                    if (Elm::fieldKind(r->unboxed, i) == 0) mix(hashValue(r->values[i].p, depth + 1));
+                    if (Elm::recordSlotKind(r, i) == 0) mix(hashValue(r->values[i].p, depth + 1));
                     else mix(r->values[i].i);
                 break;
             }

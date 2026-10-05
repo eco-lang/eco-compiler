@@ -498,13 +498,17 @@ void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
             break;
         }
         case Tag_Custom: {
-            Custom* c = static_cast<Custom*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 24; i++) unbox(c->values[i], Elm::fieldKind(c->unboxed, i) == 0);
+            Custom* c = static_cast<Custom*>(obj);   // header slots, then the tail (boxed: D semantics)
+            const u32 n = hdr->size, h = n < Elm::CUSTOM_HDR_SLOTS ? n : Elm::CUSTOM_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) unbox(c->values[i], Elm::kindInWord(c->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) unbox(c->values[i], Elm::customSlotKind(c, i) == 0);
             break;
         }
         case Tag_Record: {
             Record* r = static_cast<Record*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 32; i++) unbox(r->values[i], Elm::fieldKind(r->unboxed, i) == 0);
+            const u32 n = hdr->size, h = n < Elm::RECORD_HDR_SLOTS ? n : Elm::RECORD_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) unbox(r->values[i], Elm::kindInWord(r->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) unbox(r->values[i], Elm::recordSlotKind(r, i) == 0);
             break;
         }
         case Tag_DynRecord: {
@@ -515,7 +519,7 @@ void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
         }
         case Tag_Closure: {
             Closure* cl = static_cast<Closure*>(obj);   // APPLIED slots only (n_values)
-            for (u32 i = 0; i < cl->n_values; i++) unbox(cl->values[i], Elm::fieldKind(cl->unboxed, i) == 0);
+            for (u32 i = 0; i < cl->n_values; i++) unbox(cl->values[i], Elm::closureSlotKind(cl, i) == 0);
             break;
         }
         case Tag_Cons: {

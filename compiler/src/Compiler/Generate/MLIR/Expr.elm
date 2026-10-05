@@ -512,8 +512,12 @@ generateExpr ctx0 expr =
                     Types.computeRecordLayout (getRecordFields recordType)
 
                 fieldInfo =
-                    ListX.find (\fi -> fi.name == fieldName) layout.fields
-                        |> Maybe.withDefault { name = fieldName, index = 0, monoType = fieldType, isUnboxed = False }
+                    case ListX.find (\fi -> fi.name == fieldName) layout.fields of
+                        Just fi ->
+                            fi
+
+                        Nothing ->
+                            crash ("record access: field " ++ fieldName ++ " not in layout")
             in
             generateRecordAccess ctx record fieldInfo.index fieldInfo.isUnboxed fieldType
 
@@ -8550,7 +8554,7 @@ generateCustomCreateHeap ctx shape args =
 {-| Per-slot ABI coercion for a custom construction: each arg is coerced to
 the ctor layout's slot type (unboxed field ⇒ its ABI primitive, boxed
 field ⇒ `!eco.value`) — mirroring `boxToMatchSignatureTyped` semantics and
-`Functions.generateCtor`'s own argument ABI. Shared by the SSA-aggregate
+the coercion `Functions.generateCtor` applies to its ABI-typed parameters. Shared by the SSA-aggregate
 (`eco.make.custom`) and heap (`eco.construct.custom`) emitters so the two
 forms can never drift.
 -}

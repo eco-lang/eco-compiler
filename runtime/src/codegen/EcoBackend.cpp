@@ -1825,6 +1825,9 @@ static void expandSatMarkers(Module &m) {
         Value *c1b = b.CreateICmpULE(mx, b.getInt64(25));
         Value *c2 = b.CreateICmpEQ(rk, b.getInt64(rcC->getZExtValue()));
         Value *shift = b.CreateShl(n, b.getInt64(1));
+        // Sat sites carry at most 8 newargs, sat entries at most 16 params
+        // (getOrCreateSatEntry), so the 2N-bit mask never shifts past 63.
+        assert(N <= 16 && "sat marker: newarg count past the entry bound");
         Value *km = b.CreateAnd(b.CreateLShr(ub, shift),
                                 b.getInt64((uint64_t{1} << (2 * N)) - 1));
         Value *c3 = b.CreateICmpEQ(km, b.getInt64(kcC->getZExtValue()));

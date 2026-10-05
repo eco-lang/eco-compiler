@@ -780,11 +780,14 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             -- the field directly as i1 reads only the low bit
                             -- of the HPointer, which is 0 for both True and
                             -- False — silently inverting Bool pattern tests.
-                            -- Other targetTypes pass through unchanged because
-                            -- the caller has set them to match the field's
-                            -- storage. Mirrors Tuple2/Tuple3 handling.
+                            -- An Int/Float/Char target on a boxed slot (a field
+                            -- past the unboxed slot cap) is unboxed the same way
+                            -- (REP_BOUNDARY_001: the slot kind is 00, so the
+                            -- projection is !eco.value). Other targetTypes pass
+                            -- through unchanged because the caller has set them
+                            -- to match the field's storage.
                             if
-                                targetType == I1
+                                targetType == I1 || Types.isUnboxable targetType
                             then
                                 let
                                     ( valVar, ctxV ) =
@@ -794,7 +797,7 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                                         projCustom ctxV valVar index Types.ecoValue
 
                                     ( unboxOps, unboxedVar, ctxU ) =
-                                        Intrinsics.unboxToType ctxP valVar I1
+                                        Intrinsics.unboxToType ctxP valVar targetType
                                 in
                                 ( projectOp :: unboxOps, unboxedVar, ctxU )
 
@@ -889,24 +892,67 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
             Types.computeRecordLayout (getRecordFields containerType)
 
         fieldInfo =
-            findFieldInfoByName fieldName layout.fields
-                |> Maybe.withDefault
-                    { name = fieldName
-                    , index = 0
-                    , monoType = resultType
-                    , isUnboxed = False
-                    }
+            case findFieldInfoByName fieldName layout.fields of
+                Just fi ->
+                    fi
 
-        -- Project directly to the targetType using record projection.
-        -- MonoField is generated from TOpt.Field which is record field access.
-        -- Primitive types are stored unboxed and should be read directly.
-        ( ctx3, projectOp ) =
-            Ops.ecoProjectRecord ctx2 resultVar fieldInfo.index targetType subVar
+                Nothing ->
+                    Utils.Crash.crash ("generateMonoFieldOnHeap: field " ++ fieldName ++ " is not in the record layout")
+
+        -- The slot's stored type (REP_BOUNDARY_001): the field's ABI primitive
+        -- when its kind is unboxed, else !eco.value (Bool, and every field past
+        -- the record's unboxed slot cap).
+        storedType =
+            if fieldInfo.isUnboxed then
+                Types.monoTypeToAbi fieldInfo.monoType
+
+            else
+                Types.ecoValue
     in
-    ( projectOp :: revAcc1
-    , resultVar
-    , ctx3
-    )
+    if storedType == targetType then
+        let
+            ( ctx3, projectOp ) =
+                Ops.ecoProjectRecord ctx2 resultVar fieldInfo.index targetType subVar
+        in
+        ( projectOp :: revAcc1, resultVar, ctx3 )
+
+    else if fieldInfo.isUnboxed && Types.isEcoValueType targetType then
+        -- Unboxed slot, boxed target: project the primitive, then box (mirrors
+        -- the CustomContainer arm of generateMonoIndexOnHeap).
+        let
+            ( primVar, ctxA ) =
+                Ctx.freshVar ctx2
+
+            ( ctxB, projectOp ) =
+                Ops.ecoProjectRecord ctxA primVar fieldInfo.index storedType subVar
+
+            ( ctxC, boxOp ) =
+                boxPrimitive ctxB resultVar primVar storedType
+        in
+        ( boxOp :: projectOp :: revAcc1, resultVar, ctxC )
+
+    else if not fieldInfo.isUnboxed && (targetType == I1 || Types.isUnboxable targetType) then
+        -- Boxed slot, primitive target: project !eco.value, then unbox. Covers
+        -- an Int/Float/Char field past the slot cap and a Bool scrutinee, whose
+        -- slot holds the True/False HPointer constants (REP_CONSTANT_003).
+        let
+            ( valVar, ctxA ) =
+                Ctx.freshVar ctx2
+
+            ( ctxB, projectOp ) =
+                Ops.ecoProjectRecord ctxA valVar fieldInfo.index Types.ecoValue subVar
+
+            ( unboxOps, unboxedVar, ctxC ) =
+                Intrinsics.unboxToType ctxB valVar targetType
+        in
+        ( List.foldl (::) (projectOp :: revAcc1) unboxOps, unboxedVar, ctxC )
+
+    else
+        let
+            ( ctx3, projectOp ) =
+                Ops.ecoProjectRecord ctx2 resultVar fieldInfo.index targetType subVar
+        in
+        ( projectOp :: revAcc1, resultVar, ctx3 )
 
 
 generateMonoUnboxOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )

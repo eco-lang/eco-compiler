@@ -134,7 +134,7 @@ region  f6d3426d673d49bd16d344ce3d51e1698ba263bc9f0705aa2b5825f52ce69a56  runtim
 region  d96a6795d45b56d3be93869cafb42601b7f114403bf805425e7065a0c24fc4f5  runtime/src/allocator/NurseryParallel.cpp  NP.evacuateP  M3,W5
 region  2b3de37fd8f0c8d4cf7c933faba78f86c234a3b45a915a20d506bd3021a54b62  runtime/src/allocator/NurseryParallel.cpp  NP.reachYoungLargeP  M3
 region  c277795b03eedefe8cf247b072eb23f42f0a5ab8a7bb3490b352be4632258dc1  runtime/src/allocator/NurseryParallel.cpp  NP.spineRunP  M3
-region  5aef887f9e590c17bc8e3da73649994e1d58478de16fe9bdbebcd3f0907d32bd  runtime/src/allocator/NurseryParallel.cpp  NP.scanEntryP  M3
+region  e06ed77f04e54e3045912e8c08188ee9cccdeb39c23ff5713967263cde119b20  runtime/src/allocator/NurseryParallel.cpp  NP.scanEntryP  M3
 region  da28facd24d58e94fa954afa8d89d931d287a2ddb1f79288243ec506c1391921  runtime/src/allocator/NurseryParallel.cpp  NP.minorGCParallel  M2,M3
 region  a85e18fdce4ac8c8ae3f9a1b497877566edbd068236fbd4025034183d9d391d3  runtime/src/allocator/NurseryRegion.cpp  NR.RegionEnv  M2,M3
 region  73761e70e69c09f96e34d4c230e75ba46f2447453e8e2a48880e3d41e4a4baf3  runtime/src/allocator/NurseryRegion.cpp  NR.resolveRetire  M3,M5

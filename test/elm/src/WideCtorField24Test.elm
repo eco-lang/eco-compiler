@@ -15,10 +15,10 @@ and 26 back by pattern match. The CHECKs state the correct values.
 Today the program does not even run: the backend verifier
 (`runtime/src/codegen/EcoOps.cpp`, `eco.construct.custom` verify) rejects any
 constructor with more than 24 fields ("size (27) exceeds Custom's 24-slot
-limit"), although the heap `Custom` object and `computeCtorLayout` both allow
-boxed fields past 24. Once that limit is lifted, the ABI and projection
-miscompiles above (pinned in elm-test by CallAbiConsistencyTest and
-DestructorTypeProjectionTest) decide whether these values come back right.
+limit"); the GC walkers ignored slots past 24 until
+plans/wide-object-tail-kind-words Phase 1. Once that limit is lifted, the ABI
+and projection miscompiles above (pinned in elm-test by CallAbiConsistencyTest
+and DestructorTypeProjectionTest) decide whether these values come back right.
 
 -}
 

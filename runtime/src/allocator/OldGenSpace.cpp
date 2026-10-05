@@ -3578,17 +3578,18 @@ void OldGenSpace::scanChildren(MarkWorker& w, void* obj) {
             break;
         }
         case Tag_Custom: {
+            // Header-bitmap slots, then the tail (boxed in Phase 1, D semantics).
             Custom *c = static_cast<Custom *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 24; i++) {
-                greyU(c->values[i], fieldKind(c->unboxed, i) == 0);
-            }
+            const u32 n = hdr->size, h = n < CUSTOM_HDR_SLOTS ? n : CUSTOM_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) greyU(c->values[i], kindInWord(c->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) greyU(c->values[i], customSlotKind(c, i) == 0);
             break;
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 32; i++) {
-                greyU(r->values[i], fieldKind(r->unboxed, i) == 0);
-            }
+            const u32 n = hdr->size, h = n < RECORD_HDR_SLOTS ? n : RECORD_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) greyU(r->values[i], kindInWord(r->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) greyU(r->values[i], recordSlotKind(r, i) == 0);
             break;
         }
         case Tag_DynRecord: {
@@ -3612,7 +3613,7 @@ void OldGenSpace::scanChildren(MarkWorker& w, void* obj) {
             // eco_store_field* must never be used on a Closure.
             Closure *cl = static_cast<Closure *>(obj);
             for (u32 i = 0; i < cl->n_values; i++) {
-                greyU(cl->values[i], fieldKind(cl->unboxed, i) == 0);
+                greyU(cl->values[i], closureSlotKind(cl, i) == 0);
             }
             break;
         }
@@ -7384,17 +7385,18 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             break;
         }
         case Tag_Custom: {
+            // Same slots as the mark pass (scanChildren): header slots, then the tail.
             Custom* c = static_cast<Custom*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 24; i++) {
-                fixUnboxable(c->values[i], fieldKind(c->unboxed, i) == 0);
-            }
+            const u32 n = hdr->size, h = n < CUSTOM_HDR_SLOTS ? n : CUSTOM_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) fixUnboxable(c->values[i], kindInWord(c->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) fixUnboxable(c->values[i], customSlotKind(c, i) == 0);
             break;
         }
         case Tag_Record: {
             Record* r = static_cast<Record*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 32; i++) {
-                fixUnboxable(r->values[i], fieldKind(r->unboxed, i) == 0);
-            }
+            const u32 n = hdr->size, h = n < RECORD_HDR_SLOTS ? n : RECORD_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) fixUnboxable(r->values[i], kindInWord(r->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) fixUnboxable(r->values[i], recordSlotKind(r, i) == 0);
             break;
         }
         case Tag_DynRecord: {
@@ -7411,7 +7413,7 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             // exactly the slots mark traced, no more and no less.
             Closure* cl = static_cast<Closure*>(obj);
             for (u32 i = 0; i < cl->n_values; i++) {
-                fixUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
+                fixUnboxable(cl->values[i], closureSlotKind(cl, i) == 0);
             }
             break;
         }

@@ -15,8 +15,10 @@ module {
     eco.dbg %ctor20 : !eco.value
     // CHECK: Ctor7
 
-    // Allocate ctor with 50 fields (stress test)
-    %ctor50 = eco.allocate_ctor {tag = 0 : i64, size = 50 : i64, scalar_bytes = 0 : i64} : !eco.value
+    // Allocate ctor with 24 fields, the widest Custom before plans/wide-object-tail-kind-words
+    // Phase 3A (assertNarrowContainer): wider objects are traced past slot 24, and these
+    // fields are never initialised.
+    %ctor50 = eco.allocate_ctor {tag = 0 : i64, size = 24 : i64, scalar_bytes = 0 : i64} : !eco.value
     eco.dbg %ctor50 : !eco.value
     // CHECK: Ctor0
 

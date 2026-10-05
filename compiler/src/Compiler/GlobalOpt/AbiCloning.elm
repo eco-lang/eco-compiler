@@ -2825,8 +2825,8 @@ for both its VERDICT and its census key so the two cannot drift.
   - P2 flat residual: `peelStages argCount calleeType` must land (LSS\_039 — the
     residual type is curried, the call is flat);
   - P3 callable target: `specFunctionRow` is `Nothing` for a CAF / extern /
-    port node, or a constructor wider than 24 fields (§11.1); constructor
-    specs within that bound are callable code and resolve like functions;
+    port node (§11.1); constructor specs are callable code and resolve like
+    functions;
   - P4 shape: `|specParams| == k + |fargs|`, `drop k specParams` eqLayout `fargs`,
     `specRet` eqLayout `fret`;
   - P5 UNIQUENESS, never minimum: `p|<g>|<k>` is layout-blind, so two specs of
@@ -2950,11 +2950,9 @@ papResolve g k func argCount ctx =
 
 
 {-| The flat parameter row and return type of a spec, when its node is
-CALLABLE CODE: a closure, a tail function, or (plan §11.1) a constructor with
-at most 24 fields. `Nothing` for a value CAF, an extern, a port, or a wider
-constructor — a fast call naming one of those would jump into something that
-is not a function, or into one whose tail fields the call would pass at the
-wrong ABI.
+CALLABLE CODE: a closure, a tail function, or (plan §11.1) a constructor.
+`Nothing` for a value CAF, an extern, or a port — a fast call naming one of
+those would jump into something that is not a function.
 
 Mirrors `insertInstance`'s derivation (params from the closure/tailfunc, return
 from `Mono.typeOf body`) so the census and the instance path agree.
@@ -2976,32 +2974,14 @@ specFunctionRow specId ctx =
             -- Its parameter row is the field list (the same
             -- `ctorLayout.fields` the func.func is built from); the return
             -- is the custom type. Nullary ctors have an empty row and can
-            -- never satisfy P4's `k + |fargs| >= 1`.
-            --
-            -- GUARD: `computeCtorLayout` leaves fields at index >= 24 BOXED
-            -- while the fast call passes every Int/Float/Char unboxed, so a
-            -- wider ctor would mismatch on the tail — decline it (expected
-            -- residue 0). Within the bound the two agree: `canUnbox` and
-            -- `monoTypeToAbi` unbox exactly MInt/MFloat/MChar, and no
-            -- `MVar _ CNumber` survives into a spec (Monomorphized.elm §"No
-            -- MVar CNumber may remain").
-            if List.length shape.fieldTypes > ctorTypedSlotCap then
-                Nothing
-
-            else
-                Just ( shape.fieldTypes, Tuple.second (Mono.decomposeFunctionType ty) )
+            -- never satisfy P4's `k + |fargs| >= 1`. Every field crosses
+            -- at its ABI type, including fields the layout stores boxed past
+            -- the typed-slot cap: `generateCtor` boxes those itself
+            -- (REP_ABI_001), so a ctor of any width matches the fast call.
+            Just ( shape.fieldTypes, Tuple.second (Mono.decomposeFunctionType ty) )
 
         _ ->
             Nothing
-
-
-{-| `Types.computeCtorLayout`'s typed-slot bound (fields at index >= 24 stay
-boxed). Kept as a literal here rather than imported: AbiCloning is a GlobalOpt
-pass and does not depend on the MLIR generator.
--}
-ctorTypedSlotCap : Int
-ctorTypedSlotCap =
-    24
 
 
 {-| G3, and the reason this census exists.

@@ -146,9 +146,11 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
             break;
         case Tag_Custom:
             hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+            assertNarrowContainer(hdr->tag, hdr->size);
             break;
         case Tag_Record:
             hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
+            assertNarrowContainer(hdr->tag, hdr->size);
             break;
         case Tag_DynRecord:
             hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);

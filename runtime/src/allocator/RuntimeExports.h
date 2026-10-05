@@ -8,6 +8,7 @@
 #ifndef ECO_RUNTIME_EXPORTS_H
 #define ECO_RUNTIME_EXPORTS_H
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
@@ -763,5 +764,19 @@ HPtr eco_clone_array(HPtr array_hptr);
 void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind);
 
 } // extern "C"
+
+/// Pushes GC roots for a buffer of n slots whose kinds come from kindOf(i)
+/// (plans/wide-object-tail-kind-words.md §S.2): chunks of 64, because
+/// eco_gc_push_stack_range asserts count <= 64 and takes a u64 mask. The
+/// caller restores its eco_gc_stack_range_point afterwards.
+template <class KindOf>
+inline void pushRootsByKinds(uint64_t* base, uint32_t n, KindOf kindOf) {
+    for (uint32_t off = 0; off < n; off += 64) {
+        uint32_t c = std::min<uint32_t>(64, n - off);
+        uint64_t mask = 0;
+        for (uint32_t i = 0; i < c; ++i) if (kindOf(off + i) == 0) mask |= uint64_t{1} << i;
+        if (mask) eco_gc_push_stack_range(base + off, c, mask);
+    }
+}
 
 #endif // ECO_RUNTIME_EXPORTS_H

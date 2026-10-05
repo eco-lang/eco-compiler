@@ -1852,8 +1852,15 @@ generateCtor ctx funcName ctorLayout monoType =
                     (\i _ -> "%arg" ++ String.fromInt i)
                     ctorLayout.fields
 
+            -- REP_ABI_001: every parameter crosses the call at its ABI type (an
+            -- Int is i64 even where the layout stores the field boxed, past the
+            -- unboxed slot cap); slotTypes is the type each field is stored at.
             argTypes : List MlirType
             argTypes =
+                List.map (\field -> Types.monoTypeToAbi field.monoType) ctorLayout.fields
+
+            slotTypes : List MlirType
+            slotTypes =
                 List.map
                     (\field ->
                         if field.isUnboxed then
@@ -1873,18 +1880,32 @@ generateCtor ctx funcName ctorLayout monoType =
                 { ctxWithType | nextVar = arity, varMappings = Dict.empty }
                     |> Ctx.resetDefinedSsaVars argNames
 
+            -- Box each argument whose ABI type is a primitive but whose slot
+            -- is boxed (the same coercion as Expr.prepareCtorSlots).
+            ( boxOpsRev, slotPairsRev, ctxBoxed ) =
+                List.foldl
+                    (\( ( argName, argTy ), slotTy ) ( opsAcc, pairsAcc, ctxAcc ) ->
+                        let
+                            ( moreOps, slotVar, ctxNext ) =
+                                Expr.coerceResultToType ctxAcc argName argTy slotTy
+                        in
+                        ( List.reverse moreOps ++ opsAcc, ( slotVar, slotTy ) :: pairsAcc, ctxNext )
+                    )
+                    ( [], [], ctxFreshScope )
+                    (List.map2 Tuple.pair argPairs slotTypes)
+
             ( resultVar, ctx1 ) =
-                Ctx.freshVar ctxFreshScope
+                Ctx.freshVar ctxBoxed
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructCustom ctx1 Ctx.liveEcoValueVars resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
+                Ops.ecoConstructCustom ctx1 Ctx.liveEcoValueVars resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap (List.reverse slotPairsRev) constructorName
 
             ( _, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue
 
             region : MlirRegion
             region =
-                Ops.mkRegion argPairs [ constructOp ] returnOp
+                Ops.mkRegion argPairs (List.reverse boxOpsRev ++ [ constructOp ]) returnOp
 
             ( ctxOut, funcOp ) =
                 Ops.funcFunc ctx2 funcName argPairs Types.ecoValue region

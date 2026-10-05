@@ -342,6 +342,12 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         fusedNewargs.append(prevRealNewargs.begin(), prevRealNewargs.end());
         fusedNewargs.append(curRealNewargs.begin(), curRealNewargs.end());
 
+        // Verifier limit (PapExtendOp::verify: newargs <= 25 under the 50-bit
+        // bitmap). Release builds do not re-verify after passes, so the
+        // pattern must not exceed it (B16; mirrors FuseCreateIntoExtend's cap).
+        if (fusedNewargs.size() > 25)
+            return failure();
+
         // Compute 2-bit-per-slot bitmap from SSA types (source-of-truth approach).
         // Kind: 0=boxed (!eco.value), 1=Int (i64), 2=Float (f64), 3=Char (i16).
         uint64_t fusedBitmap = 0;

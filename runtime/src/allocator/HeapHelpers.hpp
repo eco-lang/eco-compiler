@@ -1447,20 +1447,27 @@ inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unbox
     // Pack values into a contiguous uint64_t buffer for the helper. Build
     // an HPointer mask that mirrors `unboxed_mask` but with one bit per
     // slot (boxed → 1, unboxed → 0). The helper roots only on slow path.
+    // Kinds come from the header bitmap only; slots past it are boxed
+    // (D semantics). Over 64 slots the roots go up in 64-slot chunks
+    // (B8, plans/wide-object-tail-kind-words-phase-1.md step 1c.5).
     std::vector<uint64_t> roots(values.size());
-    uint64_t hptr_mask = 0;
-    for (size_t i = 0; i < values.size(); ++i) {
-        std::memcpy(&roots[i], &values[i], sizeof(uint64_t));
-        if (fieldKind(unboxed_mask, i) == 0 && i < 64) {
-            hptr_mask |= (uint64_t{1} << i);
-        }
+    for (size_t i = 0; i < values.size(); ++i) std::memcpy(&roots[i], &values[i], sizeof(uint64_t));
+    const uint32_t n = static_cast<uint32_t>(values.size());
+    auto kindOf = [&](uint32_t i) -> uint32_t {
+        return i < CUSTOM_HDR_SLOTS ? kindInWord(unboxed_mask, i) : 0u;
+    };
+    Custom* obj;
+    if (n <= 64) {
+        uint64_t hptr_mask = 0;
+        for (uint32_t i = 0; i < n; ++i) if (kindOf(i) == 0) hptr_mask |= uint64_t{1} << i;
+        obj = static_cast<Custom*>(eco_alloc_with_roots(Tag_Custom, total_size,
+                                   roots.empty() ? nullptr : roots.data(), n, hptr_mask));
+    } else {
+        size_t saved = eco_gc_stack_range_point();
+        pushRootsByKinds(roots.data(), n, kindOf);
+        obj = static_cast<Custom*>(eco_alloc_with_roots(Tag_Custom, total_size, nullptr, 0, 0));
+        eco_gc_restore_stack_range_point(saved);
     }
-
-    Custom* obj = static_cast<Custom*>(
-        eco_alloc_with_roots(Tag_Custom, total_size,
-                             roots.empty() ? nullptr : roots.data(),
-                             static_cast<uint32_t>(values.size()),
-                             hptr_mask));
     obj->ctor = ctor;
     obj->unboxed = unboxed_mask;
     for (size_t i = 0; i < values.size(); ++i) {
@@ -1533,19 +1540,24 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
     size_t total_size = sizeof(Record) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    // Same packing strategy as custom() above.
+    // Same packing and rooting strategy as custom() above.
     std::vector<uint64_t> roots(values.size());
-    uint64_t hptr_mask = 0;
-    for (size_t i = 0; i < values.size(); ++i) {
-        std::memcpy(&roots[i], &values[i], sizeof(uint64_t));
-        if (fieldKind(unboxed_mask, i) == 0 && i < 64) {
-            hptr_mask |= (uint64_t{1} << i);
-        }
+    for (size_t i = 0; i < values.size(); ++i) std::memcpy(&roots[i], &values[i], sizeof(uint64_t));
+    const uint32_t n = static_cast<uint32_t>(values.size());
+    auto kindOf = [&](uint32_t i) -> uint32_t {
+        return i < RECORD_HDR_SLOTS ? kindInWord(unboxed_mask, i) : 0u;
+    };
+    Record* obj;
+    if (n <= 64) {
+        uint64_t hptr_mask = 0;
+        for (uint32_t i = 0; i < n; ++i) if (kindOf(i) == 0) hptr_mask |= uint64_t{1} << i;
+        obj = static_cast<Record*>(eco_alloc_with_roots(Tag_Record, total_size, roots.data(), n, hptr_mask));
+    } else {
+        size_t saved = eco_gc_stack_range_point();
+        pushRootsByKinds(roots.data(), n, kindOf);
+        obj = static_cast<Record*>(eco_alloc_with_roots(Tag_Record, total_size, nullptr, 0, 0));
+        eco_gc_restore_stack_range_point(saved);
     }
-
-    Record* obj = static_cast<Record*>(
-        eco_alloc_with_roots(Tag_Record, total_size, roots.data(),
-                             static_cast<uint32_t>(values.size()), hptr_mask));
     obj->unboxed = unboxed_mask;
     for (size_t i = 0; i < values.size(); ++i) {
         std::memcpy(&obj->values[i], &roots[i], sizeof(Unboxable));
@@ -2033,9 +2045,9 @@ inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
  * @return True if successful, false if at capacity.
  */
 // `kind`: 2-bit slot kind. 0 = boxed HPointer, 1 = Int, 2 = Float, 3 = Char.
-// Only the first 25 typed slots fit in the 50-bit 2-bit-encoded bitfield
-// (the upper 2 bits of the 52-bit field are now Closure::flags); later
-// slots fall through as boxed with no primitive bit set.
+// Only the first CLOSURE_HDR_SLOTS (25) slots have a kind in the 50-bit
+// inline field; later slots read boxed (D semantics), so a typed capture
+// there aborts (B6 / HEAP_077) instead of being traced as a pointer.
 inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     Closure* cl = static_cast<Closure*>(closure);
     if (cl->n_values >= cl->max_values) {
@@ -2051,9 +2063,15 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     if (kind == PK_Boxed) validateNurseryHPtr(value.p);
 
     size_t idx = cl->n_values;
+    if (kind != PK_Boxed && idx >= CLOSURE_HDR_SLOTS) {
+        // B6 / HEAP_077: kernel closures keep slots past the inline kinds boxed; a typed
+        // capture here would be traced as a pointer. Permanent (Phase 2 lowers the bound to 20).
+        std::fprintf(stderr, "[eco] FATAL: closureCapture of a typed value at slot %zu "
+                             "(inline kinds cover %u)\n", idx, CLOSURE_HDR_SLOTS);
+        std::abort();
+    }
     cl->values[idx] = value;
-
-    if (kind != PK_Boxed && idx < 25) {
+    if (kind != PK_Boxed) {
         cl->unboxed = bitmapSetKind(cl->unboxed, static_cast<unsigned>(idx),
                                     static_cast<u64>(kind));
     }
@@ -2063,11 +2081,10 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
 #if ECO_HEAP_VALIDATE
     // Class 2 — closure capture bitmap consistency: the just-set bit at
     // position `idx` must match `kind`. Catches mis-encoded bitmaps at
-    // the construction site. The bound must match the setter's `idx < 25`
-    // above: slots beyond 24 demote to boxed by design (50-bit bitmap =
-    // 25 typed slots), so there is no stored kind to check there.
-    if (idx < 25) {
-        u64 stored = (cl->unboxed >> (idx * 2)) & 0x3ULL;
+    // the construction site. Slots past the inline kinds read boxed
+    // (closureSlotKind), and only boxed captures reach them (abort above).
+    {
+        u64 stored = closureSlotKind(cl, static_cast<u32>(idx));
         u64 expected = (kind == PK_Boxed) ? 0ULL : static_cast<u64>(kind);
         if (stored != expected) {
             std::fprintf(stderr,

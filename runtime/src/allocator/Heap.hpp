@@ -263,14 +263,17 @@ static_assert(sizeof(Unboxable) == 8, "Unboxable must be 64 bits");
 // Slot i's kind lives at bits [2i, 2i+1]. Bool and String are always boxed.
 
 inline u64 fieldKind(u64 bitmap, unsigned index) {
+    assert(index < 32 && "fieldKind: index past one 64-bit kind word (use the slot-kind accessors)");
     return (bitmap >> (2 * index)) & 0x3ULL;
 }
 
 inline u32 tupleFieldKind(u32 headerUnboxed, unsigned index) {
+    assert(index < 3 && "tupleFieldKind: header.unboxed holds 3 slots");
     return (headerUnboxed >> (2 * index)) & 0x3U;
 }
 
 inline u64 bitmapSetKind(u64 bitmap, unsigned index, u64 kind) {
+    assert(index < 32 && "bitmapSetKind: index past one 64-bit kind word");
     const u64 shift = 2ULL * index;
     const u64 mask  = 0x3ULL << shift;
     return (bitmap & ~mask) | ((kind & 0x3ULL) << shift);
@@ -279,11 +282,32 @@ inline u64 bitmapSetKind(u64 bitmap, unsigned index, u64 kind) {
 // Derives a 1-bit-per-slot HPointer mask from a 2-bit-per-slot kind bitmap.
 // Output bit i is set iff the kind at slot i is 0 (boxed).
 inline u64 pointerMaskFromKindBitmap(u64 kindBitmap, unsigned numSlots) {
+    // One kind word describes slots 0..31; slots 32..63 have no kind here and read as boxed
+    // (D semantics). The mask itself is 64 bits wide; wider buffers use pushRootsByKinds.
+    assert(numSlots <= 64 && "pointerMaskFromKindBitmap: mask covers 64 slots; use pushRootsByKinds");
     u64 mask = 0;
-    for (unsigned i = 0; i < numSlots; ++i) {
-        if (fieldKind(kindBitmap, i) == 0) mask |= (1ULL << i);
-    }
+    for (unsigned i = 0; i < numSlots; ++i)
+        if (i >= 32 || fieldKind(kindBitmap, i) == 0) mask |= (1ULL << i);
     return mask;
+}
+
+// ---- Wide-object slot kinds (plans/wide-object-tail-kind-words.md §S.1; Phase 1 bodies) ----
+// The accessors that dereference Custom/Record/Closure follow the Closure typedef below.
+constexpr u32 CUSTOM_HDR_SLOTS   = 24;    // Custom::unboxed:48
+constexpr u32 RECORD_HDR_SLOTS   = 32;    // Record::unboxed:64
+constexpr u32 CLOSURE_HDR_SLOTS  = 25;    // Closure::unboxed:50 (Phase 2 -> 20)
+constexpr u32 SLOTS_PER_EXT_WORD = 32;
+constexpr u32 CUSTOM_MAX_FIELDS  = 2040;
+constexpr u32 RECORD_MAX_FIELDS  = 2047;
+constexpr u32 CLOSURE_MAX_ARITY  = 63;    // Phase 2 -> 2047
+
+constexpr u32 extWords(u32 n, u32 hdrSlots) {
+    return n > hdrSlots ? (n - hdrSlots + SLOTS_PER_EXT_WORD - 1) / SLOTS_PER_EXT_WORD : 0;
+}
+// Kind of slot i (< 32) within one 64-bit kind word. The ONLY shift on kind words.
+inline u32 kindInWord(u64 word, u32 i) {
+    assert(i < 32);
+    return static_cast<u32>(word >> (2 * i)) & 3u;
 }
 
 // ============================================================================
@@ -548,13 +572,13 @@ typedef struct {
 typedef struct {
     Header header;           // Header.size contains field count.
     u64 ctor : CTOR_BITS;    // Constructor index within this Elm custom type (16 bits).
-    u64 unboxed : 48;        // Bitmap: bit N set means field N is unboxed (max 48 fields with unboxing).
+    u64 unboxed : 48;        // 2-bit kinds for fields 0..23 (24 slots); fields 24+ per HEAP_019
     Unboxable values[];
 } Custom;
 
 typedef struct {
     Header header; // Header.size contains field count.
-    u64 unboxed; // Bitmap: bit N set means field N is unboxed (max 64 fields with unboxing).
+    u64 unboxed; // 2-bit kinds for fields 0..31 (32 slots); fields 32+ per HEAP_019
     Unboxable values[];
 } Record;
 
@@ -625,9 +649,9 @@ typedef struct {
                            // C++ kernel callers (List_arity_N, JsArray_*, etc.)
                            // can dispatch the function-pointer cast without
                            // needing per-call-site K plumbing.
-    u64 unboxed    : 50;   // 2-bit-per-slot kinds for captures 0..24 (50 = 25 slots).
-                           // Reduced from 26 to 25 to make room for result_kind;
-                           // existing tests cap captures well below 25.
+    u64 unboxed    : 50;   // 2-bit kinds for slots 0..24 (25 slots); slots 25+ read
+                           // boxed until the Phase 2 widening
+                           // (plans/wide-object-tail-kind-words.md).
     const EvaluatorDesc* evaluator;   // static descriptor, NOT a heap pointer
     Unboxable values[];
 } Closure;
@@ -641,6 +665,53 @@ static_assert(offsetof(EvaluatorDesc, kinds) == 8, "kinds at +8");
 static_assert(offsetof(EvaluatorDesc, stage_arity) == 16, "stage_arity at +16");
 static_assert(offsetof(EvaluatorDesc, result_kind) == 17, "result_kind at +17");
 #endif
+
+// ---- Wide-object slot-kind accessors (plans/wide-object-tail-kind-words.md §S.1; Phase 1) ----
+// Phase 1 (D semantics): slots the header bitmap cannot describe are boxed.
+// Phase 3A adds the extension-word branch bounded by header.unboxed.
+inline u32 customSlotKind(const Custom* c, u32 i) {
+    return i < CUSTOM_HDR_SLOTS ? kindInWord(c->unboxed, i) : 0u;
+}
+inline u32 recordSlotKind(const Record* r, u32 i) {
+    return i < RECORD_HDR_SLOTS ? kindInWord(r->unboxed, i) : 0u;
+}
+// Direct closure accessor for NON-allocating readers (GC walkers, validate checks,
+// printers). Allocating loops must use ClosureKinds (below). Phase 2 adds the ext branch.
+inline u32 closureSlotKind(const Closure* cl, u32 i) {
+    return i < CLOSURE_HDR_SLOTS ? kindInWord(cl->unboxed, i) : 0u;
+}
+// Snapshot of a closure's kinds for every loop that can allocate (the closure may move).
+struct ClosureKinds {
+    u64 hdr;        // Phase 1: the 50-bit inline field (25 slots)
+    u32 max;        // max_values
+    u32 k;          // ext words copied; Phase 1: always 0
+    u64 ext[64];    // used from Phase 2
+};
+inline void snapshotClosureKinds(const Closure* cl, ClosureKinds& out) {
+    out.hdr = cl->unboxed;
+    out.max = cl->max_values;
+    out.k = 0;
+}
+inline u32 closureKindAt(const ClosureKinds& ks, u32 slot) {
+    return slot < CLOSURE_HDR_SLOTS ? kindInWord(ks.hdr, slot) : 0u;   // Phase 2: ext[]
+}
+inline const u64* customExtWords(const Custom* c) { return reinterpret_cast<const u64*>(&c->values[c->header.size]); }
+inline const u64* recordExtWords(const Record* r) { return reinterpret_cast<const u64*>(&r->values[r->header.size]); }
+
+// Test switch (overview §S.6): Elm::testing::allow_wide_objects. Unit tests that build wide
+// Custom/Record objects on purpose set it; from Phase 3B, EcoRunner also sets it for modules that
+// carry the `eco.allow_wide_objects` attribute. Production code never sets it; Phase 3D deletes it.
+// Plain bool: written only by single-threaded test setup.
+namespace testing { inline bool allow_wide_objects = false; }
+// Validate-and-debug check that no runtime/kernel path builds a Custom/Record wider than its
+// header bitmap before Phase 3A (makes the walkers' tail loop provably dead outside tests).
+inline void assertNarrowContainer(u32 tag, u32 size) {
+    assert((testing::allow_wide_objects ||
+            !((tag == Tag_Custom && size > CUSTOM_HDR_SLOTS) ||
+              (tag == Tag_Record && size > RECORD_HDR_SLOTS))) &&
+           "wide Custom/Record built before Phase 3A (plans/wide-object-tail-kind-words.md)");
+    (void)tag; (void)size;
+}
 
 /// Type tag for each evaluator parameter slot, used by buildEvaluatorArgs
 /// to re-box unboxed captured values with the correct heap allocator.

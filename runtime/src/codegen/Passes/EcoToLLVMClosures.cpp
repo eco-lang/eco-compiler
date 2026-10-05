@@ -29,6 +29,9 @@ namespace {
 // Forward declarations for helpers defined later in this TU but referenced
 // by the closure-construction lowerings (PapCreate / PapCreateGroup).
 static uint8_t mlirTypeToParamKind(Type ty);
+static SmallVector<uint8_t> deriveAllParamKinds(const EcoRuntime &runtime,
+                                                StringRef funcSymbol,
+                                                int64_t arity);
 static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
                                           StringRef funcSymbol, int64_t arity);
 // plans/gc-root-registration-cost.md Phase 2/3.
@@ -778,10 +781,8 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             uint64_t bitmap0 =
                 isTyped0 ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity)
                          : op.getUnboxedBitmap();
-            uint64_t packed0 =
-                  ((static_cast<uint64_t>(arity) & 0x3F) << 6)
-                | ((static_cast<uint64_t>(closureResultKind) & 0x3) << 12)
-                | ((bitmap0 & ((1ULL << 50) - 1)) << 14);
+            uint64_t packed0 = packClosureWord(
+                0, static_cast<uint32_t>(arity), closureResultKind, bitmap0);
             auto internFunc = runtime.getOrCreateInternClosure0(rewriter);
             auto arityConst32 = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(arity));
@@ -878,11 +879,9 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // return ABI (both sourced from the op's `_result_kind`). The
         // packed bit-pattern below overwrites whatever
         // `eco_alloc_closure_k` initialised at the same offset.
-        uint64_t packedValue =
-              (static_cast<uint64_t>(numCaptured) & 0x3F)
-            | ((static_cast<uint64_t>(arity) & 0x3F) << 6)
-            | ((static_cast<uint64_t>(closureResultKind) & 0x3) << 12)
-            | ((unboxedBitmap & ((1ULL << 50) - 1)) << 14);
+        uint64_t packedValue = packClosureWord(
+            static_cast<uint32_t>(numCaptured), static_cast<uint32_t>(arity),
+            closureResultKind, unboxedBitmap);
 
         auto packedConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(packedValue));
 
@@ -962,7 +961,6 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         auto fastEvaluators = op.getFastEvaluators();
         auto arities = op.getArities();
         auto numCapturedArr = op.getNumCaptured();
-        auto unboxedBitmaps = op.getUnboxedBitmaps();
         auto captureCounts = op.getCaptureCounts();
         auto crossEdges = op.getCrossEdges();
 
@@ -1121,38 +1119,27 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         Value capturesArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i64Ty, totalCapturesConst);
 
-        // Compute the HPointer mask for the FLAT captures array. Bit k is
-        // set iff captures[k] is a boxed HPointer slot in its sibling's
-        // closure (kind 00 in the per-sibling unboxed bitmap, 2 bits/slot).
-        // This is the mask we must hand to eco_gc_push_stack_range so a
-        // major GC firing inside eco_alloc_closure_group_slow scans the
-        // captures correctly: without it, RS4GC sees the i64 stores into
-        // the array but stops tracking the source ptr addrspace(1) values
-        // once they go through ptrtoint, and the captures the runtime
-        // copies into the new closures are stale (post-GC) addresses —
-        // see Stage 7 unsafeIndex crash report.
-        uint64_t hpointerMask = 0;
-        {
-            uint32_t flatOffset = 0;
-            for (unsigned i = 0; i < numSiblings; ++i) {
-                uint64_t bitmap = static_cast<uint64_t>(
-                    cast<IntegerAttr>(unboxedBitmaps[i]).getInt());
-                uint32_t cc = static_cast<uint32_t>(
-                    cast<IntegerAttr>(captureCounts[i]).getInt());
-                for (uint32_t k = 0; k < cc; ++k) {
-                    if (flatOffset + k >= 64) break;
-                    uint64_t kind = (bitmap >> (2 * k)) & 0x3;
-                    if (kind == 0) {
-                        hpointerMask |= (1ULL << (flatOffset + k));
-                    }
-                }
-                flatOffset += cc;
-            }
-        }
+        // Compute the HPointer masks for the FLAT captures array, one per
+        // 64-slot chunk (B15: a group may hold more than 64 captures in all).
+        // Bit k of chunk c is set iff captures[64*c + k] is a boxed HPointer
+        // slot, i.e. its capture operand's slot kind is 0 (equal to the kind
+        // in the sibling's unboxed bitmap, by the verifier). These are the
+        // masks we must hand to eco_gc_push_stack_range so a major GC firing
+        // inside eco_alloc_closure_group_slow scans the captures correctly:
+        // without them, RS4GC sees the i64 stores into the array but stops
+        // tracking the source ptr addrspace(1) values once they go through
+        // ptrtoint, and the captures the runtime copies into the new closures
+        // are stale (post-GC) addresses — see Stage 7 unsafeIndex crash report.
+        const uint32_t numChunks = (totalCaptures + 63) / 64;
+        SmallVector<uint64_t, 2> hpointerMasks(numChunks, 0);
+        for (uint32_t k = 0; k < totalCaptures; ++k)
+            if (slotKindOf(op->getOperand(k).getType()) == 0)
+                hpointerMasks[k / 64] |= (1ULL << (k % 64));
 
         // Zero the captures array, save the GC range stack point, and push
-        // the array as a GC root range BEFORE storing any values into it.
-        // (totalCaptures must fit in 64 slots — the runtime asserts this.)
+        // the array as GC root ranges BEFORE storing any values into it. The
+        // runtime asserts count <= 64 per range, so push one range per chunk;
+        // the single restore below pops them all.
         Value savedRangeDepth;
         const bool needRootRange = totalCaptures > 0;
         if (needRootRange) {
@@ -1165,12 +1152,23 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             savedRangeDepth = rewriter.create<LLVM::CallOp>(
                 loc, rangePointFunc, ValueRange{}).getResult();
             auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
-            auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(totalCaptures));
-            auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(hpointerMask)));
-            rewriter.create<LLVM::CallOp>(loc, pushFunc,
-                ValueRange{capturesArr, countConst, maskConst});
+            for (uint32_t c = 0; c < numChunks; ++c) {
+                const uint32_t first = 64 * c;
+                const uint32_t count = std::min<uint32_t>(64, totalCaptures - first);
+                Value base = capturesArr;
+                if (c > 0) {
+                    auto firstConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                        rewriter.getI64IntegerAttr(first));
+                    base = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
+                        capturesArr, ValueRange{firstConst});
+                }
+                auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                    rewriter.getI64IntegerAttr(count));
+                auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                    rewriter.getI64IntegerAttr(static_cast<int64_t>(hpointerMasks[c])));
+                rewriter.create<LLVM::CallOp>(loc, pushFunc,
+                    ValueRange{base, countConst, maskConst});
+            }
         }
 
         // Convert each capture to i64 and store in captures[].
@@ -1438,9 +1436,9 @@ static uint8_t mlirTypeToParamKind(Type ty) {
     return 0;                        // PK_Boxed
 }
 
-/// Derive the 2-bit-per-slot kinds bitmap covering every parameter of the
-/// target function (captures + remaining newargs). Used by PapCreate to
-/// publish a complete kinds bitmap on the closure header so the runtime can
+/// Derive the 2-bit kind of every parameter of the target function (captures
+/// + remaining newargs), one entry per param up to `arity`. Used by PapCreate
+/// to publish a complete kinds bitmap on the closure header so the runtime can
 /// interpret slot N's kind without a separate layout descriptor.
 ///
 /// Slot i's kind comes from the i-th parameter of the target function via
@@ -1450,8 +1448,9 @@ static uint8_t mlirTypeToParamKind(Type ty) {
 /// closure->unboxed bitmap says PK_Boxed, and spliceArgsForSaturatedCall
 /// then mis-routes args. If no source resolves the symbol we abort hard
 /// rather than silently default to all-PK_Boxed.
-static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
-                                          StringRef funcSymbol, int64_t arity) {
+static SmallVector<uint8_t> deriveAllParamKinds(const EcoRuntime &runtime,
+                                                StringRef funcSymbol,
+                                                int64_t arity) {
     SmallVector<Type, 8> paramTypes;
     if (auto it = runtime.origFuncTypes.find(funcSymbol);
         it != runtime.origFuncTypes.end()) {
@@ -1471,20 +1470,28 @@ static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
             paramTypes.push_back(fnType.getParamType(i));
     } else {
         llvm::report_fatal_error(
-            "deriveAllParamKindsBitmap: no signature available for '" +
+            "deriveAllParamKinds: no signature available for '" +
             funcSymbol +
             "'; closure bitmap would silently default to PK_Boxed and "
             "diverge from the wrapper's typed-newargs decoding");
     }
 
-    uint64_t bitmap = 0;
+    SmallVector<uint8_t> kinds;
     int64_t lim = arity;
     if (lim > (int64_t)paramTypes.size()) lim = (int64_t)paramTypes.size();
-    for (int64_t i = 0; i < lim; ++i) {
-        uint64_t kind = mlirTypeToParamKind(paramTypes[i]) & 0x3ULL;
-        bitmap |= kind << (2 * i);
-    }
-    return bitmap;
+    for (int64_t i = 0; i < lim; ++i)
+        kinds.push_back(mlirTypeToParamKind(paramTypes[i]) & 0x3);
+    return kinds;
+}
+
+/// The closure-header part of deriveAllParamKinds: kinds of params
+/// 0..ClosureHdrSlots-1. Params past the header read boxed (B5, until the
+/// Phase 2 tail words), exactly as the old 50-bit masks dropped them.
+static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
+                                          StringRef funcSymbol, int64_t arity) {
+    return packKinds(deriveAllParamKinds(runtime, funcSymbol, arity),
+                     layout::ClosureHdrSlots)
+        .hdrBits;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1716,6 +1723,7 @@ static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
                 loc, i64Ty, builder.getI64IntegerAttr(off));
             auto slot = builder.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, self,
                                                     ValueRange{offConst});
+            assert(stageArity <= 16 && "sat entry: kinds shift past one word");
             uint8_t k = static_cast<uint8_t>((kindsBitmap >> (2 * i)) & 0x3);
             Type want = targetTy.getParamType(i);
             Value v;
@@ -1809,6 +1817,12 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
             satFilter::considered.fetch_add(1, std::memory_order_relaxed);
             if (n > maxReachableN) {
                 satFilter::byArity.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            // getOrCreateSatEntry admits stageArity <= 16 only; past it the
+            // shift below could reach 64 (UB), so decline before computing it.
+            if (stageArity > 16) {
+                satFilter::byShape.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
             // `%c1` fixes the closure's applied count at P - n, so the kinds
@@ -2926,7 +2940,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
             Value savedRange = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
 
-            // Get bitmap from attribute (source-of-truth) - may be modified below
+            // Bitmap from the attribute, handed to eco_pap_extend below.
             uint64_t newargsBitmap = op.getNewargsUnboxedBitmap();
 
             for (size_t i = 0; i < newargs.size(); ++i) {
@@ -2950,12 +2964,15 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
             }
 
-            // Under 2-bit-per-slot encoding, HPointer slots are those with kind 0.
+            // HPointer slots are those of kind 0, read from the newarg
+            // operand types (equal to the attribute's kinds by the verifier;
+            // getNewargs() also holds the GC roots, which follow the real
+            // newargs). numNewArgs <= 25 by PapExtendOp::verify.
             uint64_t hptrMask = 0;
-            for (unsigned i = 0; i < numNewArgs; ++i) {
-                if (((newargsBitmap >> (2 * i)) & 0x3ULL) == 0) {
+            assert(numNewArgs <= 64 && "papExtend: args range exceeds one mask");
+            for (int64_t i = 0; i < numNewArgs; ++i) {
+                if (slotKindOf(op.getNewargs()[i].getType()) == 0)
                     hptrMask |= (1ULL << i);
-                }
             }
             {
                 auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
@@ -3287,8 +3304,12 @@ void eco::detail::preMaterializeClosureArtifacts(
                            typeConverter, runtime,
                            /*typedNewargs=*/true, rk, &wrapperName);
         bool isTyped = wrapperWillBeTypedNewargs(runtime, funcSymbol);
+        // The descriptor's `kinds` documents params 0..31 (one full word),
+        // not just the closure header's 25 slots.
         uint64_t kinds =
-            isTyped ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity) : 0;
+            isTyped ? kindsWord(deriveAllParamKinds(runtime, funcSymbol, arity),
+                                0, std::min<int64_t>(arity, 32))
+                    : 0;
         llvm::SmallString<96> descName;
         getOrCreateEvalDesc(builder, module, runtime, wrapperName,
                             /*targetSymbol=*/isTyped ? funcSymbol : StringRef(),

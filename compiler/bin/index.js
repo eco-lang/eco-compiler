@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const { newServer } = require("mock-xmlhttprequest");
-const { handleEcoIO, handleEcoIOBinary } = require("./eco-io-handler");
+const { handleEcoIO, handleEcoIOBinary, markHandlerFailed } = require("./eco-io-handler");
 
 const server = newServer();
 
@@ -21,6 +21,7 @@ server.post("eco-io", (request) => {
     }
   } catch (e) {
     console.error("eco-io handler error:", e);
+    markHandlerFailed();
     request.respond(500, null, JSON.stringify({ error: e.message }));
   }
 });

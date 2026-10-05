@@ -454,3 +454,21 @@ The census lines added are `nurseryCensusForkPrepare/Parent/Child` (the survivor
 held across fork by GCFork's census layer, re-created in the child). No claim, BUSY, publish or
 forwarding step changes; the census is a validate/census-build detector outside M3's protocol.
 **Verdict: no model change needed.** (The pin now also names M6, which models the fork layers.)
+
+
+## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (GC_MODEL_001)
+
+Pins fired: region `NP.scanEntryP` (**e06ed77f04e5**).
+
+Change (plans/wide-object-tail-kind-words-phase-1.md §1d): the Custom/Record arms of scanEntryP
+scan all `hdr->size` slots (header-bitmap loop, then a tail loop treating slots past 24/32 as
+boxed); the Closure arm reads kinds through `closureSlotKind` (UB-free for n_values >= 32). The
+object is frozen (HEAP_SNAPSHOT_001); kinds are plain reads of the object, as before; no atomic,
+lock, memory order or step is added or reordered. The tail loop is dead in production (verifier
+caps; builder asserts). **Verdict: no model change needed.**
+
+MAPPING.md check: `SC_Loop`/`SC_Next` ("one slot per step, in field order") still describe the
+arm; the tail adds slots of the same object in field order, each through `E_Read`..`E_Slot`
+unchanged. The same split is in the unpinned shared walkers (`NurseryChildWalk.hpp`, which
+`scanEntryR` and the tenure engine reach through `forEachChildSlot`). The prefetch arms
+(`NP.MinorEnv`, `NR.RegionEnv`, `i < 4`) are untouched.

@@ -19,8 +19,11 @@
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include <algorithm>
+#include <cassert>
 #include <cstdlib>
 #include <functional>
 #include <vector>
@@ -373,7 +376,7 @@ constexpr uint64_t ArrayLengthOffset = HeaderSize;          // 8
 constexpr uint64_t ArrayElementsOffset = HeaderSize + PtrSize; // 16 (length:4 + padding:4 = 8)
 
 // Closure layout: [Header:8][packed:8][evaluator:8][values:N*8]
-// packed = n_values:6 | max_values:6 | unboxed:50 | flags:2
+// packed = n_values:6 | max_values:6 | result_kind:2 | unboxed:50 (packClosureWord)
 constexpr uint64_t ClosurePackedOffset = HeaderSize;
 constexpr uint64_t ClosureEvaluatorOffset = HeaderSize + PtrSize;
 constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
@@ -401,7 +404,64 @@ constexpr uint64_t RecordBaseSize = 16;  // Header + unboxed bitmap (+ N*8)
 constexpr uint64_t CustomBaseSize = 16;  // Header + ctor/unboxed (+ N*8)
 constexpr uint64_t ClosureBaseSize = 24; // Header + packed + evaluator (+ N*8)
 
+// Slots whose 2-bit kinds the object header itself can hold (Heap.hpp:
+// Custom unboxed:48, Record unboxed:64, Closure unboxed:50). Kinds past these
+// read boxed (D semantics, plans/wide-object-tail-kind-words.md).
+constexpr unsigned CustomHdrSlots = 24, RecordHdrSlots = 32, ClosureHdrSlots = 25; // P2: 20
+
 } // namespace layout
+
+//===----------------------------------------------------------------------===//
+// 2-bit slot kind packing (plans/wide-object-tail-kind-words.md §S.3)
+//===----------------------------------------------------------------------===//
+
+/// The 2-bit heap slot kind of an MLIR type: i64 -> 1 (Int), f64 -> 2 (Float),
+/// i16 -> 3 (Char), everything else -> 0 (boxed). Also correct on LLVM-level
+/// types after conversion (ptr<1> -> 0). Bool (i1) is boxed in the heap
+/// (REP_CLOSURE_001), so it is 0 here too.
+inline uint8_t slotKindOf(mlir::Type t) {
+    if (t.isInteger(64)) return 1;
+    if (t.isF64()) return 2;
+    if (t.isInteger(16)) return 3;
+    return 0;
+}
+
+/// Kinds [first, first+count) packed 2 bits per slot into one word. Slots
+/// past the end of `kinds` contribute 0. A word holds at most 32 slots, so no
+/// shift reaches 64.
+inline uint64_t kindsWord(llvm::ArrayRef<uint8_t> kinds, size_t first,
+                          size_t count) {
+    assert(count <= 32 && "kindsWord: a word holds at most 32 2-bit kinds");
+    uint64_t w = 0;
+    for (size_t i = 0; i < count && first + i < kinds.size(); ++i)
+        w |= uint64_t(kinds[first + i] & 3) << (2 * i);
+    return w;
+}
+
+/// Header bits for the first `hdrSlots` kinds, then 32 kinds per extension
+/// word. Phase 1 consumes only `hdrBits` (no object stores extension words).
+struct PackedKinds {
+    uint64_t hdrBits;
+    llvm::SmallVector<uint64_t, 2> ext;
+};
+inline PackedKinds packKinds(llvm::ArrayRef<uint8_t> kinds, unsigned hdrSlots) {
+    PackedKinds p;
+    p.hdrBits = kindsWord(kinds, 0, std::min<size_t>(hdrSlots, kinds.size()));
+    for (size_t s = hdrSlots; s < kinds.size(); s += 32)
+        p.ext.push_back(
+            kindsWord(kinds, s, std::min<size_t>(32, kinds.size() - s)));
+    return p;
+}
+
+/// The closure's packed word at +8, Phase 1 layout (Heap.hpp Closure):
+///   n_values:6 | max_values:6 | result_kind:2 | unboxed:50.
+inline uint64_t packClosureWord(uint32_t nValues, uint32_t maxValues,
+                                uint8_t resultKind, uint64_t hdrBits) {
+    assert(nValues < 64 && maxValues < 64 && resultKind < 4 &&
+           (hdrBits >> 50) == 0 && "packClosureWord: field out of range");
+    return uint64_t(nValues) | (uint64_t(maxValues) << 6) |
+           (uint64_t(resultKind & 3) << 12) | (hdrBits << 14);
+}
 
 //===----------------------------------------------------------------------===//
 // Runtime Function Helper

@@ -34,15 +34,22 @@ inline void forEachChildSlot(void* obj, F&& f) {
             break;
         }
         case Tag_Custom: {
+            // Header-bitmap slots, then the tail (boxed in Phase 1, D semantics).
             Custom* c = static_cast<Custom*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 24; i++)
-                if (fieldKind(c->unboxed, i) == 0) f(c->values[i].p);
+            const u32 n = hdr->size, h = n < CUSTOM_HDR_SLOTS ? n : CUSTOM_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++)
+                if (kindInWord(c->unboxed, i) == 0) f(c->values[i].p);
+            for (u32 i = h; i < n; i++)
+                if (customSlotKind(c, i) == 0) f(c->values[i].p);
             break;
         }
         case Tag_Record: {
             Record* r = static_cast<Record*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 32; i++)
-                if (fieldKind(r->unboxed, i) == 0) f(r->values[i].p);
+            const u32 n = hdr->size, h = n < RECORD_HDR_SLOTS ? n : RECORD_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++)
+                if (kindInWord(r->unboxed, i) == 0) f(r->values[i].p);
+            for (u32 i = h; i < n; i++)
+                if (recordSlotKind(r, i) == 0) f(r->values[i].p);
             break;
         }
         case Tag_DynRecord: {
@@ -54,7 +61,7 @@ inline void forEachChildSlot(void* obj, F&& f) {
         case Tag_Closure: {
             Closure* cl = static_cast<Closure*>(obj);   // APPLIED slots only
             for (u32 i = 0; i < cl->n_values; i++)
-                if (fieldKind(cl->unboxed, i) == 0) f(cl->values[i].p);
+                if (closureSlotKind(cl, i) == 0) f(cl->values[i].p);
             break;
         }
         case Tag_Cons: {

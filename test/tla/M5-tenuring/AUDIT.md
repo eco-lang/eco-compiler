@@ -979,3 +979,19 @@ Running with no member; `tenureJoin`'s orphan branch (`!running()`: `finish_here
 mutants (A6); no spec change needed.** Code guards: fork-trace arms `det-cr013-{start,copy,copy-scan,
 l3-exit,l3-minor}` clean (window closed by the refusal; the child's orphan path is sound); revert (no
 hold): start/copy/copy-scan/l3-minor reproduce TV1, TV3/TV4, TV6, the L3 hang again.
+
+
+## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (GC_MODEL_001)
+
+Pins fired: none (unpinned shared walkers HeapChildWalk / NurseryChildWalk / OldGenSpace
+scanChildren / NurserySpace scanObject). Voluntary entry (plans/wide-object-tail-kind-words.md §5).
+
+Change (plans/wide-object-tail-kind-words-phase-1.md §1d): the Custom/Record arms of scanEntryP
+scan all `hdr->size` slots (header-bitmap loop, then a tail loop treating slots past 24/32 as
+boxed); the Closure arm reads kinds through `closureSlotKind` (UB-free for n_values >= 32). The
+object is frozen (HEAP_SNAPSHOT_001); kinds are plain reads of the object, as before; no atomic,
+lock, memory order or step is added or reordered. The tail loop is dead in production (verifier
+caps; builder asserts). **Verdict: no model change needed.**
+
+The mark pass (`OldGenSpace` scanChildren) and the compaction fix pass use the same accessors, so
+they still visit exactly the same slots.

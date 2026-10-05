@@ -1540,15 +1540,15 @@ Testing::TestCase testFieldGroupSurvivesMinorGC("FieldGroup survives minor GC", 
 });
 
 // ============================================================================
-// 2-bit bitmap overflow policy (§0.3 of the 2-bit migration plan).
-// Closure.unboxed is 50 bits wide → 25 typed slots max (was 52/26 before
-// Phase D Part 3 narrowed the field to make room for Closure.flags:2).
-// Captures beyond slot 24 silently demote to kind 0 in the bitmap; the
-// slot storage itself still holds whatever the caller passed.
+// 2-bit bitmap overflow policy (§0.3 of the 2-bit migration plan; B6 of
+// plans/wide-object-tail-kind-words-phase-1.md step 1c.3).
+// Closure.unboxed is 50 bits wide → 25 typed slots max. Slots 25+ read boxed
+// (closureSlotKind); a boxed capture there is allowed, a typed one aborts
+// (the `wide B6` pin in WideObjectPinsTest.cpp).
 // ============================================================================
 
-Testing::UnitTest testClosureCaptureBeyond25DemotedToBoxed(
-    "closureCapture beyond slot 24 demotes to boxed",
+Testing::UnitTest testClosureCaptureBoxedBeyond25Allowed(
+    "closureCapture of a boxed value at slot 25..29 is allowed",
     []() {
         initAllocator();
 
@@ -1556,17 +1556,20 @@ Testing::UnitTest testClosureCaptureBeyond25DemotedToBoxed(
         HPointer cl = allocClosure(nullptr, capacity);
         void* clObj = Allocator::instance().resolve(cl);
 
-        for (u32 i = 0; i < capacity; ++i) {
-            closureCapture(clObj, unboxedInt(static_cast<i64>(i)), PK_Int);
+        for (u32 i = 0; i < 25; ++i) {
+            TEST_ASSERT(closureCapture(clObj, unboxedInt(static_cast<i64>(i)), PK_Int));
+        }
+        for (u32 i = 25; i < capacity; ++i) {
+            TEST_ASSERT(closureCapture(clObj, boxed(listNil()), PK_Boxed));
         }
 
         Closure* cp = static_cast<Closure*>(clObj);
         TEST_ASSERT(cp->n_values == capacity);
         for (u32 i = 0; i < 25; ++i) {
-            TEST_ASSERT(fieldKind(cp->unboxed, i) == 1);
+            TEST_ASSERT(closureSlotKind(cp, i) == 1);
         }
         for (u32 i = 25; i < capacity; ++i) {
-            TEST_ASSERT(fieldKind(cp->unboxed, i) == 0);
+            TEST_ASSERT(closureSlotKind(cp, i) == 0);
         }
     });
 
@@ -1697,6 +1700,6 @@ void registerHeapHelpersTests(Testing::TestSuite& suite) {
     suite.add(testFieldGroupSurvivesMinorGC);
 
     // 2-bit bitmap overflow policy
-    suite.add(testClosureCaptureBeyond25DemotedToBoxed);
+    suite.add(testClosureCaptureBoxedBeyond25Allowed);
     suite.add(testArrayUniformKindRoundtripsAllPrimitiveKinds);
 }

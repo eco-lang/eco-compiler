@@ -103,6 +103,7 @@ add_executable(test
         allocator/RuntimeExportsTest.cpp
         allocator/GenericApplyBoxingTest.cpp
         allocator/WideObjectPinsTest.cpp
+        allocator/WideKindsTest.cpp
         allocator/EcoApplyClosureTypedTest.cpp
         allocator/GCPressureTest.cpp
         allocator/EnsureHeadroomTest.cpp

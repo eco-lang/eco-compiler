@@ -222,9 +222,10 @@ inline ClosureMeta readClosureMeta(HPointer closureHP) {
 
 // Kind of the i-th *new* arg slot the closure expects (skipping captures).
 // `meta.unboxed` is indexed by absolute slot, so add `meta.n_values`.
+// Slots past the inline kinds read boxed (D semantics; Phase 2: ClosureKinds).
 inline uint8_t closureNewArgKind(const ClosureMeta& meta, uint32_t i) {
     uint32_t slot = meta.n_values + i;
-    return static_cast<uint8_t>((meta.unboxed >> (2 * slot)) & 0x3ULL);
+    return slot < Elm::CLOSURE_HDR_SLOTS ? static_cast<uint8_t>(Elm::kindInWord(meta.unboxed, slot)) : 0;
 }
 
 // Append one closure result onto the rolling per-iteration result vector.

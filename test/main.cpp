@@ -45,6 +45,7 @@
 #include "allocator/RuntimeExportsTest.hpp"
 #include "allocator/GenericApplyBoxingTest.hpp"
 #include "allocator/WideObjectPinsTest.hpp"
+#include "allocator/WideKindsTest.hpp"
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
 #include "allocator/EnsureHeadroomTest.hpp"
@@ -996,6 +997,8 @@ int main(int argc, char* argv[]) {
     registerGenericApplyBoxingTests(genericApplyBoxingTests);
     Testing::TestSuite wideObjectPinsTests("Wide object pins");
     registerWideObjectPinsTests(wideObjectPinsTests);
+    Testing::TestSuite wideKindsTests("Wide kinds");
+    registerWideKindsTests(wideKindsTests);
 
     // Phase D typed-apply runtime correctness tests
     Testing::TestSuite ecoApplyClosureTypedTests("EcoApplyClosureTyped");
@@ -1204,6 +1207,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(genericApplyBoxingTests));
     suite.add(std::move(wideObjectPinsTests));
+    suite.add(std::move(wideKindsTests));
     suite.add(std::move(ecoApplyClosureTypedTests));
     suite.add(std::move(sliceReprTests));
     suite.add(std::move(addressReservationTests));

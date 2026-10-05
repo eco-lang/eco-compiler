@@ -29,7 +29,7 @@ const which = require("which");
 const tmp = require("tmp");
 const FormData = require("form-data");
 const { newServer } = require("mock-xmlhttprequest");
-const { handleEcoIO } = require("./eco-io-handler");
+const { handleEcoIO, markHandlerFailed, handlerFailedFlag } = require("./eco-io-handler");
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -82,6 +82,7 @@ server.post("eco-io", (request) => {
     });
   } catch (e) {
     console.error("eco-io handler error:", e);
+    markHandlerFailed();
     request.respond(500, null, JSON.stringify({ error: e.message }));
   }
 });
@@ -232,7 +233,8 @@ server.post("waitForProcess", (request) => {
 
 server.post("exitWith", (request) => {
   rl.close();
-  process.exit(request.body);
+  const code = Number(request.body);
+  process.exit(code === 0 && handlerFailedFlag() ? 1 : code);
 });
 
 server.post("dirFindExecutable", (request) => {

@@ -257,6 +257,8 @@ extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_
     // and the field values are written by the caller after this returns.
     void* obj = eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
+    assert((scalar_bytes == 0 || getHeader(obj)->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
+    assertNarrowContainer(Tag_Custom, field_count);
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
@@ -292,8 +294,15 @@ extern "C" void eco_set_unboxed(HPtr obj_hptr, uint64_t bitmap) {
             cons->header.unboxed = static_cast<u8>(bitmap & 0x3);
             break;
         }
+        case Tag_Record:
+        case Tag_Closure:
+            // B11: their kinds live in Record::unboxed / Closure::unboxed, not header.unboxed;
+            // the old default arm wrote a 2-bit kind where no reader looks.
+            std::fprintf(stderr, "[eco] FATAL: eco_set_unboxed on tag %u (its kinds are not in header.unboxed)\n",
+                         unsigned(header->tag));
+            std::abort();
         default:
-            // For other types (e.g. Array's uniform kind), set in header.
+            // Array's uniform kind (and other header.unboxed users).
             header->unboxed = static_cast<u8>(bitmap & 0x3);
             break;
     }
@@ -456,6 +465,7 @@ extern "C" HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) 
 
     Record* rec = static_cast<Record*>(obj);
     rec->header.size = field_count;
+    assertNarrowContainer(Tag_Record, field_count);
     rec->unboxed = unboxed_bitmap;
     return ptrToHPointer(obj);
 }
@@ -1339,14 +1349,13 @@ extern "C" HPtr eco_intern_closure0(void* func_ptr, uint32_t arity,
         std::memcpy(reinterpret_cast<char*>(obj) + 8, &packed,
                     sizeof(uint64_t));
         closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(func_ptr);
-        // GC-safety: `packed` sets max_values == arity, and the closure scan
-        // (OldGenSpace::markChildren / NurserySpace::scanObject, Tag_Closure)
-        // iterates ALL max_values value slots — deliberately, to cover captures
-        // stored-but-not-yet-applied. This interned singleton has n_values == 0
-        // and never writes its value slots (it is immutable; eco_pap_extend
-        // COPIES for application), and allocatePermanent does NOT zero the
-        // old-gen body. Without zeroing, the scan follows uninitialized garbage
-        // in values[0..arity) as boxed HPointers -> use-after-free at major GC.
+        // `packed` sets max_values == arity, but the closure scans
+        // (OldGenSpace::scanChildren / NurserySpace::scanObject, Tag_Closure)
+        // iterate `n_values` slots (0 here): this interned singleton never
+        // writes its value slots (it is immutable; eco_pap_extend COPIES for
+        // application). allocatePermanent does NOT zero the old-gen body; the
+        // memset keeps the body defined for debug walkers and permanent-space
+        // copies.
         std::memset(closure->values, 0,
                     static_cast<size_t>(arity) * sizeof(Unboxable));
         return ptrToHPointer(obj);
@@ -1403,6 +1412,8 @@ extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, ui
     zeroNewObject(hdr, size);
     hdr->tag = Tag_Custom;
     hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+    assert((scalar_bytes == 0 || hdr->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
+    assertNarrowContainer(Tag_Custom, field_count);
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
     custom->unboxed = 0;
@@ -1417,6 +1428,8 @@ extern "C" HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, ui
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
     void* obj = Allocator::instance().allocateSlow(size, Tag_Custom);
     if (!obj) return HPtr::fromBits(0);
+    assert((scalar_bytes == 0 || getHeader(obj)->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
+    assertNarrowContainer(Tag_Custom, field_count);
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
@@ -1571,6 +1584,7 @@ extern "C" HPtr eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bit
     zeroNewObject(hdr, size);
     hdr->tag = Tag_Record;
     hdr->size = field_count;
+    assertNarrowContainer(Tag_Record, field_count);
     Record* rec = static_cast<Record*>(obj);
     rec->unboxed = unboxed_bitmap;
 
@@ -1584,6 +1598,7 @@ extern "C" HPtr eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bit
 
     Record* rec = static_cast<Record*>(obj);
     rec->header.size = field_count;
+    assertNarrowContainer(Tag_Record, field_count);
     rec->unboxed = unboxed_bitmap;
 
     return ptrToHPointer(obj);
@@ -1896,6 +1911,7 @@ extern "C" HPtr eco_init_record_at(void* obj, uint32_t field_count, uint64_t unb
     zeroNewObject(hdr, sizeof(Header) + 8 + field_count * sizeof(Unboxable));
     hdr->tag = Tag_Record;
     hdr->size = field_count;
+    assertNarrowContainer(Tag_Record, field_count);
     Record* rec = static_cast<Record*>(obj);
     rec->unboxed = unboxed_bitmap;
     return ptrToHPointer(obj);
@@ -1907,6 +1923,8 @@ extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_c
                   sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes);
     hdr->tag = Tag_Custom;
     hdr->size = (sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes - sizeof(Custom)) / sizeof(Unboxable);
+    assert((scalar_bytes == 0 || hdr->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
+    assertNarrowContainer(Tag_Custom, field_count);
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
     custom->unboxed = 0;
@@ -2279,9 +2297,13 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
         // Closures with >32 typed newargs under-saturated would silently lose
         // primitive-ness for slots 32+ — fail loud instead. Lifting this cap
         // requires switching from a packed bitmap to a heap- or stack-allocated
-        // kind array.
-        assert(num_args <= 32 &&
-               "eco_apply_segmentation_unknown: bitmap derivation caps at 32 args");
+        // kind array (Phase 2: eco_pap_extend_l). A release check: the shifts
+        // below are UB past 32 slots.
+        if (num_args > 32) {
+            std::fprintf(stderr, "[eco] FATAL: eco_apply_segmentation_unknown: %u under-saturated "
+                                 "args exceed the 32-slot kind bitmap\n", num_args);
+            std::abort();
+        }
         uint64_t bitmap = 0;
         if (args_layout != nullptr) {
             for (uint32_t i = 0; i < num_args; ++i) {
@@ -2426,8 +2448,11 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
                "eco_apply_closure_eval: under-saturated apply requires PK_Boxed "
                "desired_kind (well-typed IR cannot have a primitive result on "
                "an under-saturated apply)");
-        assert(num_args <= 32 &&
-               "eco_apply_closure_eval: under-saturated bitmap derivation caps at 32 args");
+        if (num_args > 32) {   // release check: the shifts below are UB past 32 slots
+            std::fprintf(stderr, "[eco] FATAL: eco_apply_closure_eval: %u under-saturated "
+                                 "args exceed the 32-slot kind bitmap\n", num_args);
+            std::abort();
+        }
         uint64_t bitmap = 0;
         if (args_layout != nullptr) {
             for (uint32_t i = 0; i < num_args; ++i) {
@@ -2557,19 +2582,24 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         if (callerMask != 0) {
             eco_gc_push_stack_range(args, num_newargs, callerMask);
         }
+        // Slot kinds come from a snapshot (the boxing below may move the
+        // closure); slots past the inline kinds read boxed (D semantics).
+        ClosureKinds ks;
+        snapshotClosureKinds(old_closure, ks);
         // Root the conversion buffer per the TARGET kinds (zero-filled
         // slots are null HPtrs — skipped by the scan).
         uint64_t targetMask = 0;
         for (uint32_t i = 0; i < num_newargs; ++i) {
-            uint64_t slotKind = (old_unboxed >> (2 * (old_n_values + i))) & 0x3ULL;
+            uint64_t slotKind = closureKindAt(ks, old_n_values + i);
             if (slotKind == 0) targetMask |= (uint64_t{1} << i);
         }
         if (targetMask != 0) {
             eco_gc_push_stack_range(conv, num_newargs, targetMask);
         }
         for (uint32_t i = 0; i < num_newargs; ++i) {
-            uint64_t slotKind = (old_unboxed >> (2 * (old_n_values + i))) & 0x3ULL;
-            uint64_t callerKind = (new_unboxed_bitmap >> (2 * i)) & 0x3ULL;
+            uint64_t slotKind = closureKindAt(ks, old_n_values + i);
+            // A u64 caller bitmap describes 32 slots (Phase 2: EvalParamLayout).
+            uint64_t callerKind = i < 32 ? kindInWord(new_unboxed_bitmap, i) : 0;
             uint64_t raw = args[i];
             if (callerKind == slotKind) {
                 // Matched encoding: copy through (the universal case).
@@ -2603,6 +2633,7 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         // Re-resolve after possible GC in the boxing path.
         old_closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
         old_unboxed = old_closure->unboxed;
+        snapshotClosureKinds(old_closure, ks);
     }
 
     // Allocate a new closure with room for all captured values.
@@ -2693,7 +2724,10 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
            && "spliceArgsForSaturatedCall: argument count mismatch");
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
 
-    uint64_t bitmap = closure->unboxed;
+    // Kinds come from a snapshot (boxing below may move the closure); slots
+    // past the inline kinds read boxed (D semantics).
+    ClosureKinds ks;
+    snapshotClosureKinds(closure, ks);
 
     // Captures: stored raw per closure->unboxed; copy directly.
     for (uint32_t i = 0; i < n_values; ++i) {
@@ -2704,7 +2738,7 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
     // wrapper convention slot-by-slot.
     for (uint32_t i = 0; i < num_newargs; ++i) {
         uint32_t slot = n_values + i;
-        uint64_t closureKind = (bitmap >> (2 * slot)) & 0x3ULL;
+        uint64_t closureKind = closureKindAt(ks, slot);
         uint64_t callerKind = layout ? (layout->kinds[i] & 0x3ULL) : 0ULL;
         uint64_t raw = new_args[i];
         if (closureKind == callerKind) {
@@ -2761,6 +2795,7 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
             }
             // Re-resolve closure: eco_alloc_* may have GC'd.
             closure = static_cast<Closure*>(hpointerToPtr(closure_bits_inout));
+            snapshotClosureKinds(closure, ks);
         } else {
             // Both kinds primitive but distinct (e.g. Int vs Float). This
             // is a representation mismatch the compiler should have ruled
@@ -2773,11 +2808,11 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
     // Stale-arg tripwire: validate combined_args before the helper returns.
     // Catches stale entries arising from caller bugs or missed re-resolves
     // across the boxing/un-boxing GC points above. Primitive slots carry
-    // raw bits, not HPointers, so they are skipped via `bitmap`
+    // raw bits, not HPointers, so they are skipped via the kinds snapshot
     // (closure->unboxed). Centralised here so both `eco_closure_call_saturated`
     // (K==0) and `invokeSaturatedTyped` (K!=0) get the check.
     for (uint32_t dbg_i = 0; dbg_i < max_values; ++dbg_i) {
-        uint64_t closureKind = (bitmap >> (2 * dbg_i)) & 0x3ULL;
+        uint64_t closureKind = closureKindAt(ks, dbg_i);
         if (closureKind != 0) continue;
         uint64_t raw = reinterpret_cast<uint64_t>(combined_args[dbg_i]);
         HPointer hp;
@@ -2789,7 +2824,7 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
 #endif
 
     max_values_out = max_values;
-    bitmap_out = bitmap;
+    bitmap_out = ks.hdr;
     return closure;
 }
 
@@ -2892,17 +2927,16 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     memset(combined_args, 0, max_values * sizeof(void*));
 
     // Open a stack root range over closure_bits and the combined buffer.
-    // The boxed-slot mask comes from `closure->unboxed` (the full-params
-    // bitmap), so primitive slots are correctly skipped by GC.
+    // The boxed-slot kinds come from `closure->unboxed` (the full-params
+    // bitmap; slots past the inline kinds read boxed), so primitive slots
+    // are correctly skipped by GC.
     EcoRootMark saved_range = ecoRootMark();
     ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
-    uint64_t bitmap = closure->unboxed;
-    if (max_values > 0) {
-        uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);
-        if (mask != 0) {
-            eco_gc_push_stack_range(
-                reinterpret_cast<uint64_t*>(combined_args), max_values, mask);
-        }
+    {
+        ClosureKinds ks;
+        snapshotClosureKinds(closure, ks);
+        pushRootsByKinds(reinterpret_cast<uint64_t*>(combined_args), max_values,
+                         [&](uint32_t i) { return closureKindAt(ks, i); });
     }
     // Also root the caller's new_args buffer's HPointer slots: when the
     // layout declares a primitive but the wrapper expects a boxed value,
@@ -2975,13 +3009,11 @@ void invokeSaturatedTyped(uint64_t closure_bits,
     // cover it, and the splice re-resolves it after a boxing allocation.
     EcoRootMark saved_range = ecoRootMark();
     ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
-    uint64_t bitmap = closure->unboxed;
-    if (max_values > 0) {
-        uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);
-        if (mask != 0) {
-            eco_gc_push_stack_range(
-                reinterpret_cast<uint64_t*>(combined_args), max_values, mask);
-        }
+    {
+        ClosureKinds ks;
+        snapshotClosureKinds(closure, ks);
+        pushRootsByKinds(reinterpret_cast<uint64_t*>(combined_args), max_values,
+                         [&](uint32_t i) { return closureKindAt(ks, i); });
     }
 
     uint32_t out_max_values = 0;
@@ -3392,7 +3424,7 @@ static void print_custom(Custom* custom, int depth) {
         for (uint32_t i = 0; i < size; i++) {
             if (i > 0) output_char(' ');
 
-            uint32_t k = static_cast<uint32_t>(fieldKind(custom->unboxed, i));
+            uint32_t k = customSlotKind(custom, i);
             if (k != 0) {
                 print_unboxable_slot(custom->values[i], k, depth);
             } else {
@@ -3430,7 +3462,7 @@ static void print_record(Record* record, int depth) {
         // We don't have field names, so use numeric indices
         output_format("f%u = ", i);
 
-        uint32_t k = static_cast<uint32_t>(fieldKind(record->unboxed, i));
+        uint32_t k = recordSlotKind(record, i);
         if (k != 0) {
             print_unboxable_slot(record->values[i], k, depth);
         } else {
@@ -3983,7 +4015,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
         Record* record = static_cast<Record*>(ptr);
         uint32_t actual_size = record->header.size;
-        uint64_t unboxed = record->unboxed;
 
         output_text("{ ");
         for (uint32_t i = 0; i < actual_size && i < field_count; i++) {
@@ -4003,7 +4034,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
                 // Print field value - check unboxed bitmap from heap
                 uint64_t field_val = static_cast<uint64_t>(record->values[i].i);
-                bool is_unboxed = fieldKind(unboxed, i) != 0;
+                bool is_unboxed = recordSlotKind(record, i) != 0;
 
                 if (is_unboxed) {
                     const Elm::EcoTypeInfo* ft = &g_type_graph->types[field->type_id];
@@ -4112,7 +4143,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 output_char(' ');
 
                 uint64_t field_val = static_cast<uint64_t>(custom->values[i].i);
-                bool is_unboxed = fieldKind(custom->unboxed, i) != 0;
+                bool is_unboxed = customSlotKind(custom, i) != 0;
 
                 // Get field type from ctor info
                 uint32_t field_type_id = g_type_graph->fields[ctor_info->first_field + i].type_id;

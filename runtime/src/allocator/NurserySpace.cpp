@@ -889,16 +889,16 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     }
                     case Tag_Custom: {
                         Custom* c = static_cast<Custom*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size && i < 24; i++) {
-                            if (Elm::fieldKind(c->unboxed, i) == 0)
+                        for (u32 i = 0; i < h->size; i++) {   // tail slots read boxed (D semantics)
+                            if (Elm::customSlotKind(c, i) == 0)
                                 checkChild(c->values[i].p, "custom", i);
                         }
                         break;
                     }
                     case Tag_Record: {
                         Record* r = static_cast<Record*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size && i < 32; i++) {
-                            if (Elm::fieldKind(r->unboxed, i) == 0)
+                        for (u32 i = 0; i < h->size; i++) {
+                            if (Elm::recordSlotKind(r, i) == 0)
                                 checkChild(r->values[i].p, "record", i);
                         }
                         break;
@@ -907,7 +907,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         // n_values, matching the scan this is verifying.
                         Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));
                         for (u32 i = 0; i < cl->n_values; i++) {
-                            if (Elm::fieldKind(cl->unboxed, i) == 0)
+                            if (Elm::closureSlotKind(cl, i) == 0)
                                 checkChild(cl->values[i].p, "closure", i);
                         }
                         break;
@@ -1047,7 +1047,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         // n_values, matching the scan this is verifying.
                         Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));
                         for (u32 i = 0; i < cl->n_values; i++) {
-                            if (Elm::fieldKind(cl->unboxed, i) == 0)
+                            if (Elm::closureSlotKind(cl, i) == 0)
                                 checkOGChild(cl->values[i].p, scan, "capture", i);
                         }
                         break;
@@ -1067,16 +1067,16 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     }
                     case Tag_Custom: {
                         Custom* c = static_cast<Custom*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size && i < 24; i++) {
-                            if (Elm::fieldKind(c->unboxed, i) == 0)
+                        for (u32 i = 0; i < h->size; i++) {   // tail slots read boxed (D semantics)
+                            if (Elm::customSlotKind(c, i) == 0)
                                 checkOGChild(c->values[i].p, scan, "custom", i);
                         }
                         break;
                     }
                     case Tag_Record: {
                         Record* r = static_cast<Record*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size && i < 32; i++) {
-                            if (Elm::fieldKind(r->unboxed, i) == 0)
+                        for (u32 i = 0; i < h->size; i++) {
+                            if (Elm::recordSlotKind(r, i) == 0)
                                 checkOGChild(r->values[i].p, scan, "record", i);
                         }
                         break;
@@ -1897,25 +1897,30 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
         case Tag_Custom: {
+            // Header-bitmap slots, then the tail (boxed in Phase 1, D semantics).
             Custom *c = static_cast<Custom *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 24; i++) {
-                bool kib = Elm::fieldKind(c->unboxed, i) == 0;
+            auto slot = [&](u32 i, bool kib) {
 #if ECO_HEAP_VALIDATE
                 validateBitmapSlotKind(this, hbase, hres, c->values[i], kib, obj, hdr->tag, "Custom", i);
 #endif
                 evacuateUnboxable(c->values[i], kib, oldgen, promoted_objects);
-            }
+            };
+            const u32 n = hdr->size, h = n < Elm::CUSTOM_HDR_SLOTS ? n : Elm::CUSTOM_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) slot(i, Elm::kindInWord(c->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) slot(i, Elm::customSlotKind(c, i) == 0);
             break;
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 32; i++) {
-                bool kib = Elm::fieldKind(r->unboxed, i) == 0;
+            auto slot = [&](u32 i, bool kib) {
 #if ECO_HEAP_VALIDATE
                 validateBitmapSlotKind(this, hbase, hres, r->values[i], kib, obj, hdr->tag, "Record", i);
 #endif
                 evacuateUnboxable(r->values[i], kib, oldgen, promoted_objects);
-            }
+            };
+            const u32 n = hdr->size, h = n < Elm::RECORD_HDR_SLOTS ? n : Elm::RECORD_HDR_SLOTS;
+            for (u32 i = 0; i < h; i++) slot(i, Elm::kindInWord(r->unboxed, i) == 0);
+            for (u32 i = h; i < n; i++) slot(i, Elm::recordSlotKind(r, i) == 0);
             break;
         }
         case Tag_DynRecord: {
@@ -1947,7 +1952,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             // minor and major GCs" pins it.
             Closure *cl = static_cast<Closure *>(obj);
             for (u32 i = 0; i < cl->n_values; i++) {
-                bool is_boxed = Elm::fieldKind(cl->unboxed, i) == 0;
+                bool is_boxed = Elm::closureSlotKind(cl, i) == 0;
 #if ECO_HEAP_VALIDATE
                 validateBitmapSlotKind(this, hbase, hres, cl->values[i], is_boxed, obj, hdr->tag, "Closure", i);
 #endif
@@ -1958,7 +1963,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                     HPointer hp; memcpy(&hp, &raw, sizeof(hp));
                     if (hp.ptr_ind == 0 && hp.ptr != 0 && raw == 0x20039995ULL)
                         std::fprintf(stderr, "[gc-debug] closure scan: FOUND 0x20039995 in UNBOXED slot! closure=%p idx=%u kind=%llu unboxed=0x%llx\n",
-                                     obj, i, (unsigned long long)Elm::fieldKind(cl->unboxed, i),
+                                     obj, i, (unsigned long long)Elm::closureSlotKind(cl, i),
                                      (unsigned long long)cl->unboxed);
                 } else {
                     uint64_t raw; memcpy(&raw, &cl->values[i], sizeof(raw));

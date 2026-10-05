@@ -60,6 +60,18 @@ let streamHandleCounter = 1000;
 const mVars = {};
 let mVarNextId = 0;
 
+// Set when a driver's eco-io route catches an exception (the request is
+// answered 500). The compiler may still go on to exit 0 and leave a truncated
+// .mlir behind, so a failed handler forces a non-zero exit status.
+let handlerFailed = false;
+function markHandlerFailed() {
+  handlerFailed = true;
+  process.exitCode = 1;
+}
+function handlerFailedFlag() {
+  return handlerFailed;
+}
+
 /**
  * Convert a Node.js Buffer to an ArrayBuffer.
  * The Elm runtime's _Http_toDataView expects ArrayBuffer, not Buffer.
@@ -436,7 +448,7 @@ function handleEcoIO(parsed, respond) {
 
     // --- Process ---
     case "Process.exit": {
-      process.exit(args.code);
+      process.exit(handlerFailed && args.code === 0 ? 1 : args.code);
       break;
     }
 
@@ -752,4 +764,4 @@ function handleEcoIOBinary(op, request, respond) {
   }
 }
 
-module.exports = { handleEcoIO, handleEcoIOBinary };
+module.exports = { handleEcoIO, handleEcoIOBinary, markHandlerFailed, handlerFailedFlag };
