@@ -25,7 +25,7 @@ file    376411c19869399e7b3194307dc0223e350189885207e1820dde352ef4495c40  runtim
 file    22f4e3f2b54689eb75b33f122b5a56d2f1591501ac0b7a7419bceeee424db85a  runtime/src/allocator/GCHelperPool.cpp  -  M6,M7,w_pool_done,w_running_chain
 file    d2cfa5f9716d32e5e5f8380d7f9c8d68aac540f89cb06d1ff47230ae80027240  runtime/src/allocator/GCFork.cpp  -  M6,M7
 file    681db7309a0a83f6b9d89d90bfcff28f193eba70caf9770017f12767f61027de  runtime/src/allocator/PageWork.hpp  -  M7
-file    3b5ca6feb509be3383edeb40c9241517e630eb8c1647ea22c6e058c6feaa1e51  runtime/src/allocator/PageWork.cpp  -  M7,w_pool_done
+file    6a3a3b932b3a9652a2eab1edc45bccf334e84ff911428eec94b4a3d381ee73d6  runtime/src/allocator/PageWork.cpp  -  M7,w_pool_done
 file    89f964a455dcd1a3daf5d3e2a7e3b173ba9bd2e6444e8a6b98ec6a45bce284b1  runtime/src/allocator/NurseryRegions.hpp  -  M3,M5
 file    f3cb469656fbb90a688227aefc61187f93bce62a0677420668c6cc2384f0849f  runtime/src/allocator/ReservedArray.hpp  -  W4,M1
 file    d82cd2a83ddb41e3b9d7ce6040da732a15555eec68688d13a8fac1580187cf09  runtime/src/allocator/TlaTrace.hpp  -  M1,M2,M3,M4,M5,M6,M7
@@ -34,7 +34,7 @@ file    4f6ac56ce0066f8cf7c4a1c88b49c36e9bf4e9de3cd52ffa8cb1c74c1a860b85  test/g
 file    f3f06ed92a5e57b6eb16ecc7ddf64c1516df9a1138ccc88373487f299c129310  test/gc-helper-tsan/harness.cpp  -  M7
 file    cc23ed539ced765847b5e27c6a52f5cae73a04a1c1e580588ddd09b4ec1d7caf  test/gc-helper-tsan/minor_harness.cpp  -  M3
 file    5bcf9065bd75d9801cd6c7fc35e8b9ab3964ecb989d234b7543831e2d61828a5  test/gc-helper-tsan/mark_harness.cpp  -  M2
-file    3400ac12ae0920b3cd2da7faab9116f91109c071c117341eb0a222707134f7c2  runtime/src/allocator/BlockTable.hpp  -  M8
+file    37a0440b8bf984f6bdce246d88e3c58a9628728088657e4a73facbb62512b3df  runtime/src/allocator/BlockTable.hpp  -  M8
 
 # ---- regions ----
 region  ba302e5793e8a7396699da96c03bb59979e8b9a4d1a0cc3481357fa9e977f9c8  runtime/src/allocator/OldGenSpace.cpp  OGS.beginMarkCycle  M1
@@ -236,7 +236,7 @@ grep    6e200a1c6e8878c686a8dc833a8928531366a6ea50e81f2172f5fd12e282cfcc  -  T3 
 grep    b463014eb99953cb3f5ffd72c53050ca56c5826edaa8ceb9ac6285d86f6fae54  -  T4  M5
 grep    73962c18b34cab42e546604d0087896cc580ec710773f29abf26bb5b79ba1184  -  T5  M4,M5
 grep    4caf2b41c9fd1611d4fd7119f99500d6a3df38430ddb1a0f51228ca0a029aeb5  -  T9  M5
-grep    dff5ec5a9d436834a75c662ec151819cc77c019a38627d70b92d2243d6cc04cc  -  P6.M16  M4
+grep    2be50684b09da8c8d5604df611b55fca3f3f8c77676537d755a7665cf18d9ae5  -  P6.M16  M4
 grep    5cef15aa00415ab076a35a90e8ed0c986a08cbdb951826fff435a3cadca7c0d4  -  P6.M17  M2,M3
 grep    e0a73570b77c8eb53f3a4bc3f49ef8f67fa39cf7d5122385abe9c9083c41adf8  -  F.gc_phase  M4
 grep    6c839077c1589b1aa01680f60c6df04a72b0026aa160b765e774e4ed931efe6c  -  F.bitscan  M4,W3

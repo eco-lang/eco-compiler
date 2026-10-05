@@ -23,7 +23,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 #include <deque>
 #include <map>  // call-census row merge
 #include <memory>
@@ -335,7 +337,9 @@ void dumpConsSites() {
     std::lock_guard<std::mutex> l(g_consSiteMu);
     // Base of the main module: lowest mapping backed by the executable
     // itself (the heap arenas map lower, so the first line won't do).
+    // No /proc on Windows: base stays 0 and sites print as absolute addresses.
     uintptr_t base = 0;
+#if !defined(_WIN32)
     char exe[512] = {0};
     ssize_t exeLen = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (FILE *f = fopen("/proc/self/maps", "r")) {
@@ -348,6 +352,7 @@ void dumpConsSites() {
         }
         fclose(f);
     }
+#endif
     std::vector<std::pair<void *, uint64_t>> v(g_consSitesAll.begin(),
                                                g_consSitesAll.end());
     std::sort(v.begin(), v.end(),

@@ -763,3 +763,14 @@ no minor and no gang is running: the CR-014 tripwire cannot fire); that is the m
 `U_Sweep`/`G_Shrink` already covers (`ReleasedSafe`: only blocks with no live or in-flight cell, the
 granted `kAllocTenure` blocks skipped). No atomic, lock, shared location or memory order was added; the
 F.gc_phase and F.allocTenure greps are unchanged. **Verdict: no model change needed.**
+
+## 2026-10-05 — macOS build: BufferMetadata::live_bytes declared uint64_t (GC_MODEL_001)
+
+Pin fired: grep `P6.M16` (**2be50684b09d**): `size_t live_bytes;` became `uint64_t live_bytes;` in
+`BlockTable.hpp`.
+
+Change: as in M8's entry of the same date. `liveBytes[b]` (P6.M16) is the same location with the same
+accesses: relaxed `atomic_ref<uint64_t>` adds outside `promo_mu_` (`initObjectHeaderWithSize`,
+`flushCursorW`, `finalizePoppedCellW`, none of them edited) and plain reads under it. The declared type
+now matches the `atomic_ref`'s on every platform; on Linux it already did. No atomic step, lock, shared
+location or memory order changed. **Verdict: no model change needed.**

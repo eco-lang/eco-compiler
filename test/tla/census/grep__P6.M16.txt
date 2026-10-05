@@ -1,8 +1,8 @@
 runtime/src/allocator/Allocator.cpp: ? static_cast<double>(frag.live_bytes) / frag.heap_bytes
 runtime/src/allocator/Allocator.cpp: frag.live_bytes / (1024.0 * 1024.0),
 runtime/src/allocator/Allocator.cpp: if (m.fully_swept && m.live_bytes == 0) ++free_pages;
-runtime/src/allocator/BlockTable.hpp: size_t live_bytes;
 runtime/src/allocator/BlockTable.hpp: t.meta(id).live_bytes += take(id);
+runtime/src/allocator/BlockTable.hpp: uint64_t live_bytes;
 runtime/src/allocator/GCStats.cpp: << (residency_pinned_live_bytes * pin_inv_pb) << "% "
 runtime/src/allocator/GCStats.cpp: const double live_frac = static_cast<double>(live_bytes) /
 runtime/src/allocator/GCStats.cpp: const double live_mb = residency_live_bytes[i] / MB;

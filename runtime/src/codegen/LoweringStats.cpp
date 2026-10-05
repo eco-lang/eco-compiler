@@ -8,10 +8,15 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/Threading.h"
 
 #include <algorithm>
 #include <cstdlib>
+#if defined(_WIN32)
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #include "mlir/IR/BuiltinOps.h"
 #include <unordered_map>
 #include <vector>
@@ -33,10 +38,15 @@ void LoweringStats::timelineMark(llvm::StringRef name, bool begin) {
         return;
     double t = std::chrono::duration<double>(Clock::now() - kProcessEpoch).count();
     std::string line = llvm::formatv("[timeline] {0:F3} {1} {2}{3}\n", t,
-                                     (unsigned long)::gettid(), begin ? "+" : "-",
+                                     (unsigned long)llvm::get_threadid(), begin ? "+" : "-",
                                      name.trim())
                            .str();
+    // One write(2) per line, so lines from concurrent threads don't interleave.
+#if defined(_WIN32)
+    ::_write(2, line.data(), static_cast<unsigned>(line.size()));
+#else
     ::write(2, line.data(), line.size());
+#endif
 }
 
 namespace {

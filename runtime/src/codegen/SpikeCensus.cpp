@@ -32,7 +32,9 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
 
+#if !defined(_WIN32)
 #include <sys/resource.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -55,9 +57,13 @@ double secs(Clock::time_point a) {
     return std::chrono::duration<double>(Clock::now() - a).count();
 }
 long maxRssMB() {
+#if defined(_WIN32)
+    return 0;   // not measured on Windows (no getrusage)
+#else
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
     return ru.ru_maxrss / 1024;
+#endif
 }
 
 bool envOn(const char *n) {

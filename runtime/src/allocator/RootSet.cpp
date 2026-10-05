@@ -8,7 +8,9 @@
  */
 
 #include "RootSet.hpp"
+#if !defined(_WIN32)
 #include <dlfcn.h>
+#endif
 #include <string>
 #include <deque>
 #include <cstring>
@@ -140,6 +142,10 @@ void RootSet::removeJitRoot(uint64_t *root) {
 static const char* labelForUnnamedScanner(void* caller) {
     static std::deque<std::string>* owned = new std::deque<std::string>();
     char buf[256];
+#if defined(_WIN32)
+    // No dladdr: label by address only.
+    std::snprintf(buf, sizeof buf, "unnamed@%p", caller);
+#else
     Dl_info info{};
     if (caller && dladdr(caller, &info) && info.dli_sname) {
         std::snprintf(buf, sizeof buf, "unnamed@%s", info.dli_sname);
@@ -150,6 +156,7 @@ static const char* labelForUnnamedScanner(void* caller) {
     } else {
         std::snprintf(buf, sizeof buf, "unnamed@%p", caller);
     }
+#endif
     owned->emplace_back(buf);
     return owned->back().c_str();
 }

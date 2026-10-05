@@ -33,7 +33,13 @@ namespace {
 }
 
 // One private-writable page for the MADV_POPULATE_WRITE support probe.
+// clang-cl caps alignas at 8192; roundUp below still finds a 4 KiB page in
+// the array, and the Win64 populate stub fails the probe regardless.
+#if defined(_WIN32)
+alignas(8192) char g_probe_page[65536];
+#else
 alignas(65536) char g_probe_page[65536];
+#endif
 
 char* roundUp(char* p, size_t g) {
     const uintptr_t v = reinterpret_cast<uintptr_t>(p);

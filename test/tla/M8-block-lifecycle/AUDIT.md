@@ -411,3 +411,14 @@ loop is, run to `Complete`, whose `onSweepComplete` light shrink is unchanged) â
 mutator inside one pause, which M8 (serial) covers as a sequence of its existing steps: `fully_swept`,
 `live_bytes == 0` (HEAP_073) and the flip/reclaim interplay are unchanged, and no block is released that
 the heavy or light pass could not release with a lower `desired_heap`. **Verdict: no model change needed.**
+
+## 2026-10-05 â€” macOS build: BufferMetadata::live_bytes declared uint64_t (GC_MODEL_001)
+
+Pin fired: file `BlockTable.hpp` (**37a0440b8bf9**).
+
+Change: `BufferMetadata::live_bytes` is declared `uint64_t` instead of `size_t`, the type of the
+`std::atomic_ref<uint64_t>` that `initObjectHeaderWithSize`, `flushCursorW` and `finalizePoppedCellW`
+already apply to it. On macOS `size_t` (`unsigned long`) and `uint64_t` (`unsigned long long`) are
+distinct types, so those `atomic_ref`s did not compile; on LP64 Linux they are the same type, so the Linux
+build is unchanged. Width and representation are unchanged on every platform, and M8's `lb` is a value.
+**Verdict: no model change needed.**

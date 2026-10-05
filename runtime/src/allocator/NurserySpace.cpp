@@ -34,11 +34,13 @@
 
 #include "NurserySpace.hpp"
 #include "HeapChildWalk.hpp"
+#if !defined(_WIN32)
 #include <sys/resource.h>
+#include <dlfcn.h>
+#endif
 #include "RuntimeExports.h"
 #include <unordered_map>
 #include <mutex>
-#include <dlfcn.h>
 #include "Allocator.hpp"
 #include "PermanentSpace.hpp"
 #include "ThreadLocalHeap.hpp"
@@ -2661,9 +2663,13 @@ void survivorCensusReportLocked(SurvivorWriteCensus& g) {
         else std::snprintf(wbuf, sizeof wbuf, "%u", (unsigned)word);
         if (tag == Tag_Closure && sub < g.eval_fn.size()) {
             const uintptr_t fn = g.eval_fn[sub];
+#if defined(_WIN32)
+            const char* sym = "?";   // no dladdr
+#else
             Dl_info info{};
             const char* sym = (fn && dladdr(reinterpret_cast<void*>(fn), &info) && info.dli_sname)
                                   ? info.dli_sname : "?";
+#endif
             std::fprintf(stderr,
                 "[survivor-write-census]   tag=%s evaluator-fn=0x%lx (%s) word=%s count=%llu\n",
                 gcTagName(tag), (unsigned long)fn, sym, wbuf,

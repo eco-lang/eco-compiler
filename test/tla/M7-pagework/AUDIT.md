@@ -598,3 +598,17 @@ PendGhost, PostIdle and NoWaitUnlessCap hold with the new step (the drain change
 its ghost, so GC_DET_001's `DetChoice` is untouched: `drainAll(true)` empties `pending_` identically in modes
 1 and 2). LockOrder (M7b) is unchanged: the drain adds no edge beyond the existing `thread_mutex_` → pool
 `m_`. **Verdict: model updated (PageWork.tla, MAPPING.md, models.txt).**
+
+## 2026-10-05 — Windows build: the probe page's alignment under _WIN32 (GC_MODEL_001)
+
+Pin fired: file `PageWork.cpp` (**6a3a3b932b3a**).
+
+Change: `g_probe_page`, the page the constructor hands to one `ops_.populate` call to probe
+`MADV_POPULATE_WRITE` support, is declared `alignas(8192)` under `#if defined(_WIN32)`, because clang-cl
+rejects alignments above 8192. Every other platform keeps `alignas(65536)`, so the Linux and macOS
+preprocessed source is unchanged. The probe runs once in the constructor, before any job can be posted,
+on a page no other thread touches; MAPPING.md maps no step to it. No atomic step, lock, shared location or
+memory order was added, removed or reordered. The six added lines move every later `PageWork.cpp` line by
++6; the line citations in MAPPING.md and `test/genmc/w_pool_done.cpp` were already about 15 lines out
+(`runJob` is cited at `:50-63` and sat at `:65`) and are left as they are. **Verdict: no model change
+needed.**

@@ -103,7 +103,9 @@ static struct EcoGCStrategyLinker {
 #include "SpikeCensus.h"
 #include "Passes/EcoSymbolGraph.h"
 #include <cstdio>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 #include "llvm/IR/PassTimingInfo.h"
 #if defined(__GLIBC__)
 #include <malloc.h>

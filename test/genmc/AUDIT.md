@@ -522,3 +522,13 @@ episode's `running_`), and `launch`'s `cv_done_.notify_all()` is a wake-up, not 
 chain member -> m_ -> joiner -> running_ -> owner holds for the joiner of its own generation; a foreign
 stopper whose generation was relaunched publishes nothing. GenMC is not installed here (as in Phases
 1-4); audited by reading. **Verdict: no driver change needed.**
+
+## 2026-10-05 — Windows build: the PageWork probe page's alignment (w_pool_done) (GC_MODEL_001)
+
+Pin fired: file `PageWork.cpp` (**6a3a3b932b3a**).
+
+Change: `g_probe_page` (the constructor's `MADV_POPULATE_WRITE` probe) is `alignas(8192)` under `_WIN32`
+and `alignas(65536)` elsewhere, as before. **w_pool_done**: `runJob`, `reapDone` and the Done publication
+the driver reduces are untouched, and the driver builds without `_WIN32`, so it sees the same code. Later
+`PageWork.cpp` lines move by +6; the driver's comment citations were already stale and are left as they
+are. GenMC is not installed here; audited by reading. **Verdict: no driver change needed.**

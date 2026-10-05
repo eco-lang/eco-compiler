@@ -73,7 +73,7 @@ static_assert(sizeof(BlockInfo) == 40, "BlockInfo must stay 40 bytes");
 // Tracks per-block statistics for compaction and reclaim decisions.
 // Addressed by BlockId (threaded-gc-01); there is no stored back-reference.
 struct BufferMetadata {
-    size_t live_bytes;      // Live object bytes. Written ONLY by the owner
+    uint64_t live_bytes;    // Live object bytes. Written ONLY by the owner
                             // (allocator side); marking attributes to a
                             // LiveBytesAccumulator merged in at
                             // finalizeMetaAfterMark (HEAP_051).
