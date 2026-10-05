@@ -42,6 +42,10 @@ What the tests establish:
     which is stored boxed, is projected as `!eco.value` (not read raw as
     `i64`), and unboxing it is not reported as spurious.
 
+  - `testBoxedRecordFieldPastSlotCap`: in a record pattern on a record of 28
+    `Int` fields, field `f27` (index 27, which `computeRecordLayout` stores
+    boxed) is not read raw as `i64` by `eco.project.record`.
+
 Each focused test also requires its MLIR to hold at least one
 `eco.project.custom`, so a match optimised away fails rather than passing
 vacuously.
@@ -52,6 +56,7 @@ computes, since no program is run.
 
 -}
 
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
@@ -64,19 +69,26 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pCtor
+        , pRecord
         , pVar
+        , recordExpr
         , tLambda
+        , tRecord
         , tType
         , tVar
         , varExpr
         )
+import Compiler.Generate.MLIR.Types as Types
+import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.CodeGen.DestructorTypeProjection
     exposing
         ( checkDestructorTypeProjection
+        , checkRecordFieldProjection
         , countCustomProjections
+        , countRecordProjections
         , expectDestructorTypeProjection
         )
 import TestLogic.Generate.CodeGen.Invariants exposing (violationsToExpectation)
@@ -114,6 +126,7 @@ focusedTests =
         , testMaybeIntExtraction
         , testNestedResultExtraction
         , testBoxedFieldPastSlotCap
+        , testBoxedRecordFieldPastSlotCap
         ]
 
 
@@ -192,6 +205,79 @@ testBoxedFieldPastSlotCap =
                 [ wideUnion ]
                 []
                 |> expectProjectedWithoutSpuriousUnbox
+
+
+{-| The test that a record pattern reading a field that
+`Compiler.Generate.MLIR.Types.computeRecordLayout` stores boxed projects it as
+an `!eco.value` (not as a raw `i64`, which would load the pointer's bits) and
+then unboxes it. The record has 28 `Int` fields `f00` to `f27`; the layout
+stores fields at index 26 and above boxed today, so `f27` (index 27) is boxed
+and `f25` (index 25) is unboxed. The program is
+
+    viaPat : { f00 : Int, ..., f27 : Int } -> Int
+    viaPat { f27, f25 } =
+        f27 * 1000 + f25
+
+    testValue : Int
+    testValue =
+        viaPat { f00 = 0, f01 = 1, ..., f27 = 27 }
+
+The check reads the layout from `Types`, so it stays valid when the record slot
+cap changes. Bug B3 of `plans/wide-object-tail-kind-words.md`: today the
+record-pattern destructor reads `f27` with `eco.project.record` as `i64`
+straight from the heap record, although the field holds a boxed pointer.
+
+-}
+testBoxedRecordFieldPastSlotCap : Test
+testBoxedRecordFieldPastSlotCap =
+    Test.test "record pattern of a field past the record slot cap is projected boxed, then unboxed" <|
+        \_ ->
+            let
+                fieldNames =
+                    List.map (\i -> "f" ++ String.padLeft 2 '0' (String.fromInt i)) (List.range 0 27)
+
+                layout : Types.RecordLayout
+                layout =
+                    Types.computeRecordLayout
+                        (Dict.fromList (List.map (\name -> ( name, Mono.MInt )) fieldNames))
+
+                viaPatDef : TypedDef
+                viaPatDef =
+                    { name = "viaPat"
+                    , args = [ pRecord [ "f27", "f25" ] ]
+                    , tipe =
+                        tLambda (tRecord (List.map (\name -> ( name, tType "Int" [] )) fieldNames))
+                            (tType "Int" [])
+                    , body =
+                        binopsExpr [ ( varExpr "f27", "*" ), ( intExpr 1000, "+" ) ] (varExpr "f25")
+                    }
+
+                testValueDef : TypedDef
+                testValueDef =
+                    { name = "testValue"
+                    , args = []
+                    , tipe = tType "Int" []
+                    , body =
+                        callExpr (varExpr "viaPat")
+                            [ recordExpr (List.indexedMap (\i name -> ( name, intExpr i )) fieldNames) ]
+                    }
+
+                modul =
+                    makeModuleWithTypedDefsUnionsAliases "Test"
+                        [ viaPatDef, testValueDef ]
+                        []
+                        []
+            in
+            case runToMlir modul of
+                Err err ->
+                    Expect.fail ("Compilation failed: " ++ err)
+
+                Ok { mlirModule } ->
+                    if countRecordProjections mlirModule == 0 then
+                        Expect.fail "No eco.project.record was generated, so the record pattern under test was not exercised"
+
+                    else
+                        violationsToExpectation (checkRecordFieldProjection layout mlirModule)
 
 
 {-| The declaration `type Maybe a = Just a | Nothing`, which

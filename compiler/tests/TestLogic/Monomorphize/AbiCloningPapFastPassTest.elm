@@ -55,10 +55,13 @@ What the tests establish:
     field, one bound. It asserts one stamp, a `fastPapPrefix` of 1, a
     `captureAbi` of `[Int]`, `[Float]` and `shapeTy`, and a callee that is
     still a local variable.
-  - Test 9: the spec is a constructor with 25 `Int` fields, one bound. The pass
-    treats a constructor as callable only up to 24 fields, because code
-    generation stores the fields from index 24 on boxed while a fast call
-    passes them unboxed. It asserts no stamp and one `declinedNoInstance`.
+  - Test 9: the spec is a constructor with 25 `Int` fields, one bound. Once
+    the constructor function takes every field at its ABI (bug B1 of
+    `plans/wide-object-tail-kind-words.md`), a constructor of any width is
+    callable like a function, so the site is stamped. It asserts one stamp and
+    no `declinedNoInstance`. Today it fails (bug B9): the guard in
+    `Compiler.GlobalOpt.AbiCloning` treats a constructor as callable only up
+    to 24 fields, so `stampedPapGlobal` is 0.
 
 The decline reasons in the test names (`papAmbiguous`, `papNonFn`, `papChar`,
 `papShapeMiss`) are not asserted; the tests read the counters, the stamped
@@ -293,10 +296,11 @@ suite =
                     , \_ -> Expect.equal True (calleeIsLocal g)
                     ]
                     ()
-        , Test.test "9. §11.1 GUARD: a constructor wider than 24 fields DECLINES (tail fields are boxed)" <|
+        , Test.test "9. §11.1 a constructor wider than 24 fields STAMPS (B1: the ctor function takes every field at its ABI)" <|
             \() ->
-                -- 25 Int fields, k = 1. Code generation stores fields at index
-                -- 24 and above boxed, and the fast call would pass them unboxed.
+                -- 25 Int fields, k = 1. B9: the 24-field guard in AbiCloning
+                -- declines this today; once the ctor function takes every
+                -- field at its ABI (B1) the width needs no guard.
                 let
                     fields =
                         List.repeat 25 Mono.MInt
@@ -314,8 +318,8 @@ suite =
                         run (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
-                    [ \_ -> Expect.equal 0 st.stampedPapGlobal
-                    , \_ -> Expect.equal 1 st.declinedNoInstance
+                    [ \_ -> Expect.equal 1 st.stampedPapGlobal
+                    , \_ -> Expect.equal 0 st.declinedNoInstance
                     ]
                     ()
         ]

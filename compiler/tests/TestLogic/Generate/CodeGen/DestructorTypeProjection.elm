@@ -1,4 +1,7 @@
-module TestLogic.Generate.CodeGen.DestructorTypeProjection exposing (expectDestructorTypeProjection, checkDestructorTypeProjection, countProjectionUnboxSequences, countCustomProjections)
+module TestLogic.Generate.CodeGen.DestructorTypeProjection exposing
+    ( expectDestructorTypeProjection, checkDestructorTypeProjection, countProjectionUnboxSequences, countCustomProjections
+    , checkRecordFieldProjection, countRecordProjections
+    )
 
 {-| Looks in generated MLIR for one sign that a pattern match read a field out of
 a custom-type value at the wrong type.
@@ -33,17 +36,28 @@ and find the op that defines an `eco.unbox` operand by its SSA name within the
 same function. An operand that no op in the function defines, such as a
 function or block argument, is never reported.
 
-Among what is not checked: projections out of records, tuples and lists; the
+`checkRecordFieldProjection` applies the same raw-read rule to records: given
+the `Compiler.Generate.MLIR.Types.RecordLayout` of the record type, it reports
+every `eco.project.record` from a heap object of a field the layout stores
+boxed whose result is an unboxable primitive. Because it reads the layout from
+`Types` rather than assuming a fixed slot cap, it stays valid when the cap
+changes. `countRecordProjections` counts the `eco.project.record` ops, so that
+a focused test can make sure its record pattern was not optimised away.
+
+Among what is not checked (by `checkDestructorTypeProjection`): projections out
+of records, tuples and lists; the
 result type the `eco.project.custom` itself declares; and which constructor is
 projected, so a field below index 24 whose type is not unboxable (and is
 therefore boxed) but is then unboxed would be reported. Such an unbox would be
 a type error, since an `eco.unbox` result is a primitive.
 
 @docs expectDestructorTypeProjection, checkDestructorTypeProjection, countProjectionUnboxSequences, countCustomProjections
+@docs checkRecordFieldProjection, countRecordProjections
 
 -}
 
 import Compiler.AST.Source as Src
+import Compiler.Generate.MLIR.Types as Types
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
@@ -136,6 +150,62 @@ checkRawBoxedRead op =
 
         _ ->
             Nothing
+
+
+{-| Returns one violation for each `eco.project.record` in the module's
+top-level `func.func` ops that reads, from a heap object (its `_operand_types`
+records `!eco.value`), a field that `layout` stores boxed, with an unboxable
+primitive result. Such a field holds a boxed pointer, so reading it as a
+primitive loads the pointer's bits. A projection whose `field_index` is not in
+`layout` is not reported.
+-}
+checkRecordFieldProjection : Types.RecordLayout -> MlirModule -> List Violation
+checkRecordFieldProjection layout mlirModule =
+    let
+        boxedIndices =
+            layout.fields
+                |> List.filter (\field -> not field.isUnboxed)
+                |> List.map .index
+    in
+    findFuncOps mlirModule
+        |> List.concatMap walkOpsInOp
+        |> List.filterMap (checkRawBoxedRecordRead boxedIndices)
+
+
+{-| Returns a violation when `op` is an `eco.project.record` from a heap object
+of a field whose index is in `boxedIndices`, with an unboxable primitive result.
+-}
+checkRawBoxedRecordRead : List Int -> MlirOp -> Maybe Violation
+checkRawBoxedRecordRead boxedIndices op =
+    case ( op.name, getIntAttr "field_index" op, ( extractOperandTypes op, op.results ) ) of
+        ( "eco.project.record", Just index, ( Just [ NamedStruct "eco.value" ], [ ( _, resultType ) ] ) ) ->
+            if List.member index boxedIndices && isUnboxable resultType then
+                Just
+                    { opId = op.id
+                    , opName = op.name
+                    , message =
+                        "raw read of boxed record field "
+                            ++ String.fromInt index
+                            ++ " as "
+                            ++ typeToString resultType
+                    }
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Returns the number of `eco.project.record` ops nested in the module's
+top-level `func.func` ops.
+-}
+countRecordProjections : MlirModule -> Int
+countRecordProjections mlirModule =
+    findFuncOps mlirModule
+        |> List.concatMap walkOpsInOp
+        |> List.filter (\op -> op.name == "eco.project.record")
+        |> List.length
 
 
 {-| Returns a dictionary from each SSA name that an op in `ops` defines as a
