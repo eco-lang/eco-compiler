@@ -20,8 +20,10 @@
 #include "../TestSuite.hpp"
 #include <csignal>
 #include <cstring>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 using namespace Elm;
@@ -29,6 +31,7 @@ using namespace Elm::TestHelpers;
 
 namespace {
 
+#if !defined(_WIN32)   // fork()ed children: POSIX only; those tests are no-ops on Windows
 // Runs `f` in a forked child. A child that returns normally exits 0; an abort
 // shows up as the negated signal number.
 template <class F> int runInChild(F f) {
@@ -41,8 +44,9 @@ template <class F> int runInChild(F f) {
     waitpid(pid, &st, 0);
     return WIFSIGNALED(st) ? -WTERMSIG(st) : WEXITSTATUS(st);
 }
+#endif
 
-void* stubEval(void**) { return nullptr; }
+[[maybe_unused]] void* stubEval(void**) { return nullptr; }
 
 Unboxable boxed(HPointer p) {
     Unboxable u;
@@ -57,12 +61,12 @@ Unboxable rawInt(i64 v) {
 }
 
 // The Int value of the boxed ElmInt in `slot`.
-i64 boxedIntValue(const Unboxable& slot) {
+[[maybe_unused]] i64 boxedIntValue(const Unboxable& slot) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(slot.p))->value;
 }
 
 // Allocates enough short-lived Ints to force several minor GCs.
-void churn() {
+[[maybe_unused]] void churn() {
     for (int i = 0; i < 100000; ++i) (void)alloc::allocInt(i);
 }
 
@@ -74,6 +78,7 @@ HPtr toHPtr(HPointer p) {
 
 // ---- B6 (green P1): closureCapture must not store a typed value it cannot describe ----
 void test_b6_closure_capture_typed_beyond_slot_aborts() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         initAllocator();
         HPointer c = alloc::allocClosureK(stubEval, 30, PK_Boxed);
@@ -84,6 +89,7 @@ void test_b6_closure_capture_typed_beyond_slot_aborts() {
         alloc::closureCapture(Allocator::instance().resolve(c), rawInt(7), PK_Int);
     });
     TEST_ASSERT(r == -SIGABRT);
+#endif
 }
 
 // ---- B7 (green P1): kind reads at slot >= 32 must not shift by >= 64 ----
@@ -111,6 +117,7 @@ void test_b7_record_equality_slots_beyond_32() {
 }
 
 void test_b7_closure_captures_beyond_32_survive_minor_gc() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         auto& a = initAllocator();
         HPointer c = alloc::allocClosureK(stubEval, 40, 0);
@@ -130,10 +137,12 @@ void test_b7_closure_captures_beyond_32_survive_minor_gc() {
         }
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 // ---- B8 (green P1): custom() must root every boxed slot on the slow path ----
 void test_b8_custom_70_boxed_roots_every_slot() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         auto& a = initAllocator();
         std::vector<HPointer> held(70);
@@ -153,12 +162,14 @@ void test_b8_custom_70_boxed_roots_every_slot() {
         }
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 // ---- B8b (green P1, step 1d): Custom slots >= 24 must be traced by the GC ----
 // Built on the fast path (no slow-path rooting involved), so the only failure
 // mode left is the Custom walker stopping at slot 24.
 void test_b8b_custom_slots_beyond_24_survive_minor_gc() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         auto& a = initAllocator();
         std::vector<Unboxable> v(70);
@@ -173,16 +184,19 @@ void test_b8b_custom_slots_beyond_24_survive_minor_gc() {
         }
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 // ---- B11 (green P1): eco_set_unboxed must reject a Record ----
 void test_b11_set_unboxed_on_record_aborts() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         initAllocator();
         HPointer rec = alloc::record({boxed(alloc::allocInt(1)), boxed(alloc::allocInt(2))}, 0);
         eco_set_unboxed(toHPtr(rec), 3);
     });
     TEST_ASSERT(r == -SIGABRT);
+#endif
 }
 
 } // namespace

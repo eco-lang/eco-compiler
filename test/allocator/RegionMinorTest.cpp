@@ -13,8 +13,10 @@
 #include <string>
 #include <vector>
 #include <csignal>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include "Allocator.hpp"
 #include "AllocatorCommon.hpp"
@@ -565,7 +567,7 @@ namespace {
 // P§3.16 / trap 7: an old object referenced ONLY by a tenuring object at t0
 // must be marked by the cycle (the t0 young walk covers the Tenuring extent).
 // Returns the value read back through the tenured copy after the handoff.
-i64 t0CoversTenuringScript(bool skip_young_walk) {
+[[maybe_unused]] i64 t0CoversTenuringScript(bool skip_young_walk) {
     HeapConfig cfg = regionConfig(1, 1);
     cfg.incremental_mark = true;
     cfg.incremental_mark_slices = 4;
@@ -605,6 +607,7 @@ i64 t0CoversTenuringScript(bool skip_young_walk) {
 Testing::TestCase testRegionT0CoversTenuring(
     "threaded-gc-07: the t0 young walk covers the Tenuring extent (an old object reachable only from it survives)",
     []() {
+#if !defined(_WIN32)
         TEST_ASSERT(t0CoversTenuringScript(false) == 4242);
 #if ECO_HEAP_VALIDATE
         // Negative control: without the young walk IM1 must fire.
@@ -616,5 +619,6 @@ Testing::TestCase testRegionT0CoversTenuring(
         int status = 0;
         TEST_ASSERT(waitpid(pid, &status, 0) == pid);
         TEST_ASSERT(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+#endif
 #endif
     });

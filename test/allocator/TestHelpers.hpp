@@ -23,6 +23,17 @@
         throw std::runtime_error(msg); \
     } while (0)
 
+#if defined(_WIN32)
+#include <cstdlib>
+// POSIX setenv/unsetenv for the tests that pin GC environment variables. _putenv_s with an
+// empty value removes the variable.
+inline int setenv(const char* name, const char* value, int overwrite) {
+    if (!overwrite && std::getenv(name) != nullptr) return 0;
+    return _putenv_s(name, value);
+}
+inline int unsetenv(const char* name) { return _putenv_s(name, ""); }
+#endif
+
 namespace Elm {
 namespace TestHelpers {
 

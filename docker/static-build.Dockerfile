@@ -78,19 +78,24 @@ FROM ${LLVM_IMAGE} AS llvm
 # Stage 2: compile the glibc-ABI link-input set (Stage D, step 2 of
 # plans/stage-d-hybrid-link-profiles.md).
 #
-# SELF-CONTAINED: plain debian:bookworm + apt. No LLVM/MLIR source image —
-# the archive-only configure (ECO_GLIBC_OUTPUT_RUNTIME) gates off
-# find_package(MLIR) and every MLIR target, and the LLVM runtime statics
-# (libc++/libc++abi/libunwind/compiler-rt builtins) come from apt packages,
-# mirroring exactly how the musl side takes them from Alpine apk
-# (`libc++-static compiler-rt`). The archives this stage compiles are built
-# with apt clang either way; nothing from an LLVM source build ever shipped.
+# SELF-CONTAINED: plain debian:bookworm + apt (plus apt.llvm.org). No
+# LLVM/MLIR source image — the archive-only configure
+# (ECO_GLIBC_OUTPUT_RUNTIME) gates off find_package(MLIR) and every MLIR
+# target, and the LLVM runtime statics (libc++/libc++abi/libunwind/compiler-rt
+# builtins) come from apt packages, mirroring exactly how the musl side takes
+# them from Alpine apk (`libc++-static compiler-rt`). The archives this stage
+# compiles are built with apt clang either way; nothing from an LLVM source
+# build ever shipped.
 #
 # Version notes:
-#   - bookworm's LLVM is 14: libc++-14 statics differ from the musl side's
-#     LLVM-21 libc++ — harmless, the two profiles never cross-link and the
-#     archives are self-contained inside produced .so/.node files.
-#   - libunwind-14-dev is the LLVM unwinder; plain `libunwind-dev` is the
+#   - LLVM 21 from apt.llvm.org, not bookworm's own LLVM 14: the runtime uses
+#     std::atomic_ref, which libc++ only has from LLVM 19. Same major as the
+#     musl side's LLVM-21 libc++; the glibc floor stays bookworm's, since
+#     apt.llvm.org builds its bookworm packages against bookworm's glibc. The
+#     repo key is checked by fingerprint (the key file is re-issued when its
+#     expiry moves, so a file hash would break the build the way tla2tools'
+#     did). The repo floats within 21.x point releases; older ones are dropped.
+#   - libunwind-21-dev is the LLVM unwinder; plain `libunwind-dev` is the
 #     nongnu implementation and must NOT be used (cmake/LLVMLibunwind.cmake
 #     hard-rejects it via the __libunwind_config.h marker).
 #   - PIC-ness of the distro archives is NOT assumed: the staging target's
@@ -101,23 +106,38 @@ FROM ${LLVM_IMAGE} AS llvm
 # FROM. Override with --build-arg DEBIAN_IMAGE=... (e.g. a digest pin).
 FROM ${DEBIAN_IMAGE} AS glibc-runtime
 ARG DEBIAN_FRONTEND=noninteractive
+ARG LLVM_APT_MAJOR=21
+ARG LLVM_APT_KEY_FPR=6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+
+# apt.llvm.org for bookworm, its signing key checked by fingerprint.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+ && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /tmp/llvm.key \
+ && gpg --show-keys --with-colons /tmp/llvm.key | grep -q "^fpr:::::::::${LLVM_APT_KEY_FPR}:" \
+ && gpg --dearmor -o /usr/share/keyrings/apt.llvm.org.gpg /tmp/llvm.key \
+ && rm /tmp/llvm.key \
+ && echo "deb [signed-by=/usr/share/keyrings/apt.llvm.org.gpg] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-${LLVM_APT_MAJOR} main" \
+      > /etc/apt/sources.list.d/apt.llvm.org.list \
+ && rm -rf /var/lib/apt/lists/*
 
 # Toolchain + link-input sources:
-#   - build-essential/clang/lld: compilers + ld.lld for the PIC audit; the
-#     glibc/gcc CRT objects (crti.o/crtbeginS.o/...) are discovered from
-#     this gcc install at configure time.
+#   - build-essential/clang-21/lld-21: compilers + ld.lld for the PIC audit;
+#     the glibc/gcc CRT objects (crti.o/crtbeginS.o/...) are discovered from
+#     this gcc install at configure time. /usr/lib/llvm-21/bin goes first on
+#     PATH so the `build` preset's plain clang/clang++ are LLVM 21.
 #   - libssl-dev: eco-kernel-cpp does find_package(OpenSSL REQUIRED) under
 #     the vendored-statics path (Debian's OpenSSL 3 statics are PIC).
 #   - zlib1g-dev: headers for the vendored curl/libzip builds (the libz.a
 #     archive itself is vendored by CMake — Debian's is NOT PIC).
-#   - libc++-14-dev libc++abi-14-dev libclang-rt-14-dev libunwind-14-dev:
+#   - libc++-21-dev libc++abi-21-dev libclang-rt-21-dev libunwind-21-dev:
 #     the LLVM runtime statics the .so/.node links embed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates git build-essential python3 pkg-config \
-      cmake ninja-build clang lld \
+      git build-essential python3 pkg-config \
+      cmake ninja-build clang-${LLVM_APT_MAJOR} lld-${LLVM_APT_MAJOR} \
       libssl-dev zlib1g-dev \
-      libc++-14-dev libc++abi-14-dev libclang-rt-14-dev libunwind-14-dev \
+      libc++-${LLVM_APT_MAJOR}-dev libc++abi-${LLVM_APT_MAJOR}-dev \
+      libclang-rt-${LLVM_APT_MAJOR}-dev libunwind-${LLVM_APT_MAJOR}-dev \
  && rm -rf /var/lib/apt/lists/*
+ENV PATH=/usr/lib/llvm-${LLVM_APT_MAJOR}/bin:$PATH
 
 WORKDIR /eco
 COPY . .
@@ -137,7 +157,7 @@ COPY . .
 RUN cmake --preset build -B build-glibc-runtime \
       -DECO_STATIC=ON \
       -DECO_GLIBC_OUTPUT_RUNTIME=ON \
-      -DLLVM_INSTALL_PREFIX=/usr/lib/llvm-14 \
+      -DLLVM_INSTALL_PREFIX=/usr/lib/llvm-${LLVM_APT_MAJOR} \
       -DECO_GLIBC_RUNTIME_TREE_OUT=/out/glibc-runtime-tree
 RUN cmake --build build-glibc-runtime --target eco-glibc-runtime-tree \
  && ls -l /out/glibc-runtime-tree

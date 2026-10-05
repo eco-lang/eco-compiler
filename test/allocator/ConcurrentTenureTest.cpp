@@ -8,13 +8,17 @@
 #include "ConcurrentTenureTest.hpp"
 
 #include <csignal>
+#if !defined(_WIN32)
 #include <dirent.h>
+#endif
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 #include "Allocator.hpp"
@@ -105,7 +109,7 @@ Run runScript(const HeapConfig& cfg, uint64_t seed, uint64_t stop_after, uint64_
     return r;
 }
 
-bool sameRun(const Run& x, const Run& y, const char* what) {
+[[maybe_unused]] bool sameRun(const Run& x, const Run& y, const char* what) {
     const bool ok = x.checksum == y.checksum && x.survived == y.survived && x.promoted == y.promoted &&
                     x.minors == y.minors && x.allocated == y.allocated && x.committed == y.committed &&
                     x.layout == y.layout;
@@ -123,6 +127,7 @@ bool sameRun(const Run& x, const Run& y, const char* what) {
     return ok;
 }
 
+#if !defined(_WIN32)   // fork()ed children: POSIX only; those tests are no-ops on Windows
 // Runs the script in a forked child and returns its figures (the layout as a
 // hash + length). Every child forks from the same parent state, so the
 // long-lived root set (an unordered_set of slot ADDRESSES, whose iteration
@@ -156,23 +161,27 @@ Run runInChild(const HeapConfig& cfg, uint64_t seed, uint64_t stop_after, uint64
     r.layout = {static_cast<uintptr_t>(in[9]), static_cast<uintptr_t>(in[10])};
     return r;
 }
+#endif
 
 }  // namespace
 
 Testing::TestCase testTenureStopResumeSameLayout(
     "threaded-gc-07: a job stopped after k items and finished in the pause places every copy as mode 1",
     []() {
+#if !defined(_WIN32)
         const Run ref = runInChild(tenureConfig(1), 31, 0, 0);
         TEST_ASSERT(ref.promoted > 0 && ref.layout[1] > 0);
         for (uint64_t k : {1ull, 13ull, 5000ull}) {
             const Run m2 = runInChild(tenureConfig(2), 31, k, 0);
             if (!sameRun(m2, ref, "stop/resume")) TEST_FAIL("mode 2 with forced stops differs from mode 1");
         }
+#endif
     });
 
 Testing::TestCase testTenureModesAgreeOnCounters(
     "threaded-gc-07: E2 in a unit test: modes 1 and 2 agree on every counter and placement (1 worker)",
     []() {
+#if !defined(_WIN32)
         for (uint64_t seed : {41ull, 42ull}) {
             const Run m1 = runInChild(tenureConfig(1), seed, 0, 0);
             const Run m2 = runInChild(tenureConfig(2), seed, 0, 0);
@@ -183,6 +192,7 @@ Testing::TestCase testTenureModesAgreeOnCounters(
         const Run b4 = runScript(tenureConfig(2, 4), 43, 0, 0);
         TEST_ASSERT(a4.checksum == b4.checksum && a4.survived == b4.survived &&
                     a4.promoted == b4.promoted && a4.minors == b4.minors);
+#endif
     });
 
 Testing::TestCase testTenureLateHelpParallel(
@@ -200,6 +210,7 @@ Testing::TestCase testTenureLateHelpParallel(
 Testing::TestCase testTenureForkChild(
     "threaded-gc-07: fork while a tenure job runs: parent and child each finish it and continue",
     []() {
+#if !defined(_WIN32)
         auto& a = initRegionAllocator(tenureConfig(2));
         NurserySpace& ns = nurseryOf(a);
         minortest::Workload w(a, 64, 61);
@@ -229,11 +240,13 @@ Testing::TestCase testTenureForkChild(
         int status = 0;
         TEST_ASSERT(waitpid(pid, &status, 0) == pid);
         TEST_ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#endif
     });
 
 Testing::TestCase testTenureExitWhileRunning(
     "threaded-gc-07: process exit with a running tenure job (a child process) is clean",
     []() {
+#if !defined(_WIN32)
         const pid_t pid = fork();
         if (pid == 0) {
             auto& a = initRegionAllocator(tenureConfig(2));
@@ -251,6 +264,7 @@ Testing::TestCase testTenureExitWhileRunning(
         int status = 0;
         TEST_ASSERT(waitpid(pid, &status, 0) == pid);
         TEST_ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#endif
     });
 
 namespace {
@@ -295,6 +309,7 @@ Testing::TestCase testTenureDuringCycle(
 // Each runs in a forked child that must die by SIGABRT.
 // ============================================================================
 namespace {
+#if !defined(_WIN32)
 bool childAbortsT(uint32_t mode, const std::function<void(Allocator&)>& arm) {
     const pid_t pid = fork();
     if (pid == 0) {
@@ -312,11 +327,13 @@ bool childAbortsT(uint32_t mode, const std::function<void(Allocator&)>& arm) {
     if (waitpid(pid, &status, 0) != pid) return false;
     return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
 }
+#endif
 }  // namespace
 
 Testing::TestCase testTenureNegativeControls(
     "threaded-gc-07: TV1 / TV7 / the body check / TV5 fire on a skipped start, heal, re-mark, grant",
     []() {
+#if !defined(_WIN32)
         for (uint32_t mode : {1u, 2u}) {
             // TV1 (every build): a skipped start entry leaves a live object untenured.
             TEST_ASSERT(childAbortsT(mode, [](Allocator& a) { nurseryOf(a).test_tenure_skip_start_every_ = 3; }));
@@ -327,11 +344,13 @@ Testing::TestCase testTenureNegativeControls(
         // A skipped heal slot leaves a slot pointing into the retired (poisoned) extent.
         TEST_ASSERT(childAbortsT(1, [](Allocator& a) { nurseryOf(a).test_heal_skip_one_ = true; }));
 #endif
+#endif
     });
 
 Testing::TestCase testTenureBodyRemarkControl(
     "threaded-gc-07: skipping the hand-over body re-mark is caught at the merge",
     []() {
+#if !defined(_WIN32)
         const pid_t pid = fork();
         if (pid == 0) {
             auto& a = initRegionAllocator(tenureConfig(1));
@@ -348,6 +367,7 @@ Testing::TestCase testTenureBodyRemarkControl(
         int status = 0;
         TEST_ASSERT(waitpid(pid, &status, 0) == pid);
         TEST_ASSERT(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+#endif
     });
 
 Testing::TestCase testTenureShrinkSkipsGranted(
@@ -373,6 +393,7 @@ Testing::TestCase testTenureShrinkSkipsGranted(
 Testing::TestCase testTenureCollectorThreads(
     "threaded-gc-07 L3: B = 2 / 4 collector threads reproduce mode 1's objects (placement free)",
     []() {
+#if !defined(_WIN32)
         for (uint64_t seed : {101ull, 102ull}) {
             const Run m1 = runInChild(tenureConfig(1), seed, 0, 0);
             for (uint32_t B : {2u, 4u}) {
@@ -402,9 +423,11 @@ Testing::TestCase testTenureCollectorThreads(
             if (rep == 0) sum = r.checksum;
             TEST_ASSERT(r.checksum == sum);
         }
+#endif
     });
 
 namespace {
+#if !defined(_WIN32)
 size_t threadCount() {
     size_t n = 0;
     if (DIR* d = opendir("/proc/self/task")) {
@@ -413,11 +436,13 @@ size_t threadCount() {
     }
     return n;
 }
+#endif
 }  // namespace
 
 Testing::TestCase testTenureRespawnAndForkStorm(
     "threaded-gc-07 E11: 100 spawned heaps and 100 forks in mode 2: no failure, no leaked collector threads",
     []() {
+#if !defined(_WIN32)
         HeapConfig cfg = tenureConfig(2, 1, 0);
         cfg.tenure_collector_threads = 2;
         cfg.validate();
@@ -475,11 +500,13 @@ Testing::TestCase testTenureRespawnAndForkStorm(
             if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) ++bad;
         }
         TEST_ASSERT(bad == 0);
+#endif
     });
 
 Testing::TestCase testTenureFifoOrder(
     "threaded-gc-07: breadth-first (FIFO) tenure order keeps objects, and stop/resume placement is exact",
     []() {
+#if !defined(_WIN32)
         HeapConfig m1 = tenureConfig(1);
         m1.tenure_fifo_order = true;
         m1.validate();
@@ -495,6 +522,7 @@ Testing::TestCase testTenureFifoOrder(
             const Run r = runInChild(m2, 131, k, 0);
             if (!sameRun(r, ref, "fifo stop/resume")) TEST_FAIL("FIFO mode 2 with forced stops differs from FIFO mode 1");
         }
+#endif
     });
 
 // HEAP_072 (2-gc-bugs.md bug 2): an extent's ylos_gen list names its

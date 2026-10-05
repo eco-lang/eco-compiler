@@ -224,6 +224,19 @@ void runFixedGuard(const char* id, const std::function<int()>& scenario) {
 #endif
 }
 
+// CR-012(c) sees its defect through MADV_DONTNEED dropping the pages at once, and CR-012(d)
+// needs MADV_POPULATE_WRITE (Linux 5.14+). Other kernels keep discarded pages resident and
+// have no populate, so off Linux these guards report a skip instead of running.
+bool linuxOnlyGuard(const char* id) {
+#if defined(__linux__)
+    (void)id;
+    return true;
+#else
+    std::cout << "  SKIP " << id << ": Linux-only (page discard / MADV_POPULATE_WRITE)\n";
+    return false;
+#endif
+}
+
 void* allocByteBuf(Allocator& a, size_t total, uint8_t fill) {
     void* obj = a.allocate(total, Tag_ByteBuffer);
     if (obj == nullptr) throw std::runtime_error("allocByteBuf: allocation failed");
@@ -949,6 +962,9 @@ bool grewBag(Allocator& a, OldGenSpace& og) {
 // For a guard whose defect is a VALUE (not an abort): an abort in the child
 // is an unrelated failure, so it reports "not reached" instead of letting
 // runXfailGuard count the SIGABRT as the defect.
+#if defined(_WIN32)
+void abortMeansNotReached() {}   // the scenarios run only in a fork()ed child: never on Windows
+#else
 void valueGuardOnAbort(int) {
     static const char msg[] = "  child: unexpected abort (not this guard's defect): scenario NOT reached\n";
     (void)!write(2, msg, sizeof msg - 1);
@@ -960,6 +976,7 @@ void abortMeansNotReached() {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGABRT, &sa, nullptr);
 }
+#endif
 
 void dumpBlocks(const char* id, OldGenSpace& og) {
     std::fprintf(stderr, "  %s child: phase %d cursor %p idx %zu/%zu bag %zu\n", id,
@@ -2195,6 +2212,9 @@ Testing::TestCase testCR007CapFallback(
 
 namespace {
 
+#if defined(_WIN32)
+int cr023Scenario() { return kNotReached; }   // parks a thread with SIGUSR1: POSIX only (never run)
+#else
 std::atomic<bool> g_cr023_parked{false}, g_cr023_unpark{false};   // lock-free: async-signal-safe
 
 void cr023Park(int) {
@@ -2297,6 +2317,7 @@ int cr023Scenario() {
     }
     return kCorrect;
 }
+#endif
 
 }  // namespace
 
@@ -2559,11 +2580,11 @@ Testing::TestCase testCR012bFreeList(
 
 Testing::TestCase testCR012cDecommitClock(
     "CR-012(c) [won't-fix CR-012: opt-in only]: another heap's pauses age a heap's pending discard",
-    []() { runWontFixGuard("CR-012(c)", cr012c); });
+    []() { if (linuxOnlyGuard("CR-012(c)")) runWontFixGuard("CR-012(c)", cr012c); });
 
 Testing::TestCase testCR012dPopulateWindow(
     "CR-012(d): a new heap's initial region never drops the populate window (two heaps, opt-in)",
-    []() { runFixedGuard("CR-012(d)", cr012d); });
+    []() { if (linuxOnlyGuard("CR-012(d)")) runFixedGuard("CR-012(d)", cr012d); });
 
 namespace {
 
@@ -2660,7 +2681,9 @@ Testing::TestCase testCR012Sequential(
 
 Testing::TestCase testCR012dSequential(
     "CR-012 (d) sequential: the next mutator's initial region keeps the populate window resident",
-    []() { runFixedGuard("CR-012 (d) sequential", cr012dSequential); });
+    []() {
+        if (linuxOnlyGuard("CR-012 (d) sequential")) runFixedGuard("CR-012 (d) sequential", cr012dSequential);
+    });
 
 // ============================================================================
 // Serial address-reuse and parse entries found by the TLA+ models (M8, M5,

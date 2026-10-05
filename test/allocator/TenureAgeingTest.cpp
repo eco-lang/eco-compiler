@@ -14,8 +14,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 #include "Allocator.hpp"
@@ -143,6 +145,7 @@ Run runScript(const HeapConfig& cfg, uint64_t seed, size_t minors, size_t every,
     return r;
 }
 
+#if !defined(_WIN32)   // fork()ed children: POSIX only; those tests are no-ops on Windows
 // Every arm from the same parent state (the root set's hash order).
 Run runInChild(const HeapConfig& cfg, uint64_t seed, size_t minors, size_t every,
                uint64_t stop_after = 0, uint64_t sleep_us = 0) {
@@ -165,6 +168,7 @@ Run runInChild(const HeapConfig& cfg, uint64_t seed, size_t minors, size_t every
         TEST_FAIL("child run failed");
     return r;
 }
+#endif
 
 void dump(const char* what, const Run& x, const Run& y) {
     std::fprintf(stderr, "%s: checksum %d promoted %llu/%llu minors %llu/%llu tags %d survived %llu/%llu "
@@ -177,6 +181,7 @@ void dump(const char* what, const Run& x, const Run& y) {
                  (unsigned long long)x.zapped);
 }
 
+#if !defined(_WIN32)
 bool childAborts(uint32_t k, const std::function<void(Allocator&)>& arm) {
     const pid_t pid = fork();
     if (pid == 0) {
@@ -194,12 +199,14 @@ bool childAborts(uint32_t k, const std::function<void(Allocator&)>& arm) {
     if (waitpid(pid, &status, 0) != pid) return false;
     return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
 }
+#endif
 
 }  // namespace
 
 Testing::TestCase testAgeOracleLegacy(
     "threaded-gc-07b: E1: region promotion_age k tenures what legacy promotion_age k promotes (k 1-3; 1, 4 workers)",
     []() {
+#if !defined(_WIN32)
         for (uint32_t k : {1u, 2u, 3u}) {
             for (uint32_t n : {1u, 4u}) {
                 const Run ref = runInChild(ageConfig(0, k, n), 61 + k, 240, 20);
@@ -219,6 +226,7 @@ Testing::TestCase testAgeOracleLegacy(
 #endif
             }
         }
+#endif
     });
 
 Testing::TestCase testAgeLifetime(
@@ -368,6 +376,7 @@ Testing::TestCase testAgeYoungLarge(
 Testing::TestCase testAgeModesAgree(
     "threaded-gc-07b: at k = 2, 3 mode 2 (with forced stops) reproduces mode 1: every counter and placement",
     []() {
+#if !defined(_WIN32)
         for (uint32_t k : {2u, 3u}) {
             const Run m1 = runInChild(ageConfig(1, k, 1, 1), 71, 200, 25);
             for (uint64_t stop : {0ull, 1ull, 97ull}) {
@@ -383,6 +392,7 @@ Testing::TestCase testAgeModesAgree(
                 }
             }
         }
+#endif
     });
 
 Testing::TestCase testAgeLateHelpParallel(
@@ -406,9 +416,11 @@ Testing::TestCase testAgeLateHelpParallel(
 Testing::TestCase testAgeNegativeControls(
     "threaded-gc-07b: a skipped zap (TV2Y) is caught; the unbroken control survives",
     []() {
+#if !defined(_WIN32)
         TEST_ASSERT(!childAborts(2, [](Allocator&) {}));
         TEST_ASSERT(!childAborts(3, [](Allocator&) {}));
 #if ECO_HEAP_VALIDATE
         TEST_ASSERT(childAborts(2, [](Allocator& a) { nurseryOf(a).test_skip_zap_ = true; }));
+#endif
 #endif
     });

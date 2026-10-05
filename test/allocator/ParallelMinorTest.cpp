@@ -11,7 +11,12 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#if defined(_WIN32)
+#include <filesystem>
+#include <random>
+#else
 #include <unistd.h>
+#endif
 
 #include "Allocator.hpp"
 #include "AllocatorCommon.hpp"
@@ -24,7 +29,9 @@
 #include "MinorWorkload.hpp"
 #include "NurserySpace.hpp"
 
+#if !defined(_WIN32)
 #include <sys/wait.h>
+#endif
 #include <csignal>
 #include <functional>
 
@@ -34,12 +41,23 @@ using namespace Elm::TestHelpers;
 namespace {
 
 std::string writeTempJson(const std::string& body) {
+#if defined(_WIN32)
+    // No mkstemp: a random name in the temp directory.
+    const std::string path = (std::filesystem::temp_directory_path() /
+                              ("eco-minor-cfg-" + std::to_string(std::random_device{}()) + ".json"))
+                                 .string();
+    std::ofstream out(path, std::ios::binary);
+    out << body;
+    TEST_ASSERT(out.good());
+    return path;
+#else
     char path[] = "/tmp/eco-minor-cfg-XXXXXX";
     const int fd = mkstemp(path);
     TEST_ASSERT(fd >= 0);
     TEST_ASSERT(write(fd, body.data(), body.size()) == static_cast<ssize_t>(body.size()));
     close(fd);
     return path;
+#endif
 }
 
 }  // namespace
@@ -434,6 +452,7 @@ Testing::TestCase testParMinorFillersParse(
 Testing::TestCase testParMinorForkChild(
     "threaded-gc-06: a forked child runs parallel minors",
     []() {
+#if !defined(_WIN32)
         auto& a = initMinor(4);
         for (int i = 0; i < 50000; ++i) (void)alloc::allocInt(i);
         a.minorGC();
@@ -451,6 +470,7 @@ Testing::TestCase testParMinorForkChild(
         int status = 0;
         TEST_ASSERT(waitpid(pid, &status, 0) == pid);
         TEST_ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#endif
     });
 
 namespace {
@@ -507,7 +527,7 @@ Testing::TestCase testParMinorDuringCycle(
 // ============================================================================
 
 namespace {
-#if ECO_HEAP_VALIDATE
+#if ECO_HEAP_VALIDATE && !defined(_WIN32)
 bool childAborts(const std::function<void(Allocator&)>& arm) {
     const pid_t pid = fork();
     if (pid == 0) {
@@ -530,7 +550,7 @@ bool childAborts(const std::function<void(Allocator&)>& arm) {
 Testing::TestCase testParMinorNegativeControls(
     "threaded-gc-06: PM1 / PM3 / PM4 fire on a double copy, a missing filler, a kept cursor",
     []() {
-#if ECO_HEAP_VALIDATE
+#if ECO_HEAP_VALIDATE && !defined(_WIN32)
         TEST_ASSERT(childAborts([](Allocator& a) { nurseryOf(a).test_minor_double_copy_every_ = 997; }));
         TEST_ASSERT(childAborts([](Allocator& a) { nurseryOf(a).test_minor_skip_filler_ = true; }));
         TEST_ASSERT(childAborts([](Allocator& a) {

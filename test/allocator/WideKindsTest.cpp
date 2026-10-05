@@ -20,8 +20,10 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 using namespace Elm;
@@ -29,6 +31,7 @@ using namespace Elm::TestHelpers;
 
 namespace {
 
+#if !defined(_WIN32)   // fork()ed children: POSIX only; those tests are no-ops on Windows
 // Runs `f` in a forked child: 0 on a normal return, the child's exit code on
 // _exit(n), the negated signal number on a crash.
 template <class F> int runInChild(F f) {
@@ -41,6 +44,7 @@ template <class F> int runInChild(F f) {
     waitpid(pid, &st, 0);
     return WIFSIGNALED(st) ? -WTERMSIG(st) : WEXITSTATUS(st);
 }
+#endif
 
 Unboxable boxed(HPointer p) {
     Unboxable u;
@@ -71,7 +75,7 @@ std::string printed(HPtr v) {
 
 std::string quoted(const std::string& s) { return "\"" + s + "\""; }
 
-i64 boxedIntValue(const Unboxable& slot) {
+[[maybe_unused]] i64 boxedIntValue(const Unboxable& slot) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(slot.p))->value;
 }
 
@@ -79,7 +83,7 @@ void churn() {
     for (int i = 0; i < 100000; ++i) (void)alloc::allocInt(i);
 }
 
-uint64_t minorCount() { return Allocator::instance().getCombinedStats().minor_gc_count; }
+[[maybe_unused]] uint64_t minorCount() { return Allocator::instance().getCombinedStats().minor_gc_count; }
 
 // Hand-made objects in a plain buffer: the accessors are pure functions.
 template <class T> T* inBuffer(std::vector<u64>& buf, u32 slots) {
@@ -188,12 +192,13 @@ void test_closure_kinds_past_31_snapshot() {
 
 // Allocates enough to force minor GCs inside the call, then returns its 40th
 // argument: combined_args is a rooted buffer, so the GC must have updated it.
-void* eval40(void** args) {
+[[maybe_unused]] void* eval40(void** args) {
     churn();
     return args[39];
 }
 
 void test_closure_call_saturated_roots_40_slots() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         auto& a = initAllocator(pressureHeapConfig());
         std::vector<HPointer> strs(40);
@@ -213,10 +218,12 @@ void test_closure_call_saturated_roots_40_slots() {
         if (printed(res) != quoted("arg39")) _exit(3);
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 // ---- 1c.5 (record() twins of the B8 / B8b pins) ----
 void test_record_70_boxed_roots_every_slot() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         auto& a = initAllocator();   // as the B8 / B8b pins
         std::vector<HPointer> held(70);
@@ -236,9 +243,11 @@ void test_record_70_boxed_roots_every_slot() {
         }
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 void test_record_slots_beyond_32_survive_minor_gc() {
+#if !defined(_WIN32)
     int r = runInChild([] {
         auto& a = initAllocator();   // as the B8 / B8b pins
         std::vector<Unboxable> v(70);
@@ -255,6 +264,7 @@ void test_record_slots_beyond_32_survive_minor_gc() {
         }
     });
     TEST_ASSERT(r == 0);
+#endif
 }
 
 } // namespace
