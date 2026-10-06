@@ -7,6 +7,14 @@
 #include <stdexcept>
 #include <string>
 
+// The std::invalid_argument thrown here is caught by code built with exceptions; under
+// _HAS_EXCEPTIONS=0 the MSVC STL gives std::exception another layout, and the catcher's
+// destructor then frees the string-literal message (eco_drop_no_exceptions_define in
+// runtime/src/codegen/CMakeLists.txt).
+#if defined(_MSC_VER) && defined(_HAS_EXCEPTIONS) && !_HAS_EXCEPTIONS
+#  error "HeapConfigJson.cpp throws std exceptions: build it without _HAS_EXCEPTIONS=0"
+#endif
+
 #if defined(__clang__)
 #  pragma clang diagnostic push
 #  pragma clang diagnostic ignored "-Wcovered-switch-default"

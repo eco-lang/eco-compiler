@@ -86,6 +86,24 @@ else()
         -fno-semantic-interposition -fvisibility-inlines-hidden)
 endif()
 
+# MSVC: llvm_update_compile_flags (run by add_mlir_library and add_llvm_executable) gives every
+# target that does not set LLVM_REQUIRES_EH the definition _HAS_EXCEPTIONS=0, which switches the
+# MSVC STL's std::exception to its no-exceptions layout (a bare message pointer, never copied).
+# The targets below re-enable EH with /EHsc and throw std exceptions that test and runtime code
+# built with exceptions catch: a std::invalid_argument thrown by HeapConfigJson.cpp was destroyed
+# by the other layout's destructor, which freed its string-literal message, and test.exe died
+# with 0xC0000374 (STATUS_HEAP_CORRUPTION). Drop the definition from those targets.
+function(eco_drop_no_exceptions_define target)
+    if(NOT MSVC)
+        return()
+    endif()
+    get_target_property(_defs ${target} COMPILE_DEFINITIONS)
+    if(_defs)
+        list(REMOVE_ITEM _defs _HAS_EXCEPTIONS=0)
+        set_property(TARGET ${target} PROPERTY COMPILE_DEFINITIONS "${_defs}")
+    endif()
+endfunction()
+
 # Include directory for generated headers
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 
@@ -563,6 +581,7 @@ target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
 # The runtime code uses exceptions, so we need to enable them
 # (LLVM/MLIR disables exceptions by default)
 target_compile_options(ecoc PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
+eco_drop_no_exceptions_define(ecoc)
 if(ECO_LOWERING_VALIDATION)
     target_compile_definitions(ecoc PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
@@ -654,6 +673,7 @@ target_include_directories(obj.EcoRunner PRIVATE
 
 target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)
 target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
+eco_drop_no_exceptions_define(obj.EcoRunner)
 if(ECO_GC_DEBUG)
     target_compile_definitions(obj.EcoRunner PRIVATE ECO_GC_DEBUG=1)
 endif()
@@ -1631,6 +1651,7 @@ add_dependencies(eco-boot-native ${ECO_BOOT_NATIVE_RUNTIME_DEPS})
 
 target_compile_features(eco-boot-native PRIVATE cxx_std_20)
 target_compile_options(eco-boot-native PRIVATE -Wno-ambiguous-reversed-operator $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
+eco_drop_no_exceptions_define(eco-boot-native)
 if(ECO_LOWERING_VALIDATION)
     target_compile_definitions(eco-boot-native PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
