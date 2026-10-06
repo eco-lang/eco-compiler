@@ -46,16 +46,14 @@ jobs:
           # libzip is vendored via FetchContent on APPLE (see
           # eco-kernel-cpp/CMakeLists.txt) so brew's libzip is not needed.
           # pkgconf is still useful for kernel curl/ssl probes. rapidcheck is
-          # a configure-time dep of the ecor target (find_package); brew bottle
-          # first, source-build fallback.
+          # a configure-time dep of the ecor target (find_package); Homebrew has
+          # no formula for it, so build it from source.
           brew install llvm@21 openssl@3 pnpm gnu-time pkgconf ccache
-          brew install rapidcheck || {
-            git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
-            cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-            cmake --build /tmp/rapidcheck/build
-            sudo cmake --install /tmp/rapidcheck/build
-          }
+          git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
+          cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          cmake --build /tmp/rapidcheck/build
+          sudo cmake --install /tmp/rapidcheck/build
 
       - name: Tool versions
         run: |
