@@ -16,6 +16,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <sys/mman.h>
+#include <unistd.h>
 
 namespace Elm {
 
@@ -47,15 +49,48 @@ extern "C" constinit thread_local HPointer** eco_tl_root1_limit
     std::abort();
 }
 
+// Maps `bytes` of read-write memory followed by one PROT_NONE guard page
+// (plans/kernel-root-stack-bounded-rooting.md §2.3). The bounds check in
+// `ecoRootRangePush` / `ecoRoot1Push` exists only in !NDEBUG and validate
+// builds; the guard page makes a push past the slack fault cleanly in every
+// build instead of writing over whatever malloc placed next.
+static std::size_t guardedBody(std::size_t bytes) {
+    const std::size_t page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    return (bytes + page - 1) / page * page;
+}
+
+static std::size_t guardedSize(std::size_t bytes) {
+    return guardedBody(bytes) + static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+}
+
+static void* mapGuarded(std::size_t bytes) {
+    const std::size_t body = guardedBody(bytes);
+    const std::size_t total = guardedSize(bytes);
+    void* p = mmap(nullptr, total, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) throw std::bad_alloc();
+    if (mprotect(static_cast<char*>(p) + body, total - body, PROT_NONE) != 0) {
+        munmap(p, total);
+        throw std::bad_alloc();
+    }
+    return p;
+}
+
+static constexpr std::size_t kRangeBytes =
+    sizeof(StackRootRangeRec) * (kRootRangeStackSlots + kRootRangeStackSlack);
+static constexpr std::size_t kRoot1Bytes =
+    sizeof(HPointer*) * (kRoot1StackSlots + kRoot1StackSlack);
+
 // Allocates this thread's shadow-stack backing array. `Allocator::setThreadHeap`
 // publishes base/limit/cursor into TLS; nothing else may.
 RootSet::RootSet() {
-    range_storage_ = static_cast<StackRootRangeRec*>(std::malloc(
-        sizeof(StackRootRangeRec) * (kRootRangeStackSlots + kRootRangeStackSlack)));
-    root1_storage_ = static_cast<HPointer**>(std::malloc(
-        sizeof(HPointer*) * (kRoot1StackSlots + kRoot1StackSlack)));
-    if (!range_storage_ || !root1_storage_)
-        throw std::bad_alloc();
+    range_storage_ = static_cast<StackRootRangeRec*>(mapGuarded(kRangeBytes));
+    try {
+        root1_storage_ = static_cast<HPointer**>(mapGuarded(kRoot1Bytes));
+    } catch (...) {
+        munmap(range_storage_, guardedSize(kRangeBytes));
+        throw;
+    }
 }
 
 RootSet::~RootSet() {
@@ -70,8 +105,8 @@ RootSet::~RootSet() {
         eco_tl_root1_base = nullptr;
         eco_tl_root1_limit = nullptr;
     }
-    std::free(range_storage_);
-    std::free(root1_storage_);
+    if (range_storage_) munmap(range_storage_, guardedSize(kRangeBytes));
+    if (root1_storage_) munmap(root1_storage_, guardedSize(kRoot1Bytes));
     range_storage_ = nullptr;
     root1_storage_ = nullptr;
 }

@@ -14,7 +14,6 @@
 
 // eco_apply_closure is declared in RuntimeExports.h (included above)
 #include <cmath>
-#include <deque>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -256,12 +255,10 @@ HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
 
     std::string strUtf8 = elmStringToUTF8(strEnc);
 
-    // std::deque has stable per-element addresses across push_back, so we
-    // can register each accumulated HPointer as its own stack root range.
-    // A std::vector<HPointer> would invalidate addresses on capacity growth.
-    std::deque<HPointer> matches;
-    auto& rs = Allocator::instance().getRootSet();
-    size_t savedRange = rs.stackRangePoint();
+    // The accumulated match records cross later createMatch allocations, so
+    // they are rooted — all of them with ONE shadow-stack record however many
+    // there are (Elm::alloc::RootedSlots, plans/kernel-root-stack-bounded-rooting.md).
+    Elm::alloc::RootedSlots matches;
     int64_t matchNum = 0;
 
     try {
@@ -288,22 +285,14 @@ HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
             }
 
             HPointer matchRecord = createMatch(matchStr, charIndex, matchNum + 1, submatches);
-            matches.push_back(matchRecord);
-            // Root the just-pushed slot. Subsequent createMatch calls allocate;
-            // without this, prior matches[i] become stale across the GC.
-            rs.pushStackRootRange(&matches.back(), 1, 1);
+            matches.push(matchRecord);
             ++matchNum;
         }
     } catch (...) {
-        rs.restoreStackRangePoint(savedRange);
         return HPtr::fromBits(Export::encode(listNil()));
     }
 
-    // Snapshot current (post-GC) HPointers into a vector for listFromPointers,
-    // which roots its own copies internally.
-    std::vector<HPointer> matchesVec(matches.begin(), matches.end());
-    HPointer result = listFromPointers(matchesVec);
-    rs.restoreStackRangePoint(savedRange);
+    HPointer result = listFromPointers(matches);
     return HPtr::fromBits(Export::encode(result));
 }
 
@@ -417,11 +406,9 @@ HPtr Elm_Kernel_Regex_splitAtMost(int64_t n, HPtr regex, HPtr str) {
         return HPtr::fromBits(Export::encode(cons(boxed(elmStr), listNil(), true)));
     }
 
-    // std::deque so per-element addresses stay valid across push_back —
-    // see findAtMost above for the rationale.
-    std::deque<HPointer> parts;
-    auto& rs = Allocator::instance().getRootSet();
-    size_t savedRange = rs.stackRangePoint();
+    // The parts cross later string allocations; rooted with ONE record (see
+    // findAtMost).
+    Elm::alloc::RootedSlots parts;
     size_t lastEnd = 0;
     int64_t splitCount = 0;
 
@@ -438,8 +425,7 @@ HPtr Elm_Kernel_Regex_splitAtMost(int64_t n, HPtr regex, HPtr str) {
 
             // Add part before the match
             std::string part = strUtf8.substr(lastEnd, matchStart - lastEnd);
-            parts.push_back(utf8ToElmString(part));
-            rs.pushStackRootRange(&parts.back(), 1, 1);
+            parts.push(utf8ToElmString(part));
 
             lastEnd = matchStart + matchLen;
             ++splitCount;
@@ -447,19 +433,15 @@ HPtr Elm_Kernel_Regex_splitAtMost(int64_t n, HPtr regex, HPtr str) {
 
         // Add final part after last match
         std::string finalPart = strUtf8.substr(lastEnd);
-        parts.push_back(utf8ToElmString(finalPart));
-        rs.pushStackRootRange(&parts.back(), 1, 1);
+        parts.push(utf8ToElmString(finalPart));
 
     } catch (...) {
-        rs.restoreStackRangePoint(savedRange);
         // On error, return list with just original string
         HPointer elmStr = Export::decode(strEnc);
         return HPtr::fromBits(Export::encode(cons(boxed(elmStr), listNil(), true)));
     }
 
-    std::vector<HPointer> partsVec(parts.begin(), parts.end());
-    HPointer result = listFromPointers(partsVec);
-    rs.restoreStackRangePoint(savedRange);
+    HPointer result = listFromPointers(parts);
     return HPtr::fromBits(Export::encode(result));
 }
 

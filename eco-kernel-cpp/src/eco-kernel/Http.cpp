@@ -251,7 +251,9 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
     auto& rs = Elm::Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     std::vector<HPointer> fileTuples(entries.size(), listNil());
-    for (auto& hp : fileTuples) rs.pushStackRootRange(&hp, 1, 1);
+    // ONE all-boxed record for the presized buffer (unfilled slots hold the
+    // Nil constant, which the GC skips) — plans/kernel-root-stack-bounded-rooting.md.
+    rs.pushStackRootRange(fileTuples.data(), fileTuples.size(), ~0ULL);
 
     for (size_t i = 0; i < entries.size(); ++i) {
         HPointer rel = allocStringFromUTF8(entries[i].relativePath);

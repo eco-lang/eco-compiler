@@ -255,6 +255,43 @@ static void test_over_cap_reversed_and_scratch() {
     });
 }
 
+// A heap reset (initAllocator) destroys the RootSet the scratch stack's root
+// scanner was registered with. The scratch registration must follow the heap
+// generation, or entries pushed after the reset are never evacuated and the
+// finished list holds stale (forwarded) from-space pointers. Found by the
+// RootStackJsonLargeListTest E2E pin, whose forked child inherited a
+// registration made before the harness reset the heap.
+static void test_scratch_survives_heap_reset() {
+    auto& first = initAllocator();
+    (void)first;
+    // Register the scanner against the first heap.
+    int64_t m0 = eco_scratch_mark();
+    eco_scratch_push_scalar(7, 1);
+    (void)eco_scratch_finish(m0, HPtr::fromBits(hpBits(alloc::listNil())), 1);
+
+    auto& alloc_ = initAllocator();   // new heap generation, new RootSet
+    const u32 n = 64;
+    int64_t mark = eco_scratch_mark();
+    for (u32 i = 0; i < n; i++) {
+        HPointer v = alloc::allocInt(static_cast<i64>(i) + 1000);
+        eco_scratch_push_boxed(HPtr::fromBits(hpBits(v)));
+    }
+    // Two minors return allocation to the semi-space the entries were born
+    // in; the garbage then overwrites it, so a stale entry reads -1.
+    alloc_.minorGC();   // must evacuate the boxed scratch entries
+    alloc_.minorGC();
+    for (u32 j = 0; j < 4 * n; j++) (void)alloc::allocInt(-1);
+    HPtr fin = eco_scratch_finish(mark, HPtr::fromBits(hpBits(alloc::listNil())), 0);
+    u32 i = 0;
+    for (alloc::ListCursor c(fin.toHPointer()); !c.done(); c.next(), i++) {
+        TEST_ASSERT(c.currentKind() == 0u);
+        void* obj = alloc_.resolve(c.current().p);
+        TEST_ASSERT(getHeader(obj)->tag == Tag_Int);
+        TEST_ASSERT(static_cast<ElmInt*>(obj)->value == static_cast<i64>(n - 1 - i) + 1000);
+    }
+    TEST_ASSERT(i == n);
+}
+
 static void test_backward_cursor_foldr() {
     rc::check("backward cursor folds mixed over-cap spines right-to-left",
               []() {
@@ -298,6 +335,8 @@ static void test_backward_cursor_foldr() {
 }
 
 void registerChunkedListTests(Testing::TestSuite& suite) {
+    suite.add(Testing::TestCase("Scratch stack survives a heap reset",
+                                test_scratch_survives_heap_reset));
     suite.add(Testing::TestCase("Backward-cursor foldr over mixed spine",
                                 test_backward_cursor_foldr));
     suite.add(Testing::TestCase("Over-cap chunk chain structure",

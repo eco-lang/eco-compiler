@@ -4573,12 +4573,22 @@ struct ListScratch {
     std::vector<uint64_t> bits;
     std::vector<u8> kinds;  // 2-bit slot kind per entry (0 = boxed HPointer)
     bool registered = false;
+    uint64_t generation = 0;  // Allocator::heapGeneration() at registration
 };
 
-ListScratch& listScratch() {
+// Registers the scratch stack's root scanner with the current thread heap's
+// RootSet. A heap reset (test harness only) destroys that RootSet and its
+// scanners while this thread_local survives, so the registration is keyed on
+// the heap generation: without that, entries pushed after a reset are never
+// evacuated and `eco_scratch_finish` builds cells from stale pointers.
+ListScratch& listScratchRegistered() {
     static thread_local ListScratch s;  // matches the per-thread RootSet
-    if (!s.registered) {
+    const uint64_t gen = Allocator::instance().heapGeneration();
+    if (!s.registered || s.generation != gen) {
         s.registered = true;
+        s.generation = gen;
+        s.bits.clear();   // entries from a previous heap are meaningless
+        s.kinds.clear();
         s.bits.reserve(1024);
         s.kinds.reserve(1024);
         ListScratch* sp = &s;  // thread_local has no automatic storage
@@ -4594,10 +4604,17 @@ ListScratch& listScratch() {
     return s;
 }
 
+// Every accumulation starts with eco_scratch_mark (which re-validates the
+// registration), so the per-element paths skip the generation check.
+ListScratch& listScratch() {
+    static thread_local ListScratch* s = &listScratchRegistered();
+    return *s;
+}
+
 }  // namespace
 
 extern "C" int64_t eco_scratch_mark(void) {
-    return static_cast<int64_t>(listScratch().bits.size());
+    return static_cast<int64_t>(listScratchRegistered().bits.size());
 }
 
 extern "C" void eco_scratch_push_boxed(HPtr value) {

@@ -160,7 +160,9 @@ inline uint64_t taskSucceedStringList(const std::vector<std::string>& items) {
     std::vector<HPointer> ptrs(items.size(), listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& hp : ptrs) rs.pushStackRootRange(&hp, 1, 1);
+    // ONE all-boxed record for the presized buffer (unfilled slots hold the
+    // Nil constant, which the GC skips) — plans/kernel-root-stack-bounded-rooting.md.
+    rs.pushStackRootRange(ptrs.data(), ptrs.size(), ~0ULL);
 
     for (size_t i = 0; i < items.size(); ++i) {
         ptrs[i] = allocStringFromUTF8(items[i]);

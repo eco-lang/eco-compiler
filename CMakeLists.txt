@@ -1292,6 +1292,9 @@ add_custom_target(rebuild
 # (guida.js via the XHR mock + eco-io-handler), so only Stage 1 is
 # needed — no Stage 2+ build.
 add_custom_target(check
+    # No GC root push may grow with the input
+    # (plans/kernel-root-stack-bounded-rooting.md step 9).
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
@@ -1326,6 +1329,7 @@ add_custom_target(stress
 # `compiler/bin/index.js` (guida.js via the XHR mock + eco-io-handler),
 # so only Stage 1 is needed — no Stage 2+ build.
 add_custom_target(full
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test

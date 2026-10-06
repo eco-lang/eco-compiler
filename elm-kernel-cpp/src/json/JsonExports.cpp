@@ -254,15 +254,13 @@ static HPointer makeJsonString(HPointer elmStr) {
     return Allocator::instance().wrap(c);
 }
 
-// threaded-gc-04b D5: roots a vector that will NOT be resized while rooted,
-// in 64-slot ranges (a StackRootRange's hpointer_mask has 64 bits). The
-// caller restores the range stack point afterwards.
-static void rootInChunks(RootSet& rs, std::vector<HPointer>& v) {
-    for (size_t base = 0; base < v.size(); base += 64) {
-        const size_t chunk = std::min<size_t>(64, v.size() - base);
-        const uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
-        rs.pushStackRootRange(v.data() + base, chunk, mask);
-    }
+// Roots a vector of HPointers that will NOT be resized while rooted, with ONE
+// all-boxed record (an all-ones mask covers a range of any length,
+// `stackRangeSlotIsRoot`; plans/kernel-root-stack-bounded-rooting.md — it used
+// to push one record per 64 slots, which overflowed the shadow stack above
+// 4,194,304 elements). The caller restores the range stack point afterwards.
+static void rootBuffer(RootSet& rs, std::vector<HPointer>& v) {
+    if (!v.empty()) rs.pushStackRootRange(v.data(), v.size(), ~0ULL);
 }
 
 // Allocates a JsArray of `count` elements from elems[start..start+count) of
@@ -320,7 +318,7 @@ static HPointer makeArrayNode(u16 ctor, HPointer child) {
 // and the flat leaf array was a large pointer-bearing object (the S2 source).
 // Every JsArray built here has <= 32 elements.
 //
-// `elements` must be rooted by the caller (rootInChunks) and is not resized.
+// `elements` must be rooted by the caller (rootBuffer) and is not resized.
 static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 elemKind) {
     constexpr size_t kBranch = 32;
     auto& allocator = Allocator::instance();
@@ -341,7 +339,7 @@ static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 el
 
     // Level 0: the Leaf nodes, in index order.
     levels.emplace_back(numLeaves, alloc::listNil());
-    rootInChunks(rs, levels.back());
+    rootBuffer(rs, levels.back());
     for (size_t k = 0; k < numLeaves; ++k) {
         HPointer leafArr = jsArrayFromSlice(elements, k * kBranch, kBranch, elemKind);
         levels.back()[k] = makeArrayNode(/*Leaf*/ 1, leafArr);
@@ -353,7 +351,7 @@ static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 el
         const size_t groups = (below.size() + kBranch - 1) / kBranch;
         levels.emplace_back(groups, alloc::listNil());
         std::vector<HPointer>& above = levels.back();
-        rootInChunks(rs, above);
+        rootBuffer(rs, above);
         for (size_t g = 0; g < groups; ++g) {
             const size_t start = g * kBranch;
             const size_t count = std::min(kBranch, below.size() - start);
@@ -440,7 +438,7 @@ static HPointer makeJsonArrayFrom(std::vector<HPointer>& elements) {
     auto& rs = Allocator::instance().getRootSet();
     const size_t saved = rs.stackRangePoint();
     std::vector<HPointer> chunks((n + F - 1) / F, alloc::listNil());
-    rootInChunks(rs, chunks);
+    rootBuffer(rs, chunks);
     for (size_t c = 0; c < chunks.size(); ++c) {
         const size_t lo = c * F;
         const size_t hi = std::min(n, lo + F);
@@ -551,20 +549,14 @@ static HPointer jsonToHeap(const json& j) {
         // STALE-hptr validator caught this in JsonRoundtrip*.elm.
         //
         // Approach: pre-fill a vector of size j.size() with Nil, then
-        // register stack-root ranges over its contiguous buffer (chunked
-        // into 64-slot pieces because StackRootRange's hpointer_mask is
-        // a uint64_t bitfield indexed by `1ULL << i`, UB for i>=64).
-        // The vector's data() pointer is stable since we don't grow.
+        // register ONE all-boxed stack-root record over its contiguous
+        // buffer (rootBuffer). The vector's data() pointer is stable since
+        // we don't grow.
         size_t n = j.size();
         std::vector<HPointer> elements(n, listNil());
         auto& rs = Allocator::instance().getRootSet();
         size_t saved = rs.stackRangePoint();
-        for (size_t base = 0; base < n; base += 64) {
-            size_t chunk = std::min<size_t>(64, n - base);
-            uint64_t mask = (chunk == 64) ? ~uint64_t{0}
-                                           : ((uint64_t{1} << chunk) - 1);
-            rs.pushStackRootRange(elements.data() + base, chunk, mask);
-        }
+        rootBuffer(rs, elements);
 
         size_t i = 0;
         for (const auto& elem : j) {
@@ -998,7 +990,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
             auto& rs = allocator.getRootSet();
             size_t savedRoots = rs.stackRangePoint();
             rs.pushStackRootRange(&elemDecHP, 1, 1);
-            rootInChunks(rs, elements);
+            rootBuffer(rs, elements);
 
             for (u32 i = 0; i < len; i++) {
                 uint64_t elemEnc = Export::encode(jsonArrayAt(resolveJval(), i));
@@ -1106,21 +1098,13 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
             auto& rs = allocator.getRootSet();
             size_t kvSaved = rs.stackRangePoint();
 
-            // StackRootRange::hpointer_mask is a uint64_t indexed by
-            // `1ULL << i` — UB for `i >= 64`, so a single range with
-            // mask=~0 only covers slots 0-63. Dicts with > 64 entries
-            // need chunked ranges; otherwise tuples[64..] go stale across
-            // recursive runDecoder calls.
+            // The whole `tuples` buffer is ONE all-boxed record (rootBuffer),
+            // so the base roots are four records whatever the entry count.
             auto pushBaseRoots = [&]() {
                 rs.pushStackRootRange(&result,    1, 1);
                 rs.pushStackRootRange(&valDecHP,  1, 1);
                 rs.pushStackRootRange(&keyStr,    1, 1);
-                for (size_t base = 0; base < tuples.size(); base += 64) {
-                    size_t chunk = std::min<size_t>(64, tuples.size() - base);
-                    uint64_t mask = (chunk == 64) ? ~uint64_t{0}
-                                                   : ((uint64_t{1} << chunk) - 1);
-                    rs.pushStackRootRange(tuples.data() + base, chunk, mask);
-                }
+                rootBuffer(rs, tuples);
             };
             pushBaseRoots();
 

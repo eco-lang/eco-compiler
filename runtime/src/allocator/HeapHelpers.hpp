@@ -55,6 +55,7 @@
 #include "Heap.hpp"
 #include "P1Census.hpp"
 #include "RootSet.hpp"
+#include "RootedSlots.hpp"
 #include "RuntimeExports.h"
 #include <algorithm>
 #include <cstring>
@@ -149,6 +150,7 @@ public:
     }
     StackRootGuard(std::initializer_list<HPointer*> roots) : saved_(ecoRootMark()) {
         for (HPointer* r : roots) {
+            // root-bounded: one push per pointer named at the call site; popped by the destructor
             if (r != nullptr) ecoRoot1Push(r);
         }
     }
@@ -1110,14 +1112,12 @@ struct ListBackwardCursor {
         ni = nodes.size();
     }
 
-    // Roots the node array as <=64-entry all-boxed ranges. Pair with
-    // rs.restoreStackRangePoint(save-point taken before this call).
+    // Roots the node array with ONE all-boxed record (an all-ones mask covers
+    // a range of any length; plans/kernel-root-stack-bounded-rooting.md). Pair
+    // with rs.restoreStackRangePoint(save-point taken before this call). The
+    // array must not grow after this.
     void rootNodes(RootSet& rs) {
-        for (size_t i = 0; i < nodes.size(); i += 64) {
-            size_t n = std::min<size_t>(64, nodes.size() - i);
-            rs.pushStackRootRange(nodes.data() + i, n,
-                                  n == 64 ? ~0ULL : ((1ULL << n) - 1));
-        }
+        if (!nodes.empty()) rs.pushStackRootRange(nodes.data(), nodes.size(), ~0ULL);
     }
 
     // Yields the next element in reverse order; false when exhausted.
@@ -1194,28 +1194,22 @@ struct ListChainReverseWriter {
 };
 
 /**
- * Builds a list from a vector of boxed HPointers.
- * All elements are treated as boxed pointers.
- *
- * @param elements Vector of HPointers (first element becomes head).
- * @return HPointer to the list head (or Nil if empty).
+ * Builds a list from a rooted buffer of boxed HPointers (first element becomes
+ * head). The buffer is ONE shadow-stack record whatever its length
+ * (plans/kernel-root-stack-bounded-rooting.md); elements are re-read from it
+ * after each allocation.
  */
-inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
-    // Copy elements into a local buffer and root them all (and the result
-    // accumulator) across the allocations, since each may GC.
-    std::vector<HPointer> rooted = elements;
+inline HPointer listFromPointers(const RootedSlots& rooted) {
     HPointer result = listNil();
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(&result, 1, 1);
-    for (auto& hp : rooted) rs.pushStackRootRange(&hp, 1, 1);
+    const u32 n = static_cast<u32>(rooted.size());
 
     // Chunks: one dense chain instead of n cells (String.split parts and
     // the other pointer-list builders). Elements are re-read from the
-    // rooted vector after construction; the fill never allocates.
-    if (eco_g_list_chunks && rooted.size() >= 4 &&
-        chunkChainFits(static_cast<u32>(rooted.size()))) {
-        u32 n = static_cast<u32>(rooted.size());
+    // rooted buffer after construction; the fill never allocates.
+    if (eco_g_list_chunks && n >= 4 && chunkChainFits(n)) {
         HPointer head = listChunkChain(n, 0, listNil());
         ListChainWriter w(head);
         for (u32 i = 0; i < n; ++i) {
@@ -1228,11 +1222,26 @@ inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
         return head;
     }
 
-    for (auto it = rooted.rbegin(); it != rooted.rend(); ++it) {
-        result = cons(boxed(*it), result, true);
+    for (u32 i = n; i > 0; --i) {
+        result = cons(boxed(rooted[i - 1]), result, true);
     }
     rs.restoreStackRangePoint(saved);
     return result;
+}
+
+/**
+ * Builds a list from a vector of boxed HPointers.
+ * All elements are treated as boxed pointers. The pointers must be valid on
+ * entry (read since the last possible GC); they are copied into one rooted
+ * buffer before anything allocates.
+ *
+ * @param elements Vector of HPointers (first element becomes head).
+ * @return HPointer to the list head (or Nil if empty).
+ */
+inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
+    RootedSlots rooted(elements.size());
+    for (HPointer hp : elements) rooted.push(hp);
+    return listFromPointers(rooted);
 }
 
 /**
@@ -1299,65 +1308,64 @@ inline u8 kindFromBoxedFlag(bool is_boxed) {
 // reading at the static (Float) kind — arithmetic folds, structural equality —
 // silently disagreed with the values `Debug.log` printed from the header.
 inline HPointer listFromUnboxables(
-        std::vector<std::pair<Unboxable, u8>>& elems,
+        const RootedElems& elems,
         HPointer tail = listNil(),
         bool reversed = false) {
     if (elems.empty()) return tail;
 
+    // `elems` roots its boxed values with ONE record
+    // (plans/kernel-root-stack-bounded-rooting.md); `result` is the one other
+    // root.
     HPointer result = tail;
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-
     rs.pushStackRootRange(&result, 1, 1);
-    for (auto& [val, kind] : elems) {
-        if (kind == 0) rs.pushStackRootRange(&val.p, 1, 1);
-    }
+    const u32 n = static_cast<u32>(elems.size());
 
     // Chunked-list fast path (plans/chunked-list-representation.md §6): when
     // the program was compiled chunk-aware, a kind-UNIFORM batch becomes a
     // chunk chain — one dense backing per listBackingMaxElems() run — instead
-    // of n cells. The bool API collapses unboxed kinds to Int (pre-existing
-    // behaviour of the cons(bool) overload); mixed batches fall back to
-    // cells. Threshold 4 avoids tiny-chunk overhead. All boxed inputs and
-    // `result` are rooted above, so the chain allocations may GC freely;
-    // elements are re-read from the (GC-updated) vector after construction,
-    // and the fill itself never allocates.
-    if (eco_g_list_chunks && elems.size() >= 4 &&
-        chunkChainFits(static_cast<u32>(elems.size()))) {
-        bool uniform = true;
-        u8 firstKind = elems[0].second;
-        for (auto& [val, kind] : elems) {
-            (void)val;
-            if (kind != firstKind) { uniform = false; break; }
+    // of n cells. Mixed batches fall back to cells. Threshold 4 avoids
+    // tiny-chunk overhead. Elements are re-read from the rooted buffer after
+    // construction, and the fill itself never allocates.
+    if (eco_g_list_chunks && n >= 4 && chunkChainFits(n) && elems.uniform()) {
+        u8 kind = elems.kind(0);
+        HPointer head = listChunkChain(n, kind, result);
+        ListChainWriter w(head);
+        if (reversed) {
+            for (u32 i = n; i > 0; --i) w.put(elems.get(i - 1));
+        } else {
+            for (u32 i = 0; i < n; ++i) w.put(elems.get(i));
         }
-        if (uniform) {
-            u8 kind = firstKind;
-            u32 n = static_cast<u32>(elems.size());
-            HPointer head = listChunkChain(n, kind, result);
-            ListChainWriter w(head);
-            if (reversed) {
-                for (u32 i = n; i > 0; --i) w.put(elems[i - 1].first);
-            } else {
-                for (u32 i = 0; i < n; ++i) w.put(elems[i].first);
-            }
-            finishChunkChain(head, n);
-            rs.restoreStackRangePoint(saved);
-            return head;
-        }
+        finishChunkChain(head, n);
+        rs.restoreStackRangePoint(saved);
+        return head;
     }
 
     if (reversed) {
-        for (auto& [val, kind] : elems) {
-            result = cons(val, result, kind);
+        for (u32 i = 0; i < n; ++i) {
+            result = cons(elems.get(i), result, elems.kind(i));
         }
     } else {
-        for (auto it = elems.rbegin(); it != elems.rend(); ++it) {
-            result = cons(it->first, result, it->second);
+        for (u32 i = n; i > 0; --i) {
+            result = cons(elems.get(i - 1), result, elems.kind(i - 1));
         }
     }
 
     rs.restoreStackRangePoint(saved);
     return result;
+}
+
+// Vector form: the values must be valid on entry (read since the last possible
+// GC); they are copied into one rooted buffer before anything allocates.
+inline HPointer listFromUnboxables(
+        const std::vector<std::pair<Unboxable, u8>>& elems,
+        HPointer tail = listNil(),
+        bool reversed = false) {
+    if (elems.empty()) return tail;
+    RootedElems rooted(elems.size());
+    for (const auto& [val, kind] : elems) rooted.push(val, kind);
+    return listFromUnboxables(rooted, tail, reversed);
 }
 
 // ============================================================================

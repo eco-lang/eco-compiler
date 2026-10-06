@@ -908,13 +908,10 @@ HPointer split(void* sep, void* str) {
         HPointer srcHp = allocator.wrap(str);
         auto& rs = allocator.getRootSet();
         size_t saved = rs.stackRangePoint();
-        // Chunk into <=64-slot ranges: StackRootRange's hpointer_mask is a
-        // uint64_t indexed by `1ULL << i`, UB for i>=64 (see JsonExports.cpp).
-        for (size_t base = 0; base < parts.size(); base += 64) {
-            size_t chunk = std::min<size_t>(64, parts.size() - base);
-            uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
-            rs.pushStackRootRange(parts.data() + base, chunk, mask);
-        }
+        // ONE all-boxed record for the whole presized buffer (an all-ones
+        // mask covers a range of any length; unfilled slots hold the Nil
+        // constant, which the GC skips) — plans/kernel-root-stack-bounded-rooting.md.
+        rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
         rs.pushStackRootRange(&srcHp, 1, ~0ULL);
         size_t start = 0;
         for (size_t idx = 0; idx < splitPositions.size(); ++idx) {
@@ -983,7 +980,9 @@ HPointer split(void* sep, void* str) {
     std::vector<HPointer> parts(numParts, alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& hp : parts) rs.pushStackRootRange(&hp, 1, 1);
+    // ONE all-boxed record for the whole presized buffer (unfilled slots hold
+    // the Nil constant, which the GC skips).
+    rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     size_t start = 0;
     for (size_t idx = 0; idx < splitPositions.size(); ++idx) {

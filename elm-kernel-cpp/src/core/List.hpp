@@ -31,60 +31,6 @@ HPointer cons(Unboxable head, HPointer tail, bool headIsBoxed);
  */
 HPointer fromArray(const std::vector<HPointer>& array);
 
-/**
- * Converts a list to a vector of HPointers.
- */
-std::vector<HPointer> toArray(HPointer list);
-
-// ============================================================================
-// Map Operations (multiple lists)
-// These take a combining function as first argument.
-// ============================================================================
-
-/**
- * Function type for map2: (a, b) -> result
- */
-using Map2Func = HPointer (*)(void*, void*);
-
-/**
- * Combines two lists element-wise using a function.
- * Stops when the shorter list ends.
- */
-HPointer map2(Map2Func func, HPointer xs, HPointer ys);
-
-/**
- * Function type for map3: (a, b, c) -> result
- */
-using Map3Func = HPointer (*)(void*, void*, void*);
-
-/**
- * Combines three lists element-wise using a function.
- * Stops when the shortest list ends.
- */
-HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs);
-
-/**
- * Function type for map4: (a, b, c, d) -> result
- */
-using Map4Func = HPointer (*)(void*, void*, void*, void*);
-
-/**
- * Combines four lists element-wise using a function.
- * Stops when the shortest list ends.
- */
-HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs);
-
-/**
- * Function type for map5: (a, b, c, d, e) -> result
- */
-using Map5Func = HPointer (*)(void*, void*, void*, void*, void*);
-
-/**
- * Combines five lists element-wise using a function.
- * Stops when the shortest list ends.
- */
-HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys, HPointer zs);
-
 // ============================================================================
 // Sorting
 // ============================================================================

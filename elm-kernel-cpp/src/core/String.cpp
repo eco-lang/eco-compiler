@@ -206,13 +206,10 @@ HPointer lines(void* str) {
         HPointer srcHp = allocator.wrap(str);
         auto& rs = allocator.getRootSet();
         size_t saved = rs.stackRangePoint();
-        // Chunk into <=64-slot ranges (StackRootRange mask is 1ULL<<i, UB
-        // for i>=64 — see JsonExports.cpp).
-        for (size_t base = 0; base < parts.size(); base += 64) {
-            size_t chunk = std::min<size_t>(64, parts.size() - base);
-            uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
-            rs.pushStackRootRange(parts.data() + base, chunk, mask);
-        }
+        // ONE all-boxed record for the whole presized buffer (an all-ones mask
+        // covers any length; unfilled slots hold the Nil constant, which the GC
+        // skips) — plans/kernel-root-stack-bounded-rooting.md.
+        rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
         rs.pushStackRootRange(&srcHp, 1, ~0ULL);
         for (size_t i = 0; i < ranges.size(); ++i) {
             parts[i] = StringOps::slice(allocator.resolve(srcHp),
@@ -266,14 +263,10 @@ HPointer lines(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    // Chunk into <=64-slot ranges (StackRootRange mask is 1ULL<<i, UB for
-    // i>=64 — see JsonExports.cpp). Pre-existing single-range fixed alongside
-    // the new UTF-8 arm.
-    for (size_t base = 0; base < parts.size(); base += 64) {
-        size_t chunk = std::min<size_t>(64, parts.size() - base);
-        uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
-        rs.pushStackRootRange(parts.data() + base, chunk, mask);
-    }
+    // ONE all-boxed record for the whole presized buffer (an all-ones mask
+    // covers any length; unfilled slots hold the Nil constant, which the GC
+    // skips) — plans/kernel-root-stack-bounded-rooting.md.
+    rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
         parts[i] = alloc::allocString(strData + ranges[i].start, ranges[i].len);
@@ -319,12 +312,10 @@ HPointer words(void* str) {
         std::vector<HPointer> parts(ranges.size(), alloc::listNil());
         auto& rs = allocator.getRootSet();
         size_t saved = rs.stackRangePoint();
-        // Chunk into <=64-slot ranges (mask is 1ULL<<i, UB for i>=64).
-        for (size_t base = 0; base < parts.size(); base += 64) {
-            size_t chunk = std::min<size_t>(64, parts.size() - base);
-            uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
-            rs.pushStackRootRange(parts.data() + base, chunk, mask);
-        }
+        // ONE all-boxed record for the whole presized buffer (an all-ones mask
+        // covers any length; unfilled slots hold the Nil constant, which the GC
+        // skips) — plans/kernel-root-stack-bounded-rooting.md.
+        rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
         rs.pushStackRootRange(&trimmedHp, 1, ~0ULL);
         for (size_t i = 0; i < ranges.size(); ++i) {
             parts[i] = StringOps::slice(allocator.resolve(trimmedHp),
@@ -371,14 +362,10 @@ HPointer words(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    // Chunk into <=64-slot ranges (StackRootRange mask is 1ULL<<i, UB for
-    // i>=64 — see JsonExports.cpp). Pre-existing single-range fixed alongside
-    // the new UTF-8 arm.
-    for (size_t base = 0; base < parts.size(); base += 64) {
-        size_t chunk = std::min<size_t>(64, parts.size() - base);
-        uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
-        rs.pushStackRootRange(parts.data() + base, chunk, mask);
-    }
+    // ONE all-boxed record for the whole presized buffer (an all-ones mask
+    // covers any length; unfilled slots hold the Nil constant, which the GC
+    // skips) — plans/kernel-root-stack-bounded-rooting.md.
+    rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
         parts[i] = alloc::allocString(strData + ranges[i].start, ranges[i].len);
