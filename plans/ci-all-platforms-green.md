@@ -15,13 +15,14 @@ Runs: Linux `37445152661` and Mac `37445152664` (commit `3fda845`), Windows `374
 
 | Platform | Pipeline | Failing under the soft gates |
 |---|---|---|
-| Linux | green | elm-tests: the 2 GOPT_003 pins (JIT 2129/2129, stress 101/101, AOT 933/935 with the 2 tolerated) |
+| Linux | green | elm-tests: the 2 GOPT_003 pins (JIT 2128/2128, stress 101/101, AOT 932/932) |
 | Mac | green | elm-tests: the 2 GOPT_003 pins; JIT: `WideClosureArity2047Test` + 5 threaded-GC determinism tests |
 | Windows | green | elm-tests: the 2 GOPT_003 pins; JIT: `test.exe` dies with heap corruption, so most of the suite never runs |
 
-Not failures, left alone: AOT `FlagsRecordTest` and `PortEchoTest`, which the `run-aot-e2e` gate
-tolerates by name (harness limits, both pass under JIT); the codegen MLIR suites, which
-`test/main.cpp` gates off on Windows (E-W5, `plans/build-on-windows.md`).
+Not failures, left alone: the codegen MLIR suites, which `test/main.cpp` gates off on Windows
+(E-W5, `plans/build-on-windows.md`). Since `f290b6f980` (the `SKIP-AOT` directive) AOT E2E no
+longer runs `FlagsRecordTest` and `PortEchoTest`, so Linux AOT is 932/932 (Linux run
+`37478972971`, commit `40cca8a`).
 
 ## Assumptions
 
@@ -164,6 +165,19 @@ diff the dumps locally.
 stdout varies between runs (inside the `threaded-gc-05a`/`05b` suites); stderr holds only
 RapidCheck lines. An earlier run exited 1 at `gc_mark_threads JSON, env and validation`, most
 likely the same fault.
+
+**First lead.** In three of four runs (`37363862386`, `37431329096`, `37478973111`; the fourth,
+`37368741971`, stopped earlier in `threaded-gc-05a`) the last test name printed is
+`threaded-gc-05b: gc_mark_threads JSON, env and validation`
+(`test/allocator/ParallelMarkTest.cpp:317`), which only parses strings and catches the
+exceptions it expects. The test before it, `a forked child can run the gang`, is a no-op on
+Windows, so the last real work is `threaded-gc-05b: GCMarkGang runs every member exactly once per
+run`: `GCMarkGang::configure(8, 0)`, 8000 `run()`s with a stack `Ctx`, then
+`shutdownForTesting()` (`runtime/src/allocator/GCHelperPool.cpp`, `memberLoop` around line 411,
+`run` around 468, `shutdownForTesting` around 498). Heap corruption usually surfaces at the next
+allocation, so examine the gang's Windows thread lifecycle first: thread start in
+`startThreadsLocked`, the `threads_` vector, `tl_member_run_`, and whether a member can still
+touch `fn_`/`ctx_` or gang state after `run()` returns or after `shutdownForTesting()`.
 
 **Already ruled out.** On Linux the full test binary under glibc's checking allocator
 (`LD_PRELOAD=libc_malloc_debug.so.0`, `GLIBC_TUNABLES=glibc.malloc.check=3`, `MALLOC_PERTURB_`)
