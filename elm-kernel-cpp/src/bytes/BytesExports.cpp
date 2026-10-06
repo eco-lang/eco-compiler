@@ -702,6 +702,10 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
             str->chars[dstPos++] = static_cast<u16>(0xDC00 + (codepoint & 0x3FF));
         }
     }
+    // The counting pass reserves two units for every 4-byte lead, but an overlong one
+    // (codepoint <= 0xFFFF) writes only one: zero the units left over rather than leave
+    // whatever the nursery last held there.
+    while (dstPos < utf16Count) str->chars[dstPos++] = 0;
 
     return HPtr::fromBits(makeTuple2_ip(offset + length, allocator.wrap(str)));
 }
