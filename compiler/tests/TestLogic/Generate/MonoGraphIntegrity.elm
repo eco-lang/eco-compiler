@@ -1,5 +1,6 @@
 module TestLogic.Generate.MonoGraphIntegrity exposing
     ( expectCallableMonoNodes
+    , localVarScopingChecks
     , expectMonoGraphClosed
     , expectMonoGraphComplete
     , expectSpecRegistryComplete
@@ -490,6 +491,27 @@ collectClosureChecks (Mono.MonoGraph data) =
                 |> Tuple.second
     in
     specIdIssues ++ localVarIssues
+
+
+{-| Returns one failing check for each out-of-scope local reference in any
+node of `graph`, as `checkNodeLocalVarScoping` finds them: the local-variable
+half of `expectMonoGraphClosed`, for a graph a test has already built (for
+example the output of a post-monomorphization pass), with no SpecId check.
+-}
+localVarScopingChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+localVarScopingChecks (Mono.MonoGraph data) =
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, acc ++ checkNodeLocalVarScoping specId node )
+        )
+        ( 0, [] )
+        data.nodes
+        |> Tuple.second
 
 
 {-| Returns one failing check, labelled with `specId`, for each `MonoVarLocal`

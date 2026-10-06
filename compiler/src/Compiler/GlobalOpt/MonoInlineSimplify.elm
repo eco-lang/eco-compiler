@@ -2195,27 +2195,32 @@ loopifyCall ctx region info qualifying args resultType =
                     case lamExpr of
                         MonoClosure cinfo cbody ctype ->
                             let
-                                ( cbody1, accPrelude1, c1 ) =
+                                ( ( cbody1, capsRev ), accPrelude1, c1 ) =
                                     List.foldl
-                                        (\( capName, capExpr, _ ) ( e, pre, cc ) ->
+                                        (\(( capName, capExpr, unboxed ) as cap) ( ( e, caps ), pre, cc ) ->
                                             case capExpr of
                                                 MonoVarLocal _ vt ->
                                                     let
                                                         ( freshCap, cc1 ) =
                                                             freshVar cc
                                                     in
-                                                    ( substitute capName freshCap vt e
+                                                    ( ( substitute capName freshCap vt e
+                                                      , ( freshCap, MonoVarLocal freshCap vt, unboxed ) :: caps
+                                                      )
                                                     , ( freshCap, capExpr ) :: pre
                                                     , cc1
                                                     )
 
                                                 _ ->
-                                                    ( e, pre, cc )
+                                                    ( ( e, cap :: caps ), pre, cc )
                                         )
-                                        ( cbody, accPrelude, c )
+                                        ( ( cbody, [] ), accPrelude, c )
                                         cinfo.captures
                             in
-                            ( ( i, MonoClosure { cinfo | captures = [] } cbody1 ctype ) :: accPairs
+                            -- Keep the closure CLOSED: it captures the prelude names, so it
+                            -- is well scoped even if the fixpoint cap is hit before the
+                            -- next round's beta reduction dissolves it.
+                            ( ( i, MonoClosure { cinfo | captures = List.reverse capsRev } cbody1 ctype ) :: accPairs
                             , accPrelude1
                             , c1
                             )
