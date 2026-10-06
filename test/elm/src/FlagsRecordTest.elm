@@ -9,6 +9,7 @@ program's compiler-generated flags decoder and hands the record to `init`.
 
 -}
 
+-- SKIP-AOT: needs `-- FLAGS:` JSON, which only the JIT harness can inject (eco_entry.cpp reads no flags)
 -- FLAGS: {"count":42,"label":"native-flags","enabled":true}
 -- CHECK: FlagsRecordTest label: "native-flags"
 -- CHECK: FlagsRecordTest count: 43

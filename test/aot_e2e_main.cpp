@@ -9,6 +9,9 @@
 //   3. Run the ELF, capture stdout/stderr, verify against `-- CHECK:` /
 //      `-- CHECK-NOT:` patterns in the test source.
 //
+// A test with a `-- SKIP-AOT: <reason>` line is listed as skipped and not run
+// (see skip_aot_reason).
+//
 // Outputs land under ${BUILD_DIR}/test/aot-e2e/<pkg>/ so they do not
 // collide with the JIT E2E suite's outputs (which live at
 // ${BUILD_DIR}/test/<pkg>/).
@@ -177,6 +180,7 @@ struct TestCase {
     std::string elm_file;      // absolute path to source .elm
     std::string aot_shadow;    // absolute path to AOT shadow dir (cwd for compile)
     std::string display_name;  // "<pkg>/<stem>"
+    std::string skip_reason;   // non-empty: `-- SKIP-AOT:` directive, not run
 };
 
 // Packages contributing E2E test sources. Matches the JIT runner's
@@ -208,6 +212,29 @@ bool has_top_level_main(const fs::path& elm_file) {
     return false;
 }
 
+// A `-- SKIP-AOT: <reason>` line in a test's source excludes it from this
+// suite only (the JIT E2E suite still runs it). Used for tests that need a
+// host the standalone AOT executable does not have: `-- FLAGS:` JSON and the
+// echo port bounce are installed in-process by the JIT harness
+// (ElmE2ETestBase.hpp), and eco_entry.cpp offers neither. Returns the reason,
+// or "" when the directive is absent. The marker must start a line so prose
+// mentioning it is not picked up.
+std::string skip_aot_reason(const fs::path& elm_file) {
+    std::ifstream f(elm_file);
+    if (!f) return std::string();
+    const std::string marker = "-- SKIP-AOT:";
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.compare(0, marker.size(), marker) != 0) continue;
+        std::string reason = line.substr(marker.size());
+        std::size_t b = reason.find_first_not_of(" \t\r");
+        std::size_t e = reason.find_last_not_of(" \t\r");
+        return b == std::string::npos ? std::string("no reason given")
+                                      : reason.substr(b, e - b + 1);
+    }
+    return std::string();
+}
+
 std::vector<TestCase> discover_all() {
     std::vector<TestCase> cases;
     for (const std::string& pkg : aot_test_packages()) {
@@ -230,6 +257,7 @@ std::vector<TestCase> discover_all() {
             tc.elm_file     = fs::absolute(p).string();
             tc.aot_shadow   = std::string(BUILD_DIR "/test/aot-e2e/") + pkg;
             tc.display_name = pkg + "/" + stem;
+            tc.skip_reason  = skip_aot_reason(p);
             cases.push_back(std::move(tc));
         }
     }
@@ -584,13 +612,27 @@ int main(int argc, char** argv) {
     }
 
     if (args.list) {
-        for (auto& c : cases) std::cout << c.display_name << "\n";
+        for (auto& c : cases) {
+            std::cout << c.display_name;
+            if (!c.skip_reason.empty()) std::cout << "  (SKIP-AOT: " << c.skip_reason << ")";
+            std::cout << "\n";
+        }
         std::cout << "\n" << cases.size() << " tests\n";
         return 0;
     }
     if (cases.empty()) {
         std::cerr << "no tests matched filter \"" << args.filter << "\"\n";
         return 1;
+    }
+
+    // Set `-- SKIP-AOT:` tests aside before the warm-up split so a skipped
+    // test is never picked as a package's warm-up compile.
+    std::vector<TestCase> skipped;
+    {
+        std::vector<TestCase> runnable;
+        for (auto& c : cases)
+            (c.skip_reason.empty() ? runnable : skipped).push_back(std::move(c));
+        cases = std::move(runnable);
     }
 
     // Start the in-process test HTTP server (singleton) and write the
@@ -664,7 +706,12 @@ int main(int argc, char** argv) {
     };
 
     std::cout << g_color.bold() << "[aot-e2e] running " << cases.size()
-              << " tests (jobs=" << args.jobs << ")\n" << g_color.reset();
+              << " tests (jobs=" << args.jobs << ", " << skipped.size()
+              << " skipped)\n" << g_color.reset();
+    for (const auto& tc : skipped) {
+        std::cout << g_color.dim() << "SKIP  " << tc.display_name << "  (SKIP-AOT: "
+                  << tc.skip_reason << ")" << g_color.reset() << "\n";
+    }
 
     for (const auto& tc : warmup) emit(run_one(tc));
 
@@ -692,6 +739,7 @@ int main(int argc, char** argv) {
               << "Tests passed: " << g_color.green() << passed << g_color.reset() << "\n"
               << "Tests failed: " << (failed ? g_color.red() : g_color.dim())
               << failed << g_color.reset() << "\n"
+              << "Tests skipped: " << skipped.size() << " (SKIP-AOT)\n"
               << "\nResult: " << (failed == 0 ? g_color.green() : g_color.red())
               << (failed == 0 ? "PASSED" : "FAILED") << g_color.reset() << "\n";
 

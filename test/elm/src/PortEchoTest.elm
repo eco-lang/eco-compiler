@@ -11,6 +11,7 @@ manager -> host callback -> eco_port_send -> queued drain -> Json decode
 
 -}
 
+-- SKIP-AOT: needs the JIT harness echoOut -> echoIn port bounce (a standalone executable has no port host)
 -- CHECK: PortEchoTest got: 42
 -- CHECK: PortEchoTest done: "ok"
 
