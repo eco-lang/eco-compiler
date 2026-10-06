@@ -151,7 +151,7 @@ static void test_eco_alloc_custom_fields() {
         // (HEAP_044 — nullary ctors are embedded null-cons constants).
         uint32_t field_count = *rc::gen::inRange<uint32_t>(1, 10);
 
-        auto hptr = eco_alloc_custom(ctor_tag, field_count, 0);
+        auto hptr = eco_alloc_custom(ctor_tag, field_count);
         RC_ASSERT(hptr.toBits() != 0);
 
         void* obj = hptrToRaw(hptr.toBits());
@@ -255,7 +255,7 @@ static void test_eco_store_field_custom() {
         auto value_hptr = eco_alloc_int(inner_val);
         RC_ASSERT(value_hptr.toBits() != 0);
 
-        auto hptr = eco_alloc_custom(0, field_count, 0);
+        auto hptr = eco_alloc_custom(0, field_count);
         RC_ASSERT(hptr.toBits() != 0);
 
         eco_store_field(hptr, index, value_hptr);
@@ -323,7 +323,7 @@ static void test_eco_store_field_i64() {
         initAllocator();
         i64 value = *rc::gen::arbitrary<i64>();
 
-        auto hptr = eco_alloc_custom(0, 1, 0);
+        auto hptr = eco_alloc_custom(0, 1);
         RC_ASSERT(hptr.toBits() != 0);
 
         eco_store_field_i64(hptr, 0, value);
@@ -342,7 +342,7 @@ static void test_eco_store_field_f64() {
             return static_cast<double>(x) / 100.0;
         });
 
-        auto hptr = eco_alloc_custom(0, 1, 0);
+        auto hptr = eco_alloc_custom(0, 1);
         RC_ASSERT(hptr.toBits() != 0);
 
         eco_store_field_f64(hptr, 0, value);
@@ -381,7 +381,7 @@ static void test_eco_get_header_tag() {
         auto tuple3Hptr = eco_alloc_tuple3(0, 0, 0, 0);
         RC_ASSERT(eco_get_header_tag(tuple3Hptr) == Tag_Tuple3);
 
-        auto customHptr = eco_alloc_custom(5, 2, 0);
+        auto customHptr = eco_alloc_custom(5, 2);
         RC_ASSERT(eco_get_header_tag(customHptr) == Tag_Custom);
 
         auto stringHptr = eco_alloc_string(10);
@@ -400,7 +400,7 @@ static void test_eco_get_custom_ctor() {
         // 1 field: a 0-field heap Custom is not a legal shape (HEAP_044 —
         // nullary ctors are embedded null-cons constants, and eco_get_tag
         // reads their index straight off the word).
-        auto hptr = eco_alloc_custom(ctor_tag, 1, 0);
+        auto hptr = eco_alloc_custom(ctor_tag, 1);
         RC_ASSERT(hptr.toBits() != 0);
 
         RC_ASSERT(eco_get_custom_ctor(hptr) == ctor_tag);
@@ -532,7 +532,7 @@ static void test_multiple_alloc_types_survive_gc() {
         auto floatH = eco_alloc_float(3.14159);
         auto charH = eco_alloc_char('X');
         auto consH = eco_alloc_cons(nil, HPtr::fromBits(nil), 0);
-        auto customH = eco_alloc_custom(7, 2, 0);
+        auto customH = eco_alloc_custom(7, 2);
 
         RC_ASSERT(intH.toBits() != 0);
         RC_ASSERT(floatH.toBits() != 0);

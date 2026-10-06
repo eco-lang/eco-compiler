@@ -96,10 +96,8 @@ void test_b7_pointer_mask_slots_beyond_32_boxed() {
 
 void test_b7_record_equality_slots_beyond_32() {
     initAllocator();
-    // A 40-field Record is wider than its header bitmap: the builder assert (P1 step 1c.7)
-    // fires unless the test switch is on.
-    const bool savedWide = Elm::testing::allow_wide_objects;
-    Elm::testing::allow_wide_objects = true;
+    // A 40-field Record is wider than its header bitmap: slots 32.. keep their
+    // kinds in a tail kind word (HEAP_019).
     auto build = [] {
         std::vector<Unboxable> v(40);
         v[0] = rawInt(5);
@@ -109,7 +107,6 @@ void test_b7_record_equality_slots_beyond_32() {
     HPointer a = build();
     HPointer b = build();    // equal contents, distinct boxed Int pointers
     HPtr eq = Elm_Kernel_Utils_equal(toHPtr(a), toHPtr(b));
-    Elm::testing::allow_wide_objects = savedWide;
     TEST_ASSERT(eq.toBits() == Elm::Kernel::Export::encodeBoxedBool(true));
 }
 
@@ -139,7 +136,6 @@ void test_b7_closure_captures_beyond_32_survive_minor_gc() {
 void test_b8_custom_70_boxed_roots_every_slot() {
     int r = runInChild([] {
         auto& a = initAllocator();
-        Elm::testing::allow_wide_objects = true;   // wide Custom on purpose (child process only)
         std::vector<HPointer> held(70);
         for (int i = 0; i < 70; ++i) {
             held[i] = alloc::allocInt(1000 + i);
@@ -165,7 +161,6 @@ void test_b8_custom_70_boxed_roots_every_slot() {
 void test_b8b_custom_slots_beyond_24_survive_minor_gc() {
     int r = runInChild([] {
         auto& a = initAllocator();
-        Elm::testing::allow_wide_objects = true;   // wide Custom on purpose (child process only)
         std::vector<Unboxable> v(70);
         for (int i = 0; i < 70; ++i) v[i] = boxed(alloc::allocInt(1000 + i));
         HPointer h = alloc::custom(0, v, 0);

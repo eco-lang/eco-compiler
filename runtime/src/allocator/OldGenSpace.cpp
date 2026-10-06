@@ -3578,8 +3578,11 @@ void OldGenSpace::scanChildren(MarkWorker& w, void* obj) {
             break;
         }
         case Tag_Custom: {
-            // Header-bitmap slots, then the tail (boxed in Phase 1, D semantics).
+            // Header-bitmap slots, then the tail (ext kind words, HEAP_019).
             Custom *c = static_cast<Custom *>(obj);
+#if ECO_HEAP_VALIDATE
+            validateExtKinds(obj, "OldGenSpace::scanChildren");
+#endif
             const u32 n = hdr->size, h = n < CUSTOM_HDR_SLOTS ? n : CUSTOM_HDR_SLOTS;
             for (u32 i = 0; i < h; i++) greyU(c->values[i], kindInWord(c->unboxed, i) == 0);
             for (u32 i = h; i < n; i++) greyU(c->values[i], customSlotKind(c, i) == 0);
@@ -3587,6 +3590,9 @@ void OldGenSpace::scanChildren(MarkWorker& w, void* obj) {
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
+#if ECO_HEAP_VALIDATE
+            validateExtKinds(obj, "OldGenSpace::scanChildren");
+#endif
             const u32 n = hdr->size, h = n < RECORD_HDR_SLOTS ? n : RECORD_HDR_SLOTS;
             for (u32 i = 0; i < h; i++) greyU(r->values[i], kindInWord(r->unboxed, i) == 0);
             for (u32 i = h; i < n; i++) greyU(r->values[i], recordSlotKind(r, i) == 0);
@@ -7710,10 +7716,12 @@ void* OldGenSpace::allocateYoungLarge(size_t size, Tag tag, bool initial_color) 
     // keep that color, write the tag's header, pin it (never moved: HEAP_062).
     Header* hdr = getHeader(obj);
     const u32 saved_color = hdr->color;
-    initHeaderForTag(hdr, tag, size);
-    hdr->color = saved_color;
-    hdr->pin = 1;
-    hdr->age = 0;
+    initHeaderForTag(hdr, tag, size);            // size / K / ext words (HEAP_019)
+    Header h = loadHeaderRelaxed(hdr);
+    h.color = saved_color;
+    h.pin = 1;
+    h.age = 0;
+    storeHeaderRelaxed(hdr, h);                  // one word: never a size without its K
 
     registerLargeBody(obj, cell_size, is_large, initial_color, /*kind=*/1);
     char* lo = static_cast<char*>(obj);

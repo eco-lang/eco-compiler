@@ -1,7 +1,7 @@
 module TestLogic.Generate.CodeGen.CtorLayoutConsistencyTest exposing (suite)
 
 {-| This suite looks, across many programs, for an `eco.construct.custom` op
-whose `size` or `unboxed_bitmap` agrees with no constructor layout computed for
+whose `size` or `slot_kinds` agrees with no constructor layout computed for
 the constructor it names. It is the only module that runs
 `TestLogic.Generate.CodeGen.CtorLayoutConsistency.expectCtorLayoutConsistency`,
 so without it that check would not run at all.
@@ -15,16 +15,16 @@ What the tests establish:
 
   - `suite` runs `expectCtorLayoutConsistency` on the programs in the
     catalogue. A program passes when it compiles to MLIR and every
-    `eco.construct.custom` op in it has a `constructor` name and integer
-    `tag`, `size` and `unboxed_bitmap` attributes, and, where the
+    `eco.construct.custom` op in it has a `constructor` name, integer
+    `tag` and `size` attributes and a `slot_kinds` array, and, where the
     constructor shapes (each a constructor's name, tag and field types)
     recorded in the monomorphized graph include some with the op's
     constructor name, one of them has the op's tag and the `size` and
-    `unboxed_bitmap` match the layout computed for one with that name and tag.
+    `slot_kinds` match the layout computed for one with that name and tag.
 
 Among what is not tested:
 
-  - Which specialisation of a constructor an op builds: the size and bitmap
+  - Which specialisation of a constructor an op builds: the size and kinds
     of another specialisation of the same constructor pass.
   - An op whose constructor name has no shape in the graph.
   - Custom values built in any other way than by `eco.construct.custom`.

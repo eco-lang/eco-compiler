@@ -3,25 +3,33 @@
 // Test low-level allocation operations.
 // Note: eco.allocate_closure requires a function reference, but user-defined
 // functions can't be translated to LLVM IR in current setup, so we test
-// only allocate_ctor and allocate_string here.
+// allocate_string here; the constructor cases (formerly eco.allocate_ctor,
+// deleted with its scalar_bytes ABI in wide-object Phase 3A) use
+// eco.construct.custom.
 
 module {
   func.func @main() -> i64 {
-    // eco.allocate_ctor - allocate constructor object
-    // tag=5, size=2 fields, 0 scalar bytes
-    %ctor_obj = eco.allocate_ctor {tag = 5 : i64, size = 2 : i64, scalar_bytes = 0 : i64} : !eco.value
+    %c1 = arith.constant 1 : i64
+    %c2 = arith.constant 2 : i64
+    %c3 = arith.constant 3 : i64
+    %b1 = eco.box %c1 : i64 -> !eco.value
+    %b2 = eco.box %c2 : i64 -> !eco.value
+    %b3 = eco.box %c3 : i64 -> !eco.value
+
+    // tag=5, 2 fields
+    %ctor_obj = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 5 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor_obj : !eco.value
-    // CHECK: Ctor5
+    // CHECK: Ctor5 1 2
 
-    // eco.allocate_ctor with different tag
-    %ctor_obj2 = eco.allocate_ctor {tag = 0 : i64, size = 3 : i64, scalar_bytes = 0 : i64} : !eco.value
+    // different tag, 3 fields
+    %ctor_obj2 = eco.construct.custom(%b1, %b2, %b3) {slot_kinds = array<i8: 0, 0, 0>, tag = 0 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor_obj2 : !eco.value
-    // CHECK: Ctor0
+    // CHECK: Ctor0 1 2 3
 
-    // eco.allocate_ctor with tag 10
-    %ctor_obj3 = eco.allocate_ctor {tag = 10 : i64, size = 1 : i64, scalar_bytes = 0 : i64} : !eco.value
+    // tag 10, 1 field
+    %ctor_obj3 = eco.construct.custom(%b3) {slot_kinds = array<i8: 0>, tag = 10 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %ctor_obj3 : !eco.value
-    // CHECK: Ctor10
+    // CHECK: Ctor10 3
 
     // eco.allocate_string - allocate string storage
     %str_storage = eco.allocate_string {length = 5 : i64} : !eco.value
@@ -33,11 +41,10 @@ module {
     eco.dbg %str_storage2 : !eco.value
     // CHECK: "
 
-    // Test construct with allocated ctor - fill fields after allocation
-    // First allocate a 2-field ctor
-    %ctor = eco.allocate_ctor {tag = 7 : i64, size = 2 : i64, scalar_bytes = 0 : i64} : !eco.value
+    // a 2-field ctor nesting another
+    %ctor = eco.construct.custom(%ctor_obj3, %b2) {slot_kinds = array<i8: 0, 0>, tag = 7 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor : !eco.value
-    // CHECK: Ctor7
+    // CHECK: Ctor7 (Ctor10 3) 2
 
     %zero = arith.constant 0 : i64
     return %zero : i64

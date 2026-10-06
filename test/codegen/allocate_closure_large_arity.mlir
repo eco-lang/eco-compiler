@@ -53,11 +53,11 @@ module {
     %b2 = eco.box %c2 : i64 -> !eco.value
 
     // Since we only sum first 2, create a PAP and extend
-    %pap = "eco.papCreate"(%b1) {function = @sum10_eval, arity = 10 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
+    %pap = "eco.papCreate"(%b1) {slot_kinds = array<i8: 0>, function = @sum10_eval, arity = 10 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
 
     // Add 9 more dummy args (we only check first 2)
     %dummy = eco.box %c1 : i64 -> !eco.value
-    %result = "eco.papExtend"(%pap, %b2, %dummy, %dummy, %dummy, %dummy, %dummy, %dummy, %dummy, %dummy) {remaining_arity = 9 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %result = "eco.papExtend"(%pap, %b2, %dummy, %dummy, %dummy, %dummy, %dummy, %dummy, %dummy, %dummy) {slot_kinds = array<i8: 0, 0, 0, 0, 0, 0, 0, 0, 0>, remaining_arity = 9 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     %unboxed = eco.unbox %result : !eco.value -> i64
     eco.dbg %unboxed : i64

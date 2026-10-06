@@ -1852,9 +1852,10 @@ generateCtor ctx funcName ctorLayout monoType =
                     (\i _ -> "%arg" ++ String.fromInt i)
                     ctorLayout.fields
 
-            -- REP_ABI_001: every parameter crosses the call at its ABI type (an
-            -- Int is i64 even where the layout stores the field boxed, past the
-            -- unboxed slot cap); slotTypes is the type each field is stored at.
+            -- REP_ABI_001: every parameter crosses the call at its ABI type;
+            -- slotTypes is the type each field is stored at (every Int/Float/Char
+            -- field is unboxed whatever its index; they differ for a number type
+            -- variable, i64 at the ABI but boxed in the heap).
             argTypes : List MlirType
             argTypes =
                 List.map (\field -> Types.monoTypeToAbi field.monoType) ctorLayout.fields
@@ -1898,7 +1899,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 Ctx.freshVar ctxBoxed
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructCustom ctx1 Ctx.liveEcoValueVars resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap (List.reverse slotPairsRev) constructorName
+                Ops.ecoConstructCustom ctx1 Ctx.liveEcoValueVars resultVar ctorLayout.tag arity (Types.ctorSlotKinds ctorLayout) (List.reverse slotPairsRev) constructorName
 
             ( _, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue

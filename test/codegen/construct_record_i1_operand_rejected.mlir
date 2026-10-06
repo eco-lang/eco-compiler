@@ -4,7 +4,7 @@
 
 module {
   func.func @bad_record_i1(%b: i1, %x: !eco.value) -> !eco.value {
-    %r = "eco.construct.record"(%b, %x) {field_count = 2 : i64, unboxed_bitmap = 0 : i64} : (i1, !eco.value) -> !eco.value
+    %r = "eco.construct.record"(%b, %x) {field_count = 2 : i64, slot_kinds = array<i8: 0, 0>} : (i1, !eco.value) -> !eco.value
     return %r : !eco.value
   }
 }

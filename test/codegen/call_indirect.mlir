@@ -33,8 +33,7 @@ module {
 
   func.func @main() -> i64 {
     // Create a closure wrapping @add_one_eval
-    %closure = "eco.papCreate"() {
-      function = @add_one_eval,
+    %closure = "eco.papCreate"() {slot_kinds = array<i8>, function = @add_one_eval,
       arity = 1 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value

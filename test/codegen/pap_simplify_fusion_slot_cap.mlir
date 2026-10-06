@@ -84,15 +84,15 @@ module {
       function = @sum32,
       arity = 32 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (i64) -> !eco.value
     %p1 = "eco.papExtend"(%pap, %c1, %c2, %c3, %c4, %c5, %c6, %c7, %c8, %c9, %c10, %c11, %c12, %c13, %c14, %c15) {
       remaining_arity = 31 : i64,
-      newargs_unboxed_bitmap = 357913941 : i64
+      slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>
     } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     %p2 = "eco.papExtend"(%p1, %c16, %c17, %c18, %c19, %c20, %c21, %c22, %c23, %c24, %c25, %c26, %c27, %c28, %c29, %c30) {
       remaining_arity = 16 : i64,
-      newargs_unboxed_bitmap = 357913941 : i64
+      slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>
     } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     return %p2 : !eco.value
   }
@@ -100,11 +100,11 @@ module {
     %c1 = arith.constant 1 : i64
     %p1 = "eco.papExtend"(%f, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1) {
       remaining_arity = 31 : i64,
-      newargs_unboxed_bitmap = 357913941 : i64
+      slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>
     } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     %p2 = "eco.papExtend"(%p1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1, %c1) {
       remaining_arity = 16 : i64,
-      newargs_unboxed_bitmap = 357913941 : i64
+      slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>
     } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     return %p2 : !eco.value
   }

@@ -18,6 +18,7 @@ import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Type as Type
+import Compiler.Data.HeapLimits as HeapLimits
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -198,13 +199,14 @@ addAlias ({ home, vars, types, ctors, binops, q_vars, q_types, q_ctors } as env)
     case scc of
         Graph.AcyclicSCC ((A.At _ (Src.Alias aliasData)) as alias) ->
             let
-                ( _, A.At _ name ) =
+                ( _, A.At nameRegion name ) =
                     aliasData.name
 
                 ( _, tipe ) =
                     aliasData.tipe
             in
             checkAliasFreeVars alias
+                |> ReportingResult.andThen (\args -> checkAliasRecordSize nameRegion name tipe |> ReportingResult.map (\_ -> args))
                 |> ReportingResult.andThen
                     (\args ->
                         Type.canonicalize env tipe
@@ -248,6 +250,41 @@ addAlias ({ home, vars, types, ctors, binops, q_vars, q_types, q_ctors } as env)
                         in
                         ReportingResult.throw (Error.RecursiveAlias region name1 args tipe (List.map toName others))
                     )
+
+
+{-| Fails with `TooLarge` (`TooManyRecordFields (Just name)`) at the alias name
+when the alias names a record type with more than `HeapLimits.maxRecordFields`
+fields (HEAP\_019). It runs before the body is canonicalized, which would report
+the same record anonymously.
+-}
+checkAliasRecordSize : A.Region -> Name -> Src.Type -> LResult i w ()
+checkAliasRecordSize nameRegion name tipe =
+    case recordFieldCount tipe of
+        Just n ->
+            if n > HeapLimits.maxRecordFields then
+                ReportingResult.throw (Error.TooLarge nameRegion (Error.TooManyRecordFields (Just name)) n HeapLimits.maxRecordFields)
+
+            else
+                ReportingResult.ok ()
+
+        Nothing ->
+            ReportingResult.ok ()
+
+
+{-| The number of fields of a source record type, looking through parentheses,
+or `Nothing` if the type is not a record.
+-}
+recordFieldCount : Src.Type -> Maybe Int
+recordFieldCount (A.At _ tipe) =
+    case tipe of
+        Src.TRecord fields _ _ ->
+            Just (List.length fields)
+
+        Src.TParens ( _, inner ) ->
+            recordFieldCount inner
+
+        _ ->
+            Nothing
 
 
 
@@ -523,11 +560,16 @@ canonicalizeUnion ({ home } as env) (A.At _ (Src.Union ( _, A.At _ name ) avars 
 
 canonicalizeCtor : Env.Env -> Index.ZeroBased -> ( A.Located Name.Name, List Src.Type ) -> LResult i w (A.Located Can.Ctor)
 canonicalizeCtor env index ( A.At region ctor, tipes ) =
-    ReportingResult.traverse (Type.canonicalize env) tipes
-        |> ReportingResult.andThen
-            (\ctipes ->
-                Can.Ctor { name = ctor, index = index, numArgs = List.length ctipes, args = ctipes } |> A.At region |> ReportingResult.ok
-            )
+    if List.length tipes > HeapLimits.maxCtorFields then
+        -- HEAP_019: a Custom object holds at most maxCtorFields fields.
+        ReportingResult.throw (Error.TooLarge region (Error.TooManyCtorFields ctor) (List.length tipes) HeapLimits.maxCtorFields)
+
+    else
+        ReportingResult.traverse (Type.canonicalize env) tipes
+            |> ReportingResult.andThen
+                (\ctipes ->
+                    Can.Ctor { name = ctor, index = index, numArgs = List.length ctipes, args = ctipes } |> A.At region |> ReportingResult.ok
+                )
 
 
 toOpts : List (Src.C2Eol ( A.Located Name.Name, List (Src.C1 Src.Type) )) -> Can.CtorOpts

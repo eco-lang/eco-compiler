@@ -12,18 +12,18 @@ module {
     %i2 = arith.constant 2 : i64
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
-    %pair1 = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pair1 = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // Create pair (3, 4)
     %i3 = arith.constant 3 : i64
     %i4 = arith.constant 4 : i64
     %b3 = eco.box %i3 : i64 -> !eco.value
     %b4 = eco.box %i4 : i64 -> !eco.value
-    %pair2 = eco.construct.custom(%b3, %b4) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pair2 = eco.construct.custom(%b3, %b4) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // Build list of pairs
-    %tail1 = eco.construct.custom(%pair2, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %list_of_pairs = eco.construct.custom(%pair1, %tail1) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %tail1 = eco.construct.custom(%pair2, %nil) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list_of_pairs = eco.construct.custom(%pair1, %tail1) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list_of_pairs : !eco.value
     // CHECK: Ctor0 (Ctor0 1 2) (Ctor0 (Ctor0 3 4) <empty>)
 
@@ -44,15 +44,15 @@ module {
     %b20 = eco.box %i20 : i64 -> !eco.value
     %b30 = eco.box %i30 : i64 -> !eco.value
 
-    // List [10, 20] - boxed values, so unboxed_bitmap = 0
-    %l1_tail = eco.construct.custom(%b20, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %list_a = eco.construct.custom(%b10, %l1_tail) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    // List [10, 20] - boxed values, so every slot kind is 0
+    %l1_tail = eco.construct.custom(%b20, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
+    %list_a = eco.construct.custom(%b10, %l1_tail) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
 
-    // List [30] - boxed value, so unboxed_bitmap = 0
-    %list_b = eco.construct.custom(%b30, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    // List [30] - boxed value, so every slot kind is 0
+    %list_b = eco.construct.custom(%b30, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
 
     // Tuple of lists
-    %tuple_of_lists = eco.construct.custom(%list_a, %list_b) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %tuple_of_lists = eco.construct.custom(%list_a, %list_b) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %tuple_of_lists : !eco.value
     // CHECK: Ctor0 (Ctor0 10 (Ctor0 20 <empty>)) (Ctor0 30 <empty>)
 

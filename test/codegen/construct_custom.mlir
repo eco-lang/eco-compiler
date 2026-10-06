@@ -14,7 +14,7 @@ module {
     // Maybe.Just 42 - uses ctor=0 with 1 field
     %i42 = arith.constant 42 : i64
     %b42 = eco.box %i42 : i64 -> !eco.value
-    %just42 = eco.construct.custom(%b42) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just42 = eco.construct.custom(%b42) {slot_kinds = array<i8: 0>, tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %just42 : !eco.value
     // CHECK: Ctor0 42
 
@@ -26,14 +26,14 @@ module {
     // Result.Ok "success" (simulated with int for now)
     %i100 = arith.constant 100 : i64
     %b100 = eco.box %i100 : i64 -> !eco.value
-    %ok_val = eco.construct.custom(%b100) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ok_val = eco.construct.custom(%b100) {slot_kinds = array<i8: 0>, tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %ok_val : !eco.value
     // CHECK: Ctor0 100
 
     // Result.Err "error" - ctor=1
     %i999 = arith.constant 999 : i64
     %b999 = eco.box %i999 : i64 -> !eco.value
-    %err_val = eco.construct.custom(%b999) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %err_val = eco.construct.custom(%b999) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %err_val : !eco.value
     // CHECK: Ctor1 999
 
@@ -45,8 +45,8 @@ module {
     // Nested Maybe: Just (Just 7)
     %i7 = arith.constant 7 : i64
     %b7 = eco.box %i7 : i64 -> !eco.value
-    %inner_just = eco.construct.custom(%b7) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %outer_just = eco.construct.custom(%inner_just) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %inner_just = eco.construct.custom(%b7) {slot_kinds = array<i8: 0>, tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %outer_just = eco.construct.custom(%inner_just) {slot_kinds = array<i8: 0>, tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %outer_just : !eco.value
     // CHECK: Ctor0 (Ctor0 7)
 
@@ -59,9 +59,9 @@ module {
     // Simulate a 3-constructor ADT: Red=0, Green=1, Blue=2
     // Each with Unit field to distinguish
     %dummy = eco.constant Empty : !eco.value
-    %red = eco.construct.custom(%dummy) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %green = eco.construct.custom(%dummy) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %blue = eco.construct.custom(%dummy) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %red = eco.construct.custom(%dummy) {slot_kinds = array<i8: 0>, tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %green = eco.construct.custom(%dummy) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %blue = eco.construct.custom(%dummy) {slot_kinds = array<i8: 0>, tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %red : !eco.value
     // CHECK: Ctor0
     eco.dbg %green : !eco.value

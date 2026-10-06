@@ -44,10 +44,10 @@ module {
     %b8 = eco.box %c8 : i64 -> !eco.value
 
     // Create a PAP with 1 captured arg
-    %pap = "eco.papCreate"(%b7) {function = @mul2_eval, arity = 2 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
+    %pap = "eco.papCreate"(%b7) {slot_kinds = array<i8: 0>, function = @mul2_eval, arity = 2 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
 
     // Extend to fully saturate - this should evaluate immediately and return the result
-    %result = "eco.papExtend"(%pap, %b8) {remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %result = "eco.papExtend"(%pap, %b8) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // 7 * 8 = 56
     %unboxed = eco.unbox %result : !eco.value -> i64

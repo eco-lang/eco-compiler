@@ -206,8 +206,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecord(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustom(OpBuilder &builder) const {
-    // eco_alloc_custom(ctor_id: i32, field_count: i32, scalar_bytes: i32) -> hptr
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY, I32_TY});
+    // eco_alloc_custom(ctor_id: i32, field_count: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_custom", funcTy);
 }
 
@@ -296,7 +296,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecordFast(OpBuilder &builder) cons
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustomFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_custom_fast", funcTy, /*gcLeaf=*/true);
 }
 
@@ -350,7 +350,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecordSlow(OpBuilder &builder) cons
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustomSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_custom_slow", funcTy);
 }
 
@@ -442,8 +442,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitRecordAt(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitCustomAt(OpBuilder &builder) const {
-    // eco_init_custom_at(ptr, ctor_id: i32, field_count: i32, scalar_bytes: i32) -> hptr
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, I32_TY, I32_TY});
+    // eco_init_custom_at(ptr, ctor_id: i32, field_count: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_init_custom_at", funcTy, /*gcLeaf=*/true);
 }
 

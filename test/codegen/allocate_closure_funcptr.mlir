@@ -45,8 +45,7 @@ module {
 
     // Attempt to call via papExtend (saturated)
     // This will fail because evaluator is null
-    %result = "eco.papExtend"(%closure, %boxed) {
-      remaining_arity = 1 : i64
+    %result = "eco.papExtend"(%closure, %boxed) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     %unboxed = eco.unbox %result : !eco.value -> i64

@@ -38,13 +38,22 @@ What the tests establish:
   - `testNestedResultExtraction`: a `case` on one `Result String Int` nested
     in the `Ok` branch of a `case` on another generates no spurious unbox.
 
-  - `testBoxedFieldPastSlotCap`: field 24 of a 25-`Int`-field constructor,
-    which is stored boxed, is projected as `!eco.value` (not read raw as
-    `i64`), and unboxing it is not reported as spurious.
+  - `testUnboxedFieldPastHeaderBitmap`: field 24 of a 25-`Int`-field
+    constructor, past the 24 slots a Custom header bitmap describes, is stored
+    unboxed (layouts have no index cap, HEAP\_019) and is projected as `i64`
+    with no unbox.
 
-  - `testBoxedRecordFieldPastSlotCap`: in a record pattern on a record of 28
-    `Int` fields, field `f27` (index 27, which `computeRecordLayout` stores
-    boxed) is not read raw as `i64` by `eco.project.record`.
+  - `testBoxedStringFieldAtIndex24`: a `String` field at index 24 is projected
+    as `!eco.value`.
+
+  - `testPolymorphicFieldAtIndex24`: field 24 of `type Wide a = Wide Int ... a`,
+    read by a function polymorphic in `a` and used at `a = Int`, is projected
+    as `i64` in the specialisation.
+
+  - `testUnboxedRecordFieldPastHeaderBitmap`: in a record pattern on a record
+    of 28 `Int` fields, field `f27` (index 27, which `computeRecordLayout` now
+    stores unboxed) is projected by `eco.project.record` as `i64`, and no
+    projection reads a boxed field raw.
 
 Each focused test also requires its MLIR to hold at least one
 `eco.project.custom`, so a match optimised away fails rather than passing
@@ -72,6 +81,7 @@ import Compiler.AST.SourceBuilder
         , pRecord
         , pVar
         , recordExpr
+        , strExpr
         , tLambda
         , tRecord
         , tType
@@ -81,6 +91,7 @@ import Compiler.AST.SourceBuilder
 import Compiler.Generate.MLIR.Types as Types
 import Dict
 import Expect
+import Mlir.Mlir exposing (MlirType(..))
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.CodeGen.DestructorTypeProjection
@@ -90,6 +101,8 @@ import TestLogic.Generate.CodeGen.DestructorTypeProjection
         , countCustomProjections
         , countRecordProjections
         , expectDestructorTypeProjection
+        , hasProjectionOf
+        , hasRecordProjectionOf
         )
 import TestLogic.Generate.CodeGen.Invariants exposing (violationsToExpectation)
 import TestLogic.TestPipeline exposing (runToMlir)
@@ -116,8 +129,9 @@ standardTests =
         ]
 
 
-{-| The three tests on small programs built here, each requiring that the
-generated MLIR holds no spurious unbox.
+{-| The tests on small programs built here, each requiring that the generated
+MLIR holds no spurious unbox (or, for the record test, no raw read of a boxed
+record field).
 -}
 focusedTests : Test
 focusedTests =
@@ -125,8 +139,10 @@ focusedTests =
         [ testResultIntExtraction
         , testMaybeIntExtraction
         , testNestedResultExtraction
-        , testBoxedFieldPastSlotCap
-        , testBoxedRecordFieldPastSlotCap
+        , testUnboxedFieldPastHeaderBitmap
+        , testBoxedStringFieldAtIndex24
+        , testPolymorphicFieldAtIndex24
+        , testUnboxedRecordFieldPastHeaderBitmap
         ]
 
 
@@ -148,13 +164,122 @@ expectProjectedWithoutSpuriousUnbox modul =
                 violationsToExpectation (checkDestructorTypeProjection mlirModule)
 
 
-{-| The test that reading an `Int` field at index 24 of a constructor, a field
-`computeCtorLayout` stores boxed, projects it as an `!eco.value` (not as a raw
-`i64`, which would load the pointer's bits), and that the unbox it then needs
-is not reported as spurious. The program declares
-`type Wide = Wide Int Int ... Int` with 25 `Int` fields, and
+{-| Compiles `modul` and passes when, as for
+`expectProjectedWithoutSpuriousUnbox`, it holds an `eco.project.custom` and no
+spurious unbox, and the module holds an `eco.project.custom` of field `index` whose
+result type is `ty`.
+-}
+expectProjectedAt : Int -> MlirType -> Src.Module -> Expect.Expectation
+expectProjectedAt index ty modul =
+    case runToMlir modul of
+        Err err ->
+            Expect.fail ("Compilation failed: " ++ err)
 
-    lastField : Wide -> Int
+        Ok { mlirModule } ->
+            Expect.all
+                [ \m ->
+                    if countCustomProjections m == 0 then
+                        Expect.fail "No eco.project.custom was generated, so the match under test was not exercised"
+
+                    else
+                        violationsToExpectation (checkDestructorTypeProjection m)
+                , \m ->
+                    hasProjectionOf index ty m
+                        |> Expect.equal True
+                        |> Expect.onFail ("expected an eco.project.custom of field " ++ String.fromInt index ++ " with the expected result type")
+                ]
+                mlirModule
+
+
+{-| A module `Test` declaring `type Wide = Wide Int ... Int T24` (24 `Int`
+fields, then one of type `field24Type`) and
+
+    lastField : Wide -> R
+    lastField w =
+        case w of
+            Wide f0 f1 ... f24 ->
+                f24
+
+    testValue : R
+    testValue =
+        lastField (Wide 0 1 ... 23 last)
+
+where `R` is `field24Type` and `last` is `lastArg`.
+
+-}
+wideCtorModule : Src.Type -> Src.Expr -> Src.Module
+wideCtorModule field24Type lastArg =
+    let
+        fieldNames =
+            List.map (\i -> "f" ++ String.fromInt i) (List.range 0 24)
+
+        wideUnion : UnionDef
+        wideUnion =
+            { name = "Wide"
+            , args = []
+            , ctors = [ { name = "Wide", args = List.repeat 24 (tType "Int" []) ++ [ field24Type ] } ]
+            }
+
+        lastFieldDef : TypedDef
+        lastFieldDef =
+            { name = "lastField"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "Wide" []) field24Type
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "Wide" (List.map pVar fieldNames), varExpr "f24" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = field24Type
+            , body =
+                callExpr (varExpr "lastField")
+                    [ callExpr (ctorExpr "Wide") (List.map intExpr (List.range 0 23) ++ [ lastArg ]) ]
+            }
+    in
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ lastFieldDef, testValueDef ]
+        [ wideUnion ]
+        []
+
+
+{-| The test that reading an `Int` field at index 24 of a constructor, past the
+24 slots a Custom header bitmap describes, projects it as `i64` with no unbox.
+`computeCtorLayout` has no index cap, so the field is stored unboxed and its
+kind goes in an extension kind word (HEAP\_019). The program is
+`wideCtorModule` with an `Int` field 24 and argument `24`.
+-}
+testUnboxedFieldPastHeaderBitmap : Test
+testUnboxedFieldPastHeaderBitmap =
+    Test.test "Int field at index 24 is projected unboxed (i64) with no unbox" <|
+        \_ ->
+            wideCtorModule (tType "Int" []) (intExpr 24)
+                |> expectProjectedAt 24 I64
+
+
+{-| The test that a boxed field at index 24 (a `String`) is projected as
+`!eco.value`: the boxed branch of the custom-container projection at an index
+past the header bitmap. A primitive is never boxed by index, so no `Int`
+variant of this path exists. The program is `wideCtorModule` with a `String`
+field 24 and argument `"x"`.
+-}
+testBoxedStringFieldAtIndex24 : Test
+testBoxedStringFieldAtIndex24 =
+    Test.test "boxed field at index 24 is projected as !eco.value" <|
+        \_ ->
+            wideCtorModule (tType "String" []) (strExpr "x")
+                |> expectProjectedAt 24 (NamedStruct "eco.value")
+
+
+{-| The test that field 24 of a polymorphic constructor, read by a function
+polymorphic in that field's type and used at `Int`, is projected as `i64` in
+the specialisation. The program declares `type Wide a = Wide Int ... Int a`
+(24 `Int` fields, then `a`) and
+
+    lastField : Wide a -> a
     lastField w =
         case w of
             Wide f0 f1 ... f24 ->
@@ -164,10 +289,12 @@ is not reported as spurious. The program declares
     testValue =
         lastField (Wide 0 1 ... 24)
 
+It exercises the shape-scanning path of the custom-field lookup past slot 24.
+
 -}
-testBoxedFieldPastSlotCap : Test
-testBoxedFieldPastSlotCap =
-    Test.test "Int field past the unboxed slot cap is projected boxed, then unboxed" <|
+testPolymorphicFieldAtIndex24 : Test
+testPolymorphicFieldAtIndex24 =
+    Test.test "polymorphic field at index 24 used at Int is projected unboxed (i64)" <|
         \_ ->
             let
                 fieldNames =
@@ -176,15 +303,15 @@ testBoxedFieldPastSlotCap =
                 wideUnion : UnionDef
                 wideUnion =
                     { name = "Wide"
-                    , args = []
-                    , ctors = [ { name = "Wide", args = List.map (\_ -> tType "Int" []) fieldNames } ]
+                    , args = [ "a" ]
+                    , ctors = [ { name = "Wide", args = List.repeat 24 (tType "Int" []) ++ [ tVar "a" ] } ]
                     }
 
                 lastFieldDef : TypedDef
                 lastFieldDef =
                     { name = "lastField"
                     , args = [ pVar "w" ]
-                    , tipe = tLambda (tType "Wide" []) (tType "Int" [])
+                    , tipe = tLambda (tType "Wide" [ tVar "a" ]) (tVar "a")
                     , body =
                         caseExpr (varExpr "w")
                             [ ( pCtor "Wide" (List.map pVar fieldNames), varExpr "f24" ) ]
@@ -204,15 +331,15 @@ testBoxedFieldPastSlotCap =
                 [ lastFieldDef, testValueDef ]
                 [ wideUnion ]
                 []
-                |> expectProjectedWithoutSpuriousUnbox
+                |> expectProjectedAt 24 I64
 
 
-{-| The test that a record pattern reading a field that
-`Compiler.Generate.MLIR.Types.computeRecordLayout` stores boxed projects it as
-an `!eco.value` (not as a raw `i64`, which would load the pointer's bits) and
-then unboxes it. The record has 28 `Int` fields `f00` to `f27`; the layout
-stores fields at index 26 and above boxed today, so `f27` (index 27) is boxed
-and `f25` (index 25) is unboxed. The program is
+{-| The test that a record pattern reading field 27 of a record of 28 `Int`
+fields `f00` to `f27` projects it unboxed, as `i64`.
+`Compiler.Generate.MLIR.Types.computeRecordLayout` has no index cap, so every
+field is stored unboxed; field 27 is past the 26 slots the old Elm-side bitmap
+could describe (bug B3 of `plans/wide-object-tail-kind-words.md` read it raw
+while it was stored boxed). The program is
 
     viaPat : { f00 : Int, ..., f27 : Int } -> Int
     viaPat { f27, f25 } =
@@ -222,15 +349,13 @@ and `f25` (index 25) is unboxed. The program is
     testValue =
         viaPat { f00 = 0, f01 = 1, ..., f27 = 27 }
 
-The check reads the layout from `Types`, so it stays valid when the record slot
-cap changes. Bug B3 of `plans/wide-object-tail-kind-words.md`: today the
-record-pattern destructor reads `f27` with `eco.project.record` as `i64`
-straight from the heap record, although the field holds a boxed pointer.
+The test also runs the layout-driven raw-read check, which reads the layout
+from `Types` and so finds no boxed primitive field.
 
 -}
-testBoxedRecordFieldPastSlotCap : Test
-testBoxedRecordFieldPastSlotCap =
-    Test.test "record pattern of a field past the record slot cap is projected boxed, then unboxed" <|
+testUnboxedRecordFieldPastHeaderBitmap : Test
+testUnboxedRecordFieldPastHeaderBitmap =
+    Test.test "record field 27 of a 28-Int record is projected unboxed (i64)" <|
         \_ ->
             let
                 fieldNames =
@@ -277,7 +402,14 @@ testBoxedRecordFieldPastSlotCap =
                         Expect.fail "No eco.project.record was generated, so the record pattern under test was not exercised"
 
                     else
-                        violationsToExpectation (checkRecordFieldProjection layout mlirModule)
+                        Expect.all
+                            [ \m -> violationsToExpectation (checkRecordFieldProjection layout m)
+                            , \m ->
+                                hasRecordProjectionOf 27 I64 m
+                                    |> Expect.equal True
+                                    |> Expect.onFail "expected an eco.project.record of field 27 with result type i64"
+                            ]
+                            mlirModule
 
 
 {-| The declaration `type Maybe a = Just a | Nothing`, which

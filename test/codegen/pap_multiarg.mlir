@@ -68,8 +68,7 @@ module {
     %b5 = eco.box %i5 : i64 -> !eco.value
 
     // Test 1: Create PAP with 1 arg, extend with 3 to saturate
-    %pap1 = "eco.papCreate"(%b2) {
-      function = @quadfunc,
+    %pap1 = "eco.papCreate"(%b2) {slot_kinds = array<i8: 0>, function = @quadfunc,
       arity = 4 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
@@ -78,16 +77,14 @@ module {
     // CHECK: <fn>
 
     // Saturate: remaining_arity=3, providing 3 args
-    %result1 = "eco.papExtend"(%pap1, %b3, %b4, %b5) {
-      remaining_arity = 3 : i64
+    %result1 = "eco.papExtend"(%pap1, %b3, %b4, %b5) {slot_kinds = array<i8: 0, 0, 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result1 : !eco.value
     // CHECK: 45
 
     // Test 2: Create PAP with 2 args, extend twice
-    %pap2 = "eco.papCreate"(%b2, %b3) {
-      function = @quadfunc,
+    %pap2 = "eco.papCreate"(%b2, %b3) {slot_kinds = array<i8: 0, 0>, function = @quadfunc,
       arity = 4 : i64,
       num_captured = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
@@ -96,30 +93,26 @@ module {
     // CHECK: <fn>
 
     // Extend with 1 more arg (still partial)
-    %pap2_ext = "eco.papExtend"(%pap2, %b4) {
-      remaining_arity = 2 : i64
+    %pap2_ext = "eco.papExtend"(%pap2, %b4) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap2_ext : !eco.value
     // CHECK: <fn>
 
     // Saturate with final arg
-    %result2 = "eco.papExtend"(%pap2_ext, %b5) {
-      remaining_arity = 1 : i64
+    %result2 = "eco.papExtend"(%pap2_ext, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result2 : !eco.value
     // CHECK: 45
 
     // Test 3: Create PAP with 3 args, saturate with 1
-    %pap3 = "eco.papCreate"(%b2, %b3, %b4) {
-      function = @quadfunc,
+    %pap3 = "eco.papCreate"(%b2, %b3, %b4) {slot_kinds = array<i8: 0, 0, 0>, function = @quadfunc,
       arity = 4 : i64,
       num_captured = 3 : i64
     } : (!eco.value, !eco.value, !eco.value) -> !eco.value
 
-    %result3 = "eco.papExtend"(%pap3, %b5) {
-      remaining_arity = 1 : i64
+    %result3 = "eco.papExtend"(%pap3, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result3 : !eco.value

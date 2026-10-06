@@ -319,10 +319,10 @@ MonoTuple2 a b ->
     eco.construct.tuple2 aVar bVar unboxedBitmap
 
 MonoRecord fields ->
-    eco.construct.record [fieldVars] fieldCount unboxedBitmap
+    eco.construct.record [fieldVars] fieldCount slotKinds
 
 MonoCustom tag fields ->
-    eco.construct.custom tag size [fieldVars] unboxedBitmap
+    eco.construct.custom tag size [fieldVars] slotKinds
 ```
 
 ### Record Update Heap Layout *(Apr 21, 2026)*

@@ -66,26 +66,26 @@ module {
     %b5 = eco.box %c5 : i64 -> !eco.value
 
     // Create initial PAP with 0 captured args
-    %pap0 = "eco.papCreate"() {function = @combine4_eval, arity = 4 : i64, num_captured = 0 : i64} : () -> !eco.value
+    %pap0 = "eco.papCreate"() {slot_kinds = array<i8>, function = @combine4_eval, arity = 4 : i64, num_captured = 0 : i64} : () -> !eco.value
 
     // Chain: pap0(2) -> pap1
-    %pap1 = "eco.papExtend"(%pap0, %b2) {remaining_arity = 4 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pap1 = "eco.papExtend"(%pap0, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 4 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap1 : !eco.value
     // CHECK: <fn>
 
     // Chain: pap1(3) -> pap2
-    %pap2 = "eco.papExtend"(%pap1, %b3) {remaining_arity = 3 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pap2 = "eco.papExtend"(%pap1, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap2 : !eco.value
     // CHECK: <fn>
 
     // Chain: pap2(4) -> pap3
-    %pap3 = "eco.papExtend"(%pap2, %b4) {remaining_arity = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pap3 = "eco.papExtend"(%pap2, %b4) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap3 : !eco.value
     // CHECK: <fn>
 
     // Final: pap3(5) -> result (saturates and calls)
     // Result = 2*3 + 4*5 = 6 + 20 = 26
-    %result = "eco.papExtend"(%pap3, %b5) {remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %result = "eco.papExtend"(%pap3, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
     %unboxed = eco.unbox %result : !eco.value -> i64
     eco.dbg %unboxed : i64
     // CHECK: 26

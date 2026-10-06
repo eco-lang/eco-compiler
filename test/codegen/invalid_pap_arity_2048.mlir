@@ -9,8 +9,7 @@ module {
   }
 
   func.func @bad() -> !eco.value {
-    %p = "eco.papCreate"() {
-      function = @target, arity = 2048 : i64, num_captured = 0 : i64
+    %p = "eco.papCreate"() {slot_kinds = array<i8>, function = @target, arity = 2048 : i64, num_captured = 0 : i64
     } : () -> !eco.value
     return %p : !eco.value
   }

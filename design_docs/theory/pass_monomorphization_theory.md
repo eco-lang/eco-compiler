@@ -355,16 +355,14 @@ Records get concrete field layouts with unboxing information:
 ```elm
 type alias RecordLayout =
     { fieldCount : Int
-    , unboxedCount : Int
-    , unboxedBitmap : Int      -- bitmask of which fields are unboxed
-    , fields : List FieldInfo
+    , fields : List FieldInfo  -- per-slot kinds via isUnboxed; no index cap (Oct 2026)
     }
 
 type alias FieldInfo =
     { name : Name
     , index : Int
     , monoType : MonoType
-    , isUnboxed : Bool  -- True for MInt/MFloat stored inline
+    , isUnboxed : Bool  -- True for MInt/MFloat/MChar stored inline, at any index
     }
 ```
 
@@ -384,9 +382,7 @@ type alias TupleLayout =
 type alias CtorLayout =
     { name : Name
     , tag : Int
-    , fields : List FieldInfo
-    , unboxedCount : Int
-    , unboxedBitmap : Int
+    , fields : List FieldInfo  -- per-slot kinds via ctorSlotTypes / isUnboxed; no index cap
     }
 ```
 
@@ -458,10 +454,11 @@ Lists, tuples, and records can store **unboxable values** (Int, Float, Char) inl
 
 The `unboxed_head` flag in the Cons cell header indicates whether the head is unboxed.
 
-**Tuple/Record Unboxing**: The `unboxedBitmap` indicates which fields are stored unboxed:
+**Tuple/Record Unboxing**: each field's `isUnboxed` says whether it is stored unboxed (tuples also keep a
+`unboxedBitmap`); records and constructors reach MLIR as `slot_kinds`, one 2-bit kind per field:
 ```elm
 -- { x : Int, y : Float, name : String }
--- unboxedBitmap = 0b011 (x and y unboxed, name boxed)
+-- slot_kinds = [1, 2, 0] (x and y unboxed, name boxed)
 ```
 
 This optimization is computed during monomorphization based on field types. The MLIR codegen uses these layouts to generate appropriate load/store operations.

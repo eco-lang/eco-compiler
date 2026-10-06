@@ -348,20 +348,66 @@ LogicalResult ConstantNullConsOp::verify() {
   return success();
 }
 
-LogicalResult AllocateCtorOp::verify() {
-  // The 0-field form is forbidden for the same reason as 0-field
-  // eco.construct.custom (CGEN_079 / HEAP_044): nullary ctors are embedded
-  // null-cons constants, never heap objects.
-  if (getSize() == 0 && getScalarBytes() == 0) {
-    return emitOpError(
-        "0-field ctor allocation is forbidden (CGEN_079): nullary "
-        "constructors are embedded null-cons constants — emit "
-        "eco.constant.null_cons instead");
+//===----------------------------------------------------------------------===//
+// Custom/Record slot kinds (plans/wide-object-tail-kind-words-phase-3.md 3B.2)
+//===----------------------------------------------------------------------===//
+
+/// 3D-D3: the u64 kind bitmaps left the op definitions in Phase 3D; a leftover
+/// one would be carried as an unregistered discardable attribute and silently
+/// ignored (a stale pre-3C .mlir cache, or a missed fixture). Reject it.
+static LogicalResult rejectStaleBitmapAttr(Operation *op) {
+  for (StringRef n : {"unboxed_bitmap", "newargs_unboxed_bitmap", "unboxed_bitmaps"})
+    if (op->hasAttr(n))
+      return op->emitOpError("stale attribute '") << n
+             << "': regenerate the MLIR (slot_kinds replaced it; "
+                "plans/wide-object-tail-kind-words.md Phase 3D)";
+  return success();
+}
+
+/// Kind of a Custom/Record field's MLIR type (= codegen slotKindOf):
+/// i64 -> 1 Int, f64 -> 2 Float, i16 -> 3 Char, everything else -> 0 boxed.
+static uint8_t fieldKind(Type t) {
+  if (t.isInteger(64)) return 1;
+  if (t.isF64()) return 2;
+  if (t.isInteger(16)) return 3;
+  return 0;
+}
+
+
+/// Checks the operand types of `slots` (the fields; GC roots excluded) and
+/// `slot_kinds` (one entry per field) against them (REP_BOUNDARY_002).
+static LogicalResult verifySlotKinds(Operation *op, TypeRange slots,
+                                     ArrayRef<int8_t> kinds, StringRef what) {
+  if (kinds.size() != slots.size())
+    return op->emitOpError("slot_kinds has ") << kinds.size()
+           << " entries but there are " << slots.size() << " " << what << "s";
+  for (unsigned i = 0; i < slots.size(); ++i) {
+    Type t = slots[i];
+    // B14: Bool is boxed in heap fields (REP_CLOSURE_001 / FORBID_CLOSURE_001).
+    if (t.isInteger(1))
+      return op->emitOpError(what) << " " << i
+             << " has i1 type: Bool must be boxed to !eco.value before construction";
+    const uint8_t k = fieldKind(t);
+    // Aggregate-typed fields are boxed (kind 0): the construct lowering boxes
+    // them via eco.to_heap so the slot holds an HPointer like any boxed field.
+    if (k == 0 && !isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
+                        eco::RecordType, eco::CustomType, eco::ConsType>(t))
+      return op->emitOpError(what) << " " << i
+             << " has kind=boxed but non-boxed SSA type " << t;
+    const int8_t want = kinds[i];
+    if (want < 0 || want > 3)
+      return op->emitOpError("slot_kinds[") << i << "] = " << int(want)
+             << " is not a kind (0..3)";
+    if (uint8_t(want) != k)
+      return op->emitOpError("slot_kinds[") << i << "] = " << int(want)
+             << " does not match operand type " << t << " (kind " << int(k) << ")";
   }
   return success();
 }
 
 LogicalResult CustomConstructOp::verify() {
+  if (failed(rejectStaleBitmapAttr(getOperation())))
+    return failure();
   // Nullary ctors are embedded null-cons constants (HEAP_044,
   // plans/null-cons-hpointer-embedding.md §2.3): a 0-field construct would
   // mint a second (heap) representation and silently break the word-equality
@@ -384,62 +430,19 @@ LogicalResult CustomConstructOp::verify() {
            << size << ")";
   }
 
-  // Custom's 48-bit bitmap supports at most 24 typed slots under 2-bit encoding.
-  if (size > 24) {
-    return emitOpError("size (")
-           << size
-           << ") exceeds Custom's 24-slot limit under 2-bit kind encoding";
+  // HEAP_019: slots 0..23 in the header bitmap, the rest in <= 63 tail kind words.
+  if (size > static_cast<int64_t>(Elm::CUSTOM_MAX_FIELDS)) {
+    return emitOpError("size (") << size << ") exceeds Custom's "
+           << Elm::CUSTOM_MAX_FIELDS << "-field limit (HEAP_019)";
   }
 
-  // Verify the 2-bit kind per slot matches the field SSA types.
-  int64_t unboxedBits = getUnboxedBitmap();
-  auto fields = getFields();
-  for (int64_t i = 0; i < size; i++) {
-    const uint64_t shift = 2ULL * static_cast<uint64_t>(i);
-    const uint64_t kind = (static_cast<uint64_t>(unboxedBits) >> shift) & 0x3ULL;
-    Type fieldType = fields[i].getType();
-
-    // B14: Bool is boxed in heap fields (REP_CLOSURE_001 / FORBID_CLOSURE_001).
-    if (fieldType.isInteger(1))
-      return emitOpError("field ") << i
-             << " has i1 type: Bool must be boxed to !eco.value before construction";
-
-    switch (kind) {
-      case 0:  // Boxed HPointer (!eco.value)
-        // Aggregate-typed fields are accepted under kind=0: the Eco→LLVM
-        // construct lowering boxes them via eco.to_heap so the slot ends up
-        // holding a boxed HPointer like any other kind=0 field.
-        if (!isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
-                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType)) {
-          return emitOpError("field ") << i
-                 << " has kind=boxed but non-boxed SSA type " << fieldType;
-        }
-        break;
-      case 1:  // Unboxed Int
-        if (!fieldType.isInteger(64)) {
-          return emitOpError("field ") << i
-                 << " has kind=Int but SSA type " << fieldType;
-        }
-        break;
-      case 2:  // Unboxed Float
-        if (!fieldType.isF64()) {
-          return emitOpError("field ") << i
-                 << " has kind=Float but SSA type " << fieldType;
-        }
-        break;
-      case 3:  // Unboxed Char
-        if (!fieldType.isInteger(16)) {
-          return emitOpError("field ") << i
-                 << " has kind=Char but SSA type " << fieldType;
-        }
-        break;
-    }
-  }
-
-  return success();
+  return verifySlotKinds(getOperation(), getFields().take_front(size).getTypes(),
+                         getSlotKinds(), "field");
 }
 
 LogicalResult RecordConstructOp::verify() {
+  if (failed(rejectStaleBitmapAttr(getOperation())))
+    return failure();
   // The fields operand list may contain GC live roots appended after the
   // actual fields by EcoGCPrepare. The first `field_count` entries are
   // fields; any beyond that are live roots (always !eco.value).
@@ -451,68 +454,17 @@ LogicalResult RecordConstructOp::verify() {
            << fieldCount << ")";
   }
 
-  // The GC record scan reads per-slot kinds for the first 32 slots only;
-  // a record with more fields would leave boxed fields unscanned.
-  if (fieldCount > 32) {
-    return emitOpError("field_count (")
-           << fieldCount
-           << ") exceeds Record's 32-slot GC scan limit";
+  // HEAP_019: 32 header slots + <= 63 tail kind words; 2047 (not 2048) so the
+  // record-alias constructor (arity = field count) fits CLOSURE_MAX_ARITY.
+  if (fieldCount > static_cast<int64_t>(Elm::RECORD_MAX_FIELDS)) {
+    return emitOpError("field_count (") << fieldCount << ") exceeds Record's "
+           << Elm::RECORD_MAX_FIELDS << "-field limit (HEAP_019)";
   }
 
-  // Verify the 2-bit kind per slot matches the field SSA types
-  // (REP_BOUNDARY_002). The store lowering dispatches on the operand type
-  // while the GC trusts the bitmap: a kind=boxed slot holding a raw
-  // primitive is scanned as a pointer (heap corruption), and a typed slot
-  // holding a boxed value is skipped by the GC (stale pointer). This is
-  // the check that would have caught the 32-bit Bitwise wraparound in the
-  // front-end's bitmapSetKind (>16-field records zeroed their low kinds).
-  int64_t unboxedBits = getUnboxedBitmap();
-  auto fields = getFields();
-  for (int64_t i = 0; i < fieldCount; i++) {
-    const uint64_t shift = 2ULL * static_cast<uint64_t>(i);
-    const uint64_t kind =
-        i < 32 ? (static_cast<uint64_t>(unboxedBits) >> shift) & 0x3ULL : 0;
-    Type fieldType = fields[i].getType();
-
-    // B14: Bool is boxed in heap fields (REP_CLOSURE_001 / FORBID_CLOSURE_001).
-    if (fieldType.isInteger(1))
-      return emitOpError("field ") << i
-             << " has i1 type: Bool must be boxed to !eco.value before construction";
-
-    switch (kind) {
-      case 0:  // Boxed HPointer (!eco.value)
-        // Aggregate-typed fields are accepted under kind=0: the Eco→LLVM
-        // construct lowering boxes them via eco.to_heap so the slot ends up
-        // holding a boxed HPointer like any other kind=0 field. Bool (i1)
-        // is rejected above: the front end boxes it to !eco.value first.
-        if (!isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
-                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType)) {
-          return emitOpError("field ") << i
-                 << " has kind=boxed but non-boxed SSA type " << fieldType;
-        }
-        break;
-      case 1:  // Unboxed Int
-        if (!fieldType.isInteger(64)) {
-          return emitOpError("field ") << i
-                 << " has kind=Int but SSA type " << fieldType;
-        }
-        break;
-      case 2:  // Unboxed Float
-        if (!fieldType.isF64()) {
-          return emitOpError("field ") << i
-                 << " has kind=Float but SSA type " << fieldType;
-        }
-        break;
-      case 3:  // Unboxed Char
-        if (!fieldType.isInteger(16)) {
-          return emitOpError("field ") << i
-                 << " has kind=Char but SSA type " << fieldType;
-        }
-        break;
-    }
-  }
-
-  return success();
+  // REP_BOUNDARY_002: the lowering derives the kinds from the operand types,
+  // so slot_kinds is a check of the front end's layout, never trusted.
+  return verifySlotKinds(getOperation(), getFields().take_front(fieldCount).getTypes(),
+                         getSlotKinds(), "field");
 }
 
 //===----------------------------------------------------------------------===//
@@ -528,22 +480,11 @@ static uint8_t operandKind(Type t) {
   return 0;
 }
 
-/// Slots of a legacy u64 closure bitmap the front end can describe exactly:
-/// it computes the word with Elm Int arithmetic (exact to 2^53) and records no
-/// kind at index >= 26 (Types.maxTypedSlots), so those slots read 0 there.
-static constexpr unsigned kLegacyClosureBitmapSlots = 26;
-
 /// CGEN_003: every closure operand is !eco.value, i64, f64 or i16 (Bool is
-/// boxed, REP_CLOSURE_001; closure ops never take aggregates). `slot_kinds`,
-/// when present, must have one entry per operand equal to the operand's type
-/// kind. A legacy u64 attribute is advisory and verified only for the slots it
-/// can describe. It is DefaultValued and stored as a property, so the parser
-/// materialises an absent one as 0 and hasAttr cannot tell the two apart: a
-/// zero word carries no claim (absent = derive from operand types, §S.5) and
-/// is not checked; a non-zero word must agree slot by slot.
+/// boxed, REP_CLOSURE_001; closure ops never take aggregates). `slot_kinds`
+/// has one entry per operand, equal to the operand's type kind.
 static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
-                                        std::optional<ArrayRef<int8_t>> kinds,
-                                        StringRef legacyName, const char *what) {
+                                        ArrayRef<int8_t> kinds, const char *what) {
   for (auto [i, v] : llvm::enumerate(operands)) {
     Type ty = v.getType();
     if (ty.isInteger(1))
@@ -555,30 +496,14 @@ static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
       return op->emitOpError(what) << " " << i
              << " has kind=boxed but non-boxed SSA type " << ty;
   }
-  if (kinds) {
-    if (kinds->size() != operands.size())
-      return op->emitOpError("slot_kinds length (") << kinds->size()
-             << ") != " << what << " count (" << operands.size() << ")";
-    for (auto [i, v] : llvm::enumerate(operands)) {
-      int k = (*kinds)[i];
-      if (k < 0 || k > 3 || uint8_t(k) != operandKind(v.getType()))
-        return op->emitOpError(what) << " " << i << " slot_kinds " << k
-               << " does not match SSA type " << v.getType();
-    }
-  }
-  uint64_t w = 0;
-  if (!legacyName.empty() && op->hasAttr(legacyName))
-    w = cast<IntegerAttr>(op->getAttr(legacyName)).getValue().getZExtValue();
-  if (w != 0) {
-    const unsigned n = static_cast<unsigned>(operands.size());
-    const unsigned described = std::min(n, kLegacyClosureBitmapSlots);
-    if (described < 32 && (w >> (2 * described)) != 0)
-      return op->emitOpError(legacyName) << " has bits set beyond " << what
-             << " count";
-    for (unsigned i = 0; i < described; ++i)
-      if (((w >> (2 * i)) & 3) != operandKind(operands[i].getType()))
-        return op->emitOpError(legacyName) << " slot " << i
-               << " disagrees with SSA type " << operands[i].getType();
+  if (kinds.size() != operands.size())
+    return op->emitOpError("slot_kinds length (") << kinds.size()
+           << ") != " << what << " count (" << operands.size() << ")";
+  for (auto [i, v] : llvm::enumerate(operands)) {
+    int k = kinds[i];
+    if (k < 0 || k > 3 || uint8_t(k) != operandKind(v.getType()))
+      return op->emitOpError(what) << " " << i << " slot_kinds " << k
+             << " does not match SSA type " << v.getType();
   }
   return success();
 }
@@ -589,6 +514,8 @@ static constexpr int64_t kClosureMaxArity = Elm::CLOSURE_MAX_ARITY;
 static constexpr int64_t kClosureMaxCaptures = Elm::CLOSURE_MAX_ARITY - 1;
 
 LogicalResult PapCreateOp::verify() {
+  if (failed(rejectStaleBitmapAttr(getOperation())))
+    return failure();
   // Verify that num_captured matches the number of captured operands.
   // Subtract appended GC roots from operand count.
   int64_t numCaptured = getNumCaptured();
@@ -626,7 +553,7 @@ LogicalResult PapCreateOp::verify() {
   // also holds the GC-root operands EcoGCPrepare appends.
   auto realCaptured = getCaptured().take_front(static_cast<size_t>(numCaptured));
   if (failed(verifyClosureKinds(getOperation(), realCaptured, getSlotKinds(),
-                                "unboxed_bitmap", "capture")))
+                                "capture")))
     return failure();
 
   // CGEN_057 kernel existence check is now in verifySymbolUses (O(1) cached).
@@ -634,6 +561,8 @@ LogicalResult PapCreateOp::verify() {
 }
 
 LogicalResult PapExtendOp::verify() {
+  if (failed(rejectStaleBitmapAttr(getOperation())))
+    return failure();
   auto allNewargs = getNewargs();
 
   // Subtract appended GC roots from newargs count.
@@ -651,8 +580,7 @@ LogicalResult PapExtendOp::verify() {
   // Per-slot kinds (CGEN_003) and REP_CLOSURE_001, real newargs only.
   if (failed(verifyClosureKinds(getOperation(),
                                 allNewargs.take_front(realNewargsCount),
-                                getSlotKinds(), "newargs_unboxed_bitmap",
-                                "newarg")))
+                                getSlotKinds(), "newarg")))
     return failure();
 
   // === Generic mode: remaining_arity absent ===
@@ -690,6 +618,8 @@ LogicalResult PapExtendOp::verify() {
 }
 
 LogicalResult PapCreateGroupOp::verify() {
+  if (failed(rejectStaleBitmapAttr(getOperation())))
+    return failure();
   const size_t numSiblings = getClosures().size();
   if (numSiblings < 2)
     return emitOpError("expects at least 2 siblings, got ") << numSiblings;
@@ -698,8 +628,7 @@ LogicalResult PapCreateGroupOp::verify() {
   auto fastEvaluators = getFastEvaluators();
   auto arities = getArities();
   auto numCaptured = getNumCaptured();
-  auto unboxedBitmaps = getUnboxedBitmaps();   // optional (legacy, advisory)
-  auto slotKinds = getSlotKinds();             // optional
+  auto slotKinds = getSlotKinds();
   auto captureCounts = getCaptureCounts();
   auto crossEdges = getCrossEdges();
 
@@ -708,19 +637,16 @@ LogicalResult PapCreateGroupOp::verify() {
       fastEvaluators.size() != numSiblings ||
       arities.size() != numSiblings ||
       numCaptured.size() != numSiblings ||
-      (unboxedBitmaps && unboxedBitmaps->size() != numSiblings) ||
-      (slotKinds && slotKinds->size() != numSiblings) ||
+      slotKinds.size() != numSiblings ||
       captureCounts.size() != numSiblings) {
     return emitOpError("per-sibling attribute arrays must all have length ")
            << numSiblings;
   }
-  if (slotKinds)
-    for (size_t i = 0; i < numSiblings; ++i)
-      if (!isa<DenseI8ArrayAttr>((*slotKinds)[i]))
-        return emitOpError("slot_kinds[") << i << "] must be a DenseI8ArrayAttr";
-  auto siblingKinds = [&](size_t i) -> std::optional<ArrayRef<int8_t>> {
-    if (!slotKinds) return std::nullopt;
-    return cast<DenseI8ArrayAttr>((*slotKinds)[i]).asArrayRef();
+  for (size_t i = 0; i < numSiblings; ++i)
+    if (!isa<DenseI8ArrayAttr>(slotKinds[i]))
+      return emitOpError("slot_kinds[") << i << "] must be a DenseI8ArrayAttr";
+  auto siblingKinds = [&](size_t i) -> ArrayRef<int8_t> {
+    return cast<DenseI8ArrayAttr>(slotKinds[i]).asArrayRef();
   };
 
   // cross_edges must be flat triples of I64 attrs.
@@ -746,18 +672,12 @@ LogicalResult PapCreateGroupOp::verify() {
     // Cross-edge slot must be boxed. slot_kinds has one kind per slot,
     // [0, num_captured): the non-sibling captures [0, capture_counts), then
     // the sibling captures, which are boxed.
-    if (auto ks = siblingKinds(consumer)) {
-      if (slot < static_cast<int64_t>(ks->size()) && (*ks)[slot] != 0)
+    {
+      ArrayRef<int8_t> ks = siblingKinds(consumer);
+      if (slot < static_cast<int64_t>(ks.size()) && ks[slot] != 0)
         return emitOpError("cross-edge consumer ") << consumer
                << " slot " << slot << " must be boxed (slot_kinds is "
-               << int((*ks)[slot]) << ")";
-    } else if (unboxedBitmaps && slot < kLegacyClosureBitmapSlots) {
-      // A zero legacy word carries no claim (see verifyClosureKinds); a
-      // non-zero bit pair at the slot is a typed claim on a sibling capture.
-      uint64_t bitmap = cast<IntegerAttr>((*unboxedBitmaps)[consumer]).getInt();
-      if (((bitmap >> (2ULL * static_cast<uint64_t>(slot))) & 0x3ULL) != 0)
-        return emitOpError("cross-edge consumer ") << consumer
-               << " slot " << slot << " must be boxed (unboxed_bitmap bit is set)";
+               << int(ks[slot]) << ")";
     }
     crossEdgeInDegree[consumer] += 1;
   }
@@ -804,35 +724,24 @@ LogicalResult PapCreateGroupOp::verify() {
   for (size_t i = 0; i < numSiblings; ++i) {
     int64_t cc = cast<IntegerAttr>(captureCounts[i]).getInt();
     auto sibCaptures = captures.slice(operandCursor, static_cast<size_t>(cc));
-    if (unboxedBitmaps) {
-      // Legacy per-sibling word: advisory, verified for the slots it can
-      // describe when non-zero (same rule as verifyClosureKinds).
-      uint64_t w = cast<IntegerAttr>((*unboxedBitmaps)[i]).getInt();
-      const unsigned described = w == 0 ? 0u :
-          std::min<unsigned>(static_cast<unsigned>(cc), kLegacyClosureBitmapSlots);
-      for (unsigned j = 0; j < described; ++j)
-        if (((w >> (2 * j)) & 3) != operandKind(sibCaptures[j].getType()))
-          return emitOpError("sibling ") << i << " capture " << j
-                 << " unboxed_bitmap kind " << ((w >> (2 * j)) & 3)
-                 << " disagrees with SSA type " << sibCaptures[j].getType();
-    }
-    if (auto ks = siblingKinds(i)) {
+    {
       // plans/wide-object-tail-kind-words-phase-2.md step 2.1: one kind per
       // closure slot, length num_captured; the non-sibling captures are
       // checked against their operand types, the sibling slots are boxed.
+      ArrayRef<int8_t> ks = siblingKinds(i);
       int64_t cap = cast<IntegerAttr>(numCaptured[i]).getInt();
-      if (static_cast<int64_t>(ks->size()) != cap)
-        return emitOpError("slot_kinds[") << i << "] length (" << ks->size()
+      if (static_cast<int64_t>(ks.size()) != cap)
+        return emitOpError("slot_kinds[") << i << "] length (" << ks.size()
                << ") != num_captured (" << cap << ")";
       if (failed(verifyClosureKinds(getOperation(), sibCaptures,
-                                    ks->take_front(static_cast<size_t>(cc)),
-                                    StringRef(), "capture")))
+                                    ks.take_front(static_cast<size_t>(cc)),
+                                    "capture")))
         return failure();
       for (int64_t j = cc; j < cap; ++j)
-        if ((*ks)[j] != 0)
+        if (ks[j] != 0)
           return emitOpError("sibling ") << i << " slot " << j
                  << " holds a sibling closure and must be boxed (slot_kinds is "
-                 << int((*ks)[j]) << ")";
+                 << int(ks[j]) << ")";
     }
     operandCursor += cc;
   }
@@ -971,11 +880,6 @@ void CallOp::getEffects(
 
 ValueRange AllocateOp::getGCRoots() { return getLiveRoots(); }
 void AllocateOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange AllocateCtorOp::getGCRoots() { return getLiveRoots(); }
-void AllocateCtorOp::setGCRoots(ValueRange newRoots) {
     getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
 }
 
@@ -1391,6 +1295,28 @@ LogicalResult ToHeapOp::verify() {
            eco::CustomType, eco::ConsType>(valTy)) {
     return emitOpError("operand must be a data aggregate, got ") << valTy;
   }
+  if (failed(rejectStaleBitmapAttr(getOperation())))
+    return failure();
+  // Record/custom: the lowering derives the heap kinds from the element
+  // types; slot_kinds (optional, 3D-D2) is a check only.
+  const bool isRec = isa<eco::RecordType>(valTy);
+  if (isRec || isa<eco::CustomType>(valTy)) {
+    ArrayRef<Type> fields = isRec ? cast<eco::RecordType>(valTy).getFields()
+                                  : cast<eco::CustomType>(valTy).getFields();
+    const uint64_t cap = isRec ? Elm::RECORD_MAX_FIELDS : Elm::CUSTOM_MAX_FIELDS;
+    if (fields.size() > cap)
+      return emitOpError(isRec ? "record" : "custom") << " aggregate has "
+             << fields.size() << " fields; limit is " << cap << " (HEAP_019)";
+    // Absent slot_kinds: check the derived kinds, i.e. only that every field
+    // type is storable (i1 boxed first, B14).
+    SmallVector<int8_t> derived;
+    for (Type t : fields) derived.push_back(static_cast<int8_t>(fieldKind(t)));
+    auto ks = getSlotKinds();
+    return verifySlotKinds(getOperation(), TypeRange(fields),
+                           ks ? *ks : ArrayRef<int8_t>(derived), "field");
+  }
+  if (getSlotKinds())
+    return emitOpError("slot_kinds is only meaningful on a record/custom aggregate");
   return success();
 }
 

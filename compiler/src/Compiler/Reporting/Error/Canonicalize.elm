@@ -147,8 +147,9 @@ level or in a `let`, defined in terms of itself, with the other definitions on
 the cycle, empty when it refers to itself directly.
 
 `TooLarge` is a function, lambda or local function over one of Eco's heap
-limits (HEAP\_078). It carries the region to underline, what is too large, the
-actual count and the limit.
+limits (HEAP\_078), or a constructor, record type or record literal with more
+fields than a heap object holds (HEAP\_019). It carries the region to
+underline, what is too large, the actual count and the limit.
 
 `TupleLargerThanThree` is a tuple of more than three elements.
 
@@ -206,12 +207,17 @@ type Error
 let-defined function with too many parameters, named; `TooManyLambdaParams` an
 anonymous function with too many parameters; and `TooManyClosureSlots` a local
 function (named) or anonymous function (`Nothing`) whose parameters plus
-captured variables exceed the closure stage arity.
+captured variables exceed the closure stage arity. `TooManyCtorFields` is a
+custom type variant with more fields than a Custom object holds, and
+`TooManyRecordFields` a record type alias (named) or a record literal or record
+type annotation (`Nothing`) with more fields than a Record object holds.
 -}
 type TooLargeWhat
     = TooManyParams Name
     | TooManyLambdaParams
     | TooManyClosureSlots (Maybe Name)
+    | TooManyCtorFields Name
+    | TooManyRecordFields (Maybe Name)
 
 
 {-| What was given the wrong number of arguments in a `BadArity` error: a type,
@@ -1094,19 +1100,34 @@ toReport source err =
 
         TooLarge region what actual limit ->
             let
-                ( title, subject, unit ) =
+                functionAdvice =
+                    "Pass the values in a record instead, or split the function into smaller ones."
+
+                fieldAdvice =
+                    "Split it into nested records or constructors."
+
+                ( ( title, subject, unit ), ( invariant, advice ) ) =
                     case what of
                         TooManyParams name ->
-                            ( "TOO MANY PARAMETERS", "The function `" ++ name ++ "`", "parameters" )
+                            ( ( "TOO MANY PARAMETERS", "The function `" ++ name ++ "`", "parameters" ), ( "HEAP_078", functionAdvice ) )
 
                         TooManyLambdaParams ->
-                            ( "TOO MANY PARAMETERS", "This anonymous function", "parameters" )
+                            ( ( "TOO MANY PARAMETERS", "This anonymous function", "parameters" ), ( "HEAP_078", functionAdvice ) )
 
                         TooManyClosureSlots (Just name) ->
-                            ( "TOO MANY CAPTURED VARIABLES", "The local function `" ++ name ++ "`", "parameters and captured variables" )
+                            ( ( "TOO MANY CAPTURED VARIABLES", "The local function `" ++ name ++ "`", "parameters and captured variables" ), ( "HEAP_078", functionAdvice ) )
 
                         TooManyClosureSlots Nothing ->
-                            ( "TOO MANY CAPTURED VARIABLES", "This anonymous function", "parameters and captured variables" )
+                            ( ( "TOO MANY CAPTURED VARIABLES", "This anonymous function", "parameters and captured variables" ), ( "HEAP_078", functionAdvice ) )
+
+                        TooManyCtorFields name ->
+                            ( ( "TOO MANY FIELDS", "The constructor `" ++ name ++ "`", "fields" ), ( "HEAP_019", fieldAdvice ) )
+
+                        TooManyRecordFields (Just name) ->
+                            ( ( "TOO MANY FIELDS", "The record type `" ++ name ++ "`", "fields" ), ( "HEAP_019", fieldAdvice ) )
+
+                        TooManyRecordFields Nothing ->
+                            ( ( "TOO MANY FIELDS", "This record", "fields" ), ( "HEAP_019", fieldAdvice ) )
             in
             Report.report title region [] <|
                 Code.toSnippet source
@@ -1120,9 +1141,11 @@ toReport source err =
                             ++ unit
                             ++ ", but Eco supports at most "
                             ++ String.fromInt limit
-                            ++ " (HEAP_078)."
+                            ++ " ("
+                            ++ invariant
+                            ++ ")."
                         )
-                    , D.reflow "Pass the values in a record instead, or split the function into smaller ones."
+                    , D.reflow advice
                     )
 
         TupleLargerThanThree region ->
@@ -2236,7 +2259,8 @@ errorDecoder =
 
 
 {-| Encodes a `TooLargeWhat` as a one-byte tag (0 `TooManyParams`, 1
-`TooManyLambdaParams`, 2 `TooManyClosureSlots`) followed by its name, if any.
+`TooManyLambdaParams`, 2 `TooManyClosureSlots`, 3 `TooManyCtorFields`, 4
+`TooManyRecordFields`) followed by its name, if any.
 -}
 tooLargeWhatEncoder : TooLargeWhat -> Bytes.Encode.Encoder
 tooLargeWhatEncoder what =
@@ -2249,6 +2273,12 @@ tooLargeWhatEncoder what =
 
         TooManyClosureSlots maybeName ->
             Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 2, BE.maybe BE.string maybeName ]
+
+        TooManyCtorFields name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 3, BE.string name ]
+
+        TooManyRecordFields maybeName ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 4, BE.maybe BE.string maybeName ]
 
 
 {-| Decodes a `TooLargeWhat` written by `tooLargeWhatEncoder`.
@@ -2267,6 +2297,12 @@ tooLargeWhatDecoder =
 
                     2 ->
                         Bytes.Decode.map TooManyClosureSlots (BD.maybe BD.string)
+
+                    3 ->
+                        Bytes.Decode.map TooManyCtorFields BD.string
+
+                    4 ->
+                        Bytes.Decode.map TooManyRecordFields (BD.maybe BD.string)
 
                     _ ->
                         Bytes.Decode.fail

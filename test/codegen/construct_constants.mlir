@@ -1,17 +1,17 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test embedded constants (Nil, True, False, Unit, etc.) stored in structure fields.
-// Constants MUST be marked as boxed (unboxed_bitmap bit = 0) because they use
+// Constants MUST be marked as boxed (slot kind 0) because they use
 // the HPointer encoding (bits 40-43), not raw primitive values.
 //
 // The ConstructOp verifier now enforces this rule:
-//   - Fields with type !eco.value (including constants) must have unboxed_bitmap bit = 0
-//   - Only primitive types (i64, f64, i32) may have unboxed_bitmap bit = 1
+//   - Fields with type !eco.value (including constants) must have slot kind 0
+//   - Only primitive types (i64 / f64 / i16) have a typed slot kind (1 / 2 / 3)
 //
 // Invalid usage is rejected at compile time:
 //   %nil = eco.constant Empty : !eco.value
-//   %bad = eco.construct.custom(%nil) {unboxed_bitmap = 1} : (!eco.value) -> !eco.value
-//   ERROR: unboxed_bitmap bit 0 is set but field has boxed type '!eco.value'
+//   %bad = eco.construct.custom(%nil) {tag = 0, size = 1, slot_kinds = array<i8: 1>} : (!eco.value) -> !eco.value
+//   ERROR: slot_kinds[0] = 1 does not match operand type '!eco.value' (kind 0)
 
 module {
   func.func @main() -> i64 {
@@ -22,32 +22,32 @@ module {
     %nothing = eco.constant Empty : !eco.value
 
     // === Single constant field ===
-    %c1 = eco.construct.custom(%nil) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %c1 = eco.construct.custom(%nil) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c1 : !eco.value
     // CHECK: Ctor1 <empty>
 
-    %c2 = eco.construct.custom(%true) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %c2 = eco.construct.custom(%true) {slot_kinds = array<i8: 0>, tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c2 : !eco.value
     // CHECK: Ctor2 True
 
-    %c3 = eco.construct.custom(%false) {tag = 3 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %c3 = eco.construct.custom(%false) {slot_kinds = array<i8: 0>, tag = 3 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c3 : !eco.value
     // CHECK: Ctor3 False
 
-    %c4 = eco.construct.custom(%unit) {tag = 4 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %c4 = eco.construct.custom(%unit) {slot_kinds = array<i8: 0>, tag = 4 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c4 : !eco.value
     // CHECK: Ctor4 <empty>
 
-    %c5 = eco.construct.custom(%nothing) {tag = 5 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %c5 = eco.construct.custom(%nothing) {slot_kinds = array<i8: 0>, tag = 5 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c5 : !eco.value
     // CHECK: Ctor5 <empty>
 
     // === Multiple constant fields ===
-    %pair_consts = eco.construct.custom(%nil, %true) {tag = 10 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pair_consts = eco.construct.custom(%nil, %true) {slot_kinds = array<i8: 0, 0>, tag = 10 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pair_consts : !eco.value
     // CHECK: Ctor10 <empty> True
 
-    %triple_consts = eco.construct.custom(%true, %false, %nil) {tag = 11 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %triple_consts = eco.construct.custom(%true, %false, %nil) {slot_kinds = array<i8: 0, 0, 0>, tag = 11 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %triple_consts : !eco.value
     // CHECK: Ctor11 True False <empty>
 
@@ -66,34 +66,34 @@ module {
     %i99 = arith.constant 99 : i64
     %b99 = eco.box %i99 : i64 -> !eco.value
 
-    %mixed1 = eco.construct.custom(%b42, %nil) {tag = 20 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %mixed1 = eco.construct.custom(%b42, %nil) {slot_kinds = array<i8: 0, 0>, tag = 20 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed1 : !eco.value
     // CHECK: Ctor20 42 <empty>
 
-    %mixed2 = eco.construct.custom(%true, %b99) {tag = 21 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %mixed2 = eco.construct.custom(%true, %b99) {slot_kinds = array<i8: 0, 0>, tag = 21 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed2 : !eco.value
     // CHECK: Ctor21 True 99
 
-    %mixed3 = eco.construct.custom(%b42, %false, %b99) {tag = 22 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %mixed3 = eco.construct.custom(%b42, %false, %b99) {slot_kinds = array<i8: 0, 0, 0>, tag = 22 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed3 : !eco.value
     // CHECK: Ctor22 42 False 99
 
     // === Mix constants with unboxed integers ===
-    // unboxed_bitmap = 1 means field 0 is unboxed
+    // slot_kinds: only field 0 is unboxed
     %i10 = arith.constant 10 : i64
-    %mix_unboxed1 = eco.construct.custom(%i10, %nil) {tag = 30 : i64, size = 2 : i64, unboxed_bitmap = 1 : i64} : (i64, !eco.value) -> !eco.value
+    %mix_unboxed1 = eco.construct.custom(%i10, %nil) {tag = 30 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>} : (i64, !eco.value) -> !eco.value
     eco.dbg %mix_unboxed1 : !eco.value
     // CHECK: Ctor30 10 <empty>
 
-    // unboxed_bitmap = 2 means field 1 is unboxed
+    // slot_kinds: only field 1 is unboxed
     %i20 = arith.constant 20 : i64
-    %mix_unboxed2 = eco.construct.custom(%true, %i20) {tag = 31 : i64, size = 2 : i64, unboxed_bitmap = 4 : i64} : (!eco.value, i64) -> !eco.value
+    %mix_unboxed2 = eco.construct.custom(%true, %i20) {tag = 31 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 1>} : (!eco.value, i64) -> !eco.value
     eco.dbg %mix_unboxed2 : !eco.value
     // CHECK: Ctor31 True 20
 
-    // unboxed_bitmap = 5 (0b101) means fields 0 and 2 are unboxed
+    // slot_kinds: fields 0 and 2 are unboxed
     %i30 = arith.constant 30 : i64
-    %mix_unboxed3 = eco.construct.custom(%i10, %false, %i30) {tag = 32 : i64, size = 3 : i64, unboxed_bitmap = 17 : i64} : (i64, !eco.value, i64) -> !eco.value
+    %mix_unboxed3 = eco.construct.custom(%i10, %false, %i30) {tag = 32 : i64, size = 3 : i64, slot_kinds = array<i8: 1, 0, 1>} : (i64, !eco.value, i64) -> !eco.value
     eco.dbg %mix_unboxed3 : !eco.value
     // CHECK: Ctor32 10 False 30
 
@@ -108,7 +108,7 @@ module {
 
     // === List with Nil tail (Cons with constant) ===
     // This is the most common case: Cons cell with Nil as tail
-    %list1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list1 = eco.construct.custom(%b42, %nil) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list1 : !eco.value
     // CHECK: Ctor0 42 <empty>
 

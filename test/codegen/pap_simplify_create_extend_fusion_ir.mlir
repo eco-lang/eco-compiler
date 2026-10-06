@@ -21,12 +21,12 @@ module {
       function = @add3,
       arity = 3 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     %p = "eco.papExtend"(%pap, %c7) {
       remaining_arity = 3 : i64,
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64) -> !eco.value
 

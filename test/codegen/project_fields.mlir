@@ -14,7 +14,7 @@ module {
     %b300 = eco.box %i300 : i64 -> !eco.value
     %b400 = eco.box %i400 : i64 -> !eco.value
 
-    %obj = eco.construct.custom(%b100, %b200, %b300, %b400) {tag = 7 : i64, size = 4 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %obj = eco.construct.custom(%b100, %b200, %b300, %b400) {slot_kinds = array<i8: 0, 0, 0, 0>, tag = 7 : i64, size = 4 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %obj : !eco.value
     // CHECK: Ctor7 100 200 300 400
 
@@ -39,7 +39,7 @@ module {
     // CHECK: 400
 
     // Create single-field constructor and project
-    %single = eco.construct.custom(%b100) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %single = eco.construct.custom(%b100) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %single : !eco.value
     // CHECK: Ctor1 100
 
@@ -53,7 +53,7 @@ module {
     %bpi = eco.box %fpi : f64 -> !eco.value
     %bch = eco.box %ch : i16 -> !eco.value
 
-    %mixed = eco.construct.custom(%b100, %bpi, %bch) {tag = 2 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %mixed = eco.construct.custom(%b100, %bpi, %bch) {slot_kinds = array<i8: 0, 0, 0>, tag = 2 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed : !eco.value
     // CHECK: Ctor2 100 3.14 'A'
 

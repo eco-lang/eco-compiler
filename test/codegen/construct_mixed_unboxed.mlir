@@ -17,7 +17,7 @@ module {
     %obj1 = eco.construct.custom(%b10, %i20, %b30) {
       tag = 0 : i64,
       size = 3 : i64,
-      unboxed_bitmap = 4 : i64
+      slot_kinds = array<i8: 0, 1, 0>
     } : (!eco.value, i64, !eco.value) -> !eco.value
     eco.dbg %obj1 : !eco.value
     // CHECK: Ctor
@@ -39,7 +39,7 @@ module {
     %obj2 = eco.construct.custom(%i10, %b20, %i30, %b40) {
       tag = 1 : i64,
       size = 4 : i64,
-      unboxed_bitmap = 17 : i64
+      slot_kinds = array<i8: 1, 0, 1, 0>
     } : (i64, !eco.value, i64, !eco.value) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor
@@ -61,7 +61,7 @@ module {
     %obj3 = eco.construct.custom(%i10, %b20, %b30, %b40) {
       tag = 2 : i64,
       size = 4 : i64,
-      unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1, 0, 0, 0>
     } : (i64, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %obj3 : !eco.value
     // CHECK: Ctor
@@ -77,7 +77,7 @@ module {
     %obj4 = eco.construct.custom(%b10, %b20, %b30, %i40) {
       tag = 3 : i64,
       size = 4 : i64,
-      unboxed_bitmap = 64 : i64
+      slot_kinds = array<i8: 0, 0, 0, 1>
     } : (!eco.value, !eco.value, !eco.value, i64) -> !eco.value
     eco.dbg %obj4 : !eco.value
     // CHECK: Ctor

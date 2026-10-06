@@ -17,6 +17,8 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include "Heap.hpp"
 
@@ -442,7 +444,8 @@ inline bool tagMayHoldPointers(uint32_t tag) {
 }
 
 // Returns the size in bytes (8-byte aligned) of an object with header `*hdr`.
-// Reads only tag and size. threaded-gc-06 (P§3.3.2): a parallel minor worker
+// Reads only tag, size (and, for Custom/Record, unboxed = K: the same word).
+// threaded-gc-06 (P§3.3.2): a parallel minor worker
 // sizes a claimed object from its SAVED header word, because the header in
 // place already reads BUSY.
 inline size_t getObjectSizeFromHeader(const Header *hdr) {
@@ -489,10 +492,12 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             size = sizeof(ListBacking) + hdr->size * sizeof(Unboxable);
             break;
         case Tag_Custom:
-            size = sizeof(Custom) + hdr->size * sizeof(Unboxable);
+            // HEAP_019/HEAP_077: K = hdr->unboxed extension kind words follow
+            // values[size]; still a function of the header word alone.
+            size = sizeof(Custom) + (size_t(hdr->size) + hdr->unboxed) * sizeof(Unboxable);
             break;
         case Tag_Record:
-            size = sizeof(Record) + hdr->size * sizeof(Unboxable);
+            size = sizeof(Record) + (size_t(hdr->size) + hdr->unboxed) * sizeof(Unboxable);
             break;
         case Tag_DynRecord:
             size = sizeof(DynRecord) + hdr->size * sizeof(HPointer);
@@ -572,6 +577,31 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
 inline size_t getObjectSize(void *obj) {
     return getObjectSizeFromHeader(getHeader(obj));
 }
+
+#if ECO_HEAP_VALIDATE
+// HEAP_019 / HEAP_077: K and padding of a Custom/Record (header.unboxed must be
+// extWords(size, CAP); bits past the last slot of the last ext word must be 0).
+inline void validateExtKinds(const void* obj, const char* where) {
+    const Header* h = static_cast<const Header*>(obj);
+    if (h->tag != Tag_Custom && h->tag != Tag_Record) return;
+    const bool isC = h->tag == Tag_Custom;
+    const u32 cap = isC ? CUSTOM_HDR_SLOTS : RECORD_HDR_SLOTS;
+    const u32 k = extWords(h->size, cap);
+    const u64* ext = isC ? customExtWords(static_cast<const Custom*>(obj))
+                         : recordExtWords(static_cast<const Record*>(obj));
+    bool bad = h->unboxed != k;
+    if (!bad && k) {
+        const u32 used = (h->size - cap) - (k - 1) * SLOTS_PER_EXT_WORD;   // slots in the last word, 1..32
+        if (used < SLOTS_PER_EXT_WORD && (ext[k - 1] >> (2 * used)) != 0) bad = true;
+    }
+    if (bad) {
+        std::fprintf(stderr,
+                     "[heap-validate] %s: %s %p size=%u unboxed(K)=%u expected K=%u\n",
+                     where, isC ? "Custom" : "Record", obj, h->size, unsigned(h->unboxed), k);
+        std::abort();
+    }
+}
+#endif
 
 // CR-007 (HEAP_058/HEAP_059): how Allocator::acquireOldGenBlock may treat a
 // free-list extent whose discard job is posted. AvoidUnderPromo is passed by a

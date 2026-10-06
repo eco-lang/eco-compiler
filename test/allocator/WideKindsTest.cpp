@@ -4,9 +4,9 @@
  *
  * Phase 1 is D semantics: a slot its container's header bitmap cannot describe
  * reads as boxed (kind 0). These tests pin the accessors, the chunked root
- * helper, and the runtime paths that now use them. Tests that build a wide
- * Custom/Record on purpose set Elm::testing::allow_wide_objects; the GC ones
- * run in a fork()ed child so a regression fails one test, not the binary.
+ * helper, and the runtime paths that now use them. Some build a wide
+ * Custom/Record (legal since Phase 3D); the GC ones run in a fork()ed child
+ * so a regression fails one test, not the binary.
  */
 
 #include "WideKindsTest.hpp"
@@ -132,8 +132,6 @@ void test_accessors_boxed_past_header() {
 // ---- 1c.2 ----
 void test_debug_to_string_40_field_record_slot_32() {
     initAllocator();
-    const bool savedWide = Elm::testing::allow_wide_objects;
-    Elm::testing::allow_wide_objects = true;
     auto& a = Allocator::instance();
     std::vector<HPointer> strs(40);
     for (int i = 1; i < 40; ++i) {
@@ -146,7 +144,6 @@ void test_debug_to_string_40_field_record_slot_32() {
     HPointer rec = alloc::record(v, 1);   // slot 0 Int, slots 1..39 boxed
     for (int i = 1; i < 40; ++i) a.getRootSet().removeRoot(&strs[i]);
     std::string out = printed(toHPtr(rec));
-    Elm::testing::allow_wide_objects = savedWide;
     TEST_ASSERT(out.find("f0 = 5") != std::string::npos);
     TEST_ASSERT(out.find("f32 = " + quoted("s32")) != std::string::npos);
     TEST_ASSERT(out.find("f39 = " + quoted("s39")) != std::string::npos);
@@ -222,7 +219,6 @@ void test_closure_call_saturated_roots_40_slots() {
 void test_record_70_boxed_roots_every_slot() {
     int r = runInChild([] {
         auto& a = initAllocator();   // as the B8 / B8b pins
-        Elm::testing::allow_wide_objects = true;
         std::vector<HPointer> held(70);
         for (int i = 0; i < 70; ++i) {
             held[i] = alloc::allocInt(1000 + i);
@@ -245,7 +241,6 @@ void test_record_70_boxed_roots_every_slot() {
 void test_record_slots_beyond_32_survive_minor_gc() {
     int r = runInChild([] {
         auto& a = initAllocator();   // as the B8 / B8b pins
-        Elm::testing::allow_wide_objects = true;
         std::vector<Unboxable> v(70);
         for (int i = 0; i < 70; ++i) v[i] = boxed(alloc::allocInt(1000 + i));
         HPointer h = alloc::record(v, 0);

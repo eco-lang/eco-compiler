@@ -389,7 +389,7 @@ Testing::TestCase testEcoAllocChurnSurvivesManyMinorGCs(
                 // 1 field, not 0: a 0-field heap Custom is not a legal shape
                 // (HEAP_044 — nullary ctors are embedded null-cons constants).
                 case 6: h = eco_alloc_custom(static_cast<uint32_t>(i & 0xFF),
-                                              1, 0);
+                                              1);
                         break;
                 case 7: h = eco_alloc_record(0, 0); break;
                 case 8: h = eco_alloc_string(8); break;
@@ -767,7 +767,7 @@ Testing::TestCase testEcoAllocCustomManyConstructors(
             // 1..5 fields: a 0-field heap Custom is not a legal shape
             // (HEAP_044 — nullary ctors are embedded null-cons constants).
             uint32_t fc = static_cast<uint32_t>(i % 5) + 1;
-            HPtr h = eco_alloc_custom(ctor, fc, 0);
+            HPtr h = eco_alloc_custom(ctor, fc);
             GCP_ASSERT(h.toBits() != 0);
             // Initialize boxed fields to Nil so GC scanning never tries to
             // resolve uninitialized memory.
@@ -826,7 +826,7 @@ Testing::TestCase testOldGenSizeClassChurn(
 
         for (uint32_t fc : field_counts) {
             for (size_t i = 0; i < kPerClass; ++i) {
-                HPtr h = eco_alloc_custom(static_cast<uint32_t>(fc), fc, 0);
+                HPtr h = eco_alloc_custom(static_cast<uint32_t>(fc), fc);
                 GCP_ASSERT(h.toBits() != 0);
                 HPointer nil_h = alloc::listNil();
                 for (uint32_t k = 0; k < fc; ++k) {
@@ -855,7 +855,7 @@ Testing::TestCase testOldGenSizeClassChurn(
         reused.reserve(field_counts.size() * kPerClass / 2);
         for (uint32_t fc : field_counts) {
             for (size_t i = 0; i < kPerClass / 2; ++i) {
-                HPtr h = eco_alloc_custom(static_cast<uint32_t>(fc), fc, 0);
+                HPtr h = eco_alloc_custom(static_cast<uint32_t>(fc), fc);
                 GCP_ASSERT(h.toBits() != 0);
                 reused.push_back(h.toHPointer());
             }
@@ -960,7 +960,7 @@ Testing::TestCase testFragmentationAndCoalescingAfterRepeatedSweeps(
         std::vector<HPointer> live;
         live.reserve(kCount / 2);
         for (size_t i = 0; i < kCount; ++i) {
-            HPtr h = eco_alloc_custom(0, kFc, 0);
+            HPtr h = eco_alloc_custom(0, kFc);
             GCP_ASSERT(h.toBits() != 0);
             HPointer nil_h = alloc::listNil();
             for (uint32_t k = 0; k < kFc; ++k) {

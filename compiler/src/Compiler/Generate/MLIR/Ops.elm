@@ -288,10 +288,12 @@ ecoConstructTuple3 ctx gcRootHints resultVar ( aVar, aType ) ( bVar, bType ) ( c
         |> opBuilder.build
 
 
-{-| eco.construct.record - create a record
+{-| eco.construct.record - create a record. `slotKinds` holds one kind per
+field (0 boxed, 1 Int, 2 Float, 3 Char) in layout order, from
+`Types.recordSlotKinds`, and is emitted as the `slot_kinds` attribute.
 -}
-ecoConstructRecord : Ctx.Context -> List ( String, MlirType ) -> String -> List ( String, MlirType ) -> Int -> Int -> ( Ctx.Context, MlirOp )
-ecoConstructRecord ctx gcRootHints resultVar fieldPairs fieldCount unboxedBitmap =
+ecoConstructRecord : Ctx.Context -> List ( String, MlirType ) -> String -> List ( String, MlirType ) -> Int -> List Int -> ( Ctx.Context, MlirOp )
+ecoConstructRecord ctx gcRootHints resultVar fieldPairs fieldCount slotKinds =
     let
         ( rootNames, rootTypes ) =
             List.unzip gcRootHints
@@ -314,7 +316,7 @@ ecoConstructRecord ctx gcRootHints resultVar fieldPairs fieldCount unboxedBitmap
             Dict.union operandTypesAttr
                 (Dict.fromList
                     [ ( "field_count", IntAttr Nothing fieldCount )
-                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                    , ( "slot_kinds", slotKindListAttr (checkKindsLength "eco.construct.record" fieldCount slotKinds) )
                     ]
                 )
     in
@@ -325,10 +327,12 @@ ecoConstructRecord ctx gcRootHints resultVar fieldPairs fieldCount unboxedBitmap
         |> opBuilder.build
 
 
-{-| eco.construct.custom - create a custom ADT value
+{-| eco.construct.custom - create a custom ADT value. `slotKinds` holds one
+kind per field (0 boxed, 1 Int, 2 Float, 3 Char) in field order, from
+`Types.ctorSlotKinds`, and is emitted as the `slot_kinds` attribute.
 -}
-ecoConstructCustom : Ctx.Context -> List ( String, MlirType ) -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe String -> ( Ctx.Context, MlirOp )
-ecoConstructCustom ctx gcRootHints resultVar tag size unboxedBitmap operands maybeCtorName =
+ecoConstructCustom : Ctx.Context -> List ( String, MlirType ) -> String -> Int -> Int -> List Int -> List ( String, MlirType ) -> Maybe String -> ( Ctx.Context, MlirOp )
+ecoConstructCustom ctx gcRootHints resultVar tag size slotKinds operands maybeCtorName =
     let
         ( rootNames, rootTypes ) =
             List.unzip gcRootHints
@@ -361,7 +365,7 @@ ecoConstructCustom ctx gcRootHints resultVar tag size unboxedBitmap operands may
                     (Dict.fromList
                         [ ( "tag", IntAttr Nothing tag )
                         , ( "size", IntAttr Nothing size )
-                        , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                        , ( "slot_kinds", slotKindListAttr (checkKindsLength "eco.construct.custom" size slotKinds) )
                         ]
                     )
                 )
@@ -371,6 +375,26 @@ ecoConstructCustom ctx gcRootHints resultVar tag size unboxedBitmap operands may
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
+
+
+{-| Crashes when a construct op is given a kinds list whose length is not its
+slot count: the C++ verifier would reject the op anyway, and the crash names
+the emitter.
+-}
+checkKindsLength : String -> Int -> List Int -> List Int
+checkKindsLength opName count kinds =
+    if List.length kinds == count then
+        kinds
+
+    else
+        crash
+            (opName
+                ++ ": slot_kinds has "
+                ++ String.fromInt (List.length kinds)
+                ++ " entries for "
+                ++ String.fromInt count
+                ++ " slots"
+            )
 
 
 
@@ -542,7 +566,7 @@ aggCustomType slotTypes =
 
 {-| eco.make.custom — build a VALUE-level custom (U-T1.3.2): no heap
 allocation; `tag` + `constructor` attrs mirror `eco.construct.custom`
-minus the heap-layout bitmap (value slots carry their types in the
+minus the heap-layout `slot_kinds` (value slots carry their types in the
 parameterised result type instead).
 -}
 ecoMakeCustom : Ctx.Context -> String -> Int -> Maybe String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
@@ -1453,7 +1477,17 @@ newarg) and each papCreateGroup sibling. The kind of each slot is
 -}
 slotKindsAttr : List MlirType -> MlirAttr
 slotKindsAttr tys =
-    ArrayAttr (Just I8) (List.map (\t -> IntAttr Nothing (Types.mlirTypeToKind t)) tys)
+    slotKindListAttr (List.map Types.mlirTypeToKind tys)
+
+
+{-| A list of slot kinds (0 boxed, 1 Int, 2 Float, 3 Char) as a dense i8
+array: the `slot_kinds` attribute of `eco.construct.record` and
+`eco.construct.custom`, whose kinds come from the layout rather than from the
+operand types.
+-}
+slotKindListAttr : List Int -> MlirAttr
+slotKindListAttr kinds =
+    ArrayAttr (Just I8) (List.map (IntAttr Nothing) kinds)
 
 
 {-| Adds `slot_kinds = slotKindsAttr tys` to an op's attributes, unless `tys`

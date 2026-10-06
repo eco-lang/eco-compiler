@@ -40,8 +40,7 @@ module {
 
   func.func @main() -> i64 {
     // Create closure for add function
-    %add_closure = "eco.papCreate"() {
-      function = @add_impl,
+    %add_closure = "eco.papCreate"() {slot_kinds = array<i8>, function = @add_impl,
       arity = 2 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -61,13 +60,11 @@ module {
     %b20 = eco.box %i20 : i64 -> !eco.value
 
     // Extend with first arg
-    %pap1 = "eco.papExtend"(%loaded_closure, %b10) {
-      remaining_arity = 2 : i64
+    %pap1 = "eco.papExtend"(%loaded_closure, %b10) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     // Extend with second arg - saturates
-    %result = "eco.papExtend"(%pap1, %b20) {
-      remaining_arity = 1 : i64
+    %result = "eco.papExtend"(%pap1, %b20) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value
@@ -76,8 +73,7 @@ module {
     // Store a different closure (partially applied)
     %i5 = arith.constant 5 : i64
     %b5 = eco.box %i5 : i64 -> !eco.value
-    %pap_5 = "eco.papExtend"(%add_closure, %b5) {
-      remaining_arity = 2 : i64
+    %pap_5 = "eco.papExtend"(%add_closure, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.store_global %pap_5, @my_closure
@@ -86,8 +82,7 @@ module {
     %add5 = eco.load_global @my_closure
     %i7 = arith.constant 7 : i64
     %b7 = eco.box %i7 : i64 -> !eco.value
-    %result2 = "eco.papExtend"(%add5, %b7) {
-      remaining_arity = 1 : i64
+    %result2 = "eco.papExtend"(%add5, %b7) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result2 : !eco.value

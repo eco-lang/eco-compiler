@@ -111,8 +111,7 @@ module {
     %b8 = eco.box %c8 : i64 -> !eco.value
 
     // Create PAP with 4 captured values
-    %pap4 = "eco.papCreate"(%b1, %b2, %b3, %b4) {
-      function = @sum8,
+    %pap4 = "eco.papCreate"(%b1, %b2, %b3, %b4) {slot_kinds = array<i8: 0, 0, 0, 0>, function = @sum8,
       arity = 8 : i64,
       num_captured = 4 : i64
     } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
@@ -121,8 +120,7 @@ module {
     // CHECK: <fn>
 
     // Extend with remaining 4 to saturate: 1+2+3+4+5+6+7+8 = 36
-    %result = "eco.papExtend"(%pap4, %b5, %b6, %b7, %b8) {
-      remaining_arity = 4 : i64
+    %result = "eco.papExtend"(%pap4, %b5, %b6, %b7, %b8) {slot_kinds = array<i8: 0, 0, 0, 0>, remaining_arity = 4 : i64
     } : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value

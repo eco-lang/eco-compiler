@@ -74,7 +74,7 @@ static Value widenFieldToI64Local(Value val, Location loc,
 /// Compute the 2-bit per-slot kind bitmap for a sequence of element types.
 /// Matches the encoding used by eco.construct.* heap ops: 00 = boxed
 /// HPointer, 01 = Int (i64), 10 = Float (f64), 11 = Char (i16). One word:
-/// callers build containers of at most 32 (record) / 24 (custom) slots.
+/// tuple2/tuple3 only (record/custom use packKinds, layout C).
 static int64_t kindBitmapFor(ArrayRef<Type> elements) {
     assert(elements.size() <= 32 && "kindBitmapFor: more kinds than one word");
     SmallVector<uint8_t> kinds;
@@ -225,8 +225,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value a = extractField(rewriter, loc, agg, 0, llvmElts[0]);
             Value b = extractField(rewriter, loc, agg, 1, llvmElts[1]);
 
-            int64_t mask = op.getUnboxedBitmap();
-            if (mask == 0) mask = kindBitmapFor(elts);
+            // Kinds from the element types (to_heap carries no bitmap, 3D).
+            int64_t mask = kindBitmapFor(elts);
 
             // Inline nursery allocation (HEAP_034): marker + constant header
             // store + fresh field stores; no zero-init needed (no safepoint
@@ -304,8 +304,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value b = extractField(rewriter, loc, agg, 1, llvmElts[1]);
             Value c = extractField(rewriter, loc, agg, 2, llvmElts[2]);
 
-            int64_t mask = op.getUnboxedBitmap();
-            if (mask == 0) mask = kindBitmapFor(elts);
+            // Kinds from the element types (to_heap carries no bitmap, 3D).
+            int64_t mask = kindBitmapFor(elts);
 
             // Inline nursery allocation (HEAP_034): see the Tuple2 arm.
             if (inlineAllocEnabled()) {
@@ -372,8 +372,12 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
         if (auto rec = dyn_cast<eco::RecordType>(srcTy)) {
             ArrayRef<Type> fields = rec.getFields();
             int64_t fieldCount = static_cast<int64_t>(fields.size());
-            int64_t mask = op.getUnboxedBitmap();
-            if (mask == 0) mask = kindBitmapFor(fields);
+            // Layout C (3B.5): kinds always come from the element types (the
+            // attributes are verifier checks only); slots past 31 go in K
+            // ext kind words after the last field (HEAP_019).
+            PackedKinds pk = packKinds(slotKindsOfTypes(fields), layout::RecordHdrSlots);
+            const uint64_t K = pk.ext.size();
+            const int64_t mask = static_cast<int64_t>(pk.hdrBits);
 
             // Pre-extract every field as a scalar SSA value BEFORE the alloc
             // safepoint. With every extract folded back through the
@@ -388,11 +392,10 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
 
             // Inline nursery allocation (HEAP_034): see the Heap
             // RecordConstructOpLowering arm.
-            uint64_t recByteSize = layout::RecordBaseSize +
-                static_cast<uint64_t>(fieldCount) * layout::PtrSize;
+            uint64_t recByteSize = layout::recordByteSize(static_cast<uint64_t>(fieldCount));
             if (inlineAllocEnabled() && recByteSize <= 4096) {
                 uint64_t header = value_enc::composeHeader(
-                    value_enc::TagRecord, 0, static_cast<uint64_t>(fieldCount));
+                    value_enc::TagRecord, K, static_cast<uint64_t>(fieldCount));
                 Value objHPtr = emitInlineAllocWithHeader(
                     rewriter, loc, runtime, recByteSize, header);
                 emitInlineAllocMetaWord(rewriter, loc, objHPtr,
@@ -402,6 +405,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         layout::RecordFieldsOffset + i * layout::PtrSize,
                         extracted[i], fields[i]);
                 }
+                emitExtKindWordStores(rewriter, loc, objHPtr, layout::RecordFieldsOffset,
+                                      static_cast<uint64_t>(fieldCount), pk.ext);
                 rewriter.replaceOp(op, objHPtr);
                 return success();
             }
@@ -447,6 +452,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         ValueRange{objHPtr, idx, fieldVal});
                 }
             }
+            emitExtKindWordStoresCall(rewriter, loc, objHPtr, layout::RecordFieldsOffset,
+                                      static_cast<uint64_t>(fieldCount), pk.ext, storeI64Func);
             rewriter.replaceOp(op, objHPtr);
             return success();
         }
@@ -455,8 +462,10 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
         if (auto cus = dyn_cast<eco::CustomType>(srcTy)) {
             ArrayRef<Type> fields = cus.getFields();
             int64_t fieldCount = static_cast<int64_t>(fields.size());
-            int64_t mask = op.getUnboxedBitmap();
-            if (mask == 0) mask = kindBitmapFor(fields);
+            // Layout C (3B.5): as the Record arm, slots past 23 in ext words.
+            PackedKinds pk = packKinds(slotKindsOfTypes(fields), layout::CustomHdrSlots);
+            const uint64_t K = pk.ext.size();
+            const int64_t mask = static_cast<int64_t>(pk.hdrBits);
 
             // Pre-extract every field as a scalar SSA value BEFORE the alloc
             // safepoint — same reasoning as the Record branch above.
@@ -470,14 +479,13 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             // Inline nursery allocation (HEAP_034): see the Heap
             // CustomConstructOpLowering arm (ctor|bitmap<<16 meta word folds
             // the eco_set_unboxed call away).
-            uint64_t cusByteSize = layout::CustomBaseSize +
-                static_cast<uint64_t>(fieldCount) * layout::PtrSize;
+            uint64_t cusByteSize = layout::customByteSize(static_cast<uint64_t>(fieldCount));
             if (inlineAllocEnabled() && cusByteSize <= 4096) {
                 uint64_t bitmap = static_cast<uint64_t>(mask);
                 assert((bitmap >> 48) == 0 &&
                        "Custom unboxed bitmap overflow (>48 bits)");
                 uint64_t header = value_enc::composeHeader(
-                    value_enc::TagCustom, 0, static_cast<uint64_t>(fieldCount));
+                    value_enc::TagCustom, K, static_cast<uint64_t>(fieldCount));
                 uint64_t meta = (static_cast<uint64_t>(op.getTag()) & 0xFFFF)
                               | (bitmap << 16);
                 Value objHPtr = emitInlineAllocWithHeader(
@@ -488,6 +496,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         layout::CustomFieldsOffset + i * layout::PtrSize,
                         extracted[i], fields[i]);
                 }
+                emitExtKindWordStores(rewriter, loc, objHPtr, layout::CustomFieldsOffset,
+                                      static_cast<uint64_t>(fieldCount), pk.ext);
                 rewriter.replaceOp(op, objHPtr);
                 return success();
             }
@@ -496,12 +506,11 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 loc, i32Ty, static_cast<int32_t>(op.getTag()));
             auto sizeVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(fieldCount));
-            auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
 
             Value objHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocCustom(rewriter),
-                ValueRange{tagVal, sizeVal, scalarBytes},
+                ValueRange{tagVal, sizeVal},
                 liveRoots);
 
             auto storeFunc    = runtime.getOrCreateStoreField(rewriter);
@@ -535,6 +544,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         ValueRange{objHPtr, idx, fieldVal});
                 }
             }
+            emitExtKindWordStoresCall(rewriter, loc, objHPtr, layout::CustomFieldsOffset,
+                                      static_cast<uint64_t>(fieldCount), pk.ext, storeI64Func);
             if (mask != 0) {
                 auto bitmapVal = rewriter.create<LLVM::ConstantOp>(
                     loc, i64Ty, mask);

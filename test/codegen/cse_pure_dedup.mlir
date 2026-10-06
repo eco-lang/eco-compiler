@@ -23,8 +23,8 @@ module {
 
     // (a) two identical constructs: CSE may merge the allocations; the
     // projected values must not change.
-    %x = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %y = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %x = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %y = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     %px = eco.project.custom %x[0] : !eco.value -> !eco.value
     %vx = eco.unbox %px : !eco.value -> i64

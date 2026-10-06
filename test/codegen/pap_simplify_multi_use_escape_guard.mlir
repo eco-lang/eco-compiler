@@ -14,7 +14,7 @@ module {
 
   func.func @applyTwice(%f: !eco.value, %x: i64) -> i64 {
     %r = "eco.papExtend"(%f, %x) {
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> i64
     eco.return %r : i64
   }
@@ -29,13 +29,13 @@ module {
       function = @add,
       arity = 2 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (i64) -> !eco.value
 
     // Qualifying use: saturated typed extend.
     %r1 = "eco.papExtend"(%pap, %c3) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> i64
 
     // Escaping use: %pap as a NEWARG (captured into another PAP).
@@ -43,11 +43,11 @@ module {
       function = @applyTwice,
       arity = 2 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
     %r2 = "eco.papExtend"(%outer, %pap, %c3) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 4 : i64
+      slot_kinds = array<i8: 0, 1>
     } : (!eco.value, !eco.value, i64) -> i64
 
     %sum = eco.int.add %r1, %r2 : i64

@@ -61,15 +61,13 @@ module {
 
     // Test 1: Create PAP with 1 captured, then extend with 1 to saturate
     // arity=2, captured=1, extend with 1 -> fully saturated
-    %pap1 = "eco.papCreate"(%b100) {
-      function = @sum2,
+    %pap1 = "eco.papCreate"(%b100) {slot_kinds = array<i8: 0>, function = @sum2,
       arity = 2 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
 
     // Extend with 1 arg to saturate: 100 + 200 = 300
-    %result1 = "eco.papExtend"(%pap1, %b200) {
-      remaining_arity = 1 : i64
+    %result1 = "eco.papExtend"(%pap1, %b200) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result1 : !eco.value
@@ -81,14 +79,12 @@ module {
     %b50 = eco.box %c50 : i64 -> !eco.value
     %b25 = eco.box %c25 : i64 -> !eco.value
 
-    %pap2 = "eco.papCreate"(%b50) {
-      function = @sum2,
+    %pap2 = "eco.papCreate"(%b50) {slot_kinds = array<i8: 0>, function = @sum2,
       arity = 2 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
 
-    %result2 = "eco.papExtend"(%pap2, %b25) {
-      remaining_arity = 1 : i64
+    %result2 = "eco.papExtend"(%pap2, %b25) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result2 : !eco.value

@@ -31,8 +31,7 @@ module {
 
   func.func @main() -> i64 {
     // Create closure for @square_eval
-    %square_fn = "eco.papCreate"() {
-      function = @square_eval,
+    %square_fn = "eco.papCreate"() {slot_kinds = array<i8>, function = @square_eval,
       arity = 1 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -46,17 +45,17 @@ module {
 
     // Cons 3 Nil
     %boxed3 = eco.box %three : i64 -> !eco.value
-    %list1 = eco.construct.custom(%boxed3, %nil) {tag = 1 : i64, size = 2 : i64}
+    %list1 = eco.construct.custom(%boxed3, %nil) {slot_kinds = array<i8: 0, 0>, tag = 1 : i64, size = 2 : i64}
       : (!eco.value, !eco.value) -> !eco.value
 
     // Cons 2 (Cons 3 Nil)
     %boxed2 = eco.box %two : i64 -> !eco.value
-    %list2 = eco.construct.custom(%boxed2, %list1) {tag = 1 : i64, size = 2 : i64}
+    %list2 = eco.construct.custom(%boxed2, %list1) {slot_kinds = array<i8: 0, 0>, tag = 1 : i64, size = 2 : i64}
       : (!eco.value, !eco.value) -> !eco.value
 
     // Cons 1 (Cons 2 (Cons 3 Nil))
     %boxed1 = eco.box %one : i64 -> !eco.value
-    %list3 = eco.construct.custom(%boxed1, %list2) {tag = 1 : i64, size = 2 : i64}
+    %list3 = eco.construct.custom(%boxed1, %list2) {slot_kinds = array<i8: 0, 0>, tag = 1 : i64, size = 2 : i64}
       : (!eco.value, !eco.value) -> !eco.value
 
     // Manually "map" square over each element using indirect closure calls

@@ -389,22 +389,17 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         // identity is a runtime value), segmentation_unknown call kind, and
         // the CURRENT extend's _result_kind (the final result's ABI claim).
         // PapExtendOp build signature: (result, closure, newargs, remaining_arity,
-        //   newargs_unboxed_bitmap, slot_kinds, _closure_kind, _dispatch_mode,
-        //   _fast_evaluator). The legacy u64 bitmap cannot describe more than
-        //   26 slots, so the fused op carries `slot_kinds` only.
+        //   slot_kinds, _closure_kind, _dispatch_mode, _fast_evaluator).
         auto fusedOp = rewriter.create<PapExtendOp>(
             extendOp.getLoc(),
             resultType,                             // Result type
             prevExtend.getClosure(),                // Original closure (skip intermediate)
             allOperands,                            // Fused real newargs + appended GC root hints
             bothTyped ? prevRemainingAttr : IntegerAttr(),
-            /*newargs_unboxed_bitmap=*/0,           // removed below
             rewriter.getDenseI8ArrayAttr(fusedKinds),
             bothTyped ? prevExtend->getAttr("_closure_kind") : Attribute(),
             bothTyped ? prevExtend->getAttrOfType<StringAttr>("_dispatch_mode") : StringAttr(),
             bothTyped ? prevExtend->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator") : FlatSymbolRefAttr());
-
-        fusedOp->removeAttr("newargs_unboxed_bitmap");
 
         if (bothTyped) {
             // Propagate _call_kind from the first extend
@@ -476,7 +471,7 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
 //   (PapCreateOp::verify limits, HEAP_078).
 // - The fused `slot_kinds` are recomputed from operand SSA types (P2's
 //   source-of-truth rule; PapCreateOp::verify enforces kind == SSA type
-//   per slot); the clone's legacy `unboxed_bitmap` is removed.
+//   per slot).
 //
 struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
@@ -546,7 +541,6 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         cloned->setOperands(allOperands);
         cloned->setAttr("num_captured", rewriter.getI64IntegerAttr(fusedCaptured));
         cloned->setAttr("slot_kinds", rewriter.getDenseI8ArrayAttr(fusedKinds));
-        cloned->removeAttr("unboxed_bitmap");
         if (fusedRootCount > 0)
             cloned->setAttr("eco.gc_roots_count",
                 rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedRootCount)));

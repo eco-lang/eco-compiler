@@ -51,8 +51,7 @@ module {
     // Create a partial application: add_two with first arg = 5
     // arity = 2 (function takes 2 args total)
     // num_captured = 1 (we're capturing 1 arg now)
-    %pap = "eco.papCreate"(%b5) {
-      function = @add_two,
+    %pap = "eco.papCreate"(%b5) {slot_kinds = array<i8: 0>, function = @add_two,
       arity = 2 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
@@ -64,8 +63,7 @@ module {
     // Saturate the closure: apply second arg = 7
     // remaining_arity = 1 (closure needs 1 more arg)
     // This should call add_two(5, 7) = 12
-    %result = "eco.papExtend"(%pap, %b7) {
-      remaining_arity = 1 : i64
+    %result = "eco.papExtend"(%pap, %b7) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value

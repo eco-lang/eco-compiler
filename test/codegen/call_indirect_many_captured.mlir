@@ -88,10 +88,10 @@ module {
     %b6 = eco.box %c6 : i64 -> !eco.value
 
     // Create PAP with 5 captured arguments (tests the loop in indirect call)
-    %pap = "eco.papCreate"(%b1, %b2, %b3, %b4, %b5) {function = @sum6_eval, arity = 6 : i64, num_captured = 5 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %pap = "eco.papCreate"(%b1, %b2, %b3, %b4, %b5) {slot_kinds = array<i8: 0, 0, 0, 0, 0>, function = @sum6_eval, arity = 6 : i64, num_captured = 5 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     // Extend with 1 more to saturate
-    %result = "eco.papExtend"(%pap, %b6) {remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %result = "eco.papExtend"(%pap, %b6) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // 1 + 2 + 3 + 4 + 5 + 6 = 21
     %unboxed = eco.unbox %result : !eco.value -> i64

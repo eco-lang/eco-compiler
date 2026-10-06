@@ -16,21 +16,21 @@ module {
     %captured = arith.constant 10.5 : f64
 
     // arity = 2 (one captured + one remaining)
-    // unboxed_bitmap = 1 (bit 0 set = first captured is unboxed f64)
+    // slot_kinds[0] = 2: the first capture is an unboxed f64
     %pap = "eco.papCreate"(%captured) {
       function = @add_floats,
       arity = 2 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 2 : i64
+      slot_kinds = array<i8: 2>
     } : (f64) -> !eco.value
 
     // Extend with second f64 argument - should saturate and return f64
     %arg = arith.constant 5.25 : f64
 
-    // newargs_unboxed_bitmap = 1 (arg 0 is unboxed f64)
+    // slot_kinds[0] = 2: newarg 0 is an unboxed f64
     %result = "eco.papExtend"(%pap, %arg) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 2 : i64
+      slot_kinds = array<i8: 2>
     } : (!eco.value, f64) -> f64
 
     // Expected: 10.5 + 5.25 = 15.75
@@ -42,7 +42,7 @@ module {
       function = @add_floats,
       arity = 2 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     %arg1 = arith.constant 100.0 : f64
@@ -51,7 +51,7 @@ module {
     // Extend with both args at once - saturates immediately
     %result2 = "eco.papExtend"(%pap2, %arg1, %arg2) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 10 : i64
+      slot_kinds = array<i8: 2, 2>
     } : (!eco.value, f64, f64) -> f64
 
     // Expected: 100.0 + 23.5 = 123.5

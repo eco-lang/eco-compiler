@@ -1008,3 +1008,26 @@ the closure's K = extWords(max_values, 20) tail extension kind words (inline kin
 allocation (HEAP_077), and the object's size is still a function of its header word (header.size =
 value slots + K), so promotion copies the ext words with the body. No atomic, lock, memory order or
 step is added or reordered. **Verdict: no model change needed.**
+
+## 2026-10-05 — wide-object-tail-kind-words Phase 3A (Custom/Record ext kind words) (GC_MODEL_001)
+
+No pin fired; voluntary entry (unpinned NurseryChildWalk.hpp, reached by `scanEntryR` and the
+tenure engine through forEachChildSlot, and the YLOS header fix-up; plans/wide-object-tail-kind-words.md §5).
+Promotion copies getObjectSize bytes, so the ext words travel with the body.
+
+Change: Custom/Record objects may carry K = header.unboxed extension kind words after
+values[size] (HEAP_019, HEAP_077). Object size is still a function of the header word alone
+(getObjectSizeFromHeader adds hdr->unboxed, which shares the 32-bit word with tag). The tail loop of
+the Custom/Record scan arms reads the slot kind through customSlotKind / recordSlotKind, whose bodies
+now add the ext-word branch (header bitmap, then the ext words, bounded by header.unboxed); the
+walker text itself has been unchanged since Phase 1d. Ext words and K are written only at
+allocation, before the object is reachable by any GC (HEAP_031/034/SNAPSHOT_001): initHeaderForTag
+composes the header in a local and writes it with one 8-byte store, and the YLOS header fix-up in
+OldGenSpace::allocateYoungLarge (not a TLA region) is one relaxed whole-word load/edit/store
+(loadHeaderRelaxed / storeHeaderRelaxed). No atomic, lock, memory order, claim or publish is added;
+the header word is the same modelled location; children are read from a frozen object.
+Validate builds add validateExtKinds (K, padding, inertness census) in the serial scan, the
+validate pre-walk and OldGenSpace scanChildren: reads only, abort on failure.
+`tla-trace` after the change: 150/150 rows as expected.
+
+**Verdict: no model change needed.**

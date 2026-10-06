@@ -6,7 +6,7 @@
 
 module {
   func.func @bad_construct_i1(%b: i1, %x: !eco.value) -> !eco.value {
-    %c = "eco.construct.custom"(%b, %x) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (i1, !eco.value) -> !eco.value
+    %c = "eco.construct.custom"(%b, %x) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (i1, !eco.value) -> !eco.value
     return %c : !eco.value
   }
 }

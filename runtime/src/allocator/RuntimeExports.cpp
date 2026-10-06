@@ -245,21 +245,22 @@ extern "C" void eco_ensure_nursery_slow(uint64_t n) {
     Allocator::instance().ensureNursery(static_cast<size_t>(n));
 }
 
-extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count) {
     // Single-representation backstop (HEAP_044): nullary customs are embedded
     // null-cons constants; post-CGEN_079 nothing may allocate the 0-field
     // shape. Mirrors the fast/slow variants below.
-    assert((field_count > 0 || scalar_bytes > 0) &&
+    assert(field_count > 0 &&
            "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
-    // Calculate size: Header + ctor/unboxed (8 bytes) + fields
-    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
+    if (field_count > CUSTOM_MAX_FIELDS) ecoFatalWideObject("eco_alloc_custom", field_count);
+    // Layout C: Header + ctor/unboxed (8 bytes) + fields + K ext kind words.
+    size_t size = wideByteSize(Tag_Custom, field_count);
 
-    // No HPointer args to root: ctor_id/field_count/scalar_bytes are scalars,
-    // and the field values are written by the caller after this returns.
+    // No HPointer args to root: ctor_id/field_count are scalars, and the field
+    // values are written by the caller after this returns. initHeaderForTag
+    // sets size = field_count, unboxed = K and zeroes the ext words.
     void* obj = eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
-    assert((scalar_bytes == 0 || getHeader(obj)->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
-    assertNarrowContainer(Tag_Custom, field_count);
+    assert(getHeader(obj)->size == field_count);
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
@@ -457,16 +458,18 @@ extern "C" HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t un
 }
 
 extern "C" HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) {
-    // Size: Header (8) + unboxed bitmap (8) + fields (N * 8).
-    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
+    if (field_count > RECORD_MAX_FIELDS) ecoFatalWideObject("eco_alloc_record", field_count);
+    // Size: Header (8) + unboxed bitmap (8) + fields (N * 8) + K ext kind words.
+    // The ext words stay zero (boxed) until codegen stores them (HEAP_077).
+    size_t size = wideByteSize(Tag_Record, field_count);
 
     // No HPointer args to root: field values are written by caller after.
     void* obj = eco_alloc_with_roots(Tag_Record, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
 
     Record* rec = static_cast<Record*>(obj);
-    rec->header.size = field_count;
-    assertNarrowContainer(Tag_Record, field_count);
+    rec->header.size = field_count;   // equal to initHeaderForTag's inversion
+    assert(rec->header.unboxed == extWords(field_count, RECORD_HDR_SLOTS));
     rec->unboxed = unboxed_bitmap;
     return ptrToHPointer(obj);
 }
@@ -1431,23 +1434,19 @@ extern "C" HPtr eco_allocate(uint64_t size, uint32_t tag) {
 // Slow variants: may trigger GC, always succeed or abort.
 //===----------------------------------------------------------------------===//
 
-extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count) {
     // Single-representation backstop (HEAP_044): nullary customs are embedded
     // null-cons constants; post-CGEN_079 the compiler never emits a 0-field
     // allocation, so reaching here with one is a codegen bug.
-    assert((field_count > 0 || scalar_bytes > 0) &&
+    assert(field_count > 0 &&
            "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
-    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
+    if (field_count > CUSTOM_MAX_FIELDS) ecoFatalWideObject("eco_alloc_custom_fast", field_count);
+    size_t size = wideByteSize(Tag_Custom, field_count);
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
 
-    // Init header + ctor
-    Header* hdr = getHeader(obj);
-    zeroNewObject(hdr, size);
-    hdr->tag = Tag_Custom;
-    hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
-    assert((scalar_bytes == 0 || hdr->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
-    assertNarrowContainer(Tag_Custom, field_count);
+    // Init header (size = n, unboxed = K, ext words zeroed) + ctor
+    initWideHeader(getHeader(obj), Tag_Custom, field_count);
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
     custom->unboxed = 0;
@@ -1455,15 +1454,15 @@ extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, ui
     return ptrToHPointer(obj);
 }
 
-extern "C" HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+extern "C" HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count) {
     // Single-representation backstop (HEAP_044) — see eco_alloc_custom_fast.
-    assert((field_count > 0 || scalar_bytes > 0) &&
+    assert(field_count > 0 &&
            "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
-    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
-    void* obj = Allocator::instance().allocateSlow(size, Tag_Custom);
+    if (field_count > CUSTOM_MAX_FIELDS) ecoFatalWideObject("eco_alloc_custom_slow", field_count);
+    size_t size = wideByteSize(Tag_Custom, field_count);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Custom);   // initHeaderForTag: n, K, ext zeroed
     if (!obj) return HPtr::fromBits(0);
-    assert((scalar_bytes == 0 || getHeader(obj)->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
-    assertNarrowContainer(Tag_Custom, field_count);
+    assert(getHeader(obj)->size == field_count);
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
@@ -1610,15 +1609,12 @@ extern "C" HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32
 }
 
 extern "C" HPtr eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bitmap) {
-    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
+    if (field_count > RECORD_MAX_FIELDS) ecoFatalWideObject("eco_alloc_record_fast", field_count);
+    size_t size = wideByteSize(Tag_Record, field_count);
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
 
-    Header* hdr = getHeader(obj);
-    zeroNewObject(hdr, size);
-    hdr->tag = Tag_Record;
-    hdr->size = field_count;
-    assertNarrowContainer(Tag_Record, field_count);
+    initWideHeader(getHeader(obj), Tag_Record, field_count);   // size = n, unboxed = K, ext zeroed
     Record* rec = static_cast<Record*>(obj);
     rec->unboxed = unboxed_bitmap;
 
@@ -1626,13 +1622,13 @@ extern "C" HPtr eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bit
 }
 
 extern "C" HPtr eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap) {
-    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
-    void* obj = Allocator::instance().allocateSlow(size, Tag_Record);
+    if (field_count > RECORD_MAX_FIELDS) ecoFatalWideObject("eco_alloc_record_slow", field_count);
+    size_t size = wideByteSize(Tag_Record, field_count);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Record);   // initHeaderForTag: n, K, ext zeroed
     if (!obj) return HPtr::fromBits(0);
 
     Record* rec = static_cast<Record*>(obj);
-    rec->header.size = field_count;
-    assertNarrowContainer(Tag_Record, field_count);
+    assert(rec->header.size == field_count);
     rec->unboxed = unboxed_bitmap;
 
     return ptrToHPointer(obj);
@@ -1947,25 +1943,17 @@ extern "C" HPtr eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c
     return ptrToHPointer(obj);
 }
 
+// Precondition (eco_init_*_at): the codegen group region reserved
+// wideByteSize(tag, field_count) bytes at obj (K = 0 while the verifier caps hold).
 extern "C" HPtr eco_init_record_at(void* obj, uint32_t field_count, uint64_t unboxed_bitmap) {
-    Header* hdr = getHeader(obj);
-    zeroNewObject(hdr, sizeof(Header) + 8 + field_count * sizeof(Unboxable));
-    hdr->tag = Tag_Record;
-    hdr->size = field_count;
-    assertNarrowContainer(Tag_Record, field_count);
+    initWideHeader(getHeader(obj), Tag_Record, field_count);
     Record* rec = static_cast<Record*>(obj);
     rec->unboxed = unboxed_bitmap;
     return ptrToHPointer(obj);
 }
 
-extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
-    Header* hdr = getHeader(obj);
-    zeroNewObject(hdr,
-                  sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes);
-    hdr->tag = Tag_Custom;
-    hdr->size = (sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes - sizeof(Custom)) / sizeof(Unboxable);
-    assert((scalar_bytes == 0 || hdr->size <= CUSTOM_HDR_SLOTS) && "scalar words would enter the tail loop");
-    assertNarrowContainer(Tag_Custom, field_count);
+extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_count) {
+    initWideHeader(getHeader(obj), Tag_Custom, field_count);
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
     custom->unboxed = 0;

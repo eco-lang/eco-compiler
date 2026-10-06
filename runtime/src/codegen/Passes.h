@@ -26,7 +26,7 @@ namespace eco {
 
 // ========== Stage 1: Eco -> Eco transformations ==========
 
-// Lowers eco.construct to eco.allocate_ctor + field stores.
+// Lowers eco.construct to allocation + field stores.
 std::unique_ptr<mlir::Pass> createConstructLoweringPass();
 
 // Removes/errors on reference counting placeholder ops (incref, decref, etc).

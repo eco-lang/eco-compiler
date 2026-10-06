@@ -18,7 +18,7 @@
 //    `ECO_INLINE_ALLOC=0` restores form 2 (temporary rollout env, N6).
 // 2. UNIFIED RUNTIME CALLS (eco_alloc_*): statepointed calls that handle GC
 //    internally — the fallback for dynamically-sized/fill-later classes
-//    (eco.allocate, allocate_ctor, allocate_string, allocate_closure,
+//    (eco.allocate, allocate_string, allocate_closure,
 //    strings/arrays) and the ECO_INLINE_ALLOC=0 A/B leg.
 // 3. ALLOCATION GROUPS (eco.gc_group_size >= 2, lowerAllocGroups below):
 //    one region fast/slow diamond for a whole group of adjacent allocs
@@ -60,6 +60,16 @@ static_assert(eco::detail::value_enc::NullConsMax == NULL_CONS_MAX,
               "value_enc::NullConsMax out of sync with NULL_CONS_MAX");
 static_assert(eco::detail::value_enc::NullCons == Elm::Const_NullCons,
               "value_enc::NullCons out of sync with Elm::Const_NullCons");
+// Custom/Record layout C (plans/wide-object-tail-kind-words-phase-3.md 3B.1):
+// the codegen and runtime layout constants are pinned equal, and the widest
+// objects stay below the born-old threshold (young: no barrier needed).
+static_assert(eco::detail::layout::CustomHdrSlots == Elm::CUSTOM_HDR_SLOTS);
+static_assert(eco::detail::layout::RecordHdrSlots == Elm::RECORD_HDR_SLOTS);
+static_assert(eco::detail::layout::SlotsPerExtWord == Elm::SLOTS_PER_EXT_WORD);
+static_assert(eco::detail::layout::recordByteSize(Elm::RECORD_MAX_FIELDS) < 32 * 1024,
+              "wide records must stay below GroupLargeObjectThreshold (young, no barrier needed)");
+static_assert(eco::detail::layout::customByteSize(Elm::CUSTOM_MAX_FIELDS) < 32 * 1024,
+              "wide customs must stay below GroupLargeObjectThreshold (young, no barrier needed)");
 // Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034):
 // the converted lowerings compose full header words from these tags. The
 // bitfield SHIFTS cannot be static_assert-ed (implementation-defined
@@ -167,13 +177,7 @@ static Value emitInlinePrimLoad(Value hptr, int64_t offsetBytes, Type primTy,
 /// Returns 0 if the size cannot be statically determined.
 static int64_t computeAllocSize(Operation *op) {
     constexpr int64_t HeaderSize = 8;
-    constexpr int64_t UnboxableSize = 8;
 
-    if (auto allocCtor = dyn_cast<eco::AllocateCtorOp>(op)) {
-        int64_t size = HeaderSize + 8 + allocCtor.getSize() * UnboxableSize +
-                       allocCtor.getScalarBytes();
-        return (size + 7) & ~7;
-    }
     if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op)) {
         int64_t size = HeaderSize + allocStr.getLength() * 2;
         return (size + 7) & ~7;
@@ -181,14 +185,12 @@ static int64_t computeAllocSize(Operation *op) {
     if (isa<eco::ListConstructOp>(op)) return 24;
     if (isa<eco::Tuple2ConstructOp>(op)) return 24;
     if (isa<eco::Tuple3ConstructOp>(op)) return 32;
-    if (auto recOp = dyn_cast<eco::RecordConstructOp>(op)) {
-        int64_t size = HeaderSize + 8 + recOp.getFieldCount() * UnboxableSize;
-        return (size + 7) & ~7;
-    }
-    if (auto customOp = dyn_cast<eco::CustomConstructOp>(op)) {
-        int64_t size = HeaderSize + 8 + customOp.getSize() * UnboxableSize;
-        return (size + 7) & ~7;
-    }
+    // Layout C (HEAP_019): 16 + 8 * (n + K); must agree with EcoGCPrepare's
+    // getFixedAllocSizeForGrouping byte-for-byte.
+    if (auto recOp = dyn_cast<eco::RecordConstructOp>(op))
+        return static_cast<int64_t>(layout::recordByteSize(recOp.getFieldCount()));
+    if (auto customOp = dyn_cast<eco::CustomConstructOp>(op))
+        return static_cast<int64_t>(layout::customByteSize(customOp.getSize()));
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type inputType = boxOp.getValue().getType();
         if (inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16))
@@ -348,41 +350,6 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
             op, rewriter, runtime,
             runtime.getOrCreateAllocate(rewriter),
             ValueRange{size, tag},
-            adaptor.getLiveRoots());
-        rewriter.replaceOp(op, result);
-        return success();
-    }
-};
-
-//===----------------------------------------------------------------------===//
-// eco.allocate_ctor -> call eco_alloc_custom
-//===----------------------------------------------------------------------===//
-
-struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
-    const EcoRuntime &runtime;
-
-    AllocateCtorOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                           const EcoRuntime &runtime)
-        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
-
-    LogicalResult
-    matchAndRewrite(AllocateCtorOp op, OpAdaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-        auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i32Ty = IntegerType::get(ctx, 32);
-
-        auto tag = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(op.getTag()));
-        auto size = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(op.getSize()));
-        auto scalarBytes = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(op.getScalarBytes()));
-
-        Value result = emitAllocWithSafepoint(
-            op, rewriter, runtime,
-            runtime.getOrCreateAllocCustom(rewriter),
-            ValueRange{tag, size, scalarBytes},
             adaptor.getLiveRoots());
         rewriter.replaceOp(op, result);
         return success();
@@ -943,7 +910,14 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         auto storeF64Func = runtime.getOrCreateStoreRecordFieldF64(rewriter);
 
         int64_t fieldCount = op.getFieldCount();
-        int64_t unboxedBitmap = op.getUnboxedBitmap();
+        // Layout C (3B.4.1): kinds derive from the ORIGINAL operand types (the
+        // attributes are verifier checks only); slots past 31 go in K ext
+        // kind words after the last field (HEAP_019).
+        PackedKinds pk = packKinds(
+            slotKindsOfTypes(op.getFields().take_front(fieldCount).getTypes()),
+            layout::RecordHdrSlots);
+        const uint64_t K = pk.ext.size();
+        int64_t unboxedBitmap = static_cast<int64_t>(pk.hdrBits);
 
         // The fields operand list may contain GC roots appended after
         // the actual fields by EcoGCPrepare. Split them using fieldCount.
@@ -955,11 +929,10 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         // field count) + unboxed-bitmap meta word + fresh field stores.
         // Oversized records (> the expansion's 4096-byte bound) keep the
         // call path.
-        uint64_t recByteSize =
-            layout::RecordBaseSize + static_cast<uint64_t>(fieldCount) * layout::PtrSize;
+        uint64_t recByteSize = layout::recordByteSize(static_cast<uint64_t>(fieldCount));
         if (inlineAllocEnabled() && recByteSize <= 4096) {
             uint64_t header = value_enc::composeHeader(
-                value_enc::TagRecord, 0, static_cast<uint64_t>(fieldCount));
+                value_enc::TagRecord, K, static_cast<uint64_t>(fieldCount));
             Value objHPtr = emitInlineAllocWithHeader(
                 rewriter, loc, runtime, recByteSize, header);
             emitInlineAllocMetaWord(rewriter, loc, objHPtr,
@@ -970,6 +943,8 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
                     layout::RecordFieldsOffset + i * layout::PtrSize,
                     fields[i], origFieldsInl[i].getType());
             }
+            emitExtKindWordStores(rewriter, loc, objHPtr, layout::RecordFieldsOffset,
+                                  static_cast<uint64_t>(fieldCount), pk.ext);
             rewriter.replaceOp(op, objHPtr);
             return success();
         }
@@ -1015,6 +990,9 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
                     ValueRange{objHPtr, idx, fieldVal});
             }
         }
+        // Ext kind words (eco_alloc_record sized and zeroed them; HEAP_031 window).
+        emitExtKindWordStoresCall(rewriter, loc, objHPtr, layout::RecordFieldsOffset,
+                                  static_cast<uint64_t>(fieldCount), pk.ext, storeI64Func);
 
         rewriter.replaceOp(op, objHPtr);
         return success();
@@ -1090,17 +1068,22 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto setUnboxedFunc = runtime.getOrCreateSetUnboxed(rewriter);
 
         int64_t opSize = op.getSize();
+        // Layout C (3B.4.2): kinds from the ORIGINAL operand types; slots past
+        // 23 go in K ext kind words after the last field (HEAP_019).
+        PackedKinds pk = packKinds(
+            slotKindsOfTypes(op.getFields().take_front(opSize).getTypes()),
+            layout::CustomHdrSlots);
+        const uint64_t K = pk.ext.size();
 
         // Inline nursery allocation (HEAP_034): marker + header (sizeField =
         // field count) + ctor|bitmap<<16 meta word (folds the separate
         // eco_set_unboxed call away) + fresh field stores.
-        uint64_t cusByteSize =
-            layout::CustomBaseSize + static_cast<uint64_t>(opSize) * layout::PtrSize;
+        uint64_t cusByteSize = layout::customByteSize(static_cast<uint64_t>(opSize));
         if (inlineAllocEnabled() && cusByteSize <= 4096) {
-            uint64_t bitmap = static_cast<uint64_t>(op.getUnboxedBitmap());
+            uint64_t bitmap = pk.hdrBits;
             assert((bitmap >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
             uint64_t header = value_enc::composeHeader(
-                value_enc::TagCustom, 0, static_cast<uint64_t>(opSize));
+                value_enc::TagCustom, K, static_cast<uint64_t>(opSize));
             uint64_t meta = (static_cast<uint64_t>(op.getTag()) & 0xFFFF)
                           | (bitmap << 16);
             Value objHPtr = emitInlineAllocWithHeader(
@@ -1113,13 +1096,14 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
                     layout::CustomFieldsOffset + i * layout::PtrSize,
                     fieldsInl[i], origFieldsInl[i].getType());
             }
+            emitExtKindWordStores(rewriter, loc, objHPtr, layout::CustomFieldsOffset,
+                                  static_cast<uint64_t>(opSize), pk.ext);
             rewriter.replaceOp(op, objHPtr);
             return success();
         }
 
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getTag()));
         auto size = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(opSize));
-        auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
 
         // The fields operand list may contain GC roots appended after
         // the actual fields by EcoGCPrepare. Split them using the size attr.
@@ -1130,7 +1114,7 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         Value objHPtr = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocCustom(rewriter),
-            ValueRange{tag, size, scalarBytes},
+            ValueRange{tag, size},
             liveRoots);
 
         // Store each field (rewriter is now in contBlock)
@@ -1164,8 +1148,12 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             }
         }
 
+        // Ext kind words (eco_alloc_custom sized and zeroed them; HEAP_031 window).
+        emitExtKindWordStoresCall(rewriter, loc, objHPtr, layout::CustomFieldsOffset,
+                                  static_cast<uint64_t>(opSize), pk.ext, storeI64Func);
+
         // Set unboxed bitmap if non-zero
-        int64_t bitmap = op.getUnboxedBitmap();
+        int64_t bitmap = static_cast<int64_t>(pk.hdrBits);
         if (bitmap != 0) {
             auto bitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, bitmap);
             rewriter.create<LLVM::CallOp>(loc, setUnboxedFunc,
@@ -1762,18 +1750,6 @@ static Value emitInitAtPtr(
         llvm_unreachable("unsupported BoxOp input type in group");
     }
 
-    if (auto allocCtor = dyn_cast<AllocateCtorOp>(op)) {
-        auto tag = builder.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(allocCtor.getTag()));
-        auto size = builder.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(allocCtor.getSize()));
-        auto scalarBytes = builder.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(allocCtor.getScalarBytes()));
-        return builder.create<LLVM::CallOp>(
-            loc, runtime.getOrCreateInitCustomAt(builder),
-            ValueRange{objPtr, tag, size, scalarBytes}).getResult();
-    }
-
     if (auto allocStr = dyn_cast<AllocateStringOp>(op)) {
         auto length = builder.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(allocStr.getLength()));
@@ -1816,8 +1792,14 @@ static Value emitInitAtPtr(
     if (auto recOp = dyn_cast<RecordConstructOp>(op)) {
         auto fieldCount = builder.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(recOp.getFieldCount()));
+        // Header bitmap from the operand types (layout C); eco_init_record_at
+        // computes K and zero-fills the ext words (the region was carved with
+        // computeAllocSize, which includes K).
+        const uint64_t hdrBits = packKinds(
+            slotKindsOfTypes(recOp.getFields().take_front(recOp.getFieldCount()).getTypes()),
+            layout::RecordHdrSlots).hdrBits;
         auto unboxedBitmap = builder.create<LLVM::ConstantOp>(
-            loc, i64Ty, recOp.getUnboxedBitmap());
+            loc, i64Ty, static_cast<int64_t>(hdrBits));
         return builder.create<LLVM::CallOp>(
             loc, runtime.getOrCreateInitRecordAt(builder),
             ValueRange{objPtr, fieldCount, unboxedBitmap}).getResult();
@@ -1828,13 +1810,28 @@ static Value emitInitAtPtr(
             loc, i32Ty, static_cast<int32_t>(customOp.getTag()));
         auto size = builder.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(customOp.getSize()));
-        auto scalarBytes = builder.create<LLVM::ConstantOp>(loc, i32Ty, 0);
         return builder.create<LLVM::CallOp>(
             loc, runtime.getOrCreateInitCustomAt(builder),
-            ValueRange{objPtr, tag, size, scalarBytes}).getResult();
+            ValueRange{objPtr, tag, size}).getResult();
     }
 
     llvm_unreachable("unsupported op kind in emitInitAtPtr");
+}
+
+/// Group merge block: store the non-zero ext kind words of a Custom/Record
+/// (eco_init_*_at already zeroed all K of them) through the gc-leaf
+/// `storeI64Func(hptr, n + j, word)`.
+static void storeNonZeroExtWords(OpBuilder &builder, Location loc, Value hptr,
+                                 int64_t n, llvm::ArrayRef<uint64_t> ext,
+                                 LLVM::LLVMFuncOp storeI64Func) {
+    auto i32Ty = builder.getI32Type();
+    auto i64Ty = builder.getI64Type();
+    for (size_t j = 0; j < ext.size(); ++j) {
+        if (ext[j] == 0) continue;
+        auto idx = builder.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(n + j));
+        auto w = builder.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(ext[j]));
+        builder.create<LLVM::CallOp>(loc, storeI64Func, ValueRange{hptr, idx, w});
+    }
 }
 
 /// Emit field stores for a record or custom op in the merge block.
@@ -1888,6 +1885,12 @@ static void emitFieldStoresForOp(
                     ValueRange{hptr, idx, valHPtr});
             }
         }
+        // Ext kind words (layout C): eco_init_record_at zeroed them; store the
+        // non-zero ones in this no-safepoint window (HEAP_031).
+        storeNonZeroExtWords(builder, loc, hptr, fieldCount,
+            packKinds(slotKindsOfTypes(fields.take_front(fieldCount).getTypes()),
+                      layout::RecordHdrSlots).ext,
+            storeI64Func);
         return;
     }
 
@@ -1929,7 +1932,10 @@ static void emitFieldStoresForOp(
             }
         }
 
-        int64_t bitmap = customOp.getUnboxedBitmap();
+        PackedKinds pk = packKinds(slotKindsOfTypes(fields.take_front(opSize).getTypes()),
+                                   layout::CustomHdrSlots);
+        storeNonZeroExtWords(builder, loc, hptr, opSize, pk.ext, storeI64Func);
+        int64_t bitmap = static_cast<int64_t>(pk.hdrBits);
         if (bitmap != 0) {
             auto bitmapVal = builder.create<LLVM::ConstantOp>(loc, i64Ty, bitmap);
             builder.create<LLVM::CallOp>(loc, setUnboxedFunc,
@@ -2158,7 +2164,10 @@ Value eco::detail::materialiseAsBoxed(OpBuilder &b, Location loc, Value v,
                                        ValueRange liveRoots) {
     if (!isEcoAggregate(v.getType())) return v;
     auto valueTy = eco::ValueType::get(b.getContext());
-    auto toHeap = b.create<eco::ToHeapOp>(loc, valueTy, v, liveRoots);
+    auto toHeap = b.create<eco::ToHeapOp>(loc, valueTy, v, liveRoots,
+                                         /*tag=*/uint64_t{0}, /*head_kind=*/uint64_t{0},
+                                         /*head_unboxed=*/false,
+                                         /*slot_kinds=*/DenseI8ArrayAttr());
     return toHeap.getResult();
 }
 
@@ -2175,7 +2184,6 @@ void eco::detail::populateEcoHeapPatterns(
     patterns.add<BoxOpLowering>(typeConverter, ctx, runtime);
     patterns.add<UnboxOpLowering>(typeConverter, ctx, runtime);
     patterns.add<AllocateOpLowering>(typeConverter, ctx, runtime);
-    patterns.add<AllocateCtorOpLowering>(typeConverter, ctx, runtime);
     patterns.add<AllocateStringOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ListConstructOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ListHeadOpLowering>(typeConverter, ctx, runtime);

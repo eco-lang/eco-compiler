@@ -26,22 +26,22 @@ module {
       function = @add3,
       arity = 3 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     // Generic-mode chain (no remaining_arity): fused into one extend.
     %pap2 = "eco.papExtend"(%pap, %c1) {
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "segmentation_unknown"
     } : (!eco.value, i64) -> !eco.value
 
     %pap3 = "eco.papExtend"(%pap2, %c2) {
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "segmentation_unknown"
     } : (!eco.value, i64) -> !eco.value
 
     %result = "eco.papExtend"(%pap3, %c3) {
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _result_kind = 1 : i8,
       _call_kind = "segmentation_unknown"
     } : (!eco.value, i64) -> i64

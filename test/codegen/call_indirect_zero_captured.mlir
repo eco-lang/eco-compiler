@@ -33,8 +33,7 @@ module {
 
   func.func @main() -> i64 {
     // Create closure with 0 captured values
-    %closure = "eco.papCreate"() {
-      function = @double_eval,
+    %closure = "eco.papCreate"() {slot_kinds = array<i8>, function = @double_eval,
       arity = 1 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -46,8 +45,7 @@ module {
     %c21 = arith.constant 21 : i64
     %b21 = eco.box %c21 : i64 -> !eco.value
 
-    %result = "eco.papExtend"(%closure, %b21) {
-      remaining_arity = 1 : i64
+    %result = "eco.papExtend"(%closure, %b21) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value

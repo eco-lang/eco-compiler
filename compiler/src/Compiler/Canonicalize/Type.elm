@@ -26,6 +26,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
+import Compiler.Data.HeapLimits as HeapLimits
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
@@ -93,9 +94,14 @@ canonicalize env (A.At typeRegion tipe) =
                 |> ReportingResult.apply (canonicalize env b)
 
         Src.TRecord fields maybeExt _ ->
-            Dups.checkFields (canonicalizeFields env fields)
-                |> ReportingResult.andThen sequenceAElmDict
-                |> ReportingResult.map (\cfields -> Can.TRecord cfields (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt))
+            if List.length fields > HeapLimits.maxRecordFields then
+                -- HEAP_019: a Record object holds at most maxRecordFields fields.
+                ReportingResult.throw (Error.TooLarge typeRegion (Error.TooManyRecordFields Nothing) (List.length fields) HeapLimits.maxRecordFields)
+
+            else
+                Dups.checkFields (canonicalizeFields env fields)
+                    |> ReportingResult.andThen sequenceAElmDict
+                    |> ReportingResult.map (\cfields -> Can.TRecord cfields (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt))
 
         Src.TUnit ->
             ReportingResult.ok Can.TUnit

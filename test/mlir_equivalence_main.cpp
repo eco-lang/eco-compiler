@@ -281,7 +281,10 @@ ProcResult run_stage(Side side,
     };
 
     if (side == Side::Stage2) {
-        argv = {"node", "--stack-size=65536", ECO_BOOT_RUNNER};
+        // Big stack, as in the E2E and AOT runners (plans/wide-object-tail-kind-words-phase-0.md
+        // step 0.5): the widest pins (arity 2047) overflow node's default stack.
+        argv = {"sh", "-c", "ulimit -s unlimited 2>/dev/null; exec \"$@\"", "sh",
+                "node", "--stack-size=500000", ECO_BOOT_RUNNER};
     } else {
         argv = {ECO_COMPILER};
     }

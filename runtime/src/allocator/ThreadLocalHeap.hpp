@@ -23,6 +23,11 @@ class Allocator;
 // eco_alloc_with_roots fast-path init in RuntimeExports.cpp.
 void initHeaderForTag(Header* hdr, Tag tag, size_t size);
 
+// Release-mode abort: a Custom/Record of `n` slots past its wide-object limit
+// (CUSTOM_MAX_FIELDS / RECORD_MAX_FIELDS, HEAP_019). Prints
+// "[eco] FATAL: <where>: <n> slots exceeds the wide-object limit (HEAP_019)".
+[[noreturn]] void ecoFatalWideObject(const char* where, u32 n);
+
 /// Zero a freshly allocated object. HEADER ONLY — the payload is left as
 /// whatever the previous occupant of those bytes wrote.
 ///
@@ -55,6 +60,35 @@ inline void zeroNewObject(Header* hdr, size_t size) {
 #endif
     (void)size;
     std::memset(hdr, 0, sizeof(Header));
+}
+
+/// Byte size of a Custom/Record with n fields under layout C: base + 8 * (n + K),
+/// K = extWords(n, CAP) extension kind words after the fields (HEAP_019).
+inline size_t wideByteSize(Tag tag, u32 n) {
+    const bool isC = tag == Tag_Custom;
+    return (isC ? sizeof(Custom) : sizeof(Record))
+         + size_t(n + extWords(n, isC ? CUSTOM_HDR_SLOTS : RECORD_HDR_SLOTS)) * sizeof(Unboxable);
+}
+
+/// Header init for the Custom/Record entries that do NOT go through
+/// initHeaderForTag (they write the header themselves): size = n, unboxed = K,
+/// one whole-word header store, and the K ext words zeroed (HEAP_077).
+/// Precondition: wideByteSize(tag, n) bytes are reserved at hdr.
+inline void initWideHeader(Header* hdr, Tag tag, u32 n) {
+    const bool isC = tag == Tag_Custom;
+    const u32 cap = isC ? CUSTOM_HDR_SLOTS : RECORD_HDR_SLOTS;
+    if (n > (isC ? CUSTOM_MAX_FIELDS : RECORD_MAX_FIELDS)) ecoFatalWideObject("alloc", n);
+    const u32 k = extWords(n, cap);
+    const size_t base = isC ? sizeof(Custom) : sizeof(Record);
+    zeroNewObject(hdr, base + size_t(n + k) * sizeof(Unboxable));
+    Header h{};
+    h.tag = tag;
+    h.size = n;
+    h.unboxed = k;
+    std::memcpy(hdr, &h, sizeof(Header));
+    if (k)
+        std::memset(reinterpret_cast<char*>(hdr) + base + size_t(n) * sizeof(Unboxable), 0,
+                    size_t(k) * sizeof(Unboxable));
 }
 
 /**

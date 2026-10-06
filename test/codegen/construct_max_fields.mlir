@@ -1,7 +1,8 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test constructor with many fields (approaching bitmap limit).
-// The unboxed_bitmap is 64 bits, so max 64 fields with unboxed tracking.
+// Kinds of slots 0..23 sit in the header bitmap, the rest in tail kind words
+// (HEAP_019); construct.custom takes up to 2040 fields.
 
 module {
   func.func @main() -> i64 {
@@ -25,7 +26,7 @@ module {
     %b8 = eco.box %c8 : i64 -> !eco.value
 
     // Constructor with 8 fields
-    %ctor8 = eco.construct.custom(%b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8) {tag = 0 : i64, size = 8 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor8 = eco.construct.custom(%b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8) {slot_kinds = array<i8: 0, 0, 0, 0, 0, 0, 0, 0>, tag = 0 : i64, size = 8 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     // Project each field and sum
     %p1 = eco.project.custom %ctor8[0] : !eco.value -> !eco.value

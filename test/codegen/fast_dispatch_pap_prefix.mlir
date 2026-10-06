@@ -40,7 +40,7 @@ module {
   func.func @consume(%pap: !eco.value, %y: i64) -> i64 {
     %r = "eco.papExtend"(%pap, %y) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "singleton_fast",
       _fast_evaluator = @lam$cap,
       _capture_abi = [i64, i64],
@@ -60,14 +60,14 @@ module {
       _fast_evaluator = @lam$cap,
       arity = 3 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (i64) -> !eco.value
 
     // Grow the PAP with one applied arg (5): non-saturating typed extend
     // (remaining 2, 1 newarg) -> runtime eco_pap_extend_l appends slot 1.
     %pap1 = "eco.papExtend"(%pap0, %c5) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> !eco.value
 
     %r = func.call @consume(%pap1, %c3) : (!eco.value, i64) -> i64

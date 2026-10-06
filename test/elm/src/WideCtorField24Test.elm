@@ -1,25 +1,9 @@
 module WideCtorField24Test exposing (main)
 
-{-| Pins a miscompile of constructor fields at index 24 and above.
-
-`Compiler.Generate.MLIR.Types.computeCtorLayout` stores every constructor field
-at index >= 24 boxed, whatever its type. But `Functions.generateCtor` declares
-such an Int parameter as `!eco.value` while callers pass `i64` (REP_ABI_001),
-and `Patterns.elm` (CustomContainer, boxed-field branch) projects the field as
-a raw `i64`/`f64`/`i16`, loading the pointer's bits instead of the value.
-
-`Wide` has 25 Int fields (0..24), a Float (25) and a Char (26). The program
-builds one from a runtime value and reads fields 23 (unboxed, control), 24, 25
-and 26 back by pattern match. The CHECKs state the correct values.
-
-Today the program does not even run: the backend verifier
-(`runtime/src/codegen/EcoOps.cpp`, `eco.construct.custom` verify) rejects any
-constructor with more than 24 fields ("size (27) exceeds Custom's 24-slot
-limit"); the GC walkers ignored slots past 24 until
-plans/wide-object-tail-kind-words Phase 1. Once that limit is lifted, the ABI
-and projection miscompiles above (pinned in elm-test by CallAbiConsistencyTest
-and DestructorTypeProjectionTest) decide whether these values come back right.
-
+{-| Pins wide constructors end to end: 25 Int fields, a Float and a Char (27 fields). Fields 0..23
+keep their kinds in the Custom header bitmap, fields 24..26 in the first tail kind word
+(HEAP_019). Historically: the verifier rejected > 24 fields, generateCtor declared field 24 as
+!eco.value (B1) and the boxed projection branch read pointer bits (B2).
 -}
 
 -- CHECK: field23: 1023

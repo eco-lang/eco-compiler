@@ -35,9 +35,9 @@ module {
 
     // Create a list that references multiple globals
     %nil = eco.constant Empty : !eco.value
-    %list1 = eco.construct.custom(%r3, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %list2 = eco.construct.custom(%r2, %list1) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %list3 = eco.construct.custom(%r1, %list2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list1 = eco.construct.custom(%r3, %nil) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list2 = eco.construct.custom(%r2, %list1) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list3 = eco.construct.custom(%r1, %list2) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list3 : !eco.value
     // CHECK: Ctor0 10 (Ctor0 20 (Ctor0 30 <empty>))
 

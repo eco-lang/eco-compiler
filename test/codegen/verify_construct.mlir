@@ -11,7 +11,7 @@ module {
 
     // ERROR: size=3 but only 2 fields provided
     // CHECK: 'eco.construct.custom' op number of operands (2) must be at least size attribute (3)
-    %bad = eco.construct.custom(%b1, %nil) {tag = 0 : i64, size = 3 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %bad = eco.construct.custom(%b1, %nil) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 3 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     %zero = arith.constant 0 : i64
     return %zero : i64

@@ -410,7 +410,7 @@ constexpr uint64_t ClosureBaseSize = 24; // Header + packed + evaluator (+ N*8)
 
 // Slots whose 2-bit kinds the object header itself can hold (Heap.hpp:
 // Custom unboxed:48, Record unboxed:64, Closure unboxed:40). Closure kinds past
-// these live in ext words; Custom/Record ones read boxed until Phase 3A.
+// these live in ext words, and so do Custom/Record ones (layout C, below).
 constexpr unsigned CustomHdrSlots = 24, RecordHdrSlots = 32, ClosureHdrSlots = 20;
 // Closure packed word: n_values:11 | max_values:11 | result_kind:2 | unboxed:40.
 constexpr unsigned ClosureMaxShift = 11, ClosureRkShift = 22, ClosureKindsShift = 24;
@@ -421,6 +421,24 @@ constexpr unsigned SatMaxArity = ClosureHdrSlots;       // SAT_MAX_ARITY
 constexpr unsigned extWordsFor(unsigned n, unsigned hdrSlots) {
     return n > hdrSlots ? (n - hdrSlots + 31) / 32 : 0;
 }
+
+// Custom/Record layout C (plans/wide-object-tail-kind-words-phase-3.md 3B.1, HEAP_019):
+// kinds of slots 0..23 (Custom) / 0..31 (Record) in the meta word, the rest in
+// K = extWords(n, HDR) extension kind words after the last field; K is
+// Header.unboxed, so the object is 16 + 8 * (n + K) bytes.
+constexpr unsigned SlotsPerExtWord = 32;   // == Elm::SLOTS_PER_EXT_WORD
+constexpr uint64_t extWords(uint64_t n, unsigned hdr) {
+    return n > hdr ? (n - hdr + SlotsPerExtWord - 1) / SlotsPerExtWord : 0;
+}
+constexpr uint64_t recordByteSize(uint64_t n) {
+    return RecordBaseSize + (n + extWords(n, RecordHdrSlots)) * PtrSize;
+}
+constexpr uint64_t customByteSize(uint64_t n) {
+    return CustomBaseSize + (n + extWords(n, CustomHdrSlots)) * PtrSize;
+}
+static_assert(recordByteSize(32) == 16 + 32 * 8 && recordByteSize(33) == 16 + 34 * 8);
+static_assert(customByteSize(24) == 16 + 24 * 8 && customByteSize(60) == 16 + 62 * 8);
+static_assert(extWords(2047, RecordHdrSlots) == 63 && extWords(2040, CustomHdrSlots) == 63);
 
 } // namespace layout
 
@@ -464,6 +482,14 @@ inline PackedKinds packKinds(llvm::ArrayRef<uint8_t> kinds, unsigned hdrSlots) {
         p.ext.push_back(
             kindsWord(kinds, s, std::min<size_t>(32, kinds.size() - s)));
     return p;
+}
+
+/// The 2-bit slot kinds of a list of (pre-conversion) operand types.
+inline llvm::SmallVector<uint8_t> slotKindsOfTypes(mlir::TypeRange ts) {
+    llvm::SmallVector<uint8_t> ks;
+    ks.reserve(ts.size());
+    for (mlir::Type t : ts) ks.push_back(slotKindOf(t));
+    return ks;
 }
 
 /// The closure's packed word at +8 (Heap.hpp Closure, HEAP_078):
@@ -1024,6 +1050,46 @@ inline void emitFreshFieldStore(mlir::OpBuilder &b, mlir::Location loc,
     auto store = b.create<mlir::LLVM::StoreOp>(loc, word, slotPtr);
     if (boxed)
         store->setAttr("eco.boxed_slot", mlir::UnitAttr::get(ctx));
+}
+
+/// Store the K ext kind words of a fresh Custom/Record (layout C, HEAP_077):
+/// every word, zero words included (the inline path writes nothing else and
+/// zeroNewObject clears only the header). Straight-line after the allocation,
+/// before any safepoint (HEAP_031/HEAP_034); `obj` is the fresh AS1 pointer.
+inline void emitExtKindWordStores(mlir::OpBuilder &b, mlir::Location loc,
+                                  mlir::Value obj, uint64_t fieldsOffset,
+                                  uint64_t n, llvm::ArrayRef<uint64_t> ext) {
+    auto i64Ty = mlir::IntegerType::get(b.getContext(), 64);
+    for (size_t j = 0; j < ext.size(); ++j) {
+        mlir::Value w = b.create<mlir::LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(ext[j]));
+        emitFreshFieldStore(b, loc, obj,
+                            static_cast<int64_t>(fieldsOffset + (n + j) * layout::PtrSize),
+                            w, i64Ty);
+    }
+}
+
+/// The call-path variant: the runtime allocation (eco_alloc_record /
+/// eco_alloc_custom) already sized the object with K and zeroed the ext words;
+/// store them here, before any safepoint (HEAP_031). Direct AS1 stores under
+/// --inline-deref, else the gc-leaf `storeI64Func(obj, n + j, word)`
+/// (eco_store_record_field_i64 / eco_store_field_i64).
+inline void emitExtKindWordStoresCall(mlir::OpBuilder &b, mlir::Location loc,
+                                      mlir::Value obj, uint64_t fieldsOffset,
+                                      uint64_t n, llvm::ArrayRef<uint64_t> ext,
+                                      mlir::LLVM::LLVMFuncOp storeI64Func) {
+    if (ext.empty()) return;
+    if (inlineDerefExtEnabled()) {
+        emitExtKindWordStores(b, loc, obj, fieldsOffset, n, ext);
+        return;
+    }
+    auto i32Ty = mlir::IntegerType::get(b.getContext(), 32);
+    auto i64Ty = mlir::IntegerType::get(b.getContext(), 64);
+    for (size_t j = 0; j < ext.size(); ++j) {
+        auto idx = b.create<mlir::LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(n + j));
+        auto w = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(ext[j]));
+        b.create<mlir::LLVM::CallOp>(loc, storeI64Func, mlir::ValueRange{obj, idx, w});
+    }
 }
 
 /// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034):

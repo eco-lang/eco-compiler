@@ -889,7 +889,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     }
                     case Tag_Custom: {
                         Custom* c = static_cast<Custom*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size; i++) {   // tail slots read boxed (D semantics)
+                        validateExtKinds(c, "NurserySpace pre-walk");
+                        for (u32 i = 0; i < h->size; i++) {   // tail slots: ext kind words
                             if (Elm::customSlotKind(c, i) == 0)
                                 checkChild(c->values[i].p, "custom", i);
                         }
@@ -897,6 +898,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     }
                     case Tag_Record: {
                         Record* r = static_cast<Record*>(static_cast<void*>(scan));
+                        validateExtKinds(r, "NurserySpace pre-walk");
                         for (u32 i = 0; i < h->size; i++) {
                             if (Elm::recordSlotKind(r, i) == 0)
                                 checkChild(r->values[i].p, "record", i);
@@ -1067,7 +1069,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     }
                     case Tag_Custom: {
                         Custom* c = static_cast<Custom*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size; i++) {   // tail slots read boxed (D semantics)
+                        for (u32 i = 0; i < h->size; i++) {   // tail slots: ext kind words
                             if (Elm::customSlotKind(c, i) == 0)
                                 checkOGChild(c->values[i].p, scan, "custom", i);
                         }
@@ -1897,8 +1899,11 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
         case Tag_Custom: {
-            // Header-bitmap slots, then the tail (boxed in Phase 1, D semantics).
+            // Header-bitmap slots, then the tail (ext kind words, HEAP_019).
             Custom *c = static_cast<Custom *>(obj);
+#if ECO_HEAP_VALIDATE
+            validateExtKinds(obj, "NurserySpace::scanObject");
+#endif
             auto slot = [&](u32 i, bool kib) {
 #if ECO_HEAP_VALIDATE
                 validateBitmapSlotKind(this, hbase, hres, c->values[i], kib, obj, hdr->tag, "Custom", i);
@@ -1912,6 +1917,9 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
+#if ECO_HEAP_VALIDATE
+            validateExtKinds(obj, "NurserySpace::scanObject");
+#endif
             auto slot = [&](u32 i, bool kib) {
 #if ECO_HEAP_VALIDATE
                 validateBitmapSlotKind(this, hbase, hres, r->values[i], kib, obj, hdr->tag, "Record", i);

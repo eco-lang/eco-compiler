@@ -40,8 +40,7 @@ using eco::computeLiveRoots;
 
 /// Returns true if the operation may allocate heap memory.
 static bool isMayAllocOp(Operation *op) {
-    return isa<eco::AllocateCtorOp>(op) ||
-           isa<eco::AllocateStringOp>(op) ||
+    return isa<eco::AllocateStringOp>(op) ||
            isa<eco::AllocateClosureOp>(op) ||
            isa<eco::ListConstructOp>(op) ||
            isa<eco::Tuple2ConstructOp>(op) ||
@@ -60,8 +59,7 @@ static bool hasFixedAllocSize(Operation *op) {
         Type inputType = boxOp.getValue().getType();
         return inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16);
     }
-    return isa<eco::AllocateCtorOp>(op) ||
-           isa<eco::AllocateStringOp>(op) ||
+    return isa<eco::AllocateStringOp>(op) ||
            isa<eco::ListConstructOp>(op) ||
            isa<eco::Tuple2ConstructOp>(op) ||
            isa<eco::Tuple3ConstructOp>(op) ||
@@ -73,13 +71,7 @@ static bool hasFixedAllocSize(Operation *op) {
 /// Must agree with computeAllocSize in EcoToLLVMHeap.cpp.
 static int64_t getFixedAllocSizeForGrouping(Operation *op) {
     constexpr int64_t HeaderSize = 8;
-    constexpr int64_t UnboxableSize = 8;
 
-    if (auto allocCtor = dyn_cast<eco::AllocateCtorOp>(op)) {
-        int64_t size = HeaderSize + 8 + allocCtor.getSize() * UnboxableSize +
-                       allocCtor.getScalarBytes();
-        return (size + 7) & ~7;
-    }
     if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op)) {
         int64_t size = HeaderSize + allocStr.getLength() * 2;
         return (size + 7) & ~7;
@@ -87,14 +79,11 @@ static int64_t getFixedAllocSizeForGrouping(Operation *op) {
     if (isa<eco::ListConstructOp>(op)) return 24;
     if (isa<eco::Tuple2ConstructOp>(op)) return 24;
     if (isa<eco::Tuple3ConstructOp>(op)) return 32;
-    if (auto recOp = dyn_cast<eco::RecordConstructOp>(op)) {
-        int64_t size = HeaderSize + 8 + recOp.getFieldCount() * UnboxableSize;
-        return (size + 7) & ~7;
-    }
-    if (auto customOp = dyn_cast<eco::CustomConstructOp>(op)) {
-        int64_t size = HeaderSize + 8 + customOp.getSize() * UnboxableSize;
-        return (size + 7) & ~7;
-    }
+    // Layout C (HEAP_019): 16 + 8 * (n + K), byte-for-byte as computeAllocSize.
+    if (auto recOp = dyn_cast<eco::RecordConstructOp>(op))
+        return static_cast<int64_t>(eco::detail::layout::recordByteSize(recOp.getFieldCount()));
+    if (auto customOp = dyn_cast<eco::CustomConstructOp>(op))
+        return static_cast<int64_t>(eco::detail::layout::customByteSize(customOp.getSize()));
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type inputType = boxOp.getValue().getType();
         if (inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16))
@@ -160,9 +149,8 @@ static bool splitInlineGroupsEnabled() {
 /// Tuple2/Tuple3ConstructOp (:670, :759), and Record/CustomConstructOp
 /// (:951, :1090) which additionally cap at 4096 bytes.
 ///
-/// AllocateCtorOp and AllocateStringOp are deliberately absent: they are
-/// groupable but have NO inline singleton path, so splitting a run containing
-/// one would trade a shared region call for a per-object alloc call and lose.
+/// AllocateStringOp is deliberately absent: it is groupable but has NO
+/// inline singleton path, so splitting a run containing one would trade a shared region call for a per-object alloc call and lose.
 /// Whitelist discipline — anything not listed keeps today's grouping.
 static bool hasInlineSingletonLowering(Operation *op) {
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {

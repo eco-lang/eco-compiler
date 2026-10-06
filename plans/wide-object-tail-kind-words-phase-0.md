@@ -808,7 +808,12 @@ def wide_record(name, n, kinds, show, doc, full=False):
                "eq self: True", "eq updated: False"]
     if full:
         pairs.append(("show", "r"))
-        checks.append("show: { " + ", ".join(f"f{i:04d} = {py_show(i, kinds[i])}" for i in range(n)) + " }")
+        # Eco's typed record printer prints fields in heap-layout order (Types.computeRecordLayout:
+        # unboxed Int/Float/Char fields first, then boxed ones, each group by name), not Elm's
+        # alphabetical order (existing behaviour, e.g. TypeAliasCtorTest's { count = 42, bold = True }).
+        order = [i for i in range(n) if kinds[i] in ("Int", "Float", "Char")] + \
+                [i for i in range(n) if kinds[i] not in ("Int", "Float", "Char")]
+        checks.append("show: { " + ", ".join(f"f{i:04d} = {py_show(i, kinds[i])}" for i in order) + " }")
     body = f"""type alias R =
     {{ {decl}
     }}

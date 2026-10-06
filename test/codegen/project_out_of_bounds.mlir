@@ -19,7 +19,7 @@ module {
     %b5 = eco.box %c5 : i64 -> !eco.value
 
     // Create 5-element structure
-    %ctor5 = eco.construct.custom(%b1, %b2, %b3, %b4, %b5) {tag = 0 : i64, size = 5 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor5 = eco.construct.custom(%b1, %b2, %b3, %b4, %b5) {slot_kinds = array<i8: 0, 0, 0, 0, 0>, tag = 0 : i64, size = 5 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     // Project field 0 (first)
     %f0 = eco.project.custom %ctor5[0] : !eco.value -> !eco.value
@@ -47,13 +47,13 @@ module {
     // CHECK: [eco.dbg] 5
 
     // Test with single-element construct
-    %ctor1 = eco.construct.custom(%b1) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ctor1 = eco.construct.custom(%b1) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     %only = eco.project.custom %ctor1[0] : !eco.value -> !eco.value
     eco.dbg %only : !eco.value
     // CHECK: [eco.dbg] 1
 
     // Test with 2-element (cons-like)
-    %ctor2 = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %ctor2 = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     %head = eco.project.custom %ctor2[0] : !eco.value -> !eco.value
     %tail = eco.project.custom %ctor2[1] : !eco.value -> !eco.value
     eco.dbg %head : !eco.value

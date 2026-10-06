@@ -36,7 +36,7 @@ module {
     %i2 = arith.constant 1 : i64
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
-    %pair = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pair = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     %r = func.call @readFirst(%pair) : (!eco.value) -> i64
     return %r : i64
   }

@@ -102,7 +102,7 @@ def Eco_ValueType : Eco_Type<"Value", "value"> {
 //
 // These types are an SSA-only representation independent of heap layout
 // (REP_AGG_001). They lower to LLVM struct values held in registers, never
-// to ptr addrspace(1). Heap-layout artifacts (unboxed_bitmap, field_count,
+// to ptr addrspace(1). Heap-layout artifacts (slot_kinds, field_count,
 // tag, head_kind) live on heap construct/`eco.to_heap`/`eco.make.closure`
 // ops, never on these types.
 //
@@ -133,8 +133,8 @@ def Eco_RecordType : Eco_Type<"Record", "record"> {
   let summary = "Unboxed logical record";
   let description = [{
     Logical representation of a record. Field types are carried directly
-    on the type. Does not carry an unboxed_bitmap — that lives on heap
-    construct/to_heap ops.
+    on the type. Does not carry slot kinds — those live on heap
+    construct ops (and are derived from the field types by to_heap).
   }];
   let parameters = (ins ArrayRefParameter<"::mlir::Type">:$fields);
   let assemblyFormat = "`<` $fields `>`";
@@ -897,19 +897,12 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
   let summary = "Construct an Elm record";
   let description = [{
     Construct a record with a fixed set of fields. `field_count` gives
-    the slot count; `unboxed_bitmap` carries the 2-bit-per-slot kinds.
+    the slot count.
 
-    Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
-    `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
-    [2i, 2i+1]. Record's bitmap is 64 bits wide, but the GC scan reads
-    kinds for the first 32 slots only, and the Elm front-end computes
-    bitmaps with exact Int arithmetic capped at 26 typed slots
-    (Types.maxTypedSlots); fields beyond that cap are stored boxed.
-
-    The per-slot kind must exactly match the field operand's SSA type
-    (REP_BOUNDARY_002): the lowering dispatches the store on the operand
-    type while the GC trusts the bitmap, so any mismatch is a
-    GC-corruption bug. The verifier enforces this.
+    `slot_kinds` holds one kind per field (0 boxed, 1 Int, 2 Float, 3 Char)
+    and must equal the kinds of the field operands (REP_BOUNDARY_002); the
+    lowering packs slots 0..31 into the header bitmap and the rest into
+    tail kind words (HEAP_019); field_count <= 2047.
 
     GC live roots may be appended after the fields by EcoGCPrepare.
     The first `field_count` operands are fields; any beyond that are
@@ -917,7 +910,7 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
 
     Example:
     ```mlir
-    %rec = eco.construct.record(%x, %y) {field_count = 2, unboxed_bitmap = 0}
+    %rec = eco.construct.record(%x, %y) {field_count = 2, slot_kinds = array<i8: 0, 0>}
       : (!eco.value, !eco.value) -> !eco.value
     ```
   }];
@@ -925,7 +918,8 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
   let arguments = (ins
     Variadic<Eco_AnyValueOrAggregate>:$fields,
     I64Attr:$field_count,
-    I64Attr:$unboxed_bitmap
+    // One kind (0 boxed, 1 Int, 2 Float, 3 Char) per field (HEAP_019).
+    DenseI8ArrayAttr:$slot_kinds
   );
   let results = (outs Eco_Value:$result);
 
@@ -975,10 +969,10 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
     The tag is the numeric constructor discriminant. The size must match
     the number of field operands.
 
-    Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
-    `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
-    [2i, 2i+1]. Custom's bitmap is 48 bits wide (up to 24 fields with
-    typed slots); fields beyond index 23 are stored boxed.
+    `slot_kinds` holds one kind per field (0 boxed, 1 Int, 2 Float, 3 Char)
+    and must equal the kinds of the field operands; the lowering packs
+    slots 0..23 into the header bitmap (beside the 16-bit ctor) and the rest
+    into tail kind words (HEAP_019); size <= 2040.
 
     The optional constructor attribute is for MLIR readability only and is
     not stored at runtime. Debug printing uses generic Ctor1, Ctor2, etc.
@@ -992,7 +986,7 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
     %just = eco.construct.custom(%inner) {
       tag = 1,
       size = 1,
-      unboxed_bitmap = 0,
+      slot_kinds = array<i8: 0>,
       constructor = "Just"
     } : (!eco.value) -> !eco.value
     ```
@@ -1002,8 +996,9 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
     Variadic<Eco_AnyValueOrAggregate>:$fields,
     I64Attr:$tag,
     I64Attr:$size,
-    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
-    OptionalAttr<StrAttr>:$constructor
+    OptionalAttr<StrAttr>:$constructor,
+    // One kind (0 boxed, 1 Int, 2 Float, 3 Char) per field (HEAP_019).
+    DenseI8ArrayAttr:$slot_kinds
   );
   let results = (outs Eco_Value:$result);
 
@@ -1353,11 +1348,9 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
 
     `slot_kinds[i]` in {0 boxed, 1 Int, 2 Float, 3 Char} is the kind of
     captured operand i; it must equal the operand's MLIR type kind (i64 -> 1,
-    f64 -> 2, i16 -> 3, !eco.value -> 0). When absent, the kinds are derived
-    from the operand types. The legacy u64 `unboxed_bitmap` (2 bits per
-    slot, slot i at bits [2i, 2i+1]) is advisory and verified only for the
-    slots it can describe (0..31). The closure's kinds for uncaptured
-    params come from the target signature. Stage arity <= 2047, captures
+    f64 -> 2, i16 -> 3, !eco.value -> 0); an empty array for zero captures.
+    The closure's kinds for uncaptured params come from the target
+    signature. Stage arity <= 2047, captures
     <= 2046 (HEAP_078).
 
     For typed closure calling, closures with captures have:
@@ -1373,7 +1366,7 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
     %add_5 = eco.papCreate @add$clo(%five) {
       arity = 2 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _fast_evaluator = @add$cap,
       _closure_kind = 42 : i64
     } : (i64) -> !eco.value
@@ -1385,8 +1378,10 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
     FlatSymbolRefAttr:$function,
     I64Attr:$arity,
     I64Attr:$num_captured,
-    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
-    OptionalAttr<DenseI8ArrayAttr>:$slot_kinds,        // one kind per captured operand
+    // One kind per captured operand. Defaults to the empty array: the front end
+    // omits it on a zero-capture papCreate; a missing non-empty one fails the
+    // verifier's length check (slot_kinds length (0) != capture count).
+    DefaultValuedAttr<DenseI8ArrayAttr, "{}">:$slot_kinds,
     OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,
     OptionalAttr<AnyAttr>:$_closure_kind,
     DefaultValuedAttr<I8Attr, "0">:$_result_kind
@@ -1434,19 +1429,15 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
       sibling's Closure.n_values. Must satisfy
       `num_captured[i] == capture_counts[i] +
         count{(p,c,s) in cross_edges | c == i}`.
-    - `slot_kinds`: optional ArrayAttr with one DenseI8ArrayAttr per
-      sibling, of length capture_counts[i] (the non-sibling captures):
-      kind of each capture operand (0 boxed, 1 Int, 2 Float, 3 Char); it
-      must equal the operand's MLIR type kind. Absent = derived from the
-      operand types.
-    - `unboxed_bitmaps`: optional (legacy, advisory) I64 ArrayAttr of
-      per-sibling unboxed_bitmap; verified only for slots 0..31.
+    - `slot_kinds`: ArrayAttr with one DenseI8ArrayAttr per sibling, of
+      length num_captured[i]: the kinds of the non-sibling captures
+      (0 boxed, 1 Int, 2 Float, 3 Char; equal to the operand's MLIR type
+      kind), then 0 for each sibling-closure slot.
     - `capture_counts`: I64 ArrayAttr, non-sibling capture count per
       sibling, used to partition the operand list.
     - `cross_edges`: I64 ArrayAttr, flat triples of
       [producer, consumer, slot]. Cross-edge slots must be boxed
-      (slot_kinds[consumer][slot] == 0 when present, else bit 2*slot of
-      unboxed_bitmap[consumer] is zero for slot < 32).
+      (slot_kinds[consumer][slot] == 0).
     - `_operand_types`: optional ArrayAttr of TypeAttr, one per capture
       operand (before roots), mirroring the papCreate convention.
   }];
@@ -1457,8 +1448,7 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
     ArrayAttr:$fast_evaluators,
     I64ArrayAttr:$arities,
     I64ArrayAttr:$num_captured,
-    OptionalAttr<I64ArrayAttr>:$unboxed_bitmaps,
-    OptionalAttr<ArrayAttr>:$slot_kinds,               // per sibling: DenseI8ArrayAttr, length capture_counts[i]
+    ArrayAttr:$slot_kinds,                             // per sibling: DenseI8ArrayAttr, length num_captured[i]
     I64ArrayAttr:$capture_counts,
     I64ArrayAttr:$cross_edges,
     OptionalAttr<I64ArrayAttr>:$_result_kinds
@@ -1508,10 +1498,8 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     closure calling attributes are ignored.
 
     `slot_kinds[i]` in {0 boxed, 1 Int, 2 Float, 3 Char} is the kind of
-    new-arg i; it must equal the operand's MLIR type kind. When absent, the
-    kinds are derived from the operand types. The legacy u64
-    `newargs_unboxed_bitmap` (2 bits per slot) is advisory and verified only
-    for the slots it can describe (0..31). At most 2047 new-args.
+    new-arg i; it must equal the operand's MLIR type kind. At most 2047
+    new-args.
 
     For typed closure calling (typed mode only):
     - `_closure_kind`: Propagated from source closure (int or "heterogeneous")
@@ -1523,14 +1511,14 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     // Typed mode: saturated call with known remaining arity
     %result = eco.papExtend %closure(%arg) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _dispatch_mode = "fast",
       _fast_evaluator = @add$cap
     } : !eco.value, (i64) -> i64
 
     // Generic mode: runtime saturation check, result always !eco.value
     %result = eco.papExtend %closure(%arg0, %arg1) {
-      newargs_unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8: 0, 0>
     } : !eco.value, (!eco.value, !eco.value) -> !eco.value
     ```
   }];
@@ -1539,8 +1527,8 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     Eco_Value:$closure,
     Variadic<Eco_AnyValue>:$newargs,
     OptionalAttr<I64Attr>:$remaining_arity,
-    DefaultValuedAttr<I64Attr, "0">:$newargs_unboxed_bitmap,
-    OptionalAttr<DenseI8ArrayAttr>:$slot_kinds,        // one kind per real newarg
+    // One kind per real newarg; defaults to empty as on papCreate.
+    DefaultValuedAttr<DenseI8ArrayAttr, "{}">:$slot_kinds,
     OptionalAttr<AnyAttr>:$_closure_kind,
     OptionalAttr<StrAttr>:$_dispatch_mode,
     OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,
@@ -1632,47 +1620,6 @@ def Eco_AllocateOp : Eco_Op<"allocate", [
   let results = (outs Eco_Value:$result);
 
   let assemblyFormat = "$size (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($size) `->` type($result)";
-}
-
-def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor", [
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
-  let summary = "Allocate constructor object";
-  // Verifier rejects the 0-field form (size == 0 && scalar_bytes == 0):
-  // nullary ctors are embedded null-cons constants (HEAP_044), never heap
-  // objects — see plans/null-cons-hpointer-embedding.md §2.3.
-  let description = [{
-    Allocate space for a constructor object with the specified tag and
-    field count. This is a specialized allocation for ADT constructors.
-
-    - tag: constructor discriminant (maps to Custom.ctor field)
-    - size: number of pointer-sized fields
-    - scalar_bytes: additional bytes for unboxed scalar fields
-
-    The optional live_roots operands are GC roots that must be tracked
-    across this allocation (populated by EcoGCPrepare).
-
-    Example:
-    ```mlir
-    %obj = eco.allocate_ctor(%r0 : !eco.value) {
-      tag = 1 : i64,
-      size = 2 : i64,
-      scalar_bytes = 0 : i64
-    } : !eco.value
-    ```
-  }];
-
-  let arguments = (ins
-    Variadic<Eco_Value>:$live_roots,
-    I64Attr:$tag,
-    I64Attr:$size,
-    I64Attr:$scalar_bytes
-  );
-  let results = (outs Eco_Value:$result);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
 
 def Eco_AllocateStringOp : Eco_Op<"allocate_string", [
@@ -3143,7 +3090,7 @@ def Eco_ResetRefOp : Eco_Op<"reset_ref"> {
 //
 // `eco.make.*` ops produce SSA-only aggregate values; they are Pure, do
 // NOT participate in GC root sets, and never carry heap-layout artifacts
-// (`unboxed_bitmap`, `field_count`, `head_kind`).  Phase 1 escape analysis
+// (`slot_kinds`, `field_count`, `head_kind`).  Phase 1 escape analysis
 // rewrites non-escaping `eco.construct.*` heap ops into these.
 //
 // `eco.to_heap` is the boxing op for the four data-aggregate shapes
@@ -3266,10 +3213,13 @@ def Eco_ToHeapOp : Eco_Op<"to_heap", [
     `!eco.closure_env` is rejected by the verifier (CGEN_029) — closure
     realisation goes through `eco.make.closure`.
 
-    Heap-layout attributes (record/custom `unboxed_bitmap`, custom `tag`,
-    cons `head_unboxed`/`head_kind`) live on this op, mirroring the
-    corresponding `eco.construct.*` shapes (Q-B). Unspecified attributes
-    default to zero / inferred from operand types at lowering time.
+    Heap-layout attributes (custom `tag`, cons `head_unboxed`/`head_kind`)
+    live on this op, mirroring the corresponding `eco.construct.*` shapes
+    (Q-B). Unspecified attributes default to zero / inferred from operand
+    types at lowering time. Tuple/record/custom kinds are always derived
+    from the element types (record/custom slots past 31 / 23 in tail kind
+    words, HEAP_019); the optional record/custom `slot_kinds` is verified
+    when present, never trusted.
 
     Example:
     ```mlir
@@ -3283,10 +3233,10 @@ def Eco_ToHeapOp : Eco_Op<"to_heap", [
 
     // Heap-layout attributes (per kind; only the relevant ones are read
     // at lowering time):
-    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,   // record/custom
     DefaultValuedAttr<I64Attr, "0">:$tag,              // custom
     DefaultValuedAttr<I64Attr, "0">:$head_kind,        // cons
-    DefaultValuedAttr<BoolAttr, "false">:$head_unboxed // cons
+    DefaultValuedAttr<BoolAttr, "false">:$head_unboxed, // cons
+    OptionalAttr<DenseI8ArrayAttr>:$slot_kinds          // record/custom: check only
   );
   let results = (outs Eco_Value:$result);
 

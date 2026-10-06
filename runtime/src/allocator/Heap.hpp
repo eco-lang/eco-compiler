@@ -42,6 +42,7 @@ namespace Elm {
 
 typedef unsigned long long int u64;  // 64-bit unsigned integer.
 typedef unsigned int u32;            // 32-bit unsigned integer.
+typedef unsigned char u8;            // 8-bit unsigned byte.
 typedef unsigned short u16;          // 16-bit unsigned integer.
 typedef long long int i64;           // 64-bit signed integer.
 typedef double f64;                  // 64-bit floating point.
@@ -677,15 +678,72 @@ static_assert(offsetof(EvaluatorDesc, sat) == 24, "sat at +24");
 static_assert(sizeof(Closure) == 24, "Closure base is 24 bytes");
 #endif
 
-// ---- Wide-object slot-kind accessors (plans/wide-object-tail-kind-words.md §S.1; Phase 1) ----
-// Phase 1 (D semantics): slots the header bitmap cannot describe are boxed.
-// Phase 3A adds the extension-word branch bounded by header.unboxed.
-inline u32 customSlotKind(const Custom* c, u32 i) {
-    return i < CUSTOM_HDR_SLOTS ? kindInWord(c->unboxed, i) : 0u;
+// ---- Wide-object slot-kind accessors (plans/wide-object-tail-kind-words.md §S.1) ----
+// Custom/Record (layout C, Phase 3A): slots 0..HDR-1 in the header bitmap, slots HDR.. in
+// K = header.unboxed extension kind words after values[header.size] (32 slots per word).
+// Readers never recompute K: a slot whose ext word index is >= header.unboxed reads boxed.
+inline const u64* customExtWords(const Custom* c) { return reinterpret_cast<const u64*>(&c->values[c->header.size]); }
+inline const u64* recordExtWords(const Record* r) { return reinterpret_cast<const u64*>(&r->values[r->header.size]); }
+inline u64* customExtWordsMut(Custom* c) { return reinterpret_cast<u64*>(&c->values[c->header.size]); }
+inline u64* recordExtWordsMut(Record* r) { return reinterpret_cast<u64*>(&r->values[r->header.size]); }
+// The slot-kind accessors are split: the header-bitmap case is forced inline (it is on the
+// equality and GC-walker hot paths, where an out-of-line call measurably cost ~1 % of a
+// self-compile), and the extension-word case, reached only by wide objects, is a cold call.
+[[gnu::noinline, gnu::cold]] inline u32 customExtSlotKind(const Custom* c, u32 i) {
+    const u32 r = i - CUSTOM_HDR_SLOTS;
+    const u32 j = r / SLOTS_PER_EXT_WORD;
+    if (j >= c->header.unboxed) return 0u;   // bounded by the stored K
+    return kindInWord(customExtWords(c)[j], r % SLOTS_PER_EXT_WORD);
 }
-inline u32 recordSlotKind(const Record* r, u32 i) {
-    return i < RECORD_HDR_SLOTS ? kindInWord(r->unboxed, i) : 0u;
+[[gnu::always_inline]] inline u32 customSlotKind(const Custom* c, u32 i) {
+    if (__builtin_expect(i < CUSTOM_HDR_SLOTS, 1)) return kindInWord(c->unboxed, i);
+    return customExtSlotKind(c, i);
 }
+[[gnu::noinline, gnu::cold]] inline u32 recordExtSlotKind(const Record* r, u32 i) {
+    const u32 q = i - RECORD_HDR_SLOTS;
+    const u32 j = q / SLOTS_PER_EXT_WORD;
+    if (j >= r->header.unboxed) return 0u;
+    return kindInWord(recordExtWords(r)[j], q % SLOTS_PER_EXT_WORD);
+}
+[[gnu::always_inline]] inline u32 recordSlotKind(const Record* r, u32 i) {
+    if (__builtin_expect(i < RECORD_HDR_SLOTS, 1)) return kindInWord(r->unboxed, i);
+    return recordExtSlotKind(r, i);
+}
+// Physical value words W = n + extWords(n, cap) -> (n, K). W is strictly increasing in n
+// (for m = n - cap >= 1, W = cap + m + ceil(m/32) steps by 1 or 2), so the inverse is unique;
+// values of W not in the image (W - cap == 1 mod 33) return false.
+constexpr bool splitPhysicalSlots(u32 W, u32 cap, u32& n, u32& k) {
+    if (W <= cap) { n = W; k = 0; return true; }
+    const u32 w = W - cap;               // w = m + ceil(m/32), m = n - cap >= 1
+    if (w < 2) return false;             // w == 1 is not in the image
+    const u32 q = (w - 2) / 33;          // m = 32q + r, r in [1,32]  =>  w = 33q + r + 1
+    const u32 r = w - 33 * q - 1;
+    if (r > 32) return false;            // w == 33(q+1) + 1 is not in the image
+    n = cap + 32 * q + r;
+    k = q + 1;                           // k = ceil(m/32) = q + 1
+    return true;
+}
+// Pack kinds[0..n) for the header bitmap (slots < cap).
+inline u64 packHeaderKinds(const u8* kinds, u32 n, u32 cap) {
+    u64 w = 0;
+    for (u32 i = 0; i < n && i < cap; ++i) w |= u64(kinds[i] & 3u) << (2 * i);
+    return w;
+}
+// Pack kinds[cap..n) into the extWords(n, cap) words at `ext`, zero padding included (HEAP_077).
+inline void packExtKinds(const u8* kinds, u32 n, u32 cap, u64* ext) {
+    const u32 k = extWords(n, cap);
+    for (u32 j = 0; j < k; ++j) ext[j] = 0;
+    for (u32 i = cap; i < n; ++i) {
+        const u32 r = i - cap;
+        ext[r / SLOTS_PER_EXT_WORD] |= u64(kinds[i] & 3u) << (2 * (r % SLOTS_PER_EXT_WORD));
+    }
+}
+static_assert(extWords(CUSTOM_MAX_FIELDS, CUSTOM_HDR_SLOTS) == 63, "Custom K must fit Header.unboxed:6");
+static_assert(extWords(RECORD_MAX_FIELDS, RECORD_HDR_SLOTS) == 63, "Record K must fit Header.unboxed:6");
+// 32 KiB = GroupLargeObjectThreshold (runtime/src/codegen/Passes/EcoGCPrepare.cpp): the born-old
+// threshold, repeated here because the allocator cannot include the codegen tree.
+static_assert(sizeof(Custom) + (CUSTOM_MAX_FIELDS + 63) * 8 < 32 * 1024, "wide Custom stays below born-old LOT");
+static_assert(sizeof(Record) + (RECORD_MAX_FIELDS + 63) * 8 < 32 * 1024, "wide Record stays below born-old LOT");
 // Closure extension kind words: the LAST K words of the object (physical-size rule).
 inline const u64* closureExtWords(const Closure* cl) {
     return reinterpret_cast<const u64*>(
@@ -693,11 +751,14 @@ inline const u64* closureExtWords(const Closure* cl) {
 }
 // Direct closure accessor for NON-allocating readers (GC walkers, validate checks,
 // printers). Allocating loops must use ClosureKinds (below).
-inline u32 closureSlotKind(const Closure* cl, u32 i) {
-    if (i < CLOSURE_HDR_SLOTS) return kindInWord(cl->unboxed, i);
+[[gnu::noinline, gnu::cold]] inline u32 closureExtSlotKind(const Closure* cl, u32 i) {
     const u32 j = (i - CLOSURE_HDR_SLOTS) / SLOTS_PER_EXT_WORD;
     if (j >= extWords(cl->max_values, CLOSURE_HDR_SLOTS)) return 0u;
     return kindInWord(closureExtWords(cl)[j], (i - CLOSURE_HDR_SLOTS) % SLOTS_PER_EXT_WORD);
+}
+[[gnu::always_inline]] inline u32 closureSlotKind(const Closure* cl, u32 i) {
+    if (__builtin_expect(i < CLOSURE_HDR_SLOTS, 1)) return kindInWord(cl->unboxed, i);
+    return closureExtSlotKind(cl, i);
 }
 // Snapshot of a closure's kinds for every loop that can allocate (the closure may move).
 struct ClosureKinds {
@@ -732,23 +793,6 @@ inline bool closureWellFormed(const Closure* cl) {
     const u32 lastSlots = (max - CLOSURE_HDR_SLOTS) - (K - 1) * SLOTS_PER_EXT_WORD;  // 1..32
     if (lastSlots < SLOTS_PER_EXT_WORD && (ext[K - 1] >> (2 * lastSlots)) != 0) return false;
     return true;
-}
-inline const u64* customExtWords(const Custom* c) { return reinterpret_cast<const u64*>(&c->values[c->header.size]); }
-inline const u64* recordExtWords(const Record* r) { return reinterpret_cast<const u64*>(&r->values[r->header.size]); }
-
-// Test switch (overview §S.6): Elm::testing::allow_wide_objects. Unit tests that build wide
-// Custom/Record objects on purpose set it; from Phase 3B, EcoRunner also sets it for modules that
-// carry the `eco.allow_wide_objects` attribute. Production code never sets it; Phase 3D deletes it.
-// Plain bool: written only by single-threaded test setup.
-namespace testing { inline bool allow_wide_objects = false; }
-// Validate-and-debug check that no runtime/kernel path builds a Custom/Record wider than its
-// header bitmap before Phase 3A (makes the walkers' tail loop provably dead outside tests).
-inline void assertNarrowContainer(u32 tag, u32 size) {
-    assert((testing::allow_wide_objects ||
-            !((tag == Tag_Custom && size > CUSTOM_HDR_SLOTS) ||
-              (tag == Tag_Record && size > RECORD_HDR_SLOTS))) &&
-           "wide Custom/Record built before Phase 3A (plans/wide-object-tail-kind-words.md)");
-    (void)tag; (void)size;
 }
 
 /// Type tag for each evaluator parameter slot, used by buildEvaluatorArgs
@@ -845,8 +889,6 @@ typedef struct {
 // ============================================================================
 // Binary Data Types
 // ============================================================================
-
-typedef unsigned char u8;  // 8-bit unsigned byte.
 
 /**
  * Immutable byte buffer for binary data.

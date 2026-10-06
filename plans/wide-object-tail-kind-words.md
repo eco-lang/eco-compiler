@@ -1,9 +1,17 @@
 # Wide heap objects: tail kind words for Custom, Record and Closure
 
-**Status:** READY FOR IMPLEMENTATION (draft 5, consolidated, 2026-10-05).
+**Status:** DONE (2026-10-05). All phases implemented; definition of done met (phase-3 file, "3D final gate result").
 **Progress:** Phase 0 DONE (2026-10-05; see the phase-0 file for the recorded baselines and pin results).
 Phase 1 DONE (2026-10-05; gate results in the phase-1 file §7.1).
 Phase 2 DONE (2026-10-05; gate results in the phase-2 file, "Phase 2 gate result").
+Phase 3 DONE (2026-10-05; 3A/3B/3C/3D gate results in the phase-3 file).
+
+**Final state (2026-10-05):** elm-tests 14,085 / 2 fail (GOPT_003 only); `full` 2,128 / 0 fail;
+validate tree 2,129 / 0; AOT 932/934 (FlagsRecordTest, PortEchoTest harness gaps); bootstrap fixed
+point; MLIR equivalence 945/946 (pre-existing IntOverflowTest). Perf: self-compile median 68.54 s vs
+the Phase 0 baseline 68.12 s on its own (smaller) source; every phase's binary-only cost was checked
+on the same source and is within run-to-run spread except Phase 2's recorded +1.8 % (canonicalization
+limit checks and the ValidateLimits walks).
 
 **Scheme (user choice):** layout C, *tail kind words*, for Custom, Record and Closure, plus fixes for
 every known boxing/unboxing bug.

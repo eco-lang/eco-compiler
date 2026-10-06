@@ -1,3 +1,4 @@
+#include <cassert>
 #include <algorithm>
 #include "Allocator.hpp"
 #include "HeapGenerators.hpp"
@@ -464,6 +465,9 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 // rejects one. Give a would-be 0-field Custom one unboxed field.
                 const bool pad = (num_values == 0);
                 size_t size = sizeof(Custom) + (pad ? 1 : num_values) * sizeof(Unboxable);
+                // Narrow only (K = 0; sizes capped by gen::resize): wide objects are
+                // covered by WideObjectTest.cpp (HEAP_019).
+                assert(num_values <= CUSTOM_HDR_SLOTS);
                 obj = allocInOldGen(size, Tag_Custom);
                 if (!obj) break;
                 Custom *custom = static_cast<Custom *>(obj);
@@ -484,6 +488,7 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
             case HeapObjectDesc::Record: {
                 size_t num_values = std::min(desc.record_values_boxed.size(), desc.record_child_values.size());
                 size_t size = sizeof(Record) + num_values * sizeof(Unboxable);
+                assert(num_values <= RECORD_HDR_SLOTS);   // narrow only, as Custom above
                 obj = allocInOldGen(size, Tag_Record);
                 if (!obj) break;
                 Record *record = static_cast<Record *>(obj);

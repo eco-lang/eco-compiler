@@ -70,8 +70,7 @@ module {
     %b5 = eco.box %five : i64 -> !eco.value
 
     // Create closure for @increment_eval
-    %inc_closure = "eco.papCreate"() {
-      function = @increment_eval,
+    %inc_closure = "eco.papCreate"() {slot_kinds = array<i8>, function = @increment_eval,
       arity = 1 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -83,8 +82,7 @@ module {
     // CHECK: 7
 
     // Create closure for @double_eval
-    %dbl_closure = "eco.papCreate"() {
-      function = @double_eval,
+    %dbl_closure = "eco.papCreate"() {slot_kinds = array<i8>, function = @double_eval,
       arity = 1 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value

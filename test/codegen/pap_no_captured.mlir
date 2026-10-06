@@ -58,8 +58,7 @@ module {
 
     // Create PAP with 0 captured arguments
     // arity = 3, num_captured = 0
-    %pap0 = "eco.papCreate"() {
-      function = @add_three,
+    %pap0 = "eco.papCreate"() {slot_kinds = array<i8>, function = @add_three,
       arity = 3 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -68,16 +67,14 @@ module {
     // CHECK: <fn>
 
     // Extend with first argument
-    %pap1 = "eco.papExtend"(%pap0, %b1) {
-      remaining_arity = 3 : i64
+    %pap1 = "eco.papExtend"(%pap0, %b1) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap1 : !eco.value
     // CHECK: <fn>
 
     // Extend with second argument
-    %pap2 = "eco.papExtend"(%pap1, %b2) {
-      remaining_arity = 2 : i64
+    %pap2 = "eco.papExtend"(%pap1, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap2 : !eco.value
@@ -85,8 +82,7 @@ module {
 
     // Extend with third (final) argument - saturates and calls
     // 1 + 2 + 3 = 6
-    %result = "eco.papExtend"(%pap2, %b3) {
-      remaining_arity = 1 : i64
+    %result = "eco.papExtend"(%pap2, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value

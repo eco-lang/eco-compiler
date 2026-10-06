@@ -3,9 +3,10 @@ module Compiler.Generate.MLIR.Types exposing
     , monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
     , isFunctionType, countTotalArity, isEcoValueType
-    , isUnboxable, mlirTypeToKind, bitmapSetKind
+    , isUnboxable, mlirTypeToKind
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
+    , ctorSlotKinds, recordSlotKinds
     , ctorSlotTypes, isAggCustomType, isAggValueType, tupleSlotTypes
     )
 
@@ -36,11 +37,12 @@ is `i64` at the ABI.
 
 The rest of the module is the heap rule worked out for each kind of object. A
 _layout_ says where each field of a record, tuple or constructor goes and
-whether it is unboxed. Each layout carries an _unboxed bitmap_, an `Int` with
-two bits per slot, slot `i` occupying bits `2i` and `2i + 1`, holding the slot
-kind: 0 boxed, 1 Int, 2 Float, 3 Char. A record field at index 26 or above,
-and a constructor field at index 24 or above, is stored boxed even when it
-could be unboxed.
+whether it is unboxed. Every Int, Float and Char field of a record or
+constructor is stored unboxed, whatever its index. A slot's kind (0 boxed,
+1 Int, 2 Float, 3 Char) is recorded per slot (`ctorSlotKinds`,
+`recordSlotKinds`), and the backend packs the kinds of slots beyond an object's
+header bitmap into extension words (HEAP\_019). Tuples keep a small Elm-side
+bitmap (`TupleLayout.unboxedBitmap`, at most 3 slots, two bits per slot).
 
 The module also recognises _value aggregates_: tuples and constructors held
 as SSA values, of types such as `!eco.tuple2<..>` and `!eco.custom<..>`,
@@ -50,9 +52,10 @@ rather than as heap objects.
 @docs monoTypeToAbi, monoTypeToOperand
 @docs mlirTypeToString
 @docs isFunctionType, countTotalArity, isEcoValueType
-@docs isUnboxable, mlirTypeToKind, bitmapSetKind
+@docs isUnboxable, mlirTypeToKind
 @docs RecordLayout, FieldInfo, TupleLayout, CtorLayout
 @docs computeRecordLayout, computeTupleLayout, computeCtorLayout
+@docs ctorSlotKinds, recordSlotKinds
 @docs ctorSlotTypes, isAggCustomType, isAggValueType, tupleSlotTypes
 
 -}
@@ -282,9 +285,9 @@ isUnboxable ty =
             False
 
 
-{-| Returns the slot kind of a value of the given MLIR type, for an unboxed
-bitmap: 1 for `i64`, 2 for `f64`, 3 for `i16`, and 0 (boxed) for anything
-else. These are the kinds the layouts give Int, Float and Char.
+{-| Returns the slot kind of a value of the given MLIR type, for `slot_kinds`
+or a tuple bitmap: 1 for `i64`, 2 for `f64`, 3 for `i16`, and 0 (boxed) for
+anything else. These are the kinds the layouts give Int, Float and Char.
 -}
 mlirTypeToKind : MlirType -> Int
 mlirTypeToKind ty =
@@ -353,8 +356,6 @@ its position in that order, not in the source.
 -}
 type alias RecordLayout =
     { fieldCount : Int
-    , unboxedCount : Int
-    , unboxedBitmap : Int
     , fields : List FieldInfo
     }
 
@@ -382,8 +383,6 @@ type alias CtorLayout =
     { name : Name
     , tag : Int
     , fields : List FieldInfo
-    , unboxedCount : Int
-    , unboxedBitmap : Int
     }
 
 
@@ -420,46 +419,45 @@ encodeUnboxedKind monoType =
             0
 
 
-{-| The number of slots an unboxed bitmap can describe. Twenty-six two-bit
-slots take 52 bits; a 27th would need 54, more than the 53 bits an Elm `Int`
-holds exactly. The bitmap records no kind for a slot at this index or above, so
-it reads as boxed there.
+{-| The slot kind of each field of a constructor layout, in field order: 1 Int,
+2 Float, 3 Char for an unboxed field, 0 for a boxed one. This is the
+`slot_kinds` attribute of `eco.construct.custom` (HEAP\_019, CGEN\_020).
 -}
-maxTypedSlots : Int
-maxTypedSlots =
-    26
+ctorSlotKinds : CtorLayout -> List Int
+ctorSlotKinds layout =
+    List.map fieldSlotKind layout.fields
 
 
-{-| Returns `bitmap` with the kind of slot `index` replaced by `kind`. An
-`index` of `maxTypedSlots` (26) or above leaves the bitmap unchanged, so that
-slot reads as boxed.
-
-The bitmap is computed with ordinary `Int` arithmetic rather than `Bitwise`,
-whose operations are 32-bit and so could reach only 16 slots. Arithmetic is
-exact up to 2^53, which covers 26 slots.
-
+{-| The slot kind of each field of a record layout, in layout order (the
+`slot_kinds` attribute of `eco.construct.record`).
 -}
-bitmapSetKind : Int -> Int -> Int -> Int
-bitmapSetKind bitmap index kind =
-    if index >= maxTypedSlots then
-        bitmap
+recordSlotKinds : RecordLayout -> List Int
+recordSlotKinds layout =
+    List.map fieldSlotKind layout.fields
+
+
+fieldSlotKind : FieldInfo -> Int
+fieldSlotKind field =
+    if field.isUnboxed then
+        encodeUnboxedKind field.monoType
 
     else
-        let
-            weight =
-                4 ^ index
+        0
 
-            current =
-                modBy 4 (floor (toFloat bitmap / toFloat weight))
-        in
-        bitmap + (modBy 4 kind - current) * weight
+
+{-| The bitmap of a tuple layout (at most three slots, so plain Int
+arithmetic is exact): slot i's kind times 4^i.
+-}
+tupleBitmap : List Int -> Int
+tupleBitmap kinds =
+    List.foldr (\kind acc -> acc * 4 + kind) 0 kinds
 
 
 {-| Returns the layout of a record with the given fields.
 
 The unboxed fields come first, then the boxed ones, each group in order of
-field name by string comparison, and the indices follow that order. A field at
-index 26 or above is stored boxed even if its type could be unboxed.
+field name by string comparison, and the indices follow that order. Every Int,
+Float or Char field is unboxed, whatever its index.
 
 -}
 computeRecordLayout : Dict Name Mono.MonoType -> RecordLayout
@@ -480,40 +478,18 @@ computeRecordLayout fields =
         orderedFields =
             sortedUnboxed ++ sortedBoxed
 
-        -- Capped by index so that a field the bitmap cannot describe is stored boxed.
         indexedFields =
             List.indexedMap
                 (\idx ( name, ty ) ->
                     { name = name
                     , index = idx
                     , monoType = ty
-                    , isUnboxed = canUnbox ty && idx < maxTypedSlots
+                    , isUnboxed = canUnbox ty
                     }
                 )
                 orderedFields
-
-        unboxedCount =
-            List.length (List.filter .isUnboxed indexedFields)
-
-        unboxedBitmap =
-            List.foldl
-                (\field acc ->
-                    let
-                        kind =
-                            if field.isUnboxed then
-                                encodeUnboxedKind field.monoType
-
-                            else
-                                0
-                    in
-                    bitmapSetKind acc field.index kind
-                )
-                0
-                indexedFields
     in
     { fieldCount = List.length orderedFields
-    , unboxedCount = unboxedCount
-    , unboxedBitmap = unboxedBitmap
     , fields = indexedFields
     }
 
@@ -560,20 +536,17 @@ computeTupleLayout types =
             List.map (\t -> ( t, canUnbox t )) types
 
         unboxedBitmap =
-            List.indexedMap Tuple.pair elements
-                |> List.foldl
-                    (\( i, ( ty, isUnboxed ) ) acc ->
-                        let
-                            kind =
-                                if isUnboxed then
-                                    encodeUnboxedKind ty
+            tupleBitmap
+                (List.map
+                    (\( ty, isUnboxed ) ->
+                        if isUnboxed then
+                            encodeUnboxedKind ty
 
-                                else
-                                    0
-                        in
-                        bitmapSetKind acc i kind
+                        else
+                            0
                     )
-                    0
+                    elements
+                )
     in
     { arity = List.length types
     , unboxedBitmap = unboxedBitmap
@@ -582,8 +555,8 @@ computeTupleLayout types =
 
 
 {-| Returns the layout of a constructor from its shape. The fields keep their
-declaration order and are named `field0`, `field1` and so on. A field at index
-24 or above is stored boxed even if its type could be unboxed.
+declaration order and are named `field0`, `field1` and so on. Every Int, Float
+or Char field is unboxed, whatever its index.
 -}
 computeCtorLayout : Mono.CtorShape -> CtorLayout
 computeCtorLayout shape =
@@ -594,33 +567,12 @@ computeCtorLayout shape =
                     { name = "field" ++ String.fromInt idx
                     , index = idx
                     , monoType = ty
-                    , isUnboxed = canUnbox ty && idx < 24
+                    , isUnboxed = canUnbox ty
                     }
                 )
                 shape.fieldTypes
-
-        unboxedBitmap =
-            List.foldl
-                (\field acc ->
-                    let
-                        kind =
-                            if field.isUnboxed then
-                                encodeUnboxedKind field.monoType
-
-                            else
-                                0
-                    in
-                    bitmapSetKind acc field.index kind
-                )
-                0
-                fields
-
-        unboxedCount =
-            List.length (List.filter .isUnboxed fields)
     in
     { name = shape.name
     , tag = shape.tag
     , fields = fields
-    , unboxedCount = unboxedCount
-    , unboxedBitmap = unboxedBitmap
     }

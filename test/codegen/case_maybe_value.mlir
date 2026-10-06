@@ -24,7 +24,7 @@ module {
 
     // Create Maybe.Just 42
     %b42 = eco.box %c42 : i64 -> !eco.value
-    %just = eco.construct.custom(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just = eco.construct.custom(%b42) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Create the nullary ctor (tag 0) — an embedded null-cons constant
     // (HEAP_044); eco.construct.custom with size 0 is a verifier error.

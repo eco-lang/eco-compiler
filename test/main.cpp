@@ -46,6 +46,7 @@
 #include "allocator/GenericApplyBoxingTest.hpp"
 #include "allocator/WideObjectPinsTest.hpp"
 #include "allocator/WideKindsTest.hpp"
+#include "allocator/WideObjectTest.hpp"
 #include "allocator/WideClosureTest.hpp"
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
@@ -1000,6 +1001,8 @@ int main(int argc, char* argv[]) {
     registerWideObjectPinsTests(wideObjectPinsTests);
     Testing::TestSuite wideKindsTests("Wide kinds");
     registerWideKindsTests(wideKindsTests);
+    Testing::TestSuite wideObjectTests("Wide objects (layout C)");
+    registerWideObjectTests(wideObjectTests);
     Testing::TestSuite wideClosureTests("Wide closures");
     registerWideClosureTests(wideClosureTests);
 
@@ -1213,6 +1216,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(genericApplyBoxingTests));
     suite.add(std::move(wideObjectPinsTests));
     suite.add(std::move(wideKindsTests));
+    suite.add(std::move(wideObjectTests));
     suite.add(std::move(wideClosureTests));
     suite.add(std::move(ecoApplyClosureTypedTests));
     suite.add(std::move(sliceReprTests));

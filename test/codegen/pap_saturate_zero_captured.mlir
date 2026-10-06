@@ -57,8 +57,7 @@ module {
     %b30 = eco.box %i30 : i64 -> !eco.value
 
     // Create PAP with 0 captured values (arity=3, captured=0)
-    %pap0 = "eco.papCreate"() {
-      function = @add_three,
+    %pap0 = "eco.papCreate"() {slot_kinds = array<i8>, function = @add_three,
       arity = 3 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -67,8 +66,7 @@ module {
     // CHECK: <fn>
 
     // Saturate with all 3 arguments at once: 10 + 20 + 30 = 60
-    %result = "eco.papExtend"(%pap0, %b10, %b20, %b30) {
-      remaining_arity = 3 : i64
+    %result = "eco.papExtend"(%pap0, %b10, %b20, %b30) {slot_kinds = array<i8: 0, 0, 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value

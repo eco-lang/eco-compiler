@@ -54,10 +54,10 @@ module {
     %b30 = eco.box %c30 : i64 -> !eco.value
 
     // Create PAP with 1 boxed captured arg
-    %pap = "eco.papCreate"(%b10) {function = @sum3_eval, arity = 3 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
+    %pap = "eco.papCreate"(%b10) {slot_kinds = array<i8: 0>, function = @sum3_eval, arity = 3 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
 
     // Extend with 2 more boxed args to saturate
-    %result = "eco.papExtend"(%pap, %b20, %b30) {remaining_arity = 2 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %result = "eco.papExtend"(%pap, %b20, %b30) {slot_kinds = array<i8: 0, 0>, remaining_arity = 2 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
 
     // 10 + 20 + 30 = 60
     %unboxed = eco.unbox %result : !eco.value -> i64

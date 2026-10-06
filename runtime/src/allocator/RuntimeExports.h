@@ -77,10 +77,10 @@ void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
 
 /// Allocates a Custom ADT object.
 /// @param ctor_id     Constructor tag (per Elm ADT, stored in Custom.ctor)
-/// @param field_count Number of pointer-sized fields
-/// @param scalar_bytes Additional bytes for unboxed scalar fields
+/// @param field_count Number of fields (1..CUSTOM_MAX_FIELDS; aborts past the limit).
+///                    Fields >= 24 get extWords ext kind words, zeroed (HEAP_019).
 /// @return HPointer (as uint64_t) to the allocated object
-HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count);
 
 /// Allocates and initializes a Cons cell (list node).
 /// @param head The head element value (HPointer or unboxed primitive as uint64_t)
@@ -279,7 +279,7 @@ void eco_set_unboxed(HPtr obj, uint64_t bitmap);
 // Fast Allocation Functions (bump-pointer only, no GC, return 0 on failure)
 //===----------------------------------------------------------------------===//
 
-HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count);
 HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_unboxed);
 HPtr eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_mask);
 HPtr eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
@@ -294,7 +294,7 @@ HPtr eco_alloc_char_fast(uint32_t value);
 // Slow Allocation Functions (may GC, always succeed — used behind statepoint)
 //===----------------------------------------------------------------------===//
 
-HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count);
 HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_unboxed);
 HPtr eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask);
 HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
@@ -357,7 +357,7 @@ HPtr eco_init_cons_at(void* ptr, uint64_t head, HPtr tail, uint32_t head_unboxed
 HPtr eco_init_tuple2_at(void* ptr, uint64_t a, uint64_t b, uint32_t unboxed_mask);
 HPtr eco_init_tuple3_at(void* ptr, uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
 HPtr eco_init_record_at(void* ptr, uint32_t field_count, uint64_t unboxed_bitmap);
-HPtr eco_init_custom_at(void* ptr, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_init_custom_at(void* ptr, uint32_t ctor_id, uint32_t field_count);
 HPtr eco_init_string_at(void* ptr, uint32_t length);
 
 //===----------------------------------------------------------------------===//

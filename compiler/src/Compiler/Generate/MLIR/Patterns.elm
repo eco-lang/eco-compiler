@@ -402,7 +402,7 @@ materializeSplitParam ctx info =
         Ctx.SplitCtor layout ->
             let
                 ( ctx2, op ) =
-                    Ops.ecoConstructCustom ctx1 hints resultVar layout.tag (List.length info.slots) layout.unboxedBitmap info.slots (Just layout.name)
+                    Ops.ecoConstructCustom ctx1 hints resultVar layout.tag (List.length info.slots) (Types.ctorSlotKinds layout) info.slots (Just layout.name)
             in
             ( [ op ], resultVar, ctx2 )
 
@@ -780,8 +780,8 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             -- the field directly as i1 reads only the low bit
                             -- of the HPointer, which is 0 for both True and
                             -- False — silently inverting Bool pattern tests.
-                            -- An Int/Float/Char target on a boxed slot (a field
-                            -- past the unboxed slot cap) is unboxed the same way
+                            -- An Int/Float/Char target on a boxed slot (e.g. a
+                            -- polymorphic field) is unboxed the same way
                             -- (REP_BOUNDARY_001: the slot kind is 00, so the
                             -- projection is !eco.value). Other targetTypes pass
                             -- through unchanged because the caller has set them
@@ -900,8 +900,8 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
                     Utils.Crash.crash ("generateMonoFieldOnHeap: field " ++ fieldName ++ " is not in the record layout")
 
         -- The slot's stored type (REP_BOUNDARY_001): the field's ABI primitive
-        -- when its kind is unboxed, else !eco.value (Bool, and every field past
-        -- the record's unboxed slot cap).
+        -- when its kind is unboxed, else !eco.value (Bool and every other
+        -- non-Int/Float/Char field; layouts have no index cap, HEAP_019).
         storedType =
             if fieldInfo.isUnboxed then
                 Types.monoTypeToAbi fieldInfo.monoType
@@ -933,7 +933,7 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
 
     else if not fieldInfo.isUnboxed && (targetType == I1 || Types.isUnboxable targetType) then
         -- Boxed slot, primitive target: project !eco.value, then unbox. Covers
-        -- an Int/Float/Char field past the slot cap and a Bool scrutinee, whose
+        -- a primitive read of a boxed (e.g. polymorphic) field and a Bool scrutinee, whose
         -- slot holds the True/False HPointer constants (REP_CONSTANT_003).
         let
             ( valVar, ctxA ) =

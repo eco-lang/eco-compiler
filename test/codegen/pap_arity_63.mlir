@@ -62,8 +62,7 @@ module {
 
     // Create PAP with high arity (simulating 63)
     // Using arity=10 captured=0 to test the machinery
-    %pap = "eco.papCreate"() {
-      function = @sum10,
+    %pap = "eco.papCreate"() {slot_kinds = array<i8>, function = @sum10,
       arity = 10 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -72,8 +71,7 @@ module {
     // CHECK: <fn>
 
     // Extend with 3 args (still partial, 7 remaining)
-    %pap2 = "eco.papExtend"(%pap, %b1, %b2, %b3) {
-      remaining_arity = 10 : i64
+    %pap2 = "eco.papExtend"(%pap, %b1, %b2, %b3) {slot_kinds = array<i8: 0, 0, 0>, remaining_arity = 10 : i64
     } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap2 : !eco.value

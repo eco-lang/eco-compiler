@@ -66,15 +66,16 @@ suite =
 
 
 {-| A call to the constructor function of a constructor with 25 `Int` fields.
-`computeCtorLayout` stores field 24 boxed, but by REP\_ABI\_001 every `Int`
-argument still crosses the call as `i64`, so the constructor function's
-parameter and the call's operand must agree. The program declares
+`computeCtorLayout` stores field 24 unboxed as `i64`; the constructor
+function's parameter and slot are both `i64`, and the call's operand must
+agree with the parameter. The test still pins REP\_ABI\_001 for constructors
+wider than the header bitmap. The program declares
 `type Wide = Wide Int ... Int` (25 fields), a `lastField : Wide -> Int` that
 matches it, and `testValue = lastField (Wide 0 1 ... 24)`.
 -}
 wideCtorCallTest : Test
 wideCtorCallTest =
-    Test.test "constructor with a field past the unboxed slot cap is called with matching operand types" <|
+    Test.test "constructor with 25 Int fields is called with matching operand types" <|
         \_ ->
             let
                 fieldNames =

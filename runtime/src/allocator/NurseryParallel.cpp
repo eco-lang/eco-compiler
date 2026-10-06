@@ -498,7 +498,7 @@ void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
             break;
         }
         case Tag_Custom: {
-            Custom* c = static_cast<Custom*>(obj);   // header slots, then the tail (boxed: D semantics)
+            Custom* c = static_cast<Custom*>(obj);   // header slots, then the tail (ext kind words)
             const u32 n = hdr->size, h = n < Elm::CUSTOM_HDR_SLOTS ? n : Elm::CUSTOM_HDR_SLOTS;
             for (u32 i = 0; i < h; i++) unbox(c->values[i], Elm::kindInWord(c->unboxed, i) == 0);
             for (u32 i = h; i < n; i++) unbox(c->values[i], Elm::customSlotKind(c, i) == 0);

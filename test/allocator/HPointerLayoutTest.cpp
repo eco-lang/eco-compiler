@@ -188,6 +188,7 @@ Testing::TestCase testHeaderWordComposition(
             {Tag_Record, 0, 5},        // record (sizeField = field count)
             {Tag_Custom, 0, 3},        // custom (sizeField = field count)
             {Tag_Closure, 0, 7},       // closure (sizeField = slot count)
+            {Tag_Record, 63, 2047},    // widest record: K = 63 ext kind words (HEAP_019)
         };
         for (const Case& c : cases) {
             TEST_ASSERT(headerWordViaBitfields(c.tag, c.unboxed, c.size) ==

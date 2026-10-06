@@ -34,18 +34,18 @@ module {
       function = @add3,
       arity = 3 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     %p1 = "eco.papExtend"(%pap, %c1) {
       remaining_arity = 3 : i64,
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64) -> !eco.value
 
     %r1 = "eco.papExtend"(%p1, %c2, %c3) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 5 : i64,
+      slot_kinds = array<i8: 1, 1>,
       _result_kind = 1 : i8,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64, i64) -> i64
@@ -58,17 +58,17 @@ module {
       function = @add3,
       arity = 3 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     %p2 = "eco.papExtend"(%pap2, %c10) {
       remaining_arity = 3 : i64,
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64) -> !eco.value
 
     %r2 = "eco.papExtend"(%p2, %c2, %c3) {
-      newargs_unboxed_bitmap = 5 : i64,
+      slot_kinds = array<i8: 1, 1>,
       _result_kind = 1 : i8,
       _call_kind = "segmentation_unknown"
     } : (!eco.value, i64, i64) -> i64
@@ -81,31 +81,31 @@ module {
       function = @add3,
       arity = 3 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     %p3a = "eco.papExtend"(%pap3, %c10) {
       remaining_arity = 3 : i64,
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64) -> !eco.value
 
     %p3b = "eco.papExtend"(%pap3, %c20) {
       remaining_arity = 3 : i64,
-      newargs_unboxed_bitmap = 1 : i64,
+      slot_kinds = array<i8: 1>,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64) -> !eco.value
 
     %r3a = "eco.papExtend"(%p3a, %c2, %c3) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 5 : i64,
+      slot_kinds = array<i8: 1, 1>,
       _result_kind = 1 : i8,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64, i64) -> i64
 
     %r3b = "eco.papExtend"(%p3b, %c2, %c3) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 5 : i64,
+      slot_kinds = array<i8: 1, 1>,
       _result_kind = 1 : i8,
       _call_kind = "direct_known_segmentation"
     } : (!eco.value, i64, i64) -> i64

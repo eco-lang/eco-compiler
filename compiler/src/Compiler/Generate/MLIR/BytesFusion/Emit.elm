@@ -1842,14 +1842,14 @@ emitJustResult state =
                 -- behavior. EcoGCPrepare's liveness query at the construct op
                 -- still picks up roots from the surrounding SSA scope.
                 ( ctx4, justOp ) =
-                    Ops.ecoConstructCustom ctx3 [] justVar 0 1 0 [ ( unitVar, Types.ecoValue ) ] (Just "Just")
+                    Ops.ecoConstructCustom ctx3 [] justVar 0 1 [ 0 ] [ ( unitVar, Types.ecoValue ) ] (Just "Just")
             in
             ( [ unitOp, justOp ], justVar, ctx4 )
 
 
 {-| Emit Just with a specific variable.
-Primitive types are stored unboxed (with unboxed\_bitmap = 1) to match type registry expectations.
-Non-primitives are stored as eco.value (with unboxed\_bitmap = 0).
+Primitive types are stored unboxed (slot kind 1..3) to match type registry expectations.
+Non-primitives are stored as eco.value (slot kind 0).
 -}
 emitJustResultWithVar : String -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitJustResultWithVar varName state =
@@ -1861,16 +1861,13 @@ emitJustResultWithVar varName state =
     in
     if Types.isUnboxable varType then
         -- Primitive types are stored unboxed in Just (matches type registry expectations).
-        -- 2-bit encoding: slot 0 kind derived from varType.
+        -- Slot 0's kind is derived from varType.
         let
             ( justVar, ctx1 ) =
                 Context.freshVar state.ctx
 
-            bitmap =
-                Types.bitmapSetKind 0 0 (Types.mlirTypeToKind varType)
-
             ( ctx2, justOp ) =
-                Ops.ecoConstructCustom ctx1 [] justVar 0 1 bitmap [ ( varName, varType ) ] (Just "Just")
+                Ops.ecoConstructCustom ctx1 [] justVar 0 1 [ Types.mlirTypeToKind varType ] [ ( varName, varType ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 
@@ -1880,9 +1877,9 @@ emitJustResultWithVar varName state =
             ( justVar, ctx1 ) =
                 Context.freshVar state.ctx
 
-            -- Use eco.construct.custom with constructor "Just", tag 0, size 1, unboxed_bitmap = 0
+            -- Use eco.construct.custom with constructor "Just", tag 0, size 1, slot kind 0
             ( ctx2, justOp ) =
-                Ops.ecoConstructCustom ctx1 [] justVar 0 1 0 [ ( varName, Types.ecoValue ) ] (Just "Just")
+                Ops.ecoConstructCustom ctx1 [] justVar 0 1 [ 0 ] [ ( varName, Types.ecoValue ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 

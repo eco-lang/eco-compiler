@@ -101,9 +101,14 @@ Validates partial application extension:
 ```cpp
 LogicalResult PapExtendOp::verify() {
     // newargs types must match remaining parameter types
-    // newargs_unboxed bitmap must be consistent with types
+    // slot_kinds must equal the newarg operand kinds; at most 2047 newargs
+    // stale u64 bitmap attributes (newargs_unboxed_bitmap) are rejected
 }
 ```
+
+`eco.construct.custom` and `eco.construct.record` likewise verify `slot_kinds` (one kind per field,
+equal to the operand kinds, `i1` rejected) with caps of 2040 fields (Custom) and 2047 (Record), and
+reject a stale `unboxed_bitmap` (CGEN_026, CGEN_020; Oct 2026).
 
 ## EcoGCLivenessAudit Pass
 

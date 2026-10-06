@@ -4,6 +4,9 @@
 (shared helpers, limits, the `slot_kinds` attribute and its lifetime, the test switch, commands, how
 to add tests) is binding. This file does not restate it.
 
+**Status:** DONE (2026-10-05): 3A, 3B, 3C and 3D implemented; each group's gate result is recorded
+before its checklist, and the whole-plan definition of done holds ("3D final gate result").
+
 **Line numbers** were verified against the tree of 2026-10-05, before Phase 1. Phases 1, 2 and the
 earlier Phase 3 groups move many of them, so **anchor on the function, op or quoted text** given with
 each one. The number says where the code was on 2026-10-05.
@@ -668,20 +671,49 @@ are committed; the 3A checklist is ticked.
 
 ---
 
+### 3A gate result (recorded 2026-10-05)
+
+- Gate 1–5 (implementer): ALL build clean (strict canary, LSS_022 license unchanged); default
+  tree `wide:` 13/13 and the whole binary 2105 pass / 10 fail (L3); validate tree `wide:` 14/14 (T8
+  included) and 2107 / 10 (L3); register-guards green; tla-canary strict. **No pin fired**: the
+  Custom/Record arms of `NP.scanEntryP` already read kinds through the accessors since Phase 1d
+  (only a comment changed, which the hash ignores); voluntary M1/M3/M5 AUDIT entries written;
+  `tla-trace` 150/150.
+- Gate 6: `full` after the cache wipe: 2,115 run, 2,105 pass, 10 fail = L3 exactly.
+- Gate 7: validate-tree `full`: 2,117 / 10 = L3; the only `[heap-validate]` lines are the six
+  existing negative-control tests (PM2–PM4, IM1, TV2) — none from `validateExtKinds`: every compiled
+  Custom/Record has K = 0.
+- AOT (3A.10 changed the allocation ABI): 922/934, identical to Phase 2 (L3 + FlagsRecordTest +
+  PortEchoTest).
+- Gate 9: bootstrap Stage 4b/8c fixed points hold; `eco-verify` rc 0.
+- Gate 10 perf: `eco-optP3a` counters equal Phase 2's `eco-optP2b` (minor 1336, major 6; promoted
+  and objects within the same run-to-run jitter), output byte-identical. Wall was +0.8 s (+1.1 %)
+  interleaved: a profile showed `Elm::customSlotKind` had become an out-of-line call (0.70 % of
+  samples) once the ext-word branch was added. **Fix:** the three slot-kind accessors are split
+  into an `always_inline` header path and a `noinline, cold` ext-word path (`customExtSlotKind`,
+  `recordExtSlotKind`, `closureExtSlotKind`). Re-measured interleaved, 3 runs each: P2b median
+  69.00 s, P3a2 69.26 s (+0.4 %, within spread); unit `wide` 32/32, validate `wide` 33/33,
+  `Closure` 48/48, `generic apply` 5/5 after the change.
+- Deviations: 3A.6 builders share one template `detail::allocWideContainer` (the u64 path builds no
+  vector); 3A.9 reads placement counters from the thread heap's stats and T11 flips the last
+  ext-word Int slot; `HeapGenerators.cpp` got the narrow-only asserts (open question 3);
+  `allocate_lowlevel.mlir` / `dbg_all_values.mlir` rewritten on `eco.construct.custom`, the three
+  `allocate_ctor` fixtures deleted, the obsolete `test/codegen/TODO_*` planning checklists later deleted.
+
 ### 3A checklist
 
-- [ ] 3A.1 accessor bodies, `splitPhysicalSlots`, pack helpers, static_asserts, `testing::allow_wide_objects`, comments
-- [ ] 3A.2 `getObjectSizeFromHeader` Custom/Record arms
-- [ ] 3A.3 `initHeaderForTag` inversion, single header store, ext zeroing, `ecoFatalWideObject`; `testHeaderWordComposition` case
-- [ ] 3A.4 YLOS whole-word fix-up (plus the old-gen direct path)
-- [ ] 3A.5 the eight explicit entries; `initWideHeader` / `wideByteSize`
-- [ ] 3A.6 builders with kinds vectors; u64 overloads forwarding
-- [ ] 3A.7 tail loops W1–W10 read kinds; equality / printers verified on accessors (typed record printer `:3986`)
-- [ ] 3A.8 `validateExtKinds` plus calls; census flag
-- [ ] 3A.9 `WideObjectTest.cpp` T1–T14 registered
-- [ ] 3A.10 `AllocateCtorOp` / `scalar_bytes` removed; fixtures and tests updated
-- [ ] TLA: M3 AUDIT + manifest update; M1/M5 voluntary entries; trace run
-- [ ] Gate 1–10 green
+- [x] 3A.1 accessor bodies, `splitPhysicalSlots`, pack helpers, static_asserts, `testing::allow_wide_objects`, comments
+- [x] 3A.2 `getObjectSizeFromHeader` Custom/Record arms
+- [x] 3A.3 `initHeaderForTag` inversion, single header store, ext zeroing, `ecoFatalWideObject`; `testHeaderWordComposition` case
+- [x] 3A.4 YLOS whole-word fix-up (plus the old-gen direct path)
+- [x] 3A.5 the eight explicit entries; `initWideHeader` / `wideByteSize`
+- [x] 3A.6 builders with kinds vectors; u64 overloads forwarding
+- [x] 3A.7 tail loops W1–W10 read kinds; equality / printers verified on accessors (typed record printer `:3986`)
+- [x] 3A.8 `validateExtKinds` plus calls; census flag
+- [x] 3A.9 `WideObjectTest.cpp` T1–T14 registered
+- [x] 3A.10 `AllocateCtorOp` / `scalar_bytes` removed; fixtures and tests updated
+- [x] TLA: M3 AUDIT + manifest update; M1/M5 voluntary entries; trace run
+- [x] Gate 1–10 green
 
 ### 3A rollback
 
@@ -1788,23 +1820,39 @@ path. Run `ECO_GCPREPARE_CENSUS=1 build/runtime/src/codegen/ecoc test/codegen/wi
 - Add a second fixture with no preceding allocations (all 600 fields `i64` constants) to pin the
   singleton call path, so both paths are covered whichever one the grouping takes.
 
+### 3B gate result (recorded 2026-10-05)
+
+- ALL build clean (strict canary silent, license hashes unchanged); codegen fixtures 342/342 (8 new
+  `wide_*`), validate tree `codegen/wide_` 8/8 with no `[heap-validate]`; whole binary default
+  2113 / 10 and validate 2115 / 10, the 10 = L3 exactly; register-guards green.
+- **LLVM identity (3B.6.2): byte-identical** LLVM IR for all 934 production `.mlir` modules
+  (`build/test/aot-e2e/*/eco-stuff`, 820 allocate), Phase 3A `ecoc` vs Phase 3B `ecoc`. Because the
+  front end is unchanged in 3B and the IR is identical, the `full`/AOT/bootstrap/perf results of 3B
+  equal 3A's; they were run once, combined with the 3C gate below.
+- Deviations: `kindBitmapFor` kept (the tuple to_heap arms use it); the plan's "bitmap bits beyond
+  the last field" verifier check left out (the old verifier never had it and a stray bit is valid
+  today); MLIR diagnostics quote types, so `wide_record_33_kind_mismatch.mlir` CHECKs
+  `operand type 'i64' (kind 1)`; the 600-field record never forms an allocation group, so two extra
+  group fixtures (`wide_record_600_group_jit.mlir`, `wide_custom_600_group_jit.mlir`) cover the group
+  path; `ecoc -emit=jit` sets the same test flag as `EcoRunner`.
+
 ### 3B checklist
 
-- [ ] Preconditions 3A-a…d, P1-a, P1-b and P2-a checked (3B.0).
-- [ ] 3B.1: layout helpers and `static_assert`s in `EcoToLLVMInternal.h` / `EcoToLLVMHeap.cpp`;
+- [x] Preconditions 3A-a…d, P1-a, P1-b and P2-a checked (3B.0).
+- [x] 3B.1: layout helpers and `static_assert`s in `EcoToLLVMInternal.h` / `EcoToLLVMHeap.cpp`;
       builds.
-- [ ] Before 3B.2: 3B.6.2 "before" LLVM dump captured.
-- [ ] 3B.2: `Ops.td` (3 ops), `verifySlotKinds`, `wideObjectsAllowed`, the 3 verifiers (cap
+- [x] Before 3B.2: 3B.6.2 "before" LLVM dump captured.
+- [x] 3B.2: `Ops.td` (3 ops), `verifySlotKinds`, `wideObjectsAllowed`, the 3 verifiers (cap
       messages without the attribute unchanged), the 3B.2.6 `EcoRunner` hook.
-- [ ] 3B.3: S1–S6 use `recordByteSize` / `customByteSize`, and `grep -n "RecordBaseSize\|CustomBaseSize"`
+- [x] 3B.3: S1–S6 use `recordByteSize` / `customByteSize`, and `grep -n "RecordBaseSize\|CustomBaseSize"`
       shows no other size formula.
-- [ ] 3B.4: RD3–RD7, F1–F6. Ext words stored in the allocation window on the inline, call and group
+- [x] 3B.4: RD3–RD7, F1–F6. Ext words stored in the allocation window on the inline, call and group
       paths.
-- [ ] 3B.5: RD8–RD11, F7–F10. `kindBitmapFor` deleted.
-- [ ] 3B.2–3B.5 land as **one commit** (the accessor type change spans them).
-- [ ] 3B.6: 6 fixtures plus the generator added. Codegen run green in the default and validate
+- [x] 3B.5: RD8–RD11, F7–F10. `kindBitmapFor` deleted.
+- [x] 3B.2–3B.5 land as **one commit** (the accessor type change spans them).
+- [x] 3B.6: 6 fixtures plus the generator added. Codegen run green in the default and validate
       trees.
-- [ ] 3B.6.2 identity `IDENTICAL`; `full` matches list L3 exactly; elm-tests 2 GOPT_003;
+- [x] 3B.6.2 identity `IDENTICAL`; `full` matches list L3 exactly; elm-tests 2 GOPT_003;
       bootstrap B==C; perf counters bit-identical to 3A.
 
 **3B is done when** every item above is checked and the 3B.6.4 table holds.
@@ -2362,24 +2410,40 @@ cmake --build build --target bootstrap 2>&1 | tee /tmp/test_output_boot.txt && c
 
 ### 3C checklist
 
-- [ ] 3C-0a…3C-0f preconditions verified.
-- [ ] `Types.elm`: caps gone; `ctorSlotKinds` / `recordSlotKinds` added; `bitmapSetKind` /
+- [x] 3C-0a…3C-0f preconditions verified.
+- [x] `Types.elm`: caps gone; `ctorSlotKinds` / `recordSlotKinds` added; `bitmapSetKind` /
   `maxTypedSlots` gone (tuples use a private `tupleBitmap`); module and function docs reworded.
-- [ ] `Ops.elm`: new signatures; `slot_kinds` emitted; `checkKindsLength` crash guard.
-- [ ] All 8 caller sites of 3C.3 converted; `grep -rn "unboxedBitmap" compiler/src` lists only
+- [x] `Ops.elm`: new signatures; `slot_kinds` emitted; `checkKindsLength` crash guard.
+- [x] All 8 caller sites of 3C.3 converted; `grep -rn "unboxedBitmap" compiler/src` lists only
   `TupleLayout` users (`Types.elm` tuple layout, `Expr.elm:7479/7483`, `Patterns.elm:388/395`,
   `Functions.elm:1120/1123/1728/1731`) plus any Phase 2 leftovers (should be none).
-- [ ] `grep -rn "bitmapSetKind\|maxTypedSlots" compiler/src compiler/tests` lists only doc text, or
+- [x] `grep -rn "bitmapSetKind\|maxTypedSlots" compiler/src compiler/tests` lists only doc text, or
   is empty.
-- [ ] `UnboxedBitmap.elm`, `CtorLayoutConsistency.elm` and `DestructorTypeProjection.elm`
+- [x] `UnboxedBitmap.elm`, `CtorLayoutConsistency.elm` and `DestructorTypeProjection.elm`
   retargeted (`checkRawBoxedRead` deleted; `checkRecordFieldProjection` unchanged); custom, record and CallAbi
   pins renamed/rewritten; String-at-24 and polymorphic variants; three new 3C.6 cases.
-- [ ] elm-tests: only the 2 GOPT_003 failures.
-- [ ] Text and bytecode spot checks (3C commands 3C.2).
-- [ ] `full` after a cache wipe: failures exactly equal the 3C.E list.
-- [ ] `run-aot-e2e` (known harness gaps only); bootstrap B==C.
-- [ ] Perf triple: counter delta explained by the census (or zero).
-- [ ] 3C perf row recorded next to the Phase 0 baseline (overview §7).
+- [x] elm-tests: only the 2 GOPT_003 failures.
+- [x] Text and bytecode spot checks (3C commands 3C.2).
+- [x] `full` after a cache wipe: failures exactly equal the 3C.E list.
+- [x] `run-aot-e2e` (known harness gaps only); bootstrap B==C.
+- [x] Perf triple: counter delta explained by the census (or zero).
+- [x] 3C perf row recorded next to the Phase 0 baseline (overview §7).
+
+### 3C gate result (recorded 2026-10-05, combined 3B + 3C)
+
+- elm-tests: 14,078 pass / 2 fail (GOPT_003).
+- Spot check: `WideRecordPatternTest` text MLIR has `slot_kinds` (28 × 1 on the record ops) and 0
+  record ops with `unboxed_bitmap`. The plan's ELF step (`eco-boot-native R.mlirbc -o R.elf`) cannot
+  run here: this `eco-boot-native` is not linked with EcoNativeDriverStatic ("native driver
+  unavailable"); the bytecode path is covered by `full`, which compiles bytecode by default.
+- `full` (cache wiped): 2,123 run, 2,113 pass, 10 fail = L3. AOT: 922/934 = L3 + FlagsRecordTest +
+  PortEchoTest. Bootstrap: Stage 4b/8c fixed points hold, `eco-verify` rc 0.
+- Perf triple (`eco-optP3c`, sha256 `207c476d3021f530…`): 69.91 / 68.87 / 69.29 s (median 69.29;
+  3A 69.26 interleaved: flat); minor 1337, major 6, promoted 178,467,331 (6392 MiB), objects
+  ≈ 304,185,150, GC 2.78–2.80 s; deterministic + fixed point. Against 3A: about 164k fewer objects
+  allocated and 24k fewer promoted (records with primitives past slot 26 no longer box them — the
+  census's 5 sites — plus the compiler source changed in 3C), one more minor GC. Output MLIR +2.6 KB
+  (`slot_kinds` arrays instead of one integer).
 
 ### 3C gate (all must hold)
 
@@ -3153,21 +3217,57 @@ no voluntary AUDIT entries for Phase 3D.
 
 ---
 
+### 3D final gate result (recorded 2026-10-05)
+
+| Gate | Result |
+|---|---|
+| elm-tests | 14,085 pass / 2 fail: exactly the two GOPT_003 pins |
+| `full` (cache wiped) | **2,128 run, 2,128 pass, 0 fail**: every list-L3 pin green, all codegen fixtures (346) and unit pins |
+| validate tree (full rebuild, `eco-stuff` wiped) | `Wide` 36/36; whole binary 2,129/2,129; only the six negative-control `[heap-validate]` lines |
+| register-guards | green (22 PASS, 1 WONTFIX CR-012(e), as before) |
+| `run-aot-e2e` | 932/934: exactly the Phase 0 harness gaps `FlagsRecordTest`, `PortEchoTest`; every wide pin passes in AOT |
+| bootstrap / `eco-verify` | Stage 4b and 8c fixed points hold; rc 0 |
+| `run-mlir-equivalence` | 945/946 after one fix (below): the only failure is `elm/IntOverflowTest` (stage2 != stage6), **pre-existing and unrelated**: the JS Stage 2 compiler reads the literal `9223372036854775807` through a double (test dated 2026-09-15) |
+| `tla-canary` strict / `tla-trace` | green / all rows as expected; no pin fired in 3D (3D.11: no AUDIT entry needed) |
+| perf triple (`eco-optP3d`, sha256 `4d81362953f90246…`) | 68.78 / 68.48 / 68.54 s (median 68.54; 3C 69.29); minor 1337, major 6, promoted 178,326,215 (6386 MiB), objects ≈ 304,296,675, GC 2.73–2.80 s; deterministic + fixed point. Not bit-identical to 3C because 3D.2 changed the compiler's own source (the workload); the 3C binary on the 3D source gives byte-identical output, the same objects (≈ 304,296,68x), minor 1337 / major 6, wall 68.58–69.64 s: 3D adds no runtime cost |
+
+**Fixes and deviations recorded in 3D:**
+- `run-mlir-equivalence`'s Stage 2 compile ran node with `--stack-size=65536` and segfaulted on
+  `WideClosureArity2047Test` (exit 139). `test/mlir_equivalence_main.cpp` now runs node under
+  `ulimit -s unlimited` with `--stack-size=500000` (the Phase 0 step 0.5 fix, which had covered only
+  the E2E and AOT runners); the pin then passes.
+- `WideRecord33Test` / `WideRecord40Test`: every value correct, but their generated `show:` CHECK
+  expected Elm's alphabetical field order while Eco's typed printer prints heap-layout order
+  (unboxed fields first, then boxed, each by name), existing behaviour (`TypeAliasCtorTest`). The
+  generator (`plans/wide-object-tail-kind-words-pins.py`, Appendix P0-A) now emits layout order; only
+  those two files changed. **Open (not part of this plan):** Eco's `Debug.toString` record field
+  order differs from Elm's alphabetical order.
+- `slot_kinds` on papCreate/papExtend defaults to an empty array (the front end omits it when there
+  are no captures/newargs); a missing non-empty one still fails the length check
+  (`papcreate_missing_slot_kinds_rejected.mlir`). Required on construct.custom/record and
+  papCreateGroup; optional on to_heap.
+- 3D.4: 184 ops had neither bitmap nor `slot_kinds` (the old attribute defaulted); the sweep script
+  gained `--add-missing` (kinds from operand types). `pap_group_root_chunks.mlir` rewritten by hand.
+- 3D.3 also removed `assertNarrowContainer` (it depended on the switch; compiled code may now be
+  wide).
+- 3D.0 snapshot is `snapshots/lss-loop/pre-3d`; the perf binaries `eco-optP0`…`eco-optP3d` stay in
+  `build/compiler/build-kernel/bin`.
+
 ### 3D checklist
 
-- [ ] 3D.0 snapshot `pre-wide-3d` + `extra.tgz` + baseline compiler binary
-- [ ] 3D.1 caps 2040/2047 in CustomConstructOp/RecordConstructOp; ToHeapOp caps; 4 limit fixtures (2 JIT, 2 negative)
-- [ ] 3D.2 `TooManyCtorFields` / `TooManyRecordFields` variants of the shared `TooLarge` error (ctor > 2040; record alias / literal / type > 2047), `HeapLimits` field constants, 5 `LimitErrorsTest` cases, CLI check
-- [ ] 3D.3 test switch gone: attribute, `wideObjectsAllowed`, `EcoRunner` hook, flag, census line, T8, `WideGuard` (grep = 0)
-- [ ] 3D.4 sweep: dry run 0 problems; write; only tuple attributes and comments remain; 28 comments reworded; fixture rename; codegen subset green
-- [ ] 3D.5 Ops.td attributes deleted (6 ops), `slot_kinds` required (5 ops; optional on to_heap), stale-attribute rejection + fixture, C++ greps clean
-- [ ] 3D.6 compiler/src and compiler/tests greps show only tuple uses; checker docstrings updated
-- [ ] 3D.7 the 10 list-L3 pins green; `WideCtorField24Test` docstring; 3C.5 elm-test pins still green
-- [ ] 3D.8 invariants: 8 full rows + 2 phrase edits; Phase 2 rows verified present; greps clean
-- [ ] 3D.9 theory docs: 9 passages; grep clean
-- [ ] 3D.10 final gate: every row of the expected-results table
-- [ ] 3D.11 canary quiet (or audited)
-- [ ] 3D.12 memory notes + overview status
+- [x] 3D.0 snapshot `pre-wide-3d` + `extra.tgz` + baseline compiler binary
+- [x] 3D.1 caps 2040/2047 in CustomConstructOp/RecordConstructOp; ToHeapOp caps; 4 limit fixtures (2 JIT, 2 negative)
+- [x] 3D.2 `TooManyCtorFields` / `TooManyRecordFields` variants of the shared `TooLarge` error (ctor > 2040; record alias / literal / type > 2047), `HeapLimits` field constants, 5 `LimitErrorsTest` cases, CLI check
+- [x] 3D.3 test switch gone: attribute, `wideObjectsAllowed`, `EcoRunner` hook, flag, census line, T8, `WideGuard` (grep = 0)
+- [x] 3D.4 sweep: dry run 0 problems; write; only tuple attributes and comments remain; 28 comments reworded; fixture rename; codegen subset green
+- [x] 3D.5 Ops.td attributes deleted (6 ops), `slot_kinds` required (5 ops; optional on to_heap), stale-attribute rejection + fixture, C++ greps clean
+- [x] 3D.6 compiler/src and compiler/tests greps show only tuple uses; checker docstrings updated
+- [x] 3D.7 the 10 list-L3 pins green; `WideCtorField24Test` docstring; 3C.5 elm-test pins still green
+- [x] 3D.8 invariants: 8 full rows + 2 phrase edits; Phase 2 rows verified present; greps clean
+- [x] 3D.9 theory docs: 9 passages; grep clean
+- [x] 3D.10 final gate: every row of the expected-results table
+- [x] 3D.11 canary quiet (or audited)
+- [x] 3D.12 memory notes + overview status
 
 ### 3D rollback
 

@@ -17,7 +17,7 @@ module {
     %b40 = eco.box %c40 : i64 -> !eco.value
     %b50 = eco.box %c50 : i64 -> !eco.value
 
-    %ctor = eco.construct.custom(%b10, %b20, %b30, %b40, %b50) {tag = 0 : i64, size = 5 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%b10, %b20, %b30, %b40, %b50) {slot_kinds = array<i8: 0, 0, 0, 0, 0>, tag = 0 : i64, size = 5 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     // Project index 0
     %p0 = eco.project.custom %ctor[0] : !eco.value -> !eco.value

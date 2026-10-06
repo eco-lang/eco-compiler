@@ -215,22 +215,19 @@ eco.construct.tuple3 %a, %b, %c, unboxed_bitmap
 ```
 `unboxed_bitmap` is 2-bit-per-slot: slot i's kind lives at bits [2i, 2i+1].
 
-**Records:**
+**Records and Custom Types (ADTs)** *(layout C, Oct 2026; HEAP_019)*:
 ```
-eco.construct.record fields=[], field_count, unboxed_bitmap
-    -> obj = eco_alloc_record(count, bitmap)
-    -> FOR EACH field: eco_store_record_field[_i64|_f64](obj, idx, val)
+eco.construct.record fields=[], field_count = n, slot_kinds = [k0, ..., k(n-1)]
+eco.construct.custom tag, size = n, fields=[], slot_kinds = [k0, ..., k(n-1)]
+    -> kinds = slot kinds of the field operand types (the verifier has checked slot_kinds)
+    -> (hdrBits, ext[0..K)) = packKinds(kinds, CAP)     CAP = 32 Record / 24 Custom, K = extWords(n, CAP)
+    -> header = composeHeader(tag, K, n), meta word = hdrBits (Custom: ctor | hdrBits<<16)
+    -> size = 16 + 8(n + K)                              (inline bump up to 4096 B, else the runtime call)
+    -> FOR EACH field: store at values[i] (unboxed i64/f64/i16 or HPointer)
+    -> FOR EACH j < K: store ext[j] at values[n + j]
     -> ptrtoint obj
 ```
-
-**Custom Types (ADTs):**
-```
-eco.construct.custom tag, size, fields=[], unboxed_bitmap
-    -> obj = eco_alloc_custom(tag, size, 0)
-    -> FOR EACH field: eco_store_field[_i64|_f64](obj, idx, val)
-    -> IF bitmap != 0: eco_set_unboxed(obj, bitmap)
-    -> ptrtoint obj
-```
+Tuples are unchanged (u64 `unboxed_bitmap`, above).
 
 ### 5. Data Structure Projection
 
@@ -268,10 +265,14 @@ words (`slot_kinds` on the closure ops, CGEN_049; updated Oct 2026, wide-object 
 **papCreate (create partial application):**
 ```
 eco.papCreate @func, arity, captured=[]
-    -> closure = eco_alloc_closure(addressof @func, arity)
-    -> packed = n_captured | (arity << 6) | (unboxed_bitmap << 12)
+    -> kinds = capture kinds (slot_kinds, from operand types) ++ uncaptured param kinds (target signature)
+    -> (kinds 0..19, ext[0..K)) = packKinds(kinds, 20); K = extWords(arity, 20)
+    -> closure = allocate 24 + 8(S + K), header.size = S + K
+    -> packed = packClosureWord(n_captured, arity, result_kind, kinds 0..19)
+              = n_captured | arity << 11 | result_kind << 22 | kinds << 24
     -> store packed at offset 8
     -> FOR i, val IN captured: store val at offset (24 + i*8)
+    -> FOR j < K: store ext[j] in the object's last K words
     -> ptrtoint closure
 ```
 
@@ -287,9 +288,9 @@ The `papExtend` operation is now lowered inline (as of Feb 2026) rather than cal
 FUNCTION lowerPapExtend(op):
     closurePtr = inttoptr closure
     packed = load [offset 8]
-    nCaptured = packed & 0x3F
-    maxValues = (packed >> 6) & 0x3F
-    unboxedBitmap = packed >> 12
+    nCaptured = packed & 0x7FF
+    maxValues = (packed >> 11) & 0x7FF
+    kinds0to19 = packed >> 24              (slots 20.. from the tail kind words, HEAP_078)
     evaluator = load [offset 16]
 
     remainingArity = maxValues - nCaptured
@@ -383,7 +384,7 @@ This is handled by `AbiCloning.elm` which clones functions and rewrites callsite
 eco.call %closure(%newargs) remaining_arity=N
     -> closurePtr = inttoptr %closure
     -> packed = load [offset 8]
-    -> nValues = packed & 0x3F
+    -> nValues = packed & 0x7FF
     -> evaluator = load [offset 16]
     -> totalArgs = nValues + N
     -> argsArray = alloca [totalArgs x i64]

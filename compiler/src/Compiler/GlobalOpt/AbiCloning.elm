@@ -2975,9 +2975,9 @@ specFunctionRow specId ctx =
             -- `ctorLayout.fields` the func.func is built from); the return
             -- is the custom type. Nullary ctors have an empty row and can
             -- never satisfy P4's `k + |fargs| >= 1`. Every field crosses
-            -- at its ABI type, including fields the layout stores boxed past
-            -- the typed-slot cap: `generateCtor` boxes those itself
-            -- (REP_ABI_001), so a ctor of any width matches the fast call.
+            -- at its ABI type; where the layout stores a field boxed,
+            -- `generateCtor` boxes it itself (REP_ABI_001), so a ctor of any
+            -- width matches the fast call.
             Just ( shape.fieldTypes, Tuple.second (Mono.decomposeFunctionType ty) )
 
         _ ->

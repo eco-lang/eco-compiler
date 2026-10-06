@@ -4,10 +4,12 @@ module TestLogic.Canonicalize.LimitErrorsTest exposing (suite)
 lambda with more parameters, or a lambda whose parameters plus captured
 variables exceed it, must be rejected by canonicalization with a located
 `TooLarge` error (bug B18, decision D5 and §S.9 of
-`plans/wide-object-tail-kind-words.md`), not fail late in the backend. These
-tests check that each such shape is reported as the right `TooLarge` variant,
-that a function at exactly the limit is accepted, and that the report names the
-function and the limit.
+`plans/wide-object-tail-kind-words.md`), not fail late in the backend. Eco also
+limits a constructor to 2040 fields and a record to 2047 fields (`HEAP_019`,
+Phase 3D, decision 3D-D4), with the same kind of error. These tests check that
+each such shape is reported as the right `TooLarge` variant, that a function,
+constructor and record at exactly the limit are accepted, and that the reports
+name the definition and the limit.
 
 Each test builds a small source module with `Compiler.AST.SourceBuilder`,
 whose parameter lists are built with `List.range`, and hands it to an
@@ -25,16 +27,28 @@ The tests establish:
     `TooManyClosureSlots Nothing`, 2048 and 2047;
   - a function with 2047 parameters is accepted;
   - the report of the 2048-parameter error is titled `TOO MANY PARAMETERS`
-    and names `big` and the limit 2047.
+    and names `big` and the limit 2047;
+  - a constructor with 2041 fields is a `TooLarge` with
+    `TooManyCtorFields "Big"`, 2041 and 2040;
+  - a record type alias with 2048 fields is a `TooLarge` with
+    `TooManyRecordFields (Just "BigRecord")`, 2048 and 2047;
+  - a record literal with 2048 fields, and a record type annotation with 2048
+    fields, are each a `TooLarge` with `TooManyRecordFields Nothing`;
+  - a constructor with 2040 fields and a record alias with 2047 fields are
+    accepted;
+  - the report of the 2041-field constructor is titled `TOO MANY FIELDS` and
+    names `Big`, the limit 2040 and `HEAP_019`.
 
-Among what is not tested: the region the error carries, record and constructor
-field limits (added by Phase 3D), and compiler-generated arity.
+Among what is not tested: the region the error carries, and compiler-generated
+arity.
 
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
+import Compiler.Data.HeapLimits as HeapLimits
 import Compiler.Reporting.Error.Canonicalize as CanError
+import Expect
 import Test exposing (Test)
 import TestLogic.Canonicalize.LimitErrors
     exposing
@@ -67,6 +81,27 @@ suite =
         , Test.test "the TooLarge report names the function and the limit" <|
             \_ ->
                 expectFirstReportContains [ "TOO MANY PARAMETERS", "big", "2047" ] (topLevelBig 2048)
+        , Test.test "a ctor with 2041 fields is TooLarge TooManyCtorFields" <|
+            \_ ->
+                expectTooLarge (CanError.TooManyCtorFields "Big") 2041 2040 (wideCtor 2041)
+        , Test.test "a record alias with 2048 fields is TooLarge TooManyRecordFields" <|
+            \_ ->
+                expectTooLarge (CanError.TooManyRecordFields (Just "BigRecord")) 2048 2047 (wideRecordAlias 2048)
+        , Test.test "a record literal with 2048 fields is TooLarge TooManyRecordFields Nothing" <|
+            \_ ->
+                expectTooLarge (CanError.TooManyRecordFields Nothing) 2048 2047 (wideRecordLiteral 2048)
+        , Test.test "a record type annotation with 2048 fields is TooLarge TooManyRecordFields Nothing" <|
+            \_ ->
+                expectTooLarge (CanError.TooManyRecordFields Nothing) 2048 2047 (wideRecordAnnotation 2048)
+        , Test.test "a ctor with 2040 fields and a record alias with 2047 fields are accepted" <|
+            \_ ->
+                expectCanonicalizes (wideCtorAndAlias 2040 2047)
+        , Test.test "the limits match HeapLimits" <|
+            \_ ->
+                Expect.equal ( HeapLimits.maxCtorFields, HeapLimits.maxRecordFields ) ( 2040, 2047 )
+        , Test.test "the TooLarge field report says TOO MANY FIELDS" <|
+            \_ ->
+                expectFirstReportContains [ "TOO MANY FIELDS", "Big", "2041", "2040", "HEAP_019" ] (wideCtor 2041)
         ]
 
 
@@ -122,4 +157,68 @@ capturingLambda captured arity =
           , params "c" captured
           , SB.lambdaExpr (params "a" arity) (SB.binopsExpr capturedTerms (SB.varExpr "a0"))
           )
+        ]
+
+
+{-| Returns `n` field types, `f0 : Int` to `f(n-1) : Int`.
+-}
+intFields : Int -> List ( String, Src.Type )
+intFields n =
+    List.map (\i -> ( "f" ++ String.fromInt i, SB.tType "Int" [] )) (List.range 0 (n - 1))
+
+
+{-| A custom type `type Wide = Big Int … Int` whose constructor has `n` fields.
+-}
+wideUnion : Int -> SB.UnionDef
+wideUnion n =
+    { name = "Wide", args = [], ctors = [ { name = "Big", args = List.repeat n (SB.tType "Int" []) } ] }
+
+
+{-| A record type alias `type alias BigRecord = { f0 : Int, … }` of `n` fields.
+-}
+wideAlias : Int -> SB.AliasDef
+wideAlias n =
+    { name = "BigRecord", args = [], tipe = SB.tRecord (intFields n) }
+
+
+{-| A module declaring only `wideUnion n`.
+-}
+wideCtor : Int -> Src.Module
+wideCtor n =
+    SB.makeModuleWithTypedDefsUnionsAliases "Test" [] [ wideUnion n ] []
+
+
+{-| A module declaring only `wideAlias n`.
+-}
+wideRecordAlias : Int -> Src.Module
+wideRecordAlias n =
+    SB.makeModuleWithTypedDefsUnionsAliases "Test" [] [] [ wideAlias n ]
+
+
+{-| A module declaring `wideUnion ctorFields` and `wideAlias recordFields`.
+-}
+wideCtorAndAlias : Int -> Int -> Src.Module
+wideCtorAndAlias ctorFields recordFields =
+    SB.makeModuleWithTypedDefsUnionsAliases "Test" [] [ wideUnion ctorFields ] [ wideAlias recordFields ]
+
+
+{-| A module whose value `r = { f0 = 0, … }` is a record literal of `n` fields.
+-}
+wideRecordLiteral : Int -> Src.Module
+wideRecordLiteral n =
+    SB.makeModuleWithDefs "Test"
+        [ ( "r", [], SB.recordExpr (List.map (\i -> ( "f" ++ String.fromInt i, SB.intExpr i )) (List.range 0 (n - 1))) ) ]
+
+
+{-| A module whose function `get : { f0 : Int, … } -> Int` is annotated with a
+record type of `n` fields.
+-}
+wideRecordAnnotation : Int -> Src.Module
+wideRecordAnnotation n =
+    SB.makeModuleWithTypedDefs "Test"
+        [ { name = "get"
+          , args = [ SB.pVar "r" ]
+          , tipe = SB.tLambda (SB.tRecord (intFields n)) (SB.tType "Int" [])
+          , body = SB.accessExpr (SB.varExpr "r") "f0"
+          }
         ]

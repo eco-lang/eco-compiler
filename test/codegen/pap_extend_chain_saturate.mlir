@@ -68,25 +68,21 @@ module {
     %b4 = eco.box %c4 : i64 -> !eco.value
 
     // Start with 1 captured
-    %pap1 = "eco.papCreate"(%b1) {
-      function = @add_four,
+    %pap1 = "eco.papCreate"(%b1) {slot_kinds = array<i8: 0>, function = @add_four,
       arity = 4 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
 
     // Extend with 1 more (still partial)
-    %pap2 = "eco.papExtend"(%pap1, %b2) {
-      remaining_arity = 3 : i64
+    %pap2 = "eco.papExtend"(%pap1, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     // Extend with 1 more (still partial)
-    %pap3 = "eco.papExtend"(%pap2, %b3) {
-      remaining_arity = 2 : i64
+    %pap3 = "eco.papExtend"(%pap2, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     // Final extend saturates: 1 + 2 + 3 + 4 = 10
-    %result = "eco.papExtend"(%pap3, %b4) {
-      remaining_arity = 1 : i64
+    %result = "eco.papExtend"(%pap3, %b4) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value

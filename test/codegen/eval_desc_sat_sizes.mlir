@@ -18,9 +18,9 @@ module {
   }
 
   func.func @main() -> i64 {
-    %c20 = "eco.papCreate"() {function = @ar20, arity = 20 : i64, num_captured = 0 : i64} : () -> !eco.value
-    %c21 = "eco.papCreate"() {function = @ar21, arity = 21 : i64, num_captured = 0 : i64} : () -> !eco.value
-    %c2047 = "eco.papCreate"() {function = @ar2047, arity = 2047 : i64, num_captured = 0 : i64} : () -> !eco.value
+    %c20 = "eco.papCreate"() {slot_kinds = array<i8>, function = @ar20, arity = 20 : i64, num_captured = 0 : i64} : () -> !eco.value
+    %c21 = "eco.papCreate"() {slot_kinds = array<i8>, function = @ar21, arity = 21 : i64, num_captured = 0 : i64} : () -> !eco.value
+    %c2047 = "eco.papCreate"() {slot_kinds = array<i8>, function = @ar2047, arity = 2047 : i64, num_captured = 0 : i64} : () -> !eco.value
     eco.dbg %c20 : !eco.value
     eco.dbg %c21 : !eco.value
     eco.dbg %c2047 : !eco.value

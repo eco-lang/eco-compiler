@@ -114,9 +114,7 @@ During monomorphization, layouts are computed:
 ```elm
 type alias RecordLayout =
     { fieldCount : Int
-    , unboxedCount : Int
-    , unboxedBitmap : Int      -- Bitmask of unboxed fields
-    , fields : List FieldInfo
+    , fields : List FieldInfo  -- isUnboxed per field; no index cap (Oct 2026)
     }
 
 type alias FieldInfo =
@@ -127,7 +125,7 @@ type alias FieldInfo =
     }
 ```
 
-The `unboxedBitmap` indicates which fields are stored inline vs as heap pointers.
+Each field's `isUnboxed` says whether it is stored inline (Int, Float, Char) or as a heap pointer. The per-slot kinds reach MLIR as the `slot_kinds` attribute of `eco.construct.record` / `eco.construct.custom` (one 2-bit kind per field), which the lowering packs into the header bitmap and the tail kind words (HEAP_019).
 
 ### Example: Record Unboxing
 
@@ -139,8 +137,6 @@ Layout:
 ```
 RecordLayout
     { fieldCount = 3
-    , unboxedCount = 2
-    , unboxedBitmap = 0b011  -- x and y unboxed
     , fields =
         [ { name = "x", index = 0, monoType = MInt, isUnboxed = True }
         , { name = "y", index = 1, monoType = MInt, isUnboxed = True }
@@ -151,7 +147,12 @@ RecordLayout
 
 Heap layout:
 ```
-[Header:8][unboxed_bitmap:8][x:i64][y:i64][label:HPointer]
+[Header:8][kinds 0..31:8][x:i64][y:i64][label:HPointer]
+```
+
+(`slot_kinds = array<i8: 1, 1, 0>`; a record with more than 32 fields adds tail kind words after
+the last field, below.)
+```
 ```
 
 ### Container Unboxing
@@ -169,18 +170,31 @@ The `unboxed` bits in the heap object Header indicate whether container elements
 u32 unboxed : 6; // 2 bits/slot; Cons (1 slot), Tuple2 (2), Tuple3 (3), ElmArray (1 uniform).
 ```
 
-Header.unboxed was widened from 3 bits → **6 bits** to hold up to 3 per-slot kinds for Tuple3 / ElmArray header. Bitmap capacity limits:
+Header.unboxed was widened from 3 bits → **6 bits** to hold up to 3 per-slot kinds for Tuple3 / ElmArray header.
 
-| Container | Max slots |
-|---|---|
-| Custom (ADT) | 24 fields (2×24 = 48 bits within `ctor_unboxed`) |
-| Record | 32 fields (64-bit `unboxed`) |
-| Closure | 20 slots in the packed word (40-bit `unboxed`); slots 20.. in tail extension kind words (stage arity <= 2047, *Oct 2026*) |
+**Layout C: header kinds plus tail kind words** *(Oct 2026, plans/wide-object-tail-kind-words.md; HEAP_019, HEAP_077, HEAP_078)*:
 
-New runtime helpers:
-- `fieldKind(bitmap, idx)` — extract the 2-bit kind for slot `idx`
-- `bitmapSetKind(bitmap, idx, kind)` — set the 2-bit kind for slot `idx`
-- `pointerMaskFromKindBitmap(bitmap, count)` — derive a 1-bit-per-slot pointer mask (kind==0 ⇒ trace) for Cheney/mark-sweep scanning
+| Container | Kinds in the header | Further slots | Limit |
+|---|---|---|---|
+| Custom (ADT) | slots 0..23 in `Custom.unboxed:48` | tail kind words, 32 slots each | 2040 fields |
+| Record | slots 0..31 in `Record.unboxed:64` | tail kind words, 32 slots each | 2047 fields |
+| Closure | slots 0..19 in the packed word's `unboxed:40` | tail kind words, 32 slots each | stage arity 2047 |
+
+```
+Custom/Record: [Header: size = n, unboxed = K][meta][values[0..n)][ext kind words[0..K)]
+               K = extWords(n, 24 | 32); object size 16 + 8(n + K)
+Closure:       [Header: size = S + K][packed n:11|max:11|rk:2|kinds:40][evaluator][values[0..S)][ext[0..K)]
+               K = extWords(max_values, 20); header.unboxed = 0
+```
+
+Field `k` always stays at `values[k]`; the extension words only carry kinds. Every allocation writes all K
+words (zero words included; `zeroNewObject` does not clear them), and object size remains a function of the
+8-byte header word alone.
+
+Runtime helpers (`Heap.hpp`): `kindInWord(word, i)`; `customSlotKind` / `recordSlotKind` /
+`closureSlotKind` (an always-inline header fast path plus a cold extension-word path); `ClosureKinds` /
+`snapshotClosureKinds` / `closureKindAt` for loops that may allocate (the closure may move); and
+`pushRootsByKinds` (`RuntimeExports.h`), which roots buffers of any length in 64-slot chunks.
 
 The compiler emits 2-bit bitmaps via `computeRecordLayout`, `computeCtorLayout`, and `computeTupleLayout`. `eco.construct.list` gained a `head_kind` attribute (vs. the old `head_unboxed` bit). MLIR verifiers enforce that each declared per-slot kind matches the SSA type of the operand stored into that slot.
 
@@ -248,12 +262,12 @@ When extracting a field from a heap object:
 When building a heap object:
 
 ```mlir
-// Set unboxed bitmap based on SSA operand types
+// Per-slot kinds based on SSA operand types (one kind per field)
 eco.construct.record %field0, %field1, %field2
-    { unboxed_bitmap = 5 }  // 0b101
+    { field_count = 3, slot_kinds = array<i8: 1, 0, 1> }  // i64, !eco.value, i64
 ```
 
-The bitmap is computed from SSA operand types (`i64`, `f64`, `i16` → unboxed).
+The kinds are computed from SSA operand types (`i64` → 1, `f64` → 2, `i16` → 3, else 0); the verifier checks `slot_kinds` against them, and the lowering packs them into the header bitmap and tail kind words. Tuples keep a u64 `unboxed_bitmap`.
 
 ### Closure Captures (REP_CLOSURE_001, REP_CLOSURE_002)
 
@@ -372,7 +386,7 @@ struct Record {
 ```cpp
 struct Custom {
     Header header;           // tag = Tag_Custom
-    uint64_t ctor_unboxed;   // ctor_tag:8 | unboxed_bitmap:56
+    u64 ctor:16 | unboxed:48;  // kinds of slots 0..23; tail kind words after values[size] (HEAP_019)
     Unboxable values[];      // Variable-length array
 };
 // header.size = field count
@@ -433,10 +447,10 @@ struct ALIGN(8) ElmStringRope {     // Tag_StringRope — concat tree node
 ### Layout Consistency (XPHASE_001)
 
 Layouts from monomorphization must match:
-- `eco.construct` attributes (`tag`, `size`, `unboxed_bitmap`)
+- `eco.construct` attributes (`tag`, `size`, `slot_kinds` for record/custom, `unboxed_bitmap` for tuples)
 - C++ struct definitions in `Heap.hpp`
 
-*(May 14, 2026)*: A regression class where this invariant could be violated has been closed at its boundary. Container `MonoType`s for `TOpt.Tuple` / `TOpt.Record` / `TOpt.TrackedRecord` are now built from the already-specialised element expressions, not from `meta.tipe`, so the `unboxed_bitmap` cannot disagree with the SSA types of slot constructors even when an upstream constraint-flow gap leaves a slot's TVar unbound. See [Monomorphization Theory §Tuple/Record Specialised-Element MonoType](pass_monomorphization_theory.md#tuple--record-specialised-element-monotype) and the `TupleSlotBoxing*Test.elm` regression suite.
+*(May 14, 2026)*: A regression class where this invariant could be violated has been closed at its boundary. Container `MonoType`s for `TOpt.Tuple` / `TOpt.Record` / `TOpt.TrackedRecord` are now built from the already-specialised element expressions, not from `meta.tipe`, so the per-slot kinds (`slot_kinds` for records, `unboxed_bitmap` for tuples) cannot disagree with the SSA types of slot constructors even when an upstream constraint-flow gap leaves a slot's TVar unbound. See [Monomorphization Theory §Tuple/Record Specialised-Element MonoType](pass_monomorphization_theory.md#tuple--record-specialised-element-monotype) and the `TupleSlotBoxing*Test.elm` regression suite.
 
 ### Type Consistency (XPHASE_002)
 
@@ -519,7 +533,7 @@ Common issues and how to identify them:
 
 ### Debugging Checklist
 
-1. **Check layout metadata**: Does `unboxedBitmap` match field types?
+1. **Check layout metadata**: Do `slot_kinds` match the operand types (and the layout's `ctorSlotTypes`)?
 2. **Check projection ops**: Does result type match storage type?
 3. **Check construction ops**: Does bitmap match operand types?
 4. **Check ABI boundaries**: Are boxable values properly boxed/unboxed?

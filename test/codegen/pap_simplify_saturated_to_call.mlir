@@ -18,13 +18,13 @@ module {
       function = @add,
       arity = 2 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (i64) -> !eco.value
 
     // Saturate with second arg - should become: eco.call @add(%c5, %c7)
     %result = "eco.papExtend"(%pap, %c7) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> i64
 
     eco.dbg %result : i64

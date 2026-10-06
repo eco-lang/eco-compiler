@@ -19,8 +19,7 @@ module {
     %i = arith.constant 42 : i64
 
     // arity-1 closure, no captures.
-    %pap0 = "eco.papCreate"() {
-      function = @identity_eval,
+    %pap0 = "eco.papCreate"() {slot_kinds = array<i8>, function = @identity_eval,
       arity = 1 : i64,
       num_captured = 0 : i64
     } : () -> !eco.value
@@ -29,7 +28,7 @@ module {
     // The lowering must produce a typed args buffer + EvalParamLayout +
     // call @eco_apply_closure_eval, with no eco_alloc_* call before it.
     %result = "eco.papExtend"(%pap0, %i) {
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> !eco.value
 
     %zero = arith.constant 0 : i64

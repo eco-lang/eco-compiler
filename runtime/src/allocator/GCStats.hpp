@@ -793,7 +793,8 @@ public:
     // plans/sum-type-wrapper-unboxing.md W1. LH1 established that Tag_Custom
     // is ~61% of everything promoted; this splits that pool by FIELD COUNT
     // (Custom's Header.size is exactly the field count — AllocatorCommon.hpp
-    // sizes it as sizeof(Custom) + size * sizeof(Unboxable)).
+    // sizes it as sizeof(Custom) + (size + K) * sizeof(Unboxable), K = header.unboxed
+    // ext kind words, HEAP_019).
     //
     // Why field count is the right gate: the plan targets multi-constructor
     // unions whose constructors each carry ONE field. A promoted 1-field

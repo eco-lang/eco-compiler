@@ -28,7 +28,7 @@ module {
     %b9 = eco.box %i9 : i64 -> !eco.value
 
     // Create a 10-field constructor
-    %obj = eco.construct.custom(%b0, %b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8, %b9) {tag = 10 : i64, size = 10 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %obj = eco.construct.custom(%b0, %b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8, %b9) {slot_kinds = array<i8: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>, tag = 10 : i64, size = 10 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %obj : !eco.value
     // CHECK: Ctor10 100 101 102 103 104 105 106 107 108 109
 
@@ -53,7 +53,7 @@ module {
     // CHECK: 107
 
     // Create an 8-field constructor with unboxed integers
-    %obj2 = eco.construct.custom(%i0, %i1, %i2, %i3, %i4, %i5, %i6, %i7) {tag = 8 : i64, size = 8 : i64, unboxed_bitmap = 21845 : i64} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
+    %obj2 = eco.construct.custom(%i0, %i1, %i2, %i3, %i4, %i5, %i6, %i7) {tag = 8 : i64, size = 8 : i64, slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1>} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor8 100 101 102 103 104 105 106 107
 

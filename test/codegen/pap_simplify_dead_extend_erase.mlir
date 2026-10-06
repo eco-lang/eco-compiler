@@ -29,17 +29,17 @@ module {
       function = @band,
       arity = 2 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     %partial = "eco.papExtend"(%pap, %c7) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> !eco.value
 
     %result = "eco.papExtend"(%partial, %c11) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> i64
 
     eco.return %result : i64
@@ -51,7 +51,7 @@ module {
     // never see it (no papCreate root); only P5 can erase it.
     %dead = "eco.papExtend"(%f, %c3) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> !eco.value
     eco.return %c3 : i64
   }

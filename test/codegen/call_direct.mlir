@@ -24,7 +24,7 @@ module {
     %i2 = arith.constant 2 : i64
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
-    %pair = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pair = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pair : !eco.value
     // CHECK: Ctor0 1 2
 
@@ -42,9 +42,9 @@ module {
     // CHECK: 42
 
     // Create a list and project from it
-    // Both fields are boxed (!eco.value), so unboxed_bitmap = 0
+    // Both fields are boxed (!eco.value), so slot_kinds = [0, 0]
     %nil = eco.constant Empty : !eco.value
-    %list = eco.construct.custom(%v1, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list = eco.construct.custom(%v1, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
     %head = eco.project.custom %list[0] : !eco.value -> !eco.value
     eco.dbg %head : !eco.value
     // CHECK: 42

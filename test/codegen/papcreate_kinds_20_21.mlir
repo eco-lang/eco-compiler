@@ -211,12 +211,10 @@ module {
     %b50 = arith.constant 51 : i64
     %b51 = arith.constant 116 : i16
     %b52 = arith.constant 117 : i16
-    %p1 = "eco.papExtend"(%f, %b21, %b22, %b23, %b24, %b25, %b26, %b27, %b28, %b29, %b30, %b31, %b32, %b33, %b34, %b35, %b36, %b37, %b38, %b39, %b40, %b41, %b42, %b43, %b44, %b45, %b46, %b47, %b48, %b49, %b50) {
-      remaining_arity = 32 : i64
+    %p1 = "eco.papExtend"(%f, %b21, %b22, %b23, %b24, %b25, %b26, %b27, %b28, %b29, %b30, %b31, %b32, %b33, %b34, %b35, %b36, %b37, %b38, %b39, %b40, %b41, %b42, %b43, %b44, %b45, %b46, %b47, %b48, %b49, %b50) {slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>, remaining_arity = 32 : i64
     } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     eco.dbg %p1 : !eco.value
-    %r = "eco.papExtend"(%p1, %b51, %b52) {
-      remaining_arity = 2 : i64
+    %r = "eco.papExtend"(%p1, %b51, %b52) {slot_kinds = array<i8: 3, 3>, remaining_arity = 2 : i64
     } : (!eco.value, i16, i16) -> i64
     eco.return %r : i64
   }
@@ -243,8 +241,7 @@ module {
     %a18 = arith.constant 19 : i64
     %a19 = arith.constant 19.25 : f64
     %a20 = arith.constant 20.25 : f64
-    %pap = "eco.papCreate"(%a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7, %a8, %a9, %a10, %a11, %a12, %a13, %a14, %a15, %a16, %a17, %a18, %a19, %a20) {
-      function = @k53,
+    %pap = "eco.papCreate"(%a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7, %a8, %a9, %a10, %a11, %a12, %a13, %a14, %a15, %a16, %a17, %a18, %a19, %a20) {slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2>, function = @k53,
       arity = 53 : i64,
       num_captured = 21 : i64
     } : (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, f64, f64) -> !eco.value

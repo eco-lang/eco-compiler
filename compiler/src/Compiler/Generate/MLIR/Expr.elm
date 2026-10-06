@@ -3711,7 +3711,7 @@ a SATURATED direct call to a constructor emits `eco.construct.custom`
 directly in the caller — the call overhead vanishes and the construct
 gains the caller's HEAP\_034 inline-alloc diamond. Slot preparation is the
 same per-field ABI coercion the ctor function's own body performs
-(`Functions.generateCtor`), so tag, bitmap, and heap layout are identical
+(`Functions.generateCtor`), so tag, slot kinds, and heap layout are identical
 (CGEN\_020/026). Nullary ctors are EXCLUDED: their calls resolve to
 CAF-memoized / interned singletons (CGEN\_068) — a fresh construct would
 ADD allocation. Applies at every saturated call position; promotable
@@ -5036,7 +5036,7 @@ Used for PendingLambda capture types where only MlirType is available.
 Correctly round-trips: monoTypeToAbi (mlirTypeToApproxMonoType t) == t
 for all ABI types (I64, F64, I16, ecoValue). Char is I16 (NOT I32 — a
 stale pre-i16-Char arm here typed escaped-taildef Char captures as boxed
-while the papCreate bitmap said i16, splitting the capture ABI of the
+while the papCreate slot kinds said i16, splitting the capture ABI of the
 outlined shell from its creation site).
 -}
 mlirTypeToApproxMonoType : MlirType -> Mono.MonoType
@@ -7205,7 +7205,7 @@ generateRecordCreate ctx fields layout recordType =
 
             -- Use eco.construct.record for records
             ( ctx4, constructOp ) =
-                Ops.ecoConstructRecord ctx3 emitSafepointHints resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
+                Ops.ecoConstructRecord ctx3 emitSafepointHints resultVar fieldVarPairs layout.fieldCount (Types.recordSlotKinds layout)
         in
         { ops = fieldsOps ++ boxOps ++ [ constructOp ]
         , resultVar = resultVar
@@ -7352,7 +7352,7 @@ generateRecordUpdate ctx record updates layout =
                 Ctx.freshVar finalCtx
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructRecord ctx1 emitSafepointHints resultVar fieldVarsAndTypes layout.fieldCount layout.unboxedBitmap
+                Ops.ecoConstructRecord ctx1 emitSafepointHints resultVar fieldVarsAndTypes layout.fieldCount (Types.recordSlotKinds layout)
         in
         { ops = allOps ++ [ constructOp ]
         , resultVar = resultVar
@@ -8490,7 +8490,7 @@ generateCustomCreateHeap ctx shape args =
                 resultVar
                 layout.tag
                 (List.length layout.fields)
-                layout.unboxedBitmap
+                (Types.ctorSlotKinds layout)
                 slotPairs
                 (Just (Name.toElmString layout.name))
     in

@@ -62,14 +62,12 @@ module {
     // f1(x) = 2*x + 3 (double plus 3)
     // f2(x) = 5*x + 10 (times 5 plus 10)
 
-    %f1 = "eco.papCreate"(%b2, %b3) {
-      function = @linear,
+    %f1 = "eco.papCreate"(%b2, %b3) {slot_kinds = array<i8: 0, 0>, function = @linear,
       arity = 3 : i64,
       num_captured = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
-    %f2 = "eco.papCreate"(%b5, %b10) {
-      function = @linear,
+    %f2 = "eco.papCreate"(%b5, %b10) {slot_kinds = array<i8: 0, 0>, function = @linear,
       arity = 3 : i64,
       num_captured = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
@@ -80,44 +78,38 @@ module {
     // CHECK: <fn>
 
     // Apply f1(5) = 2*5 + 3 = 13
-    %r1 = "eco.papExtend"(%f1, %b5) {
-      remaining_arity = 1 : i64
+    %r1 = "eco.papExtend"(%f1, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %r1 : !eco.value
     // CHECK: 13
 
     // Apply f2(5) = 5*5 + 10 = 35
-    %r2 = "eco.papExtend"(%f2, %b5) {
-      remaining_arity = 1 : i64
+    %r2 = "eco.papExtend"(%f2, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %r2 : !eco.value
     // CHECK: 35
 
     // Apply f1(10) = 2*10 + 3 = 23
-    %r3 = "eco.papExtend"(%f1, %b10) {
-      remaining_arity = 1 : i64
+    %r3 = "eco.papExtend"(%f1, %b10) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %r3 : !eco.value
     // CHECK: 23
 
     // Apply f2(2) = 5*2 + 10 = 20
-    %r4 = "eco.papExtend"(%f2, %b2) {
-      remaining_arity = 1 : i64
+    %r4 = "eco.papExtend"(%f2, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %r4 : !eco.value
     // CHECK: 20
 
     // Compose: f2(f1(2)) = f2(7) = 5*7 + 10 = 45
     // First compute f1(2) = 2*2 + 3 = 7
-    %f1_2 = "eco.papExtend"(%f1, %b2) {
-      remaining_arity = 1 : i64
+    %f1_2 = "eco.papExtend"(%f1, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %f1_2 : !eco.value
     // CHECK: 7
 
     // Then compute f2(7)
-    %r5 = "eco.papExtend"(%f2, %f1_2) {
-      remaining_arity = 1 : i64
+    %r5 = "eco.papExtend"(%f2, %f1_2) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %r5 : !eco.value
     // CHECK: 45

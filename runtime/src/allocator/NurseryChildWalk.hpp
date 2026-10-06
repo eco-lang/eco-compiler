@@ -34,7 +34,7 @@ inline void forEachChildSlot(void* obj, F&& f) {
             break;
         }
         case Tag_Custom: {
-            // Header-bitmap slots, then the tail (boxed in Phase 1, D semantics).
+            // Header-bitmap slots, then the tail (ext kind words, HEAP_019).
             Custom* c = static_cast<Custom*>(obj);
             const u32 n = hdr->size, h = n < CUSTOM_HDR_SLOTS ? n : CUSTOM_HDR_SLOTS;
             for (u32 i = 0; i < h; i++)

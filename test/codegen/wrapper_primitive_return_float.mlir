@@ -20,7 +20,7 @@ module {
       function = @double_float,
       arity = 1 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64,
+      slot_kinds = array<i8>,
       _result_kind = 2 : i8
     } : () -> !eco.value
 

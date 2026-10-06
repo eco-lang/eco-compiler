@@ -25,7 +25,7 @@ module {
     %b9 = eco.box %c9 : i64 -> !eco.value
 
     // Two-field custom, tag 3: field 0 boxed, field 1 boxed.
-    %ctor = eco.construct.custom(%b7, %b9) {tag = 3 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%b7, %b9) {slot_kinds = array<i8: 0, 0>, tag = 3 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // Positive: project.custom of construct.custom, types match (!eco.value).
     // Folds to %b7 / %b9; unbox must print the same values either way.

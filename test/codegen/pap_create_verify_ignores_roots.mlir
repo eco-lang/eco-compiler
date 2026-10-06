@@ -17,7 +17,7 @@ module {
       function = @target,
       arity = 26 : i64,
       num_captured = 25 : i64,
-      unboxed_bitmap = 375299968947541 : i64,
+      slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>,
       eco.gc_roots_count = 8 : i64
     } : (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.return %pap : !eco.value

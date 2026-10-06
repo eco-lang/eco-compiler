@@ -58,18 +58,18 @@ module {
     %b30 = eco.box %c30 : i64 -> !eco.value
 
     // Create PAP with 1 captured arg, arity 3, so remaining = 2
-    %pap1 = "eco.papCreate"(%b10) {function = @sum3_eval, arity = 3 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
+    %pap1 = "eco.papCreate"(%b10) {slot_kinds = array<i8: 0>, function = @sum3_eval, arity = 3 : i64, num_captured = 1 : i64} : (!eco.value) -> !eco.value
 
     // Extend with exactly 2 args - should saturate and call
-    %result = "eco.papExtend"(%pap1, %b20, %b30) {remaining_arity = 2 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %result = "eco.papExtend"(%pap1, %b20, %b30) {slot_kinds = array<i8: 0, 0>, remaining_arity = 2 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
 
     %unboxed = eco.unbox %result : !eco.value -> i64
     eco.dbg %unboxed : i64
     // CHECK: 60
 
     // Test 2: Create PAP with 2 captured, extend with exactly 1
-    %pap2 = "eco.papCreate"(%b10, %b20) {function = @sum3_eval, arity = 3 : i64, num_captured = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %result2 = "eco.papExtend"(%pap2, %b30) {remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pap2 = "eco.papCreate"(%b10, %b20) {slot_kinds = array<i8: 0, 0>, function = @sum3_eval, arity = 3 : i64, num_captured = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %result2 = "eco.papExtend"(%pap2, %b30) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     %unboxed2 = eco.unbox %result2 : !eco.value -> i64
     eco.dbg %unboxed2 : i64

@@ -1,17 +1,19 @@
-module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap, checkUnboxedBitmap, checkClosureKindLimits)
+module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap, checkUnboxedBitmap, checkClosureKindLimits, expectSlotKinds)
 
-{-| Checks that the unboxed bitmaps in generated MLIR agree with the operand
-types of the ops that carry them, so that a heap object or closure whose bitmap
-misdescribes the values stored in it is caught in the MLIR the code generator
-produces.
+{-| Checks that the slot kinds in generated MLIR agree with the operand types
+of the ops that carry them, so that a heap object or closure whose kinds
+misdescribe the values stored in it is caught in the MLIR the code generator
+produces. (The module keeps its historical name: only the tuple ops still
+carry an integer bitmap.)
 
-The tuple, record and custom construct ops record which of their operands
-are stored unboxed in an integer attribute, their _unboxed bitmap_. The bitmap
-holds one 2-bit _slot kind_ per operand position, slot N in bits 2N and 2N+1:
-0 for a boxed value (`!eco.value`), 1 for an Int (`i64`), 2 for a Float (`f64`)
-and 3 for a Char (`i16`). The closure ops `eco.papCreate` and `eco.papExtend`
-record the same kinds in a `slot_kinds` array (a dense `i8` array, one entry
-per captured operand or new argument; wide-object Phase 2). The operand types
+A _slot kind_ is 0 for a boxed value (`!eco.value`), 1 for an Int (`i64`), 2
+for a Float (`f64`) and 3 for a Char (`i16`). The record and custom construct
+ops record one kind per field in a `slot_kinds` array (a dense `i8` array;
+wide-object Phase 3), and so do the closure ops `eco.papCreate` and
+`eco.papExtend` (one entry per captured operand or new argument; wide-object
+Phase 2). Only the tuple construct ops record their kinds in an integer
+attribute, their _unboxed bitmap_, with slot N in bits 2N and 2N+1; a tuple has
+at most three slots. The operand types
 compared against them are the ones the op records in its `_operand_types`
 attribute, read with `TestLogic.Generate.CodeGen.Invariants.extractOperandTypes`.
 
@@ -22,9 +24,14 @@ the head) is a violation whatever the bitmap, kind or flag says.
 `expectUnboxedBitmap` compiles the given module to MLIR and checks, at any
 nesting depth:
 
-  - `eco.construct.tuple2`, `eco.construct.tuple3`, `eco.construct.record` and
-    `eco.construct.custom`: slot N of `unboxed_bitmap` holds the kind of
-    operand N, for every recorded operand, trailing GC root hints included.
+  - `eco.construct.tuple2` and `eco.construct.tuple3`: slot N of
+    `unboxed_bitmap` holds the kind of operand N, for every recorded operand,
+    trailing GC root hints included.
+  - `eco.construct.record` and `eco.construct.custom`: `slot_kinds` is present
+    and has one entry per field (`field_count` / `size`), and entry N is the
+    kind of operand N. The trailing GC root hint operands are not compared. The
+    op carries no `unboxed_bitmap` (the backend rejects it as stale since
+    wide-object Phase 3D).
   - `eco.papCreate`: `slot_kinds` has one entry per captured operand, and entry
     N is the kind of operand N.
   - `eco.papExtend`: `slot_kinds` has one entry per new argument, and entry N
@@ -34,14 +41,10 @@ nesting depth:
   - `eco.construct.list`: the boolean `head_unboxed` is true exactly when the
     head operand is `i64`, `f64` or `i16`.
 
-A closure op without `slot_kinds` passes when it has no compared operands. A
-hand-built fixture may still carry the legacy u64 bitmap instead
-(`unboxed_bitmap` on papCreate, `newargs_unboxed_bitmap` on papExtend), which
-is then checked slot by slot like a construct op's; with neither attribute and
-some compared operand, the op is a violation. A missing construct bitmap reads
-as 0 (every slot boxed) and a missing `head_unboxed` as false. An op with no
-`_operand_types` attribute is not checked. Bitmap slots are read with exact
-arithmetic, so no slot wraps the way 32-bit `Bitwise` would.
+A closure op without `slot_kinds` passes only when it has no compared
+operands. A missing tuple bitmap reads as 0 (every slot boxed) and a missing
+`head_unboxed` as false. An op with no `_operand_types` attribute is not
+checked.
 
 `checkClosureKindLimits` checks a separate property of the closure ops: that
 their kind attributes have the post-Phase-2 form the backend expects. No
@@ -57,7 +60,10 @@ the kinds of `eco.papCreateGroup` siblings, the types of function parameters
 and results, and whether a recorded operand type matches the type of the SSA
 value actually passed.
 
-@docs expectUnboxedBitmap, checkUnboxedBitmap, checkClosureKindLimits
+`expectSlotKinds` compiles a module and compares the `slot_kinds` of the one
+op of a given name with an expected list.
+
+@docs expectUnboxedBitmap, checkUnboxedBitmap, checkClosureKindLimits, expectSlotKinds
 
 -}
 
@@ -119,11 +125,9 @@ checkUnboxedBitmap mlirModule =
         customOps =
             findOpsNamed "eco.construct.custom" mlirModule
 
-        targetOps =
-            tuple2Ops ++ tuple3Ops ++ recordOps ++ customOps
-
         containerViolations =
-            List.concatMap checkContainerBitmap targetOps
+            List.concatMap checkContainerBitmap (tuple2Ops ++ tuple3Ops)
+                ++ List.concatMap checkContainerSlotKinds (recordOps ++ customOps)
 
         listOps =
             findOpsNamed "eco.construct.list" mlirModule
@@ -146,8 +150,8 @@ checkUnboxedBitmap mlirModule =
     containerViolations ++ listViolations ++ papCreateViolations ++ papExtendViolations
 
 
-{-| Returns the violations in the `unboxed_bitmap` of a tuple, record or custom
-construct op, comparing slot N with operand N. A missing bitmap reads as 0, and
+{-| Returns the violations in the `unboxed_bitmap` of a tuple construct op,
+comparing slot N with operand N. A missing bitmap reads as 0, and
 an op with no recorded operand types gives none.
 -}
 checkContainerBitmap : MlirOp -> List Violation
@@ -168,6 +172,95 @@ checkContainerBitmap op =
                 |> List.filterMap identity
 
 
+{-| Returns the violations in the `slot_kinds` of a record or custom construct
+op: the op must not carry a stale `unboxed_bitmap`, and `slot_kinds` must be
+present and hold one entry per field (`field_count` for a record, `size` for a
+custom), and entry N must be the kind operand N's type requires (an `i1`
+operand is reported whatever the entry holds). The trailing GC root hint
+operands, beyond the slot count, are not compared. Apart from the stale
+bitmap, an op with no recorded operand types gives none.
+-}
+checkContainerSlotKinds : MlirOp -> List Violation
+checkContainerSlotKinds op =
+    List.filterMap identity [ checkNoLegacyBitmap op "unboxed_bitmap" ]
+        ++ checkContainerSlotKindsOnly op
+
+
+{-| `checkContainerSlotKinds` without the stale-bitmap check.
+-}
+checkContainerSlotKindsOnly : MlirOp -> List Violation
+checkContainerSlotKindsOnly op =
+    let
+        slotCount =
+            if op.name == "eco.construct.record" then
+                getIntAttr "field_count" op
+
+            else
+                getIntAttr "size" op
+    in
+    case ( getArrayAttr "slot_kinds" op |> Maybe.map (List.map (extractKind >> Maybe.withDefault -1)), extractOperandTypes op ) of
+        ( _, Nothing ) ->
+            []
+
+        ( Nothing, Just _ ) ->
+            [ { opId = op.id, opName = op.name, message = op.name ++ " has no slot_kinds attribute" } ]
+
+        ( Just kinds, Just operandTypes ) ->
+            if Just (List.length kinds) /= slotCount then
+                [ { opId = op.id
+                  , opName = op.name
+                  , message =
+                        "slot_kinds has "
+                            ++ String.fromInt (List.length kinds)
+                            ++ " entries but the op has "
+                            ++ (slotCount |> Maybe.map String.fromInt |> Maybe.withDefault "no")
+                            ++ " slots"
+                  }
+                ]
+
+            else if List.length operandTypes < List.length kinds then
+                [ { opId = op.id
+                  , opName = op.name
+                  , message =
+                        "slot_kinds has "
+                            ++ String.fromInt (List.length kinds)
+                            ++ " entries but the op records only "
+                            ++ String.fromInt (List.length operandTypes)
+                            ++ " operand types"
+                  }
+                ]
+
+            else
+                List.map2 Tuple.pair kinds operandTypes
+                    |> List.indexedMap (\i ( k, t ) -> checkSlotKind op i k t "operand")
+                    |> List.filterMap identity
+
+
+{-| Returns an expectation that passes when `srcModule` compiles to MLIR,
+exactly one op is named `opName`, and its `slot_kinds` entries are `expected`.
+-}
+expectSlotKinds : String -> List Int -> Src.Module -> Expectation
+expectSlotKinds opName expected srcModule =
+    case runToMlir srcModule of
+        Err err ->
+            Expect.fail ("Compilation failed: " ++ err)
+
+        Ok { mlirModule } ->
+            case findOpsNamed opName mlirModule of
+                [ op ] ->
+                    getArrayAttr "slot_kinds" op
+                        |> Maybe.map (List.filterMap extractKind)
+                        |> Expect.equal (Just expected)
+
+                ops ->
+                    Expect.fail
+                        ("expected exactly one "
+                            ++ opName
+                            ++ " op, found "
+                            ++ String.fromInt (List.length ops)
+                        )
+
+
 {-| Returns the violation, if any, for operand `index` of a construct op, as
 `checkBitmapKind` decides it.
 -}
@@ -178,10 +271,8 @@ checkBitmapBit op bitmap index operandType =
 
 {-| Returns the slot kind held in slot `index` of `bitmap`.
 
-`Bitwise` (and `//`) work on 32-bit values on the JavaScript back end, which
-would wrap a slot past 15, so the slot is read with float arithmetic, exact up
-to the 52 bits a bitmap uses, as `Compiler.Generate.MLIR.Types.bitmapSetKind`
-writes it.
+Only tuple bitmaps (at most 3 slots) are still carried as integers. The slot
+is read with float arithmetic, which is exact for them.
 
 -}
 slotKind : Int -> Int -> Int
@@ -330,7 +421,7 @@ checkPapCreateBitmap op =
             []
 
         Just operandTypes ->
-            checkClosureKinds op "unboxed_bitmap" "captured operand" operandTypes
+            checkClosureKinds op "captured operand" operandTypes
 
 
 {-| Returns the violations in the kinds of an `eco.papExtend`, comparing kind
@@ -361,7 +452,7 @@ checkPapExtendBitmap op =
                     []
 
                 Just newArgTypes ->
-                    checkClosureKinds op "newargs_unboxed_bitmap" "new arg operand" newArgTypes
+                    checkClosureKinds op "new arg operand" newArgTypes
 
 
 {-| Returns the violations of a closure op whose compared operands have the
@@ -369,14 +460,13 @@ types `types`.
 
 With a `slot_kinds` array, its length must equal the number of compared
 operands, and entry N must be the kind of operand N (an `i1` operand is
-reported whatever the entry holds). Without one, the legacy u64 bitmap named
-`legacyName` is checked slot by slot, as `checkBitmapKind` decides it. With
-neither, the op is a violation unless `types` is empty. `operandLabel` only
-words the messages.
+reported whatever the entry holds). Without one, the op is a violation unless
+`types` is empty. (A stale u64 bitmap is reported by `checkClosureKindLimits`.)
+`operandLabel` only words the messages.
 
 -}
-checkClosureKinds : MlirOp -> String -> String -> List MlirType -> List Violation
-checkClosureKinds op legacyName operandLabel types =
+checkClosureKinds : MlirOp -> String -> List MlirType -> List Violation
+checkClosureKinds op operandLabel types =
     case getArrayAttr "slot_kinds" op of
         Just kindAttrs ->
             let
@@ -403,28 +493,20 @@ checkClosureKinds op legacyName operandLabel types =
                     |> List.filterMap identity
 
         Nothing ->
-            case getIntAttr legacyName op of
-                Just bitmap ->
-                    List.indexedMap (\i t -> checkBitmapKind op bitmap i t legacyName operandLabel) types
-                        |> List.filterMap identity
+            if List.isEmpty types then
+                []
 
-                Nothing ->
-                    if List.isEmpty types then
-                        []
-
-                    else
-                        [ { opId = op.id
-                          , opName = op.name
-                          , message =
-                                "no slot_kinds (and no legacy "
-                                    ++ legacyName
-                                    ++ ") for "
-                                    ++ String.fromInt (List.length types)
-                                    ++ " "
-                                    ++ operandLabel
-                                    ++ "s"
-                          }
-                        ]
+            else
+                [ { opId = op.id
+                  , opName = op.name
+                  , message =
+                        "no slot_kinds for "
+                            ++ String.fromInt (List.length types)
+                            ++ " "
+                            ++ operandLabel
+                            ++ "s"
+                  }
+                ]
 
 
 {-| The integer held by one `slot_kinds` entry, or `Nothing` for an entry that
@@ -490,8 +572,8 @@ checkClosureKindLimits mlirModule =
         ++ List.concatMap checkPapCreateGroupLimits (findOpsNamed "eco.papCreateGroup" mlirModule)
 
 
-{-| Returns the violation, if any, for a u64 closure kind bitmap `name` that
-`op` still carries.
+{-| Returns the violation, if any, for a stale u64 kind bitmap `name` that
+`op` still carries (a closure op, or a record or custom construct op).
 -}
 checkNoLegacyBitmap : MlirOp -> String -> Maybe Violation
 checkNoLegacyBitmap op name =
@@ -499,7 +581,7 @@ checkNoLegacyBitmap op name =
         Just
             { opId = op.id
             , opName = op.name
-            , message = name ++ " is present; closure ops carry slot_kinds instead (wide-object Phase 2)"
+            , message = name ++ " is present; " ++ op.name ++ " carries slot_kinds instead (wide-object Phases 2/3)"
             }
 
     else

@@ -349,15 +349,20 @@ canonicalizeNode env state0 region expression =
                 ( recordId, stateAfterRecord ) =
                     Ids.allocId state0
             in
-            Dups.checkLocatedFields (List.map (Src.c2EolValue >> Tuple.mapBoth Src.c1Value Src.c1Value) fields)
-                |> ReportingResult.andThen
-                    (\fieldDict ->
-                        traverseDictWithIds env stateAfterRecord fieldDict
-                            |> ReportingResult.map
-                                (\( cfields, finalState ) ->
-                                    ( A.At region { id = recordId, node = Can.Record cfields }, finalState )
-                                )
-                    )
+            if List.length fields > HeapLimits.maxRecordFields then
+                -- HEAP_019: a Record object holds at most maxRecordFields fields.
+                ReportingResult.throw (Error.TooLarge region (Error.TooManyRecordFields Nothing) (List.length fields) HeapLimits.maxRecordFields)
+
+            else
+                Dups.checkLocatedFields (List.map (Src.c2EolValue >> Tuple.mapBoth Src.c1Value Src.c1Value) fields)
+                    |> ReportingResult.andThen
+                        (\fieldDict ->
+                            traverseDictWithIds env stateAfterRecord fieldDict
+                                |> ReportingResult.map
+                                    (\( cfields, finalState ) ->
+                                        ( A.At region { id = recordId, node = Can.Record cfields }, finalState )
+                                    )
+                        )
 
         Src.Unit ->
             let

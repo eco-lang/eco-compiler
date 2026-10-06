@@ -69,8 +69,7 @@ module {
 
     // Simulate curried function: subtract_chain 100
     // This creates a closure waiting for 3 more args
-    %f1 = "eco.papCreate"(%b100) {
-      function = @subtract_chain,
+    %f1 = "eco.papCreate"(%b100) {slot_kinds = array<i8: 0>, function = @subtract_chain,
       arity = 4 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
@@ -79,24 +78,21 @@ module {
 
     // Apply one more arg: subtract_chain 100 10
     // Now waiting for 2 more args
-    %f2 = "eco.papExtend"(%f1, %b10) {
-      remaining_arity = 3 : i64
+    %f2 = "eco.papExtend"(%f1, %b10) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %f2 : !eco.value
     // CHECK: <fn>
 
     // Apply one more: subtract_chain 100 10 5
     // Now waiting for 1 more arg
-    %f3 = "eco.papExtend"(%f2, %b5) {
-      remaining_arity = 2 : i64
+    %f3 = "eco.papExtend"(%f2, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %f3 : !eco.value
     // CHECK: <fn>
 
     // Final application: subtract_chain 100 10 5 3
     // Expected: (((100 - 10) - 5) - 3) = ((90 - 5) - 3) = (85 - 3) = 82
-    %r1 = "eco.papExtend"(%f3, %b3) {
-      remaining_arity = 1 : i64
+    %r1 = "eco.papExtend"(%f3, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %r1 : !eco.value
     // CHECK: 82
@@ -105,24 +101,21 @@ module {
     // Use f2 (subtract_chain 100 10) with different remaining args
 
     // subtract_chain 100 10 3 1 = (((100-10)-3)-1) = ((90-3)-1) = 86
-    %r2 = "eco.papExtend"(%f2, %b3, %b1) {
-      remaining_arity = 2 : i64
+    %r2 = "eco.papExtend"(%f2, %b3, %b1) {slot_kinds = array<i8: 0, 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %r2 : !eco.value
     // CHECK: 86
 
     // Use f1 (subtract_chain 100) with different remaining args
     // subtract_chain 100 5 3 1 = (((100-5)-3)-1) = ((95-3)-1) = 91
-    %r3 = "eco.papExtend"(%f1, %b5, %b3, %b1) {
-      remaining_arity = 3 : i64
+    %r3 = "eco.papExtend"(%f1, %b5, %b3, %b1) {slot_kinds = array<i8: 0, 0, 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %r3 : !eco.value
     // CHECK: 91
 
     // Use f3 (subtract_chain 100 10 5) with different final arg
     // subtract_chain 100 10 5 1 = (((100-10)-5)-1) = 84
-    %r4 = "eco.papExtend"(%f3, %b1) {
-      remaining_arity = 1 : i64
+    %r4 = "eco.papExtend"(%f3, %b1) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %r4 : !eco.value
     // CHECK: 84

@@ -111,6 +111,15 @@ majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
     return GCStats::MajorReason::Unknown;
 }
 
+// Release-mode abort for a Custom/Record past its wide-object limit (HEAP_019):
+// a 6-bit K would otherwise wrap. Slow paths only.
+[[noreturn]] void ecoFatalWideObject(const char* where, u32 n) {
+    std::fprintf(stderr, "[eco] FATAL: %s: %u slots exceeds the wide-object limit (HEAP_019)\n",
+                 where, n);
+    std::fflush(stderr);
+    std::abort();
+}
+
 // Initializes a freshly-allocated object header for the given tag.
 // `size` is the total aligned byte size returned by the allocator. For
 // variable-size types, hdr->size is overwritten with the per-type element
@@ -125,11 +134,14 @@ majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
 // via this function).
 void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
     zeroNewObject(hdr, size);
-    hdr->tag = tag;
+    // The header is composed locally and written with ONE 8-byte store, so no
+    // reader can see a size without its K (Custom/Record, HEAP_019/HEAP_077).
+    Header h{};
+    h.tag = tag;
 
     switch (tag) {
         case Tag_String:
-            hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
+            h.size = (size - sizeof(ElmString)) / sizeof(u16);
             break;
         case Tag_StringSlice:
         case Tag_StringRope:
@@ -137,34 +149,47 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
             // Constructors (StringOps::makeSlice / makeRope / makeUtf8View) set
             // header.size explicitly to the logical UTF-16 length; nothing to
             // derive from byte size.
-            hdr->size = 0;
+            h.size = 0;
             break;
         case Tag_StringUtf8Leaf:
             // Inline ASCII bytes: 1 unit per byte, so the logical length is the
             // payload byte count (mirrors Tag_String's u16 derivation).
-            hdr->size = static_cast<u32>(size - sizeof(ElmStringUtf8Leaf));
+            h.size = static_cast<u32>(size - sizeof(ElmStringUtf8Leaf));
             break;
         case Tag_Custom:
-            hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
-            assertNarrowContainer(hdr->tag, hdr->size);
+        case Tag_Record: {
+            // Layout C: the byte size covers W = n + K value words; invert it to the
+            // field count n (header.size) and K (header.unboxed), and zero the K ext
+            // words (zeroNewObject cleared only the header word).
+            const bool isC = tag == Tag_Custom;
+            const size_t base = isC ? sizeof(Custom) : sizeof(Record);
+            const u32 cap  = isC ? CUSTOM_HDR_SLOTS : RECORD_HDR_SLOTS;
+            const u32 maxN = isC ? CUSTOM_MAX_FIELDS : RECORD_MAX_FIELDS;
+            const u32 W = static_cast<u32>((size - base) / sizeof(Unboxable));
+            u32 n = 0, k = 0;
+            if (!splitPhysicalSlots(W, cap, n, k) || n > maxN)
+                ecoFatalWideObject(isC ? "initHeaderForTag(Custom)" : "initHeaderForTag(Record)", W);
+            h.size = n;
+            h.unboxed = k;
+            if (k)
+                std::memset(reinterpret_cast<char*>(hdr) + base + size_t(n) * sizeof(Unboxable), 0,
+                            size_t(k) * sizeof(Unboxable));
             break;
-        case Tag_Record:
-            hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
-            assertNarrowContainer(hdr->tag, hdr->size);
-            break;
+        }
         case Tag_DynRecord:
-            hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
+            h.size = (size - sizeof(DynRecord)) / sizeof(HPointer);
             break;
         case Tag_FieldGroup:
-            hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
+            h.size = (size - sizeof(FieldGroup)) / sizeof(u32);
             break;
         case Tag_Closure:
-            hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+            h.size = (size - sizeof(Closure)) / sizeof(Unboxable);
             break;
         default:
-            hdr->size = static_cast<u32>(size);
+            h.size = static_cast<u32>(size);
             break;
     }
+    std::memcpy(hdr, &h, sizeof(Header));
 
     // Per-kind mutator allocation accounting. No-op when ENABLE_GC_STATS=0;
     // does a thread-local lookup + two array bumps when stats are on.
@@ -605,7 +630,9 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
         Header* hdr = getHeader(obj);
         u32 saved_color = hdr->color;
         initHeaderForTag(hdr, tag, size);
-        hdr->color = saved_color;
+        Header h = loadHeaderRelaxed(hdr);   // whole-word fix-up (hygiene; no concurrent reader)
+        h.color = saved_color;
+        storeHeaderRelaxed(hdr, h);
         return obj;
     }
 

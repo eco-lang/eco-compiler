@@ -68,8 +68,7 @@ module {
     %b10 = eco.box %i10 : i64 -> !eco.value
 
     // Create closure: add5 = add with first arg=5 captured
-    %add5 = "eco.papCreate"(%b5) {
-      function = @add_eval,
+    %add5 = "eco.papCreate"(%b5) {slot_kinds = array<i8: 0>, function = @add_eval,
       arity = 2 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
@@ -89,8 +88,7 @@ module {
     // CHECK: 15
 
     // Create closure: mul7 = mul with first arg=7 captured
-    %mul7 = "eco.papCreate"(%b7) {
-      function = @mul_eval,
+    %mul7 = "eco.papCreate"(%b7) {slot_kinds = array<i8: 0>, function = @mul_eval,
       arity = 2 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value

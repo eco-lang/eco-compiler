@@ -20,14 +20,14 @@ module {
       function = @double,
       arity = 1 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     // Extend with typed (unboxed) i64 argument - should saturate and return i64
-    // newargs_unboxed_bitmap = 1 indicates arg 0 is unboxed
+    // slot_kinds[0] = 1: newarg 0 is unboxed
     %result = "eco.papExtend"(%pap, %c42) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      slot_kinds = array<i8: 1>
     } : (!eco.value, i64) -> i64
 
     eco.dbg %result : i64

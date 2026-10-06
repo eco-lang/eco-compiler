@@ -77,8 +77,7 @@ module {
     %b3 = eco.box %i3 : i64 -> !eco.value
 
     // Create PAP with arity=2, captured=1, remaining=1
-    %pap1 = "eco.papCreate"(%b5) {
-      function = @add_two,
+    %pap1 = "eco.papCreate"(%b5) {slot_kinds = array<i8: 0>, function = @add_two,
       arity = 2 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
@@ -86,15 +85,13 @@ module {
     // CHECK: <fn>
 
     // Saturate with one more argument: 5 + 7 = 12
-    %result1 = "eco.papExtend"(%pap1, %b7) {
-      remaining_arity = 1 : i64
+    %result1 = "eco.papExtend"(%pap1, %b7) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %result1 : !eco.value
     // CHECK: 12
 
     // Create PAP with arity=3, captured=2, remaining=1 (high capture ratio)
-    %pap2 = "eco.papCreate"(%b5, %b7) {
-      function = @sum_three,
+    %pap2 = "eco.papCreate"(%b5, %b7) {slot_kinds = array<i8: 0, 0>, function = @sum_three,
       arity = 3 : i64,
       num_captured = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
@@ -102,8 +99,7 @@ module {
     // CHECK: <fn>
 
     // Saturate with one more argument: 5 + 7 + 3 = 15
-    %result2 = "eco.papExtend"(%pap2, %b3) {
-      remaining_arity = 1 : i64
+    %result2 = "eco.papExtend"(%pap2, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %result2 : !eco.value
     // CHECK: 15
@@ -114,15 +110,13 @@ module {
     %b10 = eco.box %i10 : i64 -> !eco.value
     %b20 = eco.box %i20 : i64 -> !eco.value
 
-    %pap3 = "eco.papCreate"(%b10) {
-      function = @add_two,
+    %pap3 = "eco.papCreate"(%b10) {slot_kinds = array<i8: 0>, function = @add_two,
       arity = 2 : i64,
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
 
     // 10 + 20 = 30
-    %result3 = "eco.papExtend"(%pap3, %b20) {
-      remaining_arity = 1 : i64
+    %result3 = "eco.papExtend"(%pap3, %b20) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %result3 : !eco.value
     // CHECK: 30

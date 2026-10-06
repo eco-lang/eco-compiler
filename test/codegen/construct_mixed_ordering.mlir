@@ -17,8 +17,8 @@ module {
     %b30 = eco.box %i30 : i64 -> !eco.value
 
     // Pattern: [boxed, unboxed, boxed, unboxed]
-    // unboxed_bitmap = 10 (0b1010) - bits 1 and 3 are unboxed
-    %mixed1 = eco.construct.custom(%b10, %i20, %b30, %i40) {tag = 1 : i64, size = 4 : i64, unboxed_bitmap = 68 : i64} : (!eco.value, i64, !eco.value, i64) -> !eco.value
+    // slot_kinds: fields 1 and 3 are unboxed
+    %mixed1 = eco.construct.custom(%b10, %i20, %b30, %i40) {tag = 1 : i64, size = 4 : i64, slot_kinds = array<i8: 0, 1, 0, 1>} : (!eco.value, i64, !eco.value, i64) -> !eco.value
     eco.dbg %mixed1 : !eco.value
     // CHECK: Ctor1 10 20 30 40
 
@@ -43,11 +43,11 @@ module {
     // CHECK: 40
 
     // Pattern: [unboxed, boxed, unboxed, boxed]
-    // unboxed_bitmap = 5 (0b0101) - bits 0 and 2 are unboxed
+    // slot_kinds: fields 0 and 2 are unboxed
     %b20 = eco.box %i20 : i64 -> !eco.value
     %b40 = eco.box %i40 : i64 -> !eco.value
 
-    %mixed2 = eco.construct.custom(%i10, %b20, %i30, %b40) {tag = 2 : i64, size = 4 : i64, unboxed_bitmap = 17 : i64} : (i64, !eco.value, i64, !eco.value) -> !eco.value
+    %mixed2 = eco.construct.custom(%i10, %b20, %i30, %b40) {tag = 2 : i64, size = 4 : i64, slot_kinds = array<i8: 1, 0, 1, 0>} : (i64, !eco.value, i64, !eco.value) -> !eco.value
     eco.dbg %mixed2 : !eco.value
     // CHECK: Ctor2 10 20 30 40
 
@@ -69,8 +69,8 @@ module {
     // CHECK: 40
 
     // Pattern: [boxed, boxed, unboxed, unboxed]
-    // unboxed_bitmap = 12 (0b1100) - bits 2 and 3 are unboxed
-    %mixed3 = eco.construct.custom(%b10, %b20, %i30, %i40) {tag = 3 : i64, size = 4 : i64, unboxed_bitmap = 80 : i64} : (!eco.value, !eco.value, i64, i64) -> !eco.value
+    // slot_kinds: fields 2 and 3 are unboxed
+    %mixed3 = eco.construct.custom(%b10, %b20, %i30, %i40) {tag = 3 : i64, size = 4 : i64, slot_kinds = array<i8: 0, 0, 1, 1>} : (!eco.value, !eco.value, i64, i64) -> !eco.value
     eco.dbg %mixed3 : !eco.value
     // CHECK: Ctor3 10 20 30 40
 

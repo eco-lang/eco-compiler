@@ -25,7 +25,7 @@ module {
       function = @double_float_boxed,
       arity = 1 : i64,
       num_captured = 0 : i64,
-      unboxed_bitmap = 0 : i64
+      slot_kinds = array<i8>
     } : () -> !eco.value
 
     %as_ptr = builtin.unrealized_conversion_cast %closure : !eco.value to !llvm.ptr<1>
