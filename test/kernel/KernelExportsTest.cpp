@@ -351,11 +351,21 @@ static void test_decoder_read_string_goldens() {
             std::cout << std::endl;
             continue;
         }
-        TEST_ASSERT(ok == !g.nothing);
+        // Name the golden and the code unit in a failure: the bare TEST_ASSERT text
+        // does not say which of the battery's cases diverged.
+        auto fail = [&](const char* what, size_t i, unsigned got, unsigned want) {
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "golden %s: %s at %zu: got %04X, want %04X",
+                          g.name, what, i, got, want);
+            TEST_FAIL(buf);
+        };
+        if (ok != !g.nothing) fail("Just/Nothing", 0, ok, !g.nothing);
         if (ok) {
-            TEST_ASSERT(units.size() == g.units.size());
-            for (size_t i = 0; i < units.size() && i < g.units.size(); ++i) {
-                TEST_ASSERT(units[i] == g.units[i]);
+            if (units.size() != g.units.size())
+                fail("length", 0, static_cast<unsigned>(units.size()),
+                     static_cast<unsigned>(g.units.size()));
+            for (size_t i = 0; i < units.size(); ++i) {
+                if (units[i] != g.units[i]) fail("code unit", i, units[i], g.units[i]);
             }
         }
     }
