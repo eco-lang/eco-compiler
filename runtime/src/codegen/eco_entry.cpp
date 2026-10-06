@@ -120,8 +120,11 @@ static void *eco_main_thread(void *arg) {
     // Register effect managers (Time, Http, etc.) with the scheduler.
     eco_register_all_effect_managers();
 
-    // Run the Elm program.
-    int64_t result = eco_main();
+    // Run the Elm program. Its return is the Elm `main` value (an !eco.value
+    // word: Unit is the Empty constant 0x6, HEAP_010), not an exit status, so
+    // a normal finish exits 0. A program picks its own code through
+    // Eco.Process.exit (System.Exit), which calls ::exit and never returns here.
+    (void)eco_main();
 
     // ECO_GC_EXIT_MAJOR=1: force one major GC after the program finishes
     // (still on the Elm thread, before teardown) so the exit stats'
@@ -137,7 +140,7 @@ static void *eco_main_thread(void *arg) {
     // Cleanup thread-local allocator state.
     Elm::Allocator::instance().cleanupThread();
 
-    args->result = static_cast<int>(result);
+    args->result = 0;
     return nullptr;
 }
 

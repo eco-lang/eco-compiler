@@ -216,10 +216,13 @@ void* ecoEmbedThread(void* /*arg*/) {
     if (s.idleHook)
         sched.setActivityHook(schedActivityTrampoline, nullptr);
 
-    int64_t result = eco_main();
+    // eco_main returns the Elm `main` value (Unit is the Empty constant 0x6,
+    // HEAP_010), not an exit status: a normal finish, including one a host
+    // requested with eco_app_stop, reports 0 (as eco_entry.cpp does).
+    (void)eco_main();
 
     Elm::Allocator::instance().cleanupThread();
-    s.exitCode.store(static_cast<int>(result));
+    s.exitCode.store(0);
 
     // If the ready hook never fired (non-worker program, or init crashed
     // out cleanly), release the start handshake now.

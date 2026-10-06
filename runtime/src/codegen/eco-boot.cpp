@@ -548,6 +548,16 @@ static std::string getOutputPath() {
 // Main
 //===----------------------------------------------------------------------===//
 
+// Whether partition objects can be joined into the one requested object with a
+// relocatable link (`systemLinker -r`). COFF has none: lld-link and link.exe
+// have no -r, so on Windows an object output is emitted unsplit (executables
+// still split, since the final link takes every partition object).
+#if defined(_WIN32)
+static constexpr bool kCanRelinkObjects = false;
+#else
+static constexpr bool kCanRelinkObjects = true;
+#endif
+
 // Win64 teardown hard-exit. eco-boot-native links all of LLVM/MLIR; returning
 // from main runs the /MT CRT exit() -> ExitProcess, whose DLL_PROCESS_DETACH +
 // static-destructor sweep intermittently stalls at process teardown. The
@@ -787,7 +797,7 @@ int main(int argc, char **argv) {
         job.postRS4GCDumpPath = dumpRS4GCIR;
         job.rs4gcAfterOpt = rs4gcAfterOpt;
         job.splitCodegen = splitCodegen;
-        job.splitEligible = isExe || objOnly;
+        job.splitEligible = isExe || (objOnly && kCanRelinkObjects);
         job.capClosedWorld = capClosedWorld(output);
         job.parallelOpt = parallelOpt;
         job.stats = &stats;
@@ -1046,7 +1056,7 @@ int main(int argc, char **argv) {
         job.postRS4GCDumpPath = dumpRS4GCIR;
         job.rs4gcAfterOpt = rs4gcAfterOpt;
         job.splitCodegen = splitCodegen;
-        job.splitEligible = isExecutable || emitObjOnly;
+        job.splitEligible = isExecutable || (emitObjOnly && kCanRelinkObjects);
         job.capClosedWorld = capClosedWorld(output);
         job.parallelOpt = parallelOpt;
         job.stats = &stats;
