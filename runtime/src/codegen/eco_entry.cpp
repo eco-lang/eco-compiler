@@ -11,7 +11,7 @@
 #include "../allocator/StackMap.hpp"
 #include "../allocator/GCStats.hpp"
 #include "../platform/StackMapSection.hpp"
-#include "../../eco-kernel-cpp/src/eco/Env.hpp"
+#include "../../eco-kernel-cpp/src/eco-kernel/Env.hpp"
 
 #include <cstdlib>
 #include <cstdio>

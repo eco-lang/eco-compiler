@@ -9,7 +9,7 @@
 // kernel intrinsic surface a runtime "lowering unavailable" failure.
 //
 // The stubs return -1 to signal "no implementation available". The
-// kernel-side wrapper (eco-kernel-cpp/src/eco/NativeDriver.cpp) translates
+// kernel-side wrapper (eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp) translates
 // any nonzero return into a Task failure with an explanatory message.
 //
 //===----------------------------------------------------------------------===//

@@ -2,7 +2,7 @@
  * GCReport: what an explicit collection did (plans/frontend-heap-release.md §3.1, HEAP_076).
  *
  * Returned by Allocator::collectMinor() and Allocator::collectMajorAndRelease(), and rendered as
- * JSON by the Eco.GC kernel (eco-kernel-cpp/src/eco/GC.cpp, keys = the Elm field names of §4.1).
+ * JSON by the Eco.GC kernel (eco-kernel-cpp/src/eco-kernel/GC.cpp, keys = the Elm field names of §4.1).
  * A plain struct with no allocator includes; every field is filled in every build, including
  * Release builds where ENABLE_GC_STATS = 0.
  *

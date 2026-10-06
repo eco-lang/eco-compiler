@@ -79,10 +79,10 @@ compiler/` returns nothing.
 
 - **`eco-kernel-cpp`:**
   - delete `src/Eco/CellStore.elm`, `src/Eco/Kernel/CellStore.js` and
-    `src/eco/CellStore{.hpp,.cpp,Exports.cpp}`;
+    `src/eco-kernel/CellStore{.hpp,.cpp,Exports.cpp}`;
   - remove the entry from `elm.json` `exposed-modules`;
-  - remove the export declarations from `src/eco/KernelExports.h`;
-  - remove the `Eco_Kernel_CellStore_register_gc_roots()` call from `src/eco/RuntimeExports.cpp:48`.
+  - remove the export declarations from `src/eco-kernel/KernelExports.h`;
+  - remove the `Eco_Kernel_CellStore_register_gc_roots()` call from `src/eco-kernel/RuntimeExports.cpp:48`.
 - **License pins:** `RuntimeExports.cpp` is hash-pinned in
   `compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt` (the 4 `Runtime.*` rows).
   - Re-pin those rows.

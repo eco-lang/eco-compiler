@@ -128,12 +128,12 @@ code moved verbatim (Linux/macOS behavior unchanged).
      which the UCRT supports for basic cases) — diagnostics-only, can be
      minimal in v1.
    - `signal(SIGPIPE, SIG_IGN)` → no-op on Windows.
-9. **Process spawning** (`eco-kernel-cpp/src/eco/Process.cpp`):
+9. **Process spawning** (`eco-kernel-cpp/src/eco-kernel/Process.cpp`):
    fork/execvp/pipe/waitpid → `CreateProcessW` + `CreatePipe` +
    `WaitForSingleObject`/`GetExitCodeProcess`. Self-contained module; the
    WaitService SIGCHLD logic becomes a waiter thread or
    `RegisterWaitForSingleObject`.
-10. **File I/O** (`eco-kernel-cpp/src/eco/File.cpp`):
+10. **File I/O** (`eco-kernel-cpp/src/eco-kernel/File.cpp`):
     `stat`/`S_ISDIR`/`opendir`/`readdir`/`access` →
     `std::filesystem` (`status`, `directory_iterator`, `perms`) — this
     also simplifies the POSIX side. Use UTF-8 throughout: embed a UTF-8

@@ -142,7 +142,7 @@ Steps:
    intrinsic.** New Elm kernel module `Eco.Kernel.NativeDriver` with
    `lowerAndLink : String -> String -> Task String ()` (mlirPath →
    elfPath), backed by `Eco_Kernel_NativeDriver_lowerAndLink` in
-   `eco-kernel-cpp/src/eco/NativeDriver.cpp`, which calls
+   `eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp`, which calls
    `eco_native_lower_and_link(...)`.
 5. **Front-end output dispatch**: extend
    `compiler/src/Terminal/Make.elm` with `handleElfOutput`. When
@@ -286,7 +286,7 @@ Steps:
 | `compiler/CMakeLists.txt` | **Modify** — add `eco` target + Stage 9 commands |
 | `compiler/src/Terminal/Make.elm` | **Modify** — `handleElfOutput` branch; extension-driven dispatch |
 | `compiler/src/Builder/Generate.elm` | **Modify** — `writeMonoMlirToElf` orchestrator (Phase 1 wraps the temp-file flow) |
-| `eco-kernel-cpp/src/eco/NativeDriver.{cpp,hpp}` | **Create** — kernel intrinsic that calls the C ABI entry |
+| `eco-kernel-cpp/src/eco-kernel/NativeDriver.{cpp,hpp}` | **Create** — kernel intrinsic that calls the C ABI entry |
 | `eco-kernel-cpp/src/Eco/Kernel/NativeDriver.elm` | **Create** — Elm-side wrapper for the intrinsic |
 | `guides/bootstrap.md` | **Modify** — add Stage 9 section |
 

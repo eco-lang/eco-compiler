@@ -555,7 +555,7 @@ Entries are appended here, newest last, in the §3 format.
 | **median** | **71.03** | **27.8** | **23.6** | 13.1 | 4.10 | 1235 | 7 | 7709 | 7535932 | 13370653 | 8737024 | |
 | Δ vs S3 | +1.20 | +0.8 | −0.2 | +0.1 | +0.03 | 0 | 0 | −1 | +5,348 | (new source) | +94 | |
 
-- **Change:** `Hash::deep` in `eco-kernel-cpp/src/eco/Hash.cpp` (an allocation-free structural walk
+- **Change:** `Hash::deep` in `eco-kernel-cpp/src/eco-kernel/Hash.cpp` (an allocation-free structural walk
   mirroring `eqHelp`: strings by content, Cons/ConsChunk alike, Dicts in order, boxed = unboxed
   primitives, constants by word), exported as `Eco_Kernel_Hash_deepWith`; JS and `src-xhr` twins
   return `fallback x`; `TypeTable.hashType t = Eco.Hash.deepWith hashTypeElm t`.

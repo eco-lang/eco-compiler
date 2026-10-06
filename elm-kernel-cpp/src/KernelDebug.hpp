@@ -1,6 +1,6 @@
 //===- KernelDebug.hpp - Kernel-side stderr tracing (Elm kernel) ----------===//
 //
-// Mirror of eco-kernel-cpp/src/eco/KernelDebug.hpp for the Elm kernel libs.
+// Mirror of eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp for the Elm kernel libs.
 // Re-declared rather than re-included to keep the two kernel packages
 // independent — neither has the other on its include path. The macro
 // definition must stay in sync.

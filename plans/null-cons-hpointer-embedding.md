@@ -261,7 +261,7 @@ decoders already accept one — the same staging discipline as HEAP_042.
 
 **Rename** (mechanical; the field is never read, only asserted zero):
 `runtime/src/allocator/Heap.hpp:199-207` (comment + field),
-`eco-kernel-cpp/src/eco/ExportHelpers.hpp:41-48`,
+`eco-kernel-cpp/src/eco-kernel/ExportHelpers.hpp:41-48`,
 `elm-kernel-cpp/src/ExportHelpers.hpp:20,53-54`, `THEORY.md:154,162`,
 `runtime/src/codegen/Ops.td` HPointer comment, and the
 `design_docs/theory/heap_representation_theory.md` layout section. Grep
@@ -354,7 +354,7 @@ that `eco_get_tag` on these words returns 0, 1, 1023. Also assert
 The GC needs nothing (§1), but the encode/decode validators do:
 
 - `elm-kernel-cpp/src/ExportHelpers.hpp:53-54` and
-  `eco-kernel-cpp/src/eco/ExportHelpers.hpp:41-48`: the constant-path
+  `eco-kernel-cpp/src/eco-kernel/ExportHelpers.hpp:41-48`: the constant-path
   condition `ptr_ind != 0 && ptr == 0 && null_cons_idx == 0 && padding == 0`
   must drop the `null_cons_idx == 0` conjunct **when `constant == 3`** (or
   simply: constant path = `ptr_ind != 0 && ptr == 0 && padding == 0`, since

@@ -156,8 +156,8 @@ grep -rn "eco_alloc_with_roots(Tag_Custom\|eco_alloc_with_roots(Tag_Record" elm-
 | builder | sites | maximum size |
 |---|---|---|
 | kernel closures (`allocClosure` / `allocClosureK`) | 38 call lines: Http, Task, Time, Platform, Port, Scheduler, MVar, TaskBinding | **max_values 5** (`runtime/src/platform/PortRuntime.cpp:211`) |
-| `alloc::custom` / `custom(…)` | Browser, Bytes, Http, Task, Time, Platform, Json, `eco/Http.cpp` | ≤ 5 fields (largest `std::vector<Unboxable> fields(5)`) |
-| `alloc::record` / `record(…)` | Http (`HttpExports.cpp:223`, `:314`, `:331`), `eco/Process.cpp:160`, `:259` | ≤ 5 fields |
+| `alloc::custom` / `custom(…)` | Browser, Bytes, Http, Task, Time, Platform, Json, `eco-kernel/Http.cpp` | ≤ 5 fields (largest `std::vector<Unboxable> fields(5)`) |
+| `alloc::record` / `record(…)` | Http (`HttpExports.cpp:223`, `:314`, `:331`), `eco-kernel/Process.cpp:160`, `:259` | ≤ 5 fields |
 | Json decoder Customs (`eco_alloc_with_roots(Tag_Custom…)`) | `elm-kernel-cpp/src/json/JsonExports.cpp`; `buildMapDecoder` at `:1539` | **9 fields** (`DEC_MAP8`, `:1597`) |
 
 **Conclusions** (inputs to P1 1c/1d and HEAP_077):

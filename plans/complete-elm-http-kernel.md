@@ -87,7 +87,7 @@ handle.
     that does NOT match stock `elm/http` (see "real blocker").** Gated on
     `HTTP_CURL_AVAILABLE`.
   - `HttpEffectManager.cpp`: effect manager + `eco_register_http_effect_manager()`.
-- **`eco-kernel-cpp/src/eco/`** — compiler-internal `Eco.Http` (`fetch`/`getArchive`),
+- **`eco-kernel-cpp/src/eco-kernel/`** — compiler-internal `Eco.Http` (`fetch`/`getArchive`),
   used by the bootstrap package downloader (`compiler/src/Builder/Http.elm:194-196`).
 
 ### Bridge mechanism (the first draft was wrong here)
@@ -96,7 +96,7 @@ handle.
   (`compiler/src/Compiler/Generate/MLIR/Names.elm:18-20`): `Elm.Kernel.Http.toTask`
   → external symbol `Elm_Kernel_Http_toTask`. eco-kernel follows the same rule
   (`Eco.Kernel.Http.getArchive` → `Eco_Kernel_Http_getArchive`,
-  `eco-kernel-cpp/src/eco/HttpExports.cpp:13`). **So the names are correct/required,
+  `eco-kernel-cpp/src/eco-kernel/HttpExports.cpp:13`). **So the names are correct/required,
   not arbitrary — do not rename.**
 - **All 8 C exports are already JIT-registered** (`RuntimeSymbols.cpp:881-888`),
   consumed by `EcoRunner::registerRuntimeSymbols` (`EcoRunner.cpp:218`).
@@ -162,7 +162,7 @@ first real work item.**
   and libzip hard deps (`find_package(... REQUIRED)` / required `pkg_check_modules`,
   keeping the `ECO_STATIC` vendored branches) in both `elm-kernel-cpp/CMakeLists.txt`
   and `eco-kernel-cpp/CMakeLists.txt`. Delete every `#ifdef`/`#else` stub branch in
-  `HttpExports.cpp` and `eco/Http.cpp`.
+  `HttpExports.cpp` and `eco-kernel/Http.cpp`.
 - **A2. Delete the dead stub.** Remove `src/http/Http.cpp` + `Http.hpp`; drop from
   `add_library(ElmKernel_Http …)`. Verified unreferenced → clean delete.
 - **A3. Document the naming convention (no rename).** Add one comment in

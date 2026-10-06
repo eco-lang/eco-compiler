@@ -1,5 +1,5 @@
-eco-kernel-cpp/src/eco/MVar.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
-eco-kernel-cpp/src/eco/Runtime.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+eco-kernel-cpp/src/eco-kernel/MVar.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+eco-kernel-cpp/src/eco-kernel/Runtime.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
 elm-kernel-cpp/src/http/HttpExports.cpp: Allocator::instance().getRootSet().addExternalRootScanner(
 elm-kernel-cpp/src/time/TimeEffectManager.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
 runtime/src/allocator/RootSet.cpp: void RootSet::addExternalRootScanner(ExternalRootScanner scanner, const char* name) {

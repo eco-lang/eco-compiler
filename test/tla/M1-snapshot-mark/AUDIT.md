@@ -582,7 +582,7 @@ Fired: grep `F.externalRoots` (M1), new hash prefix 631d334f9bcf.
 
 plans/remove-cellstore.md deletes the `Eco.CellStore` kernel module (the compiler's union-find point
 store is an immutable `Array` again), and with it the one line the grep lost:
-`eco-kernel-cpp/src/eco/CellStore.cpp: ...addExternalRootScanner(`. No atomic step, lock, memory
+`eco-kernel-cpp/src/eco-kernel/CellStore.cpp: ...addExternalRootScanner(`. No atomic step, lock, memory
 order or scanner protocol changes; one external root scanner less registers at start-up. M1's
 `cell[c]` / `CellSlots` abstraction (off-heap stores read and overwritten at any time, scanned through
 `forEachMajorRoot` `kind == 2`) still describes every remaining scanner (MVar, Runtime, scheduler,
@@ -646,5 +646,15 @@ the header word is the same modelled location; children are read from a frozen o
 Validate builds add validateExtKinds (K, padding, inertness census) in the serial scan, the
 validate pre-walk and OldGenSpace scanChildren: reads only, abort on failure.
 `tla-trace` after the change: 150/150 rows as expected.
+
+**Verdict: no model change needed.**
+
+## 2026-10-06 — eco-kernel-cpp/src/eco renamed to src/eco-kernel (GC_MODEL_001)
+
+Pin `F.externalRoots` (grep) moved, new hash prefix `5a5733b39b1c`. The kernel C++ directory was
+renamed so it no longer collides with `src/Eco` on case-insensitive filesystems. The grep still finds
+the same two `addExternalRootScanner(` calls (MVar.cpp, Runtime.cpp) with identical text; only the
+path prefix in the census lines changed. No code, atomic, lock, memory order or root-scanner
+registration changed.
 
 **Verdict: no model change needed.**

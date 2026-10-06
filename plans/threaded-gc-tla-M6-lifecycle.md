@@ -216,7 +216,7 @@ background gang, pool" on one CPU (a common container quota). Nothing the code d
 order: no background member ever takes `run_m_` or the mark gang's `m_`, and the pool's prepare runs
 last either way. The model checks both (constant `PrepareOrder`, §6).
 
-**What the runtime itself does.** The only `fork()` calls are in `eco-kernel-cpp/src/eco/Process.cpp`
+**What the runtime itself does.** The only `fork()` calls are in `eco-kernel-cpp/src/eco-kernel/Process.cpp`
 (70, 124). They run on the mutator between pauses, and the child immediately `execvp`s. The unit
 tests fork between pauses from the mutator and continue in the child. **A fork from another
 thread** (an embedding host, e.g. a Node child-process spawn, **or a second heap's mutator**, §2.6)
@@ -364,7 +364,7 @@ the whole chain (invariant `ClosingFinished`), and checks that step 4 is not a d
 | `ensureGang` (mark gang configure) | `OldGenSpace.cpp:2935-2944` | `PrepareOrder` (§2.4) |
 | `Allocator::thread_mutex_` around posts and waits | `Allocator.cpp:753, 892, 1253` (and `223`, `1265`) | `tm` |
 | `~Allocator`, `atexitPrintStats` | `Allocator.cpp:218-229`; `eco_entry.cpp:190-212, 261` | §2.7; `ExitGangs` on the mutator |
-| the runtime's own fork | `eco-kernel-cpp/src/eco/Process.cpp:70, 124` | `Forker = "mut"` |
+| the runtime's own fork | `eco-kernel-cpp/src/eco-kernel/Process.cpp:70, 124` | `Forker = "mut"` |
 
 **Outside M6:**
 - what the jobs do (M7);

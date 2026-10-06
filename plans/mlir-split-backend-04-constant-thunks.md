@@ -736,7 +736,7 @@ Nothing was built or run. Each issue is fixed in place above.
     callee-position calls, analyses, or route operands back through `generateExpr`
     (`BytesFusion/Emit.elm` `compileExpr`);
   - captures are locals;
-  - kernels reference no Elm thunk symbols (`eco-kernel-cpp/src/eco/Hash.cpp` has its own
+  - kernels reference no Elm thunk symbols (`eco-kernel-cpp/src/eco-kernel/Hash.cpp` has its own
     `kBase`).
 - The JS backend is untouched. 2A and phase 1 do no host arithmetic, so the JS-hosted stage
   emits identical MLIR.

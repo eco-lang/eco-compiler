@@ -160,7 +160,7 @@ After step 2, individual ops can be migrated incrementally; the migration order 
 
 **Files (17):**
 `elm-kernel-cpp/src/{core/{String.hpp,String.cpp,StringExports.cpp,Utils.cpp,DebugExports.cpp},parser/ParserExports.cpp,json/JsonExports.cpp,bytes/{Bytes.cpp,BytesExports.cpp},url/{Url.hpp,Url.cpp,UrlExports.cpp},http/HttpExports.cpp,regex/{Regex.cpp,RegexExports.cpp},virtual-dom/{VirtualDom.cpp,VirtualDomExports.cpp}}`,
-`eco-kernel-cpp/src/eco/{KernelHelpers.hpp,Http.cpp}`.
+`eco-kernel-cpp/src/eco-kernel/{KernelHelpers.hpp,Http.cpp}`.
 
 **Rule:** Kernel C++ never reads `s->chars[i]` or `s->header.size` directly. All access goes through:
 

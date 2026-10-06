@@ -11,7 +11,7 @@
 
 ## Goal
 
-Today most C++ kernel functions in `eco-kernel-cpp/src/eco/` and a handful in
+Today most C++ kernel functions in `eco-kernel-cpp/src/eco-kernel/` and a handful in
 `elm-kernel-cpp/src/` perform their syscall / blocking work **eagerly** — they
 run the IO at the moment the kernel function is called from generated code and
 then return `taskSucceed(value)` / `taskFail(err)`. The Elm side has no chance
@@ -38,10 +38,10 @@ HPtr Eco_Kernel_File_writeString(HPtr path, HPtr content) {
 ```
 
 `Scheduler::taskBinding` lives at `runtime/src/platform/Scheduler.cpp:139`.
-`taskSucceed*` / `taskFail*` live at `eco-kernel-cpp/src/eco/KernelHelpers.hpp`.
+`taskSucceed*` / `taskFail*` live at `eco-kernel-cpp/src/eco-kernel/KernelHelpers.hpp`.
 For working examples of the deferred shape, see:
 
-- `eco-kernel-cpp/src/eco/MVar.cpp` — `readBindingEvaluator` / `takeBindingEvaluator` / `putBindingEvaluator`
+- `eco-kernel-cpp/src/eco-kernel/MVar.cpp` — `readBindingEvaluator` / `takeBindingEvaluator` / `putBindingEvaluator`
 - `elm-kernel-cpp/src/core/ProcessExports.cpp` — `sleepBindingEvaluator`
 - `elm-kernel-cpp/src/time/TimeExports.cpp` — `timeNowBindingEvaluator`
 - `elm-kernel-cpp/src/http/HttpExports.cpp` — `httpBindingEval`
@@ -54,7 +54,7 @@ Legend — **E** = eager IO, **D** = deferred via `taskBinding`,
 **PE** = partially eager (fast path bypasses `taskBinding`), **N** = no IO
 involved (pure data / scheduler primitive / not a `Task`-producer).
 
-### `eco-kernel-cpp/src/eco/` — Eco-specific kernels
+### `eco-kernel-cpp/src/eco-kernel/` — Eco-specific kernels
 
 | File:line | Function | Kind | IO performed eagerly |
 |---|---|---|---|
@@ -138,7 +138,7 @@ involved (pure data / scheduler primitive / not a `Task`-producer).
 
 | # | Question | Decision |
 |---|---|---|
-| Q1 | Helper location | **New header** `eco-kernel-cpp/src/eco/TaskBinding.hpp`. `KernelHelpers.hpp` stays scoped to synchronous / pure helpers. |
+| Q1 | Helper location | **New header** `eco-kernel-cpp/src/eco-kernel/TaskBinding.hpp`. `KernelHelpers.hpp` stays scoped to synchronous / pure helpers. |
 | Q2 | Helper API shape | **No** variadic kind-inferred template in Phase 0. Helper takes a single `HPointer` "captured payload" (built via existing alloc helpers — usually a tuple / record / custom). An optional `makeBindingFromCaptured(std::initializer_list<TaggedArg>)` may be added later if raw-primitive captures emerge as a recurring pattern. |
 | Q3 | `readLine` / `readAll` true async | **Out of scope.** Implement as bindings with **synchronous evaluators** (Task construction is deferred; the evaluator still blocks on stdin). Plan a separate `StdinService` (worker thread + `pendingResumes_` token, mirror of `TimerService` / `HttpService`) for a follow-up change. |
 | Q4 | `Process::wait` strategy | **Two-phase.** Phase 4a: binding with a **blocking evaluator** (Task construction fixed, ordering matches JS, scheduler still blocks during `waitpid`). Phase 4b: replace with **`WaitService`** — `SIGCHLD` + `waitpid(WNOHANG)` worker that registers a `pendingResume` token and drains exits on the main thread. |
@@ -208,7 +208,7 @@ pattern (and the boxing overhead is measurable per Q6), add
 `makeBindingFromCaptured(std::initializer_list<TaggedArg>)` as a follow-up,
 mirroring the existing `closureCapture(..., PK_Int/Float/Char)` convention.
 
-Implementation lives in `eco-kernel-cpp/src/eco/TaskBinding.hpp` (Q1). The
+Implementation lives in `eco-kernel-cpp/src/eco-kernel/TaskBinding.hpp` (Q1). The
 helper generates a tiny boilerplate evaluator that:
 
 1. Decodes the captured payload HPointer (already kept alive by the closure's
@@ -246,7 +246,7 @@ the helper's generated evaluator and confirm:
   captures.
 - The kill-handle return path doesn't leave dangling HPointer arguments.
 
-### Phase 1 — `eco-kernel-cpp/src/eco/Console.cpp`
+### Phase 1 — `eco-kernel-cpp/src/eco-kernel/Console.cpp`
 
 **Why first:** smallest module (4 functions), straightforward syscalls, and
 `readLine` / `readAll` already block the whole scheduler — the highest
@@ -263,14 +263,14 @@ correctness win per LoC.
    it stays eager. Add a comment pointing at the Q7 row of this plan so the
    exemption is obvious to future readers.
 
-### Phase 2 — `eco-kernel-cpp/src/eco/Env.cpp`
+### Phase 2 — `eco-kernel-cpp/src/eco-kernel/Env.cpp`
 
 Two functions. `lookup(name)` → defer `getenv` into the binding body.
 `rawArgs()` → defer the `s_argv[]` walk into the binding body (also
 re-evaluates argv at consumption time, in case Env::init were ever called
 late — which it isn't today, but keeps the contract honest).
 
-### Phase 3 — `eco-kernel-cpp/src/eco/File.cpp`
+### Phase 3 — `eco-kernel-cpp/src/eco-kernel/File.cpp`
 
 Largest module (22 + 2 stubs). **Take the Q6 baseline measurement before this
 phase lands** (wall-clock, CPU, peak RSS for `cmake --build build --target full`
@@ -299,7 +299,7 @@ compiler's source-crawling loop) regresses noticeably, apply the Q6
 fallbacks — micro-optimise small-capture allocation, or special-case
 side-effect-free kernels (e.g. `rawArgs`) as pure `Task.succeed` constructors.
 
-### Phase 4 — `eco-kernel-cpp/src/eco/Process.cpp`
+### Phase 4 — `eco-kernel-cpp/src/eco-kernel/Process.cpp`
 
 Split into two sub-phases per Q4:
 
@@ -334,7 +334,7 @@ Mirror of `TimerService` / `HttpService`:
 
 Phase 4b can ship in a separate PR from 4a once 4a is settled.
 
-### Phase 5 — `eco-kernel-cpp/src/eco/Http.cpp`
+### Phase 5 — `eco-kernel-cpp/src/eco-kernel/Http.cpp`
 
 Worst-case eager-IO offender: synchronous `curl_easy_perform` blocks the
 scheduler for the entire network call. Per Q10 we **extend the existing
@@ -370,7 +370,7 @@ service:
 This is the largest semantic change in the plan; it deserves its own dedicated
 review and a separate PR (or two: extension first, then Eco.Http port).
 
-### Phase 6 — `eco-kernel-cpp/src/eco/NativeDriver.cpp`
+### Phase 6 — `eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp`
 
 Two functions, both heavy. Options:
 
@@ -384,7 +384,7 @@ Two functions, both heavy. Options:
 Recommend **easy wrap** here; revisit if the MLIR→native compile becomes a
 scheduler-fairness problem in practice.
 
-### Phase 7 — `eco-kernel-cpp/src/eco/Runtime.cpp`
+### Phase 7 — `eco-kernel-cpp/src/eco-kernel/Runtime.cpp`
 
 1. `dirname()` → defer `readlink` (mostly for uniformity; the call is
    microsecond-scale).
@@ -455,7 +455,7 @@ remains a hypothetical future option, not part of this plan.
 
 ### Phase 11 — Documentation
 
-1. Update `eco-kernel-cpp/src/eco/KernelHelpers.hpp` header comment to point
+1. Update `eco-kernel-cpp/src/eco-kernel/KernelHelpers.hpp` header comment to point
    at `TaskBinding.hpp` and discourage new `taskSucceed*` use in the
    synchronous return position of kernel functions.
 2. Add a one-paragraph note to `THEORY.md` or a new

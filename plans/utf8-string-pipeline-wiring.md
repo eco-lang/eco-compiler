@@ -100,7 +100,7 @@ a gated UTF-8 producer — invariant and live code have diverged.
 `std::u16string` and calls `allocString` (UTF-16), unconditionally, with a
 *lenient* decoder (skips invalid bytes, `:528-531`). It is the single
 ingestion chokepoint behind: `Eco.File.readString`
-(`eco-kernel-cpp/src/eco/File.cpp:82-98` → `succeedString`,
+(`eco-kernel-cpp/src/eco-kernel/File.cpp:82-98` → `succeedString`,
 `TaskBinding.hpp:52` → `taskSucceedString`, `KernelHelpers.hpp:140-144`),
 `Console.readLine`, `Env`, `Http` bodies (`Http.cpp` multiple),
 `PortRuntime.cpp`. This is why compiler source is UTF-16 before the parser
@@ -476,7 +476,7 @@ a parse-heavy run near zero (the parser narrow path is live).
 
 ### W3 — `File.readString` drops the intermediate `std::string` (perf polish; optional, after W2)
 
-**File:** `eco-kernel-cpp/src/eco/File.cpp`, `readStringBody` (`:82-98`).
+**File:** `eco-kernel-cpp/src/eco-kernel/File.cpp`, `readStringBody` (`:82-98`).
 
 Today: `ostringstream → std::string` (copy 1) → W2 gate copies into
 leaf/buffer (copy 2). Reshape to the `readBytesBody` pattern (`:100-118`) but

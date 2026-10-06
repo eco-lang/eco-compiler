@@ -17,7 +17,7 @@ Wire up the full three-stage bootstrap pipeline:
 | Component | Location | Status |
 |-----------|----------|--------|
 | JS kernel IO | `eco-kernel-cpp/src/Eco/Kernel/*.js` | Complete (Console, File, Process, Env, Runtime, MVar) |
-| C++ kernel IO | `eco-kernel-cpp/src/eco/*.cpp` | Complete (same modules) |
+| C++ kernel IO | `eco-kernel-cpp/src/eco-kernel/*.cpp` | Complete (same modules) |
 | Elm kernel wrappers | `eco-kernel-cpp/src/Eco/*.elm` | Complete (public API over kernel) |
 | eco/kernel package | `eco-kernel-cpp/elm.json` | Defined |
 | Compiler XHR IO | `compiler/src/Utils/Impure.elm` | Working (Http.task POST to mock server) |
@@ -235,7 +235,7 @@ Check what's already implemented in the compiler for kernel recognition and what
 
 #### 6.1 C++ kernel symbol registration
 
-Ensure the C++ kernel exports from `eco-kernel-cpp/src/eco/*Exports.cpp` are:
+Ensure the C++ kernel exports from `eco-kernel-cpp/src/eco-kernel/*Exports.cpp` are:
 - Compiled into a library
 - Linked into the native Eco binary
 - Registered in the MLIR/LLVM symbol table

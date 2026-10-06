@@ -131,7 +131,7 @@ Top-level `CMakeLists.txt`, inside the existing
 `${CMAKE_SOURCE_DIR}/eco-kernel-cpp/` and contains a mix of source
 (`elm.json`, `src/Eco/**/*.elm`, `src/Eco/Kernel/*.js`) plus three
 compiler caches at the top (`artifacts.dat`, `typed-artifacts.dat`,
-`docs.json`). C++ headers + sources (`src/eco/*.{hpp,cpp}`) live in the
+`docs.json`). C++ headers + sources (`src/eco-kernel/*.{hpp,cpp}`) live in the
 same tree but are **build inputs**, not redistributable artifacts — the
 compiled archives already cover the runtime side. Install only the Elm
 package half:
@@ -154,7 +154,7 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/
 
 The two `*.elm` patterns cover both `src/Eco/Foo.elm` and the nested
 `src/Eco/IO/Error.elm` / `src/Eco/Http/Error.elm` / `src/Eco/Process/Error.elm`.
-`FILES_MATCHING` makes any C++ source (`src/eco/*.{hpp,cpp}`) — which
+`FILES_MATCHING` makes any C++ source (`src/eco-kernel/*.{hpp,cpp}`) — which
 lives in a sibling lowercase `eco/` directory — drop out automatically.
 
 ### 2. Add `share/eco/examples/` install rules

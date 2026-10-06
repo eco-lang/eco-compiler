@@ -94,7 +94,7 @@ locals live across the call.
   `BytesExports.cpp`, `core/List.cpp`, `core/ListExports.cpp`,
   `core/String.cpp`, `core/StringExports.cpp`, `core/JsArray.cpp`,
   `core/BasicsExports.cpp`, `core/Utils.cpp`.
-- **Eco kernel C++** (`eco-kernel-cpp/src/eco/**`): per design doc §5.6,
+- **Eco kernel C++** (`eco-kernel-cpp/src/eco-kernel/**`): per design doc §5.6,
   mostly thin wrappers over `alloc::*`; `File.cpp`, `MVarExports.cpp`,
   `Runtime.cpp` flagged for direct allocator use.
 
@@ -442,11 +442,11 @@ Start with the four highest-traffic files, then fan out:
 
 ### Step 7 — Eco kernel C++ sweep
 
-7.1. `eco-kernel-cpp/src/eco/File.cpp` — `allocByteBuffer`,
+7.1. `eco-kernel-cpp/src/eco-kernel/File.cpp` — `allocByteBuffer`,
   `allocStringFromUTF8`, `just` wrappers. Verify caller-side rooting of
   boxed arguments passed in.
 
-7.2. `eco-kernel-cpp/src/eco/MVarExports.cpp` — `allocInt` only; no
+7.2. `eco-kernel-cpp/src/eco-kernel/MVarExports.cpp` — `allocInt` only; no
   rooting needed at the site (unboxed input), but confirm no live
   `HPointer` across it.
 
@@ -535,13 +535,13 @@ entries marked `done` are already verified above.
 | `elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp` | `allocStringFromUTF8` | immediate return | n/a | **done** (verified safe) |
 | `elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp` | via helpers | immediate return | n/a | **done** (verified safe) |
 | `elm-kernel-cpp/src/regex/Regex.cpp` | via helpers | immediate return | n/a | **done** (verified safe) |
-| `eco-kernel-cpp/src/eco/File.cpp` | via helpers | immediate return | n/a | **done** (verified safe) |
-| `eco-kernel-cpp/src/eco/MVarExports.cpp` | 1 (`allocInt`) | immediate return | n/a | **done** (verified safe) |
-| `eco-kernel-cpp/src/eco/Process.cpp` | via helpers | immediate return | n/a | **done** (verified safe) |
-| `eco-kernel-cpp/src/eco/Runtime.cpp` | 0 | n/a | n/a | **done** |
-| `eco-kernel-cpp/src/eco/ExportHelpers.hpp` | 0 | n/a | n/a | **done** |
-| `eco-kernel-cpp/src/eco/KernelHelpers.hpp` | via helpers | `StackRootGuard` | `taskSucceedStringList` fixed | **done** |
-| `eco-kernel-cpp/src/eco/Http.cpp` | via helpers | `StackRootGuard` | `fetch`/`getArchive` fixed | **done** |
+| `eco-kernel-cpp/src/eco-kernel/File.cpp` | via helpers | immediate return | n/a | **done** (verified safe) |
+| `eco-kernel-cpp/src/eco-kernel/MVarExports.cpp` | 1 (`allocInt`) | immediate return | n/a | **done** (verified safe) |
+| `eco-kernel-cpp/src/eco-kernel/Process.cpp` | via helpers | immediate return | n/a | **done** (verified safe) |
+| `eco-kernel-cpp/src/eco-kernel/Runtime.cpp` | 0 | n/a | n/a | **done** |
+| `eco-kernel-cpp/src/eco-kernel/ExportHelpers.hpp` | 0 | n/a | n/a | **done** |
+| `eco-kernel-cpp/src/eco-kernel/KernelHelpers.hpp` | via helpers | `StackRootGuard` | `taskSucceedStringList` fixed | **done** |
+| `eco-kernel-cpp/src/eco-kernel/Http.cpp` | via helpers | `StackRootGuard` | `fetch`/`getArchive` fixed | **done** |
 
 ## PR sequencing
 

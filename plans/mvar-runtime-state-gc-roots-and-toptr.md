@@ -4,14 +4,14 @@
 
 Three related GC-safety defects in the Eco kernel:
 
-1. **`Eco::Kernel::MVar::s_mvars`** (`eco-kernel-cpp/src/eco/MVar.cpp:21`) is a
+1. **`Eco::Kernel::MVar::s_mvars`** (`eco-kernel-cpp/src/eco-kernel/MVar.cpp:21`) is a
    `std::unordered_map<int64_t, MVarSlot>` where each slot holds a raw
    `HPointer`. It is never registered as a GC root, so any GC that moves the
    pointed-to object leaves the stored `HPointer` stale.
-2. **`Eco::Kernel::Runtime::s_savedState`** (`eco-kernel-cpp/src/eco/Runtime.cpp:12`)
+2. **`Eco::Kernel::Runtime::s_savedState`** (`eco-kernel-cpp/src/eco-kernel/Runtime.cpp:12`)
    is a bare `HPointer` set by `saveState` and read by `loadState`. It is also
    not a GC root, so `loadState` can return a dangling pointer after a GC.
-3. **`Eco::Kernel::Export::toPtr`** (`eco-kernel-cpp/src/eco/ExportHelpers.hpp:36`)
+3. **`Eco::Kernel::Export::toPtr`** (`eco-kernel-cpp/src/eco-kernel/ExportHelpers.hpp:36`)
    has two "suspicious" branches that `reinterpret_cast<void*>(val)` when
    `constant != 0` (and `>7`) or `padding != 0`. This fabricates raw C++
    pointers out of tagged `eco.value` bits and lets bugs silently become heap
@@ -30,7 +30,7 @@ encode/evacuate/decode.
 
 ### Step 1 — Add MVar GC root scanner
 
-In `eco-kernel-cpp/src/eco/MVar.cpp`:
+In `eco-kernel-cpp/src/eco-kernel/MVar.cpp`:
 
 - Add includes for `allocator/Allocator.hpp` and `allocator/RootSet.hpp` (and
   `ExportHelpers.hpp` for `Export::encode`/`decode`).
@@ -45,7 +45,7 @@ In `eco-kernel-cpp/src/eco/MVar.cpp`:
 
 ### Step 2 — Add Runtime saved-state GC root scanner
 
-In `eco-kernel-cpp/src/eco/Runtime.cpp`:
+In `eco-kernel-cpp/src/eco-kernel/Runtime.cpp`:
 
 - Add the same includes.
 - Add `void registerGcRootScanner()` inside `namespace Eco::Kernel::Runtime`
@@ -54,7 +54,7 @@ In `eco-kernel-cpp/src/eco/Runtime.cpp`:
 
 ### Step 3 — Expose C-linkage registration hooks
 
-In `eco-kernel-cpp/src/eco/KernelExports.h`, declare:
+In `eco-kernel-cpp/src/eco-kernel/KernelExports.h`, declare:
 
 ```cpp
 void Eco_Kernel_MVar_register_gc_roots();
@@ -84,7 +84,7 @@ ensures any GC triggered during early Elm execution will see these roots.
 
 ### Step 5 — Harden `Export::toPtr`
 
-In `eco-kernel-cpp/src/eco/ExportHelpers.hpp`, replace the body of `toPtr`
+In `eco-kernel-cpp/src/eco-kernel/ExportHelpers.hpp`, replace the body of `toPtr`
 (lines 36–52) with:
 
 ```cpp
@@ -130,12 +130,12 @@ MVar and runtime-state roots would be untracked under JIT.
 
 ## Files touched
 
-- `eco-kernel-cpp/src/eco/MVar.cpp` — add includes + `registerGcRootScanner`.
-- `eco-kernel-cpp/src/eco/Runtime.cpp` — add includes + `registerGcRootScanner`.
-- `eco-kernel-cpp/src/eco/MVarExports.cpp` — add `extern "C"` wrapper.
-- `eco-kernel-cpp/src/eco/RuntimeExports.cpp` — add `extern "C"` wrapper.
-- `eco-kernel-cpp/src/eco/KernelExports.h` — declare the two new exports.
-- `eco-kernel-cpp/src/eco/ExportHelpers.hpp` — rewrite `toPtr`.
+- `eco-kernel-cpp/src/eco-kernel/MVar.cpp` — add includes + `registerGcRootScanner`.
+- `eco-kernel-cpp/src/eco-kernel/Runtime.cpp` — add includes + `registerGcRootScanner`.
+- `eco-kernel-cpp/src/eco-kernel/MVarExports.cpp` — add `extern "C"` wrapper.
+- `eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp` — add `extern "C"` wrapper.
+- `eco-kernel-cpp/src/eco-kernel/KernelExports.h` — declare the two new exports.
+- `eco-kernel-cpp/src/eco-kernel/ExportHelpers.hpp` — rewrite `toPtr`.
 - `runtime/src/codegen/eco_entry.cpp` — extern decls + registration call(s)
   after `initThread()`.
 - `runtime/src/codegen/EcoRunner.cpp` (and any other JIT startup TU that calls

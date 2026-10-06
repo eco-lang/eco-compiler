@@ -811,13 +811,13 @@ rows =
     , ( ( "MVar", "put" )
       , { auditedPure
             | gcAlloc = GcFixed 1
-            , evidence = "eco-kernel-cpp/src/eco/MVarExports.cpp:38-46; eco-kernel-cpp/src/eco/MVar.cpp:290"
+            , evidence = "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp:38-46; eco-kernel-cpp/src/eco-kernel/MVar.cpp:290"
         }
       )
     , ( ( "MVar", "read" )
       , { auditedPure
             | gcAlloc = GcFixed 1
-            , evidence = "eco-kernel-cpp/src/eco/MVarExports.cpp:30-32; eco-kernel-cpp/src/eco/MVar.cpp:264"
+            , evidence = "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp:30-32; eco-kernel-cpp/src/eco-kernel/MVar.cpp:264"
         }
       )
 
@@ -1005,7 +1005,7 @@ rows =
             , callTimeEffect = EffNoreturn
             , totality = MayDiverge
             , divergence = Just "prints to stderr + backtrace then ::exit(1) - never returns"
-            , evidence = "eco-kernel-cpp/src/eco/CrashExports.cpp:9-11; eco-kernel-cpp/src/eco/Crash.cpp:20-33 (toString :21, fprintf :22/:26, ::exit(1) :30)"
+            , evidence = "eco-kernel-cpp/src/eco-kernel/CrashExports.cpp:9-11; eco-kernel-cpp/src/eco-kernel/Crash.cpp:20-33 (toString :21, fprintf :22/:26, ::exit(1) :30)"
         }
       )
 

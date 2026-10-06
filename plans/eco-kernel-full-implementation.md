@@ -10,7 +10,7 @@ Most are already implemented. Three stubs remain:
 - `_File_lock` / `_File_unlock` — no-op stubs
 - `_Process_wait` — returns 0 immediately
 
-**C++ kernel** (`src/eco/*.{hpp,cpp}`): 7 modules, 43 functions.
+**C++ kernel** (`src/eco-kernel/*.{hpp,cpp}`): 7 modules, 43 functions.
 ALL are stubs (return 0 or assert-crash). None perform real IO.
 
 ---
@@ -163,7 +163,7 @@ uint64_t succeedWith(uint64_t encodedValue) {
 
 ### B2. Shared helper file
 
-Create `src/eco/KernelHelpers.hpp` with the infrastructure above.
+Create `src/eco-kernel/KernelHelpers.hpp` with the infrastructure above.
 
 ### B3. Per-module implementation
 
@@ -414,14 +414,14 @@ scheduling integration with the Elm scheduler (future work).
 
 | File | Changes |
 |------|---------|
-| `src/eco/KernelHelpers.hpp` | **New** — shared string/task helpers |
-| `src/eco/Console.cpp` | Implement `write`, `readLine`, `readAll` |
-| `src/eco/Env.cpp` | Implement `lookup`, `rawArgs` |
-| `src/eco/File.cpp` | Implement all 21 file operations |
-| `src/eco/Process.cpp` | Implement `exit`, `spawn`, `spawnProcess`, `wait` |
-| `src/eco/MVar.cpp` | Implement with simple map (single-threaded) |
-| `src/eco/Runtime.cpp` | Implement `dirname`, `random`, `saveState`, `loadState` |
-| `src/eco/Http.cpp` | Implement with libcurl + OpenSSL + libzip |
+| `src/eco-kernel/KernelHelpers.hpp` | **New** — shared string/task helpers |
+| `src/eco-kernel/Console.cpp` | Implement `write`, `readLine`, `readAll` |
+| `src/eco-kernel/Env.cpp` | Implement `lookup`, `rawArgs` |
+| `src/eco-kernel/File.cpp` | Implement all 21 file operations |
+| `src/eco-kernel/Process.cpp` | Implement `exit`, `spawn`, `spawnProcess`, `wait` |
+| `src/eco-kernel/MVar.cpp` | Implement with simple map (single-threaded) |
+| `src/eco-kernel/Runtime.cpp` | Implement `dirname`, `random`, `saveState`, `loadState` |
+| `src/eco-kernel/Http.cpp` | Implement with libcurl + OpenSSL + libzip |
 | `CMakeLists.txt` | Link runtime, libcurl, OpenSSL, libzip |
 
 ---

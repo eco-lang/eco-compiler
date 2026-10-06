@@ -3,7 +3,7 @@
 
 // Hash — native string hashing.
 //
-// The JS twin of eco/Hash.cpp, used by the JS bootstrap stages. The mix must
+// The JS twin of eco-kernel/Hash.cpp, used by the JS bootstrap stages. The mix must
 // match the C++ and the pure-Elm twins exactly, so all three agree bit for
 // bit: base 2^26 keeps every intermediate inside the exact-integer range of a
 // JS double (h < 2^26, so h * 33 < 2^31).

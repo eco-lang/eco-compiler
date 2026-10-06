@@ -494,9 +494,9 @@ Why this API:
 |---|---|---|
 | Elm wrapper | `eco-kernel-cpp/src/Eco/Hash.elm` | add `deepWith`; extend `exposing` |
 | JS kernel | `eco-kernel-cpp/src/Eco/Kernel/Hash.js` (`var _Hash_string64 = F2(...)`) | add `_Hash_deepWith` |
-| C++ export | `eco-kernel-cpp/src/eco/HashExports.cpp` `Eco_Kernel_Hash_string64(int64_t, HPtr)` | add `Eco_Kernel_Hash_deepWith(HPtr, HPtr)` |
-| C++ declaration | `eco-kernel-cpp/src/eco/KernelExports.h:229-232` | add next to them |
-| implementation | `eco-kernel-cpp/src/eco/Hash.{hpp,cpp}` | add `Hash::deep` |
+| C++ export | `eco-kernel-cpp/src/eco-kernel/HashExports.cpp` `Eco_Kernel_Hash_string64(int64_t, HPtr)` | add `Eco_Kernel_Hash_deepWith(HPtr, HPtr)` |
+| C++ declaration | `eco-kernel-cpp/src/eco-kernel/KernelExports.h:229-232` | add next to them |
+| implementation | `eco-kernel-cpp/src/eco-kernel/Hash.{hpp,cpp}` | add `Hash::deep` |
 | pure twin | `compiler/src-xhr/Eco/Hash.elm` | add `deepWith` |
 | CMake | target `EcoKernel_Hash` (`compiler/CMakeLists.txt:769,829`, `test/CMakeLists.txt`) | no change (same files) |
 | `eco/kernel` `elm.json` | already exposes `Eco.Hash` | no change |
@@ -1487,7 +1487,7 @@ regionDecoderV = BD.map4 (\r1 c1 dr c2 -> Region (Position r1 c1) (Position (r1 
 - **Tests:** `compiler/tests/Compiler/AST/StringTableTest.elm`, which checks `tableDecoder (tableEncoder (build s))` gives the same `idxToStr`/`width`, and `stringDec` round-trips for widths 1, 2 and 4 (sizes 3, 300, 70,000).
 - **Gates:** G1, G2, G4 (8c decodes), G5.
 
-**(b) `File.readBytesBody` copies through a `std::vector`** (`eco-kernel-cpp/src/eco/File.cpp:132-150`).
+**(b) `File.readBytesBody` copies through a `std::vector`** (`eco-kernel-cpp/src/eco-kernel/File.cpp:132-150`).
 - Today it zero-fills a vector of `size`, reads into it, then `allocByteBuffer` copies again: 2× peak memory and memset plus memcpy.
 - Latent bugs: `tellg() == -1` is unchecked (a huge vector), and a short read silently returns a zero-padded buffer.
 - New body, modelled on `readStringBody` (`:79-130`):
@@ -1788,7 +1788,7 @@ A reader in another process, or a crash mid-write, sees a truncated file. Under 
 
 Do not change `writeBytes` itself. Its other users write user-visible outputs (e.g. `Backend.elm:473` bytecode, possibly `/dev/stdout` or symlinks), where rename semantics would be wrong: they replace a symlink and drop the file mode.
 
-**C++ (`eco-kernel-cpp/src/eco/File.cpp`)**, new body placed after `writeBytesBody`:
+**C++ (`eco-kernel-cpp/src/eco-kernel/File.cpp`)**, new body placed after `writeBytesBody`:
 ```cpp
 #if defined(_WIN32)
 #include <process.h>   // _getpid  (add to the _WIN32 include block)
@@ -1936,8 +1936,8 @@ writeObjectsAndFinalizeCompile ctx =
 This replaces `checkInterfaceAndFinalize` and `finalizeBasedOnInterface`. It writes the same files with the same bytes.
 
 **LSS_022 audit.** The manifest pins whole files:
-- `eco-kernel-cpp/src/eco/File.cpp` → 23 `TypeFaithful` rows;
-- `eco-kernel-cpp/src/eco/FileExports.cpp` → the same 23 rows.
+- `eco-kernel-cpp/src/eco-kernel/File.cpp` → 23 `TypeFaithful` rows;
+- `eco-kernel-cpp/src/eco-kernel/FileExports.cpp` → the same 23 rows.
 
 The 23 `File.*` rows are `appDataDir`, `canonicalize`, `close`, `createDir`, `dirExists`, `fileExists`, `findExecutable`, `getCwd`, `hWriteString`, `list`, `lock`, `mime`, `modificationTime`, `name`, `open`, `readBytes`, `readString`, `removeDir`, `removeFile`, `setCwd`, `size`, `touch`, `unlock`, `writeBytes`, `writeString`. `File.hpp` and `KernelExports.h` are not pinned.
 
@@ -1952,7 +1952,7 @@ Procedure (`plans/kernel-parametricity-license.md` §2.1, §2.5, §2.6):
    , ( ( "File", "writeBytesAtomic" )
      , TypeFaithful
            { scope = Inert
-           , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+           , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
            , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_writeBytesAtomic:<a>-<b> | helpers: File.cpp:writeBytesAtomic:<c>-<d>, File.cpp:writeBytesAtomicBody:<e>-<f> | type: Eco/File.elm:<g> (String -> Bytes -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :<h>; gAtomicWriteSeq is a plain integer | B3: binding closure only | audited: <date>"
            }
      )

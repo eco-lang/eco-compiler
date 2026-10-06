@@ -1761,9 +1761,9 @@ and `callsBack = HofNo`.
     (TYPE_KERNEL_001).
 - **JS kernel:** `eco-kernel-cpp/src/Eco/Kernel/<X>.js`, with an empty `/*\n*/` header and
   `var _<X>_<name> = …`. It runs in bootstrap stages 3–5 and in the AOT E2E runner.
-- **C++:** `eco-kernel-cpp/src/eco/<X>.hpp`, `<X>.cpp` and `<X>Exports.cpp`. The export is
+- **C++:** `eco-kernel-cpp/src/eco-kernel/<X>.hpp`, `<X>.cpp` and `<X>Exports.cpp`. The export is
   `<ret> Eco_Kernel_<X>_<name>(args in Elm order)`, with a prototype in
-  `eco-kernel-cpp/src/eco/KernelExports.h`.
+  `eco-kernel-cpp/src/eco-kernel/KernelExports.h`.
 - **`eco-kernel-cpp/elm.json`:** add the module to `exposed-modules`.
 - **CMake, five places:**
   - `eco-kernel-cpp/CMakeLists.txt`: the `add_library(EcoKernel_<X> …)` target, the `EcoKernel`
@@ -1785,7 +1785,7 @@ and `callsBack = HofNo`.
 
 ### 12.2 C3.0: make `Eco.Hash`'s kernels gc-leaf
 
-1. **Audit** `eco-kernel-cpp/src/eco/HashExports.cpp` and `Hash.cpp` for both exported kernels,
+1. **Audit** `eco-kernel-cpp/src/eco-kernel/HashExports.cpp` and `Hash.cpp` for both exported kernels,
    `stringWithSeed` (export at `HashExports.cpp:8`) and `string64`. Each must:
    - not allocate;
    - not call back into Elm;
@@ -1795,8 +1795,8 @@ and `callsBack = HofNo`.
 2. **Add two rows** to `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`, next to the other
    audited-pure rows:
    ```elm
-   ( ( "Hash", "stringWithSeed" ), { auditedPure | gcAlloc = GcNone, evidence = "eco-kernel-cpp/src/eco/HashExports.cpp:8" } )
-   , ( ( "Hash", "string64" ), { auditedPure | gcAlloc = GcNone, evidence = "eco-kernel-cpp/src/eco/HashExports.cpp:<line>" } )
+   ( ( "Hash", "stringWithSeed" ), { auditedPure | gcAlloc = GcNone, evidence = "eco-kernel-cpp/src/eco-kernel/HashExports.cpp:8" } )
+   , ( ( "Hash", "string64" ), { auditedPure | gcAlloc = GcNone, evidence = "eco-kernel-cpp/src/eco-kernel/HashExports.cpp:<line>" } )
    ```
 3. **Update** `KernelFactsTest.elm:66` from 57 to 59.
 
@@ -1824,7 +1824,7 @@ and `callsBack = HofNo`.
   ```
 - **`eco-kernel-cpp/src/Eco/Kernel/Bits.js`:** `var _Bits_popcount32 = function(x) { … }`. Apply
   `x >>> 0`, then the same shift-and-add SWAR. It must match the pure twin on every input.
-- **`eco-kernel-cpp/src/eco/Bits.hpp`, `Bits.cpp` and `BitsExports.cpp`:**
+- **`eco-kernel-cpp/src/eco-kernel/Bits.hpp`, `Bits.cpp` and `BitsExports.cpp`:**
   ```cpp
   int64_t Eco_Kernel_Bits_popcount32(int64_t x) {
       return std::popcount(static_cast<uint32_t>(x)); // <bit>, C++20
@@ -1835,7 +1835,7 @@ and `callsBack = HofNo`.
 - **`eco-kernel-cpp/elm.json`:** add `"Eco.Bits"` to `exposed-modules`.
 - **CMake:** `EcoKernel_Bits` in the five places listed in §12.1.
 - **`KernelFacts.elm`:**
-  `( ( "Bits", "popcount32" ), { auditedPure | gcAlloc = GcNone, evidence = "eco-kernel-cpp/src/eco/BitsExports.cpp:<line>" } )`.
+  `( ( "Bits", "popcount32" ), { auditedPure | gcAlloc = GcNone, evidence = "eco-kernel-cpp/src/eco-kernel/BitsExports.cpp:<line>" } )`.
   `KernelFactsTest` goes up by one.
 - **`compiler/src/Data/Bits32.elm`:** `popcount = Eco.Bits.popcount32`. `mask32`, `fragment`,
   `bitpos` and `below` stay in Elm.
@@ -2055,7 +2055,7 @@ var _NodeArray_insertAt = F3(function(i, x, arr) { var r = arr.slice(0, i); r.pu
 var _NodeArray_removeAt = F2(function(i, arr) { return arr.slice(0, i).concat(arr.slice(i + 1)); });
 ```
 
-**C++ (`eco-kernel-cpp/src/eco/NodeArray.cpp` and `NodeArrayExports.cpp`).** The signatures are
+**C++ (`eco-kernel-cpp/src/eco-kernel/NodeArray.cpp` and `NodeArrayExports.cpp`).** The signatures are
 `HPtr Eco_Kernel_NodeArray_insertAt(int64_t i, HPtr x, HPtr arr)` and
 `HPtr Eco_Kernel_NodeArray_removeAt(int64_t i, HPtr arr)`. The type variable `a` is erased to
 boxed, and arguments are in Elm order. Follow `elm_array_push_box` (`JsArrayExports.cpp:775-798`):

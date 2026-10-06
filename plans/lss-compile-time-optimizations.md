@@ -1501,9 +1501,9 @@ did. Path compression is preserved as-is (same writes, `reprS` 166-175).
 |---|---|---|
 | **NEW** `eco-kernel-cpp/src/Eco/CellStore.elm` | whole module | Elm wrapper over `Eco.Kernel.CellStore.*` (§4.3); add `"Eco.CellStore"` to `eco-kernel-cpp/elm.json` `exposed-modules` (7-19) |
 | **NEW** `eco-kernel-cpp/src/Eco/Kernel/CellStore.js` | whole file | JS implementation for the JS bootstrap stages (eco-boot.js is built from this package: compiler/CMakeLists.txt 256-257, 299) |
-| **NEW** `eco-kernel-cpp/src/eco/CellStore.hpp`, `CellStore.cpp`, `CellStoreExports.cpp` | whole files | C++ store table + trail + root scanner + `extern "C"` exports (§4.4) |
-| `eco-kernel-cpp/src/eco/KernelExports.h` | after the MVar block (200-213) and the hook list (235-237) | declare the 9 `Eco_Kernel_CellStore_*` exports and `Eco_Kernel_CellStore_register_gc_roots` |
-| `eco-kernel-cpp/src/eco/RuntimeExports.cpp` | `Eco_Kernel_register_all_gc_roots` 46-51 | call `Eco_Kernel_CellStore_register_gc_roots()` |
+| **NEW** `eco-kernel-cpp/src/eco-kernel/CellStore.hpp`, `CellStore.cpp`, `CellStoreExports.cpp` | whole files | C++ store table + trail + root scanner + `extern "C"` exports (§4.4) |
+| `eco-kernel-cpp/src/eco-kernel/KernelExports.h` | after the MVar block (200-213) and the hook list (235-237) | declare the 9 `Eco_Kernel_CellStore_*` exports and `Eco_Kernel_CellStore_register_gc_roots` |
+| `eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp` | `Eco_Kernel_register_all_gc_roots` 46-51 | call `Eco_Kernel_CellStore_register_gc_roots()` |
 | `eco-kernel-cpp/CMakeLists.txt` | MVar library block 158-167; `EcoKernel` INTERFACE list 250-260; asserts foreach 264-268 | add `EcoKernel_CellStore` (same three places as `EcoKernel_MVar`) |
 | `compiler/CMakeLists.txt` | link lists 752-754, 812-814, 847-849 | add `EcoKernel_CellStore` next to `EcoKernel_MVar` |
 | `test/CMakeLists.txt` | whole-archive lists 153-157, 168, 174-182, 209-219 | add `EcoKernel_CellStore` next to `EcoKernel_MVar` (the JIT must dlsym the symbols) |
@@ -1661,7 +1661,7 @@ native pins in `test/eco-kernel`.
 
 **4.4 Kernel implementation sketches.**
 
-C++ (`eco-kernel-cpp/src/eco/CellStore.cpp`, namespace `Eco::Kernel::CellStore`):
+C++ (`eco-kernel-cpp/src/eco-kernel/CellStore.cpp`, namespace `Eco::Kernel::CellStore`):
 
 ```cpp
 struct Store {
@@ -1834,7 +1834,7 @@ findings-C) — zero cost at defaults.
 - MONO_029 / LSS_006 / LSS_010: untouched (no representation of types or sets changes; Point indices are
   identical).
 - New rows to add to `design_docs/invariants.csv`: **HEAP_047** "Eco.CellStore is an OFF-HEAP mutable
-  cell vector (eco-kernel-cpp/src/eco/CellStore.cpp) whose boxed words and trail are GC roots via an
+  cell vector (eco-kernel-cpp/src/eco-kernel/CellStore.cpp) whose boxed words and trail are GC roots via an
   external root scanner (HEAP_040 pattern); it is never a heap object (HEAP_005 has no write barrier);
   stores are disposed explicitly (idempotent) and a disposed handle aborts on use"; **KERN_007** "CellStore
   handles are LINEAR: every writer returns the handle and readers must use the newest handle; the kernel is
@@ -1870,8 +1870,8 @@ roots — `build/compiler/build-xhr` (stock Elm, pure twin) and `build/compiler/
 the loop's Phase 1 step 2 type-check is the build-kernel one)
 
 1. **3a-1 kernel package.** Add `eco-kernel-cpp/src/Eco/CellStore.elm` (§4.3), `src/Eco/Kernel/CellStore.js`
-   (§4.4), `src/eco/CellStore.{hpp,cpp}` + `CellStoreExports.cpp` (§4.4), the declarations in
-   `src/eco/KernelExports.h`, the registration call in `src/eco/RuntimeExports.cpp:46-51`, the CMake
+   (§4.4), `src/eco-kernel/CellStore.{hpp,cpp}` + `CellStoreExports.cpp` (§4.4), the declarations in
+   `src/eco-kernel/KernelExports.h`, the registration call in `src/eco-kernel/RuntimeExports.cpp:46-51`, the CMake
    library + INTERFACE + asserts entries (eco-kernel-cpp/CMakeLists.txt 158-167 / 250-260 / 264-268),
    `"Eco.CellStore"` in `eco-kernel-cpp/elm.json` exposed-modules, the link-list entries in
    `compiler/CMakeLists.txt` 752-754 / 812-814 / 847-849 and `test/CMakeLists.txt` 153-157 / 168 / 174-182 /
@@ -1991,8 +1991,8 @@ Written 2026-09-19 from full reads of `Compiler/Type/UnionFind.elm` (299 ln), `D
 828-845, 1060-1075, 1114-1130, 1162-1176, 1645-1652, 1840-1856, 1898-1915, 1930-1958, 2015-2030,
 2586-2600, 2905-2932, 3015-3030, 3128-3142, 3322-3336, `Compiler/MonoSolver/Monomorphize.elm` 140-156,
 1238-1258, 3893-3908, 3952-3972, 4268-4290, 4685-4712, 4728-4770, plus every `grep` cited inline.
-Kernel side: `eco-kernel-cpp/src/Eco/MVar.elm`, `src/Eco/Kernel/MVar.js`, `src/eco/MVar.{hpp,cpp}`,
-`src/eco/MVarExports.cpp`, `src/eco/RuntimeExports.cpp` 20-55, `src/eco/KernelExports.h` 200-250,
+Kernel side: `eco-kernel-cpp/src/Eco/MVar.elm`, `src/Eco/Kernel/MVar.js`, `src/eco-kernel/MVar.{hpp,cpp}`,
+`src/eco-kernel/MVarExports.cpp`, `src/eco-kernel/RuntimeExports.cpp` 20-55, `src/eco-kernel/KernelExports.h` 200-250,
 `eco-kernel-cpp/CMakeLists.txt` 158-270, `compiler/src-xhr/Eco/MVar.elm`, `compiler/CMakeLists.txt`
 100-130, 195-215, 240-300, 748-850, 1040-1060, `runtime/src/allocator/RootSet.hpp` 80-110,
 `runtime/src/allocator/RuntimeExports.cpp` 4380-4415 (the HEAP_040 scratch-stack scanner),
@@ -8651,8 +8651,8 @@ Written 2026-09-19 from full reads of `Compiler/Type/UnionFind.elm` (299 ln), `D
 828-845, 1060-1075, 1114-1130, 1162-1176, 1645-1652, 1840-1856, 1898-1915, 1930-1958, 2015-2030,
 2586-2600, 2905-2932, 3015-3030, 3128-3142, 3322-3336, `Compiler/MonoSolver/Monomorphize.elm` 140-156,
 1238-1258, 3893-3908, 3952-3972, 4268-4290, 4685-4712, 4728-4770, plus every `grep` cited inline.
-Kernel side: `eco-kernel-cpp/src/Eco/MVar.elm`, `src/Eco/Kernel/MVar.js`, `src/eco/MVar.{hpp,cpp}`,
-`src/eco/MVarExports.cpp`, `src/eco/RuntimeExports.cpp` 20-55, `src/eco/KernelExports.h` 200-250,
+Kernel side: `eco-kernel-cpp/src/Eco/MVar.elm`, `src/Eco/Kernel/MVar.js`, `src/eco-kernel/MVar.{hpp,cpp}`,
+`src/eco-kernel/MVarExports.cpp`, `src/eco-kernel/RuntimeExports.cpp` 20-55, `src/eco-kernel/KernelExports.h` 200-250,
 `eco-kernel-cpp/CMakeLists.txt` 158-270, `compiler/src-xhr/Eco/MVar.elm`, `compiler/CMakeLists.txt`
 100-130, 195-215, 240-300, 748-850, 1040-1060, `runtime/src/allocator/RootSet.hpp` 80-110,
 `runtime/src/allocator/RuntimeExports.cpp` 4380-4415 (the HEAP_040 scratch-stack scanner),

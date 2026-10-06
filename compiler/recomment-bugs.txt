@@ -1160,7 +1160,7 @@ files were seen only by the stage 02 map readers.
     cons calls into one value they compare equal.
 - line 431  [reported 1x by: rework]
     lookupSymbol gives Eco_Kernel_MVar_put_Int/_Float/_Char the ("MVar","put") row. Those
-    exports (eco-kernel-cpp/src/eco/MVarExports.cpp:47-61) first box the value with
+    exports (eco-kernel-cpp/src/eco-kernel/MVarExports.cpp:47-61) first box the value with
     allocInt/allocFloat/allocChar and then call MVar::put, so they allocate one more object
     than the row records. Anything that reads gcAlloc for a typed MVar.put symbol gets a
     bound that is too low.
@@ -1176,13 +1176,13 @@ files were seen only by the stage 02 map readers.
     right.
 - line 810  [reported 2x by: review, rework]
     The MVar.put and MVar.read rows (:810-821) say GcFixed 1, but eco-kernel-
-    cpp/src/eco/MVar.cpp read/put allocate a closure (allocClosureK) and then a Task_Binding
+    cpp/src/eco-kernel/MVar.cpp read/put allocate a closure (allocClosureK) and then a Task_Binding
     (Scheduler::taskBinding), which is two Eco-heap objects per call. The
     put_Int/_Float/_Char variants, which lookupSymbol maps to the same row, also box the
     value first, making three. Any consumer that reads the GcFixed bound will undercount.
 - line 815  [reported 1x by: review]
     The MVar.put row (and MVar.read at :821) is GcFixed 1, but each call allocates a closure
-    and a Task_Binding, two objects (eco-kernel-cpp/src/eco/MVar.cpp:264-303).
+    and a Task_Binding, two objects (eco-kernel-cpp/src/eco-kernel/MVar.cpp:264-303).
     MVar.put_Int/_Float/_Char, which lookupSymbol maps to the same row, allocate a third
     (the box). No consumer reads n today, so only the recorded fact is wrong.
 

@@ -281,7 +281,7 @@ is a GEP on an addrspace(1) base (currently it recognises GEPs on
 ### D9. Kernel C++ side (same disease, separate ledger)
 
 `Allocator::resolve` is a non-inline .cpp function called from every kernel
-`toPtr` (`eco-kernel-cpp/src/eco/ExportHelpers.hpp:44`,
+`toPtr` (`eco-kernel-cpp/src/eco-kernel/ExportHelpers.hpp:44`,
 `elm-kernel-cpp/src/ExportHelpers.hpp`). Move the fast path (ptr_ind check +
 reinterpret + single tag test) into the header as an always-inline function
 with an out-of-line `resolveSlow` for the forward loop; demote the four

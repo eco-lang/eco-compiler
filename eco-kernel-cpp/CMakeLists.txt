@@ -113,8 +113,8 @@ endif()
 
 # File module (file I/O, directory ops, handles, locks)
 add_library(EcoKernel_File STATIC
-    src/eco/File.cpp
-    src/eco/FileExports.cpp
+    src/eco-kernel/File.cpp
+    src/eco-kernel/FileExports.cpp
 )
 target_include_directories(EcoKernel_File PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -124,8 +124,8 @@ target_compile_features(EcoKernel_File PUBLIC cxx_std_20)
 
 # Console module (stdout/stderr write, stdin read)
 add_library(EcoKernel_Console STATIC
-    src/eco/Console.cpp
-    src/eco/ConsoleExports.cpp
+    src/eco-kernel/Console.cpp
+    src/eco-kernel/ConsoleExports.cpp
 )
 target_include_directories(EcoKernel_Console PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -135,8 +135,8 @@ target_compile_features(EcoKernel_Console PUBLIC cxx_std_20)
 
 # Env module (environment variables, CLI args)
 add_library(EcoKernel_Env STATIC
-    src/eco/Env.cpp
-    src/eco/EnvExports.cpp
+    src/eco-kernel/Env.cpp
+    src/eco-kernel/EnvExports.cpp
 )
 target_include_directories(EcoKernel_Env PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -146,8 +146,8 @@ target_compile_features(EcoKernel_Env PUBLIC cxx_std_20)
 
 # Process module (exit, spawn, wait)
 add_library(EcoKernel_Process STATIC
-    src/eco/Process.cpp
-    src/eco/ProcessExports.cpp
+    src/eco-kernel/Process.cpp
+    src/eco-kernel/ProcessExports.cpp
 )
 target_include_directories(EcoKernel_Process PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -157,8 +157,8 @@ target_compile_features(EcoKernel_Process PUBLIC cxx_std_20)
 
 # MVar module (concurrency primitives)
 add_library(EcoKernel_MVar STATIC
-    src/eco/MVar.cpp
-    src/eco/MVarExports.cpp
+    src/eco-kernel/MVar.cpp
+    src/eco-kernel/MVarExports.cpp
 )
 target_include_directories(EcoKernel_MVar PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -168,8 +168,8 @@ target_compile_features(EcoKernel_MVar PUBLIC cxx_std_20)
 
 # Hash module (allocation-free native string hashing for Elm-side hash tables)
 add_library(EcoKernel_Hash STATIC
-    src/eco/Hash.cpp
-    src/eco/HashExports.cpp
+    src/eco-kernel/Hash.cpp
+    src/eco-kernel/HashExports.cpp
 )
 target_include_directories(EcoKernel_Hash PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -179,8 +179,8 @@ target_compile_features(EcoKernel_Hash PUBLIC cxx_std_20)
 
 # Runtime module (dirname, random, REPL state)
 add_library(EcoKernel_Runtime STATIC
-    src/eco/Runtime.cpp
-    src/eco/RuntimeExports.cpp
+    src/eco-kernel/Runtime.cpp
+    src/eco-kernel/RuntimeExports.cpp
 )
 target_include_directories(EcoKernel_Runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -190,8 +190,8 @@ target_compile_features(EcoKernel_Runtime PUBLIC cxx_std_20)
 
 # GC module (explicit collections, plans/frontend-heap-release.md §4, HEAP_076)
 add_library(EcoKernel_GC STATIC
-    src/eco/GC.cpp
-    src/eco/GCExports.cpp
+    src/eco-kernel/GC.cpp
+    src/eco-kernel/GCExports.cpp
 )
 target_include_directories(EcoKernel_GC PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -201,8 +201,8 @@ target_compile_features(EcoKernel_GC PUBLIC cxx_std_20)
 
 # Crash module (unrecoverable error handling)
 add_library(EcoKernel_Crash STATIC
-    src/eco/Crash.cpp
-    src/eco/CrashExports.cpp
+    src/eco-kernel/Crash.cpp
+    src/eco-kernel/CrashExports.cpp
 )
 target_include_directories(EcoKernel_Crash PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -215,8 +215,8 @@ target_compile_features(EcoKernel_Crash PUBLIC cxx_std_20)
 # (runtime/src/codegen). This module declares it weak so binaries without
 # the driver library still link.
 add_library(EcoKernel_NativeDriver STATIC
-    src/eco/NativeDriver.cpp
-    src/eco/NativeDriverExports.cpp
+    src/eco-kernel/NativeDriver.cpp
+    src/eco-kernel/NativeDriverExports.cpp
 )
 target_include_directories(EcoKernel_NativeDriver PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -231,8 +231,8 @@ target_compile_features(EcoKernel_NativeDriver PUBLIC cxx_std_20)
 
 # Http module (HTTP requests, archive downloads)
 add_library(EcoKernel_Http STATIC
-    src/eco/Http.cpp
-    src/eco/HttpExports.cpp
+    src/eco-kernel/Http.cpp
+    src/eco-kernel/HttpExports.cpp
 )
 target_include_directories(EcoKernel_Http PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -296,7 +296,7 @@ if(ECO_ASSERTS_ON)
 endif()
 
 # ECO_KERNEL_DEBUG: stderr tracing in HTTP and File kernel paths. See
-# src/eco/KernelDebug.hpp for the ECO_KLOG macro.
+# src/eco-kernel/KernelDebug.hpp for the ECO_KLOG macro.
 if(ECO_KERNEL_DEBUG)
     target_compile_definitions(EcoKernel_Http PRIVATE ECO_KERNEL_DEBUG)
     target_compile_definitions(EcoKernel_File PRIVATE ECO_KERNEL_DEBUG)

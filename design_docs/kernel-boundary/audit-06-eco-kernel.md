@@ -1,6 +1,6 @@
-# 06 — `eco-kernel-cpp/src/eco/` kernel surface audit
+# 06 — `eco-kernel-cpp/src/eco-kernel/` kernel surface audit
 
-Scope: every symbol declared in `eco-kernel-cpp/src/eco/KernelExports.h` (53
+Scope: every symbol declared in `eco-kernel-cpp/src/eco-kernel/KernelExports.h` (53
 declarations; a 54th, `Eco_Kernel_Order_register_gc_roots`, is declared only in
 `RuntimeExports.cpp:41-43`), cross-read against the Elm wrappers in
 `eco-kernel-cpp/src/Eco/*.elm` and against `KERNEL_TASK_IO_001/002`

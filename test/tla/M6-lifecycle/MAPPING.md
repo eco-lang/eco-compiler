@@ -75,7 +75,7 @@ thread), `bg1`/`bg2` and `tb1` (parent members), `fg1` (the mark gang's member 1
 | `WR_Lock`, `WR_Block`, `WR_Blocked` | `cv_done_.wait(lk, state == Done)` (GHP:244-247): lock and check; join the waiters and unlock; wake, re-lock, re-check | the waiter holds `m` from its check to its block, so a writer that skips `m_` (mutant `lost_wakeup`) lands exactly where it can in the code |
 | `WR_Reap` | `PageWork::reap` (PW:76) → `HelperJob::resetForReuse` (GHP:59) | owner-only; `WaitSeesDone` is evaluated here |
 | `M_WaitDone` | the caller releases `thread_mutex_` | |
-| `M_Choose` (fork) | the mutator forks between pauses (`eco-kernel-cpp/src/eco/Process.cpp:70, 124`) | |
+| `M_Choose` (fork) | the mutator forks between pauses (`eco-kernel-cpp/src/eco-kernel/Process.cpp:70, 124`) | |
 | `F_Tm` | GCFork's allocator layer (`Allocator::forkPrepare`: `thread_mutex_.lock()`), which runs before the pool's layer (`GCFork.cpp` `prep`: layers in increasing order) | one lock acquisition (off in mutants `as_built_2026_09`, `no_tm*`, `tm_last`) |
 | `F_Drain` | `GCHelperPool::atforkPrepare`: `m_.lock()`, then `cv_done_.wait(outstanding_ == 0)` with `m_` kept (one section, register-fixes Phase 5) | one critical section (every writer of `outstanding_` holds `m_`). Mutants `as_built_2026_09` / `no_tm_drain_split`: the pre-fix `drain()` that releases `m_` |
 | `F_Lock` | (mutants only) the pre-fix separate `m_.lock()` | lock acquisition: **the CR-003 window was between `F_Drain` and `F_Lock`** |

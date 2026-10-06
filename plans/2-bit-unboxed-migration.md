@@ -669,7 +669,7 @@ Apply the analogous pattern to Record (`record->unboxed`), Custom (`custom->unbo
 - `elm-kernel-cpp/src/core/JsArray.cpp:71`
 - `elm-kernel-cpp/src/core/ListOps.cpp` and `runtime/src/allocator/ListOps.cpp` per §2.3
 - `elm-kernel-cpp/src/core/String.cpp:60` (`c->header.unboxed & 1` → `tupleFieldKind(..., 0) != 0`)
-- `eco-kernel-cpp/src/eco/KernelHelpers.hpp:131` (`cell->header.unboxed == 0` → `tupleFieldKind(cell->header.unboxed, 0) == 0`)
+- `eco-kernel-cpp/src/eco-kernel/KernelHelpers.hpp:131` (`cell->header.unboxed == 0` → `tupleFieldKind(cell->header.unboxed, 0) == 0`)
 
 Add a shared helper in a kernel header:
 
@@ -898,7 +898,7 @@ Preserved from the original audit for quick lookup. Every entry here is covered 
 ### 11.3 Bit-twiddling sites assuming 1 bit per slot
 
 - **Tuple header:** `NurserySpace.cpp` 588, 594-602, 943-951, 996, 1016, 1135, 1224; `OldGenSpace.cpp` 460-468, 1122-1130, 1135; `RuntimeExports.cpp` 1599-1639; `HeapHelpers.hpp:603, 628`.
-- **Cons head:** `ListOps.{hpp,cpp}`, `NurserySpace.cpp`, `OldGenSpace.cpp`, `RuntimeExports.cpp`, kernels `List.cpp`, `ListExports.cpp`, `JsArray.cpp`, `String.cpp`, `Utils.cpp`, `eco-kernel-cpp/src/eco/KernelHelpers.hpp:131`.
+- **Cons head:** `ListOps.{hpp,cpp}`, `NurserySpace.cpp`, `OldGenSpace.cpp`, `RuntimeExports.cpp`, kernels `List.cpp`, `ListExports.cpp`, `JsArray.cpp`, `String.cpp`, `Utils.cpp`, `eco-kernel-cpp/src/eco-kernel/KernelHelpers.hpp:131`.
 - **Custom / Record / Closure:** `NurserySpace.cpp` 608, 616, 624, 957, 964, 979; `OldGenSpace.cpp` 480, 487, 502, 1142, 1149, 1164; `RuntimeExports.cpp` 1549, 1663, 1701, 2216, 2290; kernels `JsonExports.cpp`, `BytesExports.cpp`, `File.cpp`, `Utils.cpp`, `JsArrayExports.cpp`.
 - **Closure `packed` pack:** `EcoToLLVMClosures.cpp:616` (single authoritative write); `Heap.hpp:243-245` struct overlay.
 - **GC-mask construction:** `EcoToLLVMClosures.cpp:119-121, 976, 1172-1173, 1375-1376`; `RuntimeExports.cpp:1193-1197` (`hptr_mask_clamp(~new_unboxed_bitmap, ...)`); `RuntimeExports.cpp:1221-1223` (bitmap merge).

@@ -710,7 +710,7 @@ closure header's `result_kind`.
 | `elm-kernel-cpp/src/core/ProcessExports.cpp` | 56 | `sleepBindingEvaluator` | `Task ()` (boxed) |
 | `elm-kernel-cpp/src/time/TimeExports.cpp` | 231 | `timeNowBindingEvaluator` | `Task posix` (boxed) |
 | `elm-kernel-cpp/src/http/HttpExports.cpp` | 594 | `bindingEval` | `Task` (boxed) |
-| `eco-kernel-cpp/src/eco/MVar.cpp` | 242, 264, 286 | `readBindingEvaluator`, `takeBindingEvaluator`, `putBindingEvaluator` | `Task` (boxed) |
+| `eco-kernel-cpp/src/eco-kernel/MVar.cpp` | 242, 264, 286 | `readBindingEvaluator`, `takeBindingEvaluator`, `putBindingEvaluator` | `Task` (boxed) |
 
 All of these return boxed `Task` HPointers. They stay K = `PK_Boxed`
 forever. Phase C registers them with the new closure-K convention by
@@ -877,7 +877,7 @@ For each of the C++-implemented evaluators in C0's third table:
 - `elm-kernel-cpp/src/core/ProcessExports.cpp:56` (`sleepBindingEvaluator`)
 - `elm-kernel-cpp/src/time/TimeExports.cpp:231` (`timeNowBindingEvaluator`)
 - `elm-kernel-cpp/src/http/HttpExports.cpp:594` (`bindingEval`)
-- `eco-kernel-cpp/src/eco/MVar.cpp:242, 264, 286` (`{read,take,put}BindingEvaluator`)
+- `eco-kernel-cpp/src/eco-kernel/MVar.cpp:242, 264, 286` (`{read,take,put}BindingEvaluator`)
 
 Replace `eco_alloc_closure(reinterpret_cast<EvalFunction>(eval), arity)`
 with `eco_alloc_closure_k(reinterpret_cast<EvalFunction>(eval), arity,
@@ -1054,7 +1054,7 @@ delivered". The gating is gone.
 - `elm-kernel-cpp/src/core/ProcessExports.cpp` — `eco_alloc_closure_k(.., PK_Boxed)`.
 - `elm-kernel-cpp/src/time/TimeExports.cpp` — same.
 - `elm-kernel-cpp/src/http/HttpExports.cpp` — same.
-- `eco-kernel-cpp/src/eco/MVar.cpp` — same for all three binding evaluators.
+- `eco-kernel-cpp/src/eco-kernel/MVar.cpp` — same for all three binding evaluators.
 
 ### Compiler
 

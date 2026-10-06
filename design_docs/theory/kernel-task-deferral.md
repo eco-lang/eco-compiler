@@ -104,5 +104,5 @@ Listed verbatim in `KERNEL_TASK_IO_001`:
 - `plans/time-every-via-scheduler-timerservice.md` — the TimerService
   pattern that WaitService mirrors.
 - `runtime/src/platform/TaskBinding.hpp` — the shared helper.
-- `eco-kernel-cpp/src/eco/TaskBinding.hpp` — Eco-side `succeed*`/`fail*`
+- `eco-kernel-cpp/src/eco-kernel/TaskBinding.hpp` — Eco-side `succeed*`/`fail*`
   HPointer wrappers.

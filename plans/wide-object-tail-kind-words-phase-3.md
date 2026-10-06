@@ -373,7 +373,7 @@ inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, const std
   `(w >> 48) == 0` (n capped by `CUSTOM_HDR_SLOTS`).
 - Keep the **u64 overloads** with their current signatures for the existing callers. They expand the
   mask into `kinds[i] = i < HDR ? (mask >> 2i) & 3 : 0` and forward:
-  - `eco-kernel-cpp/src/eco/Process.cpp`;
+  - `eco-kernel-cpp/src/eco-kernel/Process.cpp`;
   - `elm-kernel-cpp/src/browser/Browser.cpp` (6);
   - `bytes/Bytes.cpp`;
   - `core/PlatformExports.cpp` (3);

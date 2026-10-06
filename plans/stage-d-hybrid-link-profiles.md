@@ -761,7 +761,7 @@ link-line, shim, and packaging.
   (`compiler/src/Terminal/Make.elm:87-102,168-273`), the
   `Eco.NativeDriver.lowerAndLink` kernel API + JS stub + Task_Binding
   payload (`eco-kernel-cpp/src/Eco/NativeDriver.elm:46-48`,
-  `eco-kernel-cpp/src/eco/NativeDriver.cpp:39-98`), the C ABI
+  `eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp:39-98`), the C ABI
   (`EcoNativeAPI.h:30`, `EcoNativeDriver.cpp:632-647`,
   `eco_native_stub.cpp:21-27`), and `EcoNativeOptions`
   (`EcoNativeDriver.h:23-42`).

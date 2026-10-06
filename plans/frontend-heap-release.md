@@ -260,7 +260,7 @@ GCReport Allocator::collectMajorAndRelease() {
 
 > "AN EXPLICIT COLLECTION IS A MUTATOR SYNC POINT (plans/frontend-heap-release.md §3). Allocator::collectMajorAndRelease runs only from a kernel Task binding on the owning mutator with pause_depth_ == 0 (so no minor, parallel promotion or CR-014 path is active). ThreadLocalHeap::majorGCAndShrink is ONE pause and ONE sync point: a STW major (MajorReason::Explicit; joins the tenure job and finishes any cycle by Join), the lazy sweep driven to Idle, then maybeShrinkCapacity(ShrinkPass::Forced), which releases every fully-swept live_bytes == 0 block and unassigned page down to max(initial_old_gen_size, alloc_buffer_size) with no hysteresis, never during a cycle or compaction. After the pause, under thread_mutex_ only, PageWork::drainAll(true) waits for every slot and discards every Pending extent; in mode 0 releases were already discarded inline. No collection or shrink step holds thread_mutex_ (HEAP_075). Modes 1 and 2 agree in every decision counter (GC_DET_001): the call adds one sync epoch and one major epoch, and drainAll empties pending_ identically. GCReport rss_*, *_ns and trim_result are observations; no GC policy or Elm control flow may read them."
 
-Its sources column: `runtime/src/allocator/Allocator.cpp|ThreadLocalHeap.cpp|OldGenSpace.cpp|eco-kernel-cpp/src/eco/GC.cpp|GC_DET_001|HEAP_058|HEAP_059|HEAP_075`.
+Its sources column: `runtime/src/allocator/Allocator.cpp|ThreadLocalHeap.cpp|OldGenSpace.cpp|eco-kernel-cpp/src/eco-kernel/GC.cpp|GC_DET_001|HEAP_058|HEAP_059|HEAP_075`.
 
 **Amend GC_DET_001:** "explicit collections (HEAP_076) are mutator-chosen sync points; report observations never feed decisions."
 
@@ -342,7 +342,7 @@ majorRaw = Eco.Kernel.GC.majorGC
 -- decode / decoder / zero: §4.1
 ```
 
-### 4.3 C++ (`eco-kernel-cpp/src/eco/`), following `Runtime.cpp:30-79`
+### 4.3 C++ (`eco-kernel-cpp/src/eco-kernel/`), following `Runtime.cpp:30-79`
 
 - **`GC.hpp`:** `namespace Eco::Kernel::GC { uint64_t minorGC(); uint64_t majorGC(); }`
 - **`GC.cpp`:**
@@ -879,7 +879,7 @@ Choose greedily in order of peak reduction, then measure Cset. If Cset is worse 
 **Built:**
 - **P0** `benchmarks/mem-trace.sh` (the §8.1 usage; `date +%s%N` bash arithmetic, samples at `T0 + k·IVAL` with missed slots skipped, sleeps sliced to ≤ 0.2 s so the end is seen promptly, thread groups = `comm` minus a trailing `-<digits>`) and `benchmarks/mem-trace-summary.py` (peaks, FE/BE phases, `[gc-report]` lines on the time axis, INVALID rules, `-rN` medians, `--json`). Tested on short commands and on the old `stage9b_samples.tsv` (whose `t_s` is all 0: the summary re-spaces such samples over the `time -v` wall). **Not done:** the baseline Stage 9b trace with the fixed sampler (a self-compile; out of this pass's scope).
 - **P1** `GCReport.hpp`; `platform::processResidentBytes` (posix: `/proc/self/statm` on Linux, else 0; win32: 0); `OldGenSpace::ShrinkPass {Heavy, Light, Forced}`, `finishSweepForRelease`, `shrinkToFloorForRelease`, `majorLiveBytes`; `GCStats::total_maybe_shrink_forced_ns` and `MajorReason::Explicit = 8` (`"explicit"`); `ThreadLocalHeap::majorGCAndShrink` (region `TLH.majorGCAndShrink`); `Allocator::collectMajorAndRelease` (region `AL.releaseDiscard`) and `collectMinor`; `NurserySpace::minorSeq`; HEAP_076 and the GC_DET_001 amendment; tests `testExplicitReleaseModesAgree`, `testExplicitReleaseReturnsMemory` (registered in `test/main.cpp`).
-- **P2** `eco-kernel-cpp/src/Eco/GC.elm` (the §4.1 record, decoder and zero record), `src/eco/GC.{hpp,cpp}`, `GCExports.cpp`, `KernelExports.h`; `EcoKernel_GC` in `eco-kernel-cpp/CMakeLists.txt` (library, aggregate, asserts list), `ECO_KERNEL_MODS`, the three `compiler/CMakeLists.txt` link lists; `"Eco.GC"` in `eco-kernel-cpp/elm.json`.
+- **P2** `eco-kernel-cpp/src/Eco/GC.elm` (the §4.1 record, decoder and zero record), `src/eco-kernel/GC.{hpp,cpp}`, `GCExports.cpp`, `KernelExports.h`; `EcoKernel_GC` in `eco-kernel-cpp/CMakeLists.txt` (library, aggregate, asserts list), `ECO_KERNEL_MODS`, the three `compiler/CMakeLists.txt` link lists; `"Eco.GC"` in `eco-kernel-cpp/elm.json`.
 - **TLA canary:** pins fired `OGS.onSweepComplete` / `OGS.maybeShrinkCapacity` (M4, M8: no model change), the `Allocator.cpp` census and `F.threadMutex` (M6: no change; M7: model updated); new pins `TLH.majorGCAndShrink` (M1, M4, M8) and `AL.releaseDiscard` (M6, M7). **M7: the preferred option** — a `DiscardAllPending` mutator step (`M_DrainSlots`, `M_DrainDiscard`) in `PageWork.tla`, invariant `DrainSafe`, mutant `drain_no_await`; quick 28/28 and both deep rows pass (AUDIT.md 2026-10-01).
 
 **Deviations from §3-§4:**

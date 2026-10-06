@@ -166,7 +166,7 @@ drifts found on 2026-08-10 are folded into the Phase 3 table below; the ones tha
 | `ListOps::append` | `ListOps.cpp:274` | **`:262`** |
 | `Bytes_encode` / `decode` | `BytesExports.cpp:397` / `:420` | **`:395` / `:418`** |
 | `alloc::ListCursor` | `HeapHelpers.hpp:812-821` | **`:822`** (`RootedListCursor` at `:754`) |
-| `Crash_crash` symbol | `Elm_Kernel_Crash_crash` | **`Eco_Kernel_Crash_crash`** (eco-kernel-cpp/src/eco/CrashExports.cpp:9-11 → Crash.cpp:20-33, exact) |
+| `Crash_crash` symbol | `Elm_Kernel_Crash_crash` | **`Eco_Kernel_Crash_crash`** (eco-kernel-cpp/src/eco-kernel/CrashExports.cpp:9-11 → Crash.cpp:20-33, exact) |
 | `eqHelp` extent | `Utils.cpp:463-733` (§6.E row 4) | **`:521-740`** (`:742` is the `dictEq` doc comment) |
 | `StringOps::equal` extent | `StringOps.hpp:1486-1543` | **`:1486-1533`** (`:1535-1543` is `compare`'s doc comment; §6.E's `:1486-1533` was right) |
 | `Utils::compare` vs `cmp` | one range `Utils.cpp:302-461` | **`cmp :302-445`, `compare :451-457`** (`:459-461` is `cmp3`'s comment) |
@@ -198,7 +198,7 @@ allocate (Order Custom)”. It cannot: `compare` (`Utils.cpp:451-457`) selects o
 **pre-allocated** singletons and `Export::decode`s it; the only `alloc::custom` calls are in
 `initOrderSingletons` (`:35/:37/:39`), whose sole caller is the runtime-init hook
 `Eco_Kernel_Order_register_gc_roots` (`UtilsExports.cpp:186-188`, invoked once from
-`eco-kernel-cpp/src/eco/RuntimeExports.cpp:49-50` and `runtime/src/codegen/ecoc.cpp:340-341`).
+`eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp:49-50` and `runtime/src/codegen/ecoc.cpp:340-341`).
 That is *why* `(Utils, compare)` may carry `GcNone`; a reviewer who reads only
 `ListExports.cpp:718` will reach the opposite conclusion, so the row's evidence string names
 the init hook explicitly.
@@ -690,7 +690,7 @@ new effect-audited keys from §6.E. Two row classes:
 `(JsArray, initializeFromList)`; row 18 `JsArray_initialize_Int` → `(JsArray, initialize)`.
 
 Path shorthands used in the table only — the Elm `evidence` string spells the full repo-relative path:
-`EKC` = `elm-kernel-cpp/src/core/`, `EKB` = `elm-kernel-cpp/src/bytes/`, `CK` = `eco-kernel-cpp/src/eco/`,
+`EKC` = `elm-kernel-cpp/src/core/`, `EKB` = `elm-kernel-cpp/src/bytes/`, `CK` = `eco-kernel-cpp/src/eco-kernel/`,
 `RA` = `runtime/src/allocator/`, `RP` = `runtime/src/platform/`, `EKU` = `elm-kernel-cpp/src/core/`
 (same as EKC; used only to keep the `UtilsExports.cpp` column readable). **Every anchor below —
 export entry AND interior — was opened and verified in the tree on 2026-08-10**, including the four

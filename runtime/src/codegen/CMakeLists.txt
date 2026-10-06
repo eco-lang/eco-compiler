@@ -1234,7 +1234,7 @@ if(APPLE)
     # Required for AOT link because (a) the vendored libzip's CMake
     # configure picks up brew openssl as a build dep and compiles
     # zip_crypto_openssl.c (auto-detect fallback even with ENABLE_OPENSSL=OFF),
-    # and (b) eco-kernel-cpp/src/eco/Http.cpp uses SHA1() directly via
+    # and (b) eco-kernel-cpp/src/eco-kernel/Http.cpp uses SHA1() directly via
     # <openssl/sha.h>. plans/build-on-mac.md sketches replacing both with
     # CommonCrypto as a follow-up; for v1 we link the brew static archives.
     find_file(ECO_DARWIN_LIBSSL_A NAMES libssl.a

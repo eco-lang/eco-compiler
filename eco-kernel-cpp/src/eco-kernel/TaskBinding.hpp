@@ -25,7 +25,7 @@ using ::Elm::HPointer;
 using ::Elm::Platform::BindingBody;
 
 // Re-export Elm::Platform::makeBinding into the Eco::Kernel namespace so
-// callers in eco-kernel-cpp/src/eco/ don't have to qualify.
+// callers in eco-kernel-cpp/src/eco-kernel/ don't have to qualify.
 template <BindingBody Body>
 inline HPointer makeBinding(HPointer captured) {
     return ::Elm::Platform::makeBinding<Body>(captured);

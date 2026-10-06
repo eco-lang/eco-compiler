@@ -247,12 +247,12 @@ grep    0f0329f49dab752a7f972b588c1cd0d0690ac6c8a50b2e2c8b463dbdddd56301  -  F.y
 grep    bd1d8d0f2c41df9df3b92587c0397fb6cfd890f9edd433340c08ecfdd5ccf927  -  F.deferredFrees  M1
 grep    5ce7c45aa18dacf6a1301765f2bf11a4f545137526ff34074ec1cd27cdfa896a  -  F.cycleState  M1
 grep    add33fc189d1dd4202c7d37409eb7d9e7acc7f2711f3f76f71ac8aec7d1b178c  -  F.bgEp  M1,M6
-grep    631d334f9bcf9d456313904a2b74cf5692af7d81edaad6dc10d1e5439a6f921b  -  F.externalRoots  M1
+grep    5a5733b39b1c9c6f148fc1cc41d022f38b00e56aadb49bd13b5523f6fc82a851  -  F.externalRoots  M1
 grep    7476bbda7198ae0acbf62316cfa443ba7cef6e570d5ffb9b2ed1d0dc21367fe7  -  F.zapFiller  M1,M5
 grep    ec251bf08300c9d83c10e2b65a9b3ca31a883a86e95d1ca8ba547bfc7fd0b451  -  F.vnodeRegistry  M1
 grep    850ac4ab5ed2fc800171f2724a8572a25286e8e5de604df12365aadb8d117285  -  F.atfork  M6
 grep    c348085dbe58545bdfa2fd3b90abeac47e4a394cd12957bf513041688f8d9ab8  -  F.atexit  M6
-grep    c347743372973b091ba458ca1c1ccc4456a808b72fe6b35d8a3f0ab5e59a4b18  -  F.fork  M6
+grep    a6e632eaf3ead4a8b0dcdd2eb79cadd6a8a68eaf2cc3bd7a1a401cb6ec7a9ece  -  F.fork  M6
 grep    2da021596e6c45076f374d5deffdd52811161df7bc02dab79206ce9d0356ea95  -  F.promoMu  M4,M7
 grep    00cb061f21bdc5bf7972cff8c5fd2c64ea1fe1a1139a360bca68ecb1f4dd2bdc  -  F.threadMutex  M6,M7
 grep    9c2d8130d0651f462331a8aa420ca6dd3b1875371cc183cfc06a09a1bd70b214  -  F.pageWorkCalls  M7

@@ -21,7 +21,7 @@ The runtime is POSIX throughout, and macOS is POSIX:
   (reserve `PROT_NONE`, commit with `MAP_FIXED`) works unchanged on macOS.
   `MAP_NORESERVE` is a no-op there — harmless.
 - pthreads (`eco_entry.cpp`, `eco_embed.cpp`), POSIX signals (`main.cpp`),
-  `fork`/`execvp`/`pipe`/`waitpid` (`eco-kernel-cpp/src/eco/Process.cpp`),
+  `fork`/`execvp`/`pipe`/`waitpid` (`eco-kernel-cpp/src/eco-kernel/Process.cpp`),
   `stat`/`opendir`/`readdir` (`File.cpp`) — all native on macOS.
 - LLVM libunwind **is** the macOS system unwinder (it originated at Apple),
   so `StackUnwind.cpp`'s `unw_getcontext`/`unw_step`/`UNW_REG_IP` usage works
@@ -34,7 +34,7 @@ The runtime is POSIX throughout, and macOS is POSIX:
 - `EcoBackend.cpp:66` uses `sys::getDefaultTargetTriple()`, so codegen
   retargets to `arm64-apple-darwin` / `x86_64-apple-darwin` automatically.
 - `elm-kernel-cpp/src/time/TimeExports.cpp` and
-  `eco-kernel-cpp/src/eco/File.cpp` already carry `__APPLE__` branches.
+  `eco-kernel-cpp/src/eco-kernel/File.cpp` already carry `__APPLE__` branches.
 
 What does NOT carry over (the actual work) is everything ELF- or
 Linux-procfs-specific, plus the AOT link driver.
@@ -81,7 +81,7 @@ Linux-procfs-specific, plus the AOT link driver.
 Introduce small platform seams rather than scattering `#ifdef`s:
 
 5. **Executable path discovery** — `/proc/self/exe` is read at **five**
-   sites, not one: `EcoBootConfig.cpp:34`, `eco-kernel-cpp/src/eco/
+   sites, not one: `EcoBootConfig.cpp:34`, `eco-kernel-cpp/src/eco-kernel/
    Runtime.cpp:31`, `runtime/src/main.cpp:143`, `eco_embed.cpp`, and
    `eco_entry.cpp:60`. Add one shared `currentExecutablePath()` helper
    (Darwin → `_NSGetExecutablePath` + `realpath`; Linux → existing

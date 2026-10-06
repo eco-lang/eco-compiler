@@ -12,7 +12,7 @@ Each wrapper delegates to either:
 
 - **JavaScript kernel** (`eco-kernel-cpp/src/Eco/Kernel/*.js`) — used when
   running compiled Elm in Node.js
-- **C++ kernel** (`eco-kernel-cpp/src/eco/*.{hpp,cpp}` +
+- **C++ kernel** (`eco-kernel-cpp/src/eco-kernel/*.{hpp,cpp}` +
   `KernelExports.h`) — used when running via the LLVM JIT
 
 Four categories of work:
@@ -145,24 +145,24 @@ wrapper converts to ExitCode. No change needed (already returns int).
 
 ### 1c. C++ kernel
 
-**`src/eco/Process.hpp`:**
+**`src/eco-kernel/Process.hpp`:**
 - Change `spawn(uint64_t config)` to `spawn(uint64_t cmd, uint64_t args)`
 - Add `spawnProcess(uint64_t cmd, uint64_t args, uint64_t stdin_,
   uint64_t stdout_, uint64_t stderr_)`
 - `exit` signature: keep as `uint64_t exit(int64_t code)` — now receives
   an unboxed `Int` (`int64_t` per ABI convention)
 
-**`src/eco/Process.cpp`:**
+**`src/eco-kernel/Process.cpp`:**
 - Update `spawn` stub: 2 args, assert-crash
 - Add `spawnProcess` stub: 5 args, assert-crash
 - Update `exit` stub: `int64_t code` param, assert-crash
 
-**`src/eco/ProcessExports.cpp`:**
+**`src/eco-kernel/ProcessExports.cpp`:**
 - Update `Eco_Kernel_Process_spawn` to pass 2 args
 - Add `Eco_Kernel_Process_spawnProcess` forwarding 5 args
 - Update `Eco_Kernel_Process_exit` to use `int64_t code`
 
-**`src/eco/KernelExports.h`:**
+**`src/eco-kernel/KernelExports.h`:**
 - Change: `uint64_t Eco_Kernel_Process_exit(int64_t code);`
 - Change: `uint64_t Eco_Kernel_Process_spawn(uint64_t cmd, uint64_t args);`
 - Add: `uint64_t Eco_Kernel_Process_spawnProcess(uint64_t cmd,
@@ -181,10 +181,10 @@ Already has `_Runtime_loadState`. **No changes needed.**
 
 ### 2b. C++ kernel
 
-**`src/eco/Runtime.hpp`:**
+**`src/eco-kernel/Runtime.hpp`:**
 - Add: `uint64_t loadState();`
 
-**`src/eco/Runtime.cpp`:**
+**`src/eco-kernel/Runtime.cpp`:**
 - Add stub with assert-crash:
 ```cpp
 uint64_t loadState() {
@@ -193,11 +193,11 @@ uint64_t loadState() {
 }
 ```
 
-**`src/eco/RuntimeExports.cpp`:**
+**`src/eco-kernel/RuntimeExports.cpp`:**
 - Add: `uint64_t Eco_Kernel_Runtime_loadState() {
   return Runtime::loadState(); }`
 
-**`src/eco/KernelExports.h`:**
+**`src/eco-kernel/KernelExports.h`:**
 - Add: `uint64_t Eco_Kernel_Runtime_loadState();`
 
 ---
@@ -299,7 +299,7 @@ These compile to double-underscore-prefixed globals:
 
 ### 3c. C++ kernel — new files
 
-**`src/eco/Http.hpp`:**
+**`src/eco-kernel/Http.hpp`:**
 ```cpp
 #ifndef ECO_HTTP_HPP
 #define ECO_HTTP_HPP
@@ -311,7 +311,7 @@ namespace Eco::Kernel::Http {
 #endif
 ```
 
-**`src/eco/Http.cpp`:**
+**`src/eco-kernel/Http.cpp`:**
 - Assert-crash stubs:
 ```cpp
 uint64_t fetch(uint64_t, uint64_t, uint64_t) {
@@ -324,11 +324,11 @@ uint64_t getArchive(uint64_t) {
 }
 ```
 
-**`src/eco/HttpExports.cpp`:**
+**`src/eco-kernel/HttpExports.cpp`:**
 - `Eco_Kernel_Http_fetch(method, url, headers)` → `Http::fetch(...)`
 - `Eco_Kernel_Http_getArchive(url)` → `Http::getArchive(...)`
 
-**`src/eco/KernelExports.h`:**
+**`src/eco-kernel/KernelExports.h`:**
 - Add Http section with both function declarations
 
 **`CMakeLists.txt`:**
@@ -352,18 +352,18 @@ uint64_t getArchive(uint64_t) {
 |------|--------|
 | `src/Eco/Process.elm` | Add `exitCodeToInt`, `intToExitCode`, `stdStreamToString`; update `exit`, `spawnProcess`, `wait` |
 | `src/Eco/Kernel/Process.js` | Rewrite `spawn` (2 args), add `spawnProcess` (5 args), add Maybe import |
-| `src/eco/Process.hpp` | Fix `exit` (int64_t), fix `spawn` sig (2 args), add `spawnProcess` (5 args) |
-| `src/eco/Process.cpp` | Fix `exit`, `spawn`, add `spawnProcess`, assert-crash stubs |
-| `src/eco/ProcessExports.cpp` | Fix `exit`, `spawn`, add `spawnProcess` |
-| `src/eco/Runtime.hpp` | Add `loadState` |
-| `src/eco/Runtime.cpp` | Add `loadState` assert-crash stub |
-| `src/eco/RuntimeExports.cpp` | Add `loadState` export |
-| `src/eco/KernelExports.h` | Fix `exit` (int64_t), fix `spawn`, add `spawnProcess`, `loadState`, Http section |
+| `src/eco-kernel/Process.hpp` | Fix `exit` (int64_t), fix `spawn` sig (2 args), add `spawnProcess` (5 args) |
+| `src/eco-kernel/Process.cpp` | Fix `exit`, `spawn`, add `spawnProcess`, assert-crash stubs |
+| `src/eco-kernel/ProcessExports.cpp` | Fix `exit`, `spawn`, add `spawnProcess` |
+| `src/eco-kernel/Runtime.hpp` | Add `loadState` |
+| `src/eco-kernel/Runtime.cpp` | Add `loadState` assert-crash stub |
+| `src/eco-kernel/RuntimeExports.cpp` | Add `loadState` export |
+| `src/eco-kernel/KernelExports.h` | Fix `exit` (int64_t), fix `spawn`, add `spawnProcess`, `loadState`, Http section |
 | `src/Eco/Http.elm` | **New** — Elm wrapper |
 | `src/Eco/Kernel/Http.js` | **New** — JS kernel (port from eco-io-handler.js, uses adm-zip) |
-| `src/eco/Http.hpp` | **New** — C++ header |
-| `src/eco/Http.cpp` | **New** — C++ assert-crash stubs |
-| `src/eco/HttpExports.cpp` | **New** — C-linkage exports |
+| `src/eco-kernel/Http.hpp` | **New** — C++ header |
+| `src/eco-kernel/Http.cpp` | **New** — C++ assert-crash stubs |
+| `src/eco-kernel/HttpExports.cpp` | **New** — C-linkage exports |
 | `CMakeLists.txt` | Add `EcoKernel_Http` target |
 
 15 files total (9 modified, 5 new, 1 CMakeLists update).

@@ -451,7 +451,7 @@ Three implementations exist:
 - **XHR** (`compiler/src-xhr/Eco/File.elm`) - 300 lines, for bootstrap stage
 - **Kernel Elm** (`eco-kernel-cpp/src/Eco/File.elm`) - calls `Eco.Kernel.File` JS/C++
 - **Kernel JS** (`eco-kernel-cpp/src/Eco/Kernel/File.js`) - Node.js `fs` implementation
-- **Kernel C++** (`eco-kernel-cpp/src/eco/File.cpp`) - POSIX implementation
+- **Kernel C++** (`eco-kernel-cpp/src/eco-kernel/File.cpp`) - POSIX implementation
 
 **Tasks**:
 - [x] Catalog current file operations
@@ -586,7 +586,7 @@ eco-kernel-cpp/
 **Deliverables**:
 - [x] Elm kernel package type definitions (`eco-kernel-cpp/elm.json`)
 - [x] JS kernel implementation (`eco-kernel-cpp/src/Eco/Kernel/*.js`)
-- [x] C++ kernel implementation (`eco-kernel-cpp/src/eco/*.cpp`)
+- [x] C++ kernel implementation (`eco-kernel-cpp/src/eco-kernel/*.cpp`)
 - [x] XHR bootstrap implementation (`compiler/src-xhr/Eco/*.elm`)
 - [x] Bootstrap runner and IO handler (`compiler/bin/eco-boot-runner.js`, `eco-io-handler.js`)
 - [x] Build configurations (`elm-bootstrap.json`, `elm-kernel.json`)
@@ -913,7 +913,7 @@ Additional kernel packages identified during the audit that also need C++ implem
 
 Implement the I/O kernel packages defined in §2.1 in C++ for linking with the native runtime.
 
-**Background**: This is separate from the standard Elm kernel (§2.3) because it covers the custom I/O operations needed for CLI tools, as designed in §2.1. The C++ implementations live in `eco-kernel-cpp/src/eco/` and are built as static libraries via CMake.
+**Background**: This is separate from the standard Elm kernel (§2.3) because it covers the custom I/O operations needed for CLI tools, as designed in §2.1. The C++ implementations live in `eco-kernel-cpp/src/eco-kernel/` and are built as static libraries via CMake.
 
 **Current Implementation**:
 - 6 C++ modules with C-linkage exports for JIT/native linking
@@ -921,7 +921,7 @@ Implement the I/O kernel packages defined in §2.1 in C++ for linking with the n
 - Combined convenience library: `EcoKernel` (INTERFACE target)
 - Uses ECO runtime heap model for Elm value interop
 
-**Deferred kernel Task IO via `Task_Binding`** *(May 31, 2026)*: Every C++ symbol that returns an Elm `Task` now performs its IO inside a `Task_Binding` callback rather than at kernel-call time. The scheduler steps bindings and can therefore interleave outstanding IO; blocking syscalls (e.g. `curl_easy_perform`, `waitpid`) park onto an async worker pool and resume the parked closure. Shared helpers live in `runtime/src/platform/TaskBinding.hpp` (sync `makeBinding` and async `makeAsyncBinding`) with Eco-side `succeed*` / `fail*` HPointer wrappers in `eco-kernel-cpp/src/eco/TaskBinding.hpp`. New invariants **KERNEL_TASK_IO_001** and **KERNEL_TASK_IO_002** record the pattern and its rooting discipline. See [Kernel Task Deferral Theory](design_docs/theory/kernel-task-deferral.md) and `plans/defer-eager-kernel-tasks-via-binding.md`.
+**Deferred kernel Task IO via `Task_Binding`** *(May 31, 2026)*: Every C++ symbol that returns an Elm `Task` now performs its IO inside a `Task_Binding` callback rather than at kernel-call time. The scheduler steps bindings and can therefore interleave outstanding IO; blocking syscalls (e.g. `curl_easy_perform`, `waitpid`) park onto an async worker pool and resume the parked closure. Shared helpers live in `runtime/src/platform/TaskBinding.hpp` (sync `makeBinding` and async `makeAsyncBinding`) with Eco-side `succeed*` / `fail*` HPointer wrappers in `eco-kernel-cpp/src/eco-kernel/TaskBinding.hpp`. New invariants **KERNEL_TASK_IO_001** and **KERNEL_TASK_IO_002** record the pattern and its rooting discipline. See [Kernel Task Deferral Theory](design_docs/theory/kernel-task-deferral.md) and `plans/defer-eager-kernel-tasks-via-binding.md`.
 
 **Structured IO errors end-to-end** *(May 31, 2026)*: Kernel IO errors are now plumbed as structured Elm error values (with errno, path, and operation context) from the C++ kernels through the scheduler to the final `Exit` boundary, replacing string-stringified error returns. Error handling audited across the Eco kernel API.
 
@@ -947,7 +947,7 @@ Implement the I/O kernel packages defined in §2.1 in C++ for linking with the n
 - [ ] Test suite for I/O operations
 
 **Deliverables**:
-- [x] C++ I/O kernel implementations in `eco-kernel-cpp/src/eco/`
+- [x] C++ I/O kernel implementations in `eco-kernel-cpp/src/eco-kernel/`
 - [x] CMake static library targets
 - [ ] Integration with `RuntimeSymbols.cpp` KERNEL_SYM table
 - [ ] Test suite for I/O operations
@@ -2575,7 +2575,7 @@ Runtime Foundation (§1)
 
 - **Defer Eager Kernel Task IO via `Task_Binding`** *(May 31, 2026)*:
   - Every C++ symbol returning an Elm `Task` in `eco-kernel-cpp/` and `elm-kernel-cpp/` now performs its IO inside a `Task_Binding` callback rather than at kernel-call time. The scheduler can interleave outstanding bindings; blocking syscalls (`curl_easy_perform`, `waitpid`) park onto an async worker pool and resume the parked closure.
-  - Shared helpers in `runtime/src/platform/TaskBinding.hpp` (`makeBinding`, `makeAsyncBinding`); Eco-side `succeed*` / `fail*` HPointer wrappers in `eco-kernel-cpp/src/eco/TaskBinding.hpp`.
+  - Shared helpers in `runtime/src/platform/TaskBinding.hpp` (`makeBinding`, `makeAsyncBinding`); Eco-side `succeed*` / `fail*` HPointer wrappers in `eco-kernel-cpp/src/eco-kernel/TaskBinding.hpp`.
   - Structured IO errors plumbed end-to-end: kernels return rich error values (errno + path + operation context) which flow through the scheduler to the final `Exit`.
   - Effect-manager setup task built by invoking a saturated closure with a Task-return-type assertion (prevents a class of silent type-soundness holes).
   - New invariants **KERNEL_TASK_IO_001** and **KERNEL_TASK_IO_002**. Plan: `plans/defer-eager-kernel-tasks-via-binding.md`. Theory: [Kernel Task Deferral](design_docs/theory/kernel-task-deferral.md). Error-handling audit on the Eco kernel API.
@@ -2789,7 +2789,7 @@ Runtime Foundation (§1)
   - Plan: `plans/dispatch-effects-gc-visible-scratch.md`
 
 - **Thread-Safe Blocking MVar** *(Apr 24, 2026)*:
-  - `eco-kernel-cpp/src/eco/MVar.cpp` reimplemented for thread-safe blocking semantics, exercising `MVarBlockingReadAwaitsPutStress`
+  - `eco-kernel-cpp/src/eco-kernel/MVar.cpp` reimplemented for thread-safe blocking semantics, exercising `MVarBlockingReadAwaitsPutStress`
 
 - **String Empty-Pattern `inttoptr` Fix** *(Apr 24, 2026)*:
   - In `EcoToLLVMControlFlow.cpp` `CaseOpLowering` (string-case path), the `pattern.empty()` branch was creating the encoded empty-string constant as `i64` and passing it to `Elm_Kernel_Utils_equal`, which expects `(ptr<1>, ptr<1>)`

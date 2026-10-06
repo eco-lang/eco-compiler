@@ -1030,126 +1030,126 @@ facts =
         , ( ( "Console", "log" )
           , TypeFaithful
                 { scope = Transports
-                , files = [ "eco-kernel-cpp/src/eco/ConsoleExports.cpp", "eco-kernel-cpp/src/eco/Console.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: cheap | entry: ConsoleExports.cpp:Eco_Kernel_Console_log:21-23 | helpers: Console.cpp:log:144-163 | type: Eco/Console.elm:81 (String -> a -> a, alias-seeded) | B1: B1(b)+B1(c) -- Console.cpp:162 `return value;` is the arg's ONLY use | B2: no static/global/task write in Console.cpp | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
                 }
           )
         , ( ( "Console", "readAll" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/ConsoleExports.cpp", "eco-kernel-cpp/src/eco/Console.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readAll:17-19 | helpers: Console.cpp:readAll:140-142 | type: Eco/Console.elm:71 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :141) | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "Console", "readLine" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/ConsoleExports.cpp", "eco-kernel-cpp/src/eco/Console.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readLine:13-15 | helpers: Console.cpp:readLine:136-138 | type: Eco/Console.elm:63 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :137) | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "Console", "write" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/ConsoleExports.cpp", "eco-kernel-cpp/src/eco/Console.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_write:9-11 | helpers: Console.cpp:write:126-134 | type: Eco/Console.elm:55 | B1: vacuous (no function-capable position) | B2: String captured :129-133, set-flow inert | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "Crash", "crash" )
           , TypeFaithful
                 { scope = Transports
-                , files = [ "eco-kernel-cpp/src/eco/CrashExports.cpp", "eco-kernel-cpp/src/eco/Crash.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/CrashExports.cpp", "eco-kernel-cpp/src/eco-kernel/Crash.cpp" ]
                 , evidence = "class: cheap | entry: CrashExports.cpp:Eco_Kernel_Crash_crash:9-11 | helpers: Crash.cpp:crash:20-33 | type: Eco/Crash.elm:16 (String -> a, alias-seeded) | B1: no function value enters (param is String); result `a` never inhabited -- ::exit(1) :30 | B2: no storage | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
                 }
           )
         , ( ( "Env", "lookup" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/EnvExports.cpp", "eco-kernel-cpp/src/eco/Env.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/EnvExports.cpp", "eco-kernel-cpp/src/eco-kernel/Env.cpp" ]
                 , evidence = "class: vacuous | entry: EnvExports.cpp:Eco_Kernel_Env_lookup:9-11 | helpers: Env.cpp:lookup:52-55 | type: Eco/Env.elm:20 (String -> Task Never (Maybe String), alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :54, inert; s_argv:19-20 is char** | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "Env", "rawArgs" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/EnvExports.cpp", "eco-kernel-cpp/src/eco/Env.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/EnvExports.cpp", "eco-kernel-cpp/src/eco-kernel/Env.cpp" ]
                 , evidence = "class: vacuous | entry: EnvExports.cpp:Eco_Kernel_Env_rawArgs:13-15 | helpers: Env.cpp:rawArgs:57-60 | type: Eco/Env.elm:27 (Task Never (List String), alias-seeded) | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :59) | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "File", "appDataDir" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_appDataDir:81-83 | helpers: File.cpp:appDataDir:823-826 | type: Eco/File.elm:271 (String -> Task Never String, alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :825 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "canonicalize" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_canonicalize:77-79 | helpers: File.cpp:canonicalize:818-821 | type: Eco/File.elm:263 (String -> Task IOError String) | B1: vacuous (no function-capable position) | B2: String captured :820 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "close" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_close:33-35 | helpers: File.cpp:close:747-753 | type: Eco/File.elm:149 (Handle -> Task IOError (); inferred Int -> ...) | B1: vacuous (no function-capable position) | B2: only an unboxed Int captured :752 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "createDir" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_createDir:85-87 | helpers: File.cpp:createDir:828-835 | type: Eco/File.elm:279 (Bool -> String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :834, Bool decoded :673 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "dirExists" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_dirExists:53-55 | helpers: File.cpp:dirExists:788-791 | type: Eco/File.elm:204 (String -> Task Never Bool, alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :790 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "fileExists" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_fileExists:49-51 | helpers: File.cpp:fileExists:783-786 | type: Eco/File.elm:197 (String -> Task Never Bool, alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :785 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "findExecutable" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_findExecutable:57-59 | helpers: File.cpp:findExecutable:793-796 | type: Eco/File.elm:211 | B1: vacuous (no function-capable position) | B2: String captured :795; :203/:209 are static FUNCTIONS | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "getCwd" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_getCwd:69-71 | helpers: File.cpp:getCwd:808-811 | type: Eco/File.elm:248 (Task Never String, alias-seeded) | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :810) | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "hWriteString" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_hWriteString:97-99 | helpers: File.cpp:hWriteString:755-763 | type: Eco/File.elm:157 | B1: vacuous (no function-capable position) | B2: String + unboxed fd in a tuple2 :762 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "list" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_list:61-63 | helpers: File.cpp:list:798-801 | type: Eco/File.elm:218 (String -> Task IOError (List String); element concrete) | B1: vacuous (no function-capable position) | B2: String captured :800; list built fresh | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "lock" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_lock:41-43 | helpers: File.cpp:lock:773-776 | type: Eco/File.elm:177 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :775, never read | B3: binding closure only | audited: 2026-10-03"
                 }
           )
@@ -1163,7 +1163,7 @@ facts =
         , ( ( "File", "modificationTime" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_modificationTime:65-67 | helpers: File.cpp:modificationTime:803-806 | type: Eco/File.elm:226 (String -> Task IOError Time.Posix; inferred ok Int) | B1: vacuous (no function-capable position) | B2: String captured :805 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
@@ -1177,84 +1177,84 @@ facts =
         , ( ( "File", "open" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_open:29-31 | helpers: File.cpp:open:734-745 | type: Eco/File.elm:118 | B1: vacuous (no function-capable position) | B2: tuple2 :744; fd returned as an Int :638 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "readBytes" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_readBytes:17-19 | helpers: File.cpp:readBytes:711-714 | type: Eco/File.elm:88 (String -> Task IOError Bytes) | B1: vacuous (no function-capable position) | B2: String captured :713 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "readString" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_readString:9-11 | helpers: File.cpp:readString:697-700 | type: Eco/File.elm:72 (String -> Task IOError String) | B1: vacuous (no function-capable position) | B2: String captured :699; no object statics in File.cpp | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "removeDir" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_removeDir:93-95 | helpers: File.cpp:removeDir:842-845 | type: Eco/File.elm:295 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :844 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "removeFile" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_removeFile:89-91 | helpers: File.cpp:removeFile:837-840 | type: Eco/File.elm:287 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :839 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "setCwd" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_setCwd:73-75 | helpers: File.cpp:setCwd:813-816 | type: Eco/File.elm:255 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :815; CWD change is an OS effect | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "size" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/File.cpp", "eco-kernel-cpp/src/eco/FileExports.cpp", "elm-kernel-cpp/src/file/FileExports.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/File.cpp", "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "elm-kernel-cpp/src/file/FileExports.cpp" ]
                 , evidence = "class: vacuous | entry: eco FileExports.cpp:37-39 + elm FileExports.cpp:37-41 (both _File_size) | type: SHARED KEY -- Eco/File.elm:165 (Handle -> Task IOError Int) AND elm/file/1.0.5/src/File.elm:163 (File -> Int); both arrow-free and variable-free | B1: vacuous (no function-capable position) | B2: eco captures an Int File.cpp:770; elm no writes | B3: eco binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "touch" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_touch:101-103 | helpers: File.cpp:touch:847-850 | type: Eco/File.elm:236 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :849 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "unlock" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_unlock:45-47 | helpers: File.cpp:unlock:778-781 | type: Eco/File.elm:185 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :780, never read | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "writeBytes" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_writeBytes:21-23 | helpers: File.cpp:writeBytes:716-723 | type: Eco/File.elm:96 (String -> Bytes -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :722 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "writeBytesAtomic" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_writeBytesAtomic:25-27 | helpers: File.cpp:writeBytesAtomic:725-732, File.cpp:writeBytesAtomicBody:547-608 | type: Eco/File.elm:106 (String -> Bytes -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :729; gAtomicWriteSeq :542 is a plain integer, not a heap value | B3: binding closure only | audited: 2026-10-03"
                 }
           )
         , ( ( "File", "writeString" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/FileExports.cpp", "eco-kernel-cpp/src/eco/File.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_writeString:13-15 | helpers: File.cpp:writeString:702-709 | type: Eco/File.elm:80 (String -> String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both Strings in a tuple2 :708 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
@@ -1268,14 +1268,14 @@ facts =
         , ( ( "Http", "fetch" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/HttpExports.cpp", "eco-kernel-cpp/src/eco/Http.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/HttpExports.cpp", "eco-kernel-cpp/src/eco-kernel/Http.cpp" ]
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Eco_Kernel_Http_fetch:9-11 | type: Eco/Http.elm:22-26 | B1: vacuous (no function-capable position) | B2: three Strings in a tuple3 :415-418; parkBundle parks the runtime's OWN resume | B3: async binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "Http", "getArchive" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/HttpExports.cpp", "eco-kernel-cpp/src/eco/Http.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/HttpExports.cpp", "eco-kernel-cpp/src/eco-kernel/Http.cpp" ]
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Eco_Kernel_Http_getArchive:13-15 | helpers: Http.cpp:getArchive:421-424, parkBundle:340-349 | type: Eco/Http.elm:35-37 | B1: vacuous (no function-capable position) | B2: url captured as the async payload :423 | B3: async binding closure only | audited: 2026-08-20"
                 }
           )
@@ -1682,28 +1682,28 @@ facts =
         , ( ( "MVar", "drop" )
           , TypeFaithful
                 { scope = Transports
-                , files = [ "eco-kernel-cpp/src/eco/MVarExports.cpp", "eco-kernel-cpp/src/eco/MVar.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp", "eco-kernel-cpp/src/eco-kernel/MVar.cpp" ]
                 , evidence = "class: cheap | entry: MVarExports.cpp:Eco_Kernel_MVar_drop:63-65 | helpers: MVar.cpp:drop | type: Eco/MVar.elm (MVar a -> Task Never ()) | B1: takes ONLY the unboxed id (uint64_t); `a` does not appear in the result, so no function value can leave | B2: clears the slot; nothing function-valued is read back to Elm | B3: no allocClosure | audited: 2026-08-25"
                 }
           )
         , ( ( "MVar", "new" )
           , TypeFaithful
                 { scope = Transports
-                , files = [ "eco-kernel-cpp/src/eco/MVarExports.cpp", "eco-kernel-cpp/src/eco/MVar.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp", "eco-kernel-cpp/src/eco-kernel/MVar.cpp" ]
                 , evidence = "class: cheap | entry: MVarExports.cpp:Eco_Kernel_MVar_new:25-28 | helpers: MVar.cpp:newEmpty | type: Eco/MVar.elm:42 (Task Never (MVar a)) | B1: makeBinding<mvarNewBody>(unit()) - unit capture; returns a fresh HANDLE. `a` is phantom and NOTHING is ever written to it by this call. Contrast MVar.put/read/take, which stay REJECTED | B2: no store outside the returned Task | B3: binding closure only, payload unit | audited: 2026-08-25"
                 }
           )
         , ( ( "NativeDriver", "lowerAndLink" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/NativeDriverExports.cpp", "eco-kernel-cpp/src/eco/NativeDriver.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/NativeDriverExports.cpp", "eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp" ]
                 , evidence = "class: vacuous | entry: NativeDriverExports.cpp:Eco_Kernel_NativeDriver_lowerAndLink:9-13 | helpers: NativeDriver.cpp:lowerAndLink:88-98 | type: Eco/NativeDriver.elm:46 | B1: vacuous (no function-capable position) | B2: three Strings in a tuple3 :94-97; no statics in the file | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "NativeDriver", "lowerAndLinkBytes" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/NativeDriverExports.cpp", "eco-kernel-cpp/src/eco/NativeDriver.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/NativeDriverExports.cpp", "eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp" ]
                 , evidence = "class: vacuous | entry: NativeDriverExports.cpp:Eco_Kernel_NativeDriver_lowerAndLinkBytes:15-18 | helpers: NativeDriver.cpp:lowerAndLinkBytes:100-108 | type: Eco/NativeDriver.elm:58 | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :104-105; no statics | B3: binding closure only | audited: 2026-08-20"
                 }
           )
@@ -1766,7 +1766,7 @@ facts =
         , ( ( "Process", "exit" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/ProcessExports.cpp", "eco-kernel-cpp/src/eco/Process.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_exit:9-11 | helpers: Process.cpp:exit:227-234 | type: Eco/Process.elm:49 | B1: vacuous (no function-capable position) | B2: nothing captured, nothing stored; ::exit() at :231 | B3: no closure fabricated at all | audited: 2026-08-20"
                 }
           )
@@ -1780,21 +1780,21 @@ facts =
         , ( ( "Process", "spawn" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/ProcessExports.cpp", "eco-kernel-cpp/src/eco/Process.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawn:13-15 | helpers: Process.cpp:spawn:236-243 | type: Eco/Process.elm:56 | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :240-242, Strings only | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "Process", "spawnProcess" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/ProcessExports.cpp", "eco-kernel-cpp/src/eco/Process.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawnProcess:17-19 | type: Eco/Process.elm:67-74 | B1: vacuous (no function-capable position) | B2: 5-field record payload :253-259; s_streamHandles:154 maps int64->fd, no Elm value | B3: binding closure only | audited: 2026-08-20"
                 }
           )
         , ( ( "Process", "wait" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/ProcessExports.cpp", "eco-kernel-cpp/src/eco/Process.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_wait:21-23 | type: Eco/Process.elm:93 | B1: vacuous (no function-capable position) | B2: only an unboxed Int pid captured :267-270; the resume :217 is the runtime's OWN closure | B3: async binding closure only | audited: 2026-08-20"
                 }
           )
@@ -1850,28 +1850,28 @@ facts =
         , ( ( "Runtime", "dirname" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_dirname:9-11 | helpers: Runtime.cpp:dirname:64-67 | type: Eco/Runtime.elm:21 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :66); s_savedState untouched | B3: binding closure only | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
         , ( ( "Runtime", "loadState" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_loadState:21-23 | helpers: Runtime.cpp:loadState | type: Eco/Runtime.elm (Task Never Encode.Value) | B1: vacuous - FULLY CONCRETE; the cross-call read is sound for the same reason as saveState | B2: reads runtime state, see B1 | B3: no allocClosure | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
         , ( ( "Runtime", "random" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_random:13-15 | helpers: Runtime.cpp:random:69-72 | type: Eco/Runtime.elm:28 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :71); statics :41-42 are C++ PRNG state | B3: binding closure only | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
         , ( ( "Runtime", "saveState" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
+                , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_saveState:17-19 | helpers: Runtime.cpp:saveState | type: Eco/Runtime.elm (Encode.Value -> Task Never ()) | B1: vacuous - FULLY CONCRETE both ways, so the loaded scheme has zero set slots (R3). It IS cross-call (loadState returns what a different saveState stored) and that is IRRELEVANT: cross-call only disqualifies when the retained position is FUNCTION-CAPABLE | B2: stores into runtime state, see B1 | B3: no allocClosure | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )

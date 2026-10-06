@@ -99,9 +99,9 @@ the design when populating the B0 report / KernelSigs seed.
 
 - **D0.1 — `Console.write` is NOT a read-only sink.**
   `Eco_Kernel_Console_write(handle, content)`
-  (`eco-kernel-cpp/src/eco/ConsoleExports.cpp:9`) returns a
+  (`eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp:9`) returns a
   `Task_Binding` capturing a `Tuple2 {handle:Int, content:String}`
-  (`eco-kernel-cpp/src/eco/Console.cpp:52-60` `writeBody`); the binding
+  (`eco-kernel-cpp/src/eco-kernel/Console.cpp:52-60` `writeBody`); the binding
   survives the call and is stepped later by the scheduler. `content` is
   therefore a **surviving reference** ⇒ `POwned`, not `PBorrowed`. Only
   the scalar `handle` is trivially borrowed. Net benefit = 0 ⇒ the
@@ -514,7 +514,7 @@ Assemble U0.1–U0.5 into `design_docs/globalopt/borrow-b0-report.md`
 - Kernel evidence: `elm-kernel-cpp/src/core/{Utils,String,JsArray,Debug}
   Exports.cpp`, `elm-kernel-cpp/src/bytes/BytesExports.cpp`,
   `elm-kernel-cpp/src/json/JsonExports.cpp`,
-  `eco-kernel-cpp/src/eco/{ConsoleExports,Console}.cpp`,
+  `eco-kernel-cpp/src/eco-kernel/{ConsoleExports,Console}.cpp`,
   `runtime/src/allocator/StringOps.cpp:31,118` (view alloc),
   `design_docs/elm_kernel_functions.csv`.
 - House methodology: `benchmarks/runtime-calls.md` (interleaved legs,

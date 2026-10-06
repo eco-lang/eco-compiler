@@ -376,7 +376,7 @@ Source: `runtime/src/main.cpp`, target at `CMakeLists.txt:414` (`EXCLUDE_FROM_AL
 
 ### Unified `eco` binary: in-process native driver
 
-The unified `eco` binary (`compiler/CMakeLists.txt:876`, plus `eco-quick` at `:941`) gets its CLI from the Elm compiler, which another section covers. For `--output` to a native target, `Terminal/Make.elm` calls the kernel intrinsic `Eco.NativeDriver.lowerAndLink mlirPath outputPath rootModule` (`eco-kernel-cpp/src/Eco/NativeDriver.elm:46`). That goes through `Eco::Kernel::NativeDriver` (`eco-kernel-cpp/src/eco/NativeDriver.cpp`) to the C ABI `eco_native_lower_and_link` / `eco_native_lower_and_link_bytes` (`runtime/src/codegen/EcoNativeAPI.h`, `runtime/src/codegen/EcoNativeDriver.cpp:1206`, `:1215`). Both build a **default** `EcoNativeOptions`. None of the options below can be set from the `eco` command line; only `rootModule` is passed through. Binaries linked without `EcoNativeDriverStatic` get weak stubs that return -1 (`runtime/src/codegen/eco_native_stub.cpp`).
+The unified `eco` binary (`compiler/CMakeLists.txt:876`, plus `eco-quick` at `:941`) gets its CLI from the Elm compiler, which another section covers. For `--output` to a native target, `Terminal/Make.elm` calls the kernel intrinsic `Eco.NativeDriver.lowerAndLink mlirPath outputPath rootModule` (`eco-kernel-cpp/src/Eco/NativeDriver.elm:46`). That goes through `Eco::Kernel::NativeDriver` (`eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp`) to the C ABI `eco_native_lower_and_link` / `eco_native_lower_and_link_bytes` (`runtime/src/codegen/EcoNativeAPI.h`, `runtime/src/codegen/EcoNativeDriver.cpp:1206`, `:1215`). Both build a **default** `EcoNativeOptions`. None of the options below can be set from the `eco` command line; only `rootModule` is passed through. Binaries linked without `EcoNativeDriverStatic` get weak stubs that return -1 (`runtime/src/codegen/eco_native_stub.cpp`).
 
 `EcoNativeOptions` (`runtime/src/codegen/EcoNativeDriver.h:24`):
 
@@ -410,7 +410,7 @@ These are not command-line flags, but they are how startup options reach a compi
 |---|---|---|---|
 | `eco_app_start(argc, argv, flags_json)` | `flags_json` may be NULL (no flags) | Host C API. `argv` backs `Eco.Kernel.Env.rawArgs`; `flags_json` is decoded by the program's flags decoder, and a mismatch crashes at startup. One app per process | `runtime/src/embed/eco_embed.h:51`, `runtime/src/embed/eco_embed.cpp:238` |
 | Node addon `Elm.<Root>.init({flags})` | `flags` optional; undefined decodes as `null` | `JSON.stringify(opts.flags)` is passed to the embed API; `init` may be called only once per process | `runtime/src/embed/eco_node_addon.cpp:350` |
-| Generated program `argv` | none | `main()` in `eco_entry.cpp` stores argc/argv for `Eco.Kernel.Env.rawArgs` (argv[0] is dropped). Compiled executables parse **no runtime flags of their own**. They run `eco_main` on a 64 MiB-stack thread | `runtime/src/codegen/eco_entry.cpp:118`, `:300`, `eco-kernel-cpp/src/eco/Env.cpp:40` |
+| Generated program `argv` | none | `main()` in `eco_entry.cpp` stores argc/argv for `Eco.Kernel.Env.rawArgs` (argv[0] is dropped). Compiled executables parse **no runtime flags of their own**. They run `eco_main` on a 64 MiB-stack thread | `runtime/src/codegen/eco_entry.cpp:118`, `:300`, `eco-kernel-cpp/src/eco-kernel/Env.cpp:40` |
 
 ### Backend lowering environment variables: MLIR pipeline (eco dialect)
 
@@ -491,10 +491,10 @@ These are read by the runtime (`runtime/src/allocator/RuntimeExports.cpp`) when 
 |---|---|---|---|
 | `TZ` | IANA name, optional leading `:` | `Time.here`/zone name: used before `/etc/localtime` on Linux, macOS and Windows | `elm-kernel-cpp/src/time/TimeExports.cpp:92`, `:130`, `:151` |
 | `CURL_CA_BUNDLE` | path | CA bundle for HTTPS when the request has no explicit `caInfo` (libcurl does not read this itself). The AOT E2E runner sets it to its test server's cert | `runtime/src/platform/HttpService.cpp:229`, `test/aot_e2e_main.cpp:127` |
-| `PATH` (Windows also `Path`) | standard | `Eco.File.findExecutable` search path | `eco-kernel-cpp/src/eco/File.cpp:190` |
-| `HOME`; Windows `APPDATA` -> `USERPROFILE` -> `HOME` | standard | `Eco.File.appDataDir` base (`~/.name`, `~/Library/Application Support/name` on macOS, `%APPDATA%/name` on Windows) | `eco-kernel-cpp/src/eco/File.cpp:350-361` |
-| any name (`Eco.Env.lookup`) | arbitrary | Elm programs read any variable through `Eco.Kernel.Env.lookup` (evaluated at task-step time) | `eco-kernel-cpp/src/eco/Env.cpp:32` |
-| `ECO_KERNEL_DEBUG` (compile-time macro / CMake option) | CMake option default **OFF**; the `dev` preset turns it ON | Enables `ECO_KLOG` `[eco-kernel:<tag>]` stderr traces in the ElmKernel_Http, EcoKernel_Http and EcoKernel_File targets. The header comment in `KernelDebug.hpp` says "defaults ON", which is stale | `CMakeLists.txt:247`, `eco-kernel-cpp/src/eco/KernelDebug.hpp:17`, `elm-kernel-cpp/src/KernelDebug.hpp:15`, `elm-kernel-cpp/CMakeLists.txt:343`, `eco-kernel-cpp/CMakeLists.txt:300` |
+| `PATH` (Windows also `Path`) | standard | `Eco.File.findExecutable` search path | `eco-kernel-cpp/src/eco-kernel/File.cpp:190` |
+| `HOME`; Windows `APPDATA` -> `USERPROFILE` -> `HOME` | standard | `Eco.File.appDataDir` base (`~/.name`, `~/Library/Application Support/name` on macOS, `%APPDATA%/name` on Windows) | `eco-kernel-cpp/src/eco-kernel/File.cpp:350-361` |
+| any name (`Eco.Env.lookup`) | arbitrary | Elm programs read any variable through `Eco.Kernel.Env.lookup` (evaluated at task-step time) | `eco-kernel-cpp/src/eco-kernel/Env.cpp:32` |
+| `ECO_KERNEL_DEBUG` (compile-time macro / CMake option) | CMake option default **OFF**; the `dev` preset turns it ON | Enables `ECO_KLOG` `[eco-kernel:<tag>]` stderr traces in the ElmKernel_Http, EcoKernel_Http and EcoKernel_File targets. The header comment in `KernelDebug.hpp` says "defaults ON", which is stale | `CMakeLists.txt:247`, `eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp:17`, `elm-kernel-cpp/src/KernelDebug.hpp:15`, `elm-kernel-cpp/CMakeLists.txt:343`, `eco-kernel-cpp/CMakeLists.txt:300` |
 
 ### Test runners (`test/`)
 
@@ -930,7 +930,7 @@ The only `ECO_*` / `ENABLE_*` feature macros in `runtime/`, `elm-kernel-cpp/` an
 | `P1_CENSUS_COMPILED` | derived | `ENABLE_P1_CENSUS \|\| ECO_HEAP_VALIDATE`. Gates the census code (30 sites). | `runtime/src/allocator/P1Census.hpp:36` |
 | `ECO_LOWERING_VALIDATION` | undefined | `#ifndef` ⇒ disables the after-each-pass MLIR verifier; `#if` ⇒ enables the verifier passes. | `runtime/src/codegen/eco-boot.cpp:365`, `EcoNativeDriver.cpp:97`, `Passes/EcoBoxedStoreVerify.cpp:53` |
 | `ECO_HEAP_TRACE` | undefined | Compiles `Allocator::heapTraceEnabled()` to read the environment. | `runtime/src/allocator/Allocator.cpp:79` |
-| `ECO_KERNEL_DEBUG` | undefined | Defines `ECO_KLOG` as an `fprintf` to stderr (a no-op otherwise). | `eco-kernel-cpp/src/eco/KernelDebug.hpp:17`, `elm-kernel-cpp/src/KernelDebug.hpp:14`, `runtime/src/platform/HttpService.cpp:9` |
+| `ECO_KERNEL_DEBUG` | undefined | Defines `ECO_KLOG` as an `fprintf` to stderr (a no-op otherwise). | `eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp:17`, `elm-kernel-cpp/src/KernelDebug.hpp:14`, `runtime/src/platform/HttpService.cpp:9` |
 | `NDEBUG` | set by build type / flags | Besides `assert`, root-stack overflow checks run when `!NDEBUG \|\| ECO_HEAP_VALIDATE`. | `runtime/src/allocator/RootSet.hpp:145,166` |
 | `RUSAGE_THREAD` | platform (Linux) | Per-thread fault and context-switch counters in the GC phase profile. They read 0 on Darwin. | `runtime/src/allocator/ThreadLocalHeap.cpp:823`, `NurserySpace.cpp:555` |
 | `__SANITIZE_THREAD__` | compiler (TSan) | Reserves the heap in TSan's low application range. | `runtime/src/allocator/PlatformVirtualMemory_posix.cpp:39` |

@@ -697,7 +697,7 @@ Two one-off purity assertions, both hand-written and non-tabular:
    (`invariants.csv:359`, CGEN_068).
 
 **Scale of the gap:** 387 distinct kernel exports across the two kernels
-(`/work/elm-kernel-cpp/src/KernelExports.h`, `/work/eco-kernel-cpp/src/eco/KernelExports.h`),
+(`/work/elm-kernel-cpp/src/KernelExports.h`, `/work/eco-kernel-cpp/src/eco-kernel/KernelExports.h`),
 with 33 classified for borrowing and 0 for purity. Largest modules:
 Basics 38, Json 35, String 31, Utils 29, JsArray 29, Bytes 26, VirtualDom 25,
 Eco.File 23, Browser 22, List 17.

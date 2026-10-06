@@ -19,8 +19,8 @@ of the single-slot API got wiped mid-GC.
 The existing comment in `ThreadLocalHeap.cpp:305-309` documents the convention
 ("kernel code must use `pushStackRootRange`"), but the convention is only
 enforced by comments. Callers that still use the old API exist today — e.g.
-`eco-kernel-cpp/src/eco/Http.cpp:201-214` and
-`eco-kernel-cpp/src/eco/KernelHelpers.hpp:112-119` — and are latent bugs under
+`eco-kernel-cpp/src/eco-kernel/Http.cpp:201-214` and
+`eco-kernel-cpp/src/eco-kernel/KernelHelpers.hpp:112-119` — and are latent bugs under
 this convention.
 
 **Goal:** make it *structurally impossible* for runtime/kernel code to use the
@@ -181,14 +181,14 @@ Grep showed these existing users that will not compile after Step 2:
   legacy: delete the rooting calls (or the whole file if it's unused)
   rather than migrating. Confirm with a CMake grep before removal.
 
-- `eco-kernel-cpp/src/eco/Http.cpp:201-214` — kernel code. Migrate to
+- `eco-kernel-cpp/src/eco-kernel/Http.cpp:201-214` — kernel code. Migrate to
   `StackRootGuard` or range-based pushes: replace
   `for (auto& hp : fileRecords) rs.pushStackRoot(&hp);` with
   `for (auto& hp : fileRecords) rs.pushStackRootRange(&hp, 1, 1);` and swap
   `stackRootPoint` / `restoreStackRootPoint` for
   `stackRangePoint` / `restoreStackRangePoint`.
 
-- `eco-kernel-cpp/src/eco/KernelHelpers.hpp:109-121`
+- `eco-kernel-cpp/src/eco-kernel/KernelHelpers.hpp:109-121`
   (`taskSucceedStringList`) — same mechanical migration.
 
 Neither kernel site relies on `replaceHead`; they build into the vector and

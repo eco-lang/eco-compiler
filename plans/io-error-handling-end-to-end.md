@@ -28,7 +28,7 @@ Kernel Elm wrappers live in **two** trees that must stay in lockstep:
 
 Each `Eco.*` wrapper calls phantom `Eco.Kernel.*` primitives. Those primitives
 are backed by **three** implementations:
-- C++ native kernel: `eco-kernel-cpp/src/eco/*.cpp` + `eco/*Exports.cpp` (C-linkage `Eco_Kernel_<Module>_<fn>`)
+- C++ native kernel: `eco-kernel-cpp/src/eco-kernel/*.cpp` + `eco/*Exports.cpp` (C-linkage `Eco_Kernel_<Module>_<fn>`)
 - node JS kernel: `eco-kernel-cpp/src/Eco/Kernel/*.js` (`_File_readString`, `__Scheduler_fail`, etc.)
 - XHR path: `compiler/src-xhr/Eco/XHR.elm` + browser plumbing
 
@@ -65,11 +65,11 @@ Compiler error plumbing:
   Almost all of this is `Task Never`.
 
 Runtime/scheduler:
-- C++ kernels fail via `taskFailString(msg)` (`eco/KernelHelpers.hpp`); `taskFail`
+- C++ kernels fail via `taskFailString(msg)` (`eco-kernel/KernelHelpers.hpp`); `taskFail`
   already accepts an arbitrary `HPointer` payload, so the failure slot is NOT
   restricted to strings.
-- `eco/Console.cpp` write **ignores** the `::write` return value (EPIPE lost).
-- `eco/MVar.cpp` has `assert(it != s_mvars.end())` at lines ~237, ~255, ~279.
+- `eco-kernel/Console.cpp` write **ignores** the `::write` return value (EPIPE lost).
+- `eco-kernel/MVar.cpp` has `assert(it != s_mvars.end())` at lines ~237, ~255, ~279.
 - Scheduler already prints `[eco-runtime] unhandled top-level Task.fail … failure
   value dropped` and terminates (`runtime/src/platform/Scheduler.cpp` ~731-744).
 - `eco_entry.cpp` installs a stats signal handler covering SIGPIPE that prints
@@ -90,7 +90,7 @@ Runtime/scheduler:
   the record → ADT.
   - **IMPLEMENTATION DEVIATION (discovered during impl, 2026-05-29):** The
     codebase *deliberately forbids* constructing user records in the kernel —
-    `eco-kernel-cpp/src/eco/Http.cpp:73-75,190-193` explicitly builds `Tuple2`
+    `eco-kernel-cpp/src/eco-kernel/Http.cpp:73-75,190-193` explicitly builds `Tuple2`
     "(NOT a record)" because a record's field-index order is computed by the
     monomorphizer (`computeRecordLayout`) and cannot be safely predicted by the
     C++/JS/XHR kernels. Replicating that across three backends would directly
@@ -211,7 +211,7 @@ fail-capable ops incl. MVar use IOError; bootstrap-green is the hard gate).
    `wait`/`exit` stay `Task Never`). Refine `Eco.Http` to the richer `HttpError`.
    Decide Env/Runtime/MVar (D6 — likely keep `Task Never` for now).
 7. Update the `Eco.Kernel.*` primitive declarations and the **C++** kernels
-   (`eco/File.cpp`, `Console.cpp`, `Process.cpp`, `Http.cpp`) to fail with the
+   (`eco-kernel/File.cpp`, `Console.cpp`, `Process.cpp`, `Http.cpp`) to fail with the
    `Raw*` record: capture `errno`, classify to the stable tag (D2), build the
    record via the layout from step 4, return through `taskFail`.
 8. Update the **node JS** kernels (`eco-kernel-cpp/src/Eco/Kernel/*.js`) to fail
@@ -226,9 +226,9 @@ fail-capable ops incl. MVar use IOError; bootstrap-green is the hard gate).
     and wrap every `*Exports.cpp` C-linkage entry. Implement
     `Eco::Runtime::reportFatal` (banner + message + flush) — likely in
     `eco_entry.cpp` or a new `Runtime.cpp`.
-12. SIGPIPE: switch to `SIG_IGN` (or `MSG_NOSIGNAL`); make `eco/Console.cpp` write
+12. SIGPIPE: switch to `SIG_IGN` (or `MSG_NOSIGNAL`); make `eco-kernel/Console.cpp` write
     check the `::write` return and surface EPIPE as a real `RawIOError`.
-13. MVar asserts (`eco/MVar.cpp` ~237/255/279): replace with either a controlled
+13. MVar asserts (`eco-kernel/MVar.cpp` ~237/255/279): replace with either a controlled
     failure or a `reportFatal`+abort (D6 decides which — "missing MVar" is arguably
     an internal invariant violation → fatal).
 14. JS scheduler: log unhandled `Task.fail` to match the native runtime message.

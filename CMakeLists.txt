@@ -241,7 +241,7 @@ option(ECO_LINK_WITH_BFD
 # Kernel-side stderr tracing for HTTP requests/responses, zip extraction, and
 # file operations. Defined as ECO_KERNEL_DEBUG in the affected kernel libs
 # (Http, File, NativeDriver, HttpService runtime). See the ECO_KLOG macro in
-# eco-kernel-cpp/src/eco/KernelDebug.hpp. Default OFF — the `dev` preset
+# eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp. Default OFF — the `dev` preset
 # flips it back ON for diagnostic builds; the `build` and `release` presets
 # inherit OFF so user-visible binaries stay quiet on stderr.
 option(ECO_KERNEL_DEBUG
@@ -583,7 +583,7 @@ if(ECO_STATIC_MUSL)
     # eco/kernel Elm package — the source the bundled `eco` resolves when
     # user code does `import Eco.Console`/`Eco.File`/etc. via the
     # `--local-package eco/kernel=<path>` flag. FILES_MATCHING with positive
-    # patterns is sufficient to drop the in-tree C++ siblings under src/eco/
+    # patterns is sufficient to drop the in-tree C++ siblings under src/eco-kernel/
     # (lowercase) and any stale elm-stuff/ cache — neither matches *.elm /
     # *.js / *.dat / elm.json / docs.json.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/
@@ -597,7 +597,7 @@ if(ECO_STATIC_MUSL)
                 PATTERN "typed-artifacts.dat"
                 PATTERN "docs.json"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
-                REGEX "/src/eco(/|$)" EXCLUDE)
+                REGEX "/src/eco-kernel(/|$)" EXCLUDE)
 
     # Starter examples — Elm sources only. The in-tree examples/ IS the hello
     # project (elm.json + src/Hello.elm at its root), so install its contents
@@ -742,7 +742,7 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 PATTERN "typed-artifacts.dat"
                 PATTERN "docs.json"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
-                REGEX "/src/eco(/|$)" EXCLUDE)
+                REGEX "/src/eco-kernel(/|$)" EXCLUDE)
 
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples/hello
@@ -805,7 +805,7 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 PATTERN "typed-artifacts.dat"
                 PATTERN "docs.json"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
-                REGEX "/src/eco(/|$)" EXCLUDE)
+                REGEX "/src/eco-kernel(/|$)" EXCLUDE)
 
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples/hello

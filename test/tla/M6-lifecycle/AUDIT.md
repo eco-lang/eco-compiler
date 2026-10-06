@@ -586,3 +586,11 @@ workers take only the pool's `m_` (HEAP_058), exactly like `drainHelperWork` and
 `takeSlot` waits, so a fork's prepare that waits for `thread_mutex_` is bounded by the pool's progress (the
 CR-015 shape, `pool_host_fork_*` rows). No new atomic, thread, job kind or fork-handler state.
 **Verdict: no model change needed** (M7 models the drain step itself: `DiscardAllPending`).
+
+## 2026-10-06 — eco-kernel-cpp/src/eco renamed to src/eco-kernel (GC_MODEL_001)
+
+Pin `F.fork` (grep) moved, new hash prefix `a6e632eaf3ea`. The kernel C++ directory was renamed so
+it no longer collides with `src/Eco` on case-insensitive filesystems. The grep still finds the same
+two `fork()` calls in Process.cpp with identical text; only the path prefix in the census lines
+changed. No fork site, fork handler or lifecycle state changed.
+**Verdict: no model change needed.**

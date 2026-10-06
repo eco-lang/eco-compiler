@@ -201,7 +201,7 @@ The `StringOps` constructors take `HPointer` arguments (not `void*`) for exactly
 
 ## Boundary with Kernel C++
 
-Per **BFOPS_032** and **HEAP_025**, the only layout-aware code for `String` is `Elm::StringOps` plus the UTF-8 helpers `elm_utf8_width` / `elm_utf8_copy`. Every other kernel C++ file (`elm-kernel-cpp/src/{core, parser, json, bytes, url, http, regex, virtual-dom}/...`, `eco-kernel-cpp/src/eco/...`) reads strings through:
+Per **BFOPS_032** and **HEAP_025**, the only layout-aware code for `String` is `Elm::StringOps` plus the UTF-8 helpers `elm_utf8_width` / `elm_utf8_copy`. Every other kernel C++ file (`elm-kernel-cpp/src/{core, parser, json, bytes, url, http, regex, virtual-dom}/...`, `eco-kernel-cpp/src/eco-kernel/...`) reads strings through:
 
 - `Elm::StringOps::length(void*)`
 - `Elm::StringOps::charAt(void*, i64)`

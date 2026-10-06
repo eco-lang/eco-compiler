@@ -293,14 +293,14 @@ test stays valid.)
 
 | Site | Current behavior | Change needed | Kind |
 |---|---|---|---|
-| eco/ExportHelpers.hpp:39 | `if (h.constant != 0) return nullptr` discrimination | Constant narrows/moves, overlaps low bits of raw ptr; rework via helper | BREAK |
-| eco/ExportHelpers.hpp:40 | `assert(h.padding == 0)` | Wrong once `enum`/`ptr_ind` carry data; update to new layout | BREAK |
-| eco/ExportHelpers.hpp:52-58 | `encodeBoxedBool`/`decodeBoxedBool` via True/False embedded const | New Bool rep | BOOL |
-| eco/KernelHelpers.hpp:40 | `toString`: `constant == Const_EmptyString+1` | Reindex / new predicate | BREAK |
-| eco/KernelHelpers.hpp:121 | `taskSucceedBool`: `elmTrue()/elmFalse()` | New Bool rep | BOOL |
-| eco/KernelHelpers.hpp:179; Http.cpp:90 | Nil-terminator: `current.constant != Const_Nil+1` | Reindex / new predicate (2 sites) | BREAK |
-| eco/TaskBinding.hpp:64; File.cpp:126, 135, 544 | `succeedBool`/`decodeBoxedBool` construct/read Bool | New Bool rep (4 sites) | BOOL |
-| eco/KernelExports.h:9, 88, 91, 116 | Docs: "Bool as HPtr True/False constants per REP_ABI_001" | Update ABI docs to new Bool rep | STALE/BOOL |
+| eco-kernel/ExportHelpers.hpp:39 | `if (h.constant != 0) return nullptr` discrimination | Constant narrows/moves, overlaps low bits of raw ptr; rework via helper | BREAK |
+| eco-kernel/ExportHelpers.hpp:40 | `assert(h.padding == 0)` | Wrong once `enum`/`ptr_ind` carry data; update to new layout | BREAK |
+| eco-kernel/ExportHelpers.hpp:52-58 | `encodeBoxedBool`/`decodeBoxedBool` via True/False embedded const | New Bool rep | BOOL |
+| eco-kernel/KernelHelpers.hpp:40 | `toString`: `constant == Const_EmptyString+1` | Reindex / new predicate | BREAK |
+| eco-kernel/KernelHelpers.hpp:121 | `taskSucceedBool`: `elmTrue()/elmFalse()` | New Bool rep | BOOL |
+| eco-kernel/KernelHelpers.hpp:179; Http.cpp:90 | Nil-terminator: `current.constant != Const_Nil+1` | Reindex / new predicate (2 sites) | BREAK |
+| eco-kernel/TaskBinding.hpp:64; File.cpp:126, 135, 544 | `succeedBool`/`decodeBoxedBool` construct/read Bool | New Bool rep (4 sites) | BOOL |
+| eco-kernel/KernelExports.h:9, 88, 91, 116 | Docs: "Bool as HPtr True/False constants per REP_ABI_001" | Update ABI docs to new Bool rep | STALE/BOOL |
 
 > No direct `<<3`/heap_base/`.ptr` arithmetic; Unit/Nothing/Nil/EmptyRec construction is fully helper-mediated (re-encoded centrally, call sites unchanged).
 

@@ -380,7 +380,7 @@ pins `Data/HashMapTest` and two K6 tests. Kept as `keep-2`.
 ### 3a — `Eco.CellStore` kernel package, pure twin, native pins — **not measured**
 
 No compiler source changed, so there is nothing to time. Adds the kernel module in three
-languages: `eco-kernel-cpp/src/eco/CellStore.{hpp,cpp}` + `CellStoreExports.cpp` (a C++ vector of
+languages: `eco-kernel-cpp/src/eco-kernel/CellStore.{hpp,cpp}` + `CellStoreExports.cpp` (a C++ vector of
 encoded HPointer words plus an undo trail, registered with `RootSet::addExternalRootScanner`),
 `src/Eco/Kernel/CellStore.js`, `src/Eco/CellStore.elm`, and `compiler/src-xhr/Eco/CellStore.elm` as
 the PURE twin stock Elm compiles for stage 1 and the unit suite. Three costs the spec did not

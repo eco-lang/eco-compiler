@@ -4,7 +4,7 @@ import Eco.Kernel.Scheduler exposing (succeed, binding)
 
 // Explicit garbage collections for the JS builds (bootstrap stages 2-5);
 // plans/frontend-heap-release.md §5.3. Returns the report as a JSON STRING,
-// exactly as the C++ kernel (src/eco/GC.cpp) does, so Eco/GC.elm decodes the
+// exactly as the C++ kernel (src/eco-kernel/GC.cpp) does, so Eco/GC.elm decodes the
 // same keys in every build and --optimize's field mangling never touches it.
 // Without node --expose-gc no collection runs and collected = 0 (not an error).
 // Report values are observations only (HEAP_076): no code may branch on them.
