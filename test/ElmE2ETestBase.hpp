@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CheckPatterns.hpp"
+#include "NodeBigStack.hpp"
 #include "IsolatedTestRunner.hpp"
 #include "TestSuite.hpp"
 #include "../runtime/src/codegen/EcoRunner.hpp"
@@ -476,13 +477,9 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
 
     std::string guidaPath = getGuidaPath();
 
-    // Big stack: the Stage-1 JS compiler recurses deeply on very wide
-    // programs (arity-2047 closures, 1100-field records) and otherwise
-    // overflows, writing a truncated .mlir while still exiting 0
-    // (plans/wide-object-tail-kind-words-phase-0.md step 0.5). The ulimit must run in the
-    // same shell as node (a `( ... )` subshell would not raise node's limit).
-    std::string compileCmd = "cd \"" + testDir + "\" && { ulimit -s unlimited 2>/dev/null || true; } && "
-                             "node --stack-size=500000 \"" + guidaPath +
+    // Big stack (NodeBigStack.hpp): the Stage-1 JS compiler recurses deeply on very wide
+    // programs and otherwise overflows, writing a truncated .mlir while still exiting 0.
+    std::string compileCmd = "cd \"" + testDir + "\" && sh -c '" + kNodeBigStackScript + "' sh \"" + guidaPath +
                              "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + getTextMlirFlag();
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";

@@ -24,6 +24,7 @@
 //   - build/runtime/src/codegen/eco-boot-native
 
 #include "CheckPatterns.hpp"
+#include "NodeBigStack.hpp"
 #include "TestHttpServer.hpp"
 
 #include <algorithm>
@@ -390,13 +391,9 @@ ProcResult compile_to_mlir(const TestCase& tc, const std::string& mlir_out) {
     // concurrent compiles don't share caches.
     const std::string builddir = "aot_e2e_" + tc.stem;
 
-    // Big stack (plans/wide-object-tail-kind-words-phase-0.md step 0.5): run
-    // node under `ulimit -s unlimited` with a 500000 KiB V8 stack so the
-    // widest pins (arity 2047) compile completely.
+    // Big stack (NodeBigStack.hpp) so the widest pins (arity 2047) compile completely.
     std::vector<std::string> argv = {
-        "sh", "-c", "ulimit -s unlimited 2>/dev/null; exec \"$@\"", "sh",
-        "node",
-        "--stack-size=500000",
+        "sh", "-c", kNodeBigStackScript, "sh",
         ECO_BOOT_2_RUNNER,
         "make",
         "--optimize",
