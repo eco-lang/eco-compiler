@@ -163,6 +163,7 @@ jobs:
         run: cmake --build build --target test -- -k 20
 
       - name: Run JIT E2E tests
+        id: jit
         shell: pwsh
         continue-on-error: true  # TEMP(soft-gates): see the elm-tests step
         run: |
@@ -180,6 +181,47 @@ jobs:
           Get-Content "$log.err" -ErrorAction SilentlyContinue |
             Where-Object { $_ -notmatch '^OK, passed' } | Select-Object -Last 40 | Write-Host
           exit $rc
+
+      # TEMP(diag) (plans/ci-all-platforms-green.md issue 4): find the test that corrupts the
+      # heap (test.exe exits 0xC0000374). Remove once test.exe reaches its summary.
+      - name: "TEMP(diag): localize test.exe's heap corruption"
+        if: steps.jit.outcome == 'failure'
+        shell: pwsh
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          # 1. A CRT heap check after every test (test/TestSuite.hpp): the last "- <name>" line
+          #    before the HEAPCHECK line or the crash is the test that corrupted the heap.
+          $log = "$env:RUNNER_TEMP\heapcheck.txt"
+          $env:ECO_TEST_HEAPCHECK = "1"
+          $p = Start-Process -FilePath build\test\test.exe -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          Remove-Item Env:ECO_TEST_HEAPCHECK
+          Write-Host ("heap-check run exit code: {0} (0x{0:X8})" -f $p.ExitCode)
+          Write-Host "--- heap-check stdout, last 15 lines ---"
+          Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 15 | Write-Host
+
+          # 2. Full page heap under cdb, if the runner has the Debugging Tools: the corrupting
+          #    write faults where it happens. sxd av: the runtime handles its own probe-page
+          #    faults, so only a second-chance access violation (or the heap's fail-fast) stops.
+          $dbg = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64"
+          foreach ($t in 'gflags.exe', 'cdb.exe') {
+            Write-Host ("{0}: {1}" -f $t, (Test-Path "$dbg\$t"))
+          }
+          if (-not ((Test-Path "$dbg\gflags.exe") -and (Test-Path "$dbg\cdb.exe"))) { exit 0 }
+          & "$dbg\gflags.exe" /p /enable test.exe /full
+          $plog = "$env:RUNNER_TEMP\pageheap.txt"
+          & "$dbg\cdb.exe" -G -lines `
+            -y "build\test;srv*$env:RUNNER_TEMP\symcache*https://msdl.microsoft.com/download/symbols" `
+            -c "sxd av; g; .echo ECO-DIAG-STOP; .lastevent; .ecxr; kb 60; ~*kb 12; q" `
+            build\test\test.exe *> $plog
+          & "$dbg\gflags.exe" /p /disable test.exe
+          Write-Host "--- cdb output from the stop, plus the last test names ---"
+          Select-String -Path $plog -Pattern '^- ' | Select-Object -Last 5 | ForEach-Object { $_.Line } | Write-Host
+          $lines = Get-Content $plog
+          $i = [Array]::IndexOf($lines, ($lines | Where-Object { $_ -match 'ECO-DIAG-STOP' } | Select-Object -First 1))
+          if ($i -ge 0) { $lines[[Math]::Max(0, $i - 40)..($lines.Count - 1)] | Write-Host }
+          else { $lines | Select-Object -Last 80 | Write-Host }
 
       # ---- Gateway 4: the full Stage 6-9 self-host chain. Split into
       #      separately-timed steps so the Actions UI shows per-stage
@@ -297,5 +339,7 @@ jobs:
             ${{ runner.temp }}/test_output.txt
             ${{ runner.temp }}/test_output.txt.err
             ${{ runner.temp }}/elm-tests.log
+            ${{ runner.temp }}/heapcheck.txt
+            ${{ runner.temp }}/pageheap.txt
           if-no-files-found: warn
           retention-days: 7
