@@ -6,9 +6,11 @@
 // shape the parallel copier handles. `checksum` re-reads the whole working set
 // through the heap, so a lost or mis-forwarded object changes it (or crashes).
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -20,19 +22,51 @@
 namespace Elm::minortest {
 
 struct Workload {
+private:
+    // The root slots live at FIXED addresses. RootSet keeps long-lived roots in an
+    // unordered_set of slot addresses, so the order a GC scans them in, and with it every
+    // promotion and tenure placement, depends on those addresses. The determinism tests run
+    // two arms (in one process, or in forked children) and compare placements exactly, which
+    // holds only if both arms' slots sit at the same addresses: true for a heap vector under
+    // glibc, which hands the freed chunk back, but not under macOS's allocator. Static
+    // storage gives every arm the same addresses on every platform. A second, overlapping
+    // Workload (or one larger than the storage) falls back to the heap.
+    static constexpr size_t kFixedCells = 1024;
+    struct Fixed {
+        HPointer cells[kFixedCells];
+        std::atomic<bool> busy{false};
+    };
+    static Fixed& fixed() {
+        static Fixed f;
+        return f;
+    }
+    HPointer* claimStorage(size_t cells) {
+        if (cells <= kFixedCells && !fixed().busy.exchange(true)) return fixed().cells;
+        own_.resize(cells);
+        return own_.data();
+    }
+
+    std::vector<HPointer> own_;        // the heap fallback
+    HPointer* store_;                  // n_slots cells, then tmp
+
+public:
     Allocator& a;
-    std::vector<HPointer> slots;
-    HPointer tmp = alloc::listNil();   // rooted: a list under construction
+    std::span<HPointer> slots;
+    HPointer& tmp;                     // rooted: a list under construction
     std::mt19937_64 rng;
 
     Workload(Allocator& alloc, size_t n_slots, uint64_t seed)
-        : a(alloc), slots(n_slots, alloc::listNil()), rng(seed) {
+        : store_(claimStorage(n_slots + 1)), a(alloc), slots(store_, n_slots),
+          tmp(store_[n_slots]), rng(seed) {
+        for (auto& s : slots) s = alloc::listNil();
+        tmp = alloc::listNil();
         for (auto& s : slots) a.getRootSet().addRoot(&s);
         a.getRootSet().addRoot(&tmp);
     }
     ~Workload() {
         for (auto& s : slots) a.getRootSet().removeRoot(&s);
         a.getRootSet().removeRoot(&tmp);
+        if (store_ == fixed().cells) fixed().busy.store(false);
     }
     Workload(const Workload&) = delete;
     Workload& operator=(const Workload&) = delete;
