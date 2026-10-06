@@ -19,6 +19,7 @@
 #include <iterator>
 #include <random>
 #include <stdexcept>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -397,7 +398,10 @@ Testing::TestCase testConcMarkConfigJson(
         TEST_ASSERT(def.conc_mark == CONC_MARK);
         TEST_ASSERT(def.conc_mark_threads_cap == CONC_MARK_THREADS_CAP);
         TEST_ASSERT(def.major_gc_headroom_margin == MAJOR_GC_HEADROOM_MARGIN);
-        const char* path = "/tmp/eco-05c-conc-mark-config.json";
+        // The system temp directory, not /tmp: Windows has no /tmp.
+        const std::string path_s =
+            (std::filesystem::temp_directory_path() / "eco-05c-conc-mark-config.json").string();
+        const char* path = path_s.c_str();
         {
             std::ofstream f(path);
             f << R"({"conc_mark": 2, "conc_mark_threads": 5, "conc_mark_threads_cap": 7,
