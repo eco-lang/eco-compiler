@@ -13,7 +13,7 @@ operand, one result and an integer `field_index`, so on generated code only
 the non-negative `field_index` check could fail.
 
 The program is supplied by the caller and compiled with
-`TestLogic.TestPipeline.runToMlir`, which uses the substitution engine.
+`TestLogic.TestPipeline.runToMlir`, the production pipeline.
 `expectRecordProjection` fails if compilation fails, and otherwise reports a
 violation for each `eco.project.record` op, at any depth in the module, for
 the first of these it breaks:

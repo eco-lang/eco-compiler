@@ -658,3 +658,15 @@ path prefix in the census lines changed. No code, atomic, lock, memory order or 
 registration changed.
 
 **Verdict: no model change needed.**
+
+## 2026-10-06 — generic-call reason census counters in RuntimeExports.cpp (GC_MODEL_001)
+
+Census pin `runtime/src/allocator/RuntimeExports.cpp` moved, new hash prefix `2e8487fd3e9f`
+(plans/staging-honesty-and-production-test-pipeline.md P0.4). Added `g_gencall_counts`, a private
+16-entry `std::atomic<uint64_t>` array bumped with relaxed `fetch_add` by `eco_gencall_stats` (a
+GC-leaf census hook emitted only by ECO_GENCALL_COUNTERS lowerings and active only under
+ECO_DISPATCH_STATS), and read with relaxed loads by the exit-time dump. It is a statistics counter
+like the existing `g_dispatch_*_total` counters: no heap object, header, mark bit, root, GC phase
+or lock is read or written, and no ordering is relied on.
+
+**Verdict: no model change needed.**

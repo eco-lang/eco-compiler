@@ -346,10 +346,11 @@ The GlobalOpt pipeline (`MonoGlobalOptimize.elm:125-152`, driven from
 ```
 [pre-pass] MonoInlineSimplify.optimize          (Generate.elm:807)
 Phase 1    wrapTopLevelCallables
-Phase 2    Staging.analyzeAndSolveStaging       → dynamicSlots
-Phase 3    Staging.validateClosureStaging       (GOPT_001/003)
+Phase 2    Staging.regroup                      (GOPT_001; creates no values)
+           (Phase 3 removed 2026-10-06; GOPT_001 checked under mono.validate
+            by Pipeline.Steps.checkClosureStaging)
 Phase 4    AbiCloning.abiCloningPass            (LSS singleton stamps)
-Phase 5    annotateCallStaging dynamicSlots     (CallInfo derivation;
+Phase 5    annotateCallStaging                  (CallInfo derivation;
                                                  preserves Phase-4 stamps)
 Phase 6    Borrow.run borrowConfig              ← THIS PASS
 ```

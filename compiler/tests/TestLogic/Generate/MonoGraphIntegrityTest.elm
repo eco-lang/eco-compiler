@@ -9,9 +9,8 @@ of those programs, not only on a hand-picked few.
 The programs are the ones `SourceIR.Suite.StandardTestSuites.expectSuite`
 gives to an expectation: the source programs built by each `SourceIR` case
 module it includes. Each checker compiles a program with
-`TestLogic.TestPipeline`, whose `runToMono` and `runToGlobalOpt` monomorphize
-with the substitution engine rather than the solver engine a default build
-uses. A _SpecId_ is the number of one specialization, a definition at one set
+`TestLogic.TestPipeline`, whose `runToMono` and `runToGlobalOpt` compile it the
+way a default build does. A _SpecId_ is the number of one specialization, a definition at one set
 of types, and the graph holds at most one node per SpecId.
 
 What the tests establish, one group per checker, as
@@ -37,6 +36,8 @@ Among what is not tested: programs from the `SourceIR` case modules that
 
 -}
 
+import Expect
+import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.MonoGraphIntegrity
@@ -65,5 +66,13 @@ suite =
             ]
         , Test.describe "MONO_011: MonoGraph is closed and hygienic"
             [ StandardTestSuites.expectSuite expectMonoGraphClosed "is closed"
+            , Test.test "MONO_011 BUG PIN: a let-bound tail-recursive function at two types is closed (solver names foldl$1 / reverseHelper$1 out of scope)"
+                (\_ ->
+                    Expect.all
+                        [ SpecializePolyLetCases.foldlMulti expectMonoGraphClosed
+                        , SpecializePolyLetCases.reverseMulti expectMonoGraphClosed
+                        ]
+                        ()
+                )
             ]
         ]

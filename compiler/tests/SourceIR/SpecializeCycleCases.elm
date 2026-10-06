@@ -27,8 +27,8 @@ function they are given. `expectSuite` runs all nine against one expectation,
 inside one test that stops at the first failing case (see
 `Compiler.BulkCheck`). `suite` runs them against
 `TestLogic.TestPipeline.expectMonomorphization`, which passes when the
-program compiles through monomorphization with the substitution engine and the
-resulting graph has a `main` and at least one node. The cases are:
+program compiles through monomorphization under the production pipeline and
+the resulting graph has a `main` and at least one node. The cases are:
 
   - two local functions that call each other (`isEven` and `isOdd`);
   - three local functions that call one another in a ring;
@@ -85,8 +85,8 @@ import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 {-| A test that runs the cases in order against `expectMonomorphization`,
 stopping at the first that fails. A case passes when its program compiles
-through monomorphization with the substitution engine and the resulting graph
-has a `main` and at least one node.
+through monomorphization under the production pipeline and the resulting
+graph has a `main` and at least one node.
 -}
 suite : Test
 suite =

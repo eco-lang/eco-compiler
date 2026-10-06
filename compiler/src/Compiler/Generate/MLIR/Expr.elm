@@ -1784,6 +1784,50 @@ generateCall ctx func args resultType callInfo =
                                 generateClosureApplication ctx func args resultType callInfo
 
 
+{-| The `_gencall_reason` attribute of a generic papExtend, under the census
+flag (`mono.stagingReport`, ECO_STAGING_REPORT=1) only
+(plans/staging-honesty-and-production-test-pipeline.md P0.4; the
+lowering counts it under ECO_GENCALL_COUNTERS). Reasons: 1 local variable,
+2 call result, 3 record field, 4 case/if join, 5 global, 6 other callee,
+7 a cross-stage batch, 8 a generic kind routed through applyByStages, 9 the
+rest of a stamped over-applied call, 10 (lowering) a generic PAP fusion.
+-}
+gencallReasonAttr : Ctx.Context -> Int -> List ( String, MlirAttr )
+gencallReasonAttr ctx reason =
+    if ctx.ecoConfig.mono.stagingReport then
+        [ ( "_gencall_reason", IntAttr Nothing reason ) ]
+
+    else
+        []
+
+
+{-| The callee-shape reason for `gencallReasonAttr`.
+-}
+gencallCalleeReason : Mono.MonoExpr -> Int
+gencallCalleeReason func =
+    case func of
+        Mono.MonoVarLocal _ _ ->
+            1
+
+        Mono.MonoCall _ _ _ _ _ ->
+            2
+
+        Mono.MonoRecordAccess _ _ _ ->
+            3
+
+        Mono.MonoCase _ _ _ _ _ ->
+            4
+
+        Mono.MonoIf _ _ _ ->
+            4
+
+        Mono.MonoVarGlobal _ _ _ ->
+            5
+
+        _ ->
+            6
+
+
 {-| Generate a generic apply call: eco.papExtend without remaining\_arity.
 
 Saturation is determined at runtime from the closure header. The result
@@ -1898,6 +1942,7 @@ generateGenericApply ctx func args resultType =
                  , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "generic_apply" )
                  ]
+                    ++ gencallReasonAttr ctx (gencallCalleeReason func)
                     ++ genericApplyResultKindAttr
                     ++ gcRootsCountAttr1
                 )
@@ -2033,6 +2078,7 @@ generateUnknownSegmentationCall ctx func args resultType =
                  , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "segmentation_unknown" )
                  ]
+                    ++ gencallReasonAttr ctx (gencallCalleeReason func)
                     ++ unknownSegResultKindAttr
                     ++ gcRootsCountAttr2
                 )
@@ -2180,6 +2226,7 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
                  , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "segmentation_unknown" )
                  ]
+                    ++ gencallReasonAttr ctx 9
                     ++ segResultKindAttr
                     ++ gcRootsCountAttrT
                 )
@@ -2602,12 +2649,18 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                         -- no-boxing mandate), and flagged by the CGEN_052
                         -- checkers. Pin: CrossStageCallKindTest.elm.
                         if isCrossStage then
-                            [ ( "_call_kind", StringAttr "segmentation_unknown" ) ]
+                            ( "_call_kind", StringAttr "segmentation_unknown" ) :: gencallReasonAttr ctx 7
 
                         else
                             case callKindAttr of
                                 Just ck ->
-                                    [ ( "_call_kind", StringAttr ck ) ]
+                                    ( "_call_kind", StringAttr ck )
+                                        :: (if ck == "segmentation_unknown" || ck == "generic_apply" then
+                                                gencallReasonAttr ctx 8
+
+                                            else
+                                                []
+                                           )
 
                                 Nothing ->
                                     []

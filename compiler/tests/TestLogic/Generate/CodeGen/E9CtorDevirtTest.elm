@@ -45,7 +45,7 @@ arguments. The pipeline adds a `main` that uses `testValue`, as
 
 What the test establishes:
 
-  - The fixture goes through `TestLogic.TestPipeline.runToGlobalOptLssOn`
+  - The fixture goes through `TestLogic.TestPipeline.runToGlobalOpt`
     (solver engine, LSS on) without an error, and afterwards no expression in
     any node of the optimized graph is a `MonoCall` whose callee is a
     `MonoVarLocal`.
@@ -92,7 +92,7 @@ suite =
     Test.describe "E9: ctor passed as function devirtualizes to a direct call"
         [ Test.test "no VarLocal-callee call remains (the f-site became a direct ctor call)" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssOn fixtureModule of
+                case Pipeline.runToGlobalOpt fixtureModule of
                     Err e ->
                         Expect.fail ("solver+LSS pipeline failed: " ++ e)
 

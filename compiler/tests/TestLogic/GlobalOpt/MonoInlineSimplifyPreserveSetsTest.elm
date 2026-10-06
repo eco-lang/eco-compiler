@@ -20,7 +20,7 @@ declines, and is counted whether or not `report` is on.
 
 Every test except T3's monomorphizes its fixture as a default build does, with the solver
 engine and lambda-set specialization on (the `monoGraph` of
-`TestLogic.TestPipeline.runToGlobalOptLssOn`, taken before that pipeline's own
+`TestLogic.TestPipeline.runToGlobalOpt`, taken before that pipeline's own
 inliner runs), so the closures carry lambda-set members and the member-keyed
 entries of `clearedMembers` are recorded. It then runs the inliner with
 `report` on and one fixpoint iteration. A declined call is still there for any
@@ -308,14 +308,14 @@ hofConfig partialHof preserveSets =
 
 
 {-| Monomorphizes `srcModule` with lambda-set specialization on (the
-`monoGraph` of `runToGlobalOptLssOn`, from before that pipeline's own inliner
+`monoGraph` of `runToGlobalOpt`, from before that pipeline's own inliner
 runs), inlines that graph with `inlineConfig`, and returns `check` applied to
 the inliner's metrics. If the pipeline returns an error, the test fails with
 its message.
 -}
 withMetrics : Config.InlineConfig -> Src.Module -> (MonoInlineSimplify.Metrics -> Expect.Expectation) -> Expect.Expectation
 withMetrics inlineConfig srcModule check =
-    case Pipeline.runToGlobalOptLssOn srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail msg
 
@@ -324,7 +324,7 @@ withMetrics inlineConfig srcModule check =
 
 
 {-| Like `withMetrics`, but monomorphizes with the substitution engine
-(`runToMono`), under which `applyTwice` keeps its function parameter `f` and
+(`runToMonoStage5`, the bootstrap Stage 5 pipeline), under which `applyTwice` keeps its function parameter `f` and
 calls it. With lambda-set specialization on, `hofPartialModule`'s `applyTwice`
 is not admitted by the higher-order budget (its specialization no longer calls
 a function parameter), so the T3 tests use this engine. It records no
@@ -332,7 +332,7 @@ member-keyed entries of `clearedMembers`.
 -}
 withSubstMetrics : Config.InlineConfig -> Src.Module -> (MonoInlineSimplify.Metrics -> Expect.Expectation) -> Expect.Expectation
 withSubstMetrics inlineConfig srcModule check =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToMonoStage5 srcModule of
         Err msg ->
             Expect.fail msg
 

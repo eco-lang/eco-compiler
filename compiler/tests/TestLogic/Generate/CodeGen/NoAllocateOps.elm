@@ -14,8 +14,8 @@ names, so the check guards against one being introduced.
 depth, has one of those four names. Ops are matched by exact name, so an op
 whose name merely begins with `eco.allocate` is not reported.
 
-Among what is not tested: MLIR produced by the solver monomorphization engine,
-since `runToMlir` monomorphizes with the substitution engine.
+Among what is not tested: MLIR produced by bootstrap Stage 5 (the substitution
+engine), since `runToMlir` is the production pipeline.
 
 @docs expectNoAllocateOps
 

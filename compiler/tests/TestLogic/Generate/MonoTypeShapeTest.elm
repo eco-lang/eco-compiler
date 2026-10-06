@@ -8,7 +8,7 @@ programs of the standard test catalogue, those
 `SourceIR.Suite.StandardTestSuites.expectSuite` gathers from its case modules.
 
 Each program goes through the pipeline of a default build
-(`TestLogic.TestPipeline.runToGlobalOptLssOn`: the solver engine, the
+(`TestLogic.TestPipeline.runToGlobalOpt`: the solver engine, the
 post-monomorphization inliner and the global optimizer), and every type in the
 optimized graph, at every position and depth, must be free of number
 variables.

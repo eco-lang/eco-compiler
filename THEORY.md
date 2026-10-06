@@ -619,22 +619,18 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 
 ### Global Optimization (GlobalOpt)
 
-After monomorphization, function types are still curried and may have incompatible calling conventions across case branches. GlobalOpt resolves all staging and ABI decisions:
+After monomorphization, function types are still curried, one argument per stage. GlobalOpt resolves staging and ABI decisions:
 
-1. **Inline small functions** (Phase 0): `MonoInlineSimplify` inlines small functions to reduce call overhead
-2. **Wrap top-level callables** (Phase 0.5): Ensure all function values are closures before staging analysis
-3. **Build staging graph** (Phase 1): `Staging.GraphBuilder` constructs a constraint graph connecting producers to slots
-4. **Solve staging** (Phase 2): `Staging.Solver` uses union-find with majority voting to choose canonical segmentations
-5. **Rewrite with staging** (Phase 3): `Staging.Rewriter` wraps closures with non-canonical staging in eta-expansions
-6. **Compute call metadata** (Phase 4): Build `CallInfo` for MLIR codegen
+1. **Inline small functions** (before GlobalOpt): `MonoInlineSimplify` inlines small functions to reduce call overhead
+2. **Wrap top-level callables** (Phase 1): `wrapTopLevelCallables` ensures all top-level function values are closures
+3. **Regroup staging** (Phase 2): `Staging.regroup` rewrites every `MonoClosure`/`MonoTailFunc` type so its first stage takes exactly its params (GOPT_001); it creates no values
+4. **ABI cloning** (Phase 4): `AbiCloning.abiCloningPass` (homogeneous closure ABIs, LSS singleton stamps)
+5. **Compute call metadata** (Phase 5): `annotateCallStaging` builds `CallInfo` for MLIR codegen; Borrow inference (Phase 6) when enabled
+6. **After GlobalOpt**: `Compiler.Pipeline.Steps` (shared by `Builder.Generate` and the test harness) runs CSE, CAF dedupe and CAF hoist, each behind its flag, and under `mono.validate` checks GOPT_001 (`Steps.checkClosureStaging`)
 
-**The Staging Subsystem** (`compiler/src/Compiler/GlobalOpt/Staging/`):
-- `Types.elm`: ProducerId, SlotId, Node, StagingGraph types
-- `GraphBuilder.elm`: Builds staging constraint graph from MonoGraph
-- `Solver.elm`: Union-find solver with majority voting
-- `Rewriter.elm`: Applies staging solution via eta-wrapping
-- `ProducerInfo.elm`: Computes natural segmentations
-- `UnionFind.elm`: Union-find data structure
+A function-valued case/if whose branches are staged differently keeps each branch's staging; GOPT_003 (rewritten Oct 6, 2026) forbids claiming a staging the branches do not all share, so calls through such a join are applied generically by the closure header.
+
+**The Staging Subsystem** (`compiler/src/Compiler/GlobalOpt/Staging.elm`): exposes `regroup` and `checkClosureStaging`. *(Oct 6, 2026)*: the former graph-based solver (`Staging/GraphBuilder`, `Solver`, `ProducerInfo`, `UnionFind`, `Types`, `Rewriter`: union-find with majority voting and eta-wrapping) was removed after measuring zero wrappers on the self-compile, E2E and elm-test corpora; output is byte-identical. Its `dynamicSlots` output is now `CallEnv.dynamicParams` in `MonoGlobalOptimize`. See [Staged Currying Theory](design_docs/theory/staged_currying_theory.md).
 
 **Key concepts**:
 - `Segmentation`: List of stage arities (e.g., `[2,1]` = take 2 args, return closure taking 1)
@@ -805,7 +801,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 | [pass_typed_optimization_theory.md](design_docs/theory/pass_typed_optimization_theory.md) | Type-preserving optimization |
 | [pass_normalize_lambda_boundaries_theory.md](design_docs/theory/pass_normalize_lambda_boundaries_theory.md) | Lambda boundary flattening (let/case lifting) |
 | [pass_monomorphization_theory.md](design_docs/theory/pass_monomorphization_theory.md) | Polymorphism elimination |
-| [pass_global_optimization_theory.md](design_docs/theory/pass_global_optimization_theory.md) | Staging canonicalization and ABI normalization |
+| [pass_global_optimization_theory.md](design_docs/theory/pass_global_optimization_theory.md) | Staging regroup, ABI cloning and call metadata |
 | [staged_currying_theory.md](design_docs/theory/staged_currying_theory.md) | Staged currying theory |
 | [pass_type_table_theory.md](design_docs/theory/pass_type_table_theory.md) | Runtime type metadata |
 | [pass_mlir_generation_theory.md](design_docs/theory/pass_mlir_generation_theory.md) | MLIR code generation |

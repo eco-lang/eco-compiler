@@ -5,7 +5,7 @@ module Compiler.AST.Monomorphized exposing
     , MaybeClosureKind, MemberOrigin(..), MonoChoice(..), MonoDef(..), MonoDestructor(..), MonoDtPath(..)
     , MonoExpr(..), MonoGraph(..), MonoNode(..), MonoPath(..), MonoType(..), PortRegistration
     , Segmentation, SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
-    , annoCoverage, annoCovers, buildSegmentedFunctionType, chooseCanonicalSegmentation, clearLssTables, collectAnnoMembers
+    , annoCoverage, annoCovers, buildSegmentedFunctionType, clearLssTables, collectAnnoMembers
     , containsAnyMVar, countTotalArity, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
     , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
     , getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
@@ -92,7 +92,7 @@ made.
 
 # Functions
 
-@docs annoCoverage, annoCovers, buildSegmentedFunctionType, chooseCanonicalSegmentation, clearLssTables, collectAnnoMembers
+@docs annoCoverage, annoCovers, buildSegmentedFunctionType, clearLssTables, collectAnnoMembers
 @docs containsAnyMVar, countTotalArity, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
 @docs enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
 @docs getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
@@ -3728,71 +3728,6 @@ segmentLengths monoType =
                     List.reverse acc
     in
     go monoType []
-
-
-{-| Returns one segmentation for a value that can be any of `leafTypes`, together
-with the argument types and result type of the first of them, flattened.
-
-The segmentation chosen is the one most of the types have. Among equally common
-ones the one with fewest stages wins, and between two of the same length, the
-one that is greater as a `List Int`. An empty `leafTypes` gives `[]`, no
-arguments and `MUnit`.
-
--}
-chooseCanonicalSegmentation : List MonoType -> ( Segmentation, List MonoType, MonoType )
-chooseCanonicalSegmentation leafTypes =
-    case leafTypes of
-        [] ->
-            ( [], [], MUnit )
-
-        firstType :: _ ->
-            let
-                ( flatArgs, flatRet ) =
-                    decomposeFunctionType firstType
-
-                countSegmentations : List MonoType -> Dict (List Int) Int
-                countSegmentations types =
-                    List.foldl
-                        (\t accDict ->
-                            let
-                                seg =
-                                    segmentLengths t
-
-                                current =
-                                    Dict.get seg accDict |> Maybe.withDefault 0
-                            in
-                            Dict.insert seg (current + 1) accDict
-                        )
-                        Dict.empty
-                        types
-
-                freqDict =
-                    countSegmentations leafTypes
-
-                maxCount =
-                    Dict.foldl (\_ count acc -> max count acc) 0 freqDict
-
-                bestSegs =
-                    Dict.foldl
-                        (\seg count acc ->
-                            if count == maxCount then
-                                seg :: acc
-
-                            else
-                                acc
-                        )
-                        []
-                        freqDict
-
-                canonicalSeg =
-                    case List.sortBy List.length bestSegs of
-                        shortest :: _ ->
-                            shortest
-
-                        [] ->
-                            segmentLengths firstType
-            in
-            ( canonicalSeg, flatArgs, flatRet )
 
 
 {-| Builds the function type that takes `flatArgs` in stages of the sizes `seg`

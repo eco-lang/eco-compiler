@@ -1,5 +1,5 @@
 module Compiler.Generate.MLIR.Backend exposing
-    ( backend, generateMlirModule, streamMlirToWriter, streamMlirBytecode
+    ( backend, generateMlirModule, generateProgram, streamMlirToWriter, streamMlirBytecode
     , constThunkReport
     )
 
@@ -9,7 +9,7 @@ This backend generates MLIR from fully specialized, monomorphic code.
 All polymorphism has been resolved and layout information is embedded
 in the types.
 
-@docs backend, generateMlirModule, streamMlirToWriter, streamMlirBytecode
+@docs backend, generateMlirModule, generateProgram, streamMlirToWriter, streamMlirBytecode
 @docs constThunkReport
 
 -}
@@ -55,7 +55,7 @@ backend : CodeGen.MonoCodeGen
 backend =
     { generate =
         \config ->
-            generateProgram config.mode config.graph |> CodeGen.TextOutput
+            generateProgram Config.default config.mode config.graph |> CodeGen.TextOutput
     }
 
 
@@ -63,22 +63,20 @@ backend =
 -- ====== GENERATE WHOLE PROGRAM ======
 
 
-{-| Generate an MlirModule directly, for use in invariant testing.
+{-| Generate the whole program as one `MlirModule`, through the same code
+generator context and per-node reset the streaming writers use, so the module
+holds exactly the ops a build streams (plans/staging-honesty-and-production-
+test-pipeline.md P1). Used by the test harness.
 -}
-generateMlirModule : Mode.Mode -> Mono.MonoGraph -> MlirModule
-generateMlirModule mode monoGraph0 =
+generateMlirModule : Config.EcoConfig -> Mode.Mode -> Mono.MonoGraph -> MlirModule
+generateMlirModule ecoConfig mode monoGraph0 =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports, flagsDecoder }) =
+        (Mono.MonoGraph { nodes, main, ports, flagsDecoder }) =
             monoGraph0
-
-        signatures : Array (Maybe Ctx.FuncSignature)
-        signatures =
-            Ctx.buildSignatures nodes
 
         ctx : Ctx.Context
         ctx =
-            Ctx.initContext mode registry signatures ctorShapes
-                |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
+            buildContext ecoConfig mode monoGraph0
 
         ( revOpChunks, ctxAfterNodes, _ ) =
             Array.foldl
@@ -92,7 +90,7 @@ generateMlirModule mode monoGraph0 =
                                 ( nodeOps, newCtx ) =
                                     Functions.generateNode accCtx specId node
                             in
-                            ( nodeOps :: accChunks, newCtx, specId + 1 )
+                            ( nodeOps :: accChunks, resetNodeCtx newCtx, specId + 1 )
                 )
                 ( [], ctx, 0 )
                 nodes
@@ -103,7 +101,6 @@ generateMlirModule mode monoGraph0 =
         ( lambdaOps, finalCtx ) =
             Lambdas.processLambdas ctxAfterNodes
 
-        -- ctorShapes are already complete from MonoGraph - no fill step needed
         ( mainOps, ctxAfterMain ) =
             case main of
                 Just mainInfo ->
@@ -135,9 +132,59 @@ generateMlirModule mode monoGraph0 =
     }
 
 
-generateProgram : Mode.Mode -> Mono.MonoGraph -> String
-generateProgram mode monoGraph =
-    Pretty.ppModule (generateMlirModule mode monoGraph)
+{-| The printed text of `generateMlirModule`.
+-}
+generateProgram : Config.EcoConfig -> Mode.Mode -> Mono.MonoGraph -> String
+generateProgram ecoConfig mode monoGraph =
+    Pretty.ppModule (generateMlirModule ecoConfig mode monoGraph)
+
+
+{-| The code generator context every MLIR entry point starts from: signatures,
+inline bodies, the build's configuration and the per-program tables
+(constructors, null-cons, constant constructors, constant thunks, sret and
+psplit promotion, borrow oracle facts, List.map templates).
+-}
+buildContext : Config.EcoConfig -> Mode.Mode -> Mono.MonoGraph -> Ctx.Context
+buildContext ecoConfig mode monoGraph0 =
+    let
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+            monoGraph0
+
+        signatures =
+            Ctx.buildSignatures nodes
+    in
+    Ctx.initContext mode registry signatures ctorShapes
+        |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
+        |> Ctx.withEcoConfig ecoConfig
+        |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
+        |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
+        |> Ctx.withConstCtorBySpec (buildConstCtorBySpec registry nodes)
+        |> Ctx.withConstThunkBySpec
+            (ConstThunks.build ecoConfig.constThunks
+                registry
+                signatures
+                nodes
+                main
+                (buildNullConsBySpec registry nodes)
+                (buildConstCtorBySpec registry nodes)
+            )
+        |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
+        |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
+        |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
+        |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
+
+
+{-| Clears the per-function fields after a node, so they do not accumulate
+across nodes: `decoderExprs` caches let-bound decoder expressions for
+BytesFusion, and `externBoxedVars` tracks extern/kernel aliases — both are
+function-local.
+-}
+resetNodeCtx : Ctx.Context -> Ctx.Context
+resetNodeCtx newCtx =
+    { newCtx
+        | decoderExprs = Dict.empty
+        , externBoxedVars = Set.empty
+    }
 
 
 
@@ -172,29 +219,8 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
         (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports, flagsDecoder }) =
             monoGraph0
 
-        signatures =
-            Ctx.buildSignatures nodes
-
         ctx =
-            Ctx.initContext mode registry signatures ctorShapes
-                |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
-                |> Ctx.withEcoConfig ecoConfig
-                |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
-                |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
-                |> Ctx.withConstCtorBySpec (buildConstCtorBySpec registry nodes)
-                |> Ctx.withConstThunkBySpec
-                    (ConstThunks.build ecoConfig.constThunks
-                        registry
-                        signatures
-                        nodes
-                        main
-                        (buildNullConsBySpec registry nodes)
-                        (buildConstCtorBySpec registry nodes)
-                    )
-                |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
-                |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
-                |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
-                |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
+            buildContext ecoConfig mode monoGraph0
 
         nodesList =
             Array.toIndexedList nodes
@@ -264,10 +290,7 @@ streamNodesList ctx0 remaining writeChunk =
                 -- decoderExprs caches let-bound decoder expressions for BytesFusion;
                 -- externBoxedVars tracks extern/kernel aliases — both are function-local.
                 cleanCtx =
-                    { newCtx
-                        | decoderExprs = Dict.empty
-                        , externBoxedVars = Set.empty
-                    }
+                    resetNodeCtx newCtx
             in
             writeOps nodeOps writeChunk
                 |> Task.andThen (\_ -> streamNodesList cleanCtx rest writeChunk)
@@ -314,29 +337,8 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
         (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports, flagsDecoder }) =
             monoGraph0
 
-        signatures =
-            Ctx.buildSignatures nodes
-
         ctx =
-            Ctx.initContext mode registry signatures ctorShapes
-                |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
-                |> Ctx.withEcoConfig ecoConfig
-                |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
-                |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
-                |> Ctx.withConstCtorBySpec (buildConstCtorBySpec registry nodes)
-                |> Ctx.withConstThunkBySpec
-                    (ConstThunks.build ecoConfig.constThunks
-                        registry
-                        signatures
-                        nodes
-                        main
-                        (buildNullConsBySpec registry nodes)
-                        (buildConstCtorBySpec registry nodes)
-                    )
-                |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
-                |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
-                |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
-                |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
+            buildContext ecoConfig mode monoGraph0
 
         nodesList =
             Array.toIndexedList nodes
@@ -403,10 +405,7 @@ encodeNodeBatch budget ctx0 remaining tables =
                         Functions.generateNode ctx0 specId node
 
                     cleanCtx =
-                        { newCtx
-                            | decoderExprs = Dict.empty
-                            , externBoxedVars = Set.empty
-                        }
+                        resetNodeCtx newCtx
 
                     newTables =
                         StreamEncode.collectAndEncodeOps nodeOps tables

@@ -1196,6 +1196,24 @@ demoting producer-less classes (`dynamicSlots`) to `CallGenericApply`
 (GOPT_001/GOPT_003, GOPT_010–016). The M3 stamp only *adds* evaluator and
 capture knowledge on top of that segmentation truth; it never replaces it.
 
+> **Note (2026-10-06, plans/staging-honesty-and-production-test-pipeline.md
+> P2/P3):** the premise of (a) did not hold. The staging graph never looked
+> into a `case`'s decision-tree `Inline` leaves (where nearly all branches
+> live), never unioned `SlotParam`s and never traced let-bound variables, so a
+> join's type was *not* made truthful of every value: measured, the solver
+> inserted zero wrappers (self-compile, E2E corpus, elm-test programs). The
+> solver was removed; `Staging.regroup` now only regroups closure types to
+> their param counts (GOPT_001) and creates no values. GOPT_003 was rewritten:
+> a function-valued join makes no staging claim beyond what all its branches
+> agree on (`closureBodyStageArities` returns `Nothing` otherwise), so calls
+> through such a join are `CallSegmentationUnknown`/`CallGenericApply` and
+> codegen applies the runtime-selected value generically by its closure
+> header. `dynamicSlots` is now `CallEnv.dynamicParams` (the function-typed
+> parameters of the enclosing `MonoTailFunc`, which is all it ever was).
+> Because staging no longer rewrites or creates values, the ordering hazard of
+> (b) below is gone; AbiCloning still runs after Staging so its stamps see the
+> final closure types.
+
 **(b) AbiCloning's stamps denote value identity; Staging rewrites values.**
 `closureKind = Known kindId` + `captureAbi` at a call site is a claim about
 *the runtime object that arrives there* — its evaluator symbol and capture

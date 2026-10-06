@@ -176,6 +176,9 @@ else()
     set(_path_sep ":")
 endif()
 add_custom_target(elm-tests
+    # The harness must compile through Compiler.Pipeline.Steps, as a build does
+    # (plans/staging-honesty-and-production-test-pipeline.md P1.3).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-test-pipeline-production.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}${_path_sep}$ENV{PATH}"
         ${ELM_TEST_RS_EXECUTABLE} --project ${BUILD_XHR_DIR} --fuzz 1
     DEPENDS guida

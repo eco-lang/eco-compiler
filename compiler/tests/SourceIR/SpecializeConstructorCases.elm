@@ -41,8 +41,8 @@ Among what is not tested: the value any `testValue` would compute, since no
 case evaluates it; a phantom alias, one whose body does not mention its
 parameter, which canonicalization rejects (`TypeVarsMessedUpInAlias`), as Elm
 does; an alias with more than one parameter in a constructor field; record and recursive constructor fields; and
-under `suite`, the solver monomorphizer, since `expectMonomorphization` runs
-the substitution engine.
+under `suite`, the bootstrap Stage 5 (substitution engine) pipeline, since
+`expectMonomorphization` runs the production default.
 
 -}
 
@@ -77,7 +77,7 @@ import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 {-| The twelve cases run as one test against
 `TestLogic.TestPipeline.expectMonomorphization`, which passes when a module
-compiles through monomorphization, on the substitution engine, to a graph with
+compiles through monomorphization, under the production pipeline, to a graph with
 a `main` and at least one node.
 -}
 suite : Test

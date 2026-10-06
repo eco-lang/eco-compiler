@@ -899,6 +899,12 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateDispatchStatsFast(OpBuilder &builder) co
     return getOrCreateFunc(builder, "eco_dispatch_stats_fast", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGencallStats(OpBuilder &builder) const {
+    // eco_gencall_stats(reason: i32) -> void  (staging plan P0.4)
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I32_TY});
+    return getOrCreateFunc(builder, "eco_gencall_stats", funcTy, /*gcLeaf=*/true);
+}
+
 // Fold-proof slot-cast barriers (REP_LLVM_002,
 // plans/fold-proof-boxed-slot-crossings.md): declare-only; every call is
 // rewritten back to a bare inttoptr/ptrtoint by StripEcoCastBarriers
@@ -1340,7 +1346,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateCrash(b); getOrCreateGcAddRoot(b); getOrCreateGcStackRangePoint(b);
     getOrCreateGcPushStackRange(b); getOrCreateGcRestoreStackRangePoint(b);
     getOrCreateSatBeginMarker(b); getOrCreateSatEndMarker(b);
-    getOrCreateRegisterTypeGraph(b); getOrCreateDispatchStatsFast(b);
+    getOrCreateRegisterTypeGraph(b); getOrCreateDispatchStatsFast(b); getOrCreateGencallStats(b);
     getOrCreateSlotToHPtr(b); getOrCreateHPtrToSlot(b);
     getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
     getOrCreateValueEqMarker(b);

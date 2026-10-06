@@ -29,12 +29,12 @@ a variable of their own scheme, as their annotations do.
 The other two check the effect on monomorphization as `TestLogic.TestPipeline`
 runs it:
 
-  - Substitution engine (`TestPipeline.runToMono`): in
+  - Substitution engine (`TestPipeline.runToMonoStage5`): in
     `wrapInt x = let h y = y * 2147483648 * 2147483648 in ( x * 1, h 4 )`
     applied to a `Float`, `h` must be specialized at `Int`, its use, not at
     `Float`. With the collision it was specialized at `Float -> Float`, and
     its MLIR multiplied the `Int` 4 with the `Float` multiplication.
-  - Solver engine (`TestPipeline.runToGlobalOptLssOn`, the default engine): in
+  - Solver engine (`TestPipeline.runToGlobalOpt`, the default engine): in
     `capture x = let h y = ( x, y ) in ( h 1, h 2.5 )` applied to a `String`,
     no specialization may be typed with an `( Int, Int )` tuple. With the
     collision the `Int` specialization of `h` was declared
@@ -84,7 +84,7 @@ suite =
                     |> expectNamesDistinct
         , Test.test "substitution engine specializes a let helper at its own use's type, not the enclosing argument's" <|
             \_ ->
-                case Pipeline.runToMono wrapIntModule of
+                case Pipeline.runToMonoStage5 wrapIntModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -106,7 +106,7 @@ suite =
                             ()
         , Test.test "solver engine gives a let helper closure the type its body has" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssOn captureModule of
+                case Pipeline.runToGlobalOpt captureModule of
                     Err msg ->
                         Expect.fail msg
 

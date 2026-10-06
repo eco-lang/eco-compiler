@@ -12,7 +12,7 @@ never constructed this way: it is an `eco.constant`. Both choices are made in
 `Compiler.Generate.MLIR.Ops.ecoConstructRecord`.
 
 The program is supplied by the caller and compiled with
-`TestLogic.TestPipeline.runToMlir`, which uses the substitution engine.
+`TestLogic.TestPipeline.runToMlir`, the production pipeline.
 `expectRecordConstruction` fails if compilation fails, and otherwise reports a
 violation for each `eco.construct.record` op, at any depth in the module, whose
 `field_count`:

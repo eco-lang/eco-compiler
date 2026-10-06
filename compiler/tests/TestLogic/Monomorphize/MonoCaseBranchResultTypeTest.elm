@@ -16,22 +16,15 @@ What the tests establish:
     `expectMonoCaseBranchResultTypes` compiles it with
     `TestLogic.TestPipeline.runToMono` and finds that every body in each
     `MonoCase`'s jump list, and every `Inline` leaf of its decision tree, has
-    a type `==` to the case's stored result type.
+    the case's stored result type (`Mono.eqLayout`).
 
-  - `"case branch types match after GlobalOpt"` (GOPT\_003, BUG PIN): the
-    same check on the graph `TestLogic.TestPipeline.runToGlobalOpt` produces.
-    It FAILS today on two programs, JoinpointABI "2.1 majority2Flat" and
-    HigherOrder "Case returns differently staged lambdas": a `case` whose
-    branches return differently staged lambdas keeps its monomorphized
-    (curried) result type while the flat branches are retyped
-    `[Int, Int] -> Int` and the curried branch is not wrapped. The cause is
-    that `Compiler.GlobalOpt.Staging.Rewriter`'s `MonoCase` arm never
-    retypes the case and the GOPT\_003 enforcer named in invariants.csv
-    (`rewriteCaseForAbi` / `buildAbiWrapperGO` in
-    `Compiler.GlobalOpt.MonoGlobalOptimize`) is unreachable;
-    `Staging.validateClosureStaging` is a no-op. Codegen copes by calling such
-    values `segmentation_unknown`, so no wrong output is known. Full notes:
-    /work/gopt003-issue.md.
+  - `"join staging is honest after GlobalOpt"` (invariant GOPT\_003, as
+    rewritten by plans/staging-honesty-and-production-test-pipeline.md P2.3):
+    `expectHonestJoinStaging` compiles each program with
+    `TestLogic.TestPipeline.runToGlobalOpt` and finds that no call claims
+    known stages past the first through a callee whose join has differently
+    staged branches. JoinpointABI category 6 holds joins a build's η-expansion
+    cannot dissolve, so the check is not vacuous on the production pipeline.
 
 Among what is not tested: the branches of an `if`.
 
@@ -39,7 +32,7 @@ Among what is not tested: the branches of an `if`.
 
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, expectMonoCaseBranchResultTypesAfterGlobalOpt)
+import TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectHonestJoinStaging, expectMonoCaseBranchResultTypes)
 
 
 {-| The group of tests checking case branch types over every standard test
@@ -50,6 +43,6 @@ suite =
     Test.describe "MONO_018 / GOPT_003: MonoCase branches match case result type"
         [ Test.describe "MONO_018: after monomorphization"
             [ StandardTestSuites.expectSuite expectMonoCaseBranchResultTypes "case branch types match" ]
-        , Test.describe "GOPT_003 BUG PIN: after global optimization (staging leaves differently staged case branches unnormalized)"
-            [ StandardTestSuites.expectSuite expectMonoCaseBranchResultTypesAfterGlobalOpt "case branch types match after GlobalOpt" ]
+        , Test.describe "GOPT_003: after global optimization no call claims a staging its callee's join does not have"
+            [ StandardTestSuites.expectSuite expectHonestJoinStaging "join staging is honest after GlobalOpt" ]
         ]

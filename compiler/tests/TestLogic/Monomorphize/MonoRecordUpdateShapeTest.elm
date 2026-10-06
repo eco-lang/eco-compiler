@@ -12,8 +12,8 @@ result's type.
 The fixture is the set of programs that
 `SourceIR.Suite.StandardTestSuites.expectSuite` hands to an expectation; that
 module's docstring says which case modules it includes. Each program is
-compiled to a monomorphized graph by `TestPipeline.runToMono`, which uses the
-substitution engine.
+compiled to a monomorphized graph by `TestPipeline.runToMono`, the production
+pipeline.
 
 What `suite` establishes, for each of those programs:
 

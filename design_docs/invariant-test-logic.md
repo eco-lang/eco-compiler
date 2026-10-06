@@ -1238,7 +1238,7 @@ ir: MonoClosure after GlobalOpt
 logic: For every MonoClosure with MFunction type after GlobalOpt:
   * Compute stageArity = length of outermost MFunction param list
   * Assert length(closureInfo.params) == stageArity
-  * Established by canonicalizeClosureStaging in GlobalOpt
+  * Established by Staging.regroup in GlobalOpt; checked at compile time under mono.validate by Compiler.Pipeline.Steps.checkClosureStaging
 inputs: GlobalOpt output graphs
 oracle: All closures have param counts matching their stage arity.
 tests: compiler/tests/TestLogic/GlobalOpt/ClosureStageArityTest.elm
@@ -1256,17 +1256,18 @@ oracle: Map is complete for all closure-returning functions.
 tests: NOT YET IMPLEMENTED
 --
 --
-name: Case/if branches have compatible staging
+name: Case/if joins claim no staging beyond what all branches agree on
 phase: global optimization
 invariants: GOPT_003
-ir: MonoCase, MonoIf after normalizeCaseIfAbi
-logic: For every MonoCase and MonoIf returning function types after GlobalOpt:
-  * All branch result types have identical staging signatures
-  * Non-conforming branches were wrapped via buildAbiWrapperGO
-  * This extends MONO_018 (type equality) to include staging equality
-inputs: GlobalOpt output with function-returning cases
-oracle: All branches unify to a common staging; no ABI mismatches.
-tests: compiler/tests/TestLogic/GlobalOpt/CaseBranchStagingTest.elm
+ir: MonoCall CallInfo whose callee value can come from a MonoCase/MonoIf join, after GlobalOpt (production pipeline)
+logic: For every MonoCall with CallDirectKnownSegmentation whose callee is a global or closure:
+  * Walk the callee body the same way MonoGlobalOptimize.closureBodyStageArities does (case jump targets and decider Inline leaves through Chain/FanOut; if branches and the else)
+  * If the reached join's branches have different stage arities, assert the call claims nothing past the first stage (no initialRemaining/remainingStageArities derived from it)
+  * Branches keep their own staging; they are never re-staged to agree (rewritten 2026-10-06; the former wrapper-based normalizer was unreachable)
+  * MONO_018's pre-GlobalOpt type check is separate and unchanged
+inputs: SourceIR JoinpointABICases (incl. category 6: joins η-expansion cannot dissolve: let-bound, in a list, as an argument, in a record field), compiled through runToGlobalOpt (production pipeline)
+oracle: No call derives a staging from a join whose branches disagree; such calls are CallSegmentationUnknown/CallGenericApply and the runtime applies them by the closure header.
+tests: compiler/tests/TestLogic/Monomorphize/MonoCaseBranchResultType.elm (expectHonestJoinStaging); E2E test/elm/src/Gopt003CaseStagingTest.elm
 --
 --
 name: No placeholder CallInfo after GlobalOpt
@@ -1345,25 +1346,6 @@ inputs: GlobalOpt graphs with kernel calls
 oracle: Kernel calls have empty stage information.
 tests: compiler/tests/TestLogic/GlobalOpt/CallInfoCompleteTest.elm
 --
---
-name: ABI wrapper nested calls respect segmentation
-phase: global optimization
-invariants: GOPT_016
-ir: Wrapper closures created by buildAbiWrapperGO/buildNestedCallsGO
-logic: When ABI normalization creates wrapper closures that call functions with multi-stage types:
-  * Get the callee's segmentation via Mono.segmentLengths (Mono.typeOf callee)
-  * For each segment length m in the segmentation:
-    - A MonoCall passes exactly m arguments to the current callee
-    - The result of that call becomes the callee for the next stage
-  * No MonoCall in a wrapper chain passes more arguments than its stage accepts
-  * Example: For callee with segmentation [2,3] called with params [a,b,c,d,e]:
-    - First call: callee(a,b) -> intermediate with segment [3]
-    - Second call: intermediate(c,d,e) -> result
-inputs: N/A (verified by construction)
-oracle: Wrapper nested calls match callee segmentation exactly; no over-application at any stage.
-verification: structural (by construction in buildNestedCallsGO; indirectly verified via CallInfo invariants GOPT_010-015)
---
-
 ---
 
 ## MLIR Codegen Phase (CGEN_*)

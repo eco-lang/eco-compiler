@@ -6,12 +6,11 @@ module Compiler.GlobalOpt.AbiCloning exposing
 {-| ABI Cloning Pass — LSS singleton dispatch upgrade (design §9.2/§9.3,
 M3.5 interchangeability rule, LSS\_009).
 
-Runs at GlobalOpt Phase 4, AFTER Staging (Phases 2-3) — the order is a
-correctness dependency, not convention (design §9.3): the stamps placed
-here denote value identity, and Staging's Rewriter is the last pass that
-replaces values (wrapper closures). Staging wrappers propagate the
-wrappee's `srcLambda` (LSS\_008), so they mark their member BLOCKED below
-and decline the upgrade wherever wrapping occurred.
+Runs at GlobalOpt Phase 4, AFTER Staging (Phase 2). Staging only regroups
+closure TYPES and creates no values (its solver and wrapping rewriter were
+retired 2026-10-06, plans/staging-honesty-and-production-test-pipeline.md P3;
+they inserted no wrapper in any measured program), so the stamps placed here,
+which denote value identity, describe the values codegen emits.
 
 The pass:
 
@@ -60,7 +59,6 @@ import Array
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Id as Id
-import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Reporting.Annotation exposing (Region)
 import Dict exposing (Dict)
@@ -160,7 +158,6 @@ type alias AbiCloningStats =
     , multiSetMembers : Dict Int Int -- E3 de-risk: member id -> occurrences across multi-set sites
     , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
     , varSiteShapes : Dict String Int -- Phase 1a/3 (plans/lss-unknown-elimination.md §2.5, plans/lss-set-variable.md): the same census for LVar-annotated sites — the "still a variable" half of what used to be one undifferentiated ⊤ population. Same shape keys as topSiteShapes; same TRAP (stampCall consults EVERY call, so these are SITE counts, not dispatch weight).
-    , stampedWrapperInstances : Int -- E7 trigger: stamped sites whose representative is a staging wrapper (collision signal)
     , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int, absentL : Dict String Int, multiSites : Dict String Int } -- Per-site census Dicts, ALL gated on `lss.census` (`StampCtx.census`). Split from `lss.report` deliberately: the benchmark protocol mandates ECO_MONO_LSS_REPORT=1, so anything billed under `report` distorts every timed run (the `qCensus` precedent, Eco/Config.elm). Each of these builds a String key and inserts a Dict node at ~43,000 AbiCloning sites per self-compile; the scalar counters beside them are field increments and stay unconditional because they are the A/B gate numbers. `byHost`: "<host global>|<reason>" — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
     , blockedMembers : List ( Int, Maybe Mono.LambdaId ) -- LSS_026 §11 census: every blocked member with its BLOCKER instance (the adopting synthetic closure; Nothing = μ-tie / no attribution). Print-only, never consulted by stamping. The instrument that named `Compiler_Type_Type_lambda_41139` as the 146-site blocker — member IDS shift with the corpus, the SYMBOL is the stable join key, which is why the blocker travels with the id. (It did NOT explain the de-stamp — see §11.5 — but it is what made that refutable.) Cost: one Dict fold over the index per COMPILE, alongside the existing `countMultiInstanceGroups` fold; nothing per site.
     }
@@ -195,7 +192,6 @@ emptyStats =
     , multiSetMembers = Dict.empty
     , topSiteShapes = Dict.empty
     , varSiteShapes = Dict.empty
-    , stampedWrapperInstances = 0
     , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, papSites = Dict.empty, absentL = Dict.empty, multiSites = Dict.empty }
     , blockedMembers = []
     }
@@ -210,10 +206,8 @@ emptyStats =
 {-| Everything the pass knows about one member's reachable instances.
 
 `blocked = True` when ANY instance shares the member's identity but not
-its code: staging-wrapper stages (LSS\_008 propagation, synthetic
-`Rewriter.wrapperHome`) and adopted synthetic closures (`srcLambda =
-Nothing` under a singleton annotation — `wrapTopLevelCallables`
-eta-wrappers). A blocked member declines all its sites; its buckets are
+its code: adopted synthetic closures (`srcLambda = Nothing` under a
+singleton annotation — `wrapTopLevelCallables` eta-wrappers). A blocked member declines all its sites; its buckets are
 dropped (their contents are irrelevant).
 
 `buckets` maps a DEPTH-CAPPED layout fingerprint of (params ++ return) to
@@ -413,7 +407,7 @@ collectClosure topLevelSpec expr acc =
                 acc1 =
                     case instanceMember closureInfo tipe of
                         Just ( m, isAdopted ) ->
-                            if isAdopted || isWrapperHome closureInfo.lambdaId then
+                            if isAdopted then
                                 -- Blocked members never stamp; drop any buckets.
                                 Dict.insert m { blocked = True, blockedBy = Just closureInfo.lambdaId, buckets = Dict.empty } acc
 
@@ -684,11 +678,6 @@ instanceMember closureInfo tipe =
 
                 Nothing ->
                     Maybe.map (\m -> ( m, True )) (Mono.singletonHeadMember tipe)
-
-
-isWrapperHome : Mono.LambdaId -> Bool
-isWrapperHome (Mono.AnonymousLambda home _) =
-    home == Rewriter.wrapperHome
 
 
 
@@ -1434,14 +1423,6 @@ stampCall index ctx region func args resultType callInfo =
 
                                 stats1 =
                                     ctx1.stats
-
-                                -- census (E7 trigger): a stamped wrapper rep.
-                                wrapperInc =
-                                    if isWrapperHome inst.lambdaId then
-                                        1
-
-                                    else
-                                        0
                             in
                             ( Mono.MonoCall region func args resultType stamped
                             , bumpHost "stamped"
@@ -1449,7 +1430,6 @@ stampCall index ctx region func args resultType callInfo =
                                     | stats =
                                         { stats1
                                             | dispatchUpgraded = stats1.dispatchUpgraded + 1
-                                            , stampedWrapperInstances = stats1.stampedWrapperInstances + wrapperInc
                                         }
                                 }
                             )

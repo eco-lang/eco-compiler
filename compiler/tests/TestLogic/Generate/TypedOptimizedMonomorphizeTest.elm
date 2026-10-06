@@ -9,9 +9,8 @@ The fixture is the catalogue that
 `SourceIR.Suite.StandardTestSuites.expectSuite` runs, whose module docstring
 says which case modules it includes and which it leaves out. Each program is
 run through `TestLogic.TestPipeline.runToMono`: canonicalization, type
-checking, PostSolve and typed optimization, then monomorphization with the
-substitution engine, `Compiler.Monomorphize.Monomorphize`, which is not the
-default engine of a build.
+checking, PostSolve and typed optimization, then the production pipeline's
+pre-monomorphization passes and monomorphization.
 
 `suite`, a group named "monomorphizes", establishes for each program:
 

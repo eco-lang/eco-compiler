@@ -17,8 +17,7 @@ escapes. The full rule, with its exceptions, belongs to
 
 The fixture is one source module, `fixtureModule`, with one function per
 scenario. Every test runs it through `TestLogic.TestPipeline.runToGlobalOpt`
-(monomorphization with the substitution engine, then the inliner and the
-global optimizer) and asks for a verdict on the optimized graph. A function is
+(the production pipeline up to and including global optimization) and asks for a verdict on the optimized graph. A function is
 found as the first specialization, in SpecId order, whose comparable global
 name contains the function's name and which yields a verdict, so no scenario
 name may occur inside another; matching is case-sensitive, so `good` does not

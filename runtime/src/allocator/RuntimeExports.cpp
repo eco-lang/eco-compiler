@@ -1008,6 +1008,13 @@ std::atomic<uint64_t> g_dispatch_gen_total{0};
 std::atomic<uint64_t> g_dispatch_fast_total{0};
 std::atomic<bool> g_dispatch_stats_dumped{false};
 
+// Generic-call reason census (plans/staging-honesty-and-production-test-pipeline.md
+// P0.4): one counter per `_gencall_reason` tag the compiler puts on a
+// segmentation_unknown / generic_apply papExtend under the census flag, bumped
+// by eco_gencall_stats when the lowering ran with ECO_GENCALL_COUNTERS.
+constexpr int kGencallReasons = 16;
+std::atomic<uint64_t> g_gencall_counts[kGencallReasons] = {};
+
 void dispatchStatsDumpImpl() {
     if (g_dispatch_stats_dumped.exchange(true)) return;
     if (!g_dispatch_stats_table) return;
@@ -1042,6 +1049,12 @@ void dispatchStatsDumpImpl() {
                  static_cast<unsigned long long>(g_dispatch_fast_total.load(std::memory_order_relaxed)),
                  rows.size(),
                  static_cast<unsigned long long>(g_dispatch_stats_overflow.load(std::memory_order_relaxed)));
+    std::fprintf(stderr, "[gencall-stats]");
+    for (int i = 0; i < kGencallReasons; ++i) {
+        uint64_t n = g_gencall_counts[i].load(std::memory_order_relaxed);
+        if (n != 0) std::fprintf(stderr, " r%d=%llu", i, static_cast<unsigned long long>(n));
+    }
+    std::fprintf(stderr, "\n");
     for (const Row& r : rows) {
         std::fprintf(stderr,
                      "[dispatch-stats] fp=0x%llx sat=%llu gen=%llu fast=%llu\n",
@@ -1117,6 +1130,16 @@ extern "C" void eco_dispatch_stats_dump(void) { dispatchStatsDumpImpl(); }
 // use. Allocation-free / GC-leaf.
 extern "C" void eco_dispatch_stats_fast(void* evaluator_fp) {
     dispatchStatsRecord(evaluator_fp, DispatchKind::Fast);
+}
+
+// Lowering-time hook (plans/staging-honesty-and-production-test-pipeline.md
+// P0.4): emitted before a generic papExtend that carries `_gencall_reason`
+// when ECO_GENCALL_COUNTERS is set at lowering time. Counts under
+// ECO_DISPATCH_STATS only. Allocation-free / GC-leaf.
+extern "C" void eco_gencall_stats(int32_t reason) {
+    if (!dispatchStatsEnabled()) return;
+    g_gencall_counts[static_cast<uint32_t>(reason) & (kGencallReasons - 1)].fetch_add(
+        1, std::memory_order_relaxed);
 }
 
 // ---- Call-kind survivor census (plans/call-survivor-census.md) -------------

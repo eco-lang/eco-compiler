@@ -323,7 +323,10 @@ runWith srcModule =
         defaults =
             Config.defaultLss
     in
-    Pipeline.runSolverMonoWithLimits Config.defaultLimits
+    -- NoPreMono (plans/staging-honesty-and-production-test-pipeline.md P1.4): this pins an LSS
+    -- analysis rule on a hand-written shape that pre-mono alias forwarding / eta-expansion
+    -- rewrite before the solver sees it.
+    Pipeline.runSolverMonoWithLimitsNoPreMono Config.defaultLimits
         { defaults | enabled = True }
         srcModule
 

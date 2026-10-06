@@ -66,8 +66,8 @@ import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
 {-| A test that applies `TestLogic.TestPipeline.expectMonomorphization` to both
-programs. That expectation runs the program through `runToMono`, which uses the
-substitution engine, and passes when monomorphization succeeds and gives a graph
+programs. That expectation runs the program through `runToMono`, the
+production pipeline, and passes when monomorphization succeeds and gives a graph
 with a `main` and at least one node.
 -}
 suite : Test

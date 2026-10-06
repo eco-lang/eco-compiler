@@ -94,7 +94,7 @@ import TestLogic.TestPipeline exposing (expectMonomorphization)
 
 
 {-| Runs the programs against `TestLogic.TestPipeline.expectMonomorphization`,
-which passes when the substitution engine monomorphizes a program to a graph
+which passes when the production pipeline monomorphizes a program to a graph
 with a `main` and some nodes.
 -}
 suite : Test

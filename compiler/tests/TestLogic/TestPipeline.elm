@@ -11,15 +11,22 @@ module TestLogic.TestPipeline exposing
     , expectMonomorphization
     , interfaceAnnotations
     , runSolverMonoWithLimits
+    , runSolverMonoWithLimitsNoPreMono
     , runSolverMonoWithReport
+    , runSolverMonoWithReportNoPreMono
     , runSubstMonoWithLimits
     , runToAssigned
     , runToGlobalOpt
-    , runToGlobalOptLssAllKeyedOn
-    , runToGlobalOptLssArrowIdOn
-    , runToGlobalOptLssOn
+    , runToGlobalOptNoPreMono
+    , runToGlobalOptStage5
     , runToMlir
+    , runToMlirNoPreMono
+    , runToMlirStage5
     , runToMono
+    , runToMonoNoPreMono
+    , runToMonoStage5
+    , productionConfig
+    , stage5Config
     , runToPostSolve
     , runToTypeCheck
     , runToTypedOpt
@@ -43,39 +50,50 @@ listed in `aliasedKernels`. Any other dependency global has an annotation and
 no node.
 
 `runToCanonical`, `runToTypeCheck`, `runToPostSolve`, `runToTypedOpt`,
-`runToMono`, `runToGlobalOpt`, `runToMlir` and `runToGlobalOptLssOn` (with its
-aliases) return the _cumulative artifacts_ of their stage: one record holding
-that stage's output together with the outputs of the earlier stages it ran,
-so that a test can inspect any of them. `runToAssigned`,
-`runToGlobalOptLssOnStats` and the three `run*MonoWith*` functions return only
-their own stage's result. A stage that fails gives `Err` with a message; for
-canonicalization and type checking it carries only a count of errors, and for
-typed optimization nothing about the error. A stage that crashes is not
-caught.
+`runToMono`, `runToGlobalOpt` and `runToMlir` (and their `Stage5` and
+`NoPreMono` variants) return the _cumulative artifacts_ of their stage: one
+record holding that stage's output together with the outputs of the earlier
+stages it ran, so that a test can inspect any of them. `runToAssigned` and the
+three `run*MonoWith*` functions return only their own stage's result. A stage
+that fails gives `Err` with a message; for canonicalization and type checking
+it carries only a count of errors, and for typed optimization nothing about
+the error. A stage that crashes is not caught.
 
 From `runToTypedOpt` on, the program is first given a _synthetic main_:
-`wrapWithMain` appends a `main` that binds `testValue` in a `let` and returns
-`Html.text "test main"`. That `main` is a valid entry point for the typed
+`wrapWithMain` appends a `main` that returns
+`Html.text (Elm.Kernel.Debug.toString testValue)`. That `main` is a valid entry point for the typed
 optimizer, and it makes `testValue` reachable from the entry point that
 monomorphization starts at. A program run through these stages must define
 `testValue`, or the test run crashes. `runToCanonical`, `runToTypeCheck` and
 `runToPostSolve` do not add a `main`.
 
-Two monomorphizer engines are used. `runToMono`, `runToGlobalOpt`,
-`runToMlir`, `runSubstMonoWithLimits` and `expectCoverageRun` use the
-substitution engine, `Compiler.Monomorphize.Monomorphize`.
-`runToGlobalOptLssOn` and its two aliases, `runToGlobalOptLssOnStats`,
-`runSolverMonoWithLimits` and `runSolverMonoWithReport` use the solver engine,
-`Compiler.MonoSolver.Monomorphize`, which is the default engine of a build
-(`Compiler.Eco.Config`).
+**Tests compile the way production compiles**
+(plans/staging-honesty-and-production-test-pipeline.md P1). From typed
+optimization on, every runner calls the build's own steps,
+`Compiler.Pipeline.Steps`, which `Builder.Generate` also calls, under a whole
+`EcoConfig`:
 
-The stages follow `Compiler.Compile` and `Builder.Generate`. Among the
-differences a test can observe: the pattern match checker is not run, neither alias forwarding nor
-eta-expansion is run before monomorphization, no pruning follows the
-post-monomorphization inliner, global optimization runs with the default
-configuration, and MLIR comes from
-`Compiler.Generate.MLIR.Backend.generateMlirModule`, not from the streaming
-writers a build uses.
+  - `runToMono`, `runToGlobalOpt`, `runToMlir` use `productionConfig`
+    (`Config.default`): the solver engine with lambda-set specialization,
+    alias forwarding and η-expansion before monomorphization, the
+    post-inline prune, and global optimization with its CSE / CAF steps as
+    configured. MLIR is generated with the build's code generator context, in
+    development mode (`eco make` without `--optimize`).
+  - the `Stage5` variants use `stage5Config`, the substitution engine, which
+    is how bootstrap Stage 5 compiles.
+  - the `NoPreMono` variants skip the pre-monomorphization passes. They are
+    not a production pipeline; a test uses one only to exercise a later pass
+    on input those passes would have rewritten, and says why.
+  - `runSolverMonoWithLimits`, `runSolverMonoWithReport` and
+    `runSubstMonoWithLimits` stop after monomorphization under the given
+    watchdog limits.
+
+What remains different from a build is the input, not the pipeline: the
+program is compiled against mock package interfaces rather than real
+packages, the pattern match checker is not run, and MLIR is generated as one
+module rather than streamed. `test/scripts/check-test-pipeline-production.sh`
+fails the `elm-tests` target if this module ever calls a compiler pass other
+than through `Compiler.Pipeline.Steps`.
 
 -}
 
@@ -95,15 +113,11 @@ import Compiler.Eco.Config as Config
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
-import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
-import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.EntryPrep as EntryPrep
-import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.Pipeline.Steps as Steps
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
@@ -199,8 +213,8 @@ the mock interfaces, and the monomorphized graph.
 
 `globalGraph` is the input monomorphization was given: the program's local
 graph plus an annotation for every mock-interface value, operator and
-constructor and a node for each kernel alias in `aliasedKernels`. `runToMono`
-fills `monoGraph` from the substitution engine.
+constructor and a node for each kernel alias in `aliasedKernels`. `monoGraph`
+comes from the engine of the runner's configuration.
 
 -}
 type alias MonoArtifacts =
@@ -220,9 +234,8 @@ artifacts plus `optimizedMonoGraph`, the result of running the
 post-monomorphization inliner and then
 `Compiler.GlobalOpt.MonoGlobalOptimize.globalOptimize` on `monoGraph`.
 
-`monoGraph` is the graph before both passes. It comes from the substitution
-engine when `runToGlobalOpt` builds the record and from the solver engine when
-`runToGlobalOptLssOn` does.
+`monoGraph` is the graph before both passes, from the engine of the runner's
+configuration.
 
 -}
 type alias GlobalOptArtifacts =
@@ -499,11 +512,48 @@ stampLikeCompile input =
     }
 
 
-{-| Runs `runToTypedOpt` on `srcModule` and monomorphizes the result with the
-substitution engine, starting from `main`.
+{-| The configuration of a default `eco make`: `Compiler.Eco.Config.default`
+(the solver engine with lambda-set specialization, the pre-monomorphization
+passes, the post-inline prune). `runToMono`, `runToGlobalOpt` and `runToMlir`
+compile under it.
 -}
-runToMono : Src.Module -> Result String MonoArtifacts
-runToMono srcModule =
+productionConfig : Config.EcoConfig
+productionConfig =
+    Config.default
+
+
+{-| The configuration of bootstrap Stage 5, the other pipeline the project
+runs (`compiler/CMakeLists.txt`, `ECO_MONO_ENGINE=subst`): the default with
+the substitution engine. The `*Stage5` runners compile under it.
+-}
+stage5Config : Config.EcoConfig
+stage5Config =
+    let
+        d =
+            Config.default
+
+        m =
+            d.mono
+    in
+    { d | mono = { m | engine = Config.EngineSubst } }
+
+
+{-| Whether a runner runs the pre-monomorphization passes. Only the
+`*NoPreMono` runners skip them.
+-}
+type PreMonoPasses
+    = WithPreMono
+    | WithoutPreMono
+
+
+{-| Runs `runToTypedOpt` on `srcModule` and then the build's steps up to and
+including monomorphization (`Compiler.Pipeline.Steps`: `prepare`, `preMono`,
+`checkMinted`, `monomorphize`, `checkStageArity`, `checkLayout`) under
+`ecoConfig`. The `Maybe String` is the LSS report, when the configuration asks
+for one.
+-}
+monoWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String ( MonoArtifacts, Maybe String )
+monoWith ecoConfig passes srcModule =
     case runToTypedOpt srcModule of
         Err e ->
             Err e
@@ -515,255 +565,245 @@ runToMono srcModule =
 
                 globalTypeEnv =
                     buildGlobalTypeEnv canonical
+
+                prepared =
+                    Steps.prepare ecoConfig globalGraph
+
+                assigned =
+                    case passes of
+                        WithPreMono ->
+                            (Steps.preMono ecoConfig prepared).assigned
+
+                        WithoutPreMono ->
+                            prepared
             in
-            case monomorphizeAny globalTypeEnv globalGraph of
-                Err monoErr ->
-                    Err ("Monomorphization failed: " ++ monoErr)
+            Steps.checkMinted ecoConfig assigned
+                |> Result.andThen (\_ -> Steps.monomorphize ecoConfig globalTypeEnv assigned)
+                |> Result.andThen
+                    (\( g, report ) ->
+                        Steps.checkStageArity g
+                            |> Result.andThen (Steps.checkLayout ecoConfig)
+                            |> Result.map (\g1 -> ( g1, report ))
+                    )
+                |> Result.mapError (\monoErr -> "Monomorphization failed: " ++ monoErr)
+                |> Result.map
+                    (\( monoGraph, report ) ->
+                        ( { canonical = canonical
+                          , annotations = annotations
+                          , nodeTypes = nodeTypes
+                          , kernelEnv = kernelEnv
+                          , localGraph = localGraph
+                          , globalGraph = globalGraph
+                          , globalTypeEnv = globalTypeEnv
+                          , monoGraph = monoGraph
+                          }
+                        , report
+                        )
+                    )
 
-                Ok monoGraph ->
-                    Ok
-                        { canonical = canonical
-                        , annotations = annotations
-                        , nodeTypes = nodeTypes
-                        , kernelEnv = kernelEnv
-                        , localGraph = localGraph
-                        , globalGraph = globalGraph
-                        , globalTypeEnv = globalTypeEnv
-                        , monoGraph = monoGraph
-                        }
+
+{-| `monoWith`, then the build's post-monomorphization steps
+(`Compiler.Pipeline.Steps`: `inline`, `prune`, `checkPruned`, `globalOpt`,
+`checkStageArity`, `checkClosureStaging`).
+-}
+globalOptWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String GlobalOptArtifacts
+globalOptWith ecoConfig passes srcModule =
+    monoWith ecoConfig passes srcModule
+        |> Result.andThen
+            (\( a, _ ) ->
+                let
+                    simplified =
+                        Steps.prune ecoConfig (Tuple.first (Steps.inline ecoConfig a.monoGraph))
+                in
+                Steps.checkPruned ecoConfig simplified
+                    |> Result.andThen (\_ -> Steps.checkStageArity (Tuple.first (Steps.globalOpt ecoConfig simplified)))
+                    |> Result.andThen (Steps.checkClosureStaging ecoConfig)
+                    |> Result.map
+                        (\optimizedMonoGraph ->
+                            { canonical = a.canonical
+                            , annotations = a.annotations
+                            , nodeTypes = a.nodeTypes
+                            , kernelEnv = a.kernelEnv
+                            , localGraph = a.localGraph
+                            , globalGraph = a.globalGraph
+                            , globalTypeEnv = a.globalTypeEnv
+                            , monoGraph = a.monoGraph
+                            , optimizedMonoGraph = optimizedMonoGraph
+                            }
+                        )
+            )
 
 
-{-| Returns the global graph of `runToMono` for `srcModule` after
-`Compiler.Monomorphize.EntryPrep.assign` has given it its ids, which is the
-kind of graph the pre-monomorphization passes work on in a build.
+{-| `globalOptWith`, then MLIR generation through the build's code generator
+context (`Compiler.Generate.MLIR.Backend.generateMlirModule ecoConfig`), in
+development mode, as `eco make` without `--optimize`.
+-}
+mlirWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String MlirArtifacts
+mlirWith ecoConfig passes srcModule =
+    globalOptWith ecoConfig passes srcModule
+        |> Result.map
+            (\a ->
+                let
+                    mlirModule =
+                        MLIR.generateMlirModule ecoConfig (Mode.Dev Nothing) a.optimizedMonoGraph
+                in
+                { canonical = a.canonical
+                , annotations = a.annotations
+                , nodeTypes = a.nodeTypes
+                , kernelEnv = a.kernelEnv
+                , localGraph = a.localGraph
+                , globalGraph = a.globalGraph
+                , globalTypeEnv = a.globalTypeEnv
+                , monoGraph = a.optimizedMonoGraph
+                , mlirModule = mlirModule
+                , mlirOutput = MLIR.generateProgram ecoConfig (Mode.Dev Nothing) a.optimizedMonoGraph
+                }
+            )
 
-It uses the assignment flags of the substitution engine, `( False, False )`,
-so arrows that share a solver root are not given a shared identity. It runs
-the whole of `runToMono`, monomorphization included, so it fails whenever
-`runToMono` does.
 
+{-| Compiles `srcModule` the way a default `eco make` does, up to and including
+monomorphization: `productionConfig`, pre-monomorphization passes included.
+-}
+runToMono : Src.Module -> Result String MonoArtifacts
+runToMono =
+    monoWith productionConfig WithPreMono >> Result.map Tuple.first
+
+
+{-| `runToMono`, then the post-monomorphization inliner, the post-inline prune
+and global optimization, as a default build runs them.
+-}
+runToGlobalOpt : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOpt =
+    globalOptWith productionConfig WithPreMono
+
+
+{-| `runToGlobalOpt`, then MLIR generation in development mode. `mlirOutput`
+is the printed text of `mlirModule`.
+-}
+runToMlir : Src.Module -> Result String MlirArtifacts
+runToMlir =
+    mlirWith productionConfig WithPreMono
+
+
+{-| `runToMono` under `stage5Config` (the substitution engine, as bootstrap
+Stage 5 compiles).
+-}
+runToMonoStage5 : Src.Module -> Result String MonoArtifacts
+runToMonoStage5 =
+    monoWith stage5Config WithPreMono >> Result.map Tuple.first
+
+
+{-| `runToGlobalOpt` under `stage5Config`.
+-}
+runToGlobalOptStage5 : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptStage5 =
+    globalOptWith stage5Config WithPreMono
+
+
+{-| `runToMlir` under `stage5Config`.
+-}
+runToMlirStage5 : Src.Module -> Result String MlirArtifacts
+runToMlirStage5 =
+    mlirWith stage5Config WithPreMono
+
+
+{-| `runToMono` WITHOUT the pre-monomorphization passes. Not a production
+pipeline: a test may use it only to exercise a later pass on input that alias
+forwarding or η-expansion would have rewritten first, and each caller says why
+in a comment.
+-}
+runToMonoNoPreMono : Src.Module -> Result String MonoArtifacts
+runToMonoNoPreMono =
+    monoWith productionConfig WithoutPreMono >> Result.map Tuple.first
+
+
+{-| `runToGlobalOpt` without the pre-monomorphization passes; see
+`runToMonoNoPreMono`.
+-}
+runToGlobalOptNoPreMono : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptNoPreMono =
+    globalOptWith productionConfig WithoutPreMono
+
+
+{-| `runToMlir` without the pre-monomorphization passes; see
+`runToMonoNoPreMono`.
+-}
+runToMlirNoPreMono : Src.Module -> Result String MlirArtifacts
+runToMlirNoPreMono =
+    mlirWith productionConfig WithoutPreMono
+
+
+{-| The global graph of `srcModule` after `Compiler.Pipeline.Steps.prepare`
+has given it its ids under `productionConfig`, which is the kind of graph the
+pre-monomorphization passes work on in a build.
 -}
 runToAssigned : Src.Module -> Result String EntryPrep.Assigned
 runToAssigned srcModule =
     Result.map
-        (\artifacts -> EntryPrep.assign ( False, False ) "main" artifacts.globalGraph)
-        (runToMono srcModule)
+        (\{ localGraph } -> Steps.prepare productionConfig (localGraphToGlobalGraph localGraph))
+        (runToTypedOpt srcModule)
 
 
-{-| Runs `runToMono` on `srcModule`, then the post-monomorphization inliner
-(`Compiler.GlobalOpt.MonoInlineSimplify.optimize`) and
-`Compiler.GlobalOpt.MonoGlobalOptimize.globalOptimize`, both with the default
-configuration. What the global optimizer does is described in
-`Compiler.GlobalOpt.MonoGlobalOptimize`.
--}
-runToGlobalOpt : Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOpt srcModule =
-    case runToMono srcModule of
-        Err e ->
-            Err e
-
-        Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, monoGraph } ->
-            let
-                ( simplifiedGraph, _ ) =
-                    MonoInlineSimplify.optimize Config.default.inline monoGraph
-
-                optimizedMonoGraph =
-                    MonoGlobalOptimize.globalOptimize simplifiedGraph
-            in
-            Ok
-                { canonical = canonical
-                , annotations = annotations
-                , nodeTypes = nodeTypes
-                , kernelEnv = kernelEnv
-                , localGraph = localGraph
-                , globalGraph = globalGraph
-                , globalTypeEnv = globalTypeEnv
-                , monoGraph = monoGraph
-                , optimizedMonoGraph = optimizedMonoGraph
-                }
-
-
-{-| Runs `runToTypedOpt` on `srcModule`, monomorphizes with the solver engine
-and the default lambda-set specialization configuration, which has
-lambda-set specialization on, and then runs the inliner and global optimizer
-as `runToGlobalOpt` does.
-
-This is the engine and lambda-set configuration of a default build.
-`runToGlobalOptLssArrowIdOn` and `runToGlobalOptLssAllKeyedOn` are the same
-function under other names.
-
--}
-runToGlobalOptLssOn : Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssOn =
-    runToGlobalOptLssKeyedWith
-
-
-{-| Runs `runToGlobalOptLssOn`; it is the same function under another name.
--}
-runToGlobalOptLssArrowIdOn : Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssArrowIdOn =
-    runToGlobalOptLssKeyedWith
-
-
-{-| Runs `runToGlobalOptLssOn`; it is the same function under another name.
--}
-runToGlobalOptLssAllKeyedOn : Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssAllKeyedOn =
-    runToGlobalOptLssKeyedWith
-
-
-{-| Runs the pipeline `runToGlobalOptLssOn` describes; `runToGlobalOptLssOn`
-and its two aliases are bound to this function.
--}
-runToGlobalOptLssKeyedWith : Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssKeyedWith srcModule =
-    case runToTypedOpt srcModule of
-        Err e ->
-            Err e
-
-        Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph } ->
-            let
-                globalGraph =
-                    localGraphToGlobalGraph localGraph
-
-                globalTypeEnv =
-                    buildGlobalTypeEnv canonical
-
-                defaultLss =
-                    Config.defaultLss
-
-                lssOn =
-                    { defaultLss | enabled = True }
-            in
-            case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
-                Err monoErr ->
-                    Err ("Monomorphization (solver + lss) failed: " ++ monoErr)
-
-                Ok monoGraph ->
-                    let
-                        ( simplifiedGraph, _ ) =
-                            MonoInlineSimplify.optimize Config.default.inline monoGraph
-
-                        optimizedMonoGraph =
-                            MonoGlobalOptimize.globalOptimize simplifiedGraph
-                    in
-                    Ok
-                        { canonical = canonical
-                        , annotations = annotations
-                        , nodeTypes = nodeTypes
-                        , kernelEnv = kernelEnv
-                        , localGraph = localGraph
-                        , globalGraph = globalGraph
-                        , globalTypeEnv = globalTypeEnv
-                        , monoGraph = monoGraph
-                        , optimizedMonoGraph = optimizedMonoGraph
-                        }
-
-
-{-| Runs `runToTypedOpt` on `srcModule` and monomorphizes the result with the
-solver engine under the given `limits` and `lssConfig`, returning the graph
-without global optimization.
-
-The limits are the specialization watchdog's, so a test can give small ones
+{-| `runToMono` with the solver engine under the given watchdog `limits` and
+`lssConfig`, returning the monomorphized graph. A test can give small limits
 and check that a program whose specializations keep growing ends in `Err`.
-
 -}
 runSolverMonoWithLimits : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String Mono.MonoGraph
-runSolverMonoWithLimits limits lssConfig srcModule =
-    case runToTypedOpt srcModule of
-        Err e ->
-            Err e
-
-        Ok { canonical, localGraph } ->
-            let
-                globalGraph =
-                    localGraphToGlobalGraph localGraph
-
-                globalTypeEnv =
-                    buildGlobalTypeEnv canonical
-            in
-            Result.map Tuple.first
-                (MonoSolver.monomorphizeWithReport lssConfig limits "main" globalTypeEnv globalGraph)
+runSolverMonoWithLimits limits lssConfig =
+    monoWith (withMono Config.EngineSolver limits lssConfig) WithPreMono
+        >> Result.map (Tuple.first >> .monoGraph)
 
 
-{-| Does what `runSolverMonoWithLimits` does with `report` set in `lssConfig`,
-and returns the rendered lambda-set specialization report alongside the
-graph, so that a test can check the report's counter lines.
-`Compiler.MonoSolver.Monomorphize` gives the report as `Just` whenever
-`report` is set.
+{-| `runSolverMonoWithLimits` with `report` set in `lssConfig`, returning the
+rendered lambda-set specialization report alongside the graph so that a test
+can check its counter lines.
 -}
 runSolverMonoWithReport : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String ( Mono.MonoGraph, Maybe String )
-runSolverMonoWithReport limits lssConfig srcModule =
-    case runToTypedOpt srcModule of
-        Err e ->
-            Err e
-
-        Ok { canonical, localGraph } ->
-            let
-                globalGraph =
-                    localGraphToGlobalGraph localGraph
-
-                globalTypeEnv =
-                    buildGlobalTypeEnv canonical
-            in
-            MonoSolver.monomorphizeWithReport { lssConfig | report = True } limits "main" globalTypeEnv globalGraph
+runSolverMonoWithReport limits lssConfig =
+    monoWith (withMono Config.EngineSolver limits { lssConfig | report = True }) WithPreMono
+        >> Result.map (Tuple.mapFirst .monoGraph)
 
 
-{-| Runs `runToTypedOpt` on `srcModule` and monomorphizes the result with the
-substitution engine under the given watchdog `limits`, as
-`runSolverMonoWithLimits` does for the solver engine.
+{-| `runSolverMonoWithLimits` without the pre-monomorphization passes; see
+`runToMonoNoPreMono` for when a test may use it.
+-}
+runSolverMonoWithLimitsNoPreMono : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String Mono.MonoGraph
+runSolverMonoWithLimitsNoPreMono limits lssConfig =
+    monoWith (withMono Config.EngineSolver limits lssConfig) WithoutPreMono
+        >> Result.map (Tuple.first >> .monoGraph)
+
+
+{-| `runSolverMonoWithReport` without the pre-monomorphization passes; see
+`runToMonoNoPreMono` for when a test may use it.
+-}
+runSolverMonoWithReportNoPreMono : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String ( Mono.MonoGraph, Maybe String )
+runSolverMonoWithReportNoPreMono limits lssConfig =
+    monoWith (withMono Config.EngineSolver limits { lssConfig | report = True }) WithoutPreMono
+        >> Result.map (Tuple.mapFirst .monoGraph)
+
+
+{-| `runToMonoStage5` (the substitution engine) under the given watchdog
+`limits`, as `runSolverMonoWithLimits` does for the solver engine.
 -}
 runSubstMonoWithLimits : Config.SpecLimits -> Src.Module -> Result String Mono.MonoGraph
-runSubstMonoWithLimits limits srcModule =
-    case runToTypedOpt srcModule of
-        Err e ->
-            Err e
-
-        Ok { canonical, localGraph } ->
-            let
-                globalGraph =
-                    localGraphToGlobalGraph localGraph
-
-                globalTypeEnv =
-                    buildGlobalTypeEnv canonical
-            in
-            Monomorphize.monomorphizeWithLimits limits "main" globalTypeEnv globalGraph
+runSubstMonoWithLimits limits =
+    monoWith (withMono Config.EngineSubst limits Config.default.mono.lss) WithPreMono
+        >> Result.map (Tuple.first >> .monoGraph)
 
 
-{-| Runs `runToGlobalOpt` on `srcModule` and generates MLIR from the optimized
-graph in development mode.
-
-The text in `mlirOutput` comes from a second generation of the same graph,
-through the back end's code generator interface. `runToMlir` fails only when
-an earlier stage does.
-
+{-| `productionConfig` with the given engine, watchdog limits and LSS
+configuration.
 -}
-runToMlir : Src.Module -> Result String MlirArtifacts
-runToMlir srcModule =
-    case runToGlobalOpt srcModule of
-        Err e ->
-            Err e
+withMono : Config.MonoEngine -> Config.SpecLimits -> Config.LssConfig -> Config.EcoConfig
+withMono engine limits lssConfig =
+    let
+        d =
+            productionConfig
 
-        Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, optimizedMonoGraph } ->
-            let
-                mlirModule =
-                    MLIR.generateMlirModule (Mode.Dev Nothing) optimizedMonoGraph
-
-                mlirOutput =
-                    runMLIRGeneration optimizedMonoGraph
-            in
-            Ok
-                { canonical = canonical
-                , annotations = annotations
-                , nodeTypes = nodeTypes
-                , kernelEnv = kernelEnv
-                , localGraph = localGraph
-                , globalGraph = globalGraph
-                , globalTypeEnv = globalTypeEnv
-                , monoGraph = optimizedMonoGraph
-                , mlirModule = mlirModule
-                , mlirOutput = mlirOutput
-                }
+        m =
+            d.mono
+    in
+    { d | mono = { m | engine = engine, limits = limits, lss = lssConfig } }
 
 
 
@@ -1002,23 +1042,16 @@ buildGlobalTypeEnv canModule =
         (Data.Map.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv)
 
 
-{-| Monomorphizes `globalGraph` with the substitution engine and its default
-limits, starting from `main`. Monomorphization can still fail; the `Err`
-carries the engine's message.
--}
-monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphizeAny globalTypeEnv globalGraph =
-    Monomorphize.monomorphize "main" globalTypeEnv globalGraph
-
-
 {-| Returns the module with the synthetic `main` appended to its values:
 
     main =
-        let
-            _tv =
-                testValue
-        in
-        Html.text "test main"
+        Html.text (Elm.Kernel.Debug.toString testValue)
+
+`main` USES `testValue`, as a real program uses what it computes. An unused
+binding would be dead code: the inliner drops it, and the post-inline prune
+then removes `testValue` and everything only it reaches, so the program under
+test would never reach code generation
+(plans/staging-honesty-and-production-test-pipeline.md P1.4).
 
 It also appends `import Html exposing (text)` unless the module already has an
 import of `Html`; when that import has an alias, `main` calls `text` through
@@ -1044,13 +1077,9 @@ wrapWithMain (Src.Module data) =
                 )
                 data.values
 
-        tvDef =
+        testValueRef =
             if List.member "testValue" valueNames then
-                Src.Define
-                    (A.At A.zero "_tv")
-                    []
-                    ( [], varRef "testValue" )
-                    Nothing
+                varRef "testValue"
 
             else
                 Debug.todo "Test module must define 'testValue' — see SourceIR test standard"
@@ -1076,19 +1105,18 @@ wrapWithMain (Src.Module data) =
                 _ ->
                     "Html"
 
-        body =
+        mainExpr =
             A.At A.zero
                 (Src.Call
                     (A.At A.zero (Src.VarQual Src.LowVar htmlQualifier "text"))
-                    [ ( [], A.At A.zero (Src.Str "test main" False) ) ]
-                )
-
-        mainExpr =
-            A.At A.zero
-                (Src.Let
-                    [ ( ( [], [] ), A.At A.zero tvDef ) ]
-                    []
-                    body
+                    [ ( []
+                      , A.At A.zero
+                            (Src.Call
+                                (A.At A.zero (Src.VarQual Src.LowVar "Elm.Kernel.Debug" "toString"))
+                                [ ( [], testValueRef ) ]
+                            )
+                      )
+                    ]
                 )
 
         mainValue =
@@ -1131,25 +1159,6 @@ varRef name =
     A.At A.zero (Src.Var Src.LowVar name)
 
 
-{-| Generates MLIR text for `monoGraph` through the MLIR back end's code
-generator interface, in development mode.
--}
-runMLIRGeneration : Mono.MonoGraph -> String
-runMLIRGeneration monoGraph =
-    let
-        config =
-            { sourceMaps = CodeGen.NoSourceMaps
-            , leadingLines = 0
-            , mode = Mode.Dev Nothing
-            , graph = monoGraph
-            }
-
-        output =
-            MLIR.backend.generate config
-    in
-    CodeGen.outputToString output
-
-
 
 -- ============================================================================
 -- EXPECTATION HELPERS
@@ -1157,12 +1166,10 @@ runMLIRGeneration monoGraph =
 
 
 {-| Creates an expectation that `srcModule` gets through `runToTypedOpt`, and
-then runs the rest of the substitution-engine pipeline on it (monomorphization,
-the inliner, global optimization and MLIR generation) only so that the code
-runs.
+then through the rest of the production pipeline (`runToMlir`) only so that the
+code runs.
 
-It fails when a stage up to typed optimization or monomorphization returns
-`Err`. The later stages cannot return `Err`; what they produce is not checked.
+It fails when any stage returns `Err`; what the stages produce is not checked.
 A stage that crashes still ends the test.
 
 -}
@@ -1172,32 +1179,12 @@ expectCoverageRun srcModule =
         Err msg ->
             Expect.fail ("Invalid test case (frontend failure): " ++ msg)
 
-        Ok typedOptArtifacts ->
-            let
-                { canonical, localGraph } =
-                    typedOptArtifacts
-
-                globalGraph =
-                    localGraphToGlobalGraph localGraph
-
-                globalTypeEnv =
-                    buildGlobalTypeEnv canonical
-            in
-            case monomorphizeAny globalTypeEnv globalGraph of
+        Ok _ ->
+            case runToMlir srcModule of
                 Err msg ->
-                    Expect.fail ("Monomorphization failed: " ++ msg)
+                    Expect.fail msg
 
-                Ok monoGraph ->
-                    let
-                        ( simplifiedGraph, _ ) =
-                            MonoInlineSimplify.optimize Config.default.inline monoGraph
-
-                        optimizedMonoGraph =
-                            MonoGlobalOptimize.globalOptimize simplifiedGraph
-
-                        _ =
-                            runMLIRGeneration optimizedMonoGraph
-                    in
+                Ok _ ->
                     Expect.pass
 
 

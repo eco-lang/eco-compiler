@@ -25,8 +25,9 @@ What the tests establish:
     the same position. A program that fails to compile fails its test.
 
 Among what is not tested: an op with no `_operand_types` attribute; an operand
-whose name is defined nowhere in its function; and MLIR produced with the
-solver monomorphization engine, since `runToMlir` uses the substitution engine.
+whose name is defined nowhere in its function; and MLIR produced by bootstrap
+Stage 5 (the substitution engine), since `runToMlir` is the production
+pipeline.
 
 -}
 

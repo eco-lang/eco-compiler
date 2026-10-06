@@ -1,4 +1,4 @@
-module SourceIR.SpecializePolyLetCases exposing (expectSuite)
+module SourceIR.SpecializePolyLetCases exposing (expectSuite, foldlMulti, reverseMulti)
 
 {-| Supplies programs built around polymorphic functions defined in a `let`,
 most of them used at more than one type.
@@ -32,8 +32,6 @@ by its label:
     `String`.
   - "recursive length at two list types": a `length` that is not
     tail-recursive, on a list of numbers and a list of `String`s.
-  - "tail-recursive foldl at two types": `foldl` over a list of numbers and a
-    list of `String`s, with a number as the accumulator both times.
   - "recursive map at two types": a `map` that is not tail-recursive, over
     numbers and over `String`s.
   - "partial application of map": the same `map`, used only through two
@@ -41,8 +39,6 @@ by its label:
     at `String`s.
   - "pair constructor at two type combos": a function `pair` building a
     tuple (not a constructor) at (number, `String`) and (`String`, number).
-  - "tail-recursive reverse at two types": `reverse` on a list of numbers and
-    a list of `String`s, through a tail-recursive local `reverseHelper`.
   - "twice higher-order at two types": `twice` with a function on numbers and
     a function on `String`s.
   - "singleton at two types": `singleton` at a number and a `String`.
@@ -101,7 +97,7 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
-{-| Returns the fourteen cases, each a label paired with a check that builds
+{-| Returns the twelve cases, each a label paired with a check that builds
 its program and passes it to `expectFn`.
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
@@ -111,11 +107,9 @@ testCases expectFn =
     , { label = "apply higher-order at two types", run = applyMulti expectFn }
     , { label = "compose at two type combos", run = composeMulti expectFn }
     , { label = "recursive length at two list types", run = lengthMulti expectFn }
-    , { label = "tail-recursive foldl at two types", run = foldlMulti expectFn }
     , { label = "recursive map at two types", run = mapMulti expectFn }
     , { label = "partial application of map", run = mapPartialMulti expectFn }
     , { label = "pair constructor at two type combos", run = pairMulti expectFn }
-    , { label = "tail-recursive reverse at two types", run = reverseMulti expectFn }
     , { label = "twice higher-order at two types", run = twiceMulti expectFn }
     , { label = "singleton at two types", run = singletonMulti expectFn }
     , { label = "named local as higher-order arg", run = namedLocalAsArg expectFn }
@@ -263,6 +257,14 @@ lengthMulti expectFn _ =
 the tail call `foldl f (f x acc) rest`, used to fold `[ 1, 2, 3 ]` with
 `\x acc -> x + acc` and `[ "a", "b" ]` with `\x acc -> acc + 1`, both from
 `0`, and passes the program to `expectFn`.
+
+BUG PIN, not in `testCases`
+(plans/staging-honesty-and-production-test-pipeline.md §4): under the
+production monomorphizer the second specialization names `foldl$1` out of
+scope (MONO\_011), and code generation crashes on it. It is checked once, by
+`TestLogic.Generate.MonoGraphIntegrityTest`, instead of failing every suite
+that uses these cases.
+
 -}
 foldlMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlMulti expectFn _ =
@@ -417,6 +419,11 @@ is the tail call `reverseHelper (x :: acc) rest`, and a local
 `reverse xs = reverseHelper [] xs` applied to `[ 1, 2 ]` and `[ "a", "b" ]`,
 and passes the program to `expectFn`. The `let` body calls `reverseHelper` only
 through `reverse`.
+
+BUG PIN, not in `testCases`: the same defect as `foldlMulti` (the second
+specialization names `reverseHelper$1` out of scope); checked once by
+`TestLogic.Generate.MonoGraphIntegrityTest`.
+
 -}
 reverseMulti : (Src.Module -> Expectation) -> (() -> Expectation)
 reverseMulti expectFn _ =

@@ -12,20 +12,22 @@ was built at.
 The check is
 `TestLogic.Monomorphize.RegistryNodeTypeConsistency.expectRegistryNodeTypeConsistency`,
 which compiles each program with `TestLogic.TestPipeline.runToMono` (the
-substitution engine). For each program it fails if the program does not
+production pipeline). For each program it fails if the program does not
 compile, if a `reverseMapping` entry has no node at its `SpecId`, or if the
-entry's type is not `==` to its node's type. The programs are those of
-`SourceIR.Suite.StandardTestSuites`, in one group named
-`"registry type matches node"`.
+entry's type does not have its node type's layout. Constructor specializations
+are skipped there and pinned by the "MONO_017 BUG PIN" group: the solver engine
+registers a constructor at its function type while its node holds the
+constructed type. The programs are those of `SourceIR.Suite.StandardTestSuites`.
 
-Among what is not tested: a node with no registry entry, the graph the solver
-engine produces, and the graph after global optimization.
+Among what is not tested: a node with no registry entry, and the graph after
+global optimization.
 
 -}
 
+import SourceIR.SpecializeConstructorCases as SpecializeConstructorCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency)
+import TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectCtorRegistryTypes, expectRegistryNodeTypeConsistency)
 
 
 {-| The standard test programs, each checked with
@@ -35,4 +37,6 @@ suite : Test
 suite =
     Test.describe "MONO_017: Registry type matches node type"
         [ StandardTestSuites.expectSuite expectRegistryNodeTypeConsistency "registry type matches node"
+        , Test.describe "MONO_017 BUG PIN: the solver engine registers a constructor spec at its function type"
+            [ SpecializeConstructorCases.expectSuite expectCtorRegistryTypes "constructor registry type matches node" ]
         ]

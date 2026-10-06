@@ -38,7 +38,7 @@ are lists. Because `applyCons` is recursive, the post-monomorphization
 inliner does not take it as an ordinary inline candidate.
 
 The one test runs the fixture through
-`TestLogic.TestPipeline.runToGlobalOptLssOn` and reads every expression of the
+`TestLogic.TestPipeline.runToGlobalOpt` and reads every expression of the
 optimized graph:
 
   - It fails if the pipeline returns an error.
@@ -91,7 +91,7 @@ suite =
     Test.describe "E9.2: (::) passed as function devirtualizes to a direct kernel call"
         [ Test.test "the f-site became a direct List.cons kernel call" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssOn fixtureModule of
+                case Pipeline.runToGlobalOpt fixtureModule of
                     Err e ->
                         Expect.fail ("solver+LSS pipeline failed: " ++ e)
 

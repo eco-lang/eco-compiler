@@ -1,4 +1,4 @@
-module TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency, Violation)
+module TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency, expectCtorRegistryTypes, Violation)
 
 {-| Checks that the specialization registry and the graph's nodes agree on the
 type of every specialization, so that code reading a specialization's type
@@ -13,27 +13,36 @@ writes and updates the two at different points, and nothing in their types
 keeps them equal.
 
 `expectRegistryNodeTypeConsistency` runs a source module through
-`TestLogic.TestPipeline.runToMono` and checks the graph it returns:
+`TestLogic.TestPipeline.runToMono` (the production pipeline: the solver engine
+with lambda-set specialization) and checks the graph it returns:
 
   - A module that fails to compile fails the check, with the pipeline's
     message.
   - Each `reverseMapping` entry that holds a specialization must have a node
     at the same `SpecId`. A missing node is reported.
-  - Where both exist, the registry's type must be `==` to the node's type.
-    This is plain structural equality, so any difference counts, including
-    ones the types printed in the failure message do not show, such as in
-    lambda-set annotations, a type variable's constraint, or a custom type's
-    arguments. The two printed types can therefore look the same.
+  - Where both exist, the registry's type must have the node type's layout
+    (`sameLayout`: `Mono.eqLayout` with type variables compared by constraint
+    only), including how a function type groups its parameters into stages. Lambda-set annotations are not compared: under the solver
+    engine a registry key records the set of the DEMAND that created the
+    specialization while the node records its own zonked type, which can be
+    ⊤ (seen: key `LSet [2]`, node `LTop 18`, for a partially applied
+    two-argument function). Whether MONO\_017 should also bind the
+    annotations is an open question
+    (plans/staging-honesty-and-production-test-pipeline.md §4).
+  - Constructor specializations (`MonoCtor` nodes) are skipped: the solver
+    engine registers a constructor at its FUNCTION type (`Int -> Box`) while
+    the node holds the constructed type (`Box`, as `MonoCtor` documents). That
+    is a MONO\_017 violation in the production engine, pinned separately by
+    `expectCtorRegistryTypes`.
 
 Empty `reverseMapping` slots, which pruning leaves for removed
 specializations, are skipped. Every violation found is reported in one
 failure, in `SpecId` order.
 
-Among what is not checked: a node with no registry entry; the graph the
-solver engine produces, which is the compiler's default (`runToMono` uses the
-substitution engine); and the graph after global optimization.
+Among what is not checked: a node with no registry entry, and the graph after
+global optimization.
 
-@docs expectRegistryNodeTypeConsistency, Violation
+@docs expectRegistryNodeTypeConsistency, expectCtorRegistryTypes, Violation
 
 -}
 
@@ -93,6 +102,10 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
 
                     Just ( _, regMonoType ) ->
                         case Array.get specId data.nodes |> Maybe.andThen identity of
+                            Just (Mono.MonoCtor _ _) ->
+                                -- Pinned separately (expectCtorRegistryTypes).
+                                acc
+
                             Nothing ->
                                 acc
                                     ++ [ { context = "SpecId " ++ String.fromInt specId
@@ -106,7 +119,7 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
                                     nType =
                                         nodeType node
                                 in
-                                if nType /= regMonoType then
+                                if not (sameLayout nType regMonoType) then
                                     acc
                                         ++ [ { context = "SpecId " ++ String.fromInt specId
                                              , message =
@@ -123,6 +136,93 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
                                     acc
             )
             []
+
+
+{-| BUG PIN (MONO\_017, plans/staging-honesty-and-production-test-pipeline.md
+§4): compiles `srcModule` with `runToMono` and fails for every constructor
+specialization whose registry type does not have its node's layout. The
+solver engine registers a constructor at its function type, so this fails on
+any program that builds a constructor with arguments.
+-}
+expectCtorRegistryTypes : Src.Module -> Expectation
+expectCtorRegistryTypes srcModule =
+    case Pipeline.runToMono srcModule of
+        Err msg ->
+            Expect.fail ("Compilation failed: " ++ msg)
+
+        Ok { monoGraph } ->
+            let
+                (Mono.MonoGraph data) =
+                    monoGraph
+
+                violations =
+                    Array.toIndexedList data.registry.reverseMapping
+                        |> List.filterMap
+                            (\( specId, maybeEntry ) ->
+                                case ( maybeEntry, Array.get specId data.nodes |> Maybe.andThen identity ) of
+                                    ( Just ( _, regMonoType ), Just (Mono.MonoCtor _ nType) ) ->
+                                        if sameLayout nType regMonoType then
+                                            Nothing
+
+                                        else
+                                            Just
+                                                { context = "SpecId " ++ String.fromInt specId
+                                                , message =
+                                                    "MONO_017 violation (constructor): registry MonoType != node MonoType\n"
+                                                        ++ "  registry: "
+                                                        ++ monoTypeToString regMonoType
+                                                        ++ "\n"
+                                                        ++ "  node:     "
+                                                        ++ monoTypeToString nType
+                                                }
+
+                                    _ ->
+                                        Nothing
+                            )
+            in
+            if List.isEmpty violations then
+                Expect.pass
+
+            else
+                Expect.fail (formatViolations violations)
+
+
+{-| `Mono.eqLayout`, except that two type variables with the same constraint
+are the same whatever their ids: an unresolved (erased) variable has no layout
+of its own, and the solver engine numbers the one in a phantom argument
+differently in a registry key and in the node it keys (seen: `Box` keyed at
+`MVar 4`, its node at `MVar 124`).
+-}
+sameLayout : Mono.MonoType -> Mono.MonoType -> Bool
+sameLayout a b =
+    case ( a, b ) of
+        ( Mono.MFunction _ _ argsA retA, Mono.MFunction _ _ argsB retB ) ->
+            sameLayoutList argsA argsB && sameLayout retA retB
+
+        ( Mono.MList _ xa, Mono.MList _ xb ) ->
+            sameLayout xa xb
+
+        ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
+            sameLayoutList xsa xsb
+
+        ( Mono.MRecord _ fieldsA, Mono.MRecord _ fieldsB ) ->
+            Dict.keys fieldsA
+                == Dict.keys fieldsB
+                && sameLayoutList (Dict.values fieldsA) (Dict.values fieldsB)
+
+        ( Mono.MCustom _ homeA nameA argsA, Mono.MCustom _ homeB nameB argsB ) ->
+            nameA == nameB && homeA == homeB && sameLayoutList argsA argsB
+
+        ( Mono.MVar _ constraintA, Mono.MVar _ constraintB ) ->
+            constraintA == constraintB
+
+        _ ->
+            a == b
+
+
+sameLayoutList : List Mono.MonoType -> List Mono.MonoType -> Bool
+sameLayoutList xs ys =
+    List.length xs == List.length ys && List.all identity (List.map2 sameLayout xs ys)
 
 
 {-| Returns the `MonoType` a node carries. It gives the same result as

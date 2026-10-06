@@ -82,7 +82,7 @@ suite =
                             |> expectNone
         , Test.test "substitution engine after alias forwarding calls the mul kernel at its operands' types" <|
             \_ ->
-                case Pipeline.runToMono wrapIntModule of
+                case Pipeline.runToMonoStage5 wrapIntModule of
                     Err msg ->
                         Expect.fail msg
 

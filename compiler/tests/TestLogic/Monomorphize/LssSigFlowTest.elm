@@ -189,7 +189,10 @@ suite =
                         Config.defaultLss
                 in
                 case
-                    Pipeline.runSolverMonoWithReport Config.defaultLimits
+                    -- NoPreMono (plans/staging-honesty-and-production-test-pipeline.md P1.4): this pins an LSS
+                    -- analysis rule on a hand-written shape that pre-mono alias forwarding / eta-expansion
+                    -- rewrite before the solver sees it.
+                    Pipeline.runSolverMonoWithReportNoPreMono Config.defaultLimits
                         { defaults | enabled = True, maxSetSize = 1 }
                         mk2Module
                 of
@@ -362,7 +365,10 @@ run srcModule =
         defaults =
             Config.defaultLss
     in
-    Pipeline.runSolverMonoWithLimits
+    -- NoPreMono (plans/staging-honesty-and-production-test-pipeline.md P1.4): this pins an LSS
+    -- analysis rule on a hand-written shape that pre-mono alias forwarding / eta-expansion
+    -- rewrite before the solver sees it.
+    Pipeline.runSolverMonoWithLimitsNoPreMono
         Config.defaultLimits
         -- `enabled` is already True in `defaultLss`.
         { defaults | enabled = True }
@@ -374,7 +380,10 @@ the output graph and the report text, empty when the solver returned none.
 -}
 runWithReport : Src.Module -> Result String ( Mono.MonoGraph, String )
 runWithReport srcModule =
-    Pipeline.runSolverMonoWithReport Config.defaultLimits Config.defaultLss srcModule
+    -- NoPreMono (plans/staging-honesty-and-production-test-pipeline.md P1.4): this pins an LSS
+    -- analysis rule on a hand-written shape that pre-mono alias forwarding / eta-expansion
+    -- rewrite before the solver sees it.
+    Pipeline.runSolverMonoWithReportNoPreMono Config.defaultLimits Config.defaultLss srcModule
         |> Result.map (Tuple.mapSecond (Maybe.withDefault ""))
 
 

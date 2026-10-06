@@ -60,9 +60,12 @@ Staging provides two services through one uniform protocol:
   nested lambda chains into one uncurried stage; `mono-still-curried`
   keeps stage boundaries where computation intervenes (lambdas separated
   by `let`/`case`). Under-application forms runtime PAPs
-  (`papCreate`/`papExtend` chains); each function commits to a canonical
-  segmentation (`chooseCanonicalSegmentation`) and disagreeing call sites
-  are reconciled by ABI wrappers (`buildAbiWrapperGO`; GOPT_003/010–016).
+  (`papCreate`/`papExtend` chains); each closure's type is regrouped to
+  its param count (`Staging.regroup`, GOPT_001), and a call whose callee's
+  staging is not known (e.g. through a join of differently staged
+  branches, GOPT_003) is applied generically (GOPT_010–016). *(Updated
+  2026-10-06: the majority-vote segmentation and ABI wrappers this line
+  used to cite were removed; they inserted no wrappers.)*
 - **Unknown callees**: the uniform closure ABI (evaluator ptr + captures +
   arity/stage metadata) plus generic apply as the arity fallback.
 

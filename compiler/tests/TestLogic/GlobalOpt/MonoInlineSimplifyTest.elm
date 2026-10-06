@@ -6,9 +6,8 @@ build: that it does the rewrite each small fixture is built for, and that over
 the standard catalogue its output keeps two structural invariants.
 
 The programs are turned into a monomorphized graph by
-`TestLogic.TestPipeline.runToMono`, which uses the substitution engine rather
-than the solver engine a default build uses, and runs none of the
-pre-monomorphization passes. The inliner is then called with
+`TestLogic.TestPipeline.runToMono`, the production pipeline up to and
+including monomorphization. The inliner is then called with
 `Config.default.inline`. The optimized graph is not pruned afterwards, whereas
 a default build prunes it.
 
@@ -159,7 +158,8 @@ simpleIdentityModule =
         []
 
 
-{-| A module whose `testValue` binds 42 in a `let` and returns it:
+{-| A module whose `testValue` binds 42 in a `let` it never uses, so the
+binding is dead and the inliner drops it:
 
     testValue : Int
     testValue =
@@ -167,7 +167,7 @@ simpleIdentityModule =
             x =
                 42
         in
-        x
+        7
 
 -}
 simpleLetModule : Src.Module
@@ -178,7 +178,7 @@ simpleLetModule =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = letExpr [ define "x" [] (intExpr 42) ] (varExpr "x")
+            , body = letExpr [ define "x" [] (intExpr 42) ] (intExpr 7)
             }
     in
     makeModuleWithTypedDefsUnionsAliases "Test"
@@ -214,8 +214,8 @@ lambdaApplicationModule =
         []
 
 
-{-| A module whose `testValue` nests one `let` inside another and returns the
-outer binding; the inner binding `y` is never used:
+{-| A module whose `testValue` nests one `let` inside another and uses
+neither binding, so both are dead and the inliner drops both:
 
     testValue : Int
     testValue =
@@ -227,7 +227,7 @@ outer binding; the inner binding `y` is never used:
             y =
                 2
         in
-        x
+        3
 
 -}
 nestedLetModule : Src.Module
@@ -241,7 +241,7 @@ nestedLetModule =
             , body =
                 letExpr [ define "x" [] (intExpr 1) ]
                     (letExpr [ define "y" [] (intExpr 2) ]
-                        (varExpr "x")
+                        (intExpr 3)
                     )
             }
     in

@@ -16,8 +16,7 @@ the constructor, gives the heap object the wrong layout.
 
 The fixture is whatever source module the caller passes.
 `expectMonoCtorLayoutIntegrity` runs it through `TestPipeline.runToMono`,
-which monomorphizes with the substitution engine (see that function's
-docstring), and fails with its message if `runToMono` returns an error.
+the production pipeline (see that function's docstring), and fails with its message if `runToMono` returns an error.
 Otherwise it applies two checks to the resulting graph and fails with every
 violation found:
 

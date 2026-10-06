@@ -8,7 +8,7 @@ Staged currying is a technique for determining how functions should segment thei
 
 **Pipeline Position**: After Monomorphization, before MLIR Generation
 
-**Related Invariant**: **GOPT_003** — All branches of a MonoCase must have compatible calling conventions (staged currying signatures).
+**Related Invariants**: **GOPT_001** — a closure's type has as many parameters in its first stage as the closure takes; **GOPT_003** — a function-valued MonoCase/MonoIf makes no staging claim beyond what all its branches agree on (rewritten Oct 2026).
 
 **Note**: This logic was moved from Monomorphization to GlobalOpt to achieve a clean separation of concerns: Monomorphization is staging-agnostic and focuses on specialization, while GlobalOpt handles all calling-convention and ABI decisions.
 
@@ -63,9 +63,9 @@ Two staging signatures are compatible if they have the same total arity and grou
 [3] NOT compatible with [2,1]     -- different grouping
 ```
 
-## Joinpoint Matching Algorithm
+## Joins of Differently Staged Functions
 
-When a case expression returns functions from different branches, we must ensure all branches have compatible calling conventions. The joinpoint matching algorithm determines a common staging and transforms non-conforming branches.
+When a case or if expression returns functions from different branches, the branches may be staged differently.
 
 ### The Problem
 
@@ -78,72 +78,34 @@ chooser b =
         \x -> \y -> x * y      -- natural staging: [1,1]
 ```
 
-Each branch has a different natural staging. We cannot return different function types from the same case expression.
+A caller of `chooser b` cannot know statically which of the two closures it receives.
 
-### Algorithm: Majority Staging
+### What the Compiler Does
 
-1. **Collect stagings**: Gather the natural staging from each branch
-2. **Find majority**: Select the most common staging pattern
-3. **Transform non-conforming**: Wrap branches with different stagings in eta-wrappers
+**Branches keep their own staging.** GlobalOpt regroups each closure's type to its own parameter count (`Staging.regroup`, GOPT_001) and never re-stages one branch to agree with another. Instead it makes no claim about the join that the branches do not all share:
 
-```
-FUNCTION computeJoinpointStaging(branches):
-    stagings = [getStaging(branch) | branch <- branches]
+- `MonoGlobalOptimize.closureBodyStageArities` returns `Just stages` only when every branch (case jump targets **and** decision-tree `Inline` leaves, through `Chain`/`FanOut`; every if branch **and** the else) is a closure with the same stage arities. Otherwise it returns `Nothing`.
+- A call whose callee value can come from such a join therefore gets no derived `initialRemaining`/`remainingStageArities`; it is `CallSegmentationUnknown` or `CallGenericApply`.
+- Codegen applies such a value generically: the runtime reads the selected closure's header (its arity and remaining count) and applies the arguments stage by stage. Every staging produces the same value, so this is always correct; it is only slower than a known-segmentation call.
 
-    -- Count occurrences of each staging
-    counts = groupAndCount(stagings)
+**Why balancing the branches was unnecessary.**
+1. Codegen already applies runtime-selected function values generically, so a join never needs one uniform staging to be called correctly.
+2. Pre-mono η-expansion to declared arity rewrites a join that is a definition's whole body. `chooser` above becomes a three-argument function whose branches compute `x + y` / `x * y` directly, so the join disappears before monomorphization.
+3. The joins η cannot dissolve (let-bound, stored in a list, passed as an argument, held in a record field) are exactly where a call site cannot see the join anyway; they are applied generically.
 
-    -- Select majority (ties broken by preferring larger groups)
-    majorityStaging = selectMajority(counts)
+### History: majority staging (removed Oct 2026)
 
-    -- Transform branches
-    FOR EACH branch IN branches:
-        branchStaging = getStaging(branch)
-        IF branchStaging != majorityStaging:
-            branch' = wrapWithEta(branch, majorityStaging)
-            REPLACE branch WITH branch'
-
-    RETURN majorityStaging
-```
-
-### Eta-Wrapping
-
-To convert a `[1,1]` function to `[2]`:
-
-```elm
--- Original: \x -> \y -> x * y
--- Wrapped:  \x y -> (\x -> \y -> x * y) x y
-```
-
-The wrapper immediately applies all arguments, eliminating the intermediate closure.
-
-### Example Transformation
-
-```elm
--- Before:
-chooser b =
-    if b then
-        \x y -> x + y          -- [2]
-    else
-        \x -> \y -> x * y      -- [1,1]
-
--- After (majority is [2]):
-chooser b =
-    if b then
-        \x y -> x + y          -- [2], unchanged
-    else
-        \x y -> (\x -> \y -> x * y) x y   -- [1,1] wrapped to [2]
-```
+Earlier designs balanced the branches: collect each branch's natural staging, pick the most common (ties to the larger first group), and eta-wrap the others (`\x -> \y -> x * y` became `\x y -> (\x -> \y -> x * y) x y`). It was implemented twice: as a case/if normalizer in `MonoGlobalOptimize` (`rewriteExprForAbi`, `computeBranchNormalization`, `buildAbiWrapperGO`, ...), which nothing called, and as the class vote of the staging solver (see "Callsite Derivation" below), which measured zero wrappers on every corpus because it never saw a case's inline branches. Both were deleted (plans/staging-honesty-and-production-test-pipeline.md P2/P3).
 
 ## Invariant GOPT_003
 
-**Statement**: All branches of a MonoCase that return functions must have compatible staged currying signatures.
+**Statement**: After GlobalOpt a function-valued MonoCase or MonoIf makes no staging claim beyond what all of its branches agree on. Its stored type may differ from a branch's staging, and branch values are never re-staged to agree. No `CallInfo` derives `initialRemaining` or `remainingStageArities` from a join whose branches disagree.
 
-**Rationale**: The case expression's result type must be uniform. If branches return functions with different calling conventions, the caller cannot know how to invoke the result.
+**Rationale**: A claimed staging that is true of only one branch would make codegen emit a known-segmentation call for a value that may be staged differently at run time. Claiming nothing is always sound: the runtime applies the value by its closure header.
 
-**Enforcement**: The `normalizeCaseIfAbi` pass runs during GlobalOpt for any case expression whose result type is a function. It uses `chooseCanonicalSegmentation` to pick a common staging and `buildAbiWrapperGO` to wrap branches that differ.
+**Enforcement**: `MonoGlobalOptimize.closureBodyStageArities` (all branches must agree, see above).
 
-**Violation Detection**: If no majority can be determined (e.g., all branches different) or transformation fails, this is a compiler bug.
+**Checks**: `TestLogic.Monomorphize.MonoCaseBranchResultType.expectHonestJoinStaging` (on the production pipeline); E2E guard `test/elm/src/Gopt003CaseStagingTest.elm`; elm-test fixtures in `JoinpointABICases` category 6 (joins η-expansion cannot dissolve: let-bound, in a list, as an argument, in a record field).
 
 ## Kernel Function Special Case
 
@@ -169,13 +131,13 @@ mappedList = List.map f
 -- pap_List_map_1 arg0 arg1 = List_map(arg0, arg1)
 ```
 
-## Callsite Derivation Algorithm
+## Callsite Derivation
 
-The staging solver uses a graph-based approach to propagate staging constraints across the entire program. This **callsite derivation algorithm** ensures that every callsite uses the correct calling convention.
+Every call site needs to know how its callee is staged. This is derived in GlobalOpt Phase 5 (`annotateCallStaging`), per function, from what the call site can see.
 
 ### The Problem
 
-Consider a function that flows through multiple intermediate bindings:
+Consider a function that flows through intermediate bindings:
 
 ```elm
 adder = \x y -> x + y              -- natural staging [2]
@@ -183,43 +145,23 @@ alias = adder                       -- what staging?
 result = alias 1 2                  -- how to call?
 ```
 
-The callsite `alias 1 2` needs to know that `alias` has staging `[2]`. But this information must be propagated from the original closure definition.
+The call site `alias 1 2` needs to know that `alias` has staging `[2]`.
 
-### The Graph-Based Solution
+### How It Is Derived
 
-1. **Producers**: Every closure/function definition is a **producer** with a natural segmentation.
-
-2. **Slots**: Every place a function value can be stored is a **slot** (variable bindings, function parameters, captures, record fields, etc.).
-
-3. **Edges**: When a producer flows to a slot, an edge is created.
-
-4. **Unification**: When the same value must have consistent staging across locations (e.g., both branches of an if-expression), slots are unified.
-
-5. **Solving**: All nodes in an equivalence class get the same canonical segmentation, chosen by majority vote among the producers in that class.
-
-### Example: Variable Propagation
-
-```elm
-f = \x y -> x + y    -- Producer P1, staging [2]
-g = f                -- Slot S1
-h = g                -- Slot S2, unified with S1
-r = h 1 2            -- Callsite: lookup S2's class → [2]
-```
-
-Graph edges: P1 → S1 → S2
-After solving: class {P1, S1, S2} has staging [2]
-The callsite at `h 1 2` queries the staging for S2 and gets [2].
+- **Globals**: the callee node is looked up in the graph; a closure or tail function supplies its parameter count (`sourceArityForExpr`) and its body's remaining stages (`closureBodyStageArities`). A global defined as an alias of another function is wrapped in an alias closure by Phase 1 (`wrapTopLevelCallables`), so it has a parameter list too.
+- **Locals**: `CallEnv` records the source arity (`varSourceArity`) and body stage arities (`varBodyStageArities`) of let-bound and captured variables whose bound expression is known.
+- **Unknown**: when nothing is known (`sourceArityForCallee` falls back to the type, `FromType`), or the callee is a function-typed parameter of the enclosing tail function (`CallEnv.dynamicParams`, `isDynamicCallee`), or it may come from a join whose branches disagree (GOPT_003), the call is `CallSegmentationUnknown` or `CallGenericApply` and the runtime applies the closure by its header.
 
 ### Kernel Function Integration
 
-Kernel functions have fixed segmentations (all args at once):
+Kernel functions have fixed ABIs (all args at once). A direct kernel call is `FlattenedExternal`; a kernel used as a value at top level is wrapped in an alias closure by Phase 1, whose parameter count is the kernel's arity.
 
-```elm
-kernelSeg("List_map") = [2]
-kernelSeg("Basics_add") = [2]
-```
+### History: the graph-based staging solver (removed Oct 2026)
 
-When a kernel flows to a slot, it contributes its fixed segmentation to the equivalence class. If user-defined closures flow to the same class, the kernel's segmentation takes precedence (kernel ABIs are immutable).
+Until October 2026 staging was decided by a program-wide solver (`Compiler.GlobalOpt.Staging.GraphBuilder`, `ProducerInfo`, `UnionFind`, `Solver`, `Types`, `Rewriter`). Closures, tail functions and kernels were *producers* with a natural segmentation; variable bindings, parameters, captures, if/case results and record/tuple/list slots were *slots*. Flows created edges, joins unioned slots, each equivalence class got a canonical segmentation by majority vote (kernels fixed), and disagreeing producers were eta-wrapped.
+
+Measured on 2026-10-06 it inserted **zero** wrappers: self-compile 38,624 classes with none disagreeing, E2E corpus 936 programs / 8,412 classes, 1,124 elm-test programs. The builder never looked into a case's decision-tree `Inline` leaves (where nearly all branches live), never connected function arguments to parameters, and never traced let-bound variables (`varBindings` was never written); pre-mono η-expansion to declared arity dissolves the joins a vote could have reconciled. Its only effects were the type regrouping (now `Staging.regroup`) and `dynamicSlots`, which was exactly the function-typed parameters of `MonoTailFunc` nodes (now `CallEnv.dynamicParams`). Output is byte-identical without it.
 
 ## PAP Wrapper Elimination
 
@@ -293,39 +235,22 @@ The GlobalOpt pass runs several phases:
 
 0. *(External)*: `MonoInlineSimplify` - Inline small functions (applied before GlobalOpt)
 1. **Phase 1**: `wrapTopLevelCallables` - Wrap bare kernel/global references in closures
-2. **Phase 2**: `Staging.analyzeAndSolveStaging` - Build staging graph, solve, and rewrite
-3. **Phase 3**: `Staging.validateClosureStaging` - Validate closure staging invariants
-4. **Phase 4**: `AbiCloning.abiCloningPass` - Clone functions for homogeneous closure ABIs
+2. **Phase 2**: `Staging.regroup` - Regroup each closure/tail-func type to its param count (GOPT_001); creates no values
+3. *(Phase 3, the no-op `validateClosureStaging`, was removed; GOPT_001 is checked under `mono.validate` by `Compiler.Pipeline.Steps.checkClosureStaging`)*
+4. **Phase 4**: `AbiCloning.abiCloningPass` - Clone functions for homogeneous closure ABIs; LSS singleton stamps (then `Mono.clearLssTables`)
 5. **Phase 5**: `annotateCallStaging` - Annotate `CallInfo` metadata for MLIR codegen
+6. **Phase 6**: `Borrow.run` - Borrow inference (when enabled)
 
-The staging subsystem in `compiler/src/Compiler/GlobalOpt/Staging/` handles the graph-based solving:
+After GlobalOpt, `Compiler.Pipeline.Steps` runs CSE, CAF dedupe and CAF hoisting, each behind its flag.
 
-| Module | Purpose |
+Staging is the single module `compiler/src/Compiler/GlobalOpt/Staging.elm`:
+
+| Function | Purpose |
 |--------|---------|
-| `Types.elm` | ProducerId, SlotId, Node, StagingGraph types |
-| `GraphBuilder.elm` | Build constraint graph from MonoGraph |
-| `Solver.elm` | Union-find solver with majority voting |
-| `Rewriter.elm` | Apply solution via eta-wrapping |
-| `ProducerInfo.elm` | Compute natural segmentations |
-| `UnionFind.elm` | Union-find data structure |
+| `regroup` | Rewrite every `MonoClosure`/`MonoTailFunc` type with `flattenTypeToArity (params)`: first stage = the params, remaining arguments one further stage, head lambda-set annotation copied onto every stage; every `MonoDefine` takes its rewritten expression's type |
+| `checkClosureStaging` | List GOPT_001 violations (run by `Steps.checkClosureStaging` under `mono.validate`) |
 
-The joinpoint matching is now integrated into the graph solver:
-1. Both branches of an if/case are connected to the same result slot
-2. The solver unifies these slots automatically
-3. Non-conforming branches are eta-wrapped during rewriting
-
-### Cost Model
-
-Eta-wrapping has a cost: it creates a closure and introduces an extra call. The algorithm prefers to minimize total wrapping:
-
-```
-FUNCTION selectMajority(counts):
-    -- Sort by (count DESC, totalArgs DESC)
-    -- Larger groups preferred (fewer wraps needed)
-    -- More args preferred (bigger functions worth preserving)
-    sorted = sortBy(counts, \(staging, count) -> (-count, -sum(staging)))
-    RETURN first(sorted).staging
-```
+**LSS interaction**: regrouping copies a closure type's head lambda-set annotation onto every stage arrow (the rebuilder rule; partial applications keep the callee's member, design OQ4). Since staging creates no values, it creates no instances that would block AbiCloning's singleton stamps (LSS_008/LSS_009).
 
 ## Example: Complex Case
 
@@ -339,13 +264,7 @@ process n =
         _ -> \x -> \y -> x - y
 ```
 
-Stagings: `[2]`, `[1,1]`, `[2]`, `[1,1]`
-
-Counts: `[2] -> 2`, `[1,1] -> 2`
-
-Tie-breaker: `[2]` wins (larger first group, more args at once)
-
-Result: Branches 1 and 3 get eta-wrapped to `[2]`.
+Stagings: `[2]`, `[1,1]`, `[2]`, `[1,1]`. Each branch keeps its own staging; `closureBodyStageArities` sees the branches disagree and returns `Nothing`, so a call through `process n` is applied generically (GOPT_003). In a production build pre-mono η-expansion first makes `process` a three-argument function, and the join disappears. (Under the removed majority vote, branches 1 and 3 would have been eta-wrapped to `[2]`.)
 
 ## Relationship to Other Passes
 
@@ -365,7 +284,7 @@ The staging logic was moved from Monomorphization to GlobalOpt to achieve a clea
 
 **GlobalOpt responsibilities** (staging-aware):
 - Canonicalize closure types to match param counts
-- Generate ABI wrappers for incompatible case branches
+- Make no staging claim for a case/if join beyond what all its branches agree on (GOPT_003)
 - Compute call staging metadata (`CallInfo`) for MLIR
 - All calling-convention decisions resolved
 

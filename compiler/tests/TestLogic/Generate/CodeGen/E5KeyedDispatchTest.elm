@@ -43,7 +43,7 @@ both lambdas and the call could not be stamped.
 What the test establishes:
 
   - "applyBoth: keying makes the site stamp at all" runs the fixture through
-    `TestLogic.TestPipeline.runToGlobalOptLssAllKeyedOn` and passes when the
+    `TestLogic.TestPipeline.runToGlobalOpt` and passes when the
     optimised graph holds at least one call with a `fastEvaluator`. A pipeline
     failure fails the test.
 
@@ -90,7 +90,7 @@ suite =
     Test.describe "keying a global fans out singleton specs that stamp"
         [ Test.test "applyBoth: keying makes the site stamp at all" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssAllKeyedOn fixtureModule of
+                case Pipeline.runToGlobalOpt fixtureModule of
                     Err e ->
                         Expect.fail ("solver+LSS keyed pipeline failed: " ++ e)
 

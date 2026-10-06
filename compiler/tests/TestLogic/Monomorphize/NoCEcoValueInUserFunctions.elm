@@ -17,7 +17,7 @@ type the walk misses is neither closed nor detected; the walk here is written
 independently of it.
 
 The caller supplies the program. It is compiled with
-`TestLogic.TestPipeline.runToMono`, which uses the substitution engine. The
+`TestLogic.TestPipeline.runToMono`, the production pipeline. The
 check looks at these types, at any depth inside them:
 
   - the type of every node, and the parameter types of a `MonoTailFunc`;

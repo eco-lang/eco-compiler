@@ -9,14 +9,14 @@ Elm lets two lambdas of the same type group their parameters differently:
 lambda layers is its _segmentation_, written as the parameter count of each
 layer, so these two are `[2, 1]` and `[1, 2]`; a function with more than one
 layer is _staged_. When the branches of a `case` return functions, the value
-leaving the `case` must be callable one way whichever branch produced it. The
-point where the branches meet is the _join point_, and the segmentation every
-branch must present there is its _ABI_. `Compiler.GlobalOpt.Staging` is the
-pass that picks one segmentation for the function values it joins at a join
-point, by a majority vote that `Compiler.GlobalOpt.Staging.Solver` owns, and
-wraps those that differ from it. Which branches it joins is a rule
-`Compiler.GlobalOpt.Staging.GraphBuilder` owns. The categories below are
-arranged by how the segmentations of the branches, as written, compare.
+leaving the `case` must be callable whichever branch produced it. The point
+where the branches meet is the _join point_. The compiler does not re-stage
+the branches to agree: each keeps its own segmentation, and a call through
+the joined value claims only what all of them agree on (GOPT\_003; the
+runtime applies such a value by its closure header). A build's pre-mono
+η-expansion dissolves a join that is a definition's whole body, which is why
+category 6 holds joins it cannot reach. The categories below are arranged by
+how the segmentations of the branches, as written, compare.
 
 Every case builds a module `Test` with
 `Compiler.AST.SourceBuilder.makeModuleWithTypedDefsUnionsAliases`, holding two
@@ -37,14 +37,13 @@ with no `Parens` node.
 What the tests establish:
 
   - `expectSuite expectFn condStr` is one test, named `"JoinpointABI "` followed
-    by `condStr`, that hands all 25 programs to `expectFn` in turn through
+    by `condStr`, that hands all 29 programs to `expectFn` in turn through
     `Compiler.BulkCheck.bulkCheck`, which stops at the first failure and
     reports that case's label. What is checked is up to `expectFn`.
-  - `suite` runs the same 25 programs through
+  - `suite` runs the same 29 programs through
     `TestLogic.TestPipeline.runToGlobalOpt`, which monomorphizes, inlines and
     runs the global optimizer, staging pass included, and checks that each
-    gives an optimized graph with a `main` and a non-empty node array. It does
-    not check which segmentation the staging pass chose.
+    gives an optimized graph with a `main` and a non-empty node array.
   - Category 1 (cases 1.1 to 1.6): every branch has the same segmentation,
     one of `[2]`, `[1, 1]`, `[3]`, `[1, 1, 1]` and `[2, 1]`, and in 1.6 every
     branch returns an `Int`.
@@ -61,9 +60,18 @@ What the tests establish:
     five lambda parameters in four segmentations (5.3), a `[2]` branch against
     a `[1, 1]` branch under a record pattern (5.4), and `case`s on a custom
     type (5.5) and on a list (5.6).
+  - Category 6 (6.1 to 6.4): RESIDUAL joins, which a build's pre-mono
+    η-expansion cannot dissolve because the join is not a definition's whole
+    body (plans/staging-honesty-and-production-test-pipeline.md P2.1). Each
+    `pick n` holds `case n of 0 -> \a b -> a + b ; _ -> \a -> \b -> a * b`
+    (a `[2]` branch against a `[1, 1]` branch) and `testValue` applies `pick`
+    to `[ 0, 1, 2 ]` through `List.map`, so `n` is not a literal at any call.
+    The join is let-bound and called twice (6.1), the element of a list a
+    lambda then applies (6.2), the argument of a higher-order `apply2` (6.3)
+    and the field of a record (6.4).
 
-Among what is not tested: no case checks which segmentation is chosen, that a
-wrapper is built, or what `testValue` evaluates to; no branch value is a kernel
+Among what is not tested: no case checks what `testValue` evaluates to (the E2E
+guard `test/elm/src/Gopt003CaseStagingTest.elm` runs the category 6 shapes); no branch value is a kernel
 function or a top-level function; no `caseFunc` is
 polymorphic.
 
@@ -100,6 +108,8 @@ import Compiler.AST.SourceBuilder
         , tRecord
         , tType
         , varExpr
+        , accessExpr
+        , qualVarExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
@@ -164,6 +174,7 @@ testCases expectFn =
         , tieBreakingCases expectFn
         , nestedControlFlowCases expectFn
         , edgeCases expectFn
+        , residualJoinCases expectFn
         ]
 
 
@@ -1629,6 +1640,145 @@ edgeCases expectFn =
     , { label = "5.5 customTypeBranches", run = customTypeBranches expectFn }
     , { label = "5.6 listPatternBranches", run = listPatternBranches expectFn }
     ]
+
+
+{-| Category 6: joins of differently staged lambdas that survive a build's
+pre-mono passes (see the module documentation).
+-}
+residualJoinCases : (Src.Module -> Expectation) -> List TestCase
+residualJoinCases expectFn =
+    [ { label = "6.1 letBoundJoin", run = residualJoin expectFn letBoundJoinBody }
+    , { label = "6.2 joinInList", run = residualJoinList expectFn }
+    , { label = "6.3 joinAsArgument", run = residualJoin expectFn joinAsArgumentBody }
+    , { label = "6.4 joinInRecord", run = residualJoin expectFn joinInRecordBody }
+    ]
+
+
+{-| `case n of 0 -> \a b -> a + b ; _ -> \a -> \b -> a * b`: a `[2]` branch
+and a `[1, 1]` branch.
+-}
+residualJoinExpr : Src.Expr
+residualJoinExpr =
+    caseExpr (varExpr "n")
+        [ ( pInt 0
+          , lambdaExpr [ pVar "a", pVar "b" ]
+                (binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b"))
+          )
+        , ( pAnything
+          , lambdaExpr [ pVar "a" ]
+                (lambdaExpr [ pVar "b" ]
+                    (binopsExpr [ ( varExpr "a", "*" ) ] (varExpr "b"))
+                )
+          )
+        ]
+
+
+{-| 6.1: `pick n = let f = <join> in f n 3 + f 5 3`.
+-}
+letBoundJoinBody : Src.Expr
+letBoundJoinBody =
+    letExpr [ define "f" [] residualJoinExpr ]
+        (binopsExpr
+            [ ( callExpr (varExpr "f") [ varExpr "n", intExpr 3 ], "+" ) ]
+            (callExpr (varExpr "f") [ intExpr 5, intExpr 3 ])
+        )
+
+
+{-| 6.3: `pick n = apply2 <join> 5 3`, with `apply2 g a b = g a b`.
+-}
+joinAsArgumentBody : Src.Expr
+joinAsArgumentBody =
+    callExpr (varExpr "apply2") [ residualJoinExpr, intExpr 5, intExpr 3 ]
+
+
+{-| 6.4: `pick n = let r = { op = <join> } in r.op 5 3`.
+-}
+joinInRecordBody : Src.Expr
+joinInRecordBody =
+    letExpr [ define "r" [] (recordExpr [ ( "op", residualJoinExpr ) ]) ]
+        (callExpr (accessExpr (varExpr "r") "op") [ intExpr 5, intExpr 3 ])
+
+
+intToIntToInt : Src.Type
+intToIntToInt =
+    tLambda (tType "Int" []) (tLambda (tType "Int" []) (tType "Int" []))
+
+
+{-| Applies `expectFn` to a program with `pick : Int -> Int` whose body is
+`pickBody`, `apply2 : (Int -> Int -> Int) -> Int -> Int -> Int`, and
+`testValue = List.map pick [ 0, 1, 2 ]`.
+-}
+residualJoin : (Src.Module -> Expectation) -> Src.Expr -> (() -> Expectation)
+residualJoin expectFn pickBody _ =
+    let
+        apply2Def : TypedDef
+        apply2Def =
+            { name = "apply2"
+            , args = [ pVar "g", pVar "a", pVar "b" ]
+            , tipe = tLambda intToIntToInt intToIntToInt
+            , body = callExpr (varExpr "g") [ varExpr "a", varExpr "b" ]
+            }
+
+        pickDef : TypedDef
+        pickDef =
+            { name = "pick"
+            , args = [ pVar "n" ]
+            , tipe = tLambda (tType "Int" []) (tType "Int" [])
+            , body = pickBody
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "List" [ tType "Int" [] ]
+            , body =
+                callExpr (qualVarExpr "List" "map")
+                    [ varExpr "pick", listExpr [ intExpr 0, intExpr 1, intExpr 2 ] ]
+            }
+    in
+    expectFn
+        (makeModuleWithTypedDefsUnionsAliases "Test"
+            [ apply2Def, pickDef, testValueDef ]
+            []
+            []
+        )
+
+
+{-| 6.2: `pick n = List.map (\g -> g 5 3) [ <join> ]`, so `pick : Int -> List
+Int` and `testValue = List.map pick [ 0, 1, 2 ]`.
+-}
+residualJoinList : (Src.Module -> Expectation) -> (() -> Expectation)
+residualJoinList expectFn _ =
+    let
+        pickDef : TypedDef
+        pickDef =
+            { name = "pick"
+            , args = [ pVar "n" ]
+            , tipe = tLambda (tType "Int" []) (tType "List" [ tType "Int" [] ])
+            , body =
+                callExpr (qualVarExpr "List" "map")
+                    [ lambdaExpr [ pVar "g" ] (callExpr (varExpr "g") [ intExpr 5, intExpr 3 ])
+                    , listExpr [ residualJoinExpr ]
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "List" [ tType "List" [ tType "Int" [] ] ]
+            , body =
+                callExpr (qualVarExpr "List" "map")
+                    [ varExpr "pick", listExpr [ intExpr 0, intExpr 1, intExpr 2 ] ]
+            }
+    in
+    expectFn
+        (makeModuleWithTypedDefsUnionsAliases "Test"
+            [ pickDef, testValueDef ]
+            []
+            []
+        )
 
 
 {-| Applies `expectFn` to a program whose `case` has a single wildcard branch,

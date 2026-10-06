@@ -24,8 +24,8 @@ the `collectSpecEdges` the prune uses, so a reference that function misses
 shows here as dangling.
 
 Each graph test builds a module with `Compiler.AST.SourceBuilder` and runs it
-through `withGraphs`: `TestPipeline.runToMono`, which uses the substitution
-engine and adds a `main` that refers to `testValue`, then
+through `withGraphs`: `TestPipeline.runToMono`, the production pipeline, which
+adds a `main` that uses `testValue`, then
 `MonoInlineSimplify.optimize` with the default inline configuration, then the
 prune. The three modules are:
 

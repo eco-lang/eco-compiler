@@ -18,9 +18,8 @@ type has two arities:
     `MFunction`.
 
 `expectFunctionArityMatches` is the check. It compiles the module it is given
-with `TestLogic.TestPipeline.runToGlobalOpt`, which monomorphizes with the
-substitution engine and then runs the post-monomorphization inliner and the
-global optimizer, and it examines every `MonoDefine`, `MonoTailFunc`,
+with `TestLogic.TestPipeline.runToGlobalOpt`, the production pipeline up to
+and including global optimization, and it examines every `MonoDefine`, `MonoTailFunc`,
 `MonoPortIncoming` and `MonoPortOutgoing` node of the optimized graph. It
 reports:
 
@@ -33,7 +32,7 @@ reports:
   - a `MonoTailFunc` node whose parameter count differs from the stage arity
     of its type. The global optimizer re-types a tail function so that its
     first stage holds exactly its parameters (GOPT\_001,
-    `Staging.Rewriter.flattenTypeToArity`), so a tail function that returns a
+    `Staging.regroup`), so a tail function that returns a
     function has a later stage of its own;
   - a `MonoCall` with more arguments than the flattened arity of its callee's
     type, when that arity is above 0. A call with fewer arguments, a partial

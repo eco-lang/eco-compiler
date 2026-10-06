@@ -236,8 +236,9 @@ checkContainerSlotKindsOnly op =
                     |> List.filterMap identity
 
 
-{-| Returns an expectation that passes when `srcModule` compiles to MLIR,
-exactly one op is named `opName`, and its `slot_kinds` entries are `expected`.
+{-| Returns an expectation that passes when `srcModule` compiles to MLIR, at
+least one op is named `opName`, and every such op's `slot_kinds` entries are
+`expected`.
 -}
 expectSlotKinds : String -> List Int -> Src.Module -> Expectation
 expectSlotKinds opName expected srcModule =
@@ -247,18 +248,16 @@ expectSlotKinds opName expected srcModule =
 
         Ok { mlirModule } ->
             case findOpsNamed opName mlirModule of
-                [ op ] ->
-                    getArrayAttr "slot_kinds" op
-                        |> Maybe.map (List.filterMap extractKind)
-                        |> Expect.equal (Just expected)
+                [] ->
+                    Expect.fail ("expected an " ++ opName ++ " op, found none")
 
                 ops ->
-                    Expect.fail
-                        ("expected exactly one "
-                            ++ opName
-                            ++ " op, found "
-                            ++ String.fromInt (List.length ops)
-                        )
+                    -- Every copy: constant-thunk folding (CGEN_082) emits a
+                    -- constant's body again at each use, so one construction
+                    -- in the source can be several ops.
+                    ops
+                        |> List.map (getArrayAttr "slot_kinds" >> Maybe.map (List.filterMap extractKind))
+                        |> Expect.equal (List.repeat (List.length ops) (Just expected))
 
 
 {-| Returns the violation, if any, for operand `index` of a construct op, as

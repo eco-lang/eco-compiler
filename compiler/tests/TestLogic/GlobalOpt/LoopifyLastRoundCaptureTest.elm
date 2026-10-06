@@ -55,7 +55,7 @@ MONO\_011 local-variable half of `expectMonoGraphClosed`):
 
   - with the default inline configuration, `appliedLambdaModule`'s graph is
     well scoped after `MonoInlineSimplify.optimize` and after the whole
-    `runToGlobalOptLssOn` pipeline (before the fix: `MONO_011: MonoVarLocal 'mono_inline_11' is not
+    `runToGlobalOpt` pipeline (before the fix: `MONO_011: MonoVarLocal 'mono_inline_11' is not
     in scope at SpecId 3`), and both loopifies happened (so the
     check is not vacuous);
   - for every round limit 1..6, both fixtures are well scoped after the
@@ -114,7 +114,7 @@ suite =
                     )
         , Test.test "default config: applied-lambda fixture is well scoped after the whole LSS pipeline" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssOn appliedLambdaModule of
+                case Pipeline.runToGlobalOpt appliedLambdaModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -135,12 +135,12 @@ suite =
 
 
 {-| Monomorphizes `srcModule` as a default build does (solver engine, LSS
-on; the `monoGraph` of `runToGlobalOptLssOn`, taken before its own inliner
+on; the `monoGraph` of `runToGlobalOpt`, taken before its own inliner
 runs) and applies `check` to the graph.
 -}
 withMono : Src.Module -> (Mono.MonoGraph -> Expect.Expectation) -> Expect.Expectation
 withMono srcModule check =
-    case Pipeline.runToGlobalOptLssOn srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail msg
 

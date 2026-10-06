@@ -412,6 +412,14 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
                 fusedOp->setAttr("_result_kind", resultKindAttr);
             }
         }
+        // Generic-call reason census (staging plan P0.4): keep a tag when either
+        // link had one; a generic fusion of untagged links is reason 10 (fused).
+        if (auto reasonAttr = extendOp->getAttr("_gencall_reason"))
+            fusedOp->setAttr("_gencall_reason", reasonAttr);
+        else if (auto prevReason = prevExtend->getAttr("_gencall_reason"))
+            fusedOp->setAttr("_gencall_reason", prevReason);
+        else if (!bothTyped)
+            fusedOp->setAttr("_gencall_reason", rewriter.getI64IntegerAttr(10));
         if (fusedRootCount > 0) {
             fusedOp->setAttr("eco.gc_roots_count",
                 rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedRootCount)));

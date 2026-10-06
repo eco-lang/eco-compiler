@@ -8,7 +8,7 @@ inference; MONO\_002 rules out `CNumber` at code generation). Any other
 variable is an `MVar _ CEcoValue`, always boxed, and may remain.
 
 `expectMonoTypesFullyElaborated` runs a program through the pipeline of a
-default build, `TestLogic.TestPipeline.runToGlobalOptLssOn`: the solver
+default build, `TestLogic.TestPipeline.runToGlobalOpt`: the solver
 monomorphization engine with lambda-set specialization, then the
 post-monomorphization inliner and the global optimizer. It fails if any type
 stored in the optimized graph, at any position `MonoTraverse.anyNodeType`
@@ -39,7 +39,7 @@ with one line per node holding one, labelled with the node's `SpecId`.
 -}
 expectMonoTypesFullyElaborated : Src.Module -> Expect.Expectation
 expectMonoTypesFullyElaborated srcModule =
-    case Pipeline.runToGlobalOptLssOn srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail ("solver+LSS pipeline failed: " ++ msg)
 

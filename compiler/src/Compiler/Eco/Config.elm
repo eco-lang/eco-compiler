@@ -237,16 +237,22 @@ type MonoEngine
 {-| The settings of monomorphization: which engine runs, the LSS settings the
 solver engine reads, and the watchdog limits.
 
-`diffDump` and `validate` cannot be set from the file, and neither has a token
-in `hash`. `diffDump` adds the first differing node to the error `EngineDiff`
-gives on a mismatch. `validate` runs validators on the program before and
-after monomorphization and fails the compile on a violation.
+`diffDump`, `validate` and `stagingReport` cannot be set from the file, and
+none has a token in `hash`. `diffDump` adds the first differing node to the
+error `EngineDiff` gives on a mismatch. `validate` runs validators on the
+program before and after monomorphization and fails the compile on a
+violation. `stagingReport` (`ECO_STAGING_REPORT=1`) prints the staging and
+generic-call census after global optimization and tags generic calls in the
+MLIR with their reason
+(plans/staging-honesty-and-production-test-pipeline.md P0); it changes no
+output but those attributes.
 
 -}
 type alias MonoConfig =
     { engine : MonoEngine
     , diffDump : Bool
     , validate : Bool
+    , stagingReport : Bool
     , lss : LssConfig
     , limits : SpecLimits
     }
@@ -539,7 +545,7 @@ default =
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
-    , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss, limits = defaultLimits }
+    , mono = { engine = EngineSolver, diffDump = False, validate = False, stagingReport = False, lss = defaultLss, limits = defaultLimits }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }
     , list = { chunks = True, consIntrinsic = True, mapTemplate = False, report = False }
     , aggPromote = True
@@ -760,8 +766,8 @@ borrowReifyFromString s =
 `limits`.
 
 A missing `engine` gives `EngineSubst`, not `default`'s `EngineSolver`, while
-one that is not recognized gives `EngineSolver`. `diffDump` and `validate` are
-not read and keep their defaults.
+one that is not recognized gives `EngineSolver`. `diffDump`, `validate` and
+`stagingReport` are not read and keep their defaults.
 
 -}
 monoDecoder : D.Decoder x MonoConfig
@@ -771,6 +777,7 @@ monoDecoder =
             { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
             , diffDump = default.mono.diffDump
             , validate = default.mono.validate
+            , stagingReport = default.mono.stagingReport
             , lss = lss
             , limits = limits
             }

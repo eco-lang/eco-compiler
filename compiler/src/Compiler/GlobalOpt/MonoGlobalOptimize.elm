@@ -7,16 +7,18 @@ Assumes MonoInlineSimplify.optimize has already been applied.
 This phase:
 
 1.  Ensures top-level function-typed values (globals/ports) are represented as closures before staging
-2.  Canonicalizes closure staging via graph-based solver + rewriting (GOPT\_001, GOPT\_003)
-3.  Validates closure staging invariants
-4.  Clones functions to ensure homogeneous closure parameter ABIs
-5.  Annotates call staging metadata (call model, stage arities, etc.)
+2.  Canonicalizes closure staging (GOPT\_001)
+3.  Clones functions to ensure homogeneous closure parameter ABIs
+4.  Annotates call staging metadata (call model, stage arities, etc.); a call
+    through a join claims only the stages all of its branches agree on
+    (GOPT\_003)
 
 Monomorphize is staging-agnostic - it preserves curried TLambda structure from TypeSubst.
 GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match param counts.
 
 Note: GOPT\_001 (closure params == stage arity) is verified by TestLogic.Generate.MonoFunctionArity,
-not at runtime. The compiler trusts that canonicalizeClosureStaging produces correct output.
+and under `mono.validate` (ECO\_MONO\_VALIDATE=1) by `Compiler.Pipeline.Steps.checkClosureStaging`
+after global optimization.
 
 @docs GlobalOptStats, globalOptimize, globalOptimizeWithStats
 
@@ -29,6 +31,7 @@ import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.Borrow as Borrow
+import Compiler.GlobalOpt.GenCallCensus as GenCallCensus
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
 import Compiler.GlobalOpt.Staging as Staging
 import Compiler.Monomorphize.Closure as Closure
@@ -69,25 +72,29 @@ freshLambdaId home ctx =
 
 {-| Environment for tracking call models and source arities of local variables.
 This replaces MLIR's Ctx.lookupVarCallModel and Ctx.lookupVarArity logic.
-Also carries dynamicSlots from the staging solver for CallKind determination.
+
+`dynamicParams` holds the function-typed parameters of the enclosing
+`MonoTailFunc`: a call through one is `CallGenericApply`, since nothing tells
+the compiler how the closure it receives is staged. (This set used to come
+from the staging solver as the producer-less classes; every such class was
+exactly one tail-function parameter slot, so the set is computed directly —
+plans/staging-honesty-and-production-test-pipeline.md P3.)
 -}
 type alias CallEnv =
     { varCallModel : Dict Name Mono.CallModel
     , varSourceArity : Dict Name Int
     , varBodyStageArities : Dict Name (List Int)
-    , dynamicSlots : Set String
-    , paramSlotKeys : Dict Name String
+    , dynamicParams : Set Name
     , varPolymorphicReturn : Set Name -- Variables bound to partial applications of polymorphic functions (func.func returns !eco.value)
     }
 
 
-emptyCallEnv : Set String -> CallEnv
-emptyCallEnv dynamicSlots =
+emptyCallEnv : CallEnv
+emptyCallEnv =
     { varCallModel = Dict.empty
     , varSourceArity = Dict.empty
     , varBodyStageArities = Dict.empty
-    , dynamicSlots = dynamicSlots
-    , paramSlotKeys = Dict.empty
+    , dynamicParams = Set.empty
     , varPolymorphicReturn = Set.empty
     }
 
@@ -101,29 +108,33 @@ emptyCallEnv dynamicSlots =
 Assumes MonoInlineSimplify.optimize has already been applied externally.
 
 1.  Phase 1: Wrap top-level callables in closures
-2.  Phase 2: Staging analysis + graph rewrite (wrappers + types)
-3.  Phase 3: Validate closure staging invariants (GOPT\_001, GOPT\_003)
-4.  Phase 4: ABI Cloning - ensure homogeneous closure parameters
-5.  Phase 5: Annotate call staging metadata using staging solution
+2.  Phase 2: Staging — regroup closure types to their parameter counts (GOPT\_001)
+3.  Phase 4: ABI Cloning - ensure homogeneous closure parameters
+4.  Phase 5: Annotate call staging metadata
+
+(Phase 3, a no-op staging validator, was removed; the GOPT\_001 check is
+`Compiler.Pipeline.Steps.checkClosureStaging`, under `mono.validate`.)
 
 -}
 globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize graph0a =
-    Tuple.first (globalOptimizeWithStats Config.default.mono.lss.stamp.census Config.default.borrow Config.default.list.mapTemplate graph0a)
+    Tuple.first (globalOptimizeWithStats Config.default.mono.lss.stamp.census False Config.default.borrow Config.default.list.mapTemplate graph0a)
 
 
-{-| GlobalOpt census counters (LSS report, design §9.4 retirement
-criterion): staging wrapper insertions + AbiCloning singleton-upgrade
-outcomes.
+{-| GlobalOpt census counters: the generic-call census and AbiCloning
+singleton-upgrade outcomes.
 -}
 type alias GlobalOptStats =
-    { wrappersInserted : Int
+    { genCalls : Dict String Int
     , abiCloning : AbiCloning.AbiCloningStats
     , borrow : Borrow.BorrowStats
     }
 
 
 {-| `globalOptimize` plus the census counters.
+
+`stagingCensus` is `mono.stagingReport`: fill in the generic-call census
+(`GenCallCensus`), which the `lss gencall:` report line prints. Report-only.
 
 `census` is `lss.census`: collect the per-site census Dicts. It changes no
 stamping decision and no emitted output — only what the report can say. OFF by
@@ -136,34 +147,24 @@ kept; otherwise it is cleared with the other AbiCloning-only tables
 (`Mono.clearLssTables`).
 
 -}
-globalOptimizeWithStats : Bool -> Config.BorrowConfig -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
-globalOptimizeWithStats census borrowCfg listMapTemplate graph0a =
+globalOptimizeWithStats : Bool -> Bool -> Config.BorrowConfig -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
+globalOptimizeWithStats census stagingCensus borrowCfg listMapTemplate graph0a =
     let
         -- Phase 1: Wrap top-level function-typed values in closures
         -- (alias wrappers for globals/kernels, general closures for other exprs).
         graph1 =
             wrapTopLevelCallables graph0a
 
-        -- Phase 2: Staging analysis + graph rewrite (wrappers + types).
-        -- Row 9 (plans/frontend-heap-release.md §7.5): only `dynamicSlots` is
-        -- read later (Phase 5), so the rest of the solution (class
-        -- segmentations, producer/slot class maps) dies here rather than
-        -- being carried through Phases 3-4.
-        ( dynamicSlots, graph2, wrappersInserted ) =
-            case Staging.analyzeAndSolveStaging graph1 of
-                ( sol, g, w ) ->
-                    ( sol.dynamicSlots, g, w )
-
-        -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
-        graph3 =
-            Staging.validateClosureStaging graph2
+        -- Phase 2: Staging — regroup closure types to their parameter
+        -- counts (GOPT_001). Creates no values.
+        graph2 =
+            Staging.regroup graph1
 
         -- Phase 4: ABI Cloning — LSS singleton dispatch upgrade (design
-        -- §9.2/§9.3). MUST stay after Staging: the stamps denote value
-        -- identity and Staging's Rewriter is the last pass that replaces
-        -- values (wrapper closures, LSS_008).
+        -- §9.2/§9.3). After Staging, so the stamps see the final closure
+        -- types.
         ( graph4Full, abiStats ) =
-            AbiCloning.abiCloningPass census graph3
+            AbiCloning.abiCloningPass census graph2
 
         -- Rows 10-11 (plans/frontend-heap-release.md §7.5): the LSS member
         -- tables have no reader after AbiCloning, except `lssMemberOrigins`
@@ -174,10 +175,10 @@ globalOptimizeWithStats census borrowCfg listMapTemplate graph0a =
                 { keepOrigins = borrowCfg.enabled || borrowCfg.oracleOpt || listMapTemplate }
                 graph4Full
 
-        -- Phase 5: Annotate call staging metadata (with dynamic slots from solver).
+        -- Phase 5: Annotate call staging metadata.
         -- annotateExprCalls preserves the Phase-4 stamps when re-deriving CallInfo.
         graph5 =
-            annotateCallStaging dynamicSlots graph4
+            annotateCallStaging graph4
 
         -- Phase 6: Borrow inference (design §6). reify = ROff ⇒ graph6 == graph5
         -- (census/oracle only; graph-inert). Skipped entirely when disabled so
@@ -190,7 +191,15 @@ globalOptimizeWithStats census borrowCfg listMapTemplate graph0a =
                 ( graph5, Borrow.emptyStats )
     in
     ( graph6
-    , { wrappersInserted = wrappersInserted, abiCloning = abiStats, borrow = borrowStats }
+    , { genCalls =
+            if stagingCensus then
+                GenCallCensus.census graph5
+
+            else
+                Dict.empty
+      , abiCloning = abiStats
+      , borrow = borrowStats
+      }
     )
 
 
@@ -220,283 +229,10 @@ specHome registry specId =
 -- COLLECT CASE LEAF FUNCTIONS
 
 
-collectCaseLeafFunctionsGO :
-    Mono.Decider Mono.MonoChoice
-    -> List ( Int, Mono.MonoExpr )
-    -> List Mono.MonoType
-collectCaseLeafFunctionsGO monoDecider monoJumps =
-    let
-        jumpDict =
-            Dict.fromList monoJumps
-
-        collectFromDecider : Mono.Decider Mono.MonoChoice -> List Mono.MonoType -> List Mono.MonoType
-        collectFromDecider dec acc =
-            case dec of
-                Mono.Leaf choice ->
-                    case choice of
-                        Mono.Inline expr ->
-                            case Mono.typeOf expr of
-                                Mono.MFunction _ _ _ _ ->
-                                    Mono.typeOf expr :: acc
-
-                                _ ->
-                                    acc
-
-                        Mono.Jump idx ->
-                            case Dict.get idx jumpDict of
-                                Just jumpExpr ->
-                                    case Mono.typeOf jumpExpr of
-                                        Mono.MFunction _ _ _ _ ->
-                                            Mono.typeOf jumpExpr :: acc
-
-                                        _ ->
-                                            acc
-
-                                Nothing ->
-                                    acc
-
-                Mono.Chain _ success failure ->
-                    collectFromDecider success (collectFromDecider failure acc)
-
-                Mono.FanOut _ edges fallback ->
-                    let
-                        accAfterEdges =
-                            List.foldl (\( _, d ) a -> collectFromDecider d a) acc edges
-                    in
-                    collectFromDecider fallback accAfterEdges
-    in
-    collectFromDecider monoDecider []
-
-
-
 -- BRANCH NORMALIZATION HELPERS
 
 
-{-| Information about ABI normalization needed for function-typed branches.
--}
-type alias BranchNormalizationInfo =
-    { canonicalType : Mono.MonoType
-    , canonicalSeg : List Int
-    }
-
-
-{-| Analyze function types from branches to determine if ABI normalization is needed.
-Returns Nothing if no function-typed branches exist.
--}
-computeBranchNormalization : List Mono.MonoType -> Maybe BranchNormalizationInfo
-computeBranchNormalization funcTypes =
-    case funcTypes of
-        [] ->
-            Nothing
-
-        _ ->
-            let
-                ( canonicalSeg, flatArgs, flatRet ) =
-                    Mono.chooseCanonicalSegmentation funcTypes
-
-                -- Join the branch types' head annotations: the canonical type
-                -- covers every branch's possible callees (rebuilder rule —
-                -- thread, never blanket-LTop).
-                canonicalAnno =
-                    case List.map Mono.headAnno funcTypes of
-                        first :: rest ->
-                            List.foldl Mono.unionAnno first rest
-
-                        [] ->
-                            Mono.topLegacy
-
-                canonicalType =
-                    Mono.buildSegmentedFunctionType canonicalAnno flatArgs flatRet canonicalSeg
-            in
-            Just
-                { canonicalType = canonicalType
-                , canonicalSeg = canonicalSeg
-                }
-
-
-{-| Process a branch result expression with optional ABI normalization.
-Always recursively processes the expression for nested case/if normalization.
-If normalization info is provided and the expression is function-typed with
-non-matching segmentation, wraps it with a canonical-ABI closure.
--}
-processBranchResult :
-    ModuleName.Canonical
-    -> Maybe BranchNormalizationInfo
-    -> Mono.MonoExpr
-    -> GlobalCtx
-    -> ( Mono.MonoExpr, GlobalCtx )
-processBranchResult home maybeNorm expr ctx =
-    -- Always process the expression first for nested case/if normalization
-    let
-        ( processedExpr, ctx1 ) =
-            rewriteExprForAbi home expr ctx
-    in
-    case maybeNorm of
-        Nothing ->
-            ( processedExpr, ctx1 )
-
-        Just norm ->
-            case Mono.typeOf processedExpr of
-                Mono.MFunction _ _ _ _ ->
-                    if Mono.segmentLengths (Mono.typeOf processedExpr) == norm.canonicalSeg then
-                        ( processedExpr, ctx1 )
-
-                    else
-                        buildAbiWrapperGO home norm.canonicalType processedExpr ctx1
-
-                _ ->
-                    ( processedExpr, ctx1 )
-
-
-{-| Process a decider tree, recursing into leaves and optionally normalizing function-typed results.
--}
-processDeciderForAbi :
-    ModuleName.Canonical
-    -> Maybe BranchNormalizationInfo
-    -> Mono.Decider Mono.MonoChoice
-    -> GlobalCtx
-    -> ( Mono.Decider Mono.MonoChoice, GlobalCtx )
-processDeciderForAbi home normInfo dec ctx =
-    case dec of
-        Mono.Leaf choice ->
-            case choice of
-                Mono.Inline expr ->
-                    let
-                        ( newExpr, ctx1 ) =
-                            processBranchResult home normInfo expr ctx
-                    in
-                    ( Mono.Leaf (Mono.Inline newExpr), ctx1 )
-
-                Mono.Jump _ ->
-                    ( dec, ctx )
-
-        Mono.Chain testChain success failure ->
-            let
-                ( newSuccess, ctx1 ) =
-                    processDeciderForAbi home normInfo success ctx
-
-                ( newFailure, ctx2 ) =
-                    processDeciderForAbi home normInfo failure ctx1
-            in
-            ( Mono.Chain testChain newSuccess newFailure, ctx2 )
-
-        Mono.FanOut path edges fallback ->
-            let
-                ( newEdges, ctx1 ) =
-                    List.foldr
-                        (\( test, d ) ( acc, accCtx ) ->
-                            let
-                                ( newD, accCtx1 ) =
-                                    processDeciderForAbi home normInfo d accCtx
-                            in
-                            ( ( test, newD ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        edges
-
-                ( newFallback, ctx2 ) =
-                    processDeciderForAbi home normInfo fallback ctx1
-            in
-            ( Mono.FanOut path newEdges newFallback, ctx2 )
-
-
-{-| Process jump branches, recursing and optionally normalizing function-typed results.
--}
-processJumpsForAbi :
-    ModuleName.Canonical
-    -> Maybe BranchNormalizationInfo
-    -> List ( Int, Mono.MonoExpr )
-    -> GlobalCtx
-    -> ( List ( Int, Mono.MonoExpr ), GlobalCtx )
-processJumpsForAbi home normInfo branches ctx =
-    List.foldr
-        (\( idx, expr ) ( acc, accCtx ) ->
-            let
-                ( newExpr, accCtx1 ) =
-                    processBranchResult home normInfo expr accCtx
-            in
-            ( ( idx, newExpr ) :: acc, accCtx1 )
-        )
-        ( [], ctx )
-        branches
-
-
-
 -- BUILD NESTED CALLS (GlobalOpt version)
-
-
-{-| Build nested calls that apply all params to a callee, respecting the callee's staging.
-Given calleeType with segmentation [2,3] and params [a,b,c,d,e]:
-
-  - First call: callee(a,b) -> intermediate1
-  - Second call: intermediate1(c,d,e) -> result
-
-This follows MONO\_016: never pass more args to a stage than it accepts.
-
--}
-buildNestedCallsGO : A.Region -> Mono.MonoExpr -> List ( Name, Mono.MonoType ) -> Mono.MonoExpr
-buildNestedCallsGO region calleeExpr params =
-    let
-        calleeType =
-            Mono.typeOf calleeExpr
-
-        srcSeg =
-            Mono.segmentLengths calleeType
-
-        -- Total flattened arity of the callee (sum of all stages)
-        totalArity =
-            List.sum srcSeg
-
-        paramExprs =
-            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
-
-        buildCalls : Mono.MonoExpr -> List Mono.MonoExpr -> List Int -> Int -> Mono.MonoExpr
-        buildCalls currentCallee remainingArgs segLengths remainingArity =
-            case ( segLengths, remainingArgs ) of
-                ( [], _ ) ->
-                    currentCallee
-
-                ( m :: restSeg, _ ) ->
-                    let
-                        ( nowArgs, laterArgs ) =
-                            ( List.take m remainingArgs, List.drop m remainingArgs )
-
-                        currentCalleeType =
-                            Mono.typeOf currentCallee
-
-                        resultType =
-                            Mono.stageReturnType currentCalleeType
-
-                        -- Pre-compute CallInfo for this nested call using the known
-                        -- callee segmentation. This avoids relying on sourceArityForCallee
-                        -- which may not have access to the captured callee's actual arity.
-                        -- remainingArity tracks how many args the current PAP still needs.
-                        callInfo =
-                            { callModel = Mono.StageCurried
-                            , stageArities = segLengths
-                            , isSingleStageSaturated = m == remainingArity && remainingArity > 0
-                            , initialRemaining = remainingArity
-                            , remainingStageArities = restSeg
-                            , closureKind = Nothing
-                            , captureAbi = Nothing
-                            , fastEvaluator = Nothing
-                            , fastEvaluatorSpec = Nothing
-                            , fastPapPrefix = Nothing
-                            , callKind = Mono.CallDirectKnownSegmentation
-                            , evaluatorReturnType = resultType
-                            }
-
-                        callExpr =
-                            Mono.MonoCall region currentCallee nowArgs resultType callInfo
-
-                        -- After applying m args, remaining arity decreases
-                        newRemainingArity =
-                            remainingArity - m
-                    in
-                    buildCalls callExpr laterArgs restSeg newRemainingArity
-    in
-    buildCalls calleeExpr paramExprs srcSeg totalArity
-
 
 
 -- CLOSURE WRAPPER BUILDERS (GlobalOpt versions using GlobalCtx)
@@ -592,7 +328,7 @@ makeGeneralClosureGO home expr argTypes retType funcType ctx =
 
 {-| Ensure a top-level node expression is directly callable.
 This wraps bare MonoVarGlobal/MonoVarKernel in closures.
-Called during ABI normalization, BEFORE rewriteExprForAbi.
+Called by `wrapTopLevelCallables`, before staging.
 -}
 ensureCallableForNode :
     ModuleName.Canonical
@@ -654,383 +390,16 @@ ensureCallableForNode home expr monoType ctx =
 -- BUILD ABI WRAPPER
 
 
-buildAbiWrapperGO :
-    ModuleName.Canonical
-    -> Mono.MonoType
-    -> Mono.MonoExpr
-    -> GlobalCtx
-    -> ( Mono.MonoExpr, GlobalCtx )
-buildAbiWrapperGO home targetType calleeExpr ctx0 =
-    let
-        srcType =
-            Mono.typeOf calleeExpr
-
-        targetSeg =
-            Mono.segmentLengths targetType
-
-        srcSeg =
-            Mono.segmentLengths srcType
-
-        -- Note: GOPT_003 (total arities match) is verified by tests,
-        -- not at runtime. See TestLogic.Monomorphize.MonoCaseBranchResultType.
-    in
-    if targetSeg == srcSeg then
-        ( calleeExpr, ctx0 )
-
-    else
-        let
-            region =
-                Closure.extractRegion calleeExpr
-
-            buildStages :
-                Mono.MonoType
-                -> List ( Name, Mono.MonoType )
-                -> GlobalCtx
-                -> ( Mono.MonoExpr, GlobalCtx )
-            buildStages remainingType accParams ctx =
-                let
-                    stageArgTypes =
-                        Mono.stageParamTypes remainingType
-
-                    stageRetType =
-                        Mono.stageReturnType remainingType
-                in
-                case stageArgTypes of
-                    [] ->
-                        ( buildNestedCallsGO region calleeExpr accParams, ctx )
-
-                    _ ->
-                        let
-                            paramsForStage =
-                                Closure.freshParams stageArgTypes
-
-                            newAccParams =
-                                accParams ++ paramsForStage
-
-                            ( innerBody, ctx1 ) =
-                                buildStages stageRetType newAccParams ctx
-
-                            captures =
-                                Closure.computeClosureCaptures paramsForStage innerBody
-
-                            ( lambdaId, ctx2 ) =
-                                freshLambdaId home ctx1
-
-                            closureInfo =
-                                { lambdaId = lambdaId
-                                , srcLambda = Nothing -- LSS_008: AbiCloning's index adopts the type's singleton member for srcLambda-less closures
-                                , lssMember = Nothing
-                                , captures = captures
-                                , params = paramsForStage
-                                , closureKind = Nothing
-                                , captureAbi = Nothing
-                                }
-                        in
-                        ( Mono.MonoClosure closureInfo innerBody remainingType, ctx2 )
-        in
-        buildStages targetType [] ctx0
-
-
-
 -- REWRITE EXPR FOR ABI
 --
 -- Uses MonoTraverse for structural recursion, with special handling for
 -- MonoCase and MonoIf (the ABI normalization targets).
 
 
-rewriteExprForAbi : ModuleName.Canonical -> Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
-rewriteExprForAbi home expr ctx =
-    case expr of
-        -- ABI normalization targets - use dedicated handlers
-        Mono.MonoCase scrutName scrutTypeName decider branches resultType ->
-            rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx
-
-        Mono.MonoIf branches final resultType ->
-            rewriteIfForAbi home branches final resultType ctx
-
-        -- Manual recursion for other expression types
-        Mono.MonoClosure info body closureType ->
-            let
-                ( newCaptures, ctx1 ) =
-                    List.foldr
-                        (\( n, e, t ) ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( ( n, newE, t ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        info.captures
-
-                ( newBody, ctx2 ) =
-                    rewriteExprForAbi home body ctx1
-            in
-            ( Mono.MonoClosure { info | captures = newCaptures } newBody closureType, ctx2 )
-
-        Mono.MonoCall region func args resultType callInfo ->
-            let
-                ( newFunc, ctx1 ) =
-                    rewriteExprForAbi home func ctx
-
-                ( newArgs, ctx2 ) =
-                    List.foldr
-                        (\e ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( newE :: acc, accCtx1 )
-                        )
-                        ( [], ctx1 )
-                        args
-            in
-            ( Mono.MonoCall region newFunc newArgs resultType callInfo, ctx2 )
-
-        Mono.MonoTailCall name args resultType ->
-            let
-                ( newArgs, ctx1 ) =
-                    List.foldr
-                        (\( n, e ) ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( ( n, newE ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        args
-            in
-            ( Mono.MonoTailCall name newArgs resultType, ctx1 )
-
-        Mono.MonoLet def body resultType ->
-            let
-                ( newDef, ctx1 ) =
-                    rewriteDefForAbi home def ctx
-
-                ( newBody, ctx2 ) =
-                    rewriteExprForAbi home body ctx1
-            in
-            ( Mono.MonoLet newDef newBody resultType, ctx2 )
-
-        Mono.MonoDestruct path inner resultType ->
-            let
-                ( newInner, ctx1 ) =
-                    rewriteExprForAbi home inner ctx
-            in
-            ( Mono.MonoDestruct path newInner resultType, ctx1 )
-
-        Mono.MonoList region items resultType ->
-            let
-                ( newItems, ctx1 ) =
-                    List.foldr
-                        (\e ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( newE :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        items
-            in
-            ( Mono.MonoList region newItems resultType, ctx1 )
-
-        Mono.MonoRecordCreate fields resultType ->
-            let
-                ( newFields, ctx1 ) =
-                    List.foldr
-                        (\( n, e ) ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( ( n, newE ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        fields
-            in
-            ( Mono.MonoRecordCreate newFields resultType, ctx1 )
-
-        Mono.MonoRecordAccess inner field resultType ->
-            let
-                ( newInner, ctx1 ) =
-                    rewriteExprForAbi home inner ctx
-            in
-            ( Mono.MonoRecordAccess newInner field resultType, ctx1 )
-
-        Mono.MonoRecordUpdate record updates resultType ->
-            let
-                ( newRecord, ctx1 ) =
-                    rewriteExprForAbi home record ctx
-
-                ( newUpdates, ctx2 ) =
-                    List.foldr
-                        (\( n, e ) ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( ( n, newE ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx1 )
-                        updates
-            in
-            ( Mono.MonoRecordUpdate newRecord newUpdates resultType, ctx2 )
-
-        Mono.MonoTupleCreate region elements resultType ->
-            let
-                ( newElements, ctx1 ) =
-                    List.foldr
-                        (\e ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( newE :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        elements
-            in
-            ( Mono.MonoTupleCreate region newElements resultType, ctx1 )
-
-        -- Leaf expressions - no children to process
-        Mono.MonoLiteral _ _ ->
-            ( expr, ctx )
-
-        Mono.MonoVarLocal _ _ ->
-            ( expr, ctx )
-
-        Mono.MonoVarGlobal _ _ _ ->
-            ( expr, ctx )
-
-        Mono.MonoVarKernel _ _ _ _ _ ->
-            ( expr, ctx )
-
-        Mono.MonoUnit ->
-            ( expr, ctx )
-
-        Mono.MonoAccessorValue _ _ _ ->
-            ( expr, ctx )
-
-
-rewriteDefForAbi : ModuleName.Canonical -> Mono.MonoDef -> GlobalCtx -> ( Mono.MonoDef, GlobalCtx )
-rewriteDefForAbi home def ctx =
-    case def of
-        Mono.MonoDef name bound ->
-            let
-                ( newBound, ctx1 ) =
-                    rewriteExprForAbi home bound ctx
-            in
-            ( Mono.MonoDef name newBound, ctx1 )
-
-        Mono.MonoTailDef name params bound ->
-            let
-                ( newBound, ctx1 ) =
-                    rewriteExprForAbi home bound ctx
-            in
-            ( Mono.MonoTailDef name params newBound, ctx1 )
-
-
-
 -- REWRITE CASE FOR ABI
 
 
-rewriteCaseForAbi :
-    ModuleName.Canonical
-    -> Name
-    -> Name
-    -> Mono.Decider Mono.MonoChoice
-    -> List ( Int, Mono.MonoExpr )
-    -> Mono.MonoType
-    -> GlobalCtx
-    -> ( Mono.MonoExpr, GlobalCtx )
-rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx0 =
-    let
-        leafTypes =
-            collectCaseLeafFunctionsGO decider branches
-
-        normInfo =
-            computeBranchNormalization leafTypes
-
-        ( newDecider, ctx1 ) =
-            processDeciderForAbi home normInfo decider ctx0
-
-        ( newBranches, ctx2 ) =
-            processJumpsForAbi home normInfo branches ctx1
-
-        finalType =
-            case normInfo of
-                Nothing ->
-                    resultType
-
-                Just info ->
-                    info.canonicalType
-    in
-    ( Mono.MonoCase scrutName scrutTypeName newDecider newBranches finalType, ctx2 )
-
-
-
 -- REWRITE IF FOR ABI
-
-
-rewriteIfForAbi :
-    ModuleName.Canonical
-    -> List ( Mono.MonoExpr, Mono.MonoExpr )
-    -> Mono.MonoExpr
-    -> Mono.MonoType
-    -> GlobalCtx
-    -> ( Mono.MonoExpr, GlobalCtx )
-rewriteIfForAbi home branches final resultType ctx0 =
-    let
-        branchResults =
-            List.map Tuple.second branches ++ [ final ]
-
-        leafTypes =
-            branchResults
-                |> List.filterMap
-                    (\e ->
-                        case Mono.typeOf e of
-                            Mono.MFunction _ _ _ _ ->
-                                Just (Mono.typeOf e)
-
-                            _ ->
-                                Nothing
-                    )
-
-        normInfo =
-            computeBranchNormalization leafTypes
-
-        ( newBranches, ctx1 ) =
-            List.foldr
-                (\( cond, then_ ) ( acc, accCtx ) ->
-                    let
-                        -- Process condition normally (no normalization)
-                        ( newCond, accCtx1 ) =
-                            rewriteExprForAbi home cond accCtx
-
-                        -- Process then-branch with potential normalization
-                        ( newThen, accCtx2 ) =
-                            processBranchResult home normInfo then_ accCtx1
-                    in
-                    ( ( newCond, newThen ) :: acc, accCtx2 )
-                )
-                ( [], ctx0 )
-                branches
-
-        ( newFinal, ctx2 ) =
-            processBranchResult home normInfo final ctx1
-
-        finalType =
-            case normInfo of
-                Nothing ->
-                    resultType
-
-                Just info ->
-                    info.canonicalType
-    in
-    ( Mono.MonoIf newBranches newFinal finalType, ctx2 )
-
 
 
 -- WRAP TOP-LEVEL CALLABLES (GRAPH-LEVEL)
@@ -1127,14 +496,14 @@ wrapNodeCallables home node ctx =
 After this phase, MLIR codegen can use CallInfo directly without
 recomputing call models or stage arities.
 -}
-annotateCallStaging : Set String -> Mono.MonoGraph -> Mono.MonoGraph
-annotateCallStaging dynamicSlots graph =
+annotateCallStaging : Mono.MonoGraph -> Mono.MonoGraph
+annotateCallStaging graph =
     let
         (Mono.MonoGraph record) =
             graph
 
         env =
-            emptyCallEnv dynamicSlots
+            emptyCallEnv
 
         newNodes =
             Array.indexedMap
@@ -1152,24 +521,20 @@ annotateNodeCalls graph nodeId env node =
 
         Mono.MonoTailFunc params body tipe ->
             let
-                paramSlotKeys =
+                dynamicParams =
                     params
-                        |> List.indexedMap
-                            (\index ( name, ty ) ->
+                        |> List.filterMap
+                            (\( name, ty ) ->
                                 if Mono.isFunctionType ty then
-                                    Just
-                                        ( name
-                                        , "P:" ++ String.fromInt nodeId ++ ":" ++ String.fromInt index
-                                        )
+                                    Just name
 
                                 else
                                     Nothing
                             )
-                        |> List.filterMap identity
-                        |> Dict.fromList
+                        |> Set.fromList
 
                 envWithParams =
-                    { env | paramSlotKeys = paramSlotKeys }
+                    { env | dynamicParams = dynamicParams }
             in
             Mono.MonoTailFunc params (annotateExprCalls graph envWithParams body) tipe
 
@@ -1203,8 +568,8 @@ annotateExprCalls graph env expr =
             Mono.MonoLet def1 body1 tipe
 
         -- MonoCall: annotate with call info after recursing on children.
-        -- If the call already has a non-default CallInfo (e.g., pre-computed by
-        -- buildNestedCallsGO for wrapper calls), keep it rather than re-deriving.
+        -- If the call already has a non-default CallInfo (e.g., pre-computed for
+        -- a staging wrapper's calls), keep it rather than re-deriving.
         Mono.MonoCall region func args resultType existingCallInfo ->
             let
                 newFunc =
@@ -1755,54 +1120,52 @@ closureBodyStageArities graph expr =
                 _ ->
                     Nothing
 
-        -- Extract the first Inline expression from a Decider tree.
-        -- When all case branches are simple (used once), the optimizer inlines them
-        -- directly into Leaf nodes as Inline expressions, leaving the jumps list empty.
-        firstInlineExpr : Mono.Decider Mono.MonoChoice -> Maybe Mono.MonoExpr
-        firstInlineExpr decider =
+        -- Every Inline leaf of a Decider tree. When all case branches are
+        -- simple (used once), the optimizer inlines them directly into Leaf
+        -- nodes as Inline expressions, leaving the jumps list empty.
+        inlineLeaves : Mono.Decider Mono.MonoChoice -> List Mono.MonoExpr -> List Mono.MonoExpr
+        inlineLeaves decider acc =
             case decider of
                 Mono.Leaf (Mono.Inline inlineExpr) ->
-                    Just inlineExpr
+                    inlineExpr :: acc
 
                 Mono.Leaf (Mono.Jump _) ->
-                    Nothing
+                    acc
 
                 Mono.Chain _ yes no ->
-                    case firstInlineExpr yes of
-                        Just e ->
-                            Just e
-
-                        Nothing ->
-                            firstInlineExpr no
+                    inlineLeaves no (inlineLeaves yes acc)
 
                 Mono.FanOut _ tests fallback ->
-                    let
-                        tryTests ts =
-                            case ts of
-                                [] ->
-                                    firstInlineExpr fallback
+                    inlineLeaves fallback (List.foldl (\( _, d ) a -> inlineLeaves d a) acc tests)
 
-                                ( _, d ) :: rest ->
-                                    case firstInlineExpr d of
-                                        Just e ->
-                                            Just e
+        -- GOPT_003: a join claims a staging only when EVERY branch is a
+        -- closure and they all agree. Staging does not re-stage branches to a
+        -- common segmentation, so the first branch alone says nothing about
+        -- the others (plans/staging-honesty-and-production-test-pipeline.md
+        -- P2.2); on disagreement the caller treats the excess stages as
+        -- unknown.
+        agreedArities : List Mono.MonoExpr -> Maybe (List Int)
+        agreedArities branchExprs =
+            case List.map getClosureArityFromExpr branchExprs of
+                (Just first) :: rest ->
+                    if List.all (\r -> r == Just first) rest then
+                        Just first
 
-                                        Nothing ->
-                                            tryTests rest
-                    in
-                    tryTests tests
+                    else
+                        Nothing
 
-        -- Try to get closure arity from a case expression, checking both jumps and inline decider leaves
+                _ ->
+                    Nothing
+
+        -- Stage arities a case's branches agree on, jumps and inline leaves alike.
         getClosureArityFromCase : Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Maybe (List Int)
         getClosureArityFromCase decider jumps =
-            case jumps of
-                ( _, branchExpr ) :: _ ->
-                    getClosureArityFromExpr branchExpr
+            agreedArities (List.map Tuple.second jumps ++ inlineLeaves decider [])
 
-                [] ->
-                    -- Jumps list empty: branches are inlined in the decider tree
-                    firstInlineExpr decider
-                        |> Maybe.andThen getClosureArityFromExpr
+        -- Stage arities an if's branches agree on, the else branch included.
+        getClosureArityFromIf : List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> Maybe (List Int)
+        getClosureArityFromIf branches final =
+            agreedArities (List.map Tuple.second branches ++ [ final ])
 
         -- Get stage arities from an expression's body
         getExprBodyArities : Mono.MonoExpr -> Maybe (List Int)
@@ -1818,13 +1181,8 @@ closureBodyStageArities graph expr =
                             -- Type staging (e.g. [1,1]) may disagree with actual closures (e.g. [2]).
                             getClosureArityFromCase decider jumps
 
-                        Mono.MonoIf branches _ _ ->
-                            case branches of
-                                ( _, thenExpr ) :: _ ->
-                                    getClosureArityFromExpr thenExpr
-
-                                [] ->
-                                    Nothing
+                        Mono.MonoIf branches final _ ->
+                            getClosureArityFromIf branches final
 
                         _ ->
                             -- Body is not a case/if returning closures.
@@ -1832,18 +1190,10 @@ closureBodyStageArities graph expr =
                             Nothing
 
                 Mono.MonoCase _ _ decider jumps _ ->
-                    -- After canonicalization, all branches have the same staging.
-                    -- Look at the first jump's closure or inline expression.
                     getClosureArityFromCase decider jumps
 
-                Mono.MonoIf branches _ _ ->
-                    -- Look at the first branch's expression for actual staging
-                    case branches of
-                        ( _, thenExpr ) :: _ ->
-                            getClosureArityFromExpr thenExpr
-
-                        [] ->
-                            Nothing
+                Mono.MonoIf branches final _ ->
+                    getClosureArityFromIf branches final
 
                 _ ->
                     Nothing
@@ -1874,21 +1224,15 @@ closureBodyStageArities graph expr =
             Nothing
 
 
-{-| Check if a callee expression is a dynamic staging slot (function parameter
-whose equivalence class has no producer segmentation). Only these callees
-should use CallGenericApply for runtime dispatch.
+{-| Check if a callee expression is a dynamic callee: a function-typed
+parameter of the enclosing tail function (`CallEnv.dynamicParams`). Only these
+callees use CallGenericApply for runtime dispatch.
 -}
 isDynamicCallee : CallEnv -> Mono.MonoExpr -> Bool
 isDynamicCallee env funcExpr =
     case funcExpr of
         Mono.MonoVarLocal name monoType ->
-            case Dict.get name env.paramSlotKeys of
-                Just slotKey ->
-                    Set.member slotKey env.dynamicSlots
-                        && Mono.isFunctionType monoType
-
-                Nothing ->
-                    False
+            Set.member name env.dynamicParams && Mono.isFunctionType monoType
 
         _ ->
             False

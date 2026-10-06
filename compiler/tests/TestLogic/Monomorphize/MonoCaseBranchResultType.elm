@@ -1,4 +1,4 @@
-module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, expectMonoCaseBranchResultTypesAfterGlobalOpt, Violation)
+module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, expectHonestJoinStaging, Violation)
 
 {-| Checks that every branch of every `case` in a monomorphized program has
 exactly the type the case records for itself, so that `Mono.typeOf` of a case
@@ -14,28 +14,34 @@ type wrong for that branch.
 A case's branch bodies are held in two places, and both are checked. The jump
 list holds the bodies the decision tree reaches by `Jump n`; a body can instead
 sit in a leaf of the decision tree itself, as `Inline expr`. Each body's
-`Mono.typeOf` is compared with the stored type by `==`, structural equality on
-the whole `MonoType`, so the lambda-set annotations on function types and the
-ids of type variables must also agree.
+`Mono.typeOf` is compared with the stored type by `Mono.eqLayout`: the layout,
+including how each function type groups its parameters into stages, must
+agree. Lambda-set annotations are not compared. Under the solver engine they
+are per occurrence (LSS\_006), so a branch may carry a smaller set than the
+join it flows into, and a ⊤ carries a provenance code that differs between
+occurrences; neither is a staging or layout difference.
 
 `expectMonoCaseBranchResultTypes` checks the graph that
-`TestLogic.TestPipeline.runToMono` produces: the substitution engine's output,
-before inlining or any GlobalOpt pass has run (invariant MONO\_018).
-`expectMonoCaseBranchResultTypesAfterGlobalOpt` makes the same check on the
-graph `TestLogic.TestPipeline.runToGlobalOpt` produces, after the inliner and
-the global optimizer (invariant GOPT\_003). Every expression in every node
-that has a body is walked, so cases nested anywhere are checked too.
+`TestLogic.TestPipeline.runToMono` produces: the production monomorphizer's
+output, before inlining or any GlobalOpt pass has run (invariant MONO\_018).
+Every expression in every node that has a body is walked, so cases nested
+anywhere are checked too.
+
+After global optimization the equality no longer holds by design: a join's
+branches keep their own staging. `expectHonestJoinStaging` checks what GOPT\_003
+now requires instead, that no call claims a staging a join does not have.
 
 Among what is not checked: the branches of an `if`, and the types on the
 decision tree's paths.
 
-@docs expectMonoCaseBranchResultTypes, expectMonoCaseBranchResultTypesAfterGlobalOpt, Violation
+@docs expectMonoCaseBranchResultTypes, expectHonestJoinStaging, Violation
 
 -}
 
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
@@ -54,7 +60,7 @@ type alias Violation =
 
 
 {-| Builds `srcModule` with `TestLogic.TestPipeline.runToMono` and passes when
-every case branch in the resulting graph, jump-list or inline, has a type `==`
+every case branch in the resulting graph, jump-list or inline, has a type `eqLayout`
 to its case's stored result type.
 
 It fails with the pipeline's message if the build fails, and otherwise with
@@ -79,27 +85,151 @@ expectMonoCaseBranchResultTypes srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Builds `srcModule` with `TestLogic.TestPipeline.runToGlobalOpt` and checks
-the optimized graph as `expectMonoCaseBranchResultTypes` checks the
-monomorphized one (invariant GOPT\_003). The violation messages still say
-MONO\_018, the name of the shared check.
+{-| GOPT\_003 (plans/staging-honesty-and-production-test-pipeline.md P2.3):
+builds `srcModule` with `TestLogic.TestPipeline.runToGlobalOpt` and fails if a
+call claims a staging that the join its callee returns through does not have.
+
+After global optimization the branches of a function-valued `case` or `if`
+may be staged differently from one another and from the join's stored type:
+nothing re-stages them to agree. What must hold is that no call relies on it.
+For every staged-curried call with `CallDirectKnownSegmentation` and a
+non-empty `remainingStageArities` (it claims to know the stages after the
+first) whose callee is a global, the global's body is followed to the join it
+returns through (the body itself, or the body of its closure); if that join's
+branches do not all have one natural staging, the call is a violation.
+
 -}
-expectMonoCaseBranchResultTypesAfterGlobalOpt : Src.Module -> Expectation
-expectMonoCaseBranchResultTypesAfterGlobalOpt srcModule =
+expectHonestJoinStaging : Src.Module -> Expectation
+expectHonestJoinStaging srcModule =
     case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail ("Compilation failed: " ++ msg)
 
         Ok { optimizedMonoGraph } ->
-            let
-                violations =
-                    checkMonoCaseBranchResultTypes optimizedMonoGraph
-            in
-            if List.isEmpty violations then
-                Expect.pass
+            case checkHonestJoinStaging optimizedMonoGraph of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (formatViolations violations)
+                violations ->
+                    Expect.fail (formatViolations violations)
+
+
+checkHonestJoinStaging : Mono.MonoGraph -> List Violation
+checkHonestJoinStaging (Mono.MonoGraph data) =
+    let
+        nodeExpr specId =
+            case Array.get specId data.nodes |> Maybe.andThen identity of
+                Just (Mono.MonoDefine e _) ->
+                    Just e
+
+                Just (Mono.MonoTailFunc _ e _) ->
+                    Just e
+
+                _ ->
+                    Nothing
+
+        -- The branches of the join a global's value returns through, if any.
+        joinBranches e =
+            case e of
+                Mono.MonoClosure _ body _ ->
+                    joinBranchesOf body
+
+                _ ->
+                    joinBranchesOf e
+
+        joinBranchesOf e =
+            case e of
+                Mono.MonoCase _ _ decider jumps _ ->
+                    Just (List.map Tuple.second jumps ++ inlineLeaves decider [])
+
+                Mono.MonoIf branches final _ ->
+                    Just (List.map Tuple.second branches ++ [ final ])
+
+                _ ->
+                    Nothing
+
+        inlineLeaves d acc =
+            case d of
+                Mono.Leaf (Mono.Inline x) ->
+                    x :: acc
+
+                Mono.Leaf (Mono.Jump _) ->
+                    acc
+
+                Mono.Chain _ yes no ->
+                    inlineLeaves no (inlineLeaves yes acc)
+
+                Mono.FanOut _ edges fallback ->
+                    inlineLeaves fallback (List.foldl (\( _, dd ) a -> inlineLeaves dd a) acc edges)
+
+        naturalStaging x =
+            case x of
+                Mono.MonoClosure info body _ ->
+                    Just (List.length info.params :: naturalStagingOfType (Mono.typeOf body))
+
+                _ ->
+                    Nothing
+
+        naturalStagingOfType t =
+            case t of
+                Mono.MFunction _ _ args ret ->
+                    List.length args :: naturalStagingOfType ret
+
+                _ ->
+                    []
+
+        agree branches =
+            case List.map naturalStaging branches of
+                first :: rest ->
+                    first /= Nothing && List.all ((==) first) rest
+
+                [] ->
+                    True
+
+        check ctx acc e =
+            case e of
+                Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) _ _ info ->
+                    if
+                        info.callModel
+                            == Mono.StageCurried
+                            && info.callKind
+                            == Mono.CallDirectKnownSegmentation
+                            && not (List.isEmpty info.remainingStageArities)
+                    then
+                        case nodeExpr specId |> Maybe.andThen joinBranches of
+                            Just branches ->
+                                if agree branches then
+                                    acc
+
+                                else
+                                    { context = ctx ++ " call of SpecId " ++ String.fromInt specId
+                                    , message =
+                                        "GOPT_003 violation: the call claims remainingStageArities "
+                                            ++ Debug.toString info.remainingStageArities
+                                            ++ " through a join whose branches are staged "
+                                            ++ Debug.toString (List.map naturalStaging branches)
+                                    }
+                                        :: acc
+
+                            Nothing ->
+                                acc
+
+                    else
+                        acc
+
+                _ ->
+                    acc
+    in
+    Array.toIndexedList data.nodes
+        |> List.concatMap
+            (\( specId, maybeNode ) ->
+                case Maybe.andThen (\_ -> nodeExpr specId) maybeNode of
+                    Just e ->
+                        MonoTraverse.foldExprAccFirst (check ("SpecId " ++ String.fromInt specId)) [] e
+
+                    Nothing ->
+                        []
+            )
 
 
 {-| Returns the violations in every node of the graph, in node order, each
@@ -235,7 +365,7 @@ checkExpr ctx expr =
             []
 
 
-{-| Returns a violation for each body in `jumps` whose type is not `==` to
+{-| Returns a violation for each body in `jumps` whose type is not `eqLayout` to
 `resultType`. It does not look inside the bodies.
 -}
 checkJumps : String -> Mono.MonoType -> List ( Int, Mono.MonoExpr ) -> List Violation
@@ -246,7 +376,7 @@ checkJumps ctx resultType jumps =
                 branchTy =
                     Mono.typeOf branchExpr
             in
-            if branchTy == resultType then
+            if Mono.eqLayout branchTy resultType then
                 []
 
             else
@@ -265,7 +395,7 @@ checkJumps ctx resultType jumps =
 
 
 {-| Returns the violations of every `Inline` leaf of `decider`: one if the
-leaf's body has a type not `==` to `resultType`, then those inside the body,
+leaf's body has a type not `eqLayout` to `resultType`, then those inside the body,
 all labelled with `inline-leaf` added to `ctx`.
 
 A `Jump` leaf gives nothing here: the body it names is in the jump list, which
@@ -285,7 +415,7 @@ checkDecider ctx resultType decider =
                         ty =
                             Mono.typeOf expr
                     in
-                    if ty == resultType then
+                    if Mono.eqLayout ty resultType then
                         checkExpr (ctx ++ " inline-leaf") expr
 
                     else

@@ -60,7 +60,7 @@ suite : Test
 suite =
     Test.describe "REP_BOUNDARY_003: Projection heap layout consistency"
         [ StandardTestSuites.expectSuite expectProjectionHeapLayoutConsistency "passes projection heap layout consistency"
-        , Test.test "List Int and erased-list specializations of one function" separateSpecializations
+        , Test.test "REP_BOUNDARY_003 BUG PIN: List Int and erased-list specializations of one function" separateSpecializations
         ]
 
 

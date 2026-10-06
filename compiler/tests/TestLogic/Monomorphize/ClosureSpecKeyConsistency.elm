@@ -17,8 +17,7 @@ function type is flattened by collecting the parameters of each nested
 `MFunction` in order, down to the first result that is not a function.
 
 `expectClosureSpecKeyConsistency` monomorphizes a source module with
-`TestLogic.TestPipeline.runToMono`, which uses the substitution engine, not the
-solver engine, and checks every SpecId whose registry entry is present and
+`TestLogic.TestPipeline.runToMono`, the production pipeline, and checks every SpecId whose registry entry is present and
 whose node exists. Only two kinds of node are checked: a `MonoDefine` whose
 body is a `MonoClosure`, and a `MonoTailFunc`. For each:
 

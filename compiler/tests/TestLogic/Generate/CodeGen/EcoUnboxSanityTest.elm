@@ -23,9 +23,7 @@ What the tests establish:
 
 Among what is not tested:
 
-  - programs outside the standard catalogue;
-  - MLIR from the monomorphization engine a default build uses, since
-    `runToMlir` uses the substitution engine.
+  - programs outside the standard catalogue.
 
 -}
 

@@ -13,7 +13,7 @@ _lost member_, and such a pass treats calls to it as calls to something else.
 The failure messages name this check `LSS_002`.
 
 Both checks compile the test program they are given with
-`TestLogic.TestPipeline.runToGlobalOptLssOn`: the solver engine with
+`TestLogic.TestPipeline.runToGlobalOpt`: the solver engine with
 lambda-set specialization on, then the post-monomorphization inliner and
 global optimization. `expectLambdaSetIntegrity` inspects `optimizedMonoGraph`,
 the graph those last two passes produce, and
@@ -50,7 +50,7 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Compiles a test program with `runToGlobalOptLssOn` and passes when no
+{-| Compiles a test program with `runToGlobalOpt` and passes when no
 closure in the optimized graph is a lost member of its head annotation. It
 fails with the pipeline's message when compilation fails, and otherwise with
 one line per lost member.
@@ -62,21 +62,21 @@ expectLambdaSetIntegrity =
 
 {-| Does what `expectLambdaSetIntegrity` does, on the graph as the solver engine
 produced it, before the inliner and global optimization (the `monoGraph` of
-`runToGlobalOptLssOn`).
+`runToGlobalOpt`).
 -}
 expectLambdaSetIntegrityBeforeOpt : Src.Module -> Expect.Expectation
 expectLambdaSetIntegrityBeforeOpt =
     integrityWith .monoGraph
 
 
-{-| Compiles `srcModule` with `runToGlobalOptLssOn` and passes when the graph
+{-| Compiles `srcModule` with `runToGlobalOpt` and passes when the graph
 `pick` takes from the result has no lost members. It fails with the pipeline's
 message when compilation fails, and otherwise with the violation messages
 joined one per line.
 -}
 integrityWith : (Pipeline.GlobalOptArtifacts -> Mono.MonoGraph) -> Src.Module -> Expect.Expectation
 integrityWith pick srcModule =
-    case Pipeline.runToGlobalOptLssOn srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail msg
 

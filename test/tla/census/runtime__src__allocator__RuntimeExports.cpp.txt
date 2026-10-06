@@ -1,5 +1,6 @@
 #include <mutex>
 .fetch_add(1, std::memory_order_relaxed);
+1, std::memory_order_relaxed);
 case DispatchKind::Fast: entry.fast.fetch_add(1, std::memory_order_relaxed); break;
 case DispatchKind::Fast: g_dispatch_fast_total.fetch_add(1, std::memory_order_relaxed); break;
 case DispatchKind::Generic: entry.gen.fetch_add(1, std::memory_order_relaxed); break;
@@ -18,6 +19,7 @@ g_dispatch_stats_overflow.fetch_add(1, std::memory_order_relaxed);
 g_dispatch_stats_table[i].fast.load(std::memory_order_relaxed)});
 g_dispatch_stats_table[i].gen.load(std::memory_order_relaxed),
 g_dispatch_stats_table[i].sat.load(std::memory_order_relaxed),
+g_gencall_counts[static_cast<uint32_t>(reason) & (kGencallReasons - 1)].fetch_add(
 if (!entry.fp.compare_exchange_strong(expected, fp,
 if (!entry.fp.compare_exchange_strong(expected, fp,
 if (g_call_census_dumped.exchange(true)) return;
@@ -40,6 +42,7 @@ std::atomic<uint64_t> g_dispatch_fast_total{0};
 std::atomic<uint64_t> g_dispatch_gen_total{0};
 std::atomic<uint64_t> g_dispatch_sat_total{0};
 std::atomic<uint64_t> g_dispatch_stats_overflow{0};
+std::atomic<uint64_t> g_gencall_counts[kGencallReasons] = {};
 std::atomic<uint64_t> gen{0};
 std::atomic<uint64_t> sat{0};
 std::lock_guard<std::mutex> l(g_consSiteMu);
@@ -57,4 +60,5 @@ uint64_t cur = entry.fp.load(std::memory_order_relaxed);
 uint64_t fp = g_closure_stats_table[i].fp.load(std::memory_order_relaxed);
 uint64_t fp = g_dispatch_stats_table[i].fp.load(std::memory_order_relaxed);
 uint64_t gen_total = g_dispatch_gen_total.load(std::memory_order_relaxed);
+uint64_t n = g_gencall_counts[i].load(std::memory_order_relaxed);
 uint64_t sat_total = g_dispatch_sat_total.load(std::memory_order_relaxed);

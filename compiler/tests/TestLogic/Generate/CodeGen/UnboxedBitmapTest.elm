@@ -120,7 +120,7 @@ suite =
         ]
 
 
-{-| Passes when `srcModule` passes `expectUnboxedBitmap` and its one op named
+{-| Passes when `srcModule` passes `expectUnboxedBitmap` and every op named
 `opName` carries the slot kinds `expected` (`expectSlotKinds`).
 -}
 expectConstructKinds : String -> List Int -> Src.Module -> Expect.Expectation

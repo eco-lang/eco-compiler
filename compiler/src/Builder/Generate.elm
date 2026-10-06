@@ -73,6 +73,7 @@ import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
 import Compiler.GlobalOpt.ListCombinators as ListCombinators
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoCse as MonoCse
+import Compiler.GlobalOpt.GenCallCensus as GenCallCensus
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.PreMono.AliasForward as AliasForward
@@ -88,6 +89,7 @@ import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Monomorphize.ValidateLimits as ValidateLimits
 import Compiler.Nitpick.Debug as Nitpick
+import Compiler.Pipeline.Steps as Steps
 import Data.Map
 import Dict exposing (Dict)
 import System.IO exposing (FilePath, MVar)
@@ -730,7 +732,7 @@ buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph merg
         -- `mono.validate`.
         assigned : EntryPrep.Assigned
         assigned =
-            EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph
+            Steps.prepare ecoConfig typedGraph
     in
     -- Row 5 (plans/frontend-heap-release.md §7.3): assignment is its OWN step.
     -- This callback's argument (the merged Name-typed graph) is rooted until
@@ -740,108 +742,26 @@ buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph merg
         |> Task.andThen (\( a, env ) -> runMonoOptPipeline ecoConfig stats env a)
 
 
-{-| Run the monomorphization → inline+simplify → global optimization pipeline.
-
-Each phase is a separate top-level function to break JS closure scope capture.
-Without this separation, Elm's compiled JS closures capture the full enclosing scope,
-pinning data from earlier phases (e.g., TypedObjects, typedGraph, globalTypeEnv)
-through subsequent phases where they are no longer needed.
-
--}
 runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
 runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
     let
         -- `assignedRaw` is `EntryPrep.assign`'s result, computed in the
         -- previous step (`buildMonoGraphFromMerged`, row 5).
         --
-        -- PRE-MONO ALIAS FORWARDING
-        -- (plans/pre-mono-lss-transforms-04-alias-forwarding.md §3.6). Slot 2:
-        -- FIRST after assignment, before η-expansion — item 1 reads the
-        -- callee's declared arity, and after forwarding that is the target's.
-        -- DEFAULT-ON since 2026-09-14 (call-stats Run 14); `ECO_INLINE_ALIAS_FORWARD=0`
-        -- turns it off. With the flag
-        -- off and `inline.report` on it runs as a CENSUS and returns the graph
-        -- untouched (`pre-afwd-census:`); with both off it is not called.
-        -- The pass mints nothing, so the id allocator passes through.
-        ( assigned0, afwdMetrics ) =
-            if ecoConfig.inline.aliasForward || ecoConfig.inline.report then
-                let
-                    ( gAfwd, stateAfwd, metrics ) =
-                        AliasForward.run ecoConfig.inline assignedRaw.mvarState assignedRaw.graph
-                in
-                ( { assignedRaw | graph = gAfwd, mvarState = stateAfwd }, metrics )
+        -- The PRE-MONO passes (alias forwarding, η-expansion, the pre-mono
+        -- inliner — their order and flags are documented there) run in
+        -- `Compiler.Pipeline.Steps.preMono`, which the test harness calls too
+        -- (plans/staging-honesty-and-production-test-pipeline.md P1). This step
+        -- adds their census lines, under `inline.report`.
+        pre =
+            Steps.preMono ecoConfig assignedRaw
 
-            else
-                ( assignedRaw, AliasForward.emptyMetrics )
+        assigned1 =
+            pre.assigned
 
-        preAfwdReport =
+        writeReport line =
             if ecoConfig.inline.report then
-                Task.io
-                    (System.IO.writeLn System.IO.stderr
-                        (renderPreAliasForwardReport ecoConfig.inline.aliasForward afwdMetrics)
-                    )
-
-            else
-                Task.succeed ()
-
-        -- PRE-MONO ETA EXPANSION
-        -- (plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md).
-        -- Default OFF; `ECO_INLINE_ETA_EXPAND=1` turns it on. With BOTH the
-        -- flag and `inline.report` off the pass is not called at all, so the
-        -- default path does not so much as walk the graph (R9).
-        --
-        -- With `inline.report` on and the flag off it runs as a CENSUS: `run`
-        -- classifies every body and returns the graph and the id allocator
-        -- UNTOUCHED, which is Step 1's measurement — the deficit histogram and
-        -- `cheapShare` that say whether the gate is tuned before a run is spent.
-        --
-        -- Placed BEFORE the pre-mono inliner (that plan's §2.8) so the inliner
-        -- sees SATURATED calls rather than the 2-of-3 PAPs its `hofParam` guard
-        -- declines, and before monomorphization because LSS runs inside the
-        -- solver: the saturated shape has to exist by the time the analysis
-        -- looks at it.
-        ( assignedEta, etaMetrics ) =
-            if ecoConfig.inline.etaExpand || ecoConfig.inline.report then
-                let
-                    ( gEta, stateEta, metrics ) =
-                        EtaExpand.run ecoConfig.inline assigned0.mvarState assigned0.graph
-                in
-                ( { assigned0 | graph = gEta, mvarState = stateEta }, metrics )
-
-            else
-                ( assigned0, EtaExpand.emptyMetrics )
-
-        preEtaReport =
-            if ecoConfig.inline.report then
-                Task.io
-                    (System.IO.writeLn System.IO.stderr
-                        (renderPreEtaReport ecoConfig.inline.etaExpand etaMetrics)
-                    )
-
-            else
-                Task.succeed ()
-
-        -- PRE-MONO inliner (plans/pre-mono-inline-simplify.md). DEFAULT-OFF
-        -- again since 2026-09-15 (call-stats Runs 17-20: +0.29 % generic
-        -- dispatch for 484 bytes, after `aliasForward` took over its
-        -- population); `ECO_INLINE_PRE_MONO=1` turns it on.
-        ( assigned1, preInlineMetrics ) =
-            if ecoConfig.inline.preMono then
-                let
-                    ( g1, state1, metrics ) =
-                        InlineSimplify.optimize ecoConfig.inline assignedEta.mvarState assignedEta.graph
-                in
-                ( { assignedEta | graph = g1, mvarState = state1 }, metrics )
-
-            else
-                ( assignedEta, InlineSimplify.emptyMetrics )
-
-        preInlineReport =
-            if ecoConfig.inline.report then
-                Task.io
-                    (System.IO.writeLn System.IO.stderr
-                        (renderPreInlineReport preInlineMetrics)
-                    )
+                Task.io (System.IO.writeLn System.IO.stderr line)
 
             else
                 Task.succeed ()
@@ -852,20 +772,17 @@ runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
         -- and after the pre-mono inliner, which is where §3.5 puts the pass.
         -- There is no flag because there is no transform yet — the plan is
         -- census-gated and this is the gate's own instrument.
-        preLiftReport =
+        preLiftReport () =
             if ecoConfig.inline.report then
-                Task.io
-                    (System.IO.writeLn System.IO.stderr
-                        (renderPreLiftReport (LiftClosedArgs.census assigned1.graph))
-                    )
+                writeReport (renderPreLiftReport (LiftClosedArgs.census assigned1.graph))
 
             else
                 Task.succeed ()
     in
-    preAfwdReport
-        |> Task.andThen (\_ -> preEtaReport)
-        |> Task.andThen (\_ -> preInlineReport)
-        |> Task.andThen (\_ -> preLiftReport)
+    writeReport (renderPreAliasForwardReport ecoConfig.inline.aliasForward pre.aliasForward)
+        |> Task.andThen (\_ -> writeReport (renderPreEtaReport ecoConfig.inline.etaExpand pre.etaExpand))
+        |> Task.andThen (\_ -> writeReport (renderPreInlineReport pre.inline))
+        |> Task.andThen (\_ -> preLiftReport ())
         |> Task.andThen (\_ -> validateMinted ecoConfig assigned1)
         |> Task.andThen
             (\_ ->
@@ -873,128 +790,31 @@ runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
             )
 
 
-{-| The assignment flags for the selected engine. The solver passes its
-`LssConfig`'s; the subst and diff engines pass `( False, False )` — changing
-those would move their output.
--}
-assignFlagsFor : Config.EcoConfig -> ( Bool, Bool )
-assignFlagsFor ecoConfig =
-    case ecoConfig.mono.engine of
-        Config.EngineSolver ->
-            ( True, ecoConfig.mono.lss.arrowCensus )
-
-        Config.EngineSubst ->
-            ( False, False )
-
-        Config.EngineDiff ->
-            ( False, False )
-
-
-{-| Under `mono.validate` (`ECO_MONO_VALIDATE=1`), check that every pre-mono
-pass minted identity for what it created and copied.
-
-The DUPLICATE-id half is the one that earns its keep: a missing id declines
-visibly, a repeated one is two bodies under a single member and is silent.
-
+{-| `Compiler.Pipeline.Steps.checkMinted` as a build step: under
+`mono.validate`, a pre-mono pass that copied without minting fails the build.
 -}
 validateMinted : Config.EcoConfig -> EntryPrep.Assigned -> Task Exit.Generate ()
 validateMinted ecoConfig assigned =
-    if ecoConfig.mono.validate then
-        case Fresh.assertMinted assigned.graph of
-            Ok () ->
-                Task.succeed ()
+    case Steps.checkMinted ecoConfig assigned of
+        Ok () ->
+            Task.succeed ()
 
-            Err message ->
-                Task.throw
-                    (Exit.GenerateMonomorphizationError
-                        ("pre-mono identity validator: " ++ message)
-                    )
-
-    else
-        Task.succeed ()
+        Err message ->
+            Task.throw (Exit.GenerateMonomorphizationError message)
 
 
-{-| Under `mono.validate` (`ECO_MONO_VALIDATE=1`), check that the post-inline
-prune left the graph CLOSED: every `MonoVarGlobal` in a live node names a live
-node (`plans/post-inline-dead-spec-prune.md` §4 R1, MONO\_011).
-
-This is the gate on the one real risk in that pass. Reachability is only as
-good as the adjacency it walks, and an adjacency that misses a reference
-shape prunes a live spec — which is silent here and surfaces as a CGEN\_044
-dangling `eco.call` at lowering, or as a crash. An earlier prune attempt
-(`plans/prune-bitset-calledges-reachability.md`) failed exactly this way
-across 702 tests. Checking closure directly costs one walk under a flag and
-cannot share a blind spot with the collector, because it matches the same
-single constructor from the other side.
-
+{-| `Compiler.Pipeline.Steps.checkPruned` as a build step: under
+`mono.validate` with the prune on, a pruned live specialization (MONO\_011)
+fails the build.
 -}
 validatePruned : Config.EcoConfig -> Mono.MonoGraph -> Task Exit.Generate ()
-validatePruned ecoConfig (Mono.MonoGraph record) =
-    if not (ecoConfig.mono.validate && ecoConfig.inline.pruneDead) then
-        Task.succeed ()
+validatePruned ecoConfig graph =
+    case Steps.checkPruned ecoConfig graph of
+        Ok () ->
+            Task.succeed ()
 
-    else
-        let
-            isLive specId =
-                case Array.get specId record.nodes of
-                    Just (Just _) ->
-                        True
-
-                    _ ->
-                        False
-
-            -- Hoisted: `collectSpecEdges` walks the whole graph, so computing
-            -- it inside the fold would be quadratic in the spec count.
-            edges =
-                MonoTraverse.collectSpecEdges record.nodes
-
-            dangling =
-                Array.foldl
-                    (\entry ( specId, acc ) ->
-                        case entry of
-                            Nothing ->
-                                ( specId + 1, acc )
-
-                            Just _ ->
-                                ( specId + 1
-                                , case Array.get specId edges |> Maybe.andThen identity of
-                                    Just targets ->
-                                        List.foldl
-                                            (\t a ->
-                                                if isLive t then
-                                                    a
-
-                                                else
-                                                    ( specId, t ) :: a
-                                            )
-                                            acc
-                                            targets
-
-                                    Nothing ->
-                                        acc
-                                )
-                    )
-                    ( 0, [] )
-                    record.nodes
-                    |> Tuple.second
-        in
-        case dangling of
-            [] ->
-                Task.succeed ()
-
-            ( from, to ) :: rest ->
-                Task.throw
-                    (Exit.GenerateMonomorphizationError
-                        ("MONO_011: post-inline prune removed a LIVE specialization — spec "
-                            ++ String.fromInt from
-                            ++ " references pruned spec "
-                            ++ String.fromInt to
-                            ++ " ("
-                            ++ String.fromInt (1 + List.length rest)
-                            ++ " dangling references in total). The edge collector "
-                            ++ "(MonoTraverse.collectSpecEdges) missed a reference shape."
-                        )
-                    )
+        Err message ->
+            Task.throw (Exit.GenerateMonomorphizationError message)
 
 
 monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
@@ -1002,7 +822,7 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
     FEStats.withPhaseLazy stats
         FEStats.PhaseMono
         (\() ->
-            case selectMonomorphizer ecoConfig globalTypeEnv assigned of
+            case Steps.monomorphize ecoConfig globalTypeEnv assigned of
                 Err err ->
                     Task.throw (Exit.GenerateMonomorphizationError err)
 
@@ -1026,23 +846,12 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
                                 -- MONO_029 layout-agreement validator
                                 -- (ECO_MONO_VALIDATE=1): engine-agnostic, fails
                                 -- the compile on any layout-disagreeing views.
-                                if ecoConfig.mono.validate then
-                                    case ValidateLayout.validate g of
-                                        [] ->
-                                            Task.succeed g
+                                case Steps.checkLayout ecoConfig g of
+                                    Ok g1 ->
+                                        Task.succeed g1
 
-                                        violations ->
-                                            Task.throw
-                                                (Exit.GenerateMonomorphizationError
-                                                    ("ECO_MONO_VALIDATE: "
-                                                        ++ String.fromInt (List.length violations)
-                                                        ++ " MONO_029 layout violations\n"
-                                                        ++ String.join "\n" violations
-                                                    )
-                                                )
-
-                                else
-                                    Task.succeed g
+                                    Err message ->
+                                        Task.throw (Exit.GenerateMonomorphizationError message)
                             )
         )
         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
@@ -1054,42 +863,30 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
                 validateStageArityLimit result.monoGraph
                     |> Task.map (\_ -> result)
             )
+        -- GOPT_001 under mono.validate (Steps.checkClosureStaging).
+        |> Task.andThen
+            (\result ->
+                case Steps.checkClosureStaging ecoConfig result.monoGraph of
+                    Ok _ ->
+                        Task.succeed result
+
+                    Err message ->
+                        Task.throw (Exit.GenerateMonomorphizationError message)
+            )
 
 
-{-| HEAP\_078 backstop (`Compiler.Monomorphize.ValidateLimits`): fails the
+{-| HEAP\_078 backstop (`Compiler.Pipeline.Steps.checkStageArity`): fails the
 build with a located `STAGE ARITY LIMIT` error when some closure has more
 parameters plus captured variables than a closure stage can hold.
 -}
 validateStageArityLimit : Mono.MonoGraph -> Task Exit.Generate Mono.MonoGraph
 validateStageArityLimit g =
-    case ValidateLimits.check g of
-        [] ->
-            Task.succeed g
+    case Steps.checkStageArity g of
+        Ok g1 ->
+            Task.succeed g1
 
-        violations ->
-            Task.throw
-                (Exit.GenerateMonomorphizationError
-                    ("STAGE ARITY LIMIT\n" ++ String.join "\n" violations)
-                )
-
-
-{-| Choose the monomorphizer engine per `eco-config.json` / `ECO_MONO_ENGINE`.
-`EngineSubst` (default) is the original engine; `EngineSolver` is the new
-solver-based one; `EngineDiff` runs both and asserts their output matches. This
-is the single production dispatch point between the two engines.
--}
-selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
-selectMonomorphizer ecoConfig globalTypeEnv assigned =
-    case ecoConfig.mono.engine of
-        Config.EngineSubst ->
-            Result.map (\g -> ( g, Nothing )) (Monomorphize.monomorphizeWithLimitsAssigned ecoConfig.mono.limits "main" globalTypeEnv assigned)
-
-        Config.EngineSolver ->
-            MonoSolver.monomorphizeWithReportAssigned ecoConfig.mono.lss ecoConfig.mono.limits "main" globalTypeEnv assigned
-
-        Config.EngineDiff ->
-            -- Diff forces lss off internally; no census.
-            Result.map (\g -> ( g, Nothing )) (MonoDiff.runAssigned ecoConfig.mono.diffDump "main" globalTypeEnv assigned)
+        Err message ->
+            Task.throw (Exit.GenerateMonomorphizationError message)
 
 
 {-| Inline+simplify phase in its own scope so monomorphization inputs are GC-eligible.
@@ -1100,59 +897,11 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
         FEStats.PhaseInlineSimplify
         (\() ->
             let
-                -- list.chunks: keep the shunted combinators' call sites intact —
-                -- their tiny delegate bodies (reverse = foldl cons [] etc.) are
-                -- otherwise threshold-inlined everywhere, and the generation-time
-                -- kernel shunt (Generate.MLIR.Functions.listChunksShunt) only
-                -- rewrites the spec definitions, not pasted copies.
-                chunkBlacklist =
-                    if ecoConfig.list.chunks then
-                        [ "List.reverse", "List.append", "List.concat", "List.take", "List.drop" ]
-
-                    else
-                        []
-
-                -- list.mapTemplate: same reason, one rung up. The template
-                -- replaces the `List.map` spec DEFINITION at generation time, so a
-                -- foldr body already pasted into a caller would keep the old
-                -- lowering and silently escape the template. Blacklisting is
-                -- name-level and wholesale by necessity: entries are qualified
-                -- source names matched by `globalToQualifiedName`, and this pass
-                -- runs BEFORE GlobalOpt/AbiCloning, so the licensed SET does not
-                -- exist yet and per-spec blacklisting is impossible. Consequence,
-                -- stated honestly: with the flag on, UNLICENSED map sites are
-                -- behaviourally identical to today but not necessarily
-                -- byte-identical — their specs stop being inline candidates.
-                -- Byte-identity is certified flag-OFF only (plan Gate 2).
-                mapTemplateBlacklist =
-                    if ecoConfig.list.mapTemplate then
-                        [ "List.map" ]
-
-                    else
-                        []
-
-                effectiveInlineConfig =
-                    case chunkBlacklist ++ mapTemplateBlacklist of
-                        [] ->
-                            ecoConfig.inline
-
-                        extra ->
-                            let
-                                cfg =
-                                    ecoConfig.inline
-                            in
-                            { cfg | blacklist = cfg.blacklist ++ extra }
-
-                -- `inline.postMono` (ECO_INLINE_POST_MONO=0) is the EARLY arm of
-                -- the position A/B (plans/pre-mono-inline-simplify.md §7): it
-                -- skips this pass so the pre-mono `InlineSimplify` is the only
-                -- inliner running. DEFAULT-ON, so the default path is unchanged.
+                -- The inliner under the build's effective inline configuration
+                -- (blacklists and the `inline.postMono` switch are documented
+                -- at `Compiler.Pipeline.Steps.inline`).
                 ( inlinedGraph, inlineMetrics ) =
-                    if ecoConfig.inline.postMono then
-                        MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
-
-                    else
-                        ( monoGraph0, MonoInlineSimplify.emptyMetrics )
+                    Steps.inline ecoConfig monoGraph0
             in
             -- E-a (plans/frontend-heap-release.md §7.4): the prune and the census
             -- run in the NEXT step. This thunk captures `monoGraph0`, and the
@@ -1183,11 +932,7 @@ pruneAndReportInline ecoConfig ( inlinedGraph, inlineMetrics ) =
         -- `fastEvaluatorSpec`, post-settle devirt targets, CafHoist's
         -- mints) runs after `runGlobalOptPhase`.
         simplifiedGraph =
-            if ecoConfig.inline.pruneDead then
-                Prune.pruneAfterInline inlinedGraph
-
-            else
-                inlinedGraph
+            Steps.prune ecoConfig inlinedGraph
     in
     if ecoConfig.inline.report then
         -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
@@ -1742,13 +1487,7 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
     FEStats.withPhaseLazy stats
         FEStats.PhaseGlobalOpt
         (\() ->
-            Task.succeed
-                (MonoGlobalOptimize.globalOptimizeWithStats
-                    mapTemplateCfg.mono.lss.stamp.census
-                    borrowCfg
-                    mapTemplateCfg.list.mapTemplate
-                    simplifiedGraph
-                )
+            Task.succeed (Steps.globalOptCore mapTemplateCfg simplifiedGraph)
                 |> Task.andThen (globalOptCseStep cfg)
                 |> Task.andThen (globalOptDedupeStep cfg)
                 |> Task.andThen (globalOptHoistStep cfg)
@@ -1773,99 +1512,36 @@ type alias GlobalOptCfg =
 census lines already rendered from graphs that are now dead.
 -}
 type alias GlobalOptCarry =
-    { goStats : MonoGlobalOptimize.GlobalOptStats
-    , cseStats : MonoCse.Stats
-    , cseCensus : Maybe String
-    , dedupeStats : CafDedupe.Stats
-    , cafCensusPre : Maybe String
-    , hoistStats : CafHoist.Stats
-    }
+    Steps.GlobalOptResult
 
 
-{-| kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
-post-annotation, because it adds MonoLet bindings and annotateCallStaging is
-O(2^let-depth); and BEFORE CafDedupe, so CSE never has to reason about specs
-dedupe is about to merge away.
+{-| kernel-opt-13 C2: bounded-scope CSE of pure calls, with its census
+(`Compiler.Pipeline.Steps.cse`). Runs HERE, post-annotation, because it adds
+MonoLet bindings and annotateCallStaging is O(2^let-depth); and BEFORE
+CafDedupe, so CSE never has to reason about specs dedupe is about to merge away.
 -}
 globalOptCseStep : GlobalOptCfg -> ( Mono.MonoGraph, MonoGlobalOptimize.GlobalOptStats ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
-globalOptCseStep cfg ( goGraph, goStats ) =
-    let
-        -- kernel-opt-13 C1 census, on `goGraph` -- the same object
-        -- `MonoCse.run` consumes, so the census numbers and the pass's input
-        -- are the same graph. Output-only.
-        cseCensus =
-            if cfg.cseCfg.report then
-                Just (CseCensus.report "" cfg.cseCfg.minCost goGraph)
-
-            else
-                Nothing
-
-        ( cseGraph, cseStats ) =
-            if cfg.cseCfg.enabled then
-                MonoCse.run
-                    { minCost = cfg.cseCfg.minCost, maxPerDef = cfg.cseCfg.maxPerDef }
-                    goGraph
-
-            else
-                ( goGraph, MonoCse.emptyStats )
-    in
-    Task.succeed
-        ( cseGraph
-        , { goStats = goStats
-          , cseStats = cseStats
-          , cseCensus = cseCensus
-          , dedupeStats = CafDedupe.emptyStats
-          , cafCensusPre = Nothing
-          , hoistStats = CafHoist.emptyStats
-          }
-        )
+globalOptCseStep cfg goResult =
+    Task.succeed (Steps.cse cfg.mapTemplateCfg goResult)
 
 
-{-| CAF spec dedupe (cafMemo.dedupe / ECO\_CAF\_DEDUPE=1): merge structurally
-identical nullary specs BEFORE census/hoist so downstream counts see the deduped
-graph. Its stats line IS the dedupe census.
+{-| CAF spec dedupe and the pre-hoist CAF census
+(`Compiler.Pipeline.Steps.dedupe`): merge structurally identical nullary specs
+BEFORE census/hoist so downstream counts see the deduped graph. Its stats line
+IS the dedupe census.
 -}
 globalOptDedupeStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
-globalOptDedupeStep cfg ( cseGraph, carry ) =
-    let
-        ( optimizedGraph, dedupeStats ) =
-            if cfg.cafMemo.dedupe then
-                CafDedupe.run cseGraph
-
-            else
-                ( cseGraph, CafDedupe.emptyStats )
-
-        -- Inner-CAF opportunity census (cafMemo.census / ECO_CAF_CENSUS=1)
-        -- over the PRE-hoist graph: the opportunity baseline. stderr, like
-        -- the LSS census.
-        cafCensusPre =
-            if cfg.cafMemo.census then
-                Just (CafCensus.report "caf-census" { minNodes = cfg.cafMemo.hoist.minNodes } optimizedGraph)
-
-            else
-                Nothing
-    in
-    Task.succeed ( optimizedGraph, { carry | dedupeStats = dedupeStats, cafCensusPre = cafCensusPre } )
+globalOptDedupeStep cfg cseResult =
+    Task.succeed (Steps.dedupe cfg.mapTemplateCfg cseResult)
 
 
-{-| CAF hoisting (plans/caf-hoist-closed-expressions.md DQ3 order: GlobalOpt →
-census(pre) → hoist → hoist stats → census(post)).
+{-| CAF hoisting (`Compiler.Pipeline.Steps.hoist`;
+plans/caf-hoist-closed-expressions.md DQ3 order: GlobalOpt → census(pre) →
+hoist → hoist stats → census(post)).
 -}
 globalOptHoistStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
-globalOptHoistStep cfg ( optimizedGraph, carry ) =
-    let
-        ( hoistedGraph, hoistStats ) =
-            if cfg.cafMemo.hoist.enabled then
-                CafHoist.run
-                    { minNodes = cfg.cafMemo.hoist.minNodes
-                    , maxHoists = cfg.cafMemo.hoist.maxHoists
-                    }
-                    optimizedGraph
-
-            else
-                ( optimizedGraph, CafHoist.emptyStats )
-    in
-    Task.succeed ( hoistedGraph, { carry | hoistStats = hoistStats } )
+globalOptHoistStep cfg dedupeResult =
+    Task.succeed (Steps.hoist cfg.mapTemplateCfg dedupeResult)
 
 
 {-| The last GlobalOpt step: every stderr line, in the original order, then the
@@ -1980,9 +1656,7 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
                     -- outcomes (design §9.4's retirement counters).
                     Task.io
                         (System.IO.writeLn System.IO.stderr
-                            ("lss globalopt: wrappersInserted="
-                                ++ String.fromInt goStats.wrappersInserted
-                                ++ " dispatchUpgraded="
+                            ("lss globalopt: dispatchUpgraded="
                                 ++ String.fromInt goStats.abiCloning.dispatchUpgraded
                                 ++ " stampedPapPrefix="
                                 ++ String.fromInt goStats.abiCloning.stampedPapPrefix
@@ -2026,12 +1700,19 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
                                 ++ String.fromInt goStats.abiCloning.devirtPost.ambiguous
                                 ++ " multiInstanceGroups="
                                 ++ String.fromInt goStats.abiCloning.multiInstanceGroups
-                                ++ " stampedWrapperInstances="
-                                ++ String.fromInt goStats.abiCloning.stampedWrapperInstances
                                 ++ "\n"
                                 ++ abiCensusLines goStats.abiCloning
                             )
                         )
+                        |> Task.map (\_ -> result)
+
+                else
+                    Task.succeed result
+            )
+        |> Task.andThen
+            (\_ ->
+                if mapTemplateCfg.mono.stagingReport then
+                    writeLnErr (stagingCensusLine goStats)
                         |> Task.map (\_ -> result)
 
                 else
@@ -2049,6 +1730,15 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
                 else
                     Task.succeed result
             )
+
+
+{-| The generic-call census line
+(plans/staging-honesty-and-production-test-pipeline.md P0.3), under
+`mono.stagingReport` (`ECO_STAGING_REPORT=1`).
+-}
+stagingCensusLine : MonoGlobalOptimize.GlobalOptStats -> String
+stagingCensusLine goStats =
+    "lss gencall: " ++ GenCallCensus.render goStats.genCalls
 
 
 {-| Census lines (2026-07-21, plans/lss-dispatch-value-extraction.md open

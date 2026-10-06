@@ -16,7 +16,7 @@ _over-applies_ it. A stamp on an over-applied call is a _staged stamp_: its
 more arguments than `captureAbi.paramTypes`.
 
 The fixture is one module, run through
-`TestLogic.TestPipeline.runToGlobalOptLssOn` (the solver engine with
+`TestLogic.TestPipeline.runToGlobalOpt` (the solver engine with
 lambda-set specialization on, then the inliner and global optimization):
 
     applyStaged : (Int -> Int -> Int) -> Int -> Int -> Int
@@ -72,7 +72,7 @@ import TestLogic.TestPipeline as Pipeline
 
 
 {-| The module's one test: it runs `fixtureModule` through
-`Pipeline.runToGlobalOptLssOn` and passes when `hasStagedStamp` finds a staged
+`Pipeline.runToGlobalOpt` and passes when `hasStagedStamp` finds a staged
 stamp in the optimized graph.
 -}
 suite : Test
@@ -80,7 +80,10 @@ suite =
     Test.describe "E2.7: staged stamp fires on an over-applied singleton"
         [ Test.test "the over-apply site carries a staged stamp (args > captureAbi params)" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssOn fixtureModule of
+                -- NoPreMono (plans/staging-honesty-and-production-test-pipeline.md P1.4): this pins an LSS
+                -- analysis rule on a hand-written shape that pre-mono alias forwarding / eta-expansion
+                -- rewrite before the solver sees it.
+                case Pipeline.runToGlobalOptNoPreMono fixtureModule of
                     Err e ->
                         Expect.fail ("solver+LSS pipeline failed: " ++ e)
 

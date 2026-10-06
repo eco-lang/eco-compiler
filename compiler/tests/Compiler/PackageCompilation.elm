@@ -45,14 +45,12 @@ arrows of the node types and annotations, and the typed optimizer is given the
 solver's scheme roots.
 
 A compiled module's typed graph can then be carried on through
-monomorphization and MLIR generation. That path differs from the compiler's:
-it uses the substitution monomorphizer
-(`Compiler.Monomorphize.Monomorphize`), starts from a top-level value the
-caller names rather than from a `main`, takes its type information from
+monomorphization and MLIR generation with the build's own steps
+(`Compiler.Pipeline.Steps`) under the default configuration. Only the inputs
+differ from a build: it starts from a top-level value the caller names rather
+than from a `main`, and takes its type information from
 `Compiler.Elm.Interface.Basic.testIfaces` rather than from the interfaces the
-module was compiled against, and runs only the inliner and
-`MonoGlobalOptimize.globalOptimize` of the global optimization steps before
-the MLIR back end.
+module was compiled against.
 
 
 # Results
@@ -105,16 +103,13 @@ import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
-import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Erased.Module as Optimize
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
-import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Parse.Module as Parse
+import Compiler.Pipeline.Steps as Steps
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanonicalizeError
 import Compiler.Reporting.Error.Main as MainError
@@ -571,8 +566,10 @@ optimizeTyped r =
 -- ============================================================================
 
 
-{-| Monomorphizes the typed graphs of `results` together with the substitution
-engine, `Compiler.Monomorphize.Monomorphize`, starting from the top-level value
+{-| Monomorphizes the typed graphs of `results` together the way a default
+build does (`Compiler.Pipeline.Steps` under `Pipeline.productionConfig`:
+assignment, the pre-monomorphization passes, the solver engine with lambda-set
+specialization, and the build's validators), starting from the top-level value
 named `entry`, or gives a `MonomorphizeError` with its message (also when there
 is no such value). `results` are the modules compiled in dependency order, as
 `compileModulesInOrder` returns them; when several define `entry`, the one
@@ -609,40 +606,39 @@ monomorphize entry results =
                 (TypeEnv.fromInterfaces Basic.testIfaces)
                 results
     in
-    case Monomorphize.monomorphize entry globalTypeEnv globalGraph of
-        Ok monoGraph ->
-            Ok monoGraph
+    let
+        cfg =
+            Pipeline.productionConfig
 
-        Err errMsg ->
-            Err (MonomorphizeError errMsg)
+        assigned =
+            (Steps.preMono cfg (Steps.prepareEntry cfg entry globalGraph)).assigned
+    in
+    Steps.checkMinted cfg assigned
+        |> Result.andThen (\_ -> Steps.monomorphizeEntry cfg entry globalTypeEnv assigned)
+        |> Result.andThen (\( g, _ ) -> Steps.checkStageArity g)
+        |> Result.andThen (Steps.checkLayout cfg)
+        |> Result.mapError MonomorphizeError
 
 
 {-| Returns the MLIR text the MLIR back end generates for `monoGraph` in
 development mode, without source maps.
 
-Before the back end, the graph goes through the post-monomorphization inliner
-and `MonoGlobalOptimize.globalOptimize`, with the default configuration, as
-`TestLogic.TestPipeline.runToGlobalOpt` does. The later global steps of
-`Builder.Generate` (CSE, CAF dedupe and hoisting) are not run.
+Before the back end, the graph goes through the build's post-monomorphization
+steps under `Pipeline.productionConfig` (`Compiler.Pipeline.Steps`: the
+inliner, the post-inline prune and global optimization), as
+`TestLogic.TestPipeline.runToGlobalOpt` does.
 
 -}
 generateMLIR : Mono.MonoGraph -> String
 generateMLIR monoGraph =
     let
-        ( simplifiedGraph, _ ) =
-            MonoInlineSimplify.optimize Config.default.inline monoGraph
+        cfg =
+            Pipeline.productionConfig
 
-        config =
-            { sourceMaps = CodeGen.NoSourceMaps
-            , leadingLines = 0
-            , mode = Mode.Dev Nothing
-            , graph = MonoGlobalOptimize.globalOptimize simplifiedGraph
-            }
-
-        output =
-            MLIR.backend.generate config
+        simplified =
+            Steps.prune cfg (Tuple.first (Steps.inline cfg monoGraph))
     in
-    CodeGen.outputToString output
+    MLIR.generateProgram cfg (Mode.Dev Nothing) (Tuple.first (Steps.globalOpt cfg simplified))
 
 
 {-| Monomorphizes `results` from `entry` as `monomorphize` does and returns the

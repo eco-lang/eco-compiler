@@ -18,8 +18,8 @@ type: the parameters of every stage of the chain added together, which is 2 for
 not a function.
 
 `expectVarGlobalArityConsistency` runs a source module through
-`TestLogic.TestPipeline.runToGlobalOpt`, which monomorphizes with the
-substitution engine and then runs the inliner and the global optimizer, and
+`TestLogic.TestPipeline.runToGlobalOpt`, which compiles it the way a default
+build does up to and including global optimization, and
 checks the optimized graph. Any pipeline failure fails the expectation. Three
 checks are made over the bodies of the define, tail-function and port nodes,
 visiting every subexpression, including closure captures, `let` definitions and

@@ -63,7 +63,7 @@ whose callee it identifies as a partial application holding `k` arguments
 with `fastPapPrefix = Just k` in its `Mono.CallInfo`, whose docstring owns the
 field's meaning. For `g acc` and `g 1`, `k` is 1.
 
-The tests run the fixture through `Pipeline.runToGlobalOptLssOn` and inspect
+The tests run the fixture through `Pipeline.runToGlobalOpt` and inspect
 its `optimizedMonoGraph`, which has been through `AbiCloning`. Each assertion
 asks whether any expression anywhere in the graph matches, not whether a
 particular call does.
@@ -129,14 +129,14 @@ suite =
         ]
 
 
-{-| Runs the fixture through `Pipeline.runToGlobalOptLssOn` and passes when
+{-| Runs the fixture through `Pipeline.runToGlobalOpt` and passes when
 `predicate` holds of the optimized graph. It fails with `failureMsg` when the
-predicate does not hold. When `Pipeline.runToGlobalOptLssOn` returns an error,
+predicate does not hold. When `Pipeline.runToGlobalOpt` returns an error,
 it fails with that error's text, prefixed by `solver+LSS pipeline failed:` and a space.
 -}
 expectOnGraph : (Mono.MonoGraph -> Bool) -> String -> Expect.Expectation
 expectOnGraph predicate failureMsg =
-    case Pipeline.runToGlobalOptLssOn fixtureModule of
+    case Pipeline.runToGlobalOpt fixtureModule of
         Err e ->
             Expect.fail ("solver+LSS pipeline failed: " ++ e)
 

@@ -21,10 +21,14 @@ constructors, each with a name, a runtime tag and field types.
 
 Each exposed expectation takes one source module and runs it through
 `TestLogic.TestPipeline.runToMono`, so the module must meet that function's
-requirements (it must define `testValue`). Monomorphization there uses the
-substitution engine, not the solver engine a default build uses. If
+requirements (it must define `testValue`). Monomorphization there is the
+production pipeline's (the solver engine with lambda-set specialization). If
 `runToMono` returns an error, the expectation fails with its message. Otherwise
 it builds a list of checks from the graph and fails if any of them fails.
+
+Types are compared with `Mono.eqLayout`, not `==`: lambda-set annotations are
+per occurrence under the solver engine (LSS\_006) and a ⊤ carries a provenance
+code, so two occurrences of one layout can differ in annotation only.
 
 Every expression of every node is visited, at any depth, including the
 branches a `case` holds inline in its decision tree (`MonoTraverse.foldExpr`).
@@ -248,7 +252,7 @@ checkConstruction context expr =
                                             Just (context ++ ": record creation has field " ++ name ++ " that its type lacks")
 
                                         Just t ->
-                                            if Mono.typeOf e == t then
+                                            if Mono.eqLayout (Mono.typeOf e) t then
                                                 Nothing
 
                                             else
@@ -273,7 +277,7 @@ checkConstruction context expr =
                             ++ String.fromInt (List.length elementTypes)
                         ]
 
-                    else if List.map Mono.typeOf elementExprs /= elementTypes then
+                    else if not (List.all identity (List.map2 Mono.eqLayout (List.map Mono.typeOf elementExprs) elementTypes)) then
                         [ context ++ ": tuple creation element types differ from its type's" ]
 
                     else
@@ -283,7 +287,7 @@ checkConstruction context expr =
                     [ context ++ ": tuple creation with a non-tuple type" ]
 
         Mono.MonoRecordUpdate recordExpr _ monoType ->
-            if Mono.typeOf recordExpr == monoType then
+            if Mono.eqLayout (Mono.typeOf recordExpr) monoType then
                 []
 
             else
@@ -326,7 +330,7 @@ checkRecordAccess context expr =
                 Mono.MRecord _ fields ->
                     case Dict.get fieldName fields of
                         Just fieldType ->
-                            if fieldType == accessType then
+                            if Mono.eqLayout fieldType accessType then
                                 []
 
                             else

@@ -138,6 +138,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\repVal -> applyLssReportOverride repVal cfg3)
             )
         |> Task.andThen
+            (\cfgS ->
+                (Utils.envLookupEnv "ECO_STAGING_REPORT" |> Task.mapError never)
+                    |> Task.map (\v -> applyStagingReportOverride v cfgS)
+            )
+        |> Task.andThen
             (\cfg4 ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_MAX_SPECS" |> Task.mapError never)
                     |> Task.map (\budgetVal -> applyLssBudgetOverride budgetVal cfg4)
@@ -1514,6 +1519,30 @@ updateCafHoist f cfg =
             cfg.cafMemo
     in
     { cfg | cafMemo = { cafMemo | hoist = f cafMemo.hoist } }
+
+
+{-| `ECO_STAGING_REPORT=1|true|yes`: print the staging and generic-call census
+after global optimization and tag generic calls with their reason
+(plans/staging-honesty-and-production-test-pipeline.md P0). Separate from
+`ECO_MONO_LSS_REPORT`, whose own census aborts the self-compile on a
+shadow-root-stack overflow in `List.sortBy`.
+-}
+applyStagingReportOverride : Maybe String -> EcoConfig -> EcoConfig
+applyStagingReportOverride maybeVal cfg =
+    case Maybe.map (String.trim >> String.toLower) maybeVal of
+        Just t ->
+            if t == "1" || t == "true" || t == "yes" then
+                let
+                    mono =
+                        cfg.mono
+                in
+                { cfg | mono = { mono | stagingReport = True } }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
 
 
 {-| `ECO_MONO_LSS_REPORT=1|true|yes`: render the LSS census after mono.

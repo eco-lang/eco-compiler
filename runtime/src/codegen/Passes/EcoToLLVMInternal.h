@@ -846,6 +846,8 @@ struct EcoRuntime {
     // LSS dispatch-value plan E0.4: void eco_dispatch_stats_fast(ptr) — records a
     // stamped fast-dispatch execution under ECO_DISPATCH_STATS. GC-leaf.
     mlir::LLVM::LLVMFuncOp getOrCreateDispatchStatsFast(mlir::OpBuilder &builder) const;
+    // void eco_gencall_stats(i32) — generic-call reason census (staging plan P0.4). GC-leaf.
+    mlir::LLVM::LLVMFuncOp getOrCreateGencallStats(mlir::OpBuilder &builder) const;
     // Fold-proof slot-cast barrier decls (REP_LLVM_002): declare-only,
     // gc-leaf; every call is rewritten back to a bare inttoptr/ptrtoint by
     // StripEcoCastBarriers strictly post-RS4GC (no definition ever exists,

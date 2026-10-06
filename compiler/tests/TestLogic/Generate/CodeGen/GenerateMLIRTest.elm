@@ -18,8 +18,6 @@ What the tests establish:
 Among what is not tested:
 
   - whether the MLIR is valid, or what any particular op in it is;
-  - MLIR from the monomorphization engine a default build uses, since
-    `runToMlir` uses the substitution engine;
   - programs outside the standard catalogue.
 
 -}

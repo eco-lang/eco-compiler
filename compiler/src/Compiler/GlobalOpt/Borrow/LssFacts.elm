@@ -16,8 +16,8 @@ position) resolve to `PUnresolved` — the full `MonoGraph.lssMemberOrigins`
 routing for those is not implemented. Sound (conservative) and still recovers the
 bulk of closure poison (direct closure calls).
 
-The `byMember` index keying primitives (`instanceMember`/`isWrapperHome`) are
-duplicated from `AbiCloning`, which does not export them.
+The `byMember` index keying primitive (`instanceMember`) is duplicated from
+`AbiCloning`, which does not export it.
 
 
 # Facts
@@ -37,7 +37,6 @@ import Compiler.Data.Id as Id
 import Compiler.GlobalOpt.Borrow.KernelSigs as KernelSigs
 import Compiler.GlobalOpt.Borrow.Mode exposing (Mode(..))
 import Compiler.GlobalOpt.Borrow.Sig as Sig exposing (BorrowSig)
-import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Dict exposing (Dict)
 import Set exposing (Set)
@@ -216,7 +215,7 @@ collectClosure specId expr acc =
             case instanceMember closureInfo tipe of
                 Just ( m, isAdopted ) ->
                     ( m
-                    , isAdopted || isWrapperHome closureInfo.lambdaId
+                    , isAdopted
                     , { lambdaId = closureInfo.lambdaId, enclosingSpecId = specId, closureInfo = closureInfo, body = body }
                     )
                         :: acc
@@ -245,11 +244,6 @@ instanceMember closureInfo tipe =
 
                 Nothing ->
                     Maybe.map (\m -> ( m, True )) (Mono.singletonHeadMember tipe)
-
-
-isWrapperHome : Mono.LambdaId -> Bool
-isWrapperHome (Mono.AnonymousLambda home _) =
-    home == Rewriter.wrapperHome
 
 
 

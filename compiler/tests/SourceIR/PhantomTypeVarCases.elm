@@ -42,8 +42,8 @@ What the tests establish:
 Among what is not tested: a program using `RErr` at more than one error type,
 so that "one specialization per distinct `e`" is never checked beyond the
 single `String` case; that `RErr` is specialized at all, since a count of zero
-passes; and the `RErr` count under the solver engine, since `runToMono` uses
-the substitution engine.
+passes; and the `RErr` count under the substitution engine (bootstrap Stage
+5), since `runToMono` is the production (solver) pipeline.
 
 -}
 

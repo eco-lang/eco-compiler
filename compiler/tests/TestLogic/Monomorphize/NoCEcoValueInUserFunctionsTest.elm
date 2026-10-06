@@ -7,7 +7,7 @@ programs with local tail-recursive functions.
 The check is
 `TestLogic.Monomorphize.NoCEcoValueInUserFunctions.expectNoResidualNumberVars`,
 which compiles each program with `TestLogic.TestPipeline.runToMono` (the
-substitution engine). Invariant MONO\_021 names this test: `CEcoValue`
+production pipeline). Invariant MONO\_021 names this test: `CEcoValue`
 variables may stay in user function and closure types by design, and the
 forbidden residual, a `CNumber` variable, is MONO\_002.
 

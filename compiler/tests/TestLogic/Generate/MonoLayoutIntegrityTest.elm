@@ -10,9 +10,8 @@ fails a test on any of those programs, not only on a hand-picked few.
 The programs are the ones `SourceIR.Suite.StandardTestSuites.expectSuite`
 gives to an expectation: the source programs built by each `SourceIR` case
 module it includes. Every checker compiles a program with
-`TestLogic.TestPipeline.runToMono`, which monomorphizes with the substitution
-engine rather than the solver engine a default build uses, and stops before
-global optimization. A _layout_ here is the shape a record, tuple or custom
+`TestLogic.TestPipeline.runToMono`, the production pipeline, which stops
+before global optimization. A _layout_ here is the shape a record, tuple or custom
 type has in the graph; for a custom type it is the graph's `ctorShapes` entry,
 the list of its constructors with their tags and field types.
 

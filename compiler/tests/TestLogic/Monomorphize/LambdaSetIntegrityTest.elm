@@ -18,7 +18,7 @@ to its caller's expectation.
 What the tests establish:
 
   - `"satisfies LSS_002"`: for each program, `expectLambdaSetIntegrity`
-    compiles it with `TestLogic.TestPipeline.runToGlobalOptLssOn` and finds no
+    compiles it with `TestLogic.TestPipeline.runToGlobalOpt` and finds no
     lost member among the closures of the optimized graph.
   - `"satisfies LSS_002 before the inliner"`: the same check through
     `expectLambdaSetIntegrityBeforeOpt`, on the graph the solver engine
@@ -26,7 +26,7 @@ What the tests establish:
     lost member is told apart from one those passes lose.
 
 Among what is not tested: any lambda-set configuration other than the one
-`runToGlobalOptLssOn` uses.
+`runToGlobalOpt` uses.
 
 -}
 

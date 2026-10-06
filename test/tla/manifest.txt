@@ -199,7 +199,7 @@ census  c47461f868a204f5f6e683af460d1b583fd869108e3d2796a25b4d00e735c1cc  runtim
 census  4f339adc3b679dcdd5da093b4857b43a07f9e2877014089aae42d61c938aed06  runtime/src/allocator/PermanentSpace.hpp  -  M1
 census  b4b1d15a7664fd5a53f1478809a791459fe43bbf99454762dd8e3954d797ced1  runtime/src/allocator/ReservedArray.hpp  -  W4
 census  701b7388c0eb64cc5b3a139166b2ca6d52370827cfb13572d323c71cea72765d  runtime/src/allocator/RootSet.hpp  -  M1
-census  7b4ec951a2534b10ec91cd6dcc563a28a72e562ec700cb2c2918e03e0d1c312a  runtime/src/allocator/RuntimeExports.cpp  -  M1
+census  2e8487fd3e9f47294c4687d03622affc0f55687a3b1c605945681269986f379c  runtime/src/allocator/RuntimeExports.cpp  -  M1
 census  a675c557bda53bf1bd6a7b43e04322bda8ec89328f821c704fee6a2866524f7b  runtime/src/allocator/TenureWork.hpp  -  M5,W5
 census  6c0c1a3929d7c680e144779e3c42a8f8d61c058a556a26963fc6400915d9e70b  runtime/src/allocator/ThreadLocalHeap.cpp  -  M6
 census  c23960239217be0cd2416371f364904215d8bc6eb75e2c188265083f87d2a7ee  runtime/src/allocator/ThreadLocalHeap.hpp  -  M6

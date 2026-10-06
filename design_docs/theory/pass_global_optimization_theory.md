@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Global Optimization (GlobalOpt) pass transforms the monomorphized IR to prepare it for MLIR code generation. Its primary responsibilities are canonicalizing function staging, normalizing calling conventions across case/if branches, and computing call metadata for the code generator.
+The Global Optimization (GlobalOpt) pass transforms the monomorphized IR to prepare it for MLIR code generation. Its primary responsibilities are regrouping function types to their closures' parameter counts, specializing closure ABIs (AbiCloning), and computing call metadata for the code generator.
 
 **Phase**: Global Optimization
 
@@ -11,7 +11,7 @@ The Global Optimization (GlobalOpt) pass transforms the monomorphized IR to prep
 **Key Invariants**:
 - **GOPT_001** — Closure types match param counts
 - **GOPT_002** — Returned closure param counts are tracked
-- **GOPT_003** — Case/if branches have compatible staging
+- **GOPT_003** — A function-valued case/if claims no staging beyond what all its branches agree on *(rewritten Oct 2026)*
 - **GOPT_011-014** — Calling convention invariants (source arity, TailDef arity, closure capture arity, let-bound function arity) *(Mar 2026)*
 
 ## Purpose
@@ -29,13 +29,13 @@ This separation ensures that Monomorphization remains simple and focused, while 
 **Input**: `MonoGraph` from Monomorphization with:
 - Curried function types (e.g., `MFunction [Int] (MFunction [Int] Int)`)
 - Closures with params that may not match their type's stage arity
-- Case/if expressions with branches that may have incompatible stagings
+- Case/if expressions whose function-valued branches may have different stagings
 - No call metadata (`CallInfo` uses defaults)
 
 **Output**: `MonoGraph` with:
 - Canonical flat function types (e.g., `MFunction [Int, Int] Int`)
 - All closures have types matching their param counts (GOPT_001)
-- All case/if branches have compatible stagings (GOPT_003)
+- Case/if branches keep their own staging; no call claims a staging the branches do not all share (GOPT_003)
 - All calls have computed `CallInfo` metadata for codegen
 
 ## The Phases
@@ -45,23 +45,37 @@ GlobalOpt runs several sequential phases, coordinated by a common traversal infr
 ```elm
 -- MonoInlineSimplify.optimize is applied externally before globalOptimize.
 
-globalOptimize graph0 =
+globalOptimizeWithStats census stagingCensus borrowCfg listMapTemplate graph0 =
     let
         -- Phase 1: Wrap top-level callables in closures
         graph1 = wrapTopLevelCallables graph0
 
-        -- Phase 2: Staging analysis + graph rewrite
-        (_, graph2) = Staging.analyzeAndSolveStaging graph1
+        -- Phase 2: Regroup closure types to their param counts (GOPT_001)
+        graph2 = Staging.regroup graph1
 
-        -- Phase 3: Validate closure staging
-        graph3 = Staging.validateClosureStaging graph2
+        -- (No Phase 3: the no-op validateClosureStaging was removed, Oct 2026)
 
         -- Phase 4: ABI Cloning
-        graph4 = AbiCloning.abiCloningPass graph3
+        ( graph4Full, abiStats ) = AbiCloning.abiCloningPass census graph2
+
+        -- Drop the LSS member tables AbiCloning was the last reader of
+        graph4 = Mono.clearLssTables { keepOrigins = ... } graph4Full
+
+        -- Phase 5: Annotate call staging metadata
+        graph5 = annotateCallStaging graph4
+
+        -- Phase 6: Borrow inference (only when borrow.enabled)
+        ( graph6, borrowStats ) = Borrow.run borrowCfg graph5
     in
-    -- Phase 5: Annotate call staging metadata
-    annotateCallStaging graph4
+    ( graph6, stats )
 ```
+
+`globalOptimize` is `globalOptimizeWithStats` at the default configuration. In a
+build, `Builder.Generate` runs it through `Compiler.Pipeline.Steps` (the middle-end
+steps shared with the test harness `TestLogic.TestPipeline`), which then runs CSE,
+CAF dedupe and CAF hoisting, each behind its flag. Under `mono.validate`
+(`ECO_MONO_VALIDATE=1`) `Steps.checkClosureStaging` checks GOPT_001 after global
+optimization.
 
 ### MonoTraverse: Common Iteration Infrastructure
 
@@ -84,15 +98,15 @@ This eliminates duplicate traversal code and ensures consistent handling across 
 
 **Function**: `wrapTopLevelCallables` (calls `ensureCallableForNode` per node)
 
-**Purpose**: Ensure all top-level function-typed values (Define, PortIncoming, PortOutgoing) are `MonoClosure` before the staging solver runs. Bare `MonoVarKernel` and `MonoVarGlobal` references are wrapped in alias closures; other function-typed expressions become general closures.
+**Purpose**: Ensure all top-level function-typed values (Define, PortIncoming, PortOutgoing) are `MonoClosure` before staging regroups their types. Bare `MonoVarKernel` and `MonoVarGlobal` references are wrapped in alias closures; other function-typed expressions become general closures.
 
-**Why before staging**: The staging producer graph should only see closures (for user functions and alias wrappers) or tail-funcs/`MonoExtern`. Bare `MonoVarKernel`/`MonoVarGlobal` references have no segmentation info and would confuse staging analysis.
+**Why before staging**: Regrouping only rewrites the types of closures and tail functions. Wrapping first means every top-level function value is a closure (user functions and alias wrappers) or a tail function/`MonoExtern`, whose param count determines its first stage; a bare `MonoVarKernel`/`MonoVarGlobal` reference has no param list to regroup to.
 
-### Phase 2: Staging Analysis + Graph Rewrite
+### Phase 2: Staging Regroup
 
-**Function**: `Staging.analyzeAndSolveStaging`
+**Function**: `Staging.regroup : MonoGraph -> MonoGraph`
 
-**Purpose**: Canonicalize closure staging via the graph-based constraint solver, then rewrite the graph with the solution. This phase both flattens nested `MFunction` types to match closure param counts and normalizes case/if branches to have compatible calling conventions.
+**Purpose**: Establish GOPT_001. Monomorphization keeps every function type curried, one argument per stage. `regroup` rewrites the type of every `MonoClosure` and `MonoTailFunc` with `flattenTypeToArity (number of params)`: the first stage takes exactly the closure's parameters and the remaining arguments form one further stage, with the head lambda-set annotation copied onto every stage arrow. Every `MonoDefine` takes its rewritten expression's type. It creates no values (no wrappers).
 
 **Type Flattening Example**:
 ```elm
@@ -100,7 +114,8 @@ This eliminates duplicate traversal code and ensures consistent handling across 
 -- After:  closure with params=[x,y], type=MFunction [Int, Int] Int
 ```
 
-**ABI Normalization Example**:
+**Joins are not normalized.** A function-valued `case`/`if` whose branches are staged differently keeps each branch's own staging:
+
 ```elm
 chooser b =
     if b then
@@ -109,31 +124,11 @@ chooser b =
         \x -> \y -> x * y      -- staging [1,1]
 ```
 
-Each branch has a different staging signature. The caller cannot know how to invoke the result.
+GOPT_003: `closureBodyStageArities` returns `Nothing` unless every branch (case jump targets and decider `Inline` leaves; if branches and the else) is a closure with the same stage arities, so a call through such a join is `CallSegmentationUnknown`/`CallGenericApply` and the runtime applies it by the closure header. Pre-mono η-expansion to declared arity removes such a join when it is a definition's whole body (here `chooser` becomes a function of three arguments); joins that survive (let-bound, in a list, passed as an argument, in a record field) are applied generically.
 
-**Solution**:
-1. Use `chooseCanonicalSegmentation` to pick the majority staging
-2. Use `buildAbiWrapperGO` to wrap non-conforming branches
+### Phase 3 (removed)
 
-**Algorithm** (`rewriteExprForAbi`):
-1. For case expressions: collect leaf types, pick canonical segmentation, wrap branches
-2. For if expressions: similarly normalize branch results
-3. For closures: verify they're properly formed (wrapping was done in Phase 1)
-
-**Key functions**:
-- `chooseCanonicalSegmentation`: Picks the most common staging pattern
-- `buildAbiWrapperGO`: Creates wrapper closures that adapt one staging to another
-- `ensureCallableForNode`: Wraps non-closure function values in closures (called in Phase 1)
-
-### Phase 3: Validate Closure Staging
-
-**Function**: `validateClosureStaging`
-
-**Purpose**: Verify that all closures now satisfy GOPT_001 (types match param counts).
-
-**Algorithm**: Walk all closures and check that `length(params) == stageParamCount(type)`.
-
-**Failure**: If validation fails after Phase 2, it indicates a bug in the transformation logic.
+`Staging.validateClosureStaging` was a no-op and was removed (Oct 2026). GOPT_001 is now checked at compile time under `mono.validate` (`ECO_MONO_VALIDATE=1`) by `Compiler.Pipeline.Steps.checkClosureStaging`, which reports every closure and tail function whose param count differs from its type's first stage (`Staging.checkClosureStaging`). The phase numbers below are kept as they appear in the code.
 
 ### Phase 4: ABI Cloning
 
@@ -146,6 +141,8 @@ Each branch has a different staging signature. The caller cannot know how to inv
 **Function**: `annotateCallStaging`
 
 **Purpose**: Compute `CallInfo` metadata that MLIR codegen needs.
+
+A callee is *dynamic* (`isDynamicCallee`) when it is a `MonoVarLocal` naming a function-typed parameter of the enclosing `MonoTailFunc` (`CallEnv.dynamicParams`). This set used to be the staging solver's `dynamicSlots` output; it was always exactly these parameters.
 
 **CallInfo structure**:
 ```elm
@@ -172,91 +169,13 @@ type alias CallInfo =
 
 ## The Staging Subsystem
 
-The staging analysis is implemented as a graph-based constraint solver in `compiler/src/Compiler/GlobalOpt/Staging/`. This subsystem determines the canonical segmentation for all functions by analyzing data flow through the program.
+Staging is the single module `compiler/src/Compiler/GlobalOpt/Staging.elm`, exposing `regroup` (Phase 2) and `checkClosureStaging` (the GOPT_001 check run by `Compiler.Pipeline.Steps` under `mono.validate`). See Phase 2 above.
 
-### Architecture
+### History: the staging solver (removed Oct 2026)
 
-The staging subsystem has six modules:
+Until October 2026 staging was a graph-based constraint solver in `compiler/src/Compiler/GlobalOpt/Staging/` (`Types`, `GraphBuilder`, `ProducerInfo`, `UnionFind`, `Solver`, `Rewriter`). It built a graph of function producers (closures, tail functions, kernels) and slots (if/case results, captures, record/tuple/list slots, parameters), unioned them into equivalence classes, picked a canonical segmentation per class by majority vote (ties to the larger first stage), and wrapped disagreeing producers in eta-expansion closures. `MonoGlobalOptimize` also carried a separate case/if "ABI normalizer" (`rewriteExprForAbi`, `computeBranchNormalization`, `buildAbiWrapperGO`, `buildNestedCallsGO`, ...) that nothing called.
 
-| Module | Purpose |
-|--------|---------|
-| `Types.elm` | Core types: Segmentation, ProducerId, SlotId, Node, StagingGraph |
-| `GraphBuilder.elm` | Builds the staging graph from MonoGraph |
-| `Solver.elm` | Union-find based solver choosing canonical segmentations |
-| `Rewriter.elm` | Rewrites MonoGraph with solved segmentations |
-| `ProducerInfo.elm` | Computes natural segmentation for each producer |
-| `UnionFind.elm` | Union-find data structure for equivalence classes |
-
-### The Staging Graph
-
-The staging graph connects **producers** (functions) to **slots** (places where function values flow):
-
-```elm
-type ProducerId
-    = ProducerClosure LambdaId    -- User-defined closure
-    | ProducerTailFunc Int        -- Tail-recursive function
-    | ProducerKernel String       -- Kernel function
-
-type SlotId
-    = SlotVar String Int          -- Variable binding
-    | SlotParam Int Int           -- Function parameter
-    | SlotCapture LambdaId Int    -- Closure capture
-    | SlotIfResult Int            -- If branch result
-    | SlotCaseResult Int          -- Case branch result
-    | SlotRecord String String    -- Record field
-    | SlotTuple String Int        -- Tuple element
-    | SlotList String Int         -- List element
-    | SlotCtor String Int         -- Constructor argument
-
-type Node
-    = NodeProducer ProducerId
-    | NodeSlot SlotId
-```
-
-Edges connect producers to slots when a function value flows to that location. When two slots must have the same segmentation (e.g., both branches of an if expression), they are unified.
-
-### The Solving Algorithm
-
-1. **Build Graph**: `GraphBuilder.buildStagingGraph` traverses the MonoGraph, creating nodes for all producers and slots, and edges for data flow.
-
-2. **Compute ProducerInfo**: For each producer, determine its **natural segmentation** from its parameter structure:
-   ```elm
-   -- \x y -> \z -> body has natural segmentation [2, 1]
-   detectNaturalSegFromParams : MonoClosure -> Segmentation
-   ```
-
-3. **Build Equivalence Classes**: Using union-find, group all nodes that must have the same segmentation (e.g., branches of case expressions).
-
-4. **Choose Canonical Segmentation**: For each equivalence class, use majority voting:
-   ```elm
-   chooseCanonicalSegs : Dict ClassId (List Segmentation) -> Dict ClassId Segmentation
-   ```
-   - Kernel functions provide fixed segmentations
-   - Among user functions, the most common segmentation wins
-   - Ties broken by preferring larger first stage (more args at once)
-
-5. **Rewrite Graph**: `Rewriter.applyStagingSolution` transforms closures whose natural segmentation differs from the canonical one by wrapping them in eta-expansion closures.
-
-### Example: Solving Case Branch Staging
-
-```elm
-picker b =
-    if b then
-        \x y -> x + y      -- Producer P1, natural seg [2]
-    else
-        \x -> \y -> x * y  -- Producer P2, natural seg [1,1]
-```
-
-1. **Graph building**:
-   - P1 → SlotIfResult(0)
-   - P2 → SlotIfResult(0)
-   - SlotIfResult(0) unified because both branches flow to same result
-
-2. **Equivalence class**: {P1, P2, SlotIfResult(0)}
-
-3. **Majority vote**: [2] appears once, [1,1] appears once → tie broken by larger first stage → [2] wins
-
-4. **Rewrite**: P2 gets wrapped: `\x y -> ((\x -> \y -> x * y) x) y`
+Both were removed (plans/staging-honesty-and-production-test-pipeline.md P2/P3). Measured, the solver inserted **zero** wrappers in the self-compile (38,624 classes, none disagreeing), the E2E corpus (936 programs, 8,412 classes) and 1,124 elm-test programs. The graph builder never looked into a case's decision-tree `Inline` leaves (where nearly all branches live), never connected function arguments to parameters, and never traced let-bound variables; pre-mono η-expansion to declared arity dissolves the joins a vote could have reconciled. The type regrouping was the only effect, and the output is byte-identical without the solver. Its other output, `dynamicSlots`, is now `CallEnv.dynamicParams` (Phase 5).
 
 ## Key Data Structures
 
@@ -325,7 +244,7 @@ type alias GlobalCtx =
 By moving all staging logic to GlobalOpt:
 
 1. **Monomorphization** remains simple — just specialize polymorphic code
-2. **GlobalOpt** handles all the complexity of ABI normalization
+2. **GlobalOpt** handles all staging and calling-convention decisions
 3. **MLIR codegen** becomes straightforward — just consume pre-computed metadata
 
 ## Implementation Notes
@@ -339,13 +258,9 @@ By moving all staging logic to GlobalOpt:
 - `MonoTraverse.elm`: Common iteration infrastructure for graph traversal
 - `MonoReturnArity.elm`: Stage arity computation utilities
 - `MonoInlineSimplify.elm`: Small function inlining pass (applied externally before GlobalOpt)
-- `Staging/`: Graph-based staging solver subsystem
-  - `Types.elm`: Core types (ProducerId, SlotId, Node, StagingGraph)
-  - `GraphBuilder.elm`: Builds staging graph from MonoGraph
-  - `Solver.elm`: Union-find solver with majority voting
-  - `Rewriter.elm`: Applies staging solution to MonoGraph
-  - `ProducerInfo.elm`: Computes natural segmentations
-  - `UnionFind.elm`: Union-find data structure
+- `Staging.elm`: Type regrouping to param counts (`regroup`) and the GOPT_001 check (`checkClosureStaging`)
+- `AbiCloning.elm`: Phase 4
+- `Compiler/Pipeline/Steps.elm`: The middle-end steps shared by `Builder.Generate` and `TestLogic.TestPipeline` (runs GlobalOpt, then CSE/CAF dedupe/CAF hoist, and the `mono.validate` checks)
 - `Closure.elm` (in Monomorphize): Shared utilities like `flattenFunctionType`
 
 ### Key Functions
@@ -354,13 +269,11 @@ By moving all staging logic to GlobalOpt:
 |----------|--------|---------|
 | `globalOptimize` | MonoGlobalOptimize | Main entry point |
 | `wrapTopLevelCallables` | MonoGlobalOptimize | Phase 1: wrap bare globals/kernels |
-| `buildStagingGraph` | Staging.GraphBuilder | Build staging constraint graph |
-| `solveStagingGraph` | Staging.Solver | Solve for canonical segmentations |
-| `applyStagingSolution` | Staging.Rewriter | Rewrite closures to canonical form |
-| `computeProducerInfo` | Staging.ProducerInfo | Compute natural segmentations |
-| `flattenTypeToArity` | Staging.Rewriter | Flatten MFunction types |
-| `wrapClosureToCanonical` | Staging.Rewriter | Create staging adapters |
-| `chooseCanonicalSegs` | Staging.Solver | Pick majority staging per class |
+| `regroup` | Staging | Phase 2: regroup closure/tail-func types to param counts (GOPT_001) |
+| `flattenTypeToArity` | Staging (internal) | Flatten MFunction types to a param count |
+| `checkClosureStaging` | Staging | List GOPT_001 violations |
+| `checkClosureStaging` | Pipeline.Steps | Run the GOPT_001 check under `mono.validate` |
+| `closureBodyStageArities` | MonoGlobalOptimize | Stage arities of a callee body; `Nothing` for a join whose branches disagree (GOPT_003) |
 | `mapExpr` / `traverseExpr` | MonoTraverse | Common graph iteration |
 
 ## Example: Full Transformation
@@ -376,25 +289,25 @@ chooser b =
             -- where body2 = MonoClosure {params=[y]} ... (MFunction [Int] Int)
 ```
 
-**After Phase 2** (staging analysis + graph rewrite):
+**After Phase 2** (`Staging.regroup`):
 ```elm
--- First closure: params=[x,y], type flattened to MFunction [Int, Int] Int
--- Second closure: wrapped to match canonical staging [2]
+-- Each closure's type is regrouped to its own param count; no wrapper is made.
 chooser b =
     if b then
         MonoClosure {params=[x,y]} body1 (MFunction [Int, Int] Int)
     else
-        MonoClosure {params=[x,y]} wrapperBody (MFunction [Int, Int] Int)
-            -- where wrapperBody calls the original [1,1] closure with x, then y
+        MonoClosure {params=[x]} body2 (MFunction [Int] (MFunction [Int] Int))
 ```
 
 **After Phase 5** (annotateCallStaging):
 ```elm
--- All MonoCall expressions now have CallInfo:
---   callModel = StageCurried
---   stageArities = [2]
---   isSingleStageSaturated = true (if called with 2 args)
+-- All MonoCall expressions now have CallInfo. A call through `chooser b`
+-- reaches a join whose branches disagree, so closureBodyStageArities is
+-- Nothing and the call is CallSegmentationUnknown / CallGenericApply:
+-- the runtime applies the selected closure by its header (GOPT_003).
 ```
+
+(In a production build pre-mono η-expansion rewrites `chooser` to take all three arguments, so this join does not survive to GlobalOpt.)
 
 ## See Also
 

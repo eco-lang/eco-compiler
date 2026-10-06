@@ -198,7 +198,10 @@ spec limits, returning the monomorphized graph or the pipeline's error message.
 -}
 run : Src.Module -> Result String Mono.MonoGraph
 run srcModule =
-    Pipeline.runSolverMonoWithLimits Config.defaultLimits lssConfig srcModule
+    -- NoPreMono (plans/staging-honesty-and-production-test-pipeline.md P1.4): this pins an LSS
+    -- analysis rule on a hand-written shape that pre-mono alias forwarding / eta-expansion
+    -- rewrite before the solver sees it.
+    Pipeline.runSolverMonoWithLimitsNoPreMono Config.defaultLimits lssConfig srcModule
 
 
 {-| Runs `srcModule` as `run` does with the LSS report switched on, and
@@ -207,7 +210,10 @@ report is rendered.
 -}
 runReport : Src.Module -> Result String ( Mono.MonoGraph, String )
 runReport srcModule =
-    Pipeline.runSolverMonoWithReport Config.defaultLimits lssConfig srcModule
+    -- NoPreMono (plans/staging-honesty-and-production-test-pipeline.md P1.4): this pins an LSS
+    -- analysis rule on a hand-written shape that pre-mono alias forwarding / eta-expansion
+    -- rewrite before the solver sees it.
+    Pipeline.runSolverMonoWithReportNoPreMono Config.defaultLimits lssConfig srcModule
         |> Result.andThen
             (\( graph, maybeReport ) ->
                 case maybeReport of

@@ -4,9 +4,10 @@ module TestLogic.Monomorphize.RenamingSubstAndMErasedTest exposing (suite)
 it gives them: no residual number variable anywhere, and the concrete types
 that the programs' annotations fix.
 
-The programs are monomorphized with `TestLogic.TestPipeline.runToMono`, which
-uses the substitution engine (`Compiler.Monomorphize.Monomorphize`), not the
-solver engine the compiler uses by default. A _number variable_ is an
+The programs are monomorphized with `TestLogic.TestPipeline.runToMonoStage5`,
+the bootstrap Stage 5 pipeline, which uses the substitution engine
+(`Compiler.Monomorphize.Monomorphize`), not the solver engine the compiler uses
+by default. A _number variable_ is an
 `MVar _ CNumber`, a type variable constrained to `number` that has not been
 resolved; it must not reach code generation. An `MVar _ CEcoValue` is an
 unconstrained one, which may survive monomorphization as a boxed value: the
@@ -337,7 +338,7 @@ message if `runToMono` fails.
 -}
 withGraph : Src.Module -> (Mono.MonoGraph -> Expectation) -> Expectation
 withGraph srcModule check =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToMonoStage5 srcModule of
         Err msg ->
             Expect.fail ("Pipeline failed: " ++ msg)
 

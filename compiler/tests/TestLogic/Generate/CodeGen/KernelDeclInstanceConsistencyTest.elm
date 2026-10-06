@@ -14,8 +14,8 @@ out the rules.
 
 The programs are the ones `SourceIR.Suite.StandardTestSuites.expectSuite`
 gathers from its case modules. Each is compiled to MLIR with
-`TestLogic.TestPipeline.runToMlir`, which monomorphizes with the substitution
-engine and then runs the post-monomorphization optimizations.
+`TestLogic.TestPipeline.runToMlir`, which compiles it the way a default build
+does.
 
   - `suite` passes for a program when it compiles to MLIR and every
     `eco.call` and `eco.papCreate` naming a declared kernel (`Elm_Kernel_` or

@@ -1503,6 +1503,29 @@ stamping verdict, `multiInstanceGroups` included — and both arms emit the same
 `out.mlir` byte count. The workload is invariant to which binary compiles it,
 which is what makes the group-3/4 difference attributable to the binary alone.
 
+### 2026-10-06 — generic-call census (plans/staging-honesty-and-production-test-pipeline.md P0.3/P0.4)
+
+**Not a protocol run.** The protocol above needs `ECO_MONO_LSS_REPORT=1`, which currently ABORTS
+the self-compile on every binary (`FATAL: GC shadow root stack overflow`: `listFromUnboxables`
+pushes one root range per boxed element, reached from `List.sortBy` on a 142,895-element list in
+`renderLssReport`; ECO_MONO_LSS_CENSUS=1 the same). So this run is the benchmark arm only, with
+the new `ECO_STAGING_REPORT=1` flag instead of the LSS report: binary eco-optG2c (current tree,
+compiled with `ECO_STAGING_REPORT=1` so generic papExtends carry `_gencall_reason`, lowered
+`ECO_GENCALL_COUNTERS=1 ECO_LSS_DISPATCH_SITE_COUNTERS=1`), self-compile solver+LSS defaults.
+
+| dispatch-stats | sat | gen | typed | fast |
+|---|---:|---:|---:|---:|
+| eco-optG2c | 74,857,086 | 64,379,752 | 10,477,334 | 376,952,692 |
+
+Generic papExtend executions by codegen reason (`[gencall-stats]`; saturating and PAP-building
+alike): local-variable callee 201,242,228; join (`case`/`if` callee) 16,854,000; rest of a stamped
+over-applied call 14,464,902; call result 5,301,374; record field 3,394,141; global 1,069,764;
+other 8,832; cross-stage / via-applyByStages / fused / untagged 0. Static sites (`lss gencall:`):
+segmentation_unknown param 12,549 / local 8,081 / field 830 / global 85 / callResult 20 / join 20 /
+other 10; generic_apply param 1,827. `perf`: the generic path is ~1.8 % of cycles in self time
+(`eco_apply_closure_eval` 0.85 %, `invokeSaturatedTyped` 0.74 %, `eco_pap_extend_l` 0.22 %), the
+typed path 0.42 %.
+
 ## Summary
 
 Run 1's rows come from a MISCOMPILING benchmark binary (see the retraction under that run) and

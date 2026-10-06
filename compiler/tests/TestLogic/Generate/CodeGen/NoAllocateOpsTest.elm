@@ -22,8 +22,8 @@ What the tests establish:
     has one of the four allocation op names. A program that fails to compile
     fails its test.
 
-Among what is not tested: MLIR produced with the solver monomorphization
-engine, since `runToMlir` uses the substitution engine; an op whose name only
+Among what is not tested: MLIR produced by bootstrap Stage 5 (the substitution
+engine), since `runToMlir` is the production pipeline; an op whose name only
 begins with `eco.allocate`, since names are matched exactly; and any MLIR
 after lowering.
 

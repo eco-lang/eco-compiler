@@ -19,9 +19,9 @@ fails if `_operand_types` is absent or is not an array, or if the array's
 length differs from the number of operands.
 
 Among what is not tested: ops not named in `requiredOps`; whether each entry is
-a type, or the right type for its operand; and MLIR produced by the solver
-monomorphization engine, since `runToMlir` monomorphizes with the substitution
-engine.
+a type, or the right type for its operand; and MLIR produced by bootstrap
+Stage 5 (the substitution engine), since `runToMlir` is the production
+pipeline.
 
 @docs expectOperandTypesAttr
 

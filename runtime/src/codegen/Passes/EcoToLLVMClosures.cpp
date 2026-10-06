@@ -2921,6 +2921,19 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         // Generic mode: remaining_arity absent — runtime saturation check.
         // Delegate to eco_apply_closure which handles under/exact/over-saturated.
         if (!remainingArityAttr) {
+            // Generic-call reason census (plans/staging-honesty-and-production-
+            // test-pipeline.md P0.4): census builds only. Untagged generic ops
+            // count as reason 15 so the tag coverage is visible.
+            static const bool gencallCounters = (::getenv("ECO_GENCALL_COUNTERS") != nullptr);
+            if (gencallCounters) {
+                int64_t reason = 15;
+                if (auto r = op->getAttrOfType<IntegerAttr>("_gencall_reason"))
+                    reason = r.getInt();
+                auto reasonVal = rewriter.create<LLVM::ConstantOp>(
+                    loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(static_cast<int32_t>(reason)));
+                rewriter.create<LLVM::CallOp>(loc, runtime.getOrCreateGencallStats(rewriter),
+                                              ValueRange{reasonVal});
+            }
             // Check _call_kind to distinguish generic_apply from segmentation_unknown
             auto callKindAttr = op->getAttrOfType<StringAttr>("_call_kind");
             if (callKindAttr && callKindAttr.getValue() == "segmentation_unknown") {
