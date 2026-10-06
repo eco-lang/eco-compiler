@@ -11,7 +11,6 @@
 #else
 #include <io.h>      // _isatty
 #include <stdio.h>   // _fileno
-#include <malloc.h>  // _heapchk  TEMP(diag)
 #define isatty       _isatty
 #define STDOUT_FILENO _fileno(stdout)
 #endif
@@ -27,24 +26,6 @@ inline std::string getTextMlirFlag() {
 }
 
 namespace Testing {
-
-// TEMP(diag) (plans/ci-all-platforms-green.md issue 4): with ECO_TEST_HEAPCHECK set, Windows
-// validates the CRT heap after every test and exits at the first test that leaves it corrupt,
-// so the 0xC0000374 crash names the test that corrupts the heap rather than a later test that
-// trips over the damage. The culprit is the last "- <name>" line printed.
-inline void diagHeapCheckAfter(const std::string& name) {
-#if defined(_WIN32)
-    static const bool on = std::getenv("ECO_TEST_HEAPCHECK") != nullptr;
-    if (!on) return;
-    const int rc = _heapchk();
-    if (rc != _HEAPOK && rc != _HEAPEMPTY) {
-        std::cout << "HEAPCHECK: _heapchk() = " << rc << " after test: " << name << std::endl;
-        std::_Exit(97);
-    }
-#else
-    (void)name;
-#endif
-}
 
 // ============================================================================
 // ANSI Color Support
@@ -544,7 +525,6 @@ private:
                     if (isSimpleTest) {
                         // Simple single test - original behavior.
                         bool passed = child->runWithResult();
-                        diagHeapCheckAfter(child->getName());  // TEMP(diag)
                         result.tests_run++;
                         if (passed) {
                             result.tests_passed++;
@@ -559,7 +539,6 @@ private:
                         // Set the current filter so container can use it.
                         CurrentFilter::set(filter);
                         child->runWithResult();
-                        diagHeapCheckAfter(child->getName());  // TEMP(diag)
                         CurrentFilter::clear();
 
                         // Check if container provides detailed results
