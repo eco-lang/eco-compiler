@@ -37,10 +37,12 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using namespace Elm;
 using namespace Elm::TestHelpers;
@@ -320,6 +322,7 @@ const LargePtrStats& ogLp(Allocator& a) { return og(a).getStats().lp; }
 const LargePtrStats& tlhLp(Allocator& a) { return tlh(a)->getStats().lp; }
 #endif
 
+#if !defined(_WIN32)   // fork()ed children: POSIX only; the death tests are no-ops on Windows
 // Runs `f` in a forked child with stderr captured. Returns the wait status.
 template <class F> int runInChildCapture(F f, std::string& err) {
     int fds[2];
@@ -343,6 +346,7 @@ template <class F> int runInChildCapture(F f, std::string& err) {
 }
 
 bool abnormal(int st) { return WIFSIGNALED(st) || (WIFEXITED(st) && WEXITSTATUS(st) != 0); }
+#endif
 
 // ---------------------------------------------------------------------------
 // T1
@@ -671,10 +675,14 @@ void test_debug_to_string() {
 // T13
 // ---------------------------------------------------------------------------
 void expectLimitAbort(void (*body)()) {
+#if defined(_WIN32)
+    (void)body;
+#else
     std::string err;
     const int st = runInChildCapture(body, err);
     TEST_ASSERT(abnormal(st));
     TEST_ASSERT(err.find("exceeds the wide-object limit") != std::string::npos);
+#endif
 }
 
 void test_release_abort_past_limits() {
