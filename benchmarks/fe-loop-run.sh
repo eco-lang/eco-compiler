@@ -4,7 +4,7 @@
 # (EXTRA_FLAGS="--no-cache" adds make flags, e.g. the S4 leg)
 # and a one-line-per-run stat table (lss-loop-extract.sh stats + --stats phase split + .ecot bytes).
 set -u
-ARM=${1:?arm}; REFMLIR=${2:?reference mlir (fixed point)}; REGVER=${3:-0.1.1}
+ARM=${1:?arm}; REFMLIR=${2:?reference mlir (fixed point)}; REGVER=${3:-0.2.0}
 cd /work
 BK=build/compiler/build-kernel
 ENV="ECO_MONO_ENGINE=solver ECO_MONO_LSS=1"

@@ -3,7 +3,7 @@
 set -u
 BK=/work/build/compiler/build-kernel
 ENV="ECO_MONO_ENGINE=solver ECO_MONO_LSS=1"
-REG=~/.eco/0.1.3/packages/registry.dat
+REG=~/.eco/0.2.0/packages/registry.dat
 OUT=/work/benchmarks/fhr-gcpoints; mkdir -p "$OUT"
 ulimit -c 0
 for P in all post-build post-merge post-assign post-mono post-inline post-globalopt post-codegen-nodes; do

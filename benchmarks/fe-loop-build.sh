@@ -2,7 +2,7 @@
 # fe-loop-build.sh N [REGVER] — Phase 1.3 + 1.4 of benchmarks/fe-opt-loop.md:
 # compile the CHANGED source with the last kept compiler (cold), then lower to eco-optN.
 set -u
-N=${1:?step}; REGVER=${2:-0.1.1}
+N=${1:?step}; REGVER=${2:-0.2.0}
 cd /work
 BK=build/compiler/build-kernel; BOOT=build/runtime/src/codegen/eco-boot-native
 ENV="ECO_MONO_ENGINE=solver ECO_MONO_LSS=1"

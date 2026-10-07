@@ -19,4 +19,4 @@ When bumping the marketing version, update `version.txt` and this baseline toget
 -}
 userFacing : String
 userFacing =
-    "0.1.1"
+    "0.2.0"

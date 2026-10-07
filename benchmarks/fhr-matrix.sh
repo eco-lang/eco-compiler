@@ -15,7 +15,7 @@ for r in $(seq 1 "$ROUNDS"); do
     name=${spec%%=*}; envs=${spec#*=}
     cd "$BK" || exit 1
     rm -rf eco-stuff bin/eco-2
-    touch ~/.eco/0.1.3/packages/registry.dat
+    touch ~/.eco/0.2.0/packages/registry.dat
     # shellcheck disable=SC2086
     env -u ECO_HEAP_CONFIG -u ECO_GC_POINTS -u ECO_GC_PRE_LINK ECO_GC_REPORT=1 $envs \
       /work/benchmarks/mem-trace.sh -o "$OUT/$name-r$r" -w bin/eco-2 -- \

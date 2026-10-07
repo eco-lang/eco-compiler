@@ -192,7 +192,7 @@ This is not the version Eco reports to its users, which is
 -}
 compiler : Version
 compiler =
-    Version 0 1 3
+    Version 0 2 0
 
 
 {-| The version of Elm that this compiler implements.
