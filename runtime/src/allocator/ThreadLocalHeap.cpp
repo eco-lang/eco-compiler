@@ -1484,10 +1484,14 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
     // heavy paths (many roots per frame) this showed up in profiles.
     Allocator& alloc = Allocator::instance();
 
+    uintptr_t diag_last_ip = 0;      // TEMP(diag)
+    bool diag_last_matched = false;  // TEMP(diag)
     do {
         ++counts.frames_walked;
         uintptr_t ip = cur.ip();
         const StackMapRecord* rec = sm.findRecord(ip + kIpToReturnAddressBias);
+        diag_last_ip = ip;              // TEMP(diag)
+        diag_last_matched = rec != nullptr;
         if (!rec) {
             continue;
         }
@@ -1525,6 +1529,34 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
         }
     } while (cur.step());
     counts.slots = sm_roots.get().size();
+
+    // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): on macOS, large List.map over strings
+    // reads stale pointers. With ECO_TEST_STACKWALK_DIAG set, report for the first 40 walks how far
+    // libunwind got against the depth of the frame-pointer chain, so a walk that stops early
+    // (frames below it never rooted) shows up.
+    {
+        static const bool diag = std::getenv("ECO_TEST_STACKWALK_DIAG") != nullptr;
+        static unsigned diag_n = 0;
+        if (diag && diag_n < 40) {
+            ++diag_n;
+            size_t fp_depth = 0;
+            auto* fp = static_cast<uintptr_t*>(__builtin_frame_address(0));
+            while (fp != nullptr && fp_depth < 200000) {
+                auto* next = reinterpret_cast<uintptr_t*>(fp[0]);
+                if (next <= fp || reinterpret_cast<char*>(next) - reinterpret_cast<char*>(fp) > (1 << 20))
+                    break;
+                fp = next;
+                ++fp_depth;
+            }
+            std::fprintf(stderr,
+                         "[diag-stackwalk] walk %u: unwound %llu frames, matched %llu, slots %llu; "
+                         "frame-pointer chain %zu; last ip %p (%s)\n",
+                         diag_n, (unsigned long long)counts.frames_walked,
+                         (unsigned long long)counts.frames_matched,
+                         (unsigned long long)counts.slots, fp_depth, (void*)diag_last_ip,
+                         diag_last_matched ? "in a stack map" : "no stack map");
+        }
+    }
 
 #if ECO_GC_DEBUG
     fprintf(stderr, "[gc-stackmap-summary] stack roots pushed: %zu\n",
