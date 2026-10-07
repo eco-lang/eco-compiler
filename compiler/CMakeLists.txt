@@ -65,31 +65,47 @@ include(${COMPILER_DIR}/cmake/toolchain.cmake)
 # ----------------------------------------------------------------------------
 # Version_Build.elm — build-time-injected user-facing version string.
 #
-# The baseline (e.g. "0.1.0") lives in /work/version.txt — the single source
-# of truth for the marketing version. For dev builds we append a
-# `-dev-<git-describe>` suffix so overnight CI artefacts identify their
-# commit; for tagged releases the release engineer passes
-# `-DECO_VERSION_OVERRIDE=0.1.0` (or whatever the tag value is) and the
-# baseline is shipped verbatim.
+# The baseline (e.g. "0.2.0") lives in /work/version.txt — the single source
+# of truth for the marketing version. For dev builds we append
+# `-dev-<12-char commit hash>` (plus `-dirty` when tracked files differ from
+# HEAD) so CI artefacts identify their commit; for tagged releases the release
+# engineer passes `-DECO_VERSION_OVERRIDE=0.2.0` (or whatever the tag value is)
+# and that is shipped verbatim.
 #
-# The generated file lands directly in compiler/src/Compiler/Elm/ so every
-# stage's Elm compile sees it via the same source tree as the rest of the
-# compiler. It is .gitignored — never check it in.
+# The stamped module is generated into the build tree (ECO_VERSION_GEN_DIR) and
+# linked into each bootstrap root as `version/`, which their elm.json lists as
+# a source directory. The checked-in baseline in compiler/src-version/ (listed
+# by compiler/elm.json) serves plain compiles and is never rewritten, so a
+# build leaves the source tree clean.
 # ----------------------------------------------------------------------------
 file(READ "${CMAKE_SOURCE_DIR}/version.txt" ECO_VERSION_BASE)
 string(STRIP "${ECO_VERSION_BASE}" ECO_VERSION_BASE)
+
+# The baseline must agree with version.txt, or plain compiles report a stale version.
+file(READ "${COMPILER_DIR}/src-version/Compiler/Elm/Version_Build.elm" ECO_VERSION_BASELINE_SRC)
+string(REGEX MATCH "userFacing =[ \n\r]+\"([^\"]*)\"" _eco_baseline_match "${ECO_VERSION_BASELINE_SRC}")
+if(NOT CMAKE_MATCH_1 STREQUAL ECO_VERSION_BASE)
+    message(FATAL_ERROR
+        "compiler/src-version/Compiler/Elm/Version_Build.elm has userFacing \"${CMAKE_MATCH_1}\" "
+        "but version.txt says \"${ECO_VERSION_BASE}\": update them together.")
+endif()
 
 if(ECO_VERSION_OVERRIDE)
     set(ECO_VERSION_USER_FACING "${ECO_VERSION_OVERRIDE}")
     message(STATUS "Eco version (override): ${ECO_VERSION_USER_FACING}")
 else()
-    execute_process(COMMAND git -C "${CMAKE_SOURCE_DIR}"
-                    describe --tags --dirty --always
-                    OUTPUT_VARIABLE ECO_GIT_DESCRIBE
+    execute_process(COMMAND git -C "${CMAKE_SOURCE_DIR}" rev-parse --short=12 HEAD
+                    OUTPUT_VARIABLE ECO_GIT_HASH
                     OUTPUT_STRIP_TRAILING_WHITESPACE
                     ERROR_QUIET)
-    if(ECO_GIT_DESCRIBE)
-        set(ECO_VERSION_USER_FACING "${ECO_VERSION_BASE}-dev-${ECO_GIT_DESCRIBE}")
+    if(ECO_GIT_HASH)
+        set(ECO_VERSION_USER_FACING "${ECO_VERSION_BASE}-dev-${ECO_GIT_HASH}")
+        execute_process(COMMAND git -C "${CMAKE_SOURCE_DIR}" diff --quiet HEAD --
+                        RESULT_VARIABLE ECO_GIT_DIRTY
+                        ERROR_QUIET)
+        if(ECO_GIT_DIRTY EQUAL 1)
+            string(APPEND ECO_VERSION_USER_FACING "-dirty")
+        endif()
     else()
         # Source tarball with no git history — ship the bare baseline so
         # the welcome banner still has a sensible value.
@@ -98,9 +114,11 @@ else()
     message(STATUS "Eco version: ${ECO_VERSION_USER_FACING}")
 endif()
 
+set(ECO_VERSION_GEN_DIR "${CMAKE_BINARY_DIR}/compiler/version")
+set(ECO_VERSION_BUILD_ELM "${ECO_VERSION_GEN_DIR}/Compiler/Elm/Version_Build.elm")
 configure_file(
     "${COMPILER_DIR}/cmake/Version_Build.elm.in"
-    "${COMPILER_DIR}/src/Compiler/Elm/Version_Build.elm"
+    "${ECO_VERSION_BUILD_ELM}"
     @ONLY)
 
 # Build-tree shadow root for the Stage 1 XHR Elm application. We materialize
@@ -117,6 +135,7 @@ include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)
 eco_create_dir_link(${COMPILER_DIR}/src     ${BUILD_XHR_DIR}/src)
 eco_create_dir_link(${COMPILER_DIR}/src-xhr ${BUILD_XHR_DIR}/src-xhr)
 eco_create_dir_link(${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests)
+eco_create_dir_link(${ECO_VERSION_GEN_DIR}  ${BUILD_XHR_DIR}/version)
 
 set(COMPILER_OUTPUT "${BUILD_XHR_DIR}/bin/guida.js")
 set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
@@ -127,6 +146,7 @@ file(GLOB_RECURSE ELM_SOURCES
     "${COMPILER_DIR}/src/*.elm"
     "${COMPILER_DIR}/src-xhr/*.elm"
 )
+list(APPEND ELM_SOURCES "${ECO_VERSION_BUILD_ELM}")
 
 # Also track key config files
 set(COMPILER_CONFIG_FILES
@@ -201,6 +221,7 @@ file(COPY
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/run-eol2.js
     DESTINATION ${BUILD_KERNEL_DIR})
 eco_create_dir_link(${COMPILER_DIR}/src                   ${BUILD_KERNEL_DIR}/src)
+eco_create_dir_link(${ECO_VERSION_GEN_DIR}                 ${BUILD_KERNEL_DIR}/version)
 eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel)
 # Mirror the install layout in the build tree so the build-tree `eco` / `eco-quick`
 # binaries auto-resolve the bundled `eco/kernel` package exactly as an installed

@@ -238,8 +238,8 @@ COPY . .
 # Optional release version. When set (e.g. --build-arg ECO_VERSION=1.2.3) it
 # stamps BOTH the bundle archive names and `eco --version` via the CMake
 # ECO_VERSION_OVERRIDE knob. When empty, the build falls back to the baseline
-# in version.txt (currently 0.1.0) — .git is excluded from the context, so the
-# usual -dev-<git-describe> suffix cannot apply here.
+# in version.txt — .git is excluded from the context, so the usual
+# -dev-<git hash> suffix cannot apply here.
 ARG ECO_VERSION=
 
 # Configure + build only the eco binary. The musl preset sets ECO_STATIC,
