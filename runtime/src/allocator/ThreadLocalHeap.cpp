@@ -1537,6 +1537,11 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
     {
         static const bool diag = std::getenv("ECO_TEST_STACKWALK_DIAG") != nullptr;
         static unsigned diag_n = 0;
+#if !defined(_WIN32)
+        if (diag && diag_n < 40)
+            std::fprintf(stderr, "[diag-stackwalk] last unw_step rc %d\n",
+                         StackUnwind::g_diagLastStepRc);
+#endif
         if (diag && diag_n < 40) {
             ++diag_n;
             size_t fp_depth = 0;

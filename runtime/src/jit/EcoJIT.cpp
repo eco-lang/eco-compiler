@@ -8,6 +8,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cstdio>   // TEMP(diag)
+#include <cstdlib>  // TEMP(diag)
 #include "EcoJIT.h"
 
 #include <cstring>
@@ -39,6 +41,9 @@ using namespace llvm::orc;
 #if !defined(_WIN32)
 extern "C" void __register_frame(void *);
 extern "C" void __deregister_frame(void *);
+// TEMP(diag) (plans/ci-all-platforms-green.md issue 8)
+struct dwarf_eh_bases;
+extern "C" const void *_Unwind_Find_FDE(const void *pc, struct dwarf_eh_bases *);
 #endif
 
 namespace {
@@ -90,10 +95,16 @@ public:
             }
             uint32_t ciePointer;
             memcpy(&ciePointer, P + 4, 4);
-            if (ciePointer != 0)
+            if (ciePointer != 0) {
                 __register_frame(P);
+                ++diagFdes_;  // TEMP(diag)
+            }
             P += fullLen;
         }
+        // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): is JIT unwind info registered?
+        if (std::getenv("ECO_TEST_STACKWALK_DIAG"))
+            std::fprintf(stderr, "[diag-ehframe] registerEHFrames: %zu bytes, %zu FDEs registered\n",
+                         Size, diagFdes_);
         EHFrames.push_back({Addr, Size});
     }
 
@@ -120,6 +131,9 @@ public:
         }
         EHFrames.clear();
     }
+
+private:
+    size_t diagFdes_ = 0;  // TEMP(diag)
 };
 #endif
 
@@ -376,8 +390,19 @@ Expected<void *> EcoJIT::lookup(StringRef name) const {
                         [&os](ErrorInfoBase &ei) { ei.log(os); });
         return makeStringError(errorMessage);
     }
-    if (void *fptr = expectedSymbol->toPtr<void *>())
+    if (void *fptr = expectedSymbol->toPtr<void *>()) {
+#if !defined(_WIN32)
+        // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): can libunwind find this JIT
+        // function's FDE?
+        alignas(16) char diagBases[64] = {};  // dwarf_eh_bases: three pointers
+        if (std::getenv("ECO_TEST_STACKWALK_DIAG"))
+            std::fprintf(stderr, "[diag-ehframe] lookup %s at %p: _Unwind_Find_FDE -> %p\n",
+                         name.str().c_str(), fptr,
+                         _Unwind_Find_FDE(static_cast<char*>(fptr) + 4,
+                                          reinterpret_cast<dwarf_eh_bases*>(diagBases)));
+#endif
         return fptr;
+    }
     return makeStringError("looked up function is null");
 }
 
