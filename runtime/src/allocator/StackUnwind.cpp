@@ -123,11 +123,8 @@ Cursor::Cursor(Context& ctx) : impl_(std::make_unique<Impl>()) {
 
 Cursor::~Cursor() = default;
 
-int g_diagLastStepRc = 1;  // TEMP(diag) (plans/ci-all-platforms-green.md issue 8)
-
 bool Cursor::step() {
     int rc = unw_step(&impl_->cursor);
-    g_diagLastStepRc = rc;  // TEMP(diag)
     if (rc < 0) {
 #if ECO_GC_DEBUG
         fprintf(stderr, "[ECO_GC_DEBUG] unw_step failed: %d\n", rc);

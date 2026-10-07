@@ -7,9 +7,6 @@
 namespace Elm {
 namespace StackUnwind {
 
-// TEMP(diag) (plans/ci-all-platforms-green.md issue 8): the last unw_step result (POSIX).
-extern int g_diagLastStepRc;
-
 class Context {
 public:
     Context();

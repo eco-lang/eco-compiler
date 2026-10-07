@@ -8,10 +8,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <cstdio>   // TEMP(diag)
-#include <unordered_map>
-#include <mutex>
-#include <cstdlib>  // TEMP(diag)
 #include "EcoJIT.h"
 
 #include <cstring>
@@ -27,9 +23,6 @@
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
-#if defined(__APPLE__)
-#include "llvm/ExecutionEngine/Orc/TargetProcess/UnwindInfoManager.h"
-#endif
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Error.h"
@@ -46,9 +39,6 @@ using namespace llvm::orc;
 #if !defined(_WIN32)
 extern "C" void __register_frame(void *);
 extern "C" void __deregister_frame(void *);
-// TEMP(diag) (plans/ci-all-platforms-green.md issue 8)
-struct dwarf_eh_bases;
-extern "C" const void *_Unwind_Find_FDE(const void *pc, struct dwarf_eh_bases *);
 #endif
 
 namespace {
@@ -67,54 +57,6 @@ public:
     void deregisterEHFrames() override {}
 };
 #else
-#if defined(__APPLE__)
-// RuntimeDyldMachO::registerEHFrames moves every FDE's pc_begin by -DeltaForText (processFDE: the
-// change in distance between __text and __eh_frame from object file to memory). That is right for
-// objects whose __eh_frame pc_begin carries no relocation (x86-64 MachO), but on arm64 MachO the
-// pc_begin is relocated to the final address first, so the move shifts every FDE's range off its
-// function and libunwind finds no unwind info for JIT code. recordEhFrameDelta (NotifyLoaded, after
-// placement and before registerEHFrames) recomputes that delta per __eh_frame load address, and
-// registerEHFrames adds it back.
-std::mutex g_ehFrameDeltaMu;
-std::unordered_map<uint64_t, int64_t> g_ehFrameDelta;
-
-void recordEhFrameDelta(const llvm::object::ObjectFile &Obj,
-                        const llvm::RuntimeDyld::LoadedObjectInfo &Info) {
-    bool haveText = false, haveEH = false;
-    int64_t textObj = 0, ehObj = 0, textLoad = 0, ehLoad = 0;
-    for (const llvm::object::SectionRef &Sec : Obj.sections()) {
-        auto Name = Sec.getName();
-        if (!Name) {
-            llvm::consumeError(Name.takeError());
-            continue;
-        }
-        if (*Name == "__text") {
-            textObj = static_cast<int64_t>(Sec.getAddress());
-            textLoad = static_cast<int64_t>(Info.getSectionLoadAddress(Sec));
-            haveText = true;
-        } else if (*Name == "__eh_frame") {
-            ehObj = static_cast<int64_t>(Sec.getAddress());
-            ehLoad = static_cast<int64_t>(Info.getSectionLoadAddress(Sec));
-            haveEH = true;
-        }
-    }
-    if (!haveText || !haveEH || ehLoad == 0)
-        return;
-    std::lock_guard<std::mutex> Lock(g_ehFrameDeltaMu);
-    g_ehFrameDelta[static_cast<uint64_t>(ehLoad)] = (textObj - ehObj) - (textLoad - ehLoad);
-}
-
-int64_t takeEhFrameDelta(uint64_t ehLoad) {
-    std::lock_guard<std::mutex> Lock(g_ehFrameDeltaMu);
-    auto It = g_ehFrameDelta.find(ehLoad);
-    if (It == g_ehFrameDelta.end())
-        return 0;
-    const int64_t Delta = It->second;
-    g_ehFrameDelta.erase(It);
-    return Delta;
-}
-#endif
-
 // EcoSectionMemoryManager overrides EH-frame registration for JIT objects.
 // LLVM libunwind's __register_frame takes a single FDE pointer (see
 // /opt/llvm-mlir/include/unwind.h: "The FDE must use pc-rel addressing to
@@ -125,43 +67,16 @@ int64_t takeEhFrameDelta(uint64_t ehLoad) {
 // back via deregisterEHFrames on teardown, so we replay the walk in reverse.
 class EcoSectionMemoryManager : public llvm::SectionMemoryManager {
 public:
-    void registerEHFrames(uint8_t *Addr, uint64_t LoadAddr,
+    void registerEHFrames(uint8_t *Addr, uint64_t /*LoadAddr*/,
                           size_t Size) override {
         if (!Addr || Size == 0)
             return;
-#if defined(__APPLE__)
-        // Undo processFDE's pc_begin move (see recordEhFrameDelta): the same 8-byte field, back by
-        // the same delta, before anything reads the FDEs.
-        const int64_t ehDelta = takeEhFrameDelta(LoadAddr);
-        if (ehDelta != 0) {
-            for (uint8_t *Q = Addr; Q + 8 <= Addr + Size;) {
-                uint32_t len;
-                memcpy(&len, Q, 4);
-                if (len == 0 || len == 0xffffffff)
-                    break;
-                uint32_t cie;
-                memcpy(&cie, Q + 4, 4);
-                if (cie != 0 && Q + 16 <= Addr + Size) {
-                    uint64_t pcBegin;
-                    memcpy(&pcBegin, Q + 8, 8);
-                    pcBegin += static_cast<uint64_t>(ehDelta);
-                    memcpy(Q + 8, &pcBegin, 8);
-                }
-                Q += 4 + static_cast<size_t>(len);
-            }
-        }
-        if (std::getenv("ECO_TEST_STACKWALK_DIAG"))  // TEMP(diag)
-            std::fprintf(stderr, "[diag-ehframe] processFDE delta undone: %lld\n",
-                         (long long)ehDelta);
-#endif
         // LLVM libunwind's __register_frame expects a single FDE pointer, not
         // a section base (per /opt/llvm-mlir/include/unwind.h: "The FDE must
         // use pc-rel addressing to point to its function"). Walk the section
         // and pass each FDE individually; skip CIE records (cie_pointer == 0).
         uint8_t *P = Addr;
         uint8_t *End = Addr + Size;
-        uint64_t codeLo = UINT64_MAX, codeHi = 0;
-        size_t fdes = 0;
         while (P < End) {
             uint32_t length;
             memcpy(&length, P, 4);
@@ -175,63 +90,14 @@ public:
             }
             uint32_t ciePointer;
             memcpy(&ciePointer, P + 4, 4);
-            if (ciePointer != 0) {
+            if (ciePointer != 0)
                 __register_frame(P);
-                uint64_t lo = 0, hi = 0;
-                fdeCodeRange(P, ciePointer, lo, hi);
-                codeLo = std::min(codeLo, lo);
-                codeHi = std::max(codeHi, hi);
-                if (fdes < 4 && std::getenv("ECO_TEST_STACKWALK_DIAG"))  // TEMP(diag)
-                    std::fprintf(stderr, "[diag-ehframe] FDE %p -> code [%#llx, %#llx)\n",
-                                 static_cast<void*>(P), (unsigned long long)lo,
-                                 (unsigned long long)hi);
-                ++fdes;
-            }
             P += fullLen;
         }
-#if defined(__APPLE__)
-        // macOS: the system libunwind does not find FDEs passed to __register_frame for JIT code
-        // (_Unwind_Find_FDE returns null, unw_step stops at the first JIT frame), so the GC's
-        // stack walk never reached JIT frames and their roots went stale. Also register the whole
-        // section for the code range it covers through libunwind's find-dynamic-unwind-sections
-        // hook, as ORC's JITLink does on Darwin (llvm::orc::UnwindInfoManager).
-        bool viaHook = false;
-        if (codeLo < codeHi && llvm::orc::UnwindInfoManager::TryEnable()) {
-            const llvm::orc::ExecutorAddrRange code{llvm::orc::ExecutorAddr(codeLo),
-                                                    llvm::orc::ExecutorAddr(codeHi)};
-            if (auto err = llvm::orc::UnwindInfoManager::registerSections(
-                    {code}, llvm::orc::ExecutorAddr(codeLo),
-                    llvm::orc::ExecutorAddrRange(llvm::orc::ExecutorAddr::fromPtr(Addr),
-                                                 llvm::orc::ExecutorAddrDiff(Size)),
-                    llvm::orc::ExecutorAddrRange())) {
-                llvm::errs() << "[eco-jit] unwind-section registration failed: "
-                             << llvm::toString(std::move(err)) << "\n";
-            } else {
-                HookRanges.push_back(code);
-                viaHook = true;
-            }
-        }
-#else
-        const bool viaHook = false;
-#endif
-        // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): is JIT unwind info registered?
-        if (std::getenv("ECO_TEST_STACKWALK_DIAG"))
-            std::fprintf(stderr, "[diag-ehframe] registerEHFrames: section %p, load addr %#llx, "
-                         "%zu bytes, %zu FDEs, code [%#llx, %#llx), dynamic-sections hook %s\n",
-                         static_cast<void*>(Addr), (unsigned long long)LoadAddr, Size, fdes,
-                         (unsigned long long)codeLo, (unsigned long long)codeHi,
-                         viaHook ? "registered" : "not used");
         EHFrames.push_back({Addr, Size});
     }
 
     void deregisterEHFrames() override {
-#if defined(__APPLE__)
-        if (!HookRanges.empty()) {
-            if (auto err = llvm::orc::UnwindInfoManager::deregisterSections(HookRanges))
-                llvm::consumeError(std::move(err));
-            HookRanges.clear();
-        }
-#endif
         for (auto &F : EHFrames) {
             uint8_t *P = F.Addr;
             uint8_t *End = F.Addr + F.Size;
@@ -253,57 +119,6 @@ public:
             }
         }
         EHFrames.clear();
-    }
-
-private:
-#if defined(__APPLE__)
-    std::vector<llvm::orc::ExecutorAddrRange> HookRanges;
-#endif
-
-    static uint64_t uleb(const uint8_t*& p) {
-        uint64_t v = 0;
-        for (int sh = 0;; sh += 7) {
-            const uint8_t b = *p++;
-            v |= uint64_t(b & 0x7f) << sh;
-            if (!(b & 0x80)) break;
-        }
-        return v;
-    }
-
-    // The code range [lo, hi) an FDE describes, decoded as libunwind reads it: the pointer
-    // encoding comes from the CIE's 'R' augmentation (pc-relative on ELF and MachO).
-    static void fdeCodeRange(const uint8_t* fde, uint32_t ciePointer, uint64_t& lo,
-                             uint64_t& hi) {
-        const uint8_t* p = fde + 4 - ciePointer + 8;   // the CIE, past its length and id
-        const uint8_t version = *p++;
-        const char* aug = reinterpret_cast<const char*>(p);
-        p += std::strlen(aug) + 1;
-        uleb(p);                                       // code alignment
-        uleb(p);                                       // data alignment (an sleb: same length)
-        if (version == 1) ++p; else uleb(p);           // return-address register
-        uint8_t enc = 0;                               // DW_EH_PE_absptr
-        if (aug[0] == 'z') {
-            uleb(p);
-            for (const char* a = aug + 1; *a; ++a) {
-                if (*a == 'R') { enc = *p++; break; }
-                if (*a == 'P') { const uint8_t pe = *p++; p += (pe & 0x0f) == 0x0b ? 4 : 8; }
-                else if (*a == 'L') ++p;
-            }
-        }
-        const uint8_t* f = fde + 8;
-        auto read = [&](bool pcrel) -> uint64_t {
-            const uint8_t* at = f;
-            int64_t v = 0;
-            switch (enc & 0x0f) {
-                case 0x0b: { int32_t x; std::memcpy(&x, f, 4); v = x; f += 4; break; }
-                case 0x03: { uint32_t x; std::memcpy(&x, f, 4); v = x; f += 4; break; }
-                default:   { int64_t x; std::memcpy(&x, f, 8); v = x; f += 8; break; }
-            }
-            return pcrel && (enc & 0x70) == 0x10 ? uint64_t(reinterpret_cast<uintptr_t>(at) + v)
-                                                 : uint64_t(v);
-        };
-        lo = read(true);
-        hi = lo + read(false);
     }
 };
 #endif
@@ -474,18 +289,6 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
     if (!tmBuilderOrError)
         return tmBuilderOrError.takeError();
 
-#if defined(__APPLE__)
-    // The GC finds stack roots by unwinding through JIT frames (libunwind +
-    // stack maps), which needs every JIT function's unwind info registered.
-    // MachO describes most functions with compact unwind, which RuntimeDyld
-    // never registers; only __eh_frame reaches registerEHFrames above. Emit a
-    // DWARF FDE for every function so the walk does not stop at the first JIT
-    // frame (it did: 0 stack roots found, so deep recursions kept stale
-    // pointers across minor GCs).
-    tmBuilderOrError->getOptions().MCOptions.EmitDwarfUnwind =
-        llvm::EmitDwarfUnwindType::Always;
-#endif
-
     auto tmOrError = tmBuilderOrError->createTargetMachine();
     if (!tmOrError)
         return tmOrError.takeError();
@@ -509,13 +312,6 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
             // Register our stack map extraction listener
             objectLayer->registerJITEventListener(
                 *engine->stackMapListener_);
-#if defined(__APPLE__)
-            objectLayer->setNotifyLoaded(
-                [](MaterializationResponsibility &, const object::ObjectFile &Obj,
-                   const RuntimeDyld::LoadedObjectInfo &Info) {
-                    recordEhFrameDelta(Obj, Info);
-                });
-#endif
 
             return objectLayer;
         };
@@ -568,19 +364,8 @@ Expected<void *> EcoJIT::lookup(StringRef name) const {
                         [&os](ErrorInfoBase &ei) { ei.log(os); });
         return makeStringError(errorMessage);
     }
-    if (void *fptr = expectedSymbol->toPtr<void *>()) {
-#if !defined(_WIN32)
-        // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): can libunwind find this JIT
-        // function's FDE?
-        alignas(16) char diagBases[64] = {};  // dwarf_eh_bases: three pointers
-        if (std::getenv("ECO_TEST_STACKWALK_DIAG"))
-            std::fprintf(stderr, "[diag-ehframe] lookup %s at %p: _Unwind_Find_FDE -> %p\n",
-                         name.str().c_str(), fptr,
-                         _Unwind_Find_FDE(static_cast<char*>(fptr) + 4,
-                                          reinterpret_cast<dwarf_eh_bases*>(diagBases)));
-#endif
+    if (void *fptr = expectedSymbol->toPtr<void *>())
         return fptr;
-    }
     return makeStringError("looked up function is null");
 }
 
