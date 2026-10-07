@@ -2,7 +2,7 @@ module Builder.File exposing
     ( Time(..), getTime, zeroTime, timeEncoder, timeDecoder
     , readBinary, writeBinary
     , readUtf8, writeUtf8
-    , writePackage, copyPackageSource
+    , writePackage, copyPackageSource, fingerprintPackageSource
     , exists, remove
     , withStreamingWriter
     )
@@ -31,7 +31,7 @@ tracking, and package extraction.
 
 # Package Management
 
-@docs writePackage, copyPackageSource
+@docs writePackage, copyPackageSource, fingerprintPackageSource
 
 
 # File System Queries
@@ -49,6 +49,7 @@ import Bytes.Decode
 import Bytes.Encode
 import Codec.Archive.Zip as Zip
 import Eco.File
+import Eco.Hash
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Time
@@ -241,6 +242,83 @@ copyPackageSource source destination =
             copyPath (Utils.fpCombine source name) (Utils.fpCombine destination name)
         )
         [ "elm.json", "LICENSE", "README.md", "src" ]
+
+
+{-| Computes a fingerprint of a package seed directory: the sorted list of
+`(relative path, size, modification time)` for `elm.json` and for every file
+under `src/`, hashed into a short string. Any edit, addition, removal or rename
+of one of those files changes it (up to a hash collision).
+
+Paths that do not exist are skipped, so a seed with no `src/` still gets a
+fingerprint (the caller decides whether that seed is valid). The hash uses only
+the narrow `Eco.Hash.stringWithSeed`, which every build of the compiler computes
+alike, so a fingerprint written by one build is understood by another.
+
+-}
+fingerprintPackageSource : FilePath -> Task Never String
+fingerprintPackageSource source =
+    fingerprintPath source "elm.json" []
+        |> Task.andThen (fingerprintPath source "src")
+        |> Task.map
+            (\entries ->
+                let
+                    rendered : String
+                    rendered =
+                        entries
+                            |> List.sortBy (\( path, _, _ ) -> path)
+                            |> List.map (\( path, size, mtime ) -> path ++ "\t" ++ String.fromInt size ++ "\t" ++ String.fromInt mtime ++ "\n")
+                            |> String.concat
+                in
+                "v1:"
+                    ++ String.fromInt (List.length entries)
+                    ++ ":"
+                    ++ String.fromInt (Eco.Hash.stringWithSeed 23 rendered)
+                    ++ ":"
+                    ++ String.fromInt (Eco.Hash.stringWithSeed 7919 rendered)
+            )
+
+
+{-| Adds the fingerprint entries of `relPath` (relative to `root`) to `acc`: one
+entry for a file, the entries of everything below it for a directory, and none
+when nothing is there. Existence is checked first because reading the size or
+modification time of a missing file crashes.
+-}
+fingerprintPath : FilePath -> FilePath -> List ( FilePath, Int, Int ) -> Task Never (List ( FilePath, Int, Int ))
+fingerprintPath root relPath acc =
+    let
+        fullPath : FilePath
+        fullPath =
+            Utils.fpCombine root relPath
+    in
+    Utils.dirDoesDirectoryExist fullPath
+        |> Task.andThen
+            (\isDir ->
+                if isDir then
+                    Utils.dirListDirectory fullPath
+                        |> Task.andThen
+                            (List.foldl
+                                (\name accTask ->
+                                    accTask |> Task.andThen (fingerprintPath root (relPath ++ "/" ++ name))
+                                )
+                                (Task.succeed acc)
+                            )
+
+                else
+                    Utils.dirDoesFileExist fullPath
+                        |> Task.andThen
+                            (\isFile ->
+                                if isFile then
+                                    Utils.dirGetFileSize fullPath
+                                        |> Task.andThen
+                                            (\size ->
+                                                Utils.dirGetModificationTime fullPath
+                                                    |> Task.map (\mtime -> ( relPath, size, Time.posixToMillis mtime ) :: acc)
+                                            )
+
+                                else
+                                    Task.succeed acc
+                            )
+            )
 
 
 {-| Recursively copies a file or directory tree. Paths that do not exist are

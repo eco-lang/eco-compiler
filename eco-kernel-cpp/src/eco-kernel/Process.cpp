@@ -169,9 +169,11 @@ HPointer spawnProcessBody(HPointer captured) {
 // processReadyAsync's asyncSources_ iteration.
 void waitServiceDrain() {
     auto& sched = Elm::Platform::Scheduler::instance();
-    std::uint64_t token;
-    int exitCode;
-    while (Elm::Platform::WaitService::instance().tryPopResult(token, exitCode)) {
+    Elm::Platform::WaitService::Ready ready;
+    while (Elm::Platform::WaitService::instance().tryPopReady(
+               Elm::Platform::WaitLane::EcoKernel, ready)) {
+        std::uint64_t token = ready.token;
+        int exitCode = ready.exitCode;  // 128 + signal for a signal death
         HPointer resumeClosure = sched.takePendingResume(token);
         if (Elm::alloc::isNil(resumeClosure)) {
             sched.decrementPendingAsync();
@@ -196,7 +198,10 @@ void waitEnsureRegistered() {
     std::call_once(flag, [] {
         Elm::Platform::Scheduler::instance().registerAsyncSource(
             waitServiceDrain,
-            [] { return Elm::Platform::WaitService::instance().hasReady(); });
+            [] {
+                return Elm::Platform::WaitService::instance().hasReady(
+                    Elm::Platform::WaitLane::EcoKernel);
+            });
     });
 }
 
@@ -216,7 +221,8 @@ HPointer waitBody(HPointer captured, HPointer resume) {
     auto& sched = Elm::Platform::Scheduler::instance();
     std::uint64_t token = sched.registerPendingResume(resume);
     sched.incrementPendingAsync();
-    Elm::Platform::WaitService::instance().submit(pid, token);
+    Elm::Platform::WaitService::instance().submit(
+        pid, token, Elm::Platform::WaitLane::EcoKernel);
 
     // Kill handle: Unit placeholder (no cancellation yet).
     return Elm::alloc::unit();

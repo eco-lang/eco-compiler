@@ -42,6 +42,7 @@
 #include <optional>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -388,6 +389,84 @@ inline std::string verifyPatterns(const std::string& output,
         }
     }
     return "";  // Success
+}
+
+// ----------------------------------------------------------------------------
+// Process directives (plans/eco-system-library.md Phase 1 step 8c). Each must
+// start a line so prose mentioning a directive is not picked up.
+//
+//   -- EXIT: <n>     expected process exit status. The JIT harness enforces it
+//                    (default 0) for checkProcessOutput suites; the AOT runner
+//                    enforces it only when present.
+//   -- STDIN: <text> text fed to the program's stdin through a pipe. One space
+//                    after the colon is a separator; `\n`, `\t` and `\\` are
+//                    unescaped; repeated lines are concatenated in order.
+// ----------------------------------------------------------------------------
+
+namespace detail {
+// Calls fn(rest) for every line that starts with `marker`, where `rest` is the
+// text after the marker with a trailing '\r' removed.
+template <class Fn>
+inline void forEachDirectiveLine(const std::string& content, const char* marker, Fn fn) {
+    const size_t mlen = std::strlen(marker);
+    size_t pos = 0;
+    while (pos < content.size()) {
+        size_t eol = content.find('\n', pos);
+        if (eol == std::string::npos) eol = content.size();
+        if (eol - pos >= mlen && content.compare(pos, mlen, marker) == 0) {
+            std::string rest = content.substr(pos + mlen, eol - pos - mlen);
+            if (!rest.empty() && rest.back() == '\r') rest.pop_back();
+            fn(rest);
+        }
+        pos = eol + 1;
+    }
+}
+} // namespace detail
+
+/// The `-- EXIT: <n>` directive (first occurrence), or nullopt when absent.
+/// A malformed value throws std::runtime_error so a typo cannot silently
+/// disable the check.
+inline std::optional<int> extractExitDirective(const std::string& content,
+                                               const char* marker = "-- EXIT:") {
+    std::optional<int> result;
+    detail::forEachDirectiveLine(content, marker, [&](const std::string& rest) {
+        if (result) return;
+        std::string t = trimCheckPattern(rest);
+        size_t used = 0;
+        int v = 0;
+        try {
+            v = std::stoi(t, &used);
+        } catch (...) {
+            used = 0;
+        }
+        if (t.empty() || used != t.size()) {
+            throw std::runtime_error("malformed EXIT directive: '" + rest + "'");
+        }
+        result = v;
+    });
+    return result;
+}
+
+/// The concatenated `-- STDIN:` text, or nullopt when there is no directive.
+inline std::optional<std::string> extractStdinDirective(const std::string& content,
+                                                        const char* marker = "-- STDIN:") {
+    std::optional<std::string> result;
+    detail::forEachDirectiveLine(content, marker, [&](const std::string& rest) {
+        std::string text = (!rest.empty() && rest[0] == ' ') ? rest.substr(1) : rest;
+        std::string out;
+        for (size_t i = 0; i < text.size(); i++) {
+            if (text[i] == '\\' && i + 1 < text.size()) {
+                char n = text[i + 1];
+                if (n == 'n') { out += '\n'; i++; continue; }
+                if (n == 't') { out += '\t'; i++; continue; }
+                if (n == '\\') { out += '\\'; i++; continue; }
+            }
+            out += text[i];
+        }
+        if (!result) result = std::string();
+        *result += out;
+    });
+    return result;
 }
 
 } // namespace eco_test

@@ -10,6 +10,7 @@
 #include "../allocator/Allocator.hpp"
 #include "../allocator/StackMap.hpp"
 #include "../allocator/GCStats.hpp"
+#include "../allocator/RuntimeExports.h"
 #include "../platform/StackMapSection.hpp"
 #include "../../eco-kernel-cpp/src/eco-kernel/Env.hpp"
 
@@ -121,9 +122,11 @@ static void *eco_main_thread(void *arg) {
     eco_register_all_effect_managers();
 
     // Run the Elm program. Its return is the Elm `main` value (an !eco.value
-    // word: Unit is the Empty constant 0x6, HEAP_010), not an exit status, so
-    // a normal finish exits 0. A program picks its own code through
-    // Eco.Process.exit (System.Exit), which calls ::exit and never returns here.
+    // word: Unit is the Empty constant 0x6, HEAP_010), not an exit status. A
+    // normal finish exits with eco_get_exit_code() (0 unless the program
+    // called eco/system's `setExitCode`). A program can also end early through
+    // Eco.Process.exit / eco/system `exitWithCode`, which call exit and never
+    // return here.
     (void)eco_main();
 
     // ECO_GC_EXIT_MAJOR=1: force one major GC after the program finishes
@@ -140,7 +143,7 @@ static void *eco_main_thread(void *arg) {
     // Cleanup thread-local allocator state.
     Elm::Allocator::instance().cleanupThread();
 
-    args->result = 0;
+    args->result = eco_get_exit_code();
     return nullptr;
 }
 
@@ -264,12 +267,7 @@ static void installStatsHandlers() {
     std::atexit(atexitPrintStats);
 
 #if !defined(_WIN32)
-    // Ignore SIGPIPE so a write to a closed pipe (e.g. `eco ... | head`) returns
-    // EPIPE to the kernel write path — surfaced as Eco.IO.Error.BrokenPipe and
-    // handled locally — instead of terminating the process (see IO_ERR_001).
-    // No equivalent on Windows: pipe-write failures already surface as
-    // ERROR_BROKEN_PIPE → ::errno = EPIPE in the CRT, no signal involved.
-    std::signal(SIGPIPE, SIG_IGN);
+    // SIGPIPE is ignored unconditionally in main() (installSigpipeIgnore).
 
     struct sigaction sa{};
     sa.sa_handler = signalPrintStats;
@@ -300,6 +298,20 @@ static void installStatsHandlers() {
 static void installStatsHandlers() {}
 #endif
 
+// Ignore SIGPIPE so a write to a closed pipe (e.g. `eco ... | head`) returns
+// EPIPE to the kernel write path — surfaced as Eco.IO.Error.BrokenPipe and
+// handled locally — instead of terminating the process (see IO_ERR_001).
+// Unconditional (not only under ENABLE_GC_STATS): eco/system streams rely on
+// EPIPE (plans/eco-system-library.md F17, Phase 2 step 1). Embed mode
+// (eco_embed.cpp) does not do this; signals belong to the host there.
+// No equivalent on Windows: pipe-write failures already surface as
+// ERROR_BROKEN_PIPE → ::errno = EPIPE in the CRT, no signal involved.
+static void installSigpipeIgnore() {
+#if !defined(_WIN32)
+    std::signal(SIGPIPE, SIG_IGN);
+#endif
+}
+
 int main(int argc, char **argv) {
     // Disable stdio buffering so progress lines and (more importantly) the
     // GCStats summary printed by signal handlers reach the captured log
@@ -308,7 +320,14 @@ int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
 
+    installSigpipeIgnore();
     installStatsHandlers();
+
+#if !defined(_WIN32)
+    // Record the process main thread (this thread) before the Elm thread
+    // starts, for eco/system's setProcessTitle (Phase 2 step 7).
+    eco_set_process_main_thread(pthread_self());
+#endif
 
     MainArgs args{argc, argv, 0};
 

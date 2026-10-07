@@ -214,6 +214,7 @@ type alias Context =
     , varMappings : Dict.Dict String VarInfo -- Let-bound name -> variable info with call model
     , currentLetSiblings : Dict.Dict String VarInfo -- Sibling mappings for current let-rec group
     , kernelDecls : Dict.Dict String KernelDeclInfo -- Kernel symbol -> ABI declaration info
+    , ecoSystemManagers : Set.Set String -- Home modules (e.g. "System") of eco/system effect-manager leaves reached in codegen; the `__eco_register_ports` preamble calls `Eco_System_registerManager_<Home>` once per element (plans/eco-system-library.md §3.6)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
     , currentFuncName : String -- diagnostics only: the func being generated (crash context)
@@ -309,6 +310,7 @@ initContext mode registry signatures initialCtorShapes =
     , varMappings = Dict.empty
     , currentLetSiblings = Dict.empty
     , kernelDecls = Dict.empty
+    , ecoSystemManagers = Set.empty
     , typeRegistry =
         { emptyTypeRegistry
             | ctorShapes = initialCtorShapes

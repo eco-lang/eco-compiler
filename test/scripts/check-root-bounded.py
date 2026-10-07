@@ -20,7 +20,7 @@ import re
 import sys
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "..")
-DIRS = ["runtime/src", "elm-kernel-cpp/src", "eco-kernel-cpp/src"]
+DIRS = ["runtime/src", "elm-kernel-cpp/src", "eco-kernel-cpp/src", "system-kernel-cpp/src"]
 PUSH = re.compile(r"\b(pushStackRootRange|ecoRoot1Push)\s*\(")
 POP = re.compile(r"\b(restoreStackRangePoint|ecoRootRangeRestore|ecoRoot1Restore)\s*\(")
 LOOP = re.compile(r"^\s*(for|while)\s*\(|^\s*do\s*\{?\s*$|\}\s*while\s*\(")

@@ -2,7 +2,7 @@ module Compiler.Elm.Package exposing
     ( Name, Author, Project
     , compareName, toString, toChars, toUrl, toJsonString
     , isKernel
-    , dummyName, kernel, ecoKernel, core, virtualDom, html, json, bytes, webgl, linearAlgebra
+    , dummyName, kernel, ecoKernel, ecoSystem, core, virtualDom, html, json, bytes, webgl, linearAlgebra
     , suggestions, nearbyNames
     , encode, decoder, keyDecoder
     , nameEncoder, nameDecoder, parser
@@ -56,7 +56,7 @@ describes; the others write them inline.
 
 # Common Packages
 
-@docs dummyName, kernel, ecoKernel, core, virtualDom, html, json, bytes, webgl, linearAlgebra
+@docs dummyName, kernel, ecoKernel, ecoSystem, core, virtualDom, html, json, bytes, webgl, linearAlgebra
 
 
 # Package Suggestions
@@ -216,6 +216,13 @@ kernel =
 ecoKernel : Name
 ecoKernel =
     toName eco "kernel"
+
+
+{-| The package name `eco/system`.
+-}
+ecoSystem : Name
+ecoSystem =
+    toName eco "system"
 
 
 {-| The package name `elm/core`.

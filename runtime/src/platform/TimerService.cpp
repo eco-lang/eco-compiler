@@ -28,9 +28,24 @@ void TimerService::schedule(double millis, std::uint64_t resumeToken) {
         std::chrono::duration_cast<Clock::duration>(delay);
     {
         std::lock_guard<std::mutex> lk(timersMutex_);
-        timers_.push(TimerEntry{deadline, resumeToken});
+        auto it = timers_.emplace(deadline, resumeToken);
+        byToken_[resumeToken] = it;
     }
     timersCV_.notify_one();
+}
+
+bool TimerService::cancel(std::uint64_t token) {
+    {
+        std::lock_guard<std::mutex> lk(timersMutex_);
+        auto it = byToken_.find(token);
+        if (it == byToken_.end()) return false;
+        timers_.erase(it->second);
+        byToken_.erase(it);
+    }
+    // The worker may be sleeping until the removed deadline; let it
+    // recompute its next wake-up.
+    timersCV_.notify_one();
+    return true;
 }
 
 bool TimerService::tryPopReadyToken(std::uint64_t& outToken) {
@@ -52,14 +67,17 @@ void TimerService::workerLoop() {
         if (timers_.empty()) {
             timersCV_.wait(lk, [this]{ return !timers_.empty(); });
         }
-        TimePoint deadline = timers_.top().deadline;
+        auto first = timers_.begin();
+        TimePoint deadline = first->first;
         TimePoint now      = Clock::now();
         if (now < deadline) {
             timersCV_.wait_until(lk, deadline);
             continue;
         }
-        std::uint64_t token = timers_.top().token;
-        timers_.pop();
+        std::uint64_t token = first->second;
+        auto idx = byToken_.find(token);
+        if (idx != byToken_.end() && idx->second == first) byToken_.erase(idx);
+        timers_.erase(first);
         lk.unlock();
 
         {

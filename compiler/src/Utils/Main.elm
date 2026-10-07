@@ -4,7 +4,7 @@ module Utils.Main exposing
     , fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
     , dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
     , dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-    , dirRemoveFile, dirCanonicalizePath
+    , dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath
     , envLookupEnv, envGetProgName, envGetArgs
     , lockWithFileLock
     , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
@@ -83,7 +83,7 @@ here are defined in `System.IO`.
 
 @docs dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
 @docs dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-@docs dirRemoveFile, dirCanonicalizePath
+@docs dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath
 
 
 # Environment Operations
@@ -1046,6 +1046,36 @@ dirGetModificationTime filename =
 dirRemoveFile : FilePath -> Task Never ()
 dirRemoveFile path =
     Eco.File.removeFile path
+        |> IO.crashOnError
+
+
+{-| Removes the directory at `path` together with everything in it, as
+`Eco.File.removeDir` does on every backend (the native kernel, the eco/kernel
+JS kernel and the eco-io server). Nothing at `path` is not a failure; any other
+failure crashes the program.
+-}
+dirRemoveDirectoryRecursive : FilePath -> Task Never ()
+dirRemoveDirectoryRecursive path =
+    Eco.File.removeDir path
+        |> IO.crashOnError
+
+
+{-| Returns the size in bytes of the file at `path`, by opening it for reading,
+asking for its size and closing it again. Crashes the program if the file
+cannot be opened or its size cannot be read, so check that it exists first.
+-}
+dirGetFileSize : FilePath -> Task Never Int
+dirGetFileSize path =
+    Eco.File.open path Eco.File.ReadMode
+        |> Task.andThen
+            (\handle ->
+                Eco.File.size handle
+                    |> Task.andThen
+                        (\n ->
+                            Eco.File.close handle
+                                |> Task.map (\_ -> n)
+                        )
+            )
         |> IO.crashOnError
 
 

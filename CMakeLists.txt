@@ -499,6 +499,9 @@ if(NOT ECO_FRONTEND_ONLY)
 
     # Eco kernel C++ implementation (IO operations)
     add_subdirectory(eco-kernel-cpp)
+
+    # Eco system C++ implementation (kernels of the public eco/system package)
+    add_subdirectory(system-kernel-cpp)
 endif()
 
 # Guida compiler (Elm compiler written in Elm). Gated off in the Stage D
@@ -525,7 +528,8 @@ endif()
 #   <prefix>/lib/eco-runtime/{libc,libc++,libc++abi,libunwind,libclang_rt.builtins-*}.a
 #   <prefix>/lib/eco-runtime/{libcurl,libssl,libcrypto,libzip,libz}.a
 #   <prefix>/lib/eco-runtime/crt/{crt1,crti,crtn,clang_rt.crtbegin-*,clang_rt.crtend-*}.o
-#   <prefix>/lib/eco-runtime/project/lib{ElmKernel_*,EcoKernel_*,Eco*Static}.a
+#   <prefix>/lib/eco-runtime/project/lib{ElmKernel_*,EcoKernel_*,EcoSystem_*,Eco*Static}.a
+#   <prefix>/share/eco/{kernel/eco-kernel-cpp,system/system-kernel-cpp}/
 #-------------------------------------------------------------------------------
 option(ECO_BUNDLE_STRIP
        "Strip debug info from bundled project archives so AOT-built binaries \
@@ -569,6 +573,9 @@ if(ECO_STATIC_MUSL)
     foreach(mod ${ECO_KERNEL_MODS})
         list(APPEND _eco_project_targets EcoKernel_${mod})
     endforeach()
+    foreach(mod ${ECO_SYSTEM_MODS})
+        list(APPEND _eco_project_targets EcoSystem_${mod})
+    endforeach()
     install(TARGETS ${_eco_project_targets}
             ARCHIVE DESTINATION lib/eco-runtime/project
             COMPONENT Bundle)
@@ -598,6 +605,23 @@ if(ECO_STATIC_MUSL)
                 PATTERN "docs.json"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/src/eco-kernel(/|$)" EXCLUDE)
+
+    # eco/system Elm package — same filter as eco/kernel above; the C++ under
+    # src/eco-system/ ships as the EcoSystem_* archives instead.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/system-kernel-cpp/
+            DESTINATION share/eco/system/system-kernel-cpp
+            COMPONENT Bundle
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "artifacts.dat"
+                PATTERN "typed-artifacts.dat"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/node_modules(/|$)" EXCLUDE
+                REGEX "/scripts(/|$)" EXCLUDE
+                REGEX "/src/eco-system(/|$)" EXCLUDE)
 
     # Starter examples — Elm sources only. The in-tree examples/ IS the hello
     # project (elm.json + src/Hello.elm at its root), so install its contents
@@ -680,6 +704,7 @@ endif()
 #   <prefix>/lib/eco-runtime/project/lib*.a
 #   <prefix>/lib/eco-runtime/project/{libzip,libssl,libcrypto}.a
 #   <prefix>/share/eco/kernel/eco-kernel-cpp/
+#   <prefix>/share/eco/system/system-kernel-cpp/
 #   <prefix>/share/eco/examples/hello/
 #
 # Notes vs Linux Stage C:
@@ -702,6 +727,9 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
     endforeach()
     foreach(mod ${ECO_KERNEL_MODS})
         list(APPEND _eco_project_targets EcoKernel_${mod})
+    endforeach()
+    foreach(mod ${ECO_SYSTEM_MODS})
+        list(APPEND _eco_project_targets EcoSystem_${mod})
     endforeach()
     install(TARGETS ${_eco_project_targets}
             ARCHIVE DESTINATION lib/eco-runtime/project
@@ -744,6 +772,23 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/src/eco-kernel(/|$)" EXCLUDE)
 
+    # eco/system Elm package — same filter as eco/kernel above; the C++ under
+    # src/eco-system/ ships as the EcoSystem_* archives instead.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/system-kernel-cpp/
+            DESTINATION share/eco/system/system-kernel-cpp
+            COMPONENT BundleDarwin
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "artifacts.dat"
+                PATTERN "typed-artifacts.dat"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/node_modules(/|$)" EXCLUDE
+                REGEX "/scripts(/|$)" EXCLUDE
+                REGEX "/src/eco-system(/|$)" EXCLUDE)
+
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples/hello
             COMPONENT BundleDarwin
@@ -776,6 +821,9 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
     foreach(mod ${ECO_KERNEL_MODS})
         list(APPEND _eco_project_targets_win EcoKernel_${mod})
     endforeach()
+    foreach(mod ${ECO_SYSTEM_MODS})
+        list(APPEND _eco_project_targets_win EcoSystem_${mod})
+    endforeach()
     install(TARGETS ${_eco_project_targets_win}
             ARCHIVE DESTINATION lib/eco-runtime/project
             COMPONENT BundleWindows)
@@ -806,6 +854,23 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 PATTERN "docs.json"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/src/eco-kernel(/|$)" EXCLUDE)
+
+    # eco/system Elm package — same filter as eco/kernel above; the C++ under
+    # src/eco-system/ ships as the EcoSystem_* archives instead.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/system-kernel-cpp/
+            DESTINATION share/eco/system/system-kernel-cpp
+            COMPONENT BundleWindows
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "artifacts.dat"
+                PATTERN "typed-artifacts.dat"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/node_modules(/|$)" EXCLUDE
+                REGEX "/scripts(/|$)" EXCLUDE
+                REGEX "/src/eco-system(/|$)" EXCLUDE)
 
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples/hello
@@ -920,6 +985,10 @@ if(ECO_GLIBC_OUTPUT_RUNTIME)
     foreach(mod ${ECO_KERNEL_MODS})
         list(APPEND _glibc_project_files $<TARGET_FILE:EcoKernel_${mod}>)
         list(APPEND _glibc_tree_deps EcoKernel_${mod})
+    endforeach()
+    foreach(mod ${ECO_SYSTEM_MODS})
+        list(APPEND _glibc_project_files $<TARGET_FILE:EcoSystem_${mod}>)
+        list(APPEND _glibc_tree_deps EcoSystem_${mod})
     endforeach()
 
     set(_tree "${ECO_GLIBC_RUNTIME_TREE_OUT}")
@@ -1334,10 +1403,12 @@ add_custom_target(stress
 # so only Stage 1 is needed — no Stage 2+ build.
 add_custom_target(full
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-homes.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test
+    COMMAND ${CMAKE_BINARY_DIR}/system-kernel-cpp/eco-system-core-test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run JIT E2E"
+    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests and JIT E2E"
     USES_TERMINAL
 )

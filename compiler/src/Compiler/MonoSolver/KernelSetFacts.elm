@@ -1767,7 +1767,7 @@ facts =
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
-                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_exit:9-11 | helpers: Process.cpp:exit:227-234 | type: Eco/Process.elm:49 | B1: vacuous (no function-capable position) | B2: nothing captured, nothing stored; ::exit() at :231 | B3: no closure fabricated at all | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_exit:9-11 | helpers: Process.cpp:exit:233-240 | type: Eco/Process.elm:49 | B1: vacuous (no function-capable position) | B2: nothing captured, nothing stored; ::exit() at :237 | B3: no closure fabricated at all | re-audit 2026-10-07: Process.cpp changed only by WaitService lanes (WaitLane::EcoKernel in wait/waitServiceDrain, plans/eco-system-library.md Phase 2 step 2.5); B1-B3 unchanged | audited: 2026-10-07"
                 }
           )
         , ( ( "Process", "sleep" )
@@ -1781,21 +1781,21 @@ facts =
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
-                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawn:13-15 | helpers: Process.cpp:spawn:236-243 | type: Eco/Process.elm:56 | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :240-242, Strings only | B3: binding closure only | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawn:13-15 | helpers: Process.cpp:spawn:242-249 | type: Eco/Process.elm:56 | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :246-248, Strings only | B3: binding closure only | re-audit 2026-10-07: Process.cpp changed only by WaitService lanes (WaitLane::EcoKernel in wait/waitServiceDrain, plans/eco-system-library.md Phase 2 step 2.5); B1-B3 unchanged | audited: 2026-10-07"
                 }
           )
         , ( ( "Process", "spawnProcess" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
-                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawnProcess:17-19 | type: Eco/Process.elm:67-74 | B1: vacuous (no function-capable position) | B2: 5-field record payload :253-259; s_streamHandles:154 maps int64->fd, no Elm value | B3: binding closure only | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawnProcess:17-19 | type: Eco/Process.elm:67-74 | B1: vacuous (no function-capable position) | B2: 5-field record payload :259-265; s_streamHandles:154 maps int64->fd, no Elm value | B3: binding closure only | re-audit 2026-10-07: Process.cpp changed only by WaitService lanes (WaitLane::EcoKernel in wait/waitServiceDrain, plans/eco-system-library.md Phase 2 step 2.5); B1-B3 unchanged | audited: 2026-10-07"
                 }
           )
         , ( ( "Process", "wait" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
-                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_wait:21-23 | type: Eco/Process.elm:93 | B1: vacuous (no function-capable position) | B2: only an unboxed Int pid captured :267-270; the resume :217 is the runtime's OWN closure | B3: async binding closure only | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_wait:21-23 | type: Eco/Process.elm:93 | B1: vacuous (no function-capable position) | B2: only an unboxed Int pid captured :273-276; the resume :222 is the runtime's OWN closure | B3: async binding closure only | re-audit 2026-10-07: Process.cpp changed only by WaitService lanes (WaitLane::EcoKernel in wait/waitServiceDrain, plans/eco-system-library.md Phase 2 step 2.5); B1-B3 unchanged | audited: 2026-10-07"
                 }
           )
         , ( ( "Regex", "contains" )

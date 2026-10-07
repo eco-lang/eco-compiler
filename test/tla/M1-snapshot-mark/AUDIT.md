@@ -684,3 +684,17 @@ like the existing `g_dispatch_*_total` counters: no heap object, header, mark bi
 or lock is read or written, and no ordering is relied on.
 
 **Verdict: no model change needed.**
+
+## 2026-10-07 — process exit code and main-thread record in RuntimeExports.cpp (GC_MODEL_001)
+
+Census pin `runtime/src/allocator/RuntimeExports.cpp` moved, new hash prefix `e6ce850a9a95`
+(plans/eco-system-library.md Phase 2 steps 2.2 and 2.7). Added `g_eco_exit_code`, a process-wide
+`std::atomic<int>` written with a relaxed store by `eco_set_exit_code` and read with a relaxed load by
+`eco_get_exit_code` (the value `eco_entry`/`eco_embed`/`EcoRunner` return on a normal exit), and
+`g_eco_main_thread_recorded`, a `std::atomic<bool>` published with a release store after the process
+main thread's `pthread_t` is recorded (`eco_set_process_main_thread`) and read with an acquire load by
+`eco_process_main_thread`. Neither is GC state: no heap object, header, mark bit, root, GC phase,
+helper-pool slot or lock is read or written, and M1's actions (`P_*`, `M_*`) do not touch them. The
+release/acquire pair only orders the plain `pthread_t` store for the reader.
+
+**Verdict: no model change needed.**

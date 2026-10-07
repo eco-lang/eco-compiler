@@ -95,7 +95,7 @@ requireRoot maybeRoot =
 
 addPackageCache : FilePath -> Task Exit.Bump ( FilePath, Stuff.PackageCache )
 addPackageCache root =
-    Task.io (Stuff.getPackageCache Nothing)
+    Task.io (Stuff.resolveBundledPackages [] |> Task.andThen Stuff.getPackageCache)
         |> Task.map (\cache -> ( root, cache ))
 
 
@@ -259,7 +259,7 @@ promptVersionChange ( suggestion, newDocs ) =
 
 generateDocs : FilePath -> Outline.PkgOutline -> Task Exit.Bump Docs.Documentation
 generateDocs root (Outline.PkgOutline pkgData) =
-    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing Nothing False False Nothing Registry.Normal))
+    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Stuff.resolveBundledPackages [] |> Task.andThen (\locals -> Details.load Reporting.silent scope root Nothing Nothing False False locals Registry.Normal)))
         |> Task.andThen (buildDocsFromExposed root pkgData.exposed)
 
 

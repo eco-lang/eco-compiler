@@ -196,6 +196,7 @@ type alias DetailsData =
     , deps : Dict Pkg.Name V.Version
     , hasTypedOpt : Bool
     , configHash : String
+    , localFingerprint : String
     }
 
 
@@ -295,10 +296,10 @@ loadObjects root maybeBuildDir (Details detailsData) =
 {-| Load typed global objects for MLIR backend.
 Loads both local typed objects and typed objects from all package dependencies.
 -}
-loadTypedObjects : Maybe ( Pkg.Name, FilePath ) -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
-loadTypedObjects maybeLocal (Details detailsData) =
+loadTypedObjects : List ( Pkg.Name, FilePath ) -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
+loadTypedObjects locals (Details detailsData) =
     fork (Utils.maybeEncoder packageTypedArtifactsEncoder)
-        (Stuff.getPackageCache maybeLocal
+        (Stuff.getPackageCache locals
             |> Task.andThen (loadAllTypedObjects detailsData.deps)
         )
 
@@ -407,12 +408,16 @@ Used by the install command to download and build dependencies.
 -}
 verifyInstall : BW.Scope -> FilePath -> Solver.Env -> Outline.Outline -> Task Never (Result Exit.Details ())
 verifyInstall scope root (Solver.Env env) outline =
-    File.getTime (root ++ "/elm.json")
-        |> Task.andThen (runVerifyInstall scope root env.cache env.manager env.connection env.registry outline)
+    localPackagesFingerprint (Stuff.localPackages env.cache)
+        |> Task.andThen
+            (\localFingerprint ->
+                File.getTime (root ++ "/elm.json")
+                    |> Task.andThen (runVerifyInstall scope root env.cache env.manager env.connection env.registry localFingerprint outline)
+            )
 
 
-runVerifyInstall : BW.Scope -> FilePath -> Stuff.PackageCache -> Http.Manager -> Solver.Connection -> Registry.Registry -> Outline.Outline -> File.Time -> Task Never (Result Exit.Details ())
-runVerifyInstall scope root cache manager connection registry outline time =
+runVerifyInstall : BW.Scope -> FilePath -> Stuff.PackageCache -> Http.Manager -> Solver.Connection -> Registry.Registry -> String -> Outline.Outline -> File.Time -> Task Never (Result Exit.Details ())
+runVerifyInstall scope root cache manager connection registry localFingerprint outline time =
     let
         key : Reporting.Key msg
         key =
@@ -420,7 +425,7 @@ runVerifyInstall scope root cache manager connection registry outline time =
 
         env : Env
         env =
-            Env { key = key, scope = scope, root = root, maybeBuildDir = Nothing, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False, showPackageErrors = False, configHash = Config.hash Config.default }
+            Env { key = key, scope = scope, root = root, maybeBuildDir = Nothing, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False, showPackageErrors = False, configHash = Config.hash Config.default, localFingerprint = localFingerprint }
     in
     case outline of
         Outline.Pkg pkg ->
@@ -437,20 +442,26 @@ runVerifyInstall scope root cache manager connection registry outline time =
 {-| Load project details, verifying dependencies and building them if necessary.
 Checks if elm.json has changed and regenerates details if needed. Used by build commands.
 -}
-load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details Details)
-load style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy =
+load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> List ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details Details)
+load style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors locals registryPolicy =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (loadWithTime style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy)
+        |> Task.andThen (loadWithTime style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors locals registryPolicy)
 
 
-loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
-loadWithTime style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime =
+loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> List ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
+loadWithTime style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors locals registryPolicy newTime =
     File.readBinary detailsDecoder (Stuff.detailsWithBuildDir root maybeBuildDir)
-        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime)
+        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors locals registryPolicy newTime)
 
 
-handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
-handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime maybeDetails =
+handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> List ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
+handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors locals registryPolicy newTime maybeDetails =
+    localPackagesFingerprint locals
+        |> Task.andThen (handleCachedDetailsWithFingerprint style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors locals registryPolicy newTime maybeDetails)
+
+
+handleCachedDetailsWithFingerprint : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> List ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Maybe Details -> String -> Task Never (Result Exit.Details Details)
+handleCachedDetailsWithFingerprint style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors locals registryPolicy newTime maybeDetails localFingerprint =
     let
         -- The hash stored when a build is the canonical key for a config change.
         -- `Nothing` callers (test/diff/bump/repl/api) don't read eco-config.json,
@@ -461,7 +472,7 @@ handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt
 
         regenerate : Task Never (Result Exit.Details Details)
         regenerate =
-            generate style scope root maybeBuildDir resolvedConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
+            generate style scope root maybeBuildDir resolvedConfigHash localFingerprint needsTypedOpt showPackageErrors locals registryPolicy newTime
     in
     case maybeDetails of
         Nothing ->
@@ -483,8 +494,31 @@ handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt
             else if configChanged maybeConfigHash detailsData.configHash then
                 regenerate
 
+            else if localFingerprint /= detailsData.localFingerprint then
+                -- A local package's seed (elm.json or a file under src/) changed
+                -- since these details were written: re-verify the dependencies
+                -- so `seedLocalPackage` refreshes its cache copy and artifacts.
+                regenerate
+
             else
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
+
+
+{-| The combined fingerprint of every local package's seed, as
+`File.fingerprintPackageSource` computes it, in package-name order. It is stored
+in `d.dat` so that a project depending on a local package regenerates its
+details (and so refreshes the package) when the seed changes.
+-}
+localPackagesFingerprint : List ( Pkg.Name, FilePath ) -> Task Never String
+localPackagesFingerprint locals =
+    locals
+        |> List.sortBy (\( pkg, _ ) -> Pkg.toChars pkg)
+        |> Utils.listTraverse
+            (\( pkg, path ) ->
+                File.fingerprintPackageSource path
+                    |> Task.map (\fp -> Pkg.toChars pkg ++ "=" ++ fp)
+            )
+        |> Task.map (String.join ";")
 
 
 {-| A config change forces a rebuild — but only when the caller supplied a hash
@@ -505,11 +539,11 @@ configChanged maybeConfigHash storedConfigHash =
 -- ====== GENERATE ======
 
 
-generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
-generate style scope root maybeBuildDir configHash needsTypedOpt showPackageErrors maybeLocal registryPolicy time =
+generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> String -> String -> Bool -> Bool -> List ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
+generate style scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors locals registryPolicy time =
     Reporting.trackDetails style
         (\key ->
-            initEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors maybeLocal registryPolicy
+            initEnv key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors locals registryPolicy
                 |> Task.andThen (verifyOutline time)
         )
 
@@ -545,6 +579,7 @@ type alias EnvData =
     , needsTypedOpt : Bool
     , showPackageErrors : Bool
     , configHash : String
+    , localFingerprint : String
     }
 
 
@@ -552,37 +587,37 @@ type Env
     = Env EnvData
 
 
-initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors maybeLocal registryPolicy =
-    fork resultRegistryProblemEnvEncoder (Solver.initEnv registryPolicy maybeLocal)
-        |> Task.andThen (initEnvWithMVar key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors)
+initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> String -> Bool -> Bool -> List ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnv key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors locals registryPolicy =
+    fork resultRegistryProblemEnvEncoder (Solver.initEnv registryPolicy locals)
+        |> Task.andThen (initEnvWithMVar key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors)
 
 
-initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnvWithMVar key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors mvar =
+initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnvWithMVar key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors mvar =
     Outline.read root
-        |> Task.andThen (handleOutlineForEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors mvar)
+        |> Task.andThen (handleOutlineForEnv key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors mvar)
 
 
-handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-handleOutlineForEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors mvar eitherOutline =
+handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+handleOutlineForEnv key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors mvar eitherOutline =
     case eitherOutline of
         Err problem ->
             Task.succeed (Err (Exit.DetailsBadOutline problem))
 
         Ok outline ->
             Utils.readMVar resultRegistryProblemEnvDecoder mvar
-                |> Task.map (combineEnvAndOutline key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors outline)
+                |> Task.map (combineEnvAndOutline key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors outline)
 
 
-combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
-combineEnvAndOutline key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors outline maybeEnv =
+combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> String -> Bool -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
+combineEnvAndOutline key scope root maybeBuildDir configHash localFingerprint needsTypedOpt showPackageErrors outline maybeEnv =
     case maybeEnv of
         Err problem ->
             Err (Exit.DetailsCannotGetRegistry problem)
 
         Ok (Solver.Env env) ->
-            Ok ( Env { key = key, scope = scope, root = root, maybeBuildDir = maybeBuildDir, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors, configHash = configHash }, outline )
+            Ok ( Env { key = key, scope = scope, root = root, maybeBuildDir = maybeBuildDir, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors, configHash = configHash, localFingerprint = localFingerprint }, outline )
 
 
 
@@ -659,16 +694,22 @@ verifyConstraints (Env envData) constraints =
                         Task.succeed details
 
                     Solver.NoSolution ->
-                        if bundledKernelUnresolvable envData constraints then
-                            -- eco/kernel is a bundled package (not in the registry).
-                            -- When it is also not registered as a local package, the
-                            -- solver cannot resolve it and reports a generic no-solution.
-                            -- Surface a precise, actionable error instead of the
-                            -- misleading "INCOMPATIBLE DEPENDENCIES".
-                            Task.throw Exit.DetailsBundledKernelMissing
+                        case bundledPackagesUnresolvable envData constraints of
+                            pkg :: _ ->
+                                -- eco/kernel and eco/system are bundled packages (not in
+                                -- the registry). When one is also not registered as a
+                                -- local package, the solver cannot resolve it and reports
+                                -- a generic no-solution. Surface a precise, actionable
+                                -- error instead of the misleading "INCOMPATIBLE
+                                -- DEPENDENCIES".
+                                Task.io (Stuff.bundledPackagePath pkg)
+                                    |> Task.andThen
+                                        (\maybePath ->
+                                            Task.throw (Exit.DetailsBundledKernelMissing pkg (Maybe.withDefault "" maybePath))
+                                        )
 
-                        else
-                            Task.throw Exit.DetailsNoSolution
+                            [] ->
+                                Task.throw Exit.DetailsNoSolution
 
                     Solver.NoOfflineSolution ->
                         Task.throw Exit.DetailsNoOfflineSolution
@@ -678,24 +719,32 @@ verifyConstraints (Env envData) constraints =
             )
 
 
-{-| Detect the specific failure where dependency solving has no solution purely
-because the bundled `eco/kernel` package could not be resolved: it is among the
-stated dependencies, it is not registered as a local package (so
-`resolveLocalPackage` did not find it next to the executable), and it is absent
-from the registry. In that case the user needs the kernel located (install layout
-or `--local-package`), not a version-conflict fix.
+{-| Detect the specific failure where dependency solving has no solution
+because a bundled package (`eco/kernel`, `eco/system`; see
+`Stuff.bundledPackages`) could not be resolved: it is among the stated
+dependencies, it is not registered as a local package (so
+`Stuff.resolveBundledPackages` did not find it next to the executable and no
+`--local-package` names it), and it is absent from the registry. In that case
+the user needs the package located (install layout or `--local-package`), not a
+version-conflict fix. Returns every such package, in `Stuff.bundledPackages`
+order.
 -}
-bundledKernelUnresolvable : EnvData -> Dict Pkg.Name Con.Constraint -> Bool
-bundledKernelUnresolvable envData constraints =
-    Dict.member Pkg.ecoKernel constraints
-        && not (Stuff.isLocalPackage envData.cache Pkg.ecoKernel)
-        && (case Registry.getVersions Pkg.ecoKernel envData.registry of
-                Nothing ->
-                    True
+bundledPackagesUnresolvable : EnvData -> Dict Pkg.Name Con.Constraint -> List Pkg.Name
+bundledPackagesUnresolvable envData constraints =
+    Stuff.bundledPackages
+        |> List.map Tuple.first
+        |> List.filter
+            (\pkg ->
+                Dict.member pkg constraints
+                    && not (Stuff.isLocalPackage envData.cache pkg)
+                    && (case Registry.getVersions pkg envData.registry of
+                            Nothing ->
+                                True
 
-                Just _ ->
-                    False
-           )
+                            Just _ ->
+                                False
+                       )
+            )
 
 
 
@@ -759,7 +808,7 @@ verifyDependencies ((Env envData) as env) time outline solution directDeps =
         (Reporting.report envData.key (Reporting.DStart (Dict.size solution))
             |> Task.andThen (\_ -> Utils.newEmptyMVar)
             |> Task.andThen (verifyAllDeps env solution)
-            |> Task.andThen (finalizeDependencies envData.scope envData.root envData.maybeBuildDir envData.configHash envData.needsTypedOpt time outline directDeps depVersions)
+            |> Task.andThen (finalizeDependencies envData.scope envData.root envData.maybeBuildDir envData.configHash envData.localFingerprint envData.needsTypedOpt time outline directDeps depVersions)
         )
 
 
@@ -778,8 +827,8 @@ verifyAllDeps ((Env envData) as env) solution mvar =
 
 {-| Finalize dependency verification: build artifacts or report errors.
 -}
-finalizeDependencies : BW.Scope -> FilePath -> Maybe String -> String -> Bool -> File.Time -> ValidOutline -> Dict Pkg.Name a -> Dict Pkg.Name V.Version -> Dict Pkg.Name Dep -> Task Never (Result Exit.Details Details)
-finalizeDependencies scope root maybeBuildDir configHash needsTypedOpt time outline directDeps depVersions deps =
+finalizeDependencies : BW.Scope -> FilePath -> Maybe String -> String -> String -> Bool -> File.Time -> ValidOutline -> Dict Pkg.Name a -> Dict Pkg.Name V.Version -> Dict Pkg.Name Dep -> Task Never (Result Exit.Details Details)
+finalizeDependencies scope root maybeBuildDir configHash localFingerprint needsTypedOpt time outline directDeps depVersions deps =
     case Utils.dictSequenceResult deps of
         Err _ ->
             Stuff.getElmHome
@@ -792,7 +841,7 @@ finalizeDependencies scope root maybeBuildDir configHash needsTypedOpt time outl
                     )
 
         Ok artifacts ->
-            writeVerifiedArtifacts scope root maybeBuildDir configHash needsTypedOpt time outline directDeps artifacts depVersions
+            writeVerifiedArtifacts scope root maybeBuildDir configHash localFingerprint needsTypedOpt time outline directDeps artifacts depVersions
 
 
 {-| Write verified artifacts to disk.
@@ -802,6 +851,7 @@ writeVerifiedArtifacts :
     -> FilePath
     -> Maybe String
     -> String
+    -> String
     -> Bool
     -> File.Time
     -> ValidOutline
@@ -809,7 +859,7 @@ writeVerifiedArtifacts :
     -> Dict Pkg.Name Artifacts
     -> Dict Pkg.Name V.Version
     -> Task Never (Result Exit.Details Details)
-writeVerifiedArtifacts scope root maybeBuildDir configHash needsTypedOpt time outline directDeps artifacts depVersions =
+writeVerifiedArtifacts scope root maybeBuildDir configHash localFingerprint needsTypedOpt time outline directDeps artifacts depVersions =
     let
         objs : Opt.GlobalGraph
         objs =
@@ -835,6 +885,7 @@ writeVerifiedArtifacts scope root maybeBuildDir configHash needsTypedOpt time ou
                 , deps = depVersions
                 , hasTypedOpt = needsTypedOpt
                 , configHash = configHash
+                , localFingerprint = localFingerprint
                 }
     in
     BW.writeBinary Opt.globalGraphEncoder scope (Stuff.objectsWithBuildDir root maybeBuildDir) objs
@@ -926,22 +977,41 @@ verifyDep (Env envData) depsMVar solution pkg ((Solver.Details vsn directDeps) a
 
 handleDepExistence : VerifyDepContext -> Bool -> Task Never Dep
 handleDepExistence ctx exists =
-    if exists then
-        handleCachedDep ctx
-
-    else if Stuff.isLocalPackage ctx.cache ctx.pkg then
+    if Stuff.isLocalPackage ctx.cache ctx.pkg then
         seedLocalPackage ctx
+
+    else if exists then
+        handleCachedDep ctx
 
     else
         downloadAndBuildDep ctx
 
 
-{-| Seed a locally linked package into the cache on first build. The
-`--local-package` path is treated as a read-only source: copy its `src/` and
-`elm.json` into the writable cache directory, then build it there like any other
-cached dependency (so `artifacts.dat`/`typed-artifacts.dat` land in `~/.eco`, not
-the possibly read-only seed). A missing seed source means the local package is
-genuinely misconfigured.
+{-| Seed (or refresh) a locally linked package in the cache. The
+`--local-package` path is treated as a read-only source: its `src/` and
+`elm.json` are copied into the writable cache directory, and the package is then
+built there like any other cached dependency (so `artifacts.dat`,
+`typed-artifacts.dat` and `docs.json` land in `~/.eco`, not the possibly
+read-only seed). A missing seed source means the local package is genuinely
+misconfigured.
+
+The copy is kept in step with the seed through a fingerprint (see
+`File.fingerprintPackageSource`) stored in `<cache>/eco-local-fingerprint`. When
+the seed's fingerprint differs from the stored one (or none is stored), the
+cache directory is replaced, under the registry lock:
+
+1.  the whole cache directory is removed, which also deletes stale `src/` files,
+    `artifacts.dat`, `typed-artifacts.dat`, `docs.json` and the old fingerprint;
+2.  the seed is copied in afresh;
+3.  the fingerprint is written **last**.
+
+There is no directory-rename primitive on any backend, so the copy is not
+staged in a temporary directory and renamed into place. Writing the fingerprint
+last gives the same crash safety: an interrupted refresh leaves no fingerprint,
+so the next build sees a mismatch and refreshes again. The fingerprint is
+checked again inside the lock so that concurrent refreshes do not repeat the
+copy.
+
 -}
 seedLocalPackage : VerifyDepContext -> Task Never Dep
 seedLocalPackage ctx =
@@ -951,7 +1021,8 @@ seedLocalPackage ctx =
                 |> Task.andThen
                     (\sourceExists ->
                         if sourceExists then
-                            File.copyPackageSource source (Stuff.package ctx.cache ctx.pkg ctx.vsn)
+                            File.fingerprintPackageSource source
+                                |> Task.andThen (refreshLocalPackageIfStale ctx source)
                                 |> Task.andThen (\_ -> handleCachedDep ctx)
 
                         else
@@ -960,6 +1031,74 @@ seedLocalPackage ctx =
 
         Nothing ->
             Task.succeed (Err (Just (Exit.BD_LocalPackageNotFound ctx.pkg)))
+
+
+{-| Replace the cache copy of a local package with a fresh copy of its seed,
+unless the cache already holds a copy with fingerprint `fingerprint` (see
+`seedLocalPackage`).
+-}
+refreshLocalPackageIfStale : VerifyDepContext -> FilePath -> String -> Task Never ()
+refreshLocalPackageIfStale ctx source fingerprint =
+    let
+        cacheDir : FilePath
+        cacheDir =
+            Stuff.package ctx.cache ctx.pkg ctx.vsn
+
+        refresh : Task Never ()
+        refresh =
+            Utils.dirRemoveDirectoryRecursive cacheDir
+                |> Task.andThen (\_ -> File.copyPackageSource source cacheDir)
+                |> Task.andThen (\_ -> File.writeUtf8 (localFingerprintPath cacheDir) fingerprint)
+    in
+    isLocalCopyFresh cacheDir fingerprint
+        |> Task.andThen
+            (\fresh ->
+                if fresh then
+                    Task.succeed ()
+
+                else
+                    Stuff.withRegistryLock ctx.cache
+                        (isLocalCopyFresh cacheDir fingerprint
+                            |> Task.andThen
+                                (\freshInLock ->
+                                    if freshInLock then
+                                        Task.succeed ()
+
+                                    else
+                                        refresh
+                                )
+                        )
+            )
+
+
+{-| Whether the cache copy at `cacheDir` was made from a seed with fingerprint
+`fingerprint`: its `src/` exists and its stored fingerprint matches.
+-}
+isLocalCopyFresh : FilePath -> String -> Task Never Bool
+isLocalCopyFresh cacheDir fingerprint =
+    Utils.dirDoesDirectoryExist (cacheDir ++ "/src")
+        |> Task.andThen
+            (\srcExists ->
+                if srcExists then
+                    File.exists (localFingerprintPath cacheDir)
+                        |> Task.andThen
+                            (\fpExists ->
+                                if fpExists then
+                                    File.readUtf8 (localFingerprintPath cacheDir)
+                                        |> Task.map (\stored -> String.trim stored == fingerprint)
+
+                                else
+                                    Task.succeed False
+                            )
+
+                else
+                    Task.succeed False
+            )
+
+
+localFingerprintPath : FilePath -> FilePath
+localFingerprintPath cacheDir =
+    cacheDir ++ "/eco-local-fingerprint"
 
 
 handleCachedDep : VerifyDepContext -> Task Never Dep
@@ -1992,6 +2131,7 @@ detailsEncoder (Details detailsData) =
         , BE.stdDict Pkg.nameEncoder V.versionEncoder detailsData.deps
         , BE.bool detailsData.hasTypedOpt
         , BE.string detailsData.configHash
+        , BE.string detailsData.localFingerprint
         ]
 
 
@@ -2021,9 +2161,9 @@ detailsDecoder =
                                                                                         BD.bool
                                                                                             |> Bytes.Decode.andThen
                                                                                                 (\hasTypedOpt ->
-                                                                                                    BD.string
+                                                                                                    Bytes.Decode.map2 Tuple.pair BD.string BD.string
                                                                                                         |> Bytes.Decode.map
-                                                                                                            (\configHash ->
+                                                                                                            (\( configHash, localFingerprint ) ->
                                                                                                                 Details
                                                                                                                     { time = time
                                                                                                                     , outline = outline
@@ -2034,6 +2174,7 @@ detailsDecoder =
                                                                                                                     , deps = deps
                                                                                                                     , hasTypedOpt = hasTypedOpt
                                                                                                                     , configHash = configHash
+                                                                                                                    , localFingerprint = localFingerprint
                                                                                                                     }
                                                                                                             )
                                                                                                 )

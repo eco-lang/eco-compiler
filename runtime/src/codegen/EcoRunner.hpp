@@ -42,6 +42,7 @@ bool isCapturingOutput();
 struct RunResult {
     bool success = false;              ///< True if execution completed without errors
     int64_t returnValue = 0;           ///< Return value from main()
+    int exitCode = 0;                  ///< eco_get_exit_code() after main returned (process status; `-- EXIT:`)
     std::string output;                ///< Captured eco.dbg output
     std::string errorMessage;          ///< Error message if !success
 

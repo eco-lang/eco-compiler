@@ -590,6 +590,9 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
     for (const auto &lib : eco::config::ecoKernelLibs()) {
         args.push_back(push(resolveFile(lib)));
     }
+    for (const auto &lib : eco::config::ecoSystemLibs()) {
+        args.push_back(push(resolveFile(lib)));
+    }
 
     // libzip + OpenSSL (libssl, libcrypto) — not in the macOS SDK. libzip
     // is vendored statically via FetchContent (see eco-kernel-cpp/
@@ -726,6 +729,9 @@ static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
         }
     }
     for (const auto &lib : eco::config::ecoKernelLibs()) {
+        args.push_back(push(resolveFile(lib)));
+    }
+    for (const auto &lib : eco::config::ecoSystemLibs()) {
         args.push_back(push(resolveFile(lib)));
     }
 
@@ -1046,8 +1052,13 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         glibcTree ? eco::config::glibcRuntimeLib : eco::config::runtimeLib;
     const auto elmKernelFiles = glibcTree ? eco::config::glibcElmKernelLibs()
                                           : eco::config::elmKernelLibs();
-    const auto ecoKernelFiles = glibcTree ? eco::config::glibcEcoKernelLibs()
-                                          : eco::config::ecoKernelLibs();
+    // eco/kernel and eco/system archives are linked alike, so they share one
+    // list here.
+    auto ecoKernelFiles = glibcTree ? eco::config::glibcEcoKernelLibs()
+                                    : eco::config::ecoKernelLibs();
+    for (const auto &lib : glibcTree ? eco::config::glibcEcoSystemLibs()
+                                     : eco::config::ecoSystemLibs())
+        ecoKernelFiles.push_back(lib);
 
     // Project static archives, wrapped in --start-group so cyclic deps
     // between EffectRegistry / Time / Http effect managers and the
@@ -1141,6 +1152,9 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         for (const auto &lib : kernelSysLibs)
             args.push_back(push(lib));
         args.push_back("-lzip");
+        // zlib directly, not only through libzip/libcurl: eco/system's Stream
+        // codecs call it (plans/eco-system-library.md Phase 1 step 1.2).
+        args.push_back("-lz");
     }
 
     // Compiler builtins + unwinder. Four profiles:

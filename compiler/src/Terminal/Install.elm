@@ -111,7 +111,7 @@ handleArgs root args forTest autoYes registryPolicy =
 
 installPackage : FilePath -> Pkg.Name -> Bool -> Bool -> Registry.RegistryPolicy -> Task Exit.Install ()
 installPackage root pkg forTest autoYes registryPolicy =
-    Task.eio Exit.InstallBadRegistry (Solver.initEnv registryPolicy Nothing)
+    Task.eio Exit.InstallBadRegistry (Stuff.resolveBundledPackages [] |> Task.andThen (Solver.initEnv registryPolicy))
         |> Task.andThen (installWithEnv root pkg forTest autoYes)
 
 

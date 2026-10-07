@@ -21,6 +21,7 @@
 #include "eco_embed.h"
 
 #include "../allocator/Allocator.hpp"
+#include "../allocator/RuntimeExports.h"
 #include "../allocator/StackMap.hpp"
 #include "../platform/PlatformRuntime.hpp"
 #include "../platform/PortRuntime.hpp"
@@ -207,6 +208,8 @@ void* ecoEmbedThread(void* /*arg*/) {
     // eco_app_stop). Taken before eco_main so the loop can never observe
     // zero refs and exit between init and the host's first send.
     auto& sched = Elm::Platform::Scheduler::instance();
+    // Embedded: the host owns signals, process exit and loop lifetime.
+    sched.setEmbedMode(true);
     sched.incrementPendingAsync();
     // That single lifetime hold is not "real work": tell the scheduler to
     // discount it when reporting host liveness, and wire the idle/busy
@@ -218,11 +221,13 @@ void* ecoEmbedThread(void* /*arg*/) {
 
     // eco_main returns the Elm `main` value (Unit is the Empty constant 0x6,
     // HEAP_010), not an exit status: a normal finish, including one a host
-    // requested with eco_app_stop, reports 0 (as eco_entry.cpp does).
+    // requested with eco_app_stop, reports eco_get_exit_code() (0 unless the
+    // program called eco/system's setExitCode / embed-mode exitWithCode), as
+    // eco_entry.cpp does.
     (void)eco_main();
 
     Elm::Allocator::instance().cleanupThread();
-    s.exitCode.store(0);
+    s.exitCode.store(eco_get_exit_code());
 
     // If the ready hook never fired (non-worker program, or init crashed
     // out cleanly), release the start handshake now.

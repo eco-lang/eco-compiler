@@ -122,7 +122,7 @@ getEnv =
 
 addPackageCache : Maybe String -> Task Exit.Diff ( Maybe String, Stuff.PackageCache )
 addPackageCache maybeRoot =
-    Task.io (Stuff.getPackageCache Nothing)
+    Task.io (Stuff.resolveBundledPackages [] |> Task.andThen Stuff.getPackageCache)
         |> Task.map (\cache -> ( maybeRoot, cache ))
 
 
@@ -286,7 +286,7 @@ generateDocs (Env props) =
             Task.throw Exit.DiffNoOutline
 
         Just root ->
-            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing Nothing False False Nothing Registry.Normal))
+            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Stuff.resolveBundledPackages [] |> Task.andThen (\locals -> Details.load Reporting.silent scope root Nothing Nothing False False locals Registry.Normal)))
                 |> Task.andThen (buildDocsFromDetails root)
 
 

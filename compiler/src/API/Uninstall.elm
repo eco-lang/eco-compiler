@@ -51,7 +51,7 @@ run pkg =
 
                         Just root ->
                             Task.run
-                                (Task.eio Exit.UninstallBadRegistry (Solver.initEnv Registry.Normal Nothing)
+                                (Task.eio Exit.UninstallBadRegistry (Stuff.resolveBundledPackages [] |> Task.andThen (Solver.initEnv Registry.Normal))
                                     |> Task.andThen
                                         (\env ->
                                             Task.eio Exit.UninstallBadOutline (Outline.read root)

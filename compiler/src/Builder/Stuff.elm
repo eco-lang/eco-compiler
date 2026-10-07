@@ -1,7 +1,7 @@
 module Builder.Stuff exposing
     ( findRoot, getElmHome
     , PackageCache, getPackageCache, package, isLocalPackage, localPackageSource, registry
-    , resolveBundledKernel
+    , localPackages, resolveBundledPackages, bundledPackages, bundledPackagePath
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , withRootLock, withRootLockBuildDir, withRegistryLock
     , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
@@ -25,7 +25,7 @@ managing file locks.
 # Package Cache
 
 @docs PackageCache, getPackageCache, package, isLocalPackage, localPackageSource, registry
-@docs resolveBundledKernel
+@docs localPackages, resolveBundledPackages, bundledPackages, bundledPackagePath
 @docs typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
 
 
@@ -221,17 +221,19 @@ withRegistryLock (PackageCache dir _) work =
 -- ====== PACKAGE CACHES ======
 
 
-{-| Represents the package cache directory location.
+{-| Represents the package cache directory location, together with the
+locally linked packages (`--local-package` mappings plus any bundled packages
+found next to the executable), each as a `( package, seed path )` pair.
 -}
 type PackageCache
-    = PackageCache String (Maybe ( Pkg.Name, FilePath ))
+    = PackageCache String (List ( Pkg.Name, FilePath ))
 
 
 {-| Returns the package cache directory, creating it if necessary.
 -}
-getPackageCache : Maybe ( Pkg.Name, FilePath ) -> Task Never PackageCache
-getPackageCache maybeLocal =
-    Task.map (\dir -> PackageCache dir maybeLocal) (getCacheDir "packages")
+getPackageCache : List ( Pkg.Name, FilePath ) -> Task Never PackageCache
+getPackageCache locals =
+    Task.map (\dir -> PackageCache dir locals) (getCacheDir "packages")
 
 
 {-| Returns the path to the package registry cache file.
@@ -245,8 +247,9 @@ registry (PackageCache dir _) =
 
 A locally linked package resolves to the same cache path as a downloaded one: its
 source is copied from the seed path (see `localPackageSource`) into this cache
-directory on first build, and all reads and writes then use the cache so artifacts
-land in the writable `~/.eco` tree rather than the (possibly read-only) seed.
+directory, and all reads and writes then use the cache so artifacts land in the
+writable `~/.eco` tree rather than the (possibly read-only) seed. The copy is
+refreshed whenever the seed's fingerprint changes.
 
 -}
 package : PackageCache -> Pkg.Name -> V.Version -> String
@@ -254,76 +257,134 @@ package (PackageCache dir _) name version =
     Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
 
 
-{-| Check whether a package name matches the locally linked package, if any.
+{-| Check whether a package name matches one of the locally linked packages.
 -}
 isLocalPackage : PackageCache -> Pkg.Name -> Bool
-isLocalPackage (PackageCache _ maybeLocal) name =
-    case maybeLocal of
-        Just ( localPkg, _ ) ->
-            localPkg == name
-
-        Nothing ->
-            False
+isLocalPackage (PackageCache _ locals) name =
+    List.any (\( localPkg, _ ) -> localPkg == name) locals
 
 
 {-| Returns the read-only seed path for a locally linked package, if `name`
-matches the configured local package. The package source is copied from here into
-the cache on first build; thereafter `package` (the cache path) is used for all
-reads and writes.
+matches one of the configured local packages (the first mapping wins). The
+package source is copied from here into the cache; thereafter `package` (the
+cache path) is used for all reads and writes.
 -}
 localPackageSource : PackageCache -> Pkg.Name -> Maybe FilePath
-localPackageSource (PackageCache _ maybeLocal) name =
-    case maybeLocal of
-        Just ( localPkg, localPath ) ->
+localPackageSource (PackageCache _ locals) name =
+    lookupLocal name locals
+
+
+{-| Returns every locally linked package mapping held by the cache.
+-}
+localPackages : PackageCache -> List ( Pkg.Name, FilePath )
+localPackages (PackageCache _ locals) =
+    locals
+
+
+lookupLocal : Pkg.Name -> List ( Pkg.Name, FilePath ) -> Maybe FilePath
+lookupLocal name locals =
+    case locals of
+        [] ->
+            Nothing
+
+        ( localPkg, localPath ) :: rest ->
             if localPkg == name then
                 Just localPath
 
             else
-                Nothing
-
-        Nothing ->
-            Nothing
+                lookupLocal name rest
 
 
-{-| Resolve the local-package mapping, falling back to the bundled `eco/kernel`
-package when no explicit mapping was given.
+{-| The packages bundled with an Eco installation, with their location relative
+to the directory holding the executable (binary in `<prefix>/bin`, packages in
+`<prefix>/share/eco/...`).
+-}
+bundledPackages : List ( Pkg.Name, FilePath )
+bundledPackages =
+    [ ( Pkg.ecoKernel, "../share/eco/kernel/eco-kernel-cpp" )
+    , ( Pkg.ecoSystem, "../share/eco/system/system-kernel-cpp" )
+    ]
 
-An explicit mapping (e.g. from a `--local-package` flag) always wins. Otherwise
-we look for the kernel package next to the executable at
-`dirname(exe)/../share/eco/kernel/eco-kernel-cpp`, matching the install layout
-(binary in `<prefix>/bin`, kernel in `<prefix>/share/eco/kernel/eco-kernel-cpp`).
-If that directory does not exist we leave the mapping unset so the normal package
-cache lookup applies.
 
-Shared by `make` and `init` so both resolve the bundled kernel identically.
+{-| Extend the local-package mappings with the bundled packages.
+
+Explicit mappings (e.g. from `--local-package` flags) always win. For each
+bundled package (`eco/kernel`, `eco/system`) that is **not already mapped**, we
+look for it next to the executable (see `bundledPackages`) and append the
+canonical path if the directory exists. Bundled packages that are not found are
+left unmapped so the normal package cache lookup applies.
+
+Shared by `make`, `init`, `install` and the other commands so all of them
+resolve the bundled packages identically.
 
 -}
-resolveBundledKernel : Maybe ( Pkg.Name, FilePath ) -> Task Never (Maybe ( Pkg.Name, FilePath ))
-resolveBundledKernel maybeLocalPackage =
-    case maybeLocalPackage of
-        Just _ ->
-            Task.succeed maybeLocalPackage
+resolveBundledPackages : List ( Pkg.Name, FilePath ) -> Task Never (List ( Pkg.Name, FilePath ))
+resolveBundledPackages explicit =
+    let
+        missing : List ( Pkg.Name, FilePath )
+        missing =
+            List.filter (\( pkg, _ ) -> lookupLocal pkg explicit == Nothing) bundledPackages
+    in
+    case missing of
+        [] ->
+            Task.succeed explicit
 
-        Nothing ->
+        _ ->
             Utils.nodeGetDirname
                 |> Task.andThen
                     (\binDir ->
-                        let
-                            kernelDir : FilePath
-                            kernelDir =
-                                Utils.fpCombine binDir "../share/eco/kernel/eco-kernel-cpp"
-                        in
-                        Utils.dirDoesDirectoryExist kernelDir
-                            |> Task.andThen
-                                (\exists ->
-                                    if exists then
-                                        Utils.dirCanonicalizePath kernelDir
-                                            |> Task.map (\canonical -> Just ( Pkg.ecoKernel, canonical ))
+                        List.foldl
+                            (\( pkg, relPath ) acc ->
+                                acc
+                                    |> Task.andThen
+                                        (\found ->
+                                            probeBundled binDir relPath
+                                                |> Task.map
+                                                    (\maybePath ->
+                                                        case maybePath of
+                                                            Just path ->
+                                                                found ++ [ ( pkg, path ) ]
 
-                                    else
-                                        Task.succeed Nothing
-                                )
+                                                            Nothing ->
+                                                                found
+                                                    )
+                                        )
+                            )
+                            (Task.succeed explicit)
+                            missing
                     )
+
+
+probeBundled : FilePath -> FilePath -> Task Never (Maybe FilePath)
+probeBundled binDir relPath =
+    let
+        dir : FilePath
+        dir =
+            Utils.fpCombine binDir relPath
+    in
+    Utils.dirDoesDirectoryExist dir
+        |> Task.andThen
+            (\exists ->
+                if exists then
+                    Utils.dirCanonicalizePath dir |> Task.map Just
+
+                else
+                    Task.succeed Nothing
+            )
+
+
+{-| Returns the expected location of a bundled package next to the executable,
+for error messages. `Nothing` if the package is not one of the bundled ones.
+-}
+bundledPackagePath : Pkg.Name -> Task Never (Maybe FilePath)
+bundledPackagePath name =
+    case lookupLocal name bundledPackages of
+        Just relPath ->
+            Utils.nodeGetDirname
+                |> Task.map (\binDir -> Just (Utils.fpCombine binDir relPath))
+
+        Nothing ->
+            Task.succeed Nothing
 
 
 {-| Returns the path to typed artifacts cache for a specific package version.
@@ -375,10 +436,10 @@ getElmHome =
 {-| Encodes a package cache location to bytes.
 -}
 packageCacheEncoder : PackageCache -> Bytes.Encode.Encoder
-packageCacheEncoder (PackageCache dir maybeLocal) =
+packageCacheEncoder (PackageCache dir locals) =
     Bytes.Encode.sequence
         [ BE.string dir
-        , BE.maybe (\( name, path ) -> Bytes.Encode.sequence [ Pkg.nameEncoder name, BE.string path ]) maybeLocal
+        , BE.list (\( name, path ) -> Bytes.Encode.sequence [ Pkg.nameEncoder name, BE.string path ]) locals
         ]
 
 
@@ -388,4 +449,4 @@ packageCacheDecoder : Bytes.Decode.Decoder PackageCache
 packageCacheDecoder =
     Bytes.Decode.map2 PackageCache
         BD.string
-        (BD.maybe (Bytes.Decode.map2 (\a b -> ( a, b )) Pkg.nameDecoder BD.string))
+        (BD.list (Bytes.Decode.map2 (\a b -> ( a, b )) Pkg.nameDecoder BD.string))

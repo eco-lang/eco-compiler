@@ -14,6 +14,10 @@
 
 #include "Heap.hpp"
 
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
 namespace Elm { struct EvalParamLayout; }
 
 using Elm::HPtr;
@@ -41,6 +45,34 @@ void* eco_set_output_stream(void* stream);
 /// Gets the current output stream for eco_dbg_print functions.
 /// Returns nullptr if output goes to stderr.
 void* eco_get_output_stream();
+
+//===----------------------------------------------------------------------===//
+// Process exit code and main thread (plans/eco-system-library.md Phase 2)
+//===----------------------------------------------------------------------===//
+
+/// Sets the process-wide exit code reported when the program ends normally
+/// (event loop quiescent / main returned). A process-wide std::atomic<int>,
+/// 0 until set. Read by eco_entry.cpp (AOT main's return value), eco_embed.cpp
+/// (eco_app_join's result) and EcoRunner (RunResult::exitCode). eco/system's
+/// `System.setExitCode` / embed-mode `exitWithCode` write it.
+void eco_set_exit_code(int code);
+
+/// Returns the code last stored by eco_set_exit_code (0 by default).
+int eco_get_exit_code();
+
+#if !defined(_WIN32)
+/// Records the process main thread (the thread that ran C `main`). Called once
+/// by eco_entry.cpp before it starts the Elm thread. Not called by the JIT or
+/// the embed host.
+void eco_set_process_main_thread(pthread_t thread);
+
+/// The process main thread as recorded by eco_entry.cpp. When nothing was
+/// recorded (JIT test harness, embedded hosts), returns the calling thread.
+/// Used by eco/system's setProcessTitle (prctl renames the calling thread, so
+/// the title must be applied to this thread, §3.8). Distinct from eco_entry.cpp's
+/// static `eco_main_thread`, which is the thread function that runs Elm.
+pthread_t eco_process_main_thread();
+#endif
 
 //===----------------------------------------------------------------------===//
 // Allocation Functions

@@ -2,7 +2,7 @@ module Terminal.Terminal.Chomp exposing
     ( Chomper, Chunk, Suggest
     , chomp, chompExactly, chompMultiple
     , chompArg
-    , chompNormalFlag, chompOnOffFlag, checkForUnknownFlags
+    , chompNormalFlag, chompRepeatableFlag, chompOnOffFlag, checkForUnknownFlags
     , map, pure, apply, andThen
     )
 
@@ -27,9 +27,11 @@ the chunks it left are given to each _argument alternative_ in turn: an
 alternative is one accepted shape for the positional arguments, usually made
 with `chompExactly` or `chompMultiple`, and the first to succeed wins.
 
-A flag chomper takes out only the first occurrence of its flag.
-`checkForUnknownFlags`, run after the flag chompers, treats every string still
-left that starts with `-` as an unknown flag.
+A flag chomper takes out only the first occurrence of its flag, except
+`chompRepeatableFlag`, which takes out every occurrence. `checkForUnknownFlags`,
+run after the flag chompers, treats every string still left that starts with `-`
+as an unknown flag, so a repeated ordinary flag is rejected while a repeatable
+flag may appear any number of times.
 
 Parsing also gathers tab completions. The _suggestion state_ (`Suggest`) that
 is passed from chomper to chomper holds the position of the string to be
@@ -54,7 +56,7 @@ by the first chomper that finds completions for that position.
 
 # Flag Chompers
 
-@docs chompNormalFlag, chompOnOffFlag, checkForUnknownFlags
+@docs chompNormalFlag, chompRepeatableFlag, chompOnOffFlag, checkForUnknownFlags
 
 
 # Combinators
@@ -504,6 +506,49 @@ chompNormalFlag flagName ((Parser { singular, examples }) as parser) parserFn =
                             ChomperErr suggest (FlagWithNoValue flagName (Expectation singular (examples "")))
 
 
+{-| Creates a chomper for a flag that takes a value and may be given any number
+of times. It gives every value, parsed with the parse function, in the order the
+flags appear, and the empty list when the flag is absent.
+
+Each occurrence is written and parsed as for `chompNormalFlag`, and every
+occurrence is taken out, so `checkForUnknownFlags` never sees a repeat of it.
+The first occurrence with no value or a value that does not parse fails, with
+`FlagWithNoValue` or `FlagWithBadValue` as for `chompNormalFlag`.
+
+-}
+chompRepeatableFlag : String -> Parser -> (String -> Maybe a) -> Chomper FlagError (List a)
+chompRepeatableFlag flagName ((Parser { singular, examples }) as parser) parserFn =
+    let
+        loop : List a -> Suggest -> List Chunk -> ChomperResult FlagError (List a)
+        loop revValues suggest chunks =
+            case findFlag flagName chunks of
+                Nothing ->
+                    ChomperOk suggest chunks (List.reverse revValues)
+
+                Just (FoundFlag before value after) ->
+                    let
+                        attempt : Int -> String -> ChomperResult FlagError (List a)
+                        attempt index string =
+                            case tryToParse suggest parser parserFn index string of
+                                ( newSuggest, Err expectation ) ->
+                                    ChomperErr newSuggest (FlagWithBadValue flagName string expectation)
+
+                                ( newSuggest, Ok flagValue ) ->
+                                    loop (flagValue :: revValues) newSuggest (before ++ after)
+                    in
+                    case value of
+                        Definitely index string ->
+                            attempt index string
+
+                        Possibly (Chunk index string) ->
+                            attempt index string
+
+                        DefNope ->
+                            ChomperErr suggest (FlagWithNoValue flagName (Expectation singular (examples "")))
+    in
+    Chomper (loop [])
+
+
 
 -- ====== FIND FLAG ======
 
@@ -594,7 +639,9 @@ with `-`, and otherwise succeeds without taking anything.
 
 It does not look at flag names: any string left that starts with `-` counts. So
 it is meant to run after every flag chomper, and a second occurrence of a known
-flag, a lone `-` or a negative number is reported as unknown. The error carries
+flag, a lone `-` or a negative number is reported as unknown. Repeats of a flag
+chomped with `chompRepeatableFlag` are accepted, because that chomper takes out
+every occurrence before this check runs. The error carries
 the first such string and the `Flags` description, from which nearby names can
 be suggested.
 

@@ -218,7 +218,7 @@ make =
                 |> Terminal.more
                     (Terminal.flag "local-package"
                         Make.localPackage
-                        "Resolve a package dependency from a local filesystem path (e.g. eco/kernel=../eco-kernel-cpp)."
+                        "Resolve a package dependency from a local filesystem path (e.g. eco/kernel=../eco-kernel-cpp). May be given more than once."
                     )
                 |> Terminal.more
                     (Terminal.onOff "text-mlir"
@@ -265,7 +265,7 @@ make =
                         |> Chomp.apply (Chomp.chompOnOffFlag "Xpackage-errors")
                         |> Chomp.apply (Chomp.chompNormalFlag "builddir" Make.buildDir Make.parseBuildDir)
                         |> Chomp.apply (Chomp.chompNormalFlag "kernel-package" Make.kernelPackage Make.parseKernelPackage)
-                        |> Chomp.apply (Chomp.chompNormalFlag "local-package" Make.localPackage Make.parseLocalPackage)
+                        |> Chomp.apply (Chomp.chompRepeatableFlag "local-package" Make.localPackage Make.parseLocalPackage)
                         |> Chomp.apply (Chomp.chompOnOffFlag "text-mlir")
                         |> Chomp.apply (Chomp.chompOnOffFlag "refresh-registry")
                         |> Chomp.apply (Chomp.chompNormalFlag "config" Make.configFlag Make.parseConfig)

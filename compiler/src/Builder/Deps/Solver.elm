@@ -723,16 +723,16 @@ package registry. Falls back to offline mode if registry update fails but a
 cached registry exists.
 
 -}
-initEnv : Registry.RegistryPolicy -> Maybe ( Pkg.Name, IO.FilePath ) -> Task Never (Result Exit.RegistryProblem Env)
-initEnv policy maybeLocal =
+initEnv : Registry.RegistryPolicy -> List ( Pkg.Name, IO.FilePath ) -> Task Never (Result Exit.RegistryProblem Env)
+initEnv policy locals =
     Utils.newEmptyMVar
-        |> Task.andThen (forkHttpManagerAndInitCache policy maybeLocal)
+        |> Task.andThen (forkHttpManagerAndInitCache policy locals)
 
 
-forkHttpManagerAndInitCache : Registry.RegistryPolicy -> Maybe ( Pkg.Name, IO.FilePath ) -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
-forkHttpManagerAndInitCache policy maybeLocal mvar =
+forkHttpManagerAndInitCache : Registry.RegistryPolicy -> List ( Pkg.Name, IO.FilePath ) -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+forkHttpManagerAndInitCache policy locals mvar =
     Utils.forkIO (Http.getManager |> Task.andThen (Utils.putMVar Http.managerEncoder mvar))
-        |> Task.andThen (\_ -> Stuff.getPackageCache maybeLocal)
+        |> Task.andThen (\_ -> Stuff.getPackageCache locals)
         |> Task.andThen (\cache -> initEnvWithCache policy cache mvar)
 
 

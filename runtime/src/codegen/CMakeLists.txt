@@ -953,6 +953,12 @@ set(ECO_KERNEL_MODS File Console Env Process MVar Hash NativeDriver Runtime GC H
     CACHE INTERNAL "Eco kernel module names — drives static lib targets and bundle install"
 )
 
+# Kernel modules of the public eco/system package (system-kernel-cpp/). Each
+# names a static lib EcoSystem_<mod>.
+set(ECO_SYSTEM_MODS Core System Stream FileSystem ChildProcess Terminal HttpServer HttpStream
+    CACHE INTERNAL "Eco system module names — drives static lib targets and bundle install"
+)
+
 #------------------------------------------------------------------------------
 # Phase 3: linker + crt path discovery for direct ld invocation.
 #
@@ -1371,6 +1377,14 @@ foreach(mod ${ECO_KERNEL_MODS})
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<RuntimeFile> ecoSystemLibs() {\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
+foreach(mod ${ECO_SYSTEM_MODS})
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libEcoSystem_${mod}.a\", \"project\", \"$<TARGET_FILE:EcoSystem_${mod}>\"},\n")
+endforeach()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
 # --- LLVM libunwind ------------------------------------------------------
 # Passed as an absolute path (not -lunwind) so AOT links never pick up the
 # system (nongnu) libunwind. See cmake/LLVMLibunwind.cmake.
@@ -1566,6 +1580,14 @@ foreach(mod ${ECO_KERNEL_MODS})
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<RuntimeFile> glibcEcoSystemLibs() {\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
+foreach(mod ${ECO_SYSTEM_MODS})
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libEcoSystem_${mod}.a\", \"glibc/project\", \"\"},\n")
+endforeach()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
 #--- Phase 3 (Darwin): AOT link driver config ------------------------------
 # Consumed by linkExecutableDarwin() in EcoNativeDriver.cpp. Empty strings
 # on non-Darwin builds; the non-Darwin code paths never read them.
@@ -1635,8 +1657,8 @@ target_link_libraries(eco-boot-native PRIVATE
 #
 # NB: ElmKernel and EcoKernel are INTERFACE libraries; add_dependencies() on an
 # INTERFACE target is a no-op (no build action attached), so we must list each
-# concrete static lib explicitly. Reuse ECO_ELM_KERNEL_MODS / ECO_KERNEL_MODS
-# defined above so this list can't drift from the generated EcoBootConfig.h.
+# concrete static lib explicitly. Reuse ECO_ELM_KERNEL_MODS / ECO_KERNEL_MODS /
+# ECO_SYSTEM_MODS defined above so this list can't drift from the generated EcoBootConfig.h.
 set(ECO_BOOT_NATIVE_RUNTIME_DEPS EcoEntryStatic EcoEmbedStatic EcoRuntimeStatic)
 if(TARGET EcoNodeGlue)
     list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoNodeGlue)
@@ -1646,6 +1668,9 @@ foreach(mod ${ECO_ELM_KERNEL_MODS})
 endforeach()
 foreach(mod ${ECO_KERNEL_MODS})
     list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoKernel_${mod})
+endforeach()
+foreach(mod ${ECO_SYSTEM_MODS})
+    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoSystem_${mod})
 endforeach()
 add_dependencies(eco-boot-native ${ECO_BOOT_NATIVE_RUNTIME_DEPS})
 

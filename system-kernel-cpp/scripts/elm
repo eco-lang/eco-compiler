@@ -1,0 +1,17 @@
+#!/bin/sh
+# elm — shim that lets elm-doc-preview build eco/system's docs with the Eco compiler.
+#
+# Stock elm rejects kernel imports and `effect module` outside @elm, which eco/system uses from
+# Phase 3 on, so `pnpm run docs` puts this directory first on PATH (plans/eco-system-library.md
+# Phase 1 step 7). elm-doc-preview runs `elm --version` (stdout only) and
+# `elm make --docs=<file> --report=json` in the package directory, and parses the compiler's
+# stderr as the JSON error report. The Eco compiler's JS bundle is a dev build that prints a
+# "Compiled in DEV mode" console warning to stderr on every run, so that one line is filtered out.
+here=$(cd "$(dirname "$0")" && pwd)
+if [ "$1" = "--version" ]; then echo 0.19.1; exit 0; fi
+err=$(mktemp)
+node "$here/../../compiler/bin/index.js" "$@" 2>"$err"
+rc=$?
+grep -v '^Compiled in DEV mode\. Follow the advice at ' "$err" >&2
+rm -f "$err"
+exit $rc

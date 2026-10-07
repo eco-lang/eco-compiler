@@ -73,6 +73,7 @@ static struct EcoGCStrategyLinker {
 #include "KernelExports.h"
 #include "../allocator/Allocator.hpp"
 
+#include <csignal>
 #include <mutex>
 #include <sstream>
 
@@ -120,6 +121,12 @@ class EcoRunner::Impl {
 public:
     Impl() {
         initializeLLVM();
+#if !defined(_WIN32)
+        // Like eco_entry.cpp: a write to a closed pipe must return EPIPE to the
+        // kernel write path, not kill the process (plans/eco-system-library.md
+        // Phase 1 step 8g, review R1.15).
+        std::signal(SIGPIPE, SIG_IGN);
+#endif
     }
 
     ~Impl() = default;
@@ -271,6 +278,10 @@ private:
             startOutputCapture();
         }
 
+        // Each run starts with exit code 0 (Phase 2 step 2): a previous run in
+        // this process must not leak its setExitCode into the next.
+        eco_set_exit_code(0);
+
         // Invoke main
         int64_t returnValue = 0;
         void* args[] = { &returnValue };
@@ -291,6 +302,7 @@ private:
 
         result.success = true;
         result.returnValue = returnValue;
+        result.exitCode = eco_get_exit_code();
         return result;
     }
 };

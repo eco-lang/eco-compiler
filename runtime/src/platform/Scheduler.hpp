@@ -52,6 +52,27 @@ public:
     void requestStop();
     bool stopRequested() const { return stopRequested_.load(); }
 
+    // Embed mode (eco_embed.cpp): the host owns process-level concerns, so
+    // the loop never exits on quiescence, signal handlers and std::exit are
+    // off limits to kernels (plans/eco-system-library.md §3.4, §3.7).
+    // Set once before the loop starts; read from any thread.
+    void setEmbedMode(bool on) { embedMode_.store(on); }
+    bool embedMode() const { return embedMode_.load(); }
+
+    // Quiescence hook (Node `beforeExit` semantics; plans/eco-system-library.md
+    // §3.7, Phase 2 step 3). When runEventLoop finds the run queue empty and
+    // pendingAsync_ == 0 (no stop requested), and listeners exist and the hook
+    // is armed, it disarms the hook, releases mutex_, calls every listener in
+    // registration order on the eco thread, and loops again instead of
+    // exiting. The hook re-arms only when incrementPendingAsync() runs, so a
+    // listener that starts no async work cannot keep the loop alive forever:
+    // the next quiescence with the hook disarmed exits. Never fires in embed
+    // mode. Listeners may sendToApp/drain/allocate (mutex_ is not held) but
+    // must run on, and are only called from, the eco thread. Registration is
+    // permanent (for the process lifetime) and must happen on the eco thread.
+    using QuiescenceListener = void (*)(void* ctx);
+    void addQuiescenceListener(QuiescenceListener fn, void* ctx);
+
     // Called by helper threads (e.g. TimerService worker) to wake the main
     // event loop when new async work is ready. Must not allocate or touch GC.
     void notifyWorkAvailableFromAsync();
@@ -197,9 +218,13 @@ private:
     std::unordered_map<u32, std::function<void(HPointer)>> selfMsgHandlers_;
     // External async completion sources (HTTP, etc). Drained on the main
     // thread in processReadyAsync; their `ready` predicates feed the wait
-    // condition. Registered once at kernel init; never mutated concurrently
-    // with the event loop after startup.
-    std::vector<std::pair<std::function<void()>, std::function<bool()>>> asyncSources_;
+    // condition. Registered on the main thread, possibly lazily from inside a
+    // drain (a binding stepped by a drain may register a new source), so the
+    // loops over this container iterate by index with the size re-read each
+    // step, and it is a deque: push_back never moves existing elements, so a
+    // drain that registers a source does not destroy the std::function that
+    // is running.
+    std::deque<std::pair<std::function<void()>, std::function<bool()>>> asyncSources_;
     bool working_ = false;
     std::mutex mutex_;
     std::condition_variable eventCV_;
@@ -214,6 +239,12 @@ private:
     void fireActivity(bool busy);
     std::atomic<u32> nextProcId_{0};
     std::atomic<bool> stopRequested_{false};
+    std::atomic<bool> embedMode_{false};
+    // Quiescence hook state (see addQuiescenceListener). The listener list is
+    // guarded by mutex_; quiescenceArmed_ is set from any thread by
+    // incrementPendingAsync and cleared by the event loop when it fires.
+    std::vector<std::pair<QuiescenceListener, void*>> quiescenceListeners_;
+    std::atomic<bool> quiescenceArmed_{true};
 };
 
 } // namespace Elm::Platform

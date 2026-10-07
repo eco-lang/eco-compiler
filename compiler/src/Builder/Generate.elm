@@ -480,10 +480,10 @@ type TypedLoadingObjects
     = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (List ModuleName.Raw) (Dict ModuleName.Raw ModuleTyped) FilePath (Maybe String)
 
 
-loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
-loadTypedObjects root maybeBuildDir maybeLocal details modules =
+loadTypedObjects : FilePath -> Maybe String -> List ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
+loadTypedObjects root maybeBuildDir localPackages details modules =
     Task.io
-        (Details.loadTypedObjects maybeLocal details
+        (Details.loadTypedObjects localPackages details
             |> Task.andThen (loadTypedModuleObjects root maybeBuildDir modules)
         )
 
@@ -662,11 +662,11 @@ buildMonoGraph :
     -> FEStats.Handle
     -> FilePath
     -> Maybe String
-    -> Maybe ( Pkg.Name, FilePath )
+    -> List ( Pkg.Name, FilePath )
     -> Details.Details
     -> Build.Artifacts
     -> Task Exit.Generate MonoBuildResult
-buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
+buildMonoGraph ecoConfig stats root maybeBuildDir localPackages details (Build.Artifacts artifacts) =
     let
         roots =
             artifacts.roots
@@ -683,7 +683,7 @@ buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details (Build.Arti
     -- dropped (HEAP_005). Never drop them inside Build: `checkRoot`'s
     -- `loadInterfaces` takes them.
     Task.io (Utils.listTraverse_ dropCachedInterfaceMVar artifacts.modules)
-        |> Task.andThen (\_ -> loadTypedObjects root maybeBuildDir maybeLocal details modules)
+        |> Task.andThen (\_ -> loadTypedObjects root maybeBuildDir localPackages details modules)
         |> Task.andThen finalizeAndMergeTypedObjects
         |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats roots)
 
@@ -2042,13 +2042,13 @@ writeMonoMlirStreaming :
     -> FEStats.Handle
     -> FilePath
     -> Maybe String
-    -> Maybe ( Pkg.Name, FilePath )
+    -> List ( Pkg.Name, FilePath )
     -> Details.Details
     -> Build.Artifacts
     -> FilePath
     -> Task Exit.Generate ()
-writeMonoMlirStreaming ecoConfig stats root maybeBuildDir maybeLocal details artifacts target =
-    buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
+writeMonoMlirStreaming ecoConfig stats root maybeBuildDir localPackages details artifacts target =
+    buildMonoGraph ecoConfig stats root maybeBuildDir localPackages details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
                 constThunkCensus ecoConfig monoGraph
@@ -2075,13 +2075,13 @@ writeMonoMlirStreamingBytecode :
     -> FEStats.Handle
     -> FilePath
     -> Maybe String
-    -> Maybe ( Pkg.Name, FilePath )
+    -> List ( Pkg.Name, FilePath )
     -> Details.Details
     -> Build.Artifacts
     -> FilePath
     -> Task Exit.Generate ()
-writeMonoMlirStreamingBytecode ecoConfig stats root maybeBuildDir maybeLocal details artifacts target =
-    buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
+writeMonoMlirStreamingBytecode ecoConfig stats root maybeBuildDir localPackages details artifacts target =
+    buildMonoGraph ecoConfig stats root maybeBuildDir localPackages details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
                 constThunkCensus ecoConfig monoGraph

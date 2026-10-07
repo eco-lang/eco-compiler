@@ -159,10 +159,11 @@ type alias InitDetails =
 
 init : Bool -> Task Never (Result Exit.Init ())
 init package =
-    -- Locate the bundled `eco/kernel` package (next to the executable) so the
-    -- dependency solver can resolve it: the scaffolded application depends on it
-    -- for console IO, and it ships with eco rather than the package registry.
-    Stuff.resolveBundledKernel Nothing
+    -- Locate the bundled packages (`eco/kernel`, `eco/system`; next to the
+    -- executable) so the dependency solver can resolve them: the scaffolded
+    -- application depends on eco/kernel for console IO, and both ship with eco
+    -- rather than the package registry.
+    Stuff.resolveBundledPackages []
         |> Task.andThen (Solver.initEnv Registry.Normal)
         |> Task.andThen (initWithEnv package)
 

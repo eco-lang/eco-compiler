@@ -1,0 +1,13 @@
+{
+  "name": "eco-system",
+  "private": true,
+  "license": "BSD-3-Clause",
+  "scripts": {
+    "docs": "PATH=$PWD/scripts:$PATH elm-doc-preview",
+    "docs:check": "PATH=$PWD/scripts:$PATH elm-doc-preview --output docs.json"
+  },
+  "devDependencies": {
+    "elm-doc-preview": "^6.0.1"
+  },
+  "packageManager": "pnpm@11.1.3"
+}

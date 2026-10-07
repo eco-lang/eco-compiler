@@ -16,6 +16,7 @@ set(ELM_TEST_PACKAGES
     elm
     elm-bytes
     eco-kernel
+    eco-system
     elm-core
     elm-http
     elm-json
@@ -135,6 +136,7 @@ add_executable(test
         allocator/HPointerLayoutTest.cpp
         allocator/ConcurrencyRegisterTest.cpp
         kernel/KernelExportsTest.cpp
+        platform/PlatformServicesTest.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
@@ -230,6 +232,44 @@ endif()
 # Export symbols so the JIT can find them via dlsym.
 set_target_properties(test PROPERTIES ENABLE_EXPORTS ON)
 
+# eco/system kernels (plans/eco-system-library.md Phase 1 step 8e): every
+# EcoSystem_${mod} archive is whole-archived into `test` (and `stress-test`
+# below) so the JIT can dlsym its `Eco_Kernel_*` / `Eco_System_*` symbols.
+# ECO_SYSTEM_MODS is defined in runtime/src/codegen/CMakeLists.txt, which the
+# top-level CMakeLists adds AFTER this directory, so on a fresh configure the
+# list (a CACHE INTERNAL variable) is not yet set here, and on a re-configure
+# it may be stale. The link is therefore deferred to the end of the top-level
+# directory, when the list and the EcoSystem_* targets exist.
+function(eco_test_link_eco_system tgt)
+    if(NOT TARGET ${tgt})
+        return()
+    endif()
+    set(_libs "")
+    foreach(mod ${ECO_SYSTEM_MODS})
+        if(TARGET EcoSystem_${mod})
+            list(APPEND _libs EcoSystem_${mod})
+        endif()
+    endforeach()
+    if(NOT _libs)
+        return()
+    endif()
+    if(APPLE)
+        set(_force "")
+        foreach(lib ${_libs})
+            list(APPEND _force -Wl,-force_load,$<TARGET_FILE:${lib}>)
+        endforeach()
+        target_link_libraries(${tgt} ${_force} ${_libs})
+    elseif(WIN32)
+        target_link_libraries(${tgt} ${_libs})
+        foreach(lib ${_libs})
+            target_link_options(${tgt} PRIVATE /WHOLEARCHIVE:$<TARGET_FILE:${lib}>)
+        endforeach()
+    else()
+        target_link_libraries(${tgt} -Wl,--whole-archive ${_libs} -Wl,--no-whole-archive)
+    endif()
+endfunction()
+cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL eco_test_link_eco_system test)
+
 # Stress test runner — a separate binary so these can be built/run independently
 # of the main E2E suite. Reuses ElmE2ETestBase/TestSuite/IsolatedTestRunner.
 # On Windows the stress-elm/main.cpp hits the same Elm-E2E fork code paths the
@@ -267,6 +307,8 @@ else()
     )
 endif()
 set_target_properties(stress-test PROPERTIES ENABLE_EXPORTS ON)
+# eco/system kernels for EcoSystem*.elm stress programs (Phase 1 step 8e/h).
+cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL eco_test_link_eco_system stress-test)
 endif() # NOT WIN32 (stress-test)
 
 # mlir-equivalence — compares Stage 2 (eco-boot.js) vs Stage 6 (eco-compiler

@@ -19,17 +19,23 @@ g_dispatch_stats_overflow.fetch_add(1, std::memory_order_relaxed);
 g_dispatch_stats_table[i].fast.load(std::memory_order_relaxed)});
 g_dispatch_stats_table[i].gen.load(std::memory_order_relaxed),
 g_dispatch_stats_table[i].sat.load(std::memory_order_relaxed),
+g_eco_exit_code.store(code, std::memory_order_relaxed);
+g_eco_main_thread_recorded.store(true, std::memory_order_release);
 g_gencall_counts[static_cast<uint32_t>(reason) & (kGencallReasons - 1)].fetch_add(
 if (!entry.fp.compare_exchange_strong(expected, fp,
 if (!entry.fp.compare_exchange_strong(expected, fp,
 if (g_call_census_dumped.exchange(true)) return;
 if (g_closure_stats_dumped.exchange(true)) return;
 if (g_dispatch_stats_dumped.exchange(true)) return;
+if (g_eco_main_thread_recorded.load(std::memory_order_acquire))
+return g_eco_exit_code.load(std::memory_order_relaxed);
 static_cast<unsigned long long>(g_dispatch_fast_total.load(std::memory_order_relaxed)),
 static_cast<unsigned long long>(g_dispatch_stats_overflow.load(std::memory_order_relaxed)));
 std::atomic<bool> g_call_census_dumped{false};
 std::atomic<bool> g_closure_stats_dumped{false};
 std::atomic<bool> g_dispatch_stats_dumped{false};
+std::atomic<bool> g_eco_main_thread_recorded{false};
+std::atomic<int> g_eco_exit_code{0};
 std::atomic<uint64_t> creates{0};
 std::atomic<uint64_t> extends{0};
 std::atomic<uint64_t> fast{0};

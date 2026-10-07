@@ -104,7 +104,7 @@ generateMlirModule ecoConfig mode monoGraph0 =
         ( mainOps, ctxAfterMain ) =
             case main of
                 Just mainInfo ->
-                    Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
+                    Functions.generateMainEntry finalCtx ports flagsDecoder finalCtx.ecoSystemManagers mainInfo
 
                 Nothing ->
                     ( [], finalCtx )
@@ -239,7 +239,7 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                     ( mainOps, ctxAfterMain ) =
                         case main of
                             Just mainInfo ->
-                                Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
+                                Functions.generateMainEntry finalCtx ports flagsDecoder finalCtx.ecoSystemManagers mainInfo
 
                             Nothing ->
                                 ( [], finalCtx )
@@ -437,7 +437,7 @@ finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes 
         ( mainOps, ctxAfterMain ) =
             case main of
                 Just mainInfo ->
-                    Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
+                    Functions.generateMainEntry finalCtx ports flagsDecoder finalCtx.ecoSystemManagers mainInfo
 
                 Nothing ->
                     ( [], finalCtx )

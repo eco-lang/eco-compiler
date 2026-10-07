@@ -1472,7 +1472,7 @@ toOutlineProblemReport path source _ region problem =
 -}
 type Details
     = DetailsNoSolution
-    | DetailsBundledKernelMissing
+    | DetailsBundledKernelMissing Pkg.Name FilePath
     | DetailsNoOfflineSolution
     | DetailsSolverProblem Solver
     | DetailsBadElmInPkg C.Constraint
@@ -1525,36 +1525,34 @@ toDetailsReport details =
                 , "Please ask for help on the community forums if you try those paths and are still having problems!" |> D.reflow
                 ]
 
-        DetailsBundledKernelMissing ->
-            Help.report "BUNDLED KERNEL NOT FOUND"
+        DetailsBundledKernelMissing pkg expectedPath ->
+            let
+                pkgName : String
+                pkgName =
+                    Pkg.toChars pkg
+
+                dirName : String
+                dirName =
+                    expectedPath
+                        |> String.split "/"
+                        |> List.filter (not << String.isEmpty)
+                        |> List.reverse
+                        |> List.head
+                        |> Maybe.withDefault pkgName
+            in
+            Help.report "BUNDLED PACKAGE NOT FOUND"
                 (Just "elm.json")
-                "Your project depends on eco/kernel, which ships with eco rather than the package registry, and I could not locate it."
-                [ D.reflow "I look for the kernel package next to the eco executable, at <dir-of-eco>/../share/eco/kernel/eco-kernel-cpp. That path does not exist, so dependency solving cannot resolve eco/kernel."
+                ("Your project depends on " ++ pkgName ++ ", which ships with eco rather than the package registry, and I could not locate it.")
+                [ D.reflow ("I look for " ++ pkgName ++ " next to the eco executable, at " ++ expectedPath ++ ". That path does not exist, so dependency solving cannot resolve " ++ pkgName ++ ".")
                 , D.fillSep
-                    [ D.fromChars "To"
-                    , D.fromChars "fix"
-                    , D.fromChars "this,"
-                    , D.fromChars "either"
-                    , D.fromChars "install"
-                    , D.fromChars "eco"
-                    , D.fromChars "so"
-                    , D.fromChars "the"
-                    , D.fromChars "kernel"
-                    , D.fromChars "sits"
-                    , D.fromChars "at"
-                    , D.fromChars "<prefix>/share/eco/kernel/eco-kernel-cpp,"
-                    , D.fromChars "or"
-                    , D.fromChars "point"
-                    , D.fromChars "the"
-                    , D.fromChars "compiler"
-                    , D.fromChars "at"
-                    , D.fromChars "the"
-                    , D.fromChars "kernel"
-                    , D.fromChars "source"
-                    , D.fromChars "with"
-                    , D.green (D.fromChars "--local-package eco/kernel=<path>/eco-kernel-cpp")
-                        |> D.a (D.fromChars ".")
-                    ]
+                    (List.map D.fromChars
+                        (String.words
+                            ("To fix this, either install eco so that " ++ pkgName ++ " sits at that path, or point the compiler at the package source with")
+                        )
+                        ++ [ D.green (D.fromChars ("--local-package " ++ pkgName ++ "=<path>/" ++ dirName))
+                                |> D.a (D.fromChars ".")
+                           ]
+                    )
                 ]
 
         DetailsNoOfflineSolution ->

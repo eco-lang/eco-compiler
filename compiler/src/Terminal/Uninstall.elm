@@ -98,7 +98,7 @@ handleArgs root args autoYes =
 
 uninstallPackage : FilePath -> Pkg.Name -> Bool -> Task Exit.Uninstall ()
 uninstallPackage root pkg autoYes =
-    Task.eio Exit.UninstallBadRegistry (Solver.initEnv Registry.Normal Nothing)
+    Task.eio Exit.UninstallBadRegistry (Stuff.resolveBundledPackages [] |> Task.andThen (Solver.initEnv Registry.Normal))
         |> Task.andThen (uninstallWithEnv root pkg autoYes)
 
 

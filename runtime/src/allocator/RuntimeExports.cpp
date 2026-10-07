@@ -146,6 +146,39 @@ extern "C" void* eco_get_output_stream() {
 }
 
 //===----------------------------------------------------------------------===//
+// Process exit code and main thread
+//===----------------------------------------------------------------------===//
+
+namespace {
+std::atomic<int> g_eco_exit_code{0};
+#if !defined(_WIN32)
+std::atomic<bool> g_eco_main_thread_recorded{false};
+pthread_t g_eco_main_thread;
+#endif
+} // anonymous namespace
+
+extern "C" void eco_set_exit_code(int code) {
+    g_eco_exit_code.store(code, std::memory_order_relaxed);
+}
+
+extern "C" int eco_get_exit_code() {
+    return g_eco_exit_code.load(std::memory_order_relaxed);
+}
+
+#if !defined(_WIN32)
+extern "C" void eco_set_process_main_thread(pthread_t thread) {
+    g_eco_main_thread = thread;
+    g_eco_main_thread_recorded.store(true, std::memory_order_release);
+}
+
+extern "C" pthread_t eco_process_main_thread() {
+    if (g_eco_main_thread_recorded.load(std::memory_order_acquire))
+        return g_eco_main_thread;
+    return pthread_self();
+}
+#endif
+
+//===----------------------------------------------------------------------===//
 // Allocation Functions
 //===----------------------------------------------------------------------===//
 

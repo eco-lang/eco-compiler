@@ -42,14 +42,19 @@ import Utils.Crash exposing (crash)
 
 
 {-| Generate the main entry point function.
+
+`managers` is the set of home modules of the eco/system effect managers the
+program reaches (`Ctx.ecoSystemManagers`, accumulated while the node bodies
+were generated); the preamble registers each one before anything else.
+
 -}
-generateMainEntry : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> Mono.MainInfo -> ( List MlirOp, Ctx.Context )
-generateMainEntry ctx ports flagsDecoder mainInfo =
+generateMainEntry : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> Set.Set String -> Mono.MainInfo -> ( List MlirOp, Ctx.Context )
+generateMainEntry ctx ports flagsDecoder managers mainInfo =
     case mainInfo of
         Mono.StaticMain mainSpecId ->
             let
                 ( portFnOps, ctxPorts ) =
-                    generateRegisterPorts ctx ports flagsDecoder
+                    generateRegisterPorts ctx ports flagsDecoder managers
 
                 -- main has no block args, so reset scope completely
                 ctxMain =
@@ -121,13 +126,19 @@ registration call before `Platform.worker` runs:
     (the separate specialization recorded in `PortRegistration.decoderSpecId`)
   - outgoing: `Elm_Kernel_Platform_registerOutgoingPort(name)`
 
-Returns `( [], ctx )` for programs without ports so no preamble is
-emitted at all.
+Before all of those it registers every eco/system effect manager in
+`managers` (plans/eco-system-library.md §3.6): one
+`Eco_System_registerManager_<Home with . replaced by _>()` call per home, in
+set order, so the C++ managers are in the runtime's table before
+`initWorker` reads it.
+
+Returns `( [], ctx )` for programs without ports, flags decoder or eco/system
+managers, so no preamble is emitted at all.
 
 -}
-generateRegisterPorts : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> ( List MlirOp, Ctx.Context )
-generateRegisterPorts ctx0 ports flagsDecoder =
-    if List.isEmpty ports && flagsDecoder == Nothing then
+generateRegisterPorts : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> Set.Set String -> ( List MlirOp, Ctx.Context )
+generateRegisterPorts ctx0 ports flagsDecoder managers =
+    if List.isEmpty ports && flagsDecoder == Nothing && Set.isEmpty managers then
         ( [], ctx0 )
 
     else
@@ -177,18 +188,41 @@ generateRegisterPorts ctx0 ports flagsDecoder =
                                 c
                        )
 
+            -- eco/system effect managers (plans/eco-system-library.md §3.6):
+            -- one nullary registration call per home, emitted FIRST. Each
+            -- callee is declared like the other preamble kernels; the C
+            -- function returns uint64_t = encode(unit()), i.e. !eco.value.
+            ( managerRevOps, ctxAfterManagers ) =
+                Set.foldl
+                    (\home ( accOps, c ) ->
+                        let
+                            symbol =
+                                ecoSystemRegisterManagerSymbol home
+
+                            ( resultVar, c1 ) =
+                                Ctx.freshVar (Ctx.registerKernelCall c symbol [] Types.ecoValue)
+
+                            ( c2, registerOp ) =
+                                Ops.ecoCallNamed c1 Expr.emitSafepointHints resultVar symbol [] Types.ecoValue
+                        in
+                        ( registerOp :: accOps, c2 )
+                    )
+                    ( [], ctxKernels )
+                    managers
+
             -- Flags decoder registration (Phase 5): call the decoder's
             -- value thunk, then hand the decoder to the runtime. Emitted
-            -- before the port registrations.
+            -- after the manager registrations and before the port
+            -- registrations.
             ( flagsRevOps, ctxAfterFlags ) =
                 case flagsDecoder of
                     Nothing ->
-                        ( [], ctxKernels )
+                        ( [], ctxAfterManagers )
 
                     Just decoderSpecId ->
                         let
                             ( decoderVar, c1 ) =
-                                Ctx.freshVar ctxKernels
+                                Ctx.freshVar ctxAfterManagers
 
                             ( c2, decoderCallOp ) =
                                 Ops.ecoCallNamed c1
@@ -277,12 +311,42 @@ generateRegisterPorts ctx0 ports flagsDecoder =
 
             region : MlirRegion
             region =
-                Ops.mkRegion [] (List.reverse (revOps ++ flagsRevOps) ++ [ unitOp ]) returnOp
+                Ops.mkRegion [] (List.reverse (revOps ++ flagsRevOps ++ managerRevOps) ++ [ unitOp ]) returnOp
 
             ( ctxF, funcOp ) =
                 Ops.funcFunc ctxU3 "__eco_register_ports" [] Types.ecoValue region
         in
         ( [ funcOp ], ctxF )
+
+
+{-| The C symbol that registers the eco/system effect manager of `home`:
+`Eco_System_registerManager_` followed by the module name with every `.`
+replaced by `_` (plans/eco-system-library.md T6).
+-}
+ecoSystemRegisterManagerSymbol : String -> String
+ecoSystemRegisterManagerSymbol home =
+    "Eco_System_registerManager_" ++ String.replace "." "_" home
+
+
+{-| Records `home` in `ctx.ecoSystemManagers` when the manager leaf `specId`
+belongs to package eco/system (plans/eco-system-library.md §3.6). The set
+deduplicates: a home reached through several leaf specializations (several
+leaves of one module, or clones at different types) is registered once.
+Leaves of any other package (elm/time's `Time`, ...) are not recorded; their
+managers are built into the runtime.
+-}
+recordEcoSystemManager : Mono.SpecId -> String -> Ctx.Context -> Ctx.Context
+recordEcoSystemManager specId home ctx =
+    case Registry.lookupSpecKey specId ctx.registry of
+        Just ( Mono.Global (ModuleName.Canonical pkg _) _, _ ) ->
+            if pkg == Pkg.ecoSystem then
+                { ctx | ecoSystemManagers = Set.insert home ctx.ecoSystemManagers }
+
+            else
+                ctx
+
+        _ ->
+            ctx
 
 
 
@@ -515,7 +579,7 @@ generateNodeInner ctx funcName specId node =
         Mono.MonoManagerLeaf homeModuleName monoType ->
             let
                 ( ctx1, op ) =
-                    generateManagerLeaf ctx funcName homeModuleName monoType
+                    generateManagerLeaf (recordEcoSystemManager specId homeModuleName ctx) funcName homeModuleName monoType
             in
             ( [ op ], ctx1 )
 

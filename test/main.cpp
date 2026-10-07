@@ -65,11 +65,13 @@
 #include "allocator/HPointerLayoutTest.hpp"
 #include "allocator/ConcurrencyRegisterTest.hpp"
 #include "kernel/KernelExportsTest.hpp"
+#include "platform/PlatformServicesTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
 #include "elm-bytes/ElmBytesTest.hpp"
 #include "eco-kernel/EcoKernelTest.hpp"
+#include "eco-system/EcoSystemTest.hpp"
 #include "elm-core/ElmCoreTest.hpp"
 #include "elm-json/ElmJsonTest.hpp"
 #include "elm-parser/ElmParserTest.hpp"
@@ -1094,6 +1096,13 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite kernelExportsTests("KernelExports");
     registerKernelExportsTests(kernelExportsTests);
 
+    // Runtime platform services (Scheduler quiescence hook, TimerService
+    // cancel, WaitService lanes, exit code). Fork-isolated: their singletons
+    // start worker threads (WaitService reaps every child of the process).
+    auto platformServicesTests =
+        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("PlatformServices");
+    registerPlatformServicesTests(*platformServicesTests);
+
     // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
     // / Bytes.width on a slice under F3). Fork-isolated so each abort is reported
     // as a single failed test rather than killing the binary.
@@ -1189,6 +1198,11 @@ int main(int argc, char* argv[]) {
     // --local-package eco/kernel so imports resolve to eco-kernel-cpp.
     auto ecoKernelTests = EcoKernelTest::buildEcoKernelTestSuite();
 
+    // eco/system E2E tests — compiled with --local-package eco/system; run in
+    // process-output mode (CHECK sees raw fd output, EXIT enforced, stdin
+    // /dev/null or `-- STDIN:`).
+    auto ecoSystemTests = EcoSystemTest::buildEcoSystemTestSuite();
+
     // Elm package E2E tests
     auto elmCoreTests = ElmCoreTest::buildElmCoreTestSuite();
     auto elmJsonTests = ElmJsonTest::buildElmJsonTestSuite();
@@ -1224,12 +1238,14 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(hpointerLayoutTests));
     suite.add(std::move(concurrencyRegisterTests));
     suite.add(std::move(kernelExportsTests));
+    suite.add(std::move(platformServicesTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));
     suite.add(std::move(elmBytesTests));
     suite.add(std::move(ecoKernelTests));
+    suite.add(std::move(ecoSystemTests));
     suite.add(std::move(elmCoreTests));
     suite.add(std::move(elmJsonTests));
     suite.add(std::move(elmParserTests));

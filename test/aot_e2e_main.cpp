@@ -24,6 +24,7 @@
 //   - build/runtime/src/codegen/eco-boot-native
 
 #include "CheckPatterns.hpp"
+#include "ChildStdin.hpp"
 #include "NodeBigStack.hpp"
 #include "TestHttpServer.hpp"
 
@@ -84,6 +85,7 @@ Color g_color{ static_cast<bool>(isatty(fileno(stdout))) };
 const char* ECO_BOOT_2_RUNNER = BUILD_DIR "/compiler/build-kernel/bin/eco-boot-2-runner.js";
 const char* ECO_BOOT_NATIVE   = BUILD_DIR "/runtime/src/codegen/eco-boot-native";
 const char* ECO_KERNEL_DIR    = REPO_ROOT "/eco-kernel-cpp";
+const char* ECO_SYSTEM_DIR    = REPO_ROOT "/system-kernel-cpp";
 
 bool preflight() {
     bool ok = true;
@@ -189,7 +191,7 @@ struct TestCase {
 // covered by the separate `stress-test` binary).
 const std::vector<std::string>& aot_test_packages() {
     static const std::vector<std::string> pkgs = {
-        "elm", "elm-bytes", "eco-kernel", "elm-core", "elm-http",
+        "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-http",
         "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url",
     };
     return pkgs;
@@ -273,7 +275,9 @@ std::vector<TestCase> discover_all() {
 // Subprocess spawn with combined stdout/stderr capture.
 //
 // Returns exit code, terminating signal (if any), and the captured output
-// (truncated to `cap` bytes if it overflows).
+// (truncated to `cap` bytes if it overflows). The child's stdin is /dev/null,
+// or a pipe holding `stdin_text` when given (`-- STDIN:`, plans/eco-system-
+// library.md Phase 1 step 8c), so no child reads the runner's stdin.
 // ----------------------------------------------------------------------------
 
 struct ProcResult {
@@ -286,7 +290,8 @@ struct ProcResult {
 ProcResult spawn_capture(const std::vector<std::string>& argv,
                           const std::vector<std::string>& extra_env,
                           const std::string& cwd,
-                          std::size_t cap = 64 * 1024) {
+                          std::size_t cap = 64 * 1024,
+                          const std::optional<std::string>& stdin_text = std::nullopt) {
     ProcResult r;
 
     int pipefd[2];
@@ -309,6 +314,14 @@ ProcResult spawn_capture(const std::vector<std::string>& argv,
         if (dup2(pipefd[1], STDOUT_FILENO) < 0) _exit(127);
         if (dup2(pipefd[1], STDERR_FILENO) < 0) _exit(127);
         ::close(pipefd[1]);
+
+        {
+            std::string err = eco_test::redirectChildStdin(stdin_text);
+            if (!err.empty()) {
+                ::fprintf(stderr, "stdin setup failed: %s\n", err.c_str());
+                _exit(127);
+            }
+        }
 
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
             ::fprintf(stderr, "chdir(%s) failed: %s\n",
@@ -391,6 +404,13 @@ ProcResult compile_to_mlir(const TestCase& tc, const std::string& mlir_out) {
     // concurrent compiles don't share caches.
     const std::string builddir = "aot_e2e_" + tc.stem;
 
+    // Local package per test package: eco-system tests import eco/system
+    // (and not eco/kernel), every other package gets eco/kernel as before.
+    const std::string local_package =
+        tc.package_name == "eco-system"
+            ? std::string("--local-package=eco/system=") + ECO_SYSTEM_DIR
+            : std::string("--local-package=eco/kernel=") + ECO_KERNEL_DIR;
+
     // Big stack (NodeBigStack.hpp) so the widest pins (arity 2047) compile completely.
     std::vector<std::string> argv = {
         "sh", "-c", kNodeBigStackScript, "sh",
@@ -399,7 +419,7 @@ ProcResult compile_to_mlir(const TestCase& tc, const std::string& mlir_out) {
         "--optimize",
         std::string("--builddir=") + builddir,
         "--kernel-package", "eco/compiler",
-        std::string("--local-package=eco/kernel=") + ECO_KERNEL_DIR,
+        local_package,
         std::string("--output=") + mlir_out,
         tc.elm_file,
     };
@@ -428,9 +448,10 @@ ProcResult lower_to_elf(const std::string& mlir_in, const std::string& elf_out,
     return spawn_capture(argv, {}, cwd);
 }
 
-ProcResult run_elf(const std::string& elf_path, const std::string& cwd) {
+ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
+                   const std::optional<std::string>& stdin_text) {
     std::vector<std::string> argv = { elf_path };
-    return spawn_capture(argv, {}, cwd);
+    return spawn_capture(argv, {}, cwd, 64 * 1024, stdin_text);
 }
 
 TestResult run_one(const TestCase& tc) {
@@ -475,18 +496,35 @@ TestResult run_one(const TestCase& tc) {
         }
     }
 
+    // Directives read before the run: `-- STDIN:` feeds the ELF's stdin
+    // (default /dev/null), `-- EXIT:` is checked below when present.
+    auto src = slurp(tc.elm_file);
+    if (!src) {
+        r.failure_reason = "Failed to read source file " + tc.elm_file;
+        return r;
+    }
+    std::optional<int> expected_exit;
+    try {
+        expected_exit = eco_test::extractExitDirective(*src);
+    } catch (const std::exception& e) {
+        r.failure_reason = e.what();
+        return r;
+    }
+    const std::optional<std::string> stdin_text = eco_test::extractStdinDirective(*src);
+
     // 3. Run the ELF and capture stdout/stderr.
     //
-    // Exit code is NOT used as a pass/fail oracle. Many Elm test programs
-    // return UI values (e.g. `Html.text "hello"`) from main and have no
-    // meaningful exit-status semantics — they "succeed" by producing the
-    // expected stdout. Only signal termination (SIGSEGV, SIGABRT, etc.) is
-    // an unconditional fail; everything else defers to the CHECK-pattern
-    // oracle below.
+    // Exit code is NOT used as a pass/fail oracle unless the test has an
+    // `-- EXIT: <n>` directive (plans/eco-system-library.md Phase 1 step 8c).
+    // Many Elm test programs return UI values (e.g. `Html.text "hello"`) from
+    // main and have no meaningful exit-status semantics — they "succeed" by
+    // producing the expected stdout. Only signal termination (SIGSEGV,
+    // SIGABRT, etc.) is an unconditional fail; everything else defers to the
+    // CHECK-pattern oracle below.
     std::string elf_output;
     int elf_exit = 0;
     {
-        ProcResult p = run_elf(elf_out, tc.aot_shadow);
+        ProcResult p = run_elf(elf_out, tc.aot_shadow, stdin_text);
         elf_output = p.output;
         elf_exit = p.exit_code;
         std::ofstream(out_log) << elf_output;
@@ -498,12 +536,14 @@ TestResult run_one(const TestCase& tc) {
         }
     }
 
-    // 4. Verify CHECK patterns against the captured output.
-    auto src = slurp(tc.elm_file);
-    if (!src) {
-        r.failure_reason = "Failed to read source file " + tc.elm_file;
+    if (expected_exit && elf_exit != *expected_exit) {
+        r.failure_reason = "ELF exited with status " + std::to_string(elf_exit) +
+                           ", expected " + std::to_string(*expected_exit) + " (-- EXIT:)";
+        r.failure_detail = "Captured ELF output:\n" + truncated_tail(elf_output);
         return r;
     }
+
+    // 4. Verify CHECK patterns against the captured output.
     auto patterns = eco_test::extractCheckPatterns(
         *src, "-- CHECK:", "-- CHECK-NOT:");
     if (patterns.empty()) {

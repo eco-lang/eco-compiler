@@ -225,7 +225,7 @@ eco_create_dir_link(${ECO_VERSION_GEN_DIR}                 ${BUILD_KERNEL_DIR}/v
 eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel)
 # Mirror the install layout in the build tree so the build-tree `eco` / `eco-quick`
 # binaries auto-resolve the bundled `eco/kernel` package exactly as an installed
-# binary does. Terminal.Make.resolveLocalPackage probes
+# binary does. Builder.Stuff.resolveBundledPackages probes
 # dirname(exe)/../share/eco/kernel/eco-kernel-cpp; dirname(exe) for these binaries
 # is ${BUILD_KERNEL_DIR}/bin, so the kernel must appear at
 # ${BUILD_KERNEL_DIR}/share/eco/kernel/eco-kernel-cpp. Without this, a clean
@@ -235,6 +235,10 @@ eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/s
 # install(DIRECTORY eco-kernel-cpp DESTINATION share/eco/kernel/eco-kernel-cpp) rules.
 file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR}/share/eco/kernel)
 eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp ${BUILD_KERNEL_DIR}/share/eco/kernel/eco-kernel-cpp)
+# Same for the bundled `eco/system` package: Builder.Stuff.resolveBundledPackages
+# also probes dirname(exe)/../share/eco/system/system-kernel-cpp.
+file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR}/share/eco/system)
+eco_create_dir_link(${CMAKE_SOURCE_DIR}/system-kernel-cpp ${BUILD_KERNEL_DIR}/share/eco/system/system-kernel-cpp)
 # Eco.Kernel.Http.js does `require('adm-zip')` when downloading package
 # archives. Without this link, node walks up from eco-boot.js's location
 # (.../build-kernel/bin/) and never reaches ${COMPILER_DIR}/node_modules,
@@ -744,6 +748,15 @@ set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
 # FetchContent libzip target). Adding bare `-lstdc++ -lcurl …` here under
 # ECO_STATIC would re-resolve to the .so siblings and defeat the static link.
 function(eco_apply_unified_link target)
+    # The eco/system kernels (EcoSystem_*) are not linked into eco itself; eco
+    # passes them to the AOT link of user programs (EcoBootConfig.h). Build
+    # them whenever eco is built so those paths exist.
+    foreach(mod ${ECO_SYSTEM_MODS})
+        if(TARGET EcoSystem_${mod})
+            add_dependencies(${target} EcoSystem_${mod})
+        endif()
+    endforeach()
+
     if(APPLE)
         # Darwin link line: ld64 via Apple Clang driver, no group syntax,
         # -force_load instead of --whole-archive, no libgcc/libstdc++/

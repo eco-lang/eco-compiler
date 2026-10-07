@@ -1,17 +1,20 @@
 #pragma once
 
 #include "CheckPatterns.hpp"
+#include "ChildStdin.hpp"
 #include "NodeBigStack.hpp"
 #include "IsolatedTestRunner.hpp"
 #include "TestSuite.hpp"
 #include "../runtime/src/codegen/EcoRunner.hpp"
 #include "../runtime/src/allocator/GCStats.hpp"
 #include "../runtime/src/allocator/Allocator.hpp"
+#include "../runtime/src/allocator/RuntimeExports.h"
 #include "../runtime/src/platform/PlatformRuntime.hpp"
 #include "../runtime/src/platform/PortRuntime.hpp"
 
 #include <algorithm>
 #include <array>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -82,6 +85,15 @@ struct ElmSharedTestResult {
     bool passed;
     char error[4096];
     char output[8192];
+
+    // checkProcessOutput suites only (plans/eco-system-library.md Phase 1
+    // step 8b). Written by the child when the Elm program ends, either
+    // normally (eco_main returned; code = eco_get_exit_code()) or through
+    // std::exit (atexit hook; the parent's WEXITSTATUS is authoritative).
+    // `output` then holds the program's eco-thread output (Debug.log etc.).
+    bool programExited;
+    int  programExitCode;
+    bool outputTruncated;
 
     uint64_t objects_allocated;
     uint64_t bytes_allocated;
@@ -774,6 +786,162 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
 }
 
 // ============================================================================
+// Process-output mode (checkProcessOutput suites, Phase 1 step 8b)
+// ============================================================================
+//
+// The child does not verify CHECK patterns. It records the program's
+// eco-thread output and exit into the shared block (both at a normal end and,
+// through an atexit hook, when the program calls std::exit), and the parent
+// verifies CHECK / CHECK-NOT / EXIT against shared->output + the fork-pipe
+// text (raw fd 1/2 writes) after waitpid.
+
+namespace detail {
+
+struct ProcessOutputState {
+    ElmSharedTestResult* shared = nullptr;
+    // Leaked on purpose: std::exit destroys thread_locals (the runner's own
+    // capture buffer included) before atexit handlers run.
+    std::ostringstream* stream = nullptr;
+};
+
+inline ProcessOutputState& processOutputState() {
+    static ProcessOutputState* st = new ProcessOutputState();
+    return *st;
+}
+
+inline void publishProcessOutput(int exitCode) {
+    auto& st = processOutputState();
+    if (!st.shared || st.shared->programExited) return;
+    std::string out = st.stream ? st.stream->str() : std::string();
+    const size_t cap = sizeof(st.shared->output) - 1;
+    if (out.size() > cap) {
+        st.shared->outputTruncated = true;
+        out.resize(cap);
+    }
+    std::memcpy(st.shared->output, out.data(), out.size());
+    st.shared->output[out.size()] = '\0';
+    st.shared->programExitCode = exitCode;
+    st.shared->programExited = true;
+}
+
+inline void processOutputAtExit() {
+    std::cout.flush();
+    std::cerr.flush();
+    std::fflush(nullptr);
+    publishProcessOutput(eco_get_exit_code());
+}
+
+} // namespace detail
+
+// Runs one program in the current (forked child) process for a
+// checkProcessOutput suite. Throws on harness errors (missing MLIR,
+// CHECK-MLIR mismatch, JIT failure); returns the program's exit code on a
+// normal end. A program that calls std::exit never returns here.
+inline int runElmProgramForProcessCheck(const std::string& mlirPath,
+                                        const std::string& elmPath,
+                                        ElmSharedTestResult* shared,
+                                        const std::optional<ElmE2EBase::StressFlags>& flags) {
+    std::string elmContent = readFile(elmPath);
+    auto checkMlirPatterns = extractCheckMlirPatterns(elmContent);
+
+    if (!std::filesystem::exists(mlirPath)) {
+        throw std::runtime_error("MLIR file not found: " + mlirPath +
+                                 " (should have been compiled in Phase 1)");
+    }
+    if (!checkMlirPatterns.empty()) {
+        std::string mlirText = readMlirAsText(mlirPath);
+        std::string error = verifyPatterns(mlirText, checkMlirPatterns);
+        if (!error.empty()) {
+            throw std::runtime_error("MLIR-shape check failed: " + error +
+                                     "\nMLIR file: " + mlirPath);
+        }
+    }
+
+    auto& runner = getRunner();
+    runner.reset();
+    // Capture into our own leaked stream instead of the runner's thread-local
+    // buffer, so the atexit hook can still read it.
+    eco::EcoRunner::Options opts = runner.getOptions();
+    opts.captureOutput = false;
+    runner.setOptions(opts);
+
+    auto& platform = Elm::Platform::PlatformRuntime::instance();
+    std::string flagsDirective = extractFlagsDirective(elmContent);
+    if (!flagsDirective.empty()) {
+        platform.setPendingFlagsJson(flagsDirective);
+    } else if (flags.has_value()) {
+        platform.setPendingFlagsJson(flags->toJson());
+    } else {
+        platform.clearPendingFlagsJson();
+    }
+    installPortEchoBounce();
+
+    auto& st = detail::processOutputState();
+    st.shared = shared;
+    st.stream = new std::ostringstream();
+    std::atexit(detail::processOutputAtExit);
+
+    eco_set_output_stream(st.stream);
+    auto result = runner.runFile(mlirPath);
+    eco_set_output_stream(nullptr);
+
+    if (!result.success) {
+        throw std::runtime_error("JIT execution failed: " + result.errorMessage +
+                                 "\nOutput:\n" + st.stream->str().substr(0, 500));
+    }
+    std::cout.flush();
+    std::cerr.flush();
+    std::fflush(nullptr);
+    detail::publishProcessOutput(result.exitCode);
+    return result.exitCode;
+}
+
+// Parent-side verdict for a checkProcessOutput child that exited (not
+// signalled). Returns "" on pass, else the failure message. `combinedOut`
+// receives shared->output + the fork-pipe text.
+inline std::string verifyProcessOutcome(const std::string& elmPath,
+                                        const ElmSharedTestResult* shared,
+                                        const std::string& pipeOutput,
+                                        int exitStatus,
+                                        std::string& combinedOut) {
+    combinedOut = std::string(shared->output) + pipeOutput;
+    if (shared->completed && !shared->passed) {
+        return shared->error;  // harness error in the child
+    }
+    if (!shared->programExited) {
+        return "Program did not finish (process exit code " +
+               std::to_string(exitStatus) + ")";
+    }
+    std::string elmContent = readFile(elmPath);
+    auto checkPatterns = extractCheckPatterns(elmContent);
+    std::string expectedOutput = extractExpectedOutput(elmContent);
+    if (checkPatterns.empty() && !expectedOutput.empty()) {
+        checkPatterns.push_back({expectedOutput, /*negated=*/false});
+    }
+    const int expectedExit = eco_test::extractExitDirective(elmContent).value_or(0);
+
+    std::string error;
+    if (!checkPatterns.empty()) {
+        error = verifyPatterns(combinedOut, checkPatterns);
+    }
+    if (error.empty() && exitStatus != expectedExit) {
+        error = "Exit code " + std::to_string(exitStatus) + ", expected " +
+                std::to_string(expectedExit) + " (-- EXIT:)";
+    }
+    if (error.empty()) return "";
+
+    std::ostringstream msg;
+    msg << error << "\n";
+    if (shared->outputTruncated) {
+        msg << "(eco-thread output was truncated to " << (sizeof(shared->output) - 1)
+            << " bytes)\n";
+    }
+    msg << "Actual output:\n" << combinedOut.substr(0, 500);
+    if (combinedOut.length() > 500) msg << "\n... (truncated)";
+    return msg.str();
+}
+
+// ============================================================================
 // Parallel Test Execution with GCStats
 // ============================================================================
 
@@ -781,7 +949,8 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
     const std::vector<std::string>& mlirPaths,
     const std::vector<std::string>& elmPaths,
     const std::vector<std::string>& testNames,
-    const std::optional<ElmE2EBase::StressFlags>& flags = std::nullopt)
+    const std::optional<ElmE2EBase::StressFlags>& flags = std::nullopt,
+    bool checkProcessOutput = false)
 {
     using namespace IsolatedTestRunner;
 
@@ -794,6 +963,9 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
     // Windows v1: serial in-process Elm E2E runner. No fork sandboxing —
     // a crash in any Elm test kills the suite. Tests that depend on
     // crash isolation will need a CreateProcessW + named-pipe port.
+    // checkProcessOutput is not honoured here (no fork, no exit status): the
+    // CHECK patterns are matched in-process against the eco-thread output.
+    (void)checkProcessOutput;
     ParallelTestSummary summary;
     for (size_t i = 0; i < numTests; i++) {
         std::string err;
@@ -905,6 +1077,36 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                 dup2(ctx.outputPipe[1], STDERR_FILENO);
                 close(ctx.outputPipe[1]);
 
+                // A write to a closed pipe returns EPIPE instead of killing
+                // the test child (review R1.15).
+                std::signal(SIGPIPE, SIG_IGN);
+
+                if (checkProcessOutput) {
+                    // stdin: /dev/null, or the `-- STDIN:` text (step 8c).
+                    // The program's exit status becomes the child's.
+                    int programExit = 1;
+                    try {
+                        std::string err = eco_test::redirectChildStdin(
+                            eco_test::extractStdinDirective(readFile(ctx.elmPath)));
+                        if (!err.empty()) throw std::runtime_error(err);
+                        programExit = runElmProgramForProcessCheck(
+                            ctx.mlirPath, ctx.elmPath, ctx.shared, flags);
+                        ctx.shared->passed = true;
+                        ctx.shared->completed = true;
+                    } catch (const std::exception& e) {
+                        ctx.shared->passed = false;
+                        ctx.shared->completed = true;
+                        std::strncpy(ctx.shared->error, e.what(), sizeof(ctx.shared->error) - 1);
+                        ctx.shared->error[sizeof(ctx.shared->error) - 1] = '\0';
+                    } catch (...) {
+                        ctx.shared->passed = false;
+                        ctx.shared->completed = true;
+                        std::strncpy(ctx.shared->error, "Unknown exception", sizeof(ctx.shared->error) - 1);
+                    }
+                    copyStatsToShared(ctx.shared);
+                    _exit(ctx.shared->passed ? programExit : 1);
+                }
+
                 try {
                     runElmTestFromMlir(ctx.mlirPath, ctx.elmPath, flags);
                     ctx.shared->passed = true;
@@ -960,6 +1162,24 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                     ctx.result.crashed = true;
                     ctx.result.signal = WTERMSIG(status);
                     ctx.result.error = "Test crashed: " + signalName(ctx.result.signal);
+                } else if (WIFEXITED(status) && checkProcessOutput) {
+                    ctx.result.exitCode = WEXITSTATUS(status);
+                    std::string combined;
+                    std::string error;
+                    try {
+                        error = verifyProcessOutcome(ctx.elmPath, ctx.shared,
+                                                     ctx.capturedOutput,
+                                                     ctx.result.exitCode, combined);
+                    } catch (const std::exception& e) {
+                        error = e.what();
+                    }
+                    ctx.result.passed = error.empty();
+                    ctx.result.crashed = !ctx.shared->completed && !ctx.shared->programExited;
+                    ctx.result.error = error;
+                    ctx.result.output = combined;
+                    if (ctx.shared->completed) {
+                        accumulateFromShared(ctx.shared);
+                    }
                 } else if (WIFEXITED(status)) {
                     ctx.result.exitCode = WEXITSTATUS(status);
 
@@ -1156,10 +1376,12 @@ public:
                              const std::string& suiteName,
                              const std::string& testPrefix,
                              const std::string& extraCompileFlags = "",
-                             std::optional<ElmE2EBase::StressFlags> stressFlags = std::nullopt)
+                             std::optional<ElmE2EBase::StressFlags> stressFlags = std::nullopt,
+                             bool checkProcessOutput = false)
         : name_(suiteName), testDir_(testDir), testPrefix_(testPrefix),
           extraCompileFlags_(extraCompileFlags),
-          stressFlags_(stressFlags) {
+          stressFlags_(stressFlags),
+          checkProcessOutput_(checkProcessOutput) {
         auto testPaths = discoverTests(testDir);
 
         for (const auto& path : testPaths) {
@@ -1251,7 +1473,8 @@ public:
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count());
             }
-            summary = runMlirTestsParallel(mlirPaths, elmPaths, testNames, flagsPerRun);
+            summary = runMlirTestsParallel(mlirPaths, elmPaths, testNames, flagsPerRun,
+                                           checkProcessOutput_);
         }
 
         lastPassCount_ = summary.passCount;
@@ -1273,6 +1496,9 @@ private:
     std::string testPrefix_;
     std::string extraCompileFlags_;
     std::optional<ElmE2EBase::StressFlags> stressFlags_;
+    // Phase 1 step 8b: CHECK sees eco-thread output + raw fd 1/2 output and is
+    // verified by the parent; EXIT is enforced; stdin is /dev/null or STDIN.
+    bool checkProcessOutput_ = false;
     std::vector<std::unique_ptr<ElmE2ETestEntry>> testEntries_;
 
     mutable size_t lastPassCount_ = 0;
@@ -1301,7 +1527,8 @@ inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(
     const std::string& suiteName,
     const std::string& testPrefix,
     const std::string& extraCompileFlags = "",
-    std::optional<ElmE2EBase::StressFlags> stressFlags = std::nullopt) {
+    std::optional<ElmE2EBase::StressFlags> stressFlags = std::nullopt,
+    bool checkProcessOutput = false) {
 #if defined(_WIN32)
     // Windows v1: the Elm → MLIR → JIT pipeline trips the same
     // Allocator::resolve "Pointer above heap end" assertion the codegen
@@ -1314,7 +1541,7 @@ inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(
     return std::make_unique<ElmE2EParallelTestSuite>(
         "win-skipped/" + dirName,
         suiteName + " (skipped on Windows v1)",
-        testPrefix, extraCompileFlags, stressFlags);
+        testPrefix, extraCompileFlags, stressFlags, checkProcessOutput);
 #else
     std::string testDir = findTestDir(dirName);
 
@@ -1323,7 +1550,8 @@ inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(
     }
 
     return std::make_unique<ElmE2EParallelTestSuite>(
-        testDir, suiteName, testPrefix, extraCompileFlags, stressFlags);
+        testDir, suiteName, testPrefix, extraCompileFlags, stressFlags,
+        checkProcessOutput);
 #endif
 }
 

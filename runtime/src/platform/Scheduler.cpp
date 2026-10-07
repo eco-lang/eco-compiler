@@ -486,11 +486,24 @@ void Scheduler::rawSend(HPointer procHP, HPointer msg) {
 // Binding body for killTask (Task purity, F2): the kill ATTEMPT happens when
 // the binding is stepped, once per fulfilment. The attempt itself is
 // unchanged: best-effort — call the target root Task_Binding's kill handle
-// (if any) without mutating the target Process; callers holding stale
-// HPointers are not tracked (a full solution needs runQueue-side bookkeeping
-// per logical process id, outside this scope).
+// (if any) without mutating the target Process (the target is not removed
+// from the run queue and its mailbox is not dropped).
+//
+// The target is resolved through the latest-process registry by its logical
+// id (plans/eco-system-library.md F13, Phase 2 step 4): Process values are
+// immutable snapshots, so the HPointer `spawn` returned is usually stale by
+// the time Elm kills it — its root is the pre-step task, not the parked
+// Task_Binding that carries the kill handle. Falls back to the given snapshot
+// when the id has no registry entry.
 static HPointer killBindingBody(HPointer targetProcHP) {
     void* ptr = resolveHP(targetProcHP);
+    if (ptr) {
+        u32 id = static_cast<u32>(static_cast<Process*>(ptr)->id);
+        HPointer latest = Scheduler::instance().latestProcessById(id);
+        if (void* latestPtr = resolveHP(latest)) {
+            ptr = latestPtr;
+        }
+    }
     if (ptr) {
         Process* proc = static_cast<Process*>(ptr);
         void* rootPtr = resolveHP(proc->root);
@@ -563,7 +576,27 @@ void Scheduler::runEventLoop() {
 
         std::unique_lock<std::mutex> lock(mutex_);
         if (stopRequested_.load()) break;
-        if (runQueue_.empty() && pendingAsync_.load() == 0) break;
+        if (runQueue_.empty() && pendingAsync_.load() == 0) {
+            // Quiescent. Give onEmptyEventLoop-style listeners one chance per
+            // arming (§3.7): they run with mutex_ released (they may enqueue,
+            // send to the app, drain and start async work), then the loop
+            // re-checks everything. The hook re-arms only through
+            // incrementPendingAsync, so a quiescent loop whose listeners start
+            // no async work exits on the next pass. Never in embed mode.
+            if (!embedMode_.load() && !quiescenceListeners_.empty()
+                && quiescenceArmed_.load()) {
+                quiescenceArmed_.store(false);
+                // Copy: a listener may register another listener.
+                auto listeners = quiescenceListeners_;
+                lock.unlock();
+                for (auto& [fn, ctx] : listeners) {
+                    fn(ctx);
+                }
+                lock.lock();
+                continue;
+            }
+            break;
+        }
         // About to block: the worker has real work in flight only if the run
         // queue is non-empty or pendingAsync_ exceeds the embedder's lifetime
         // baseline (a pending timer/HTTP/task). Otherwise we are idle, waiting
@@ -581,8 +614,8 @@ void Scheduler::runEventLoop() {
                 || TimerService::instance().hasReadyTokens()) {
                 return true;
             }
-            for (auto& src : asyncSources_) {
-                if (src.second()) return true;
+            for (size_t i = 0; i < asyncSources_.size(); ++i) {
+                if (asyncSources_[i].second()) return true;
             }
             return false;
         });
@@ -604,6 +637,13 @@ void Scheduler::fireActivity(bool busy) {
 
 void Scheduler::incrementPendingAsync() {
     pendingAsync_.fetch_add(1);
+    // New async work re-arms the quiescence hook (§3.7 step 2).
+    quiescenceArmed_.store(true);
+}
+
+void Scheduler::addQuiescenceListener(QuiescenceListener fn, void* ctx) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    quiescenceListeners_.emplace_back(fn, ctx);
 }
 
 void Scheduler::decrementPendingAsync() {
@@ -652,8 +692,11 @@ void Scheduler::processReadyAsync() {
 
     // Drain external async sources (HTTP, etc). Each does its own HPointer/GC
     // work on this (main) thread and is responsible for decrementPendingAsync.
-    for (auto& src : asyncSources_) {
-        src.first();
+    // By index, re-reading the size: a drain can step a binding that
+    // registers a new source (registerAsyncSource appends to this deque; a
+    // range-for would be UB). A source added here is drained in this pass.
+    for (size_t i = 0; i < asyncSources_.size(); ++i) {
+        asyncSources_[i].first();
     }
 }
 

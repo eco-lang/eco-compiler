@@ -183,7 +183,8 @@ parsePackage chars =
 
 suggestPackages : String -> Task Never (List String)
 suggestPackages given =
-    Stuff.getPackageCache Nothing
+    Stuff.resolveBundledPackages []
+        |> Task.andThen Stuff.getPackageCache
         |> Task.andThen
             (\cache ->
                 Registry.read cache
@@ -201,7 +202,8 @@ suggestPackages given =
 
 examplePackages : String -> Task Never (List String)
 examplePackages given =
-    Stuff.getPackageCache Nothing
+    Stuff.resolveBundledPackages []
+        |> Task.andThen Stuff.getPackageCache
         |> Task.andThen
             (\cache ->
                 Registry.read cache
