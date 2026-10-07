@@ -86,10 +86,6 @@ jobs:
 
       # ---- Gateway 2: the compiler's own Elm test suite. ----
       - name: elm-tests (compiler's Elm suite via mac elm-test-rs)
-        # TEMP(soft-gates): don't stop the run on test failures while CI is
-        # being repaired, so the later stages get exercised. Revert before
-        # merging to master.
-        continue-on-error: true
         # elm-test-rs 3.0.1 exits 2 ("INCOMPLETE") for the one intentional
         # Test.skip in compiler/tests/ (NoCEcoValueInUserFunctionsTest.elm)
         # even with zero real failures. Accept iff the log proves nothing
@@ -117,7 +113,6 @@ jobs:
         run: cmake --build build --target test -- -k 20
 
       - name: Run JIT E2E tests
-        continue-on-error: true  # TEMP(soft-gates): see the elm-tests step
         run: |
           # macos GH Actions default shell is `/bin/bash -e {0}` (no pipefail),
           # so a naive `test | tee` loses the test binary's exit code (it sees
