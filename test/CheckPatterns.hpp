@@ -396,8 +396,10 @@ inline std::string verifyPatterns(const std::string& output,
 // start a line so prose mentioning a directive is not picked up.
 //
 //   -- EXIT: <n>     expected process exit status. The JIT harness enforces it
-//                    (default 0) for checkProcessOutput suites; the AOT runner
-//                    enforces it only when present.
+//                    (default 0) for checkProcessOutput suites, and a test that
+//                    has it runs in process-output mode in any suite (Phase 7:
+//                    EcoSystem* stress programs that end with System.exit); the
+//                    AOT runner enforces it only when present.
 //   -- STDIN: <text> text fed to the program's stdin through a pipe. One space
 //                    after the colon is a separator; `\n`, `\t` and `\\` are
 //                    unescaped; repeated lines are concatenated in order.

@@ -1,4 +1,4 @@
-module System exposing
+effect module System where { command = MyCmd, subscription = MySub } exposing
     ( Program, ProgramConfiguration, defineProgram
     , SimpleProgram, defineSimpleProgram, endSimpleProgram
     , Environment, getEnvironmentVariables, Platform(..), getPlatform, CpuArchitecture(..), getCpuArchitecture
@@ -56,8 +56,11 @@ to set up first.
 
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
+import Eco.Kernel.System
 import Platform
+import Process
 import Stream
+import Stream.Internal
 import System.File.Path exposing (Path)
 import Task exposing (Task)
 
@@ -109,7 +112,37 @@ available as `platform` in the [`Environment`](#Environment).
 -}
 getPlatform : Task x Platform
 getPlatform =
-    Debug.todo "Implement System API"
+    kGetPlatform
+        |> Task.map platformFromString
+        |> Task.mapError never
+
+
+platformFromString : String -> Platform
+platformFromString platform =
+    case String.toLower platform of
+        "win32" ->
+            Win32
+
+        "darwin" ->
+            Darwin
+
+        "linux" ->
+            Linux
+
+        "freebsd" ->
+            FreeBSD
+
+        "openbsd" ->
+            OpenBSD
+
+        "sunos" ->
+            SunOS
+
+        "aix" ->
+            Aix
+
+        _ ->
+            UnknownPlatform platform
 
 
 {-| The CPU architecture your application is running on. Architectures that are not
@@ -134,7 +167,46 @@ available as `cpuArchitecture` in the [`Environment`](#Environment).
 -}
 getCpuArchitecture : Task x CpuArchitecture
 getCpuArchitecture =
-    Debug.todo "Implement System API"
+    kGetCpuArchitecture
+        |> Task.map archFromString
+        |> Task.mapError never
+
+
+archFromString : String -> CpuArchitecture
+archFromString arch =
+    case String.toLower arch of
+        "arm" ->
+            Arm
+
+        "arm64" ->
+            Arm64
+
+        "ia32" ->
+            IA32
+
+        "mips" ->
+            Mips
+
+        "mipsel" ->
+            Mipsel
+
+        "ppc" ->
+            PPC
+
+        "ppc64" ->
+            PPC64
+
+        "s390" ->
+            S390
+
+        "s390x" ->
+            S390x
+
+        "x64" ->
+            X64
+
+        _ ->
+            UnknownArchitecture arch
 
 
 {-| Get a `Dict` of the environment variables of the running process, mapping each variable
@@ -142,7 +214,28 @@ name to its value.
 -}
 getEnvironmentVariables : Task x (Dict String String)
 getEnvironmentVariables =
-    Debug.todo "Implement System API"
+    kGetEnvironmentVariables
+        |> Task.map Dict.fromList
+        |> Task.mapError never
+
+
+{-| Gather the [`Environment`](#Environment). The standard streams are created once per
+process; every program sees the same three streams.
+-}
+initializeEnvironment : Task Never Environment
+initializeEnvironment =
+    kEnvironment
+        |> Task.map
+            (\( ( platform, arch, applicationPath ), args, ( stdin, stdout, stderr ) ) ->
+                { platform = platformFromString platform
+                , cpuArchitecture = archFromString arch
+                , applicationPath = System.File.Path.fromPosixString applicationPath
+                , args = args
+                , stdout = Stream.Internal.Writable stdout
+                , stderr = Stream.Internal.Writable stderr
+                , stdin = Stream.Internal.Readable stdin
+                }
+            )
 
 
 
@@ -196,7 +289,56 @@ until it calls [`exit`](#exit) or [`exitWithCode`](#exitWithCode).
 -}
 defineProgram : ProgramConfiguration model msg -> Program model msg
 defineProgram config =
-    Debug.todo "Implement System API"
+    Platform.worker
+        { init = initProgram config.init
+        , update = update config.update
+        , subscriptions = subscriptions config.subscriptions
+        }
+
+
+initProgram : (Environment -> ( model, Cmd msg )) -> () -> ( Model model, Cmd (Msg model msg) )
+initProgram appInit _ =
+    ( Uninitialized
+    , initializeEnvironment
+        |> Task.map appInit
+        |> Task.perform InitDone
+    )
+
+
+update : (msg -> model -> ( model, Cmd msg )) -> Msg model msg -> Model model -> ( Model model, Cmd (Msg model msg) )
+update appUpdate msg model =
+    case model of
+        Uninitialized ->
+            case msg of
+                InitDone ( initModel, initCmd ) ->
+                    ( Initialized initModel, Cmd.map MsgReceived initCmd )
+
+                MsgReceived _ ->
+                    -- Ignore
+                    ( model, Cmd.none )
+
+        Initialized appModel ->
+            case msg of
+                InitDone _ ->
+                    -- Ignore
+                    ( model, Cmd.none )
+
+                MsgReceived appMsg ->
+                    let
+                        ( newModel, cmd ) =
+                            appUpdate appMsg appModel
+                    in
+                    ( Initialized newModel, Cmd.map MsgReceived cmd )
+
+
+subscriptions : (model -> Sub msg) -> Model model -> Sub (Msg model msg)
+subscriptions appSubs model =
+    case model of
+        Uninitialized ->
+            Sub.none
+
+        Initialized appModel ->
+            Sub.map MsgReceived (appSubs appModel)
 
 
 {-| A program that runs a single command and then finishes. It has no model of its own.
@@ -218,8 +360,12 @@ command are ignored.
 
 -}
 defineSimpleProgram : (Environment -> Cmd msg) -> SimpleProgram msg
-defineSimpleProgram init =
-    Debug.todo "Implement System API"
+defineSimpleProgram appInit =
+    defineProgram
+        { init = \env -> ( (), appInit env )
+        , update = \_ model -> ( model, Cmd.none )
+        , subscriptions = \_ -> Sub.none
+        }
 
 
 {-| When defining a program with [`defineSimpleProgram`](#defineSimpleProgram), use this
@@ -228,7 +374,7 @@ ends once the task, and any IO it started, has completed.
 -}
 endSimpleProgram : Task Never a -> Cmd msg
 endSimpleProgram task =
-    Debug.todo "Implement System API"
+    command (Execute (Task.map (\_ -> ()) task))
 
 
 
@@ -245,7 +391,7 @@ This function is equivalent to:
 -}
 exit : Cmd msg
 exit =
-    Debug.todo "Implement System API"
+    exitWithCode 0
 
 
 {-| Terminate the program immediately with the given exit code. Buffered standard output is
@@ -259,7 +405,7 @@ If all you want is to signal that your application exited due to an error, 1 is 
 -}
 exitWithCode : Int -> Cmd msg
 exitWithCode code =
-    Debug.todo "Implement System API"
+    endSimpleProgram (kExitWithCode code)
 
 
 {-| Set the exit code that the program will return once it finishes.
@@ -270,7 +416,8 @@ system are allowed to complete. The program only exits once there is no ongoing 
 -}
 setExitCode : Int -> Task x ()
 setExitCode code =
-    Debug.todo "Implement System API"
+    kSetExitCode code
+        |> Task.mapError never
 
 
 
@@ -287,7 +434,7 @@ This subscription never fires when the program is embedded in a host application
 -}
 onEmptyEventLoop : msg -> Sub msg
 onEmptyEventLoop msg =
-    Debug.todo "Implement System API"
+    subscription (OnEmptyEventLoop msg)
 
 
 {-| Receive the given message when the process receives an interrupt signal (`SIGINT`), which
@@ -296,7 +443,7 @@ longer terminates the program, so you are expected to exit yourself.
 -}
 onSignalInterrupt : msg -> Sub msg
 onSignalInterrupt msg =
-    Debug.todo "Implement System API"
+    subscription (OnSignalInterrupt msg)
 
 
 {-| Receive the given message when the process receives a terminate signal (`SIGTERM`), the
@@ -305,4 +452,235 @@ the signal no longer terminates the program, so you are expected to exit yoursel
 -}
 onSignalTerminate : msg -> Sub msg
 onSignalTerminate msg =
-    Debug.todo "Implement System API"
+    subscription (OnSignalTerminate msg)
+
+
+
+-- EFFECT MANAGER
+--
+-- The native backend runs the C++ manager registered as "System"
+-- (src/eco-system/System/SystemManager.{hpp,cpp}, plans/eco-system-library.md Appendix C.1)
+-- and ignores the Elm functions below. The JS backend runs them (plans/eco-system-library.md
+-- Phase 10, D15): Execute spawns its task; each kind of subscription keeps one listener
+-- process alive (a never-completing kernel binding, killed when the last subscription of
+-- that kind goes away) that notifies the manager through `Platform.sendToSelf`. The
+-- constructor layouts of MyCmd and MySub are mirrored by SystemManager.hpp: keep them in
+-- sync.
+
+
+type MyCmd msg
+    = Execute (Task Never ())
+
+
+type MySub msg
+    = OnEmptyEventLoop msg
+    | OnSignalInterrupt msg
+    | OnSignalTerminate msg
+
+
+cmdMap : (a -> b) -> MyCmd a -> MyCmd b
+cmdMap _ (Execute task) =
+    Execute task
+
+
+subMap : (a -> b) -> MySub a -> MySub b
+subMap f sub =
+    case sub of
+        OnEmptyEventLoop msg ->
+            OnEmptyEventLoop (f msg)
+
+        OnSignalInterrupt msg ->
+            OnSignalInterrupt (f msg)
+
+        OnSignalTerminate msg ->
+            OnSignalTerminate (f msg)
+
+
+type alias State msg =
+    { emptyEventLoop : Listeners msg
+    , signalInterrupt : Listeners msg
+    , signalTerminate : Listeners msg
+    }
+
+
+{-| The msgs of one kind of subscription, in subscription order, and the process running
+its listener while there are any.
+-}
+type alias Listeners msg =
+    { msgs : List msg
+    , listener : Maybe Process.Id
+    }
+
+
+type Event
+    = NotifyEmptyEventLoop
+    | NotifySignalInterrupt
+    | NotifySignalTerminate
+
+
+init : Task Never (State msg)
+init =
+    Task.succeed
+        { emptyEventLoop = noListeners
+        , signalInterrupt = noListeners
+        , signalTerminate = noListeners
+        }
+
+
+noListeners : Listeners msg
+noListeners =
+    { msgs = [], listener = Nothing }
+
+
+onEffects : Platform.Router msg Event -> List (MyCmd msg) -> List (MySub msg) -> State msg -> Task Never (State msg)
+onEffects router cmds subs state =
+    let
+        -- Effects arrive in reverse order of declaration.
+        ordered =
+            List.reverse subs
+
+        emptyMsgs =
+            List.filterMap
+                (\sub ->
+                    case sub of
+                        OnEmptyEventLoop msg ->
+                            Just msg
+
+                        _ ->
+                            Nothing
+                )
+                ordered
+
+        interruptMsgs =
+            List.filterMap
+                (\sub ->
+                    case sub of
+                        OnSignalInterrupt msg ->
+                            Just msg
+
+                        _ ->
+                            Nothing
+                )
+                ordered
+
+        terminateMsgs =
+            List.filterMap
+                (\sub ->
+                    case sub of
+                        OnSignalTerminate msg ->
+                            Just msg
+
+                        _ ->
+                            Nothing
+                )
+                ordered
+    in
+    List.reverse cmds
+        |> List.map (\(Execute task) -> Process.spawn task)
+        |> Task.sequence
+        |> Task.andThen
+            (\_ ->
+                Task.map3 State
+                    (updateListeners emptyMsgs
+                        state.emptyEventLoop
+                        (kAttachEmptyEventLoopListener (Platform.sendToSelf router NotifyEmptyEventLoop))
+                    )
+                    (updateListeners interruptMsgs
+                        state.signalInterrupt
+                        (kAttachSignalListener "SIGINT" (Platform.sendToSelf router NotifySignalInterrupt))
+                    )
+                    (updateListeners terminateMsgs
+                        state.signalTerminate
+                        (kAttachSignalListener "SIGTERM" (Platform.sendToSelf router NotifySignalTerminate))
+                    )
+            )
+
+
+{-| Starts the listener when the first subscription of its kind appears, and kills it when
+the last one goes away.
+-}
+updateListeners : List msg -> Listeners msg -> Task Never () -> Task Never (Listeners msg)
+updateListeners msgs current attach =
+    case ( msgs, current.listener ) of
+        ( [], Just pid ) ->
+            Process.kill pid
+                |> Task.map (\_ -> noListeners)
+
+        ( [], Nothing ) ->
+            Task.succeed noListeners
+
+        ( _, Just pid ) ->
+            Task.succeed { msgs = msgs, listener = Just pid }
+
+        ( _, Nothing ) ->
+            Process.spawn attach
+                |> Task.map (\pid -> { msgs = msgs, listener = Just pid })
+
+
+onSelfMsg : Platform.Router msg Event -> Event -> State msg -> Task Never (State msg)
+onSelfMsg router event state =
+    let
+        listeners =
+            case event of
+                NotifyEmptyEventLoop ->
+                    state.emptyEventLoop
+
+                NotifySignalInterrupt ->
+                    state.signalInterrupt
+
+                NotifySignalTerminate ->
+                    state.signalTerminate
+    in
+    listeners.msgs
+        |> List.map (Platform.sendToApp router)
+        |> Task.sequence
+        |> Task.map (\_ -> state)
+
+
+
+-- KERNELS
+-- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.1).
+
+
+kEnvironment : Task Never ( ( String, String, String ), List String, ( Int, Int, Int ) )
+kEnvironment =
+    Eco.Kernel.System.environment
+
+
+kGetPlatform : Task Never String
+kGetPlatform =
+    Eco.Kernel.System.getPlatform
+
+
+kGetCpuArchitecture : Task Never String
+kGetCpuArchitecture =
+    Eco.Kernel.System.getCpuArchitecture
+
+
+kGetEnvironmentVariables : Task Never (List ( String, String ))
+kGetEnvironmentVariables =
+    Eco.Kernel.System.getEnvironmentVariables
+
+
+kExitWithCode : Int -> Task Never ()
+kExitWithCode =
+    Eco.Kernel.System.exitWithCode
+
+
+kSetExitCode : Int -> Task Never ()
+kSetExitCode =
+    Eco.Kernel.System.setExitCode
+
+
+-- JS-only kernels, used by the effect-manager bodies above (the native backend drops those
+-- bodies, so these have no C++ counterpart).
+
+
+kAttachEmptyEventLoopListener : Task Never () -> Task Never ()
+kAttachEmptyEventLoopListener =
+    Eco.Kernel.System.attachEmptyEventLoopListener
+
+
+kAttachSignalListener : String -> Task Never () -> Task Never ()
+kAttachSignalListener =
+    Eco.Kernel.System.attachSignalListener

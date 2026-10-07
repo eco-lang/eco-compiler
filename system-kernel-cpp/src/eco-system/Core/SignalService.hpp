@@ -7,16 +7,22 @@
 //     byte, to the non-blocking write end of an O_CLOEXEC pipe;
 //   * one detached thread reads the pipe and queues `signo` events, then
 //     wakes the scheduler loop;
-//   * the main-thread signal drain hands each event to the callback
-//     registered with setDispatch (the System / Terminal managers), which
-//     delivers it with sendToApp + drain() per message (G12).
+//   * the main-thread signal drain hands each event to every LISTENER of
+//     that signal (per-signal, multi-subscriber dispatch, Phase 5): the
+//     System manager (SIGINT, SIGTERM), the Terminal manager (SIGWINCH) and
+//     the Terminal kernel's internal raw-mode restore (SIGINT, SIGTERM).
+//     A listener that sends to the app does sendToApp + drain() per message
+//     (G12).
 //
 // Handlers are installed only while some subscription to that signal
 // exists: subscribe/unsubscribe keep a reference count per signal, the
 // first subscribe installs the handler (remembering the previous
-// disposition) and the last unsubscribe restores it. There is no chaining
-// to the previous handler: like Node, a listened-to signal no longer has
-// its default effect.
+// disposition) and the last unsubscribe restores it. addListener /
+// removeListener subscribe / unsubscribe once per listener. There is no
+// automatic chaining to the previous handler: like Node, a listened-to
+// signal no longer has its default effect. A listener may chain explicitly
+// with chainToPrevious (the raw-mode restore does, when it is the only
+// listener).
 //
 // Disabled in embed mode (Scheduler::embedMode(), §3.7): subscribe is a
 // no-op that returns false, so the host keeps its signal dispositions.
@@ -34,8 +40,10 @@
 #include "eco-system/Core/Core.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <mutex>
+#include <vector>
 
 namespace Eco::System {
 
@@ -57,10 +65,35 @@ public:
     bool tryPop(int& signo);
     bool hasReady() const { return readyCount_.load(std::memory_order_acquire) > 0; }
 
-    // Main thread. The callback the drain hands each signal to.
-    using DispatchFn = void (*)(int signo);
-    void setDispatch(DispatchFn fn) { dispatch_ = fn; }
-    DispatchFn dispatch() const { return dispatch_; }
+    // --- Listeners (main thread) -------------------------------------------
+    //
+    // A listener is called by the signal drain, on the main thread, for every
+    // delivered `signo` it listens to; several listeners of one signal are
+    // called in registration order. A listener may add or remove listeners
+    // (including itself); one removed before its turn is not called.
+    using Listener = void (*)(int signo, void* ctx);
+    using ListenerId = uint64_t;
+
+    // Subscribes `signo` once and records the listener. Returns its id, or 0
+    // (nothing recorded) when subscribe() fails: embed mode, Windows, an
+    // uncatchable or out-of-range signal, or setup failure.
+    ListenerId addListener(int signo, Listener fn, void* ctx);
+    // Removes the listener and unsubscribes its signal once. Unknown ids
+    // (including 0) are ignored.
+    void removeListener(ListenerId id);
+    // Number of listeners currently registered for `signo`.
+    int listenerCount(int signo) const;
+
+    // Calls every listener of `signo` (what the drain does per event).
+    void dispatch(int signo);
+
+    // Gives `signo` the effect it would have had without our handler: the
+    // previous disposition (saved by the first subscribe) is reinstated, the
+    // signal is raised on this thread, and our handler is put back if the
+    // process survives (SIG_IGN, or a previous handler that returns). For
+    // SIGINT / SIGTERM with the default disposition this terminates the
+    // process. A no-op when `signo` is not subscribed (or on Windows).
+    void chainToPrevious(int signo);
 
     // Signal-reader thread only.
     void post(int signo);
@@ -81,12 +114,21 @@ private:
     std::mutex readyMutex_;
     std::deque<int> ready_;
     std::atomic<size_t> readyCount_{0};
-    DispatchFn dispatch_ = nullptr;
+
+    struct ListenerRec {
+        ListenerId id;
+        int signo;
+        Listener fn;
+        void* ctx;
+    };
+    std::vector<ListenerRec> listeners_;   // main thread only
+    ListenerId nextListenerId_ = 1;
 };
 
 // The signal drain (main thread). Runs from the eco/system async source;
-// tests may call it directly. Does not call Scheduler::drain(): the
-// dispatch callback follows G12 for each message it sends.
+// tests may call it directly. Pops every queued signal and dispatches it to
+// its listeners. Does not call Scheduler::drain(): each listener follows G12
+// for each message it sends.
 void signalDrain();
 
 } // namespace Eco::System

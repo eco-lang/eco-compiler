@@ -162,14 +162,71 @@ void SignalService::unsubscribe(int signo) {
 
 #endif // _WIN32
 
+// ---------------------------------------------------------------------------
+// Listeners (main thread)
+// ---------------------------------------------------------------------------
+
+SignalService::ListenerId SignalService::addListener(int signo, Listener fn, void* ctx) {
+    if (!fn) return 0;
+    if (!subscribe(signo)) return 0;
+    ListenerId id = nextListenerId_++;
+    listeners_.push_back(ListenerRec{id, signo, fn, ctx});
+    return id;
+}
+
+void SignalService::removeListener(ListenerId id) {
+    if (id == 0) return;
+    for (auto it = listeners_.begin(); it != listeners_.end(); ++it) {
+        if (it->id == id) {
+            int signo = it->signo;
+            listeners_.erase(it);
+            unsubscribe(signo);
+            return;
+        }
+    }
+}
+
+int SignalService::listenerCount(int signo) const {
+    int n = 0;
+    for (const auto& l : listeners_)
+        if (l.signo == signo) ++n;
+    return n;
+}
+
+void SignalService::dispatch(int signo) {
+    // Snapshot: a listener may add or remove listeners (G11-style re-entry).
+    std::vector<ListenerRec> snap;
+    for (const auto& l : listeners_)
+        if (l.signo == signo) snap.push_back(l);
+    for (const auto& l : snap) {
+        bool live = false;
+        for (const auto& cur : listeners_) {
+            if (cur.id == l.id) { live = true; break; }
+        }
+        if (live) l.fn(signo, l.ctx);
+    }
+}
+
+#ifdef _WIN32
+void SignalService::chainToPrevious(int) {}
+#else
+void SignalService::chainToPrevious(int signo) {
+    if (signo <= 0 || signo >= kMaxSig || counts_[signo] == 0) return;
+    auto* old = static_cast<struct sigaction*>(saved_[signo]);
+    if (!old) return;
+    struct sigaction ours {};
+    if (::sigaction(signo, old, &ours) != 0) return;
+    ::raise(signo);   // synchronous on this thread; default action may end the process
+    ::sigaction(signo, &ours, nullptr);   // survived: listen again
+}
+#endif
+
 void signalDrain() {
     auto& svc = SignalService::instance();
     int signo;
     while (svc.tryPop(signo)) {
-        SignalService::DispatchFn fn = svc.dispatch();
-        if (!fn) continue;
         try {
-            fn(signo);
+            svc.dispatch(signo);
         } catch (const std::exception& e) {
             ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
         } catch (...) {

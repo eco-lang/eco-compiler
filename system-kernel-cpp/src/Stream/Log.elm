@@ -27,14 +27,16 @@ failed; any error is ignored.
 -}
 bytes : Stream.Writable Bytes -> Bytes -> Task x ()
 bytes stream data =
-    Debug.todo "Implement System API"
+    Stream.write data stream
+        |> ignoreErrors
 
 
 {-| Send a `String`, encoded as UTF-8, to a writable byte stream. Any potential error is ignored.
 -}
 string : Stream.Writable Bytes -> String -> Task x ()
 string stream data =
-    Debug.todo "Implement System API"
+    Stream.writeStringAsBytes data stream
+        |> ignoreErrors
 
 
 {-| Send a `String`, encoded as UTF-8, to a writable byte stream, followed by a newline character.
@@ -45,4 +47,12 @@ Any potential error is ignored.
 -}
 line : Stream.Writable Bytes -> String -> Task x ()
 line stream data =
-    Debug.todo "Implement System API"
+    Stream.writeLineAsBytes data stream
+        |> ignoreErrors
+
+
+ignoreErrors : Task Stream.Error a -> Task x ()
+ignoreErrors task =
+    task
+        |> Task.map (\_ -> ())
+        |> Task.onError (\_ -> Task.succeed ())

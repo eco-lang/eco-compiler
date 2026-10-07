@@ -25,8 +25,9 @@
 
 #include "CheckPatterns.hpp"
 #include "ChildStdin.hpp"
+#include "TestPort.hpp"
 #include "NodeBigStack.hpp"
-#include "TestHttpServer.hpp"
+#include "TestServerConfig.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -106,13 +107,14 @@ bool preflight() {
 }
 
 // ----------------------------------------------------------------------------
-// In-process HTTP server for elm-http + eco-kernel/HttpGetArchive tests.
+// In-process HTTP server for the elm-http, eco-kernel/HttpGetArchive and
+// eco-system Http.Stream tests.
 //
 // Mirrors the JIT runner's `ElmHttpTest::prepareServer` /
 // `EcoKernelTest::prepareServer`: start the singleton TestHttpServer in this
 // parent process and write a generated `TestServerConfig.elm` for each HTTP
-// test package, carrying the server's ephemeral baseUrl (and httpsBaseUrl for
-// elm-http). Forked test children inherit the parent's listening sockets and
+// test package, carrying the server's ephemeral baseUrl and httpsBaseUrl.
+// Forked test children inherit the parent's listening sockets and
 // reach the server at 127.0.0.1:<port>.
 //
 // Without this step, every HTTP test in Gate B would surface as
@@ -123,53 +125,13 @@ bool preflight() {
 // current port.
 // ----------------------------------------------------------------------------
 void prepare_http_server() {
-    auto& server = ElmHttpTestServer::TestHttpServer::instance();
-    int port      = server.port();
-    int httpsPort = server.httpsPort();
-
-    // Point libcurl in the forked test children at the server's throwaway CA
-    // so HTTPS requests verify the peer (HttpsGetTest). Set before any fork.
-    if (!server.certPath().empty()) {
-        setenv("CURL_CA_BUNDLE", server.certPath().c_str(), 1);
-    }
-
-    // elm-http imports `TestServerConfig.{baseUrl,httpsBaseUrl}`.
-    {
-        const std::string path =
-            std::string(REPO_ROOT) + "/test/elm-http/src/TestServerConfig.elm";
-        std::ofstream out(path, std::ios::trunc);
-        out << "module TestServerConfig exposing (baseUrl, httpsBaseUrl)\n\n\n"
-            << "baseUrl : String\n"
-            << "baseUrl =\n"
-            << "    \"http://127.0.0.1:" << port << "\"\n\n\n"
-            << "httpsBaseUrl : String\n"
-            << "httpsBaseUrl =\n"
-            << "    \"https://127.0.0.1:" << httpsPort << "\"\n";
-    }
-
-    // eco-kernel/HttpGetArchiveTest imports `TestServerConfig.baseUrl` only.
-    {
-        const std::string path =
-            std::string(REPO_ROOT) + "/test/eco-kernel/src/TestServerConfig.elm";
-        std::ofstream out(path, std::ios::trunc);
-        out << "module TestServerConfig exposing (baseUrl)\n\n\n"
-            << "baseUrl : String\n"
-            << "baseUrl =\n"
-            << "    \"http://127.0.0.1:" << port << "\"\n";
-    }
-
-    // Bump every test-source mtime so any per-test cache miss-detection that
-    // compares source mtime against cached artifact mtime fires. Belt-and-
-    // braces alongside the per-test eco-stuff wipe in main().
-    std::error_code ec;
-    auto now = std::filesystem::file_time_type::clock::now();
-    for (const char* pkg : {"elm-http", "eco-kernel"}) {
-        const std::string srcDir = std::string(REPO_ROOT) + "/test/" + pkg + "/src";
-        for (auto& e : fs::directory_iterator(srcDir, ec)) {
-            if (e.path().extension() == ".elm") {
-                fs::last_write_time(e.path(), now, ec);
-            }
-        }
+    // elm-http, eco-kernel (HttpGetArchiveTest) and eco-system (Http.Stream)
+    // import `TestServerConfig`; one shared generator (TestServerConfig.hpp)
+    // writes it and bumps every test-source mtime so any per-test cache
+    // miss-detection that compares source mtime against cached artifact mtime
+    // fires (belt-and-braces alongside the per-test eco-stuff wipe in main()).
+    for (const char* pkg : {"elm-http", "eco-kernel", "eco-system"}) {
+        TestServerConfig::prepare(std::string(REPO_ROOT) + "/test/" + pkg + "/src");
     }
 }
 
@@ -451,7 +413,13 @@ ProcResult lower_to_elf(const std::string& mlir_in, const std::string& elf_out,
 ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
                    const std::optional<std::string>& stdin_text) {
     std::vector<std::string> argv = { elf_path };
-    return spawn_capture(argv, {}, cwd, 64 * 1024, stdin_text);
+    // A free port per test, as ECO_TEST_PORT (TestPort.hpp,
+    // plans/eco-system-library.md Phase 7 step 7.4).
+    std::vector<std::string> env;
+    if (int port = eco_test::pickFreeTcpPort(); port > 0) {
+        env.push_back(eco_test::testPortEnvEntry(port));
+    }
+    return spawn_capture(argv, env, cwd, 64 * 1024, stdin_text);
 }
 
 TestResult run_one(const TestCase& tc) {

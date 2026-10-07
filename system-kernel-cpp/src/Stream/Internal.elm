@@ -22,5 +22,5 @@ type Writable value
 
 {-| A transformation, identified by its stream-table id.
 -}
-type Transformation read write
+type Transformation input output
     = Transformation Int

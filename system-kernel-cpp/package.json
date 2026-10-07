@@ -3,8 +3,8 @@
   "private": true,
   "license": "BSD-3-Clause",
   "scripts": {
-    "docs": "elm-doc-preview",
-    "docs:check": "elm-doc-preview --output docs.json"
+    "docs": "node scripts/make-docs-package.js && cd .docs-package && elm-doc-preview",
+    "docs:check": "node scripts/make-docs-package.js && cd .docs-package && elm-doc-preview --output docs.json && cp docs.json ../docs.json"
   },
   "devDependencies": {
     "elm-doc-preview": "^6.0.1"

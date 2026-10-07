@@ -1,10 +1,8 @@
 # Plan: `eco/system` — the public system library for Eco
 
-Status: **v3, implementation-ready** (2026-10-07). Amended for D8 (no HTTP client) and D9
-(`Http.Stream`), with the readiness review R3 applied. v1 was drafted, reviewed adversarially by two
-independent reviewers (runtime/compiler; Elm/API/streams), cross-checked against the GC patterns of
-`eco-kernel-cpp/` and `elm-kernel-cpp/`, and rewritten. The review findings and their resolutions are in
-§9.
+Status: **Phases 0–10 implemented** (2026-10-07), including the JS target (D15): all 80
+eco-system tests pass on both backends. The design history was: v1 draft → two adversarial reviews → v2 → readiness review R3 → v3 →
+user decisions D8–D14 during implementation. §10 has the progress log and every deviation.
 
 Already in tree (scaffold): `system-kernel-cpp/` (package `eco/system`, placeholder `System.noop`, CMake
 target `EcoSystem_System`), `ECO_SYSTEM_MODS` in `runtime/src/codegen/CMakeLists.txt`,
@@ -37,6 +35,9 @@ How to read this plan:
 | D10 | `Environment.args` is the **full C argv**: `args[0]` is the program as invoked. This differs from gren-node, whose `process.argv` starts with the node binary and the script path (§3.7). |
 | D11 | Effect managers stay keyed by **bare module name** in `PlatformRuntime` (`"System"`, `"System.File"`, …), not by package. Only kernel-author packages can declare effect modules, so a collision would itself signal that a module should be redesigned rather than namespaced. The compiler still uses the package (`eco/system`) to decide which registration calls to emit. |
 | D12 | **Third-party tooling always runs the original Elm 0.19.1** (`elm` assumed installed on `PATH`), because that is what all third-party tools work with. `pnpm run docs` is plain `elm-doc-preview`, with no compiler shim; the Phase 1 step 1.7 shim was deleted. **Open consequence:** from Phase 3, stock elm rejects kernel imports and `effect module` outside `@elm`, so the docs can no longer be built from the package as it stands. Phase 3 must choose how its docs are produced (see §7). |
+| D13 | (Resolves Q5.) **Docs come from a generated stock-elm copy.** `pnpm run docs` and `docs:check` first run `scripts/make-docs-package.js`, which copies the package into `.docs-package/` (git-ignored) with:<ul><li>`effect module X where {…} exposing` rewritten to `module X exposing`;</li><li>`import Eco.Kernel.*` lines dropped;</li><li>every `Eco.Kernel.<Home>.<fn>` reference replaced by `Debug.todo "kernel"`;</li><li>`command`/`subscription` uses replaced by `(\_ -> Debug.todo "effect")`.</li></ul>`elm-doc-preview` then runs there with stock elm (D12). The exposed API and its docs are unchanged by the rewrite. Moving the plumbing into unexposed modules cannot help, because `elm make --docs` compiles every reachable module. |
+| D14 | **`Transformation input output`** takes input on its writable side and gives output on its readable side, so `readable : Transformation input output -> Readable output` and `writable : Transformation input output -> Writable input`. gren-lang/core's annotations (`readable : Transformation read write -> Readable read`) contradicted `pipeThrough`, `customTransformation` and the codecs, which made `readable textEncoder` claim to yield `String`. The parameter names were corrected in `Stream` and `Stream.Internal` (found in Phase 6). |
+| D15 | (Phase 10.) **The JS target shares the Elm wrappers with the native one.**<ul><li>The JS kernels (`src/Eco/Kernel/*.js`) implement exactly the Appendix B signatures and neutral value shapes (tuples, Lists, `Maybe`, Int handle ids, `FErr`/`SErr`/`RunErr` tuples; Bytes are DataViews), so every Elm wrapper and decoder is the same on both backends.</li><li>Kernel functions used only by Elm effect-manager bodies (e.g. listener attachers) are allowed in JS. The native backend drops those bodies (F10), so they never need a C++ symbol; this is checked by compiling the native suite after each change.</li><li>The effect modules get real Elm `init`/`onEffects`/`onSelfMsg`/`cmdMap`/`subMap` bodies for JS (pattern: gren-node's `onEffects`, a never-completing listener binding per subscription kind, spawned with `Process.spawn`, notifying through `Platform.sendToSelf`, killed when the last subscription goes away). The `MyCmd`/`MySub` declarations stay exactly as in Appendix C, which is normative for the C++ managers.</li><li>Stream semantics in JS are a **port of the C++ StreamTable state machine** (§3.5 and the Phase 3/6 deviations in §10), not a wrapper over WHATWG streams, so the same eco-system tests pass on both backends. Channel kinds wrap Node streams behind a small JS **ByteChannel** interface (`requestRead`/`requestWrite`/`close`/`shutdown`), documented at the top of `Stream.js` and exposed as `_Stream_createChannelSource`/`_Stream_createChannelSink` with Node `Readable`/`Writable` adapters; files, child pipes and HTTP bodies reuse it.</li><li>Codecs: text via `TextDecoder({fatal: false, ignoreBOM: false})` with `stream: true` and `TextEncoder` with a manual high-surrogate carry; compression via `node:zlib`, driven synchronously per chunk (Z_NO_FLUSH, Z_FINISH on close) through the zlib object's native handle.</li><li>The JS E2E runner (`test/scripts/run-js-e2e.js`, target `run-js-e2e`, part of `full`) runs the eco-system tests with the native harness's directives; `-- SKIP-JS: <reason>` skips a test on JS and is used only for genuinely native-only behaviour.</li></ul> |
 
 Other deliberate API changes relative to gren (all reflected in Appendix A):
 - `SimpleProgram msg = Program () msg`.
@@ -55,7 +56,7 @@ Other deliberate API changes relative to gren (all reflected in Appendix A):
 
 **Out of scope, as follow-ups** (§8 lists the risks):
 - **The JS target.** Phase 1 ships JS kernel stubs that throw, because the compiler needs a `.js` file
-  per kernel home (F14). Porting gren-node's JS kernels properly is Phase 10 and optional.
+  per kernel home (F14). Porting gren-node's JS kernels properly is Phase 10 (done).
 - **Windows.** The libraries must compile there (CI builds Windows). The kernels that are portable work:
   platform, arch, environment, args, cwd/home/tmp/devNull and in-memory streams. Every fallible task
   fails with error code `"ENOTSUP"`. Every infallible operation (`Task Never`, `Cmd`, `Sub`) crashes
@@ -612,9 +613,9 @@ incomplete sequences across chunks, and emits nothing for empty output. `textEnc
 ### 3.6 Effect managers
 
 These are C++ managers (F10), one per effect module, keyed by module name (§3.1). The layouts are in
-Appendix C. Each Elm effect module still declares `effect module … where { … }` with **total, trivial**
-Elm `init`/`onEffects`/`onSelfMsg`/`cmdMap`/`subMap`; the JS backend would use them, and the native
-backend ignores them.
+Appendix C. Each Elm effect module still declares `effect module … where { … }` with total Elm
+`init`/`onEffects`/`onSelfMsg`/`cmdMap`/`subMap`; the native backend ignores them, and the JS backend
+runs them (D15: real bodies from Phase 10 on; `System`'s are done).
 
 **Registration (Phase 1 step 6).**
 - In the `MonoManagerLeaf` branch of `Generate/MLIR/Functions.elm:515`, look up the leaf's package with
@@ -927,8 +928,12 @@ In `Generate/MLIR/Functions.elm`:
 - Add a compiler unit test: a module graph with an eco/system manager leaf emits exactly one
   registration call.
 
-1.7. **Docs tooling** (revised by D12). `pnpm run docs` / `docs:check` run plain `elm-doc-preview`
-with the `elm` on `PATH`, which is assumed to be the original Elm 0.19.1. There is no compiler shim.
+1.7. **Docs tooling** (revised by D12 and D13). `pnpm run docs` / `docs:check` run
+`node scripts/make-docs-package.js`, then `elm-doc-preview` inside the generated `.docs-package/` (git-
+and bundle-ignored), using the `elm` on `PATH`, which is assumed to be the original Elm 0.19.1. There
+is no compiler shim. `docs:check` copies the result to `docs.json`, which the bundle ships.
+`elm-doc-preview`'s live reload watches the generated copy, so after editing `src/` you rerun
+`pnpm run docs`.
 
 1.8. **Test harness.**
 
@@ -1457,6 +1462,21 @@ not run.
 Port the gren-node and gren-core JS kernels into `src/Eco/Kernel/*.js`. This means rewriting Array to
 List, using Elm record/constructor conventions (`__$field`, `__Module_Ctor` imports), writing real Elm
 effect-manager bodies (gren's `onEffects` code works after Array→List), and adding a JS E2E run.
+The rules are decision D15.
+
+10.1. **Foundation (done, §10):** the JS E2E runner and its HTTP test server, `System.js`,
+`Stream.js` (the StreamTable port and the JS byte-channel API), and the `System` manager bodies.
+
+10.2. **Remaining homes (done, §10)**, each on top of the byte-channel API in `Stream.js`:
+- `FileSystem.js` (B.3, the `System.File` manager C.2): `node:fs`; file streams are channel pairs
+  over `fs.createReadStream`/`createWriteStream` (or fd-based channels).
+- `ChildProcess.js` and `Terminal.js` (B.4, B.5, managers C.3, C.4): `node:child_process`; External
+  pipes are channel pairs over the child's stdio streams.
+- `HttpServer.js` (B.6, manager C.5): `node:http`.
+- `HttpStream.js` (B.7): `node:http`/`https`; the response body is a channel source, a stream request
+  body is piped into a channel sink with `_Stream_pipeStreams`.
+Each kernel that starts external IO calls `_Stream_noteActivity()` (`onEmptyEventLoop` re-arming,
+§3.7). Tests that cannot pass on JS get `-- SKIP-JS: <reason>`.
 
 ---
 
@@ -1479,12 +1499,7 @@ is optional.
 
 ## 7. Open questions for the user
 
-- **Q5 (from D12):** from Phase 3, how are eco/system's docs built, given that stock elm rejects kernel
-  imports and effect modules outside `@elm`? Options include a docs-only copy of the package with the
-  kernel imports stubbed out, generated before running `elm-doc-preview`, or keeping kernel calls and
-  effect declarations in modules that are not exposed.
-
-Q1 (LICENSE wording) is resolved by D7 and Q3 (`args`) by D10. Q2 (`Http.Client` naming) and Q4
+None. Q1 (LICENSE wording) is resolved by D7, Q3 (`args`) by D10 and Q5 (docs from Phase 3) by D13. Q2 (`Http.Client` naming) and Q4
 (where `Method` lives) are moot since D8: `Method` stays in `Http.Server`.
 
 ## 8. Risks
@@ -1665,6 +1680,299 @@ tuples. The one cost is no `tracker`/`Http.cancel` support; cancel a `task` with
       elm-doc-preview parses stderr as JSON.
   - Deferred to Phase 3, because they need eco/system's stdio APIs: harness self-tests for a
     non-zero `EXIT`, `STDIN` echo, and `CHECK` on raw fd output.
+- 2026-10-07 — **D13 docs generator** (`scripts/make-docs-package.js`) is in place. `pnpm run
+  docs:check` builds the docs with stock elm from `.docs-package/`, and an effect module with a kernel
+  import is verified to document correctly.
+- 2026-10-07 — **Phase 4 step 4.1 done** (`System.File.Path`, pure Elm).
+  - Tests: 591 elm-test-rs tests pass with stock elm (`cmake --build build --target
+    eco-system-elm-tests`; `elm-tests` depends on it). The golden tables come from
+    `scripts/gen-path-golden.js`, which ports FilePath.js onto node:path.
+  - **Test layout:** the tests live in `system-kernel-cpp/tests/tests/`, the standard elm-test-rs
+    layout; a `"."` source directory confuses stock elm.
+  - **`join`** keeps the first path's root, as gren does. Appendix E.2's "fold from `empty`" wording
+    would drop it; the golden tables are authoritative.
+  - **The posix `./` quirk** is applied to the posix flavour only.
+  - **Windows normalisation** follows node 22, including its reserved-name and drive-ambiguity rules.
+- 2026-10-07 — **Phase 3 gates green.**
+  - `full`: 2166/2185. The 19 failures were all HTTP tests, caused by running a second test binary at
+    the same time (`TestServerConfig.elm` is shared); rerun on their own, elm-http is 22/22 and
+    `HttpGetArchiveTest` 1/1.
+  - The validate tree with `ECO_NURSERY_POISON=1` and `heap-config-gc-pressure.json`: eco-system 26/26.
+  - Stress under validate (`-n 10`, with and without gc-pressure): 3/3.
+  - The root-bound and kernel-home checks pass.
+  - **Phase 3 deviations:**
+    - `argv` is read from the OS.
+    - Pairs with an Errored side are kept.
+    - Channel sources never prefetch.
+    - Stream ops have no kill handles yet.
+    - SignalService has a single dispatch callback, owned by the System manager; Phase 5 needs it to
+      dispatch to several subscribers.
+- 2026-10-07 — **Phase 9, early parts done.**
+  - Step 9.1: the `eco-system-docs` target is in `ALL` and defined in `compiler/CMakeLists.txt`. It runs
+    the D13 generator, then `ELM_EXECUTABLE` (stock elm 0.19.1) `make --docs`, writing
+    `system-kernel-cpp/docs.json`, which the bundle install rules ship.
+  - Step 9.4: rows `SYS_001`–`SYS_003` were added to `design_docs/invariants.csv` (status
+    `documented`).
+- 2026-10-07 — **Phase 4 implemented** (System.File, FileHandle, file streams, watch).
+  - Results: eco-system 37/37 in its copy; watch tests pass in both inotify and polling mode
+    (`ECO_SYSTEM_WATCH_POLL=1`); File stress 2/2, also under gc-pressure.
+  - Core change: `FdChannelOptions { readLimit, truncateOnClose }` is an optional second argument to
+    the FdChannel constructor; it implements `Between` and `ReplaceFrom`.
+  - Deviations:
+    - The inotify reader needs no wake pipe; watches are added and removed from the main thread.
+    - A failed `open` reports the path being opened; operations on an open handle report the empty
+      path (gren).
+    - `ReplaceFrom n<=0` behaves as `Replace`.
+    - `Between` with end < start gives an empty stream.
+    - Negative offsets are clamped.
+    - `writeFromOffset` with a negative offset writes at the current position.
+    - `makeTempDirectory` joins `tmp/prefix`.
+    - Pool tasks have no kill handles.
+- 2026-10-07 — **Phase 5 implemented** (System.Process, System.Terminal, SignalService with several
+  listeners).
+  - Results: eco-system 39/39 in its copy, also under gc-pressure; eco-kernel 14/14;
+    platform-services 9/9; Core 167 checks; Process stress 2/2.
+  - **SignalService API:** `addListener(signo, fn, ctx)` / `removeListener` / `listenerCount` /
+    `dispatch(signo)` / `chainToPrevious` replace the single dispatch callback. Its users are the
+    System manager (INT, TERM), the Terminal manager (WINCH) and the raw-mode restore listener, which
+    acts only when it is the sole listener.
+  - Deviations:
+    - `run` collects output on its own detached thread per run, not two FdChannels.
+    - `run` stdin is `/dev/null`.
+    - A signal death in `run` gives `ProgramError -1`.
+    - `maxBytes <= 0` means no limit.
+    - A spawn failure delivers `onInit`, then `onExit (-errno)`.
+    - `NO_COLOR` wins over `FORCE_COLOR`.
+  - **Runtime bug found and fixed by the lead:** `String.join sep [""]` (reached by `String.replace`
+    on `""`) called `allocAsciiOut(0)`. `StringOps.cpp` now returns the Empty constant when the
+    joined length is 0 (HEAP_071), and `test/elm-core/src/StringJoinTest.elm` covers it.
+- 2026-10-07 — **Phase 6 implemented** (stream transformations). The §3.3.3 gates 1 (`full`) and 2
+  (validate tree) are still to be run by the lead.
+  - Results: JIT `test --filter eco-system` 36/36 (`/tmp/eco-p6-test3.txt`), also 36/36 under
+    `ECO_NURSERY_POISON=1` + `heap-config-gc-pressure.json` on the normal build
+    (`/tmp/eco-p6-test-gcp.txt`); `stress-test --filter EcoSystem -n 5` 4/4, with and without gc
+    pressure; Core unit tests 127/127; `check-root-bounded`, `check-kernel-homes` and the D13 docs
+    build pass.
+  - Layout: `Stream/StreamCodec.{hpp,cpp}` (zlib and UTF-8 engines, no heap access),
+    `Stream/StreamPipe.cpp` (pipe registry, `pipeThrough`/`pipeTo` bodies); Custom/Codec kinds and
+    the pump driver in `Stream.cpp`. `EcoSystem_Stream` links `zlibstatic` where the top-level
+    CMakeLists vendors it (Windows, Stage D) and `ZLIB::ZLIB` otherwise.
+  - **Pump driver:** pumps and pipes run from one work list. `pumpStream` marks a pair dirty and
+    drains the list unless a drain is already running, so pipe chains are driven iteratively and
+    a re-entrant `pumpStream` (from a pipe, or from Elm re-entering a kernel during a Custom
+    action) only marks the pair.
+  - Deviations:
+    - **Custom `Close`/`Cancel`:** the write whose transform returned it succeeds and the writes
+      queued behind it fail (WHATWG, checked against node's `TransformStream`). `Cancel` also
+      clears the read buffer, like `cancelWritable`.
+    - **Codec capacities:** the text and compression transformations buffer one chunk on each
+      side; WHATWG's readable high-water mark is 0, which would make a `write` wait for a reader.
+    - **Pipes release their locks when they finish** (WHATWG), rather than holding them forever;
+      both sides are terminal by then, so later operations answer `Closed`/`Cancelled`.
+    - Decompression fails (both sides cancelled) on corrupt data, on data after the end of the
+      compressed stream, and on a close before the end (Compression Streams spec).
+    - The gzip fixture test compares decompressed data, not compressed bytes: node bundles a
+      zlib fork whose deflate output differs from the system zlib's.
+  - **Finding, fixed by the lead as D14:** Appendix A, like gren, types `readable : Transformation read
+    write -> Readable read` but `customTransformation`/codecs return `Transformation input
+    output`, so `readable` of a codec or a type-changing custom transformation has the input
+    type. Only `pipeThrough` is well-typed for those; the tests use it.
+- 2026-10-07 — **Phases 4–6 merged into `/work` and the gates are green.** The three phases were built in
+  parallel in repo copies under `worktrees/`, each with its own build tree and `ECO_HOME`.
+  `system-kernel-cpp/CMakeLists.txt` was merged by hand; the D14 fix and `StreamTransformTypesTest`
+  were added.
+  - Results:
+    - eco-system: 61/61.
+    - Core: 167 checks.
+    - stress `EcoSystem`: 8/8.
+    - `full`: 2220/2220.
+    - The validate tree with `ECO_NURSERY_POISON=1` and gc-pressure: eco-system 61/61, stress
+      (`-n 10`) 8/8, Core all passed, with no STALE or poison reports.
+- 2026-10-07 — **Phase 9 steps 9.2 and 9.3 (partial).**
+  - Step 9.2: `docs/getting-started.md` has a "System programs" section.
+  - Step 9.3:
+    - `examples/system/` holds `Cat.elm` and `Ls.elm`, both checked by hand as AOT binaries.
+    - The bundle installs them to `share/eco/examples/system`; the `hello` install excludes
+      `system/`.
+    - The `eco-system-examples` target compiles them, and `full` runs it.
+    - The HTTP echo example follows Phase 7.
+    - GitHub CI workflows were not edited (they need the user's approval); `full` covers the
+      compile check locally.
+- 2026-10-07 — **Phase 7 implemented** (HTTP server), in `worktrees/p7`, then merged.
+  - Results: eco-system 67/67 from a cold cache, also under poison + gc-pressure; elm-http 22/22;
+    Core 226 checks; stress 9/9.
+  - **Layout:**
+    - `HttpServer/{HttpServer,HttpServerExports,HttpServerManager,HttpServerService,HttpServerServiceWin32}`.
+    - llhttp v9.2.1 is fetched by SHA256 as an OBJECT library and its objects are merged into
+      `libEcoSystem_HttpServer.a`.
+  - **Harness:** `test/TestPort.hpp` gives every forked child and AOT ELF an `ECO_TEST_PORT`. A test
+    with `-- EXIT:` runs in process-output mode in any suite.
+  - Deviations:
+    - `respond` completes after the response is written.
+    - Requests that arrive before a subscription exists are held until one appears.
+    - 400/431 responses and `100-continue` are handled by the connection thread.
+    - Header names keep their case.
+    - HEAD, 1xx, 204 and 304 responses have no body.
+    - A `Date` header is added.
+    - There are no request timeouts and no way to close a server.
+  - **Example:** `examples/system/src/HttpEcho.elm`, checked by hand as an AOT binary with `curl`.
+- 2026-10-07 — **Phase 8 implemented** (`Http.Stream`), in `worktrees/p8`, then merged.
+  - Results: eco-system 74/74 in its copy, also under poison + gc-pressure; elm-http 22/22;
+    eco-kernel 14/14.
+  - **Layout:**
+    - `HttpStream/{HttpStream,HttpStreamExports,HttpTransfer}`.
+    - Each transfer has its own detached thread and a private curl multi handle, which gives an
+      exact header deadline and an immediate abort.
+    - Two `HttpTransferChannel`s: the download side is a ChannelSource and the upload side a
+      ChannelSink.
+    - Core/Stream additions: `ChannelResult::reason`, and `pipeStreams`, an internal pipe used as the
+      upload pump.
+  - **Test plumbing:**
+    - One shared `test/TestServerConfig.hpp` generator, used by both the JIT and AOT harnesses.
+    - TestHttpServer gained de-chunked request bodies, `/truncate` and `/echo-headers?dup=1`.
+    - It now writes with `MSG_NOSIGNAL`; a client hanging up mid-body could otherwise kill the
+      runner.
+  - Deviations:
+    - With `expectStream`, a non-2xx response aborts the transfer at the headers.
+    - No `ACCEPT_ENCODING`.
+    - Headers containing CR/LF are dropped.
+    - The timeout is `max 1 (round t)`.
+    - A non-http(s) scheme gives `BadUrl`.
+    - A locked stream body gives `NetworkError_`.
+    - `Process.kill` stops a transfer only before its headers; after that, use
+      `Stream.cancelReadable`.
+- 2026-10-07 — **Phases 7 and 8 merged into `/work`.** `system-kernel-cpp/CMakeLists.txt` and
+  `test/aot_e2e_main.cpp` were three-way merged.
+  - Results: eco-system 80/80 from a cold cache; elm-http 22/22; eco-kernel 14/14; Core 226 checks;
+    stress `EcoSystem` 9/9.
+  - **Follow-ups for elm/http's native kernel (outside eco/system, found in Phase 7):**
+    - repeated response headers keep only the last value, where JS elm/http joins them;
+    - HEAD sets `CUSTOMREQUEST` but not `NOBODY`, so it probably waits for a body.
+  - Also outstanding from R2.10: protocol restriction, header injection, stale redirect headers,
+    empty statusText and cancellation in `HttpService` (`plans/complete-elm-http-kernel.md`).
+- 2026-10-07 — **Final gates on the merged Phases 0–9 are green.**
+  - `full`: 2239/2239, including the Core unit tests (226 checks) and the example compile.
+  - The validate tree with `ECO_NURSERY_POISON=1` and gc-pressure:
+    - eco-system 80/80;
+    - stress `EcoSystem` (`-n 10`) 9/9;
+    - Core 226 checks;
+    - no STALE or poison reports.
+  - `run-aot-e2e` with `TEST_FILTER=eco-`: 94/94 (eco-system 80, eco-kernel 14), none skipped.
+  - The README status describes what was tested: Linux only. The macOS paths are written but
+    untested, Windows has compile-oriented stubs that are untested, and the JS target is not
+    supported.
+- 2026-10-07 — **Phase 3 implemented** (Stream core, stdio, `System`). The §3.3.3 gates 1 (`full`)
+  and 2 (validate tree) are still to be run by the lead.
+  - Results: JIT `test --filter eco-system` 26/26 from a cold cache (`/tmp/eco-p3-test.txt`), also
+    26/26 under `ECO_NURSERY_POISON=1` + the gc-pressure heap config on the normal build; AOT
+    `aot-e2e-runner --filter eco-system` 26/26; `stress-test --filter EcoSystem` 3/3 (`-n 3` and
+    default loops under gc pressure); Core unit tests 127/127; `--filter eco-kernel` 14/14;
+    `check-root-bounded` and `check-kernel-homes` OK. The compiler emits
+    `Eco_System_registerManager_System` first in `__eco_register_ports` (checked in the MLIR of
+    `OnEmptyEventLoopTest`).
+  - Layout: `Stream/{StreamTable.hpp,Stream.hpp,Stream.cpp,StreamExports.cpp}`,
+    `System/{System.hpp,System.cpp,SystemExports.cpp,SystemManager.hpp,SystemManager.cpp}`.
+    `EcoSystem_System` links `EcoSystem_Stream` (stdio pairs).
+  - Deviations:
+    - **argv** comes from the OS (`/proc/self/cmdline`, `_NSGetArgv`, `__argv`), not from eco/kernel's
+      `Env` (D1 forbids the link). It is the full C argv of the process (D10); embedded, it is the
+      host's argv, and under the JIT harness the test runner's.
+    - **Pair erasure:** a pair is erased only when both sides are `Closed` and nothing is parked or
+      in flight; a missing id then answers exactly as the erased pair would. Pairs with an
+      `Errored` side are kept (queues emptied) so they keep answering with their reason.
+    - **Channel kinds** never prefetch: a parked read issues one channel read. A ChannelSink keeps
+      its in-flight writes in `writeQ` (valueEnc 0); `enqueue` on a sink uses a synthetic request
+      id (≥ 2^62) and still holds a pendingAsync count until the bytes are written.
+    - **Kill handles:** stream bodies return `()` as the kill handle (T9 as written), so killing a
+      process parked on a stream does not unpark it. A T7 handle per parked token is left for later.
+    - `cancelReadable`/`cancelWritable` on a terminal side succeed without effect (WHATWG).
+    - The harness now flushes the runner's stdio before `fork()`: process-output children
+      flushed the parent's buffered banner into their output pipe.
+  - Left for later phases: the Phase 6 kernels (custom, pipes, codecs; `StreamPair` already scans
+    `customFnEnc`/`customStateEnc`); `SignalService` has a single dispatch callback, which the
+    `System` manager now owns, so Phase 5 (`SIGWINCH`, Terminal) must turn it into a per-signal
+    or multi-subscriber dispatch; Windows stdio streams fail with `ENOTSUP` (FdChannel stub).
+- 2026-10-07 — **Phase 10 foundation done** (D15): the JS E2E runner, `System.js`, `Stream.js` and the
+  `System` manager bodies.
+  - Results:
+    - JS: `run-js-e2e` filtered to the System/Stream/Harness tests, 37/37
+      (`/tmp/eco-p10a-js-e2e.txt`). The other 43 eco-system tests (File*, Process*, Terminal*,
+      HttpServer*, HttpStream*, `SignalInterruptTest` and `HarnessTestPortTest`, which need
+      `System.Process`/`Http.Server`) wait for the remaining JS kernels (Phase 10.2).
+    - Native: eco-system 80/80 (`/tmp/eco-p10a-native.txt`); the native MLIR of the System tests
+      references no JS-only kernel; the D13 docs build passes.
+  - **Runner** (`test/scripts/run-js-e2e.js`, `js-e2e-http-server.js`): mirrors the test project into
+    `<build>/test/js-e2e/project`, compiles each test with Stage 1 (first alone, then in parallel with
+    `--builddir`), and runs `node <Name>.run.js` 8 at a time with the native directives (CHECK family
+    as `CheckPatterns.hpp`, EXIT, STDIN, `ECO_TEST_PORT`) plus `-- SKIP-JS: <reason>`. Its HTTP test
+    server is a raw `net` twin of `TestHttpServer.hpp` (no HTTPS) and reuses its previous port, so the
+    generated `TestServerConfig.elm` stays unchanged between runs. Target `run-js-e2e`
+    (`compiler/CMakeLists.txt`, POSIX only), run by `full` after the native suite.
+  - **Stream.js** is a line-by-line port of `Stream.cpp`/`StreamPipe.cpp`/`StreamCodec.cpp`: the same
+    pair kinds, queues, locks, pump driver and pipe rules. Completions are queued and run when the
+    outermost stream operation returns (the C++ drain's `Scheduler::drain()`), so Elm never re-enters
+    the table mid-pump. The byte-channel API is documented at the top of the file.
+  - **System**: `args` is `process.argv` without the node binary (so `args[0]` is the script, D10);
+    `applicationPath` is the real path of the compiled module; stdio are pinned channel pairs over
+    `process.stdin/stdout/stderr` (stdin touched only on the first read; fds 0–2 never closed);
+    `exitWithCode` is `process.exit`.
+  - Deviations:
+    - **`onEmptyEventLoop`** uses Node's `beforeExit` with the §3.7 arming rule: it fires again only
+      if a channel request (or a kernel's `_Stream_noteActivity()`) happened since it last fired, and
+      after firing it keeps the loop alive for one more turn, because a stdout write that completes
+      synchronously would otherwise let Node exit without a second check.
+    - **zlib** is driven synchronously through the zlib object's native handle (`_handle.writeSync`,
+      `_writeState`): node's own sync path closes the handle after one call. Data after the end of a
+      deflate/raw stream is ignored and after a gzip member must be another member (node's
+      multi-member rule), where the C++ codec fails with "Junk found after end of compressed data.".
+    - Channel completions that a channel delivers synchronously are deferred to a microtask.
+    - The readable adapter keeps a chunk larger than the request's 64 KiB for the next read.
+  - **Pre-existing, fixed in 10.2:** `scripts/make-docs-package.js` also rewrites the words "command" and
+    "subscription" in doc-comment prose (11 places in the shipped `docs.json`, e.g. "the full list of
+    (\_ -> Debug.todo "effect") line arguments").
+- 2026-10-07 — **Phase 10.2 done** (D15): `FileSystem.js`, `ChildProcess.js`, `Terminal.js`,
+  `HttpServer.js`, `HttpStream.js` and real Elm manager bodies for `System.File`, `System.Process`,
+  `System.Terminal` and `Http.Server` (`MyCmd`/`MySub` unchanged). Built in parallel repo copies
+  (`worktrees/p10b`–`p10d`) and merged.
+  - Results: JS `run-js-e2e` 80/80, none skipped (`/tmp/eco-p10-js-all.txt`);
+    `ProcessSpawnExternalTest` 100 runs on JS without a failure; `full` green: 2239/2239 native, JS 80/80
+    (`/tmp/eco-p10-full.txt`).
+    Native eco-system 80/80 in each copy; the native MLIR references none of the JS-only kernels
+    (`FileSystem.attachWatchListener`, `ChildProcess.spawn`, `Terminal.attachResizeListener`,
+    `HttpServer.attachRequestListener`/`holdRequest`).
+  - **FileSystem**: all B.3 kernels on `node:fs`; FErr codes, syscalls and paths as native
+    (`ERR_FS_EISDIR` for `remove` of a directory); an open-handle set gives EBADF after `close`;
+    file streams are fd-based ByteChannels mirroring `FdChannel` (inclusive `Between` end,
+    `ReplaceFrom` truncates on close, open errors reported by the task). One `fs.watch` listener per
+    (path, recursive) key.
+  - **ChildProcess / Terminal**: `run` uses `child_process.spawn` with the native rules (stdin
+    `/dev/null`, maxBytes and runDuration give `ProgramError -1`, signal death -1, `InitError` errno
+    name); the manager's `spawn` makes a scheduler process whose kill handle SIGTERMs the child.
+    Child pipes are taken out of `child.stdio` (Node's `flushStdio` resumes them at exit and would
+    drop unread output). Colour depth uses B.5's rules, not `getColorDepth`; resize via SIGWINCH.
+  - **HTTP**: the server uses `node:http` (llhttp, 64 KiB header limit, timeouts off) with the native
+    response rules; requests that arrive with no subscriber are held. `Http.Stream.send` uses
+    `node:http`/`https` with download/upload channels and `_Stream_pipeStreams`; `CURL_CA_BUNDLE` is
+    honoured. Test plumbing: `test/scripts/js-e2e-xhr.js`, a Node `XMLHttpRequest` for elm/http's
+    JS kernel, loaded by every test launcher.
+  - **Stream.js fix**: the readable adapter attaches to a Node stream on the first read; it now checks
+    `errored`/`readableEnded`/`destroyed` when it attaches, since a stream that ended before then
+    emits nothing more (a child pipe at EOF with nothing buffered; made `ProcessSpawnExternalTest`
+    exit with no output about 1 run in 10).
+  - **Docs generator fix**: `make-docs-package.js` applies its `Eco.Kernel.*` and
+    `command`/`subscription` rewrites only to code, skipping comments and string/char literals.
+  - Deviations (JS vs native):
+    - FErr descriptions use libuv's errno text (EEXIST "file already exists", EISDIR "illegal
+      operation on a directory"); `createServer` and network-error messages are Node's. Codes match.
+    - Recursive watch is Node's recursive `fs.watch`: on Linux a file created in a new
+      sub-directory first gives only `Moved`; an unwatchable path keeps its listener until killed.
+    - Bare program names are resolved against the parent's PATH (as `posix_spawnp`); invalid
+      arguments that make Node throw report Node's code (e.g. `ERR_INVALID_ARG_VALUE`).
+    - Terminal size comes from stdout then stderr (not fd 0); raw mode is restored by Node's own
+      reset; `process.title` also works on macOS; a Detached child's runDuration timer is unref'd.
+    - Http.Stream: Node upper-cases methods; redirects follow curl's method rules and a stream body
+      is not resent (`NetworkError_`); upload writes complete when Node flushes them (native
+      acknowledges up to 256 KiB ahead); `statusText` is not trimmed.
 
 ---
 
@@ -1732,7 +2040,7 @@ enqueue : value -> Writable value -> Task Error (Writable value)
 closeWritable : Writable value -> Task Error ()
 cancelWritable : String -> Writable value -> Task Error ()
 
-type alias Transformation read write = Stream.Internal.Transformation read write
+type alias Transformation input output = Stream.Internal.Transformation input output
 identityTransformation : Task x (Transformation data data)
 identityTransformationWithOptions : { readCapacity : Int, writeCapacity : Int } -> Task x (Transformation data data)
 nullTransformation : data -> Task x (Transformation data data)
@@ -1746,8 +2054,8 @@ customTransformationWithOptions :
     (state -> input -> CustomTransformationAction state output)
     -> { initialState : state, readCapacity : Int, writeCapacity : Int }
     -> Task x (Transformation input output)
-readable : Transformation read write -> Readable read
-writable : Transformation read write -> Writable write
+readable : Transformation input output -> Readable output
+writable : Transformation input output -> Writable input
 pipeThrough : Transformation input output -> Readable input -> Task Error (Readable output)
 awaitAndPipeThrough : Task Error (Transformation input output) -> Readable input -> Task Error (Readable output)
 pipeTo : Writable data -> Readable data -> Task Error ()

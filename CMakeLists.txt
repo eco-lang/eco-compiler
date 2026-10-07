@@ -621,6 +621,7 @@ if(ECO_STATIC_MUSL)
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/node_modules(/|$)" EXCLUDE
                 REGEX "/scripts(/|$)" EXCLUDE
+                REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
     # Starter examples — Elm sources only. The in-tree examples/ IS the hello
@@ -633,7 +634,17 @@ if(ECO_STATIC_MUSL)
             COMPONENT Bundle
             FILES_MATCHING
                 PATTERN "elm.json"
-                PATTERN "*.elm")
+                PATTERN "*.elm"
+                REGEX "/system(/|$)" EXCLUDE)
+    # eco/system examples (cat, ls, an HTTP echo server): plans/eco-system-library.md Phase 9.3.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system/
+            DESTINATION share/eco/examples/system
+            COMPONENT Bundle
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/eco-stuff(/|$)" EXCLUDE)
 
     # Stage D: merge the Debian-built glibc output-runtime tree into the
     # bundle. ECO_GLIBC_RUNTIME_TREE points at the tree staged by the
@@ -787,6 +798,7 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/node_modules(/|$)" EXCLUDE
                 REGEX "/scripts(/|$)" EXCLUDE
+                REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
@@ -794,7 +806,17 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
             COMPONENT BundleDarwin
             FILES_MATCHING
                 PATTERN "elm.json"
-                PATTERN "*.elm")
+                PATTERN "*.elm"
+                REGEX "/system(/|$)" EXCLUDE)
+    # eco/system examples (cat, ls, an HTTP echo server): plans/eco-system-library.md Phase 9.3.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system/
+            DESTINATION share/eco/examples/system
+            COMPONENT BundleDarwin
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/eco-stuff(/|$)" EXCLUDE)
 endif()
 
 #-------------------------------------------------------------------------------
@@ -870,6 +892,7 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/node_modules(/|$)" EXCLUDE
                 REGEX "/scripts(/|$)" EXCLUDE
+                REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
@@ -877,7 +900,17 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
             COMPONENT BundleWindows
             FILES_MATCHING
                 PATTERN "elm.json"
-                PATTERN "*.elm")
+                PATTERN "*.elm"
+                REGEX "/system(/|$)" EXCLUDE)
+    # eco/system examples (cat, ls, an HTTP echo server): plans/eco-system-library.md Phase 9.3.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system/
+            DESTINATION share/eco/examples/system
+            COMPONENT BundleWindows
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/eco-stuff(/|$)" EXCLUDE)
 endif()
 
 #-------------------------------------------------------------------------------
@@ -1401,14 +1434,21 @@ add_custom_target(stress
 # The JIT runner compiles each Elm test through Stage 1's
 # `compiler/bin/index.js` (guida.js via the XHR mock + eco-io-handler),
 # so only Stage 1 is needed — no Stage 2+ build.
+# run-js-e2e (compiler/CMakeLists.txt) exists on POSIX hosts only.
+set(_full_js_e2e)
+if(NOT WIN32)
+    set(_full_js_e2e COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-e2e)
+endif()
 add_custom_target(full
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-homes.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test eco-system-examples
     COMMAND ${CMAKE_BINARY_DIR}/system-kernel-cpp/eco-system-core-test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests and JIT E2E"
+    # The eco-system suite on the JS target (plans/eco-system-library.md Phase 10).
+    ${_full_js_e2e}
+    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E and the JS eco-system E2E"
     USES_TERMINAL
 )

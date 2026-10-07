@@ -57,7 +57,7 @@ int makeCloexecPipe(int fds[2], bool) {
     return ENOTSUP;
 }
 
-FdChannel::FdChannel(int fd) : st_(std::make_shared<State>()) { st_->fd = fd; }
+FdChannel::FdChannel(int fd, FdChannelOptions) : st_(std::make_shared<State>()) { st_->fd = fd; }
 FdChannel::~FdChannel() = default;
 
 void FdChannel::requestRead(uint64_t token, size_t) {
@@ -94,6 +94,8 @@ struct FdChannel::State {
     int wakeR = -1;
     int wakeW = -1;
     bool regular = false;   // regular file: write without chunking
+    int64_t readRemaining = -1;     // FdChannelOptions::readLimit (channel thread only)
+    bool truncateOnClose = false;   // FdChannelOptions::truncateOnClose
 
     std::mutex m;            // guards everything below
     std::deque<ReadReq> reads;
@@ -168,12 +170,18 @@ void doRead(State& st, std::vector<char>& buf) {
     }
     if (maxBytes == 0) maxBytes = 1;
     if (maxBytes > kMaxReadChunk) maxBytes = kMaxReadChunk;
+    if (st.readRemaining >= 0 && maxBytes > static_cast<uint64_t>(st.readRemaining))
+        maxBytes = static_cast<size_t>(st.readRemaining);
     if (buf.size() < maxBytes) buf.resize(maxBytes);
 
-    ssize_t r;
-    do { r = ::read(st.fd, buf.data(), maxBytes); } while (r < 0 && errno == EINTR);
-    int e = errno;
-    if (r < 0 && (e == EAGAIN || e == EWOULDBLOCK)) return;   // spurious: poll again
+    ssize_t r = 0;
+    int e = 0;
+    if (maxBytes > 0) {   // 0 only when the read limit is used up: EOF
+        do { r = ::read(st.fd, buf.data(), maxBytes); } while (r < 0 && errno == EINTR);
+        e = errno;
+        if (r < 0 && (e == EAGAIN || e == EWOULDBLOCK)) return;   // spurious: poll again
+        if (r > 0 && st.readRemaining >= 0) st.readRemaining -= r;
+    }
 
     ChannelResult res;
     res.channelId = st.chanId;
@@ -262,6 +270,10 @@ void channelThread(std::shared_ptr<State> sp) {
             wantRead = !st.reads.empty();
             wantWrite = !st.writes.empty();
         }
+        if (wantRead && st.readRemaining == 0) {   // read limit used up: EOF now
+            doRead(st, buf);
+            continue;
+        }
         struct pollfd pfd[2];
         pfd[0].fd = (wantRead || wantWrite) ? st.fd : -1;   // -1: ignored by poll
         pfd[0].events = static_cast<short>((wantRead ? POLLIN : 0) | (wantWrite ? POLLOUT : 0));
@@ -304,18 +316,27 @@ void channelThread(std::shared_ptr<State> sp) {
     for (auto& r : reads) postSimple(st.chanId, r.token, ChannelResult::Op::Read, ECANCELED);
     for (auto& w : writes) postSimple(st.chanId, w.token, ChannelResult::Op::Write, ECANCELED);
     int closeErr = 0;
+    if (closeRequested && st.truncateOnClose && st.fd > 2) {
+        off_t pos = ::lseek(st.fd, 0, SEEK_CUR);
+        int rc;
+        if (pos < 0) rc = -1;
+        else do { rc = ::ftruncate(st.fd, pos); } while (rc != 0 && errno == EINTR);
+        if (rc != 0) closeErr = errno;
+    }
     if (st.fd > 2) {
         // No retry on EINTR: the fd is released either way on Linux/macOS.
-        if (::close(st.fd) != 0 && errno != EINTR) closeErr = errno;
+        if (::close(st.fd) != 0 && errno != EINTR && closeErr == 0) closeErr = errno;
     }
     if (closeRequested) postSimple(st.chanId, closeToken, ChannelResult::Op::Close, closeErr);
 }
 
 } // namespace
 
-FdChannel::FdChannel(int fd) : st_(std::make_shared<State>()) {
+FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State>()) {
     st_->fd = fd;
     st_->chanId = id();
+    st_->readRemaining = opts.readLimit;
+    st_->truncateOnClose = opts.truncateOnClose;
     struct stat sb;
     if (::fstat(fd, &sb) == 0) st_->regular = S_ISREG(sb.st_mode);
 

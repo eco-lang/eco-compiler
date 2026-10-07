@@ -4,3 +4,5 @@ artifacts.dat
 docs.json
 typed-artifacts.dat
 node_modules/
+.docs-package/
+tests/elm-stuff/

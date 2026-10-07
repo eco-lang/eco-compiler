@@ -29,14 +29,28 @@
 
 #include "eco-system/Core/ByteChannel.hpp"
 
+#include <cstdint>
 #include <memory>
 
 namespace Eco::System {
 
+// Per-channel options (Phase 4 file streams). Both are read only by the
+// channel thread after construction.
+struct FdChannelOptions {
+    // >= 0: the channel reads at most this many bytes in total and then
+    // reports EOF (System.File.readFileStream `Between`, inclusive end).
+    int64_t readLimit = -1;
+    // On a graceful close(), truncate the file to the current file offset
+    // before closing the fd (System.File.writeFileStream `ReplaceFrom`:
+    // the file ends at the start position plus the bytes written). An
+    // ftruncate failure is reported as the close error.
+    bool truncateOnClose = false;
+};
+
 class FdChannel final : public ByteChannel {
 public:
     // Main thread. Takes ownership of `fd` (see above).
-    explicit FdChannel(int fd);
+    explicit FdChannel(int fd, FdChannelOptions opts = {});
     ~FdChannel() override;
 
     void requestRead(uint64_t token, size_t maxBytes) override;

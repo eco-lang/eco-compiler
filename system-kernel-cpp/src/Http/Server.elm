@@ -1,4 +1,4 @@
-module Http.Server exposing
+effect module Http.Server where { subscription = MySub } exposing
     ( Server, ServerError(..), createServer
     , Request, Method(..), methodToString, bodyAsString, bodyFromJson, requestInfo
     , onRequest
@@ -36,8 +36,13 @@ See [`Http.Server.Response`](Http-Server-Response) for more details on respondin
 
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
+import Eco.Kernel.HttpServer
+import Eco.Kernel.Stream
+import Http.Server.Internal as Internal
 import Http.Server.Response
 import Json.Decode
+import Platform
+import Process
 import Task exposing (Task)
 import Url exposing (Url)
 
@@ -69,7 +74,9 @@ A listening server keeps the program running.
 -}
 createServer : { host : String, port_ : Int } -> Task ServerError Server
 createServer options =
-    Debug.todo "Implement System API"
+    kCreateServer options.host options.port_
+        |> Task.map Server
+        |> Task.mapError (\( code, message ) -> ServerError { code = code, message = message })
 
 
 
@@ -112,14 +119,103 @@ type Method
 -}
 methodToString : Method -> String
 methodToString method =
-    Debug.todo "Implement System API"
+    case method of
+        GET ->
+            "GET"
+
+        HEAD ->
+            "HEAD"
+
+        POST ->
+            "POST"
+
+        PUT ->
+            "PUT"
+
+        DELETE ->
+            "DELETE"
+
+        CONNECT ->
+            "CONNECT"
+
+        TRACE ->
+            "TRACE"
+
+        PATCH ->
+            "PATCH"
+
+        UNKNOWN value ->
+            value
+
+
+toMethod : String -> Method
+toMethod s =
+    case s of
+        "GET" ->
+            GET
+
+        "HEAD" ->
+            HEAD
+
+        "POST" ->
+            POST
+
+        "PUT" ->
+            PUT
+
+        "DELETE" ->
+            DELETE
+
+        "CONNECT" ->
+            CONNECT
+
+        "TRACE" ->
+            TRACE
+
+        "PATCH" ->
+            PATCH
+
+        _ ->
+            UNKNOWN s
+
+
+{-| Build a `Request` from the pieces handed over by the server (C.5): the URL is absolute
+(Appendix E.5) and falls back to gren's default record if it does not parse; each header
+occurrence is one `( name, [ value ] )` entry in arrival order, and the last one wins.
+-}
+toRequest : String -> String -> List ( String, List String ) -> Bytes -> Request
+toRequest method url headers body =
+    { headers = List.foldl insertHeader Dict.empty headers
+    , method = toMethod method
+    , body = body
+    , url =
+        Url.fromString url
+            |> Maybe.withDefault
+                { protocol = Url.Http
+                , host = ""
+                , port_ = Nothing
+                , path = ""
+                , query = Nothing
+                , fragment = Nothing
+                }
+    }
+
+
+insertHeader : ( String, List String ) -> Dict String String -> Dict String String
+insertHeader ( name, values ) dict =
+    case List.head (List.reverse values) of
+        Just value ->
+            Dict.insert name value dict
+
+        Nothing ->
+            dict
 
 
 {-| Get the request body as a string. Returns `Nothing` if the body is not valid UTF-8.
 -}
 bodyAsString : Request -> Maybe String
 bodyAsString request =
-    Debug.todo "Implement System API"
+    kUtf8ToString request.body
 
 
 {-| Decode the request body as JSON. A body that is not valid UTF-8 is treated as the empty
@@ -127,7 +223,10 @@ string, so the decoder fails.
 -}
 bodyFromJson : Json.Decode.Decoder a -> Request -> Result Json.Decode.Error a
 bodyFromJson decoder request =
-    Debug.todo "Implement System API"
+    request
+        |> bodyAsString
+        |> Maybe.withDefault ""
+        |> Json.Decode.decodeString decoder
 
 
 {-| Get a string representation of the request, for example `"GET http://localhost:8080/"`.
@@ -137,7 +236,16 @@ Good for logging.
 -}
 requestInfo : Request -> String
 requestInfo request =
-    Debug.todo "Implement System API"
+    let
+        method =
+            case request.method of
+                UNKNOWN m ->
+                    "UNKNOWN(" ++ m ++ ")"
+
+                known ->
+                    methodToString known
+    in
+    method ++ " " ++ Url.toString request.url
 
 
 {-| Subscribe to incoming HTTP requests on a server. For every request you receive the
@@ -149,5 +257,151 @@ requestInfo request =
 
 -}
 onRequest : Server -> (Request -> Http.Server.Response.Response -> msg) -> Sub msg
-onRequest server toMsg =
-    Debug.todo "Implement System API"
+onRequest (Server id) toMsg =
+    subscription
+        (OnRequest id
+            (\( ( method, url ), ( headers, body ), key ) ->
+                toMsg (toRequest method url headers body) (freshResponse key)
+            )
+        )
+
+
+{-| A fresh response: status 200, no headers, empty body.
+-}
+freshResponse : Int -> Http.Server.Response.Response
+freshResponse key =
+    Internal.Response
+        { key = key
+        , status = 200
+        , headers = []
+        , body = Internal.StringBody ""
+        }
+
+
+
+-- EFFECT MANAGER
+--
+-- The native backend runs the C++ manager registered as "Http.Server"
+-- (src/eco-system/HttpServer/HttpServerManager.{hpp,cpp}, plans/eco-system-library.md
+-- Appendix C.5) and ignores the Elm functions below. The JS backend runs them
+-- (plans/eco-system-library.md Phase 10, D15): every server with subscribers keeps one
+-- listener process (a never-completing kernel binding, killed when the server's last
+-- subscription goes away) that notifies the manager through `Platform.sendToSelf`; the
+-- manager hands each request to every tagger of that server. Requests for a server
+-- without subscribers are held by the kernel until one appears, as natively. The
+-- constructor layout of MySub is mirrored by HttpServerManager.hpp: keep them in sync.
+-- The tagger argument is ( ( method, absoluteUrl ), ( headers, body ), responseKey ).
+
+
+type MySub msg
+    = OnRequest Int (( ( String, String ), ( List ( String, List String ), Bytes ), Int ) -> msg)
+
+
+subMap : (a -> b) -> MySub a -> MySub b
+subMap f (OnRequest id tagger) =
+    OnRequest id (tagger >> f)
+
+
+type alias RequestArg =
+    ( ( String, String ), ( List ( String, List String ), Bytes ), Int )
+
+
+{-| Per server id: its taggers in subscription order, and the process running its listener.
+-}
+type alias State msg =
+    Dict Int (ServerListeners msg)
+
+
+type alias ServerListeners msg =
+    { taggers : List (RequestArg -> msg)
+    , listener : Process.Id
+    }
+
+
+type Event
+    = Incoming Int RequestArg
+
+
+init : Task Never (State msg)
+init =
+    Task.succeed Dict.empty
+
+
+onEffects : Platform.Router msg Event -> List (MySub msg) -> State msg -> Task Never (State msg)
+onEffects router subs state =
+    let
+        -- Effects arrive in reverse order of declaration.
+        grouped =
+            List.foldr
+                (\(OnRequest id tagger) dict ->
+                    Dict.update id (\old -> Just (tagger :: Maybe.withDefault [] old)) dict
+                )
+                Dict.empty
+                (List.reverse subs)
+
+        stopped =
+            Dict.diff state grouped
+                |> Dict.values
+                |> List.map (\entry -> Process.kill entry.listener)
+
+        running =
+            Dict.toList grouped
+                |> List.map
+                    (\( id, taggers ) ->
+                        case Dict.get id state of
+                            Just entry ->
+                                Task.succeed ( id, { taggers = taggers, listener = entry.listener } )
+
+                            Nothing ->
+                                Process.spawn (kAttachRequestListener id (\arg -> Platform.sendToSelf router (Incoming id arg)))
+                                    |> Task.map (\pid -> ( id, { taggers = taggers, listener = pid } ))
+                    )
+    in
+    Task.sequence stopped
+        |> Task.andThen (\_ -> Task.sequence running)
+        |> Task.map Dict.fromList
+
+
+onSelfMsg : Platform.Router msg Event -> Event -> State msg -> Task Never (State msg)
+onSelfMsg router (Incoming id (( _, _, key ) as arg)) state =
+    case Dict.get id state of
+        Just entry ->
+            entry.taggers
+                |> List.map (\tagger -> Platform.sendToApp router (tagger arg))
+                |> Task.sequence
+                |> Task.map (\_ -> state)
+
+        Nothing ->
+            -- The last subscriber went away after the listener sent this request.
+            kHoldRequest id key
+                |> Task.map (\_ -> state)
+
+
+
+-- KERNELS
+-- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.6).
+
+
+kCreateServer : String -> Int -> Task ( String, String ) Int
+kCreateServer =
+    Eco.Kernel.HttpServer.createServer
+
+
+kUtf8ToString : Bytes -> Maybe String
+kUtf8ToString =
+    Eco.Kernel.Stream.utf8ToString
+
+
+
+-- JS-only kernels, used by the effect-manager bodies above (the native backend drops those
+-- bodies, so these have no C++ counterpart).
+
+
+kAttachRequestListener : Int -> (RequestArg -> Task Never ()) -> Task Never ()
+kAttachRequestListener =
+    Eco.Kernel.HttpServer.attachRequestListener
+
+
+kHoldRequest : Int -> Int -> Task Never ()
+kHoldRequest =
+    Eco.Kernel.HttpServer.holdRequest

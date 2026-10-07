@@ -58,13 +58,131 @@ set(ECO_SYSTEM_CORE_SRCS
 eco_system_module(Core         POSIX ${ECO_SYSTEM_CORE_SRCS})
 find_package(Threads REQUIRED)
 target_link_libraries(EcoSystem_Core PUBLIC Threads::Threads)
-eco_system_module(System       POSIX src/eco-system/System/System.cpp)
-eco_system_module(Stream       POSIX src/eco-system/Stream/Stream.cpp)
-eco_system_module(FileSystem   POSIX src/eco-system/FileSystem/FileSystem.cpp)
-eco_system_module(ChildProcess POSIX src/eco-system/ChildProcess/ChildProcess.cpp)
-eco_system_module(Terminal     POSIX src/eco-system/Terminal/Terminal.cpp)
-eco_system_module(HttpServer   POSIX src/eco-system/HttpServer/HttpServer.cpp)
-eco_system_module(HttpStream   POSIX src/eco-system/HttpStream/HttpStream.cpp)
+eco_system_module(System       POSIX
+    src/eco-system/System/System.cpp
+    src/eco-system/System/SystemExports.cpp
+    src/eco-system/System/SystemManager.cpp)
+# System reads the stdio pairs out of the stream table (environment, §3.7).
+target_link_libraries(EcoSystem_System PUBLIC EcoSystem_Stream)
+eco_system_module(Stream       POSIX
+    src/eco-system/Stream/Stream.cpp
+    src/eco-system/Stream/StreamCodec.cpp
+    src/eco-system/Stream/StreamPipe.cpp
+    src/eco-system/Stream/StreamExports.cpp)
+# zlib for the compression codecs (StreamCodec.cpp, Phase 6). Where the
+# top-level CMakeLists vendors zlib — Windows (the `ZLIB` FetchContent with
+# OVERRIDE_FIND_PACKAGE) and the Stage D glibc-runtime archive build
+# (`zlib_vendored`) — link that `zlibstatic` target, exactly what libzip and
+# libcurl get there. Everywhere else find_package(ZLIB): the system libz on
+# Linux/macOS dynamic builds, and under ECO_STATIC the static libz.a, because
+# ZLIB_USE_STATIC_LIBS is set before any subdirectory is added. AOT links
+# add zlib themselves (EcoNativeDriver.cpp: -lz, libzStaticA,
+# windowsZlibA).
+if(TARGET zlibstatic)
+    target_link_libraries(EcoSystem_Stream PUBLIC zlibstatic)
+    if(DEFINED zlib_vendored_SOURCE_DIR)
+        target_include_directories(EcoSystem_Stream PRIVATE
+            ${zlib_vendored_SOURCE_DIR} ${zlib_vendored_BINARY_DIR})
+    endif()
+else()
+    find_package(ZLIB REQUIRED)
+    target_link_libraries(EcoSystem_Stream PUBLIC ZLIB::ZLIB)
+endif()
+eco_system_module(FileSystem   POSIX
+    src/eco-system/FileSystem/FileSystem.cpp
+    src/eco-system/FileSystem/FileSystemExports.cpp
+    src/eco-system/FileSystem/FileSystemOps.cpp
+    src/eco-system/FileSystem/FileSystemManager.cpp
+    src/eco-system/FileSystem/WatchService.cpp
+    WIN32
+    src/eco-system/FileSystem/FileSystem.cpp
+    src/eco-system/FileSystem/FileSystemExports.cpp
+    src/eco-system/FileSystem/FileSystemOpsWin32.cpp
+    src/eco-system/FileSystem/FileSystemManager.cpp
+    src/eco-system/FileSystem/WatchService.cpp)
+# File streams are FdSource/FdSink pairs in the stream table (Phase 4 step 4.5).
+target_link_libraries(EcoSystem_FileSystem PUBLIC EcoSystem_Stream)
+eco_system_module(ChildProcess POSIX
+    src/eco-system/ChildProcess/Spawn.cpp
+    src/eco-system/ChildProcess/ChildProcess.cpp
+    src/eco-system/ChildProcess/ChildProcessExports.cpp
+    src/eco-system/ChildProcess/ChildProcessManager.cpp)
+# External connections hand the child's pipes to Elm as streams (Phase 5).
+target_link_libraries(EcoSystem_ChildProcess PUBLIC EcoSystem_Stream)
+# posix_spawn_file_actions_addchdir_np (glibc >= 2.29, musl >= 1.1.24,
+# macOS >= 10.15); without it the child runs through /bin/sh to cd (step 5.2).
+if(NOT WIN32)
+    include(CheckCXXSymbolExists)
+    check_cxx_symbol_exists(posix_spawn_file_actions_addchdir_np "spawn.h"
+        ECO_SYSTEM_HAVE_ADDCHDIR_NP)
+    if(ECO_SYSTEM_HAVE_ADDCHDIR_NP)
+        target_compile_definitions(EcoSystem_ChildProcess PRIVATE ECO_SYSTEM_HAVE_ADDCHDIR_NP=1)
+    endif()
+endif()
+eco_system_module(Terminal     POSIX
+    src/eco-system/Terminal/Terminal.cpp
+    src/eco-system/Terminal/TerminalExports.cpp
+    src/eco-system/Terminal/TerminalManager.cpp)
+eco_system_module(HttpServer   POSIX
+    src/eco-system/HttpServer/HttpServer.cpp
+    src/eco-system/HttpServer/HttpServerExports.cpp
+    src/eco-system/HttpServer/HttpServerManager.cpp
+    src/eco-system/HttpServer/HttpServerService.cpp
+    WIN32
+    src/eco-system/HttpServer/HttpServer.cpp
+    src/eco-system/HttpServer/HttpServerExports.cpp
+    src/eco-system/HttpServer/HttpServerManager.cpp
+    src/eco-system/HttpServer/HttpServerServiceWin32.cpp)
+# llhttp (Node's HTTP/1.1 parser, MIT) parses requests (Phase 7 step 7.1). The
+# release tarball ships the generated C, so no node/TypeScript build is
+# needed. It is an OBJECT library whose objects are merged INTO
+# libEcoSystem_HttpServer.a: static archives carry no link dependencies, and
+# the AOT driver links exactly the EcoSystem_* archives of EcoBootConfig.h,
+# so llhttp must be inside the archive (no driver or bundle change).
+# SOURCE_SUBDIR points at a directory without a CMakeLists.txt, so
+# FetchContent only downloads: llhttp's own CMake project is not added.
+# Windows uses the stub service and does not need it (§1).
+if(NOT WIN32)
+    include(FetchContent)
+    FetchContent_Declare(llhttp
+        URL https://github.com/nodejs/llhttp/archive/refs/tags/release/v9.2.1.tar.gz
+        URL_HASH SHA256=3c163891446e529604b590f9ad097b2e98b5ef7e4d3ddcf1cf98b62ca668f23e
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR eco-no-cmake)
+    FetchContent_MakeAvailable(llhttp)
+    add_library(llhttp_objects OBJECT
+        ${llhttp_SOURCE_DIR}/src/api.c
+        ${llhttp_SOURCE_DIR}/src/http.c
+        ${llhttp_SOURCE_DIR}/src/llhttp.c)
+    target_include_directories(llhttp_objects PUBLIC ${llhttp_SOURCE_DIR}/include)
+    set_target_properties(llhttp_objects PROPERTIES
+        C_STANDARD 99
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden)
+    target_sources(EcoSystem_HttpServer PRIVATE $<TARGET_OBJECTS:llhttp_objects>)
+    target_include_directories(EcoSystem_HttpServer PRIVATE ${llhttp_SOURCE_DIR}/include)
+    add_dependencies(EcoSystem_HttpServer llhttp_objects)
+endif()
+eco_system_module(HttpStream   POSIX
+    src/eco-system/HttpStream/HttpStream.cpp
+    src/eco-system/HttpStream/HttpStreamExports.cpp
+    src/eco-system/HttpStream/HttpTransfer.cpp)
+# Response bodies are ChannelSources and stream request bodies are piped into
+# a ChannelSink (Phase 8).
+target_link_libraries(EcoSystem_HttpStream PUBLIC EcoSystem_Stream)
+# libcurl, with the same per-platform selection as EcoKernel_Http
+# (eco-kernel-cpp/CMakeLists.txt): the vendored `libcurl_static` target under
+# WIN32 (schannel) and ECO_STATIC (created by the top-level CMakeLists before
+# any subdirectory), the SDK / system libcurl (CURL::libcurl) otherwise.
+# find_package's imported target is directory-scoped, so it is looked up
+# here again. AOT links add libcurl themselves (EcoNativeDriver.cpp: -lcurl,
+# libcurlStaticA, Darwin curl, windowsLibcurlA).
+if(WIN32 OR ECO_STATIC)
+    target_link_libraries(EcoSystem_HttpStream PRIVATE libcurl_static)
+else()
+    find_package(CURL REQUIRED)
+    target_link_libraries(EcoSystem_HttpStream PRIVATE CURL::libcurl)
+endif()
 
 # Every module listed in ECO_SYSTEM_MODS must have a target here.
 foreach(mod ${ECO_SYSTEM_MODS})
@@ -93,8 +211,10 @@ if(NOT WIN32 AND TARGET EcoRuntimeStatic)
     add_executable(eco-system-core-test EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/../test/eco-system-core/EcoSystemCoreTest.cpp)
     target_compile_features(eco-system-core-test PRIVATE cxx_std_20)
+    # EcoSystem_HttpServer for the HttpServer service checks (Phase 7); only
+    # its POD service objects (and llhttp) are pulled in.
     target_link_libraries(eco-system-core-test PRIVATE
-        EcoSystem_Core EcoRuntimeStatic Threads::Threads)
+        EcoSystem_HttpServer EcoSystem_Core EcoRuntimeStatic Threads::Threads)
     if(ECO_ASSERTS_ON)
         target_compile_options(eco-system-core-test PRIVATE -UNDEBUG)
     endif()

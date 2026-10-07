@@ -195,13 +195,82 @@ if(WIN32)
 else()
     set(_path_sep ":")
 endif()
+# Pure-Elm tests of the eco/system package (System.File.Path golden tables), run with stock
+# elm 0.19.1 (plans/eco-system-library.md Phase 4.1). Regenerate the golden module with
+# `node system-kernel-cpp/scripts/gen-path-golden.js`.
+add_custom_target(eco-system-elm-tests
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}${_path_sep}$ENV{PATH}"
+        ${ELM_TEST_RS_EXECUTABLE} --compiler ${ELM_EXECUTABLE}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/system-kernel-cpp/tests
+    COMMENT "Running elm-test-rs for eco/system (system-kernel-cpp/tests)"
+    USES_TERMINAL
+    VERBATIM
+)
+
+# eco/system's docs.json, shipped in the bundle next to its Elm sources (plans/eco-system-library.md
+# Phase 9.1). Built with stock elm 0.19.1 from the generated stock-elm copy (D12, D13): the real
+# package uses kernel imports and effect modules, which stock elm rejects. Written into the source
+# tree (system-kernel-cpp/docs.json is git-ignored), where the bundle install rules pick it up.
+set(ECO_SYSTEM_DIR ${CMAKE_SOURCE_DIR}/system-kernel-cpp)
+set(ECO_SYSTEM_DOCS_PKG ${CMAKE_BINARY_DIR}/eco-system-docs-package)
+file(GLOB_RECURSE _eco_system_docs_srcs CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/*.elm)
+add_custom_command(
+    OUTPUT ${ECO_SYSTEM_DIR}/docs.json
+    COMMAND ${NODE_EXECUTABLE} ${ECO_SYSTEM_DIR}/scripts/make-docs-package.js ${ECO_SYSTEM_DOCS_PKG}
+    COMMAND ${CMAKE_COMMAND} -E chdir ${ECO_SYSTEM_DOCS_PKG}
+        ${ELM_EXECUTABLE} make --docs=${ECO_SYSTEM_DIR}/docs.json
+    DEPENDS ${_eco_system_docs_srcs} ${ECO_SYSTEM_DIR}/elm.json ${ECO_SYSTEM_DIR}/README.md
+        ${ECO_SYSTEM_DIR}/scripts/make-docs-package.js
+    COMMENT "Building eco/system docs.json with stock elm (generated docs package)"
+    VERBATIM
+)
+add_custom_target(eco-system-docs ALL DEPENDS ${ECO_SYSTEM_DIR}/docs.json)
+
+# The eco/system example programs (examples/system, plans/eco-system-library.md Phase 9.3) are
+# compiled, not run, by `full`, so an API change that breaks them is caught. Output goes to the
+# build tree; the examples' own eco-stuff/ cache is git-ignored.
+file(GLOB _eco_system_examples CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/system/src/*.elm)
+set(_eco_system_example_cmds)
+foreach(_ex ${_eco_system_examples})
+    get_filename_component(_name ${_ex} NAME_WE)
+    list(APPEND _eco_system_example_cmds
+        COMMAND ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
+            ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make src/${_name}.elm
+            --local-package eco/system=${ECO_SYSTEM_DIR}
+            --output=${CMAKE_BINARY_DIR}/eco-system-examples/${_name}.mlir)
+endforeach()
+add_custom_target(eco-system-examples
+    ${_eco_system_example_cmds}
+    DEPENDS guida
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system
+    COMMENT "Compiling the eco/system examples (examples/system)"
+    VERBATIM
+)
+
+# The eco-system E2E suite on the JS target (plans/eco-system-library.md Phase 10, decision D15):
+# test/scripts/run-js-e2e.js compiles every test/eco-system test to JS with Stage 1 (guida.js),
+# runs it with node against its own HTTP test server, and checks the same CHECK / CHECK-NOT /
+# EXIT / STDIN directives as the native harness (plus `-- SKIP-JS: <reason>`). Work files go
+# to ${CMAKE_BINARY_DIR}/test/js-e2e. `full` runs it after the native suite.
+# Usage: cmake --build build --target run-js-e2e
+#        TEST_FILTER=Stream cmake --build build --target run-js-e2e   (comma-separated substrings)
+if(NOT WIN32)
+    add_custom_target(run-js-e2e
+        COMMAND ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
+            sh -c "${NODE_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/scripts/run-js-e2e.js --build-dir ${CMAKE_BINARY_DIR} --repo-root ${CMAKE_SOURCE_DIR} $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
+        DEPENDS guida
+        COMMENT "Running the eco-system E2E tests on the JS target (node)"
+        USES_TERMINAL
+    )
+endif()
+
 add_custom_target(elm-tests
     # The harness must compile through Compiler.Pipeline.Steps, as a build does
     # (plans/staging-honesty-and-production-test-pipeline.md P1.3).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-test-pipeline-production.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}${_path_sep}$ENV{PATH}"
         ${ELM_TEST_RS_EXECUTABLE} --project ${BUILD_XHR_DIR} --fuzz 1
-    DEPENDS guida
+    DEPENDS guida eco-system-elm-tests
     WORKING_DIRECTORY ${COMPILER_DIR}
     COMMENT "Running elm-test-rs against build-xhr shadow root"
     USES_TERMINAL

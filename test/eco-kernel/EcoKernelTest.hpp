@@ -1,11 +1,9 @@
 #pragma once
 #include "../ElmE2ETestBase.hpp"
 #if !defined(_WIN32)
-#include "../TestHttpServer.hpp"
+#include "../TestServerConfig.hpp"
 #endif
 
-#include <filesystem>
-#include <fstream>
 #include <string>
 
 // REPO_ROOT (= CMAKE_SOURCE_DIR) is plumbed via target_compile_definitions
@@ -31,29 +29,12 @@ inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSu
 }  // namespace EcoKernelTest
 #else
 
-// Start the shared in-process server (a singleton, also used by elm-http) and
-// write a generated TestServerConfig.elm carrying its base URL so the Eco.Http
-// getArchive test can hit /package.zip. Mirrors ElmHttpTest::prepareServer.
+// Start the shared in-process server (a singleton, also used by elm-http and
+// eco-system) and write the generated TestServerConfig.elm carrying its base
+// URL, so the Eco.Http getArchive test can hit /package.zip
+// (TestServerConfig.hpp).
 inline void prepareServer() {
-    int port = ElmHttpTestServer::TestHttpServer::instance().port();
-    std::string testDir = ElmE2EBase::findTestDir("eco-kernel");
-    std::string configPath = testDir + "/src/TestServerConfig.elm";
-    std::ofstream out(configPath, std::ios::trunc);
-    out << "module TestServerConfig exposing (baseUrl)\n\n\n"
-        << "baseUrl : String\n"
-        << "baseUrl =\n"
-        << "    \"http://127.0.0.1:" << port << "\"\n";
-    out.close();
-
-    // Ephemeral port changes each run; bump test-source mtimes so the harness
-    // recompiles against the current port (see ElmHttpTest::prepareServer).
-    std::error_code ec;
-    auto now = std::filesystem::file_time_type::clock::now();
-    for (auto& e : std::filesystem::directory_iterator(testDir + "/src", ec)) {
-        if (e.path().extension() == ".elm") {
-            std::filesystem::last_write_time(e.path(), now, ec);
-        }
-    }
+    TestServerConfig::prepare(ElmE2EBase::findTestDir("eco-kernel") + "/src");
 }
 
 inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSuite() {

@@ -1,4 +1,4 @@
-module System.File exposing
+effect module System.File where { subscription = MySub } exposing
     ( Metadata, EntityType(..), metadata, AccessPermission(..), checkAccess, changeAccess, accessPermissionsToInt, changeOwner, changeTimes, move, realPath
     , copyFile, appendToFile, readFile, ReadFileStreamMode(..), readFileStream, writeFile, WriteFileStreamMode(..), writeFileStream, truncateFile, remove
     , listDirectory, makeDirectory, makeTempDirectory
@@ -58,9 +58,14 @@ Unlike gren-node's `FileSystem` module, no permission value is needed to use the
 -}
 
 import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Eco.Kernel.FileSystem
+import Platform
+import Process
 import Stream
+import Stream.Internal
 import System.File.Internal
-import System.File.Path exposing (Path)
+import System.File.Path as Path exposing (Path)
 import Task exposing (Task)
 import Time
 
@@ -88,7 +93,11 @@ is the **destination** path.
 -}
 errorPath : Error -> Path
 errorPath error =
-    Debug.todo "Implement System API"
+    let
+        (System.File.Internal.Error { path }) =
+            error
+    in
+    path
 
 
 {-| A string that identifies a specific kind of error. There can be several error codes for the
@@ -100,14 +109,22 @@ reports `"ERR_FS_EISDIR"`, so [errorIsDirectoryFound](#errorIsDirectoryFound) is
 -}
 errorCode : Error -> String
 errorCode error =
-    Debug.todo "Implement System API"
+    let
+        (System.File.Internal.Error { code }) =
+            error
+    in
+    code
 
 
 {-| Returns a human readable description of the error.
 -}
 errorToString : Error -> String
 errorToString error =
-    Debug.todo "Implement System API"
+    let
+        (System.File.Internal.Error { message }) =
+            error
+    in
+    message
 
 
 {-| If `True`, the error occurred because you don't have the correct access permission to perform
@@ -115,28 +132,28 @@ the operation.
 -}
 errorIsPermissionDenied : Error -> Bool
 errorIsPermissionDenied error =
-    Debug.todo "Implement System API"
+    errorCode error == "EACCES"
 
 
 {-| If `True`, a file exists when it was expected not to.
 -}
 errorIsFileExists : Error -> Bool
 errorIsFileExists error =
-    Debug.todo "Implement System API"
+    errorCode error == "EEXIST"
 
 
 {-| If `True`, a file operation was attempted on a directory.
 -}
 errorIsDirectoryFound : Error -> Bool
 errorIsDirectoryFound error =
-    Debug.todo "Implement System API"
+    errorCode error == "EISDIR"
 
 
 {-| If `True`, the application has too many open files.
 -}
 errorIsTooManyOpenFiles : Error -> Bool
 errorIsTooManyOpenFiles error =
-    Debug.todo "Implement System API"
+    errorCode error == "EMFILE"
 
 
 {-| If `True`, the code was passed a [Path](System-File-Path#Path) which points to a file or
@@ -144,49 +161,49 @@ directory that doesn't exist.
 -}
 errorIsNoSuchFileOrDirectory : Error -> Bool
 errorIsNoSuchFileOrDirectory error =
-    Debug.todo "Implement System API"
+    errorCode error == "ENOENT"
 
 
 {-| If `True`, a directory was expected but it found a file or some other entity.
 -}
 errorIsNotADirectory : Error -> Bool
 errorIsNotADirectory error =
-    Debug.todo "Implement System API"
+    errorCode error == "ENOTDIR"
 
 
 {-| If `True`, the operation expected an empty directory, but the directory is not empty.
 -}
 errorIsDirectoryNotEmpty : Error -> Bool
 errorIsDirectoryNotEmpty error =
-    Debug.todo "Implement System API"
+    errorCode error == "ENOTEMPTY"
 
 
 {-| If `True`, the operation was rejected because of missing privileges.
 -}
 errorIsNotPermitted : Error -> Bool
 errorIsNotPermitted error =
-    Debug.todo "Implement System API"
+    errorCode error == "EPERM"
 
 
 {-| If `True`, we seem to be stuck in a loop following link after link after...
 -}
 errorIsLinkLoop : Error -> Bool
 errorIsLinkLoop error =
-    Debug.todo "Implement System API"
+    errorCode error == "ELOOP"
 
 
 {-| If `True`, the [Path](System-File-Path#Path) is too long.
 -}
 errorIsPathTooLong : Error -> Bool
 errorIsPathTooLong error =
-    Debug.todo "Implement System API"
+    errorCode error == "ENAMETOOLONG"
 
 
 {-| If `True`, the arguments passed to the function are invalid somehow.
 -}
 errorIsInvalidInput : Error -> Bool
 errorIsInvalidInput error =
-    Debug.todo "Implement System API"
+    errorCode error == "EINVAL"
 
 
 {-| If `True`, the operation failed due to an IO error. This could be that the disk is
@@ -194,7 +211,7 @@ busy, or even corrupt.
 -}
 errorIsIO : Error -> Bool
 errorIsIO error =
-    Debug.todo "Implement System API"
+    errorCode error == "EIO"
 
 
 
@@ -241,7 +258,9 @@ pointed at by the link.
 -}
 metadata : { resolveLink : Bool } -> Path -> Task Error Metadata
 metadata options path =
-    Debug.todo "Implement System API"
+    kStat options.resolveLink (Path.toPosixString path)
+        |> Task.map (System.File.Internal.decodeMetadata entityFromInt)
+        |> withPath path
 
 
 {-| Represents the permission to access an entity for a specific operation.
@@ -264,7 +283,9 @@ Passing an empty `List` will check that the entity exists.
 -}
 checkAccess : List AccessPermission -> Path -> Task Error Path
 checkAccess permissions path =
-    Debug.todo "Implement System API"
+    kAccess (accessPermissionsToInt permissions) (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| Change the access permissions for the entity's owner, group and everyone else.
@@ -276,7 +297,9 @@ Each list is turned into one octal digit of the file mode with
 -}
 changeAccess : { owner : List AccessPermission, group : List AccessPermission, others : List AccessPermission } -> Path -> Task Error Path
 changeAccess permissions path =
-    Debug.todo "Implement System API"
+    kChmod (modeFromPermissions permissions) (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| The integer representation of a set of access permissions in a posix system.
@@ -286,7 +309,15 @@ changeAccess permissions path =
 -}
 accessPermissionsToInt : List AccessPermission -> Int
 accessPermissionsToInt permissions =
-    Debug.todo "Implement System API"
+    let
+        numberFor num a =
+            if List.member a permissions then
+                num
+
+            else
+                0
+    in
+    numberFor 4 Read + numberFor 2 Write + numberFor 1 Execute
 
 
 {-| Change the user and group that owns a file.
@@ -299,7 +330,9 @@ not the entity it points to.
 -}
 changeOwner : { userID : Int, groupID : Int, resolveLink : Bool } -> Path -> Task Error Path
 changeOwner options path =
-    Debug.todo "Implement System API"
+    kChown options.resolveLink options.userID options.groupID (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| Change the registered time (down to the second) an entity was accessed and modified.
@@ -311,7 +344,12 @@ itself, not the entity it points to.
 -}
 changeTimes : { lastAccessed : Time.Posix, lastModified : Time.Posix, resolveLink : Bool } -> Path -> Task Error Path
 changeTimes options path =
-    Debug.todo "Implement System API"
+    kUtimes options.resolveLink
+        (Time.posixToMillis options.lastAccessed // 1000)
+        (Time.posixToMillis options.lastModified // 1000)
+        (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| Move the entity represented by the second [Path](System-File-Path#Path), to the location
@@ -325,7 +363,9 @@ The task succeeds with the new path. If it fails, [errorPath](#errorPath) is the
 -}
 move : Path -> Path -> Task Error Path
 move newPath oldPath =
-    Debug.todo "Implement System API"
+    kRename (Path.toPosixString oldPath) (Path.toPosixString newPath)
+        |> withPath newPath
+        |> Task.map (\_ -> newPath)
 
 
 {-| If you have a [Path](System-File-Path#Path) that is relative to the current directory,
@@ -334,7 +374,9 @@ entity.
 -}
 realPath : Path -> Task Error Path
 realPath path =
-    Debug.todo "Implement System API"
+    kRealpath (Path.toPosixString path)
+        |> withPath path
+        |> Task.map Path.fromPosixString
 
 
 
@@ -352,14 +394,18 @@ and if it fails, [errorPath](#errorPath) is the destination path.
 -}
 copyFile : Path -> Path -> Task Error Path
 copyFile destinationPath sourcePath =
-    Debug.todo "Implement System API"
+    kCopyFile (Path.toPosixString sourcePath) (Path.toPosixString destinationPath)
+        |> withPath destinationPath
+        |> Task.map (\_ -> destinationPath)
 
 
 {-| Add `Bytes` to the end of a file. The file is created if it doesn't exist.
 -}
 appendToFile : Bytes -> Path -> Task Error Path
 appendToFile bytes path =
-    Debug.todo "Implement System API"
+    kAppendFile bytes (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| Read the entire contents of a file.
@@ -371,7 +417,8 @@ to use [readFileStream](#readFileStream) instead.
 -}
 readFile : Path -> Task Error Bytes
 readFile path =
-    Debug.todo "Implement System API"
+    kReadFile (Path.toPosixString path)
+        |> withPath path
 
 
 {-| Specify where in a file you'll start streaming data from.
@@ -397,7 +444,21 @@ itself, rather than being reported by the first read from the stream.
 -}
 readFileStream : ReadFileStreamMode -> Path -> Task Error (Stream.Readable Bytes)
 readFileStream mode path =
-    Debug.todo "Implement System API"
+    let
+        ( start, end ) =
+            case mode of
+                Beginning ->
+                    ( 0, -1 )
+
+                From n ->
+                    ( max 0 n, -1 )
+
+                Between range ->
+                    ( max 0 range.start, range.end )
+    in
+    kReadFileStream start end (Path.toPosixString path)
+        |> withPath path
+        |> Task.map Stream.Internal.Readable
 
 
 {-| Write the given `Bytes` into a file. The file will be created if it doesn't exist,
@@ -405,7 +466,9 @@ and overwritten if it does.
 -}
 writeFile : Bytes -> Path -> Task Error Path
 writeFile bytes path =
-    Debug.todo "Implement System API"
+    kWriteFile bytes (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| Specify how the streamed bytes will be entered into the file.
@@ -429,7 +492,25 @@ type WriteFileStreamMode
 -}
 writeFileStream : WriteFileStreamMode -> Path -> Task Error (Stream.Writable Bytes)
 writeFileStream mode path =
-    Debug.todo "Implement System API"
+    let
+        ( kind, position ) =
+            case mode of
+                Replace ->
+                    ( 0, 0 )
+
+                ReplaceFrom n ->
+                    if n <= 0 then
+                        ( 0, 0 )
+
+                    else
+                        ( 1, n )
+
+                Append ->
+                    ( 2, 0 )
+    in
+    kWriteFileStream kind position (Path.toPosixString path)
+        |> withPath path
+        |> Task.map Stream.Internal.Writable
 
 
 {-| Make sure the given file is of a specific length. If the file is smaller than
@@ -438,7 +519,9 @@ is larger than the given length, the excess bytes are removed.
 -}
 truncateFile : Int -> Path -> Task Error Path
 truncateFile length path =
-    Debug.todo "Implement System API"
+    kTruncate length (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| Remove the file or directory at the given path.
@@ -450,7 +533,9 @@ Removing a directory with `recursive = False` fails with the error code `"ERR_FS
 -}
 remove : { recursive : Bool } -> Path -> Task Error Path
 remove options path =
-    Debug.todo "Implement System API"
+    kRemove options.recursive (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 
@@ -462,7 +547,16 @@ the directory being listed. Entries are sorted by name, byte by byte.
 -}
 listDirectory : Path -> Task Error (List { path : Path, entityType : EntityType })
 listDirectory path =
-    Debug.todo "Implement System API"
+    kListDirectory (Path.toPosixString path)
+        |> withPath path
+        |> Task.map
+            (List.map
+                (\( name, entity ) ->
+                    { path = Path.fromPosixString name
+                    , entityType = entityFromInt entity
+                    }
+                )
+            )
 
 
 {-| Create a new directory at the given [Path](System-File-Path#Path).
@@ -473,7 +567,9 @@ given [Path](System-File-Path#Path).
 -}
 makeDirectory : { recursive : Bool } -> Path -> Task Error Path
 makeDirectory options path =
-    Debug.todo "Implement System API"
+    kMakeDirectory options.recursive (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 {-| Create a directory, prefixed by a given name, that ends up in a section of the
@@ -485,7 +581,13 @@ A few random characters are added after the prefix, so every call creates a new 
 -}
 makeTempDirectory : String -> Task Error Path
 makeTempDirectory prefix =
-    Debug.todo "Implement System API"
+    tmpDirectory
+        |> Task.andThen
+            (\tmp ->
+                kMakeTempDirectory prefix
+                    |> withPath (Path.appendPosixString prefix tmp)
+                    |> Task.map Path.fromPosixString
+            )
 
 
 
@@ -503,7 +605,9 @@ the "real" entity and which is the link.
 -}
 hardLink : Path -> Path -> Task Error Path
 hardLink linkPath targetPath =
-    Debug.todo "Implement System API"
+    kLink (Path.toPosixString targetPath) (Path.toPosixString linkPath)
+        |> withPath linkPath
+        |> Task.map (\_ -> linkPath)
 
 
 {-| Creates a soft link from the second [Path](System-File-Path#Path) to the first.
@@ -517,14 +621,18 @@ redirect to this other location.
 -}
 softLink : Path -> Path -> Task Error Path
 softLink linkPath targetPath =
-    Debug.todo "Implement System API"
+    kSymlink (Path.toPosixString targetPath) (Path.toPosixString linkPath)
+        |> withPath linkPath
+        |> Task.map (\_ -> linkPath)
 
 
 {-| Returns the [Path](System-File-Path#Path) pointed to by a soft link.
 -}
 readLink : Path -> Task Error Path
 readLink path =
-    Debug.todo "Implement System API"
+    kReadLink (Path.toPosixString path)
+        |> withPath path
+        |> Task.map Path.fromPosixString
 
 
 {-| Removes a link, hard or soft, from the file system. If the
@@ -532,7 +640,9 @@ readLink path =
 -}
 unlink : Path -> Task Error Path
 unlink path =
-    Debug.todo "Implement System API"
+    kUnlink (Path.toPosixString path)
+        |> withPath path
+        |> Task.map (\_ -> path)
 
 
 
@@ -558,14 +668,14 @@ represented by the given [Path](System-File-Path#Path).
 -}
 watch : (WatchEvent -> msg) -> Path -> Sub msg
 watch toMsg path =
-    Debug.todo "Implement System API"
+    subscription (Watch (Path.toPosixString path) False (watchTagger toMsg))
 
 
 {-| Same as [watch](#watch), but this will also watch for changes in sub-directories.
 -}
 watchRecursive : (WatchEvent -> msg) -> Path -> Sub msg
 watchRecursive toMsg path =
-    Debug.todo "Implement System API"
+    subscription (Watch (Path.toPosixString path) True (watchTagger toMsg))
 
 
 
@@ -580,7 +690,9 @@ system's user database.
 -}
 homeDirectory : Task x Path
 homeDirectory =
-    Debug.todo "Implement System API"
+    kHomeDirectory
+        |> Task.map Path.fromPosixString
+        |> Task.mapError never
 
 
 {-| Returns the current working directory of the program.
@@ -591,7 +703,9 @@ directory that the program was executed from.
 -}
 currentWorkingDirectory : Task x Path
 currentWorkingDirectory =
-    Debug.todo "Implement System API"
+    kCurrentWorkingDirectory
+        |> Task.map Path.fromPosixString
+        |> Task.mapError never
 
 
 {-| Find a [Path](System-File-Path#Path) that represents a directory meant to hold temporary files.
@@ -602,7 +716,9 @@ This is the first of the `TMPDIR`, `TMP` and `TEMP` environment variables that i
 -}
 tmpDirectory : Task x Path
 tmpDirectory =
-    Debug.todo "Implement System API"
+    kTmpDirectory
+        |> Task.map Path.fromPosixString
+        |> Task.mapError never
 
 
 {-| [Path](System-File-Path#Path) to a file which is always empty. Anything written to this file
@@ -610,4 +726,325 @@ will be discarded.
 -}
 devNull : Task x Path
 devNull =
-    Debug.todo "Implement System API"
+    kDevNull
+        |> Task.map Path.fromPosixString
+        |> Task.mapError never
+
+
+
+-- HELPERS
+
+
+withPath : Path -> Task ( String, String ) a -> Task Error a
+withPath path task =
+    Task.mapError (System.File.Internal.decodeError path) task
+
+
+entityFromInt : Int -> EntityType
+entityFromInt n =
+    case n of
+        0 ->
+            File
+
+        1 ->
+            Directory
+
+        2 ->
+            Socket
+
+        3 ->
+            Symlink
+
+        4 ->
+            Device
+
+        _ ->
+            Pipe
+
+
+{-| The numeric file mode for `chmod`: one octal digit per class, as gren builds the string
+`"644"` (plans/eco-system-library.md Appendix E.3).
+-}
+modeFromPermissions : { owner : List AccessPermission, group : List AccessPermission, others : List AccessPermission } -> Int
+modeFromPermissions permissions =
+    accessPermissionsToInt permissions.owner
+        * 64
+        + accessPermissionsToInt permissions.group
+        * 8
+        + accessPermissionsToInt permissions.others
+
+
+watchTagger : (WatchEvent -> msg) -> ( Int, Maybe String ) -> msg
+watchTagger toMsg ( kind, relativePath ) =
+    let
+        path =
+            Maybe.map Path.fromPosixString relativePath
+    in
+    if kind == 1 then
+        toMsg (Moved path)
+
+    else
+        toMsg (Changed path)
+
+
+
+-- EFFECT MANAGER
+--
+-- The native backend runs the C++ manager registered as "System.File"
+-- (src/eco-system/FileSystem/FileSystemManager.{hpp,cpp}, plans/eco-system-library.md
+-- Appendix C.2) and ignores the Elm functions below. The JS backend runs them
+-- (plans/eco-system-library.md Phase 10, D15): one watcher exists per (path, recursive) key,
+-- a never-completing kernel binding spawned when the key first appears and killed when its
+-- last subscription goes away; it notifies the manager through `Platform.sendToSelf`, which
+-- hands the event to every tagger of that key. The constructor layout of MySub is mirrored
+-- by FileSystemManager.hpp: keep them in sync.
+
+
+type MySub msg
+    = Watch String Bool (( Int, Maybe String ) -> msg)
+
+
+subMap : (a -> b) -> MySub a -> MySub b
+subMap f (Watch path recursive tagger) =
+    Watch path recursive (\event -> f (tagger event))
+
+
+{-| The watchers by key (see `watchKey`).
+-}
+type alias State msg =
+    Dict String (Watcher msg)
+
+
+{-| The taggers of one key, in subscription order, and the process running its watcher.
+-}
+type alias Watcher msg =
+    { taggers : List (( Int, Maybe String ) -> msg)
+    , listener : Process.Id
+    }
+
+
+type alias WatchSpec msg =
+    { path : String
+    , recursive : Bool
+    , taggers : List (( Int, Maybe String ) -> msg)
+    }
+
+
+type Event
+    = Notify String ( Int, Maybe String )
+
+
+{-| The registry key (path, recursive) as a comparable String.
+-}
+watchKey : String -> Bool -> String
+watchKey path recursive =
+    if recursive then
+        "R" ++ path
+
+    else
+        "N" ++ path
+
+
+init : Task Never (State msg)
+init =
+    Task.succeed Dict.empty
+
+
+onEffects : Platform.Router msg Event -> List (MySub msg) -> State msg -> Task Never (State msg)
+onEffects router subs state =
+    let
+        addSub (Watch path recursive tagger) acc =
+            Dict.update (watchKey path recursive)
+                (\existing ->
+                    case existing of
+                        Just spec ->
+                            Just { spec | taggers = spec.taggers ++ [ tagger ] }
+
+                        Nothing ->
+                            Just { path = path, recursive = recursive, taggers = [ tagger ] }
+                )
+                acc
+
+        -- Effects arrive in reverse order of declaration.
+        wanted =
+            List.foldl addSub Dict.empty (List.reverse subs)
+
+        stopped =
+            Dict.diff state wanted
+                |> Dict.values
+                |> List.map (\watcher -> Process.kill watcher.listener)
+
+        startOrKeep key spec acc =
+            acc
+                |> Task.andThen
+                    (\watchers ->
+                        case Dict.get key state of
+                            Just watcher ->
+                                Task.succeed (Dict.insert key { watcher | taggers = spec.taggers } watchers)
+
+                            Nothing ->
+                                Process.spawn
+                                    (kAttachWatchListener spec.path
+                                        spec.recursive
+                                        (\event -> Platform.sendToSelf router (Notify key event))
+                                    )
+                                    |> Task.map (\pid -> Dict.insert key { taggers = spec.taggers, listener = pid } watchers)
+                    )
+    in
+    Task.sequence stopped
+        |> Task.andThen (\_ -> Dict.foldl startOrKeep (Task.succeed Dict.empty) wanted)
+
+
+onSelfMsg : Platform.Router msg Event -> Event -> State msg -> Task Never (State msg)
+onSelfMsg router (Notify key event) state =
+    case Dict.get key state of
+        Just watcher ->
+            watcher.taggers
+                |> List.map (\tagger -> Platform.sendToApp router (tagger event))
+                |> Task.sequence
+                |> Task.map (\_ -> state)
+
+        Nothing ->
+            Task.succeed state
+
+
+
+-- KERNELS
+-- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.3).
+
+
+kStat : Bool -> String -> Task ( String, String ) (List Int)
+kStat =
+    Eco.Kernel.FileSystem.stat
+
+
+kAccess : Int -> String -> Task ( String, String ) ()
+kAccess =
+    Eco.Kernel.FileSystem.access
+
+
+kChmod : Int -> String -> Task ( String, String ) ()
+kChmod =
+    Eco.Kernel.FileSystem.chmod
+
+
+kChown : Bool -> Int -> Int -> String -> Task ( String, String ) ()
+kChown =
+    Eco.Kernel.FileSystem.chown
+
+
+kUtimes : Bool -> Int -> Int -> String -> Task ( String, String ) ()
+kUtimes =
+    Eco.Kernel.FileSystem.utimes
+
+
+kRename : String -> String -> Task ( String, String ) ()
+kRename =
+    Eco.Kernel.FileSystem.rename
+
+
+kRealpath : String -> Task ( String, String ) String
+kRealpath =
+    Eco.Kernel.FileSystem.realpath
+
+
+kCopyFile : String -> String -> Task ( String, String ) ()
+kCopyFile =
+    Eco.Kernel.FileSystem.copyFile
+
+
+kAppendFile : Bytes -> String -> Task ( String, String ) ()
+kAppendFile =
+    Eco.Kernel.FileSystem.appendFile
+
+
+kReadFile : String -> Task ( String, String ) Bytes
+kReadFile =
+    Eco.Kernel.FileSystem.readFile
+
+
+kWriteFile : Bytes -> String -> Task ( String, String ) ()
+kWriteFile =
+    Eco.Kernel.FileSystem.writeFile
+
+
+kTruncate : Int -> String -> Task ( String, String ) ()
+kTruncate =
+    Eco.Kernel.FileSystem.truncate
+
+
+kRemove : Bool -> String -> Task ( String, String ) ()
+kRemove =
+    Eco.Kernel.FileSystem.remove
+
+
+kListDirectory : String -> Task ( String, String ) (List ( String, Int ))
+kListDirectory =
+    Eco.Kernel.FileSystem.listDirectory
+
+
+kMakeDirectory : Bool -> String -> Task ( String, String ) ()
+kMakeDirectory =
+    Eco.Kernel.FileSystem.makeDirectory
+
+
+kMakeTempDirectory : String -> Task ( String, String ) String
+kMakeTempDirectory =
+    Eco.Kernel.FileSystem.makeTempDirectory
+
+
+kLink : String -> String -> Task ( String, String ) ()
+kLink =
+    Eco.Kernel.FileSystem.link
+
+
+kSymlink : String -> String -> Task ( String, String ) ()
+kSymlink =
+    Eco.Kernel.FileSystem.symlink
+
+
+kReadLink : String -> Task ( String, String ) String
+kReadLink =
+    Eco.Kernel.FileSystem.readLink
+
+
+kUnlink : String -> Task ( String, String ) ()
+kUnlink =
+    Eco.Kernel.FileSystem.unlink
+
+
+kReadFileStream : Int -> Int -> String -> Task ( String, String ) Int
+kReadFileStream =
+    Eco.Kernel.FileSystem.readFileStream
+
+
+kWriteFileStream : Int -> Int -> String -> Task ( String, String ) Int
+kWriteFileStream =
+    Eco.Kernel.FileSystem.writeFileStream
+
+
+kHomeDirectory : Task Never String
+kHomeDirectory =
+    Eco.Kernel.FileSystem.homeDirectory
+
+
+kCurrentWorkingDirectory : Task Never String
+kCurrentWorkingDirectory =
+    Eco.Kernel.FileSystem.currentWorkingDirectory
+
+
+kTmpDirectory : Task Never String
+kTmpDirectory =
+    Eco.Kernel.FileSystem.tmpDirectory
+
+
+kDevNull : Task Never String
+kDevNull =
+    Eco.Kernel.FileSystem.devNull
+
+
+{-| JS only (D15): used by the manager body above, which the native backend drops.
+-}
+kAttachWatchListener : String -> Bool -> (( Int, Maybe String ) -> Task Never ()) -> Task Never ()
+kAttachWatchListener =
+    Eco.Kernel.FileSystem.attachWatchListener

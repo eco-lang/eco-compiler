@@ -43,6 +43,10 @@ struct ChannelResult {
     bool eof = false;       // Read: end of input (bytes empty)
     std::string bytes;      // Read: the data (non-empty unless eof or err)
     size_t written = 0;     // Write: bytes written (all of them on success)
+    // err != 0: the stream's error reason, when the channel has a better one
+    // than the errno text (HttpTransferChannel: "network error: <curl
+    // message>"). Empty: the stream table describes `err`.
+    std::string reason;
 };
 
 class ByteChannel {

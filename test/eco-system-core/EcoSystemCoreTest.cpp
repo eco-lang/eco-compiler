@@ -18,6 +18,7 @@
 #include "eco-system/Core/Registry.hpp"
 #include "eco-system/Core/SignalService.hpp"
 #include "eco-system/Core/SysWorkPool.hpp"
+#include "eco-system/HttpServer/HttpServerService.hpp"
 
 #include <atomic>
 #include <cerrno>
@@ -34,8 +35,12 @@
 #include <thread>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 using namespace Eco::System;
@@ -361,7 +366,22 @@ void (*currentHandler(int signo))(int) {
 }
 
 std::vector<int> g_signals;
-void recordSignal(int signo) { g_signals.push_back(signo); }
+void recordSignal(int signo, void*) { g_signals.push_back(signo); }
+
+// Waits until the reader thread has queued at least one signal.
+void waitSignalReady() {
+    auto& svc = SignalService::instance();
+    auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (!svc.hasReady() && Clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
+// Raises `signo` and runs the drain until it has been delivered.
+void raiseAndDrain(int signo) {
+    CHECK(::raise(signo) == 0);
+    waitSignalReady();
+    signalDrain();
+}
 
 void testSignalService() {
     std::printf("SignalService: SIGUSR1\n");
@@ -382,15 +402,21 @@ void testSignalService() {
     auto got = popN<int>(1, 5000, [&](int& s) { return svc.tryPop(s); });
     CHECK(got.size() == 1 && got[0] == SIGUSR1);
 
-    // Through the drain and the dispatch callback.
-    svc.setDispatch(&recordSignal);
-    CHECK(::raise(SIGUSR1) == 0);
-    auto deadline = Clock::now() + std::chrono::seconds(5);
-    while (!svc.hasReady() && Clock::now() < deadline)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    signalDrain();
+    // Through the drain and a listener (the listener holds a third
+    // subscription).
+    auto lid = svc.addListener(SIGUSR1, &recordSignal, nullptr);
+    CHECK(lid != 0);
+    CHECK(svc.subscribers(SIGUSR1) == 3);
+    CHECK(svc.listenerCount(SIGUSR1) == 1);
+    raiseAndDrain(SIGUSR1);
     CHECK(g_signals.size() == 1 && g_signals[0] == SIGUSR1);
-    svc.setDispatch(nullptr);
+    svc.removeListener(lid);
+    CHECK(svc.subscribers(SIGUSR1) == 2);
+    CHECK(svc.listenerCount(SIGUSR1) == 0);
+    svc.removeListener(lid);   // unknown id: ignored
+    CHECK(svc.subscribers(SIGUSR1) == 2);
+    raiseAndDrain(SIGUSR1);    // no listener: popped and dropped
+    CHECK(g_signals.size() == 1);
 
     svc.unsubscribe(SIGUSR1);
     CHECK(svc.subscribers(SIGUSR1) == 1);
@@ -403,6 +429,118 @@ void testSignalService() {
 
     CHECK(!svc.subscribe(SIGKILL));
     CHECK(!svc.subscribe(0));
+}
+
+struct ListenerLog {
+    std::vector<std::string> events;
+};
+ListenerLog g_llog;
+SignalService::ListenerId g_selfRemoving = 0;
+SignalService::ListenerId g_victim = 0;
+
+void listenerA(int signo, void* ctx) {
+    g_llog.events.push_back(std::string("A") + (ctx ? static_cast<const char*>(ctx) : "") +
+                            std::to_string(signo));
+}
+void listenerB(int signo, void*) { g_llog.events.push_back("B" + std::to_string(signo)); }
+// Removes itself and the victim listener registered after it.
+void listenerRemover(int signo, void*) {
+    g_llog.events.push_back("R" + std::to_string(signo));
+    SignalService::instance().removeListener(g_selfRemoving);
+    SignalService::instance().removeListener(g_victim);
+}
+
+void testSignalServiceListeners() {
+    std::printf("SignalService: per-signal, multi-listener dispatch\n");
+    auto& svc = SignalService::instance();
+    static const char tag[] = "x";
+    auto a1 = svc.addListener(SIGUSR1, &listenerA, const_cast<char*>(tag));
+    auto b1 = svc.addListener(SIGUSR1, &listenerB, nullptr);
+    auto a2 = svc.addListener(SIGUSR2, &listenerA, nullptr);
+    CHECK(a1 != 0 && b1 != 0 && a2 != 0 && a1 != b1 && b1 != a2);
+    CHECK(svc.listenerCount(SIGUSR1) == 2 && svc.listenerCount(SIGUSR2) == 1);
+    CHECK(svc.subscribers(SIGUSR1) == 2 && svc.subscribers(SIGUSR2) == 1);
+    CHECK(!svc.addListener(SIGUSR1, nullptr, nullptr));   // no function: rejected
+    CHECK(!svc.addListener(SIGKILL, &listenerB, nullptr));
+
+    // SIGUSR1 reaches both of its listeners, in registration order, and not
+    // SIGUSR2's; SIGUSR2 reaches only its own.
+    g_llog.events.clear();
+    raiseAndDrain(SIGUSR1);
+    CHECK(g_llog.events.size() == 2);
+    if (g_llog.events.size() == 2) {
+        CHECK(g_llog.events[0] == "Ax" + std::to_string(SIGUSR1));
+        CHECK(g_llog.events[1] == "B" + std::to_string(SIGUSR1));
+    }
+    g_llog.events.clear();
+    raiseAndDrain(SIGUSR2);
+    CHECK(g_llog.events.size() == 1 && g_llog.events[0] == "A" + std::to_string(SIGUSR2));
+
+    // Direct dispatch (what the drain does per event) needs no signal.
+    g_llog.events.clear();
+    svc.dispatch(SIGUSR2);
+    CHECK(g_llog.events.size() == 1);
+
+    // A listener that removes itself and a later listener: the later one is
+    // not called for this event, and both are gone afterwards.
+    g_selfRemoving = svc.addListener(SIGUSR1, &listenerRemover, nullptr);
+    g_victim = svc.addListener(SIGUSR1, &listenerB, nullptr);
+    CHECK(svc.listenerCount(SIGUSR1) == 4);
+    g_llog.events.clear();
+    svc.dispatch(SIGUSR1);
+    CHECK(g_llog.events.size() == 3);   // A, B, R (the victim B is skipped)
+    if (g_llog.events.size() == 3) CHECK(g_llog.events[2] == "R" + std::to_string(SIGUSR1));
+    CHECK(svc.listenerCount(SIGUSR1) == 2);
+    CHECK(svc.subscribers(SIGUSR1) == 2);
+
+    // Removing the last listener of a signal restores its disposition.
+    svc.removeListener(a1);
+    svc.removeListener(b1);
+    svc.removeListener(a2);
+    CHECK(svc.listenerCount(SIGUSR1) == 0 && svc.listenerCount(SIGUSR2) == 0);
+    CHECK(svc.subscribers(SIGUSR1) == 0 && svc.subscribers(SIGUSR2) == 0);
+    CHECK(currentHandler(SIGUSR1) == SIG_DFL);
+    CHECK(currentHandler(SIGUSR2) == SIG_DFL);
+}
+
+std::atomic<int> g_prevHandlerHits{0};
+extern "C" void prevHandler(int) { g_prevHandlerHits.fetch_add(1); }
+
+void testSignalServiceChainToPrevious() {
+    std::printf("SignalService: chainToPrevious\n");
+    auto& svc = SignalService::instance();
+
+    // Previous disposition is a handler: chaining runs it once, and ours is
+    // reinstalled afterwards (the event is NOT queued again).
+    struct sigaction mine {};
+    mine.sa_handler = &prevHandler;
+    sigemptyset(&mine.sa_mask);
+    ::sigaction(SIGUSR2, &mine, nullptr);
+    auto lid = svc.addListener(SIGUSR2, &listenerB, nullptr);
+    CHECK(lid != 0);
+    svc.chainToPrevious(SIGUSR2);
+    CHECK(g_prevHandlerHits.load() == 1);
+    CHECK(currentHandler(SIGUSR2) != &prevHandler);   // ours again
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(!svc.hasReady());
+    svc.removeListener(lid);
+    CHECK(currentHandler(SIGUSR2) == &prevHandler);   // restored on removal
+
+    // Previous disposition SIG_IGN: the process survives the raise.
+    mine.sa_handler = SIG_IGN;
+    ::sigaction(SIGUSR2, &mine, nullptr);
+    lid = svc.addListener(SIGUSR2, &listenerB, nullptr);
+    svc.chainToPrevious(SIGUSR2);
+    CHECK(currentHandler(SIGUSR2) != SIG_IGN);
+    svc.removeListener(lid);
+    CHECK(currentHandler(SIGUSR2) == SIG_IGN);
+
+    // Not subscribed: a no-op (SIG_IGN stays, nothing raised).
+    svc.chainToPrevious(SIGUSR2);
+    CHECK(currentHandler(SIGUSR2) == SIG_IGN);
+
+    mine.sa_handler = SIG_DFL;
+    ::sigaction(SIGUSR2, &mine, nullptr);
 }
 
 void testSignalServiceRestoresCustomHandler() {
@@ -429,6 +567,9 @@ void testSignalServiceEmbedMode() {
     CHECK(svc.subscribers(SIGUSR1) == 0);
     CHECK(currentHandler(SIGUSR1) == SIG_DFL);
     svc.unsubscribe(SIGUSR1);   // matching no-op
+    CHECK(currentHandler(SIGUSR1) == SIG_DFL);
+    CHECK(svc.addListener(SIGUSR1, &listenerB, nullptr) == 0);   // inactive
+    CHECK(svc.listenerCount(SIGUSR1) == 0);
     CHECK(currentHandler(SIGUSR1) == SIG_DFL);
     sched.setEmbedMode(false);
 }
@@ -544,6 +685,244 @@ void testRegistry() {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// HttpServer service (plans/eco-system-library.md Phase 7): the wire format
+// of responses, and the accept/connection threads driven over real sockets
+// without Elm. Lives here because the service is POD-only like Core.
+// ---------------------------------------------------------------------------
+
+namespace HttpSrvT = Eco::System::HttpSrv;
+
+bool contains(const std::string& s, const std::string& sub) {
+    return s.find(sub) != std::string::npos;
+}
+
+void testHttpServerWireFormat() {
+    std::printf("HttpServer: response wire format\n");
+    HttpSrvT::ResponseData r;
+    r.status = 201;
+    r.headers = {{"X-Multi", "a"}, {"X-Multi", "b"}, {"Content-Length", "999"},
+                 {"connection", "keep-alive"}, {"Bad", "x\r\nInjected: 1"}, {"Date", "today"}};
+    r.body = "pong";
+    std::string out = HttpSrvT::serializeResponse(r, false);
+    CHECK(out.rfind("HTTP/1.1 201 Created\r\n", 0) == 0);
+    CHECK(contains(out, "\r\nX-Multi: a\r\nX-Multi: b\r\n"));
+    CHECK(contains(out, "\r\nContent-Length: 4\r\n"));
+    CHECK(!contains(out, "999"));
+    CHECK(!contains(out, "keep-alive"));
+    CHECK(!contains(out, "Injected"));
+    CHECK(contains(out, "\r\nDate: today\r\n"));
+    CHECK(contains(out, "\r\nConnection: close\r\n\r\npong"));
+    CHECK(out.size() >= 4 && out.compare(out.size() - 4, 4, "pong") == 0);
+
+    std::string head = HttpSrvT::serializeResponse(r, /*isHead=*/true);
+    CHECK(contains(head, "\r\nContent-Length: 4\r\n"));
+    CHECK(head.size() >= 4 && head.compare(head.size() - 4, 4, "\r\n\r\n") == 0);
+
+    HttpSrvT::ResponseData nc;
+    nc.status = 204;
+    nc.body = "ignored";
+    std::string noContent = HttpSrvT::serializeResponse(nc, false);
+    CHECK(noContent.rfind("HTTP/1.1 204 No Content\r\n", 0) == 0);
+    CHECK(!contains(noContent, "Content-Length"));
+    CHECK(!contains(noContent, "ignored"));
+    CHECK(contains(noContent, "\r\nDate: "));
+
+    HttpSrvT::ResponseData odd;
+    odd.status = 42;   // out of range → 500
+    CHECK(HttpSrvT::serializeResponse(odd, false).rfind("HTTP/1.1 500 Internal Server Error\r\n", 0) == 0);
+    odd.status = 299;
+    CHECK(HttpSrvT::serializeResponse(odd, false).rfind("HTTP/1.1 299 unknown\r\n", 0) == 0);
+    CHECK(std::string(HttpSrvT::statusReason(404)) == "Not Found");
+}
+
+int connectTo(int port) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = htons(static_cast<uint16_t>(port));
+    if (::connect(fd, reinterpret_cast<struct sockaddr*>(&a), sizeof(a)) < 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+void sendAll(int fd, const std::string& s) {
+    size_t off = 0;
+    while (off < s.size()) {
+#if defined(MSG_NOSIGNAL)
+        ssize_t n = ::send(fd, s.data() + off, s.size() - off, MSG_NOSIGNAL);
+#else
+        ssize_t n = ::send(fd, s.data() + off, s.size() - off, 0);
+#endif
+        if (n <= 0) return;
+        off += static_cast<size_t>(n);
+    }
+}
+
+// Reads until EOF (or 5 s).
+std::string readToEof(int fd) {
+    std::string out;
+    char buf[4096];
+    auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (Clock::now() < deadline) {
+        struct pollfd p{fd, POLLIN, 0};
+        if (::poll(&p, 1, 100) <= 0) continue;
+        ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        out.append(buf, static_cast<size_t>(n));
+    }
+    return out;
+}
+
+// Reads until `needle` arrives (or 5 s), without waiting for EOF.
+std::string readUntil(int fd, const std::string& needle) {
+    std::string out;
+    char buf[4096];
+    auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (!contains(out, needle) && Clock::now() < deadline) {
+        struct pollfd p{fd, POLLIN, 0};
+        if (::poll(&p, 1, 100) <= 0) continue;
+        ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        out.append(buf, static_cast<size_t>(n));
+    }
+    return out;
+}
+
+std::vector<HttpSrvT::RequestEvent> popRequests(size_t n) {
+    std::vector<HttpSrvT::RequestEvent> out;
+    auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (out.size() < n && Clock::now() < deadline) {
+        HttpSrvT::HttpServerService::instance().drainRequests(out);
+        if (out.size() < n) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return out;
+}
+
+std::vector<uint64_t> popDone(size_t n) {
+    std::vector<uint64_t> out;
+    auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (out.size() < n && Clock::now() < deadline) {
+        HttpSrvT::HttpServerService::instance().drainDone(out);
+        if (out.size() < n) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return out;
+}
+
+void testHttpServerService() {
+    std::printf("HttpServer: listen, parse, respond over sockets\n");
+    auto& svc = HttpSrvT::HttpServerService::instance();
+
+    HttpSrvT::ListenResult lr = HttpSrvT::listenOn("127.0.0.1", 0);
+    CHECK(lr.fd >= 0);
+    if (lr.fd < 0) return;
+    CHECK((::fcntl(lr.fd, F_GETFD) & FD_CLOEXEC) != 0);
+    struct sockaddr_in addr{};
+    socklen_t len = sizeof(addr);
+    CHECK(::getsockname(lr.fd, reinterpret_cast<struct sockaddr*>(&addr), &len) == 0);
+    int port = ntohs(addr.sin_port);
+
+    // The port is taken now: a second listener fails with EADDRINUSE.
+    HttpSrvT::ListenResult busy = HttpSrvT::listenOn("127.0.0.1", port);
+    CHECK(busy.fd < 0 && busy.code == "EADDRINUSE");
+    CHECK(contains(busy.message, "listen EADDRINUSE: "));
+    CHECK(contains(busy.message, "127.0.0.1:" + std::to_string(port)));
+    HttpSrvT::ListenResult bad = HttpSrvT::listenOn("no-such-host.invalid", 0);
+    CHECK(bad.fd < 0 && bad.code == "ENOTFOUND");
+    HttpSrvT::ListenResult range = HttpSrvT::listenOn("127.0.0.1", 70000);
+    CHECK(range.fd < 0 && range.code == "ERR_SOCKET_BAD_PORT");
+
+    int64_t sid = svc.startServer(lr.fd, "127.0.0.1", port);
+    CHECK(sid > 0);
+
+    // 1. A chunked POST, split over two writes, with a repeated header and
+    //    no Host header: the URL falls back to host:port (E.5).
+    int c1 = connectTo(port);
+    CHECK(c1 >= 0);
+    sendAll(c1, "POST /echo?x=1 HTTP/1.1\r\nX-Dup: 1\r\nX-D");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    sendAll(c1, "up: 2\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n");
+    auto evs = popRequests(1);
+    CHECK(evs.size() == 1);
+    if (evs.size() == 1) {
+        const auto& ev = evs[0];
+        CHECK(ev.serverId == sid);
+        CHECK(ev.method == "POST");
+        CHECK(ev.url == "http://127.0.0.1:" + std::to_string(port) + "/echo?x=1");
+        CHECK(ev.body == "hello world");
+        CHECK(ev.headers.size() == 3);
+        if (ev.headers.size() == 3) {
+            CHECK(ev.headers[0].first == "X-Dup" && ev.headers[0].second == "1");
+            CHECK(ev.headers[1].first == "X-Dup" && ev.headers[1].second == "2");
+        }
+        HttpSrvT::ResponseData r;
+        r.status = 200;
+        r.headers = {{"Content-Type", "text/plain"}};
+        r.body = "pong";
+        CHECK(svc.respond(ev.key, 77, r));
+        CHECK(!svc.respond(ev.key, 78, r));   // answered already
+        std::string resp = readToEof(c1);
+        CHECK(resp.rfind("HTTP/1.1 200 OK\r\n", 0) == 0);
+        CHECK(contains(resp, "\r\nContent-Type: text/plain\r\n"));
+        CHECK(contains(resp, "\r\nContent-Length: 4\r\n"));
+        CHECK(contains(resp, "\r\nConnection: close\r\n\r\npong"));
+        auto done = popDone(1);
+        CHECK(done.size() == 1 && done[0] == 77);
+    }
+    if (c1 >= 0) ::close(c1);
+
+    // 2. A Host header wins; OPTIONS is passed through by name; HEAD gets
+    //    no body; Expect: 100-continue is answered before the body.
+    int c2 = connectTo(port);
+    sendAll(c2, "OPTIONS * HTTP/1.1\r\nHost: example.test:8080\r\n\r\n");
+    int c3 = connectTo(port);
+    sendAll(c3, "HEAD /h HTTP/1.1\r\nHost: h\r\n\r\n");
+    int c4 = connectTo(port);
+    sendAll(c4, "PUT /up HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\nExpect: 100-continue\r\n\r\n");
+    std::string cont = readUntil(c4, "\r\n\r\n");
+    CHECK(cont == "HTTP/1.1 100 Continue\r\n\r\n");
+    sendAll(c4, "abc");
+    auto evs2 = popRequests(3);
+    CHECK(evs2.size() == 3);
+    for (const auto& ev : evs2) {
+        HttpSrvT::ResponseData r;
+        r.body = "body";
+        if (ev.method == "OPTIONS") {
+            CHECK(ev.url == "http://example.test:8080/");
+            CHECK(ev.body.empty());
+        } else if (ev.method == "HEAD") {
+            CHECK(ev.url == "http://h/h");
+        } else {
+            CHECK(ev.method == "PUT");
+            CHECK(ev.body == "abc");
+        }
+        CHECK(svc.respond(ev.key, 0, r));   // token 0: nothing to complete
+    }
+    std::string r2 = readToEof(c2), r3 = readToEof(c3), r4 = readToEof(c4);
+    CHECK(contains(r2, "\r\n\r\nbody"));
+    CHECK(contains(r3, "Content-Length: 4\r\n") && !contains(r3, "\r\n\r\nbody"));
+    CHECK(contains(r4, "\r\n\r\nbody"));
+    for (int fd : {c2, c3, c4}) if (fd >= 0) ::close(fd);
+
+    // 3. Garbage is answered 400 by the connection thread; nothing reaches Elm.
+    int c5 = connectTo(port);
+    sendAll(c5, "NOT AN HTTP REQUEST\r\n\r\n");
+    std::string r5 = readToEof(c5);
+    CHECK(r5.rfind("HTTP/1.1 400 Bad Request\r\n", 0) == 0);
+    if (c5 >= 0) ::close(c5);
+    std::vector<HttpSrvT::RequestEvent> none;
+    svc.drainRequests(none);
+    CHECK(none.empty());
+
+    // 4. Unknown keys are refused.
+    CHECK(!svc.respond(987654321, 1, HttpSrvT::ResponseData{}));
+}
+
+
 int main() {
     // The Scheduler singleton needs a heap on this (the main) thread, and must
     // be constructed here, before any service thread can touch it.
@@ -561,10 +940,14 @@ int main() {
     testFdChannelStdioNeverClosed();
     testChannelDrainDispatch();
     testSignalService();
+    testSignalServiceListeners();
+    testSignalServiceChainToPrevious();
     testSignalServiceRestoresCustomHandler();
     testSignalServiceEmbedMode();
     testGuardsAndHelpers();
     testRegistry();
+    testHttpServerWireFormat();
+    testHttpServerService();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     std::printf(g_failures == 0 ? "ALL PASSED\n" : "FAILED\n");

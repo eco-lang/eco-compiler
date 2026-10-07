@@ -11,9 +11,15 @@
 //   /anything        -> 200 JSON reflecting {method, contentType, body, headers}
 //   /status/{code}   -> responds with HTTP status {code}
 //   /echo-headers    -> 200 JSON of request headers; sets X-Test-Server: eco
+//                       (?dup=1 also sends `X-Dup: one` and `X-Dup: two`)
 //   /bytes/{n}       -> 200 application/octet-stream, n bytes (i & 0xff)
 //   /slow            -> sleeps ~3s then 200 (drives Timeout)
 //   /redirect        -> 302 Location: /anything
+//   /drip, /drip-chunked -> a body written in 8 chunks over ~ms (see below)
+//   /truncate        -> 200 with Content-Length: 1000, then 10 bytes and close
+//
+// Request bodies with `Transfer-Encoding: chunked` (Http.Stream stream
+// bodies) are de-chunked before routing.
 //   /package.zip     -> 200 application/zip, a canned 2-entry STORED zip
 //                       (for the Eco.Http.getArchive E2E test)
 //===----------------------------------------------------------------------===//
@@ -104,7 +110,10 @@ struct Conn {
         return ssl ? SSL_read(ssl, buf, static_cast<int>(n)) : ::read(fd, buf, n);
     }
     ssize_t write(const void* buf, size_t n) {
-        return ssl ? SSL_write(ssl, buf, static_cast<int>(n)) : ::write(fd, buf, n);
+        // MSG_NOSIGNAL: a client that hangs up mid-body (Http.Stream tests
+        // cancel and kill transfers) must not SIGPIPE the test runner.
+        return ssl ? SSL_write(ssl, buf, static_cast<int>(n))
+                   : ::send(fd, buf, n, MSG_NOSIGNAL);
     }
     void close() {
         if (ssl) { SSL_shutdown(ssl); SSL_free(ssl); }
@@ -146,6 +155,40 @@ inline bool readRequest(Conn& conn, ParsedRequest& req) {
         while (!val.empty() && (val.front() == ' ' || val.front() == '\t')) val.erase(0, 1);
         for (auto& c : key) c = static_cast<char>(std::tolower(c));
         req.headers[key] = val;
+    }
+
+    auto te = req.headers.find("transfer-encoding");
+    if (te != req.headers.end() && te->second.find("chunked") != std::string::npos) {
+        // De-chunk: "<hex size>[;ext]\r\n<data>\r\n" ... "0\r\n<trailers>\r\n".
+        std::string in = rest;
+        size_t pos = 0;
+        auto fill = [&](size_t need) {
+            while (in.size() < need) {
+                ssize_t n = conn.read(tmp, sizeof(tmp));
+                if (n <= 0) return false;
+                in.append(tmp, static_cast<size_t>(n));
+            }
+            return true;
+        };
+        for (;;) {
+            size_t eol;
+            while ((eol = in.find("\r\n", pos)) == std::string::npos) {
+                if (!fill(in.size() + 1)) return !req.method.empty();
+            }
+            size_t size = std::strtoul(in.c_str() + pos, nullptr, 16);
+            pos = eol + 2;
+            if (size == 0) {
+                // Trailers end with an empty line.
+                while (in.find("\r\n", pos) == std::string::npos) {
+                    if (!fill(in.size() + 1)) break;
+                }
+                break;
+            }
+            if (!fill(pos + size + 2)) return !req.method.empty();
+            req.body.append(in, pos, size);
+            pos += size + 2;
+        }
+        return !req.method.empty();
     }
 
     size_t contentLength = 0;
@@ -227,8 +270,9 @@ inline void handleConnection(Conn conn) {
                 first = false;
             }
             os << "}";
-            sendResponse(conn, 200, "OK", "application/json", os.str(),
-                         "X-Test-Server: eco\r\n");
+            std::string extra = "X-Test-Server: eco\r\n";
+            if (queryLong(query, "dup", 0) == 1) extra += "X-Dup: one\r\nX-Dup: two\r\n";
+            sendResponse(conn, 200, "OK", "application/json", os.str(), extra);
         } else if (route.rfind("/bytes/", 0) == 0) {
             int n = std::atoi(route.substr(7).c_str());
             if (n < 0) n = 0;
@@ -300,6 +344,14 @@ inline void handleConnection(Conn conn) {
                 }
             }
             writeAll(conn, "0\r\n\r\n");  // terminating chunk
+        } else if (route == "/truncate") {
+            // Promises 1000 bytes, sends 10, closes: the client sees a
+            // truncated body (curl: CURLE_PARTIAL_FILE).
+            writeAll(conn, "HTTP/1.1 200 OK\r\n"
+                           "Content-Type: application/octet-stream\r\n"
+                           "Content-Length: 1000\r\n"
+                           "Connection: close\r\n\r\n"
+                           "0123456789");
         } else if (route == "/redirect") {
             sendResponse(conn, 302, "Found", "text/plain", "", "Location: /anything\r\n");
         } else if (route == "/package.zip") {

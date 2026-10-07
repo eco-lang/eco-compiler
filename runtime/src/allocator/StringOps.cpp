@@ -698,9 +698,10 @@ HPointer join(void* sep, HPointer stringList) {
 
     if (count == 0) return alloc::emptyString();
     total_len += sep_len * (count - 1);
-    // A non-empty list can still join to "" (all elements empty and the
-    // separator never emitted, e.g. join ", " [""]): HEAP_071, the result is
-    // the Empty constant, never a zero-length leaf.
+    // A non-empty list can still join to "": every element empty and the
+    // separator empty or never emitted (e.g. `String.join sep [""]`, which
+    // `String.replace` reaches for an empty input). The result is the Empty
+    // constant, never a zero-length object (HEAP_071; allocAsciiOut asserts).
     if (total_len == 0) return alloc::emptyString();
     // The separator (when it contributes) must also be UTF-8 for a byte-join.
     bool sepUtf8 = (sep_len == 0) || (sep && isUtf8(sep));

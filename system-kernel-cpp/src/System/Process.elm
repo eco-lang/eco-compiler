@@ -1,4 +1,4 @@
-module System.Process exposing
+effect module System.Process where { command = MyCmd } exposing
     ( RunOptions, defaultRunOptions, Shell(..), WorkingDirectory(..), EnvironmentVariables(..), RunDuration(..)
     , run, SuccessfulRun, FailedRun(..)
     , spawn, SpawnOptions, StreamIO, Connection(..), defaultSpawnOptions
@@ -28,8 +28,11 @@ function can be called directly.
 
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
+import Eco.Kernel.ChildProcess
+import Platform
 import Process
 import Stream
+import Stream.Internal
 import Task exposing (Task)
 
 
@@ -44,7 +47,8 @@ import Task exposing (Task)
   - `environmentVariables` specifies the environment variables the process has access to.
   - `maximumBytesWrittenToStreams` is an upper bound on the number of bytes the process may write
     to each of stdout and stderr. A process that writes more is terminated with `SIGTERM` and the
-    run fails with a `ProgramError` whose `exitCode` is `-1`, holding the output collected so far.
+    run fails with a `ProgramError` whose `exitCode` is `-1`, holding the output collected so far
+    (truncated at the limit). A value of `0` or less means no limit.
   - `runDuration` specifies a maximum amount of time the process is allowed to run before it is
     terminated.
 
@@ -64,7 +68,12 @@ no time limit.
 -}
 defaultRunOptions : RunOptions
 defaultRunOptions =
-    Debug.todo "Implement System API"
+    { shell = DefaultShell
+    , workingDirectory = InheritWorkingDirectory
+    , environmentVariables = InheritEnvironmentVariables
+    , maximumBytesWrittenToStreams = 1024 * 1024
+    , runDuration = NoLimit
+    }
 
 
 {-| Which shell should the child process run in?
@@ -166,12 +175,20 @@ type alias SuccessfulRun =
     System.Process.run "cat" [ "my_file" ] System.Process.defaultRunOptions
 
 The task succeeds if the program exits with code 0, and fails with a [`FailedRun`](#FailedRun)
-otherwise.
+otherwise. The program's standard input is empty (`/dev/null`). Killing the task with
+`Process.kill` terminates the program with `SIGTERM`.
 
 -}
 run : String -> List String -> RunOptions -> Task FailedRun SuccessfulRun
 run program arguments options =
-    Debug.todo "Implement System API"
+    kRun program
+        arguments
+        (encodeShell options.shell)
+        (encodeWorkingDirectory options.workingDirectory)
+        (encodeEnvironmentVariables options.environmentVariables)
+        ( max 0 options.maximumBytesWrittenToStreams, encodeRunDuration options.runDuration )
+        |> Task.map (\( stdout, stderr ) -> { stdout = stdout, stderr = stderr })
+        |> Task.mapError (decodeFailedRun program arguments)
 
 
 
@@ -238,7 +255,13 @@ and no time limit.
 -}
 defaultSpawnOptions : Connection msg -> (Int -> msg) -> SpawnOptions msg
 defaultSpawnOptions connection onExit =
-    Debug.todo "Implement System API"
+    { shell = DefaultShell
+    , workingDirectory = InheritWorkingDirectory
+    , environmentVariables = InheritEnvironmentVariables
+    , runDuration = NoLimit
+    , connection = connection
+    , onExit = onExit
+    }
 
 
 {-| Spawn a program with the given name, arguments and options, and let it run in the
@@ -247,9 +270,205 @@ background. This is mostly helpful for starting long-running processes.
     System.Process.spawn "tail" [ "-f", "my_file" ] mySpawnOptions
 
 You receive the `connection` message once the process has started, and the `onExit` message
-when it terminates.
+when it terminates. If the program cannot be started at all, you still receive the `connection`
+message, immediately followed by `onExit` with a negative exit code: minus the number of the
+system error (`-2` when the program does not exist), as in Node.
 
 -}
 spawn : String -> List String -> SpawnOptions msg -> Cmd msg
 spawn program arguments options =
-    Debug.todo "Implement System API"
+    command
+        (Spawn
+            ( ( program, arguments )
+            , ( encodeShell options.shell, encodeWorkingDirectory options.workingDirectory )
+            , ( encodeEnvironmentVariables options.environmentVariables
+              , encodeRunDuration options.runDuration
+              , connectionKind options.connection
+              )
+            )
+            (onInitFor options.connection)
+            (\( exitCode, _ ) -> options.onExit exitCode)
+        )
+
+
+
+-- ENCODING (plans/eco-system-library.md Appendix B.4 and C.3)
+
+
+encodeShell : Shell -> ( Int, String )
+encodeShell shell =
+    case shell of
+        NoShell ->
+            ( 0, "" )
+
+        DefaultShell ->
+            ( 1, "" )
+
+        CustomShell value ->
+            ( 2, value )
+
+
+encodeWorkingDirectory : WorkingDirectory -> ( Bool, String )
+encodeWorkingDirectory workingDirectory =
+    case workingDirectory of
+        InheritWorkingDirectory ->
+            ( True, "" )
+
+        SetWorkingDirectory value ->
+            ( False, value )
+
+
+encodeEnvironmentVariables : EnvironmentVariables -> ( Int, List ( String, String ) )
+encodeEnvironmentVariables environmentVariables =
+    case environmentVariables of
+        InheritEnvironmentVariables ->
+            ( 0, [] )
+
+        MergeWithEnvironmentVariables value ->
+            ( 1, Dict.toList value )
+
+        ReplaceEnvironmentVariables value ->
+            ( 2, Dict.toList value )
+
+
+{-| 0 means no limit.
+-}
+encodeRunDuration : RunDuration -> Int
+encodeRunDuration runDuration =
+    case runDuration of
+        NoLimit ->
+            0
+
+        Milliseconds ms ->
+            max 0 ms
+
+
+decodeFailedRun : String -> List String -> ( Int, String, ( Int, Bytes, Bytes ) ) -> FailedRun
+decodeFailedRun program arguments ( kind, errorCode, ( exitCode, stdout, stderr ) ) =
+    if kind == 0 then
+        InitError { program = program, arguments = arguments, errorCode = errorCode }
+
+    else
+        ProgramError { exitCode = exitCode, stdout = stdout, stderr = stderr }
+
+
+connectionKind : Connection msg -> Int
+connectionKind connection =
+    case connection of
+        Integrated _ ->
+            0
+
+        External _ ->
+            1
+
+        Ignored _ ->
+            2
+
+        Detached _ ->
+            3
+
+
+onInitFor : Connection msg -> ( Process.Id, Maybe ( Int, Int, Int ) ) -> msg
+onInitFor connection ( processId, streams ) =
+    case connection of
+        Integrated toMsg ->
+            toMsg processId
+
+        External toMsg ->
+            let
+                ( input, output, error ) =
+                    Maybe.withDefault ( 0, 0, 0 ) streams
+            in
+            toMsg
+                { processId = processId
+                , streams =
+                    { input = Stream.Internal.Writable input
+                    , output = Stream.Internal.Readable output
+                    , error = Stream.Internal.Readable error
+                    }
+                }
+
+        Ignored toMsg ->
+            toMsg processId
+
+        Detached toMsg ->
+            toMsg processId
+
+
+
+-- EFFECT MANAGER
+--
+-- The native backend runs the C++ manager registered as "System.Process"
+-- (src/eco-system/ChildProcess/ChildProcessManager.{hpp,cpp}, plans/eco-system-library.md
+-- Appendix C.3) and ignores the Elm functions below. The JS backend runs them
+-- (plans/eco-system-library.md Phase 10, D15): each Spawn starts the child through a
+-- JS-only kernel, which also creates the Elm process standing for it, then delivers
+-- onInit; the kernel delivers onExit when the child exits. The constructor layout of
+-- MyCmd is mirrored by ChildProcessManager.hpp: keep them in sync.
+
+
+type MyCmd msg
+    = Spawn
+        ( ( String, List String ), ( ( Int, String ), ( Bool, String ) ), ( ( Int, List ( String, String ) ), Int, Int ) )
+        (( Process.Id, Maybe ( Int, Int, Int ) ) -> msg)
+        (( Int, Int ) -> msg)
+
+
+cmdMap : (a -> b) -> MyCmd a -> MyCmd b
+cmdMap f (Spawn spec onInit onExit) =
+    Spawn spec (onInit >> f) (onExit >> f)
+
+
+init : Task Never ()
+init =
+    Task.succeed ()
+
+
+onEffects : Platform.Router msg Never -> List (MyCmd msg) -> () -> Task Never ()
+onEffects router cmds _ =
+    -- Effects arrive in reverse order of declaration.
+    List.reverse cmds
+        |> List.map (spawnChild router)
+        |> Task.sequence
+        |> Task.map (\_ -> ())
+
+
+spawnChild : Platform.Router msg Never -> MyCmd msg -> Task Never ()
+spawnChild router (Spawn spec onInit onExit) =
+    kSpawn (\exit -> Platform.sendToApp router (onExit exit)) spec
+        |> Task.andThen (\initArg -> Platform.sendToApp router (onInit initArg))
+
+
+onSelfMsg : Platform.Router msg Never -> Never -> () -> Task Never ()
+onSelfMsg _ _ _ =
+    Task.succeed ()
+
+
+
+-- KERNELS
+-- The annotation fixes the kernel ABI (plans/eco-system-library.md Appendix B.4).
+
+
+kRun :
+    String
+    -> List String
+    -> ( Int, String )
+    -> ( Bool, String )
+    -> ( Int, List ( String, String ) )
+    -> ( Int, Int )
+    -> Task ( Int, String, ( Int, Bytes, Bytes ) ) ( Bytes, Bytes )
+kRun =
+    Eco.Kernel.ChildProcess.run
+
+
+
+-- JS-only kernel, used by the effect-manager body above (the native backend drops that
+-- body, so it has no C++ counterpart).
+
+
+kSpawn :
+    (( Int, Int ) -> Task Never ())
+    -> ( ( String, List String ), ( ( Int, String ), ( Bool, String ) ), ( ( Int, List ( String, String ) ), Int, Int ) )
+    -> Task Never ( Process.Id, Maybe ( Int, Int, Int ) )
+kSpawn =
+    Eco.Kernel.ChildProcess.spawn

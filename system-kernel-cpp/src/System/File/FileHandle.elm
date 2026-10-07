@@ -10,8 +10,9 @@ module System.File.FileHandle exposing
 represents an open file. If you know you're going to perform repeated operations on a file, it
 will be more efficient through a [FileHandle](#FileHandle).
 
-The error type is the [Error](System-File#Error) from [System.File](System-File), but
-[errorPath](System-File#errorPath) will always return an empty path.
+The error type is the [Error](System-File#Error) from [System.File](System-File). For operations
+on an open [FileHandle](#FileHandle), [errorPath](System-File#errorPath) returns the empty path;
+only a failure to open a file reports the path that was being opened.
 
 Compared with gren-node's file handle module, the phantom types are named
 [ReadAccess](#ReadAccess) and [WriteAccess](#WriteAccess) (gren: `ReadPermission` and
@@ -42,8 +43,10 @@ Compared with gren-node's file handle module, the phantom types are named
 -}
 
 import Bytes exposing (Bytes)
+import Eco.Kernel.FileSystem
 import System.File as File
-import System.File.Path exposing (Path)
+import System.File.Internal
+import System.File.Path as Path exposing (Path)
 import Task exposing (Task)
 import Time
 
@@ -106,7 +109,11 @@ in other parts of your code.
 -}
 makeReadOnly : ReadWriteableFileHandle -> FileHandle ReadAccess Never
 makeReadOnly handle =
-    Debug.todo "Implement System API"
+    let
+        (FileHandle fd) =
+            handle
+    in
+    FileHandle fd
 
 
 {-| This lets you downgrade a [ReadWriteableFileHandle](#ReadWriteableFileHandle) to a
@@ -118,7 +125,11 @@ in other parts of your code.
 -}
 makeWriteOnly : ReadWriteableFileHandle -> FileHandle Never WriteAccess
 makeWriteOnly handle =
-    Debug.todo "Implement System API"
+    let
+        (FileHandle fd) =
+            handle
+    in
+    FileHandle fd
 
 
 
@@ -129,7 +140,7 @@ makeWriteOnly handle =
 -}
 openForRead : Path -> Task File.Error (FileHandle ReadAccess Never)
 openForRead path =
-    Debug.todo "Implement System API"
+    openImpl "r" path
 
 
 {-| There are several ways to open a file for writing.
@@ -150,14 +161,38 @@ type OpenForWriteBehaviour
 -}
 openForWrite : OpenForWriteBehaviour -> Path -> Task File.Error (FileHandle Never WriteAccess)
 openForWrite behaviour path =
-    Debug.todo "Implement System API"
+    let
+        access =
+            case behaviour of
+                EnsureEmpty ->
+                    "w"
+
+                ExpectExisting ->
+                    "r+"
+
+                ExpectNotExisting ->
+                    "wx"
+    in
+    openImpl access path
 
 
 {-| Open a file at the provided path with both read and write access.
 -}
 openForReadAndWrite : OpenForWriteBehaviour -> Path -> Task File.Error ReadWriteableFileHandle
 openForReadAndWrite behaviour path =
-    Debug.todo "Implement System API"
+    let
+        access =
+            case behaviour of
+                EnsureEmpty ->
+                    "w+"
+
+                ExpectExisting ->
+                    "r+"
+
+                ExpectNotExisting ->
+                    "wx+"
+    in
+    openImpl access path
 
 
 {-| Close a file. All later operations performed against the given [FileHandle](#FileHandle)
@@ -165,7 +200,8 @@ will fail.
 -}
 close : FileHandle a b -> Task File.Error ()
 close handle =
-    Debug.todo "Implement System API"
+    kClose (fdOf handle)
+        |> handleError
 
 
 
@@ -181,7 +217,9 @@ annotation wrapped it in a file handle type by mistake.
 -}
 metadata : ReadableFileHandle a -> Task File.Error File.Metadata
 metadata handle =
-    Debug.todo "Implement System API"
+    kFstat (fdOf handle)
+        |> Task.map (System.File.Internal.decodeMetadata entityFromInt)
+        |> handleError
 
 
 {-| Change how different users can access a file. Each list becomes one octal digit of the
@@ -192,14 +230,24 @@ changeAccess :
     -> WriteableFileHandle a
     -> Task File.Error (WriteableFileHandle a)
 changeAccess permissions handle =
-    Debug.todo "Implement System API"
+    kFchmod (fdOf handle)
+        (File.accessPermissionsToInt permissions.owner
+            * 64
+            + File.accessPermissionsToInt permissions.group
+            * 8
+            + File.accessPermissionsToInt permissions.others
+        )
+        |> handleError
+        |> Task.map (\_ -> handle)
 
 
 {-| Change who owns the file. You'll need the ID of the new user and group who will own the file.
 -}
 changeOwner : { userID : Int, groupID : Int } -> WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
 changeOwner ids handle =
-    Debug.todo "Implement System API"
+    kFchown (fdOf handle) ids.userID ids.groupID
+        |> handleError
+        |> Task.map (\_ -> handle)
 
 
 {-| This will let you set the timestamp for when the file was last accessed, and last modified.
@@ -207,7 +255,11 @@ The times will be rounded down to the closest second.
 -}
 changeTimes : { lastAccessed : Time.Posix, lastModified : Time.Posix } -> WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
 changeTimes times handle =
-    Debug.todo "Implement System API"
+    kFutimes (fdOf handle)
+        (Time.posixToMillis times.lastAccessed // 1000)
+        (Time.posixToMillis times.lastModified // 1000)
+        |> handleError
+        |> Task.map (\_ -> handle)
 
 
 
@@ -218,7 +270,7 @@ changeTimes times handle =
 -}
 read : ReadableFileHandle a -> Task File.Error Bytes
 read handle =
-    Debug.todo "Implement System API"
+    readFromOffset handle { offset = 0, length = -1 }
 
 
 {-| Read `length` number of bytes from a file, starting at `offset` bytes.
@@ -229,7 +281,8 @@ for are returned if the end of the file is reached first.
 -}
 readFromOffset : ReadableFileHandle a -> { offset : Int, length : Int } -> Task File.Error Bytes
 readFromOffset handle options =
-    Debug.todo "Implement System API"
+    kReadFromOffset (fdOf handle) options.offset options.length
+        |> handleError
 
 
 
@@ -242,7 +295,7 @@ If the file is not empty, existing bytes will be overwritten. Use
 -}
 write : WriteableFileHandle a -> Bytes -> Task File.Error (WriteableFileHandle a)
 write handle bytes =
-    Debug.todo "Implement System API"
+    writeFromOffset handle 0 bytes
 
 
 {-| Write bytes into a specific location of a file, given as a byte offset from the beginning
@@ -250,7 +303,9 @@ of the file.
 -}
 writeFromOffset : WriteableFileHandle a -> Int -> Bytes -> Task File.Error (WriteableFileHandle a)
 writeFromOffset handle offset bytes =
-    Debug.todo "Implement System API"
+    kWriteFromOffset (fdOf handle) offset bytes
+        |> handleError
+        |> Task.map (\_ -> handle)
 
 
 {-| Make sure that a file is of the given size. If the file is larger than the given size, excess
@@ -259,7 +314,9 @@ of the given size.
 -}
 truncate : Int -> WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
 truncate length handle =
-    Debug.todo "Implement System API"
+    kFtruncate (fdOf handle) length
+        |> handleError
+        |> Task.map (\_ -> handle)
 
 
 {-| Usually when you make changes to a file, the changes aren't actually written to disk right
@@ -271,7 +328,9 @@ This task, when executed, will force changes to be written to disk.
 -}
 sync : WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
 sync handle =
-    Debug.todo "Implement System API"
+    kFsync (fdOf handle)
+        |> handleError
+        |> Task.map (\_ -> handle)
 
 
 {-| Same as [sync](#sync), except it only forces the contents of the file to be written. Changes
@@ -280,4 +339,113 @@ the risk of losing changes to metadata.
 -}
 syncData : WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
 syncData handle =
-    Debug.todo "Implement System API"
+    kFdatasync (fdOf handle)
+        |> handleError
+        |> Task.map (\_ -> handle)
+
+
+
+-- HELPERS
+
+
+openImpl : String -> Path -> Task File.Error (FileHandle a b)
+openImpl access path =
+    kOpen access (Path.toPosixString path)
+        |> Task.mapError (System.File.Internal.decodeError path)
+        |> Task.map FileHandle
+
+
+fdOf : FileHandle a b -> Int
+fdOf (FileHandle fd) =
+    fd
+
+
+{-| Errors of operations on an open handle carry the empty path (see the module docs).
+-}
+handleError : Task ( String, String ) a -> Task File.Error a
+handleError task =
+    Task.mapError (System.File.Internal.decodeError Path.empty) task
+
+
+{-| Private duplicate of the one in `System.File` (plans/eco-system-library.md Phase 4 step 4.2).
+-}
+entityFromInt : Int -> File.EntityType
+entityFromInt n =
+    case n of
+        0 ->
+            File.File
+
+        1 ->
+            File.Directory
+
+        2 ->
+            File.Socket
+
+        3 ->
+            File.Symlink
+
+        4 ->
+            File.Device
+
+        _ ->
+            File.Pipe
+
+
+
+-- KERNELS
+-- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.3).
+
+
+kOpen : String -> String -> Task ( String, String ) Int
+kOpen =
+    Eco.Kernel.FileSystem.open
+
+
+kClose : Int -> Task ( String, String ) ()
+kClose =
+    Eco.Kernel.FileSystem.close
+
+
+kFstat : Int -> Task ( String, String ) (List Int)
+kFstat =
+    Eco.Kernel.FileSystem.fstat
+
+
+kFchmod : Int -> Int -> Task ( String, String ) ()
+kFchmod =
+    Eco.Kernel.FileSystem.fchmod
+
+
+kFchown : Int -> Int -> Int -> Task ( String, String ) ()
+kFchown =
+    Eco.Kernel.FileSystem.fchown
+
+
+kFutimes : Int -> Int -> Int -> Task ( String, String ) ()
+kFutimes =
+    Eco.Kernel.FileSystem.futimes
+
+
+kReadFromOffset : Int -> Int -> Int -> Task ( String, String ) Bytes
+kReadFromOffset =
+    Eco.Kernel.FileSystem.readFromOffset
+
+
+kWriteFromOffset : Int -> Int -> Bytes -> Task ( String, String ) ()
+kWriteFromOffset =
+    Eco.Kernel.FileSystem.writeFromOffset
+
+
+kFtruncate : Int -> Int -> Task ( String, String ) ()
+kFtruncate =
+    Eco.Kernel.FileSystem.ftruncate
+
+
+kFsync : Int -> Task ( String, String ) ()
+kFsync =
+    Eco.Kernel.FileSystem.fsync
+
+
+kFdatasync : Int -> Task ( String, String ) ()
+kFdatasync =
+    Eco.Kernel.FileSystem.fdatasync

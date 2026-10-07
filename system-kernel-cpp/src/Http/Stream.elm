@@ -51,9 +51,13 @@ Differences from elm/http:
 -}
 
 import Bytes exposing (Bytes)
+import Dict exposing (Dict)
+import Eco.Kernel.HttpStream
+import Eco.Kernel.Stream
 import Http
 import Json.Encode
 import Stream
+import Stream.Internal
 import Task exposing (Task)
 
 
@@ -97,7 +101,18 @@ request :
     }
     -> Cmd msg
 request r =
-    Debug.todo "Implement System API"
+    case r.expect of
+        Expect discard toMsg ->
+            Task.perform toMsg
+                (sendRaw
+                    { method = r.method
+                    , headers = r.headers
+                    , url = r.url
+                    , body = r.body
+                    , timeout = r.timeout
+                    }
+                    discard
+                )
 
 
 
@@ -117,7 +132,7 @@ where you are not sending any data.
 -}
 emptyBody : Body
 emptyBody =
-    Debug.todo "Implement System API"
+    EmptyBody
 
 
 {-| Put some string in the body of your request. It is sent encoded as UTF-8.
@@ -128,7 +143,7 @@ is sent as the `Content-Type` header. Some servers are strict about this!
 -}
 stringBody : String -> String -> Body
 stringBody mimeType value =
-    Debug.todo "Implement System API"
+    BytesBody mimeType (kStringToUtf8 value)
 
 
 {-| Put some JSON value in the body of your request. This will automatically add the
@@ -136,7 +151,7 @@ stringBody mimeType value =
 -}
 jsonBody : Json.Encode.Value -> Body
 jsonBody value =
-    Debug.todo "Implement System API"
+    stringBody "application/json" (Json.Encode.encode 0 value)
 
 
 {-| Put some `Bytes` in the body of your request. This allows you to use
@@ -152,7 +167,7 @@ The first argument is a [MIME type](https://en.wikipedia.org/wiki/Media_type) of
 -}
 bytesBody : String -> Bytes -> Body
 bytesBody mimeType bytes =
-    Debug.todo "Implement System API"
+    BytesBody mimeType bytes
 
 
 {-| Use a readable stream of bytes as the body of your request. The stream is uploaded as it is
@@ -175,8 +190,8 @@ chunked transfer encoding. If the stream is cancelled, the request fails with a 
 
 -}
 streamBody : String -> Stream.Readable Bytes -> Body
-streamBody mimeType stream =
-    Debug.todo "Implement System API"
+streamBody mimeType (Stream.Internal.Readable id) =
+    StreamBody mimeType id
 
 
 
@@ -203,7 +218,26 @@ Read the body to the end, or cancel it with `Stream.cancelReadable` when you no 
 -}
 expectStream : (Result Http.Error ( Http.Metadata, Stream.Readable Bytes ) -> msg) -> Expect msg
 expectStream toMsg =
-    Debug.todo "Implement System API"
+    Expect True (toMsg << toStreamResult)
+
+
+toStreamResult : Http.Response (Stream.Readable Bytes) -> Result Http.Error ( Http.Metadata, Stream.Readable Bytes )
+toStreamResult response =
+    case response of
+        Http.GoodStatus_ meta body ->
+            Ok ( meta, body )
+
+        Http.BadStatus_ meta _ ->
+            Err (Http.BadStatus meta.statusCode)
+
+        Http.BadUrl_ url ->
+            Err (Http.BadUrl url)
+
+        Http.Timeout_ ->
+            Err Http.Timeout
+
+        Http.NetworkError_ ->
+            Err Http.NetworkError
 
 
 {-| Expect an `Http.Response` with a stream body.
@@ -215,7 +249,7 @@ comes with its real body stream, so you can read the error body of, say, a 404 r
 -}
 expectStreamResponse : (Result x a -> msg) -> (Http.Response (Stream.Readable Bytes) -> Result x a) -> Expect msg
 expectStreamResponse toMsg toResult =
-    Debug.todo "Implement System API"
+    Expect False (toMsg << toResult)
 
 
 
@@ -239,7 +273,26 @@ task :
     }
     -> Task x a
 task r =
-    Debug.todo "Implement System API"
+    case r.resolver of
+        Resolver resolve ->
+            sendRaw
+                { method = r.method
+                , headers = r.headers
+                , url = r.url
+                , body = r.body
+                , timeout = r.timeout
+                }
+                False
+                |> Task.mapError never
+                |> Task.andThen
+                    (\response ->
+                        case resolve response of
+                            Ok a ->
+                                Task.succeed a
+
+                            Err x ->
+                                Task.fail x
+                    )
 
 
 {-| Describes how to resolve an HTTP task. You can create a resolver with
@@ -255,4 +308,119 @@ stream.
 -}
 streamResolver : (Http.Response (Stream.Readable Bytes) -> Result x a) -> Resolver x a
 streamResolver toResult =
-    Debug.todo "Implement System API"
+    Resolver toResult
+
+
+
+-- SENDING
+
+
+type alias RawRequest =
+    { method : String
+    , headers : List Http.Header
+    , url : String
+    , body : Body
+    , timeout : Maybe Float
+    }
+
+
+{-| Run the transfer (B.7) and build the elm/http response. The task resolves when the response
+headers arrive (or the request fails before that); the body is a stream. `discard` drops the body
+of a non-2xx response in the transfer thread.
+-}
+sendRaw : RawRequest -> Bool -> Task Never (Http.Response (Stream.Readable Bytes))
+sendRaw r discard =
+    let
+        timeoutMs =
+            case r.timeout of
+                Nothing ->
+                    0
+
+                Just t ->
+                    if t > 0 then
+                        max 1 (round t)
+
+                    else
+                        0
+
+        bodyArg =
+            case r.body of
+                EmptyBody ->
+                    ( 0, "", ( kStringToUtf8 "", -1 ) )
+
+                BytesBody mime bytes ->
+                    ( 1, mime, ( bytes, -1 ) )
+
+                StreamBody mime id ->
+                    ( 2, mime, ( kStringToUtf8 "", id ) )
+    in
+    kSend ( r.method, r.url, timeoutMs ) r.headers bodyArg discard
+        |> Task.map toResponse
+
+
+toResponse : ( Int, String, ( ( Int, String, String ), List ( String, String ), Int ) ) -> Http.Response (Stream.Readable Bytes)
+toResponse ( kind, badUrl, ( ( statusCode, statusText, url ), headers, streamId ) ) =
+    let
+        meta () =
+            { url = url
+            , statusCode = statusCode
+            , statusText = statusText
+            , headers = mergeHeaders headers
+            }
+    in
+    case kind of
+        0 ->
+            Http.BadUrl_ badUrl
+
+        1 ->
+            Http.Timeout_
+
+        2 ->
+            Http.NetworkError_
+
+        3 ->
+            Http.BadStatus_ (meta ()) (Stream.Internal.Readable streamId)
+
+        _ ->
+            Http.GoodStatus_ (meta ()) (Stream.Internal.Readable streamId)
+
+
+{-| Header names arrive lower-cased, in arrival order. Repeated names are joined with `", "` in
+arrival order, as elm/http's `_Http_parseHeaders` does.
+-}
+mergeHeaders : List ( String, String ) -> Dict String String
+mergeHeaders pairs =
+    List.foldl
+        (\( name, value ) dict ->
+            Dict.update name
+                (\old ->
+                    case old of
+                        Nothing ->
+                            Just value
+
+                        Just previous ->
+                            Just (previous ++ ", " ++ value)
+                )
+                dict
+        )
+        Dict.empty
+        pairs
+
+
+
+-- KERNELS
+
+
+kSend :
+    ( String, String, Int )
+    -> List Http.Header
+    -> ( Int, String, ( Bytes, Int ) )
+    -> Bool
+    -> Task Never ( Int, String, ( ( Int, String, String ), List ( String, String ), Int ) )
+kSend =
+    Eco.Kernel.HttpStream.send
+
+
+kStringToUtf8 : String -> Bytes
+kStringToUtf8 =
+    Eco.Kernel.Stream.stringToUtf8

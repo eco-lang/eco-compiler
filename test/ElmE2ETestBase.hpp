@@ -2,6 +2,7 @@
 
 #include "CheckPatterns.hpp"
 #include "ChildStdin.hpp"
+#include "TestPort.hpp"
 #include "NodeBigStack.hpp"
 #include "IsolatedTestRunner.hpp"
 #include "TestSuite.hpp"
@@ -998,6 +999,11 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         IsolatedTestResult result;
         bool completed;
         std::string capturedOutput;
+        // Process-output mode for this test: the suite's mode, or a test
+        // with an `-- EXIT:` directive in any suite (an EcoSystem* stress
+        // program that must end with System.exit because a listening
+        // server keeps it alive; plans/eco-system-library.md Phase 7).
+        bool processMode;
     };
 
     std::vector<ElmTestContext> contexts(numTests);
@@ -1009,6 +1015,15 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         contexts[i].shared = nullptr;
         contexts[i].pid = 0;
         contexts[i].completed = false;
+        contexts[i].processMode = checkProcessOutput;
+        if (!checkProcessOutput) {
+            try {
+                contexts[i].processMode =
+                    eco_test::extractExitDirective(readFile(elmPaths[i])).has_value();
+            } catch (...) {
+                contexts[i].processMode = false;   // reported when the test runs
+            }
+        }
     }
 
     for (auto& ctx : contexts) {
@@ -1061,6 +1076,15 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                 continue;
             }
 
+            // Flush the parent's stdio buffers first: the child inherits them,
+            // and a process-output child flushes them (fflush(nullptr) /
+            // exit) into its output pipe, where the runner's own text would
+            // reach the CHECK patterns.
+            std::cout.flush();
+            std::fflush(nullptr);
+            // A free port for the child, as ECO_TEST_PORT (TestPort.hpp,
+            // plans/eco-system-library.md Phase 7 step 7.4).
+            const int testPort = eco_test::pickFreeTcpPort();
             pid_t pid = fork();
 
             if (pid < 0) {
@@ -1081,7 +1105,11 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                 // the test child (review R1.15).
                 std::signal(SIGPIPE, SIG_IGN);
 
-                if (checkProcessOutput) {
+                if (testPort > 0) {
+                    ::setenv("ECO_TEST_PORT", std::to_string(testPort).c_str(), 1);
+                }
+
+                if (ctx.processMode) {
                     // stdin: /dev/null, or the `-- STDIN:` text (step 8c).
                     // The program's exit status becomes the child's.
                     int programExit = 1;
@@ -1162,7 +1190,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                     ctx.result.crashed = true;
                     ctx.result.signal = WTERMSIG(status);
                     ctx.result.error = "Test crashed: " + signalName(ctx.result.signal);
-                } else if (WIFEXITED(status) && checkProcessOutput) {
+                } else if (WIFEXITED(status) && ctx.processMode) {
                     ctx.result.exitCode = WEXITSTATUS(status);
                     std::string combined;
                     std::string error;

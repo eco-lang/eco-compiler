@@ -7,8 +7,9 @@ normally with exit code 0 (eco_get_exit_code() is 0 unless set). The output is
 produced from `update`, after a Task round trip, so it is only seen if the
 eco-thread output is captured up to the program's end.
 
-Non-zero EXIT, fd-output CHECK and STDIN self-tests need eco/system APIs
-(exitWithCode, Stream stdout/stdin); they arrive with Phase 3.
+The non-zero EXIT, fd-output CHECK and STDIN self-tests need eco/system APIs
+(exitWithCode, Stream stdout/stdin): HarnessExitNonZeroTest, HarnessFdOutputTest,
+HarnessStdinTest and HarnessStdinDevNullTest (Phase 3).
 
 -}
 
