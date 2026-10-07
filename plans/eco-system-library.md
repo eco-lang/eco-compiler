@@ -733,9 +733,9 @@ exposing lists.
 - `Http.Server.Internal` also defines `type Body = StringBody String | BytesBody Bytes`.
 
 0.5. **`elm.json`:**
-- Grouped `exposed-modules`: `{"System": ["System"], "Streams": ["Stream", "Stream.Log"], "Files":
-  ["System.File", "System.File.Path", "System.File.FileHandle"], "Processes": ["System.Process"],
-  "Terminal": ["System.Terminal"], "HTTP": ["Http.Server", "Http.Server.Response", "Http.Stream"]}`.
+- `exposed-modules`: a **flat list** of the 11 public modules, the usual Elm convention. The grouped
+  object form is also valid Elm 0.19, but it is rare and was copied from gren-node's `gren.json`; the
+  user asked for the flat list.
 - `dependencies`:
   - `"elm/core": "1.0.0 <= v < 2.0.0"`
   - `"elm/bytes": "1.0.0 <= v < 2.0.0"`

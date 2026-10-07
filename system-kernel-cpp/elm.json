@@ -4,31 +4,19 @@
     "summary": "POSIX-style system programming for Eco programs",
     "license": "BSD-3-Clause",
     "version": "1.0.0",
-    "exposed-modules": {
-        "System": [
-            "System"
-        ],
-        "Streams": [
-            "Stream",
-            "Stream.Log"
-        ],
-        "Files": [
-            "System.File",
-            "System.File.Path",
-            "System.File.FileHandle"
-        ],
-        "Processes": [
-            "System.Process"
-        ],
-        "Terminal": [
-            "System.Terminal"
-        ],
-        "HTTP": [
-            "Http.Server",
-            "Http.Server.Response",
-            "Http.Stream"
-        ]
-    },
+    "exposed-modules": [
+        "System",
+        "Stream",
+        "Stream.Log",
+        "System.File",
+        "System.File.Path",
+        "System.File.FileHandle",
+        "System.Process",
+        "System.Terminal",
+        "Http.Server",
+        "Http.Server.Response",
+        "Http.Stream"
+    ],
     "elm-version": "0.19.0 <= v < 0.20.0",
     "dependencies": {
         "elm/bytes": "1.0.0 <= v < 2.0.0",

@@ -16,15 +16,16 @@ request and response bodies on top of it.
 
 ## Modules
 
-| Module | Purpose |
-|---|---|
-| `System` | Program definitions, the environment (args, stdin/stdout/stderr, platform), exit codes and signals |
-| `Stream`, `Stream.Log` | Readable and writable streams, transformations, compression, and simple logging |
-| `System.File`, `System.File.Path`, `System.File.FileHandle` | Files, directories, links, metadata, file handles and paths |
-| `System.Process` | Running and spawning child processes |
-| `System.Terminal` | Terminal size, raw mode and resize events |
-| `Http.Server`, `Http.Server.Response` | An HTTP server |
-| `Http.Stream` | Streaming request and response bodies for elm/http |
+- `System`: program definitions, the environment (args, stdin/stdout/stderr, platform), exit codes
+  and signals.
+- `Stream`, `Stream.Log`: readable and writable streams, transformations, compression, and simple
+  logging.
+- `System.File`, `System.File.Path`, `System.File.FileHandle`: files, directories, links, metadata,
+  file handles and paths.
+- `System.Process`: running and spawning child processes.
+- `System.Terminal`: terminal size, raw mode and resize events.
+- `Http.Server`, `Http.Server.Response`: an HTTP server.
+- `Http.Stream`: streaming request and response bodies for elm/http.
 
 ## Example
 
