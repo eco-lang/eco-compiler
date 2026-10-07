@@ -123,6 +123,36 @@ jobs:
           tail -30 /tmp/test_output.txt
           exit $rc
 
+      # TEMP(diag) (plans/ci-all-platforms-green.md issue 8): which GC concurrency feature the
+      # macOS-only large-list corruption needs. Remove with the fix.
+      - name: "TEMP(diag): large-list corruption under GC config variants"
+        if: always()
+        timeout-minutes: 30
+        run: |
+          set +e
+          run() {
+            label="$1"; shift
+            env "$@" ./build/test/test --filter TempDiagRsMapStr > /tmp/diag-variant.txt 2>&1
+            rc=$?
+            printf '%-34s rc=%s %s | %s\n' "$label" "$rc" \
+              "$(grep -E 'Tests (passed|failed):' /tmp/diag-variant.txt | tr '\n' ' ')" \
+              "$(grep -E 'diag-crash\] signal|Missing pattern' /tmp/diag-variant.txt | head -2 | tr '\n' ' ')"
+          }
+          run baseline
+          run "GC_THREAD=0"          ECO_GC_THREAD=0
+          run "TENURE_MODE=1"        ECO_TENURE_MODE=1
+          run "GC_CONC_MARK=0"       ECO_GC_CONC_MARK=0
+          run "GC_MINOR_THREADS=1"   ECO_GC_MINOR_THREADS=1
+          run "GC_MARK_THREADS=1"    ECO_GC_MARK_THREADS=1
+          run "NURSERY_REGIONS=0"    ECO_NURSERY_REGIONS=0
+          run "all serial"           ECO_GC_THREAD=0 ECO_TENURE_MODE=1 ECO_GC_CONC_MARK=0 \
+                                     ECO_GC_MINOR_THREADS=1 ECO_GC_MARK_THREADS=1
+          for i in 1 2 3 4 5; do
+            ./build/test/test --filter "single wide root is shared by stealing" > /tmp/diag-steal.txt 2>&1
+            echo "steal test run $i: rc=$? $(grep -E 'Tests failed:' /tmp/diag-steal.txt)"
+          done
+          exit 0
+
       # ---- Gateway 4: the full Stage 6-9 self-host chain. `--target eco`
       #      transitively pulls Stage 6 (eco-compiler Mach-O), 7a/7b
       #      (self-compile + link), 8a-c (self-compile again + the 8c
