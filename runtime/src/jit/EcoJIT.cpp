@@ -72,7 +72,7 @@ public:
 // back via deregisterEHFrames on teardown, so we replay the walk in reverse.
 class EcoSectionMemoryManager : public llvm::SectionMemoryManager {
 public:
-    void registerEHFrames(uint8_t *Addr, uint64_t /*LoadAddr*/,
+    void registerEHFrames(uint8_t *Addr, uint64_t LoadAddr,
                           size_t Size) override {
         if (!Addr || Size == 0)
             return;
@@ -97,14 +97,16 @@ public:
             memcpy(&ciePointer, P + 4, 4);
             if (ciePointer != 0) {
                 __register_frame(P);
+                if (diagFdes_ < 4 && std::getenv("ECO_TEST_STACKWALK_DIAG"))
+                    diagPrintFde(P, ciePointer);  // TEMP(diag)
                 ++diagFdes_;  // TEMP(diag)
             }
             P += fullLen;
         }
         // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): is JIT unwind info registered?
         if (std::getenv("ECO_TEST_STACKWALK_DIAG"))
-            std::fprintf(stderr, "[diag-ehframe] registerEHFrames: %zu bytes, %zu FDEs registered\n",
-                         Size, diagFdes_);
+            std::fprintf(stderr, "[diag-ehframe] registerEHFrames: section %p, load addr %#llx, %zu bytes, %zu FDEs registered\n",
+                         static_cast<void*>(Addr), (unsigned long long)LoadAddr, Size, diagFdes_);
         EHFrames.push_back({Addr, Size});
     }
 
@@ -134,6 +136,49 @@ public:
 
 private:
     size_t diagFdes_ = 0;  // TEMP(diag)
+
+    // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): the code range an FDE describes, as
+    // libunwind will read it (pointer encoding from the CIE's 'R' augmentation).
+    static uint64_t diagUleb(const uint8_t*& p) {
+        uint64_t v = 0;
+        for (int sh = 0;; sh += 7) { uint8_t b = *p++; v |= uint64_t(b & 0x7f) << sh; if (!(b & 0x80)) break; }
+        return v;
+    }
+    static void diagPrintFde(const uint8_t* fde, uint32_t ciePointer) {
+        const uint8_t* cie = fde + 4 - ciePointer;
+        const uint8_t* p = cie + 8;          // length, CIE id
+        const uint8_t version = *p++;
+        const char* aug = reinterpret_cast<const char*>(p);
+        p += std::strlen(aug) + 1;
+        diagUleb(p);                         // code alignment
+        diagUleb(p);                         // data alignment (sleb; skipping is the same)
+        if (version == 1) ++p; else diagUleb(p);  // return register
+        uint8_t enc = 0;                     // DW_EH_PE_absptr
+        if (aug[0] == 'z') {
+            diagUleb(p);
+            for (const char* a = aug + 1; *a; ++a) {
+                if (*a == 'R') { enc = *p++; break; }
+                if (*a == 'P') { const uint8_t pe = *p++; p += (pe & 0x0f) == 0x0b ? 4 : 8; }
+                else if (*a == 'L') ++p;
+            }
+        }
+        const uint8_t* f = fde + 8;
+        auto read = [&](bool pcrel) -> uint64_t {
+            const uint8_t* at = f;
+            int64_t v = 0;
+            switch (enc & 0x0f) {
+                case 0x0b: { int32_t x; std::memcpy(&x, f, 4); v = x; f += 4; break; }
+                case 0x03: { uint32_t x; std::memcpy(&x, f, 4); v = x; f += 4; break; }
+                default:   { int64_t x; std::memcpy(&x, f, 8); v = x; f += 8; break; }
+            }
+            return pcrel && (enc & 0x70) == 0x10 ? uint64_t(reinterpret_cast<uintptr_t>(at) + v) : uint64_t(v);
+        };
+        const uint64_t start = read(true);
+        const uint64_t range = read(false);
+        std::fprintf(stderr, "[diag-ehframe] FDE %p: CIE aug \"%s\" enc 0x%02x -> code [%#llx, %#llx)\n",
+                     static_cast<const void*>(fde), aug, enc, (unsigned long long)start,
+                     (unsigned long long)(start + range));
+    }
 };
 #endif
 
