@@ -18,8 +18,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
-#include <sys/mman.h>
-#include <unistd.h>
+
+#include "PlatformVirtualMemory.hpp"
 
 namespace Elm {
 
@@ -55,27 +55,31 @@ extern "C" constinit thread_local HPointer** eco_tl_root1_limit
 // (plans/kernel-root-stack-bounded-rooting.md §2.3). The bounds check in
 // `ecoRootRangePush` / `ecoRoot1Push` exists only in !NDEBUG and validate
 // builds; the guard page makes a push past the slack fault cleanly in every
-// build instead of writing over whatever malloc placed next.
+// build instead of writing over whatever malloc placed next. Built on the
+// platform layer (POSIX mmap, Win64 VirtualAlloc): the whole range is
+// reserved unbacked and only the body is committed, so the page after it
+// stays the inaccessible guard.
 static std::size_t guardedBody(std::size_t bytes) {
-    const std::size_t page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
-    return (bytes + page - 1) / page * page;
+    return (bytes + OS_PAGE_SIZE - 1) / OS_PAGE_SIZE * OS_PAGE_SIZE;
 }
 
 static std::size_t guardedSize(std::size_t bytes) {
-    return guardedBody(bytes) + static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    return guardedBody(bytes) + OS_PAGE_SIZE;
 }
 
 static void* mapGuarded(std::size_t bytes) {
-    const std::size_t body = guardedBody(bytes);
     const std::size_t total = guardedSize(bytes);
-    void* p = mmap(nullptr, total, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) throw std::bad_alloc();
-    if (mprotect(static_cast<char*>(p) + body, total - body, PROT_NONE) != 0) {
-        munmap(p, total);
+    void* p = platform::reserveAddressSpace(total);
+    if (p == nullptr) throw std::bad_alloc();
+    if (platform::commitAt(p, guardedBody(bytes)) != p) {
+        platform::releaseReservation(p, total);
         throw std::bad_alloc();
     }
     return p;
+}
+
+static void unmapGuarded(void* p, std::size_t bytes) {
+    platform::releaseReservation(p, guardedSize(bytes));
 }
 
 static constexpr std::size_t kRangeBytes =
@@ -90,7 +94,7 @@ RootSet::RootSet() {
     try {
         root1_storage_ = static_cast<HPointer**>(mapGuarded(kRoot1Bytes));
     } catch (...) {
-        munmap(range_storage_, guardedSize(kRangeBytes));
+        unmapGuarded(range_storage_, kRangeBytes);
         throw;
     }
 }
@@ -107,8 +111,8 @@ RootSet::~RootSet() {
         eco_tl_root1_base = nullptr;
         eco_tl_root1_limit = nullptr;
     }
-    if (range_storage_) munmap(range_storage_, guardedSize(kRangeBytes));
-    if (root1_storage_) munmap(root1_storage_, guardedSize(kRoot1Bytes));
+    if (range_storage_) unmapGuarded(range_storage_, kRangeBytes);
+    if (root1_storage_) unmapGuarded(root1_storage_, kRoot1Bytes);
     range_storage_ = nullptr;
     root1_storage_ = nullptr;
 }
