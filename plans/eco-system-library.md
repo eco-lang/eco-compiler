@@ -36,6 +36,7 @@ How to read this plan:
 | D9 | **`Http.Stream`** extends elm/http with the stream-based operations of gren's `HttpClient` (`withStreamBody`, `expectStream`) and **nothing else**. It owns its own `Body`, `Expect` and `Resolver` types and `request`/`task` functions shaped like elm/http's, and reuses elm/http's public `Header`, `Error`, `Metadata` and `Response`. Responses are always delivered as streams. eco/system therefore depends on elm/http. (See §9, design note DN1, for why it does not extend `Http.Body`/`Http.Expect` directly.) |
 | D10 | `Environment.args` is the **full C argv**: `args[0]` is the program as invoked. This differs from gren-node, whose `process.argv` starts with the node binary and the script path (§3.7). |
 | D11 | Effect managers stay keyed by **bare module name** in `PlatformRuntime` (`"System"`, `"System.File"`, …), not by package. Only kernel-author packages can declare effect modules, so a collision would itself signal that a module should be redesigned rather than namespaced. The compiler still uses the package (`eco/system`) to decide which registration calls to emit. |
+| D12 | **Third-party tooling always runs the original Elm 0.19.1** (`elm` assumed installed on `PATH`), because that is what all third-party tools work with. `pnpm run docs` is plain `elm-doc-preview`, with no compiler shim; the Phase 1 step 1.7 shim was deleted. **Open consequence:** from Phase 3, stock elm rejects kernel imports and `effect module` outside `@elm`, so the docs can no longer be built from the package as it stands. Phase 3 must choose how its docs are produced (see §7). |
 
 Other deliberate API changes relative to gren (all reflected in Appendix A):
 - `SimpleProgram msg = Program () msg`.
@@ -926,19 +927,8 @@ In `Generate/MLIR/Functions.elm`:
 - Add a compiler unit test: a module graph with an eco/system manager leaf emits exactly one
   registration call.
 
-1.7. **Docs shim.**
-- Add `system-kernel-cpp/scripts/elm` (POSIX sh, executable):
-  ```sh
-  #!/bin/sh
-  here=$(cd "$(dirname "$0")" && pwd)
-  if [ "$1" = "--version" ]; then echo 0.19.1; exit 0; fi
-  exec node "$here/../../compiler/bin/index.js" "$@"
-  ```
-- Switch the `docs` and `docs:check` scripts to `PATH=$PWD/scripts:$PATH`.
-- Verify that `node compiler/bin/index.js make --docs=/tmp/x.json --report=json`, run in
-  `system-kernel-cpp/`, works for a package with kernel imports and effect modules (create a throwaway
-  effect module to test). If `--docs` or `--report=json` is unsupported or fails for that case, fix the
-  compiler (`Terminal/Make.elm` docs path) before continuing.
+1.7. **Docs tooling** (revised by D12). `pnpm run docs` / `docs:check` run plain `elm-doc-preview`
+with the `elm` on `PATH`, which is assumed to be the original Elm 0.19.1. There is no compiler shim.
 
 1.8. **Test harness.**
 
@@ -1003,7 +993,7 @@ j. **First test:** `test/eco-system/src/PackageLinksTest.elm`. It imports every 
    compiles natively with stubs and links. Phase 1 does not yet turn modules into effect modules.
 
 **Exit criteria:** `full` is green, including the new suite; `check-kernel-homes` passes; the compiler
-tests are green; the docs shim works.
+tests are green; `pnpm run docs:check` passes with stock elm.
 
 ### Phase 2 — Runtime prerequisites and Core services
 
@@ -1489,7 +1479,12 @@ is optional.
 
 ## 7. Open questions for the user
 
-None. Q1 (LICENSE wording) is resolved by D7 and Q3 (`args`) by D10. Q2 (`Http.Client` naming) and Q4
+- **Q5 (from D12):** from Phase 3, how are eco/system's docs built, given that stock elm rejects kernel
+  imports and effect modules outside `@elm`? Options include a docs-only copy of the package with the
+  kernel imports stubbed out, generated before running `elm-doc-preview`, or keeping kernel calls and
+  effect declarations in modules that are not exposed.
+
+Q1 (LICENSE wording) is resolved by D7 and Q3 (`args`) by D10. Q2 (`Http.Client` naming) and Q4
 (where `Method` lives) are moot since D8: `Method` stays in `Http.Server`.
 
 ## 8. Risks
