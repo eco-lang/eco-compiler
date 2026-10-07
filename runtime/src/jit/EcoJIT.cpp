@@ -289,6 +289,18 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
     if (!tmBuilderOrError)
         return tmBuilderOrError.takeError();
 
+#if defined(__APPLE__)
+    // The GC finds stack roots by unwinding through JIT frames (libunwind +
+    // stack maps), which needs every JIT function's unwind info registered.
+    // MachO describes most functions with compact unwind, which RuntimeDyld
+    // never registers; only __eh_frame reaches registerEHFrames above. Emit a
+    // DWARF FDE for every function so the walk does not stop at the first JIT
+    // frame (it did: 0 stack roots found, so deep recursions kept stale
+    // pointers across minor GCs).
+    tmBuilderOrError->getOptions().MCOptions.EmitDwarfUnwind =
+        llvm::EmitDwarfUnwindType::Always;
+#endif
+
     auto tmOrError = tmBuilderOrError->createTargetMachine();
     if (!tmOrError)
         return tmOrError.takeError();
