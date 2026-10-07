@@ -35,6 +35,9 @@
 #include <unistd.h>
 #include <csignal>
 #include <execinfo.h>  // TEMP(diag)
+#if defined(__APPLE__)
+#include <sys/ucontext.h>  // TEMP(diag)
+#endif
 #endif
 
 namespace ElmE2EBase {
@@ -44,7 +47,9 @@ namespace ElmE2EBase {
 // macOS only. In the forked test child, report the fault address, this thread's two shadow-stack
 // ranges (base / cursor / limit; the guard page follows each limit's slack) and a backtrace, then
 // die with the same signal. The JIT harness installs no other SIGSEGV/SIGBUS handler.
-inline void diagCrashHandler(int sig, siginfo_t* si, void*) {
+inline void diagCrashHandler(int sig, siginfo_t* si, void* ctx) {
+    std::fflush(stdout);
+    std::fflush(stderr);
     char buf[600];
     const int n = std::snprintf(
         buf, sizeof buf,
@@ -54,6 +59,38 @@ inline void diagCrashHandler(int sig, siginfo_t* si, void*) {
         (void*)Elm::eco_tl_root_limit, (void*)Elm::eco_tl_root1_base, (void*)Elm::eco_tl_root1_sp,
         (void*)Elm::eco_tl_root1_limit);
     if (n > 0) (void)!write(2, buf, static_cast<size_t>(n));
+#if defined(__APPLE__) && defined(__aarch64__)
+    {
+        // Registers, the heap base, and the code around pc (disassemble the bytes offline).
+        const auto& ss = static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss;
+        char line[160];
+        for (int i = 0; i < 29; i += 4) {
+            int m = std::snprintf(line, sizeof line, "[diag-regs] x%-2d %016llx", i,
+                                  (unsigned long long)ss.__x[i]);
+            for (int j = i + 1; j < i + 4 && j < 29; ++j)
+                m += std::snprintf(line + m, sizeof line - m, "  x%-2d %016llx", j,
+                                   (unsigned long long)ss.__x[j]);
+            line[m++] = '\n';
+            (void)!write(2, line, static_cast<size_t>(m));
+        }
+        int m = std::snprintf(line, sizeof line,
+                              "[diag-regs] fp %016llx lr %016llx sp %016llx pc %016llx heap %p\n",
+                              (unsigned long long)ss.__fp, (unsigned long long)ss.__lr,
+                              (unsigned long long)ss.__sp, (unsigned long long)ss.__pc,
+                              (void*)Elm::Allocator::instance().getHeapBase());
+        (void)!write(2, line, static_cast<size_t>(m));
+        const unsigned char* pc = reinterpret_cast<const unsigned char*>(ss.__pc);
+        for (int off = -192; off < 64; off += 32) {
+            m = std::snprintf(line, sizeof line, "[diag-code] %+4d", off);
+            for (int k = 0; k < 32; ++k)
+                m += std::snprintf(line + m, sizeof line - m, " %02x", pc[off + k]);
+            line[m++] = '\n';
+            (void)!write(2, line, static_cast<size_t>(m));
+        }
+    }
+#else
+    (void)ctx;
+#endif
     void* frames[64];
     backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
     std::signal(sig, SIG_DFL);
@@ -943,6 +980,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                 dup2(ctx.outputPipe[1], STDERR_FILENO);
                 close(ctx.outputPipe[1]);
                 installDiagCrashHandler();  // TEMP(diag)
+                std::setvbuf(stdout, nullptr, _IOLBF, 0);  // TEMP(diag): keep logs on a crash
 
                 try {
                     runElmTestFromMlir(ctx.mlirPath, ctx.elmPath, flags);
