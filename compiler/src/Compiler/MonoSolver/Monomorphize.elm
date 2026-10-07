@@ -4570,7 +4570,7 @@ resolveGlobalNode home name s =
                 annIds =
                     case node of
                         Just n ->
-                            nodeAnnotationIds n
+                            nodeAnnotationIds s.env.toptNodes 8 n
 
                         Nothing ->
                             EverySet.empty
@@ -4582,19 +4582,66 @@ resolveGlobalNode home name s =
 
 
 {-| The item node's annotation free-var ids (excluded from taint harvest).
+
+Every declared type a spec of this global can be translated against is
+per-spec: one spec binding an annotation var to a `number` super says nothing
+about a sibling spec where the same var stays erased. Harvesting such a var
+into the global super table made Prune close the sibling's
+`MVar _ CEcoValue` to `MInt` (REP\_BOUNDARY\_003: a boxed `List a` spec
+re-typed as an unboxed `List Int`). So every node kind with a declared type
+contributes, a `Cycle` through all its members (self-recursive functions are
+cycles), and a `Link` through its target (`depth` bounds the chase).
 -}
-nodeAnnotationIds : TOpt.Node TypeIds.MVarId -> EverySet.EverySet Int Int
-nodeAnnotationIds node =
+nodeAnnotationIds : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> Int -> TOpt.Node TypeIds.MVarId -> EverySet.EverySet Int Int
+nodeAnnotationIds toptNodes depth node =
     let
-        fromCan t =
-            EverySet.fromList identity (List.map Id.toComparable (KernelAbi.freeVarIds t []))
+        fromCans ts =
+            EverySet.fromList identity (List.map Id.toComparable (List.foldl (\t acc -> KernelAbi.freeVarIds t acc) [] ts))
+
+        defType def =
+            case def of
+                TOpt.Def _ _ _ t ->
+                    t
+
+                TOpt.TailDef _ _ _ _ t _ ->
+                    t
     in
     case node of
         TOpt.Define _ _ meta ->
-            fromCan meta.tipe
+            fromCans [ meta.tipe ]
 
         TOpt.TrackedDefine _ _ _ meta ->
-            fromCan meta.tipe
+            fromCans [ meta.tipe ]
+
+        TOpt.Cycle _ valueDefs funcDefs _ ->
+            fromCans (List.map (\( _, vexpr ) -> TOpt.typeOf vexpr) valueDefs ++ List.map defType funcDefs)
+
+        TOpt.PortIncoming _ _ meta ->
+            fromCans [ meta.tipe ]
+
+        TOpt.PortOutgoing _ _ meta ->
+            fromCans [ meta.tipe ]
+
+        TOpt.Ctor _ _ canType ->
+            fromCans [ canType ]
+
+        TOpt.Enum _ canType ->
+            fromCans [ canType ]
+
+        TOpt.Box canType ->
+            fromCans [ canType ]
+
+        TOpt.Link target ->
+            if depth <= 0 then
+                EverySet.empty
+
+            else
+                case HashMap.get TOpt.globalHash (==) target toptNodes of
+                    Just targetNode ->
+                        nodeAnnotationIds toptNodes (depth - 1) targetNode
+
+                    Nothing ->
+                        EverySet.empty
 
         _ ->
             EverySet.empty

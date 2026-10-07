@@ -809,7 +809,11 @@ translateDispatch expr s0 =
             translateAccess record fieldName meta s0
 
         TOpt.Update _ record updates meta ->
-            translateUpdate record updates meta.tipe s0
+            -- MONO_006: a record update has exactly its record's type, so
+            -- connect the two before anything is classified. Without it a
+            -- let-polymorphic record's use-site instance (`{ r | f = … }`)
+            -- keeps its type vars erased while the update is concrete.
+            translateUpdate record updates meta.tipe (connectTypes (TOpt.typeOf record) meta.tipe s0)
 
         TOpt.Let def body meta ->
             -- Connect the body's type to the Let node's own type before
@@ -5017,6 +5021,38 @@ translateLet def body letCanType sTop =
                                 ( maybeEntry, s3 ) ->
                                     case flushLocalMultiEnrich name maybeEntry [] monoBody0 s3 of
                                         ( monoBody, s4 ) ->
+                                            case multiInstances maybeEntry of
+                                                Just instances ->
+                                                    translateTailDefInstances name typedArgs tailBody defCanType instances monoBody letCanType s4
+
+                                                Nothing ->
+                                                    translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody letCanType s4
+
+
+{-| The recorded instances of a local-multi entry when there are two or more
+(each needs its own renamed `MonoTailDef`), else `Nothing`.
+-}
+multiInstances : Maybe Engine.NumberMultiEntry -> Maybe (List Engine.NumberInstance)
+multiInstances maybeEntry =
+    case maybeEntry of
+        Just entry ->
+            case Mono.specMapValues entry.instances of
+                ((_ :: _ :: _) as instances) ->
+                    Just instances
+
+                _ ->
+                    Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| A local tail-recursive function used at one type (or none): demand-unify
+the def's type with the recorded instance IN the item store and translate the
+def ONCE under the bare name (the TailCall self-reference needs no renaming).
+-}
+translateTailDefSingle : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Mono.MonoExpr -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
+translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody letCanType s4 =
                                             let
                                                 singleInstance =
                                                     case maybeEntry of
@@ -5072,6 +5108,145 @@ translateLet def body letCanType sTop =
                                                                                 letType0
                                                                     in
                                                                     ( Mono.MonoLet (Mono.MonoTailDef name monoParams monoTailBody) monoBody letType, s8 )
+
+
+{-| A local tail-recursive function used at two or more types (MONO\_011).
+The body's uses already name the per-instance bindings (`f`, `f$1`, …), so
+each instance gets its own `MonoTailDef`: the def is re-translated in a
+scratch store with its type demand-unified to that instance (as
+`retranslateWithTag` does for a plain `Def`), and its self-references — tail
+calls and any other use of the name inside the body — are renamed to the
+instance's name. Instance 0 keeps the bare name.
+-}
+translateTailDefInstances : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> List Engine.NumberInstance -> Mono.MonoExpr -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
+translateTailDefInstances name typedArgs tailBody defCanType instances monoBody letCanType s0 =
+    case
+        Engine.traverse
+            (\( ord, inst ) sx ->
+                case retranslateTailAtInstance name ord typedArgs tailBody defCanType inst.monoType sx of
+                    ( ( monoParams, monoTailBody ), sx1 ) ->
+                        ( Mono.MonoTailDef inst.freshName monoParams (renameSelfReferences name inst.freshName monoTailBody), sx1 )
+            )
+            (List.indexedMap Tuple.pair instances)
+            s0
+    of
+        ( instanceDefs, s1 ) ->
+            case classifyAs Mono.tkClassLet letCanType s1 of
+                ( letType0, s2 ) ->
+                    let
+                        letType =
+                            if
+                                Mono.containsAnyMVar letType0
+                                    || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
+                            then
+                                Mono.typeOf monoBody
+
+                            else
+                                letType0
+                    in
+                    ( List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody (List.reverse instanceDefs)
+                        |> retypeLet letType
+                    , s2
+                    )
+
+
+{-| One instance of a multi-instance local tail def: in a scratch store (the
+item store is stashed and restored, as in `retranslateWithTag`), bind the
+def's type to the instance's demanded type, then derive the param types and
+translate the body under the bare name. Returns the params and the body.
+-}
+retranslateTailAtInstance : Name -> Int -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step ( List ( Name, Mono.MonoType ), Mono.MonoExpr )
+retranslateTailAtInstance name ord typedArgs tailBody defCanType instType s0 =
+    case Engine.localInstanceTagFor ord s0 of
+        ( instTag, sT ) ->
+            let
+                clearedA =
+                    Engine.clearedAux sT.itemAux
+
+                sFresh =
+                    { sT | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty, itemAux = { clearedA | currentLocalInstance = instTag, retranslating = Nothing } }
+
+                step sx0 =
+                    case Store.loadTypeS defCanType sx0 of
+                        ( annVar, sx1 ) ->
+                            case Store.monoTypeToVarS instType sx1 of
+                                ( demandVar, sx2 ) ->
+                                    case tailDefBindingTypes (Just annVar) typedArgs defCanType (unifyStepBestEffort annVar demandVar sx2) of
+                                        ( ( monoParams, defType ), sx3 ) ->
+                                            case
+                                                withLoopFrame name
+                                                    typedArgs
+                                                    (Engine.scoped
+                                                        (\sy -> translate tailBody (insertVars monoParams (Engine.insertVar name defType sy)))
+                                                    )
+                                                    sx3
+                                            of
+                                                ( monoTailBody, sx4 ) ->
+                                                    ( ( monoParams, monoTailBody ), sx4 )
+            in
+            case step sFresh of
+                ( result, s1 ) ->
+                    ( result, { s1 | store = sT.store, memo = sT.memo, revMemo = sT.revMemo, itemAux = Engine.restoredAux sT.itemAux s1.itemAux } )
+
+
+{-| Renames a local tail def's self-references inside its own body: tail calls,
+variable uses, and closure captures of the name (a capture's name and the uses
+in the closure body must move together). Elm forbids shadowing, so a
+name-keyed rewrite is exact.
+-}
+renameSelfReferences : Name -> Name -> Mono.MonoExpr -> Mono.MonoExpr
+renameSelfReferences oldName newName expr =
+    if oldName == newName then
+        expr
+
+    else
+        MonoTraverse.mapExpr
+            (\e ->
+                case e of
+                    Mono.MonoVarLocal n t ->
+                        if n == oldName then
+                            Just (Mono.MonoVarLocal newName t)
+
+                        else
+                            Nothing
+
+                    Mono.MonoTailCall n args t ->
+                        if n == oldName then
+                            Just (Mono.MonoTailCall newName args t)
+
+                        else
+                            Nothing
+
+                    Mono.MonoClosure info body t ->
+                        if List.any (\( n, _, _ ) -> n == oldName) info.captures then
+                            Just
+                                (Mono.MonoClosure
+                                    { info
+                                        | captures =
+                                            List.map
+                                                (\( n, ce, u ) ->
+                                                    ( if n == oldName then
+                                                        newName
+
+                                                      else
+                                                        n
+                                                    , ce
+                                                    , u
+                                                    )
+                                                )
+                                                info.captures
+                                    }
+                                    body
+                                    t
+                                )
+
+                        else
+                            Nothing
+
+                    _ ->
+                        Nothing
+            )
+            expr
 
 
 {-| F3-b (plans/lss-container-payload-transport.md §12.9.5): a local tail-def's

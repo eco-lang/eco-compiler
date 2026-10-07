@@ -513,11 +513,16 @@ processOneWorkItem specId rest state =
                                     saAccum =
                                         stateAfter.accum
 
-                                    actualType =
-                                        Mono.nodeType monoNode
-
+                                    -- MONO_017: a constructor keeps the function
+                                    -- type it was requested at (its node holds the
+                                    -- constructed type), as the solver does.
                                     updatedRegistry =
-                                        Registry.updateRegistryType specId actualType saAccum.registry
+                                        case monoNode of
+                                            Mono.MonoCtor _ _ ->
+                                                saAccum.registry
+
+                                            _ ->
+                                                Registry.updateRegistryType specId (Mono.nodeType monoNode) saAccum.registry
                                 in
                                 { stateAfter
                                     | accum =

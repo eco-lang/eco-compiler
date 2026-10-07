@@ -1,17 +1,15 @@
 module PolyLetTailRecTwoTypesTest exposing (main)
 
-{-| BUG PIN (plans/staging-honesty-and-production-test-pipeline.md §4): a
-let-bound, polymorphic, tail-recursive local function used at two types.
+{-| A let-bound, polymorphic, tail-recursive local function used at two types.
 
-Under the production monomorphizer (the solver engine) the second
-specialization's recursive call names `foldl$1`, which is not in scope, and the
-compile crashes with "lookupVar: unbound variable foldl$1". The substitution
-engine (bootstrap Stage 5) compiles it. The elm-test twin is the "Poly let-bound
-multi-specialization is closed" failure (SourceIR.SpecializePolyLetCases,
-"tail-recursive foldl at two types").
+Each use needs its own copy of the loop: the solver emits `foldl` and
+`foldl$1`, each a `MonoTailDef` whose self-calls name that copy. It used to emit
+one `foldl` while the second use named `foldl$1`, and the compile crashed with
+"lookupVar: unbound variable foldl$1" (MONO_011). The elm-test twin is the
+"tail-recursive foldl at two types" case of SourceIR.SpecializePolyLetCases.
 -}
 
--- CHECK: r: (6,2)
+-- CHECK: r: (6, 2)
 
 import Html exposing (text)
 

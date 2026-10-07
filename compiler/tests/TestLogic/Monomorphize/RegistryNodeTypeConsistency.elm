@@ -1,4 +1,4 @@
-module TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency, expectCtorRegistryTypes, Violation)
+module TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency, Violation)
 
 {-| Checks that the specialization registry and the graph's nodes agree on the
 type of every specialization, so that code reading a specialization's type
@@ -29,11 +29,12 @@ with lambda-set specialization) and checks the graph it returns:
     two-argument function). Whether MONO\_017 should also bind the
     annotations is an open question
     (plans/staging-honesty-and-production-test-pipeline.md §4).
-  - Constructor specializations (`MonoCtor` nodes) are skipped: the solver
-    engine registers a constructor at its FUNCTION type (`Int -> Box`) while
-    the node holds the constructed type (`Box`, as `MonoCtor` documents). That
-    is a MONO\_017 violation in the production engine, pinned separately by
-    `expectCtorRegistryTypes`.
+  - A constructor specialization (`MonoCtor` node) is registered at the
+    function type it was requested at (`Int -> Box`) while its node holds the
+    constructed type (`Box`), as MONO\_017 states for constructors: the
+    registry type's parameters must have the layouts of the shape's field
+    types and its final result the node type's layout. Lambda-set analysis
+    reads a constructor's payload sets from those parameters.
 
 Empty `reverseMapping` slots, which pruning leaves for removed
 specializations, are skipped. Every violation found is reported in one
@@ -42,7 +43,7 @@ failure, in `SpecId` order.
 Among what is not checked: a node with no registry entry, and the graph after
 global optimization.
 
-@docs expectRegistryNodeTypeConsistency, expectCtorRegistryTypes, Violation
+@docs expectRegistryNodeTypeConsistency, Violation
 
 -}
 
@@ -102,10 +103,6 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
 
                     Just ( _, regMonoType ) ->
                         case Array.get specId data.nodes |> Maybe.andThen identity of
-                            Just (Mono.MonoCtor _ _) ->
-                                -- Pinned separately (expectCtorRegistryTypes).
-                                acc
-
                             Nothing ->
                                 acc
                                     ++ [ { context = "SpecId " ++ String.fromInt specId
@@ -113,6 +110,23 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
                                             "MONO_017 violation: SpecId in registry.reverseMapping but not in graph.nodes"
                                          }
                                        ]
+
+                            Just (Mono.MonoCtor shape nType) ->
+                                if ctorRowMatches shape.fieldTypes nType regMonoType then
+                                    acc
+
+                                else
+                                    acc
+                                        ++ [ { context = "SpecId " ++ String.fromInt specId
+                                             , message =
+                                                "MONO_017 violation (constructor): registry MonoType is not the function from the fields to the node MonoType\n"
+                                                    ++ "  registry: "
+                                                    ++ monoTypeToString regMonoType
+                                                    ++ "\n"
+                                                    ++ "  node:     "
+                                                    ++ monoTypeToString nType
+                                             }
+                                           ]
 
                             Just node ->
                                 let
@@ -138,53 +152,29 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
             []
 
 
-{-| BUG PIN (MONO\_017, plans/staging-honesty-and-production-test-pipeline.md
-§4): compiles `srcModule` with `runToMono` and fails for every constructor
-specialization whose registry type does not have its node's layout. The
-solver engine registers a constructor at its function type, so this fails on
-any program that builds a constructor with arguments.
+{-| A constructor's registry row is the function type it was requested at:
+its parameters, across however many stages, are the shape's field types, and
+its final result is the node's constructed type. A constructor without fields
+is registered at the constructed type itself.
 -}
-expectCtorRegistryTypes : Src.Module -> Expectation
-expectCtorRegistryTypes srcModule =
-    case Pipeline.runToMono srcModule of
-        Err msg ->
-            Expect.fail ("Compilation failed: " ++ msg)
+ctorRowMatches : List Mono.MonoType -> Mono.MonoType -> Mono.MonoType -> Bool
+ctorRowMatches fieldTypes nodeT regT =
+    case fieldTypes of
+        [] ->
+            sameLayout nodeT regT
 
-        Ok { monoGraph } ->
-            let
-                (Mono.MonoGraph data) =
-                    monoGraph
+        _ ->
+            case regT of
+                Mono.MFunction _ _ args result ->
+                    if List.length args > List.length fieldTypes then
+                        False
 
-                violations =
-                    Array.toIndexedList data.registry.reverseMapping
-                        |> List.filterMap
-                            (\( specId, maybeEntry ) ->
-                                case ( maybeEntry, Array.get specId data.nodes |> Maybe.andThen identity ) of
-                                    ( Just ( _, regMonoType ), Just (Mono.MonoCtor _ nType) ) ->
-                                        if sameLayout nType regMonoType then
-                                            Nothing
+                    else
+                        sameLayoutList args (List.take (List.length args) fieldTypes)
+                            && ctorRowMatches (List.drop (List.length args) fieldTypes) nodeT result
 
-                                        else
-                                            Just
-                                                { context = "SpecId " ++ String.fromInt specId
-                                                , message =
-                                                    "MONO_017 violation (constructor): registry MonoType != node MonoType\n"
-                                                        ++ "  registry: "
-                                                        ++ monoTypeToString regMonoType
-                                                        ++ "\n"
-                                                        ++ "  node:     "
-                                                        ++ monoTypeToString nType
-                                                }
-
-                                    _ ->
-                                        Nothing
-                            )
-            in
-            if List.isEmpty violations then
-                Expect.pass
-
-            else
-                Expect.fail (formatViolations violations)
+                _ ->
+                    False
 
 
 {-| `Mono.eqLayout`, except that two type variables with the same constraint

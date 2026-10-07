@@ -22,7 +22,11 @@ or the reverse.
 `separateSpecializations` checks a program, `count [ 1, 2 ] + count []`, whose
 `count` gets one specialization for `List Int` and one for a list of an erased
 variable. That is valid output, since each specialization only receives lists
-of its own element type, and the check must pass on it.
+of its own element type, and the check must pass on it. It once failed: the
+`List Int` spec's `number` binding of `count`'s annotation variable leaked into
+the solver's global super table (a self-recursive function is a `Cycle` node,
+whose annotation variables the harvest did not exclude), and Prune then closed
+the erased spec's element to `Int`.
 
 Among what is not tested: any MLIR op, including `eco.project.list_head`
 itself; the calls and list positions the checker's docstring lists as
@@ -60,7 +64,7 @@ suite : Test
 suite =
     Test.describe "REP_BOUNDARY_003: Projection heap layout consistency"
         [ StandardTestSuites.expectSuite expectProjectionHeapLayoutConsistency "passes projection heap layout consistency"
-        , Test.test "REP_BOUNDARY_003 BUG PIN: List Int and erased-list specializations of one function" separateSpecializations
+        , Test.test "List Int and erased-list specializations of one function stay separate" separateSpecializations
         ]
 
 

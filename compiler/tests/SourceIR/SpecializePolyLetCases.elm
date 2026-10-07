@@ -1,4 +1,4 @@
-module SourceIR.SpecializePolyLetCases exposing (expectSuite, foldlMulti, reverseMulti)
+module SourceIR.SpecializePolyLetCases exposing (expectSuite)
 
 {-| Supplies programs built around polymorphic functions defined in a `let`,
 most of them used at more than one type.
@@ -46,6 +46,12 @@ by its label:
     local `apply`, at one type only.
   - "named local as higher-order arg at two types": the same, at a number and
     at a `String`.
+  - "tail-recursive foldl at two types": a tail-recursive `foldl`, over
+    numbers and over `String`s. Each use needs its own copy of the loop, with
+    its self-calls renamed to that copy (MONO\_011).
+  - "tail-recursive helper through a wrapper at two types": a tail-recursive
+    `reverseHelper` reached only through a local `reverse`, at numbers and at
+    `String`s.
 
 Except in "named local as higher-order arg", `testValue` is a pair whose two
 halves are the two uses, so both uses are reachable from it.
@@ -97,7 +103,7 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
-{-| Returns the twelve cases, each a label paired with a check that builds
+{-| Returns the fourteen cases, each a label paired with a check that builds
 its program and passes it to `expectFn`.
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
@@ -114,6 +120,8 @@ testCases expectFn =
     , { label = "singleton at two types", run = singletonMulti expectFn }
     , { label = "named local as higher-order arg", run = namedLocalAsArg expectFn }
     , { label = "named local as higher-order arg at two types", run = namedLocalAsArgMulti expectFn }
+    , { label = "tail-recursive foldl at two types", run = foldlMulti expectFn }
+    , { label = "tail-recursive helper through a wrapper at two types", run = reverseMulti expectFn }
     ]
 
 
@@ -258,12 +266,8 @@ the tail call `foldl f (f x acc) rest`, used to fold `[ 1, 2, 3 ]` with
 `\x acc -> x + acc` and `[ "a", "b" ]` with `\x acc -> acc + 1`, both from
 `0`, and passes the program to `expectFn`.
 
-BUG PIN, not in `testCases`
-(plans/staging-honesty-and-production-test-pipeline.md §4): under the
-production monomorphizer the second specialization names `foldl$1` out of
-scope (MONO\_011), and code generation crashes on it. It is checked once, by
-`TestLogic.Generate.MonoGraphIntegrityTest`, instead of failing every suite
-that uses these cases.
+Each use of the tail-recursive `foldl` gets its own `MonoTailDef` (`foldl`,
+`foldl$1`) whose self-calls name that copy (MONO\_011).
 
 -}
 foldlMulti : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -420,9 +424,8 @@ is the tail call `reverseHelper (x :: acc) rest`, and a local
 and passes the program to `expectFn`. The `let` body calls `reverseHelper` only
 through `reverse`.
 
-BUG PIN, not in `testCases`: the same defect as `foldlMulti` (the second
-specialization names `reverseHelper$1` out of scope); checked once by
-`TestLogic.Generate.MonoGraphIntegrityTest`.
+Like `foldlMulti`, each use needs its own copy of `reverseHelper`, here
+reached through `reverse`.
 
 -}
 reverseMulti : (Src.Module -> Expectation) -> (() -> Expectation)

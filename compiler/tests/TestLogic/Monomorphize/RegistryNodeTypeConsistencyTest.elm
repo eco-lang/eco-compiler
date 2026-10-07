@@ -14,20 +14,19 @@ The check is
 which compiles each program with `TestLogic.TestPipeline.runToMono` (the
 production pipeline). For each program it fails if the program does not
 compile, if a `reverseMapping` entry has no node at its `SpecId`, or if the
-entry's type does not have its node type's layout. Constructor specializations
-are skipped there and pinned by the "MONO_017 BUG PIN" group: the solver engine
-registers a constructor at its function type while its node holds the
-constructed type. The programs are those of `SourceIR.Suite.StandardTestSuites`.
+entry's type does not have its node type's layout. A constructor
+specialization is registered at its function type, so its entry must be the
+function from the constructor's field types to the node's constructed type.
+The programs are those of `SourceIR.Suite.StandardTestSuites`.
 
 Among what is not tested: a node with no registry entry, and the graph after
 global optimization.
 
 -}
 
-import SourceIR.SpecializeConstructorCases as SpecializeConstructorCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectCtorRegistryTypes, expectRegistryNodeTypeConsistency)
+import TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency)
 
 
 {-| The standard test programs, each checked with
@@ -37,6 +36,4 @@ suite : Test
 suite =
     Test.describe "MONO_017: Registry type matches node type"
         [ StandardTestSuites.expectSuite expectRegistryNodeTypeConsistency "registry type matches node"
-        , Test.describe "MONO_017 BUG PIN: the solver engine registers a constructor spec at its function type"
-            [ SpecializeConstructorCases.expectSuite expectCtorRegistryTypes "constructor registry type matches node" ]
         ]

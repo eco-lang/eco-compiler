@@ -36,8 +36,6 @@ Among what is not tested: programs from the `SourceIR` case modules that
 
 -}
 
-import Expect
-import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.MonoGraphIntegrity
@@ -66,13 +64,5 @@ suite =
             ]
         , Test.describe "MONO_011: MonoGraph is closed and hygienic"
             [ StandardTestSuites.expectSuite expectMonoGraphClosed "is closed"
-            , Test.test "MONO_011 BUG PIN: a let-bound tail-recursive function at two types is closed (solver names foldl$1 / reverseHelper$1 out of scope)"
-                (\_ ->
-                    Expect.all
-                        [ SpecializePolyLetCases.foldlMulti expectMonoGraphClosed
-                        , SpecializePolyLetCases.reverseMulti expectMonoGraphClosed
-                        ]
-                        ()
-                )
             ]
         ]
