@@ -25,6 +25,9 @@
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
+#if defined(__APPLE__)
+#include "llvm/ExecutionEngine/Orc/TargetProcess/UnwindInfoManager.h"
+#endif
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Error.h"
@@ -82,6 +85,8 @@ public:
         // and pass each FDE individually; skip CIE records (cie_pointer == 0).
         uint8_t *P = Addr;
         uint8_t *End = Addr + Size;
+        uint64_t codeLo = UINT64_MAX, codeHi = 0;
+        size_t fdes = 0;
         while (P < End) {
             uint32_t length;
             memcpy(&length, P, 4);
@@ -97,20 +102,61 @@ public:
             memcpy(&ciePointer, P + 4, 4);
             if (ciePointer != 0) {
                 __register_frame(P);
-                if (diagFdes_ < 4 && std::getenv("ECO_TEST_STACKWALK_DIAG"))
-                    diagPrintFde(P, ciePointer);  // TEMP(diag)
-                ++diagFdes_;  // TEMP(diag)
+                uint64_t lo = 0, hi = 0;
+                fdeCodeRange(P, ciePointer, lo, hi);
+                codeLo = std::min(codeLo, lo);
+                codeHi = std::max(codeHi, hi);
+                if (fdes < 4 && std::getenv("ECO_TEST_STACKWALK_DIAG"))  // TEMP(diag)
+                    std::fprintf(stderr, "[diag-ehframe] FDE %p -> code [%#llx, %#llx)\n",
+                                 static_cast<void*>(P), (unsigned long long)lo,
+                                 (unsigned long long)hi);
+                ++fdes;
             }
             P += fullLen;
         }
+#if defined(__APPLE__)
+        // macOS: the system libunwind does not find FDEs passed to __register_frame for JIT code
+        // (_Unwind_Find_FDE returns null, unw_step stops at the first JIT frame), so the GC's
+        // stack walk never reached JIT frames and their roots went stale. Also register the whole
+        // section for the code range it covers through libunwind's find-dynamic-unwind-sections
+        // hook, as ORC's JITLink does on Darwin (llvm::orc::UnwindInfoManager).
+        bool viaHook = false;
+        if (codeLo < codeHi && llvm::orc::UnwindInfoManager::TryEnable()) {
+            const llvm::orc::ExecutorAddrRange code{llvm::orc::ExecutorAddr(codeLo),
+                                                    llvm::orc::ExecutorAddr(codeHi)};
+            if (auto err = llvm::orc::UnwindInfoManager::registerSections(
+                    {code}, llvm::orc::ExecutorAddr(codeLo),
+                    llvm::orc::ExecutorAddrRange(llvm::orc::ExecutorAddr::fromPtr(Addr),
+                                                 llvm::orc::ExecutorAddrDiff(Size)),
+                    llvm::orc::ExecutorAddrRange())) {
+                llvm::errs() << "[eco-jit] unwind-section registration failed: "
+                             << llvm::toString(std::move(err)) << "\n";
+            } else {
+                HookRanges.push_back(code);
+                viaHook = true;
+            }
+        }
+#else
+        const bool viaHook = false;
+#endif
         // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): is JIT unwind info registered?
         if (std::getenv("ECO_TEST_STACKWALK_DIAG"))
-            std::fprintf(stderr, "[diag-ehframe] registerEHFrames: section %p, load addr %#llx, %zu bytes, %zu FDEs registered\n",
-                         static_cast<void*>(Addr), (unsigned long long)LoadAddr, Size, diagFdes_);
+            std::fprintf(stderr, "[diag-ehframe] registerEHFrames: section %p, load addr %#llx, "
+                         "%zu bytes, %zu FDEs, code [%#llx, %#llx), dynamic-sections hook %s\n",
+                         static_cast<void*>(Addr), (unsigned long long)LoadAddr, Size, fdes,
+                         (unsigned long long)codeLo, (unsigned long long)codeHi,
+                         viaHook ? "registered" : "not used");
         EHFrames.push_back({Addr, Size});
     }
 
     void deregisterEHFrames() override {
+#if defined(__APPLE__)
+        if (!HookRanges.empty()) {
+            if (auto err = llvm::orc::UnwindInfoManager::deregisterSections(HookRanges))
+                llvm::consumeError(std::move(err));
+            HookRanges.clear();
+        }
+#endif
         for (auto &F : EHFrames) {
             uint8_t *P = F.Addr;
             uint8_t *End = F.Addr + F.Size;
@@ -135,27 +181,34 @@ public:
     }
 
 private:
-    size_t diagFdes_ = 0;  // TEMP(diag)
+#if defined(__APPLE__)
+    std::vector<llvm::orc::ExecutorAddrRange> HookRanges;
+#endif
 
-    // TEMP(diag) (plans/ci-all-platforms-green.md issue 8): the code range an FDE describes, as
-    // libunwind will read it (pointer encoding from the CIE's 'R' augmentation).
-    static uint64_t diagUleb(const uint8_t*& p) {
+    static uint64_t uleb(const uint8_t*& p) {
         uint64_t v = 0;
-        for (int sh = 0;; sh += 7) { uint8_t b = *p++; v |= uint64_t(b & 0x7f) << sh; if (!(b & 0x80)) break; }
+        for (int sh = 0;; sh += 7) {
+            const uint8_t b = *p++;
+            v |= uint64_t(b & 0x7f) << sh;
+            if (!(b & 0x80)) break;
+        }
         return v;
     }
-    static void diagPrintFde(const uint8_t* fde, uint32_t ciePointer) {
-        const uint8_t* cie = fde + 4 - ciePointer;
-        const uint8_t* p = cie + 8;          // length, CIE id
+
+    // The code range [lo, hi) an FDE describes, decoded as libunwind reads it: the pointer
+    // encoding comes from the CIE's 'R' augmentation (pc-relative on ELF and MachO).
+    static void fdeCodeRange(const uint8_t* fde, uint32_t ciePointer, uint64_t& lo,
+                             uint64_t& hi) {
+        const uint8_t* p = fde + 4 - ciePointer + 8;   // the CIE, past its length and id
         const uint8_t version = *p++;
         const char* aug = reinterpret_cast<const char*>(p);
         p += std::strlen(aug) + 1;
-        diagUleb(p);                         // code alignment
-        diagUleb(p);                         // data alignment (sleb; skipping is the same)
-        if (version == 1) ++p; else diagUleb(p);  // return register
-        uint8_t enc = 0;                     // DW_EH_PE_absptr
+        uleb(p);                                       // code alignment
+        uleb(p);                                       // data alignment (an sleb: same length)
+        if (version == 1) ++p; else uleb(p);           // return-address register
+        uint8_t enc = 0;                               // DW_EH_PE_absptr
         if (aug[0] == 'z') {
-            diagUleb(p);
+            uleb(p);
             for (const char* a = aug + 1; *a; ++a) {
                 if (*a == 'R') { enc = *p++; break; }
                 if (*a == 'P') { const uint8_t pe = *p++; p += (pe & 0x0f) == 0x0b ? 4 : 8; }
@@ -171,13 +224,11 @@ private:
                 case 0x03: { uint32_t x; std::memcpy(&x, f, 4); v = x; f += 4; break; }
                 default:   { int64_t x; std::memcpy(&x, f, 8); v = x; f += 8; break; }
             }
-            return pcrel && (enc & 0x70) == 0x10 ? uint64_t(reinterpret_cast<uintptr_t>(at) + v) : uint64_t(v);
+            return pcrel && (enc & 0x70) == 0x10 ? uint64_t(reinterpret_cast<uintptr_t>(at) + v)
+                                                 : uint64_t(v);
         };
-        const uint64_t start = read(true);
-        const uint64_t range = read(false);
-        std::fprintf(stderr, "[diag-ehframe] FDE %p: CIE aug \"%s\" enc 0x%02x -> code [%#llx, %#llx)\n",
-                     static_cast<const void*>(fde), aug, enc, (unsigned long long)start,
-                     (unsigned long long)(start + range));
+        lo = read(true);
+        hi = lo + read(false);
     }
 };
 #endif
