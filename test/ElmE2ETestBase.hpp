@@ -77,7 +77,7 @@ inline void diagCrashHandler(int sig, siginfo_t* si, void* ctx) {
                               "[diag-regs] fp %016llx lr %016llx sp %016llx pc %016llx heap %p\n",
                               (unsigned long long)ss.__fp, (unsigned long long)ss.__lr,
                               (unsigned long long)ss.__sp, (unsigned long long)ss.__pc,
-                              (void*)Elm::Allocator::instance().getHeapBase());
+                              (void*)Elm::AllocatorTestAccess::getHeapBase(Elm::Allocator::instance()));
         (void)!write(2, line, static_cast<size_t>(m));
         const unsigned char* pc = reinterpret_cast<const unsigned char*>(ss.__pc);
         for (int off = -192; off < 64; off += 32) {
