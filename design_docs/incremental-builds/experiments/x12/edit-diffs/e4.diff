@@ -1,0 +1,109 @@
+diff -ruN /tmp/inc-exp/subject/src/Compiler/Generate/MLIR/Context.elm /tmp/inc-exp/x12-edits/e4/src/Compiler/Generate/MLIR/Context.elm
+--- /tmp/inc-exp/subject/src/Compiler/Generate/MLIR/Context.elm	2026-10-06 10:53:20.550609593 +0000
++++ /tmp/inc-exp/x12-edits/e4/src/Compiler/Generate/MLIR/Context.elm	2026-10-06 11:03:11.040628481 +0000
+@@ -86,7 +86,8 @@
+ type alias FuncSignature =
+     { paramTypes : List Mono.MonoType
+     , returnType : Mono.MonoType
+-    , evaluatorBoxesAll : Bool -- True for MonoExtern/MonoManagerLeaf: evaluator wrapper always has !eco.value params
++    , evaluatorBoxesAll : Bool
++    , sigVersion : Int -- True for MonoExtern/MonoManagerLeaf: evaluator wrapper always has !eco.value params
+     }
+ 
+ 
+@@ -156,6 +157,7 @@
+     { paramTypes = argTypes
+     , returnType = retType
+     , evaluatorBoxesAll = False
++    , sigVersion = 0
+     }
+ 
+ 
+@@ -874,6 +876,7 @@
+                         { paramTypes = List.map Tuple.second closureInfo.params
+                         , returnType = residualResultType (List.length closureInfo.params) monoType
+                         , evaluatorBoxesAll = False
++                        , sigVersion = 0
+                         }
+ 
+                 _ ->
+@@ -881,6 +884,7 @@
+                         { paramTypes = []
+                         , returnType = monoType
+                         , evaluatorBoxesAll = False
++                        , sigVersion = 0
+                         }
+ 
+         Mono.MonoTailFunc params _ monoType ->
+@@ -892,6 +896,7 @@
+                 { paramTypes = List.map Tuple.second params
+                 , returnType = returnType
+                 , evaluatorBoxesAll = False
++                , sigVersion = 0
+                 }
+ 
+         Mono.MonoCtor ctorShape monoType ->
+@@ -899,6 +904,7 @@
+                 { paramTypes = ctorShape.fieldTypes
+                 , returnType = monoType
+                 , evaluatorBoxesAll = False
++                , sigVersion = 0
+                 }
+ 
+         Mono.MonoEnum _ monoType ->
+@@ -906,6 +912,7 @@
+                 { paramTypes = []
+                 , returnType = monoType
+                 , evaluatorBoxesAll = False
++                , sigVersion = 0
+                 }
+ 
+         Mono.MonoExtern monoType ->
+@@ -919,6 +926,7 @@
+                         { paramTypes = argMonoTypes
+                         , returnType = resultMonoType
+                         , evaluatorBoxesAll = True
++                        , sigVersion = 0
+                         }
+ 
+                 _ ->
+@@ -935,6 +943,7 @@
+                         { paramTypes = argMonoTypes
+                         , returnType = resultMonoType
+                         , evaluatorBoxesAll = True
++                        , sigVersion = 0
+                         }
+ 
+                 _ ->
+@@ -947,6 +956,7 @@
+                         { paramTypes = List.map Tuple.second closureInfo.params
+                         , returnType = residualResultType (List.length closureInfo.params) monoType
+                         , evaluatorBoxesAll = False
++                        , sigVersion = 0
+                         }
+ 
+                 _ ->
+@@ -954,6 +964,7 @@
+                         { paramTypes = []
+                         , returnType = monoType
+                         , evaluatorBoxesAll = False
++                        , sigVersion = 0
+                         }
+ 
+         Mono.MonoPortOutgoing expr monoType ->
+@@ -963,6 +974,7 @@
+                         { paramTypes = List.map Tuple.second closureInfo.params
+                         , returnType = residualResultType (List.length closureInfo.params) monoType
+                         , evaluatorBoxesAll = False
++                        , sigVersion = 0
+                         }
+ 
+                 _ ->
+@@ -970,6 +982,7 @@
+                         { paramTypes = []
+                         , returnType = monoType
+                         , evaluatorBoxesAll = False
++                        , sigVersion = 0
+                         }
+ 
+ 

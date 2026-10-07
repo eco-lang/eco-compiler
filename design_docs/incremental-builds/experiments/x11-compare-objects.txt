@@ -1,0 +1,12 @@
+edit             bytes-changed          content-changed  content-changed units
+base1b      0 units   0.0% CPU       0 units   0.0% CPU  []
+e1          1 units   0.3% CPU       1 units   0.3% CPU  ['Terminal.Main']
+e2         74 units  42.2% CPU       0 units   0.0% CPU  []
+e3        205 units  92.2% CPU       3 units   0.7% CPU  ['Builder.BackgroundWriter', 'Compiler.Generate.MLIR.Intrinsics', '~unattributed']
+e4         64 units  38.2% CPU       5 units   2.9% CPU  ['Builder.BackgroundWriter', 'Compiler.Generate.MLIR.ConstThunks', 'Compiler.Generate.MLIR.Context', 'Compiler.Generate.MLIR.Expr', '~unattributed']
+e5          0 units   0.0% CPU       0 units   0.0% CPU  []
+e6          0 units   0.0% CPU       0 units   0.0% CPU  []
+e7          1 units   0.1% CPU       1 units   0.1% CPU  ['Prelude']
+e8        209 units  88.0% CPU       1 units   1.5% CPU  ['Builder.Eco.Config']
+e9          0 units   0.0% CPU       0 units   0.0% CPU  []
+e10       125 units  75.3% CPU       1 units   0.0% CPU  ['Compiler.Generate.MLIR.Names']

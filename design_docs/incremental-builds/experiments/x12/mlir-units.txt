@@ -1,0 +1,18 @@
+== e1
+raw-names module units dirty units: 1 of 327 cost 0.14% ['eco/compiler:Terminal.Main']
+stable-normalised module units dirty units: 1 of 327 cost 0.14% ['eco/compiler:Terminal.Main']
+== e3
+raw-names module units dirty units: 227 of 327 cost 83.28% ['andre-dietrich/parser-combinators:Combine.Char', 'coinop-logan/elm-format-number:FormatNumber', 'coinop-logan/elm-format-number:Parser', 'coinop-logan/elm-format-number:Stringfy', 'eco/accessor:Accessor', 'eco/compiler:Builder.BackgroundWriter', 'eco/compiler:Builder.Build', 'eco/compiler:Builder.Deps.Bump']
+stable-normalised module units dirty units: 68 of 327 cost 45.48% ['eco/compiler:Builder.Build', 'eco/compiler:Builder.Eco.FEStats', 'eco/compiler:Builder.File', 'eco/compiler:Builder.Generate', 'eco/compiler:Builder.Reporting', 'eco/compiler:Builder.Reporting.Exit', 'eco/compiler:Compiler.AST.Monomorphized', 'eco/compiler:Compiler.Elm.Compiler.Type.Extract']
+== e4
+raw-names module units dirty units: 60 of 327 cost 43.58% ['eco/compiler:Builder.Generate', 'eco/compiler:Compiler.AST.Monomorphized', 'eco/compiler:Compiler.AST.TypeTable', 'eco/compiler:Compiler.Generate.MLIR.Backend', 'eco/compiler:Compiler.Generate.MLIR.BytesFusion.Emit', 'eco/compiler:Compiler.Generate.MLIR.BytesFusion.Reify', 'eco/compiler:Compiler.Generate.MLIR.ConstThunks', 'eco/compiler:Compiler.Generate.MLIR.Context']
+stable-normalised module units dirty units: 21 of 327 cost 30.61% ['eco/accessor:Accessor', 'eco/compiler:Compiler.Generate.MLIR.Backend', 'eco/compiler:Compiler.Generate.MLIR.BytesFusion.Emit', 'eco/compiler:Compiler.Generate.MLIR.ConstThunks', 'eco/compiler:Compiler.Generate.MLIR.Context', 'eco/compiler:Compiler.Generate.MLIR.Expr', 'eco/compiler:Compiler.Generate.MLIR.Functions', 'eco/compiler:Compiler.Generate.MLIR.Intrinsics']
+== e5
+raw-names module units dirty units: 1 of 327 cost 0.27% ['eco/compiler:Compiler.Generate.MLIR.Intrinsics']
+stable-normalised module units dirty units: 1 of 327 cost 0.27% ['eco/compiler:Compiler.Generate.MLIR.Intrinsics']
+== e7
+raw-names module units dirty units: 1 of 327 cost 0.03% ['eco/compiler:Prelude']
+stable-normalised module units dirty units: 1 of 327 cost 0.03% ['eco/compiler:Prelude']
+== e8
+raw-names module units dirty units: 243 of 327 cost 84.93% ['andre-dietrich/parser-combinators:Combine.Char', 'coinop-logan/elm-format-number:FormatNumber', 'coinop-logan/elm-format-number:Parser', 'coinop-logan/elm-format-number:Stringfy', 'eco/accessor:Accessor', 'eco/compiler:Builder.BackgroundWriter', 'eco/compiler:Builder.Build', 'eco/compiler:Builder.Deps.Bump']
+stable-normalised module units dirty units: 1 of 327 cost 0.64% ['eco/compiler:Builder.Eco.Config']

@@ -1,0 +1,354 @@
+--- a/runtime/src/codegen/EcoSplit.cpp	2026-10-05 20:49:06.229992617 +0000
++++ b/runtime/src/codegen/EcoSplit.cpp	2026-10-06 21:39:55.162991590 +0000
+@@ -9,6 +9,7 @@
+ #include "Passes/EcoCapHoistCore.h"
+ #include "Passes/EcoSymbolGraph.h"
+ #include "Passes/EcoParallel.h"
++#include "Passes/ExpModuleOf.h"
+ 
+ #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+ #include "mlir/IR/Builders.h"
+@@ -36,6 +37,10 @@
+ #include <string>
+ #include <thread>
+ #include <vector>
++#include <map>
++#include <mutex>
++#include <semaphore>
++#include <time.h>
+ 
+ using namespace mlir;
+ 
+@@ -105,6 +110,9 @@
+     // Plan 06 B4: exported `$cap`s nothing takes the address of — exported
+     // only AFTER the owner's prepass, if they still exist.
+     std::vector<std::vector<std::string>> exportsLate;
++    // EXPERIMENT X4/X5 (design_docs/incremental-builds): per-partition census.
++    std::vector<std::string> groups;
++    std::vector<uint64_t> ownedFns, ownedOps, importFns, declCount;
+ };
+ 
+ // U1: ownership, imports, exports, clone, S6, census.
+@@ -151,6 +159,54 @@
+             heap.push({l.first + cost[f], l.second});
+         }
+     }
++    // EXPERIMENT X4/X5 (design_docs/incremental-builds): ECO_SPLIT_POLICY=
++    // module | module-req partitions by Elm source module instead of LPT.
++    // `module` attributes a spec to its defining module; `module-req` also
++    // treats package-module specs (ECO_EXP_LOCAL_PREFIXES) as owned by their
++    // requester. Symbols with no recoverable module (lambdas, local tails,
++    // wrappers) follow the first referrer in module order. N becomes the
++    // number of groups.
++    std::vector<std::string> groupNames;
++    if (const char *pol = ::getenv("ECO_SPLIT_POLICY");
++        pol && (StringRef(pol) == "module" || StringRef(pol) == "module-req")) {
++        const bool req = StringRef(pol) == "module-req";
++        std::vector<std::string> mod(n);
++        for (uint32_t i : defFns)
++            mod[i] = expx::moduleOfSymbol(g.nodes[i].name.getValue(), req);
++        // Propagate through globals too: closures reach their wrappers,
++        // `$cap` bodies and lambdas via eval-descriptor globals.
++        for (bool changed = true; changed;) {
++            changed = false;
++            for (uint32_t i = 0; i < n; ++i)
++                if (!mod[i].empty())
++                    for (uint32_t e = g.outBegin[i]; e < g.outBegin[i + 1]; ++e) {
++                        uint32_t t = g.outTarget[e];
++                        if (g.nodes[t].isDef && mod[t].empty()) {
++                            mod[t] = mod[i];
++                            changed = true;
++                        }
++                    }
++        }
++        std::map<std::string, unsigned> gidx;
++        for (uint32_t i : defFns) {
++            if (mod[i].empty())
++                mod[i] = "~unattributed";
++            gidx[mod[i]] = 0;
++        }
++        unsigned k = 0;
++        for (auto &kv : gidx) {
++            kv.second = k++;
++            groupNames.push_back(kv.first);
++        }
++        N = k;
++        owner.assign(n, -1);
++        for (uint32_t i : defFns)
++            owner[i] = (int)gidx[mod[i]];
++    }
++    if (groupNames.empty())
++        for (unsigned p = 0; p < N; ++p)
++            groupNames.push_back("lpt" + std::to_string(p));
++
+     // Globals: the owner of their first referrer in module order, else 0.
+     for (uint32_t i = 0; i < n; ++i) {
+         if (owner[i] < 0)
+@@ -367,6 +423,21 @@
+                 "not carry its owner's eco-cap facts (01 S6)",
+                 p, s6[p].c_str());
+ 
++    plan.groups = groupNames;
++    plan.ownedFns.assign(N, 0);
++    plan.ownedOps.assign(N, 0);
++    plan.importFns.assign(N, 0);
++    plan.declCount.assign(N, 0);
++    for (uint32_t i : defFns) {
++        plan.ownedFns[owner[i]] += 1;
++        plan.ownedOps[owner[i]] += cost[i];
++    }
++    for (unsigned p = 0; p < N; ++p) {
++        plan.importFns[p] = importCount[p];
++        for (uint32_t i = 0; i < n; ++i)
++            plan.declCount[p] += role[p][i] == 3;
++    }
++
+     if (envOn("ECO_MLIR_SPLIT_STATS")) {
+         uint64_t imin = UINT64_MAX, imax = 0, isum = 0, decls = 0, exps = 0;
+         for (unsigned p = 0; p < N; ++p) {
+@@ -431,6 +502,7 @@
+             return planOr.takeError();
+         plan = std::move(*planOr);
+     }
++    N = (unsigned)plan.mods.size(); // EXPERIMENT: the module policy picks N
+ 
+     // The source module is no longer needed: destroy its body off the
+     // critical path (it was a serial 1.17 s teardown, review R8). The
+@@ -461,6 +533,20 @@
+     std::vector<PartitionWorkerInfo> info(N);
+     std::vector<std::string> errs(N);
+     std::atomic<unsigned> failures{0};
++    // EXPERIMENT X4/X5: ECO_SPLIT_MAX_THREADS caps concurrent workers so each
++    // worker's time is close to its CPU time; ECO_SPLIT_PART_STATS=path writes
++    // one line per partition.
++    unsigned capThreads = N;
++    if (const char *e = ::getenv("ECO_SPLIT_MAX_THREADS"))
++        capThreads = std::max(1u, (unsigned)strtoul(e, nullptr, 10));
++    std::counting_semaphore<4096> workerSlots(std::min(capThreads, 4096u));
++    const char *partStatsPath = ::getenv("ECO_SPLIT_PART_STATS");
++    std::vector<std::string> partStats(N);
++    auto threadCpu = [] {
++        timespec ts;
++        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
++        return ts.tv_sec + ts.tv_nsec * 1e-9;
++    };
+     std::vector<std::thread> threads;
+     threads.reserve(N);
+     for (unsigned i = 0; i < N; ++i) {
+@@ -468,6 +554,13 @@
+         info[i].exports = std::move(plan.exports[i]);
+         info[i].exportsLate = std::move(plan.exportsLate[i]);
+         threads.emplace_back([&, i] {
++            workerSlots.acquire();
++            struct Release {
++                std::counting_semaphore<4096> &s;
++                ~Release() { s.release(); }
++            } release{workerSlots};
++            auto wallT0 = Clock::now();
++            double cpu0 = threadCpu();
+             setPartitionIndex((int)i);
+             llvm::LLVMContext lctx;
+             std::unique_ptr<llvm::Module> lm;
+@@ -518,6 +611,15 @@
+             job.splitEligible = true; // the parallel tier (review R1)
+             job.splitCodegen = 1;     // ... but never split again
+             job.partition = &info[i];
++            double translateWall = secs(wallT0);
++            uint64_t insts = 0, defs = 0;
++            if (partStatsPath)
++                for (llvm::Function &F : *lm)
++                    if (!F.isDeclaration()) {
++                        ++defs;
++                        insts += F.getInstructionCount();
++                    }
++            auto beT0 = Clock::now();
+             EcoBackendResult r;
+             if (auto err = runEcoBackend(*lm, job, &r)) {
+                 errs[i] = "partition " + std::to_string(i) + ": " +
+@@ -525,6 +627,29 @@
+                 ++failures;
+                 return;
+             }
++            if (partStatsPath) {
++                uint64_t objBytes = 0;
++                llvm::sys::fs::file_size(paths[i], objBytes);
++                std::string line;
++                llvm::raw_string_ostream os(line);
++                os << i << "\t" << plan.groups[i] << "\t" << plan.ownedFns[i]
++                   << "\t" << plan.ownedOps[i] << "\t" << plan.importFns[i]
++                   << "\t" << plan.declCount[i] << "\t" << defs << "\t"
++                   << insts << "\t" << translateWall << "\t" << secs(beT0)
++                   << "\t" << secs(wallT0) << "\t" << (threadCpu() - cpu0)
++                   << "\t" << objBytes;
++                os.flush();
++                partStats[i] = line;
++            }
++            // EXPERIMENT (incremental-builds 11): keep each unit's object.
++            if (const char *keep = ::getenv("ECO_SPLIT_KEEP_OBJS")) {
++                std::string g = plan.groups[i];
++                for (char &c : g)
++                    if (c == '/' || c == ':' || c == ' ')
++                        c = '_';
++                llvm::sys::fs::copy_file(paths[i],
++                                         std::string(keep) + "/" + g + ".o");
++            }
+         });
+     }
+     {
+@@ -536,6 +661,13 @@
+             t.join();
+     }
+     teardown.join();
++    if (partStatsPath) {
++        std::ofstream out(partStatsPath);
++        out << "idx\tgroup\townedFns\townedOps\timportFns\tdecls\tllvmDefs"
++               "\tllvmInsts\ttranslateWall\tbackendWall\twall\tthreadCpu\tobjBytes\n";
++        for (auto &l : partStats)
++            out << l << "\n";
++    }
+ 
+     if (failures.load()) {
+         for (auto &f : owned)
+--- a/runtime/src/codegen/Passes/EcoCapHoistPlan.cpp	2026-10-05 20:49:06.229992617 +0000
++++ b/runtime/src/codegen/Passes/EcoCapHoistPlan.cpp	2026-10-06 11:09:30.529064721 +0000
+@@ -19,6 +19,7 @@
+ //===----------------------------------------------------------------------===//
+ #include "../Passes.h"
+ #include "EcoCapHoistCore.h"
++#include "ExpModuleOf.h"
+ #include "EcoMarkerFacts.h"
+ #include "EcoSymbolGraph.h"
+ #include "EcoParallel.h"
+@@ -208,6 +209,43 @@
+         for (int g : v)
+             addrTaken[g] = 1;
+ 
++    // EXPERIMENT X3 (design_docs/incremental-builds): separate-compilation
++    // restriction "an exported symbol has unknown external callers, so it is
++    // not eligible for coverage". A function referenced from a function in a
++    // different source module counts as exported. ECO_EXP_CAP_XMOD=1 uses
++    // definition-module attribution, =r requester attribution (package-module
++    // instances belong to their referrer). Symbols with no recoverable module
++    // (lambdas, local tails, wrappers) inherit the module of a referrer.
++    std::vector<char> xmodExported(nodes.size(), 0);
++    if (const char *xe = ::getenv("ECO_EXP_CAP_XMOD"); xe && *xe && *xe != '0') {
++        const bool req = (*xe == 'r');
++        std::vector<std::string> mod(nodes.size());
++        for (size_t i = 0; i < nodes.size(); ++i)
++            if (nodes[i].isFunc)
++                mod[i] = expx::moduleOfSymbol(sg.nodes[i].name.getValue(), req);
++        for (bool changed = true; changed;) {
++            changed = false;
++            for (size_t i = 0; i < nodes.size(); ++i)
++                if (!mod[i].empty())
++                    for (int r : nodes[i].refs)
++                        if (mod[r].empty()) { // globals too (eval descriptors)
++                            mod[r] = mod[i];
++                            changed = true;
++                        }
++        }
++        unsigned nx = 0;
++        for (size_t i = 0; i < nodes.size(); ++i)
++            if (nodes[i].defined && !mod[i].empty())
++                for (int r : nodes[i].refs)
++                    if (nodes[r].defined && !mod[r].empty() && mod[r] != mod[i] &&
++                        !xmodExported[r]) {
++                        xmodExported[r] = 1;
++                        ++nx;
++                    }
++        llvm::errs() << "[exp-cap-xmod] mode=" << (req ? "req" : "def")
++                     << " cross-module-referenced defined functions=" << nx << "\n";
++    }
++
+     // 7. Phase A, in parallel per defined function.
+     std::vector<int> defs;
+     for (size_t i = 0; i < nodes.size(); ++i)
+@@ -232,7 +270,8 @@
+             auto l = fn.getLinkage();
+             local = l == LLVM::Linkage::Internal || l == LLVM::Linkage::Private;
+         }
+-        nd.eligible = !sn.interposable && !addrTaken[self] && local;
++        nd.eligible = !sn.interposable && !addrTaken[self] && local &&
++                      !xmodExported[self];
+         if (sn.interposable)
+             setTop(caphoist::Reason::Other);
+ 
+--- /dev/null	2026-10-05 20:51:05.917711991 +0000
++++ b/runtime/src/codegen/Passes/ExpModuleOf.h	2026-10-06 10:51:00.913619021 +0000
+@@ -0,0 +1,76 @@
++//===- ExpModuleOf.h - incremental-builds experiment helpers ----*- C++ -*-===//
++//
++// EXPERIMENT-ONLY (design_docs/incremental-builds, X3/X4/X5). Not product code.
++//
++// Recovers the Elm source module of a generated symbol from its MLIR name:
++//   <Module_With_Underscores>_<sanitizedName>_$_<specId>[$cap|$clo|...]
++// Module segments are Capitalized; Elm value names start lowercase. A name
++// whose segments are all Capitalized is a constructor function: the last
++// segment is the ctor. Lambdas (`<entry>_lambda_<uid>`), local tail functions
++// (`_tail_...`), accessors, wrappers and runtime symbols have no recoverable
++// module and return "" (callers attribute them to a referrer).
++//
++// ECO_EXP_LOCAL_PREFIXES="Compiler,Builder,..." marks which first segments are
++// project modules; with `requester` semantics a symbol in a NON-local (package)
++// module also returns "" so it is attributed to its requester.
++//
++//===----------------------------------------------------------------------===//
++#ifndef ECO_EXP_MODULE_OF_H
++#define ECO_EXP_MODULE_OF_H
++
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/ADT/StringRef.h"
++#include "llvm/ADT/StringSet.h"
++
++#include <cstdlib>
++#include <string>
++
++namespace eco::expx {
++
++inline const llvm::StringSet<> &localPrefixes() {
++    static const llvm::StringSet<> s = [] {
++        llvm::StringSet<> r;
++        if (const char *e = ::getenv("ECO_EXP_LOCAL_PREFIXES")) {
++            llvm::SmallVector<llvm::StringRef, 16> parts;
++            llvm::StringRef(e).split(parts, ',', -1, false);
++            for (auto p : parts)
++                r.insert(p.trim());
++        }
++        return r;
++    }();
++    return s;
++}
++
++/// "" when unknown. With `requester`, package modules also give "".
++inline std::string moduleOfSymbol(llvm::StringRef name, bool requester) {
++    size_t d = name.find("_$_");
++    if (d == llvm::StringRef::npos)
++        return "";
++    llvm::StringRef base = name.substr(0, d);
++    if (base.empty() || base.starts_with("_") || base.starts_with("accessor_"))
++        return "";
++    llvm::SmallVector<llvm::StringRef, 8> toks;
++    base.split(toks, '_', -1, /*KeepEmpty=*/true);
++    size_t k = 0;
++    while (k < toks.size() && !toks[k].empty() &&
++           toks[k][0] >= 'A' && toks[k][0] <= 'Z')
++        ++k;
++    if (k == toks.size())
++        --k; // all Capitalized: constructor function, drop the ctor name
++    if (k == 0)
++        return "";
++    std::string mod;
++    for (size_t i = 0; i < k; ++i) {
++        if (i)
++            mod += '.';
++        mod += toks[i].str();
++    }
++    if (requester && !localPrefixes().empty() &&
++        !localPrefixes().contains(toks[0]))
++        return "";
++    return mod;
++}
++
++} // namespace eco::expx
++
++#endif

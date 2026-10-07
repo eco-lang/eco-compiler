@@ -1,0 +1,40 @@
+diff -ruN /tmp/inc-exp/subject/src/Compiler/Generate/MLIR/Intrinsics.elm /tmp/inc-exp/x12-edits/e5/src/Compiler/Generate/MLIR/Intrinsics.elm
+--- /tmp/inc-exp/subject/src/Compiler/Generate/MLIR/Intrinsics.elm	2026-10-06 10:53:20.550609593 +0000
++++ /tmp/inc-exp/x12-edits/e5/src/Compiler/Generate/MLIR/Intrinsics.elm	2026-10-06 11:03:11.040628481 +0000
+@@ -374,28 +374,28 @@
+ {-| Look up an intrinsic for a kernel function call.
+ -}
+ kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+-kernelIntrinsic home name argTypes resultType =
++kernelIntrinsic home name argTys resultType =
+     case home of
+         "Basics" ->
+-            basicsIntrinsic name argTypes resultType
++            basicsIntrinsic name argTys resultType
+ 
+         "Bitwise" ->
+-            bitwiseIntrinsic name argTypes resultType
++            bitwiseIntrinsic name argTys resultType
+ 
+         "Utils" ->
+-            utilsIntrinsic name argTypes resultType
++            utilsIntrinsic name argTys resultType
+ 
+         "JsArray" ->
+-            jsArrayIntrinsic name argTypes resultType
++            jsArrayIntrinsic name argTys resultType
+ 
+         "List" ->
+-            listIntrinsic name argTypes resultType
++            listIntrinsic name argTys resultType
+ 
+         "Char" ->
+-            charIntrinsic name argTypes resultType
++            charIntrinsic name argTys resultType
+ 
+         "String" ->
+-            stringIntrinsic name argTypes resultType
++            stringIntrinsic name argTys resultType
+ 
+         _ ->
+             Nothing

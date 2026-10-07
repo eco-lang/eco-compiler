@@ -1,0 +1,12 @@
+diff -ruN /tmp/inc-exp/subject/src/Prelude.elm /tmp/inc-exp/x12-edits/e7/src/Prelude.elm
+--- /tmp/inc-exp/subject/src/Prelude.elm	2026-10-06 10:53:20.554609850 +0000
++++ /tmp/inc-exp/x12-edits/e7/src/Prelude.elm	2026-10-06 11:03:11.040628481 +0000
+@@ -27,7 +27,7 @@
+             item
+ 
+         Nothing ->
+-            crash "*** Exception: Prelude.head: empty list"
++            crash "*** Exception: Prelude.head: empty list!"
+ 
+ 
+ {-| Returns every element of `items` except the last, in order, aborting if

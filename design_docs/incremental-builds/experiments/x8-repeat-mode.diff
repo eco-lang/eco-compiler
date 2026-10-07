@@ -1,0 +1,332 @@
+diff -ruN /tmp/inc-exp/repo/compiler/src/Builder/Generate.elm /tmp/inc-exp/wt-x8/src/Builder/Generate.elm
+--- /tmp/inc-exp/repo/compiler/src/Builder/Generate.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x8/src/Builder/Generate.elm	2026-10-06 12:39:12.530461874 +0000
+@@ -4,6 +4,7 @@
+     , prod
+     , repl
+     , MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirStreamingBytecode
++    , MergedTypedData, x8LoadMerged
+     )
+ 
+ {-| Code generation orchestration for the Elm compiler.
+@@ -716,6 +717,15 @@
+         |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats roots)
+ 
+ 
++{-| X8 experiment (ECO\_EXP\_RETAIN=2): load and merge the whole typed program
++(the input of monomorphization) so a server-mode prototype can keep it alive.
++-}
++x8LoadMerged : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> Build.Artifacts -> Task Exit.Generate MergedTypedData
++x8LoadMerged root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
++    loadTypedObjects root maybeBuildDir maybeLocal details (List.map stripUntypedGraph artifacts.modules)
++        |> Task.andThen finalizeAndMergeTypedObjects
++
++
+ dropCachedInterfaceMVar : Build.Module -> Task Never ()
+ dropCachedInterfaceMVar modul =
+     case modul of
+diff -ruN /tmp/inc-exp/repo/compiler/src/Terminal/Make.elm /tmp/inc-exp/wt-x8/src/Terminal/Make.elm
+--- /tmp/inc-exp/repo/compiler/src/Terminal/Make.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x8/src/Terminal/Make.elm	2026-10-06 12:39:12.530461874 +0000
+@@ -50,6 +50,8 @@
+ -}
+ 
+ import Builder.BackgroundWriter as BW
++import Bytes.Decode
++import Bytes.Encode
+ import Builder.Build as Build
+ import Builder.Deps.Registry as Registry
+ import Builder.Eco.Config as EcoConfigLoader
+@@ -70,10 +72,13 @@
+ import Compiler.Elm.Package as Pkg
+ import Compiler.Generate.CodeGen as CodeGen
+ import Compiler.Generate.Html as Html
++import Eco.GC
+ import Eco.NativeDriver
++import System.IO as IO
+ import Maybe.Extra as Maybe
+ import System.IO exposing (FilePath)
+ import Task exposing (Task)
++import Time
+ import Terminal.Terminal.Internal exposing (Parser(..))
+ import Utils.Bytes.Decode as BD
+ import Utils.Bytes.Encode as BE
+@@ -135,29 +140,186 @@
+ {-| Execute the make command with the given source file paths and flags.
+ -}
+ run : List String -> Flags -> Task Never ()
+-run paths ((Flags flagsData) as flags) =
++run paths flags =
++    Utils.envLookupEnv "ECO_EXP_REPEAT"
++        |> Task.andThen
++            (\maybeN ->
++                case Maybe.andThen String.toInt maybeN of
++                    Just n ->
++                        x8Setup n (\retain -> runOnce retain paths flags)
++
++                    Nothing ->
++                        runOnce Nothing paths flags
++            )
++
++
++
++-- ====== X8 EXPERIMENT: REPEAT MODE (env-gated, default off) ======
++
++
++{-| ECO\_EXP\_REPEAT=N runs the same make N times in one process.
++ECO\_EXP\_REPEAT\_GC=1 asks for a full release (Eco.GC.majorGC) after each
++build; otherwise a minor collection is used only to read the report.
++ECO\_EXP\_REPEAT\_EDIT=path rewrites that file before each build, replacing
++the marker X8ITER0 with X8ITER<i>.
++-}
++x8Setup : Int -> (X8Retain -> Task Never ()) -> Task Never ()
++x8Setup n onceWith =
++    Utils.envLookupEnv "ECO_EXP_RETAIN"
++        |> Task.andThen
++            (\retainFlag ->
++                if retainFlag == Just "1" || retainFlag == Just "2" then
++                    Utils.newMVar (\_ -> Bytes.Encode.unsignedInt8 0) Nothing
++                        |> Task.andThen (\mv -> x8Setup2 n (onceWith (Just ( retainFlag == Just "2", mv ))))
++
++                else
++                    x8Setup2 n (onceWith Nothing)
++            )
++
++
++{-| ECO\_EXP\_RETAIN=1 (repeat mode only): keep the latest build's Details and
++Artifacts alive in a native MVar until the next build replaces them, as a
++server that retains type-checked state would.
++-}
++type alias X8Retain =
++    Maybe ( Bool, IO.MVar (Maybe ( Details.Details, Build.Artifacts, Maybe Generate.MergedTypedData )) )
++
++
++x8RetainStore : X8Retain -> Details.Details -> Build.Artifacts -> Task x ()
++x8RetainStore retain details artifacts =
++    case retain of
++        Nothing ->
++            Task.succeed ()
++
++        Just ( _, mv ) ->
++            Task.io
++                (Utils.takeMVar (Bytes.Decode.fail) mv
++                    |> Task.andThen (\_ -> Utils.putMVar (\_ -> Bytes.Encode.unsignedInt8 0) mv (Just ( details, artifacts, Nothing )))
++                )
++
++
++{-| ECO\_EXP\_RETAIN=2: after the build's output is written, drop the previous
++build's retained typed program and load + keep this build's (the merged
++TOpt.GlobalGraph + GlobalTypeEnv that monomorphization starts from).
++-}
++x8RetainTyped : BuildContext -> Build.Artifacts -> Task Exit.Make ()
++x8RetainTyped ctx artifacts =
++    case ctx.retain of
++        Just ( True, mv ) ->
++            Task.io (Utils.takeMVar Bytes.Decode.fail mv)
++                |> Task.andThen (\_ -> Task.io Time.now)
++                |> Task.andThen
++                    (\t0 ->
++                        Generate.x8LoadMerged ctx.root ctx.maybeBuildDir ctx.localPackage ctx.details artifacts
++                            |> Task.mapError Exit.MakeBadGenerate
++                            |> Task.andThen
++                                (\merged ->
++                                    Task.io Time.now
++                                        |> Task.andThen
++                                            (\t1 ->
++                                                Task.io (IO.writeLn IO.stderr ("[x8] retain-load ms=" ++ String.fromInt (Time.posixToMillis t1 - Time.posixToMillis t0)))
++                                            )
++                                        |> Task.andThen (\_ -> Task.io (Utils.putMVar (\_ -> Bytes.Encode.unsignedInt8 0) mv (Just ( ctx.details, artifacts, Just merged ))))
++                                )
++                    )
++
++        _ ->
++            Task.succeed ()
++
++
++x8Setup2 : Int -> Task Never () -> Task Never ()
++x8Setup2 n once =
++    Utils.envLookupEnv "ECO_EXP_REPEAT_GC"
++        |> Task.andThen
++            (\gcFlag ->
++                Utils.envLookupEnv "ECO_EXP_REPEAT_EDIT"
++                    |> Task.andThen
++                        (\editPath ->
++                            case editPath of
++                                Just path ->
++                                    File.readUtf8 path
++                                        |> Task.andThen
++                                            (\content ->
++                                                x8Loop (gcFlag == Just "1") (Just ( path, content )) n 1 once
++                                            )
++
++                                Nothing ->
++                                    x8Loop (gcFlag == Just "1") Nothing n 1 once
++                        )
++            )
++
++
++x8Loop : Bool -> Maybe ( String, String ) -> Int -> Int -> Task Never () -> Task Never ()
++x8Loop doMajor edit n i once =
++    if i > n then
++        Task.io Eco.GC.majorGC
++            |> Task.andThen (\r -> IO.writeLn IO.stderr (GcPoints.render "x8-final" r))
++
++    else
++        let
++            editTask =
++                case edit of
++                    Just ( path, content ) ->
++                        File.writeUtf8 path (String.replace "X8ITER0" ("X8ITER" ++ String.fromInt i) content)
++
++                    Nothing ->
++                        Task.succeed ()
++        in
++        editTask
++            |> Task.andThen (\_ -> Time.now)
++            |> Task.andThen
++                (\t0 ->
++                    IO.writeLn IO.stderr ("[x8] begin iter=" ++ String.fromInt i ++ " epoch_ms=" ++ String.fromInt (Time.posixToMillis t0))
++                        |> Task.andThen (\_ -> once)
++                        |> Task.andThen (\_ -> Time.now)
++                        |> Task.andThen
++                            (\t1 ->
++                                IO.writeLn IO.stderr
++                                    ("[x8] end iter="
++                                        ++ String.fromInt i
++                                        ++ " epoch_ms="
++                                        ++ String.fromInt (Time.posixToMillis t1)
++                                        ++ " wall_ms="
++                                        ++ String.fromInt (Time.posixToMillis t1 - Time.posixToMillis t0)
++                                    )
++                            )
++                )
++            |> Task.andThen
++                (\_ ->
++                    if doMajor then
++                        Eco.GC.majorGC
++
++                    else
++                        Eco.GC.minorGC
++                )
++            |> Task.andThen (\r -> IO.writeLn IO.stderr (GcPoints.render ("x8-iter-" ++ String.fromInt i) r))
++            |> Task.andThen (\_ -> x8Loop doMajor edit n (i + 1) once)
++
++
++runOnce : X8Retain -> List String -> Flags -> Task Never ()
++runOnce retain paths ((Flags flagsData) as flags) =
+     FEStats.init flagsData.stats
+         |> Task.andThen
+             (\stats ->
+                 getStyle flagsData.report
+-                    |> Task.andThen (runWithStyle paths flags stats)
++                    |> Task.andThen (runWithStyle retain paths flags stats)
+                     |> Task.andThen (\_ -> FEStats.finalize stats)
+                     |> Task.andThen (\_ -> FEStats.prettyPrint stats)
+             )
+ 
+ 
+-runWithStyle : List String -> Flags -> FEStats.Handle -> Reporting.Style -> Task Never ()
+-runWithStyle paths flags stats style =
++runWithStyle : X8Retain -> List String -> Flags -> FEStats.Handle -> Reporting.Style -> Task Never ()
++runWithStyle retain paths flags stats style =
+     Stuff.findRoot
+-        |> Task.andThen (runWithRoot paths flags stats style)
++        |> Task.andThen (runWithRoot retain paths flags stats style)
+ 
+ 
+-runWithRoot : List String -> Flags -> FEStats.Handle -> Reporting.Style -> Maybe FilePath -> Task Never ()
+-runWithRoot paths flags stats style maybeRoot =
++runWithRoot : X8Retain -> List String -> Flags -> FEStats.Handle -> Reporting.Style -> Maybe FilePath -> Task Never ()
++runWithRoot retain paths flags stats style maybeRoot =
+     Reporting.attemptWithStyle style Exit.makeToReport <|
+         case maybeRoot of
+             Just root ->
+-                runHelp root paths style stats flags
++                runHelp retain root paths style stats flags
+ 
+             Nothing ->
+                 Task.succeed (Err Exit.MakeNoOutline)
+@@ -182,11 +344,12 @@
+     , textMlir : Bool
+     , ecoConfig : Config.EcoConfig
+     , stats : FEStats.Handle
++    , retain : X8Retain
+     }
+ 
+ 
+-runHelp : String -> List String -> Reporting.Style -> FEStats.Handle -> Flags -> Task Never (Result Exit.Make ())
+-runHelp root paths style stats (Flags flagsData) =
++runHelp : X8Retain -> String -> List String -> Reporting.Style -> FEStats.Handle -> Flags -> Task Never (Result Exit.Make ())
++runHelp retain root paths style stats (Flags flagsData) =
+     let
+         registryPolicy =
+             if flagsData.refreshRegistry then
+@@ -198,39 +361,39 @@
+     Stuff.resolveBundledKernel flagsData.localPackage
+         |> Task.andThen
+             (\maybeLocalPackage ->
+-                BW.withScope (runHelpWithScope root paths style stats flagsData.noCache flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage maybeLocalPackage flagsData.textMlir flagsData.configPath registryPolicy)
++                BW.withScope (runHelpWithScope root paths style stats retain flagsData.noCache flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage maybeLocalPackage flagsData.textMlir flagsData.configPath registryPolicy)
+             )
+ 
+ 
+-runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
+-runHelpWithScope root paths style stats noCache debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope =
++runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> X8Retain -> Bool -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
++runHelpWithScope root paths style stats retain noCache debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope =
+     Stuff.withRootLockBuildDir root
+         maybeBuildDir
+         (Task.run
+             (getMode debug optimize
+-                |> Task.andThen (loadDetailsAndBuild root paths style stats noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope)
++                |> Task.andThen (loadDetailsAndBuild root paths style stats retain noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope)
+             )
+         )
+ 
+ 
+-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+-loadDetailsAndBuild root paths style stats noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope desiredMode =
++loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> X8Retain -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
++loadDetailsAndBuild root paths style stats retain noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope desiredMode =
+     EcoConfigLoader.load maybeConfigPath root
+         |> Task.andThen
+             (\ecoConfig ->
+                 FEStats.withPhase stats
+                     FEStats.PhaseDeps
+                     (Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (Just (Config.hash ecoConfig)) (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy))
+-                    |> Task.andThen (buildWithDetails root paths style stats noCache withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
++                    |> Task.andThen (buildWithDetails root paths style stats retain noCache withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
+             )
+ 
+ 
+-buildWithDetails : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
+-buildWithDetails root paths style stats noCache withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode details =
++buildWithDetails : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> X8Retain -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
++buildWithDetails root paths style stats retain noCache withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode details =
+     let
+         ctx : BuildContext
+         ctx =
+-            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage textMlir ecoConfig stats
++            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage textMlir ecoConfig stats retain
+     in
+     case paths of
+         [] ->
+@@ -257,6 +420,18 @@
+ 
+ handleArtifacts : BuildContext -> Build.Artifacts -> Task Exit.Make ()
+ handleArtifacts ctx artifacts =
++    case ctx.retain of
++        Just ( True, _ ) ->
++            handleArtifactsHelp ctx artifacts
++                |> Task.andThen (\_ -> x8RetainTyped ctx artifacts)
++
++        _ ->
++            x8RetainStore ctx.retain ctx.details artifacts
++                |> Task.andThen (\_ -> handleArtifactsHelp ctx artifacts)
++
++
++handleArtifactsHelp : BuildContext -> Build.Artifacts -> Task Exit.Make ()
++handleArtifactsHelp ctx artifacts =
+     case ctx.maybeOutput of
+         Nothing ->
+             handleDefaultOutput ctx artifacts

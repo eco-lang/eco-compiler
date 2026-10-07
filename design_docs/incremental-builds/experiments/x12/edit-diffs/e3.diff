@@ -1,0 +1,17 @@
+diff -ruN /tmp/inc-exp/subject/src/Compiler/Generate/MLIR/Intrinsics.elm /tmp/inc-exp/x12-edits/e3/src/Compiler/Generate/MLIR/Intrinsics.elm
+--- /tmp/inc-exp/subject/src/Compiler/Generate/MLIR/Intrinsics.elm	2026-10-06 10:53:20.550609593 +0000
++++ /tmp/inc-exp/x12-edits/e3/src/Compiler/Generate/MLIR/Intrinsics.elm	2026-10-06 11:03:11.036628224 +0000
+@@ -781,7 +781,12 @@
+             Just CharFromInt
+ 
+         _ ->
+-            Nothing
++            Dict.get name charIntrinsicAliases
++
++
++charIntrinsicAliases : Dict.Dict String Intrinsic
++charIntrinsicAliases =
++    Dict.fromList [ ( "toCodeUnchecked", CharToInt ), ( "fromCodeUnchecked", CharFromInt ) ]
+ 
+ 
+ stringIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic

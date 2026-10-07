@@ -1,0 +1,16 @@
+diff -ruN /tmp/inc-exp/subject/src/Compiler/Data/Name.elm /tmp/inc-exp/x12-edits/e6/src/Compiler/Data/Name.elm
+--- /tmp/inc-exp/subject/src/Compiler/Data/Name.elm	2026-10-06 10:53:20.550609593 +0000
++++ /tmp/inc-exp/x12-edits/e6/src/Compiler/Data/Name.elm	2026-10-06 11:03:11.040628481 +0000
+@@ -90,6 +90,12 @@
+ import Utils.Crash exposing (crash)
+ 
+ 
++{-| Unused helper (x12 edit e6). -}
++suffixAll : List String -> List String
++suffixAll names =
++    List.map (\n -> n ++ "_") names
++
++
+ 
+ -- ====== NAME ======
+ 

@@ -1,0 +1,12 @@
+diff -ruN /tmp/inc-exp/subject/src/Terminal/Main.elm /tmp/inc-exp/x12-edits/e1/src/Terminal/Main.elm
+--- /tmp/inc-exp/subject/src/Terminal/Main.elm	2026-10-06 10:53:20.546609335 +0000
++++ /tmp/inc-exp/x12-edits/e1/src/Terminal/Main.elm	2026-10-06 11:03:11.036628224 +0000
+@@ -85,7 +85,7 @@
+     D.fillSep <|
+         (List.map D.fromChars <|
+             String.words <|
+-                "Be sure to ask on the Elm slack if you run into trouble! Folks are friendly and happy to help out. They hang out there because it is fun, so be kind to get the best results!"
++                "Be sure to ask on the Elm slack if you run into trouble! Folks are friendly and glad to help out. They hang out there because it is fun, so be kind to get the best results!"
+         )
+ 
+ 

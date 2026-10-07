@@ -1,0 +1,3527 @@
+diff -ruN /tmp/inc-exp/repo/compiler/src/Builder/Generate.elm /tmp/inc-exp/wt-x7/src/Builder/Generate.elm
+--- /tmp/inc-exp/repo/compiler/src/Builder/Generate.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x7/src/Builder/Generate.elm	2026-10-06 11:11:17.443949424 +0000
+@@ -1029,14 +1029,52 @@
+ 
+ monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
+ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
++    -- X7 (incremental-builds experiment): ECO_INC_OWNER_CENSUS=<path> turns on
++    -- the owner-scoping census (solver engine only) and writes it to <path>.
++    Task.io (Utils.envLookupEnv "ECO_INC_OWNER_CENSUS")
++        |> Task.andThen (\censusPath -> monoPipelineFromCensus (Maybe.andThen nonEmptyPath censusPath) ecoConfig stats globalTypeEnv assigned)
++
++
++nonEmptyPath : String -> Maybe String
++nonEmptyPath p =
++    if String.isEmpty p then
++        Nothing
++
++    else
++        Just p
++
++
++monoPipelineFromCensus : Maybe String -> Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
++monoPipelineFromCensus censusPath ecoConfig stats globalTypeEnv assigned =
+     FEStats.withPhaseLazy stats
+         FEStats.PhaseMono
+         (\() ->
+-            case selectMonomorphizer ecoConfig globalTypeEnv assigned of
++            case selectMonomorphizerCensus censusPath ecoConfig globalTypeEnv assigned of
+             Err err ->
+                 Task.throw (Exit.GenerateMonomorphizationError err)
+ 
+-            Ok ( monoGraph0, maybeLssReport ) ->
++            Ok ( monoGraph0, maybeLssReport1 ) ->
++                (case censusPath of
++                    Just path ->
++                        case String.split MonoSolver.ownerCensusMarker (Maybe.withDefault "" maybeLssReport1) of
++                            [ lssPart, censusPart ] ->
++                                Task.io (File.writeUtf8 path censusPart)
++                                    |> Task.map
++                                        (\_ ->
++                                            if String.isEmpty lssPart then
++                                                Nothing
++
++                                            else
++                                                Just lssPart
++                                        )
++
++                            _ ->
++                                Task.succeed maybeLssReport1
++
++                    Nothing ->
++                        Task.succeed maybeLssReport1
++                )
++                    |> Task.andThen (\maybeLssReport ->
+                 (case maybeLssReport of
+                     Just report ->
+                         -- LSS census (lss.report / ECO_MONO_LSS_REPORT=1):
+@@ -1071,6 +1109,7 @@
+                             else
+                                 Task.succeed g
+                         )
++                    )
+         )
+         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
+         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
+@@ -1083,12 +1122,17 @@
+ -}
+ selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
+ selectMonomorphizer ecoConfig globalTypeEnv assigned =
++    selectMonomorphizerCensus Nothing ecoConfig globalTypeEnv assigned
++
++
++selectMonomorphizerCensus : Maybe String -> Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
++selectMonomorphizerCensus censusPath ecoConfig globalTypeEnv assigned =
+     case ecoConfig.mono.engine of
+         Config.EngineSubst ->
+             Result.map (\g -> ( g, Nothing )) (Monomorphize.monomorphizeWithLimitsAssigned ecoConfig.mono.limits "main" globalTypeEnv assigned)
+ 
+         Config.EngineSolver ->
+-            MonoSolver.monomorphizeWithReportAssigned ecoConfig.mono.lss ecoConfig.mono.limits "main" globalTypeEnv assigned
++            MonoSolver.monomorphizeWithReportAssignedCensus (censusPath /= Nothing) ecoConfig.mono.lss ecoConfig.mono.limits "main" globalTypeEnv assigned
+ 
+         Config.EngineDiff ->
+             -- Diff forces lss off internally; no census.
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/Engine.elm /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/Engine.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/Engine.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/Engine.elm	2026-10-06 12:52:45.177044161 +0000
+@@ -5,6 +5,7 @@
+     , freshStore, renewStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
+     , mvarIdKey, pointKey
+     , AliasKey, AliasVerdict(..), aliasKeyHash, aliasKeyEq, putAliasVerdict
++    , OwnerCensus, emptyOwnerCensus, isScalarVarStatic, ocLicense, ocOn, ocUpdate, ocCurSpec, ocRootRead, ocRootInsert, ocNumReads, ocDqMulti, ocSigHit, ocSigInferred
+     , ArrowFact, Env, GroundingStats, ItemAux, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SigFlowStats, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, emptyQShadowStats, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTable, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isNumberMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markDirty, markFlexCtorSpec, memberClassOf, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, restoredAux, scoped, specIdsForGlobal, notePendingFailure, renderFailure, crashFailure, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+     )
+ 
+@@ -320,9 +321,215 @@
+     -- §5.6 `Q` OVER INFERENCE — scored inside `inferUnitInScratch`, where the
+     -- paper's `Q` actually lives. THIS is the gated one.
+     , qInfer : QShadowStats
++
++    -- X7 incremental-builds experiment (ECO_INC_OWNER_CENSUS): owner-scoping
++    -- census. Inert unless `ownerCensus.on`; never read by the engine.
++    , ownerCensus : OwnerCensus
++    }
++
++
++{-| X7 owner-scoping census (incremental-builds experiment). Raw event logs
++recorded during the drain; `OwnerCensus.analyze` derives owners and the
++cross-owner tallies post-drain. Every field stays empty unless `on`.
++-}
++type alias OwnerCensus =
++    { on : Bool
++    , enq : List ( ( Int, Int ), ( Int, Mono.MonoType ) ) -- ((requester spec | -1, callee spec), (hit code 0 new/1 identical/2 noop join/3 changed join/4 callMemo-hit edge (no enqueue; type = cached UNSTAMPED func type, not a demand), demand type))
++    , harvest : CoreDict.Dict Int (List Int) -- non-static number-tainted MVarId key -> harvesting specs (newest first)
++    , numReads : List ( Int, Int ) -- (reader spec, MVarId key): hasNumberVar decision reads answered by a HARVESTED taint
++    , rootReads : List ( Int, ( Int, Int ) ) -- (raw lambda, (reader spec, site * 2 + (1 if hit)))
++    , rootIns : CoreDict.Dict Int Int -- raw lambda -> spec that inserted rootLamOf (first)
++    , muTies : List ( Int, Int ) -- (spec, tied member id)
++    , dqMulti : List ( Int, List Int ) -- (spec, candidate qualified mids for one raw) where > 1 candidate
++    , memoPut : Mono.SpecKeyMap Int -- callMemo key -> spec that put it
++    , memoHits : List ( Int, ( Int, Bool ) ) -- (reader spec, (putter spec, cached func type carries an MVar residual => taint-sensitive))
++    , sigBy : CoreDict.Dict String Int -- signature global -> spec during whose item it was inferred
++    , sigHits : List ( Int, ( String, String ) ) -- (reader spec, (signature global key, its home module)) on memo hits
++    , flexMarks : List ( Int, Int ) -- (marking requester spec, marked ctor spec): Phase 2b flex-construction marks
++    , licReads : List ( Int, ( Bool, List Int ) ) -- kernel-license checks whose occurrence type mentions HARVESTED-tainted vars: (reader spec, (decision differs from static-only truth, harvested keys))
+     }
+ 
+ 
++emptyOwnerCensus : OwnerCensus
++emptyOwnerCensus =
++    { on = False, enq = [], harvest = CoreDict.empty, numReads = [], rootReads = [], rootIns = CoreDict.empty, muTies = [], dqMulti = [], memoPut = Mono.specKeyMapEmpty, memoHits = [], sigBy = CoreDict.empty, sigHits = [], licReads = [], flexMarks = [] }
++
++
++ocOn : S -> Bool
++ocOn s =
++    s.lssStats.sigStats.ownerCensus.on
++
++
++ocUpdate : (OwnerCensus -> OwnerCensus) -> S -> S
++ocUpdate f s =
++    let
++        stats =
++            s.lssStats
++
++        sig =
++            stats.sigStats
++    in
++    { s | lssStats = { stats | sigStats = { sig | ownerCensus = f sig.ownerCensus } } }
++
++
++ocHasMVar : Mono.MonoType -> Bool
++ocHasMVar t =
++    case t of
++        Mono.MVar _ _ ->
++            True
++
++        Mono.MList _ i ->
++            ocHasMVar i
++
++        Mono.MTuple _ es ->
++            List.any ocHasMVar es
++
++        Mono.MRecord _ fs ->
++            CoreDict.foldl (\_ v acc -> acc || ocHasMVar v) False fs
++
++        Mono.MCustom _ _ _ args ->
++            List.any ocHasMVar args
++
++        Mono.MFunction _ _ args r ->
++            List.any ocHasMVar args || ocHasMVar r
++
++        _ ->
++            False
++
++
++{-| `isScalarVar` against the STATIC solver truth only (no harvested taint).
++Census use only.
++-}
++isScalarVarStatic : S -> TypeIds.MVarId -> Bool
++isScalarVarStatic s mid =
++    case CoreDict.get (mvarIdKey mid) s.env.superStatic of
++        Just Vars.Number ->
++            True
++
++        Just Vars.Comparable ->
++            True
++
++        _ ->
++            False
++
++
++{-| Census: a kernel-license check over an occurrence type whose free vars
++are `ids`; `flipped` = the full-table decision differs from the static-only
++one. Records only checks that mention a harvested (non-static) Number key.
++-}
++ocLicense : Bool -> List Int -> S -> S
++ocLicense flipped ids s =
++    let
++        harvested =
++            List.filter
++                (\k -> CoreDict.get k s.superTable == Just Vars.Number && CoreDict.get k s.env.superStatic /= Just Vars.Number)
++                ids
++    in
++    if List.isEmpty harvested && not flipped then
++        s
++
++    else
++        ocUpdate (\c -> { c | licReads = ( ocCurSpec s, ( flipped, harvested ) ) :: c.licReads }) s
++
++
++ocCurSpec : S -> Int
++ocCurSpec s =
++    Maybe.withDefault -1 s.itemAux.currentSpecId
++
++
++{-| Census: a rootLamOf read at `site` (1 = instanceQualTagFor, 2 = layout
++key choice, 3 = LssInfer spine injection).
++-}
++ocRootRead : Int -> Int -> Bool -> S -> S
++ocRootRead site raw hit s =
++    if ocOn s then
++        ocUpdate
++            (\c ->
++                { c
++                    | rootReads =
++                        ( raw
++                        , ( ocCurSpec s
++                          , site
++                                * 2
++                                + (if hit then
++                                    1
++
++                                   else
++                                    0
++                                  )
++                          )
++                        )
++                            :: c.rootReads
++                }
++            )
++            s
++
++    else
++        s
++
++
++ocRootInsert : Int -> S -> S
++ocRootInsert raw s =
++    if ocOn s then
++        ocUpdate
++            (\c ->
++                if CoreDict.member raw c.rootIns then
++                    c
++
++                else
++                    { c | rootIns = CoreDict.insert raw (ocCurSpec s) c.rootIns }
++            )
++            s
++
++    else
++        s
++
++
++{-| Census: decision reads (hasNumberVar) of MVarId keys; records those whose
++Number answer came from a HARVESTED (non-static) taint.
++-}
++ocNumReads : List Int -> S -> S
++ocNumReads keys s =
++    if ocOn s then
++        let
++            harvested =
++                List.filter
++                    (\k -> CoreDict.get k s.superTable == Just Vars.Number && CoreDict.get k s.env.superStatic /= Just Vars.Number)
++                    keys
++        in
++        if List.isEmpty harvested then
++            s
++
++        else
++            ocUpdate (\c -> { c | numReads = List.map (\k -> ( ocCurSpec s, k )) harvested ++ c.numReads }) s
++
++    else
++        s
++
++
++ocDqMulti : Int -> List Int -> S -> S
++ocDqMulti specId mids s =
++    ocUpdate (\c -> { c | dqMulti = ( specId, mids ) :: c.dqMulti }) s
++
++
++ocSigHit : String -> String -> S -> S
++ocSigHit gkey homeMod s =
++    if ocOn s then
++        ocUpdate (\c -> { c | sigHits = ( ocCurSpec s, ( gkey, homeMod ) ) :: c.sigHits }) s
++
++    else
++        s
++
++
++ocSigInferred : List String -> S -> S
++ocSigInferred gkeys s =
++    if ocOn s then
++        ocUpdate (\c -> { c | sigBy = List.foldl (\k acc -> CoreDict.insert k (ocCurSpec s) acc) c.sigBy gkeys }) s
++
++    else
++        s
++
++
+ {-| §5.1 (plans/lss-paper-inclusion-constraints.md): what the shadow `Q`
+ census found, accumulated across items.
+ 
+@@ -592,7 +799,7 @@
+ 
+ emptyLssStats : LssStats
+ emptyLssStats =
+-    { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
++    { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats, ownerCensus = emptyOwnerCensus }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
+ 
+ 
+ {-| The all-defaults signature for an annotation with `n` arrows.
+@@ -682,10 +889,10 @@
+         ( 0, s )
+ 
+     else if CoreDict.member raw s.lssMemberTable.rootLamOf then
+-        ( 0, bumpInstanceQual (\lq -> { lq | instRootSkip = lq.instRootSkip + 1 }) s )
++        ( 0, ocRootRead 1 raw True (bumpInstanceQual (\lq -> { lq | instRootSkip = lq.instRootSkip + 1 }) s) )
+ 
+     else
+-        ( s.itemAux.currentLocalInstance, s )
++        ( s.itemAux.currentLocalInstance, ocRootRead 1 raw False s )
+ 
+ 
+ {-| The LSS\_018 μ-tie lookup/record key: the raw lambda id, or the raw id mixed
+@@ -798,8 +1005,11 @@
+ 
+ -}
+ lambdaMemberLayoutQualified : Int -> Int -> Int -> S -> ( Int, S )
+-lambdaMemberLayoutQualified raw instTag specId s0 =
++lambdaMemberLayoutQualified raw instTag specId s0r =
+     let
++        s0 =
++            ocRootRead 2 raw (CoreDict.member raw s0r.lssMemberTable.rootLamOf) s0r
++
+         ( plainKey, isFallback ) =
+             layoutQualKey s0.lssMemberTable.specWidenedKeys raw instTag specId
+ 
+@@ -974,8 +1184,15 @@
+ as `MonoGraph.lssBlockedMembers` at assembly.
+ -}
+ recordMuTied : Int -> S -> S
+-recordMuTied tiedId s =
++recordMuTied tiedId s0 =
+     let
++        s =
++            if ocOn s0 then
++                ocUpdate (\c -> { c | muTies = ( ocCurSpec s0, tiedId ) :: c.muTies }) s0
++
++            else
++                s0
++
+         table =
+             s.lssMemberTable
+     in
+@@ -1131,7 +1348,15 @@
+ mark must exist whenever that pass runs.
+ -}
+ markFlexCtorSpec : Int -> S -> S
+-markFlexCtorSpec specId s =
++markFlexCtorSpec specId s0 =
++    let
++        s =
++            if ocOn s0 then
++                ocUpdate (\c -> { c | flexMarks = ( ocCurSpec s0, specId ) :: c.flexMarks }) s0
++
++            else
++                s0
++    in
+     let
+         stats =
+             s.lssStats
+@@ -2386,13 +2611,44 @@
+         -- spec, write-once. Both arms record (widenSets is idempotent, so
+         -- budget-widened and annotation-created twins of one global land
+         -- EQUAL widened keys — their lambdas share, per the plan's §5 pins).
+-        s2 =
++        s2c =
+             case ( created, maybeWidened ) of
+                 ( True, Just keyType ) ->
+                     recordSpecWidenedKey specId (Mono.toComparableMonoType keyType) s1
+ 
+                 _ ->
+                     s1
++
++        -- X7 owner census: requester -> callee edge + the demand (inert off).
++        s2 =
++            if ocOn s2c then
++                ocUpdate
++                    (\c ->
++                        { c
++                            | enq =
++                                ( ( ocCurSpec s2c, specId )
++                                , ( case hit of
++                                        Registry.CreatedNew ->
++                                            0
++
++                                        Registry.HitIdentical ->
++                                            1
++
++                                        Registry.HitNoopJoin ->
++                                            2
++
++                                        Registry.HitChangedJoin ->
++                                            3
++                                  , monoType
++                                  )
++                                )
++                                    :: c.enq
++                        }
++                    )
++                    s2c
++
++            else
++                s2c
+     in
+     -- MONO_030: watchdogs on the created path only (probe hits never check).
+     case
+@@ -2762,7 +3018,70 @@
+         ( _, ( _, superTable1 ) ) =
+             Array.foldl step ( 0, ( s.store, s.superTable ) ) s.revMemo
+     in
+-    { s | superTable = superTable1 }
++    if ocOn s then
++        ocHarvest excluded { s | superTable = superTable1 }
++
++    else
++        { s | superTable = superTable1 }
++
++
++{-| X7 census twin of the harvest walk: every NON-static key this item's store
++marks Number (same exclusion), recorded against the harvesting spec.
++-}
++ocHarvest : EverySet.EverySet Int Int -> S -> S
++ocHarvest excluded s =
++    let
++        spec =
++            ocCurSpec s
++
++        step maybeMvarId ( pointIdx, acc ) =
++            ( pointIdx + 1
++            , case maybeMvarId of
++                Nothing ->
++                    acc
++
++                Just mvarId ->
++                    let
++                        key =
++                            mvarIdKey mvarId
++                    in
++                    if EverySet.member identity key excluded || CoreDict.get key s.env.superStatic == Just Vars.Number then
++                        acc
++
++                    else
++                        let
++                            ( _, desc ) =
++                                UF.get (Vars.Pt pointIdx) s.store
++                        in
++                        case desc.content of
++                            Vars.FlexSuper Vars.Number _ ->
++                                key :: acc
++
++                            Vars.RigidSuper Vars.Number _ ->
++                                key :: acc
++
++                            _ ->
++                                acc
++            )
++
++        ( _, keys ) =
++            Array.foldl step ( 0, [] ) s.revMemo
++    in
++    if List.isEmpty keys then
++        s
++
++    else
++        ocUpdate
++            (\c ->
++                { c
++                    | harvest =
++                        List.foldl
++                            (\k acc -> CoreDict.update k (\v -> Just (spec :: Maybe.withDefault [] v)) acc)
++                            c.harvest
++                            keys
++                }
++            )
++            s
+ 
+ 
+ 
+@@ -2785,12 +3104,49 @@
+ 
+ lookupCallMemo : Mono.SpecKey -> S -> ( (Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId )), S )
+ lookupCallMemo key s =
+-    ( Mono.specKeyMapGet key s.monoMemo.callMemo, s )
++    let
++        hit =
++            Mono.specKeyMapGet key s.monoMemo.callMemo
++    in
++    case hit of
++        Just ( funcMono, _, hitSpecId ) ->
++            if ocOn s then
++                ( hit
++                , ocUpdate
++                    (\c ->
++                        let
++                            -- a memo hit SKIPS enqueue: record the
++                            -- requester -> callee edge here too.
++                            c1 =
++                                { c | enq = ( ( ocCurSpec s, hitSpecId ), ( 4, funcMono ) ) :: c.enq }
++                        in
++                        case Mono.specKeyMapGet key c1.memoPut of
++                            Just by ->
++                                { c1 | memoHits = ( ocCurSpec s, ( by, ocHasMVar funcMono ) ) :: c1.memoHits }
++
++                            Nothing ->
++                                c1
++                    )
++                    s
++                )
++
++            else
++                ( hit, s )
++
++        Nothing ->
++            ( hit, s )
+ 
+ 
+ putCallMemo : Mono.SpecKey -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> S -> S
+-putCallMemo key entry s =
++putCallMemo key entry s0 =
+         let
++            s =
++                if ocOn s0 then
++                    ocUpdate (\c -> { c | memoPut = Mono.specKeyMapInsert key (ocCurSpec s0) c.memoPut }) s0
++
++                else
++                    s0
++
+             m =
+                 s.monoMemo
+         in
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/LssInfer.elm /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/LssInfer.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/LssInfer.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/LssInfer.elm	2026-10-06 12:08:33.649590954 +0000
+@@ -1,5 +1,6 @@
+ module Compiler.MonoSolver.LssInfer exposing
+-    ( canTypeArrowDepth
++    ( ocLicenseAt, ocLicenseKernel
++    , canTypeArrowDepth
+     , canTypeIsArrow
+     , canTypeMentionsArrow
+     , declaredArityOf
+@@ -57,6 +58,9 @@
+ import Compiler.AST.TypeIds as TypeIds
+ import Compiler.AST.TypedOptimized as TOpt
+ import Compiler.Data.Name exposing (Name)
++import Compiler.Elm.ModuleName as ModuleName
++import Compiler.Data.Id as Id
++import Compiler.Monomorphize.KernelAbi as KernelAbi
+ import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
+ import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
+ import Compiler.MonoSolver.Store as Store
+@@ -86,7 +90,15 @@
+     in
+     case HashMap.get TOpt.globalHash (==) global s0.lssSignatures of
+         Just sig ->
+-            ( sig, s0 )
++            ( sig
++            , if Engine.ocOn s0 then
++                case global of
++                    TOpt.Global (ModuleName.Canonical ( sa, sp ) sm) _ ->
++                        Engine.ocSigHit gkey (sa ++ "/" ++ sp ++ ":" ++ sm) s0
++
++              else
++                s0
++            )
+ 
+         Nothing ->
+             if not s0.env.lss.enabled then
+@@ -116,6 +128,37 @@
+                         inferUnit global gkey s0
+ 
+ 
++{-| X7 census (inert off): record a kernel-license occurrence check whose
++type mentions harvested number taint, and whether the decision depends on it.
++-}
++ocLicenseAt : KernelSetFacts.License -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
++ocLicenseAt license tipe s =
++    if Engine.ocOn s then
++        Engine.ocLicense
++            (KernelSetFacts.licenseApplies (Engine.isScalarVar s) license tipe
++                /= KernelSetFacts.licenseApplies (Engine.isScalarVarStatic s) license tipe
++            )
++            (List.map Id.toComparable (KernelAbi.freeVarIds tipe []))
++            s
++
++    else
++        s
++
++
++ocLicenseKernel : Name -> Name -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
++ocLicenseKernel home name tipe s =
++    if Engine.ocOn s then
++        case KernelSetFacts.factFor home name of
++            Just (KernelSetFacts.TypeFaithful license) ->
++                ocLicenseAt license tipe s
++
++            _ ->
++                s
++
++    else
++        s
++
++
+ {-| Load the callee's signature-source type as a fresh per-call-site
+ instantiation (isolated memo) and apply the callee's signature facts to its
+ arrow slots. `funcCanType` must be sourced annotation-first exactly as
+@@ -225,14 +268,14 @@
+                     -- Non-folded lambdas keep the LSS_013 full-spine write.
+                     case CoreDict.get (Engine.srcLambdaKey lamId) s1.lssMemberTable.rootLamOf of
+                         Just g ->
+-                            case injectSpineMemberId 1 mid funcVar s1 of
++                            case injectSpineMemberId 1 mid funcVar (Engine.ocRootRead 3 (Engine.srcLambdaKey lamId) True s1) of
+                                 s2 ->
+                                     case injectFoldedSuccessors g arity funcVar s2 of
+                                         s3 ->
+                                             ( Just mid, s3 )
+ 
+                         Nothing ->
+-                            case injectSpineMemberId arity mid funcVar s1 of
++                            case injectSpineMemberId arity mid funcVar (Engine.ocRootRead 3 (Engine.srcLambdaKey lamId) False s1) of
+                                 s2 ->
+                                     ( Just mid, s2 )
+ 
+@@ -401,6 +444,7 @@
+                         ( sigs, s4 ) ->
+                             let
+                                 s5 =
++                                    Engine.ocSigInferred (List.map (\( k, _ ) -> TOpt.toComparableGlobal k) sigs)
+                                     { s4
+                                         | lssSignatures = List.foldl (\( k, sg ) acc -> HashMap.insert TOpt.globalHash (==) k sg acc) s4.lssSignatures sigs
+                                         , lssInProgress = HashMap.remove TOpt.globalHash (==) global (List.foldl (\m acc -> HashMap.remove TOpt.globalHash (==) m.g acc) s4.lssInProgress members)
+@@ -1998,7 +2042,16 @@
+ 
+ -}
+ kernelCallBoundary : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
+-kernelCallBoundary home name funcMeta args meta s0 =
++kernelCallBoundary home name funcMeta args meta s0raw =
++    let
++        s0 =
++            case KernelSetFacts.factFor home name of
++                Just (KernelSetFacts.TypeFaithful license) ->
++                    ocLicenseAt license funcMeta.tipe s0raw
++
++                _ ->
++                    s0raw
++    in
+     case KernelSetFacts.factFor home name of
+         Nothing ->
+             poisonCallBoundary args meta s0
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/Monomorphize.elm /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/Monomorphize.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/Monomorphize.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/Monomorphize.elm	2026-10-06 11:10:54.486471094 +0000
+@@ -1,6 +1,7 @@
+ module Compiler.MonoSolver.Monomorphize exposing
+     ( monomorphize
+-    , monomorphizeWithReport, monomorphizeWithReportAssigned
++    , monomorphizeWithReport, monomorphizeWithReportAssigned, monomorphizeWithReportAssignedCensus
++    , ownerCensusMarker
+     )
+ 
+ {-| The solver-based monomorphizer (Architecture C) — a drop-in replacement for
+@@ -21,7 +22,8 @@
+ specialization is the new solver engine.
+ 
+ @docs monomorphize
+-@docs monomorphizeWithReport, monomorphizeWithReportAssigned
++@docs monomorphizeWithReport, monomorphizeWithReportAssigned, monomorphizeWithReportAssignedCensus
++@docs ownerCensusMarker
+ 
+ -}
+ 
+@@ -42,6 +44,7 @@
+ import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), S, WorkItem(..))
+ import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
+ import Compiler.MonoSolver.LssInfer as LssInfer
++import Compiler.MonoSolver.OwnerCensus as OwnerCensus
+ import Compiler.MonoSolver.Store as Store
+ import Compiler.MonoSolver.Translate as Translate
+ import Compiler.MonoSolver.Zonk as Zonk
+@@ -102,6 +105,23 @@
+ -}
+ monomorphizeWithReportAssigned : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
+ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv assigned =
++    monomorphizeWithReportAssignedCensus False lssConfig limits entryPointName globalTypeEnv assigned
++
++
++{-| X7 (incremental-builds experiment): the separator between the LSS report and
++the owner census text in the returned report string when the census is on.
++-}
++ownerCensusMarker : String
++ownerCensusMarker =
++    "\n@@X7_OWNER_CENSUS@@\n"
++
++
++{-| `monomorphizeWithReportAssigned` with the X7 owner census switch. With the
++switch off this is exactly the original; with it on, the census text rides the
++report channel after `ownerCensusMarker` (the graph is unchanged).
++-}
++monomorphizeWithReportAssignedCensus : Bool -> Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
++monomorphizeWithReportAssignedCensus ownerCensusOn lssConfig limits entryPointName globalTypeEnv assigned =
+     let
+         (TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _) =
+             assigned.graph
+@@ -126,7 +146,11 @@
+ 
+                 s0 : S
+                 s0 =
+-                    initState lssConfig limits mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState
++                    if ownerCensusOn then
++                        Engine.ocUpdate (\c -> { c | on = True }) (initState lssConfig limits mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState)
++
++                    else
++                        initState lssConfig limits mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState
+ 
+                 -- Entry seeding uses an EMPTY super table (matching the original
+                 -- engine's `entryPointMonoType Dict.empty`).
+@@ -183,21 +207,42 @@
+                         -- `l|`-headed parents are never pap-able); the
+                         -- TRAILING successor sweep extends spines from any
+                         -- pap-able head varLambda just wrote.
++                        sVC =
++                            settleVarCtorRows sDrained
++
++                        sCR =
++                            settleCtorRows sVC
++
++                        sVS1 =
++                            settleVarSuccessors sCR
++
++                        sVL =
++                            settleVarLambda sVS1
++
+                         sFinal =
+-                            settleVarSuccessors
+-                                (settleVarLambda
+-                                    (settleVarSuccessors (settleCtorRows (settleVarCtorRows sDrained)))
+-                                )
++                            settleVarSuccessors sVL
+ 
+                         graph =
+                             pruneGraph sFinal (assembleRawGraph sFinal mainSpecId maybeFlagsSpecId)
+ 
+-                        report =
++                        report0 =
+                             if lssConfig.report then
+                                 Just (renderLssReport sFinal graph)
+ 
+                             else
+                                 Nothing
++
++                        -- X7 owner census (inert off): rides the report channel.
++                        report =
++                            if ownerCensusOn then
++                                Just
++                                    (Maybe.withDefault "" report0
++                                        ++ ownerCensusMarker
++                                        ++ OwnerCensus.analyze { drained = sDrained, vc = sVC, cr = sCR, vs1 = sVS1, vl = sVL, final = sFinal }
++                                    )
++
++                            else
++                                report0
+                     in
+                     -- Row 7 (plans/frontend-heap-release.md §7.4): the final
+                     -- point store is off-heap and a GC root until disposed
+@@ -4169,7 +4214,7 @@
+                     -- the STORED demand for qualified members of raw lambdas
+                     -- (rebuilt per item, so LSS_010 re-translations re-tie
+                     -- against the fully-joined demand — monotone).
+-                    sItem =
++                    sItem0 =
+                         { sItemR
+                             | itemAux =
+                                 { auxR
+@@ -4177,6 +4222,14 @@
+                                     , demandQualified = demandQualifiedFor monoType sItemR
+                                 }
+                         }
++
++                    -- X7 owner census (inert off): order-dependent min-id choices.
++                    sItem =
++                        if Engine.ocOn sItem0 && s.env.lss.enabled then
++                            List.foldl (\mids acc -> Engine.ocDqMulti specId mids acc) sItem0 (OwnerCensus.demandCandidates monoType sItem0)
++
++                        else
++                            sItem0
+                 in
+                 case global of
+                     Mono.Accessor fieldName ->
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/OwnerCensus.elm /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/OwnerCensus.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/OwnerCensus.elm	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/OwnerCensus.elm	2026-10-06 12:53:10.406741571 +0000
+@@ -0,0 +1,2663 @@
++module Compiler.MonoSolver.OwnerCensus exposing (Stages, analyze, demandCandidates)
++
++{-| X7 (incremental-builds experiment): the owner-scoping census.
++
++Inert unless `ECO_INC_OWNER_CENSUS` is set (the Builder passes the flag in;
++`Engine.OwnerCensus.on`). Nothing here feeds back into the engine: the
++analysis reads the drained state and the inputs of each post-drain settle,
++and renders a text report.
++
++OWNER RULE (requester ownership, 02 §2). A spec is HOME-OWNED when its global
++is a top-level `Mono.Global` whose canonical annotation has no free type
++variable AND whose creation demand carries no lambda set (`LSet`/`LPartial`)
++at an argument-side position of its arrow spine; its owner is its home
++module. Every other spec (generic instance, LSS-keyed instance, accessor) is
++REQUESTER-OWNED: its owner set is the union of the owner sets of every spec
++that enqueued it (`Engine.enqueueSpecKeyed`, requester = the spec being
++translated, `ItemAux.currentSpecId`, or the entry seed = main's module).
++Under variant A (per-requester copies) a requester-owned spec with k owners
++is k copies. Rule R0 (ignore LSS keys: generic-only) is reported alongside.
++
++-}
++
++import Array exposing (Array)
++import Compiler.AST.Canonical as Can
++import Compiler.AST.Monomorphized as Mono
++import Compiler.AST.TypeIds as TypeIds
++import Compiler.AST.TypedOptimized as TOpt
++import Compiler.Data.Id as Id
++import Compiler.Elm.ModuleName as ModuleName
++import Compiler.MonoSolver.Engine as Engine exposing (S)
++import Compiler.Monomorphize.KernelAbi as KernelAbi
++import Compiler.Monomorphize.MonoTraverse as Traverse
++import Compiler.Type.Vars as Vars
++import Data.HashMap as HashMap
++import Data.Map as DMap
++import Dict exposing (Dict)
++
++
++{-| The inputs of each post-drain settle, in pipeline order.
++-}
++type alias Stages =
++    { drained : S
++    , vc : S
++    , cr : S
++    , vs1 : S
++    , vl : S
++    , final : S
++    }
++
++
++
++-- ====== OWNERS ======
++
++
++type alias Own =
++    { owners : Array (List Int)
++    , owners0 : Array (List Int)
++    , homeOwned : Array Bool
++    , homeOwned0 : Array Bool
++    , homeMod : Array Int
++    , kind : Array String
++    , gkey : Array String
++    , modNames : Dict Int String
++    , mainMod : Int
++    , generic : Array Bool
++    }
++
++
++ownersOf : Own -> Int -> List Int
++ownersOf own i =
++    if i < 0 then
++        [ own.mainMod ]
++
++    else
++        Maybe.withDefault [] (Array.get i own.owners)
++
++
++modString : ModuleName.Canonical -> String
++modString (ModuleName.Canonical ( a, p ) m) =
++    a ++ "/" ++ p ++ ":" ++ m
++
++
++nodeKindAndType : S -> Int -> TOpt.Global -> ( String, Maybe (Can.Type TypeIds.MVarId) )
++nodeKindAndType s fuel g =
++    case HashMap.get TOpt.globalHash (==) g s.env.toptNodes of
++        Nothing ->
++            ( "extern", Nothing )
++
++        Just node ->
++            case node of
++                TOpt.Define _ _ meta ->
++                    ( "define", Just meta.tipe )
++
++                TOpt.TrackedDefine _ _ _ meta ->
++                    ( "define", Just meta.tipe )
++
++                TOpt.Ctor _ _ t ->
++                    ( "ctor", Just t )
++
++                TOpt.Enum _ t ->
++                    ( "enum", Just t )
++
++                TOpt.Box t ->
++                    ( "box", Just t )
++
++                TOpt.Link target ->
++                    if fuel <= 0 then
++                        ( "link", Nothing )
++
++                    else
++                        case nodeKindAndType s (fuel - 1) target of
++                            ( k, t ) ->
++                                ( if k == "define" then
++                                    "define"
++
++                                  else
++                                    k
++                                , t
++                                )
++
++                TOpt.Cycle _ _ _ _ ->
++                    ( "cycle", Nothing )
++
++                TOpt.Manager _ ->
++                    ( "manager", Nothing )
++
++                TOpt.Kernel _ _ ->
++                    ( "kernel", Nothing )
++
++                TOpt.PortIncoming _ _ meta ->
++                    ( "port", Just meta.tipe )
++
++                TOpt.PortOutgoing _ _ meta ->
++                    ( "port", Just meta.tipe )
++
++
++isSetAnno : Mono.LambdaSetAnno -> Bool
++isSetAnno a =
++    case a of
++        Mono.LSet _ ->
++            True
++
++        Mono.LPartial _ ->
++            True
++
++        _ ->
++            False
++
++
++hasSet : Mono.MonoType -> Bool
++hasSet t =
++    case t of
++        Mono.MFunction _ anno args result ->
++            isSetAnno anno || List.any hasSet args || hasSet result
++
++        Mono.MList _ i ->
++            hasSet i
++
++        Mono.MTuple _ es ->
++            List.any hasSet es
++
++        Mono.MRecord _ fs ->
++            Dict.foldl (\_ v acc -> acc || hasSet v) False fs
++
++        Mono.MCustom _ _ _ args ->
++            List.any hasSet args
++
++        _ ->
++            False
++
++
++argSets : Mono.MonoType -> Bool
++argSets t =
++    case t of
++        Mono.MFunction _ _ args result ->
++            List.any hasSet args || argSets result
++
++        _ ->
++            False
++
++
++computeOwn : S -> Dict Int Mono.MonoType -> Dict Int (List Int) -> Own
++computeOwn s creation fwd =
++    let
++        entries =
++            Array.toIndexedList s.registry.reverseMapping
++
++        mainModName =
++            modString s.env.currentModule
++
++        modIdx0 =
++            Dict.singleton mainModName 0
++
++        ( modIdx, infos ) =
++            List.foldl
++                (\( i, entry ) ( mi, acc ) ->
++                    case entry of
++                        Just ( Mono.Global home name, t ) ->
++                            let
++                                ms =
++                                    modString home
++
++                                ( idx, mi1 ) =
++                                    case Dict.get ms mi of
++                                        Just k ->
++                                            ( k, mi )
++
++                                        Nothing ->
++                                            ( Dict.size mi, Dict.insert ms (Dict.size mi) mi )
++
++                                g =
++                                    TOpt.Global home name
++
++                                ( kind, nodeT ) =
++                                    nodeKindAndType s 8 g
++
++                                annT =
++                                    case DMap.get TOpt.toComparableGlobal g s.env.annotations of
++                                        Just (Can.Forall _ at) ->
++                                            Just at
++
++                                        Nothing ->
++                                            nodeT
++
++                                generic =
++                                    case annT of
++                                        Just at ->
++                                            KernelAbi.hasAnyFreeVar at
++
++                                        Nothing ->
++                                            -- cycles without annotation, kernels, managers: treat
++                                            -- kernel/manager as home, unknown cycle as generic
++                                            kind == "cycle"
++
++                                demand =
++                                    Maybe.withDefault t (Dict.get i creation)
++                            in
++                            ( mi1
++                            , ( i
++                              , { home = idx
++                                , kind = kind
++                                , gkey = Mono.toComparableGlobal (Mono.Global home name)
++                                , generic = generic
++                                , homeOwned = not generic && not (argSets demand)
++                                , homeOwned0 = not generic
++                                }
++                              )
++                                :: acc
++                            )
++
++                        Just ( Mono.Accessor f, _ ) ->
++                            ( mi
++                            , ( i, { home = -1, kind = "accessor", gkey = "." ++ f, generic = True, homeOwned = False, homeOwned0 = False } ) :: acc
++                            )
++
++                        Nothing ->
++                            ( mi, ( i, { home = -1, kind = "none", gkey = "", generic = False, homeOwned = False, homeOwned0 = False } ) :: acc )
++                )
++                ( modIdx0, [] )
++                entries
++
++        n =
++            Array.length s.registry.reverseMapping
++
++        infoArr =
++            List.foldl (\( i, inf ) arr -> Array.set i inf arr)
++                (Array.repeat n { home = -1, kind = "none", gkey = "", generic = False, homeOwned = False, homeOwned0 = False })
++                infos
++
++        homeOwnedArr =
++            Array.map .homeOwned infoArr
++
++        homeOwned0Arr =
++            Array.map .homeOwned0 infoArr
++
++        -- specs nobody enqueued are the entry SEEDS (main, the flags
++        -- decoder: `seedSpec` bypasses enqueue) — roots owned by their home
++        -- module even when generic (`main : Html msg`).
++        requested =
++            Dict.foldl (\_ cs acc -> List.foldl (\c a -> Dict.insert c () a) acc cs) Dict.empty fwd
++
++        isRoot hoArr i inf =
++            Maybe.withDefault False (Array.get i hoArr) || (inf.home >= 0 && not (Dict.member i requested))
++
++        initOwners hoArr =
++            Array.indexedMap
++                (\i inf ->
++                    if isRoot hoArr i inf then
++                        [ inf.home ]
++
++                    else
++                        []
++                )
++                infoArr
++
++        homeSeeds hoArr =
++            -1 :: List.filterMap (\( i, inf ) -> if isRoot hoArr i inf then Just i else Nothing) (Array.toIndexedList infoArr)
++    in
++    { owners = propagate fwd (Array.indexedMap (isRoot homeOwnedArr) infoArr) (initOwners homeOwnedArr) (homeSeeds homeOwnedArr)
++    , owners0 = propagate fwd (Array.indexedMap (isRoot homeOwned0Arr) infoArr) (initOwners homeOwned0Arr) (homeSeeds homeOwned0Arr)
++    , homeOwned = homeOwnedArr
++    , homeOwned0 = homeOwned0Arr
++    , homeMod = Array.map .home infoArr
++    , kind = Array.map .kind infoArr
++    , gkey = Array.map .gkey infoArr
++    , modNames = Dict.foldl (\k v acc -> Dict.insert v k acc) Dict.empty modIdx
++    , mainMod = 0
++    , generic = Array.map .generic infoArr
++    }
++
++
++propagate : Dict Int (List Int) -> Array Bool -> Array (List Int) -> List Int -> Array (List Int)
++propagate fwd ho arr work =
++    case work of
++        [] ->
++            arr
++
++        p :: rest ->
++            let
++                op =
++                    if p < 0 then
++                        [ 0 ]
++
++                    else
++                        Maybe.withDefault [] (Array.get p arr)
++
++                callees =
++                    Maybe.withDefault [] (Dict.get p fwd)
++
++                ( arr1, work1 ) =
++                    List.foldl
++                        (\c ( a, w ) ->
++                            if Maybe.withDefault True (Array.get c ho) then
++                                ( a, w )
++
++                            else
++                                let
++                                    cur =
++                                        Maybe.withDefault [] (Array.get c a)
++
++                                    nu =
++                                        Mono.unionSortedInts cur op
++                                in
++                                if List.length nu == List.length cur then
++                                    ( a, w )
++
++                                else
++                                    ( Array.set c nu a, c :: w )
++                        )
++                        ( arr, rest )
++                        callees
++            in
++            if List.isEmpty op then
++                propagate fwd ho arr rest
++
++            else
++                propagate fwd ho arr1 work1
++
++
++
++-- ====== ANNOTATION DIFF ======
++
++
++type alias Diff =
++    { pos : Int
++    , same : Int
++    , narrower : Int
++    , wider : Int
++    , incomparable : Int
++    , ownerWrites : Int
++    , ownerLoses : Int
++    , otherDiff : Int
++    , topKind : Int
++    , shape : Int
++    }
++
++
++emptyDiff : Diff
++emptyDiff =
++    { pos = 0, same = 0, narrower = 0, wider = 0, incomparable = 0, ownerWrites = 0, ownerLoses = 0, otherDiff = 0, topKind = 0, shape = 0 }
++
++
++addDiff : Diff -> Diff -> Diff
++addDiff a b =
++    { pos = a.pos + b.pos, same = a.same + b.same, narrower = a.narrower + b.narrower, wider = a.wider + b.wider, incomparable = a.incomparable + b.incomparable, ownerWrites = a.ownerWrites + b.ownerWrites, ownerLoses = a.ownerLoses + b.ownerLoses, otherDiff = a.otherDiff + b.otherDiff, topKind = a.topKind + b.topKind, shape = a.shape + b.shape }
++
++
++diffNonSame : Diff -> Int
++diffNonSame d =
++    d.narrower + d.wider + d.incomparable + d.ownerWrites + d.ownerLoses + d.otherDiff + d.topKind + d.shape
++
++
++{-| Compare global `g` against per-owner `p` arrow by arrow.
++-}
++annoDiff : Mono.MonoType -> Mono.MonoType -> Diff -> Diff
++annoDiff g p d =
++    case ( g, p ) of
++        ( Mono.MFunction _ ag argsG resG, Mono.MFunction _ ap argsP resP ) ->
++            let
++                d1 =
++                    annoCmp ag ap { d | pos = d.pos + 1 }
++
++                d2 =
++                    if List.length argsG == List.length argsP then
++                        List.foldl (\( x, y ) acc -> annoDiff x y acc) d1 (List.map2 Tuple.pair argsG argsP)
++
++                    else
++                        { d1 | shape = d1.shape + 1 }
++            in
++            annoDiff resG resP d2
++
++        ( Mono.MList _ x, Mono.MList _ y ) ->
++            annoDiff x y d
++
++        ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
++            if List.length xs == List.length ys then
++                List.foldl (\( x, y ) acc -> annoDiff x y acc) d (List.map2 Tuple.pair xs ys)
++
++            else
++                { d | shape = d.shape + 1 }
++
++        ( Mono.MRecord _ fx, Mono.MRecord _ fy ) ->
++            Dict.foldl
++                (\k x acc ->
++                    case Dict.get k fy of
++                        Just y ->
++                            annoDiff x y acc
++
++                        Nothing ->
++                            { acc | shape = acc.shape + 1 }
++                )
++                d
++                fx
++
++        ( Mono.MCustom _ _ _ xs, Mono.MCustom _ _ _ ys ) ->
++            if List.length xs == List.length ys then
++                List.foldl (\( x, y ) acc -> annoDiff x y acc) d (List.map2 Tuple.pair xs ys)
++
++            else
++                { d | shape = d.shape + 1 }
++
++        _ ->
++            if isLeafPair g p then
++                d
++
++            else
++                { d | shape = d.shape + 1 }
++
++
++isLeafPair : Mono.MonoType -> Mono.MonoType -> Bool
++isLeafPair g p =
++    case ( g, p ) of
++        ( Mono.MFunction _ _ _ _, _ ) ->
++            False
++
++        ( _, Mono.MFunction _ _ _ _ ) ->
++            False
++
++        _ ->
++            True
++
++
++annoCmp : Mono.LambdaSetAnno -> Mono.LambdaSetAnno -> Diff -> Diff
++annoCmp ag ap d =
++    case ( ag, ap ) of
++        ( Mono.LSet xs, Mono.LSet ys ) ->
++            if xs == ys then
++                { d | same = d.same + 1 }
++
++            else if subset ys xs then
++                { d | narrower = d.narrower + 1 }
++
++            else if subset xs ys then
++                { d | wider = d.wider + 1 }
++
++            else
++                { d | incomparable = d.incomparable + 1 }
++
++        ( Mono.LSet _, _ ) ->
++            { d | ownerLoses = d.ownerLoses + 1 }
++
++        ( _, Mono.LSet _ ) ->
++            { d | ownerWrites = d.ownerWrites + 1 }
++
++        ( Mono.LTop ka, Mono.LTop kb ) ->
++            if ka == kb then
++                { d | same = d.same + 1 }
++
++            else
++                { d | topKind = d.topKind + 1 }
++
++        ( Mono.LVar a, Mono.LVar b ) ->
++            if a == b then
++                { d | same = d.same + 1 }
++
++            else
++                { d | otherDiff = d.otherDiff + 1 }
++
++        ( Mono.LPartial xs, Mono.LPartial ys ) ->
++            if xs == ys then
++                { d | same = d.same + 1 }
++
++            else
++                { d | otherDiff = d.otherDiff + 1 }
++
++        _ ->
++            { d | otherDiff = d.otherDiff + 1 }
++
++
++subset : List Int -> List Int -> Bool
++subset xs ys =
++    List.all (\x -> List.member x ys) xs
++
++
++renderDiff : String -> Diff -> List String
++renderDiff prefix d =
++    [ prefix ++ ".positions=" ++ String.fromInt d.pos
++    , prefix ++ ".same=" ++ String.fromInt d.same
++    , prefix ++ ".perOwnerNarrowerSet=" ++ String.fromInt d.narrower
++    , prefix ++ ".perOwnerWiderSet=" ++ String.fromInt d.wider
++    , prefix ++ ".incomparableSets=" ++ String.fromInt d.incomparable
++    , prefix ++ ".perOwnerWritesSetGlobalDoesNot=" ++ String.fromInt d.ownerWrites
++    , prefix ++ ".perOwnerLosesGlobalSet=" ++ String.fromInt d.ownerLoses
++    , prefix ++ ".otherAnnoDiff=" ++ String.fromInt d.otherDiff
++    , prefix ++ ".topProvenanceDiff=" ++ String.fromInt d.topKind
++    , prefix ++ ".shapeMismatch=" ++ String.fromInt d.shape
++    ]
++
++
++
++-- ====== HELPERS ======
++
++
++ownersSubset : List Int -> List Int -> Bool
++ownersSubset xs ys =
++    List.all (\x -> List.member x ys) xs
++
++
++{-| Some owner of `reader` is not an owner of any spec in `sources`.
++-}
++uncovered : Own -> Int -> List Int -> Bool
++uncovered own reader sources =
++    let
++        srcOwners =
++            List.foldl (\h acc -> Mono.unionSortedInts acc (ownersOf own h)) [] sources
++    in
++    not (ownersSubset (ownersOf own reader) srcOwners)
++
++
++kv : String -> Int -> String
++kv k v =
++    k ++ "=" ++ String.fromInt v
++
++
++pct : Int -> Int -> String
++pct a b =
++    if b == 0 then
++        "n/a"
++
++    else
++        let
++            x =
++                toFloat (round (10000 * toFloat a / toFloat b)) / 100
++        in
++        String.fromFloat x ++ "%"
++
++
++bump : comparable -> Int -> Dict comparable Int -> Dict comparable Int
++bump k n d =
++    Dict.update k (\v -> Just (n + Maybe.withDefault 0 v)) d
++
++
++topN : Int -> Dict String Int -> List ( String, Int )
++topN k d =
++    Dict.toList d
++        |> List.sortBy (\( _, v ) -> negate v)
++        |> List.take k
++
++
++nodeCallees : Mono.MonoNode -> List Int
++nodeCallees node =
++    let
++        f e acc =
++            case e of
++                Mono.MonoVarGlobal _ sid _ ->
++                    sid :: acc
++
++                _ ->
++                    acc
++    in
++    case node of
++        Mono.MonoDefine e _ ->
++            Traverse.foldExpr f [] e
++
++        Mono.MonoTailFunc _ e _ ->
++            Traverse.foldExpr f [] e
++
++        Mono.MonoPortIncoming e _ ->
++            Traverse.foldExpr f [] e
++
++        Mono.MonoPortOutgoing e _ ->
++            Traverse.foldExpr f [] e
++
++        _ ->
++            []
++
++
++exprSize : Mono.MonoNode -> Int
++exprSize node =
++    let
++        cnt e acc =
++            acc + 1
++    in
++    case node of
++        Mono.MonoDefine e _ ->
++            Traverse.foldExpr cnt 0 e
++
++        Mono.MonoTailFunc _ e _ ->
++            Traverse.foldExpr cnt 0 e
++
++        Mono.MonoPortIncoming e _ ->
++            Traverse.foldExpr cnt 0 e
++
++        Mono.MonoPortOutgoing e _ ->
++            Traverse.foldExpr cnt 0 e
++
++        _ ->
++            1
++
++
++
++-- ====== ANALYZE ======
++
++
++analyze : Stages -> String
++analyze st =
++    let
++        s =
++            st.drained
++
++        census =
++            s.lssStats.sigStats.ownerCensus
++
++        enq =
++            List.reverse census.enq
++
++        creation =
++            List.foldl
++                (\( ( _, c ), ( code, t ) ) acc ->
++                    if code == 0 && not (Dict.member c acc) then
++                        Dict.insert c t acc
++
++                    else
++                        acc
++                )
++                Dict.empty
++                enq
++
++        fwdSets =
++            List.foldl
++                (\( ( r, c ), _ ) acc -> Dict.update r (\v -> Just (Dict.insert c () (Maybe.withDefault Dict.empty v))) acc)
++                Dict.empty
++                enq
++
++        fwd =
++            Dict.map (\_ d -> Dict.keys d) fwdSets
++
++        own =
++            computeOwn s creation fwd
++    in
++    String.join "\n"
++        (List.concat
++            [ [ "# X7 owner-scoping census (ECO_INC_OWNER_CENSUS)" ]
++            , ownershipSection s own fwdSets
++            , joinSection s own enq
++            , varCtorSection st own
++            , flexSection own census
++            , ctorRowsSection st own
++            , varLambdaSection st own
++            , taintSection s own census
++            , rootSection own census
++            , miscSection s own census
++            ]
++        )
++        ++ "\n"
++
++
++
++-- ====== OWNERSHIP ======
++
++
++ownershipSection : S -> Own -> Dict Int (Dict Int ()) -> List String
++ownershipSection s own fwdSets =
++    let
++        n =
++            Array.length s.registry.reverseMapping
++
++        idxs =
++            List.range 0 (n - 1)
++
++        live i =
++            case Array.get i s.registry.reverseMapping of
++                Just (Just _) ->
++                    True
++
++                _ ->
++                    False
++
++        sizeOf i =
++            case Array.get i s.nodes of
++                Just (Just node) ->
++                    exprSize node
++
++                _ ->
++                    0
++
++        tally ownersArr hoArr =
++            List.foldl
++                (\i acc ->
++                    if not (live i) then
++                        acc
++
++                    else
++                        let
++                            os =
++                                Maybe.withDefault [] (Array.get i ownersArr)
++
++                            k =
++                                List.length os
++
++                            ho =
++                                Maybe.withDefault False (Array.get i hoArr)
++
++                            sz =
++                                sizeOf i
++                        in
++                        { acc
++                            | specs = acc.specs + 1
++                            , home = acc.home + (if ho then 1 else 0)
++                            , req = acc.req + (if ho then 0 else 1)
++                            , orphan = acc.orphan + (if k == 0 then 1 else 0)
++                            , multi = acc.multi + (if k > 1 then 1 else 0)
++                            , copies = acc.copies + max 1 k
++                            , size = acc.size + sz
++                            , sizeCopies = acc.sizeCopies + sz * max 1 k
++                            , maxOwners = max acc.maxOwners k
++                            , reqSingleSameHome =
++                                acc.reqSingleSameHome
++                                    + (if not ho && os == [ Maybe.withDefault -9 (Array.get i own.homeMod) ] then
++                                        1
++
++                                       else
++                                        0
++                                      )
++                        }
++                )
++                { specs = 0, home = 0, req = 0, orphan = 0, multi = 0, copies = 0, size = 0, sizeCopies = 0, maxOwners = 0, reqSingleSameHome = 0 }
++                idxs
++
++        tR =
++            tally own.owners own.homeOwned
++
++        tR0 =
++            tally own.owners0 own.homeOwned0
++
++        renderT p t =
++            [ kv (p ++ ".specs") t.specs
++            , kv (p ++ ".homeOwned") t.home
++            , kv (p ++ ".requesterOwned") t.req
++            , kv (p ++ ".requesterOwnedSingleOwnerEqualsHome") t.reqSingleSameHome
++            , kv (p ++ ".orphanNoOwner") t.orphan
++            , kv (p ++ ".multiOwner") t.multi
++            , p ++ ".multiOwnerShare=" ++ pct t.multi t.specs
++            , kv (p ++ ".variantACopies") t.copies
++            , p ++ ".copyFactor=" ++ pct t.copies t.specs
++            , kv (p ++ ".exprNodes") t.size
++            , kv (p ++ ".exprNodesVariantA") t.sizeCopies
++            , p ++ ".exprCopyFactor=" ++ pct t.sizeCopies t.size
++            , kv (p ++ ".maxOwnersOfOneSpec") t.maxOwners
++            ]
++
++        kinds =
++            List.foldl
++                (\i acc ->
++                    if live i then
++                        bump (Maybe.withDefault "?" (Array.get i own.kind) ++ (if Maybe.withDefault False (Array.get i own.homeOwned) then "/home" else "/req")) 1 acc
++
++                    else
++                        acc
++                )
++                Dict.empty
++                idxs
++
++        topMulti =
++            List.filterMap
++                (\i ->
++                    let
++                        k =
++                            List.length (ownersOf own i)
++                    in
++                    if k > 1 then
++                        Just ( Maybe.withDefault "?" (Array.get i own.gkey), k )
++
++                    else
++                        Nothing
++                )
++                idxs
++                |> List.foldl (\( g, k ) acc -> Dict.update g (\v -> Just (max k (Maybe.withDefault 0 v))) acc) Dict.empty
++                |> topN 15
++
++        -- requesters per callee (inverse of the enqueue edges)
++        reqsOf =
++            Dict.foldl (\r cs acc -> Dict.foldl (\c _ a -> Dict.update c (\v -> Just (r :: Maybe.withDefault [] v)) a) acc cs) Dict.empty fwdSets
++
++        homeGlobalsCount =
++            List.foldl
++                (\i acc ->
++                    if live i && Maybe.withDefault False (Array.get i own.homeOwned) then
++                        bump (Maybe.withDefault "?" (Array.get i own.gkey)) 1 acc
++
++                    else
++                        acc
++                )
++                Dict.empty
++                idxs
++
++        homeStats =
++            List.foldl
++                (\i acc ->
++                    if live i && Maybe.withDefault False (Array.get i own.homeOwned) then
++                        let
++                            rs =
++                                Maybe.withDefault [] (Dict.get i reqsOf)
++
++                            hm =
++                                Maybe.withDefault -1 (Array.get i own.homeMod)
++
++                            reqOwners =
++                                List.foldl (\r a -> Mono.unionSortedInts a (ownersOf own r)) [] rs
++
++                            onlyForeign =
++                                not (List.isEmpty rs) && not (List.member hm reqOwners)
++
++                            multiG =
++                                Maybe.withDefault 0 (Dict.get (Maybe.withDefault "?" (Array.get i own.gkey)) homeGlobalsCount) > 1
++                        in
++                        { acc
++                            | onlyForeign = acc.onlyForeign + (if onlyForeign then 1 else 0)
++                            , someForeign = acc.someForeign + (if List.any (\o -> o /= hm) reqOwners then 1 else 0)
++                            , onlyForeignMultiG = acc.onlyForeignMultiG + (if onlyForeign && multiG then 1 else 0)
++                        }
++
++                    else
++                        acc
++                )
++                { onlyForeign = 0, someForeign = 0, onlyForeignMultiG = 0 }
++                idxs
++
++        nodeEdgeCheck =
++            Array.toIndexedList s.nodes
++                |> List.foldl
++                    (\( i, mn ) acc ->
++                        case mn of
++                            Just node ->
++                                let
++                                    callees =
++                                        nodeCallees node
++
++                                    have =
++                                        Maybe.withDefault Dict.empty (Dict.get i fwdSets)
++                                in
++                                List.foldl
++                                    (\c a ->
++                                        if Dict.member c have || c == i then
++                                            { a | ok = a.ok + 1 }
++
++                                        else
++                                            { a | missing = a.missing + 1 }
++                                    )
++                                    acc
++                                    callees
++
++                            Nothing ->
++                                acc
++                    )
++                    { ok = 0, missing = 0 }
++
++        -- enqueue edges: requester-owned callee always shares the requester's
++        -- owners by construction; home-owned callee in another module = a
++        -- cross-module reference (callee -> caller summary flow).
++        edgeStats =
++            Dict.foldl
++                (\r cs acc ->
++                    Dict.foldl
++                        (\c _ a ->
++                            let
++                                ho =
++                                    Maybe.withDefault False (Array.get c own.homeOwned)
++
++                                cm =
++                                    Maybe.withDefault -1 (Array.get c own.homeMod)
++                            in
++                            if ho then
++                                if List.all (\o -> o == cm) (ownersOf own r) then
++                                    { a | homeSame = a.homeSame + 1 }
++
++                                else
++                                    { a | homeCross = a.homeCross + 1 }
++
++                            else
++                                { a | req = a.req + 1 }
++                        )
++                        acc
++                        cs
++                )
++                { homeSame = 0, homeCross = 0, req = 0 }
++                fwdSets
++    in
++    List.concat
++        [ [ "", "## ownership" ]
++        , [ kv "modules" (Dict.size own.modNames) ]
++        , renderT "R" tR
++        , renderT "R0" tR0
++        , List.map (\( k, v ) -> kv ("kind." ++ k) v) (Dict.toList kinds)
++        , [ kv "home.specsDemandedBySomeOtherModule" homeStats.someForeign
++          , kv "home.specsDemandedONLYByOtherModules" homeStats.onlyForeign
++          , kv "home.globalsWithMoreThanOneHomeOwnedSpec" (Dict.size (Dict.filter (\_ v -> v > 1) homeGlobalsCount))
++          , kv "home.extraHomeOwnedSpecsBeyondOnePerGlobal" (Dict.foldl (\_ v a -> a + v - 1) 0 homeGlobalsCount)
++          , kv "home.specsDemandedOnlyByOtherModulesOfMultiSpecGlobals" homeStats.onlyForeignMultiG
++          ]
++        , List.map (\( g, k ) -> "home.topMultiSpecGlobal " ++ String.fromInt k ++ " " ++ g) (topN 10 (Dict.filter (\_ v -> v > 1) homeGlobalsCount))
++        , List.concatMap
++            (\( g, _ ) ->
++                List.filterMap
++                    (\i ->
++                        if live i && Array.get i own.gkey == Just g && Maybe.withDefault False (Array.get i own.homeOwned) then
++                            case Array.get i s.registry.reverseMapping of
++                                Just (Just ( _, ty )) ->
++                                    Just ("    home.spec " ++ String.fromInt i ++ " " ++ String.left 300 (Mono.toComparableMonoType ty))
++
++                                _ ->
++                                    Nothing
++
++                        else
++                            Nothing
++                    )
++                    idxs
++            )
++            (topN 3 (Dict.filter (\_ v -> v > 1) homeGlobalsCount))
++        , [ kv "edges.nodeRefsCoveredByEnqueueLog" nodeEdgeCheck.ok
++          , kv "edges.nodeRefsMissingFromEnqueueLog" nodeEdgeCheck.missing
++          , kv "edges.distinct" (edgeStats.homeSame + edgeStats.homeCross + edgeStats.req)
++          , kv "edges.toRequesterOwned(intraOwnerByConstruction)" edgeStats.req
++          , kv "edges.toHomeOwnedSameModule" edgeStats.homeSame
++          , kv "edges.toHomeOwnedOtherModule(crossOwnerReference)" edgeStats.homeCross
++          ]
++        , List.map (\( g, k ) -> "topMultiOwner " ++ String.fromInt k ++ " " ++ g) topMulti
++        , if n <= 400 then
++            List.filterMap
++                (\i ->
++                    if live i then
++                        Just
++                            ("spec "
++                                ++ String.fromInt i
++                                ++ " "
++                                ++ Maybe.withDefault "?" (Array.get i own.gkey)
++                                ++ " "
++                                ++ Maybe.withDefault "?" (Array.get i own.kind)
++                                ++ (if Maybe.withDefault False (Array.get i own.homeOwned) then " HOME" else " REQ")
++                                ++ " owners="
++                                ++ String.join "," (List.map (\o -> Maybe.withDefault "?" (Dict.get o own.modNames)) (ownersOf own i))
++                                ++ " requesters="
++                                ++ String.join "," (List.map String.fromInt (Dict.foldl (\r cs acc -> if Dict.member i cs then r :: acc else acc) [] fwdSets))
++                            )
++
++                    else
++                        Nothing
++                )
++                idxs
++
++          else
++            []
++        ]
++
++
++
++-- ====== LSS SHARED-KEY JOINS ======
++
++
++joinSection : S -> Own -> List ( ( Int, Int ), ( Int, Mono.MonoType ) ) -> List String
++joinSection s own enq =
++    let
++        byCallee =
++            List.foldl
++                (\( ( r, c ), ( code, t ) ) acc ->
++                    if code == 4 then
++                        acc
++
++                    else
++                        Dict.update c (\v -> Just (( r, code, t ) :: Maybe.withDefault [] v)) acc
++                )
++                Dict.empty
++                enq
++
++        codeCounts =
++            List.foldl (\( _, ( code, _ ) ) acc -> bump code 1 acc) Dict.empty enq
++
++        res =
++            Dict.foldl
++                (\c ds0 acc ->
++                    let
++                        ds =
++                            List.reverse ds0
++
++                        creator =
++                            case List.filter (\( _, code, _ ) -> code == 0) ds of
++                                ( r, _, _ ) :: _ ->
++                                    Just r
++
++                                [] ->
++                                    Nothing
++
++                        contrib =
++                            List.foldl (\( r, _, _ ) a -> Mono.unionSortedInts a (ownersOf own r)) [] ds
++
++                        crossJoinEvents =
++                            List.foldl
++                                (\( r, code, _ ) a ->
++                                    if code >= 2 then
++                                        case creator of
++                                            Just cr ->
++                                                if ownersOf own r /= ownersOf own cr then
++                                                    { a | cross = a.cross + 1, crossChanged = a.crossChanged + (if code == 3 then 1 else 0) }
++
++                                                else
++                                                    a
++
++                                            Nothing ->
++                                                a
++
++                                    else
++                                        a
++                                )
++                                { cross = 0, crossChanged = 0 }
++                                ds
++
++                        cOwners =
++                            ownersOf own c
++
++                        distinct =
++                            List.foldl
++                                (\( _, _, t ) a ->
++                                    if List.any (\u -> u == t) a then
++                                        a
++
++                                    else
++                                        t :: a
++                                )
++                                []
++                                ds
++
++                        multi =
++                            List.length cOwners > 1
++
++                        homeOwnedC =
++                            Maybe.withDefault False (Array.get c own.homeOwned)
++
++                        -- demands reaching c from owners OTHER than c's own
++                        foreignDemand =
++                            List.any (\( r, _, _ ) -> not (ownersSubset (ownersOf own r) cOwners)) ds
++
++                        creationT =
++                            case List.filter (\( _, code, _ ) -> code == 0) ds of
++                                ( _, _, t0 ) :: _ ->
++                                    Just t0
++
++                                [] ->
++                                    Nothing
++
++                        ( perOwnerDiffers, diff ) =
++                            if List.length distinct > 1 && (multi || homeOwnedC) then
++                                let
++                                    jg =
++                                        joinAll (List.map (\( _, _, t ) -> t) ds)
++                                in
++                                List.foldl
++                                    (\o ( dd, df ) ->
++                                        let
++                                            mine =
++                                                List.filterMap (\( r, _, t ) -> if List.member o (ownersOf own r) then Just t else Nothing) ds
++
++                                            jo =
++                                                case joinAll mine of
++                                                    Just j ->
++                                                        Just j
++
++                                                    Nothing ->
++                                                        -- the owner only SEEDS it (home-owned spec
++                                                        -- demanded solely by importers): approximate
++                                                        -- the seed by the creation demand
++                                                        creationT
++                                        in
++                                        case ( jo, jg ) of
++                                            ( Just j, Just g ) ->
++                                                if g == j then
++                                                    ( dd, df )
++
++                                                else
++                                                    ( True, annoDiff g j df )
++
++                                            _ ->
++                                                ( dd, df )
++                                    )
++                                    ( False, acc.diff )
++                                    cOwners
++
++                            else
++                                ( False, acc.diff )
++                    in
++                    { acc
++                        | callees = acc.callees + 1
++                        , contribMulti = acc.contribMulti + (if List.length contrib > 1 then 1 else 0)
++                        , multiOwner = acc.multiOwner + (if multi then 1 else 0)
++                        , multiDistinct = acc.multiDistinct + (if multi && List.length distinct > 1 then 1 else 0)
++                        , perOwnerDiffers = acc.perOwnerDiffers + (if perOwnerDiffers && multi then 1 else 0)
++                        , homeForeign = acc.homeForeign + (if homeOwnedC && foreignDemand then 1 else 0)
++                        , homeForeignDistinct = acc.homeForeignDistinct + (if homeOwnedC && foreignDemand && List.length distinct > 1 then 1 else 0)
++                        , homeDiffers = acc.homeDiffers + (if perOwnerDiffers && homeOwnedC then 1 else 0)
++                        , diff = diff
++                        , crossJoin = acc.crossJoin + crossJoinEvents.cross
++                        , crossChanged = acc.crossChanged + crossJoinEvents.crossChanged
++                        , anyDistinct = acc.anyDistinct + (if List.length distinct > 1 then 1 else 0)
++                    }
++                )
++                { callees = 0, contribMulti = 0, multiOwner = 0, multiDistinct = 0, perOwnerDiffers = 0, diff = emptyDiff, crossJoin = 0, crossChanged = 0, anyDistinct = 0, homeForeign = 0, homeForeignDistinct = 0, homeDiffers = 0 }
++                byCallee
++    in
++    List.concat
++        [ [ "", "## LSS shared-key joins (LSS_010)" ]
++        , [ kv "join.enqueueEvents" (List.length enq)
++          , kv "join.created" (Maybe.withDefault 0 (Dict.get 0 codeCounts))
++          , kv "join.hitIdentical" (Maybe.withDefault 0 (Dict.get 1 codeCounts))
++          , kv "join.hitNoopJoin" (Maybe.withDefault 0 (Dict.get 2 codeCounts))
++          , kv "join.hitChangedJoin" (Maybe.withDefault 0 (Dict.get 3 codeCounts))
++          , kv "join.callMemoHitEdges(noEnqueue,excludedFromJoins)" (Maybe.withDefault 0 (Dict.get 4 codeCounts))
++          , kv "join.eventsWithRequesterOutsideAnyItem" (List.length (List.filter (\( ( r, _ ), _ ) -> r < 0) enq))
++          , kv "join.flushRounds" s.lssStats.joinRounds
++          , kv "join.retranslations" s.lssStats.retranslations
++          , kv "join.completionJoinsChanged" (s.lssStats.completionJoins - s.lssStats.completionJoinNoop)
++          , kv "join.callees" res.callees
++          , kv "join.calleesWithDemandsFromMoreThanOneOwner" res.contribMulti
++          , kv "join.calleesMultiOwner" res.multiOwner
++          , kv "join.calleesWithMoreThanOneDistinctDemand" res.anyDistinct
++          , kv "join.multiOwnerCalleesWithMoreThanOneDistinctDemand" res.multiDistinct
++          , kv "join.multiOwnerCalleesWherePerOwnerJoinDiffers" res.perOwnerDiffers
++          , kv "join.homeOwnedCalleesDemandedByOtherOwners" res.homeForeign
++          , kv "join.homeOwnedCalleesDemandedByOtherOwnersWithMoreThanOneDistinctDemand" res.homeForeignDistinct
++          , kv "join.homeOwnedCalleesWhereHomeOnlyJoinDiffers" res.homeDiffers
++          , kv "join.joinEventsFromOwnerOtherThanCreator" res.crossJoin
++          , kv "join.changedJoinEventsFromOwnerOtherThanCreator" res.crossChanged
++          ]
++        , renderDiff "join.perOwnerVsGlobal" res.diff
++        ]
++
++
++joinAll : List Mono.MonoType -> Maybe Mono.MonoType
++joinAll ts =
++    case ts of
++        [] ->
++            Nothing
++
++        t :: rest ->
++            Just (List.foldl (\x acc -> Mono.joinAnnotations acc x) t rest)
++
++
++
++-- ====== SETTLE: VAR CTOR ROWS (copy of Monomorphize.settleVarCtorRows) ======
++
++
++isCtorGlobalS : S -> Mono.Global -> Bool
++isCtorGlobalS s key =
++    case key of
++        Mono.Global h n ->
++            case HashMap.get TOpt.globalHash (==) (TOpt.Global h n) s.env.toptNodes of
++                Just (TOpt.Ctor _ _ _) ->
++                    True
++
++                Just (TOpt.Box _) ->
++                    True
++
++                _ ->
++                    False
++
++        _ ->
++            False
++
++
++ctorName : Mono.Global -> String
++ctorName key =
++    case key of
++        Mono.Global _ n ->
++            n
++
++        _ ->
++            "?"
++
++
++type alias VcCell =
++    { top : Bool, flexVar : Bool, sets : Maybe (List Int) }
++
++
++vcCollectCell : Bool -> Mono.LambdaSetAnno -> VcCell -> VcCell
++vcCollectCell marked anno cell =
++    case anno of
++        Mono.LTop _ ->
++            { cell | top = True }
++
++        Mono.LSet ms ->
++            { cell | sets = Just (Mono.unionSortedInts ms (Maybe.withDefault [] cell.sets)) }
++
++        Mono.LPartial _ ->
++            { cell | flexVar = True }
++
++        Mono.LVar _ ->
++            if marked then
++                { cell | flexVar = True }
++
++            else
++                cell
++
++
++vcCollect : Bool -> String -> String -> Mono.MonoType -> Dict String VcCell -> Dict String VcCell
++vcCollect marked gname path t acc =
++    case t of
++        Mono.MFunction _ anno args result ->
++            let
++                acc1 =
++                    Dict.update (gname ++ "|" ++ path)
++                        (\v -> Just (vcCollectCell marked anno (Maybe.withDefault { top = False, flexVar = False, sets = Nothing } v)))
++                        acc
++
++                accR =
++                    vcCollect marked gname (path ++ "/r") result acc1
++            in
++            List.foldl
++                (\( i, a ) accA -> vcCollect marked gname (path ++ "/a" ++ String.fromInt i) a accA)
++                accR
++                (List.indexedMap Tuple.pair args)
++
++        Mono.MList _ inner ->
++            vcCollect marked gname (path ++ "/l") inner acc
++
++        Mono.MTuple _ elems ->
++            List.foldl
++                (\( i, e ) accE -> vcCollect marked gname (path ++ "/t" ++ String.fromInt i) e accE)
++                acc
++                (List.indexedMap Tuple.pair elems)
++
++        Mono.MRecord _ fields ->
++            Dict.foldl (\fname ft a -> vcCollect marked gname (path ++ "/f:" ++ fname) ft a) acc fields
++
++        Mono.MCustom _ _ _ args ->
++            List.foldl
++                (\( i, a ) accA -> vcCollect marked gname (path ++ "/c" ++ String.fromInt i) a accA)
++                acc
++                (List.indexedMap Tuple.pair args)
++
++        _ ->
++            acc
++
++
++vcRewrite : (String -> Maybe VcCell) -> String -> Mono.MonoType -> Mono.MonoType
++vcRewrite look path t =
++    case t of
++        Mono.MFunction _ anno args result ->
++            let
++                args1 =
++                    List.indexedMap (\i a -> vcRewrite look (path ++ "/a" ++ String.fromInt i) a) args
++
++                result1 =
++                    vcRewrite look (path ++ "/r") result
++
++                anno1 =
++                    case anno of
++                        Mono.LVar _ ->
++                            case look path of
++                                Just cell ->
++                                    if cell.top || cell.flexVar then
++                                        anno
++
++                                    else
++                                        case cell.sets of
++                                            Just union ->
++                                                Mono.LSet union
++
++                                            Nothing ->
++                                                anno
++
++                                Nothing ->
++                                    anno
++
++                        _ ->
++                            anno
++            in
++            Mono.mFunction anno1 args1 result1
++
++        Mono.MList _ inner ->
++            Mono.mList (vcRewrite look (path ++ "/l") inner)
++
++        Mono.MTuple _ elems ->
++            Mono.mTuple (List.indexedMap (\i e -> vcRewrite look (path ++ "/t" ++ String.fromInt i) e) elems)
++
++        Mono.MRecord _ fields ->
++            Mono.mRecord (Dict.map (\fname ft -> vcRewrite look (path ++ "/f:" ++ fname) ft) fields)
++
++        Mono.MCustom _ h n args ->
++            Mono.mCustom h n (List.indexedMap (\i a -> vcRewrite look (path ++ "/c" ++ String.fromInt i) a) args)
++
++        _ ->
++            t
++
++
++ctorRows : S -> List ( Int, Mono.Global, Mono.MonoType )
++ctorRows s =
++    Array.toIndexedList s.registry.reverseMapping
++        |> List.filterMap
++            (\( i, e ) ->
++                case e of
++                    Just ( key, t ) ->
++                        if isCtorGlobalS s key then
++                            Just ( i, key, t )
++
++                        else
++                            Nothing
++
++                    Nothing ->
++                        Nothing
++            )
++
++
++rowAfter : S -> Int -> Maybe Mono.MonoType
++rowAfter s i =
++    case Array.get i s.registry.reverseMapping of
++        Just (Just ( _, t )) ->
++            Just t
++
++        _ ->
++            Nothing
++
++
++type alias SettleAcc =
++    { rows : Int
++    , rowsMulti : Int
++    , pairs : Int
++    , pairsDiffer : Int
++    , rowsDiffer : Int
++    , diff : Diff
++    , sanity : Int
++    , groupDiff : Dict String Int
++    , samples : List ( ( Int, Int ), ( Mono.MonoType, Mono.MonoType ) )
++    , writePos : Int
++    , writePosCrossGroup : Int
++    , writeRows : Int
++    , writeRowsCrossGroup : Int
++    }
++
++
++emptySettleAcc : SettleAcc
++emptySettleAcc =
++    { rows = 0, rowsMulti = 0, pairs = 0, pairsDiffer = 0, rowsDiffer = 0, diff = emptyDiff, sanity = 0, groupDiff = Dict.empty, samples = [], writePos = 0, writePosCrossGroup = 0, writeRows = 0, writeRowsCrossGroup = 0 }
++
++
++{-| Fold one row's global result against each owner's result.
++-}
++settleRow : Own -> Int -> String -> Bool -> Mono.MonoType -> Mono.MonoType -> Maybe Mono.MonoType -> (Int -> Mono.MonoType) -> SettleAcc -> SettleAcc
++settleRow own i group crossGroup inputT globalT actual perOwner acc =
++    let
++        -- positions the GLOBAL settle wrote on this row
++        w =
++            if inputT == globalT then
++                0
++
++            else
++                diffNonSame (annoDiff inputT globalT emptyDiff)
++
++        os =
++            ownersOf own i
++
++        ( ( pairsDiffer, diff ), samples ) =
++            List.foldl
++                (\o ( ( pd, df ), smp ) ->
++                    let
++                        p =
++                            perOwner o
++                    in
++                    if p == globalT then
++                        ( ( pd, df ), smp )
++
++                    else
++                        let
++                            d1 =
++                                annoDiff globalT p emptyDiff
++                        in
++                        if diffNonSame d1 == 0 then
++                            ( ( pd, df ), smp )
++
++                        else
++                            ( ( pd + 1, addDiff df d1 )
++                            , if List.length smp < 10 then
++                                ( ( i, o ), ( globalT, p ) ) :: smp
++
++                              else
++                                smp
++                            )
++                )
++                ( ( 0, acc.diff ), acc.samples )
++                os
++    in
++    { acc
++        | rows = acc.rows + 1
++        , rowsMulti = acc.rowsMulti + (if List.length os > 1 then 1 else 0)
++        , pairs = acc.pairs + List.length os
++        , pairsDiffer = acc.pairsDiffer + pairsDiffer
++        , rowsDiffer = acc.rowsDiffer + (if pairsDiffer > 0 then 1 else 0)
++        , diff = diff
++        , samples = samples
++        , writePos = acc.writePos + w
++        , writeRows = acc.writeRows + (if w > 0 then 1 else 0)
++        , writePosCrossGroup = acc.writePosCrossGroup + (if crossGroup then w else 0)
++        , writeRowsCrossGroup = acc.writeRowsCrossGroup + (if crossGroup && w > 0 then 1 else 0)
++        , sanity =
++            acc.sanity
++                + (case actual of
++                    Just a ->
++                        if a == globalT then
++                            0
++
++                        else
++                            1
++
++                    Nothing ->
++                        1
++                  )
++        , groupDiff =
++            if pairsDiffer > 0 then
++                bump group 1 acc.groupDiff
++
++            else
++                acc.groupDiff
++    }
++
++
++renderSamples : Own -> String -> List ( ( Int, Int ), ( Mono.MonoType, Mono.MonoType ) ) -> List String
++renderSamples own p samples =
++    List.map
++        (\( ( i, o ), ( g, q ) ) ->
++            p
++                ++ " spec="
++                ++ String.fromInt i
++                ++ " "
++                ++ Maybe.withDefault "?" (Array.get i own.gkey)
++                ++ " owner="
++                ++ Maybe.withDefault "?" (Dict.get o own.modNames)
++                ++ "\n    ref      : "
++                ++ String.left 400 (Mono.toComparableMonoType g)
++                ++ "\n    perOwner : "
++                ++ String.left 400 (Mono.toComparableMonoType q)
++        )
++        (List.reverse samples)
++
++
++renderSettle : Own -> String -> SettleAcc -> List String
++renderSettle own p a =
++    List.concat
++        [ [ kv (p ++ ".rows") a.rows
++          , kv (p ++ ".rowsMultiOwner") a.rowsMulti
++          , kv (p ++ ".rowOwnerPairs") a.pairs
++          , kv (p ++ ".rowOwnerPairsDiffering") a.pairsDiffer
++          , kv (p ++ ".rowsDiffering") a.rowsDiffer
++          , kv (p ++ ".groupsDiffering") (Dict.size a.groupDiff)
++          , kv (p ++ ".sanityCopyVsRealSettleMismatch") a.sanity
++          , kv (p ++ ".globalWrittenPositions") a.writePos
++          , kv (p ++ ".globalWrittenRows") a.writeRows
++          , kv (p ++ ".globalWrittenPositionsInCrossOwnerGroups(lostIfPoisoned)") a.writePosCrossGroup
++          , kv (p ++ ".globalWrittenRowsInCrossOwnerGroups") a.writeRowsCrossGroup
++          ]
++        , renderDiff (p ++ ".perOwnerVsGlobal") a.diff
++        , List.map (\( g, k ) -> p ++ ".topGroup " ++ String.fromInt k ++ " " ++ g) (topN 12 a.groupDiff)
++        , List.map
++            (\( ( i, o ), ( g, q ) ) ->
++                p
++                    ++ ".sample spec="
++                    ++ String.fromInt i
++                    ++ " "
++                    ++ Maybe.withDefault "?" (Array.get i own.gkey)
++                    ++ " owner="
++                    ++ Maybe.withDefault "?" (Dict.get o own.modNames)
++                    ++ " allOwners="
++                    ++ String.fromInt (List.length (ownersOf own i))
++                    ++ "\n    global   : "
++                    ++ String.left 400 (Mono.toComparableMonoType g)
++                    ++ "\n    perOwner : "
++                    ++ String.left 400 (Mono.toComparableMonoType q)
++            )
++            (List.reverse a.samples)
++        ]
++
++
++groupOwnerStats : Own -> List ( Int, String ) -> { groups : Int, multi : Int }
++groupOwnerStats own rows =
++    let
++        g =
++            List.foldl (\( i, k ) acc -> Dict.update k (\v -> Just (Mono.unionSortedInts (Maybe.withDefault [] v) (ownersOf own i))) acc) Dict.empty rows
++    in
++    { groups = Dict.size g, multi = Dict.size (Dict.filter (\_ v -> List.length v > 1) g) }
++
++
++varCtorSection : Stages -> Own -> List String
++varCtorSection st own =
++    let
++        s =
++            st.drained
++
++        rows =
++            ctorRows s
++
++        marked i =
++            Dict.member i s.lssStats.flexCtorSpecs
++
++        gcells =
++            List.foldl (\( i, key, t ) acc -> vcCollect (marked i) (ctorName key) "" t acc) Dict.empty rows
++
++        ocells =
++            List.foldl
++                (\( i, key, t ) acc ->
++                    List.foldl (\o a -> vcCollect (marked i) (String.fromInt o ++ "#" ++ ctorName key) "" t a) acc (ownersOf own i)
++                )
++                Dict.empty
++                rows
++
++        nameOwnerCount =
++            List.foldl (\( i, key, _ ) acc -> Dict.update (ctorName key) (\v -> Just (Mono.unionSortedInts (Maybe.withDefault [] v) (ownersOf own i))) acc) Dict.empty rows
++                |> Dict.map (\_ v -> List.length v)
++
++        tk t =
++            Mono.toComparableMonoType (Mono.widenSets t)
++
++        -- SAME-TYPE cells: all owners, keyed by the ctor GLOBAL and the
++        -- set-widened row type (no name collisions, no cross-type junk)
++        scells =
++            List.foldl (\( i, key, t ) acc -> vcCollect (marked i) (Mono.toComparableGlobal key ++ "@" ++ tk t) "" t acc) Dict.empty rows
++
++        hazard =
++            List.foldl
++                (\( i, key, t ) acc ->
++                    let
++                        sk =
++                            Mono.toComparableGlobal key ++ "@" ++ tk t
++
++                        sameT =
++                            vcRewrite (\p -> Dict.get (sk ++ "|" ++ p) scells) "" t
++                    in
++                    List.foldl
++                        (\o a ->
++                            let
++                                p =
++                                    vcRewrite (\pp -> Dict.get (String.fromInt o ++ "#" ++ ctorName key ++ "|" ++ pp) ocells) "" t
++
++                                d =
++                                    annoDiff sameT p emptyDiff
++                            in
++                            { a
++                                | diff = addDiff a.diff d
++                                , pairs = a.pairs + (if d.narrower + d.ownerWrites + d.incomparable > 0 then 1 else 0)
++                                , samples =
++                                    if d.narrower + d.ownerWrites + d.incomparable > 0 && List.length a.samples < 6 then
++                                        ( ( i, o ), ( sameT, p ) ) :: a.samples
++
++                                    else
++                                        a.samples
++                            }
++                        )
++                        acc
++                        (ownersOf own i)
++                )
++                { diff = emptyDiff, pairs = 0, samples = [] }
++                rows
++
++        res =
++            List.foldl
++                (\( i, key, t ) acc ->
++                    let
++                        gname =
++                            ctorName key
++
++                        g =
++                            vcRewrite (\p -> Dict.get (gname ++ "|" ++ p) gcells) "" t
++                    in
++                    settleRow own
++                        i
++                        (Mono.toComparableGlobal key)
++                        (Maybe.withDefault 0 (Dict.get gname nameOwnerCount) > 1)
++                        t
++                        g
++                        (rowAfter st.vc i)
++                        (\o -> vcRewrite (\p -> Dict.get (String.fromInt o ++ "#" ++ gname ++ "|" ++ p) ocells) "" t)
++                        acc
++                )
++                emptySettleAcc
++                rows
++
++        nameGlobals =
++            List.foldl (\( _, key, _ ) acc -> Dict.update (ctorName key) (\v -> Just (Dict.insert (Mono.toComparableGlobal key) () (Maybe.withDefault Dict.empty v))) acc) Dict.empty rows
++
++        collisions =
++            Dict.filter (\_ v -> Dict.size v > 1) nameGlobals
++
++        gs =
++            groupOwnerStats own (List.map (\( i, key, _ ) -> ( i, ctorName key )) rows)
++    in
++    List.concat
++        [ [ "", "## settleVarCtorRows (cells keyed by ctor NAME + path)" ]
++        , [ kv "varCtor.groupsByName" gs.groups
++          , kv "varCtor.groupsSpanningMoreThanOneOwner" gs.multi
++          , kv "varCtor.ctorNamesSharedByDistinctCtorGlobals" (Dict.size collisions)
++          , kv "varCtor.rowsInNameCollidingGroups" (List.length (List.filter (\( _, key, _ ) -> Dict.member (ctorName key) collisions) rows))
++          ]
++        , renderSettle own "varCtor" res
++        , [ kv "varCtor.vsSameTypeUnion.rowOwnerPairsNarrowerOrWritingVsSameTypeUnion" hazard.pairs ]
++        , renderDiff "varCtor.perOwnerVsSameTypeAllOwnerUnion" hazard.diff
++        , renderSamples own "varCtor.hazardSample(sameTypeAllOwners vs perOwner)" hazard.samples
++        , List.map (\( n, d ) -> "varCtor.nameCollision " ++ n ++ " -> " ++ String.join " , " (Dict.keys d)) (List.take 12 (Dict.toList collisions))
++        ]
++
++
++
++flexSection : Own -> Engine.OwnerCensus -> List String
++flexSection own census =
++    let
++        marks =
++            census.flexMarks
++
++        byMarked =
++            List.foldl (\( r, m ) acc -> Dict.update m (\v -> Just (r :: Maybe.withDefault [] v)) acc) Dict.empty marks
++
++        foreignMark ( r, m ) =
++            not (ownersSubset (ownersOf own m) (ownersOf own r))
++
++        onlyForeign =
++            Dict.filter (\m rs -> List.all (\r -> foreignMark ( r, m )) rs) byMarked
++    in
++    [ ""
++    , "## flex-construction marks (lssStats.flexCtorSpecs, read by settleVarCtorRows)"
++    , kv "flex.marks" (List.length marks)
++    , kv "flex.markedCtorSpecs" (Dict.size byMarked)
++    , kv "flex.marksFromRequesterOutsideMarkedSpecOwners" (List.length (List.filter foreignMark marks))
++    , kv "flex.markedSpecsMarkedONLYFromOtherOwners(perOwnerWouldMissTheMark)" (Dict.size onlyForeign)
++    , kv "flex.markedHomeOwnedSpecsMarkedOnlyFromOtherOwners" (Dict.size (Dict.filter (\m _ -> Maybe.withDefault False (Array.get m own.homeOwned)) onlyForeign))
++    ]
++
++
++-- ====== SETTLE: CTOR ROWS ⊤-HEAL (copy of Monomorphize.settleCtorRows) ======
++
++
++ctorRowsSection : Stages -> Own -> List String
++ctorRowsSection st own =
++    let
++        s =
++            st.vc
++
++        rows =
++            ctorRows s
++
++        gk key =
++            Mono.toComparableGlobal key
++
++        enrichInto k t acc =
++            Dict.update k
++                (\v ->
++                    Just
++                        (case v of
++                            Just u ->
++                                Mono.enrichAnnotations u t
++
++                            Nothing ->
++                                t
++                        )
++                )
++                acc
++
++        gun =
++            List.foldl (\( _, key, t ) acc -> enrichInto (gk key) t acc) Dict.empty rows
++
++        oun =
++            List.foldl (\( i, key, t ) acc -> List.foldl (\o a -> enrichInto (String.fromInt o ++ "#" ++ gk key) t a) acc (ownersOf own i)) Dict.empty rows
++
++        -- SAME-TYPE union: all owners, but only rows of the same ctor at the
++        -- same set-widened type. Per-owner members missing from THIS are
++        -- members of the same instance in another owner (the hazardous
++        -- class); members only in the global (all-types) union are
++        -- cross-type junk the shape-matched global union admits.
++        tk t =
++            Mono.toComparableMonoType (Mono.widenSets t)
++
++        sun =
++            List.foldl (\( _, key, t ) acc -> enrichInto (gk key ++ "@" ++ tk t) t acc) Dict.empty rows
++
++        hazard =
++            List.foldl
++                (\( i, key, t ) acc ->
++                    if Mono.hasTopAnno t then
++                        let
++                            sameT =
++                                case Dict.get (gk key ++ "@" ++ tk t) sun of
++                                    Just u ->
++                                        Mono.enrichAnnotationsTopOnly t u
++
++                                    Nothing ->
++                                        t
++                        in
++                        List.foldl
++                            (\o a ->
++                                let
++                                    p =
++                                        case Dict.get (String.fromInt o ++ "#" ++ gk key) oun of
++                                            Just u ->
++                                                Mono.enrichAnnotationsTopOnly t u
++
++                                            Nothing ->
++                                                t
++
++                                    d =
++                                        annoDiff sameT p emptyDiff
++                                in
++                                { a
++                                    | diff = addDiff a.diff d
++                                    , pairs = a.pairs + (if d.narrower + d.incomparable > 0 then 1 else 0)
++                                    , samples =
++                                        if d.narrower + d.incomparable > 0 && List.length a.samples < 6 then
++                                            ( ( i, o ), ( sameT, p ) ) :: a.samples
++
++                                        else
++                                            a.samples
++                                }
++                            )
++                            acc
++                            (ownersOf own i)
++
++                    else
++                        acc
++                )
++                { diff = emptyDiff, pairs = 0, samples = [] }
++                rows
++
++        globalOwnerCount =
++            List.foldl (\( i, key, _ ) acc -> Dict.update (gk key) (\v -> Just (Mono.unionSortedInts (Maybe.withDefault [] v) (ownersOf own i))) acc) Dict.empty rows
++                |> Dict.map (\_ v -> List.length v)
++
++        res =
++            List.foldl
++                (\( i, key, t ) acc ->
++                    if Mono.hasTopAnno t then
++                        let
++                            g =
++                                case Dict.get (gk key) gun of
++                                    Just u ->
++                                        Mono.enrichAnnotationsTopOnly t u
++
++                                    Nothing ->
++                                        t
++                        in
++                        settleRow own
++                            i
++                            (gk key)
++                            (Maybe.withDefault 0 (Dict.get (gk key) globalOwnerCount) > 1)
++                            t
++                            g
++                            (rowAfter st.cr i)
++                            (\o ->
++                                case Dict.get (String.fromInt o ++ "#" ++ gk key) oun of
++                                    Just u ->
++                                        Mono.enrichAnnotationsTopOnly t u
++
++                                    Nothing ->
++                                        t
++                            )
++                            acc
++
++                    else
++                        acc
++                )
++                emptySettleAcc
++                rows
++
++        gs =
++            groupOwnerStats own (List.map (\( i, key, _ ) -> ( i, gk key )) rows)
++    in
++    List.concat
++        [ [ "", "## settleCtorRows (top-heal, groups keyed by ctor global)" ]
++        , [ kv "ctorRows.groups" gs.groups, kv "ctorRows.groupsSpanningMoreThanOneOwner" gs.multi ]
++        , renderSettle own "ctorRows" res
++        , [ kv "ctorRows.vsSameTypeUnion.rowOwnerPairsMissingSameTypeMembers(narrowerOrIncomparable)" hazard.pairs ]
++        , renderDiff "ctorRows.perOwnerVsSameTypeAllOwnerUnion" hazard.diff
++        , renderSamples own "ctorRows.hazardSample(sameTypeAllOwners vs perOwner)" hazard.samples
++        ]
++
++
++
++-- ====== SETTLE: VAR LAMBDA (copy of Monomorphize.settleVarLambda) ======
++
++
++type alias VlCell =
++    { top : Bool, var : Bool, sets : Maybe (List Int) }
++
++
++type alias Home =
++    { arity : Maybe Int, cells : Dict String VlCell }
++
++
++vlEmpty : VlCell
++vlEmpty =
++    { top = False, var = False, sets = Nothing }
++
++
++vlMerge : VlCell -> VlCell -> VlCell
++vlMerge ca cb =
++    { top = ca.top || cb.top
++    , var = ca.var || cb.var
++    , sets =
++        case ( ca.sets, cb.sets ) of
++            ( Just xs, Just ys ) ->
++                Just (Mono.unionSortedInts xs ys)
++
++            ( Just xs, Nothing ) ->
++                Just xs
++
++            ( Nothing, sb ) ->
++                sb
++    }
++
++
++vlMapMerge : Dict String VlCell -> Dict String VlCell -> Dict String VlCell
++vlMapMerge a b =
++    Dict.foldl (\k cell d -> Dict.update k (\v -> Just (vlMerge (Maybe.withDefault vlEmpty v) cell)) d) a b
++
++
++vlCellWalk : String -> Mono.MonoType -> Dict String VlCell -> Dict String VlCell
++vlCellWalk path t acc =
++    case t of
++        Mono.MFunction _ anno args result ->
++            let
++                acc1 =
++                    Dict.update path
++                        (\v ->
++                            let
++                                c =
++                                    Maybe.withDefault vlEmpty v
++                            in
++                            Just
++                                (case anno of
++                                    Mono.LTop _ ->
++                                        { c | top = True }
++
++                                    Mono.LVar _ ->
++                                        { c | var = True }
++
++                                    Mono.LPartial _ ->
++                                        { c | var = True }
++
++                                    Mono.LSet ms ->
++                                        { c | sets = Just (Mono.unionSortedInts ms (Maybe.withDefault [] c.sets)) }
++                                )
++                        )
++                        acc
++
++                accR =
++                    vlCellWalk (path ++ "/r") result acc1
++            in
++            List.foldl (\( i, a ) aa -> vlCellWalk (path ++ "/a" ++ String.fromInt i) a aa) accR (List.indexedMap Tuple.pair args)
++
++        Mono.MList _ inner ->
++            vlCellWalk (path ++ "/l") inner acc
++
++        Mono.MTuple _ elems ->
++            List.foldl (\( i, e ) aa -> vlCellWalk (path ++ "/t" ++ String.fromInt i) e aa) acc (List.indexedMap Tuple.pair elems)
++
++        Mono.MRecord _ fields ->
++            Dict.foldl (\fn ft aa -> vlCellWalk (path ++ "/f:" ++ fn) ft aa) acc fields
++
++        Mono.MCustom _ _ _ args ->
++            List.foldl (\( i, a ) aa -> vlCellWalk (path ++ "/c" ++ String.fromInt i) a aa) acc (List.indexedMap Tuple.pair args)
++
++        _ ->
++            acc
++
++
++{-| ( mid, arity, cells ) of every closure the settle's home walk visits.
++-}
++closureHomes : Mono.MonoExpr -> List ( Int, Int, Dict String VlCell ) -> List ( Int, Int, Dict String VlCell )
++closureHomes e acc =
++    case e of
++        Mono.MonoClosure info body _ ->
++            closureHomes body
++                (case info.lssMember of
++                    Just mid ->
++                        ( mid, List.length info.params, vlCellWalk "/r" (Mono.typeOf body) Dict.empty ) :: acc
++
++                    Nothing ->
++                        acc
++                )
++
++        Mono.MonoList _ items _ ->
++            List.foldl closureHomes acc items
++
++        Mono.MonoCall _ f args _ _ ->
++            List.foldl closureHomes (closureHomes f acc) args
++
++        Mono.MonoTailCall _ entries _ ->
++            List.foldl (\( _, x ) aa -> closureHomes x aa) acc entries
++
++        Mono.MonoIf branches final _ ->
++            closureHomes final (List.foldl (\( c, th ) aa -> closureHomes th (closureHomes c aa)) acc branches)
++
++        Mono.MonoLet def body _ ->
++            closureHomes body
++                (case def of
++                    Mono.MonoDef _ bound ->
++                        closureHomes bound acc
++
++                    Mono.MonoTailDef _ _ bound ->
++                        closureHomes bound acc
++                )
++
++        Mono.MonoDestruct _ inner _ ->
++            closureHomes inner acc
++
++        Mono.MonoCase _ _ decider branches _ ->
++            List.foldl (\( _, x ) aa -> closureHomes x aa)
++                (List.foldl closureHomes acc (deciderExprs decider []))
++                branches
++
++        Mono.MonoRecordCreate fields _ ->
++            List.foldl (\( _, x ) aa -> closureHomes x aa) acc fields
++
++        Mono.MonoRecordAccess inner _ _ ->
++            closureHomes inner acc
++
++        Mono.MonoRecordUpdate inner updates _ ->
++            List.foldl (\( _, x ) aa -> closureHomes x aa) (closureHomes inner acc) updates
++
++        Mono.MonoTupleCreate _ items _ ->
++            List.foldl closureHomes acc items
++
++        _ ->
++            acc
++
++
++deciderExprs : Mono.Decider Mono.MonoChoice -> List Mono.MonoExpr -> List Mono.MonoExpr
++deciderExprs d acc =
++    case d of
++        Mono.Leaf (Mono.Inline e) ->
++            e :: acc
++
++        Mono.Leaf (Mono.Jump _) ->
++            acc
++
++        Mono.Chain _ success failure ->
++            deciderExprs failure (deciderExprs success acc)
++
++        Mono.FanOut _ tests fallback ->
++            deciderExprs fallback (List.foldl (\( _, dd ) aa -> deciderExprs dd aa) acc tests)
++
++
++nodeClosureHomes : Mono.MonoNode -> List ( Int, Int, Dict String VlCell )
++nodeClosureHomes node =
++    case node of
++        Mono.MonoDefine expr _ ->
++            closureHomes expr []
++
++        Mono.MonoTailFunc _ expr _ ->
++            closureHomes expr []
++
++        Mono.MonoPortIncoming expr _ ->
++            closureHomes expr []
++
++        Mono.MonoPortOutgoing expr _ ->
++            closureHomes expr []
++
++        _ ->
++            []
++
++
++mergeHome : comparable -> Int -> Dict String VlCell -> Dict comparable Home -> Dict comparable Home
++mergeHome k arity cells acc =
++    Dict.update k
++        (\v ->
++            Just
++                (case v of
++                    Just cur ->
++                        { arity =
++                            if cur.arity == Just arity then
++                                cur.arity
++
++                            else
++                                Nothing
++                        , cells = vlMapMerge cur.cells cells
++                        }
++
++                    Nothing ->
++                        { arity = Just arity, cells = cells }
++                )
++        )
++        acc
++
++
++vlRewrite : (Int -> Maybe Home) -> Mono.MonoType -> Maybe ( Dict String VlCell, String ) -> Mono.MonoType
++vlRewrite look t ctx =
++    let
++        openCtx ms nargs =
++            List.foldl
++                (\m acc ->
++                    case acc of
++                        Nothing ->
++                            Nothing
++
++                        Just cm ->
++                            case look m of
++                                Just home ->
++                                    if home.arity == Just nargs then
++                                        Just (vlMapMerge cm home.cells)
++
++                                    else
++                                        Nothing
++
++                                Nothing ->
++                                    Nothing
++                )
++                (Just Dict.empty)
++                ms
++    in
++    case t of
++        Mono.MFunction _ anno args result ->
++            let
++                anno1 =
++                    case ( anno, ctx ) of
++                        ( Mono.LVar _, Just ( cm, rp ) ) ->
++                            case Dict.get rp cm of
++                                Just cell ->
++                                    if cell.top || cell.var then
++                                        anno
++
++                                    else
++                                        case cell.sets of
++                                            Just ss ->
++                                                Mono.LSet ss
++
++                                            Nothing ->
++                                                anno
++
++                                Nothing ->
++                                    anno
++
++                        _ ->
++                            anno
++
++                ctxR =
++                    case anno of
++                        Mono.LSet ms ->
++                            Maybe.map (\cm -> ( cm, "/r" )) (openCtx ms (List.length args))
++
++                        _ ->
++                            Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/r" )) ctx
++
++                result1 =
++                    vlRewrite look result ctxR
++
++                args1 =
++                    List.map (\a -> vlRewrite look a Nothing) args
++            in
++            Mono.mFunction anno1 args1 result1
++
++        Mono.MList _ inner ->
++            Mono.mList (vlRewrite look inner (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/l" )) ctx))
++
++        Mono.MTuple _ elems ->
++            Mono.mTuple (List.indexedMap (\i e -> vlRewrite look e (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/t" ++ String.fromInt i )) ctx)) elems)
++
++        Mono.MRecord _ fields ->
++            Mono.mRecord (Dict.map (\fn ft -> vlRewrite look ft (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/f:" ++ fn )) ctx)) fields)
++
++        Mono.MCustom _ h n args ->
++            Mono.mCustom h n (List.indexedMap (\i a -> vlRewrite look a (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/c" ++ String.fromInt i )) ctx)) args)
++
++        _ ->
++            t
++
++
++hasLVar : Mono.MonoType -> Bool
++hasLVar t =
++    case t of
++        Mono.MFunction _ anno args result ->
++            (case anno of
++                Mono.LVar _ ->
++                    True
++
++                _ ->
++                    False
++            )
++                || List.any hasLVar args
++                || hasLVar result
++
++        Mono.MList _ i ->
++            hasLVar i
++
++        Mono.MTuple _ es ->
++            List.any hasLVar es
++
++        Mono.MRecord _ fs ->
++            Dict.foldl (\_ v acc -> acc || hasLVar v) False fs
++
++        Mono.MCustom _ _ _ args ->
++            List.any hasLVar args
++
++        _ ->
++            False
++
++
++varLambdaSection : Stages -> Own -> List String
++varLambdaSection st own =
++    let
++        s =
++            st.vs1
++
++        entries =
++            Array.toIndexedList s.nodes
++                |> List.concatMap
++                    (\( i, mn ) ->
++                        case mn of
++                            Just node ->
++                                List.map (\( mid, ar, cells ) -> ( i, ( mid, ar, cells ) )) (nodeClosureHomes node)
++
++                            Nothing ->
++                                []
++                    )
++
++        ghomes =
++            List.foldl (\( _, ( mid, ar, cells ) ) acc -> mergeHome mid ar cells acc) Dict.empty entries
++
++        ohomes =
++            List.foldl (\( i, ( mid, ar, cells ) ) acc -> List.foldl (\o a -> mergeHome ( o, mid ) ar cells a) acc (ownersOf own i)) Dict.empty entries
++
++        -- mids whose home entries come from specs of > 1 owner
++        midOwners =
++            List.foldl (\( i, ( mid, _, _ ) ) acc -> Dict.update mid (\v -> Just (Mono.unionSortedInts (Maybe.withDefault [] v) (ownersOf own i))) acc) Dict.empty entries
++
++        res =
++            Array.toIndexedList s.registry.reverseMapping
++                |> List.foldl
++                    (\( i, e ) acc ->
++                        case e of
++                            Just ( key, t ) ->
++                                if hasLVar t then
++                                    settleRow own
++                                        i
++                                        (Mono.toComparableGlobal key)
++                                        (let
++                                            ro =
++                                                ownersOf own i
++                                         in
++                                         List.length ro
++                                            > 1
++                                            || List.any
++                                                (\m -> not (ownersSubset (Maybe.withDefault [] (Dict.get m midOwners)) ro))
++                                                (Mono.collectAnnoMembers t)
++                                        )
++                                        t
++                                        (vlRewrite (\m -> Dict.get m ghomes) t Nothing)
++                                        (rowAfter st.vl i)
++                                        (\o -> vlRewrite (\m -> Dict.get ( o, m ) ohomes) t Nothing)
++                                        acc
++
++                                else
++                                    acc
++
++                            Nothing ->
++                                acc
++                    )
++                    emptySettleAcc
++    in
++    List.concat
++        [ [ "", "## settleVarLambda (lambda-home table keyed by member id)" ]
++        , [ kv "varLambda.closureEntries" (List.length entries)
++          , kv "varLambda.mids" (Dict.size ghomes)
++          , kv "varLambda.midsWithClosuresInMoreThanOneOwner" (Dict.size (Dict.filter (\_ v -> List.length v > 1) midOwners))
++          , "varLambda.note=rows considered = rows carrying an LVar (only those can be written); sanity counts rows the real settle changed differently"
++          ]
++        , renderSettle own "varLambda" res
++        ]
++
++
++
++-- ====== NUMBER TAINT ======
++
++
++collectMVars : Mono.MonoType -> Dict Int Bool -> Dict Int Bool
++collectMVars t acc =
++    case t of
++        Mono.MVar mid c ->
++            let
++                isNum =
++                    case c of
++                        Mono.CNumber ->
++                            True
++
++                        Mono.CEcoValue ->
++                            False
++            in
++            Dict.update (Id.toComparable mid) (\v -> Just (isNum || Maybe.withDefault False v)) acc
++
++        Mono.MList _ i ->
++            collectMVars i acc
++
++        Mono.MTuple _ es ->
++            List.foldl collectMVars acc es
++
++        Mono.MRecord _ fs ->
++            Dict.foldl (\_ v a -> collectMVars v a) acc fs
++
++        Mono.MCustom _ _ _ args ->
++            List.foldl collectMVars acc args
++
++        Mono.MFunction _ _ args r ->
++            collectMVars r (List.foldl collectMVars acc args)
++
++        _ ->
++            acc
++
++
++nodeMVars : Mono.MonoNode -> Dict Int Bool
++nodeMVars node =
++    let
++        base =
++            collectMVars (Mono.nodeType node) Dict.empty
++
++        viaExpr e =
++            Traverse.foldExpr (\x acc -> collectMVars (Mono.typeOf x) acc) base e
++    in
++    case node of
++        Mono.MonoDefine e _ ->
++            viaExpr e
++
++        Mono.MonoTailFunc params e _ ->
++            List.foldl (\( _, pt ) acc -> collectMVars pt acc) (viaExpr e) params
++
++        Mono.MonoPortIncoming e _ ->
++            viaExpr e
++
++        Mono.MonoPortOutgoing e _ ->
++            viaExpr e
++
++        _ ->
++            base
++
++
++annIdsOf : S -> Int -> List Int
++annIdsOf s i =
++    case Array.get i s.registry.reverseMapping of
++        Just (Just ( Mono.Global h n, _ )) ->
++            case HashMap.get TOpt.globalHash (==) (TOpt.Global h n) s.env.toptNodes of
++                Just (TOpt.Define _ _ meta) ->
++                    List.map Id.toComparable (KernelAbi.freeVarIds meta.tipe [])
++
++                Just (TOpt.TrackedDefine _ _ _ meta) ->
++                    List.map Id.toComparable (KernelAbi.freeVarIds meta.tipe [])
++
++                _ ->
++                    []
++
++        _ ->
++            []
++
++
++taintSection : S -> Own -> Engine.OwnerCensus -> List String
++taintSection s own census =
++    let
++        harvested =
++            census.harvest
++
++        harvestEvents =
++            Dict.foldl (\_ hs acc -> acc + List.length hs) 0 harvested
++
++        static k =
++            Dict.get k s.env.superStatic == Just Vars.Number
++
++        res =
++            Array.toIndexedList s.nodes
++                |> List.foldl
++                    (\( i, mn ) acc ->
++                        case mn of
++                            Just node ->
++                                let
++                                    mvs0 =
++                                        nodeMVars node
++
++                                    mvs =
++                                        case Array.get i s.registry.reverseMapping of
++                                            Just (Just ( _, rt )) ->
++                                                collectMVars rt mvs0
++
++                                            _ ->
++                                                mvs0
++
++                                    anns =
++                                        annIdsOf s i
++                                in
++                                Dict.foldl
++                                    (\k isNum a ->
++                                        if static k then
++                                            { a | staticNum = a.staticNum + 1 }
++
++                                        else
++                                            case Dict.get k harvested of
++                                                Nothing ->
++                                                    if isNum then
++                                                        { a | numNoHarvest = a.numNoHarvest + 1 }
++
++                                                    else
++                                                        { a | ecoNoTaint = a.ecoNoTaint + 1 }
++
++                                                Just hs ->
++                                                    if List.member i hs || (isNum && List.member k anns) then
++                                                        { a | local = a.local + 1 }
++
++                                                    else if uncovered own i hs then
++                                                        let
++                                                            note =
++                                                                Maybe.withDefault "?" (Array.get i own.gkey)
++                                                                    ++ " mvar="
++                                                                    ++ String.fromInt k
++                                                                    ++ (if isNum then " CNumber" else " CEcoValue")
++                                                                    ++ " harvestedBy="
++                                                                    ++ String.join "," (List.map (\h -> Maybe.withDefault "?" (Array.get h own.gkey)) (List.take 3 hs))
++                                                        in
++                                                        if isNum then
++                                                            { a | crossNum = a.crossNum + 1, crossSpecs = Dict.insert i note a.crossSpecs }
++
++                                                        else
++                                                            { a | crossEco = a.crossEco + 1, crossSpecs = Dict.insert i note a.crossSpecs }
++
++                                                    else if isNum then
++                                                        { a | sameNum = a.sameNum + 1 }
++
++                                                    else
++                                                        { a | sameEco = a.sameEco + 1 }
++                                    )
++                                    acc
++                                    mvs
++
++                            Nothing ->
++                                acc
++                    )
++                    { staticNum = 0, numNoHarvest = 0, ecoNoTaint = 0, local = 0, crossNum = 0, crossEco = 0, sameNum = 0, sameEco = 0, crossSpecs = Dict.empty }
++
++        numReads =
++            List.foldl
++                (\( r, k ) a ->
++                    let
++                        hs =
++                            Maybe.withDefault [] (Dict.get k harvested)
++                    in
++                    if List.member r hs then
++                        { a | local = a.local + 1 }
++
++                    else if uncovered own r hs then
++                        { a
++                            | cross = a.cross + 1
++                            , crossSameGlobal =
++                                a.crossSameGlobal
++                                    + (if List.any (\h -> Array.get h own.gkey == Array.get r own.gkey) hs then
++                                        1
++
++                                       else
++                                        0
++                                      )
++                        }
++
++                    else
++                        { a | same = a.same + 1 }
++                )
++                { local = 0, cross = 0, same = 0, crossSameGlobal = 0 }
++                census.numReads
++
++        harvMultiOwner =
++            Dict.foldl
++                (\_ hs acc ->
++                    let
++                        os =
++                            List.foldl (\h a -> Mono.unionSortedInts a (ownersOf own h)) [] hs
++                    in
++                    if List.length os > 1 then
++                        acc + 1
++
++                    else
++                        acc
++                )
++                0
++                harvested
++    in
++    [ ""
++    , "## number taint (superTable Join-R harvest)"
++    , kv "taint.harvestedKeys(nonStatic)" (Dict.size harvested)
++    , kv "taint.harvestEvents" harvestEvents
++    , kv "taint.harvestedKeysWithHarvestersInMoreThanOneOwner" harvMultiOwner
++    , "taint.note=residual MVar occurrences per (spec, var) over node + expr + registry types, pre-prune"
++    , kv "taint.residual.staticNumberVar" res.staticNum
++    , kv "taint.residual.CNumberNotHarvested(localStore)" res.numNoHarvest
++    , kv "taint.residual.CEcoValueNeverTainted" res.ecoNoTaint
++    , kv "taint.residual.taintedLocal(readerIsHarvester)" res.local
++    , kv "taint.residual.taintedSameOwner.CNumber" res.sameNum
++    , kv "taint.residual.taintedSameOwner.CEcoValue(closedToIntByPrune)" res.sameEco
++    , kv "taint.residual.taintedCrossOwner.CNumber(zonkReadOfOtherOwnersTaint)" res.crossNum
++    , kv "taint.residual.taintedCrossOwner.CEcoValue(closedToIntByPruneViaOtherOwner)" res.crossEco
++    , kv "taint.residual.specsWithCrossOwnerTaint" (Dict.size res.crossSpecs)
++    ]
++        ++ List.map (\n -> "taint.crossSample " ++ n) (List.take 8 (Dict.values res.crossSpecs))
++        ++ [ ""
++    , kv "taint.hasNumberVarHarvestedReads" (List.length census.numReads)
++    , kv "taint.hasNumberVarHarvestedReads.local" numReads.local
++    , kv "taint.hasNumberVarHarvestedReads.sameOwner" numReads.same
++    , kv "taint.hasNumberVarHarvestedReads.crossOwner" numReads.cross
++    , kv "taint.hasNumberVarHarvestedReads.crossOwnerHarvestedByAnotherSpecOfSameGlobal" numReads.crossSameGlobal
++    , kv "taint.kernelLicenseChecksMentioningHarvestedTaint" (List.length census.licReads)
++    , kv "taint.kernelLicenseDecisionsFlippedByHarvestedTaint" (List.length (List.filter (\( _, ( f, _ ) ) -> f) census.licReads))
++    , kv "taint.kernelLicenseDecisionsFlippedByCrossOwnerTaint"
++        (List.length
++            (List.filter
++                (\( r, ( f, ks ) ) -> f && List.any (\k -> uncovered own r (Maybe.withDefault [] (Dict.get k harvested))) ks)
++                census.licReads
++            )
++        )
++    ]
++
++
++
++-- ====== rootLamOf ======
++
++
++rootSection : Own -> Engine.OwnerCensus -> List String
++rootSection own census =
++    let
++        globalOf i =
++            Maybe.withDefault "?" (Array.get i own.gkey)
++
++        -- spec ids per global (to ask: does owner o own ANY spec of the
++        -- root's global, i.e. would its per-owner run insert the root?)
++        specsByGlobal =
++            Array.foldl
++                (\g ( i, acc ) -> ( i + 1, Dict.update g (\v -> Just (i :: Maybe.withDefault [] v)) acc ))
++                ( 0, Dict.empty )
++                own.gkey
++                |> Tuple.second
++
++        res =
++            List.foldl
++                (\( raw, ( reader, code ) ) a ->
++                    let
++                        site =
++                            code // 2
++
++                        hit =
++                            modBy 2 code == 1
++
++                        a1 =
++                            { a | reads = bump ("site" ++ String.fromInt site ++ (if hit then ".hit" else ".miss")) 1 a.reads }
++                    in
++                    case Dict.get raw census.rootIns of
++                        Nothing ->
++                            a1
++
++                        Just ins ->
++                            let
++                                insSpecs =
++                                    Maybe.withDefault [ ins ] (Dict.get (globalOf ins) specsByGlobal)
++
++                                notCovered =
++                                    uncovered own reader insSpecs
++                            in
++                            if hit then
++                                if notCovered then
++                                    { a1 | hitUncovered = a1.hitUncovered + 1, rawsUncovered = Dict.insert raw () a1.rawsUncovered }
++
++                                else if ownersOf own reader /= ownersOf own ins then
++                                    { a1 | hitOtherOwnerCovered = a1.hitOtherOwnerCovered + 1 }
++
++                                else
++                                    a1
++
++                            else
++                                { a1
++                                    | missBeforeInsert = a1.missBeforeInsert + 1
++                                    , missBeforeInsertCovered = a1.missBeforeInsertCovered + (if notCovered then 0 else 1)
++                                    , rawsMissed = Dict.insert raw () a1.rawsMissed
++                                }
++                )
++                { reads = Dict.empty, hitUncovered = 0, hitOtherOwnerCovered = 0, missBeforeInsert = 0, missBeforeInsertCovered = 0, rawsUncovered = Dict.empty, rawsMissed = Dict.empty }
++                census.rootReads
++    in
++    List.concat
++        [ [ "", "## rootLamOf (root-member fold table, populated during translation)" ]
++        , [ kv "root.inserted" (Dict.size census.rootIns)
++          , kv "root.reads" (List.length census.rootReads)
++          ]
++        , List.map (\( k, v ) -> kv ("root.reads." ++ k) v) (Dict.toList res.reads)
++        , [ kv "root.hitsWhereReaderOwnerOwnsNoSpecOfRootGlobal" res.hitUncovered
++          , kv "root.rawsInvolvedInUncoveredHits" (Dict.size res.rawsUncovered)
++          , kv "root.hitsInsertedByOtherOwnerButCovered" res.hitOtherOwnerCovered
++          , kv "root.missesBeforeLaterInsert(orderDependent)" res.missBeforeInsert
++          , kv "root.missesBeforeLaterInsertWhereReaderOwnerHasRootGlobal" res.missBeforeInsertCovered
++          , kv "root.rawsWithMissBeforeInsert" (Dict.size res.rawsMissed)
++          ]
++        ]
++
++
++
++-- ====== MISC: μ-tie, demandQualified, callMemo, signatures ======
++
++
++miscSection : S -> Own -> Engine.OwnerCensus -> List String
++miscSection s own census =
++    let
++        crossPairs pairs =
++            List.foldl
++                (\( r, p ) a ->
++                    if r == p then
++                        { a | sameSpec = a.sameSpec + 1 }
++
++                    else if ownersSubset (ownersOf own r) (ownersOf own p) then
++                        { a | covered = a.covered + 1 }
++
++                    else
++                        { a | cross = a.cross + 1 }
++                )
++                { sameSpec = 0, covered = 0, cross = 0 }
++                pairs
++
++        memo =
++            crossPairs (List.map (\( r, ( p, _ ) ) -> ( r, p )) census.memoHits)
++
++        memoCrossMVar =
++            List.foldl
++                (\( r, ( p, mv ) ) a ->
++                    if mv && r /= p && not (ownersSubset (ownersOf own r) (ownersOf own p)) then
++                        a + 1
++
++                    else
++                        a
++                )
++                0
++                census.memoHits
++
++        modIdx =
++            Dict.foldl (\k v acc -> Dict.insert v k acc) Dict.empty own.modNames
++
++        -- a signature is a pure function of its def + callee signatures
++        -- (callee -> caller): a read is CROSS-OWNER when the reader's owners
++        -- are not just the signature's home module
++        sigs =
++            List.foldl
++                (\( r, ( _, hm ) ) a ->
++                    let
++                        h =
++                            Maybe.withDefault -7 (Dict.get hm modIdx)
++                    in
++                    if ownersOf own r == [ h ] then
++                        { a | home = a.home + 1 }
++
++                    else
++                        { a | cross = a.cross + 1 }
++                )
++                { home = 0, cross = 0 }
++                census.sigHits
++
++        -- per-owner (no interface) recomputation: each signature inferred once
++        -- per owner that reads it, vs once (home) with published signatures
++        sigNeed =
++            List.foldl
++                (\( r, ( g, _ ) ) acc -> Dict.update g (\v -> Just (Mono.unionSortedInts (Maybe.withDefault [] v) (ownersOf own r))) acc)
++                Dict.empty
++                census.sigHits
++
++        sigDup =
++            Dict.foldl (\_ os acc -> acc + max 1 (List.length os)) 0 sigNeed
++
++        dqCross =
++            List.foldl
++                (\( sp, mids ) a ->
++                    let
++                        minters =
++                            List.filterMap (\m -> Maybe.map Tuple.second (Dict.get m s.lssMemberTable.lambdaQualified)) mids
++                    in
++                    if uncovered own sp minters then
++                        a + 1
++
++                    else
++                        a
++                )
++                0
++                census.dqMulti
++    in
++    [ ""
++    , "## mu-tie / demandQualified / member tables"
++    , kv "mu.tieEvents" (List.length census.muTies)
++    , kv "mu.muTiedMembers" (Dict.size s.lssMemberTable.muTied)
++    , kv "mu.tieBypass" s.lssStats.layoutQual.tieBypass
++    , kv "dq.rawsWithMoreThanOneQualifiedCandidate" (List.length census.dqMulti)
++    , kv "dq.ofWhichSomeCandidateFirstMintedOutsideReaderOwners" dqCross
++    , kv "members.interned" (Dict.size s.lssMemberTable.byKey)
++    , kv "members.lambdaQualified" (Dict.size s.lssMemberTable.lambdaQualified)
++    , kv "members.layoutQualSharedAcrossSpecs" s.lssStats.layoutQual.shared
++    , ""
++    , "## callMemo (open-scheme call classification cache)"
++    , kv "callMemo.puts" (Mono.specKeyMapSize census.memoPut)
++    , kv "callMemo.hits" (List.length census.memoHits)
++    , kv "callMemo.hits.sameSpec" memo.sameSpec
++    , kv "callMemo.hits.putterOwnersCoverReader" memo.covered
++    , kv "callMemo.hits.crossOwner" memo.cross
++    , kv "callMemo.hits.crossOwnerWithMVarInCachedType(taintSensitive)" memoCrossMVar
++    , ""
++    , "## LSS signatures (LssInfer memo)"
++    , kv "sig.inferred" (Dict.size census.sigBy)
++    , kv "sig.hits" (List.length census.sigHits)
++    , kv "sig.hits.readerOwnedByHome" sigs.home
++    , kv "sig.hits.crossOwner(calleeToCallerReuse)" sigs.cross
++    , kv "sig.signaturesRead" (Dict.size sigNeed)
++    , kv "sig.perOwnerInferencesIfNotPublished" sigDup
++    ]
++        ++ (if Dict.size s.lssMemberTable.byKey <= 200 then
++                List.map (\( k, mid ) -> "member " ++ String.fromInt mid ++ " " ++ k) (Dict.toList s.lssMemberTable.byKey)
++
++            else
++                []
++           )
++
++
++{-| Census helper for `processItem`: the qualified-candidate lists, per raw
++lambda, that `demandQualifiedFor` reduces with `min` (only lists with > 1
++candidate are interesting: there the smallest-id choice is order-dependent).
++-}
++demandCandidates : Mono.MonoType -> S -> List (List Int)
++demandCandidates monoType s =
++    List.foldl
++        (\mid acc ->
++            case Dict.get mid s.lssMemberTable.lambdaQualified of
++                Just ( raw, _ ) ->
++                    Dict.update raw (\cur -> Just (mid :: List.filter (\x -> x /= mid) (Maybe.withDefault [] cur))) acc
++
++                Nothing ->
++                    acc
++        )
++        Dict.empty
++        (Mono.collectAnnoMembers monoType)
++        |> Dict.values
++        |> List.filter (\l -> List.length l > 1)
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/Translate.elm /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/Translate.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/MonoSolver/Translate.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x7/src/Compiler/MonoSolver/Translate.elm	2026-10-06 12:08:33.649590954 +0000
+@@ -1684,7 +1684,7 @@
+                                         tbl =
+                                             s0b.lssMemberTable
+                                     in
+-                                    { s0b | lssMemberTable = { tbl | rootLamOf = Dict.insert (Engine.srcLambdaKey lamId) g tbl.rootLamOf } }
++                                    Engine.ocRootInsert (Engine.srcLambdaKey lamId) { s0b | lssMemberTable = { tbl | rootLamOf = Dict.insert (Engine.srcLambdaKey lamId) g tbl.rootLamOf } }
+ 
+                     _ ->
+                         s0b
+@@ -4645,11 +4645,15 @@
+         -- instrument for every future row: without it, "annotate the rest"
+         -- means annotating blind, and annotations are fail-stop.
+         s =
+-            if s0.env.lss.report then
+-                recordRefusedLicense ( kHome, kName ) canFuncType s0
++            LssInfer.ocLicenseKernel kHome
++                kName
++                canFuncType
++                (if s0.env.lss.report then
++                    recordRefusedLicense ( kHome, kName ) canFuncType s0
+ 
+-            else
+-                s0
++                 else
++                    s0
++                )
+     in
+     if s.env.lss.enabled then
+         case KernelSetFacts.factFor kHome kName of
+@@ -5483,8 +5487,16 @@
+ 
+ hasNumberVar : Can.Type TypeIds.MVarId -> Step Bool
+ hasNumberVar defCanType s =
+-    ( List.any (\id -> Dict.get (Id.toComparable id) s.superTable == Just Vars.Number) (KernelAbi.freeVarIds defCanType [])
+-    , s
++    let
++        ids =
++            KernelAbi.freeVarIds defCanType []
++    in
++    ( List.any (\id -> Dict.get (Id.toComparable id) s.superTable == Just Vars.Number) ids
++    , if Engine.ocOn s then
++        Engine.ocNumReads (List.map Id.toComparable ids) s
++
++      else
++        s
+     )
+ 
+ 

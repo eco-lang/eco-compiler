@@ -1,0 +1,12 @@
+{
+ "e1": {"census": "census/e1.tsv", "modules": ["Terminal.Main"], "desc": "string literal in leaf CAF Terminal.Main.outro"},
+ "e2": {"census": "census/e2.tsv", "modules": ["Compiler.Generate.MLIR.Intrinsics"], "desc": "add a case branch in Intrinsics.stringIntrinsic"},
+ "e3": {"census": "census/e3.tsv", "modules": ["Compiler.Generate.MLIR.Intrinsics"], "desc": "new top-level Dict String Intrinsic + Dict.get call at that new type in charIntrinsic"},
+ "e4": {"census": "census/e4.tsv", "modules": ["Compiler.Generate.MLIR.Context"], "desc": "add field sigVersion:Int to record alias Ctx.FuncSignature (12 construction sites)"},
+ "e5": {"census": "census/e5.tsv", "modules": ["Compiler.Generate.MLIR.Intrinsics"], "desc": "rename parameter argTypes->argTys in Intrinsics.kernelIntrinsic"},
+ "e6": {"census": "census/e6.tsv", "modules": ["Compiler.Data.Name"], "desc": "add unused top-level fn with a lambda to Compiler.Data.Name"},
+ "e7": {"census": "census/e7.tsv", "modules": ["Prelude"], "desc": "change crash message in polymorphic utility Prelude.head"},
+ "e8": {"census": "census/e8.tsv", "modules": ["Builder.Eco.Config"], "desc": "new top-level fn isTruthy in Builder.Eco.Config, called from one site"},
+ "e9": {"census": "census/e9.tsv", "modules": ["Compiler.Generate.MLIR.Expr"], "desc": "comment-only edit (2 lines) near top of Generate.MLIR.Expr"},
+ "e10": {"census": "census/e10.tsv", "modules": ["Compiler.Generate.MLIR.Names"], "desc": "extra String.replace in small widely-used Names.canonicalToMLIRName"}
+}

@@ -1,0 +1,22 @@
+diff -ruN /tmp/inc-exp/subject/src/Builder/Eco/Config.elm /tmp/inc-exp/x12-edits/e8/src/Builder/Eco/Config.elm
+--- /tmp/inc-exp/subject/src/Builder/Eco/Config.elm	2026-10-06 10:53:20.546609335 +0000
++++ /tmp/inc-exp/x12-edits/e8/src/Builder/Eco/Config.elm	2026-10-06 11:03:11.040628481 +0000
+@@ -495,7 +495,7 @@
+                 t =
+                     String.toLower (String.trim raw)
+             in
+-            if t == "1" || t == "true" || t == "yes" || t == "on" then
++            if isTruthy t then
+                 { cfg | aggPromote = True }
+ 
+             else if t == "0" || t == "off" then
+@@ -2219,3 +2219,9 @@
+         (Task.succeed ())
+         warnings
+         |> Task.map (\_ -> clamped)
++
++
++{-| Whether an environment flag value reads as "on". -}
++isTruthy : String -> Bool
++isTruthy t =
++    t == "1" || t == "true" || t == "yes" || t == "on"

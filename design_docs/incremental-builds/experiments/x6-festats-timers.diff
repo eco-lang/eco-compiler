@@ -1,0 +1,98 @@
+diff -ruN a/compiler/src/Builder/Eco/FEStats.elm b/compiler/src/Builder/Eco/FEStats.elm
+--- a/compiler/src/Builder/Eco/FEStats.elm	2026-10-05 20:49:06.000000000 +0000
++++ b/compiler/src/Builder/Eco/FEStats.elm	2026-10-06 10:55:26.350709272 +0000
+@@ -65,6 +65,8 @@
+     | PhaseInlineSimplify
+     | PhaseGlobalOpt
+     | PhaseMlir
++    | PhaseTypedLoad
++    | PhaseAssign
+ 
+ 
+ {-| The three per-module stages inside the local-build phase.
+@@ -458,7 +460,9 @@
+                     "(not run)"
+ 
+                 Just ps ->
+-                    formatMs (max 0 (ps.endMs - ps.startMs))
++                    padRight 12 (formatMs (max 0 (ps.endMs - ps.startMs)))
++                        ++ "[" ++ formatMs (max 0 (ps.startMs - state.startMs))
++                        ++ " .. " ++ formatMs (max 0 (ps.endMs - state.startMs)) ++ "]"
+     in
+     label ++ body
+ 
+@@ -684,6 +688,12 @@
+         PhaseMlir ->
+             "MLIR codegen"
+ 
++        PhaseTypedLoad ->
++            "typed-graph load"
++
++        PhaseAssign ->
++            "assign mvar ids"
++
+ 
+ stageLabel : ModuleStage -> String
+ stageLabel stage =
+@@ -719,6 +729,12 @@
+         PhaseMlir ->
+             5
+ 
++        PhaseTypedLoad ->
++            6
++
++        PhaseAssign ->
++            7
++
+ 
+ stageOrd : ModuleStage -> Int
+ stageOrd stage =
+@@ -735,7 +751,7 @@
+ 
+ allPhases : List PhaseName
+ allPhases =
+-    [ PhaseDeps, PhaseLocal, PhaseMono, PhaseInlineSimplify, PhaseGlobalOpt, PhaseMlir ]
++    [ PhaseDeps, PhaseLocal, PhaseTypedLoad, PhaseAssign, PhaseMono, PhaseInlineSimplify, PhaseGlobalOpt, PhaseMlir ]
+ 
+ 
+ allStages : List ModuleStage
+diff -ruN a/compiler/src/Builder/Generate.elm b/compiler/src/Builder/Generate.elm
+--- a/compiler/src/Builder/Generate.elm	2026-10-05 20:49:45.000000000 +0000
++++ b/compiler/src/Builder/Generate.elm	2026-10-06 10:55:33.903195541 +0000
+@@ -711,8 +711,15 @@
+     -- dropped (HEAP_005). Never drop them inside Build: `checkRoot`'s
+     -- `loadInterfaces` takes them.
+     Task.io (Utils.listTraverse_ dropCachedInterfaceMVar artifacts.modules)
+-        |> Task.andThen (\_ -> loadTypedObjects root maybeBuildDir maybeLocal details modules)
+-        |> Task.andThen finalizeAndMergeTypedObjects
++        |> Task.andThen
++            (\_ ->
++                FEStats.withPhaseLazy stats
++                    FEStats.PhaseTypedLoad
++                    (\() ->
++                        loadTypedObjects root maybeBuildDir maybeLocal details modules
++                            |> Task.andThen finalizeAndMergeTypedObjects
++                    )
++            )
+         |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats roots)
+ 
+ 
+@@ -758,15 +765,14 @@
+         -- pre-mono passes: anything they create or copy must mint through
+         -- `PreMono.Fresh`, and `validateMinted` checks that under
+         -- `mono.validate`.
+-        assigned : EntryPrep.Assigned
+-        assigned =
+-            EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph
+     in
+     -- Row 5 (plans/frontend-heap-release.md §7.3): assignment is its OWN step.
+     -- This callback's argument (the merged Name-typed graph) is rooted until
+     -- it returns, so handing `( assigned, globalTypeEnv )` to a following step
+     -- is what lets the Name-typed graph die before the pre-mono rewrites.
+-    Task.succeed ( assigned, globalTypeEnv )
++    FEStats.withPhaseLazy stats
++        FEStats.PhaseAssign
++        (\() -> Task.succeed ( EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph, globalTypeEnv ))
+         |> Task.andThen (\( a, env ) -> runMonoOptPipeline ecoConfig stats env a)
+ 
+ 

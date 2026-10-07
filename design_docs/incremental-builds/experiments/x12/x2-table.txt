@@ -1,0 +1,37 @@
+baseline_total_cost 1948482
+specs 32739
+instances 25839
+instance_cost 1009929
+instance_cost_pct 51.831579660474155
+pkg_only_instances 3637
+pkg_only_instance_cost 129867
+instances_with_dominator 22776
+instances_nreq1 22124
+distinct_requesting_modules 249
+n_missing_import_files 0
+A {'cost': 2329126, 'pct_of_baseline': 119.53541269562665, 'symbols': 44476}
+B {'cost': 1981892, 'pct_of_baseline': 101.71466813652884, 'symbols': 33455}
+A+C {'cost': 2207419, 'pct_of_baseline': 113.2891656171317, 'symbols': 40876}
+B+C {'cost': 1980737, 'pct_of_baseline': 101.65539122250038, 'symbols': 33390}
+by_reason {'poly': {'n': 15585, 'cost': 932865, 'cost_A': 1303787}, 'ctor-foreign-arg': {'n': 396, 'cost': 396, 'cost_A': 720}, 'ctor-multi': {'n': 9462, 'cost': 9462, 'cost_A': 13210}, 'lss': {'n': 250, 'cost': 37263, 'cost_A': 38723}, 'multi': {'n': 108, 'cost': 29829, 'cost_A': 34019}, 'accessor': {'n': 38, 'cost': 114, 'cost_A': 114}}
+nreq_hist {1: 22124, 2: 1843, 3: 690, 4: 274, 5: 226, 6: 199, 7: 96, 8: 63, 9: 67, 10: 40, 11: 35, 12: 24, 13: 17, 14: 16, 15: 18, 16: 8, 17: 15, 18: 21, 19: 1, 20: 24, 21: 1, 23: 3, 24: 2, 27: 1, 28: 5, 29: 4, 30: 2, 31: 1, 35: 2, 36: 2, 37: 4, 38: 1, 40: 1, 42: 1, 47: 1, 50: 7}
+{'key': 'elm/core:Dict.balance@Fn[g:elm/core:Dict.balance](elm/core:Dict.NColor)->Fn[p:elm/core:Dict.balance/1](S)->Fn[p:elm/core:Dict.balance/2](I)->Fn[p:elm/core:Dict.', 'cost': 149, 'nreq': 37, 'extra_cost': 5364, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:Dict.balance@Fn[g:elm/core:Dict.balance](elm/core:Dict.NColor)->Fn[p:elm/core:Dict.balance/1](S)->Fn[p:elm/core:Dict.balance/2](U)->Fn[p:elm/core:Dict.', 'cost': 149, 'nreq': 30, 'extra_cost': 4321, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:Dict.moveRedLeft@Fn[g:elm/core:Dict.moveRedLeft](elm/core:Dict.Dict(S,I))->elm/core:Dict.Dict(S,I)', 'cost': 186, 'nreq': 20, 'extra_cost': 3534, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:Dict.moveRedRight@Fn[g:elm/core:Dict.moveRedRight](elm/core:Dict.Dict(S,I))->elm/core:Dict.Dict(S,I)', 'cost': 186, 'nreq': 20, 'extra_cost': 3534, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:Dict.insertHelp@Fn[g:elm/core:Dict.insertHelp](S)->Fn[p:elm/core:Dict.insertHelp/1](I)->Fn[p:elm/core:Dict.insertHelp/2](elm/core:Dict.Dict(S,I))->elm/', 'cost': 92, 'nreq': 37, 'extra_cost': 3312, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:List.foldrHelper@Fn[g:elm/core:List.foldrHelper](Fn[L:the-sett/elm-pretty-printer:Pretty.join#0](the-sett/elm-pretty-printer:Internals.Doc(R{bold:B,col', 'cost': 153, 'nreq': 20, 'extra_cost': 2907, 'pkg_only': False, 'dominator': 'eco/compiler:Text.PrettyPrint.ANSI.Leijen'}
+{'key': 'elm/core:Dict.removeHelp@Fn[g:elm/core:Dict.removeHelp](S)->Fn[p:elm/core:Dict.removeHelp/1](elm/core:Dict.Dict(S,I))->elm/core:Dict.Dict(S,I)', 'cost': 139, 'nreq': 20, 'extra_cost': 2641, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'the-sett/elm-pretty-printer:Internals.flatten@Fn[g:the-sett/elm-pretty-printer:Internals.flatten](the-sett/elm-pretty-printer:Internals.Doc(R{bold:B,color:elm/c', 'cost': 200, 'nreq': 14, 'extra_cost': 2600, 'pkg_only': False, 'dominator': 'eco/compiler:Text.PrettyPrint.ANSI.Leijen'}
+{'key': 'the-sett/elm-pretty-printer:Internals.flatten@Fn[g:the-sett/elm-pretty-printer:Internals.flatten](the-sett/elm-pretty-printer:Internals.Doc(v))->the-sett/elm-pr', 'cost': 200, 'nreq': 14, 'extra_cost': 2600, 'pkg_only': True, 'dominator': 'the-sett/elm-pretty-printer:Internals'}
+{'key': 'elm/core:Dict.insertHelp@Fn[g:elm/core:Dict.insertHelp](S)->Fn[p:elm/core:Dict.insertHelp/1](U)->Fn[p:elm/core:Dict.insertHelp/2](elm/core:Dict.Dict(S,U))->elm/', 'cost': 92, 'nreq': 29, 'extra_cost': 2576, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:Dict.balance@Fn[g:elm/core:Dict.balance](elm/core:Dict.NColor)->Fn[p:elm/core:Dict.balance/1](I)->Fn[p:elm/core:Dict.balance/2](U)->Fn[p:elm/core:Dict.', 'cost': 149, 'nreq': 18, 'extra_cost': 2533, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:Dict.balance@Fn[g:elm/core:Dict.balance](elm/core:Dict.NColor)->Fn[p:elm/core:Dict.balance/1](S)->Fn[p:elm/core:Dict.balance/2](T(S,U))->Fn[p:elm/core:', 'cost': 149, 'nreq': 17, 'extra_cost': 2384, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:List.foldrHelper@Fn[g:elm/core:List.foldrHelper](Fn[L:eco/compiler:Compiler.AST.Canonical.aliasEncoderS#0](S)->Fn[L:eco/compiler:Compiler.AST.Canonical', 'cost': 153, 'nreq': 15, 'extra_cost': 2142, 'pkg_only': False, 'dominator': None}
+{'key': 'elm/core:Dict.removeMin@Fn[g:elm/core:Dict.removeMin](elm/core:Dict.Dict(S,I))->elm/core:Dict.Dict(S,I)', 'cost': 106, 'nreq': 20, 'extra_cost': 2014, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'the-sett/elm-pretty-printer:Pretty.join@Fn[g:the-sett/elm-pretty-printer:Pretty.join](the-sett/elm-pretty-printer:Internals.Doc(R{bold:B,color:elm/core:Maybe.Ma', 'cost': 96, 'nreq': 20, 'extra_cost': 1824, 'pkg_only': False, 'dominator': 'eco/compiler:Text.PrettyPrint.ANSI.Leijen'}
+{'key': 'elm/core:List.foldl@Fn[g:elm/core:List.foldl](Fn[k:List.cons](S)->Fn[p:elm/core:List.cons/1](L(S))->L(S))->Fn[p:elm/core:List.foldl/1](L(S))->Fn[p:elm/core:List', 'cost': 24, 'nreq': 72, 'extra_cost': 1704, 'pkg_only': True, 'dominator': 'elm/core:List'}
+{'key': 'elm/core:Dict.get@Fn[g:elm/core:Dict.get](S)->Fn[p:elm/core:Dict.get/1](elm/core:Dict.Dict(S,I))->elm/core:Maybe.Maybe(I)', 'cost': 47, 'nreq': 36, 'extra_cost': 1645, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'elm/core:Dict.balance@Fn[g:elm/core:Dict.balance](elm/core:Dict.NColor)->Fn[p:elm/core:Dict.balance/1](S)->Fn[p:elm/core:Dict.balance/2](eco/compiler:Compiler.A', 'cost': 149, 'nreq': 12, 'extra_cost': 1639, 'pkg_only': False, 'dominator': 'eco/compiler:Compiler.AST.Monomorphized'}
+{'key': 'elm/core:Dict.insert@Fn[g:elm/core:Dict.insert](S)->Fn[p:elm/core:Dict.insert/1](I)->Fn[p:elm/core:Dict.insert/2](elm/core:Dict.Dict(S,I))->elm/core:Dict.Dict(S', 'cost': 44, 'nreq': 37, 'extra_cost': 1584, 'pkg_only': True, 'dominator': 'elm/core:Dict'}
+{'key': 'eco/compiler:Compiler.Generate.JavaScript.Builder.fromExpr@Fn[g:eco/compiler:Compiler.Generate.JavaScript.Builder.fromExpr](eco/compiler:Compiler.Generate.JavaS', 'cost': 1582, 'nreq': 2, 'extra_cost': 1582, 'pkg_only': False, 'dominator': 'eco/compiler:Compiler.Generate.JavaScript.Builder'}

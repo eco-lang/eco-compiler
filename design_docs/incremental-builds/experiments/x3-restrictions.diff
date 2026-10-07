@@ -1,0 +1,1364 @@
+diff -ruN /tmp/inc-exp/repo/compiler/src/Builder/Generate.elm /tmp/inc-exp/wt-x3/src/Builder/Generate.elm
+--- /tmp/inc-exp/repo/compiler/src/Builder/Generate.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x3/src/Builder/Generate.elm	2026-10-06 11:02:09.856689134 +0000
+@@ -73,6 +73,7 @@
+ import Compiler.GlobalOpt.CafDedupe as CafDedupe
+ import Compiler.GlobalOpt.CafHoist as CafHoist
+ import Compiler.GlobalOpt.CseCensus as CseCensus
++import Compiler.GlobalOpt.IncOwner as IncOwner
+ import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
+ import Compiler.GlobalOpt.ListCombinators as ListCombinators
+ import Compiler.GlobalOpt.MapTemplate as MapTemplate
+@@ -1099,6 +1100,80 @@
+ -}
+ runInlineSimplifyPhase : Config.EcoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
++    readIncExp
++        |> Task.andThen (\xexp -> runInlineSimplifyPhaseX xexp ecoConfig stats monoGraph0)
++
++
++{-| EXPERIMENT X3: the separate-compilation restriction switches, read from
++the environment (`ECO_EXP_R1=1`, `ECO_EXP_R2=1`, `ECO_EXP_R3=1|home`,
++`ECO_EXP_X3_CENSUS=1`). All default off; off reproduces the default build.
++-}
++readIncExp : Task x IncOwner.Exp
++readIncExp =
++    let
++        get name =
++            Utils.envLookupEnv name |> Task.mapError never
++
++        isOn v =
++            case v of
++                Just "1" ->
++                    True
++
++                Just "home" ->
++                    True
++
++                _ ->
++                    False
++    in
++    get "ECO_EXP_R1"
++        |> Task.andThen
++            (\r1 ->
++                get "ECO_EXP_R2"
++                    |> Task.andThen
++                        (\r2 ->
++                            get "ECO_EXP_R3"
++                                |> Task.andThen
++                                    (\r3 ->
++                                        get "ECO_EXP_X3_CENSUS"
++                                            |> Task.map
++                                                (\c ->
++                                                    { r1 = isOn r1
++                                                    , r2 = isOn r2
++                                                    , r3 = isOn r3
++                                                    , r3HomeOk = r3 == Just "home"
++                                                    , census = isOn c
++                                                    }
++                                                )
++                                    )
++                        )
++            )
++
++
++{-| EXPERIMENT X3: one stderr census line from the counters (per-callee keys
++`r1.callee:*` are summarized as a distinct count).
++-}
++renderX3Census : String -> Dict String Int -> String
++renderX3Census tag counts =
++    let
++        ( callees, rest ) =
++            Dict.partition (\k _ -> String.startsWith "r1.callee:" k) counts
++    in
++    "[x3-census] "
++        ++ tag
++        ++ " "
++        ++ String.join " "
++            (List.map (\( k, v ) -> k ++ "=" ++ String.fromInt v) (Dict.toList rest)
++                ++ (if Dict.isEmpty callees then
++                        []
++
++                    else
++                        [ "r1.blocked.distinctCallees=" ++ String.fromInt (Dict.size callees) ]
++                   )
++            )
++
++
++runInlineSimplifyPhaseX : IncOwner.Exp -> Config.EcoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
++runInlineSimplifyPhaseX xexp ecoConfig stats monoGraph0 =
+     FEStats.withPhaseLazy stats
+         FEStats.PhaseInlineSimplify
+         (\() ->
+@@ -1150,22 +1225,35 @@
+             -- the position A/B (plans/pre-mono-inline-simplify.md §7): it
+             -- skips this pass so the pre-mono `InlineSimplify` is the only
+             -- inliner running. DEFAULT-ON, so the default path is unchanged.
+-            ( inlinedGraph, inlineMetrics ) =
++            ( inlinedGraph, inlineMetrics, inlineX ) =
+                 if ecoConfig.inline.postMono then
+-                    MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
++                    MonoInlineSimplify.optimizeExp xexp effectiveInlineConfig monoGraph0
+ 
+                 else
+-                    ( monoGraph0, MonoInlineSimplify.emptyMetrics )
++                    ( monoGraph0, MonoInlineSimplify.emptyMetrics, Dict.empty )
+          in
+          -- E-a (plans/frontend-heap-release.md §7.4): the prune and the census
+          -- run in the NEXT step. This thunk captures `monoGraph0`, and the
+          -- running callback stays rooted until it returns, so doing the prune
+          -- here would keep the pre-inline graph live through it.
+-         Task.succeed ( inlinedGraph, inlineMetrics )
++         (if xexp.census then
++            Task.io
++                (System.IO.writeLn System.IO.stderr
++                    (renderX3Census "inline"
++                        (Dict.insert "inline.count" inlineMetrics.inlineCount
++                            (Dict.insert "inline.hofLoopified" inlineMetrics.hofLoopified inlineX)
++                        )
++                    )
++                )
++
++          else
++            Task.succeed ()
++         )
++            |> Task.map (\_ -> ( inlinedGraph, inlineMetrics ))
+             |> Task.andThen (pruneAndReportInline ecoConfig)
+         )
+         -- Hand off to a separate function so monoGraph0 goes out of scope
+-        |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
++        |> Task.andThen (runGlobalOptPhase xexp ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
+ 
+ 
+ {-| The second step of the inline phase (E-a): the post-inline dead-spec prune,
+@@ -1730,8 +1818,8 @@
+ still written in the original order by the last step.
+ 
+ -}
+-runGlobalOptPhase : Config.EcoConfig -> Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> Config.CseConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+-runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg stats simplifiedGraph =
++runGlobalOptPhase : IncOwner.Exp -> Config.EcoConfig -> Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> Config.CseConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
++runGlobalOptPhase xexp mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg stats simplifiedGraph =
+     let
+         cfg : GlobalOptCfg
+         cfg =
+@@ -1747,12 +1835,14 @@
+         FEStats.PhaseGlobalOpt
+         (\() ->
+             Task.succeed
+-                (MonoGlobalOptimize.globalOptimizeWithStats
++                (MonoGlobalOptimize.globalOptimizeWithStatsExp
++                    xexp
+                     mapTemplateCfg.mono.lss.stamp.census
+                     borrowCfg
+                     mapTemplateCfg.list.mapTemplate
+                     simplifiedGraph
+                 )
++                |> Task.andThen (globalOptX3Census xexp)
+                 |> Task.andThen (globalOptCseStep cfg)
+                 |> Task.andThen (globalOptDedupeStep cfg)
+                 |> Task.andThen (globalOptHoistStep cfg)
+@@ -1760,6 +1850,34 @@
+         )
+ 
+ 
++{-| EXPERIMENT X3: print the GlobalOpt census line (when on) and drop the
++counters.
++-}
++globalOptX3Census : IncOwner.Exp -> ( Mono.MonoGraph, MonoGlobalOptimize.GlobalOptStats, Dict String Int ) -> Task x ( Mono.MonoGraph, MonoGlobalOptimize.GlobalOptStats )
++globalOptX3Census xexp ( g, st, counts ) =
++    if xexp.census then
++        let
++            a =
++                st.abiCloning
++
++            withStats =
++                counts
++                    |> Dict.insert "staging.wrappersInserted" st.wrappersInserted
++                    |> Dict.insert "abi.dispatchUpgraded" a.dispatchUpgraded
++                    |> Dict.insert "abi.stampedPapPrefix" a.stampedPapPrefix
++                    |> Dict.insert "abi.stampedStaged" a.stampedStaged
++                    |> Dict.insert "abi.stampedPapGlobal" a.stampedPapGlobal
++                    |> Dict.insert "abi.devirtPost.fn" a.devirtPost.fn
++                    |> Dict.insert "abi.devirtPost.ctor" a.devirtPost.ctor
++                    |> Dict.insert "abi.blockedMembers" (List.length a.blockedMembers)
++        in
++        Task.io (System.IO.writeLn System.IO.stderr (renderX3Census "globalopt" withStats))
++            |> Task.map (\_ -> ( g, st ))
++
++    else
++        Task.succeed ( g, st )
++
++
+ {-| The configuration the GlobalOpt steps read (E-b). Flags and small records
+ only — never a graph.
+ -}
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/AbiCloning.elm /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/AbiCloning.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/AbiCloning.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/AbiCloning.elm	2026-10-06 11:00:59.220141178 +0000
+@@ -1,5 +1,5 @@
+ module Compiler.GlobalOpt.AbiCloning exposing
+-    ( AbiCloningStats, abiCloningPass, emptyStats
++    ( AbiCloningStats, abiCloningPass, abiCloningPassExp, emptyStats
+     , instanceFingerprint, peelStages
+     )
+ 
+@@ -59,6 +59,8 @@
+ import Compiler.AST.DecisionTree.Test as DT
+ import Compiler.AST.Monomorphized as Mono
+ import Compiler.Data.Id as Id
++import Compiler.Elm.ModuleName as ModuleName
++import Compiler.GlobalOpt.IncOwner as IncOwner
+ import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
+ import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+ import Compiler.Reporting.Annotation exposing (Region)
+@@ -279,6 +281,9 @@
+     -- `Nothing` for a nested closure: those are queued through
+     -- `Expr.pendingLambdas` and DO get a function named by their lambdaId.
+     , topLevelSpec : Maybe Mono.SpecId
++
++    -- EXPERIMENT X3 (R3): the SpecId of the node this instance sits in.
++    , hostSpec : Int
+     }
+ 
+ 
+@@ -332,19 +337,19 @@
+ 
+ -}
+ collectNode : Mono.SpecId -> Mono.MonoNode -> Dict Int MemberInfo -> Dict Int MemberInfo
+-collectNode specId node acc =
++collectNode host node acc =
+     case node of
+         Mono.MonoDefine ((Mono.MonoClosure _ _ _) as expr) _ ->
+-            collectClosure (Just specId) expr acc
++            collectClosure host (Just host) expr acc
+ 
+         Mono.MonoPortIncoming ((Mono.MonoClosure _ _ _) as expr) _ ->
+-            collectClosure (Just specId) expr acc
++            collectClosure host (Just host) expr acc
+ 
+         Mono.MonoPortOutgoing ((Mono.MonoClosure _ _ _) as expr) _ ->
+-            collectClosure (Just specId) expr acc
++            collectClosure host (Just host) expr acc
+ 
+         _ ->
+-            List.foldl collectGo acc (nodeExprs node)
++            List.foldl (collectGo host) acc (nodeExprs node)
+ 
+ 
+ nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
+@@ -378,22 +383,22 @@
+ {-| First-order accumulating walk for the instance index (same de-HOF
+ rationale as the stamping walk below).
+ -}
+-collectGo : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+-collectGo expr acc =
++collectGo : Int -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
++collectGo host expr acc =
+     case expr of
+         Mono.MonoClosure _ _ _ ->
+-            collectClosure Nothing expr acc
++            collectClosure host Nothing expr acc
+ 
+         _ ->
+-            collectOther expr acc
++            collectOther host expr acc
+ 
+ 
+ {-| LSS\_031: index one closure, recording whether it is a node's TOP-LEVEL
+ closure (`Just specId`, emitted under the spec name) or a nested one
+ (`Nothing`, emitted under its lambdaId).
+ -}
+-collectClosure : Maybe Mono.SpecId -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+-collectClosure topLevelSpec expr acc =
++collectClosure : Int -> Maybe Mono.SpecId -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
++collectClosure host topLevelSpec expr acc =
+     case expr of
+         Mono.MonoClosure closureInfo body tipe ->
+             let
+@@ -425,10 +430,10 @@
+                                                     present
+ 
+                                                 else
+-                                                    Just { mi | buckets = insertInstance emittedSpec closureInfo body mi.buckets }
++                                                    Just { mi | buckets = insertInstance host emittedSpec closureInfo body mi.buckets }
+ 
+                                             Nothing ->
+-                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance emittedSpec closureInfo body Dict.empty }
++                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance host emittedSpec closureInfo body Dict.empty }
+                                     )
+                                     acc
+ 
+@@ -436,12 +441,12 @@
+                             acc
+ 
+                 acc2 =
+-                    List.foldl (\( _, e, _ ) a -> collectGo e a) acc1 closureInfo.captures
++                    List.foldl (\( _, e, _ ) a -> collectGo host e a) acc1 closureInfo.captures
+             in
+-            collectGo body acc2
++            collectGo host body acc2
+ 
+         _ ->
+-            -- `collectClosure` is only ever called on a closure; this arm
++            -- `collectClosure host` is only ever called on a closure; this arm
+             -- keeps the match total.
+             acc
+ 
+@@ -449,41 +454,41 @@
+ {-| Every non-closure expression form. Split out of `collectGo` by LSS\_031 so
+ the closure arm can take a `Maybe SpecId`.
+ -}
+-collectOther : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+-collectOther expr acc =
++collectOther : Int -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
++collectOther host expr acc =
+     case expr of
+         Mono.MonoCall _ func args _ _ ->
+-            List.foldl collectGo (collectGo func acc) args
++            List.foldl (collectGo host) (collectGo host func acc) args
+ 
+         Mono.MonoTailCall _ args _ ->
+-            List.foldl (\( _, e ) a -> collectGo e a) acc args
++            List.foldl (\( _, e ) a -> collectGo host e a) acc args
+ 
+         Mono.MonoIf branches final _ ->
+-            collectGo final (List.foldl (\( c, t ) a -> collectGo t (collectGo c a)) acc branches)
++            collectGo host final (List.foldl (\( c, t ) a -> collectGo host t (collectGo host c a)) acc branches)
+ 
+         Mono.MonoLet def body _ ->
+-            collectGo body (collectGoDef def acc)
++            collectGo host body (collectGoDef host def acc)
+ 
+         Mono.MonoDestruct _ inner _ ->
+-            collectGo inner acc
++            collectGo host inner acc
+ 
+         Mono.MonoCase _ _ decider jumps _ ->
+-            List.foldl (\( _, e ) a -> collectGo e a) (collectGoDecider decider acc) jumps
++            List.foldl (\( _, e ) a -> collectGo host e a) (collectGoDecider host decider acc) jumps
+ 
+         Mono.MonoList _ items _ ->
+-            List.foldl collectGo acc items
++            List.foldl (collectGo host) acc items
+ 
+         Mono.MonoRecordCreate fields _ ->
+-            List.foldl (\( _, e ) a -> collectGo e a) acc fields
++            List.foldl (\( _, e ) a -> collectGo host e a) acc fields
+ 
+         Mono.MonoRecordAccess inner _ _ ->
+-            collectGo inner acc
++            collectGo host inner acc
+ 
+         Mono.MonoRecordUpdate record updates _ ->
+-            List.foldl (\( _, e ) a -> collectGo e a) (collectGo record acc) updates
++            List.foldl (\( _, e ) a -> collectGo host e a) (collectGo host record acc) updates
+ 
+         Mono.MonoTupleCreate _ elements _ ->
+-            List.foldl collectGo acc elements
++            List.foldl (collectGo host) acc elements
+ 
+         Mono.MonoLiteral _ _ ->
+             acc
+@@ -504,37 +509,37 @@
+             acc
+ 
+         Mono.MonoClosure _ _ _ ->
+-            collectClosure Nothing expr acc
++            collectClosure host Nothing expr acc
+ 
+ 
+-collectGoDef : Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
+-collectGoDef def acc =
++collectGoDef : Int -> Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
++collectGoDef host def acc =
+     case def of
+         Mono.MonoDef _ e ->
+-            collectGo e acc
++            collectGo host e acc
+ 
+         Mono.MonoTailDef _ _ e ->
+-            collectGo e acc
++            collectGo host e acc
+ 
+ 
+-collectGoDecider : Mono.Decider Mono.MonoChoice -> Dict Int MemberInfo -> Dict Int MemberInfo
+-collectGoDecider decider acc =
++collectGoDecider : Int -> Mono.Decider Mono.MonoChoice -> Dict Int MemberInfo -> Dict Int MemberInfo
++collectGoDecider host decider acc =
+     case decider of
+         Mono.Leaf (Mono.Inline e) ->
+-            collectGo e acc
++            collectGo host e acc
+ 
+         Mono.Leaf (Mono.Jump _) ->
+             acc
+ 
+         Mono.Chain _ success failure ->
+-            collectGoDecider failure (collectGoDecider success acc)
++            collectGoDecider host failure (collectGoDecider host success acc)
+ 
+         Mono.FanOut _ edges fallback ->
+-            collectGoDecider fallback (List.foldl (\( _, d ) a -> collectGoDecider d a) acc edges)
++            collectGoDecider host fallback (List.foldl (\( _, d ) a -> collectGoDecider host d a) acc edges)
+ 
+ 
+-insertInstance : Maybe Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
+-insertInstance emittedSpec closureInfo body buckets =
++insertInstance : Int -> Maybe Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
++insertInstance host emittedSpec closureInfo body buckets =
+     let
+         paramTypes =
+             List.map Tuple.second closureInfo.params
+@@ -550,6 +555,7 @@
+             , info = closureInfo
+             , body = body
+             , topLevelSpec = emittedSpec
++            , hostSpec = host
+             }
+     in
+     Dict.update (siteFingerprint paramTypes returnType)
+@@ -754,6 +760,12 @@
+     -- are unaffected and always collected.
+     , census : Bool
+ 
++    -- EXPERIMENT X3 (R3): module-restricted stamping; inert when xmodR3 is False.
++    , xmodR3 : Bool
++    , xmodHomeOk : Bool
++    , xmodOwners : Array.Array String
++    , xmodSpecHome : Array.Array String
++    , xmodCounts : Dict String Int
+     }
+ 
+ 
+@@ -781,7 +793,27 @@
+ 
+ -}
+ abiCloningPass : Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
+-abiCloningPass census ((Mono.MonoGraph record) as graph) =
++abiCloningPass census graph =
++    let
++        ( g, st, _ ) =
++            abiCloningPassExp IncOwner.off Array.empty census graph
++    in
++    ( g, st )
++
++
++{-| EXPERIMENT X3 (R3, module-restricted AbiCloning): `abiCloningPass` with
++the experiment switches. With `exp.r3` a fast-dispatch stamp (fastEvaluator /
++fastEvaluatorSpec, incl. PAP / staged / flat arms) is only kept when the
++representative instance's host node has the same owner (`IncOwner`) as the
++call site's node, and a post-settle devirtualization (direct call / PAP fast
++stamp naming a spec) only when the target spec has the site's owner. With
++`exp.r3HomeOk` an instance (target spec) owned by the lambda's (target
++global's) own defining module is also admitted -- the "published in the
++member's home module's interface" relaxation of 02 §4 item 2. Third
++component: census counters.
++-}
++abiCloningPassExp : IncOwner.Exp -> Array.Array String -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats, Dict String Int )
++abiCloningPassExp xexp xowners census ((Mono.MonoGraph record) as graph) =
+     let
+         -- LSS_018: μ-tied members are force-blocked — their instances span
+         -- DIFFERENT demands of one recursive family (behaviorally divergent;
+@@ -801,7 +833,7 @@
+         -- ORIGINS/registry, not instances — a graph can hold devirtable
+         -- g|/c| singletons and no closures — so an empty closure index alone
+         -- is not enough to exit.
+-        ( graph, emptyStats )
++        ( graph, emptyStats, Dict.empty )
+ 
+     else
+         let
+@@ -920,11 +952,139 @@
+ 
+                             else
+                                 Dict.empty
++                      , xmodR3 = xexp.r3
++                      , xmodHomeOk = xexp.r3HomeOk
++                      , xmodOwners = xowners
++                      , xmodSpecHome =
++                            if xexp.r3 then
++                                Array.initialize (Array.length record.registry.reverseMapping)
++                                    (\i -> IncOwner.specModule record.registry i |> Maybe.withDefault "")
++
++                            else
++                                Array.empty
++                      , xmodCounts = Dict.empty
+                       }
+                     )
+                     record.nodes
+         in
+-        ( Mono.MonoGraph { record | nodes = nodes1 }, finalCtx.stats )
++        ( Mono.MonoGraph { record | nodes = nodes1 }, finalCtx.stats, finalCtx.xmodCounts )
++
++
++{-| EXPERIMENT X3 (R3): decline a representative stamp whose instance lives
++in another owner module than the site.
++-}
++xmodGate : StampCtx -> Resolution -> Resolution
++xmodGate ctx res =
++    if not ctx.xmodR3 then
++        res
++
++    else
++        case res of
++            Stamp inst ->
++                xmodGateInst ctx inst "stamp" res
++
++            StampPap inst _ ->
++                xmodGateInst ctx inst "pap" res
++
++            StampStaged inst ->
++                xmodGateInst ctx inst "staged" res
++
++            StampFlat inst ->
++                xmodGateInst ctx inst "flat" res
++
++            Decline _ _ ->
++                res
++
++
++xmodGateInst : StampCtx -> Instance -> String -> Resolution -> Resolution
++xmodGateInst ctx inst kind res =
++    let
++        siteOwner =
++            IncOwner.ownerOf ctx.xmodOwners ctx.hostSpecId
++
++        instOwner =
++            IncOwner.ownerOf ctx.xmodOwners inst.hostSpec
++
++        lamHome =
++            case inst.lambdaId of
++                Mono.AnonymousLambda (ModuleName.Canonical _ name) _ ->
++                    name
++    in
++    if instOwner == siteOwner then
++        res
++
++    else if instOwner == lamHome then
++        if ctx.xmodHomeOk then
++            res
++
++        else
++            Decline "xmodR3" (xmodCount ("r3.blocked." ++ kind ++ ".homeRecoverable"))
++
++    else
++        Decline "xmodR3" (xmodCount ("r3.blocked." ++ kind))
++
++
++xmodCount : String -> StampCtx -> StampCtx
++xmodCount key ctx =
++    { ctx
++        | xmodCounts =
++            ctx.xmodCounts
++                |> Dict.update key (\v -> Just (Maybe.withDefault 0 v + 1))
++                |> Dict.update "r3.blocked.total" (\v -> Just (Maybe.withDefault 0 v + 1))
++    }
++
++
++xmodCountPs : String -> StampCtx -> StampCtx
++xmodCountPs why ctx =
++    if String.startsWith "xmodR3|" why then
++        xmodCount ("r3.blocked." ++ String.dropLeft 7 why) ctx
++
++    else
++        ctx
++
++
++{-| EXPERIMENT X3 (R3): the same gate for post-settle devirtualization.
++-}
++xmodGatePs : StampCtx -> PostSettleOutcome -> PostSettleOutcome
++xmodGatePs ctx outcome =
++    if not ctx.xmodR3 then
++        outcome
++
++    else
++        let
++            check specId kind =
++                let
++                    siteOwner =
++                        IncOwner.ownerOf ctx.xmodOwners ctx.hostSpecId
++
++                    tgtOwner =
++                        IncOwner.ownerOf ctx.xmodOwners specId
++
++                    tgtHome =
++                        Array.get specId ctx.xmodSpecHome |> Maybe.withDefault ""
++                in
++                if tgtOwner == siteOwner then
++                    outcome
++
++                else if tgtOwner == tgtHome then
++                    if ctx.xmodHomeOk then
++                        outcome
++
++                    else
++                        PsNotCandidate ("xmodR3|" ++ kind ++ ".homeRecoverable")
++
++                else
++                    PsNotCandidate ("xmodR3|" ++ kind)
++        in
++        case outcome of
++            PsStamp specId _ ->
++                check specId "devirt"
++
++            PsStampPap target ->
++                check target.specId "papGlobal"
++
++            _ ->
++                outcome
+ 
+ 
+ {-| P0 census: the global a SpecId belongs to, for decline attribution.
+@@ -1413,7 +1573,7 @@
+         Mono.LSet [ m ] ->
+             case Dict.get m index of
+                 Just memberInfo ->
+-                    case resolveRepresentative (Mono.typeOf func) (List.length args) memberInfo of
++                    case xmodGate ctx (resolveRepresentative (Mono.typeOf func) (List.length args) memberInfo) of
+                         Stamp inst ->
+                             let
+                                 ( kindId, ctx1 ) =
+@@ -1605,7 +1765,7 @@
+                     -- capture-free). Commit-after-settle: annotations are
+                     -- final here, so this catches exactly the sites
+                     -- translate-time E9/E9.1 committed too early to see.
+-                    case postSettleTarget m func (List.length args) ctx of
++                    case xmodGatePs ctx (postSettleTarget m func (List.length args) ctx) of
+                         PsStamp specId isCtor ->
+                             let
+                                 stats1 =
+@@ -1726,7 +1886,7 @@
+                                 m
+                                 func
+                                 (List.length args)
+-                                (bumpPapSite why (bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance ctx))))
++                                (bumpPapSite why (bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance (xmodCountPs why ctx)))))
+                             )
+ 
+         Mono.LSet ms ->
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/IncOwner.elm /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/IncOwner.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/IncOwner.elm	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/IncOwner.elm	2026-10-06 11:01:14.501125049 +0000
+@@ -0,0 +1,223 @@
++module Compiler.GlobalOpt.IncOwner exposing
++    ( Exp, off, anyOn
++    , Owners, compute, ownerOf, specModule, isProjectModuleName
++    )
++
++{-| EXPERIMENT X3 (incremental-builds design exploration, 02 §4-§5): the
++owner module of each specialization, under REQUESTER OWNERSHIP, and the switch
++record for the separate-compilation restrictions R1-R3.
++
++Env-gated, default off: with `off` nothing in this module is evaluated.
++
++Ownership rule (02 §2, with the approximations stated here):
++
++  - A spec whose global is defined in a PROJECT module (top-level dir API,
++    Builder, Codec, Common, Compiler, Control, Data, Mlir, System, Terminal,
++    Text, Utils, or the module Prelude) is owned by that module.
++  - A spec of a PACKAGE global (or an accessor) is owned by its requester:
++    the set of project owners whose specs reference it, propagated through
++    package -> package references (an instance requested by an owned instance
++    joins the root requester). The lattice is Unknown < One m < Many:
++      - `One m` -> owner "m";
++      - `Many` -> owner "<shared>" (under per-requester copies there would be
++        one copy per requester; we keep one, and treat it as belonging to no
++        project module);
++      - `Unknown` (reached only from package code / roots) -> "<pkg>".
++
++-}
++
++import Array exposing (Array)
++import Compiler.AST.Monomorphized as Mono
++import Compiler.Elm.ModuleName as ModuleName
++import Compiler.Monomorphize.MonoTraverse as Traverse
++
++
++{-| Experiment switches. `census` prints counters on stderr.
++-}
++type alias Exp =
++    { r1 : Bool
++    , r2 : Bool
++    , r3 : Bool
++    , r3HomeOk : Bool
++    , census : Bool
++    }
++
++
++off : Exp
++off =
++    { r1 = False, r2 = False, r3 = False, r3HomeOk = False, census = False }
++
++
++anyOn : Exp -> Bool
++anyOn e =
++    e.r1 || e.r2 || e.r3 || e.census
++
++
++{-| SpecId-indexed owner keys.
++-}
++type alias Owners =
++    Array String
++
++
++type OwnerState
++    = Unknown
++    | One String
++    | Many
++
++
++isProjectModuleName : String -> Bool
++isProjectModuleName name =
++    let
++        top =
++            case String.split "." name of
++                t :: _ ->
++                    t
++
++                [] ->
++                    name
++    in
++    List.member top projectTops
++
++
++projectTops : List String
++projectTops =
++    [ "API", "Builder", "Codec", "Common", "Compiler", "Control", "Data", "Mlir", "System", "Terminal", "Text", "Utils", "Prelude" ]
++
++
++{-| The defining module of a spec, as `Just name` when it is a project module.
++-}
++specModule : Mono.SpecializationRegistry -> Int -> Maybe String
++specModule registry specId =
++    case Array.get specId registry.reverseMapping of
++        Just (Just ( Mono.Global (ModuleName.Canonical _ name) _, _ )) ->
++            if isProjectModuleName name then
++                Just name
++
++            else
++                Nothing
++
++        _ ->
++            Nothing
++
++
++ownerOf : Owners -> Int -> String
++ownerOf owners specId =
++    Array.get specId owners |> Maybe.withDefault "<pkg>"
++
++
++compute : Array (Maybe Mono.MonoNode) -> Mono.SpecializationRegistry -> Owners
++compute nodes registry =
++    let
++        n =
++            Array.length nodes
++
++        edges =
++            Traverse.collectSpecEdges nodes
++
++        initial : Array OwnerState
++        initial =
++            Array.initialize n
++                (\i ->
++                    case specModule registry i of
++                        Just m ->
++                            One m
++
++                        Nothing ->
++                            Unknown
++                )
++
++        pkgFlags : Array Bool
++        pkgFlags =
++            Array.map
++                (\st ->
++                    case st of
++                        Unknown ->
++                            True
++
++                        _ ->
++                            False
++                )
++                initial
++
++        isPkg i =
++            Array.get i pkgFlags |> Maybe.withDefault False
++
++        roots =
++            List.filter (\i -> not (isPkg i)) (List.range 0 (n - 1))
++
++        final =
++            propagate edges isPkg roots initial
++    in
++    Array.map
++        (\st ->
++            case st of
++                One m ->
++                    m
++
++                Many ->
++                    "<shared>"
++
++                Unknown ->
++                    "<pkg>"
++        )
++        final
++
++
++join : OwnerState -> OwnerState -> OwnerState
++join a b =
++    case ( a, b ) of
++        ( Unknown, x ) ->
++            x
++
++        ( x, Unknown ) ->
++            x
++
++        ( One x, One y ) ->
++            if x == y then
++                One x
++
++            else
++                Many
++
++        _ ->
++            Many
++
++
++propagate : Array (Maybe (List Int)) -> (Int -> Bool) -> List Int -> Array OwnerState -> Array OwnerState
++propagate edges isPkg work states =
++    case work of
++        [] ->
++            states
++
++        s :: rest ->
++            let
++                st =
++                    Array.get s states |> Maybe.withDefault Unknown
++
++                targets =
++                    Array.get s edges |> Maybe.andThen identity |> Maybe.withDefault []
++
++                ( states1, pushed ) =
++                    List.foldl
++                        (\t ( accS, accW ) ->
++                            if isPkg t then
++                                let
++                                    old =
++                                        Array.get t accS |> Maybe.withDefault Unknown
++
++                                    new =
++                                        join old st
++                                in
++                                if new == old then
++                                    ( accS, accW )
++
++                                else
++                                    ( Array.set t new accS, t :: accW )
++
++                            else
++                                ( accS, accW )
++                        )
++                        ( states, rest )
++                        targets
++            in
++            propagate edges isPkg pushed states1
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm	2026-10-05 20:49:06.000000000 +0000
++++ /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm	2026-10-06 11:02:09.856689134 +0000
+@@ -1,4 +1,4 @@
+-module Compiler.GlobalOpt.MonoGlobalOptimize exposing (GlobalOptStats, globalOptimize, globalOptimizeWithStats)
++module Compiler.GlobalOpt.MonoGlobalOptimize exposing (GlobalOptStats, globalOptimize, globalOptimizeWithStats, globalOptimizeWithStatsExp)
+ 
+ {-| Global optimization pass that runs after monomorphization and inlining but before MLIR codegen.
+ 
+@@ -29,6 +29,7 @@
+ import Compiler.Elm.ModuleName as ModuleName
+ import Compiler.GlobalOpt.AbiCloning as AbiCloning
+ import Compiler.GlobalOpt.Borrow as Borrow
++import Compiler.GlobalOpt.IncOwner as IncOwner
+ import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
+ import Compiler.GlobalOpt.Staging as Staging
+ import Compiler.Monomorphize.Closure as Closure
+@@ -139,18 +140,70 @@
+ globalOptimizeWithStats : Bool -> Config.BorrowConfig -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
+ globalOptimizeWithStats census borrowCfg listMapTemplate graph0a =
+     let
++        ( g, st, _ ) =
++            globalOptimizeWithStatsExp IncOwner.off census borrowCfg listMapTemplate graph0a
++    in
++    ( g, st )
++
++
++{-| EXPERIMENT X3: `globalOptimizeWithStats` with the R2 (module-scoped
++staging) and R3 (module-restricted AbiCloning) switches. Owners
++(`IncOwner.compute`) are computed once on the Phase-1 graph, only when a
++switch or the census is on. Third component: census counters.
++-}
++globalOptimizeWithStatsExp : IncOwner.Exp -> Bool -> Config.BorrowConfig -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats, Dict String Int )
++globalOptimizeWithStatsExp xexp census borrowCfg listMapTemplate graph0a =
++    let
+         -- Phase 1: Wrap top-level function-typed values in closures
+         -- (alias wrappers for globals/kernels, general closures for other exprs).
+         graph1 =
+             wrapTopLevelCallables graph0a
+ 
++        xowners =
++            if IncOwner.anyOn xexp then
++                case graph1 of
++                    Mono.MonoGraph r1 ->
++                        IncOwner.compute r1.nodes r1.registry
++
++            else
++                Array.empty
++
++        ownerCensus =
++            if xexp.census then
++                Array.foldl
++                    (\o acc ->
++                        let
++                            k =
++                                if String.startsWith "<" o then
++                                    "owners." ++ o
++
++                                else
++                                    "owners.project"
++                        in
++                        Dict.update k (\v -> Just (Maybe.withDefault 0 v + 1)) acc
++                    )
++                    Dict.empty
++                    xowners
++
++            else
++                Dict.empty
++
+         -- Phase 2: Staging analysis + graph rewrite (wrappers + types).
+         -- Row 9 (plans/frontend-heap-release.md §7.5): only `dynamicSlots` is
+         -- read later (Phase 5), so the rest of the solution (class
+         -- segmentations, producer/slot class maps) dies here rather than
+         -- being carried through Phases 3-4.
+         ( dynamicSlots, graph2, wrappersInserted ) =
+-            case Staging.analyzeAndSolveStaging graph1 of
++            case
++                Staging.analyzeAndSolveStagingScoped
++                    (if xexp.r2 then
++                        Just xowners
++
++                     else
++                        Nothing
++                    )
++                    graph1
++            of
+                 ( sol, g, w ) ->
+                     ( sol.dynamicSlots, g, w )
+ 
+@@ -162,8 +215,8 @@
+         -- §9.2/§9.3). MUST stay after Staging: the stamps denote value
+         -- identity and Staging's Rewriter is the last pass that replaces
+         -- values (wrapper closures, LSS_008).
+-        ( graph4Full, abiStats ) =
+-            AbiCloning.abiCloningPass census graph3
++        ( graph4Full, abiStats, abiX ) =
++            AbiCloning.abiCloningPassExp xexp xowners census graph3
+ 
+         -- Rows 10-11 (plans/frontend-heap-release.md §7.5): the LSS member
+         -- tables have no reader after AbiCloning, except `lssMemberOrigins`
+@@ -191,6 +244,7 @@
+     in
+     ( graph6
+     , { wrappersInserted = wrappersInserted, abiCloning = abiStats, borrow = borrowStats }
++    , Dict.union abiX ownerCensus
+     )
+ 
+ 
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/MonoInlineSimplify.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm	2026-10-05 20:49:45.000000000 +0000
++++ /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/MonoInlineSimplify.elm	2026-10-06 10:58:45.715545437 +0000
+@@ -1,5 +1,5 @@
+ module Compiler.GlobalOpt.MonoInlineSimplify exposing
+-    ( Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures
++    ( Metrics, emptyMetrics, optimize, optimizeExp, buildBodyLookup, countClosures
+     , functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
+     )
+ 
+@@ -30,6 +30,7 @@
+ import Compiler.Eco.Config as Config
+ import Compiler.Elm.ModuleName as ModuleName
+ import Compiler.Generate.MLIR.Intrinsics as Intrinsics
++import Compiler.GlobalOpt.IncOwner as IncOwner
+ import Compiler.GlobalOpt.KernelFacts as KernelFacts
+ import Compiler.Graph as Graph
+ import Compiler.Monomorphize.Closure as Closure
+@@ -829,6 +830,22 @@
+ optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
+ optimize inlineConfig graph =
+     let
++        ( g, m, _ ) =
++            optimizeExp IncOwner.off inlineConfig graph
++    in
++    ( g, m )
++
++
++{-| EXPERIMENT X3 (R1, package-only cross-module inlining): `optimize` with
++the experiment switches. With `exp.r1` a direct-call inline or loopification
++of a callee defined in a PROJECT module is refused unless that module is the
++caller's owner (`IncOwner`: the defining module of a project spec, the
++requester of a package instance). Package callees always stay inlinable.
++Returns census counters as a third component (empty when off).
++-}
++optimizeExp : IncOwner.Exp -> Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics, Dict String Int )
++optimizeExp xexp inlineConfig graph =
++    let
+         (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder, lssMemberOrigins, lssMemberKinds, lssBlockedMembers }) =
+             graph
+ 
+@@ -870,9 +887,16 @@
+         callGraph =
+             buildCallGraph rNodes callEdges
+ 
+-        ctx =
++        ctx0 =
+             initRewriteCtx inlineConfig rNodes registry callGraph nextLambdaIndex
+ 
++        ctx =
++            if xexp.r1 then
++                { ctx0 | xmodR1 = True, xmodOwners = IncOwner.compute rNodes registry }
++
++            else
++                ctx0
++
+         -- Convert nodes to a list so the Array can be GC'd during the fold.
+         -- List.foldl releases consumed cons cells, enabling incremental GC
+         -- of the input graph while building the output graph.
+@@ -883,13 +907,15 @@
+     -- and becomes GC-eligible. Only `nodesList` is passed forward (the
+     -- raise counters are plain Ints — no graph state retained).
+     optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssMemberKinds lssBlockedMembers
+-        |> Tuple.mapSecond
+-            (\m ->
+-                { m
++        |> (\( g, m, x ) ->
++                ( g
++                , { m
+                     | arityRaised = Tuple.first raiseCounters
+                     , arityRaiseSkipped = Tuple.second raiseCounters
+-                }
+-            )
++                  }
++                , x
++                )
++           )
+ 
+ 
+ optimizeNodes :
+@@ -903,7 +929,7 @@
+     -> Dict Int Mono.MemberOrigin
+     -> Dict Int String
+     -> Dict Int ()
+-    -> ( MonoGraph, Metrics )
++    -> ( MonoGraph, Metrics, Dict String Int )
+ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssMemberKinds lssBlockedMembers =
+     let
+         ( optimizedNodesList, finalCtx, _ ) =
+@@ -945,6 +971,7 @@
+         , lssBlockedMembers = lssBlockedMembers
+         }
+     , metrics
++    , finalCtx.xmodCounts
+     )
+ 
+ 
+@@ -1446,6 +1473,12 @@
+     , varCounter : Int
+     , lambdaCounter : Int
+     , metrics : InternalMetrics
++
++    -- EXPERIMENT X3 (R1): see `optimizeExp`. Inert when `xmodR1` is False.
++    , xmodR1 : Bool
++    , xmodOwners : IncOwner.Owners
++    , xmodCaller : String
++    , xmodCounts : Dict String Int
+     }
+ 
+ 
+@@ -2586,6 +2619,10 @@
+     , inlineCountThisFunction = 0
+     , varCounter = 0
+     , lambdaCounter = nextLambdaIndex
++    , xmodR1 = False
++    , xmodOwners = Array.empty
++    , xmodCaller = ""
++    , xmodCounts = Dict.empty
+     , metrics =
+         { inlineCount = 0
+         , betaReductions = 0
+@@ -2703,11 +2740,15 @@
+ 
+ 
+ optimizeNode : RewriteCtx -> SpecId -> MonoNode -> ( MonoNode, RewriteCtx )
+-optimizeNode ctx _ node =
++optimizeNode ctx nodeSpecId node =
+     -- Reset per-function inline count at start of each node
+     let
+         ctxForNode =
+-            { ctx | inlineCountThisFunction = 0 }
++            if ctx.xmodR1 then
++                { ctx | inlineCountThisFunction = 0, xmodCaller = IncOwner.ownerOf ctx.xmodOwners nodeSpecId }
++
++            else
++                { ctx | inlineCountThisFunction = 0 }
+     in
+     case node of
+         MonoDefine expr tipe ->
+@@ -2828,14 +2869,24 @@
+             -- tryInlineCall. The loopified expression is returned as-is;
+             -- the fixpoint's next iteration beta-reduces the inlined lambda
+             -- literal and continues normal rewriting inside the loop.
+-            case tryLoopify ctx region specId args resultType of
++            case
++                if xmodBlocks ctx specId then
++                    Nothing
++
++                else
++                    tryLoopify ctx region specId args resultType
++            of
+                 Just ( loopified, ctxL ) ->
+                     ( loopified, ctxL )
+ 
+                 Nothing ->
+                     let
+                         ( maybeInlined, ctx1 ) =
+-                            tryInlineCall region ctx specId args resultType
++                            if xmodBlocks ctx specId then
++                                ( Nothing, xmodBump ctx specId )
++
++                            else
++                                tryInlineCall region ctx specId args resultType
+                     in
+                     case maybeInlined of
+                         Just inlinedExpr ->
+@@ -4815,6 +4866,48 @@
+ -- ============================================================================
+ 
+ 
++{-| EXPERIMENT X3 (R1): True when the callee is an inline/loopify candidate
++defined in a project module other than the current caller's owner.
++-}
++xmodBlocks : RewriteCtx -> SpecId -> Bool
++xmodBlocks ctx callee =
++    if not ctx.xmodR1 then
++        False
++
++    else if Dict.member callee ctx.inlineCandidates || Dict.member callee ctx.loopifiables then
++        case IncOwner.specModule ctx.registry callee of
++            Nothing ->
++                False
++
++            Just m ->
++                m /= ctx.xmodCaller
++
++    else
++        False
++
++
++xmodBump : RewriteCtx -> SpecId -> RewriteCtx
++xmodBump ctx callee =
++    let
++        kind =
++            if String.startsWith "<" ctx.xmodCaller then
++                "r1.blocked.callerOwner" ++ ctx.xmodCaller
++
++            else
++                "r1.blocked.projectCaller"
++
++        bump k d =
++            Dict.update k (\v -> Just (Maybe.withDefault 0 v + 1)) d
++    in
++    { ctx
++        | xmodCounts =
++            ctx.xmodCounts
++                |> bump kind
++                |> bump "r1.blocked.attempts"
++                |> bump ("r1.callee:" ++ String.fromInt callee)
++    }
++
++
+ tryInlineCall : Region -> RewriteCtx -> SpecId -> List MonoExpr -> Mono.MonoType -> ( Maybe MonoExpr, RewriteCtx )
+ tryInlineCall callRegion ctx specId args resultType =
+     -- Check budget
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/Staging/GraphBuilder.elm /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/Staging/GraphBuilder.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/Staging/GraphBuilder.elm	2026-10-05 20:49:06.000000000 +0000
++++ /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/Staging/GraphBuilder.elm	2026-10-06 10:59:11.593211588 +0000
+@@ -1,4 +1,4 @@
+-module Compiler.GlobalOpt.Staging.GraphBuilder exposing (buildStagingGraphFused)
++module Compiler.GlobalOpt.Staging.GraphBuilder exposing (buildStagingGraphFused, buildStagingGraphFusedScoped)
+ 
+ {-| Builds the staging graph by traversing the MonoGraph and creating
+ union-find edges between producers and slots that must share staging.
+@@ -17,7 +17,7 @@
+ 
+ -}
+ 
+-import Array
++import Array exposing (Array)
+ import Compiler.AST.Monomorphized as Mono
+ import Compiler.GlobalOpt.Staging.ProducerInfo as ProducerInfo
+ import Compiler.GlobalOpt.Staging.Types exposing (Node(..), ProducerId(..), ProducerInfo, SlotId(..), StagingGraph, emptyProducerInfo, emptyStagingGraph)
+@@ -28,6 +28,10 @@
+ type alias BuildCtx =
+     { nextExprId : Int
+     , varBindings : Dict String ProducerId
++
++    -- EXPERIMENT X3 (R2): owner-module prefix for the structural slot keys
++    -- (record / tuple / list) and kernel producers; "" when off.
++    , scope : String
+     }
+ 
+ 
+@@ -35,9 +39,19 @@
+ emptyBuildCtx =
+     { nextExprId = 0
+     , varBindings = Dict.empty
++    , scope = ""
+     }
+ 
+ 
++scoped : BuildCtx -> String -> String
++scoped ctx key =
++    if ctx.scope == "" then
++        key
++
++    else
++        ctx.scope ++ "#" ++ key
++
++
+ freshExprId : BuildCtx -> ( Int, BuildCtx )
+ freshExprId ctx =
+     ( ctx.nextExprId, { ctx | nextExprId = ctx.nextExprId + 1 } )
+@@ -107,8 +121,26 @@
+ 
+ -}
+ buildStagingGraphFused : Mono.MonoGraph -> ( ProducerInfo, StagingGraph )
+-buildStagingGraphFused (Mono.MonoGraph mono) =
++buildStagingGraphFused graph =
++    buildStagingGraphFusedScoped Nothing graph
++
++
++{-| EXPERIMENT X3 (R2, module-scoped staging): with `Just owners` the
++structural slot keys and kernel producers are prefixed with the owner module
++of the node being walked, so union-find classes (and their majority votes)
++never pool across owner modules.
++-}
++buildStagingGraphFusedScoped : Maybe (Array String) -> Mono.MonoGraph -> ( ProducerInfo, StagingGraph )
++buildStagingGraphFusedScoped maybeOwners (Mono.MonoGraph mono) =
+     let
++        withScope nodeId ( sg, ctx ) =
++            case maybeOwners of
++                Nothing ->
++                    ( sg, ctx )
++
++                Just owners ->
++                    ( sg, { ctx | scope = Array.get nodeId owners |> Maybe.withDefault "<pkg>" } )
++
+         ( _, finalPInfo, ( finalSg, _ ) ) =
+             Array.foldl
+                 (\maybeNode ( nodeId, pinfo, sgCtx ) ->
+@@ -119,7 +151,7 @@
+                         Just node ->
+                             ( nodeId + 1
+                             , ProducerInfo.foldNode nodeId node pinfo
+-                            , foldNodeStaging nodeId node sgCtx
++                            , foldNodeStaging nodeId node (withScope nodeId sgCtx)
+                             )
+                 )
+                 ( 0, emptyProducerInfo, ( emptyStagingGraph, emptyBuildCtx ) )
+@@ -298,7 +330,7 @@
+ 
+                 -- Add record field slots
+                 recordKey =
+-                    recordKeyFromType recordType
++                    scoped ctx0 (recordKeyFromType recordType)
+ 
+                 sg2 =
+                     List.foldl
+@@ -331,7 +363,7 @@
+ 
+                 -- Add tuple element slots
+                 tupleKey =
+-                    tupleKeyFromType tupleType
++                    scoped ctx0 (tupleKeyFromType tupleType)
+ 
+                 sg2 =
+                     List.foldl
+@@ -364,7 +396,7 @@
+ 
+                 -- Add list element slots
+                 listKey =
+-                    listKeyFromType listType
++                    scoped ctx0 (listKeyFromType listType)
+ 
+                 sg2 =
+                     List.foldl
+@@ -457,7 +489,7 @@
+             Just (ProducerClosure closureInfo.lambdaId)
+ 
+         Mono.MonoVarKernel _ _ home name _ ->
+-            Just (ProducerKernel (home ++ "." ++ name))
++            Just (ProducerKernel (scoped ctx (home ++ "." ++ name)))
+ 
+         Mono.MonoVarLocal name _ ->
+             -- Look up in context if this var was bound to a producer
+@@ -524,7 +556,7 @@
+             -- Use first branch's type as the canonical key
+             let
+                 recordKey =
+-                    recordKeyFromType firstType
++                    scoped ctx (recordKeyFromType firstType)
+             in
+             -- For each field in the first branch that's a function type,
+             -- unify it with the corresponding field in other branches
+@@ -568,7 +600,7 @@
+         ( firstExprs, firstType ) :: restBranches ->
+             let
+                 tupleKey =
+-                    tupleKeyFromType firstType
++                    scoped ctx (tupleKeyFromType firstType)
+             in
+             List.foldl
+                 (\( _, restExprs ) accSg ->
+diff -ruN /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/Staging.elm /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/Staging.elm
+--- /tmp/inc-exp/repo/compiler/src/Compiler/GlobalOpt/Staging.elm	2026-10-05 20:49:06.000000000 +0000
++++ /tmp/inc-exp/wt-x3/src/Compiler/GlobalOpt/Staging.elm	2026-10-06 10:59:11.593211588 +0000
+@@ -1,6 +1,6 @@
+ module Compiler.GlobalOpt.Staging exposing
+     ( StagingSolution
+-    , analyzeAndSolveStaging, validateClosureStaging
++    , analyzeAndSolveStaging, analyzeAndSolveStagingScoped, validateClosureStaging
+     )
+ 
+ {-| Global staging algorithm for determining correct staged-currying calling
+@@ -62,10 +62,22 @@
+     Mono.MonoGraph
+     -> ( StagingSolution, Mono.MonoGraph, Int )
+ analyzeAndSolveStaging graph0 =
++    analyzeAndSolveStagingScoped Nothing graph0
++
++
++{-| EXPERIMENT X3 (R2): `analyzeAndSolveStaging` with owner-scoped slot
++classes (`GraphBuilder.buildStagingGraphFusedScoped`). `Nothing` is the
++default behaviour.
++-}
++analyzeAndSolveStagingScoped :
++    Maybe (Array.Array String)
++    -> Mono.MonoGraph
++    -> ( StagingSolution, Mono.MonoGraph, Int )
++analyzeAndSolveStagingScoped maybeOwners graph0 =
+     let
+         -- 1+2. Fused (F2): compute ProducerInfo AND build the staging graph in one walk.
+         ( producerInfo, sg ) =
+-            GraphBuilder.buildStagingGraphFused graph0
++            GraphBuilder.buildStagingGraphFusedScoped maybeOwners graph0
+     in
+     if Dict.isEmpty producerInfo.naturalSeg then
+         -- No producers (no closures, no tail-funcs, no kernels with staging).
