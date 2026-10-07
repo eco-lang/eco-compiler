@@ -9,6 +9,8 @@
 //===----------------------------------------------------------------------===//
 
 #include <cstdio>   // TEMP(diag)
+#include <unordered_map>
+#include <mutex>
 #include <cstdlib>  // TEMP(diag)
 #include "EcoJIT.h"
 
@@ -65,6 +67,54 @@ public:
     void deregisterEHFrames() override {}
 };
 #else
+#if defined(__APPLE__)
+// RuntimeDyldMachO::registerEHFrames moves every FDE's pc_begin by -DeltaForText (processFDE: the
+// change in distance between __text and __eh_frame from object file to memory). That is right for
+// objects whose __eh_frame pc_begin carries no relocation (x86-64 MachO), but on arm64 MachO the
+// pc_begin is relocated to the final address first, so the move shifts every FDE's range off its
+// function and libunwind finds no unwind info for JIT code. recordEhFrameDelta (NotifyLoaded, after
+// placement and before registerEHFrames) recomputes that delta per __eh_frame load address, and
+// registerEHFrames adds it back.
+std::mutex g_ehFrameDeltaMu;
+std::unordered_map<uint64_t, int64_t> g_ehFrameDelta;
+
+void recordEhFrameDelta(const llvm::object::ObjectFile &Obj,
+                        const llvm::RuntimeDyld::LoadedObjectInfo &Info) {
+    bool haveText = false, haveEH = false;
+    int64_t textObj = 0, ehObj = 0, textLoad = 0, ehLoad = 0;
+    for (const llvm::object::SectionRef &Sec : Obj.sections()) {
+        auto Name = Sec.getName();
+        if (!Name) {
+            llvm::consumeError(Name.takeError());
+            continue;
+        }
+        if (*Name == "__text") {
+            textObj = static_cast<int64_t>(Sec.getAddress());
+            textLoad = static_cast<int64_t>(Info.getSectionLoadAddress(Sec));
+            haveText = true;
+        } else if (*Name == "__eh_frame") {
+            ehObj = static_cast<int64_t>(Sec.getAddress());
+            ehLoad = static_cast<int64_t>(Info.getSectionLoadAddress(Sec));
+            haveEH = true;
+        }
+    }
+    if (!haveText || !haveEH || ehLoad == 0)
+        return;
+    std::lock_guard<std::mutex> Lock(g_ehFrameDeltaMu);
+    g_ehFrameDelta[static_cast<uint64_t>(ehLoad)] = (textObj - ehObj) - (textLoad - ehLoad);
+}
+
+int64_t takeEhFrameDelta(uint64_t ehLoad) {
+    std::lock_guard<std::mutex> Lock(g_ehFrameDeltaMu);
+    auto It = g_ehFrameDelta.find(ehLoad);
+    if (It == g_ehFrameDelta.end())
+        return 0;
+    const int64_t Delta = It->second;
+    g_ehFrameDelta.erase(It);
+    return Delta;
+}
+#endif
+
 // EcoSectionMemoryManager overrides EH-frame registration for JIT objects.
 // LLVM libunwind's __register_frame takes a single FDE pointer (see
 // /opt/llvm-mlir/include/unwind.h: "The FDE must use pc-rel addressing to
@@ -79,6 +129,31 @@ public:
                           size_t Size) override {
         if (!Addr || Size == 0)
             return;
+#if defined(__APPLE__)
+        // Undo processFDE's pc_begin move (see recordEhFrameDelta): the same 8-byte field, back by
+        // the same delta, before anything reads the FDEs.
+        const int64_t ehDelta = takeEhFrameDelta(LoadAddr);
+        if (ehDelta != 0) {
+            for (uint8_t *Q = Addr; Q + 8 <= Addr + Size;) {
+                uint32_t len;
+                memcpy(&len, Q, 4);
+                if (len == 0 || len == 0xffffffff)
+                    break;
+                uint32_t cie;
+                memcpy(&cie, Q + 4, 4);
+                if (cie != 0 && Q + 16 <= Addr + Size) {
+                    uint64_t pcBegin;
+                    memcpy(&pcBegin, Q + 8, 8);
+                    pcBegin += static_cast<uint64_t>(ehDelta);
+                    memcpy(Q + 8, &pcBegin, 8);
+                }
+                Q += 4 + static_cast<size_t>(len);
+            }
+        }
+        if (std::getenv("ECO_TEST_STACKWALK_DIAG"))  // TEMP(diag)
+            std::fprintf(stderr, "[diag-ehframe] processFDE delta undone: %lld\n",
+                         (long long)ehDelta);
+#endif
         // LLVM libunwind's __register_frame expects a single FDE pointer, not
         // a section base (per /opt/llvm-mlir/include/unwind.h: "The FDE must
         // use pc-rel addressing to point to its function"). Walk the section
@@ -434,6 +509,13 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
             // Register our stack map extraction listener
             objectLayer->registerJITEventListener(
                 *engine->stackMapListener_);
+#if defined(__APPLE__)
+            objectLayer->setNotifyLoaded(
+                [](MaterializationResponsibility &, const object::ObjectFile &Obj,
+                   const RuntimeDyld::LoadedObjectInfo &Info) {
+                    recordEhFrameDelta(Obj, Info);
+                });
+#endif
 
             return objectLayer;
         };
