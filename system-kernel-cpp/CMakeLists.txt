@@ -54,7 +54,9 @@ set(ECO_SYSTEM_CORE_SRCS
     src/eco-system/Core/SysWorkPool.cpp
     src/eco-system/Core/FdChannel.cpp
     src/eco-system/Core/ChannelDrain.cpp
-    src/eco-system/Core/SignalService.cpp)
+    src/eco-system/Core/SignalService.cpp
+    src/eco-system/Core/SocketUtil.cpp
+    src/eco-system/Core/IoReactor.cpp)
 eco_system_module(Core         POSIX ${ECO_SYSTEM_CORE_SRCS})
 find_package(Threads REQUIRED)
 target_link_libraries(EcoSystem_Core PUBLIC Threads::Threads)
@@ -182,6 +184,44 @@ if(WIN32 OR ECO_STATIC)
 else()
     find_package(CURL REQUIRED)
     target_link_libraries(EcoSystem_HttpStream PRIVATE CURL::libcurl)
+endif()
+
+# Sockets (plans/eco-system-sockets.md §3.1): TCP, Unix and UDP in
+# EcoSystem_Socket; TLS in EcoSystem_Tls on OpenSSL 3 (§3.6), linking the
+# socket tables and transports of EcoSystem_Socket. OpenSSL is already on
+# every native AOT link (sockets plan SF6), so the driver needs no change.
+# The stream sockets (S3) run on the IoReactor (Conn, Listener, SocketEvents,
+# SocketTables). The same sources build on every platform: on Windows the
+# reactor is a stub and the fallible kernels fail with ENOTSUP (§1).
+eco_system_module(Socket       POSIX
+    src/eco-system/Socket/Conn.cpp
+    src/eco-system/Socket/ConnChannel.cpp
+    src/eco-system/Socket/Listener.cpp
+    src/eco-system/Socket/Socket.cpp
+    src/eco-system/Socket/SocketEvents.cpp
+    src/eco-system/Socket/SocketExports.cpp
+    src/eco-system/Socket/SocketManager.cpp
+    src/eco-system/Socket/SocketTables.cpp
+    src/eco-system/Socket/Udp.cpp
+    src/eco-system/Socket/UdpExports.cpp
+    src/eco-system/Socket/UdpManager.cpp)
+# Connections are stream pairs in the stream table (§3.3.3).
+target_link_libraries(EcoSystem_Socket PUBLIC EcoSystem_Stream)
+# TLS (S5): contexts on the SysWorkPool, a memory-BIO transport plugged into
+# Conn/ListenerHandler through TransportFactory, and the B.3 kernels. The
+# same sources build on Windows, where every OpenSSL part is compiled out
+# and the kernels fail ENOTSUP (§1).
+eco_system_module(Tls          POSIX
+    src/eco-system/Tls/Tls.cpp
+    src/eco-system/Tls/TlsContext.cpp
+    src/eco-system/Tls/TlsExports.cpp
+    src/eco-system/Tls/TlsTransport.cpp)
+target_link_libraries(EcoSystem_Tls PUBLIC EcoSystem_Socket)
+# OpenSSL on POSIX only: Windows has no OpenSSL in its dependency stack (TLS
+# via schannel elsewhere), and its Tls sources are stubs.
+if(NOT WIN32)
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(EcoSystem_Tls PRIVATE OpenSSL::SSL)
 endif()
 
 # Every module listed in ECO_SYSTEM_MODS must have a target here.

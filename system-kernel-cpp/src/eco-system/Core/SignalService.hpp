@@ -5,8 +5,13 @@
 // self-pipe:
 //   * the sigaction handler (SA_RESTART) only writes the signal number, one
 //     byte, to the non-blocking write end of an O_CLOEXEC pipe;
-//   * one detached thread reads the pipe and queues `signo` events, then
-//     wakes the scheduler loop;
+//   * one detached thread waits for the pipe to become readable, reads it
+//     and queues `signo` events, then wakes the scheduler loop;
+//   * the scheduler's readiness check (pollReady, main thread) also takes
+//     what the handler has written, and on Linux dequeues subscribed signals
+//     that are pending but not yet handled, so a signal received before the
+//     loop goes quiescent is never lost to the reader thread's scheduling
+//     delay (the loop exits only when no async source is ready);
 //   * the main-thread signal drain hands each event to every LISTENER of
 //     that signal (per-signal, multi-subscriber dispatch, Phase 5): the
 //     System manager (SIGINT, SIGTERM), the Terminal manager (SIGWINCH) and
@@ -64,6 +69,13 @@ public:
     // Main thread (the drain, or a test). Non-blocking.
     bool tryPop(int& signo);
     bool hasReady() const { return readyCount_.load(std::memory_order_acquire) > 0; }
+    // Main thread: the readiness check of the signal drain source, called by
+    // the scheduler loop (with its mutex held: never notifies the
+    // scheduler). Queues every signal already received - written to the pipe
+    // by the handler but not yet taken by the reader thread, or (Linux)
+    // pending for the process with our handler not yet run - then returns
+    // hasReady(). Non-blocking.
+    bool pollReady();
 
     // --- Listeners (main thread) -------------------------------------------
     //
@@ -95,14 +107,19 @@ public:
     // process. A no-op when `signo` is not subscribed (or on Windows).
     void chainToPrevious(int signo);
 
-    // Signal-reader thread only.
-    void post(int signo);
+    // Signal-reader thread or main thread: reads everything currently in the
+    // pipe and queues it, under pipeMutex_ so that a byte read by one thread
+    // is queued before the other can observe an empty pipe. Never notifies.
+    // Returns true if anything was queued.
+    bool takeFromPipe();
 
 private:
     SignalService();
     ~SignalService() = default;
 
     bool ensureStarted();   // main thread: pipe + reader thread
+    void queue(int signo);  // ready_ push (any thread; no notify)
+    void takePending();     // main thread (Linux): dequeue pending subscribed signals
 
     static constexpr int kMaxSig = 128;
 
@@ -111,7 +128,9 @@ private:
     int counts_[kMaxSig] = {};
     void* saved_[kMaxSig] = {};   // struct sigaction* of the previous disposition
 
-    std::mutex readyMutex_;
+    int readFd_ = -1;            // non-blocking read end (set before the reader starts)
+    std::mutex pipeMutex_;       // held from a pipe read until its bytes are queued
+    std::mutex readyMutex_;      // order: pipeMutex_ -> readyMutex_
     std::deque<int> ready_;
     std::atomic<size_t> readyCount_{0};
 

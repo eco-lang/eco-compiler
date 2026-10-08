@@ -362,8 +362,8 @@ unescapeString s =
 {-| Returns `s` with each escape sequence replaced by the character it stands
 for.
 
-`\n`, `\t`, `\\`, `\"` and `\'` become a newline, a tab, a backslash, a double
-quote and a single quote. `\u` followed by four hex digits becomes the
+`\n`, `\r`, `\t`, `\\`, `\"` and `\'` become a newline, a carriage return, a tab, a
+backslash, a double quote and a single quote. `\u` followed by four hex digits becomes the
 character with that code. Each such escape is converted on its own; a
 character above U+FFFF arrives as two escapes, one for each half of a UTF-16
 surrogate pair, and the two halves end up next to each other in the result.
@@ -387,6 +387,9 @@ unescapeStringSlow s =
 
                 '\\' :: 't' :: rest ->
                     go (Char.fromCode 0x09 :: acc) rest
+
+                '\\' :: 'r' :: rest ->
+                    go (Char.fromCode 0x0D :: acc) rest
 
                 '\\' :: '\\' :: rest ->
                     go ('\\' :: acc) rest

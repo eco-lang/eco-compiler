@@ -10,7 +10,9 @@
 // posix_spawn, which only inherits fds without FD_CLOEXEC, so the window is
 // the one between socket() and fcntl() — the same as libuv's on macOS).
 // EINTR is retried everywhere. Writes use MSG_NOSIGNAL (Linux) or
-// SO_NOSIGPIPE (macOS), so a vanished client never raises SIGPIPE.
+// SO_NOSIGPIPE (macOS), so a vanished client never raises SIGPIPE. The fd
+// helpers (socketCloexec, acceptCloexec, kSendFlags) live in
+// Core/SocketUtil, shared with the Socket kernels.
 //
 // Templates used: none (POD only, G1).
 //
@@ -20,6 +22,7 @@
 
 #include "eco-system/Core/Core.hpp"        // errnoName
 #include "eco-system/Core/FdChannel.hpp"   // makeCloexecPipe
+#include "eco-system/Core/SocketUtil.hpp"  // kSendFlags, socketCloexec, acceptCloexec
 #include "platform/Scheduler.hpp"
 
 #include <llhttp.h>
@@ -57,27 +60,6 @@ namespace {
 constexpr size_t kMaxHeaderBytes = 64 * 1024;   // larger → 431
 constexpr size_t kReadChunk = 64 * 1024;
 
-#if defined(MSG_NOSIGNAL)
-constexpr int kSendFlags = MSG_NOSIGNAL;
-#else
-constexpr int kSendFlags = 0;
-#endif
-
-// Used where accept4 / SOCK_CLOEXEC are missing (macOS).
-[[maybe_unused]] void setCloexec(int fd) {
-    int fl = ::fcntl(fd, F_GETFD);
-    if (fl >= 0) (void)::fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
-}
-
-void setNoSigpipe(int fd) {
-#if defined(SO_NOSIGPIPE)
-    int one = 1;
-    (void)::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#else
-    (void)fd;
-#endif
-}
-
 void closeFd(int fd) {
     if (fd >= 0) {
         while (::close(fd) < 0 && errno == EINTR) {
@@ -88,7 +70,7 @@ void closeFd(int fd) {
 // Writes all of `data` (blocking socket). False on error (EPIPE, reset, ...).
 bool writeAll(int fd, const char* data, size_t n) {
     while (n > 0) {
-        ssize_t w = ::send(fd, data, n, kSendFlags);
+        ssize_t w = ::send(fd, data, n, ::Eco::System::kSendFlags);
         if (w < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -289,14 +271,11 @@ ListenResult listenOn(const std::string& host, int64_t port) {
     int lastErr = 0;
     const char* lastSyscall = "listen";
     for (struct addrinfo* a : addrs) {
-#if defined(SOCK_CLOEXEC)
-        int fd = ::socket(a->ai_family, a->ai_socktype | SOCK_CLOEXEC, a->ai_protocol);
-#else
-        int fd = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (fd >= 0) setCloexec(fd);
-#endif
+        int sockErr = 0;
+        int fd = ::Eco::System::socketCloexec(a->ai_family, a->ai_socktype, a->ai_protocol,
+                                              /*nonBlocking=*/false, &sockErr);
         if (fd < 0) {
-            lastErr = errno;
+            lastErr = sockErr;
             lastSyscall = "socket";
             continue;
         }
@@ -508,14 +487,11 @@ void sendSimple(int fd, int status) {
 
 void HttpServerService::Impl::acceptLoop(std::shared_ptr<Server> srv) {
     for (;;) {
-#if defined(__linux__)
-        int fd = ::accept4(srv->fd, nullptr, nullptr, SOCK_CLOEXEC);
-#else
-        int fd = ::accept(srv->fd, nullptr, nullptr);
-        if (fd >= 0) setCloexec(fd);
-#endif
+        // accept4(SOCK_CLOEXEC) on Linux; accept + FD_CLOEXEC elsewhere. Both
+        // set SO_NOSIGPIPE where it exists.
+        int e = 0;
+        int fd = ::Eco::System::acceptCloexec(srv->fd, /*nonBlocking=*/false, nullptr, nullptr, &e);
         if (fd < 0) {
-            int e = errno;
             if (e == EINTR || e == ECONNABORTED || e == EAGAIN || e == EWOULDBLOCK) continue;
             if (e == EMFILE || e == ENFILE || e == ENOBUFS || e == ENOMEM) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -524,7 +500,6 @@ void HttpServerService::Impl::acceptLoop(std::shared_ptr<Server> srv) {
             // EBADF/EINVAL: the listening socket is gone; nothing to serve.
             return;
         }
-        setNoSigpipe(fd);
         int one = 1;
         (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         try {

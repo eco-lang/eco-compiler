@@ -519,6 +519,9 @@ the main thread and children are spawned only from the main thread.
 - It installs a handler for a signal **only while some Elm subscription to it exists**, and restores
   the previous handler when the last subscription goes away.
 - It is disabled in embed mode (§3.7).
+- The scheduler loop's readiness check (`pollReady`) also takes what the handler wrote, and the loop
+  runs ready sources before it exits as quiescent, so a received signal is never dropped at exit
+  (§10, 2026-10-08).
 
 **`HttpStreamService`** (in `EcoSystem_HttpStream`, Phase 8) runs one detached thread per streaming
 transfer, each with its own curl easy handle. Streaming transfers cannot use the shared `HttpService`
@@ -1973,6 +1976,38 @@ tuples. The one cost is no `tracker`/`Http.cancel` support; cancel a `task` with
     - Http.Stream: Node upper-cases methods; redirects follow curl's method rules and a stream body
       is not resent (`NetworkError_`); upload writes complete when Node flushes them (native
       acknowledges up to 256 KiB ahead); `statusText` is not trimmed.
+- 2026-10-08 — **Flaky `SignalInterruptTest` fixed** (Phase 5, `System.onSignalInterrupt`). Under CPU
+  load (24 busy loops, 12 cores) it failed about 1 run in 8–24 with empty output, exit 0, and the
+  harness reporting a normal program end (not "did not finish", which a SIGINT death would give).
+  - **Root cause:** a lost wake-up at quiescence, not handler ordering. Instrumented runs showed the
+    handler always installed in the first effects round after `InitDone` and always running on the
+    main thread (`tid == pid`; for `kill(2)` from another process Linux targets the thread-group
+    leader). In each failing run the order was: handler (writes the self-pipe) → main loop finds
+    `runQueue` empty and `pendingAsync == 0` (`P.run` done), with `SignalService::hasReady()` false
+    and SIGINT not pending → loop exits → only then does the reader thread post the signal. The event
+    reached the scheduler only through the reader thread, and under load that thread was scheduled
+    too late. `runEventLoop` also never consulted its async sources before exiting as quiescent, and
+    signal events hold no `pendingAsync` (§3.4 keep-alive rule).
+  - **Fix:**
+    - `runtime/src/platform/Scheduler.cpp` `runEventLoop`: when quiescent, call each async source's
+      `ready()` (with `mutex_` held, as the wait predicate already does) and, if any is ready, go round
+      the loop again (drain + `processReadyAsync`) before the onEmptyEventLoop listeners or exit.
+      Scheduler rows re-audited in `KernelSetFacts.elm`; manifest updated.
+    - `system-kernel-cpp/src/eco-system/Core/SignalService.{hpp,cpp}`: the signal source's ready
+      function is now `pollReady()`, which (main thread, never notifies) (1) on Linux dequeues
+      subscribed signals pending for the process with `sigtimedwait` and a zero timeout, and (2) reads
+      the pipe itself. Both pipe ends are non-blocking. The reader thread `poll`s and then reads under
+      `pipeMutex_` until its bytes are queued, so a received byte is always either in the pipe or in
+      `ready_`. Lock order: scheduler `mutex_` → `pipeMutex_` → `readyMutex_`; the reader notifies
+      the scheduler only after releasing both.
+  - Residual (not seen): a signal that a non-main thread has already dequeued but whose handler has
+    not yet written the pipe, or (non-Linux, no `sigtimedwait`) one still pending in the kernel. For
+    `kill` from another process the main thread is the target unless it blocks the signal.
+  - Results: under load, before the fix 3/24 and 1/24 failed (`/tmp/eco-p11i-repro.txt`,
+    `/tmp/eco-p11i-instr.txt`); after, 0/40 (`/tmp/eco-p11i-verify-load.txt`). Without load:
+    `test --filter eco-system` 113/113 (`/tmp/eco-p11i-eco-system.txt`), `eco-system-core-test`
+    1445 checks (`/tmp/eco-p11i-core-test.txt`), `--filter platform` 9/9, `--filter eco-kernel`
+    14/14.
 
 ---
 

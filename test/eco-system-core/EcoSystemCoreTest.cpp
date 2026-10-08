@@ -15,20 +15,27 @@
 #include "eco-system/Core/AsyncSources.hpp"
 #include "eco-system/Core/ByteChannel.hpp"
 #include "eco-system/Core/FdChannel.hpp"
+#include "eco-system/Core/IoReactor.hpp"
 #include "eco-system/Core/Registry.hpp"
 #include "eco-system/Core/SignalService.hpp"
+#include "eco-system/Core/SocketUtil.hpp"
 #include "eco-system/Core/SysWorkPool.hpp"
 #include "eco-system/HttpServer/HttpServerService.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -37,10 +44,14 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <net/if.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 using namespace Eco::System;
@@ -923,6 +934,842 @@ void testHttpServerService() {
 }
 
 
+// ===========================================================================
+// SocketUtil and IoReactor (plans/eco-system-sockets.md S2)
+// ===========================================================================
+
+namespace {
+
+void testSocketUtil() {
+    std::printf("SocketUtil: fd flags, sockaddr conversion, sun_path, gai codes\n");
+
+    // --- fd flags, socketCloexec, acceptCloexec over loopback TCP ----------
+    int e = 0;
+    int lfd = socketCloexec(AF_INET, SOCK_STREAM, 0, /*nonBlocking=*/false, &e);
+    CHECK(lfd >= 0);
+    CHECK((::fcntl(lfd, F_GETFD) & FD_CLOEXEC) != 0);
+    CHECK((::fcntl(lfd, F_GETFL) & O_NONBLOCK) == 0);
+    SockAddr la;
+    CHECK(inetToSockaddr("127.0.0.1", 0, la) == 0);
+    CHECK(la.family() == AF_INET && la.len == sizeof(struct sockaddr_in));
+    CHECK(::bind(lfd, la.get(), la.len) == 0);
+    CHECK(::listen(lfd, 4) == 0);
+    SockAddr bound;
+    bound.len = sizeof(bound.ss);
+    CHECK(::getsockname(lfd, bound.get(), &bound.len) == 0);
+    std::string text;
+    int64_t port = -1;
+    CHECK(sockaddrToInet(bound, text, port));
+    CHECK(text == "127.0.0.1" && port > 0);
+    int c = connectTo(static_cast<int>(port));
+    CHECK(c >= 0);
+    SockAddr peer;
+    peer.len = sizeof(peer.ss);
+    int afd = acceptCloexec(lfd, /*nonBlocking=*/true, peer.get(), &peer.len, &e);
+    CHECK(afd >= 0);
+    CHECK((::fcntl(afd, F_GETFD) & FD_CLOEXEC) != 0);
+    CHECK((::fcntl(afd, F_GETFL) & O_NONBLOCK) != 0);
+    std::string ptext;
+    int64_t pport = 0;
+    CHECK(sockaddrToInet(peer, ptext, pport) && ptext == "127.0.0.1" && pport > 0);
+    CHECK(setNoSigPipe(afd) == 0);
+    int nb = socketCloexec(AF_INET6, SOCK_DGRAM, 0, /*nonBlocking=*/true, &e);
+    if (nb >= 0) {
+        CHECK((::fcntl(nb, F_GETFL) & O_NONBLOCK) != 0);
+        ::close(nb);
+    }
+    int plain = ::socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(setNonBlocking(plain) == 0 && (::fcntl(plain, F_GETFL) & O_NONBLOCK) != 0);
+    CHECK(setCloexec(plain) == 0 && (::fcntl(plain, F_GETFD) & FD_CLOEXEC) != 0);
+    ::close(plain);
+    CHECK(setCloexec(-1) == EBADF);
+    for (int fd : {c, afd, lfd}) if (fd >= 0) ::close(fd);
+    CHECK(kSendFlags == MSG_NOSIGNAL);   // Linux
+
+    // --- inet text <-> sockaddr ---------------------------------------------
+    auto roundTrip = [](const std::string& in, int64_t p, std::string& out) {
+        SockAddr sa;
+        if (inetToSockaddr(in, p, sa) != 0) return false;
+        int64_t q = -1;
+        if (!sockaddrToInet(sa, out, q)) return false;
+        return q == p;
+    };
+    std::string out;
+    CHECK(roundTrip("127.0.0.1", 8080, out) && out == "127.0.0.1");
+    CHECK(roundTrip("0.0.0.0", 0, out) && out == "0.0.0.0");
+    CHECK(roundTrip("255.255.255.255", 65535, out) && out == "255.255.255.255");
+    CHECK(roundTrip("::1", 443, out) && out == "::1");
+    CHECK(roundTrip("::", 1, out) && out == "::");
+    CHECK(roundTrip("2001:DB8:0:0:0:0:1:2", 9, out) && out == "2001:db8::1:2");
+    CHECK(roundTrip("::ffff:127.0.0.1", 7, out) && out == "::ffff:127.0.0.1");
+    {
+        SockAddr v6;
+        CHECK(inetToSockaddr("::1", 1, v6) == 0 && v6.family() == AF_INET6 &&
+              v6.len == sizeof(struct sockaddr_in6));
+    }
+    unsigned lo = ::if_nametoindex("lo");
+    CHECK(lo != 0);
+    if (lo != 0) {
+        CHECK(roundTrip("fe80::1%lo", 80, out) && out == "fe80::1%lo");
+        CHECK(roundTrip("fe80::1%" + std::to_string(lo), 80, out) && out == "fe80::1%lo");
+        SockAddr sa;
+        CHECK(inetToSockaddr("fe80::1%lo", 80, sa) == 0);
+        CHECK(reinterpret_cast<struct sockaddr_in6*>(&sa.ss)->sin6_scope_id == lo);
+        CHECK(scopeName(lo) == "lo");
+        uint32_t id = 0;
+        CHECK(parseScope("lo", id) && id == lo);
+    }
+    CHECK(roundTrip("fe80::1%4000000", 1, out) && out == "fe80::1%4000000");   // no such interface: decimal
+    CHECK(scopeName(0).empty());
+    uint32_t sid = 0;
+    CHECK(parseScope("0", sid) && sid == 0);
+    CHECK(!parseScope("", sid));
+    CHECK(!parseScope("99999999999", sid));
+    CHECK(!parseScope("nosuchif9", sid));
+    SockAddr bad;
+    CHECK(inetToSockaddr("fe80::1%nosuchif9", 1, bad) == EINVAL);
+    CHECK(inetToSockaddr("fe80::1%", 1, bad) == EINVAL);
+    CHECK(inetToSockaddr("127.0.0.1%lo", 1, bad) == EINVAL);
+    CHECK(inetToSockaddr("1.2.3", 1, bad) == EINVAL);
+    CHECK(inetToSockaddr("01.2.3.4", 1, bad) == EINVAL);
+    CHECK(inetToSockaddr("", 1, bad) == EINVAL);
+    CHECK(inetToSockaddr("::1::2", 1, bad) == EINVAL);
+    CHECK(inetToSockaddr("127.0.0.1", 65536, bad) == EINVAL);
+    CHECK(inetToSockaddr("127.0.0.1", -1, bad) == EINVAL);
+    CHECK(bad.len == 0 && bad.family() == AF_UNSPEC);   // untouched on failure
+
+    // --- IPv4 -> IPv4-mapped IPv6 (§D.4) --------------------------------------
+    SockAddr m;
+    CHECK(inetToSockaddr("127.0.0.1", 5, m) == 0);
+    CHECK(mapIPv4ToIPv6(m));
+    CHECK(m.family() == AF_INET6 && m.len == sizeof(struct sockaddr_in6));
+    CHECK(sockaddrToInet(m, out, port) && out == "::ffff:127.0.0.1" && port == 5);
+    CHECK(!mapIPv4ToIPv6(m));   // already IPv6: unchanged
+    CHECK(sockaddrToInet(m, out, port) && out == "::ffff:127.0.0.1");
+
+    // --- Unix paths (§D.3) ----------------------------------------------------
+    CHECK(unixPathMax() == sizeof(sockaddr_un::sun_path));
+    CHECK(unixPathMax() == 108);   // Linux
+    SockAddr u;
+    std::string p107(107, 'a');
+    CHECK(unixSockaddr(p107, u) == 0);
+    CHECK(u.family() == AF_UNIX && u.len == offsetof(struct sockaddr_un, sun_path) + 108);
+    std::string back;
+    CHECK(sockaddrToUnixPath(u.get(), u.len, back) && back == p107);
+    SockAddr u2;
+    CHECK(unixSockaddr(std::string(108, 'a'), u2) == ENAMETOOLONG);
+    std::string utf8;
+    for (int i = 0; i < 54; ++i) utf8 += "\xc3\xa9";   // 54 characters, 108 bytes
+    CHECK(unixSockaddr(utf8, u2) == ENAMETOOLONG);
+    CHECK(unixSockaddr(std::string("a\0b", 3), u2) == EINVAL);
+    CHECK(unixSockaddr("", u2) == ENOENT);
+    CHECK(unixSockaddr(std::string(300, '\0'), u2) == ENAMETOOLONG);   // length first
+    CHECK(u2.len == 0);
+    {
+        struct sockaddr_un unnamed{};
+        unnamed.sun_family = AF_UNIX;
+        std::string p = "x";
+        CHECK(sockaddrToUnixPath(reinterpret_cast<struct sockaddr*>(&unnamed), sizeof(sa_family_t), p) &&
+              p.empty());
+        CHECK(!sockaddrToUnixPath(la.get(), la.len, p));
+    }
+    std::string sockPath = "/tmp/eco-p11b-sockutil-" + std::to_string(::getpid()) + ".sock";
+    ::unlink(sockPath.c_str());
+    int us = socketCloexec(AF_UNIX, SOCK_STREAM, 0, false, &e);
+    SockAddr ua;
+    CHECK(us >= 0 && unixSockaddr(sockPath, ua) == 0);
+    CHECK(::bind(us, ua.get(), ua.len) == 0);
+    SockAddr ub;
+    ub.len = sizeof(ub.ss);
+    CHECK(::getsockname(us, ub.get(), &ub.len) == 0);
+    CHECK(sockaddrToUnixPath(ub.get(), ub.len, back) && back == sockPath);
+    ::close(us);
+    ::unlink(sockPath.c_str());
+
+    // --- getaddrinfo codes (§3.3.6) --------------------------------------------
+    CHECK(std::string(gaiCode(EAI_NONAME, 0)) == "ENOTFOUND");
+#ifdef EAI_NODATA
+    CHECK(std::string(gaiCode(EAI_NODATA, 0)) == "ENOTFOUND");
+#endif
+    CHECK(std::string(gaiCode(EAI_AGAIN, 0)) == "EAI_AGAIN");
+    CHECK(std::string(gaiCode(EAI_MEMORY, 0)) == "ENOMEM");
+    CHECK(std::string(gaiCode(EAI_SYSTEM, ECONNREFUSED)) == "ECONNREFUSED");
+    CHECK(std::string(gaiCode(EAI_FAIL, 0)) == "EAI_FAIL");
+    CHECK(std::string(gaiCode(EAI_FAMILY, 0)) == "EAI_FAIL");
+    CHECK(std::string(gaiCode(EAI_SERVICE, 0)) == "EAI_FAIL");
+}
+
+// --- reactor helpers ---------------------------------------------------------
+
+IoReactor& R() { return IoReactor::instance(); }
+
+// Runs fn on the reactor thread and waits for it (aborts after 10 s: the
+// command captures this frame by reference).
+void onReactor(const std::function<void()>& fn) {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+    R().submit([&] {
+        fn();
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            done = true;
+        }
+        cv.notify_all();
+    });
+    std::unique_lock<std::mutex> lk(mu);
+    if (!cv.wait_for(lk, std::chrono::seconds(10), [&] { return done; })) {
+        std::fprintf(stderr, "  FATAL: reactor command did not run within 10 s\n");
+        std::abort();
+    }
+}
+
+template <typename P>
+bool waitUntil(P pred, int timeoutMs = 5000) {
+    auto deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (!pred()) {
+        if (Clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+bool makePair(int sv[2]) { return ::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0; }
+
+// Reads exactly n bytes from a blocking fd (poll-bounded).
+std::string recvExactly(int fd, size_t n, int timeoutMs = 10000) {
+    std::string out;
+    char buf[65536];
+    auto deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (out.size() < n && Clock::now() < deadline) {
+        struct pollfd p{fd, POLLIN, 0};
+        if (::poll(&p, 1, 50) <= 0) continue;
+        size_t want = std::min(sizeof(buf), n - out.size());
+        ssize_t r = ::recv(fd, buf, want, 0);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        out.append(buf, static_cast<size_t>(r));
+    }
+    return out;
+}
+
+// True when the peer sees EOF (recv 0) within timeoutMs.
+bool peerSeesEof(int fd, int timeoutMs = 5000) {
+    char buf[256];
+    auto deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (Clock::now() < deadline) {
+        struct pollfd p{fd, POLLIN, 0};
+        if (::poll(&p, 1, 50) <= 0) continue;
+        ssize_t r = ::recv(fd, buf, sizeof(buf), 0);
+        if (r == 0) return true;
+        if (r < 0 && errno != EINTR && errno != EAGAIN) return false;
+    }
+    return false;
+}
+
+// Echoes everything back; closes on EOF/error or closeAll.
+struct EchoHandler : IoHandler {
+    int fd;
+    std::string out;   // reactor thread only
+    std::atomic<int> readyCalls{0};
+    std::atomic<int> closeAllCalls{0};
+    std::atomic<bool> closed{false};
+    std::atomic<uint64_t> keySeen{0};
+    explicit EchoHandler(int f) : fd(f) {}
+
+    void onReady(bool r, bool, bool e) override {
+        ++readyCalls;
+        if (r || e) {
+            char buf[16384];
+            for (;;) {
+                ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+                if (n > 0) {
+                    out.append(buf, static_cast<size_t>(n));
+                    continue;
+                }
+                if (n == 0) { finish(); return; }
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                finish();
+                return;
+            }
+        }
+        flush();
+    }
+    void flush() {
+        while (!out.empty()) {
+            ssize_t n = ::send(fd, out.data(), out.size(), kSendFlags);
+            if (n > 0) {
+                out.erase(0, static_cast<size_t>(n));
+                continue;
+            }
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            finish();
+            return;
+        }
+        R().setInterest(key(), true, !out.empty());
+    }
+    void finish() {
+        if (key() == 0) return;
+        R().remove(key());   // rule 3: remove, then close
+        ::close(fd);
+        fd = -1;
+        closed = true;
+    }
+    void onCloseAll() override {
+        ++closeAllCalls;
+        finish();
+    }
+};
+
+std::shared_ptr<EchoHandler> startEcho(int fd) {
+    CHECK(setNonBlocking(fd) == 0);
+    auto h = std::make_shared<EchoHandler>(fd);
+    onReactor([&] {
+        uint64_t k = R().add(h, fd);
+        h->keySeen = k;
+        CHECK(k != 0 && h->key() == k);
+        CHECK(R().setInterest(k, true, false) == 0);
+    });
+    return h;
+}
+
+// Counts calls; on readiness drops all interest WITHOUT reading (the N1 shape).
+struct DropHandler : IoHandler {
+    int fd;
+    std::atomic<int> calls{0};
+    std::atomic<bool> sawHangup{false};
+    explicit DropHandler(int f) : fd(f) {}
+    void onReady(bool, bool, bool e) override {
+        ++calls;
+        if (e) sawHangup = true;
+        R().setInterest(key(), false, false);
+    }
+    void onCloseAll() override {
+        if (key() == 0) return;
+        R().remove(key());
+        ::close(fd);
+    }
+};
+
+// Records readiness calls only.
+struct CountHandler : IoHandler {
+    int fd;
+    std::atomic<int> calls{0};
+    std::atomic<int64_t> bytes{0};
+    bool readAndDrop = false;   // read everything, then drop interest
+    explicit CountHandler(int f, bool rd = false) : fd(f), readAndDrop(rd) {}
+    void onReady(bool, bool, bool) override {
+        ++calls;
+        if (!readAndDrop) return;
+        char buf[4096];
+        for (;;) {
+            ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+            if (n > 0) { bytes += n; continue; }
+            if (n < 0 && errno == EINTR) continue;
+            break;
+        }
+        R().setInterest(key(), false, false);
+    }
+    void onCloseAll() override {
+        if (key() == 0) return;
+        R().remove(key());
+        if (fd >= 0) ::close(fd);
+    }
+};
+
+// --- tests -------------------------------------------------------------------
+
+void testReactorEcho() {
+    std::printf("IoReactor: echo over a socketpair\n");
+    int sv[2];
+    CHECK(makePair(sv));
+    auto h = startEcho(sv[0]);
+    sendAll(sv[1], "hello reactor");
+    CHECK(recvExactly(sv[1], 13) == "hello reactor");
+
+    // 4 MiB each way: the socket buffers fill, so the echo needs write
+    // interest (EPOLLOUT) and the peer must read while it writes.
+    std::string big(4u << 20, '\0');
+    for (size_t i = 0; i < big.size(); ++i) big[i] = static_cast<char>((i * 131) ^ (i >> 9));
+    std::thread writer([&] { sendAll(sv[1], big); });
+    std::string got = recvExactly(sv[1], big.size(), 20000);
+    writer.join();
+    CHECK(got.size() == big.size());
+    CHECK(got == big);
+
+    // Half-close: the handler reads EOF, removes itself and closes.
+    CHECK(::shutdown(sv[1], SHUT_WR) == 0);
+    CHECK(waitUntil([&] { return h->closed.load(); }));
+    CHECK(peerSeesEof(sv[1]));
+    CHECK(h->closeAllCalls == 0);
+    ::close(sv[1]);
+}
+
+void testReactorIdleNoBusyLoop() {
+    std::printf("IoReactor: idle fd with a closed / reset peer does not spin\n");
+    auto& r = R();
+
+    // A: registered with interest; the peer closes; the handler is told once
+    // and drops its interest WITHOUT reading. The fd still has EOF pending;
+    // since it is no longer in the kernel set, the loop stays idle.
+    int sv[2];
+    CHECK(makePair(sv));
+    CHECK(setNonBlocking(sv[0]) == 0);
+    auto a = std::make_shared<DropHandler>(sv[0]);
+    onReactor([&] { CHECK(r.setInterest(r.add(a, sv[0]), true, false) == 0); });
+    ::close(sv[1]);
+    CHECK(waitUntil([&] { return a->calls.load() >= 1; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    uint64_t it0 = r.loopIterations();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    uint64_t it1 = r.loopIterations();
+    std::printf("  close: %llu iterations in 200 ms, %d calls\n",
+                static_cast<unsigned long long>(it1 - it0), a->calls.load());
+    CHECK(it1 - it0 <= 5);
+    CHECK(a->calls == 1);
+
+    // B: TCP, registered then unregistered, then the peer resets it (RST:
+    // EPOLLERR|EPOLLHUP, which epoll reports even with no requested events).
+    int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    SockAddr la;
+    CHECK(inetToSockaddr("127.0.0.1", 0, la) == 0);
+    CHECK(::bind(lfd, la.get(), la.len) == 0 && ::listen(lfd, 4) == 0);
+    la.len = sizeof(la.ss);
+    CHECK(::getsockname(lfd, la.get(), &la.len) == 0);
+    std::string t;
+    int64_t port = 0;
+    CHECK(sockaddrToInet(la, t, port));
+    int client = connectTo(static_cast<int>(port));
+    int server = acceptCloexec(lfd, true, nullptr, nullptr, nullptr);
+    CHECK(client >= 0 && server >= 0);
+    auto b = std::make_shared<DropHandler>(server);
+    onReactor([&] {
+        uint64_t k = r.add(b, server);
+        CHECK(r.setInterest(k, true, false) == 0);
+        CHECK(r.setInterest(k, false, false) == 0);   // EPOLL_CTL_DEL
+    });
+    struct linger lg{1, 0};
+    CHECK(::setsockopt(client, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg)) == 0);
+    ::close(client);   // RST
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    it0 = r.loopIterations();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    it1 = r.loopIterations();
+    std::printf("  reset: %llu iterations in 200 ms\n", static_cast<unsigned long long>(it1 - it0));
+    CHECK(it1 - it0 <= 5);
+    CHECK(b->calls == 0);
+    // Interest again: the pending error is now reported (level-triggered).
+    onReactor([&] { CHECK(r.setInterest(b->key(), true, false) == 0); });
+    CHECK(waitUntil([&] { return b->calls.load() == 1; }));
+    CHECK(b->sawHangup.load());
+    onReactor([&] { a->onCloseAll(); b->onCloseAll(); });
+    ::close(lfd);
+}
+
+void testReactorManyPairs() {
+    constexpr int kWant = 1000;
+    struct rlimit rl{};
+    ::getrlimit(RLIMIT_NOFILE, &rl);
+    rlim_t need = 2 * kWant + 256;
+    if (rl.rlim_cur < need && rl.rlim_max >= need) {
+        rl.rlim_cur = need;
+        ::setrlimit(RLIMIT_NOFILE, &rl);
+        ::getrlimit(RLIMIT_NOFILE, &rl);
+    }
+    int n = kWant;
+    if (rl.rlim_cur < need) n = static_cast<int>((rl.rlim_cur - 256) / 2);
+    std::printf("IoReactor: %d socketpairs with interleaved traffic\n", n);
+    CHECK(n == kWant);
+
+    std::vector<int> peers(static_cast<size_t>(n), -1);
+    std::vector<std::shared_ptr<EchoHandler>> hs;
+    hs.reserve(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        int sv[2];
+        if (!makePair(sv)) {
+            CHECK(false);
+            return;
+        }
+        CHECK(setNonBlocking(sv[0]) == 0);
+        peers[static_cast<size_t>(i)] = sv[1];
+        hs.push_back(std::make_shared<EchoHandler>(sv[0]));
+    }
+    onReactor([&] {
+        for (auto& h : hs) {
+            uint64_t k = R().add(h, h->fd);
+            if (k == 0 || R().setInterest(k, true, false) != 0) CHECK(false);
+        }
+    });
+
+    constexpr int kRounds = 4;
+    auto msg = [](int i, int round) {
+        return "pair " + std::to_string(i) + " round " + std::to_string(round) + std::string(i % 37, '.') + ";";
+    };
+    std::thread writer([&] {
+        std::mt19937 rng(12345);
+        std::vector<int> order(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) order[static_cast<size_t>(i)] = i;
+        for (int round = 0; round < kRounds; ++round) {
+            std::shuffle(order.begin(), order.end(), rng);
+            for (int i : order) sendAll(peers[static_cast<size_t>(i)], msg(i, round));
+        }
+    });
+    int ok = 0;
+    for (int round = 0; round < kRounds; ++round) {
+        for (int j = 0; j < n; ++j) {
+            int i = (j * 7 + round * 13) % n;   // another order than the writer's
+            std::string m = msg(i, round);
+            if (recvExactly(peers[static_cast<size_t>(i)], m.size()) == m) ++ok;
+        }
+    }
+    writer.join();
+    CHECK(ok == n * kRounds);
+
+    for (int fd : peers) ::close(fd);   // every handler sees EOF and closes itself
+    CHECK(waitUntil([&] {
+        for (auto& h : hs) if (!h->closed.load()) return false;
+        return true;
+    }, 10000));
+}
+
+void testReactorSubmitRacing() {
+    std::printf("IoReactor: submit racing readiness\n");
+    // A: 4 threads x 20 000 submits while echo traffic runs: every command
+    // runs exactly once, in submission order per thread.
+    constexpr int kThreads = 4, kPer = 20000;
+    std::vector<int> last(kThreads, -1);   // reactor thread only
+    std::vector<int> count(kThreads, 0);
+    int bad = 0;
+    int sv[2];
+    CHECK(makePair(sv));
+    auto echo = startEcho(sv[0]);
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; ++t) {
+        ts.emplace_back([&, t] {
+            for (int i = 0; i < kPer; ++i) {
+                R().submit([&, t, i] {
+                    if (i != last[static_cast<size_t>(t)] + 1) ++bad;
+                    last[static_cast<size_t>(t)] = i;
+                    ++count[static_cast<size_t>(t)];
+                });
+            }
+        });
+    }
+    int echoed = 0;
+    for (int i = 0; i < 200; ++i) {
+        std::string m = "ping " + std::to_string(i);
+        sendAll(sv[1], m);
+        if (recvExactly(sv[1], m.size()) == m) ++echoed;
+    }
+    for (auto& t : ts) t.join();
+    CHECK(echoed == 200);
+    int total = 0, badSeen = -1;
+    onReactor([&] {
+        for (int c : count) total += c;
+        badSeen = bad;
+    });
+    CHECK(total == kThreads * kPer);
+    CHECK(badSeen == 0);
+    ::close(sv[1]);
+    CHECK(waitUntil([&] { return echo->closed.load(); }));
+
+    // B: interest submitted while the data races in: level-triggered
+    // registration reports data that arrived before the fd was added.
+    int pv[2];
+    CHECK(makePair(pv));
+    CHECK(setNonBlocking(pv[0]) == 0);
+    auto h = std::make_shared<CountHandler>(pv[0], /*readAndDrop=*/true);
+    uint64_t key = 0;
+    onReactor([&] { key = R().add(h, pv[0]); });
+    int delivered = 0;
+    for (int i = 0; i < 300; ++i) {
+        std::thread w([&] { sendAll(pv[1], "x"); });
+        if (i % 2 == 0) std::this_thread::yield();
+        R().submit([key] { R().setInterest(key, true, false); });
+        w.join();
+        if (waitUntil([&] { return h->bytes.load() == i + 1; }, 2000)) ++delivered;
+    }
+    CHECK(delivered == 300);
+    onReactor([&] { h->onCloseAll(); });
+    ::close(pv[1]);
+}
+
+void testReactorStaleGeneration() {
+    std::printf("IoReactor: removed keys and stale generations are dropped\n");
+    auto& r = R();
+
+    // A: synthetic events (the normal dispatch path) for a removed key whose
+    // slot and fd number were reused.
+    int sv[2], sw[2];
+    CHECK(makePair(sv));
+    CHECK(setNonBlocking(sv[0]) == 0);
+    auto a = std::make_shared<CountHandler>(sv[0]);
+    auto b = std::make_shared<CountHandler>(-1);
+    uint64_t ka = 0, kb = 0;
+    int oldFd = sv[0], newFd = -1;
+    onReactor([&] {
+        ka = r.add(a, sv[0]);
+        CHECK(r.setInterest(ka, true, false) == 0);
+        r.remove(ka);   // rule 3: remove, then close
+        CHECK(a->key() == 0);
+        ::close(sv[0]);
+        a->fd = -1;
+        CHECK(makePair(sw));
+        newFd = sw[0];
+        CHECK(setNonBlocking(sw[0]) == 0);
+        b->fd = sw[0];
+        kb = r.add(b, sw[0]);
+        r.injectEventForTest(ka, true, true, true);   // stale generation: dropped
+        r.injectEventForTest(kb, true, false, false);  // no interest yet: dropped
+        CHECK(r.setInterest(kb, true, false) == 0);
+        r.injectEventForTest(kb, false, true, false);  // a direction it does not want: dropped
+        r.injectEventForTest(kb, true, false, false);  // delivered
+        r.injectEventForTest(ka, true, false, false);  // still dropped
+    });
+    CHECK((ka & 0xFFFFFFFFu) == (kb & 0xFFFFFFFFu));   // the slot was reused...
+    CHECK(ka != kb);                                    // ...with a new generation
+    CHECK(newFd == oldFd);                              // and the fd number too
+    CHECK(a->calls == 0);
+    CHECK(b->calls == 1);
+    onReactor([&] { r.remove(ka); r.remove(kb); r.remove(0); r.setTimer(ka, r.nowMs()); CHECK(r.setInterest(ka, true, true) == 0); });
+    CHECK(b->key() == 0);
+    ::close(sw[0]);
+    ::close(sw[1]);
+    ::close(sv[1]);
+
+    // B: a real batch: two readable handlers, each removes (and closes) the
+    // other and itself on its first call. Both events come back from one
+    // epoll_wait; the second one must be dropped.
+    struct KillOther : IoHandler {
+        int fd = -1;
+        std::shared_ptr<KillOther> other;
+        std::atomic<int>* calls = nullptr;
+        void onReady(bool, bool, bool) override {
+            ++*calls;
+            if (other && other->key() != 0) {
+                R().remove(other->key());
+                ::close(other->fd);
+            }
+            other.reset();
+            if (key() != 0) {
+                R().remove(key());
+                ::close(fd);
+            }
+        }
+        void onCloseAll() override {}
+    };
+    std::atomic<int> calls{0};
+    int p1[2], p2[2];
+    CHECK(makePair(p1) && makePair(p2));
+    auto x = std::make_shared<KillOther>();
+    auto y = std::make_shared<KillOther>();
+    x->fd = p1[0];
+    y->fd = p2[0];
+    x->other = y;
+    y->other = x;
+    x->calls = y->calls = &calls;
+    sendAll(p1[1], "a");
+    sendAll(p2[1], "b");
+    onReactor([&] {
+        CHECK(r.setInterest(r.add(x, x->fd), true, false) == 0);
+        CHECK(r.setInterest(r.add(y, y->fd), true, false) == 0);
+    });
+    CHECK(waitUntil([&] { return calls.load() >= 1; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK(calls == 1);
+    ::close(p1[1]);
+    ::close(p2[1]);
+
+    // C: real kernel, fd-number reuse: A is put in the kernel set with data
+    // pending, then (in the same command, before any wait) removed and its
+    // fd closed; B gets the same fd number. Only B may hear about it.
+    int q[2], q2[2];
+    CHECK(makePair(q));
+    CHECK(setNonBlocking(q[0]) == 0);
+    sendAll(q[1], "pending for A");
+    auto a2 = std::make_shared<CountHandler>(q[0]);
+    auto b2 = std::make_shared<CountHandler>(-1, /*readAndDrop=*/true);
+    int reusedFd = -1;
+    onReactor([&] {
+        uint64_t k = r.add(a2, q[0]);
+        CHECK(r.setInterest(k, true, false) == 0);
+        r.remove(k);
+        ::close(q[0]);
+        a2->fd = -1;
+        CHECK(makePair(q2));
+        reusedFd = q2[0];
+        CHECK(setNonBlocking(q2[0]) == 0);
+        b2->fd = q2[0];
+        CHECK(r.setInterest(r.add(b2, q2[0]), true, false) == 0);
+        sendAll(q2[1], "for B");
+    });
+    CHECK(reusedFd == q[0]);
+    CHECK(waitUntil([&] { return b2->bytes.load() == 5; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK(a2->calls == 0);
+    CHECK(b2->calls == 1);
+    onReactor([&] { b2->onCloseAll(); });
+    ::close(q[1]);
+    ::close(q2[1]);
+}
+
+void testReactorTimers() {
+    std::printf("IoReactor: timers (ordering, replace, cancel, remove, re-arm)\n");
+    auto& r = R();
+    struct Fired {
+        int id;
+        int64_t at;
+        int64_t deadline;
+    };
+    std::mutex mu;
+    std::vector<Fired> fired;
+    struct TimerHandler : IoHandler {
+        int id = 0;
+        int64_t deadline = 0;
+        int rearm = 0;      // times to re-arm, period 15 ms
+        std::mutex* mu = nullptr;
+        std::vector<Fired>* fired = nullptr;
+        void onReady(bool, bool, bool) override {}
+        void onTimer() override {
+            int64_t now = R().nowMs();
+            {
+                std::lock_guard<std::mutex> lk(*mu);
+                fired->push_back(Fired{id, now, deadline});
+            }
+            if (rearm > 0) {
+                --rearm;
+                deadline = now + 15;
+                R().setTimer(key(), deadline);
+            }
+        }
+        void onCloseAll() override { R().remove(key()); }
+    };
+    std::vector<std::shared_ptr<TimerHandler>> hs;
+    for (int i = 0; i <= 8; ++i) {
+        auto h = std::make_shared<TimerHandler>();
+        h->id = i;
+        h->mu = &mu;
+        h->fired = &fired;
+        hs.push_back(h);
+    }
+    hs[7]->rearm = 2;   // fires 3 times
+    onReactor([&] {
+        for (auto& h : hs) CHECK(r.add(h, -1) != 0);
+        int64_t base = r.nowMs();
+        auto set = [&](int i, int64_t d) {
+            hs[static_cast<size_t>(i)]->deadline = d;
+            r.setTimer(hs[static_cast<size_t>(i)]->key(), d);
+        };
+        set(1, base + 80);
+        set(2, base + 20);
+        set(3, base + 50);
+        set(4, base + 30);
+        r.setTimer(hs[4]->key(), 0);   // cancelled
+        set(5, base + 10);
+        set(5, base + 65);             // replaced (one timer per handler)
+        set(6, base + 25);
+        r.remove(hs[6]->key());        // removed with its timer
+        set(7, base + 5);
+        set(8, base - 5);              // already passed: fires on the next iteration
+        CHECK(r.setInterest(hs[1]->key(), true, false) == 0);   // timer-only: no-op
+    });
+    CHECK(waitUntil([&] {
+        std::lock_guard<std::mutex> lk(mu);
+        return fired.size() >= 8;
+    }, 3000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));   // nothing else may fire
+    std::vector<int> order;
+    int sevens = 0;
+    bool early = false;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        for (const auto& f : fired) {
+            if (f.at < f.deadline) early = true;
+            if (f.id == 7) ++sevens;
+            else order.push_back(f.id);
+        }
+    }
+    CHECK(!early);
+    CHECK(sevens == 3);
+    CHECK((order == std::vector<int>{8, 2, 3, 5, 1}));
+    onReactor([&] { for (auto& h : hs) r.remove(h->key()); });
+}
+
+void testReactorCloseAll() {
+    std::printf("IoReactor: closeAll\n");
+    auto& r = R();
+    std::vector<int> peers;
+    std::vector<std::shared_ptr<EchoHandler>> hs;
+    for (int i = 0; i < 5; ++i) {
+        int sv[2];
+        CHECK(makePair(sv));
+        peers.push_back(sv[1]);
+        hs.push_back(startEcho(sv[0]));
+    }
+    struct TimerOnly : IoHandler {
+        std::atomic<int> closes{0};
+        std::atomic<int> timers{0};
+        void onReady(bool, bool, bool) override {}
+        void onTimer() override { ++timers; }
+        void onCloseAll() override {
+            ++closes;
+            R().remove(key());
+        }
+    };
+    auto t = std::make_shared<TimerOnly>();
+    onReactor([&] { r.setTimer(r.add(t, -1), r.nowMs() + 300); });
+
+    r.closeAll();   // main thread: returns once every handler has closed
+    for (auto& h : hs) {
+        CHECK(h->closeAllCalls == 1);
+        CHECK(h->closed.load());
+    }
+    CHECK(t->closes == 1);
+    for (int fd : peers) {
+        CHECK(peerSeesEof(fd));
+        ::close(fd);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    CHECK(t->timers == 0);   // removed with its timer
+
+    // On the reactor thread it runs inline (no self-deadlock).
+    int sv[2];
+    CHECK(makePair(sv));
+    auto h = startEcho(sv[0]);
+    onReactor([&] { R().closeAll(); });
+    CHECK(h->closeAllCalls == 1 && h->closed.load());
+    CHECK(peerSeesEof(sv[1]));
+    ::close(sv[1]);
+    r.closeAll();   // nothing registered
+}
+
+// Must be the last reactor test: quiesce is irreversible.
+void testReactorQuiesce() {
+    std::printf("IoReactor: quiesce\n");
+    auto& r = R();
+    std::atomic<bool> ran{false};
+    onReactor([] {});
+    auto t0 = Clock::now();
+    CHECK(r.quiesce(100));
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+    CHECK(ms < 100);
+    r.submit([&ran] { ran = true; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(!ran.load());
+    uint64_t it = r.loopIterations();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK(r.loopIterations() == it);
+    t0 = Clock::now();
+    r.closeAll();   // quiesced: returns at once
+    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count() < 100);
+    CHECK(r.quiesce(10));   // again: still acknowledged
+}
+
+} // namespace
+
+
 int main() {
     // The Scheduler singleton needs a heap on this (the main) thread, and must
     // be constructed here, before any service thread can touch it.
@@ -948,6 +1795,15 @@ int main() {
     testRegistry();
     testHttpServerWireFormat();
     testHttpServerService();
+    testSocketUtil();
+    testReactorEcho();
+    testReactorIdleNoBusyLoop();
+    testReactorManyPairs();
+    testReactorSubmitRacing();
+    testReactorStaleGeneration();
+    testReactorTimers();
+    testReactorCloseAll();
+    testReactorQuiesce();   // last reactor test: irreversible
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     std::printf(g_failures == 0 ? "ALL PASSED\n" : "FAILED\n");

@@ -537,8 +537,8 @@ ppAttrs attrs =
 
 A `\uXXXX` escape becomes the character it names. The escapes `\n`, `\t`, `\"`
 and `\\` are kept, and so is a `\u` not followed by four hexadecimal digits.
-Any other escape loses its backslash, so `\r` becomes the letter `r` and `\'`
-becomes `'`. Last, a `"` that no backslash escapes, as the text of a
+`\r` becomes `\0D`, MLIR's hexadecimal escape for a carriage return. Any other
+escape loses its backslash, so `\'` becomes `'`. Last, a `"` that no backslash escapes, as the text of a
 multi-line string can hold, gains one.
 
 A character that a `\uXXXX` escape names is written as itself, so a newline or
@@ -621,6 +621,10 @@ convertUnicodeEscapesToUtf8 s =
 
                             else
                                 go ('u' :: '\\' :: revAcc) afterU
+
+                        Just ( 'r', afterEscape ) ->
+                            -- MLIR has no `\r` escape; `\0D` is its two-hex-digit form.
+                            go ('D' :: '0' :: '\\' :: revAcc) afterEscape
 
                         Just ( c, afterEscape ) ->
                             if c == 'n' || c == 't' || c == '"' || c == '\\' then

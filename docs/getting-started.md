@@ -69,6 +69,13 @@ Notes:
 
 - `eco/system` is resolved from the distribution automatically, like `eco/kernel`; `eco install
   eco/system` adds it to an `elm.json`.
+- `Socket` and its modules (`Socket.Tcp`, `Socket.Unix`, `Socket.Udp`, `Socket.Tls`,
+  `Socket.Address`) give TCP, Unix domain and TLS connections as streams, UDP datagrams, and IPv4/IPv6
+  addresses. The examples `TcpEcho.elm`, `UdpEcho.elm` and `TlsGet.elm` show each kind:
+
+      eco make src/TcpEcho.elm --output=tcp-echo && ./tcp-echo 7000
+      eco make src/TlsGet.elm --output=tls-get && ./tls-get example.com
+
 - Use `elm/http` for HTTP requests. `Http.Stream` adds request and response bodies as streams for
   when the data is too large, or arrives too slowly, to hold in memory at once.
 - The API is a port of [gren-lang/node](https://github.com/gren-lang/node) and gren-lang/core's

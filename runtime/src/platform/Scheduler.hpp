@@ -73,6 +73,17 @@ public:
     using QuiescenceListener = void (*)(void* ctx);
     void addQuiescenceListener(QuiescenceListener fn, void* ctx);
 
+    // Stop hooks (embed teardown, plans/eco-system-sockets.md §3.3.9): run
+    // on the eco thread, in registration order, when runEventLoop exits
+    // because a stop was requested (eco_app_stop, or an embed-mode exit).
+    // They release process-level resources a library holds for the program
+    // (eco/system closes its sockets so they do not stay bound in the host
+    // process). A hook must not call Elm or touch the heap; it may block
+    // briefly. Registration is permanent and idempotent per function, and
+    // must happen on the eco thread.
+    using StopHook = void (*)();
+    void addStopHook(StopHook fn);
+
     // Called by helper threads (e.g. TimerService worker) to wake the main
     // event loop when new async work is ready. Must not allocate or touch GC.
     void notifyWorkAvailableFromAsync();
@@ -244,6 +255,8 @@ private:
     // guarded by mutex_; quiescenceArmed_ is set from any thread by
     // incrementPendingAsync and cleared by the event loop when it fires.
     std::vector<std::pair<QuiescenceListener, void*>> quiescenceListeners_;
+    // Stop hooks (see addStopHook); eco thread only.
+    std::vector<StopHook> stopHooks_;
     std::atomic<bool> quiescenceArmed_{true};
 };
 

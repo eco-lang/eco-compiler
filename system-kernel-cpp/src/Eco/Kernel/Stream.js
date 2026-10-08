@@ -1040,6 +1040,351 @@ function _Stream_fromNodeWritable(writable, options)
 }
 
 
+// --- Duplex sockets (plans/eco-system-sockets.md Appendix E, §3.3.3, §D.2) -----------------
+//
+// _Stream_nodeDuplexChannels(socket, options) -> { read, write, abort(reason), reset(reason) }
+//
+// Two ByteChannels over ONE connected net.Socket / tls.TLSSocket created with
+// allowHalfOpen: true (the readable and writable adapters above destroy their Node stream
+// on close, which would end both directions of a socket):
+//   - read: never prefetches beyond Node's own buffer (resumed only while a read is
+//     pending, paused after each chunk). close/shutdown stops reading without destroying.
+//     A shutdown before end of input marks the read side abandoned: the final close then
+//     discards incoming data for up to 2 s (or until the peer's FIN) before destroying,
+//     so the kernel does not answer our FIN with RST (native §3.3.3, N8).
+//   - write: close is socket.end() (FIN; TLS close_notify first), completing on 'finish';
+//     shutdown fails the writes in flight and ends the socket.
+//   - the socket is destroyed when both sides are done, or by abort / reset.
+//   - abort(reason) (Socket.close): fails the pending read and writes with `reason`,
+//     completes a pending write close, destroys the socket. Later requests fail with
+//     `reason` (a read after end of input still gives end of input).
+//   - reset(reason) (Socket.reset): as abort, through resetAndDestroy() (RST) on
+//     options.raw (the net.Socket under a TLSSocket) or the socket; Unix sockets, where
+//     Node throws, are destroyed.
+// Errors carry `reason` (_Stream_describeError uses it): "read <CODE>" / "write <CODE>"
+// for socket errors (a socket error fails later reads and writes the same way), the abort
+// reason after abort / reset.
+// The socket is unref'd while no request is pending, so an idle connection does not keep
+// the program alive (native: an idle connection holds no pendingAsync count, §3.3.8).
+
+function _Stream_socketError(reason, code)
+{
+	var e = new Error(reason);
+	e.code = code || 'ECANCELED';
+	e.reason = reason;
+	return e;
+}
+
+function _Stream_nodeDuplexChannels(socket, options)
+{
+	var raw = (options && options.raw) || socket;
+	var buffered = [];       // Buffers received, not yet delivered
+	var eof = false;
+	var errCode = null;      // a socket error's code
+	var aborted = null;      // abort / reset reason
+	var pendingRead = null;  // { __max, __done }
+	var writes = [];         // { __done } in flight, oldest first
+	var closing = null;      // done of a pending write close
+	var readDone = false;
+	var readAbandoned = false;
+	var writeDone = false;
+	var finalized = false;
+	var reffed = true;
+
+	function busy()
+	{
+		return !!pendingRead || writes.length > 0 || !!closing;
+	}
+
+	function updateRef()
+	{
+		var want = busy() && !socket.destroyed;
+		if (want === reffed) return;
+		reffed = want;
+		try
+		{
+			if (want) socket.ref(); else socket.unref();
+		}
+		catch (e) { /* destroyed */ }
+	}
+
+	function readError()
+	{
+		if (aborted) return _Stream_socketError(aborted, 'ECANCELED');
+		if (errCode) return _Stream_socketError('read ' + errCode, errCode);
+		return null;
+	}
+
+	function writeError()
+	{
+		if (aborted) return _Stream_socketError(aborted, 'ECANCELED');
+		if (errCode) return _Stream_socketError('write ' + errCode, errCode);
+		return null;
+	}
+
+	function deliver()
+	{
+		if (!pendingRead) return;
+		var p = pendingRead;
+		var err;
+		if (buffered.length && !aborted)
+		{
+			pendingRead = null;
+			var head = buffered[0];
+			var chunk;
+			if (head.length <= p.__max)
+			{
+				chunk = buffered.shift();
+			}
+			else
+			{
+				chunk = head.subarray(0, p.__max);
+				buffered[0] = head.subarray(p.__max);
+			}
+			updateRef();
+			p.__done(null, new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+		}
+		else if (eof)
+		{
+			pendingRead = null;
+			updateRef();
+			p.__done(null, null);
+		}
+		else if ((err = readError()))
+		{
+			pendingRead = null;
+			updateRef();
+			p.__done(err, null);
+		}
+		else if (socket.destroyed)
+		{
+			// Closed under us without an error or a FIN we saw.
+			pendingRead = null;
+			updateRef();
+			p.__done(_Stream_socketError('socket closed', 'ECANCELED'), null);
+		}
+		else
+		{
+			socket.resume();
+		}
+	}
+
+	function failWrites(errFn)
+	{
+		var ws = writes;
+		writes = [];
+		for (var i = 0; i < ws.length; i++)
+		{
+			if (!ws[i].__settled)
+			{
+				ws[i].__settled = true;
+				ws[i].__done(errFn());
+			}
+		}
+	}
+
+	function finishClose(err)
+	{
+		if (!closing) return;
+		var done = closing;
+		closing = null;
+		writeDone = true;
+		updateRef();
+		done(err);
+		maybeFinalize();
+	}
+
+	function maybeFinalize()
+	{
+		if (finalized || !readDone || !writeDone) return;
+		finalized = true;
+		if (socket.destroyed) return;
+		if (readAbandoned && !eof && !errCode && !aborted)
+		{
+			// Discard incoming data until the peer's FIN or 2 s, then destroy.
+			var timer = setTimeout(function() { socket.destroy(); }, 2000);
+			if (timer.unref) timer.unref();
+			socket.on('data', function() {});
+			socket.once('end', function() { clearTimeout(timer); socket.destroy(); });
+			socket.once('close', function() { clearTimeout(timer); });
+			socket.resume();
+			return;
+		}
+		socket.destroy();
+	}
+
+	socket.pause();   // before 'data', so attaching it does not start flowing
+	socket.on('data', function(chunk)
+	{
+		if (readDone) return;   // abandoned: discard
+		buffered.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+		socket.pause();
+		deliver();
+	});
+	socket.on('end', function()
+	{
+		eof = true;
+		deliver();
+	});
+	socket.on('error', function(e)
+	{
+		if (!errCode && !aborted) errCode = (e && e.code) || 'EIO';
+		deliver();
+		failWrites(writeError);
+		finishClose(writeError());
+	});
+	socket.on('close', function()
+	{
+		deliver();
+		failWrites(function() { return writeError() || _Stream_socketError('socket closed', 'ECANCELED'); });
+		finishClose(writeError() || _Stream_socketError('socket closed', 'ECANCELED'));
+		updateRef();
+	});
+	updateRef();
+
+	function stop(reason, useReset)
+	{
+		if (aborted) return;
+		aborted = reason;
+		buffered = [];
+		readDone = true;
+		writeDone = true;
+		finalized = true;
+		deliver();
+		failWrites(writeError);
+		if (closing)
+		{
+			var done = closing;
+			closing = null;
+			done(null);   // a pending closeWritable completes (native §D.2)
+		}
+		if (!socket.destroyed)
+		{
+			var resetDone = false;
+			if (useReset && raw.resetAndDestroy)
+			{
+				try
+				{
+					raw.resetAndDestroy();
+					resetDone = true;
+				}
+				catch (e) { /* Unix sockets: plain destroy */ }
+			}
+			if (!resetDone) socket.destroy();
+			if (raw !== socket && !raw.destroyed) raw.destroy();
+		}
+		updateRef();
+	}
+
+	var read = {
+		requestRead: function(maxBytes, done)
+		{
+			if (readDone && !aborted)
+			{
+				done(_Stream_socketError('socket closed', 'ECANCELED'), null);
+				return;
+			}
+			pendingRead = { __max: maxBytes > 0 ? maxBytes : _Stream_kChannelReadChunk, __done: done };
+			updateRef();
+			deliver();
+		},
+		requestWrite: function(bytes, done)
+		{
+			done(new Error('not a writable channel'));
+		},
+		close: function(done)
+		{
+			if (!readDone)
+			{
+				readDone = true;
+				if (!eof) readAbandoned = true;
+				if (pendingRead)
+				{
+					var p = pendingRead;
+					pendingRead = null;
+					p.__done(_Stream_cancelledError(), null);
+				}
+				if (!socket.destroyed) socket.pause();
+				updateRef();
+				maybeFinalize();
+			}
+			if (done) done(null);
+		},
+		shutdown: function()
+		{
+			read.close(null);
+		}
+	};
+
+	var write = {
+		requestRead: function(maxBytes, done)
+		{
+			done(new Error('not a readable channel'), null);
+		},
+		requestWrite: function(bytes, done)
+		{
+			var err = writeError();
+			if (err || writeDone || closing || socket.destroyed)
+			{
+				done(err || _Stream_socketError('socket closed', 'ECANCELED'));
+				return;
+			}
+			var entry = { __done: done, __settled: false };
+			writes.push(entry);
+			updateRef();
+			socket.write(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), function(e)
+			{
+				if (entry.__settled) return;
+				entry.__settled = true;
+				var i = writes.indexOf(entry);
+				if (i >= 0) writes.splice(i, 1);
+				if (e && !errCode && !aborted) errCode = e.code || 'EIO';
+				updateRef();
+				done(e ? writeError() : null);
+			});
+		},
+		close: function(done)
+		{
+			done = done || function() {};
+			var err = writeError();
+			if (err || writeDone || closing || socket.destroyed)
+			{
+				done(err || (writeDone ? null : _Stream_socketError('socket closed', 'ECANCELED')));
+				return;
+			}
+			closing = done;
+			updateRef();
+			socket.end(function(e)
+			{
+				finishClose(e ? (writeError() || _Stream_socketError('write ' + (e.code || 'EIO'), e.code)) : null);
+			});
+		},
+		shutdown: function()
+		{
+			if (writeDone) return;
+			writeDone = true;
+			failWrites(_Stream_cancelledError);
+			if (closing)
+			{
+				var done = closing;
+				closing = null;
+				done(_Stream_cancelledError());
+			}
+			if (!socket.destroyed && !socket.writableEnded) socket.end();
+			updateRef();
+			maybeFinalize();
+		}
+	};
+
+	return {
+		read: read,
+		write: write,
+		abort: function(reason) { stop(reason || 'socket closed', false); },
+		reset: function(reason) { stop(reason || 'socket closed', true); }
+	};
+}
+
+
 // --- Codecs (StreamCodec.cpp) -----------------------------------------------------------
 //
 // A codec is { __transform(value, outs) -> error string | null, __flush(outs) -> error | null }.

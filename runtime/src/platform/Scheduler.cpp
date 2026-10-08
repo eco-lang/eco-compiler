@@ -577,6 +577,19 @@ void Scheduler::runEventLoop() {
         std::unique_lock<std::mutex> lock(mutex_);
         if (stopRequested_.load()) break;
         if (runQueue_.empty() && pendingAsync_.load() == 0) {
+            // An async source may have work that holds no pendingAsync (a
+            // received signal, plans/eco-system-library.md §3.4 keep-alive
+            // rule): run it before deciding the loop is quiescent, or it is
+            // lost (§10, 2026-10-08). ready() is called with mutex_ held, as
+            // in the wait predicate below.
+            bool sourceReady = false;
+            for (size_t i = 0; i < asyncSources_.size() && !sourceReady; ++i) {
+                sourceReady = asyncSources_[i].second();
+            }
+            if (sourceReady) {
+                lock.unlock();
+                continue;   // drain + processReadyAsync at the top
+            }
             // Quiescent. Give onEmptyEventLoop-style listeners one chance per
             // arming (§3.7): they run with mutex_ released (they may enqueue,
             // send to the app, drain and start async work), then the loop
@@ -623,8 +636,21 @@ void Scheduler::runEventLoop() {
         // across the upcoming drain. fireActivity is a no-op if unchanged.
         fireActivity(true);
     }
+    // Stopped (not quiescent): release what libraries hold for the program
+    // (stop hooks, eco thread). Copy: a hook may register another hook.
+    if (stopRequested_.load()) {
+        auto hooks = stopHooks_;
+        for (StopHook h : hooks) h();
+    }
     // Loop exiting (stop / quiescence): let the host loop go.
     fireActivity(false);
+}
+
+void Scheduler::addStopHook(StopHook fn) {
+    for (StopHook h : stopHooks_) {
+        if (h == fn) return;
+    }
+    stopHooks_.push_back(fn);
 }
 
 void Scheduler::fireActivity(bool busy) {

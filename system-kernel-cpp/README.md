@@ -1,7 +1,7 @@
 # eco/system
 
 POSIX-style system programming for Eco programs: files, processes,
-streams, the terminal and HTTP servers, from Elm.
+streams, the terminal, HTTP servers and sockets, from Elm.
 
 `eco/system` is the public system API for programs compiled with the Eco compiler. (Eco's own
 `eco/kernel` package is the compiler's internal IO layer and is not meant for applications.) The API
@@ -31,6 +31,10 @@ request and response bodies on top of it.
 - `System.Terminal`: terminal size, raw mode and resize events.
 - `Http.Server`, `Http.Server.Response`: an HTTP server.
 - `Http.Stream`: streaming request and response bodies for elm/http.
+- `Socket`, `Socket.Address`, `Socket.Tcp`, `Socket.Unix`, `Socket.Udp`, `Socket.Tls`: TCP, Unix
+  domain and TLS connections (TLS on OpenSSL 3 natively), UDP datagrams, IPv4/IPv6 addresses and
+  name lookup. Native socket IO runs non-blocking on one shared event loop (epoll on Linux, kqueue
+  on macOS).
 
 ## Example
 

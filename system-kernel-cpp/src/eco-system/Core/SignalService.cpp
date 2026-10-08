@@ -4,6 +4,16 @@
 // (§3.4). The handler is async-signal-safe: it reads one atomic int and
 // calls write(2), preserving errno.
 //
+// Quiescence (plans/eco-system-library.md §10, 2026-10-08): the handler runs
+// on whichever thread the kernel picks (for kill(2) from another process,
+// normally the main thread), but the event used to reach the scheduler only
+// through the reader thread. Under CPU load that thread could be scheduled
+// after the main loop had found itself quiescent and exited, so a signal
+// sent by a child before it exited was lost (SignalInterruptTest, about 1
+// run in 12 under load). pollReady() closes this: the loop's readiness
+// check reads the pipe itself, and the reader holds pipeMutex_ from read to
+// queue, so a byte is always either in the pipe or in ready_.
+//
 // Templates used: none (POD only, G1).
 //
 //===----------------------------------------------------------------------===//
@@ -18,7 +28,9 @@
 #ifndef _WIN32
 #include <csignal>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -26,7 +38,7 @@ namespace Eco::System {
 
 namespace {
 
-[[maybe_unused]] bool signalReady() { return SignalService::instance().hasReady(); }
+[[maybe_unused]] bool signalReady() { return SignalService::instance().pollReady(); }
 
 #ifndef _WIN32
 // Write end of the self-pipe, read by the handler. Lock-free int.
@@ -45,16 +57,25 @@ extern "C" void ecoSystemSignalHandler(int signo) {
     errno = saved;
 }
 
-void readerThread(int rfd) {
-    unsigned char buf[64];
+// Waits for the (non-blocking) read end to become readable, then takes its
+// bytes under pipeMutex_. The main thread may have taken them first
+// (pollReady); then there is nothing to queue and no wake-up.
+void readerThread(int rfd, Scheduler* sched) {
     for (;;) {
-        ssize_t r = ::read(rfd, buf, sizeof buf);
+        struct pollfd p {};
+        p.fd = rfd;
+        p.events = POLLIN;
+        int r = ::poll(&p, 1, -1);
         if (r < 0) {
             if (errno == EINTR) continue;
-            return;   // the pipe is never closed; defensive
+            return;   // defensive
         }
-        if (r == 0) return;
-        for (ssize_t i = 0; i < r; ++i) SignalService::instance().post(buf[i]);
+        if (p.revents & (POLLERR | POLLNVAL)) return;   // the pipe is never closed; defensive
+        if (SignalService::instance().takeFromPipe()) {
+            // Outside pipeMutex_/readyMutex_ (the Scheduler reads hasReady()
+            // and pollReady() under its mutex).
+            sched->notifyWorkAvailableFromAsync();
+        }
     }
 }
 #endif
@@ -72,14 +93,21 @@ SignalService::SignalService() {
     sched_ = &Scheduler::instance();
 }
 
-void SignalService::post(int signo) {
-    {
-        std::lock_guard<std::mutex> lk(readyMutex_);
-        ready_.push_back(signo);
-        readyCount_.fetch_add(1, std::memory_order_acq_rel);
-    }
-    // Outside readyMutex_ (the Scheduler reads hasReady() under its mutex).
-    sched_->notifyWorkAvailableFromAsync();
+void SignalService::queue(int signo) {
+    std::lock_guard<std::mutex> lk(readyMutex_);
+    ready_.push_back(signo);
+    readyCount_.fetch_add(1, std::memory_order_acq_rel);
+}
+
+bool SignalService::pollReady() {
+    if (hasReady()) return true;
+    if (!started_) return false;
+    // Dequeue pending signals first: one whose handler runs instead (on
+    // this thread, at the return of a syscall) has written the pipe by the
+    // time we read it.
+    takePending();
+    takeFromPipe();
+    return hasReady();
 }
 
 bool SignalService::tryPop(int& signo) {
@@ -101,23 +129,70 @@ int SignalService::subscribers(int signo) const {
 bool SignalService::ensureStarted() { return false; }
 bool SignalService::subscribe(int) { return false; }
 void SignalService::unsubscribe(int) {}
+bool SignalService::takeFromPipe() { return false; }
+void SignalService::takePending() {}
 
 #else
+
+bool SignalService::takeFromPipe() {
+    std::lock_guard<std::mutex> lk(pipeMutex_);
+    bool any = false;
+    unsigned char buf[64];
+    for (;;) {
+        ssize_t r = ::read(readFd_, buf, sizeof buf);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;   // EAGAIN: empty
+        }
+        if (r == 0) break;
+        for (ssize_t i = 0; i < r; ++i) queue(buf[i]);
+        any = true;
+    }
+    return any;
+}
+
+void SignalService::takePending() {
+#if defined(__linux__)
+    // A subscribed signal pending for the process (or this thread) whose
+    // handler has not run yet: take it here, as the handler would have.
+    // sigtimedwait dequeues atomically, so the handler and this call never
+    // both see one instance. Elsewhere (no sigtimedwait, e.g. macOS) the
+    // handler's own pipe write is the only path.
+    sigset_t set;
+    sigemptyset(&set);
+    bool any = false;
+    for (int s = 1; s < kMaxSig && s < NSIG; ++s) {
+        if (counts_[s] > 0) {
+            sigaddset(&set, s);
+            any = true;
+        }
+    }
+    if (!any) return;
+    struct timespec zero {};
+    for (;;) {
+        int s = ::sigtimedwait(&set, nullptr, &zero);
+        if (s > 0) {
+            queue(s);
+            continue;
+        }
+        if (s < 0 && errno == EINTR) continue;
+        break;   // EAGAIN: none pending
+    }
+#endif
+}
 
 bool SignalService::ensureStarted() {
     if (started_) return true;
     int fds[2] = {-1, -1};
-    if (makeCloexecPipe(fds, /*nonBlocking=*/false) != 0) return false;
-    // The handler must never block: only the write end is non-blocking.
-    int fl = ::fcntl(fds[1], F_GETFL);
-    if (fl < 0 || ::fcntl(fds[1], F_SETFL, fl | O_NONBLOCK) < 0) {
-        ::close(fds[0]);
-        ::close(fds[1]);
-        return false;
-    }
+    // Both ends non-blocking: the handler must never block, and the read end
+    // is read by two threads (the reader after poll, the main thread in
+    // pollReady).
+    if (makeCloexecPipe(fds, /*nonBlocking=*/true) != 0) return false;
+    readFd_ = fds[0];
     try {
-        std::thread(readerThread, fds[0]).detach();
+        std::thread(readerThread, fds[0], sched_).detach();
     } catch (...) {
+        readFd_ = -1;
         ::close(fds[0]);
         ::close(fds[1]);
         return false;
