@@ -1,221 +1,492 @@
 # Plan: GC triggers for large-body allocation
 
-Status: **draft** (2026-10-08). Follow-up to R7 in `plans/eco-system-websockets.md` (§8 and the §10
-Integration entry). Touches `runtime/src/allocator/`: read `test/tla/README.md` and
-`design_docs/invariants.csv` (HEAP_026, HEAP_034, HEAP_041, HEAP_042, HEAP_056, HEAP_062, HEAP_068)
-before changing code.
+Status: **implementation-ready, v2** (2026-10-08). v1 was the draft; §11 is the review that
+produced v2. Follow-up to R7 in `plans/eco-system-websockets.md` (§8, and the §10 Integration
+entry).
 
-## 1. Problem
+**Read before coding:**
+- `design_docs/invariants.csv`: HEAP_007, HEAP_026, HEAP_034, HEAP_041, HEAP_042, HEAP_062,
+  HEAP_063, HEAP_068, HEAP_074.
+- `test/tla/README.md`, "The canary". This plan touches no `TLA-REGION`; §6 says how to confirm
+  that.
+- `CLAUDE.md`: run each test command once, tee its output to `/tmp`, then grep.
 
-A large `Bytes` or `String` (payload ≥ `large_header_split_threshold`, default 8 KiB) is a 16-byte
-header in the nursery and a pinned body in the old generation (HEAP_026). The body is freed at the
-end of the first minor GC that does not reach its header, so a short-lived large value is cheap,
-**provided a minor GC runs**. Nothing makes one run:
+## 1. Problem (verified in the tree, 2026-10-08)
 
-- **G1. Minors ignore large-body bytes.** A minor runs when the nursery's clamped bump end is hit
-  (`NurserySpace::computeAllocEnd`). A 16 MiB message costs the nursery 16 bytes. A program that
-  mostly moves big buffers (an echo server, a file copy through Elm) allocates gigabytes of bodies
-  between two minors.
-- **G2. Major-GC work is paced by minors.** The major triggers are evaluated at minors
-  (`ThreadLocalHeap::minorGC` → `evaluateMajorGCTrigger`). An incremental cycle advances one slice
-  per minor (`stepMarkCycle`, 32 slices by default), and its pressure finish
-  (`cyclePressureFinishDue`, 95% of the cap) is checked only there. Compiled code polls no
-  safepoints (`__eco_safepoint_poll` is never emitted). A cycle that starts gets no further while
-  minors are rare.
-- **G3. No recovery when a body allocation fails.** `allocLargeByteBuffer` and `allocLargeString`
-  assert when `allocateLargeBody` returns null. `allocateLargePinned` and `allocateYoungLarge` run
-  a major GC and retry; the split allocators do not.
+A `String` or `Bytes` whose allocation size is at least `HeapConfig::large_object_threshold`
+(8 KiB) uses the **split** form (HEAP_026):
+- a 16-byte `Tag_LargeStringHeader` / `Tag_LargeByteHeader` in the nursery;
+- a pinned body in the old generation.
+
+The routing lives in `alloc::allocString` / `allocByteBuffer` / `allocByteBufferBlank`
+(`HeapHelpers.hpp`). They call `ThreadLocalHeap::allocLargeString` / `allocLargeByteBuffer`, which
+allocate the header with `allocate()` and then the body with `OldGenSpace::allocateLargeBody`.
+
+The end of every minor GC frees the bodies whose headers it did not reach
+(`OldGenSpace::sweepNurseryLargeBodies`). That happens in every phase except compaction. So a
+short-lived large value is cheap, **provided minors run**. Three things stop them from running:
+
+- **G1. Minors ignore direct old-generation bytes.**
+  - A minor runs only when an allocation misses the nursery's clamped end
+    (`NurserySpace::computeAllocEnd`).
+  - The only other route, `ThreadLocalHeap::collectAtSafepoint`, is reached only through
+    `__eco_safepoint_poll`, which compiled code never emits (the comment in
+    `ThreadLocalHeap::isNurseryNearFull` says so).
+  - A large body costs the nursery 16 bytes, so a program that mostly moves big buffers allocates
+    gigabytes of bodies between two minors.
+- **G2. Major work is paced by minors.** `ThreadLocalHeap::minorGC` evaluates the major triggers
+  at its end (`evaluateMajorGCTrigger`). While an incremental cycle runs, each minor end is one
+  cycle step instead (`stepMarkCycle`; HEAP_063: a cycle spans T + 1 minors, T =
+  `incremental_mark_slices` = 32). The pressure finish (`cyclePressureFinishDue`, at
+  `incremental_mark_finish_fraction` = 0.95 of the old-gen cap) is checked only in `stepMarkCycle`.
+  With rare minors, a cycle that has started never finishes.
+- **G3. No recovery when a body allocation fails.** `allocLargeString` / `allocLargeByteBuffer`
+  assert on a null body. In an `NDEBUG` build the assert vanishes and the null pointer is then
+  dereferenced. `allocateLargePinned` and `allocateYoungLarge` call `majorGC(AllocFailure)` and
+  retry; the split allocators do not.
 
 ### Evidence
 
 Native `WsEchoServer`, Autobahn group 13 in one process
-(`/tmp/eco-p12j-autobahn-run2/logs/server-native-default.13.server.log`):
+(`/tmp/eco-p12j-autobahn-run2/logs/server-native-default.13.server.log`, GC stats at exit):
 
-- **Allocation:** 5.3 GB allocated, but only **5 minor GCs** in the whole run.
-- **Large bodies:** 4.7 GB freed at those 5 minors, with nothing deferred.
-- **Majors:** a global-pressure trigger fired once, yet **0 major cycles completed**.
-- **Old generation:** 20,480 MB in use at the end, 100% of the cap.
-- **Result:** abort in `allocLargeByteBuffer` ("Failed to allocate large byte buffer body in old
-  gen").
+| Counter | Value |
+|---|---|
+| Bytes allocated (nursery and direct, total) | 5265 MB |
+| Minor GC cycles | **5** |
+| Large bodies freed at minors / deferred | 4720 MB / 0 MB |
+| Global-pressure triggers | 1 (a cycle started) |
+| Major GC cycles completed | **0** |
+| Old-gen in use at the end | 20480 MB (100% of the cap) |
 
-The native server and client each reached 7–8 GB RSS during groups 12 and 13; the JS server stayed
-under 170 MB. WS6 measured the same effect at small scale: a loop dropping 1000 × 256 KiB `Bytes`
-grows RSS by ~300 MB with no GC.
+The run ended with an abort in `allocLargeByteBuffer` ("Failed to allocate large byte buffer body
+in old gen").
 
-Large Strings take the same path, so string-heavy code is exposed too, not only eco/system
-streams.
+Other measurements:
+- The native server and client each reached 7–8 GB RSS during groups 12 and 13; the JS server
+  stayed under 170 MB.
+- WS6: a loop dropping 1000 × 256 KiB `Bytes` grows RSS by ~300 MB with no GC.
+
+Any code that handles large Strings or Bytes is exposed. That includes every eco/system stream,
+whose chunks are 64 KiB (`FileSystemOps.cpp` `kChunk`, `StreamPipe.cpp` `kPipeReadChunk`).
 
 ## 2. Goals and non-goals
 
 Goals:
-1. Dead large bodies are reclaimed within a bounded number of bytes of large allocation, whatever
-   the program's nursery allocation rate.
-2. A major cycle that has started keeps advancing under large-body allocation and finishes before
-   the cap.
-3. A body allocation that fails gets one minor GC, then one major GC, before it gives up.
-4. No measurable cost on the Stage 7 self-compile (§6 gate).
+1. The bytes allocated straight into the old generation between two minors are bounded by a
+   budget (§3 D2) plus one allocation, whatever the program's nursery allocation rate.
+2. Because minors then happen, the major triggers are evaluated and a running cycle advances and
+   pressure-finishes before the cap (G2 is fixed by G1's fix).
+3. A body allocation that fails gets one minor and one major GC, then a clear fatal message
+   (never an assert or a null dereference).
+4. No measurable slowdown of the Stage 7 self-compile (§5 Phase 4).
 
 Non-goals:
 - Safepoint polls in compiled code.
-- Changes to the split representation, the large-body sweep, or the mark protocol.
-- Changes inside TLA-pinned regions, unless §4 step 1.2 finds one unavoidable.
+- Changes to the split representation, the large-body sweep, the mark protocol or any
+  `TLA-REGION`.
 
 ## 3. Design
 
-**D1. Direct-allocation debt.** `ThreadLocalHeap` keeps `direct_debt_bytes_`: bytes allocated
-straight into the old generation since the last minor GC. It counts:
-- split bodies (`allocLargeString`, `allocLargeByteBuffer`);
-- young large objects (`allocateYoungLarge`, freed at minors);
-- pinned large objects (`allocateLargePinned`). These are not freed by a minor, but counting them
-  lets the major triggers be evaluated.
+**D1. Direct-allocation debt.** `ThreadLocalHeap` gets two plain fields:
+- `direct_debt_bytes_`: bytes allocated straight into the old generation since the last minor;
+- `direct_debt_seq_`: the `nursery_.minorSeq()` value that debt belongs to.
 
-The counter is a plain per-heap field (one mutator thread per heap, HEAP_007). It is never shared,
-has no atomics, and leaves the census pins unchanged.
+The debt resets lazily: when `nursery_.minorSeq()` differs from `direct_debt_seq_`.
+`NurserySpace::minorSeq()` already exists. It is always on and is incremented at the start of
+every minor in both nursery modes (`NurserySpace.cpp`, `++minor_seq_`). No GC code changes. HEAP_007
+(one mutator per process) makes plain fields correct; there are no atomics, so the canary's census
+pins do not change.
 
-**D2. Budget.** Add `HeapConfig::direct_alloc_minor_budget` (bytes; `0` disables; JSON key
-`direct_alloc_minor_budget`). The default equals the nursery's minor threshold in object bytes
-(`threshold_total_bytes_`), so a byte of large body weighs the same as a byte of nursery. Choose
-the final default by measurement (§4 Phase 3), not by fiat.
+The debt counts four allocation paths:
 
-**D3. Request a minor through the existing clamp.** When the debt reaches the budget, a new
-`NurserySpace::requestMinor()` sets `bump_.end = bump_.ptr`. Every allocation path then misses at
-an existing GC point and runs `minorGC()` there:
-- the C++ `allocate` and `allocateSlow`;
-- the compiled inline bump through `eco_alloc_inline_slow` (it reloads `bump.end` from the TLS
-  bump state, HEAP_034);
-- `ensureHeadroom` (HEAP_041: a miss means "the threshold tripped").
-
-No new GC point is introduced. A minor recomputes `bump_.end = computeAllocEnd()`, which removes
-the clamp. Because the minor runs `evaluateMajorGCTrigger` and `stepMarkCycle`, G2 is fixed by the
-same change: minors now come at least once per budget of large allocation, so a cycle advances
-and its pressure finish is checked at most one budget late.
-
-**D4. Resetting the debt.** The debt belongs to a minor epoch: it resets when the heap's minor
-count differs from the count at the last increment. That needs no edit to `TLH.minorGC`, provided
-a monotonic per-heap minor counter exists outside the pinned region; §4 step 1.2 checks. If none
-exists, increment one in `minorGC` and follow the canary procedure (AUDIT entries for M1, M4, M5,
-M6, M8). The expected verdict is "no model change": a thread-local counter adds no shared state.
-
-**D5. Recovery on body failure (G3).** In `allocLargeString` and `allocLargeByteBuffer`, a null
-body is handled as follows:
-1. Leave the null-bodied header as garbage. GC skips a null body; HEAP_026's null guards already
-   cover this.
-2. Run `minorGC()`. If the body still fails, run `majorGC(AllocFailure)`; if a cycle is in
-   flight, finish it first with `finishMarkCycleNow(Pressure)`.
-3. Restart the function from the header allocation.
-
-The header-first ordering note stays true: no GC runs between a *successful* body registration
-and its wiring. For the caller the call is still one GC point, as before, because the header
-allocation already was one.
-
-**D6. Caller audit.** `allocLargeByteBuffer(data, …)` and `allocLargeString(chars, …)` copy from a
-raw pointer after GC points. Every caller must pass memory that a GC cannot move or free: a C++
-buffer, or an old-generation body that the caller roots. The existing header allocation already
-requires this, but nothing has checked it; D5 adds GCs, so audit every caller (`grep -rn
-'allocLarge\(String\|ByteBuffer\)\|allocByteBufferBlank'`) and fix or document each one.
-
-**D7. Telemetry.** Add `GCStats`:
-- `minor_gc_direct_debt_triggers`;
-- `direct_debt_bytes_total`;
-- `large_body_alloc_failure_recoveries`, split by minor or major.
-
-Print them in the Minor GC block.
-
-## 4. Phases
-
-### Phase 0: reproduce (red tests first)
-- 0.1 Add an allocator test, `test/allocator/LargeBodyChurnTest.cpp`. With a small heap (old-gen
-  cap 256 MB), allocate and drop 100,000 × 64 KiB byte buffers (6.4 GB), with no other nursery
-  allocation.
-  - It must complete with committed old-gen bytes bounded by cap × 0.5.
-  - Today it should fail with the G3 assertion. Record that failure.
-  - Add a variant with live retention (keep every 100th buffer, up to a bound) to exercise G2:
-    majors must run and complete.
-- 0.2 Add an Elm E2E test, `test/eco-system/src/LargeBytesChurnTest.elm`. Stream 4 GiB through
-  Elm in 256 KiB chunks (`Stream` from a generated source, dropping each chunk) and check the RSS
-  delta with `rssKiB`, following the pattern of `WebSocketStreamedMemoryTest`. Mark it SKIP-JS if
-  the JS measurement is meaningless.
-- 0.3 Take a baseline. Run the Stage 7 self-compile with GC stats and record:
-  - large-placement bytes (`noteLargeAlloc` counters) and split-body bytes;
-  - minors, majors, GC time and wall time.
-
-  This bounds the extra minors D2 would add.
-
-### Phase 1: debt and clamp (D1–D4, D7)
-- 1.1 Add the `HeapConfig` field with validation (`> 0` or `0` for off), the JSON key, and a
-  `HeapConfigJson` test.
-- 1.2 Find or add the monotonic minor counter (D4). Decide the reset site; if it is inside
-  `TLH.minorGC`, do the canary procedure.
-- 1.3 Count the debt in the three direct paths and the two split allocators; call
-  `nursery_.requestMinor()` when the debt reaches the budget.
-- 1.4 Implement `NurserySpace::requestMinor()` in both legacy and region mode, covering
-  `rg_->eden_base` and the region bump. It must be idempotent and must not fight `failSoftUnclamp`:
-  a fail-soft unclamp after the requested minor is fine, because the minor resets the debt.
-- 1.5 Add tests:
-  - 0.1 passes, and its stats show `minor_gc_direct_debt_triggers > 0`;
-  - an `EnsureHeadroomTest` case shows that a clamp requested between two `ensureHeadroom` calls
-    yields exactly one minor and no loop;
-  - inline allocation is covered by an E2E test that allocates large Bytes from compiled code
-    (Phase 0.2 covers this).
-
-### Phase 2: recovery (D5, D6)
-- 2.1 Implement the retry loop in both split allocators, at most one minor and one major per call.
-  Then fail with a clear message naming the cap and the debt.
-- 2.2 Do the caller audit (D6); fix or annotate every call site.
-- 2.3 Add tests:
-  - a heap with a tiny cap and a pre-filled old generation of dead large bodies makes the next
-    body allocation recover via the minor;
-  - with live bodies it recovers via the major;
-  - with everything live it fails with the message.
-
-### Phase 3: workloads and tuning
-- 3.1 Native Autobahn with all cases in one process (`test/conformance/autobahn.sh`, add a
-  `--one-process` mode if needed). It must not crash, and server RSS must stay within a small
-  multiple of the largest message. Record RSS for groups 9, 12 and 13.
-- 3.2 Re-measure the WS6 loop (1000 × 256 KiB) and `WebSocketStreamedMemoryTest`. Tighten the
-  latter's RSS bound if it now holds a lower figure.
-- 3.3 Self-compile A/B against the Phase 0.3 baseline at the default budget and at 0.5× and 2× the
-  default. Pick the default on wall time and GC time; document the choice next to the constant,
-  in the house style of `AllocatorCommon.hpp`.
-
-### Phase 4: documentation
-- New invariant `HEAP_0xx DirectAllocDebt`: direct old-gen allocation bytes since the last minor
-  are bounded by `direct_alloc_minor_budget` plus one allocation; reaching the budget clamps the
-  nursery end, so the next allocation runs a minor.
-- Extend HEAP_026 with the recovery path.
-- Close R7 in `plans/eco-system-websockets.md` (§8 row and memory `eco-large-bytes-not-freed`).
-  Revisit `autobahn.sh`'s per-subsection default.
-
-## 5. Risks
-
-| # | Risk | Mitigation |
+| Path | What it allocates | Freed by |
 |---|---|---|
-| K1 | Extra minors cost the compiler time | Phase 0.3 / 3.3 A/B; the budget is configurable; minors with few survivors are cheap |
-| K2 | The clamp interacts with hoisted headroom (HEAP_041) | A clamp only follows an allocation, which is already a GC point, so no hoisted run spans it; covered by the 1.5 test |
-| K3 | A minor counter edit lands in a pinned region | D4 prefers an existing counter; otherwise the canary procedure with AUDIT entries |
-| K4 | Recovery GC invalidates a caller's `data` pointer | D6 audit before D5 lands |
-| K5 | Region-mode (threaded-gc-07) bump state differs | 1.4 implements and tests both modes |
-| K6 | A large *live* working set still hits the cap | That is genuine exhaustion; D5 fails with a clear message instead of an assertion |
+| `allocLargeString` | split string body | a minor |
+| `allocLargeByteBuffer` | split byte-buffer body | a minor |
+| `allocateYoungLarge` | pointer-bearing large object (HEAP_062) | a minor |
+| `allocateLargePinned` | pointer-free non-split large object | a major only |
 
-## 6. Gates
+Pinned objects are counted too: a minor does not free them, but it evaluates the major triggers,
+which is what bounds them.
 
-Run each once, tee to `/tmp`:
+**D2. Budget.**
+
+    budget = min( direct_alloc_minor_budget × nursery_.minorThresholdBytes(),
+                  getOldGenMaxBytes() / 32 )
+
+`direct_alloc_minor_budget` is a new `HeapConfig` field, a `double` multiplier with default 1.0;
+`0` disables the mechanism. `minorThresholdBytes()` is a new accessor returning
+`threshold_total_bytes_`, the nursery's own trip point in object bytes. Because it is read at
+each check, it follows nursery growth.
+
+The cap bound (1/32 ≈ 3%) is needed because of G2. A cycle pressure-finishes only at a minor
+that sees committed ≥ 95% of the cap. With at most 3% of the cap between minors, at least one
+minor falls inside the 95–100% window.
+
+**D3. Requesting a minor.** `NurserySpace::requestMinor()` sets `bump_.end = bump_.ptr` when
+`bump_.end > bump_.ptr`, and returns whether it changed anything. After that, every nursery
+allocation misses into an existing slow path, which runs `minorGC()`:
+- `ThreadLocalHeap::allocate` and `allocateSlow` (`nursery_.allocate` returns null);
+- `allocateSlowRaw`, reached from compiled code's inline bump through `eco_alloc_inline_slow`.
+  The expansion reloads `{ptr, end}` from `eco_bump_state()`, the address of this same
+  `NurseryBump`, on every allocation (HEAP_034);
+- `ensureNursery`, reached from `eco_ensure_nursery_slow`: `ensureHeadroom` fails when
+  end − ptr < n (HEAP_041).
+
+These facts make the clamp safe:
+- Only nursery initialization, the end of a minor and `failSoftUnclamp` (called only right after
+  a minor) write `bump_.end`. The clamp therefore lasts until the next minor, which recomputes
+  `bump_.end = computeAllocEnd()`.
+- The only validator check on the end is `assert(bump_.ptr <= bump_.end)` at the end of a minor,
+  and `end == ptr` satisfies it.
+- No new GC point is created: the clamp is set inside an allocating call, which already is a GC
+  point. No hoisted headroom region can contain one, because `eco_ensure_nursery_slow` is "the ONE
+  statepoint of a covered region" (`RuntimeExports.cpp`).
+- There is no GC loop: after the minor, the next request needs another full budget of direct
+  allocation.
+
+**D4. Recovery (G3).** The split allocators become a loop of at most three attempts:
+1. Allocate the header, then the body.
+2. On a null body, abandon the header. It is unreachable garbage with a null `body`, which every
+   GC path skips (HEAP_026's null guards). On the first failure run `minorGC()`; on the second
+   run `majorGC(GCStats::MajorReason::AllocFailure)`. Count each in `GCStats`, the major also as
+   `major_gc_alloc_failure_triggers`, as the sibling paths do.
+3. Start again from step 1.
+4. After the third failure, call a `[[noreturn]] largeBodyExhausted(kind, body_size)` that prints
+   the size, the old-gen in-use bytes and the cap, then aborts. It follows the shape of
+   `ThreadLocalHeap::regionTooLarge`.
+
+`majorGC` already finishes a running cycle (`finishMarkCycleNow(Join)`), so no extra step is
+needed. The header-first ordering note stays true: no GC runs between a *successful* body
+registration and its wiring.
+
+**D5. Callers keep the same contract.**
+- `allocLargeString(chars, …)` and `allocLargeByteBuffer(data, …)` already copy from the caller's
+  raw pointer after a GC point: the header allocation can run a minor, and that minor can chain
+  into a major. The small-object paths (`eco_alloc_with_roots`, then the copy) do the same.
+- D4 adds more GCs of the same kinds, not a new hazard. So instead of a call-site audit, write
+  the contract on the four `HeapHelpers` entry points: `chars`/`data` must not point into the GC
+  heap unless it is a rooted, pinned large body.
+
+**D6. Telemetry.** Add `GCStats` fields, combined in `GCStats::combine`, zeroed in
+`GCStats::reset` and printed in `GCStats::print`'s "Minor GC" block:
+
+| Field | Meaning |
+|---|---|
+| `direct_debt_bytes_total` | bytes counted by D1 |
+| `minor_gc_debt_requests` | `requestMinor()` calls that set a clamp |
+| `large_body_recover_minors` | D4 first retries |
+| `large_body_recover_majors` | D4 second retries |
+
+All four are behind `ENABLE_GC_STATS`, like the other counters. The debt itself is not.
+
+## 4. Implementation, file by file
+
+**`runtime/src/allocator/AllocatorCommon.hpp`**
+- Next to `MAJOR_GC_GARBAGE_FRACTION`, add the constant with a comment in the house style:
+
+  ```cpp
+  // Multiple of the nursery's minor-GC threshold (object bytes) that allocation made directly
+  // in the old generation (split large bodies, young large objects, pinned large objects)
+  // may reach before the next allocation runs a minor GC (0 disables). The effective budget is
+  // also capped at 1/32 of the old-gen cap (plans/large-body-gc-trigger.md D2).
+  constexpr double DIRECT_ALLOC_MINOR_BUDGET = 1.0;
+  ```
+
+- In `HeapConfig`, next to `major_gc_garbage_fraction`:
+  `double direct_alloc_minor_budget = DIRECT_ALLOC_MINOR_BUDGET;`
+- In `HeapConfig::validate()`, reject non-finite values and values outside `[0, 64]`, with the
+  same throw style as its neighbours.
+
+**`runtime/src/allocator/HeapConfigJson.cpp`**
+- Add `"direct_alloc_minor_budget"` to the known-key list (the array that holds
+  `"major_gc_garbage_fraction"`).
+- Parse it with `parseDouble`, not `parseFraction`, which rejects values above 1; `validate()`
+  does the range check.
+
+**`runtime/src/allocator/NurserySpace.hpp`** (public section, near `minorSeq()`)
+
+```cpp
+// The proactive minor-GC trip point in object bytes (computeAllocEnd's threshold).
+size_t minorThresholdBytes() const { return threshold_total_bytes_; }
+// Make the next allocation on every path (allocate/allocateSlow/allocateSlowRaw, the inline
+// bump, ensureHeadroom) miss into its slow path and run a minor GC, which re-derives
+// bump_.end. Returns false if a miss was already due (end <= ptr).
+bool requestMinor() {
+    if (bump_.end <= bump_.ptr) return false;
+    bump_.end = bump_.ptr;
+    return true;
+}
+```
+
+**`runtime/src/allocator/ThreadLocalHeap.hpp`**
+- Private fields: `size_t direct_debt_bytes_ = 0;` and `uint64_t direct_debt_seq_ = 0;`.
+- Public method (tests read it): `size_t directAllocBudget() const;`.
+- Private methods: `void noteDirectAlloc(size_t bytes);`,
+  `[[noreturn]] void largeBodyExhausted(const char* kind, size_t body_size);`.
+
+**`runtime/src/allocator/ThreadLocalHeap.cpp`**
+
+```cpp
+size_t ThreadLocalHeap::directAllocBudget() const {
+    const double f = config_->direct_alloc_minor_budget;
+    if (!(f > 0.0)) return 0;
+    size_t b = static_cast<size_t>(f * static_cast<double>(nursery_.minorThresholdBytes()));
+    const size_t cap = parent_->getOldGenMaxBytes();
+    if (cap != 0) b = std::min(b, cap / 32);
+    return std::max<size_t>(b, 1);
+}
+
+void ThreadLocalHeap::noteDirectAlloc(size_t bytes) {
+    const uint64_t seq = nursery_.minorSeq();
+    if (seq != direct_debt_seq_) {   // a minor ran since the last note: the debt is paid
+        direct_debt_seq_ = seq;
+        direct_debt_bytes_ = 0;
+    }
+    direct_debt_bytes_ += bytes;
+#if ENABLE_GC_STATS
+    stats_.direct_debt_bytes_total += bytes;
+#endif
+    const size_t budget = directAllocBudget();
+    if (budget != 0 && direct_debt_bytes_ >= budget && nursery_.requestMinor()) {
+#if ENABLE_GC_STATS
+        stats_.minor_gc_debt_requests++;
+#endif
+    }
+}
+```
+
+- `allocateYoungLarge` and `allocateLargePinned`: call `noteDirectAlloc(size)` once the object
+  exists, just before `return obj`.
+- `allocLargeString` / `allocLargeByteBuffer`: wrap the existing body in
+  `for (int attempt = 0;; ++attempt) { … }`. When the body is non-null, keep the existing fill
+  and wiring, then `noteDirectAlloc(body_size); return header_hp;`. When it is null:
+
+  ```cpp
+  if (attempt == 0) { /* stats */ minorGC(); continue; }
+  if (attempt == 1) { /* stats */ majorGC(GCStats::MajorReason::AllocFailure); continue; }
+  largeBodyExhausted("byte buffer", body_size);   // "string" in allocLargeString
+  ```
+
+  Remove the two `assert(body && …)` lines, which the loop replaces. Extend the ordering comment
+  in `allocLargeString`: a failed attempt abandons its header with a null body, and the retry
+  starts from the header.
+- `largeBodyExhausted`: `std::fprintf(stderr, "eco: out of memory: cannot allocate a %zu-byte
+  large %s body (old generation %zu of %zu bytes in use after a minor and a major GC)\n", …);
+  std::abort();` using `parent_->getOldGenCommittedBytes()` and `getOldGenMaxBytes()`.
+
+**`runtime/src/allocator/GCStats.hpp` / `GCStats.cpp`**: the D6 fields (`uint64_t`, next to
+`minor_gc_count`), each added to `combine`, `reset` and `print` (four lines in the Minor GC
+block).
+
+**`runtime/src/allocator/HeapHelpers.hpp`**: the D5 contract sentence on `allocString`,
+`allocByteBuffer`, `allocStringBlank` and `allocByteBufferBlank`.
+
+## 5. Phases
+
+Every phase ends with its tests green. Run each command once, tee its output to `/tmp`, then
+grep.
+
+### Phase 0: reproduce, before any runtime change
+
+**0.1** Add `test/allocator/LargeBodyChurnTest.{hpp,cpp}`, registered like
+`OldGenCapacityTest` (`test/CMakeLists.txt` source list, `#include` and registration in
+`test/main.cpp`). Heap config, following `capacityHeapConfig()`:
+- `alloc_buffer_size = 64 KiB`, `nursery_block_count = 4` (a 256 KiB nursery);
+- `initial_old_gen_size = 256 KiB`, `max_heap_size = 64 MiB`;
+- defaults otherwise.
+
+Allocate through `alloc.allocLargeByteBuffer(nullptr, 60 * 1024)`, the split path.
+`alloc.allocate(…, Tag_ByteBuffer)` would take the pinned path instead.
+
+Three cases:
+- **(a) churn:** 20,000 buffers (1.2 GB), none kept. Pass: the loop completes and
+  `alloc.getCurrentThreadHeap()->getNursery().minorSeq()` grows by at least 1.2 GB ÷ (2 ×
+  budget), where budget = `alloc.getCurrentThreadHeap()->directAllocBudget()` (Phase 1). Before
+  Phase 1 exists, only the abort matters.
+- **(b) promoted garbage:** keep every 16th buffer in a rooted ring of 64 slots
+  (`getRootSet().addRoot`), overwriting the oldest. The kept headers get promoted, so their bodies
+  die old and only majors free them: about 75 MB of old garbage against a cap of a few tens of
+  MB. Pass: completes. Completing at all proves majors ran.
+- **(c) recovery only:** like (a) with `cfg.direct_alloc_minor_budget = 0`. Pass: completes. If
+  stats are compiled, `large_body_recover_minors > 0`.
+
+Before the fix, case (a) aborts the whole in-process test binary. Do **not** commit it red: run it
+once against the unfixed runtime with a temporary `--filter` and record the abort in §10, then
+continue straight to Phase 1 with the test in place.
+
+**0.2** Add `test/eco-system/src/LargeBytesChurnTest.elm`:
+1. Read `/dev/zero` with
+   `System.File.readFileStream (Between { start = 0, end = 2147483647 })`: 2 GiB, 32,768 fresh
+   64 KiB `Bytes` natively.
+2. Drop each chunk; count the bytes.
+3. Sample `rssKiB` (import `WebSocketTestHelp`) after the first 64 MiB and at the end.
+
+CHECK lines:
+- `read: 2147483648 bytes`;
+- `rss growth under 512 MiB: True`;
+- `-- EXIT: 0`.
+
+Before the fix the second line should print `False` (expect about 2 GiB of growth). Record the
+figure in §10. If `/dev/zero` cannot be opened through `readFileStream` on either backend, write
+a 64 MiB temp file once and read it 32 times instead. JS stays enabled: V8's own GC bounds it.
+
+**0.3** Take a baseline: Stage 7 self-compile, 3 runs. Create
+`plans/large-body-gc-trigger/variants.json`:
+
+```json
+[{"name": "baseline", "overrides": {}},
+ {"name": "budget_0", "overrides": {"direct_alloc_minor_budget": 0}}]
+```
+
+Run `./heap-profile.py sweep --variants baseline --label large-body-baseline` (built-in
+baseline, before the key exists). From its GC stats, record:
+- minors, majors, GC time and wall time;
+- the "Large placement" counters (`stats_.lp`);
+- the split-body bytes. To get those, add `direct_debt_bytes_total` first (Phase 1 step 1),
+  then rerun this step. With `budget_0` the mechanism is off, so it measures debt without changing
+  behaviour.
+
+### Phase 1: debt and clamp (D1–D3, D6)
+
+1. `GCStats` fields (D6).
+2. `HeapConfig` and JSON key (§4). Add a case to `LargeBodyChurnTest.cpp`, copying the
+   `mkstemp` + `applyHeapConfigJsonFile` round trip in `test/allocator/GCHelperTest.cpp`:
+   - `{"direct_alloc_minor_budget": 2.5}` parses to 2.5;
+   - `-1` and `100` make `HeapConfig::validate()` throw.
+3. `NurserySpace::minorThresholdBytes()` and `requestMinor()`.
+4. `ThreadLocalHeap::directAllocBudget()` and `noteDirectAlloc()`, called from the four paths.
+5. Tests:
+   - 0.1 (a) and (b) pass.
+   - New `EnsureHeadroomTest` case, using `NurserySpaceTestAccess` (`NurserySpace.hpp`), as
+     that file's cases do:
+     1. `ensureHeadroom(n, 64)` holds.
+     2. `n.requestMinor()` returns true; then `headroom(n) == 0` and `ensureHeadroom(n, 64)` is
+        false.
+     3. `Allocator::ensureNursery(64)` runs exactly one minor (`minorSeq` + 1), after which
+        `headroom(n) >= 64` again.
+   - New `LargeBodyChurnTest` case (d): with `direct_alloc_minor_budget = 0`, 1000 small
+     allocations after many large ones run no extra minor. This proves the switch is off.
+   - 0.2 passes natively.
+6. Run `cmake --build build --target check` (C++ only) and confirm `full` is not needed yet: no
+   Elm or MLIR change.
+
+### Phase 2: recovery and contract (D4, D5)
+
+1. The retry loop in both split allocators, `largeBodyExhausted`, and the assert removal.
+2. The `HeapHelpers` contract comments.
+3. Tests: 0.1 (c) passes. Manual check of the fatal path: a scratch program (under
+   `/tmp/large-body/`) that keeps every buffer alive under the 0.1 config must print the
+   `eco: out of memory` line and abort. Record its output in §10. In-process death tests would
+   kill the test binary.
+
+### Phase 3: workloads
+
+1. Native Autobahn, all cases in one process: `test/conformance/autobahn.sh --mode both --backend
+   native --no-split`. Pass: no program crashed in the summary. Record, from each server and
+   client log's exit GC stats:
+   - "Old-gen commit hiwtr";
+   - "Minor GC cycles";
+   - "Major GC cycles";
+   - the new debt counters.
+
+   Also record each program's peak RSS: read `VmHWM` from `/proc/<pid>/status` before the script
+   stops it, or wrap it in `/usr/bin/time -v` via the script's build step.
+2. Re-run `WebSocketStreamedMemoryTest` and the WS6 loop (1000 × 256 KiB). Tighten
+   `WebSocketStreamedMemoryTest`'s RSS bound if it now holds a clearly lower figure (keep 2×
+   headroom).
+
+### Phase 4: tuning (the self-compile A/B)
+
+1. Extend `variants.json` with `budget_0_5` (0.5), `budget_1` (1.0, the default) and `budget_2`
+   (2.0).
+2. Run `./heap-profile.py sweep --variants-file plans/large-body-gc-trigger/variants.json
+   --label large-body-ab`. The default is 3 serial repeats per cell; compare the medians.
+3. Accept the default (1.0) if its `mutator_pct` is within 1.0 point of `budget_0` and its wall
+   time within 2%. Otherwise pick the smallest multiplier that is.
+4. Record the table in §10 and the choice in the constant's comment.
+
+### Phase 5: documentation and closure
+
+- `design_docs/invariants.csv`:
+  - add `HEAP_079;Runtime_Heap;DirectAllocDebt;enforced;…`: direct old-gen allocation since the
+    last minor is bounded by the D2 budget plus one allocation; reaching the budget clamps the
+    nursery end (`requestMinor`), so the next allocation on any path runs a minor GC; the debt is
+    keyed by `minorSeq`.
+  - In HEAP_026, replace the stale `large_header_split_threshold` with `large_object_threshold`
+    and add the D4 recovery.
+- `plans/eco-system-websockets.md`: mark R7 resolved, citing this plan; update memory
+  `eco-large-bytes-not-freed`.
+- `test/conformance/autobahn.sh`: keep the split default (it isolates crashes) and add a header
+  line saying `--no-split` is now expected to pass natively.
+
+## 6. Gates (after Phase 5)
+
+Run each once, tee its output to `/tmp`:
 - `cmake --build build --target full`;
-- the validate tree: `cmake --build build-validate --target test stress-test`, then the
-  `--filter eco-system` and allocator runs with `ECO_NURSERY_POISON=1` and the gc-pressure config;
-- the stress run (`ECO_VALIDATE_FREELIST_DUP_SCAN=0`);
-- `TEST_FILTER=eco- … run-aot-e2e`;
-- `tla-canary` with `ECO_TLA_CANARY_STRICT=ON`, plus `tla-check` for any model named in a new
-  AUDIT entry;
-- the self-compile A/B (§4 3.3).
+- the validate tree: `cmake --build build-validate --target test stress-test`; then
+  `ECO_NURSERY_POISON=1 ECO_HEAP_CONFIG=$PWD/benchmarks/heap-config-gc-pressure.json
+  build-validate/test/test --filter eco-system`; then the same with the allocator tests' filter
+  (`build-validate/test/test --help` lists the filter syntax; the new suite's name is
+  `LargeBodyChurn`);
+- `ECO_NURSERY_POISON=1 ECO_VALIDATE_FREELIST_DUP_SCAN=0 build-validate/test/stress-test -n 10`;
+- `TEST_FILTER=eco- cmake --build build --target run-aot-e2e`;
+- the same two validate runs again with `ECO_NURSERY_REGIONS=1` (region mode, K5);
+- `sh test/scripts/check-tla-manifest.sh .` (strict when run by hand). It must pass unchanged,
+  because no `TLA-REGION` was edited and no atomic or lock was added (census pins on
+  `ThreadLocalHeap.*` and `NurserySpace.*`). If it fails, follow `test/tla/README.md` "When it
+  fires"; never just update the hash.
 
 No model checks in CI.
 
-## 7. Open questions
+## 7. Risks
 
-1. Should pinned large objects (`allocateLargePinned`) count towards the debt? They are not freed
-   by a minor; counting them only makes major triggers be evaluated sooner. Proposed: yes.
-2. Should the budget be absolute bytes or a fraction of the nursery threshold? Proposed: bytes,
-   defaulting to the threshold, because the nursery grows.
-3. Should `autobahn.sh` return to one process per group once Phase 3.1 passes? Proposed: yes;
-   keep per-subsection as an option.
+| # | Risk | Mitigation |
+|---|---|---|
+| K1 | Extra minors slow the compiler | Phase 0.3 / 4 A/B; the knob; minors with few survivors are cheap |
+| K2 | The clamp breaks a headroom guarantee | No covered region contains a statepoint (D3); the Phase 1 `EnsureHeadroomTest` case |
+| K3 | A GC loop | A request needs a full budget of new direct allocation after each minor (D3) |
+| K4 | Recovery GCs invalidate a caller's source pointer | Same GC kinds as today (D5); the contract is written down |
+| K5 | Region mode (threaded-gc-07) differs | `requestMinor` only touches `bump_`, shared by both modes; `minorSeq` counts both; §6 runs the allocator and eco-system validate filters once more with `ECO_NURSERY_REGIONS=1` |
+| K6 | A live working set at the cap | Genuine exhaustion: D4 ends in a clear message |
+| K7 | Debt counted for pinned objects causes useless minors | They make the major triggers be evaluated, which is what bounds pinned objects; the A/B shows the cost |
+
+## 8. Out of scope, noted
+
+- Freed body cells return to free lists, but committed pages are not necessarily decommitted, so
+  RSS stays at its high-water mark. Phase 3 shows whether that matters; if it does, it is a
+  decommit-policy follow-up.
+
+## 9. Decisions taken (change them here if you disagree)
+
+1. Pinned large objects count towards the debt (D1, K7).
+2. The budget is a multiplier of the nursery threshold, not absolute bytes: it follows nursery
+   growth and needs no per-machine tuning. It is capped by 1/32 of the old-gen cap for G2.
+3. `autobahn.sh` keeps one process per group by default (Phase 5).
+
+## 10. Progress log
+
+(empty)
+
+## 11. Review log (v1 → v2, 2026-10-08)
+
+| # | v1 said | Finding | v2 |
+|---|---|---|---|
+| A1 | `large_header_split_threshold` (8 KiB) | No such field; the split uses `large_object_threshold` (`HeapHelpers.hpp`); HEAP_026's text is stale | §1; Phase 5 fixes HEAP_026 |
+| A2 | D5: finish a running cycle, then `majorGC` | `majorGC` already finishes a running cycle (`finishMarkCycleNow(Join)`) | D4: just `majorGC(AllocFailure)` |
+| A3 | D4: maybe add a minor counter inside `TLH.minorGC` | `NurserySpace::minorSeq()` exists (always on, both modes) | D1 keys the debt on it; no pinned edit |
+| A4 | D2: default "equals `threshold_total_bytes_`" as a config constant, and open question 2 answered "bytes" | A config constant cannot track a growing nursery; bytes vs fraction contradicted D2 | D2: multiplier of `minorThresholdBytes()`, read at each check |
+| A5 | (missing) | With the budget near the nursery threshold and a small cap, a whole minor gap could jump from below 95% of the cap to 100%, missing the pressure finish | D2: cap at 1/32 of the old-gen cap |
+| A6 | D6: audit ~30 callers of the source-pointer allocators | The header allocation can already run a minor that chains into a major, and the small paths copy after a GC point too; no new hazard | D5: document the contract instead |
+| A7 | G3: "assert" | In `NDEBUG` builds it is a null dereference, not an assert | §1 G3; D4 always ends in a message |
+| A8 | Phase 0.1: red test "fails today" | The test binary runs allocator tests in-process; an abort kills the run | Record the abort once, don't commit red |
+| A9 | Phase 0.1 allocation path unspecified | `alloc.allocate(…, Tag_ByteBuffer)` takes the pinned path, not the split | 0.1 uses `allocLargeByteBuffer` |
+| A10 | Phase 0.2 "generated source" | `patternSource` writes the same chunk value repeatedly: no fresh large allocation per chunk | 0.2 reads `/dev/zero` (fresh 64 KiB `Bytes` per chunk) |
+| A11 | Phase 3.1 "add a `--one-process` mode" | `autobahn.sh --no-split` exists | Phase 3.1 uses it |
+| A12 | 1.4 "both legacy and region mode, covering `rg_->eden_base`" | Both modes use the one `bump_`; the clamp needs no mode code | §4 `requestMinor` |
+| A13 | Evidence "5.3 GB allocated, but only 5 minors" read as nursery bytes | The counter totals all allocation | §1 table wording |
+| A14 | K2 rested on "an allocation is already a GC point" | True, and stronger: a covered region's only statepoint is `eco_ensure_nursery_slow` | D3 cites it |
+| A15 | JSON parsing unspecified | `parseFraction` rejects > 1; multipliers up to 2 are needed for the A/B | `parseDouble` + `validate()` |
+| A16 | K5 relied on the gc-pressure config for region mode | That config only sets `nursery_region_bytes` (HEAP_043 sizing); region mode is `ECO_NURSERY_REGIONS` | §6 runs region mode explicitly |
+| A17 | Canary run with `ECO_TLA_CANARY=strict` | The script is strict by hand; the variable only knows `warn` | §6 command |
