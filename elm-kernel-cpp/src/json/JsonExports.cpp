@@ -1648,6 +1648,14 @@ HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
         return HPtr::fromBits(makeErr("Invalid decoder"));
     }
     uint64_t valueBits = value.toBits();
+    // Json.Encode.null is the embedded ENC_NULL constant, the encoder family's
+    // only nullary ctor; the decoder family's null is the CTOR_JSON_NULL
+    // constant. No other Value is a constant with tag ENC_NULL, so map it
+    // across here (fixed 2026-10-08, plans/elm-html-native-kernel.md §14 I2):
+    // without this, Json.Decode.null and nullable failed on Json.Encode.null.
+    if (isNullConsBits(valueBits) && nullConsTagBits(valueBits) == ENC_NULL) {
+        valueBits = nullConsWordFor(CTOR_JSON_NULL);
+    }
     // Family bridge (HEAP_046 sibling, fixed 2026-08-29): a Value built by
     // Json.Encode arrives as an ENC_* Custom (Json_wrap's family), but
     // runDecoder dispatches on the CTOR_JSON_* family — so every decodeValue

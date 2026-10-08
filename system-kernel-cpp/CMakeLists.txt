@@ -147,6 +147,8 @@ eco_system_module(HttpServer   POSIX
 # Http.Server.upgradeRequest (§3.6, WS5): the h1 hand-off parks the connection
 # as a WebSocket handshake (EcoSystem_WebSocket's HoldProtocol and tables).
 target_link_libraries(EcoSystem_HttpServer PUBLIC EcoSystem_Socket EcoSystem_Tls EcoSystem_WebSocket)
+# respondHtml serializes with ElmKernel_VirtualDom's writeHtml (plans/elm-html-native-kernel.md §7.3).
+target_link_libraries(EcoSystem_HttpServer PRIVATE ElmKernel_VirtualDom)
 # llhttp (Node's HTTP/1.1 parser, MIT) parses requests (Phase 7 step 7.1). The
 # release tarball ships the generated C, so no node/TypeScript build is
 # needed. It is an OBJECT library whose objects are merged INTO
@@ -320,6 +322,12 @@ if(NOT WIN32)
     target_compile_definitions(EcoSystem_WebSocket PRIVATE NGHTTP2_STATICLIB)
     add_dependencies(EcoSystem_WebSocket nghttp2_objects)
 endif()
+
+# Http.Dom's kernels: the VirtualDom side door (plans/elm-html-native-kernel.md §4.2, B1b).
+# The serializer itself is ElmKernel_VirtualDom's writeHtml.
+eco_system_module(Dom          POSIX
+    src/eco-system/Dom/DomExports.cpp)
+target_link_libraries(EcoSystem_Dom PRIVATE ElmKernel_VirtualDom)
 
 # Every module listed in ECO_SYSTEM_MODS must have a target here.
 foreach(mod ${ECO_SYSTEM_MODS})

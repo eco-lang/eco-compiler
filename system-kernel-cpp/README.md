@@ -30,7 +30,9 @@ request and response bodies on top of it.
 - `System.Process`: running and spawning child processes.
 - `System.Terminal`: terminal size, raw mode and resize events.
 - `Http.Server`, `Http.Server.Response`: an HTTP server (HTTP/1.1 with keep-alive, request limits
-  and timeouts, HTTPS, HTTP/2 over TLS, and WebSocket upgrades).
+  and timeouts, HTTPS, HTTP/2 over TLS, and WebSocket upgrades). `setBodyAsHtml` answers with a
+  page built with elm/html, serialized straight into the response.
+- `Http.Dom`: a transparent view of `Html`/`Svg` values and their HTML serialization.
 - `Http.Stream`: streaming request and response bodies for elm/http.
 - `Socket`, `Socket.Address`, `Socket.Tcp`, `Socket.Unix`, `Socket.Udp`, `Socket.Tls`: TCP, Unix
   domain and TLS connections (TLS on OpenSSL 3 natively), UDP datagrams, IPv4/IPv6 addresses and

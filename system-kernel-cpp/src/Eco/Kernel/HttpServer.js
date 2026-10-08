@@ -6,6 +6,7 @@ import Maybe exposing (Nothing)
 import Eco.Kernel.Stream exposing (noteActivity, toBytes, toUint8Array)
 import Eco.Kernel.Tls exposing (code, errorMessage)
 import Eco.Kernel.WebSocket exposing (parkUpgrade, parkH2Upgrade)
+import Http.Dom as Dom exposing (render)
 */
 
 // HttpServer — JS twin of src/eco-system/HttpServer/ (eco/system), plans/eco-system-library.md
@@ -81,6 +82,10 @@ import Eco.Kernel.WebSocket exposing (parkUpgrade, parkH2Upgrade)
 //                            closes after the response. The task completes once the response
 //                            is written (or the client is gone); an unknown or answered key
 //                            completes at once.
+//   respondHtml key status headers doctype node
+//                            respond with an Http.Dom.Node body rendered by Http.Dom.render
+//                            (UTF-8), after "<!DOCTYPE html>" when doctype is true
+//                            (plans/elm-html-native-kernel.md §7.3).
 //   * Upgrade requests ('upgrade' listener: Upgrade + Connection: upgrade) are handed over as
 //     requests with the lower-cased first Upgrade token; the socket and the bytes after the
 //     request are kept for takeUpgrade. CONNECT ('connect' listener) is handed over without a
@@ -1292,6 +1297,29 @@ var _HttpServer_respond = F4(function(key, status, headers, body)
 		__Stream_noteActivity();
 		var user = _HttpServer_userHeaders(headers);
 		_HttpServer_writeAnswer(e, status, user.__raw, __Stream_toUint8Array(body), user.__askClose, complete);
+	});
+});
+
+// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Http.Dom.Node -> Task Never ()
+var _HttpServer_respondHtml = F5(function(key, status, headers, doctype, node)
+{
+	return __Scheduler_binding(function(callback)
+	{
+		var complete = function()
+		{
+			callback(__Scheduler_succeed(__Utils_Tuple0));
+		};
+		var e = _HttpServer_pending[key];
+		if (!e)
+		{
+			complete();   // unknown or already answered
+			return;
+		}
+		delete _HttpServer_pending[key];
+		__Stream_noteActivity();
+		var user = _HttpServer_userHeaders(headers);
+		var body = Buffer.from((doctype ? '<!DOCTYPE html>' : '') + __Dom_render(node), 'utf8');
+		_HttpServer_writeAnswer(e, status, user.__raw, body, user.__askClose, complete);
 	});
 });
 

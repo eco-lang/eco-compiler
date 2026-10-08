@@ -8,6 +8,7 @@ while users only see the alias exposed by `Http.Server.Response`.
 -}
 
 import Bytes exposing (Bytes)
+import Http.Dom as Dom
 
 
 {-| An HTTP response under construction. `key` identifies the request it answers.
@@ -21,8 +22,10 @@ type Response
         }
 
 
-{-| The body of a response.
+{-| The body of a response. An `HtmlBody` is serialized when the response is sent
+(plans/elm-html-native-kernel.md §7.3).
 -}
 type Body
     = StringBody String
     | BytesBody Bytes
+    | HtmlBody Dom.Node

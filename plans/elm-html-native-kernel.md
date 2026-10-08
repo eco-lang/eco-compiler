@@ -1,16 +1,16 @@
 # Plan: Native `elm/html`: a heap-resident VirtualDom kernel, the `Http.Dom` side door, and HTML serialization
 
-> **Status: v5.1, implementation-ready (2026-10-08). The module is now `Http.Dom` (D7).**
+> **Status: v7, implemented (2026-10-08).** All phases P0–P8 are in the tree; §14 lists what
+> implementation changed or found. (v6 was the implementation-ready plan, rebased on the merged
+> eco/system in `system-kernel-cpp/`.)
 > - It has been adversarially reviewed (§1 lists what the review found and fixed), and all
->   questions (Q1–Q7) are answered.
-> - **When to start.** Phases P0–P4 depend only on this repository. Phases P5–P8 land in
->   **eco/system**, which is on another branch; per the user, implementation waits until that
->   branch is merged.
-> - **Provisional parts.** The eco/system parts are lowered against the installed copy
->   `~/.eco/0.2.0/packages/eco/system/1.0.0`, written `$SYS` below. Re-check the cited lines
->   after the merge.
+>   questions (Q1–Q7) are answered. §1.1 lists what changed to fit the merged eco/system.
+> - **When to start.** Now. The eco/system gate (Q1) is gone: every phase, P0–P8, lands in this
+>   repository. P0–P4 touch `runtime/`, `elm-kernel-cpp/` and `test/`; P5–P7 touch
+>   `system-kernel-cpp/` and its tests.
 > - **Citations.** Facts marked *(verified)* were checked in this checkout and cite
->   `file:line`.
+>   `file:line`. eco/system paths are relative to the repository root
+>   (`system-kernel-cpp/...`); the lines cited in §7.3 were re-checked against the merged tree.
 > - **Code.** Appendices A–D hold the reference code (Elm `Http.Dom` module, C++ skeletons, JS
 >   twin) and the golden test corpus.
 
@@ -57,10 +57,10 @@
 | F13 | `noJavaScriptOrHtmlJson` stringifies a bounded 64-unit prefix | **Wrong.** `\s*` runs are unbounded, so `"<100 spaces>javascript:"` would slip past a prefix. | Stringify fully. |
 | F14 | Rewrite `</` "in any case" inside `<style>` | `</` contains no letters, so "any case" means nothing. | Replace `</` with `<\/`. |
 | F15 | `Dom` is a safe module name | Elm reports an ambiguous import when an application module and a dependency both define `Dom`, so a server app with its own `src/Dom.elm` could not import a top-level `Dom`. | **Renamed to `Http.Dom`** (user, 2026-10-08). The kernel home stays `Eco.Kernel.Dom`. |
-| F16 | — | `DomExports.o` sits in a static archive and is only pulled in when referenced. The JIT looks symbols up in the process (`runtime/src/jit/EcoJIT.cpp:438`) and through `KERNEL_SYM` (`runtime/src/codegen/RuntimeSymbols.cpp:591-596`). | Register the new symbols with `KERNEL_SYM`; this also anchors the objects. |
+| F16 | — | `DomExports.o` sits in a static archive and is only pulled in when referenced. The JIT looks symbols up in the process (`runtime/src/jit/EcoJIT.cpp:438`) and through `KERNEL_SYM` (`runtime/src/codegen/RuntimeSymbols.cpp:591-596`). | Register the new `Elm_Kernel_*` symbols with `KERNEL_SYM`; this also anchors the objects. (v6: the `Eco_Kernel_Dom_*` symbols moved to eco/system, which needs no `KERNEL_SYM`, §1.1 E4.) |
 | F17 | — | The JS target uses whichever `elm/virtual-dom` the app resolved. 1.0.3 does not filter `outerHTML` or JSON arrays; native follows 1.0.5. | Documented as a cross-target difference (§8.8). |
 | F18 | Delete the `Json.hpp` stub with the VirtualDom stub | `Json.hpp` is also included by `file/File.hpp:13` and `browser/Browser.hpp:6`. | Leave `Json.hpp` alone (out of scope). Only the VirtualDom stub is deleted. |
-| F19 | — | `elm/svg` is not in the package cache (`~/.eco/0.2.0/packages/elm/`). | The SVG golden test needs a registry fetch, which the eco/system test tree must allow. |
+| F19 | — | `elm/svg` is not in the package cache (`~/.eco/0.2.0/packages/elm/`). | v6: the SVG cases use `VirtualDom.nodeNS`/`attributeNS` directly, which is all `elm/svg` does, so no registry fetch is needed (§1.1 E7). |
 
 Checked and **confirmed** (no change):
 - `eco_apply_closure` is the sanctioned boxed-args entry for C++ (`RuntimeExports.cpp:2229-2246`). It is right for `lazy*`, whose type-variable arguments arrive boxed.
@@ -68,7 +68,29 @@ Checked and **confirmed** (no change):
 - `Json.Encode.string ""` is a proper `ENC_STRING` (`JsonExports.cpp:1735-1748`).
 - Kernel JS importing the Elm module that imports it has precedent: `VirtualDom.js` imports `VirtualDom exposing (toHandlerInt)`.
 - `elm/html` 1.0.0 and 1.0.1, and `elm/virtual-dom` 1.0.3 and 1.0.5, reference the same 19 kernel names, so one native kernel serves all of them.
-- eco/system's native `respond` already copies the response out of the heap into a POD `ResponseData { status, headers, std::string body }` inside a no-allocation scope (`$SYS/src/eco-system/HttpServer/HttpServer.cpp:282-316`, `HttpServerService.hpp:45-49`). `HtmlWriter` drops straight into that scope.
+- eco/system's native `respond` already copies the response out of the heap into a POD `ResponseData { status, headers, std::string body }` inside a no-allocation scope (`system-kernel-cpp/src/eco-system/HttpServer/HttpServer.cpp:282-313`, `HttpServerService.hpp:45-49`). `HtmlWriter` drops straight into that scope.
+
+### 1.1 Fit to the merged eco/system (v6)
+
+The installed copy that v5 was lowered against has the same sources as the merged
+`system-kernel-cpp/src`, so the Elm and C++ code cited in §7.3 still holds. What the merge adds
+is the build, test and rule machinery around that code. Checking the plan against it found
+these:
+
+| # | v5 said | What is true *(verified)* | Fix in v6 |
+|---|---|---|---|
+| E1 | `Eco_Kernel_Dom_*` live in `elm-kernel-cpp/src/virtual-dom/DomExports.cpp` | `full` first runs `test/scripts/check-kernel-homes.sh` (`CMakeLists.txt:1444`). It collects every `(Elm\|Eco)_Kernel_<Home>_` prefix under `elm-kernel-cpp/src` and fails if an eco/system JS kernel file has the same home (`check-kernel-homes.sh:26-41`). `Eco_Kernel_Dom_*` in elm-kernel-cpp plus `system-kernel-cpp/src/Eco/Kernel/Dom.js` is such a clash, so `full` would fail at its first command. | The three `Eco_Kernel_Dom_*` exports move into a new eco/system module **`Dom`**: `system-kernel-cpp/src/eco-system/Dom/DomExports.cpp`, library `EcoSystem_Dom`, added to `ECO_SYSTEM_MODS`. eco/system's convention is one library per kernel home. The serializer stays in `ElmKernel_VirtualDom` as the C++ function `Elm::Kernel::VirtualDom::writeHtml`, which has no `_Kernel_` C symbol, so the home check never sees it. |
+| E2 | — | eco/system's boundary rules forbid package ADTs across a kernel boundary (B1, `plans/eco-system-library.md:146-150`). B5 (`:172-174`) allows only two pure kernels. `Eco.Kernel.Dom.*` are pure and take `VirtualDom` values, and `respondHtml` takes an `Http.Dom.Node`. | P5 adds rule **B1b**, the VirtualDom side door, to `plans/eco-system-library.md`. It is modelled on B1a (the one foreign ADT HttpStream reads) and pinned by VDOM_001 and `DomLayoutTest`. P5 also extends B5's list with `Dom.fromNode`, `Dom.fromAttribute` and `Dom.toString`. |
+| E3 | `respondHtml` body used `Elm::Kernel::Export::decodeBoxedBool(Export::encode(…))` | Every eco/system C++ file is in namespace `Eco::System` and starts with `#include "eco-system/Core/Core.hpp"`. There, `Export` is `Eco::Kernel::Export`, and exports take and return `uint64_t` through `enc`/`dec` (`plans/eco-system-library.md` §3.3.2; `Core.hpp:20-22`). elm-kernel-cpp's `ExportHelpers.hpp` is not on eco/system's include path, so v5's snippet would not compile. eco/system reads a Bool field as `::Elm::hpBits(x) == ::Elm::hpBits(alloc::elmTrue())` (`HttpServer.cpp:210`). | §7.3 and B.4 now use eco/system idioms. `HtmlWriter.hpp` includes only `<cstdint>` and `<string>`, and eco/system includes it as `"virtual-dom/HtmlWriter.hpp"`, so no elm-kernel-cpp helper header leaks into eco/system. |
+| E4 | `KERNEL_SYM` for `Eco_Kernel_Dom_*` and `respondHtml` | eco/system symbols are never `KERNEL_SYM`-registered: `RuntimeSymbols.cpp` names none of them. The `test` binary whole-archives every `EcoSystem_*` library, so the JIT finds them by `dlsym` (`test/CMakeLists.txt:236-270`). The AOT driver links every library in `ECO_SYSTEM_MODS` (`EcoNativeDriver.cpp:593`, `:734`, `:1059`). | P1 registers only `Elm_Kernel_VirtualDom_noJavaScriptUri` (F16). Adding `Dom` to `ECO_SYSTEM_MODS` is the whole registration for the Dom kernels. |
+| E5 | "Check that the AOT driver puts eco/system libs before the elm kernel libs" | This is already settled. On ELF, the elm-kernel and eco/system archives sit in one `--start-group … --end-group` (`EcoNativeDriver.cpp:1063-1102`). ld64 rescans archives, so order does not matter on macOS (`compiler/CMakeLists.txt:836-839`). The Windows AOT link is still a stub (`EcoNativeDriver.cpp:656`, `linkExecutableWindows`). | The order check is dropped. The only link edits are CMake target dependencies: `EcoSystem_Dom` and `EcoSystem_HttpServer` link `ElmKernel_VirtualDom`. That gives them the include path and pulls the library into `eco-system-core-test`. |
+| E6 | — | An application's `elm.json` must list every transitive dependency. Once eco/system depends on `elm/virtual-dom`, every application that uses eco/system must list it too: `test/eco-system/elm.json` and `examples/system/elm.json`, which `full` builds through `eco-system-examples` (`CMakeLists.txt:1447`). `test/stress-elm/elm.json` already lists `elm/virtual-dom 1.0.3`. `system-kernel-cpp/tests/elm.json` (elm-test) compiles only the modules its tests reach, and none of them imports `Http.Dom`. | P5 step 2 edits both `elm.json` files. |
+| E7 | SVG cases need `elm/svg` from the registry (F19) | `elm/svg`'s `Svg.node` is `VirtualDom.nodeNS "http://www.w3.org/2000/svg"`, its plain attributes are `VirtualDom.attribute`, and `xlinkHref` is `VirtualDom.attributeNS "http://www.w3.org/1999/xlink" "xlink:href"` (elm/svg 1.0.1 source; it is not in the cache, so this is not re-checked here). `elm/virtual-dom 1.0.3` and `elm/html 1.0.0` are in the package cache. | The tests make `elm/virtual-dom` a direct dependency and build SVG through `VirtualDom.nodeNS`/`attributeNS`, which reaches exactly the kernels `elm/svg` uses. Golden case D.1 #26 is rewritten that way. |
+| E8 | Each phase ends with one `full` run | eco/system C++ has three more gates (`plans/eco-system-library.md` §3.3.3): the `ECO_HEAP_VALIDATE` tree filtered to `eco-system`, `stress-test --filter EcoSystem`, and `check-root-bounded.py`, which already scans `system-kernel-cpp/src` and `elm-kernel-cpp/src` (`check-root-bounded.py:22`). | P2–P6 add the validate-tree run, and P6 adds the stress scenario `test/stress-elm/src/EcoSystemHttpServerHtml.elm`. |
+| E9 | Tests go "in eco/system's E2E tree" | This is now concrete. Both the native suite (`test/eco-system/EcoSystemTest.hpp`, compiled with `--local-package eco/system=<repo>/system-kernel-cpp`) and `run-js-e2e` pick up every `test/eco-system/src/*.elm` that has a `main`, so no wiring is needed. HTTP tests use `HttpServerTestHelp.program`, whose `get` reports `<status> <content-type> <body>` (`HttpServerTestHelp.elm:70-123`). | P5–P7 tests are lowered onto that harness (§9). |
+| E10 | — | The JS `respondHtml` builds its body with `Buffer.from(…, 'utf8')`, which writes a lone surrogate as `EF BF BD`. Native writes the 3-byte surrogate form (F9). | Added to D16 as an accepted cross-target difference. |
+| E12 | P7 (JS twin) came after P5/P6 | `full` runs `run-js-e2e` (`CMakeLists.txt:1437-1453`). A missing kernel `.js` is not a build error: the package crawl treats it as a foreign kernel (`compiler/src/Builder/Elm/Details.elm:1810-1819`). The failure therefore shows up at run time on JS. Without `Dom.js`, `_Dom_*` is undefined and P5's tests fail under `run-js-e2e`. Without `_HttpServer_respondHtml`, `Response.elm`'s top-level `kRespondHtml = Eco.Kernel.HttpServer.respondHtml` throws a `ReferenceError` when any JS program that sends a response loads, which would break the existing JS HTTP server tests. | The JS twin lands in P5 and the JS `respondHtml` in P6. P7 is now the JS-target rules that apply inside them. |
+| E11 | — | `system-kernel-cpp/README.md` lists the modules. `scripts/make-docs-package.js` strips every `import Eco.Kernel.*` and kernel call generically, so the stock-Elm docs build needs no script change for `Http.Dom`. | P8 adds `Http.Dom` to the README module list and runs `pnpm docs:check`. |
 
 ---
 
@@ -91,10 +113,13 @@ Checked and **confirmed** (no change):
   application's own `Dom` module, F15). Kernel home `Eco.Kernel.Dom`, which is unique among kernel
   homes. Kernel JS refers to the module through `import Http.Dom as Dom`, so its names are spelled
   `__Dom_*`, the same pattern as `VirtualDom.js` importing `Json.Decode as Json`.
-- **D8 — Placement:**
-  - `Http/Dom.elm`, `Eco/Kernel/Dom.js` and the HttpServer changes go in eco/system.
-  - The C++ (`Elm_Kernel_VirtualDom_*`, `Eco_Kernel_Dom_*`, `HtmlWriter`, `JsonRead`) goes in
-    `elm-kernel-cpp/`.
+- **D8 — Placement** (v6, §1.1 E1):
+  - **eco/system (`system-kernel-cpp/`):** `src/Http/Dom.elm`, `src/Eco/Kernel/Dom.js`, the
+    `Eco_Kernel_Dom_*` exports (`src/eco-system/Dom/DomExports.cpp`, library `EcoSystem_Dom`),
+    and the HttpServer changes.
+  - **`elm-kernel-cpp/`:** `Elm_Kernel_VirtualDom_*`, `XssFilters`, `HtmlWriter` (exposed as the
+    C++ function `Elm::Kernel::VirtualDom::writeHtml`) and `JsonRead`. eco/system calls
+    `writeHtml` and links `ElmKernel_VirtualDom`.
 - **D9 — Native `main : Html msg` keeps discarding its value** (`runtime/src/codegen/eco_entry.cpp:122-126`).
 - **D10 — URI filters behave as in PROD.** A matching URI is replaced with `""`.
 - **D11 — Names are not validated at construction** (user). Construction is total.
@@ -112,8 +137,11 @@ Checked and **confirmed** (no change):
   - It prefixes `<!DOCTYPE html>` iff the root, seen through `Mapped`, is an un-namespaced
     element whose tag lower-cases to `html`.
   - `Http.Dom.toString` adds neither.
-- **D16 — Attribute order and number formatting may differ between the JS and native targets**
-  (user, for order; F10, for numbers).
+- **D16 — Attribute order, number formatting and lone-surrogate bytes may differ between the JS
+  and native targets** (user, for order; F10, for numbers; §1.1 E10, for surrogates). So may the
+  text a filtered URI is replaced with: a JS program compiled in DEV mode (as `run-js-e2e` does)
+  gets elm/virtual-dom's `javascript:alert("This is an XSS vector…")` where native and PROD JS
+  write `""` (D10).
 - **D17 — Token-breaking names are refused by substitution, and serialization never crashes**
   (user):
   - **Token-breaking:**
@@ -128,6 +156,7 @@ Checked and **confirmed** (no change):
     convention (`FORBID_IO_001`).
 - **D18 — Pinned files are not edited** (F3): `JsonExports.cpp`, `ExportHelpers.hpp`, and
   everything else listed in `compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt`.
+  (Amended v7: one bug fix to `JsonExports.cpp` was made through the re-audit procedure, §14 I2.)
 - **D19 — `Debug.toString` prints `<internals>`** for kernel-built values whose shape differs
   from the declared type (F1), as JS does.
 
@@ -200,13 +229,18 @@ Int arguments (`Eco_Kernel_HttpServer_respondHtml`'s `key`/`status`) are `int64_
 `init` and `custom` are JS-only and not provided natively (D9; no Elm source references
 `custom`).
 
-### 4.2 `Eco.Kernel.Dom` (`DomExports.cpp`, Appendix B.4)
+### 4.2 `Eco.Kernel.Dom` (eco/system `src/eco-system/Dom/DomExports.cpp`, Appendix B.4)
 
 | Kernel | Native | JS twin (Appendix C) |
 |---|---|---|
 | `fromNode`(1) | returns its argument | calibrated conversion |
 | `fromAttribute`(1) | returns its argument | calibrated conversion of one fact |
 | `toString`(1) | `HtmlWriter` into a `std::string`, then one `allocStringFromUTF8` | `__Dom_render(_Dom_fromNode(node))` |
+
+These follow eco/system's export conventions:
+- They take and return `uint64_t`, the same bits as elm-kernel-cpp's `HPtr`.
+- Each body is wrapped in `ECO_KERNEL_GUARD` (B6).
+- They are pure and return values, not Tasks, which B5 permits once P5 extends its list.
 
 ### 4.3 `Eco.Kernel.HttpServer.respondHtml` (eco/system, §7.3)
 
@@ -238,7 +272,8 @@ Int arguments (`Eco_Kernel_HttpServer_respondHtml`'s `key`/`status`) are `int64_
     read-only walkers `eq`/`compare`/`toString` rely on (`HeapHelpers.hpp:827-836`).
   - All their state lives in `std::` containers.
   - The only Eco allocation is the final `allocStringFromUTF8` in `Eco_Kernel_Dom_toString`, made
-    after the walk. `respondHtml` makes none.
+    after the walk. `httpServerRespondHtmlBody` makes none inside its G3 copy-out scope (the
+    export's payload tuples are allocated before the walk, §7.3).
   - Reviewers check that `HtmlWriter.cpp`/`JsonRead.cpp` call no `alloc::` allocator, no
     `eco_alloc_*`, and no `eco_apply_closure*`.
 - **R9** — `FORBID_HEAP_001`/`003` apply: detect constants with the helpers, and root only
@@ -281,8 +316,10 @@ Int arguments (`Eco_Kernel_HttpServer_respondHtml`'s `key`/`status`) are `int64_
 
 Exposes `Node(..)`, `Fact(..)`, `Tagger`, `Handler`, `fromNode`, `fromAttribute`,
 `attributes`, `render` and `toString`.
-- eco/system's `elm.json` gains `"elm/virtual-dom": "1.0.0 <= v < 2.0.0"`; `elm/json` is
-  already a dependency.
+- `system-kernel-cpp/elm.json` gains `"elm/virtual-dom": "1.0.0 <= v < 2.0.0"` and lists
+  `Http.Dom` in `exposed-modules` after `Http.Server.Response`. `elm/json` is already a
+  dependency. Applications that use eco/system must then list `elm/virtual-dom` too (§1.1 E6).
+- The kernel crossings are allowed by rule B1b, which P5 adds to eco/system's plan (§1.1 E2).
 - Kernel bindings are annotated, eta-free aliases (`TYPE_KERNEL_001`; first usage wins,
   `compiler/src/Compiler/Type/KernelTypes.elm:7-24`).
 
@@ -300,10 +337,10 @@ Exposes `Node(..)`, `Fact(..)`, `Tagger`, `Handler`, `fromNode`, `fromAttribute`
     `VirtualDom.server.js` renders. Nothing throws.
 - Every `__Home_name` token used must appear in the header imports (eco kernel-JS pitfall).
 
-### 7.3 `setBodyAsHtml` (eco/system; provisional against `$SYS`)
+### 7.3 `setBodyAsHtml` (eco/system; checked against the merged `system-kernel-cpp/`)
 
 **Elm.**
-- `$SYS/src/Http/Server/Internal.elm:26-28` becomes
+- `system-kernel-cpp/src/Http/Server/Internal.elm:26-28` becomes
   `type Body = StringBody String | BytesBody Bytes | HtmlBody Dom.Node`.
 - `Response.elm` and `Internal.elm` add `import Http.Dom as Dom` (the snippets below use the
   `Dom.` alias) and `import VirtualDom`. `Response.elm` gains (and exposes in its module header
@@ -315,7 +352,8 @@ setBodyAsHtml node (Internal.Response r) =
     Internal.Response { r | body = HtmlBody (Dom.fromNode node) }
 ```
 
-- `send` (`Response.elm:57-58`) dispatches on the body:
+- `send` (`Response.elm:57-58`) dispatches on the body. Its doc comment gains one sentence: an
+  HTML body is serialized as it is sent (see `setBodyAsHtml`).
 
 ```elm
 send : Response -> Cmd msg
@@ -362,33 +400,100 @@ kRespondHtml =
 - `bodyBytes` gains `HtmlBody node -> kStringToUtf8 (Dom.render node)`, for exhaustiveness and
   any other caller.
 
-**Native** (`$SYS/src/eco-system/HttpServer/`):
-- `Eco_Kernel_HttpServer_respondHtml(int64_t key, int64_t status, uint64_t headers, uint64_t doctype, uint64_t node)`
-  is built like `Eco_Kernel_HttpServer_respond` (`HttpServerExports.cpp:28-44`). Its payload is
-  `tuple2(ks, tuple3(headers, doctype, node))`, with each inner tuple rooted before the next
-  allocation (G2).
-- `httpServerRespondHtmlBody` is a copy of `httpServerRespondBody` (`HttpServer.cpp:282-316`)
-  except inside the G3 copy-out scope, where `data.body = toStdBytes(body);` becomes:
+**Native** (`system-kernel-cpp/src/eco-system/HttpServer/`, eco/system conventions §1.1 E3):
+- **Export.** `HttpServerExports.cpp` gains, after `Eco_Kernel_HttpServer_respond` (`:27-44`)
+  and in the same shape:
 
 ```cpp
-if (Elm::Kernel::Export::decodeBoxedBool(Export::encode(t3->b.p))) data.body = "<!DOCTYPE html>";
-Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8: no allocation (G5 holds)
+// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Http.Dom.Node -> Task Never ()
+uint64_t Eco_Kernel_HttpServer_respondHtml(int64_t key, int64_t status, uint64_t headers,
+                                           uint64_t doctype, uint64_t node) {
+    ECO_KERNEL_GUARD(
+        HPointer headersHP = dec(headers);
+        HPointer doctypeHP = dec(doctype);
+        HPointer nodeHP = dec(node);
+        HPointer ks = alloc::listNil();
+        HPointer hdn = alloc::listNil();
+        Elm::StackRootGuard g({&headersHP, &doctypeHP, &nodeHP, &ks, &hdn});
+        // Five arguments: nested tuples (G2), each rooted before the next allocation.
+        ks = alloc::tuple2(alloc::unboxedInt(key), alloc::unboxedInt(status), 0x5);
+        hdn = alloc::tuple3(alloc::boxed(headersHP), alloc::boxed(doctypeHP), alloc::boxed(nodeHP), 0);
+        HPointer payload = alloc::tuple2(alloc::boxed(ks), alloc::boxed(hdn), 0);
+        return enc(makeAsyncBinding<httpServerRespondHtmlBody>(payload));
+    )
+}
 ```
 
-- Add the prototype and the Elm-facing comment in `HttpServerExports.cpp`, and a `KERNEL_SYM`
-  (or eco/system's own registration mechanism, whichever the merged branch uses).
-- **Link order:** the eco/system HttpServer library now depends on `ElmKernel_VirtualDom`.
-  - In CMake: `target_link_libraries(<HttpServer lib> PRIVATE ElmKernel_VirtualDom)`.
-  - In the AOT driver: check that the library list puts eco/system libs **before** the elm
-    kernel libs (`runtime/src/codegen/EcoNativeDriver.cpp:581-589`, `1047-1060`). If it does
-    not, reorder or group them.
+- **Declaration.** `HttpServer.hpp` gains, after `httpServerRespondBody` (`:33-35`):
+  `// captured = ( ( key, status ) mask 0x5, ( headers, doctype, node ) ) mask 0.` followed by
+  `HPointer httpServerRespondHtmlBody(HPointer captured, HPointer resume);`.
+- **Body.** In `HttpServer.cpp`, factor the header loop of `httpServerRespondBody`
+  (`:298-303`) into a file-local
+  `static void copyHeaders(HPointer headers, ResponseData& data)`, which does not allocate.
+  Then add `httpServerRespondHtmlBody`, a copy of `httpServerRespondBody` (`:282-313`) whose
+  G3 scope reads:
 
-**JS** (`$SYS/src/Eco/Kernel/HttpServer.js:1269-1288`): add
-`_HttpServer_respondHtml = F5(function(key, status, headers, doctype, node) {…})`, a copy of
-`_HttpServer_respond`:
-- its body is `Buffer.from((doctype ? '<!DOCTYPE html>' : '') + __Dom_render(node), 'utf8')`, in
-  place of `__Stream_toUint8Array(body)`;
-- the header gains `import Http.Dom as Dom exposing (render)` (the alias keeps the `__Dom_render` spelling).
+```cpp
+        {   // G3: copy everything out; no allocation in this scope (G5)
+            Tuple2* outer = asTuple2(captured);
+            Tuple2* ks = asTuple2(outer->a.p);
+            key = ks->a.i;
+            data.status = ks->b.i;
+            Tuple3* hdn = asTuple3(outer->b.p);
+            copyHeaders(hdn->a.p, data);
+            if (::Elm::hpBits(hdn->b.p) == ::Elm::hpBits(alloc::elmTrue()))   // Bool: a constant
+                data.body = "<!DOCTYPE html>";
+            // R8/VDOM_004: no Eco allocation and no Elm call, so G5 holds across the walk.
+            ::Elm::Kernel::VirtualDom::writeHtml(enc(hdn->c.p), data.body);
+        }
+```
+
+  Everything after the scope (`ensureHttpTables`, G10 registration, `httpTablesRespond`) is
+  unchanged, so HTTP/1.1, HTTP/2, `HEAD` and keep-alive framing are shared with `respond`.
+  `HttpServer.cpp` adds `#include "virtual-dom/HtmlWriter.hpp"`, and its file header's kernel
+  list (`:29-36`) gains `respondHtml` next to `respond`. Its "Templates used" line is unchanged
+  (T2, T4, G3, G10).
+- **Windows.** `HttpServerServiceWin32.cpp` stubs the service, not the bodies, so the new body
+  needs no Windows variant.
+- **CMake** (`system-kernel-cpp/CMakeLists.txt`, after `:149`):
+  `target_link_libraries(EcoSystem_HttpServer PRIVATE ElmKernel_VirtualDom)`. This gives
+  eco/system the `elm-kernel-cpp/src` include path (`elm-kernel-cpp/CMakeLists.txt:161-164`) and
+  pulls the library into `eco-system-core-test`. **No registration and no AOT change:** the
+  `test` binary whole-archives `EcoSystem_HttpServer`, and the AOT driver already links
+  elm-kernel and eco/system archives in one group (§1.1 E4, E5).
+
+**JS** (`system-kernel-cpp/src/Eco/Kernel/HttpServer.js:1276-1295`): after `_HttpServer_respond`,
+add
+
+```js
+// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Http.Dom.Node -> Task Never ()
+var _HttpServer_respondHtml = F5(function(key, status, headers, doctype, node)
+{
+	return __Scheduler_binding(function(callback)
+	{
+		var complete = function()
+		{
+			callback(__Scheduler_succeed(__Utils_Tuple0));
+		};
+		var e = _HttpServer_pending[key];
+		if (!e)
+		{
+			complete();   // unknown or already answered
+			return;
+		}
+		delete _HttpServer_pending[key];
+		__Stream_noteActivity();
+		var user = _HttpServer_userHeaders(headers);
+		var body = Buffer.from((doctype ? '<!DOCTYPE html>' : '') + __Dom_render(node), 'utf8');
+		_HttpServer_writeAnswer(e, status, user.__raw, body, user.__askClose, complete);
+	});
+});
+```
+
+- Add `import Http.Dom as Dom exposing (render)` to the header comment (`HttpServer.js:1-9`).
+  The alias keeps the `__Dom_render` spelling, and every `__Home_name` token must be imported
+  (eco JS-kernel pitfall).
+- Add `respondHtml` to the kernel list in the file's header comment, next to `respond`.
 
 ---
 
@@ -445,9 +550,10 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
    - `removeAttr name` deletes the entry.
    - `setStyle k v`: with `n = cssName k`, `v == ""` removes `n` from `styleProps`; otherwise
      upsert it, and append a `style` placeholder if there is none.
-   - **Finish:** the `style` entry's value becomes `styleRaw ++ props` when `styleRaw` is empty
-     or ends with `;`, and `styleRaw ++ ";" ++ props` otherwise, where
-     `props = concat (n ++ ":" ++ v ++ ";")`.
+   - **Finish:** the `style` entry's value becomes `styleRaw ++ props` when `props` is empty,
+     `styleRaw` is empty or `styleRaw` ends with `;`, and `styleRaw ++ ";" ++ props` otherwise,
+     where `props = concat (n ++ ":" ++ v ++ ";")`. (An untouched `style` attribute keeps its
+     text exactly, as in a browser; golden D.1 #10.)
 
    **Reflection table** (closed; built from every property key `Html/Attributes.elm` uses):
    - `AsString` with renaming: `className→class`, `htmlFor→for`, `httpEquiv→http-equiv`,
@@ -494,7 +600,20 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
 
 ---
 
-## 9. Phases (each ends green: run `cmake --build build --target full` **once**, teed to `/tmp/test_output.txt`)
+## 9. Phases
+
+**Every phase ends with these gates green** (v6, §1.1 E8; the gates of `plans/eco-system-library.md`
+§3.3.3):
+1. **Normal suite:** `cmake --build build --target full 2>&1 | tee /tmp/test_output.txt`, run
+   **once** (CLAUDE.md). `full` also runs `check-root-bounded.py` and `check-kernel-homes.sh`,
+   then the JIT E2E suite, `eco-system-core-test` and the JS eco/system suite (`run-js-e2e`).
+2. **Validate tree** (from P2 on). Configure it once with
+   `cmake -DECO_HEAP_VALIDATE=ON --preset build -B build-validate`. Then run
+   `ECO_NURSERY_POISON=1 ECO_HEAP_CONFIG=$PWD/benchmarks/heap-config-gc-pressure.json build-validate/test/test --filter <F> 2>&1 | tee /tmp/test_output_validate.txt`,
+   where `<F>` is `VirtualDomKernel` (P2, P4), `elm-html` (P3) or `eco-system` (P5, P6).
+   This gate catches a forgotten root.
+3. **Stress** (P6): `ECO_NURSERY_POISON=1 build-validate/test/stress-test --timeout 5m --filter EcoSystemHttpServerHtml`.
+
 
 ### P0 — Groundwork in this repo (no behaviour change for existing programs)
 
@@ -534,7 +653,7 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
 1. Delete `elm-kernel-cpp/src/virtual-dom/VirtualDom.hpp`, `VirtualDom.cpp` and
    `VirtualDomExports.cpp`.
 2. Add `VirtualDomLayout.hpp` (B.1), `VirtualDomExports.cpp` (B.2), and empty-for-now
-   `HtmlWriter.hpp/.cpp` and `DomExports.cpp`.
+   `HtmlWriter.hpp/.cpp`. There is no `DomExports.cpp` here: it lives in eco/system (D8, P5).
 3. Update `elm-kernel-cpp/CMakeLists.txt:157-166`:
 
    ```cmake
@@ -542,17 +661,15 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
        src/virtual-dom/VirtualDomExports.cpp
        src/virtual-dom/XssFilters.cpp
        src/virtual-dom/HtmlWriter.cpp
-       src/virtual-dom/DomExports.cpp
    )
    target_link_libraries(ElmKernel_VirtualDom PUBLIC ElmKernel_Json)
    ```
 
-4. In `elm-kernel-cpp/src/KernelExports.h:350-377`, add the prototypes
-   `HPtr Elm_Kernel_VirtualDom_noJavaScriptUri(HPtr value);`,
-   `HPtr Eco_Kernel_Dom_fromNode(HPtr node);`,
-   `HPtr Eco_Kernel_Dom_fromAttribute(HPtr fact);` and `HPtr Eco_Kernel_Dom_toString(HPtr node);`.
+4. In `elm-kernel-cpp/src/KernelExports.h:350-377`, add the prototype
+   `HPtr Elm_Kernel_VirtualDom_noJavaScriptUri(HPtr value);`.
 5. In `runtime/src/codegen/RuntimeSymbols.cpp:803-828`, add
-   `KERNEL_SYM(Elm_Kernel_VirtualDom_noJavaScriptUri)` and the three `Eco_Kernel_Dom_*` (F16).
+   `KERNEL_SYM(Elm_Kernel_VirtualDom_noJavaScriptUri)` (F16). Nothing named `Eco_Kernel_*` is
+   added to `elm-kernel-cpp/`: `check-kernel-homes.sh` would fail `full` (§1.1 E1).
 6. **Gate:** the ~950 `main = text "done"` tests pass.
 
 ### P2 — C++ kernel unit tests (`test/kernel/VirtualDomKernelTest.cpp/.hpp`)
@@ -584,7 +701,7 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
 - **V5 literal arguments:** pass a raw pointer to a static `ElmString` as `tag`, if the test
   harness can build one. Otherwise rely on the E2E tests, where literals arrive this way.
 
-### P3 — `test/elm-html` E2E suite (this repo; no `Http.Dom` yet)
+### P3 — `test/elm-html` E2E suite (no `Http.Dom` yet)
 
 **Wiring:**
 - Create `test/elm-html/{elm.json, ElmHtmlTest.hpp, src/}`, modelled on `test/elm-url`.
@@ -605,65 +722,149 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
   and logs `done`. It is GC pressure on the constructors.
 - `DebugInternalsTest.elm` (specified in P0.1).
 
-### P4 — `HtmlWriter` and `Eco.Kernel.Dom` C++ (this repo)
+### P4 — `HtmlWriter` C++ (`elm-kernel-cpp/`)
 
 - Implement `HtmlWriter.cpp` (B.5) as a **line-by-line mirror of Appendix A** (same function
-  names), and `DomExports.cpp` (B.4).
+  names).
 - **Unit tests V6** in `VirtualDomKernelTest.cpp`: build the trees for Appendix D.1 cases 1–17
   and 20–24 from C++ through the kernels. Properties come from
-  `Elm_Kernel_Json_wrap`/`wrap_Int`/`wrap_Float` and booleans from the Bool constants. Check
-  `Eco_Kernel_Dom_toString` against the expected strings.
+  `Elm_Kernel_Json_wrap`/`wrap_Int`/`wrap_Float` and booleans from the Bool constants. Call
+  `Elm::Kernel::VirtualDom::writeHtml(bits, out)` and compare `out` with the expected strings.
+  `Eco_Kernel_Dom_toString` is P5's; it adds only the final string allocation.
 - **V7 totality:** a seeded fuzz of 10k random tags, attribute names, values and JSON property
   values over a 64-character alphabet that includes every breaking character. It must never
   crash, and the output must never contain a breaking character inside an emitted name.
 - **V8:** a lone surrogate in a text node is emitted as its 3-byte form.
 
-**— Gate: eco/system branch merged (Q1). —**
+### P5 — `Http.Dom` in eco/system (Elm module, native exports and JS twin together)
 
-### P5 — `Http.Dom` module in eco/system
+The JS twin lands in this phase, not after it (§1.1 E12). `full` runs the JS eco/system suite,
+and without `src/Eco/Kernel/Dom.js` every `_Dom_*` reference is undefined at run time on JS.
 
-- Add `src/Http/Dom.elm` (Appendix A) and the `elm/virtual-dom` dependency, and expose `Http.Dom` in
-  eco/system's `elm.json`.
-- **Tests** (in eco/system's E2E tree, `test/eco-system/` on that branch):
-  - `DomLayoutTest.elm`: build every `Node`/`Fact` shape through `Html` (and `Svg`, F19), then
-    pattern-match with `Http.Dom.fromNode` and `Http.Dom.fromAttribute` and log the extracted names and
-    values. This pins VDOM_001.
-  - `DomGoldenTest.elm`: every case in Appendix D.1, checking **both** `Http.Dom.toString h` (native:
-    C++) and `Http.Dom.render (Http.Dom.fromNode h)` (Elm) against the expected string.
-  - `DomDifferentialTest.elm`: an Elm LCG (a fixed seed; no `elm/random`) generates 2,000
-    random trees from a vocabulary of tags, including breaking ones, `attribute`, `property`
-    with string/bool/int/float/null/list values, `style`, `classList`, `map`, `Keyed` and
-    `lazy`. Count trees where `Http.Dom.toString h /= Http.Dom.render (Http.Dom.fromNode h)`; expect
-    `-- CHECK: mismatches: 0`. Strings exclude lone surrogates (F9; V8 covers them).
-  - `DomDeepTest.elm`: a 10k-deep and a 200k-wide tree through both serializers. Check the
-    lengths and equality.
+1. **Rules** (`plans/eco-system-library.md` §3.2). After B1a, add:
+   > **B1b The VirtualDom side door.** `Eco.Kernel.Dom.fromNode`/`fromAttribute`/`toString`
+   > take `VirtualDom.Node msg`/`VirtualDom.Attribute msg`, and `HttpServer.respondHtml` takes an
+   > `Http.Dom.Node`. Natively these are one and the same heap layout, read-only, defined by
+   > `elm-kernel-cpp/src/virtual-dom/VirtualDomLayout.hpp` and pinned by VDOM_001 and
+   > `test/eco-system/src/DomLayoutTest.elm` (plans/elm-html-native-kernel.md §3). On JS the
+   > twin reads VirtualDom's objects through calibrated keys (Appendix C).
 
-### P6 — `setBodyAsHtml` (§7.3)
+   In B5, extend the list of allowed pure kernels with "`Dom.fromNode`, `Dom.fromAttribute` and
+   `Dom.toString` (side-effect-free conversions, B1b)".
+2. **Package metadata.**
+   - `system-kernel-cpp/elm.json`: add `Http.Dom` to `exposed-modules` after
+     `Http.Server.Response`, and `"elm/virtual-dom": "1.0.0 <= v < 2.0.0"` to `dependencies`.
+   - `test/eco-system/elm.json`: add `"elm/html": "1.0.0"` and `"elm/virtual-dom": "1.0.3"` to
+     `direct`. Both are in the package cache, so nothing is fetched (E7).
+   - `examples/system/elm.json`: add `"elm/virtual-dom": "1.0.3"` to `indirect` (E6).
+     `test/stress-elm/elm.json` already lists it.
+3. **Elm.** Add `system-kernel-cpp/src/Http/Dom.elm` (Appendix A).
+4. **Native.**
+   - Add `system-kernel-cpp/src/eco-system/Dom/DomExports.cpp` (B.4).
+   - In `system-kernel-cpp/CMakeLists.txt`, after the WebSocket module block (`:297-322`), add:
 
-- Add the Elm changes, `respondHtml` (native + JS), the CMake link and the driver order check.
-- **E2E test:** a server answers with
-  `node "html" [] [ node "body" [] [ text "x" ] ]`, and a client (elm/http or eco/system
-  `Http.Stream`) reads the response. Expect `Content-Type: text/html; charset=utf-8` and body
-  `<!DOCTYPE html><html><body>x</body></html>`.
-- A second response sets `Content-Type: application/xhtml+xml` first; check that it is kept.
+     ```cmake
+     # Http.Dom's kernels: the VirtualDom side door (plans/elm-html-native-kernel.md §4.2, B1b).
+     # The serializer itself is ElmKernel_VirtualDom's writeHtml.
+     eco_system_module(Dom          POSIX
+         src/eco-system/Dom/DomExports.cpp)
+     target_link_libraries(EcoSystem_Dom PRIVATE ElmKernel_VirtualDom)
+     ```
 
-### P7 — JS twin (`src/Eco/Kernel/Dom.js`, Appendix C)
+   - Append `Dom` to `ECO_SYSTEM_MODS` (`runtime/src/codegen/CMakeLists.txt:958-959`). That
+     one list drives the AOT link (`EcoBootConfig.h`), the `test`/`stress-test` whole-archive
+     link, the eco-boot dependencies and the bundle installs (E4). The `foreach` at
+     `system-kernel-cpp/CMakeLists.txt:325-329` fails configuration if the target is missing.
+5. **JS twin.** Add `system-kernel-cpp/src/Eco/Kernel/Dom.js` (Appendix C). Before the first
+   build, check that every `__[A-Z]` token in it appears in its header imports:
+   `grep -o '__[A-Z][A-Za-z]*_[A-Za-z]*' Dom.js | sort -u`.
+6. **Tests** in `test/eco-system/src/`. Both the native suite and `run-js-e2e` pick them up with
+   no wiring (E9). Each is a `System.SimpleProgram` that prints its result lines with
+   `Stream.Log.line env.stdout`, as `HelloStdoutTest.elm` does, so the output is the same on
+   both targets. SVG is built as `elm/svg` builds it:
+   `svgNode = VirtualDom.nodeNS "http://www.w3.org/2000/svg"`, with
+   `VirtualDom.attribute`/`attributeNS` (E7).
+   - `DomLayoutTest.elm`: build every `Node`/`Fact` shape through `Html`, `Html.Keyed`,
+     `Html.map`, `Html.Attributes.style`/`property`/`attribute`, `Html.Events.on` and `svgNode`
+     with an `attributeNS`. Pattern-match the results with `Http.Dom.fromNode` and
+     `Http.Dom.fromAttribute`, and print the extracted constructor names, strings and namespaces
+     (one `-- CHECK:` per shape). This pins VDOM_001 natively and the calibration on JS.
+   - `DomGoldenTest.elm`: every case in Appendix D.1. Print
+     `<n>: <Http.Dom.toString h>` and `<n> ref: <Http.Dom.render (Http.Dom.fromNode h)>`,
+     checking both against the expected string. Cases whose JS output may differ under D16
+     (several attributes on one element, number text) are written so that they do not depend
+     on it: one attribute per element, and integral numbers.
+   - `DomDifferentialTest.elm` (`-- SKIP-JS: compares the C++ HtmlWriter with the Elm render;
+     on JS both are the Elm render`): an Elm LCG with a fixed seed (no `elm/random`) generates
+     2,000 random trees from a vocabulary of tags, including breaking ones, `attribute`,
+     `property` with string/bool/int/float/null/list values, `style`, `classList`, `map`,
+     `Keyed` and `lazy`. Count the trees where
+     `Http.Dom.toString h /= Http.Dom.render (Http.Dom.fromNode h)`, and expect
+     `-- CHECK: mismatches: 0`. Strings exclude lone surrogates (F9; V8 covers them).
+   - `DomDeepTest.elm`: a 10k-deep and a 200k-wide tree through both serializers. Print the
+     lengths and whether they are equal. On JS this also proves that the twin's conversion is
+     iterative (D17).
 
-- Run P5's layout, golden and deep tests and P6's test under `run-js-e2e`.
-  - Golden expectations may differ only where D16 allows (attribute order, number text). Write
-    those cases so that they do not depend on order (one attribute each), or add `-- SKIP-JS:`
-    with the reason.
-  - The differential test is native-only (`-- SKIP-JS: compares C++ HtmlWriter to Elm render`).
+### P6 — `setBodyAsHtml` (§7.3, native and JS together)
+
+1. The Elm changes in `Internal.elm` and `Response.elm` (§7.3). In `Response.elm`, add
+   `setBodyAsHtml` to the module's `exposing` list and to the `## Body` `@docs` line, give it
+   a doc comment (D13, D15, the `Http.Dom` divergences), and add the `send` doc sentence.
+2. Native `respondHtml` (export, declaration, `copyHeaders` refactor, body) and the CMake link
+   `EcoSystem_HttpServer → ElmKernel_VirtualDom`.
+3. JS `_HttpServer_respondHtml` and its header import.
+4. **E2E test** `test/eco-system/src/HttpServerHtmlTest.elm`, on `HttpServerTestHelp.program`
+   (pattern: `HttpServerJsonTest.elm`). The handler dispatches on `request.url.path`:
+   - `/page` → `Response.setBodyAsHtml (node "html" [] [ node "body" [] [ text "x" ] ])`;
+   - `/xhtml` → `Response.setHeader "Content-Type" "application/xhtml+xml"`, then
+     `setBodyAsHtml (div [] [ text "y" ])`;
+   - `/frag` → `setBodyAsHtml (Html.map identity (p [] [ text "<z>" ]))`.
+
+   The client runs `Help.get` on each path in turn. Expected lines:
+
+   ```
+   -- CHECK: client: 200 text/html; charset=utf-8 <!DOCTYPE html><html><body>x</body></html>
+   -- CHECK: client: 200 application/xhtml+xml <div>y</div>
+   -- CHECK: client: 200 text/html; charset=utf-8 <p>&lt;z&gt;</p>
+   ```
+
+   This covers D15's three rules: the doctype only for an `html` root, the Content-Type added,
+   and a user Content-Type kept. The harness prints client lines as `client: <line>`
+   (`HttpServerTestHelp.elm:184`), and `get` looks up the lower-cased `content-type` header in
+   elm/http's metadata (`:120-123`).
+5. **Stress** `test/stress-elm/src/EcoSystemHttpServerHtml.elm` (pattern:
+   `EcoSystemHttpServerSequential.elm`, `StressHarness`): each cycle serves a 5,000-node page
+   with `setBodyAsHtml` and fetches it, checking the length. It runs under gate 3, so a nursery
+   collection lands between the export's tuple allocations and during the copy-out of a large
+   tree.
+
+### P7 — JS target (no separate landing; it applies inside P5 and P6, E12)
+
+- `full` runs every P5/P6 test under `run-js-e2e`. Run a subset by hand with
+  `TEST_FILTER=eco-system/Dom,eco-system/HttpServerHtml cmake --build build --target run-js-e2e`;
+  logs are in `build/test/js-e2e/out/<Name>.log`.
+- Golden expectations may differ only where D16 allows. Prefer test shapes that cannot differ
+  (P5 step 6). Use `-- SKIP-JS: <reason>` only for native-only behaviour, as
+  `run-js-e2e.js:29-30` requires.
+- On a calibration failure (wrong `$` codes or keys), fix the probe in `_Dom_calibrate`. Never
+  hard-code renamed field letters (F6).
 
 ### P8 — Invariants and documentation
 
 - Add VDOM_001–VDOM_005 (§11) to `design_docs/invariants.csv`.
 - Module docs for `Http.Dom`: the model, `==`, eager `lazy`, §8.8 divergences, and D16.
+- `system-kernel-cpp/README.md`: add to the Modules list, after `Http.Server`, the line
+  "`Http.Dom`: a transparent view of `Html`/`Svg` values and their HTML serialization", and
+  mention `setBodyAsHtml` in the `Http.Server` line. Run `pnpm docs:check` in
+  `system-kernel-cpp/` (stock Elm, E11) to confirm the docs build.
 - A note in `elm-kernel-cpp/LIBRARY_DEPENDENCIES.md` (VirtualDom: no external libraries).
-- *Optional:* `KernelFacts` rows (constructors are pure allocators; filters are pure;
-  `Http.Dom.fromNode`/`fromAttribute` are gc-leaf identities), added by the audited-row procedure in
+- *Optional:* `KernelFacts` rows for the **`VirtualDom`** home only (constructors are pure
+  allocators; filters are pure), added by the audited-row procedure in
   `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`. Not required for correctness: a missing row
-  is the conservative default.
+  is the conservative default. **No `( "Dom", … )` rows.** Fact tables are keyed without the
+  `Eco` prefix, and `check-kernel-homes.sh` counts every home named there as a non-eco/system
+  home (`:20-24`), so a Dom row would collide with `Dom.js` and fail `full`. No eco/system
+  kernel has fact rows today.
 
 ---
 
@@ -679,7 +880,7 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
 | No crash on any input (D17) | P4 V7, P5 differential (breaking names), deep trees |
 | `Debug.toString` safe (D19) | P0.1 / P3 `DebugInternalsTest` |
 | HTML response path, headers, doctype (D13/D15) | P6 |
-| JS target | P7 |
+| JS target | P5 and P6 under `run-js-e2e` (rules in P7) |
 
 ## 11. Invariants to add
 
@@ -693,7 +894,7 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
   arms return, for every input.
 - **VDOM_004 (Runtime_Heap):** `HtmlWriter` and `JsonRead` never allocate on the Eco heap and
   never call Elm code. `Eco_Kernel_Dom_toString` allocates once, after the walk, and
-  `respondHtml` allocates nothing.
+  `httpServerRespondHtmlBody` allocates nothing in its copy-out scope.
 - **VDOM_005 (CrossPhase):** `Http.Dom.render` (Elm) and `HtmlWriter` (C++) implement §8 and agree
   byte for byte natively. All text and attribute values are escaped. No token-breaking name is
   emitted: attributes are dropped and elements unwrapped. Serialization is total: no input
@@ -707,7 +908,7 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
   test catches it. The fallback is a copying `fromNode` with the same Elm API.
 - **K-3 — JS internals (D14).** Calibration absorbs renaming and version drift. A *structural*
   change in VirtualDom's JS objects (for example, a field that holds an array no longer being
-  an array) would break the twin; the P7 layout test catches it.
+  an array) would break the twin; `DomLayoutTest` under `run-js-e2e` catches it (P5, P7).
 - **K-4 — Eager `lazy` (D5)** differs from the browser only for subtrees that crash or never
   terminate and are never rendered.
 - **K-5 — Weakened printer asserts (D19).** Codegen bugs that produce mismatched shapes now
@@ -720,6 +921,71 @@ Elm::Kernel::VirtualDom::writeHtml(Export::encode(t3->c.p), data.body);   // R8:
 - Printing `main : Html` (D9).
 - Chunked HTML streaming across scheduler yields.
 - Removing the `Json.hpp` stub (F18).
+
+---
+
+## 14. Implementation notes (v7)
+
+What implementing the plan changed or found, in order of discovery:
+
+- **I1 — Style finish rule (spec bug, fixed in §8.5, Appendix A and C++).** The v6 rule appended
+  `;` to a raw `style` attribute even when no style property followed, so golden D.1 #10 gave
+  `style="margin: 0;"`. A browser leaves an untouched `style` attribute as written. The rule now
+  takes `styleRaw ++ props` when `props` is empty.
+- **I2 — Native `Json.Decode.null` did not match `Json.Encode.null` (kernel bug, fixed).**
+  `Encode.null` is the embedded `ENC_NULL` constant. `Elm_Kernel_Json_run` bridged only heap
+  encoder nodes to the decoder family, so `runDecoder` saw ctor 0, not `CTOR_JSON_NULL`, and
+  `DEC_NULL` failed: `Decode.decodeValue (Decode.null x) Encode.null` (and `Decode.nullable`)
+  was `Err` natively. The differential test found it (83 of 2,000 trees). Fixed in
+  `JsonExports.cpp` (`Elm_Kernel_Json_run` maps the `ENC_NULL` constant to the `CTOR_JSON_NULL`
+  constant before decoding) through the LSS_022 procedure: every licensed row pinned to the file
+  got a `re-audit 2026-10-08` note (31 KernelSetFacts rows, 2 KernelIntrinsics rows) and the
+  manifest was regenerated. This amends D18 for this one fix. Regression test:
+  `test/elm-json/src/DecodeValueEncodeNullTest.elm`. `Http.Dom.propValue` uses plain
+  `Decode.null` again.
+- **I3 — DEV-mode filter text on JS (D16 extended).** `run-js-e2e` compiles in DEV mode, where
+  elm/virtual-dom replaces a filtered URI with `javascript:alert("This is an XSS vector…")`
+  instead of `""`. DomGoldenTest cases 14–16 accept either text.
+- **I4 — Kernel-home check reads comments.** A comment in `elm-kernel-cpp` that spelled out an
+  `Eco_Kernel_Dom_*` symbol made `check-kernel-homes.sh` report a `Dom` collision (the E1
+  mechanism). `HtmlWriter.hpp` now names the caller without the C symbol.
+- **I5 — Test expectations follow eco's output.** `Debug.toString` prints lists and tuples with
+  `, ` (`[1, 2]`, `(<internals>, 1)`), and eco evaluates list elements right to left, so
+  HtmlLazyTest checks its log lines with `CHECK-DAG`.
+- **I6 — Order of work.** `HtmlWriter` was written in full in P1 rather than as an empty file,
+  and P4's unit tests (V6–V8) landed with P2's. V5 builds static `ElmString`s outside the heap and
+  passes their raw addresses to the constructors, the filters and the writer. Compiled code now
+  interns literals as permanent heap objects (`eco_alloc_string_literal`), and the GC traces only
+  heap and permanent objects, so V5 checks the R3 read path before any collection.
+- **I11 — KernelFacts rows (P8, done).** 18 audited rows under the `VirtualDom` home: the 12
+  constructors (`GcFixed 1`, or `GcFixed 2` for `nodeNS`, `keyedNodeNS` and `mapAttribute`) and the
+  6 filters (`cppAlloc`; `noJavaScriptUri` and `noJavaScriptOrHtmlUri` are `GcNone`, so they are
+  gc-leaf). `params` stays empty, so the borrow analysis is unchanged; `lazy*` have no row, and no
+  `Dom` rows exist (kernel-home check). `KernelFactsTest` pins 75 rows and 18 gc-leaf keys.
+- **I7 — `respond` shares its tail.** `httpServerRespondBody` and `httpServerRespondHtmlBody` share
+  `copyHeaders` and `submitResponse` (registration, count, `httpTablesRespond`), so the two cannot
+  drift.
+- **I9 — Stress gate budget.** The E2E child watchdog is a fixed 60 s
+  (`test/IsolatedTestRunner.hpp:47`, `test/ElmE2ETestBase.hpp:1254`), whatever `--timeout` says,
+  so on the validate tree the documented `--timeout 5m` stress command kills any long HTTP
+  scenario (the existing `EcoSystemHttpServerSequential` included). Fixed in the harness:
+  `runMlirTestsParallel` now allows `StressFlags.timeoutMs` plus `TEST_TIMEOUT_SECONDS` when a
+  stress `--timeout` is given (normal suites keep 60 s), and `ECO_TEST_TIMEOUT_SECONDS` overrides
+  the 60 s base for slow trees. Gate 3 then passes exactly as specified
+  (`--timeout 5m`) for `EcoSystemHttpServerHtml` and `EcoSystemHttpServerSequential`, with clean
+  census lines.
+- **I10 — Validate-tree observations.** After the I2 fix, gate 2 also covers elm-json (the suite
+  of the changed kernel). `RootStackJsonLargeKeyValueTest` and `RootStackJsonLargeListTest` take
+  longer than the 60 s watchdog on the validate tree with `heap-config-gc-pressure.json`, with or
+  without the I2 change (A/B on 2026-10-08). With `ECO_TEST_TIMEOUT_SECONDS=900` they pass, and
+  elm-json is 36/36. One eco-system run
+  failed `HttpServerHttp2LimitsTest` (`big header: status 431` missing) under 8-way parallel load;
+  it passes alone and passed in the earlier eco-system validate run. In that failing run the
+  external `curl` client exited with `(92) Stream error in the HTTP/2 framing layer`. The final
+  eco-system validate run on the finished code is green: 164/164.
+- **I8 — Docs build.** `pnpm docs:check` runs with stock Elm 0.19.1 (the official release binary,
+  sha256 `f8f12a61…92e`, put on `PATH`) and `elm-doc-preview` from `pnpm install`; it passes and the
+  docs list `Http.Dom` and `Http.Server.Response.setBodyAsHtml`.
 
 ---
 
@@ -1115,7 +1381,7 @@ finishStyle st ( name, value ) =
             props =
                 String.concat (List.map (\( k, v ) -> k ++ ":" ++ v ++ ";") st.styleProps)
         in
-        if st.styleRaw == "" || String.endsWith ";" st.styleRaw then
+        if props == "" || st.styleRaw == "" || String.endsWith ";" st.styleRaw then
             ( name, Just (st.styleRaw ++ props) )
 
         else
@@ -1637,28 +1903,80 @@ bool jsToString(uint64_t valueBits, std::u16string& out);
 #endif // ECO_JSONREAD_H
 ```
 
-### B.4 `DomExports.cpp`
+### B.4 `system-kernel-cpp/src/eco-system/Dom/DomExports.cpp` (eco/system, §1.1 E1/E3)
 
 ```cpp
+//===- DomExports.cpp - C exports of Eco.Kernel.Dom ------------------------===//
+//
+// plans/elm-html-native-kernel.md §4.2 and plans/eco-system-library.md B1b. The
+// VirtualDom side door: natively a VirtualDom.Node msg already has the heap
+// layout of Http.Dom.Node (VirtualDomLayout.hpp, VDOM_001), so fromNode and
+// fromAttribute are identities. toString runs ElmKernel_VirtualDom's
+// writeHtml, which never allocates on the Eco heap (VDOM_004), then allocates
+// the one result String. Pure kernels (B5): no binding, no table.
+//
+//===----------------------------------------------------------------------===//
+
+#include "eco-system/Core/Core.hpp"
+#include "virtual-dom/HtmlWriter.hpp"
+
+#include <string>
+
+using namespace Eco::System;
+
 extern "C" {
-HPtr Eco_Kernel_Dom_fromNode(HPtr node) { return node; }            // R7: zero-copy (D3)
-HPtr Eco_Kernel_Dom_fromAttribute(HPtr fact) { return fact; }
-HPtr Eco_Kernel_Dom_toString(HPtr node) {
-    std::string out;
-    Elm::Kernel::VirtualDom::writeHtml(node.toBits(), out);          // R8: no Eco allocation
-    return HPtr::fromBits(Elm::Kernel::Export::encode(Elm::alloc::allocStringFromUTF8(out)));
+
+// fromNode : VirtualDom.Node msg -> Http.Dom.Node
+uint64_t Eco_Kernel_Dom_fromNode(uint64_t node) {
+    ECO_KERNEL_GUARD(
+        return node;   // R7: zero-copy (D3)
+    )
 }
+
+// fromAttribute : VirtualDom.Attribute msg -> Http.Dom.Fact
+uint64_t Eco_Kernel_Dom_fromAttribute(uint64_t fact) {
+    ECO_KERNEL_GUARD(
+        return fact;
+    )
 }
+
+// toString : VirtualDom.Node msg -> String
+uint64_t Eco_Kernel_Dom_toString(uint64_t node) {
+    ECO_KERNEL_GUARD(
+        std::string out;
+        ::Elm::Kernel::VirtualDom::writeHtml(node, out);   // R8: no Eco allocation
+        return enc(alloc::allocStringFromUTF8(out));       // the one allocation, after the walk
+    )
+}
+
+} // extern "C"
 ```
+
+- `node` is only passed through to `writeHtml`, which reads it with elm-kernel-cpp's
+  `Export::toPtr` (R3). No `HPointer` is live across the one allocation, so no guard is needed.
+- `ECO_KERNEL_GUARD` is a `try` block whose handlers call `reportFatal`
+  (`eco-kernel-cpp/src/eco-kernel/KernelExports.h:44-52`), so it wraps a plain `return`. Only
+  `std::bad_alloc` from `out` can reach it, and running out of memory is outside D17.
 
 ### B.5 `HtmlWriter.hpp/.cpp`
 
 ```cpp
+// elm-kernel-cpp/src/virtual-dom/HtmlWriter.hpp. Self-contained: eco/system includes it
+// (as "virtual-dom/HtmlWriter.hpp"), so it includes nothing from elm-kernel-cpp (§1.1 E3).
+#ifndef ECO_HTMLWRITER_H
+#define ECO_HTMLWRITER_H
+#include <cstdint>
+#include <string>
+
 namespace Elm::Kernel::VirtualDom {
 // Appends the HTML serialization (plan §8) of a VirtualDom.Node / Http.Dom.Node value to `out` as
-// UTF-8. Never allocates on the Eco heap, never calls Elm (VDOM_004), never fails (D17).
+// UTF-8. `nodeBits` is an encoded word (heap pointer or raw literal pointer, R3). Never allocates
+// on the Eco heap, never calls Elm (VDOM_004), never fails (D17). Callers: eco/system's
+// Eco_Kernel_Dom_toString and httpServerRespondHtmlBody.
 void writeHtml(uint64_t nodeBits, std::string& out);
 }
+
+#endif // ECO_HTMLWRITER_H
 ```
 
 Implementation outline. Mirror Appendix A **function for function**, with the same names:
@@ -1698,7 +2016,7 @@ import Http.Dom as Dom exposing (Text, Element, KeyedElement, Mapped, Attribute,
 
 */
 
-// Dom: the JS twin of elm-kernel-cpp/src/virtual-dom/DomExports.cpp (plans/elm-html-native-kernel.md
+// Dom: the JS twin of src/eco-system/Dom/DomExports.cpp (plans/elm-html-native-kernel.md
 // section 7.2). Stock VirtualDom JS objects are read through keys and type codes CALIBRATED from probe
 // vnodes, so kernel field renaming and package versions do not matter. Never throws (D17).
 
@@ -1872,7 +2190,7 @@ Each case is `Http.Dom.toString` of the given `Html`; `Encode` is `Json.Encode`.
 | 23 | `Html.map identity (Html.Keyed.ul [] [ ( "a", li [] [ text "1" ] ) ])` | `<ul><li>1</li></ul>` |
 | 24 | `textarea [ value "a<b" ] [ text "ignored" ]` | `<textarea>a&lt;b</textarea>` |
 | 25 | `select [ value "b" ] [ option [ value "a" ] [], option [ value "b" ] [] ]` | `<select><option value="a"></option><option value="b"></option></select>` |
-| 26 | `Svg.svg [ Svg.Attributes.viewBox "0 0 10 10" ] [ Svg.use [ Svg.Attributes.xlinkHref "#a" ] [] ]` | `<svg viewBox="0 0 10 10"><use xlink:href="#a"></use></svg>` |
+| 26 | `svgNode "svg" [ VirtualDom.attribute "viewBox" "0 0 10 10" ] [ svgNode "use" [ VirtualDom.attributeNS "http://www.w3.org/1999/xlink" "xlink:href" "#a" ] [] ]`, where `svgNode = VirtualDom.nodeNS "http://www.w3.org/2000/svg"` (what `Svg.svg`/`Svg.use`/`viewBox`/`xlinkHref` expand to, E7) | `<svg viewBox="0 0 10 10"><use xlink:href="#a"></use></svg>` |
 | 27 | `div [ Html.Events.onClick (), id "e" ] []` | `<div id="e"></div>` |
 | 28 | `Html.Lazy.lazy (\n -> text (String.fromInt n)) 5` | `5` |
 | 29 | `div [ property "title" (Encode.int 3), property "foo" (Encode.string "x") ] []` | `<div title="3"></div>` |

@@ -18,6 +18,7 @@ set(ELM_TEST_PACKAGES
     eco-kernel
     eco-system
     elm-core
+    elm-html
     elm-http
     elm-json
     elm-parser
@@ -136,6 +137,7 @@ add_executable(test
         allocator/HPointerLayoutTest.cpp
         allocator/ConcurrencyRegisterTest.cpp
         kernel/KernelExportsTest.cpp
+        kernel/VirtualDomKernelTest.cpp
         platform/PlatformServicesTest.cpp
 )
 

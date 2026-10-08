@@ -44,6 +44,26 @@ uint64_t Eco_Kernel_HttpServer_respond(int64_t key, int64_t status, uint64_t hea
     )
 }
 
+// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Http.Dom.Node -> Task Never ()
+// plans/elm-html-native-kernel.md §7.3: `respond` with an HTML body, serialized in the body's
+// copy-out scope.
+uint64_t Eco_Kernel_HttpServer_respondHtml(int64_t key, int64_t status, uint64_t headers,
+                                           uint64_t doctype, uint64_t node) {
+    ECO_KERNEL_GUARD(
+        HPointer headersHP = dec(headers);
+        HPointer doctypeHP = dec(doctype);
+        HPointer nodeHP = dec(node);
+        HPointer ks = alloc::listNil();
+        HPointer hdn = alloc::listNil();
+        Elm::StackRootGuard g({&headersHP, &doctypeHP, &nodeHP, &ks, &hdn});
+        // Five arguments: nested tuples (G2), each rooted before the next allocation.
+        ks = alloc::tuple2(alloc::unboxedInt(key), alloc::unboxedInt(status), 0x5);
+        hdn = alloc::tuple3(alloc::boxed(headersHP), alloc::boxed(doctypeHP), alloc::boxed(nodeHP), 0);
+        HPointer payload = alloc::tuple2(alloc::boxed(ks), alloc::boxed(hdn), 0);
+        return enc(makeAsyncBinding<httpServerRespondHtmlBody>(payload));
+    )
+}
+
 // --- plans/eco-system-websockets.md Appendix B.2 ---------------------------------
 
 // createServerWith : ( ( String, Int ), ( Bool, Int ) ) -> Maybe ( String, String )

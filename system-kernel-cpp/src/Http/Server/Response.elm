@@ -1,7 +1,7 @@
 module Http.Server.Response exposing
     ( Response, send
     , setStatus, setHeader, appendHeader
-    , setBody, setBodyAsString, setBodyAsBytes
+    , setBody, setBodyAsString, setBodyAsBytes, setBodyAsHtml
     )
 
 {-| Build up a response to an HTTP request and send it as a command.
@@ -29,16 +29,18 @@ A fresh response has status `200`, no headers and an empty body.
 
 ## Body
 
-@docs setBody, setBodyAsString, setBodyAsBytes
+@docs setBody, setBodyAsString, setBodyAsBytes, setBodyAsHtml
 
 -}
 
 import Bytes exposing (Bytes)
 import Eco.Kernel.HttpServer
 import Eco.Kernel.Stream
+import Http.Dom as Dom
 import Http.Server.Internal as Internal exposing (Body(..))
 import System
 import Task exposing (Task)
+import VirtualDom
 
 
 {-| An HTTP response to a single request. You receive one from
@@ -51,12 +53,19 @@ type alias Response =
 {-| Command to send an HTTP response.
 
 The response is written with a `Content-Length` header and the connection is closed afterwards.
-Send each response only once.
+Send each response only once. An HTML body (see [`setBodyAsHtml`](#setBodyAsHtml)) is serialized
+as it is sent.
 
 -}
 send : Response -> Cmd msg
 send (Internal.Response r) =
-    System.endSimpleProgram (kRespond r.key r.status r.headers (bodyBytes r.body))
+    case r.body of
+        HtmlBody node ->
+            System.endSimpleProgram
+                (kRespondHtml r.key r.status (withHtmlContentType r.headers) (isDocument node) node)
+
+        _ ->
+            System.endSimpleProgram (kRespond r.key r.status r.headers (bodyBytes r.body))
 
 
 bodyBytes : Body -> Bytes
@@ -67,6 +76,40 @@ bodyBytes body =
 
         BytesBody b ->
             b
+
+        HtmlBody node ->
+            kStringToUtf8 (Dom.render node)
+
+
+{-| Add `Content-Type: text/html; charset=utf-8` unless the response already has a
+Content-Type (the name compared case-insensitively).
+-}
+withHtmlContentType : List ( String, List String ) -> List ( String, List String )
+withHtmlContentType headers =
+    if List.any (\( name, _ ) -> String.toLower name == "content-type") headers then
+        headers
+
+    else
+        ( "Content-Type", [ "text/html; charset=utf-8" ] ) :: headers
+
+
+{-| Whether the page gets `<!DOCTYPE html>`: its root, seen through `Html.map`, is an HTML
+`html` element.
+-}
+isDocument : Dom.Node -> Bool
+isDocument node =
+    case node of
+        Dom.Mapped _ inner ->
+            isDocument inner
+
+        Dom.Element Nothing tag _ _ ->
+            String.toLower tag == "html"
+
+        Dom.KeyedElement Nothing tag _ _ ->
+            String.toLower tag == "html"
+
+        _ ->
+            False
 
 
 {-| Set the HTTP status code of a response.
@@ -135,6 +178,28 @@ setBodyAsBytes body (Internal.Response r) =
     Internal.Response { r | body = BytesBody body }
 
 
+{-| Set the body of the response to an HTML page or fragment built with
+[elm/html](/packages/elm/html/latest/) (or `Svg`).
+
+    response
+        |> Http.Server.Response.setBodyAsHtml
+            (Html.node "html" [] [ Html.node "body" [] [ Html.text "Hello!" ] ])
+        |> Http.Server.Response.send
+
+When the response is sent:
+
+  - the HTML is serialized as [`Http.Dom.toString`](Http-Dom#toString) does, straight into the
+    response (natively no `String` is built);
+  - `<!DOCTYPE html>` is written first when the root element is `html`;
+  - `Content-Type: text/html; charset=utf-8` is added unless the response already has a
+    Content-Type header.
+
+-}
+setBodyAsHtml : VirtualDom.Node msg -> Response -> Response
+setBodyAsHtml node (Internal.Response r) =
+    Internal.Response { r | body = HtmlBody (Dom.fromNode node) }
+
+
 
 -- KERNELS
 -- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.6).
@@ -148,3 +213,8 @@ kRespond =
 kStringToUtf8 : String -> Bytes
 kStringToUtf8 =
     Eco.Kernel.Stream.stringToUtf8
+
+
+kRespondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Dom.Node -> Task Never ()
+kRespondHtml =
+    Eco.Kernel.HttpServer.respondHtml

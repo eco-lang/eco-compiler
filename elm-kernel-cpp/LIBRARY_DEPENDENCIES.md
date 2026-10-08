@@ -63,7 +63,7 @@ These modules can be implemented using only C++ standard library features:
 | Module | Functions | Libraries Used |
 |--------|-----------|----------------|
 | **Browser** | 20 | WebAssembly + Emscripten |
-| **VirtualDom** | 25 | WebAssembly + Emscripten |
+| **VirtualDom** | 25 | None (native heap DOM model, XSS filters and HTML writer; plans/elm-html-native-kernel.md) |
 
 ---
 

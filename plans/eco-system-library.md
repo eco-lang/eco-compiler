@@ -153,6 +153,13 @@ and `System.File` exposes `type alias Metadata = MetadataOf EntityType`.
   Strings (`elm/http 2.0.0 Http.elm:198`), and the native elm/http kernel reads it the same way
   (`elm-kernel-cpp/src/http/HttpExports.cpp:505-516`). Building a list of name/value pairs in Elm is
   impossible because `Header` is opaque, so this is the minimal coupling. A test pins it (Phase 8).
+- **B1b The VirtualDom side door.** `Eco.Kernel.Dom.fromNode`/`fromAttribute`/`toString`
+  take `VirtualDom.Node msg`/`VirtualDom.Attribute msg`, and `HttpServer.respondHtml` takes an
+  `Http.Dom.Node`. Natively these are one and the same heap layout, read-only, defined by
+  `elm-kernel-cpp/src/virtual-dom/VirtualDomLayout.hpp` and pinned by VDOM_001 and
+  `test/eco-system/src/DomLayoutTest.elm` (plans/elm-html-native-kernel.md §3). On JS the
+  twin reads VirtualDom's objects through calibrated keys (plans/elm-html-native-kernel.md
+  Appendix C).
 - **B2 Errors.** Errors cross as tuples:
 
   | Shape | Tuple | Used by |
@@ -171,7 +178,8 @@ and `System.File` exposes `type alias Metadata = MetadataOf EntityType`.
   names. Elm builds the Dicts.
 - **B5 Bindings.** Every kernel that performs IO or touches a kernel table returns a Task built with
   `makeBinding` or `makeAsyncBinding` (F2). The only pure kernels allowed are side-effect-free
-  conversions: `Stream.utf8ToString : Bytes -> Maybe String` and `Stream.stringToUtf8 : String -> Bytes`.
+  conversions: `Stream.utf8ToString : Bytes -> Maybe String` and `Stream.stringToUtf8 : String -> Bytes`,
+  and `Dom.fromNode`, `Dom.fromAttribute` and `Dom.toString` (side-effect-free conversions, B1b).
 - **B6 Exceptions.** Every export is wrapped in `ECO_KERNEL_GUARD`, **and every binding body in
   `ECO_SYSTEM_BODY_GUARD`** (F21, §3.3 G2).
 - **B7 Effect-manager types.** Effect-manager `MySub`/`MyCmd` constructors carry only B1 field types

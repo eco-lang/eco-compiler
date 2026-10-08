@@ -34,6 +34,10 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume);
 // captured = ( ( key, status ) mask 0x5, ( headers, body ) ) mask 0.
 HPointer httpServerRespondBody(HPointer captured, HPointer resume);
 
+// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Http.Dom.Node -> Task Never ()
+// captured = ( ( key, status ) mask 0x5, ( headers, doctype, node ) ) mask 0.
+HPointer httpServerRespondHtmlBody(HPointer captured, HPointer resume);
+
 // closeServer : Int -> Int -> Task Never ()
 // captured = ( serverId, deadlineMs ) mask 0x5.
 HPointer httpServerCloseServerBody(HPointer captured, HPointer resume);

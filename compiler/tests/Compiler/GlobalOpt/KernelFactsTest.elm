@@ -44,7 +44,8 @@ The tests establish:
     `gcLeafEligibleFor` and `droppableFor` of its key agree with
     `gcLeafEligible` and `droppable` of its record, and all three key forms
     (with `hoistableFor`) are False for the unlisted `( "Platform", "sendToApp" )`.
-  - Test 7: the table has 57 rows and 57 distinct keys.
+  - Test 7: the table has 75 rows and 75 distinct keys (57, plus the 18 audited
+    `VirtualDom` rows of plans/elm-html-native-kernel.md P8).
 
 Among what is not tested: `hoistableFor` on a listed key (`hoistable` is not
 exposed, so it cannot be compared with a record form), `costClass` and
@@ -137,7 +138,7 @@ suite =
                     ]
                     ()
         , Test.test "7. the table has the expected size and no duplicate keys" <|
-            \_ -> Expect.equal ( 57, 57 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
+            \_ -> Expect.equal ( 75, 75 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
         ]
 
 
@@ -165,12 +166,14 @@ dedupeSorted xs =
             xs
 
 
-{-| The 16 kernel keys whose rows are expected to be gc-leaf, written out by
+{-| The 18 kernel keys whose rows are expected to be gc-leaf, written out by
 hand rather than computed from the table.
 
 It includes `( "Basics", "not" )` and `( "Basics", "round" )`. Their rows record
 that `not` returns one of the embedded `True` and `False` constants and that
 `round`'s only export takes and returns unboxed numbers, so neither allocates.
+The two `VirtualDom` URI filters return their argument or the embedded empty
+string, copying it only into C++ memory, so they do not allocate either.
 
 -}
 stampable : List ( String, String )
@@ -191,6 +194,8 @@ stampable =
     , ( "Bytes", "getStringWidth" )
     , ( "Bytes", "width" )
     , ( "Bytes", "decodeFailure" )
+    , ( "VirtualDom", "noJavaScriptUri" )
+    , ( "VirtualDom", "noJavaScriptOrHtmlUri" )
     ]
 
 

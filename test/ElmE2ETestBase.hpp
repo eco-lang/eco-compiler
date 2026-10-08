@@ -960,6 +960,21 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         return {};
     }
 
+    // The child watchdog: TEST_TIMEOUT_SECONDS, or ECO_TEST_TIMEOUT_SECONDS
+    // when set (slow trees such as ECO_HEAP_VALIDATE with gc-pressure configs
+    // need more). A stress run given `--timeout T` lets its programs loop for
+    // up to T (StressFlags.timeoutMs), so the watchdog allows T on top; a fixed
+    // 60 s would kill every long-running scenario before its own deadline.
+    int64_t baseTimeoutSeconds = TEST_TIMEOUT_SECONDS;
+    if (const char* env = std::getenv("ECO_TEST_TIMEOUT_SECONDS")) {
+        long long v = std::atoll(env);
+        if (v > 0) baseTimeoutSeconds = v;
+    }
+    [[maybe_unused]] const int64_t childTimeoutSeconds =
+        (flags.has_value() && flags->timeoutMs > 0)
+            ? flags->timeoutMs / 1000 + baseTimeoutSeconds
+            : baseTimeoutSeconds;
+
 #if defined(_WIN32)
     // Windows v1: serial in-process Elm E2E runner. No fork sandboxing —
     // a crash in any Elm test kills the suite. Tests that depend on
@@ -1251,7 +1266,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                         now - ctx.startTime).count();
 
-                    if (elapsed >= TEST_TIMEOUT_SECONDS) {
+                    if (elapsed >= childTimeoutSeconds) {
                         kill(ctx.pid, SIGKILL);
 
                         int status;
@@ -1269,7 +1284,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                         ctx.result.passed = false;
                         ctx.result.crashed = true;
                         ctx.result.error = "Test timed out after " +
-                                           std::to_string(TEST_TIMEOUT_SECONDS) + " seconds";
+                                           std::to_string(childTimeoutSeconds) + " seconds";
 
                         printTestResult(ctx.name, ctx.capturedOutput,
                                         ctx.result.passed, ctx.result.error);

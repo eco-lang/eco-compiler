@@ -382,6 +382,7 @@ HPtr Elm_Kernel_VirtualDom_lazy8(HPtr closure, HPtr a, HPtr b, HPtr c, HPtr d, H
 HPtr Elm_Kernel_VirtualDom_noScript(HPtr tag);
 HPtr Elm_Kernel_VirtualDom_noOnOrFormAction(HPtr key);
 HPtr Elm_Kernel_VirtualDom_noInnerHtmlOrFormAction(HPtr key);
+HPtr Elm_Kernel_VirtualDom_noJavaScriptUri(HPtr value);
 HPtr Elm_Kernel_VirtualDom_noJavaScriptOrHtmlUri(HPtr value);
 HPtr Elm_Kernel_VirtualDom_noJavaScriptOrHtmlJson(HPtr value);
 

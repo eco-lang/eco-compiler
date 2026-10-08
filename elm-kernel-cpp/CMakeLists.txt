@@ -155,19 +155,25 @@ target_include_directories(ElmKernel_Process PUBLIC
 target_compile_features(ElmKernel_Process PUBLIC cxx_std_20)
 
 # VirtualDom module
+# plans/elm-html-native-kernel.md: the heap DOM model (VirtualDomExports), the
+# 1.0.5 XSS filters, and the HTML writer that eco/system's Http.Dom and
+# setBodyAsHtml call (writeHtml).
 add_library(ElmKernel_VirtualDom STATIC
-    src/virtual-dom/VirtualDom.cpp
     src/virtual-dom/VirtualDomExports.cpp
+    src/virtual-dom/XssFilters.cpp
+    src/virtual-dom/HtmlWriter.cpp
 )
 target_include_directories(ElmKernel_VirtualDom PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
 )
 target_compile_features(ElmKernel_VirtualDom PUBLIC cxx_std_20)
+target_link_libraries(ElmKernel_VirtualDom PUBLIC ElmKernel_Json)
 
 # Json module
 add_library(ElmKernel_Json STATIC
     src/json/JsonExports.cpp
+    src/json/JsonRead.cpp
 )
 target_include_directories(ElmKernel_Json PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

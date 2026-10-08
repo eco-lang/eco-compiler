@@ -65,6 +65,7 @@
 #include "allocator/HPointerLayoutTest.hpp"
 #include "allocator/ConcurrencyRegisterTest.hpp"
 #include "kernel/KernelExportsTest.hpp"
+#include "kernel/VirtualDomKernelTest.hpp"
 #include "platform/PlatformServicesTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
@@ -77,6 +78,7 @@
 #include "elm-parser/ElmParserTest.hpp"
 #include "elm-regex/ElmRegexTest.hpp"
 #include "elm-url/ElmUrlTest.hpp"
+#include "elm-html/ElmHtmlTest.hpp"
 #include "elm-http/ElmHttpTest.hpp"
 #include "elm-time/ElmTimeTest.hpp"
 #include "TestSuite.hpp"
@@ -1096,6 +1098,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite kernelExportsTests("KernelExports");
     registerKernelExportsTests(kernelExportsTests);
 
+    // Native elm/html kernels (plans/elm-html-native-kernel.md P2/P4).
+    Testing::TestSuite virtualDomKernelTests("VirtualDomKernel");
+    registerVirtualDomKernelTests(virtualDomKernelTests);
+
     // Runtime platform services (Scheduler quiescence hook, TimerService
     // cancel, WaitService lanes, exit code). Fork-isolated: their singletons
     // start worker threads (WaitService reaps every child of the process).
@@ -1209,6 +1215,7 @@ int main(int argc, char* argv[]) {
     auto elmParserTests = ElmParserTest::buildElmParserTestSuite();
     auto elmRegexTests = ElmRegexTest::buildElmRegexTestSuite();
     auto elmUrlTests = ElmUrlTest::buildElmUrlTestSuite();
+    auto elmHtmlTests = ElmHtmlTest::buildElmHtmlTestSuite();
     auto elmHttpTests = ElmHttpTest::buildElmHttpTestSuite();
     auto elmTimeTests = ElmTimeTest::buildElmTimeTestSuite();
 
@@ -1238,6 +1245,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(hpointerLayoutTests));
     suite.add(std::move(concurrencyRegisterTests));
     suite.add(std::move(kernelExportsTests));
+    suite.add(std::move(virtualDomKernelTests));
     suite.add(std::move(platformServicesTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(codegenTests));
@@ -1251,6 +1259,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(elmParserTests));
     suite.add(std::move(elmRegexTests));
     suite.add(std::move(elmUrlTests));
+    suite.add(std::move(elmHtmlTests));
     suite.add(std::move(elmHttpTests));
     suite.add(std::move(elmTimeTests));
     // LAST: crash-risk representation tests (see comment above). Placed after

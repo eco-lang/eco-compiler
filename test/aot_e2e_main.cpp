@@ -153,7 +153,7 @@ struct TestCase {
 // covered by the separate `stress-test` binary).
 const std::vector<std::string>& aot_test_packages() {
     static const std::vector<std::string> pkgs = {
-        "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-http",
+        "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-html", "elm-http",
         "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url",
     };
     return pkgs;

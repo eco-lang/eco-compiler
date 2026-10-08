@@ -4091,6 +4091,18 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint32_t first_ctor = typeInfo->data.custom.first_ctor;
         uint32_t ctor_count = typeInfo->data.custom.ctor_count;
 
+        // Kernel-built values may not have the shape their declared type
+        // describes: VirtualDom.Node is declared `type Node msg = Node` but the
+        // kernel builds Http.Dom.Node values (plans/elm-html-native-kernel.md
+        // D19), Json.Value fields hold the Json kernel's encodings, and opaque
+        // placeholder types (Http.Dom.Tagger) hold closures. JS prints such
+        // values as `<internals>`; so does this printer on any shape mismatch,
+        // instead of asserting.
+        if (ctor_count == 0) {
+            output_text("<internals>");
+            break;
+        }
+
         // An embedded constant of a Custom type is one of that type's nullary
         // constructors. A null-cons word (HEAP_044) carries its declaration
         // index — look the ctor up by id. The legacy merged empty (0x6, e.g.
@@ -4130,9 +4142,8 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         }
 
         Header* header = static_cast<Header*>(ptr);
-        assert(header->tag == Tag_Custom && "Expected Custom tag for Custom type");
         if (header->tag != Tag_Custom) {
-            output_text("<not-custom>");
+            output_text("<internals>");   // D19: shape mismatch
             break;
         }
 
@@ -4142,7 +4153,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
         // Assert constructor info is available
         assert(g_type_graph->ctors && "Type graph has no ctors array");
-        assert(ctor_count > 0 && "Custom type has no constructors in type graph - codegen bug");
 
         // Runtime-recognised types (e.g. Dict) use reserved ctor_id values
         // outside 0..ctor_count-1, so search linearly instead of indexing.
@@ -4153,7 +4163,10 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 break;
             }
         }
-        assert(ctor_info != nullptr && "Constructor id not found in type graph");
+        if (ctor_info == nullptr || ctor_info->field_count != size) {
+            output_text("<internals>");   // D19: shape mismatch
+            break;
+        }
 
         // Assert constructor name is available
         assert(g_type_graph->strings && "Type graph has no strings array");
@@ -4167,7 +4180,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         if (size > 0) {
             // Assert field info is available
             assert(g_type_graph->fields && "Type graph has no fields array");
-            assert(ctor_info->field_count == size && "Field count mismatch");
             assert(ctor_info->first_field + size <= g_type_graph->field_count &&
                    "Field indices out of bounds");
 

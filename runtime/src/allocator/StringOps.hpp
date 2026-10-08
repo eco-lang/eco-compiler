@@ -22,6 +22,7 @@
 #include "Utf8.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
@@ -1193,27 +1194,44 @@ inline HPointer fromInt(i64 n) {
 }
 
 /**
+ * Writes the text String.fromFloat produces for `n` into `buf` (at least 32
+ * bytes) and returns its length: "NaN", "Infinity", "-Infinity", "0" for both
+ * zeros, else the shortest round-trip form from std::to_chars. Shared with the
+ * HTML serializer (plans/elm-html-native-kernel.md P0.2), so property text and
+ * String.fromFloat agree natively.
+ */
+inline size_t formatFloatShortest(f64 n, char* buf) {
+    if (std::isnan(n)) {
+        std::memcpy(buf, "NaN", 3);
+        return 3;
+    }
+    if (std::isinf(n)) {
+        if (n > 0) {
+            std::memcpy(buf, "Infinity", 8);
+            return 8;
+        }
+        std::memcpy(buf, "-Infinity", 9);
+        return 9;
+    }
+    if (n == 0.0) {
+        buf[0] = '0';
+        return 1;
+    }
+    // Use std::to_chars for the shortest round-trip representation,
+    // matching JavaScript/Elm's Number.prototype.toString() behavior.
+    auto [ptr, ec] = std::to_chars(buf, buf + 32, n);
+    (void)ec;
+    return static_cast<size_t>(ptr - buf);
+}
+
+/**
  * Converts a float to a string.
  */
 inline HPointer fromFloat(f64 n) {
     // All outputs are pure ASCII, so emit UTF-8 leaves.
-    if (std::isnan(n))
-        return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("NaN"), 3);
-    if (std::isinf(n)) {
-        return n > 0
-                   ? makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("Infinity"), 8)
-                   : makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("-Infinity"), 9);
-    }
-    if (n == 0.0)
-        return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("0"), 1);
-
-    // Use std::to_chars for the shortest round-trip representation,
-    // matching JavaScript/Elm's Number.prototype.toString() behavior.
     char buf[32];
-    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), n);
-    (void)ec;
-    return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>(buf),
-                                 static_cast<u32>(ptr - buf));
+    size_t len = formatFloatShortest(n, buf);
+    return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>(buf), static_cast<u32>(len));
 }
 
 /**

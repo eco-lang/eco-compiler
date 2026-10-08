@@ -32,6 +32,9 @@
 //     reactor; the task completes when the transport took the bytes
 //     (RespondDone). An unknown, answered or dead key completes at once:
 //     respond is a Task Never.
+//   * respondHtml (R mode): respond with an Http.Dom.Node body, serialized by
+//     ElmKernel_VirtualDom's writeHtml inside the same copy-out scope
+//     (plans/elm-html-native-kernel.md §7.3).
 //   * closeServer (R mode): HttpTables closes the listener and starts the
 //     graceful close on the reactor; the task completes on ServerClosed. An
 //     unknown or fully closed server completes at once.
@@ -50,6 +53,7 @@
 #include "eco-system/Socket/Socket.hpp"
 #include "eco-system/Tls/TlsContext.hpp"
 #include "eco-system/Tls/TlsTransport.hpp"
+#include "virtual-dom/HtmlWriter.hpp"
 
 #include <string>
 #include <utility>
@@ -158,6 +162,22 @@ void completeNow(HPointer& resume, uint64_t& token, bool& counted) {
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
 }
+
+// The response headers ( name, values ) -> one line per value. Reads only; no
+// allocation (G3, G5).
+void copyHeaders(HPointer headers, ResponseData& data) {
+    for (alloc::ListCursor c(headers); !c.done(); c.next()) {
+        Tuple2* h = asTuple2(c.current().p);
+        std::string name = toStdString(h->a.p);
+        for (alloc::ListCursor v(h->b.p); !v.done(); v.next())
+            data.headers.emplace_back(name, toStdString(v.current().p));
+    }
+}
+
+// The rest of respond / respondHtml once the response is copied out: register
+// the resume (G10), take one count, and hand the POD to HttpTables.
+HPointer submitResponse(int64_t key, ResponseData data, HPointer resume, uint64_t& token,
+                        bool& counted);
 
 } // namespace
 
@@ -293,27 +313,53 @@ HPointer httpServerRespondBody(HPointer captured, HPointer resume) {
             key = ks->a.i;
             data.status = ks->b.i;
             Tuple2* hb = asTuple2(hbHP);
-            HPointer headers = hb->a.p;
-            HPointer body = hb->b.p;
-            for (alloc::ListCursor c(headers); !c.done(); c.next()) {
-                Tuple2* h = asTuple2(c.current().p);
-                std::string name = toStdString(h->a.p);
-                for (alloc::ListCursor v(h->b.p); !v.done(); v.next())
-                    data.headers.emplace_back(name, toStdString(v.current().p));
-            }
-            data.body = toStdBytes(body);
+            copyHeaders(hb->a.p, data);
+            data.body = toStdBytes(hb->b.p);
         }
-        HttpSrv::ensureHttpTables();
-        auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);   // G10
-        s.incrementPendingAsync();
-        counted = true;
-        if (!HttpSrv::httpTablesRespond(key, token, std::move(data))) {
-            completeNow(resume, token, counted);   // unknown, answered or gone: at once
-        }
-        return alloc::unit();
+        return submitResponse(key, std::move(data), resume, token, counted);
     )
 }
+
+// plans/elm-html-native-kernel.md §7.3: respond, with the body serialized from
+// an Http.Dom.Node inside the copy-out scope (no String or Bytes on the heap).
+HPointer httpServerRespondHtmlBody(HPointer captured, HPointer resume) {
+    uint64_t token = 0;
+    bool counted = false;
+    ECO_SYSTEM_ASYNC_GUARD(Never, resume, token, counted,
+        int64_t key = 0;
+        ResponseData data;
+        {   // G3: copy everything out; no allocation in this scope (G5)
+            Tuple2* outer = asTuple2(captured);
+            Tuple2* ks = asTuple2(outer->a.p);
+            key = ks->a.i;
+            data.status = ks->b.i;
+            Tuple3* hdn = asTuple3(outer->b.p);
+            copyHeaders(hdn->a.p, data);
+            if (::Elm::hpBits(hdn->b.p) == ::Elm::hpBits(alloc::elmTrue()))   // Bool: a constant
+                data.body = "<!DOCTYPE html>";
+            // R8/VDOM_004: no Eco allocation and no Elm call, so G5 holds across the walk.
+            ::Elm::Kernel::VirtualDom::writeHtml(enc(hdn->c.p), data.body);
+        }
+        return submitResponse(key, std::move(data), resume, token, counted);
+    )
+}
+
+namespace {
+
+HPointer submitResponse(int64_t key, ResponseData data, HPointer resume, uint64_t& token,
+                        bool& counted) {
+    HttpSrv::ensureHttpTables();
+    auto& s = Scheduler::instance();
+    token = s.registerPendingResume(resume);   // G10
+    s.incrementPendingAsync();
+    counted = true;
+    if (!HttpSrv::httpTablesRespond(key, token, std::move(data))) {
+        completeNow(resume, token, counted);   // unknown, answered or gone: at once
+    }
+    return alloc::unit();
+}
+
+} // namespace
 
 HPointer httpServerCloseServerBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;

@@ -824,6 +824,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_VirtualDom_noScript)
         KERNEL_SYM(Elm_Kernel_VirtualDom_noOnOrFormAction)
         KERNEL_SYM(Elm_Kernel_VirtualDom_noInnerHtmlOrFormAction)
+        KERNEL_SYM(Elm_Kernel_VirtualDom_noJavaScriptUri)
         KERNEL_SYM(Elm_Kernel_VirtualDom_noJavaScriptOrHtmlUri)
         KERNEL_SYM(Elm_Kernel_VirtualDom_noJavaScriptOrHtmlJson)
 

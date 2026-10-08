@@ -1037,6 +1037,125 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/Basics.cpp:40-42; runtime/src/codegen/Passes/EcoToLLVMArith.cpp:324-337"
         }
       )
+
+    -- elm/virtual-dom constructors and XSS filters (plans/elm-html-native-kernel.md P8).
+    -- Audited pure: no call-time effect, no call back into Elm, total. `params` stays
+    -- empty, so the borrow analysis treats every argument as before (no borrow claim).
+    -- `lazy*` have no row: they apply their closure (D5).
+    , ( ( "VirtualDom", "text" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_text (make: ONE alloc::custom NODE_TEXT over the argument; no statics, no eco_apply)"
+        }
+      )
+    , ( ( "VirtualDom", "node" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_node (make: ONE alloc::custom NODE_ELEMENT over Nothing and the three arguments)"
+        }
+      )
+    , ( ( "VirtualDom", "nodeNS" )
+      , { auditedPure
+            | gcAlloc = GcFixed 2
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_nodeNS (makeNS: alloc::just for the namespace, then ONE alloc::custom NODE_ELEMENT; tag/facts/kids guarded across the first (R2))"
+        }
+      )
+    , ( ( "VirtualDom", "keyedNode" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_keyedNode (make: ONE alloc::custom NODE_KEYED_ELEMENT over Nothing and the three arguments)"
+        }
+      )
+    , ( ( "VirtualDom", "keyedNodeNS" )
+      , { auditedPure
+            | gcAlloc = GcFixed 2
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_keyedNodeNS (makeNS: alloc::just, then ONE alloc::custom NODE_KEYED_ELEMENT)"
+        }
+      )
+    , ( ( "VirtualDom", "map" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_map (make: ONE alloc::custom NODE_MAPPED storing the tagger closure; the closure is never applied)"
+        }
+      )
+    , ( ( "VirtualDom", "attribute" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_attribute (make: ONE alloc::custom FACT_ATTRIBUTE over the two arguments)"
+        }
+      )
+    , ( ( "VirtualDom", "attributeNS" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_attributeNS (make: ONE alloc::custom FACT_ATTRIBUTE_NS over the three arguments)"
+        }
+      )
+    , ( ( "VirtualDom", "property" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_property (make: ONE alloc::custom FACT_PROPERTY over the two arguments)"
+        }
+      )
+    , ( ( "VirtualDom", "style" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_style (make: ONE alloc::custom FACT_STYLE over the two arguments)"
+        }
+      )
+    , ( ( "VirtualDom", "on" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_on (make: ONE alloc::custom FACT_EVENT over the name, the handler and Nil; the handler is never applied)"
+        }
+      )
+    , ( ( "VirtualDom", "mapAttribute" )
+      , { auditedPure
+            | gcAlloc = GcFixed 2
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_mapAttribute (a non-event fact is returned unchanged; an event gets alloc::cons of the tagger onto its tagger list, then ONE alloc::custom FACT_EVENT; the tagger is never applied)"
+        }
+      )
+    , ( ( "VirtualDom", "noScript" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , cppAlloc = True -- copies the string into a std::u16string first (R3)
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noScript (returns the argument, or one allocStringFromUTF8(\"p\") when Xss::isScriptTag holds)"
+        }
+      )
+    , ( ( "VirtualDom", "noOnOrFormAction" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , cppAlloc = True -- copies the string into a std::u16string first (R3)
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noOnOrFormAction (returns the argument, or one allocString(\"data-\" ++ key) when Xss::isOnOrFormAction holds)"
+        }
+      )
+    , ( ( "VirtualDom", "noInnerHtmlOrFormAction" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , cppAlloc = True -- copies the string into a std::u16string first (R3)
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noInnerHtmlOrFormAction (returns the argument, or one allocString(\"data-\" ++ key) when Xss::isInnerHtmlOrFormAction holds)"
+        }
+      )
+    , ( ( "VirtualDom", "noJavaScriptUri" )
+      , { auditedPure
+            | gcAlloc = GcNone
+            , cppAlloc = True -- copies the string into a std::u16string first (R3)
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noJavaScriptUri (returns the argument or the embedded empty-string constant; XssFilters.cpp is pure)"
+        }
+      )
+    , ( ( "VirtualDom", "noJavaScriptOrHtmlUri" )
+      , { auditedPure
+            | gcAlloc = GcNone
+            , cppAlloc = True -- copies the string into a std::u16string first (R3)
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noJavaScriptOrHtmlUri (returns the argument or the embedded empty-string constant; XssFilters.cpp is pure)"
+        }
+      )
+    , ( ( "VirtualDom", "noJavaScriptOrHtmlJson" )
+      , { auditedPure
+            | gcAlloc = GcFixed 1
+            , cppAlloc = True -- copies the string into a std::u16string first (R3)
+            , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noJavaScriptOrHtmlJson (JsonRead::jsToString (no Eco allocation, recursion capped at 256) then the argument, or ONE Elm_Kernel_Json_wrap of the empty-string constant (one Tag_Custom ENC_STRING))"
+        }
+      )
     ]
 
 
