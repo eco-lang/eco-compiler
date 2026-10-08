@@ -197,6 +197,13 @@ target_include_directories(ElmKernel_Bytes PUBLIC
     ${RUNTIME_INCLUDE_DIR}
 )
 target_compile_features(ElmKernel_Bytes PUBLIC cxx_std_20)
+# Bytes.Decode failure is a C++ throw caught in Elm_Kernel_Bytes_decode around
+# a call to the extern "C" eco_apply_closure_typed. Under MSVC-model /EHsc
+# ("extern C functions never throw") that try/catch may be optimised away, so
+# use /EHs with /EHc- for this target (plans/bytes-decode-failure-unwind.md).
+if(MSVC)
+    target_compile_options(ElmKernel_Bytes PRIVATE /EHs /EHc-)
+endif()
 
 # File module
 add_library(ElmKernel_File STATIC

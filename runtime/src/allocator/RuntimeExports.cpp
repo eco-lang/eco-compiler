@@ -595,6 +595,10 @@ extern "C" void eco_store_cons_tail(HPtr cons_hptr, HPtr value) {
 }
 
 extern "C" HPtr eco_alloc_string(uint32_t length) {
+    // HEAP_071: a length-0 string is the embedded Empty constant, never a
+    // header-only heap object (which would also compare unequal to "").
+    if (length == 0) return HPtr::fromHPointer(alloc::emptyString());
+
     // Size: Header + length * sizeof(u16), aligned to 8 bytes
     size_t size = sizeof(Header) + length * sizeof(u16);
     size = (size + 7) & ~7;  // Align to 8 bytes

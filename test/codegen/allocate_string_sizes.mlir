@@ -5,10 +5,11 @@
 
 module {
   func.func @main() -> i64 {
-    // Allocate empty string (length 0)
+    // Allocate empty string (length 0): HEAP_071 makes this the embedded
+    // Empty constant, which the untyped eco.dbg printer shows as <empty>.
     %s0 = eco.allocate_string {length = 0 : i64} : !eco.value
     eco.dbg %s0 : !eco.value
-    // CHECK: ""
+    // CHECK: [eco.dbg] <empty>
 
     // Allocate small string
     %s1 = eco.allocate_string {length = 1 : i64} : !eco.value

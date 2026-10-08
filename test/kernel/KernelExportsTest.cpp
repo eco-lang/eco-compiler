@@ -139,7 +139,20 @@ static void test_encode_large_routes_large_header() {
 
 // ---- K6..K8 : decoders ----------------------------------------------------
 
-// K6: read_* primitives return (newOffset, value); overrun returns Nothing.
+// A failing read does not return: it throws Elm::BytesDecodeFailure, which
+// only Elm_Kernel_Bytes_decode catches (plans/bytes-decode-failure-unwind.md).
+// Direct calls in these tests stand in for that catch.
+template <typename F>
+static bool readThrowsDecodeFailure(F&& read) {
+    try {
+        (void)read();
+    } catch (const Elm::BytesDecodeFailure&) {
+        return true;
+    }
+    return false;
+}
+
+// K6: read_* primitives return (newOffset, value); overrun fails (throws).
 static void test_decoder_read_primitives() {
     initAllocator();
     HPtr trueLE = HPtr::fromBits(Ex::encodeBoxedBool(true));
@@ -152,8 +165,10 @@ static void test_decoder_read_primitives() {
     TEST_ASSERT(!isNothing(r8));
     Tuple2* t8 = asTuple(r8);
     TEST_ASSERT(t8->a.i == 3 && t8->b.i == 0xFF);
-    // 2 bytes requested at offset 4, only 1 available -> Nothing.
-    TEST_ASSERT(isNothing(Elm_Kernel_Bytes_read_u16(trueLE, bb, 4)));
+    // 2 bytes requested at offset 4, only 1 available -> decode failure.
+    TEST_ASSERT(readThrowsDecodeFailure([&] { return Elm_Kernel_Bytes_read_u16(trueLE, bb, 4); }));
+    TEST_ASSERT(readThrowsDecodeFailure([&] { return Elm_Kernel_Bytes_read_u8(bb, 5); }));
+    TEST_ASSERT(readThrowsDecodeFailure([&] { return Elm_Kernel_Bytes_decodeFailure(); }));
 }
 
 // K7: read_bytes yields a Tag_ByteBufferSlice with correct content.
@@ -269,13 +284,19 @@ static void test_bytes_width_on_slice() {
 
 // ---- W0.2: Bytes.Decode.string behavior goldens ---------------------------
 //
-// Pins the CURRENT (pre-W1) observable behavior of Elm_Kernel_Bytes_read_string
-// on ASCII, non-ASCII, and INVALID UTF-8 input, so wiring the UTF-8 fast path
-// (plans/utf8-string-pipeline-wiring.md W1) cannot change decoded values. The
-// legacy decoder reads past `length` on truncated sequences (a known quirk);
-// to keep the golden deterministic we place each invalid prefix inside a
-// zero-padded buffer and decode only the prefix length, so any read-past lands
-// on known 0x00 padding rather than unallocated heap.
+// Pins the observable behavior of Elm_Kernel_Bytes_read_string on ASCII,
+// non-ASCII and INVALID UTF-8. Target semantics (shared with the fused decoder's
+// elm_utf8_decode, which K8c checks directly): `string n` succeeds only when the
+// n bytes are complete, valid UTF-8, and NO byte outside [offset, offset+n) is
+// ever read. Every invalid / truncated row is therefore Nothing.
+//
+// Each row runs in three source shapes:
+//   padded   - prefix + 4 trailing zero bytes (the original W0 harness)
+//   unpadded - the buffer ends exactly at the prefix, so an over-read leaves
+//              the buffer (reads whatever the heap holds next)
+//   slice    - a real Tag_ByteBufferSlice (>= 32 bytes) whose PARENT continues
+//              with valid continuation bytes 0x80 0x80 0x80, so an over-read
+//              past the slice would silently "complete" a truncated sequence
 struct DecodeGolden {
     const char* name;
     std::vector<u8> prefix;   // the bytes to decode (length = prefix.size())
@@ -283,35 +304,72 @@ struct DecodeGolden {
     std::vector<u16> units;   // expected: decoded UTF-16 code units (if !nothing)
 };
 
-// Decode `prefix` (padded with 4 zero bytes so any read-past is deterministic)
-// and return the resulting code units, or {nothing=true}.
-static bool decodeGoldenUnits(const std::vector<u8>& prefix,
+enum class GoldenShape { Padded, Unpadded, Slice };
+
+static const char* goldenShapeName(GoldenShape s) {
+    switch (s) {
+        case GoldenShape::Padded: return "padded";
+        case GoldenShape::Unpadded: return "unpadded";
+        case GoldenShape::Slice: return "slice";
+    }
+    return "?";
+}
+
+// Filler placed in front of the prefix in the Slice shape, so the slice is
+// long enough (>= MAKE_BYTEBUFFER_SLICE_MIN_LEN) to stay a real slice view.
+static constexpr size_t kSliceFiller = 32;
+
+// Decode `prefix` in the given source shape; return the resulting code units
+// (Slice shape: the filler's 'A's are stripped), or false for Nothing.
+static bool decodeGoldenUnits(const std::vector<u8>& prefix, GoldenShape shape,
                               std::vector<u16>& outUnits) {
-    std::vector<u8> padded = prefix;
-    padded.insert(padded.end(), {0, 0, 0, 0});
-    HPtr bb = bbFromVec(padded);
-    HPtr r = Elm_Kernel_Bytes_read_string(static_cast<int64_t>(prefix.size()), bb, 0);
-    if (isNothing(r)) return false;
+    HPtr src;
+    int64_t len = static_cast<int64_t>(prefix.size());
+    size_t skip = 0;
+    if (shape == GoldenShape::Padded) {
+        std::vector<u8> padded = prefix;
+        padded.insert(padded.end(), {0, 0, 0, 0});
+        src = bbFromVec(padded);
+    } else if (shape == GoldenShape::Unpadded) {
+        src = bbFromVec(prefix);
+    } else {
+        std::vector<u8> parent(kSliceFiller, 'A');
+        parent.insert(parent.end(), prefix.begin(), prefix.end());
+        parent.insert(parent.end(), {0x80, 0x80, 0x80});
+        HPointer parentHp = BytesOps::fromVector(parent);
+        HPointer sliceHp = alloc::makeByteBufferSlice(
+            parentHp, 0, static_cast<u32>(kSliceFiller + prefix.size()));
+        TEST_ASSERT(alloc::getTag(Allocator::instance().resolve(sliceHp)) ==
+                    Tag_ByteBufferSlice);
+        src = HPtr::fromHPointer(sliceHp);
+        len += static_cast<int64_t>(kSliceFiller);
+        skip = kSliceFiller;
+    }
+    HPtr r;
+    try {
+        r = Elm_Kernel_Bytes_read_string(len, src, 0);
+    } catch (const Elm::BytesDecodeFailure&) {
+        return false;  // decode failure (Nothing at the Bytes.Decode.decode level)
+    }
+    TEST_ASSERT(!isNothing(r));  // failures throw; a returned Nothing is the old protocol
     Tuple2* t = asTuple(r);
+    TEST_ASSERT(t->a.i == len);  // advances exactly n
     void* strObj = Allocator::instance().resolve(t->b.p);
     size_t n = StringOps::length(strObj);
     outUnits.clear();
-    for (size_t i = 0; i < n; ++i) outUnits.push_back(StringOps::charAt(strObj, i));
+    for (size_t i = skip; i < n; ++i) outUnits.push_back(StringOps::charAt(strObj, i));
     return true;
 }
 
-static void test_decoder_read_string_goldens() {
-    initAllocator();
-    // The battery. `units` filled from a capture run against the unmodified
-    // export; asserted verbatim thereafter (bug-compatibility, not "correct").
-    std::vector<DecodeGolden> battery = {
+static std::vector<DecodeGolden> decodeGoldenBattery() {
+    return {
         // --- valid ASCII (W1 DIVERTS these to UTF-8 forms; value must hold) ---
         {"ascii_1",   {'x'}, false, {'x'}},
         {"ascii_5",   {'h','e','l','l','o'}, false, {'h','e','l','l','o'}},
         {"ascii_31",  std::vector<u8>(31, 'a'), false, std::vector<u16>(31, u'a')},
         {"ascii_32",  std::vector<u8>(32, 'b'), false, std::vector<u16>(32, u'b')},
         {"ascii_33",  std::vector<u8>(33, 'c'), false, std::vector<u16>(33, u'c')},
-        // --- valid non-ASCII (legacy path; must stay byte-identical) ---
+        // --- valid non-ASCII ---
         {"u0080",     {0xC2, 0x80}, false, {0x0080}},
         {"u07FF",     {0xDF, 0xBF}, false, {0x07FF}},
         {"u0800",     {0xE0, 0xA0, 0x80}, false, {0x0800}},
@@ -320,55 +378,109 @@ static void test_decoder_read_string_goldens() {
         {"u10FFFF",   {0xF4, 0x8F, 0xBF, 0xBF}, false, {0xDBFF, 0xDFFF}},
         {"mixed_astral", {'A', 0xF0, 0x9F, 0x98, 0x80, 'B'}, false,
                          {u'A', 0xD83D, 0xDE00, u'B'}},
-        // --- invalid (legacy lenient path; values captured from the
-        //     UNMODIFIED export via W0_CAPTURE_GOLDENS — garbage-tolerant, not
-        //     "correct"; the point is byte-for-byte stability across W1/W2) ---
-        {"bare_cont",     {0x80}, false, {0x0000}},
-        {"trunc_2",       {0xC2}, false, {0x0080}},
-        {"trunc_3",       {0xE2, 0x82}, false, {0x2080}},
-        {"trunc_4",       {0xF0, 0x9F, 0x98}, false, {0xD83D, 0xDE00}},
-        {"overlong_2",    {0xC0, 0x80}, false, {0x0000}},
-        {"overlong_3",    {0xE0, 0x80, 0x80}, false, {0x0000}},
-        {"overlong_4",    {0xF0, 0x80, 0x80, 0x80}, false, {0x0000, 0x0000}},
-        {"surrogate",     {0xED, 0xA0, 0x80}, false, {0xD800}},
-        {"gt_10FFFF",     {0xF4, 0x90, 0x80, 0x80}, false, {0xDC00, 0xDC00}},
-        {"bad_cont",      {0xC2, 0x00}, false, {0x0080}},
+        // --- invalid: all Nothing (strict, same as elm_utf8_decode) ---
+        {"bare_cont",     {0x80}, true, {}},
+        {"bare_cont_bf",  {0xBF}, true, {}},
+        {"lead_f8",       {0xF8}, true, {}},
+        {"lead_ff",       {0xFF}, true, {}},
+        {"cont_then_abc", {0x80, 'A', 'B', 'C'}, true, {}},
+        {"trunc_2",       {0xC2}, true, {}},
+        {"trunc_3",       {0xE2, 0x82}, true, {}},
+        {"trunc_3_lead",  {0xE2}, true, {}},
+        {"trunc_4",       {0xF0, 0x9F, 0x98}, true, {}},
+        {"trunc_4_lead",  {0xF0}, true, {}},
+        {"trunc_4_two",   {0xF0, 0x9F}, true, {}},
+        {"ascii_trunc_2", {'A', 0xC3}, true, {}},
+        {"ascii_trunc_4", {'A', 0xF0, 0x9F, 0x98}, true, {}},
+        {"overlong_2",    {0xC0, 0x80}, true, {}},
+        {"overlong_3",    {0xE0, 0x80, 0x80}, true, {}},
+        {"overlong_4",    {0xF0, 0x80, 0x80, 0x80}, true, {}},
+        {"surrogate",     {0xED, 0xA0, 0x80}, true, {}},
+        {"gt_10FFFF",     {0xF4, 0x90, 0x80, 0x80}, true, {}},
+        {"bad_cont",      {0xC2, 0x00}, true, {}},
+        {"bad_cont_mid",  {0xC3, 'A'}, true, {}},
     };
+}
+
+static void test_decoder_read_string_goldens() {
+    initAllocator();
+    std::vector<DecodeGolden> battery = decodeGoldenBattery();
 
     bool CAPTURE = std::getenv("W0_CAPTURE_GOLDENS") != nullptr;
-    for (auto& g : battery) {
-        std::vector<u16> units;
-        bool ok = decodeGoldenUnits(g.prefix, units);
-        if (CAPTURE) {
-            std::cout << "WGOLDEN|" << g.name << "|"
-                      << (ok ? "SOME" : "NOTHING") << "|len=" << units.size()
-                      << "|";
-            for (u16 u : units) {
-                char buf[8];
-                std::snprintf(buf, sizeof(buf), "%04X ", u);
-                std::cout << buf;
+    std::string failures;
+    for (GoldenShape shape : {GoldenShape::Padded, GoldenShape::Unpadded, GoldenShape::Slice}) {
+        for (auto& g : battery) {
+            std::vector<u16> units;
+            bool ok = decodeGoldenUnits(g.prefix, shape, units);
+            if (CAPTURE) {
+                std::cout << "WGOLDEN|" << goldenShapeName(shape) << "|" << g.name << "|"
+                          << (ok ? "SOME" : "NOTHING") << "|len=" << units.size()
+                          << "|";
+                for (u16 u : units) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "%04X ", u);
+                    std::cout << buf;
+                }
+                std::cout << std::endl;
+                continue;
             }
-            std::cout << std::endl;
-            continue;
-        }
-        // Name the golden and the code unit in a failure: the bare TEST_ASSERT text
-        // does not say which of the battery's cases diverged.
-        auto fail = [&](const char* what, size_t i, unsigned got, unsigned want) {
-            char buf[160];
-            std::snprintf(buf, sizeof buf, "golden %s: %s at %zu: got %04X, want %04X",
-                          g.name, what, i, got, want);
-            TEST_FAIL(buf);
-        };
-        if (ok != !g.nothing) fail("Just/Nothing", 0, ok, !g.nothing);
-        if (ok) {
-            if (units.size() != g.units.size())
-                fail("length", 0, static_cast<unsigned>(units.size()),
-                     static_cast<unsigned>(g.units.size()));
-            for (size_t i = 0; i < units.size(); ++i) {
-                if (units[i] != g.units[i]) fail("code unit", i, units[i], g.units[i]);
+            // Collect every divergence (shape + golden + what) and fail once, so
+            // a run reports the whole battery rather than the first bad row.
+            auto fail = [&](const char* what, size_t i, unsigned got, unsigned want) {
+                char buf[200];
+                std::snprintf(buf, sizeof buf, "\n  [%s] golden %s: %s at %zu: got %04X, want %04X",
+                              goldenShapeName(shape), g.name, what, i, got, want);
+                failures += buf;
+            };
+            if (ok != !g.nothing) {
+                fail("Just/Nothing", 0, ok, !g.nothing);
+                continue;
+            }
+            if (ok) {
+                if (units.size() != g.units.size()) {
+                    fail("length", 0, static_cast<unsigned>(units.size()),
+                         static_cast<unsigned>(g.units.size()));
+                    continue;
+                }
+                for (size_t i = 0; i < units.size(); ++i) {
+                    if (units[i] != g.units[i]) fail("code unit", i, units[i], g.units[i]);
+                }
             }
         }
     }
+    if (!failures.empty()) TEST_FAIL(("read_string goldens diverged:" + failures).c_str());
+}
+
+// ---- K8d: kernel read_string agrees with the fused decoder ------------------
+//
+// The fused Bytes.Decode path calls elm_utf8_decode(ptr, len) after its own
+// bounds check; the non-fused fallback calls Elm_Kernel_Bytes_read_string.
+// Whatever the compiler decides to fuse, a program must see the same result:
+// same Just/Nothing, same code units, for every row of the battery.
+static void test_decoder_read_string_agrees_with_fused() {
+    initAllocator();
+    std::string failures;
+    for (auto& g : decodeGoldenBattery()) {
+        HPtr fused = elm_utf8_decode(g.prefix.data(), static_cast<u32>(g.prefix.size()));
+        bool fusedOk = fused.toBits() != 0;
+        std::vector<u16> fusedUnits;
+        if (fusedOk) {
+            void* s = Allocator::instance().resolve(fused.toHPointer());
+            size_t n = StringOps::length(s);
+            for (size_t i = 0; i < n; ++i) fusedUnits.push_back(StringOps::charAt(s, i));
+        }
+        std::vector<u16> kernelUnits;
+        bool kernelOk = decodeGoldenUnits(g.prefix, GoldenShape::Unpadded, kernelUnits);
+        if (fusedOk != kernelOk) {
+            failures += std::string("\n  ") + g.name + ": fused " +
+                        (fusedOk ? "Just" : "Nothing") + ", kernel " +
+                        (kernelOk ? "Just" : "Nothing");
+        } else if (fusedOk && fusedUnits != kernelUnits) {
+            failures += std::string("\n  ") + g.name + ": code units differ";
+        }
+    }
+    if (!failures.empty())
+        TEST_FAIL(("kernel read_string disagrees with fused elm_utf8_decode:" + failures).c_str());
 }
 
 // ---- W1: Bytes.Decode.string representation matrix ------------------------
@@ -470,6 +582,7 @@ void registerKernelExportsTests(Testing::TestSuite& suite) {
     suite.add(Testing::UnitTest("K7 decoder read_bytes -> slice", test_decoder_read_bytes_slice));
     suite.add(Testing::UnitTest("K8 decoder read_string utf8", test_decoder_read_string_utf8));
     suite.add(Testing::UnitTest("K8b decoder read_string goldens", test_decoder_read_string_goldens));
+    suite.add(Testing::UnitTest("K8d decoder read_string agrees with fused", test_decoder_read_string_agrees_with_fused));
     suite.add(Testing::UnitTest("K8c decoder read_string representation", test_decoder_read_string_representation));
     suite.add(Testing::UnitTest("K9 string length all forms", test_string_length_all_forms));
     suite.add(Testing::UnitTest("K10 string foldl astral code-unit count", test_string_foldl_astral_count));

@@ -8,6 +8,8 @@
 #include "../ExportHelpers.hpp"
 #include "allocator/BytesOps.hpp"
 #include "allocator/StringOps.hpp"
+#include "allocator/RootSet.hpp"
+#include "allocator/RuntimeExports.h"
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -422,13 +424,32 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     static constexpr auto kLayoutBoxedInt = Elm::makeEvalParamLayout<2>(0, {0, 1});
     const auto* layout = Elm::asLayout(&kLayoutBoxedInt);
     int64_t args[2] = { static_cast<int64_t>(bytes.toBits()), 0 };
-    uint64_t result = eco_apply_closure_typed(decoder, args, 2, layout).toBits();
 
-    // Result is either Nothing (an embedded HPointer constant produced by a
-    // primitive read that overran the buffer) or a Tuple2(new_offset: i64,
-    // decoded_value). Embedded constants live in the `constant` bit-field
-    // of HPointer (non-zero means embedded), so a Nothing closure-result
-    // short-circuits straight back to the caller's Nothing.
+    // Failure is a non-local exit, as in elm/bytes' JS (_Bytes_decode's
+    // try/catch): a failing primitive read or `fail` throws BytesDecodeFailure
+    // from wherever it sits under map/map2/andThen/loop, and we catch it here,
+    // so no combinator ever destructures a missing (offset, value) tuple.
+    // The unwound frames are compiled Elm code (its GC roots are found by
+    // walking the LIVE stack, so they simply vanish) and the closure-apply
+    // trampolines. Those push to the kernel root stacks with a manual
+    // ecoRootMark/ecoRootRelease pair, and compiled code pushes range records
+    // and list-scratch entries; the throw skips all of those pops, so restore
+    // both root-stack cursors and the scratch stack to their state on entry.
+    // See plans/bytes-decode-failure-unwind.md.
+    const EcoRootMark rootMark = ecoRootMark();
+    const int64_t scratchMark = eco_scratch_mark();
+    uint64_t result;
+    try {
+        result = eco_apply_closure_typed(decoder, args, 2, layout).toBits();
+    } catch (const Elm::BytesDecodeFailure&) {
+        ecoRootRelease(rootMark);
+        eco_scratch_abandon(scratchMark);
+        return HPtr::fromBits(Export::encode(alloc::nothing()));
+    }
+
+    // Result is a Tuple2(new_offset: i64, decoded_value): failures no longer
+    // arrive as a value. Kept defensively: an embedded constant in place of
+    // the tuple is still reported as Nothing rather than resolved.
     HPointer resultHP = Export::decode(result);
     if (resultHP.ptr_ind != 0) {
         return HPtr::fromBits(Export::encode(alloc::nothing()));
@@ -460,8 +481,9 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     return HPtr::fromBits(Export::encode(allocator.wrap(just)));
 }
 
+// `Bytes.Decode.fail`: a non-local exit to Elm_Kernel_Bytes_decode.
 HPtr Elm_Kernel_Bytes_decodeFailure() {
-    return HPtr::fromBits(Export::encode(alloc::nothing()));
+    throw Elm::BytesDecodeFailure{};
 }
 
 // --- arity 2 read functions: (bytes, offset) ---
@@ -472,15 +494,17 @@ HPtr Elm_Kernel_Bytes_decodeFailure() {
 // movbe / bswap pair (one or two instructions per primitive read), much
 // tighter than the manual byte-shift loops the original code emitted.
 //
-// Each read returns Nothing (an embedded HPointer constant) when the
+// Each read fails (throws BytesDecodeFailure via decoderNothing) when the
 // requested width would extend past the end of the buffer; the wrapper
-// `Elm_Kernel_Bytes_decode` detects that constant and propagates it as
-// the decoder's overall Nothing result. The bytes-fusion fast path
+// `Elm_Kernel_Bytes_decode` catches it and makes the whole decode Nothing. The bytes-fusion fast path
 // performs equivalent bounds checks via `bf.require`, so reads only
 // reach these helpers from the non-fused fall-back path.
 
-static inline HPtr decoderNothing() {
-    return HPtr::fromBits(Export::encode(alloc::nothing()));
+// A failing read never returns: it throws to the catch in
+// Elm_Kernel_Bytes_decode (plans/bytes-decode-failure-unwind.md). Typed as
+// returning HPtr so read sites keep their `return decoderNothing();` shape.
+[[noreturn]] static HPtr decoderNothing() {
+    throw Elm::BytesDecodeFailure{};
 }
 
 HPtr Elm_Kernel_Bytes_read_i8(HPtr bytes, int64_t offset) {
@@ -604,55 +628,45 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     }
     const u8* src = src_view.data + offset;
 
-    // UTF-8 fast path (HEAP_032): a strictly-valid all-ASCII payload becomes a
-    // zero-copy view over the source buffer (>= utf8_view_min_len bytes) or a
-    // small inline UTF-8 leaf — no transcode, no UTF-16 allocation. Non-ASCII
-    // or invalid input falls through to the legacy two-pass decode below,
-    // byte-for-byte unchanged (pinned by the W0 goldens, K8b). The scan reads
-    // `src` before any allocation, so the pointer is stable here.
-    // See plans/utf8-string-pipeline-wiring.md (W1).
-    const auto& cfg = allocator.getConfig();
-    if (cfg.utf8_strings_enabled) {
-        Elm::Utf8::ScanResult scan =
-            Elm::Utf8::scan(src, static_cast<size_t>(length));
-        if (scan.valid && scan.ascii) {
-            HPointer result;
-            if (static_cast<size_t>(length) >= cfg.utf8_view_min_len) {
-                // makeUtf8View collapses a Tag_ByteBufferSlice base into
-                // base + inner.offset itself, matching byteBufferView's data
-                // pointer (bytes + slc->offset) — offsets stay consistent for
-                // plain-buffer, slice, and large-header sources.
-                result = Elm::StringOps::makeUtf8View(
-                    srcHP, static_cast<u32>(offset), static_cast<u32>(length));
-            } else {
-                // makeUtf8LeafFromBytes snapshots `src` to the C stack before
-                // allocating, so no rooting is needed at this call site.
-                result = Elm::StringOps::makeUtf8LeafFromBytes(
-                    src, static_cast<u32>(length));
-            }
-            return HPtr::fromBits(makeTuple2_ip(offset + length, result));
-        }
+    // Strict UTF-8 validation, identical to the fused decoder's elm_utf8_decode
+    // (Utf8::scan mirrors its pass 1): truncated sequences, stray continuation
+    // or 0xF8+ lead bytes, overlong forms, surrogates and cp > 0x10FFFF all
+    // make the decode Nothing, so fused and non-fused decoding agree. It also
+    // means every multi-byte sequence lies wholly inside [offset, offset+length),
+    // so the transcode below never reads a byte outside the requested range —
+    // not past the buffer, nor past a slice into its parent (K8b/K8d,
+    // DecodeStringStrictKernelTest). The scan reads `src` before any allocation,
+    // so the pointer is stable here.
+    Elm::Utf8::ScanResult scan = Elm::Utf8::scan(src, static_cast<size_t>(length));
+    if (!scan.valid) {
+        return decoderNothing();
     }
 
-    // Count UTF-16 code units needed for the UTF-8 input.
-    size_t utf16Count = 0;
-    size_t pos = 0;
-    while (pos < static_cast<size_t>(length)) {
-        uint8_t byte = src[pos];
-        if (byte < 0x80) {
-            utf16Count++;
-            pos++;
-        } else if (byte < 0xE0) {
-            utf16Count++;
-            pos += 2;
-        } else if (byte < 0xF0) {
-            utf16Count++;
-            pos += 3;
+    // UTF-8 fast path (HEAP_032): an all-ASCII payload becomes a zero-copy view
+    // over the source buffer (>= utf8_view_min_len bytes) or a small inline
+    // UTF-8 leaf — no transcode, no UTF-16 allocation. Non-ASCII input takes the
+    // UTF-16 transcode below. See plans/utf8-string-pipeline-wiring.md (W1).
+    const auto& cfg = allocator.getConfig();
+    if (cfg.utf8_strings_enabled && scan.ascii) {
+        HPointer result;
+        if (static_cast<size_t>(length) >= cfg.utf8_view_min_len) {
+            // makeUtf8View collapses a Tag_ByteBufferSlice base into
+            // base + inner.offset itself, matching byteBufferView's data
+            // pointer (bytes + slc->offset) — offsets stay consistent for
+            // plain-buffer, slice, and large-header sources.
+            result = Elm::StringOps::makeUtf8View(
+                srcHP, static_cast<u32>(offset), static_cast<u32>(length));
         } else {
-            utf16Count += 2;  // surrogate pair
-            pos += 4;
+            // makeUtf8LeafFromBytes snapshots `src` to the C stack before
+            // allocating, so no rooting is needed at this call site.
+            result = Elm::StringOps::makeUtf8LeafFromBytes(
+                src, static_cast<u32>(length));
         }
+        return HPtr::fromBits(makeTuple2_ip(offset + length, result));
     }
+
+    // UTF-16 code units for the (valid) input, counted by the scan.
+    size_t utf16Count = scan.utf16Units;
 
     // Pattern B: srcHP re-resolved after the allocate to copy/convert chars.
     // Root via helper, re-read post-call.
@@ -702,10 +716,9 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
             str->chars[dstPos++] = static_cast<u16>(0xDC00 + (codepoint & 0x3FF));
         }
     }
-    // The counting pass reserves two units for every 4-byte lead, but an overlong one
-    // (codepoint <= 0xFFFF) writes only one: zero the units left over rather than leave
-    // whatever the nursery last held there.
-    while (dstPos < utf16Count) str->chars[dstPos++] = 0;
+    // Input is valid UTF-8 (scan above), so the transcode wrote exactly
+    // scan.utf16Units units: no overlong 4-byte form can leave a slot unwritten.
+    assert(dstPos == utf16Count);
 
     return HPtr::fromBits(makeTuple2_ip(offset + length, allocator.wrap(str)));
 }

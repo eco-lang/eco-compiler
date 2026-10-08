@@ -16,6 +16,15 @@
 #include "../../runtime/src/allocator/Heap.hpp"
 using Elm::HPtr;
 
+namespace Elm {
+// Thrown by a failing Bytes.Decode primitive read (Elm_Kernel_Bytes_read_*)
+// and by Elm_Kernel_Bytes_decodeFailure (`Bytes.Decode.fail`); caught only by
+// Elm_Kernel_Bytes_decode, which returns Nothing. Mirrors elm/bytes' JS
+// throw/catch so a failure below map/map2/andThen/loop never reaches the
+// combinator's tuple destructure (plans/bytes-decode-failure-unwind.md).
+struct BytesDecodeFailure {};
+}  // namespace Elm
+
 extern "C" {
 
 //===----------------------------------------------------------------------===//

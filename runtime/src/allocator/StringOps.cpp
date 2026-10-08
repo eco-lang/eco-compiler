@@ -698,6 +698,10 @@ HPointer join(void* sep, HPointer stringList) {
 
     if (count == 0) return alloc::emptyString();
     total_len += sep_len * (count - 1);
+    // A non-empty list can still join to "" (all elements empty and the
+    // separator never emitted, e.g. join ", " [""]): HEAP_071, the result is
+    // the Empty constant, never a zero-length leaf.
+    if (total_len == 0) return alloc::emptyString();
     // The separator (when it contributes) must also be UTF-8 for a byte-join.
     bool sepUtf8 = (sep_len == 0) || (sep && isUtf8(sep));
 
@@ -964,7 +968,9 @@ HPointer split(void* sep, void* str) {
             }
         }
     } else {
-        for (size_t i = 0; i <= str_len - sep_len; ++i) {
+        // `i + sep_len <= str_len`, not `i <= str_len - sep_len`: size_t
+        // underflows when the separator is longer than the input.
+        for (size_t i = 0; i + sep_len <= str_len; ++i) {
             bool match = true;
             for (size_t j = 0; j < sep_len && match; ++j) {
                 if (strData[i + j] != sepData[j]) match = false;
