@@ -1641,6 +1641,15 @@ Native review (N): 2 BLOCKER, 15 MAJOR, 9 MINOR. WebSocket review (J): 2 BLOCKER
     request answered wrongly or not at all); not reproduced in 12 reruns (7 alone, 5 with the
     whole EcoSystem set, with per-request diagnostics). A suspect is the harness's free-port
     window (`test/TestPort.hpp`: the port is closed before the child binds it).
+  - `HttpServerHttp2LimitsTest` failed once under AOT: curl 7.88 exit 92 with empty stdout (the
+    RST_STREAM(NO_ERROR) after an early 413 arrived in the same read as the response, and curl
+    dropped both). `HttpServerH2Help.curl` now repeats the request (up to 3 tries) in exactly that
+    case; the 92-with-output tolerance stays. 3/3 AOT, JIT and JS green after.
+  - Final gates on the merged tree after the runtime fix (`/tmp/eco-final-*.txt`): `full` green
+    (core 2169 checks / 0, JIT E2E 2319/2319, JS 157 passed + 2 skips); validate tree eco-system
+    159/159; stress under validate 12/12; AOT `eco-` 172/173 (the curl race above, fixed and
+    re-run); `check-root-bounded`, `check-kernel-homes`, license manifest OK.
+  - Follow-up for R7: `plans/large-body-gc-trigger.md`.
 
 ## Appendix A — Public API (normative)
 

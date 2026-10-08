@@ -282,6 +282,11 @@ its stdout (with `-D -`, the response head then the body).
 -}
 curl : Tools -> Server -> List String -> String -> Task String String
 curl tools server args path =
+    curlTries 3 tools server args path
+
+
+curlTries : Int -> Tools -> Server -> List String -> String -> Task String String
+curlTries tries tools server args path =
     let
         port_ =
             String.fromInt (Server.serverPort server)
@@ -299,9 +304,15 @@ curl tools server args path =
                     -- curl 7.88 reports a RST_STREAM(NO_ERROR) that follows a complete response
                     -- (the server's answer before the end of an upload, RFC 9113 §8.1) as error
                     -- 92; whether it comes depends on timing. The response itself was written.
+                    -- When the RST_STREAM lands in the same read as the response, curl drops the
+                    -- response too (empty stdout): the server's answer is the same every time, so
+                    -- the request is repeated.
                     P.ProgramError e ->
                         if e.exitCode == 92 && Bytes.width e.stdout > 0 then
                             Task.succeed (bytesToString e.stdout)
+
+                        else if e.exitCode == 92 && tries > 1 then
+                            curlTries (tries - 1) tools server args path
 
                         else
                             Task.fail ("curl exited " ++ String.fromInt e.exitCode ++ ": " ++ String.replace "\n" "|" (bytesToString e.stderr))
