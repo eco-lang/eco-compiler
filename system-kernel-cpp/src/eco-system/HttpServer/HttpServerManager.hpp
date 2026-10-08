@@ -5,13 +5,17 @@
 // system-kernel-cpp/src/Http/Server.elm, section "EFFECT MANAGER":
 //
 //     type MySub msg
-//         = OnRequest Int (( ( String, String ), ( List ( String, List String ), Bytes ), Int ) -> msg)
+//         = OnRequest Int (( ( String, String ), ( List ( String, List String ), Bytes ), ( Int, Int, String ) ) -> msg)
 //     -- tag 0: [serverId unboxed Int (mask 0b01), tagger boxed]
 //
-// Tagger argument: ( ( method, absoluteUrl ), ( headers, body ), responseKey ),
-// a tuple3 whose slot 2 is an unboxed Int (mask 1 << 4 = 0x10, HEAP_046);
-// the inner tuples are all boxed (mask 0). Each header occurrence is one
-// ( name, [ value ] ) entry, in arrival order (Elm keeps the last, E.5).
+// Tagger argument (plans/eco-system-websockets.md Appendix C.1):
+// ( ( method, absoluteUrl ), ( headers, body ), ( responseKey, flags,
+// upgradeToken ) ), a tuple3 of boxed slots (mask 0); the inner pairs are
+// all boxed (mask 0); the inner triple has two unboxed Ints (mask 0x5,
+// HEAP_046). flags: bits 0-1 the HTTP version (0 = 1.0, 1 = 1.1, 2 = 2),
+// bit 2 TLS; upgradeToken: the lower-cased protocol an upgrade request asks
+// for, "" for none. Each header occurrence is one ( name, [ value ] ) entry,
+// in arrival order (Elm keeps the last, E.5).
 //
 // Tags are the zero-based declaration indexes (Compiler/Data/CtorTag.elm).
 // Keep the two in sync.
@@ -35,14 +39,19 @@ constexpr int ON_REQUEST_SERVER_FIELD = 0;   // unboxed Int
 constexpr int ON_REQUEST_TAGGER_FIELD = 1;
 constexpr uint64_t ON_REQUEST_MASK = 0x1;    // slot 0 Int
 
-// The tagger argument's tuple3 mask: slot 2 (responseKey) is an Int.
-constexpr uint32_t TAGGER_ARG_MASK = 0x10;
+// The tagger argument's tuple3 mask: every slot boxed.
+constexpr uint32_t TAGGER_ARG_MASK = 0;
+// The inner ( responseKey, flags, upgradeToken ) triple: slots 0 and 1 Int.
+constexpr uint32_t TAGGER_KEY_MASK = 0x5;
+
+// flags (C.1).
+constexpr int64_t FLAG_VERSION_MASK = 0x3;   // 0 = HTTP/1.0, 1 = HTTP/1.1, 2 = HTTP/2
+constexpr int64_t FLAG_TLS = 0x4;
 
 } // namespace HttpServerManager
 
-// Main thread. Registers the module drain (requests to the subscribed
-// taggers, respond completions) with the eco/system async source. Idempotent.
-void ensureHttpServerDrain();
+// The delivery hooks the HttpTables drain calls (httpManagerHasSubscriber,
+// httpManagerDeliver) are declared in HttpTables.hpp.
 
 } // namespace Eco::System
 

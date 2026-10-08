@@ -67,6 +67,9 @@ constexpr size_t kChannelReadChunk = 64 * 1024;
 // Request ids for channel requests that have no resume of their own.
 // Disjoint from Scheduler resume tokens, which count up from 1. Main thread.
 uint64_t g_nextSyntheticToken = uint64_t{1} << 62;
+// Uncounted request ids (MappedSource read-ahead, reader kicks), below the
+// synthetic ones and far above any resume token.
+uint64_t g_nextUncountedToken = uint64_t{1} << 61;
 
 // ChannelId → pair id for ChannelSource/ChannelSink pairs. Validated on use
 // (the pair must still exist and own that channel), so stale entries left
@@ -135,6 +138,12 @@ void streamCompleteErr(uint64_t token, bool counted, int kind, const std::string
 }
 
 uint64_t streamSyntheticToken() { return g_nextSyntheticToken++; }
+
+uint64_t streamUncountedToken() { return g_nextUncountedToken++; }
+
+bool streamIsUncountedToken(uint64_t token) {
+    return token >= (uint64_t{1} << 61) && token < (uint64_t{1} << 62);
+}
 
 namespace {
 
@@ -221,11 +230,14 @@ void maybeErase(int64_t id) {
     if (p->w != WState::Closed || p->r != RState::Closed) return;
     if (!p->readQ.empty() || !p->writeQ.empty() || !p->waitingForRoom.empty()) return;
     if (p->parkedReadToken || p->closeToken) return;
+    if (!p->rawQ.empty() || p->readInFlight || p->readerKick) return;   // MappedSource
     if (p->channel) channelPairs().erase(p->channel->id());
     t.erase(id);
 }
 
 void channelDispatch(ChannelResult& r);
+void mapHead(int64_t id);
+void mappedReadResult(int64_t id, ChannelResult& r);
 
 int64_t insertChannelPair(StreamKind kind, ByteChannel* channel) {
     auto& t = streamTable();
@@ -403,14 +415,23 @@ void transformCodec(int64_t id, const PendingWrite& pw) {
     finishWrite(pw, true, "");
 }
 
-// One pump of an in-memory pair (Identity, Custom, Codec). Channel kinds
-// are driven by their channel results.
+// One pump of an in-memory pair (Identity, Custom, Codec) or of a
+// MappedSource (its readQ side). ChannelSource/ChannelSink are driven by
+// their channel results.
 void pumpCore(int64_t id) {
     auto& t = streamTable();
     for (;;) {
         StreamPair* p = t.find(id);
         if (!p) return;
         if (p->kind == StreamKind::ChannelSource || p->kind == StreamKind::ChannelSink) return;
+
+        // 0. MappedSource: a waiting consumer (a parked read, or a pipe
+        //    whose destination has room) takes the next raw chunk: map it.
+        if (p->kind == StreamKind::MappedSource && p->readQ.empty() && !p->rawQ.empty() &&
+            (p->parkedReadToken || streamPipeDemand(p))) {
+            mapHead(id);   // calls Elm (G11)
+            continue;
+        }
 
         // 1. A parked reader takes the head of readQ directly.
         if (p->parkedReadToken && !p->readQ.empty()) {
@@ -496,7 +517,7 @@ void pumpCore(int64_t id) {
         }
 
         // 5. A parked reader on a drained, terminal readable.
-        if (p->parkedReadToken && p->readQ.empty() && p->r != RState::Open) {
+        if (p->parkedReadToken && p->readQ.empty() && p->rawQ.empty() && p->r != RState::Open) {
             uint64_t tok = p->parkedReadToken;
             bool counted = p->parkedReadCounted;
             p->parkedReadToken = 0;
@@ -536,6 +557,7 @@ void drive() {
             }
             pumpCore(item);
             if (StreamPair* p = streamTable().find(item)) {
+                if (p->kind == StreamKind::MappedSource) streamMappedMaybeRead(item);
                 if (p->pipeOutId) schedule(-p->pipeOutId);
                 if (p->pipeInId) schedule(-p->pipeInId);
             }
@@ -583,9 +605,14 @@ void channelDispatch(ChannelResult& r) {
     }
     auto& s = Scheduler::instance();
 
+    if (r.op == ChannelResult::Op::Read && p && p->kind == StreamKind::MappedSource) {
+        mappedReadResult(id, r);
+        return;
+    }
+
     switch (r.op) {
     case ChannelResult::Op::Read: {
-        AsyncRelease release;
+        AsyncRelease release(!streamIsUncountedToken(r.token));   // mapped read-ahead: uncounted
         if (!p || r.token == 0 || p->parkedReadToken != r.token) {
             (void)s.takePendingResume(r.token);   // orphaned: drop it
             return;
@@ -606,8 +633,8 @@ void channelDispatch(ChannelResult& r) {
                 if (p->r == RState::Open) p->r = RState::Closed;
                 p->channel->close(0);
             } else if (!r.bytes.empty()) {
-                HPointer bytes = makeBytes(r.bytes);
-                if (StreamPair* q = t.find(id)) q->readQ.push_back(enc(bytes));   // no allocation in between
+                HPointer v = r.text ? alloc::allocStringFromUTF8(r.bytes) : makeBytes(r.bytes);
+                if (StreamPair* q = t.find(id)) q->readQ.push_back(enc(v));   // no allocation in between
             }
             pumpStream(id);
             return;
@@ -626,9 +653,9 @@ void channelDispatch(ChannelResult& r) {
             p->channel->close(0);   // release the fd (never 0–2); uncounted
             completeErr(r.token, false, kSErrClosed, "");
         } else {
-            HPointer bytes = makeBytes(r.bytes);
-            Elm::StackRootGuard g(&bytes);
-            completeOk(r.token, false, bytes);
+            HPointer v = r.text ? alloc::allocStringFromUTF8(r.bytes) : makeBytes(r.bytes);
+            Elm::StackRootGuard g(&v);
+            completeOk(r.token, false, v);
         }
         pumpStream(id);
         return;
@@ -698,12 +725,224 @@ void channelDispatch(ChannelResult& r) {
 } // namespace
 
 // ---------------------------------------------------------------------------
+// Value-mapped pairs (plans/eco-system-websockets.md §3.3, W16)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// ( Int tag, String, Bytes ) for a raw chunk, mask 0x1 (B.1 of the
+// WebSockets plan). Allocates; the result is fresh.
+HPointer wireTuple(const ChannelResult& c) {
+    HPointer str = alloc::listNil(), bytes = alloc::listNil();
+    Elm::StackRootGuard g(&str, &bytes);
+    str = c.text ? alloc::allocStringFromUTF8(c.bytes) : alloc::emptyString();
+    bytes = c.text ? alloc::emptyBytes() : makeBytes(c.bytes);
+    return alloc::tuple3(alloc::unboxedInt(c.tag), alloc::boxed(str), alloc::boxed(bytes), 0x1);
+}
+
+// MappedSource: maps the head of rawQ through fromWire (G11) into readQ.
+void mapHead(int64_t id) {
+    ChannelResult c;
+    HPointer fn = alloc::listNil();
+    {
+        StreamPair* p = streamTable().find(id);
+        if (!p || p->rawQ.empty()) return;
+        c = std::move(p->rawQ.front());
+        p->rawQ.pop_front();
+        fn = dec(p->mapFnEnc);
+    }
+    HPointer arg = alloc::listNil(), res = alloc::listNil();
+    Elm::StackRootGuard g(&fn, &arg, &res);
+    arg = wireTuple(c);
+    res = Scheduler::callClosure1(fn, arg);   // may GC; G11
+    StreamPair* p = streamTable().find(id);  // re-fetch after the call
+    if (!p) return;
+    p->readQ.push_back(enc(res));            // no allocation since the call
+}
+
+// The chunks / end a subscription reader has not seen yet, then the next
+// read-ahead. Runs from the channel drain (G12: it drains afterwards).
+void feedReader(int64_t id) {
+    for (;;) {
+        StreamPair* p = streamTable().find(id);
+        if (!p) return;
+        if (!p->reader) {   // detached meanwhile: back to normal reading
+            pumpStream(id);
+            return;
+        }
+        ReaderFn fn = p->reader;
+        void* ctx = p->readerCtx;
+        if (!p->rawQ.empty()) {
+            ChannelResult c = std::move(p->rawQ.front());
+            p->rawQ.pop_front();
+            fn(id, c, ctx);   // may call Elm (G11): `p` is dead from here
+            continue;
+        }
+        if (p->r != RState::Open) {
+            if (!p->readerEndSent) {
+                p->readerEndSent = true;
+                ChannelResult c;
+                c.channelId = p->channel ? p->channel->id() : 0;
+                c.op = ChannelResult::Op::Read;
+                if (p->r == RState::Closed) {
+                    c.eof = true;
+                } else {
+                    c.err = p->rErrno != 0 ? p->rErrno : EIO;
+                    c.reason = p->rReason;
+                }
+                fn(id, c, ctx);
+                continue;
+            }
+            pumpStream(id);   // erasure checks
+            return;
+        }
+        streamMappedMaybeRead(id);
+        return;
+    }
+}
+
+// A read result of a MappedSource's channel (from channelDispatch).
+void mappedReadResult(int64_t id, ChannelResult& r) {
+    auto& s = Scheduler::instance();
+    StreamPair* p = streamTable().find(id);
+    if (r.token != 0 && r.token == p->readerKick) {   // attachReader's kick (uncounted)
+        p->readerKick = 0;
+        feedReader(id);
+        return;
+    }
+    if (r.token == 0 || r.token != p->readInFlight) {   // stale
+        (void)s.takePendingResume(r.token);
+        return;
+    }
+    AsyncRelease release(p->readInFlightCounted);
+    p->readInFlight = 0;
+    p->readInFlightCounted = false;
+    if (r.err) {
+        if (p->r == RState::Open) {
+            p->r = RState::Errored;
+            p->rReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+            p->rErrno = r.err;
+        }
+        if (p->channel) p->channel->shutdown();
+    } else if (r.eof) {
+        if (p->r == RState::Open) p->r = RState::Closed;
+        if (p->channel) p->channel->close(0);   // uncounted release
+    } else if (p->r == RState::Open) {
+        p->rawQ.push_back(std::move(r));   // POD until a consumer takes it
+    }
+    if (p->reader && !p->readerKick) {
+        feedReader(id);
+    } else {
+        pumpStream(id);
+    }
+}
+
+} // namespace
+
+void streamMappedMaybeRead(int64_t id) {
+    StreamPair* p = streamTable().find(id);
+    if (!p || p->kind != StreamKind::MappedSource || !p->channel) return;
+    if (p->r != RState::Open || p->readInFlight || p->readerKick) return;
+    if (!p->rawQ.empty() || !p->readQ.empty()) return;   // read-ahead: one chunk
+    uint64_t tok = streamUncountedToken();
+    bool counted = p->pipeOutId != 0;   // a pipe waits for it: keep the program alive
+    if (counted) Scheduler::instance().incrementPendingAsync();
+    p->readInFlight = tok;
+    p->readInFlightCounted = counted;
+    p->channel->requestRead(tok, kChannelReadChunk);
+}
+
+void streamMapForSink(uint64_t toWireEnc, HPointer value, int64_t& tag, bool& text,
+                      std::string& bytes) {
+    HPointer fn = dec(toWireEnc), res = alloc::listNil();
+    Elm::StackRootGuard g(&fn, &value, &res);
+    res = Scheduler::callClosure1(fn, value);   // may GC; G11
+    // Decode ( Int, String, Bytes ) without allocating.
+    Tuple3* t3 = asTuple3(res);
+    u32 ub = t3->header.unboxed;
+    if (Elm::tupleFieldKind(ub, 0) == 1) {
+        tag = t3->a.i;
+    } else {
+        tag = static_cast<ElmInt*>(Allocator::instance().resolve(t3->a.p))->value;
+    }
+    std::string str = toStdString(t3->b.p);
+    if (!str.empty()) {
+        text = true;
+        bytes = std::move(str);
+    } else {
+        text = false;
+        bytes = toStdBytes(asTuple3(res)->c.p);
+    }
+}
+
+int64_t createMappedSource(ByteChannel* channel, uint64_t fromWireEnc) {
+    auto& t = streamTable();
+    StreamPair p;
+    p.kind = StreamKind::MappedSource;
+    p.channel.reset(channel);
+    p.w = WState::Closed;   // no writable side
+    p.readCap = 1;
+    p.mapFnEnc = fromWireEnc;
+    uint64_t chan = channel->id();
+    int64_t id = t.insert(std::move(p));
+    channelPairs()[chan] = id;
+    streamMappedMaybeRead(id);   // read ahead (no heap allocation)
+    return id;
+}
+
+int64_t createMappedSink(ByteChannel* channel, uint64_t toWireEnc) {
+    int64_t id = insertChannelPair(StreamKind::ChannelSink, channel);
+    if (StreamPair* p = streamTable().find(id)) p->mapFnEnc = toWireEnc;
+    return id;
+}
+
+bool attachReader(int64_t pairId, ReaderFn fn, void* ctx) {
+    StreamPair* p = streamTable().find(pairId);
+    if (!p || p->kind != StreamKind::MappedSource || !fn) return false;
+    if (p->reader || p->readLock || p->pipedOut) return false;
+    if (!p->readQ.empty()) return false;   // mapped values wait for a reader (never in practice)
+    p->reader = fn;
+    p->readerCtx = ctx;
+    if (!p->rawQ.empty() || p->r != RState::Open) {
+        // Chunks already read (or the end): handed over from the channel
+        // drain, in order (no read is in flight while rawQ holds a chunk).
+        if (!p->readerKick && p->channel) {
+            p->readerKick = streamUncountedToken();
+            ChannelResult kick;
+            kick.channelId = p->channel->id();
+            kick.token = p->readerKick;
+            kick.op = ChannelResult::Op::Read;
+            postChannelResult(std::move(kick));
+        }
+    } else {
+        streamMappedMaybeRead(pairId);
+    }
+    return true;
+}
+
+void detachReader(int64_t pairId) {
+    StreamPair* p = streamTable().find(pairId);
+    if (!p || !p->reader) return;
+    p->reader = nullptr;
+    p->readerCtx = nullptr;
+    streamMappedMaybeRead(pairId);
+}
+
+// ---------------------------------------------------------------------------
 // C++ API (B.2)
 // ---------------------------------------------------------------------------
 
 int64_t createChannelSource(ByteChannel* channel) {
     return insertChannelPair(StreamKind::ChannelSource, channel);
 }
+
+int64_t createTextChannelSink(ByteChannel* channel) {
+    int64_t id = insertChannelPair(StreamKind::ChannelSink, channel);
+    if (StreamPair* p = streamTable().find(id)) p->textSink = true;
+    return id;
+}
+
+void discardReadable(int64_t id) { streamCancelReadableNow(id, std::string()); }
 
 int64_t createChannelSink(ByteChannel* channel) {
     return insertChannelPair(StreamKind::ChannelSink, channel);
@@ -842,6 +1081,11 @@ HPointer streamReadBody(HPointer captured, HPointer resume) {
         StreamPair* p = streamTable().find(id);
         if (!p) return resumeNow(resume, failSErr(kSErrClosed, ""));
         if (streamReadLocked(p)) return resumeNow(resume, failSErr(kSErrLocked, ""));
+        if (p->kind == StreamKind::MappedSource && p->readQ.empty() && !p->rawQ.empty()) {
+            mapHead(id);                        // the chunk read ahead (calls Elm, G11)
+            p = streamTable().find(id);
+            if (!p) return resumeNow(resume, failSErr(kSErrClosed, ""));
+        }
         if (!p->readQ.empty()) {
             HPointer v = dec(p->readQ.front());
             p->readQ.pop_front();
@@ -863,8 +1107,12 @@ HPointer streamReadBody(HPointer captured, HPointer resume) {
             counted = true;
             p->parkedReadCounted = true;
             p->channel->requestRead(token, kChannelReadChunk);
+        } else if (p->kind == StreamKind::MappedSource) {
+            sched.incrementPendingAsync();      // the read-ahead request is uncounted
+            counted = true;
+            p->parkedReadCounted = true;
         }
-        pumpStream(id);
+        pumpStream(id);                         // MappedSource: issues the read-ahead if due
         return alloc::unit();
     )
 }
@@ -889,8 +1137,35 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
         return resumeNow(resume, failSErr(kSErrCancelled, reason));
     }
 
+    if (p->kind == StreamKind::ChannelSink && p->mapFnEnc) {
+        // Mapped sink: toWire first (G11), then the tagged channel write.
+        int64_t tag = 0;
+        bool text = false;
+        std::string bytes;
+        streamMapForSink(p->mapFnEnc, v, tag, text, bytes);
+        p = streamTable().find(id);              // re-fetch after the call
+        if (!p) return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
+        if (p->w != WState::Open) {
+            std::string reason = p->w == WState::Errored ? p->wReason : std::string(kWritableClosed);
+            return resumeNow(resume, failSErr(kSErrCancelled, reason));
+        }
+        uint64_t req;
+        if (isEnqueue) {
+            req = g_nextSyntheticToken++;
+        } else {
+            token = sched.registerPendingResume(resume);
+            req = token;
+        }
+        sched.incrementPendingAsync();
+        if (!isEnqueue) counted = true;
+        p->writeQ.push_back(PendingWrite{req, 0, true, true});
+        p->channel->requestWriteTagged(req, tag, text, std::move(bytes));
+        if (isEnqueue) return resumeNow(resume, succeedUnit());
+        return alloc::unit();
+    }
+
     if (p->kind == StreamKind::ChannelSink) {
-        std::string bytes = toStdBytes(v);       // G3: copy out first
+        std::string bytes = p->textSink ? toStdString(v) : toStdBytes(v);   // G3: copy out first
         uint64_t req;
         if (isEnqueue) {
             req = g_nextSyntheticToken++;
@@ -906,7 +1181,7 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
         return alloc::unit();
     }
 
-    if (p->kind == StreamKind::ChannelSource) {
+    if (p->kind == StreamKind::ChannelSource || p->kind == StreamKind::MappedSource) {
         // A source has no writable side (unreachable from Elm).
         return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
     }
@@ -960,7 +1235,7 @@ HPointer streamCloseWritableBody(HPointer captured, HPointer resume) {
         if (!p) return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
         if (streamWriteLocked(p)) return resumeNow(resume, failSErr(kSErrLocked, ""));
         if (p->w == WState::Closing || p->w == WState::Closed ||
-            p->kind == StreamKind::ChannelSource) {
+            p->kind == StreamKind::ChannelSource || p->kind == StreamKind::MappedSource) {
             return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
         }
         if (p->w == WState::Errored) {
@@ -999,12 +1274,15 @@ void streamCancelReadableNow(int64_t id, const std::string& reason) {
     std::vector<TokenRef> toFail;
     if (p->r == RState::Open) p->r = RState::Closed;   // later reads give Closed
     p->readQ.clear();
+    p->rawQ.clear();
     if (p->w == WState::Open || p->w == WState::Closing) {
         p->w = WState::Errored;
         p->wReason = reason;
         drainWriteSide(p, toFail);
     }
-    if (p->kind == StreamKind::ChannelSource && p->channel) p->channel->shutdown();
+    if ((p->kind == StreamKind::ChannelSource || p->kind == StreamKind::MappedSource) && p->channel) {
+        p->channel->shutdown();
+    }
     failAll(toFail, reason);                    // allocates: `p` is dead from here
     pumpStream(id);
 }

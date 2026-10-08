@@ -54,9 +54,22 @@ void ListenerHandler::start() {
     updateInterest();
 }
 
+void ListenerHandler::setCallbackMode(ProtocolFactory factory, int64_t maxConnections) {
+    protocolFactory_ = std::move(factory);
+    maxConnections_ = maxConnections;
+}
+
 bool ListenerHandler::canAccept() const {
-    return !closed_ && !backoff_ && (unlimited_ || credit_ > 0) &&
-           handshaking_.size() < static_cast<size_t>(kMaxHandshakes);
+    if (closed_ || backoff_ || handshaking_.size() >= static_cast<size_t>(kMaxHandshakes)) {
+        return false;
+    }
+    if (protocolFactory_) return maxConnections_ < 0 || open_ < maxConnections_;
+    return unlimited_ || credit_ > 0;
+}
+
+void ListenerHandler::connClosed() {
+    if (open_ > 0) --open_;
+    updateInterest();
 }
 
 void ListenerHandler::updateInterest() {
@@ -96,7 +109,7 @@ void ListenerHandler::acceptLoop() {
             return;
         }
         bool reserved = false;
-        if (credit_ > 0) {   // reserved now, returned if the handshake fails (N10)
+        if (!protocolFactory_ && credit_ > 0) {   // reserved now, returned if the handshake fails (N10)
             --credit_;
             reserved = true;
         }
@@ -108,6 +121,14 @@ void ListenerHandler::acceptLoop() {
         }
         handshaking_.push_back(Handshake{c, reserved});
         auto self = std::static_pointer_cast<ListenerHandler>(shared_from_this());
+        if (protocolFactory_) {
+            // Counted until the fd closes (the credit of callback mode).
+            ++open_;
+            std::weak_ptr<ListenerHandler> weak = self;
+            c->addCloseHook([weak](Conn&) {
+                if (auto l = weak.lock()) l->connClosed();
+            });
+        }
         int64_t deadline = factory_ ? reactor().nowMs() + kHandshakeTimeoutMs : 0;
         c->beginServer(deadline, [self](Conn& conn, bool ok) { self->established(conn, ok); });
     }
@@ -132,6 +153,17 @@ void ListenerHandler::established(Conn& c, bool ok) {
         // silently (as Node without a tlsClientError listener).
         if (h.reserved) ++credit_;
         c.abort(false);
+        updateInterest();
+        return;
+    }
+    if (protocolFactory_) {
+        // Callback mode: the connection stays on the reactor.
+        std::unique_ptr<ConnProtocol> p = protocolFactory_(c);
+        if (!p) {
+            c.abort(false);
+        } else {
+            c.setProtocol(std::move(p), std::string());   // onOpen
+        }
         updateInterest();
         return;
     }
@@ -172,7 +204,10 @@ void ListenerHandler::closeNow(bool post) {
         fd_ = -1;
         ownsPath_ = false;
     }
-    if (!post) return;
+    // Callback mode (HTTP servers): the owner closed the listener from a
+    // reactor command and learns of it there; there is no Socket listener
+    // entry to tell.
+    if (!post || protocolFactory_) return;
     // After the fd is closed and the path unlinked: a re-listen works at once.
     SocketEvent ev;
     ev.kind = SocketEvent::Kind::ListenerClosed;

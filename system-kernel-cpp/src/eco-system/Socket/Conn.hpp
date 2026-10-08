@@ -26,11 +26,19 @@
 //     over an accepted fd, registered, then beginServer() runs the transport
 //     handshake (plain: done at once) with a deadline and reports to the
 //     listener through a callback.
-//   * open: the faces queue reads/writes/closes; final close when both
-//     directions are done (Draining first, for at most 2 s: discard input
-//     if the read face was cancelled before EOF, N8, and flush what the
-//     transport still holds, e.g. a TLS close_notify and its SHUT_WR);
-//     abort() (Socket.close) / reset close at once (no close_notify).
+//   * open: the current protocol (ConnProtocol, plans/eco-system-websockets.md
+//     §3.2) gets the plaintext while it wants to read, queues writes
+//     (write / shutdownWrite), sets deadlines (several ids multiplexed on
+//     the reactor's one timer per handler) and closes (closeGraceful /
+//     abort). A new Conn runs the stream faces (FaceProtocol: the
+//     Socket.Connection streams); setProtocol hands the connection to
+//     another protocol with the bytes read past the old one's end.
+//   * close: closeGraceful = the queued writes, SHUT_WR, then Draining:
+//     discard input until EOF (closing with unread data would make Linux
+//     send RST instead of our FIN, N8) and flush what the transport still
+//     holds (e.g. a TLS close_notify and its SHUT_WR), bounded by the drain
+//     deadline (2 s for the faces); abort() (Socket.close) / reset close at
+//     once (no close_notify).
 //   * pending transport output (Transport::hasPendingWrite) keeps write
 //     interest in every phase and is flushed when writable, so a TLS
 //     shutdownWrite that returned 1 (from closeWritable or a write-face
@@ -54,6 +62,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #ifndef _WIN32
 #include <sys/types.h>
@@ -119,17 +129,87 @@ struct ConnectSpec {
     bool isTls = false;         // the factory makes a TLS transport (S5)
 };
 
+// --- Protocols (plans/eco-system-websockets.md §3.2, W17) -------------------
+
+class Conn;
+
+// What runs over an open connection: the stream faces (FaceProtocol, the
+// Socket.Connection streams), and later HTTP/1.1, HTTP/2 and WebSocket.
+// Reactor thread only; never touches the heap (G1). A Conn has exactly one
+// current protocol; setProtocol hands the connection to another one.
+//
+// Callbacks are made by the Conn from inside its own IO loop; a protocol
+// may call any Conn method from a callback (write, setDeadline,
+// setProtocol, closeGraceful, abort, ...): the Conn finishes the current
+// step first (no nested reads). A protocol replaced by setProtocol is kept
+// alive until its queued writes are done, so `done` callbacks may capture
+// it.
+class ConnProtocol {
+public:
+    virtual ~ConnProtocol() = default;
+    // After connect / accept (+ TLS handshake), or when installed by
+    // setProtocol on an open connection (before onData(leftover)).
+    virtual void onOpen(Conn& /*c*/) {}
+    // Plaintext from the transport (or the leftover of a hand-off). Only
+    // while wantsRead() (leftover: regardless). The view dies on return.
+    virtual void onData(Conn& c, std::string_view bytes) = 0;
+    // Peer FIN (after a TLS close_notify, or an unexpected EOF). Once.
+    virtual void onEof(Conn& c) = 0;
+    // A transport failure. `code` is the stream reason of §D.2 of the
+    // sockets plan: "read <CODE>" for a failed read (reading is over) or
+    // "write <CODE>" for a failed write or flush (writing is over; queued
+    // writes were already failed through their `done`). At most once per
+    // direction.
+    virtual void onError(Conn& c, int err, const std::string& code) = 0;
+    // outbound() fell below kLowWatermark after having reached it.
+    virtual void onWritable(Conn& /*c*/) {}
+    // A deadline set with setDeadline(timerId, ...) passed (in deadline
+    // order; ties by id). Ids owned by the Conn while it uses them
+    // (kTimerConnect while connecting, kTimerDrain after closeGraceful)
+    // are not forwarded.
+    virtual void onTimer(Conn& /*c*/, int /*timerId*/) {}
+    // The connection is torn down NOW (Conn::abort: Socket.close / reset,
+    // a protocol's own abort, embed stop, heap reset): fail everything
+    // pending. The Conn closes the fd when it returns. At most once.
+    virtual void onCloseAll(Conn& c) = 0;
+    // Read interest (demand-driven, sockets plan §3.3.1 rule 1).
+    virtual bool wantsRead() const = 0;
+};
+
+class FaceProtocol;
+
 // --- The connection ----------------------------------------------------------
 
-class Conn final : public IoHandler {
+class Conn : public IoHandler {
 public:
     enum class Phase : uint8_t { Idle, Connecting, Handshaking, Open, Draining, Closed };
 
+    // Timer ids (setDeadline). Several deadlines share the reactor's one
+    // timer per handler: the earliest is armed, onTimer dispatches every
+    // expired id.
+    static constexpr int kTimerConnect = 0;          // connect / TLS handshake (Conn)
+    static constexpr int kTimerDrain = 1;            // closeGraceful (Conn)
+    static constexpr int kTimerIdle = 2;             // idle / keep-alive
+    static constexpr int kTimerHeaders = 3;
+    static constexpr int kTimerRequest = 4;
+    static constexpr int kTimerHeartbeat = 5;
+    static constexpr int kTimerPong = 6;
+    static constexpr int kTimerCloseHandshake = 7;
+    static constexpr int kMaxTimers = 8;
+
+    // onWritable fires when outbound() drops below this after reaching it.
+    static constexpr size_t kLowWatermark = 64 * 1024;
+    // The drain of the stream faces' final close (N8, SF8).
+    static constexpr int64_t kFaceDrainMs = 2000;
+
     // Main thread: a client connection for resume token `token` (the
-    // Connected event carries it) of heap generation `gen`.
+    // Connected event carries it) of heap generation `gen`. Its protocol is
+    // a FaceProtocol.
     static std::shared_ptr<Conn> makeClient(ConnectSpec spec, TransportFactory factory,
                                             uint64_t token, uint64_t gen);
     // Reactor thread: a connection over an accepted fd (owned from now on).
+    // Its protocol is a FaceProtocol until setProtocol (listener callback
+    // mode).
     static std::shared_ptr<Conn> makeAccepted(int fd, bool isUnix, std::unique_ptr<Transport> t);
 
     ~Conn() override;
@@ -138,21 +218,84 @@ public:
 
     // Client: create the socket and connect (§3.3.3 "Connect").
     void startConnect();
+    // Client, set before startConnect: the connect result goes to `cb` on
+    // the reactor thread instead of a SocketEvent Connected (the WebSocket
+    // dial, plans/eco-system-websockets.md §3.6). On success the connection
+    // is Open with its FaceProtocol (`cb` typically installs another
+    // protocol); on failure it is already closed. Called at most once.
+    using ConnectCallback =
+        std::function<void(Conn&, bool ok, const std::string& code, const std::string& message)>;
+    void setConnectCallback(ConnectCallback cb) { connectCb_ = std::move(cb); }
     // Server: the fd is registered (IoReactor::add); run the transport
     // handshake until done (deadline: monotonic ms, 0 none), then call
     // done(*this, ok). For the plain transport done(true) is called at once.
     void beginServer(int64_t deadlineMs, std::function<void(Conn&, bool ok)> done);
 
-    // Face requests (ConnChannel.cpp): one ChannelResult each.
+    // Hand-off (§3.2): installs `p` (the old protocol is retired, kept alive
+    // until its queued writes are done). On an open connection: p->onOpen,
+    // then p->onData(leftover) if `leftover` is non-empty (bytes the old
+    // protocol read past its end), then interest is re-evaluated, which
+    // also delivers plaintext a TLS transport still buffers. Only between
+    // protocol callbacks or from a reactor command.
+    void setProtocol(std::unique_ptr<ConnProtocol> p, std::string leftover);
+    ConnProtocol* protocol() const { return protocol_.get(); }
+
+    // Queues `bytes` behind earlier writes; done(0) once the transport took
+    // all of them, done(errno) on failure / cancel. On a connection whose
+    // write side is finished (or after shutdownWrite / closeGraceful) done
+    // is called at once, inside write(). `done` may be null.
+    void write(std::string bytes, std::function<void(int err)> done);
+    // Bytes queued and not yet taken by the transport.
+    size_t outbound() const { return outBytes_; }
+    // Re-evaluates read/write interest after the protocol's wants changed
+    // (and attempts the IO at once: most reads find data, and TLS may hold
+    // decrypted bytes no fd event announces, N6).
+    void updateInterest();
+    // Deadline `timerId` (0..kMaxTimers-1) at monotonic `monoMs`; 0 cancels.
+    void setDeadline(int timerId, int64_t monoMs);
+    int64_t deadline(int timerId) const;
+    // FIN after the queued writes (TLS: close_notify first). done(0) once
+    // sent, done(errno) on failure; with a null `done` failures are silent
+    // (best effort). No-op (done(0/err) at once) when writing is over.
+    void shutdownWrite(std::function<void(int err)> done = nullptr);
+    // Fails every queued write and pending shutdownWrite callback with
+    // `err` (the shutdown itself stays requested).
+    void cancelWrites(int err);
+    // Orderly close: the queued writes, then SHUT_WR, then discard input
+    // until EOF (unless already seen) while what the transport holds is
+    // flushed; the fd closes then, or when `drainMs` (> 0) passes. The
+    // protocol gets no more data.
+    void closeGraceful(int64_t drainMs);
+    // Socket.close (reset = false) / Socket.reset (reset = true, TCP:
+    // SO_LINGER {1,0}): onCloseAll, fail the rest, close now. No close_notify.
+    void abort(bool reset);
+    // The TLS handshake's result; nullptr for plain or before the handshake.
+    const TlsInfo* tlsInfo() const { return hasTls_ ? &tls_ : nullptr; }
+    // Called once on the reactor thread when the fd is closed.
+    void addCloseHook(std::function<void(Conn&)> hook);
+
+    // State the protocols read (reactor thread).
+    bool eofSeen() const { return eofSeen_; }
+    int readError() const { return readErr_; }
+    const std::string& readErrorReason() const { return readErrReason_; }
+    int writeError() const { return writeErr_; }
+    const std::string& writeErrorReason() const { return writeErrReason_; }
+    bool writeEnded() const { return writeDone_; }   // FIN sent, failed, or given up
+    bool aborted() const { return aborted_; }
+    bool closing() const { return closing_; }
+
+    // Face requests (ConnChannel.cpp), forwarded to the FaceProtocol; one
+    // ChannelResult each. After a hand-off away from the faces they fail
+    // ECANCELED with faceDetachedReason (default "socket closed").
     void reqRead(uint64_t channelId, uint64_t token, size_t maxBytes);
     void reqWrite(uint64_t channelId, uint64_t token, std::string bytes);
     void reqCloseWrite(uint64_t channelId, uint64_t token);   // graceful half-close
     void reqCloseRead(uint64_t channelId, uint64_t token);    // the reader is done (EOF seen)
     void readFaceShutdown();    // cancelReadable / face dropped: abandon reading (no SHUT_RD)
     void writeFaceShutdown();   // cancelWritable / face dropped: fail queued writes, SHUT_WR
-
-    // Socket.close (reset = false) / Socket.reset (reset = true, TCP: SO_LINGER {1,0}).
-    void abort(bool reset);
+    // The FaceProtocol while it is the current protocol, else nullptr.
+    FaceProtocol* face() const { return face_; }
+    void setFaceDetachedReason(std::string reason) { faceDetachedReason_ = std::move(reason); }
 
     // setNoDelay / setKeepAlive (R mode): 0 or errno. Unix: no effect.
     int setNoDelay(bool on);
@@ -181,19 +324,14 @@ public:
     Conn(const Conn&) = delete;
     Conn& operator=(const Conn&) = delete;
 
-private:
-    Conn() = default;
+protected:
+    Conn();
 
-    struct ReadReq {
-        uint64_t channelId;
-        uint64_t token;
-        size_t max;
-    };
-    struct WriteReq {
-        uint64_t channelId;
-        uint64_t token;
+private:
+    struct OutReq {
         std::string bytes;
         size_t offset = 0;
+        std::function<void(int)> done;
     };
 
     // Client connect.
@@ -205,20 +343,25 @@ private:
     std::string target() const;
 
     // Open-phase IO.
+    void runIo(bool tryRead, bool tryWrite);
     void serviceReads();
     void serviceWrites();
     void afterIo();
-    void updateInterest();
+    void applyInterest();
     void flushPending();
+    void writeFailed();
+    void failOutbound(int err);
+    void finishShutdown(int err);
+    void enterDraining();
     void drainStep();
     void closeNow();
-
-    void postRead(const ReadReq& r, ChannelResult res);
-    void failReads(int err, const std::string& reason);
-    void failWrites(int err, const std::string& reason);
-    void postClose(uint64_t channelId, uint64_t token, int err, const std::string& reason);
-    void readResultForLateRequest(ChannelResult& r) const;
-    void writeResultForLateRequest(ChannelResult& r) const;
+    void reapRetired();
+    void armTimer();
+    void fireTimer(int id);
+    void timedOut();
+    struct BusyScope;
+    template <typename F>
+    void guarded(F&& f);
 
     // Fixed at construction.
     bool isUnix_ = false;
@@ -227,6 +370,7 @@ private:
     TransportFactory factory_;
     uint64_t token_ = 0;     // client: the connect task's resume token
     uint64_t gen_ = 0;       // client: heap generation of the connect
+    ConnectCallback connectCb_;   // client: report to it instead of a SocketEvent
 
 public:
     std::atomic<int> resolved{0};   // client connect race (cancelConnect)
@@ -237,23 +381,40 @@ private:
     Phase phase_ = Phase::Idle;
     std::unique_ptr<Transport> transport_;
     std::function<void(Conn&, bool)> serverDone_;
+    TlsInfo tls_;
+    bool hasTls_ = false;
 
-    std::deque<ReadReq> readReqs_;
-    std::deque<WriteReq> writeQ_;
-    bool closePending_ = false;          // write face close requested
-    uint64_t closeChannel_ = 0, closeToken_ = 0;
+    std::unique_ptr<ConnProtocol> protocol_;
+    FaceProtocol* face_ = nullptr;
+    std::vector<std::unique_ptr<ConnProtocol>> retired_;
+    std::string faceDetachedReason_;
+
+    std::deque<OutReq> outQ_;
+    size_t outBytes_ = 0;
+    bool aboveLow_ = false;              // outbound reached kLowWatermark (onWritable edge)
+    bool shutRequested_ = false;         // a shutdownWrite waits behind outQ_ (or for TLS)
+    std::vector<std::function<void(int)>> shutDone_;
+
     bool readOnWrite_ = false;           // the last read wants writability (TLS)
     bool writeOnRead_ = false;           // the last write/shutdown wants readability (TLS)
-    bool readDone_ = false;              // EOF, read error, or the read face is done
-    bool writeDone_ = false;             // FIN sent, write error, or the write face is done
+    bool readDone_ = false;              // EOF or a read error (transport level)
+    bool writeDone_ = false;             // FIN sent, write error, or writing given up
     bool eofSeen_ = false;
-    bool readAbandoned_ = false;         // read face shut down before EOF
+    bool closing_ = false;               // closeGraceful requested
     bool discarding_ = false;            // Draining: still discarding input (N8)
     bool aborted_ = false;               // Socket.close / reset / closeAll
+    bool aborting_ = false;
     int readErr_ = 0;                    // errno of a failed read (0: none)
     std::string readErrReason_;
     int writeErr_ = 0;
     std::string writeErrReason_;
+
+    bool busy_ = false;                  // inside runIo (protocol callbacks may re-enter)
+    bool again_ = false;
+    bool againRead_ = false, againWrite_ = false;
+
+    int64_t deadlines_[kMaxTimers] = {};
+    std::vector<std::function<void(Conn&)>> closeHooks_;
 };
 
 } // namespace Eco::System

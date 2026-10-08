@@ -1,6 +1,7 @@
 //===- HttpServerExports.cpp - C exports of Eco.Kernel.HttpServer ---------===//
 //
-// plans/eco-system-library.md Appendix B.6. Exports only pack and bind
+// plans/eco-system-library.md Appendix B.6 and plans/eco-system-websockets.md
+// Appendix B.2. Exports only pack and bind
 // (G2); the bodies are in HttpServer.cpp. The `Http.Server` effect-manager
 // registration is in HttpServerManager.cpp.
 //
@@ -14,7 +15,7 @@ using namespace Eco::System;
 
 extern "C" {
 
-// createServer : String -> Int -> Task ( String, String ) Int
+// createServer : String -> Int -> Task ( String, String ) ( Int, Int )
 uint64_t Eco_Kernel_HttpServer_createServer(uint64_t host, int64_t port) {
     ECO_KERNEL_GUARD(
         HPointer hostHP = dec(host);
@@ -40,6 +41,40 @@ uint64_t Eco_Kernel_HttpServer_respond(int64_t key, int64_t status, uint64_t hea
         hb = alloc::tuple2(alloc::boxed(headersHP), alloc::boxed(bodyHP), 0);
         HPointer payload = alloc::tuple2(alloc::boxed(ks), alloc::boxed(hb), 0);
         return enc(makeAsyncBinding<httpServerRespondBody>(payload));
+    )
+}
+
+// --- plans/eco-system-websockets.md Appendix B.2 ---------------------------------
+
+// createServerWith : ( ( String, Int ), ( Bool, Int ) ) -> Maybe ( String, String )
+//     -> ( ( Int, Int, Int ), ( Int, Int, Int ) ) -> Task ( String, String ) ( Int, Int )
+uint64_t Eco_Kernel_HttpServer_createServerWith(uint64_t target, uint64_t tls, uint64_t limits) {
+    ECO_KERNEL_GUARD(
+        HPointer targetHP = dec(target);
+        HPointer tlsHP = dec(tls);
+        HPointer limitsHP = dec(limits);
+        Elm::StackRootGuard g({&targetHP, &tlsHP, &limitsHP});
+        HPointer payload =
+            alloc::tuple3(alloc::boxed(targetHP), alloc::boxed(tlsHP), alloc::boxed(limitsHP), 0);
+        return enc(makeAsyncBinding<httpServerCreateServerWithBody>(payload));
+    )
+}
+
+// closeServer : Int -> Int -> Task Never ()
+uint64_t Eco_Kernel_HttpServer_closeServer(int64_t serverId, int64_t deadlineMs) {
+    ECO_KERNEL_GUARD(
+        HPointer payload =
+            alloc::tuple2(alloc::unboxedInt(serverId), alloc::unboxedInt(deadlineMs), 0x5);
+        return enc(makeAsyncBinding<httpServerCloseServerBody>(payload));
+    )
+}
+
+// takeUpgrade : Int -> Task ( String, String )
+//     ( Int, ( String, String, String ), ( List ( String, List String ), Bool, ( Int, String, Int ) ) )
+// Phase WS5 (HttpUpgrade.cpp): the payload is the boxed key.
+uint64_t Eco_Kernel_HttpServer_takeUpgrade(int64_t key) {
+    ECO_KERNEL_GUARD(
+        return enc(makeBinding<httpServerTakeUpgradeBody>(alloc::allocInt(key)));
     )
 }
 

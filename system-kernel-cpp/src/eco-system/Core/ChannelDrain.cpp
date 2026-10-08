@@ -14,6 +14,7 @@
 #include "eco-system/Core/Core.hpp"
 
 #include <atomic>
+#include <cerrno>
 #include <deque>
 #include <mutex>
 
@@ -48,6 +49,19 @@ ByteChannel::ByteChannel() : id_(g_nextChannelId.fetch_add(1)) {
     (void)results();
     static std::once_flag once;
     std::call_once(once, [] { addDrainSource(&channelDrain, &channelReady); });
+}
+
+void ByteChannel::requestWriteTagged(uint64_t token, int64_t tag, bool, std::string bytes) {
+    if (tag == 0) {
+        requestWrite(token, std::move(bytes));
+        return;
+    }
+    ChannelResult r;
+    r.channelId = id();
+    r.token = token;
+    r.op = ChannelResult::Op::Write;
+    r.err = ENOTSUP;
+    postChannelResult(std::move(r));
 }
 
 void postChannelResult(ChannelResult r) {

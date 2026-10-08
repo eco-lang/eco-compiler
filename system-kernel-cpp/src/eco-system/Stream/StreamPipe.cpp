@@ -92,7 +92,7 @@ bool dstCanAccept(const StreamPair* d) {
 // Hands encoded value `v` to dst's writable side. No heap allocation.
 void pushIntoDst(StreamPair* d, uint64_t v) {
     if (d->kind == StreamKind::ChannelSink) {
-        std::string bytes = toStdBytes(dec(v));   // G3: copy out before the request
+        std::string bytes = d->textSink ? toStdString(dec(v)) : toStdBytes(dec(v));   // G3: copy out first
         uint64_t req = streamSyntheticToken();
         Scheduler::instance().incrementPendingAsync();   // released by the dispatch
         d->writeQ.push_back(PendingWrite{req, 0, true, true});
@@ -214,7 +214,27 @@ void streamRunPipe(int64_t pid) {
             return;
         }
 
-        // 3. Move one value.
+        // 3. Move one value. A mapped sink maps it first (an Elm call: the
+        //    value leaves src's scanned readQ, so it is rooted across it).
+        if (s && !s->readQ.empty() && dstCanAccept(d) && d->kind == StreamKind::ChannelSink &&
+            d->mapFnEnc) {
+            HPointer v = dec(s->readQ.front());
+            s->readQ.pop_front();
+            Elm::StackRootGuard g(&v);
+            int64_t tag = 0;
+            bool text = false;
+            std::string bytes;
+            streamMapForSink(d->mapFnEnc, v, tag, text, bytes);   // G11: s, d are dead
+            if (StreamPair* dd = t.find(pp.dst); dd && dd->w == WState::Open && dd->channel) {
+                uint64_t req = streamSyntheticToken();
+                Scheduler::instance().incrementPendingAsync();   // released by the dispatch
+                dd->writeQ.push_back(PendingWrite{req, 0, true, true});
+                dd->channel->requestWriteTagged(req, tag, text, std::move(bytes));
+            }
+            pumpStream(pp.src);
+            pumpStream(pp.dst);
+            continue;
+        }
         if (s && !s->readQ.empty() && dstCanAccept(d)) {
             uint64_t v = s->readQ.front();
             s->readQ.pop_front();
@@ -225,7 +245,7 @@ void streamRunPipe(int64_t pid) {
         }
 
         // 4. src closed and drained → close dst.
-        bool srcDone = !s || (s->r == RState::Closed && s->readQ.empty() &&
+        bool srcDone = !s || (s->r == RState::Closed && s->readQ.empty() && s->rawQ.empty() &&
                               s->parkedReadToken == 0);
         if (srcDone) {
             it->second.closingDst = true;
@@ -242,6 +262,22 @@ void streamRunPipe(int64_t pid) {
         if (s->kind != StreamKind::ChannelSource && s->kind != StreamKind::ChannelSink &&
             s->r == RState::Open && s->readQ.empty() && !s->writeQ.empty() && dstCanAccept(d)) {
             pumpStream(pp.src);
+            return;
+        }
+
+        // 5c. A mapped source: a chunk read ahead is mapped by its pump (the
+        //     pipe is a waiting reader); otherwise its read-ahead request
+        //     now keeps the program alive (counted) while the pipe waits.
+        if (s->kind == StreamKind::MappedSource && s->r == RState::Open && s->readQ.empty() &&
+            dstCanAccept(d)) {
+            if (!s->rawQ.empty()) {
+                pumpStream(pp.src);
+            } else if (s->readInFlight && !s->readInFlightCounted) {
+                Scheduler::instance().incrementPendingAsync();   // released by the dispatch
+                s->readInFlightCounted = true;
+            } else if (!s->readInFlight) {
+                streamMappedMaybeRead(pp.src);
+            }
             return;
         }
 

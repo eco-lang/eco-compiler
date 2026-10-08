@@ -1,6 +1,6 @@
 /*
 import Elm.Kernel.Scheduler exposing (binding, succeed, fail)
-import Elm.Kernel.Utils exposing (Tuple0, Tuple2)
+import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (toArray)
 import Maybe exposing (Just, Nothing)
 */
@@ -49,6 +49,40 @@ import Maybe exposing (Just, Nothing)
 //   _Stream_createChannelSource(channel) -> id   a Readable Bytes over the channel
 //   _Stream_createChannelSink(channel)   -> id   a Writable Bytes over the channel
 // The table owns the channel from then on (it calls close/shutdown).
+// Text channels (plans/eco-system-websockets.md WS6): a channel source whose requestRead
+// gives a (non-empty) JS string as the chunk yields that String instead of Bytes;
+//   _Stream_createTextChannelSink(channel) -> id   a Writable String: requestWrite gets
+//       each value as a JS string.
+//   _Stream_discardReadable(id)   cancels the readable side with no reason (a source that
+//       never reached Elm); the pair is erased once released.
+//
+// Value-mapped pairs (plans/eco-system-websockets.md §3.3, W16; C++: Stream.hpp). They
+// carry values a kernel cannot build (e.g. WebSocket.Message) across the boundary: the
+// channel speaks TAGGED chunks, plain objects { tag, text, bytes } (plain property names:
+// they cross kernel files), and Elm closures convert:
+//   _Stream_createMappedSource(channel, fromWire) -> id
+//       A Readable whose values are fromWire ( tag, text, bytes ) for each chunk the
+//       channel reads: requestRead's done(err, chunk) gives chunk = { tag: Int, text:
+//       String ('' for a binary chunk), bytes: Uint8Array or null (text chunks) }, null at
+//       end of input. Reads ahead one chunk (one request in flight while nothing is
+//       buffered); fromWire runs when a consumer takes the chunk (a read, a parked read, a
+//       pipe). Optional channel method setDemand(bool): told whether a consumer waits (a
+//       parked read or a pipe), the JS twin of native's pendingAsync count (the read-ahead
+//       itself must not keep the program alive).
+//   _Stream_createMappedSink(channel, toWire) -> id
+//       A Writable whose accepted values are passed to toWire (a -> ( Int, String, Bytes ))
+//       and written with channel.requestWriteTagged({ tag, text, bytes }, done) (text: the
+//       String, bytes: the Bytes as a Uint8Array); without that method a tag-0 chunk goes
+//       to requestWrite(bytes, done) and any other fails ENOTSUP.
+//   _Stream_attachReader(id, fn) -> Bool
+//       Subscription reader of a mapped source: while attached, chunks bypass the queue
+//       and fromWire and go to fn(err, chunk) (chunk null at end of input; err once on a
+//       failure), read-ahead continues as fast as fn returns, and reads, pipes and
+//       cancelReadable fail Locked. fn runs inside a stream operation, never inside
+//       attachReader (chunks already read are handed over first, from a microtask). False
+//       (nothing done) while a read is parked, the pair is piped, a reader is attached, or
+//       the id is not a mapped source.
+//   _Stream_detachReader(id)   back to normal reading (later chunks queue as usual).
 //
 // Adapters for Node streams:
 //   _Stream_nodeReadableChannel(readable, options) -> channel
@@ -84,7 +118,7 @@ import Maybe exposing (Just, Nothing)
 var _Stream_W_OPEN = 0, _Stream_W_CLOSING = 1, _Stream_W_CLOSED = 2, _Stream_W_ERRORED = 3;
 var _Stream_R_OPEN = 0, _Stream_R_CLOSED = 1, _Stream_R_ERRORED = 2;
 var _Stream_K_IDENTITY = 0, _Stream_K_CUSTOM = 1, _Stream_K_CODEC = 2,
-    _Stream_K_SOURCE = 3, _Stream_K_SINK = 4;
+    _Stream_K_SOURCE = 3, _Stream_K_SINK = 4, _Stream_K_MAPPED = 5;
 var _Stream_E_CLOSED = 0, _Stream_E_CANCELLED = 1, _Stream_E_LOCKED = 2;
 
 var _Stream_kWritableClosed = 'WritableStream is closed';
@@ -262,7 +296,16 @@ function _Stream_newPair(kind)
 		__customState: null,
 		__codec: null,
 		__channel: null,
-		__pinned: false
+		__pinned: false,
+		__mapFn: null,         // mapped source: fromWire; mapped sink: toWire
+		__rawQ: [],            // mapped source: chunks read, not mapped yet
+		__readInFlight: null,  // mapped source: the read-ahead's token
+		__rErr: null,          // mapped source: the error that ended reading
+		__reader: null,        // mapped source: the subscription reader
+		__readerKick: false,
+		__readerEndSent: false,
+		__demand: false,       // mapped source: last setDemand value
+		__textSink: false      // channel sink of Strings (createTextChannelSink)
 	};
 }
 
@@ -289,7 +332,7 @@ function _Stream_pin(id)
 
 function _Stream_readLocked(p)
 {
-	return p.__readLock || p.__pipedOut;
+	return p.__readLock || p.__pipedOut || !!p.__reader;
 }
 
 function _Stream_writeLocked(p)
@@ -363,6 +406,7 @@ function _Stream_maybeErase(id)
 	if (p.__w !== _Stream_W_CLOSED || p.__r !== _Stream_R_CLOSED) return;
 	if (p.__readQ.length || p.__writeQ.length || p.__waitingForRoom.length) return;
 	if (p.__parkedRead || p.__closeTok) return;
+	if (p.__rawQ.length || p.__readInFlight || p.__readerKick) return;   // mapped source
 	delete _Stream_table[id];
 }
 
@@ -461,6 +505,15 @@ function _Stream_pumpCore(id)
 
 		var tok, pw;
 
+		// 0. Mapped source: a waiting consumer (a parked read, or a pipe whose
+		//    destination has room) takes the next raw chunk: map it.
+		if (p.__kind === _Stream_K_MAPPED && !p.__readQ.length && p.__rawQ.length &&
+			(p.__parkedRead !== null || _Stream_pipeDemand(p)))
+		{
+			_Stream_mapHead(id);
+			continue;
+		}
+
 		// 1. A parked reader takes the head of readQ directly.
 		if (p.__parkedRead && p.__readQ.length)
 		{
@@ -537,7 +590,7 @@ function _Stream_pumpCore(id)
 		}
 
 		// 5. A parked reader on a drained, terminal readable.
-		if (p.__parkedRead && !p.__readQ.length && p.__r !== _Stream_R_OPEN)
+		if (p.__parkedRead && !p.__readQ.length && !p.__rawQ.length && p.__r !== _Stream_R_OPEN)
 		{
 			tok = p.__parkedRead;
 			p.__parkedRead = null;
@@ -581,6 +634,11 @@ function _Stream_drive()
 			}
 			_Stream_pumpCore(item);
 			var p = _Stream_table[item];
+			if (p && p.__kind === _Stream_K_MAPPED)
+			{
+				_Stream_mappedMaybeRead(item);
+				_Stream_mappedDemand(item);
+			}
 			if (p)
 			{
 				if (p.__pipeOutId) _Stream_schedule(-p.__pipeOutId);
@@ -694,6 +752,10 @@ function _Stream_onReadResult(id, ch, tok, err, chunk)
 			if (p.__r === _Stream_R_OPEN) p.__r = _Stream_R_CLOSED;
 			ch.close(null);
 		}
+		else if (typeof chunk === 'string')
+		{
+			if (chunk.length) p.__readQ.push(chunk);
+		}
 		else if (chunk.byteLength)
 		{
 			p.__readQ.push(_Stream_toBytes(chunk));
@@ -721,7 +783,7 @@ function _Stream_onReadResult(id, ch, tok, err, chunk)
 	}
 	else
 	{
-		_Stream_completeOk(tok, _Stream_toBytes(chunk));
+		_Stream_completeOk(tok, typeof chunk === 'string' ? chunk : _Stream_toBytes(chunk));
 	}
 	_Stream_pump(id);
 }
@@ -808,6 +870,228 @@ function _Stream_createChannelSink(channel)
 	p.__channel = channel;
 	p.__r = _Stream_R_CLOSED;   // no readable side
 	return _Stream_insert(p);
+}
+
+function _Stream_createTextChannelSink(channel)
+{
+	var id = _Stream_createChannelSink(channel);
+	_Stream_table[id].__textSink = true;
+	return id;
+}
+
+function _Stream_discardReadable(id)
+{
+	_Stream_enter(function() { _Stream_cancelReadableNow(id, ''); });
+}
+
+
+// --- Value-mapped pairs (plans/eco-system-websockets.md §3.3) ------------------------
+
+function _Stream_wireTuple(chunk)
+{
+	return __Utils_Tuple3(
+		chunk.tag,
+		typeof chunk.text === 'string' ? chunk.text : '',
+		_Stream_toBytes(chunk.bytes || new Uint8Array(0))
+	);
+}
+
+// Mapped source: maps the head of rawQ through fromWire into readQ.
+function _Stream_mapHead(id)
+{
+	var p = _Stream_table[id];
+	if (!p || !p.__rawQ.length) return;
+	var chunk = p.__rawQ.shift();
+	var v = p.__mapFn(_Stream_wireTuple(chunk));
+	p = _Stream_table[id];
+	if (p) p.__readQ.push(v);
+}
+
+function _Stream_mappedMaybeRead(id)
+{
+	var p = _Stream_table[id];
+	if (!p || p.__kind !== _Stream_K_MAPPED || !p.__channel) return;
+	if (p.__r !== _Stream_R_OPEN || p.__readInFlight || p.__readerKick) return;
+	if (p.__rawQ.length || p.__readQ.length) return;   // read-ahead: one chunk
+	var ch = p.__channel;
+	var tok = { __resume: null };
+	p.__readInFlight = tok;
+	_Stream_channelCall(
+		function(done) { ch.requestRead(_Stream_kChannelReadChunk, done); },
+		function(err, chunk) { _Stream_onMappedRead(id, ch, tok, err, chunk); }
+	);
+}
+
+// Tells the channel whether a consumer waits (parked read or pipe): native counts those
+// in pendingAsync, so the JS channel refs its handle only then.
+function _Stream_mappedDemand(id)
+{
+	var p = _Stream_table[id];
+	if (!p || p.__kind !== _Stream_K_MAPPED || !p.__channel) return;
+	var demand = p.__r === _Stream_R_OPEN && (p.__parkedRead !== null || !!p.__pipeOutId);
+	if (demand === p.__demand) return;
+	p.__demand = demand;
+	if (demand) _Stream_noteActivity();
+	if (typeof p.__channel.setDemand === 'function') p.__channel.setDemand(demand);
+}
+
+function _Stream_onMappedRead(id, ch, tok, err, chunk)
+{
+	var p = _Stream_pairOf(id, ch);
+	if (!p || p.__readInFlight !== tok) return;   // stale
+	p.__readInFlight = null;
+	if (err)
+	{
+		if (p.__r === _Stream_R_OPEN)
+		{
+			p.__r = _Stream_R_ERRORED;
+			p.__rReason = _Stream_describeError(err);
+			p.__rErr = err;
+		}
+		ch.shutdown();
+	}
+	else if (!chunk)
+	{
+		if (p.__r === _Stream_R_OPEN) p.__r = _Stream_R_CLOSED;
+		ch.close(null);
+	}
+	else if (p.__r === _Stream_R_OPEN)
+	{
+		p.__rawQ.push(chunk);   // mapped when a consumer takes it
+	}
+	if (p.__reader && !p.__readerKick)
+	{
+		_Stream_feedReader(id);
+	}
+	else
+	{
+		_Stream_pump(id);
+	}
+}
+
+// The chunks / end the reader has not seen yet, then the next read-ahead.
+function _Stream_feedReader(id)
+{
+	for (;;)
+	{
+		var p = _Stream_table[id];
+		if (!p) return;
+		if (!p.__reader)
+		{
+			_Stream_pump(id);
+			return;
+		}
+		var fn = p.__reader;
+		if (p.__rawQ.length)
+		{
+			fn(null, p.__rawQ.shift());
+			continue;
+		}
+		if (p.__r !== _Stream_R_OPEN)
+		{
+			if (!p.__readerEndSent)
+			{
+				p.__readerEndSent = true;
+				if (p.__r === _Stream_R_CLOSED)
+				{
+					fn(null, null);
+				}
+				else
+				{
+					fn(p.__rErr || _Stream_socketError(p.__rReason, 'EIO'), null);
+				}
+				continue;
+			}
+			_Stream_pump(id);   // erasure checks
+			return;
+		}
+		_Stream_mappedMaybeRead(id);
+		return;
+	}
+}
+
+function _Stream_createMappedSource(channel, fromWire)
+{
+	var p = _Stream_newPair(_Stream_K_MAPPED);
+	p.__channel = channel;
+	p.__w = _Stream_W_CLOSED;   // no writable side
+	p.__readCap = 1;
+	p.__mapFn = fromWire;
+	var id = _Stream_insert(p);
+	_Stream_mappedMaybeRead(id);   // read ahead
+	return id;
+}
+
+function _Stream_createMappedSink(channel, toWire)
+{
+	var id = _Stream_createChannelSink(channel);
+	_Stream_table[id].__mapFn = toWire;
+	return id;
+}
+
+// A mapped sink's channel write of value `v` (toWire first).
+function _Stream_mappedWrite(id, p, tok, v)
+{
+	var w = p.__mapFn(v);
+	var chunk = { tag: w.a, text: w.b, bytes: _Stream_toUint8Array(w.c) };
+	var ch = p.__channel;
+	_Stream_noteActivity();
+	_Stream_channelCall(
+		function(done)
+		{
+			if (typeof ch.requestWriteTagged === 'function')
+			{
+				ch.requestWriteTagged(chunk, done);
+			}
+			else if (chunk.tag === 0)
+			{
+				ch.requestWrite(chunk.bytes, done);
+			}
+			else
+			{
+				done(_Stream_socketError('write ENOTSUP', 'ENOTSUP'));
+			}
+		},
+		function(err) { _Stream_onWriteResult(id, ch, tok, err); }
+	);
+}
+
+function _Stream_attachReader(id, fn)
+{
+	var p = _Stream_table[id];
+	if (!p || p.__kind !== _Stream_K_MAPPED || !fn) return false;
+	if (p.__reader || p.__readLock || p.__pipedOut || p.__readQ.length) return false;
+	p.__reader = fn;
+	if (p.__rawQ.length || p.__r !== _Stream_R_OPEN)
+	{
+		if (!p.__readerKick)
+		{
+			p.__readerKick = true;
+			queueMicrotask(function()
+			{
+				_Stream_enter(function()
+				{
+					var q = _Stream_table[id];
+					if (!q) return;
+					q.__readerKick = false;
+					_Stream_feedReader(id);
+				});
+			});
+		}
+	}
+	else
+	{
+		_Stream_mappedMaybeRead(id);
+	}
+	return true;
+}
+
+function _Stream_detachReader(id)
+{
+	var p = _Stream_table[id];
+	if (!p || !p.__reader) return;
+	p.__reader = null;
+	_Stream_enter(function() { _Stream_pump(id); });
 }
 
 
@@ -1061,6 +1345,13 @@ function _Stream_fromNodeWritable(writable, options)
 //   - reset(reason) (Socket.reset): as abort, through resetAndDestroy() (RST) on
 //     options.raw (the net.Socket under a TLSSocket) or the socket; Unix sockets, where
 //     Node throws, are destroyed.
+//   - detach(reason) (WebSocket.upgradeRequest, plans/eco-system-websockets.md §3.2, E.3):
+//     hands the socket to another protocol: { socket, raw, buffered (a Buffer of the data
+//     received and not delivered), eof }; or { error, message } (ECANCELED when the socket
+//     is closed or its write side ended, EBUSY while a read, write or close is in flight or
+//     after an earlier detach). Afterwards the channels' requests fail with `reason`, and
+//     the duplex no longer reads, refs or destroys the socket, except that abort / reset
+//     (Socket.close / Socket.reset on the old connection) still destroy it.
 // Errors carry `reason` (_Stream_describeError uses it): "read <CODE>" / "write <CODE>"
 // for socket errors (a socket error fails later reads and writes the same way), the abort
 // reason after abort / reset.
@@ -1090,6 +1381,7 @@ function _Stream_nodeDuplexChannels(socket, options)
 	var writeDone = false;
 	var finalized = false;
 	var reffed = true;
+	var detached = null;     // detach reason
 
 	function busy()
 	{
@@ -1098,6 +1390,7 @@ function _Stream_nodeDuplexChannels(socket, options)
 
 	function updateRef()
 	{
+		if (detached) return;   // the new owner refs the socket
 		var want = busy() && !socket.destroyed;
 		if (want === reffed) return;
 		reffed = want;
@@ -1110,6 +1403,7 @@ function _Stream_nodeDuplexChannels(socket, options)
 
 	function readError()
 	{
+		if (detached) return _Stream_socketError(detached, 'ECANCELED');
 		if (aborted) return _Stream_socketError(aborted, 'ECANCELED');
 		if (errCode) return _Stream_socketError('read ' + errCode, errCode);
 		return null;
@@ -1117,6 +1411,7 @@ function _Stream_nodeDuplexChannels(socket, options)
 
 	function writeError()
 	{
+		if (detached) return _Stream_socketError(detached, 'ECANCELED');
 		if (aborted) return _Stream_socketError(aborted, 'ECANCELED');
 		if (errCode) return _Stream_socketError('write ' + errCode, errCode);
 		return null;
@@ -1214,33 +1509,65 @@ function _Stream_nodeDuplexChannels(socket, options)
 	}
 
 	socket.pause();   // before 'data', so attaching it does not start flowing
-	socket.on('data', function(chunk)
+	function onData(chunk)
 	{
 		if (readDone) return;   // abandoned: discard
 		buffered.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
 		socket.pause();
 		deliver();
-	});
-	socket.on('end', function()
+	}
+	function onEnd()
 	{
 		eof = true;
 		deliver();
-	});
-	socket.on('error', function(e)
+	}
+	function onError(e)
 	{
 		if (!errCode && !aborted) errCode = (e && e.code) || 'EIO';
 		deliver();
 		failWrites(writeError);
 		finishClose(writeError());
-	});
-	socket.on('close', function()
+	}
+	function onClose()
 	{
 		deliver();
 		failWrites(function() { return writeError() || _Stream_socketError('socket closed', 'ECANCELED'); });
 		finishClose(writeError() || _Stream_socketError('socket closed', 'ECANCELED'));
 		updateRef();
-	});
+	}
+	socket.on('data', onData);
+	socket.on('end', onEnd);
+	socket.on('error', onError);
+	socket.on('close', onClose);
 	updateRef();
+
+	function detach(reason)
+	{
+		if (detached)
+		{
+			return { error: 'EBUSY', message: 'upgradeRequest EBUSY: the connection was taken over already' };
+		}
+		if (aborted || socket.destroyed || writeDone || closing)
+		{
+			return { error: 'ECANCELED', message: 'socket closed' };
+		}
+		if (pendingRead || writes.length)
+		{
+			return { error: 'EBUSY', message: 'upgradeRequest EBUSY: the connection has a read, write or close in progress' };
+		}
+		socket.removeListener('data', onData);
+		socket.removeListener('end', onEnd);
+		socket.removeListener('error', onError);
+		socket.removeListener('close', onClose);
+		socket.pause();
+		var data = buffered.length ? Buffer.concat(buffered) : Buffer.alloc(0);
+		buffered = [];
+		detached = reason;
+		readDone = true;
+		writeDone = true;
+		finalized = true;
+		return { socket: socket, raw: raw, buffered: data, eof: eof };
+	}
 
 	function stop(reason, useReset)
 	{
@@ -1281,7 +1608,7 @@ function _Stream_nodeDuplexChannels(socket, options)
 		{
 			if (readDone && !aborted)
 			{
-				done(_Stream_socketError('socket closed', 'ECANCELED'), null);
+				done(detached ? readError() : _Stream_socketError('socket closed', 'ECANCELED'), null);
 				return;
 			}
 			pendingRead = { __max: maxBytes > 0 ? maxBytes : _Stream_kChannelReadChunk, __done: done };
@@ -1380,7 +1707,8 @@ function _Stream_nodeDuplexChannels(socket, options)
 		read: read,
 		write: write,
 		abort: function(reason) { stop(reason || 'socket closed', false); },
-		reset: function(reason) { stop(reason || 'socket closed', true); }
+		reset: function(reason) { stop(reason || 'socket closed', true); },
+		detach: detach
 	};
 }
 
@@ -1551,11 +1879,18 @@ function _Stream_dstCanAccept(d)
 
 function _Stream_pushIntoDst(dstId, d, v)
 {
+	if (d.__kind === _Stream_K_SINK && d.__mapFn)
+	{
+		var mtok = { __resume: null };
+		d.__writeQ.push({ __tok: mtok, __value: null, __completeOnTransform: true });
+		_Stream_mappedWrite(dstId, d, mtok, v);
+		return;
+	}
 	if (d.__kind === _Stream_K_SINK)
 	{
 		var tok = { __resume: null };
 		d.__writeQ.push({ __tok: tok, __value: null, __completeOnTransform: true });
-		_Stream_channelWrite(dstId, d.__channel, tok, _Stream_toUint8Array(v));
+		_Stream_channelWrite(dstId, d.__channel, tok, d.__textSink ? v : _Stream_toUint8Array(v));
 		return;
 	}
 	d.__writeQ.push({ __tok: null, __value: v, __completeOnTransform: true });
@@ -1688,7 +2023,8 @@ function _Stream_runPipe(pid)
 		}
 
 		// 4. src closed and drained -> close dst.
-		var srcDone = !s || (s.__r === _Stream_R_CLOSED && !s.__readQ.length && !s.__parkedRead);
+		var srcDone = !s || (s.__r === _Stream_R_CLOSED && !s.__readQ.length && !s.__rawQ.length &&
+			!s.__parkedRead);
 		if (srcDone)
 		{
 			pp.__closingDst = true;
@@ -1704,6 +2040,23 @@ function _Stream_runPipe(pid)
 			_Stream_dstCanAccept(d))
 		{
 			_Stream_pump(pp.__src);
+			return;
+		}
+
+		// 5c. A mapped source: a chunk read ahead is mapped by its pump (the pipe is a
+		//     waiting reader); otherwise its read-ahead request is (or now goes) out.
+		if (s.__kind === _Stream_K_MAPPED && s.__r === _Stream_R_OPEN && !s.__readQ.length &&
+			_Stream_dstCanAccept(d))
+		{
+			if (s.__rawQ.length)
+			{
+				_Stream_pump(pp.__src);
+			}
+			else
+			{
+				_Stream_mappedMaybeRead(pp.__src);
+				_Stream_mappedDemand(pp.__src);
+			}
 			return;
 		}
 
@@ -1744,13 +2097,14 @@ function _Stream_cancelReadableNow(id, reason)
 	var toFail = [];
 	if (p.__r === _Stream_R_OPEN) p.__r = _Stream_R_CLOSED;   // later reads give Closed
 	p.__readQ = [];
+	p.__rawQ = [];
 	if (p.__w === _Stream_W_OPEN || p.__w === _Stream_W_CLOSING)
 	{
 		p.__w = _Stream_W_ERRORED;
 		p.__wReason = reason;
 		_Stream_drainWriteSide(p, toFail);
 	}
-	if (p.__kind === _Stream_K_SOURCE && p.__channel) p.__channel.shutdown();
+	if ((p.__kind === _Stream_K_SOURCE || p.__kind === _Stream_K_MAPPED) && p.__channel) p.__channel.shutdown();
 	_Stream_failAll(toFail, reason);
 	_Stream_pump(id);
 }
@@ -1841,6 +2195,10 @@ var _Stream_read = function(id)
 		var p = _Stream_table[id];
 		if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CLOSED, ''));
 		if (_Stream_readLocked(p)) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_LOCKED, ''));
+		if (p.__kind === _Stream_K_MAPPED && !p.__readQ.length && p.__rawQ.length)
+		{
+			_Stream_mapHead(id);   // the chunk read ahead
+		}
 		if (p.__readQ.length)
 		{
 			var v = p.__readQ.shift();
@@ -1857,7 +2215,7 @@ var _Stream_read = function(id)
 		{
 			_Stream_channelRead(id, p.__channel, tok, _Stream_kChannelReadChunk);
 		}
-		_Stream_pump(id);
+		_Stream_pump(id);   // mapped source: read-ahead and demand
 	});
 };
 
@@ -1875,15 +2233,23 @@ function _Stream_writeOrEnqueue(value, id, callback, isEnqueue)
 		return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, p.__wReason));
 	}
 	var tok;
+	if (p.__kind === _Stream_K_SINK && p.__mapFn)
+	{
+		tok = isEnqueue ? { __resume: null } : _Stream_token(callback);
+		p.__writeQ.push({ __tok: tok, __value: null, __completeOnTransform: true });
+		_Stream_mappedWrite(id, p, tok, value);
+		if (isEnqueue) _Stream_resumeNow(callback, __Scheduler_succeed(__Utils_Tuple0));
+		return;
+	}
 	if (p.__kind === _Stream_K_SINK)
 	{
 		tok = isEnqueue ? { __resume: null } : _Stream_token(callback);
 		p.__writeQ.push({ __tok: tok, __value: null, __completeOnTransform: true });
-		_Stream_channelWrite(id, p.__channel, tok, _Stream_toUint8Array(value));
+		_Stream_channelWrite(id, p.__channel, tok, p.__textSink ? value : _Stream_toUint8Array(value));
 		if (isEnqueue) _Stream_resumeNow(callback, __Scheduler_succeed(__Utils_Tuple0));
 		return;
 	}
-	if (p.__kind === _Stream_K_SOURCE)
+	if (p.__kind === _Stream_K_SOURCE || p.__kind === _Stream_K_MAPPED)
 	{
 		// A source has no writable side (unreachable from Elm).
 		return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, _Stream_kWritableClosed));
@@ -1926,7 +2292,8 @@ var _Stream_closeWritable = function(id)
 		var p = _Stream_table[id];
 		if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, _Stream_kWritableClosed));
 		if (_Stream_writeLocked(p)) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_LOCKED, ''));
-		if (p.__w === _Stream_W_CLOSING || p.__w === _Stream_W_CLOSED || p.__kind === _Stream_K_SOURCE)
+		if (p.__w === _Stream_W_CLOSING || p.__w === _Stream_W_CLOSED || p.__kind === _Stream_K_SOURCE ||
+			p.__kind === _Stream_K_MAPPED)
 		{
 			return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, _Stream_kWritableClosed));
 		}

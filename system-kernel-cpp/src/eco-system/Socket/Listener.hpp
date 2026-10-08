@@ -23,6 +23,15 @@
 //   * Errors: EAGAIN/EWOULDBLOCK stop; ECONNABORTED/EINTR/EPROTO retry;
 //     EMFILE/ENFILE/ENOBUFS/ENOMEM (and anything unexpected) drop interest
 //     and retry from a 100 ms timer (no spin, N9).
+//   * Callback mode (plans/eco-system-websockets.md §3.2, HTTP servers):
+//     instead of posting Accepted, an established connection gets the
+//     protocol made by a reactor-side factory (Conn::setProtocol, which
+//     calls onOpen). Credit is then maxConnections - open (open = accepted
+//     connections whose fd is not closed yet, handshaking ones included)
+//     when maxConnections >= 0, else unlimited; addCredit/setUnlimited do
+//     not apply. The listener never closes those connections itself
+//     (except handshaking ones on close()), and close() posts no
+//     ListenerClosed (the owner closes it from a reactor command).
 //   * close(): close every handshaking connection, remove, close the fd,
 //     unlink the Unix path if this listener created it, THEN post
 //     ListenerClosed, so the closeListener task completes once the address
@@ -39,6 +48,7 @@
 #include "eco-system/Socket/Conn.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,7 +69,14 @@ public:
                     bool ownsPath, TransportFactory factory);
     ~ListenerHandler() override;
 
+    // Main thread, before start(): callback mode (see above). `factory` is
+    // called on the reactor thread once the connection is established; a
+    // null result aborts the connection. maxConnections < 0: unlimited.
+    using ProtocolFactory = std::function<std::unique_ptr<ConnProtocol>(Conn&)>;
+    void setCallbackMode(ProtocolFactory factory, int64_t maxConnections);
+
     // --- Reactor thread (submit) ------------------------------------------------
+    int64_t openConnections() const { return open_; }   // callback mode
     void start();                     // add to the reactor (no interest until credit)
     void addCredit(int64_t n);        // +1 per parked accept, -1 per cancelled one (floor 0)
     void setUnlimited(bool on);       // while the listener has subscribers
@@ -78,6 +95,7 @@ private:
     void acceptLoop();
     void established(Conn& c, bool ok);
     void closeNow(bool post);
+    void connClosed();
 
     int fd_;
     const int64_t listenerId_;
@@ -87,7 +105,12 @@ private:
     bool ownsPath_;
     TransportFactory factory_;
 
+    // Callback mode (fixed before start()).
+    ProtocolFactory protocolFactory_;
+    int64_t maxConnections_ = -1;
+
     // Reactor thread only.
+    int64_t open_ = 0;                // callback mode: accepted, fd not closed yet
     int64_t credit_ = 0;
     bool unlimited_ = false;
     bool backoff_ = false;

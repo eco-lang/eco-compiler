@@ -47,6 +47,13 @@ struct ChannelResult {
     // than the errno text (HttpTransferChannel: "network error: <curl
     // message>"). Empty: the stream table describes `err`.
     std::string reason;
+    // Tagged chunks (plans/eco-system-websockets.md §3.3, W16): a channel
+    // under a mapped source (createMappedSource) says what a Read chunk is.
+    // `tag` is the first component of the value handed to fromWire; `text`:
+    // `bytes` is UTF-8 for the String component (else the Bytes one).
+    // Plain channels leave both at 0 / false.
+    int64_t tag = 0;
+    bool text = false;
 };
 
 class ByteChannel {
@@ -63,6 +70,11 @@ public:
     virtual void requestRead(uint64_t token, size_t maxBytes) = 0;
     // Write all of `bytes`. Requests complete in order.
     virtual void requestWrite(uint64_t token, std::string bytes) = 0;
+    // A tagged write (mapped sinks, createMappedSink): `bytes` is the UTF-8
+    // of the String component when `text`, else the Bytes component. The
+    // default forwards to requestWrite when tag == 0 and fails the request
+    // with ENOTSUP otherwise. Same ordering and result rules as requestWrite.
+    virtual void requestWriteTagged(uint64_t token, int64_t tag, bool text, std::string bytes);
     // Graceful close: after every queued write has completed, release the
     // underlying resource and post a Close result (err = 0 or errno). Pending
     // reads complete with ECANCELED. `token` may be 0 (still posted).

@@ -651,6 +651,28 @@ var _Socket_closeListener = function(listenerId)
 	});
 };
 
+// Hands connection `connId`'s socket to another protocol (WebSocket.upgradeRequest,
+// plans/eco-system-websockets.md §3.2, E.3); not a kernel. Returns { socket, raw, buffered,
+// eof, isUnix } (plain property names: read by WebSocket.js), or { error, message }
+// (EBUSY while the connection's streams have an operation in flight, ECANCELED when it is
+// closed). The connection's streams then fail Cancelled `reason`; Socket.close /
+// Socket.reset on it still destroy the socket (and so end the new protocol).
+function _Socket_detach(connId, reason)
+{
+	var c = _Socket_conns[connId];
+	if (!c)
+	{
+		return { error: 'ECANCELED', message: 'socket closed' };
+	}
+	var r = c.__duplex.detach(reason);
+	if (r.error)
+	{
+		return r;
+	}
+	r.isUnix = c.__isUnix;
+	return r;
+}
+
 // close : Int -> Task Never ()
 var _Socket_close = function(connId)
 {

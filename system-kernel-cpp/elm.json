@@ -21,7 +21,8 @@
         "Socket.Tcp",
         "Socket.Unix",
         "Socket.Udp",
-        "Socket.Tls"
+        "Socket.Tls",
+        "WebSocket"
     ],
     "elm-version": "0.19.0 <= v < 0.20.0",
     "dependencies": {

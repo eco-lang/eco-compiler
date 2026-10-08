@@ -210,6 +210,7 @@ bool isIpLiteral(const std::string& name) {
 }
 
 // Server ALPN selection (§3.6): the first server protocol the client offers.
+// No overlap: a fatal alert, or no ALPN in NoAck mode (websockets plan §3.5).
 int alpnSelect(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
                const unsigned char* in, unsigned int inlen, void* arg) {
     auto* cfg = static_cast<TlsServerConfig*>(arg);
@@ -229,8 +230,16 @@ int alpnSelect(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
         }
         i += 1 + sl;
     }
+    if (cfg->alpnNoAck) return SSL_TLSEXT_ERR_NOACK;   // Http.Server: HTTP/1.1 without ALPN
     return SSL_TLSEXT_ERR_ALERT_FATAL;   // no_application_protocol (as Node)
 }
+
+// RFC 9113 §9.2.2 / Appendix A: TLS 1.2 suites for HTTP/2 (ECDHE key
+// exchange, AEAD ciphers). SSL_CTX_set_cipher_list does not touch TLS 1.3.
+const char* const kH2Tls12Ciphers =
+    "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
+    "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+    "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305";
 
 } // namespace
 
@@ -325,10 +334,11 @@ std::shared_ptr<TlsClientConfig> buildTlsClientConfig(int64_t mode, const std::s
 std::shared_ptr<TlsServerConfig> buildTlsServerConfig(const std::string& certificateChain,
                                                       const std::string& privateKey,
                                                       const std::vector<std::string>& alpn,
-                                                      TlsError& err) {
+                                                      TlsError& err, TlsServerMode mode) {
     ERR_clear_error();
     auto cfg = std::make_shared<TlsServerConfig>();
     if (!alpnWire(alpn, cfg->alpnWire, err)) return nullptr;
+    cfg->alpnNoAck = mode.alpnNoAck;
     SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
     if (!ctx) {
         err = tlsTakeError("SSL_CTX_new");
@@ -336,6 +346,10 @@ std::shared_ptr<TlsServerConfig> buildTlsServerConfig(const std::string& certifi
     }
     cfg->ctx = own(ctx);
     commonOptions(ctx);
+    if (mode.h2Ciphers && SSL_CTX_set_cipher_list(ctx, kH2Tls12Ciphers) != 1) {
+        err = tlsTakeError("ciphers");
+        return nullptr;
+    }
     (void)SSL_CTX_set_num_tickets(ctx, 0);   // no session resumption in v1 (TlsContext.hpp)
 
     // The chain: the leaf certificate first, then the intermediates.

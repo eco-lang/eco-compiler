@@ -5,20 +5,17 @@
 //
 //   * onEffects: the OnRequest taggers are grouped by server id (encoded
 //     words in a T5 registry, with the router). Subscriptions hold no
-//     pendingAsync: the listening server already does (§3.4).
+//     pendingAsync: the listening server already does (§3.4). It then
+//     tells HttpTables, whose drain delivers the requests parked for a
+//     server that has a subscriber now (never from onEffects itself).
 //   * subMap composes the tagger (TimeEffectManager pattern) and keeps the
 //     unboxed server id (mask 0x1). There are no commands.
-//   * The module drain (one eco/system async source) first completes the
-//     respond tasks whose responses were written (G10: take the resume,
-//     resume with (), decrement exactly once), then delivers each POD
-//     RequestEvent (T8/G12): build the tagger argument once (fully rooted,
+//   * Delivery (httpManagerDeliver, called by the HttpTables drain for each
+//     request, T8/G12): build the tagger argument once (fully rooted,
 //     G4/G6), snapshot the server's taggers into one rooted range, and for
-//     each tagger: call it, sendToApp, drain().
-//   * A request for a server nobody subscribes to (yet) is parked (POD,
-//     main thread) and delivered by the drain once onEffects sees a
-//     subscription for that server; the subscription normally follows
-//     createServer within the same update, but nothing forces a program to
-//     subscribe before the first client connects.
+//     each tagger: call it, sendToApp, drain(). Requests of a server
+//     nobody subscribes to are parked by HttpTables (plans/eco-system-
+//     websockets.md §3.4 "Manager": bounded, keyed on heap generation).
 //   * Windows: an OnRequest subscription crashes with a clear message (§1).
 //
 // Templates used: T6 (rooted registration per G14), T5, T8/G12, G6, G10.
@@ -27,18 +24,13 @@
 
 #include "eco-system/HttpServer/HttpServerManager.hpp"
 
-#include "eco-system/Core/AsyncRelease.hpp"
-#include "eco-system/Core/AsyncSources.hpp"
 #include "eco-system/Core/Core.hpp"
 #include "eco-system/Core/Registry.hpp"
-#include "eco-system/HttpServer/HttpServerService.hpp"
+#include "eco-system/HttpServer/HttpTables.hpp"
 
-#include <atomic>
 #include <cstring>
-#include <deque>
 #include <map>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -47,8 +39,7 @@ namespace Eco::System {
 namespace {
 
 using namespace HttpServerManager;
-using HttpSrv::HttpServerService;
-using HttpSrv::RequestEvent;
+using HttpSrv::RequestData;
 
 struct ManagerState {
     uint64_t routerEnc = 0;
@@ -76,17 +67,6 @@ ManagerState& state() {
     return *r.find(id);
 }
 
-// Requests that arrived while their server had no subscriber. POD, main
-// thread only (no scanner needed).
-std::unordered_map<int64_t, std::deque<RequestEvent>>& parked() {
-    static auto* m = new std::unordered_map<int64_t, std::deque<RequestEvent>>();   // leaky
-    return *m;
-}
-
-// Set by onEffects when a parked server gained a subscriber; read by the
-// ready predicate and the drain (both on the main thread).
-std::atomic<bool> g_parkedReady{false};
-
 bool hasSubscriber(int64_t serverId) {
     ManagerState& st = state();
     if (st.routerEnc == 0) return false;
@@ -104,12 +84,7 @@ HPointer makeBytes(const std::string& b) {
     return bb.hp;
 }
 
-void deliver(const RequestEvent& ev) {
-    if (!hasSubscriber(ev.serverId)) {
-        parked()[ev.serverId].push_back(ev);
-        return;
-    }
-
+void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
     HPointer router = alloc::listNil();
     HPointer arg = alloc::listNil();
     HPointer msg = alloc::listNil();
@@ -120,7 +95,8 @@ void deliver(const RequestEvent& ev) {
     HPointer name = alloc::listNil();
     HPointer value = alloc::listNil();
     HPointer values = alloc::listNil();
-    Elm::StackRootGuard g({&router, &arg, &msg, &hdrs, &body, &mu, &hb, &name, &value, &values});
+    HPointer kfu = alloc::listNil();
+    Elm::StackRootGuard g({&router, &arg, &msg, &hdrs, &body, &mu, &hb, &name, &value, &values, &kfu});
     auto& rs = Allocator::instance().getRootSet();
 
     // ( name, [ value ] ) per header occurrence (T3: one rooted range).
@@ -143,12 +119,15 @@ void deliver(const RequestEvent& ev) {
     name = alloc::allocStringFromUTF8(ev.method);
     value = alloc::allocStringFromUTF8(ev.url);
     mu = alloc::tuple2(alloc::boxed(name), alloc::boxed(value), 0);
-    arg = alloc::tuple3(alloc::boxed(mu), alloc::boxed(hb), alloc::unboxedInt(ev.key), TAGGER_ARG_MASK);
+    name = alloc::allocStringFromUTF8(ev.upgrade);
+    kfu = alloc::tuple3(alloc::unboxedInt(key), alloc::unboxedInt(ev.flags), alloc::boxed(name),
+                        TAGGER_KEY_MASK);
+    arg = alloc::tuple3(alloc::boxed(mu), alloc::boxed(hb), alloc::boxed(kfu), TAGGER_ARG_MASK);
 
     // Snapshot the taggers: update may change the subscriptions while we
     // deliver (G11). No allocation from the decodes to the range push.
     ManagerState& st = state();
-    const std::vector<uint64_t>& words = st.taggers[ev.serverId];
+    const std::vector<uint64_t>& words = st.taggers[serverId];
     std::vector<HPointer> taggers;
     taggers.reserve(words.size());
     for (uint64_t w : words) taggers.push_back(dec(w));
@@ -161,55 +140,6 @@ void deliver(const RequestEvent& ev) {
         Scheduler::instance().drain();                    // once per message (G12)
     }
     rs.restoreStackRangePoint(saved);
-}
-
-// Respond completions (G10): exactly one decrement per token.
-void completeResponses(std::vector<uint64_t>& tokens) {
-    if (tokens.empty()) return;
-    auto& s = Scheduler::instance();
-    for (uint64_t token : tokens) {
-        AsyncRelease release;   // decrements on every path
-        HPointer resume = s.takePendingResume(token);
-        if (alloc::isNil(resume)) continue;   // the task was killed
-        HPointer task = alloc::listNil();
-        Elm::StackRootGuard g(&resume, &task);
-        task = succeedUnit();
-        Scheduler::callClosure1(resume, task);
-    }
-    s.drain();
-}
-
-void httpServerDrain() {
-    try {
-        std::vector<uint64_t> done;
-        HttpServerService::instance().drainDone(done);
-        completeResponses(done);
-
-        std::vector<RequestEvent> evs;
-        if (g_parkedReady.exchange(false)) {
-            // Parked requests of servers that now have a subscriber go first:
-            // they arrived earlier.
-            auto& p = parked();
-            for (auto it = p.begin(); it != p.end();) {
-                if (hasSubscriber(it->first)) {
-                    for (auto& ev : it->second) evs.push_back(std::move(ev));
-                    it = p.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-        HttpServerService::instance().drainRequests(evs);
-        for (const auto& ev : evs) deliver(ev);
-    } catch (const std::exception& e) {
-        ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
-    } catch (...) {
-        ::Eco::Kernel::reportFatal("unknown native exception in Http.Server request delivery");
-    }
-}
-
-bool httpServerReady() {
-    return HttpServerService::instance().hasEvents() || g_parkedReady.load();
 }
 
 // --- Manager closures (C.0) ------------------------------------------------------
@@ -247,14 +177,8 @@ void* onEffectsEval(void* args[]) {
         ManagerState& st = state();
         st.routerEnc = enc(router);
         st.taggers = std::move(wanted);
-        for (const auto& kv : parked()) {
-            if (!kv.second.empty() && hasSubscriber(kv.first)) {
-                g_parkedReady.store(true);   // the drain delivers them
-                ensureHttpServerDrain();
-                break;
-            }
-        }
     }
+    HttpSrv::httpTablesSubscriptionsChanged();   // parked requests: from the drain
 
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
@@ -303,9 +227,6 @@ void* subMapEval(void* args[]) {
 
 } // namespace
 
-void ensureHttpServerDrain() {
-    addDrainSource(&httpServerDrain, &httpServerReady);   // idempotent
-}
 
 } // namespace Eco::System
 
@@ -329,6 +250,10 @@ void registerHttpServerManager() {
     PlatformRuntime::ManagerInfo info{enc(initCl), enc(effCl), enc(selfCl),
                                       enc(cmdMapCl), enc(subMapCl)};
     PlatformRuntime::instance().registerManager("Http.Server", info);   // no allocation after encode
+    HttpSrv::HttpManagerHooks hooks;
+    hooks.hasSubscriber = &hasSubscriber;
+    hooks.deliver = &deliver;
+    HttpSrv::setHttpManagerHooks(hooks);
 }
 
 } // namespace

@@ -76,6 +76,34 @@ Notes:
       eco make src/TcpEcho.elm --output=tcp-echo && ./tcp-echo 7000
       eco make src/TlsGet.elm --output=tls-get && ./tls-get example.com
 
+- `Http.Server` serves HTTP/1.1 with keep-alive (one request in flight per connection, so
+  pipelined requests are answered in order), request size limits and timeouts
+  (`Http.Server.createServerWith` and `defaultServerOptions`; `createServer` keeps the defaults),
+  and closes gracefully with `closeServer`. Malformed or ambiguous requests are answered 400 and
+  the connection closed; there is no lenient parsing mode.
+- **https:** give `createServerWith` a certificate chain and private key in `tls` (PEM strings,
+  for example read with `System.File.readFile`) and the server speaks HTTPS; request URLs then have
+  the `https` scheme.
+- **HTTP/2:** with `tls` set, `http2 = True` adds HTTP/2 on the same port (the client chooses
+  through ALPN; clients without HTTP/2 get HTTP/1.1). There is no HTTP/2 without TLS (h2c), and
+  header names arrive in lower case, so look them up case-insensitively. There is no default cap
+  on connections or concurrent HTTP/2 streams: set `maxConnections` and `maxConcurrentStreams` on
+  a public server.
+- **WebSockets:** the `WebSocket` module is a client (`WebSocket.connect` to a `ws://` or `wss://`
+  URL) and a server: an `Http.Server` request whose `upgrade` is `Just "websocket"` becomes a
+  WebSocket with `Http.Server.upgradeRequest` and `WebSocket.accept` (or, on a raw
+  `Socket.Connection`, with `WebSocket.upgradeRequest`). Messages are `WebSocket.Text` or
+  `WebSocket.Binary`, read from `WebSocket.readable` or an `onMessage` subscription and written to
+  `WebSocket.writable`; a streamed mode handles messages too large for memory. permessage-deflate
+  compression and a ping/pong heartbeat are on by default. The examples `WsEchoServer.elm`
+  (optionally with `--tls CERT KEY` for `wss` and `--http2`), `WsChat.elm` (a chat room with a
+  browser page) and `WsClient.elm` show both ends:
+
+      eco make src/WsEchoServer.elm --output=ws-echo-server && ./ws-echo-server 9001 &
+      eco make src/WsClient.elm --output=ws-client
+      ./ws-client ws://127.0.0.1:9001/ hello world
+      eco make src/WsChat.elm --output=ws-chat && ./ws-chat 9002   # then open http://127.0.0.1:9002/
+
 - Use `elm/http` for HTTP requests. `Http.Stream` adds request and response bodies as streams for
   when the data is too large, or arrives too slowly, to hold in memory at once.
 - The API is a port of [gren-lang/node](https://github.com/gren-lang/node) and gren-lang/core's

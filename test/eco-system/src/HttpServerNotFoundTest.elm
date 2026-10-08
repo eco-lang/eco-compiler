@@ -2,9 +2,9 @@ module HttpServerNotFoundTest exposing (main)
 
 {-| Two sequential requests to one server (plans/eco-system-library.md
 Phase 7 step 7.4): a known path answers 200, an unknown one 404, which
-elm/http reports as `BadStatus 404` with `expectString`-style handling. Every
-connection is closed after its response (no keep-alive), so the second
-request opens a new one.
+elm/http reports as `BadStatus 404` with `expectString`-style handling. Since
+plans/eco-system-websockets.md WS2 connections are kept alive, so the client
+may send the later requests on the first connection.
 -}
 
 -- CHECK: server: GET /hello

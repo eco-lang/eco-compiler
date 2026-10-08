@@ -1,0 +1,14 @@
+# h2spec 2.6.0 baseline (h2spec -t -k against Http.Server with TLS and HTTP/2; local only).
+# Format: <backend> <passed>/<total>. test/conformance/h2spec.sh fails when a backend passes fewer
+# cases than recorded here. Recorded in WS8 (plans/eco-system-websockets.md §10) against a scratch
+# createServerWith { tls, http2 = True } program; a plain Node 22 HTTP/2 server scores 128/146.
+# WS10's run against examples/system WsEchoServer --tls --http2 scored native 137/146, JS 133/146.
+#
+# Known native failures (nghttp2 1.70.0 behaviour, a subset of Node's): frames on closed streams
+# accepted leniently (5.1 #8 #9 #11 #12, 5.1.1 #2; in WS8 also 5.1 #5, half closed (remote) DATA),
+# PRIORITY frames ignored (5.3.1 #2, 6.3 #1: SETTINGS_NO_RFC7540_PRIORITIES), stream window
+# overflow ends the connection instead of RST_STREAM (6.9.1 #3); 1 case skipped.
+# Known JS failures (Node 22's http2): the native ones plus 5.1 half closed (remote) DATA and
+# HEADERS, 6.1 DATA on a stream not open, 6.7 PING with ACK.
+native 136/146
+js 133/146

@@ -1,18 +1,9 @@
-//===- HttpServerService.cpp - Sockets and threads behind Http.Server -----===//
+//===- HttpServerService.cpp - Listening and wire format of Http.Server ---===//
 //
 // See HttpServerService.hpp. POSIX (Linux, macOS); Windows uses
-// HttpServerServiceWin32.cpp.
-//
-// Leaky singleton with detached threads (§3.4): std::exit never runs a
-// destructor that races a live accept or connection thread. Every fd is
-// opened O_CLOEXEC (accept4 / SOCK_CLOEXEC on Linux, fcntl elsewhere: the
-// sockets are created off the main thread, but children are spawned with
-// posix_spawn, which only inherits fds without FD_CLOEXEC, so the window is
-// the one between socket() and fcntl() — the same as libuv's on macOS).
-// EINTR is retried everywhere. Writes use MSG_NOSIGNAL (Linux) or
-// SO_NOSIGPIPE (macOS), so a vanished client never raises SIGPIPE. The fd
-// helpers (socketCloexec, acceptCloexec, kSendFlags) live in
-// Core/SocketUtil, shared with the Socket kernels.
+// HttpServerServiceWin32.cpp. Every fd is O_CLOEXEC (socketCloexec,
+// Core/SocketUtil). The connections themselves run on the IoReactor
+// (Http1.cpp, plans/eco-system-websockets.md §3.4).
 //
 // Templates used: none (POD only, G1).
 //
@@ -21,44 +12,23 @@
 #include "eco-system/HttpServer/HttpServerService.hpp"
 
 #include "eco-system/Core/Core.hpp"        // errnoName
-#include "eco-system/Core/FdChannel.hpp"   // makeCloexecPipe
-#include "eco-system/Core/SocketUtil.hpp"  // kSendFlags, socketCloexec, acceptCloexec
-#include "platform/Scheduler.hpp"
-
-#include <llhttp.h>
+#include "eco-system/Core/SocketUtil.hpp"  // socketCloexec, SockAddr, sockaddrToInet
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cerrno>
-#include <chrono>
 #include <cstring>
 #include <ctime>
-#include <deque>
-#include <memory>
-#include <mutex>
-#include <system_error>
-#include <thread>
-#include <unordered_map>
 
-#include <arpa/inet.h>
-#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 namespace Eco::System::HttpSrv {
 
-using ::Elm::Platform::Scheduler;
-
 namespace {
-
-constexpr size_t kMaxHeaderBytes = 64 * 1024;   // larger → 431
-constexpr size_t kReadChunk = 64 * 1024;
 
 void closeFd(int fd) {
     if (fd >= 0) {
@@ -67,27 +37,7 @@ void closeFd(int fd) {
     }
 }
 
-// Writes all of `data` (blocking socket). False on error (EPIPE, reset, ...).
-bool writeAll(int fd, const char* data, size_t n) {
-    while (n > 0) {
-        ssize_t w = ::send(fd, data, n, ::Eco::System::kSendFlags);
-        if (w < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct pollfd p{fd, POLLOUT, 0};
-                (void)::poll(&p, 1, 1000);
-                continue;
-            }
-            return false;
-        }
-        data += w;
-        n -= static_cast<size_t>(w);
-    }
-    return true;
-}
-
-// The authority for request URLs without a Host header (E.5). IPv6
-// literals are bracketed.
+// Node's text for a listen address: IPv6 literals are bracketed.
 std::string authorityOf(const std::string& host, int64_t port) {
     std::string h = host.empty() ? std::string("localhost") : host;
     if (h.find(':') != std::string::npos && h.front() != '[') h = "[" + h + "]";
@@ -112,7 +62,7 @@ bool hasBadChar(const std::string& s) {
     return false;
 }
 
-// RFC 7231 IMF-fixdate, e.g. "Tue, 07 Oct 2026 18:50:00 GMT".
+// RFC 9110 IMF-fixdate, e.g. "Tue, 07 Oct 2026 18:50:00 GMT".
 std::string httpDate() {
     std::time_t t = std::time(nullptr);
     struct tm g;
@@ -197,10 +147,11 @@ const char* statusReason(int64_t status) {
     }
 }
 
-std::string serializeResponse(const ResponseData& r, bool isHead) {
-    // node rejects codes outside 100..999 (RangeError); answer 500 instead.
-    int64_t status = (r.status < 100 || r.status > 999) ? 500 : r.status;
-    bool noBody = (status >= 100 && status < 200) || status == 204 || status == 304;
+std::string serializeH1(const ResponseData& r, const H1Options& o) {
+    // Node rejects codes outside 100..999 (RangeError); a final 1xx (and
+    // 101 outside an upgrade) cannot be a response either (§3.4): 500.
+    int64_t status = (r.status < 200 || r.status > 999) ? 500 : r.status;
+    bool noBody = status == 204 || status == 304;
     std::string out;
     out.reserve(256 + r.body.size());
     out += "HTTP/1.1 ";
@@ -230,9 +181,28 @@ std::string serializeResponse(const ResponseData& r, bool isHead) {
         out += std::to_string(r.body.size());
         out += "\r\n";
     }
-    out += "Connection: close\r\n\r\n";
-    if (!noBody && !isHead) out += r.body;
+    out += o.keepAlive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n";
+    if (!noBody && !o.isHead) out += r.body;
     return out;
+}
+
+bool headersAskClose(const std::vector<std::pair<std::string, std::string>>& headers) {
+    for (const auto& h : headers) {
+        if (!iequals(h.first, "connection")) continue;
+        // A comma-separated token list (RFC 9110 §7.6.1).
+        size_t i = 0;
+        const std::string& v = h.second;
+        while (i <= v.size()) {
+            size_t j = v.find(',', i);
+            if (j == std::string::npos) j = v.size();
+            size_t a = i, b = j;
+            while (a < b && (v[a] == ' ' || v[a] == '\t')) ++a;
+            while (b > a && (v[b - 1] == ' ' || v[b - 1] == '\t')) --b;
+            if (iequals(v.substr(a, b - a), "close")) return true;
+            i = j + 1;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -272,8 +242,9 @@ ListenResult listenOn(const std::string& host, int64_t port) {
     const char* lastSyscall = "listen";
     for (struct addrinfo* a : addrs) {
         int sockErr = 0;
+        // Non-blocking: the fd is handed to a ListenerHandler (the reactor).
         int fd = ::Eco::System::socketCloexec(a->ai_family, a->ai_socktype, a->ai_protocol,
-                                              /*nonBlocking=*/false, &sockErr);
+                                              /*nonBlocking=*/true, &sockErr);
         if (fd < 0) {
             lastErr = sockErr;
             lastSyscall = "socket";
@@ -295,6 +266,15 @@ ListenResult listenOn(const std::string& host, int64_t port) {
         }
         ::freeaddrinfo(list);
         res.fd = fd;
+        res.boundPort = port;
+        ::Eco::System::SockAddr bound;
+        bound.len = sizeof(bound.ss);
+        std::string text;
+        int64_t p = 0;
+        if (::getsockname(fd, bound.get(), &bound.len) == 0 &&
+            ::Eco::System::sockaddrToInet(bound, text, p)) {
+            res.boundPort = p;
+        }
         return res;
     }
     ::freeaddrinfo(list);
@@ -303,396 +283,6 @@ ListenResult listenOn(const std::string& host, int64_t port) {
     res.code = ::Eco::System::errnoName(lastErr);
     res.message = std::string(lastSyscall) + " " + res.code + ": " + (m ? m : "") + " " + where;
     return res;
-}
-
-// ---------------------------------------------------------------------------
-// The service
-// ---------------------------------------------------------------------------
-
-namespace {
-
-struct Conn {
-    int64_t key = 0;
-    int fd = -1;
-    int wake[2] = {-1, -1};
-    std::mutex m;
-    bool hasResponse = false;
-    ResponseData response;
-    uint64_t token = 0;
-
-    ~Conn() {
-        closeFd(wake[0]);
-        closeFd(wake[1]);
-    }
-};
-
-struct Server {
-    int64_t id = 0;
-    int fd = -1;
-    std::string authority;   // E.5 fallback
-};
-
-} // namespace
-
-struct HttpServerService::Impl {
-    Scheduler* sched = nullptr;
-
-    std::mutex qMutex;
-    std::deque<RequestEvent> requests;
-    std::deque<uint64_t> done;
-    std::atomic<size_t> ready{0};
-
-    // Connections waiting for their response: written by connection threads
-    // (insert) and the main thread (take). Never allocates on the heap of
-    // Elm, so the mutex is fine (G9 is about the Elm heap).
-    std::mutex connMutex;
-    std::unordered_map<int64_t, std::shared_ptr<Conn>> waiting;
-
-    std::atomic<int64_t> nextServerId{1};
-    std::atomic<int64_t> nextKey{1};
-
-    void postRequest(RequestEvent ev) {
-        {
-            std::lock_guard<std::mutex> lk(qMutex);
-            requests.push_back(std::move(ev));
-            ready.fetch_add(1, std::memory_order_release);
-        }
-        sched->notifyWorkAvailableFromAsync();   // outside qMutex
-    }
-
-    void postDone(uint64_t token) {
-        {
-            std::lock_guard<std::mutex> lk(qMutex);
-            done.push_back(token);
-            ready.fetch_add(1, std::memory_order_release);
-        }
-        sched->notifyWorkAvailableFromAsync();
-    }
-
-    void acceptLoop(std::shared_ptr<Server> srv);
-    void connLoop(std::shared_ptr<Server> srv, int fd);
-};
-
-namespace {
-
-// llhttp callbacks collect the first request of a connection.
-struct ParseState {
-    std::string url;
-    std::vector<std::pair<std::string, std::string>> headers;
-    bool inValue = false;
-    std::string body;
-    size_t headerBytes = 0;
-    bool tooLarge = false;
-    bool headersDone = false;
-    bool complete = false;
-    bool expectContinue = false;
-};
-
-ParseState* stateOf(llhttp_t* p) { return static_cast<ParseState*>(p->data); }
-
-int onUrl(llhttp_t* p, const char* at, size_t n) {
-    ParseState* s = stateOf(p);
-    s->headerBytes += n;
-    if (s->headerBytes > kMaxHeaderBytes) { s->tooLarge = true; return HPE_USER; }
-    s->url.append(at, n);
-    return 0;
-}
-
-int onHeaderField(llhttp_t* p, const char* at, size_t n) {
-    ParseState* s = stateOf(p);
-    s->headerBytes += n;
-    if (s->headerBytes > kMaxHeaderBytes) { s->tooLarge = true; return HPE_USER; }
-    if (s->headers.empty() || s->inValue) {
-        s->headers.emplace_back();
-        s->inValue = false;
-    }
-    s->headers.back().first.append(at, n);
-    return 0;
-}
-
-int onHeaderValue(llhttp_t* p, const char* at, size_t n) {
-    ParseState* s = stateOf(p);
-    s->headerBytes += n;
-    if (s->headerBytes > kMaxHeaderBytes) { s->tooLarge = true; return HPE_USER; }
-    if (s->headers.empty()) s->headers.emplace_back();
-    s->inValue = true;
-    s->headers.back().second.append(at, n);
-    return 0;
-}
-
-int onHeadersComplete(llhttp_t* p) {
-    ParseState* s = stateOf(p);
-    s->headersDone = true;
-    for (const auto& h : s->headers) {
-        if (iequals(h.first, "expect") && iequals(h.second, "100-continue")) s->expectContinue = true;
-    }
-    return 0;
-}
-
-int onBody(llhttp_t* p, const char* at, size_t n) {
-    stateOf(p)->body.append(at, n);
-    return 0;
-}
-
-int onMessageComplete(llhttp_t* p) {
-    stateOf(p)->complete = true;
-    return HPE_PAUSED;   // one request per connection (no keep-alive in v1)
-}
-
-// The absolute request URL of E.5.
-std::string absoluteUrl(const ParseState& s, const std::string& fallbackAuthority) {
-    const std::string& target = s.url;
-    if (target.rfind("http://", 0) == 0 || target.rfind("https://", 0) == 0) return target;
-    std::string authority = fallbackAuthority;
-    for (const auto& h : s.headers) {
-        if (iequals(h.first, "host") && !h.second.empty()) authority = h.second;   // the first Host
-        if (iequals(h.first, "host")) break;
-    }
-    std::string path = target.empty() || target[0] != '/' ? "/" + (target == "*" ? std::string() : target)
-                                                           : target;
-    return "http://" + authority + path;
-}
-
-// Closes a connection gracefully: FIN first, then wait (bounded) for the
-// client's FIN so unread client bytes do not turn the close into a reset
-// that could destroy the response in flight.
-void lingerClose(int fd) {
-    (void)::shutdown(fd, SHUT_WR);
-    char buf[4096];
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    for (;;) {
-        auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        deadline - std::chrono::steady_clock::now())
-                        .count();
-        if (left <= 0) break;
-        struct pollfd p{fd, POLLIN, 0};
-        int r = ::poll(&p, 1, static_cast<int>(left));
-        if (r < 0 && errno == EINTR) continue;
-        if (r <= 0) break;
-        ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) break;
-    }
-    closeFd(fd);
-}
-
-void sendSimple(int fd, int status) {
-    ResponseData r;
-    r.status = status;
-    std::string out = serializeResponse(r, false);
-    (void)writeAll(fd, out.data(), out.size());
-}
-
-} // namespace
-
-void HttpServerService::Impl::acceptLoop(std::shared_ptr<Server> srv) {
-    for (;;) {
-        // accept4(SOCK_CLOEXEC) on Linux; accept + FD_CLOEXEC elsewhere. Both
-        // set SO_NOSIGPIPE where it exists.
-        int e = 0;
-        int fd = ::Eco::System::acceptCloexec(srv->fd, /*nonBlocking=*/false, nullptr, nullptr, &e);
-        if (fd < 0) {
-            if (e == EINTR || e == ECONNABORTED || e == EAGAIN || e == EWOULDBLOCK) continue;
-            if (e == EMFILE || e == ENFILE || e == ENOBUFS || e == ENOMEM) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                continue;
-            }
-            // EBADF/EINVAL: the listening socket is gone; nothing to serve.
-            return;
-        }
-        int one = 1;
-        (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        try {
-            std::thread([this, srv, fd] { connLoop(srv, fd); }).detach();
-        } catch (...) {
-            closeFd(fd);   // no thread: drop the connection
-        }
-    }
-}
-
-void HttpServerService::Impl::connLoop(std::shared_ptr<Server> srv, int fd) {
-    auto conn = std::make_shared<Conn>();
-    conn->fd = fd;
-    if (::Eco::System::makeCloexecPipe(conn->wake, /*nonBlocking=*/true) != 0) {
-        closeFd(fd);
-        return;
-    }
-
-    ParseState ps;
-    llhttp_settings_t settings;
-    llhttp_settings_init(&settings);
-    settings.on_url = &onUrl;
-    settings.on_header_field = &onHeaderField;
-    settings.on_header_value = &onHeaderValue;
-    settings.on_headers_complete = &onHeadersComplete;
-    settings.on_body = &onBody;
-    settings.on_message_complete = &onMessageComplete;
-    llhttp_t parser;
-    llhttp_init(&parser, HTTP_REQUEST, &settings);
-    parser.data = &ps;
-
-    std::string buf(kReadChunk, '\0');
-    bool continueSent = false;
-    // Read until the first request is complete.
-    while (!ps.complete) {
-        struct pollfd pfds[2] = {{fd, POLLIN, 0}, {conn->wake[0], POLLIN, 0}};
-        int pr = ::poll(pfds, 2, -1);
-        if (pr < 0) {
-            if (errno == EINTR) continue;
-            closeFd(fd);
-            return;
-        }
-        if (!(pfds[0].revents & (POLLIN | POLLHUP | POLLERR))) continue;
-        ssize_t n = ::recv(fd, &buf[0], buf.size(), 0);
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            closeFd(fd);
-            return;
-        }
-        llhttp_errno_t err;
-        if (n == 0) {
-            err = llhttp_finish(&parser);   // EOF: ends a body without length
-            if (!ps.complete) {
-                if (err != HPE_OK && err != HPE_PAUSED && ps.headerBytes > 0) sendSimple(fd, 400);
-                closeFd(fd);
-                return;
-            }
-            break;
-        }
-        err = llhttp_execute(&parser, buf.data(), static_cast<size_t>(n));
-        if (err == HPE_PAUSED_UPGRADE) {
-            ps.complete = true;   // an upgrade request: answered like any other
-            break;
-        }
-        if (err != HPE_OK && err != HPE_PAUSED) {
-            sendSimple(fd, ps.tooLarge ? 431 : 400);
-            lingerClose(fd);
-            return;
-        }
-        if (ps.headersDone && ps.expectContinue && !continueSent && !ps.complete) {
-            static const char k100[] = "HTTP/1.1 100 Continue\r\n\r\n";
-            continueSent = true;
-            if (!writeAll(fd, k100, sizeof(k100) - 1)) {
-                closeFd(fd);
-                return;
-            }
-        }
-    }
-
-    const char* methodName = llhttp_method_name(static_cast<llhttp_method_t>(parser.method));
-    std::string method = methodName ? methodName : "GET";
-    bool isHead = method == "HEAD";
-
-    RequestEvent ev;
-    ev.serverId = srv->id;
-    ev.key = nextKey.fetch_add(1, std::memory_order_relaxed);
-    ev.method = method;
-    ev.url = absoluteUrl(ps, srv->authority);
-    ev.headers = std::move(ps.headers);
-    ev.body = std::move(ps.body);
-    conn->key = ev.key;
-    {
-        std::lock_guard<std::mutex> lk(connMutex);
-        waiting.emplace(conn->key, conn);
-    }
-    postRequest(std::move(ev));
-
-    // Wait for the response (respond() writes the wake pipe).
-    for (;;) {
-        {
-            std::lock_guard<std::mutex> lk(conn->m);
-            if (conn->hasResponse) break;
-        }
-        struct pollfd p{conn->wake[0], POLLIN, 0};
-        int pr = ::poll(&p, 1, -1);
-        if (pr < 0 && errno != EINTR) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-        if (pr > 0) {
-            char drain[64];
-            while (::read(conn->wake[0], drain, sizeof(drain)) < 0 && errno == EINTR) {
-            }
-        }
-    }
-    ResponseData resp;
-    uint64_t token = 0;
-    {
-        std::lock_guard<std::mutex> lk(conn->m);
-        resp = std::move(conn->response);
-        token = conn->token;
-    }
-    std::string out = serializeResponse(resp, isHead);
-    (void)writeAll(fd, out.data(), out.size());   // a vanished client is not an error of the task
-    lingerClose(fd);
-    if (token != 0) postDone(token);
-}
-
-HttpServerService& HttpServerService::instance() {
-    static HttpServerService* s = new HttpServerService();   // leaky (§3.4)
-    return *s;
-}
-
-HttpServerService::HttpServerService() : impl_(new Impl()) {
-    impl_->sched = &Scheduler::instance();   // bound on the main thread
-}
-
-int64_t HttpServerService::startServer(int fd, const std::string& host, int64_t port) {
-    auto srv = std::make_shared<Server>();
-    srv->id = impl_->nextServerId.fetch_add(1, std::memory_order_relaxed);
-    srv->fd = fd;
-    srv->authority = authorityOf(host, port);
-    Impl* impl = impl_;
-    try {
-        std::thread([impl, srv] { impl->acceptLoop(srv); }).detach();
-    } catch (...) {
-        closeFd(fd);
-        throw;
-    }
-    return srv->id;
-}
-
-bool HttpServerService::respond(int64_t key, uint64_t token, ResponseData resp) {
-    std::shared_ptr<Conn> conn;
-    {
-        std::lock_guard<std::mutex> lk(impl_->connMutex);
-        auto it = impl_->waiting.find(key);
-        if (it == impl_->waiting.end()) return false;
-        conn = std::move(it->second);
-        impl_->waiting.erase(it);
-    }
-    {
-        std::lock_guard<std::mutex> lk(conn->m);
-        conn->response = std::move(resp);
-        conn->token = token;
-        conn->hasResponse = true;
-    }
-    char one = 1;
-    while (::write(conn->wake[1], &one, 1) < 0 && errno == EINTR) {
-    }
-    return true;
-}
-
-void HttpServerService::drainRequests(std::vector<RequestEvent>& out) {
-    std::lock_guard<std::mutex> lk(impl_->qMutex);
-    while (!impl_->requests.empty()) {
-        out.push_back(std::move(impl_->requests.front()));
-        impl_->requests.pop_front();
-        impl_->ready.fetch_sub(1, std::memory_order_acq_rel);
-    }
-}
-
-void HttpServerService::drainDone(std::vector<uint64_t>& out) {
-    std::lock_guard<std::mutex> lk(impl_->qMutex);
-    while (!impl_->done.empty()) {
-        out.push_back(impl_->done.front());
-        impl_->done.pop_front();
-        impl_->ready.fetch_sub(1, std::memory_order_acq_rel);
-    }
-}
-
-bool HttpServerService::hasEvents() const {
-    return impl_->ready.load(std::memory_order_acquire) > 0;
 }
 
 } // namespace Eco::System::HttpSrv

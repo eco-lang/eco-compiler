@@ -126,15 +126,27 @@ eco_system_module(Terminal     POSIX
     src/eco-system/Terminal/TerminalExports.cpp
     src/eco-system/Terminal/TerminalManager.cpp)
 eco_system_module(HttpServer   POSIX
+    src/eco-system/HttpServer/Http1.cpp
+    src/eco-system/HttpServer/Http2.cpp
     src/eco-system/HttpServer/HttpServer.cpp
     src/eco-system/HttpServer/HttpServerExports.cpp
     src/eco-system/HttpServer/HttpServerManager.cpp
     src/eco-system/HttpServer/HttpServerService.cpp
+    src/eco-system/HttpServer/HttpTables.cpp
+    src/eco-system/HttpServer/HttpUpgrade.cpp
     WIN32
     src/eco-system/HttpServer/HttpServer.cpp
     src/eco-system/HttpServer/HttpServerExports.cpp
     src/eco-system/HttpServer/HttpServerManager.cpp
-    src/eco-system/HttpServer/HttpServerServiceWin32.cpp)
+    src/eco-system/HttpServer/HttpServerServiceWin32.cpp
+    src/eco-system/HttpServer/HttpTables.cpp
+    src/eco-system/HttpServer/HttpUpgrade.cpp)
+# Connections run on the IoReactor as Conn protocols (plans/eco-system-
+# websockets.md §3.4, WS2): listeners in callback mode, Http1Protocol.
+# HTTPS (§3.5, WS3): TLS server contexts and transports of EcoSystem_Tls.
+# Http.Server.upgradeRequest (§3.6, WS5): the h1 hand-off parks the connection
+# as a WebSocket handshake (EcoSystem_WebSocket's HoldProtocol and tables).
+target_link_libraries(EcoSystem_HttpServer PUBLIC EcoSystem_Socket EcoSystem_Tls EcoSystem_WebSocket)
 # llhttp (Node's HTTP/1.1 parser, MIT) parses requests (Phase 7 step 7.1). The
 # release tarball ships the generated C, so no node/TypeScript build is
 # needed. It is an OBJECT library whose objects are merged INTO
@@ -162,8 +174,55 @@ if(NOT WIN32)
         POSITION_INDEPENDENT_CODE ON
         C_VISIBILITY_PRESET hidden)
     target_sources(EcoSystem_HttpServer PRIVATE $<TARGET_OBJECTS:llhttp_objects>)
-    target_include_directories(EcoSystem_HttpServer PRIVATE ${llhttp_SOURCE_DIR}/include)
+    # PUBLIC: Http1.hpp (the WS5 hand-off hooks) includes llhttp.h.
+    target_include_directories(EcoSystem_HttpServer PUBLIC ${llhttp_SOURCE_DIR}/include)
     add_dependencies(EcoSystem_HttpServer llhttp_objects)
+
+    # nghttp2 1.70.0 (MIT) runs HTTP/2 connections (plans/eco-system-websockets.md
+    # §3.8, phase WS8): one server session per h2 connection (Http2.cpp), and
+    # the WebSocket client's session over HTTP/2 (Http2Client.cpp, §3.9, WS9).
+    # "Route B", as llhttp: FetchContent only downloads (SOURCE_SUBDIR has no
+    # CMakeLists.txt, so nghttp2's own project is not added), lib/*.c (26 files)
+    # build as an OBJECT library whose objects are merged INTO
+    # libEcoSystem_WebSocket.a (below; the AOT driver links only EcoSystem_*
+    # archives, in one group; EcoSystem_HttpServer links EcoSystem_WebSocket, so
+    # Http2.cpp finds them there), and nghttp2ver.h is generated here. Only the
+    # library sources are used (no apps, no OpenSSL/libev/jansson).
+    FetchContent_Declare(nghttp2
+        URL https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.gz
+        URL_HASH SHA256=aa317e2cf9dca6afa0aed68f8fad6ff303ec6982e25a78c75c0b65e2b9b3ded5
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR eco-no-cmake)
+    FetchContent_MakeAvailable(nghttp2)
+    set(PACKAGE_VERSION "1.70.0")
+    set(PACKAGE_VERSION_NUM "0x014600")
+    set(ECO_NGHTTP2_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nghttp2-gen)
+    configure_file(${nghttp2_SOURCE_DIR}/lib/includes/nghttp2/nghttp2ver.h.in
+        ${ECO_NGHTTP2_GEN_DIR}/nghttp2/nghttp2ver.h @ONLY)
+    file(GLOB ECO_NGHTTP2_SRCS ${nghttp2_SOURCE_DIR}/lib/*.c)
+    list(LENGTH ECO_NGHTTP2_SRCS ECO_NGHTTP2_NSRCS)
+    if(NOT ECO_NGHTTP2_NSRCS EQUAL 26)
+        message(FATAL_ERROR "nghttp2: expected 26 lib/*.c files, found ${ECO_NGHTTP2_NSRCS}")
+    endif()
+    add_library(nghttp2_objects OBJECT ${ECO_NGHTTP2_SRCS})
+    # The generated nghttp2ver.h first (the tarball also ships one).
+    target_include_directories(nghttp2_objects BEFORE PUBLIC
+        ${ECO_NGHTTP2_GEN_DIR}
+        ${nghttp2_SOURCE_DIR}/lib/includes)
+    target_include_directories(nghttp2_objects PRIVATE ${nghttp2_SOURCE_DIR}/lib)
+    target_compile_definitions(nghttp2_objects
+        PUBLIC NGHTTP2_STATICLIB
+        PRIVATE BUILDING_NGHTTP2 HAVE_ARPA_INET_H HAVE_NETINET_IN_H HAVE_CLOCK_GETTIME
+                HAVE_DECL_CLOCK_MONOTONIC=1)
+    set_target_properties(nghttp2_objects PROPERTIES
+        C_STANDARD 99
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden)
+    target_include_directories(EcoSystem_HttpServer PRIVATE
+        ${ECO_NGHTTP2_GEN_DIR}
+        ${nghttp2_SOURCE_DIR}/lib/includes)
+    target_compile_definitions(EcoSystem_HttpServer PRIVATE NGHTTP2_STATICLIB)
+    add_dependencies(EcoSystem_HttpServer nghttp2_objects)
 endif()
 eco_system_module(HttpStream   POSIX
     src/eco-system/HttpStream/HttpStream.cpp
@@ -195,6 +254,7 @@ endif()
 # reactor is a stub and the fallible kernels fail with ENOTSUP (§1).
 eco_system_module(Socket       POSIX
     src/eco-system/Socket/Conn.cpp
+    src/eco-system/Socket/FaceProtocol.cpp
     src/eco-system/Socket/ConnChannel.cpp
     src/eco-system/Socket/Listener.cpp
     src/eco-system/Socket/Socket.cpp
@@ -224,6 +284,43 @@ if(NOT WIN32)
     target_link_libraries(EcoSystem_Tls PRIVATE OpenSSL::SSL)
 endif()
 
+# WebSockets (plans/eco-system-websockets.md §3.1, §3.6): the RFC 6455 codec
+# (WsFrame, WsProtocol) as a connection protocol on the IoReactor, over plain
+# and TLS connections, with message streams in the stream table (WsChannel:
+# mapped pairs); the kernel side of the handshake (WsHandshake: key/accept
+# with OpenSSL SHA-1, RAND and base64, the dial and the upgrade read), the
+# main-thread tables and events (WsTables, WsEvents) and the "WebSocket"
+# manager; WsDeflate (permessage-deflate, WS7) uses zlib, which comes with
+# EcoSystem_Stream (PUBLIC). The same sources build on
+# Windows, where the OpenSSL parts are compiled out and the kernels fail
+# ENOTSUP (§1).
+eco_system_module(WebSocket    POSIX
+    src/eco-system/WebSocket/H2StreamPort.cpp
+    src/eco-system/WebSocket/Http2Client.cpp
+    src/eco-system/WebSocket/WebSocket.cpp
+    src/eco-system/WebSocket/WebSocketExports.cpp
+    src/eco-system/WebSocket/WsChannel.cpp
+    src/eco-system/WebSocket/WsDeflate.cpp
+    src/eco-system/WebSocket/WsEvents.cpp
+    src/eco-system/WebSocket/WsFrame.cpp
+    src/eco-system/WebSocket/WsHandshake.cpp
+    src/eco-system/WebSocket/WsManager.cpp
+    src/eco-system/WebSocket/WsProtocol.cpp
+    src/eco-system/WebSocket/WsTables.cpp)
+target_link_libraries(EcoSystem_WebSocket PUBLIC EcoSystem_Socket EcoSystem_Tls EcoSystem_Stream)
+if(NOT WIN32)
+    target_link_libraries(EcoSystem_WebSocket PRIVATE OpenSSL::Crypto)
+    # WebSockets over HTTP/2 (RFC 8441, §3.9, WS9): the client's nghttp2
+    # session. The nghttp2 objects (declared with EcoSystem_HttpServer above)
+    # live in this archive, for Http.Server's Http2.cpp too.
+    target_sources(EcoSystem_WebSocket PRIVATE $<TARGET_OBJECTS:nghttp2_objects>)
+    target_include_directories(EcoSystem_WebSocket PRIVATE
+        ${ECO_NGHTTP2_GEN_DIR}
+        ${nghttp2_SOURCE_DIR}/lib/includes)
+    target_compile_definitions(EcoSystem_WebSocket PRIVATE NGHTTP2_STATICLIB)
+    add_dependencies(EcoSystem_WebSocket nghttp2_objects)
+endif()
+
 # Every module listed in ECO_SYSTEM_MODS must have a target here.
 foreach(mod ${ECO_SYSTEM_MODS})
     if(NOT TARGET EcoSystem_${mod})
@@ -251,10 +348,20 @@ if(NOT WIN32 AND TARGET EcoRuntimeStatic)
     add_executable(eco-system-core-test EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/../test/eco-system-core/EcoSystemCoreTest.cpp)
     target_compile_features(eco-system-core-test PRIVATE cxx_std_20)
-    # EcoSystem_HttpServer for the HttpServer service checks (Phase 7); only
-    # its POD service objects (and llhttp) are pulled in.
+    # EcoSystem_HttpServer for the HttpServer checks (serializeH1, listenOn,
+    # Http1Protocol on the reactor; WS2). EcoSystem_Socket and
+    # EcoSystem_Stream for the WS1 checks (Conn protocols, listener callback
+    # mode, mapped stream pairs; plans/eco-system-websockets.md §3.2, §3.3).
+    # EcoSystem_WebSocket for the WS4 frame codec and HTTP head checks (§3.6).
     target_link_libraries(eco-system-core-test PRIVATE
-        EcoSystem_HttpServer EcoSystem_Core EcoRuntimeStatic Threads::Threads)
+        EcoSystem_WebSocket EcoSystem_Tls
+        EcoSystem_HttpServer EcoSystem_Socket EcoSystem_Stream EcoSystem_Core
+        EcoRuntimeStatic Threads::Threads)
+    # The HTTP/2 checks drive Http2Protocol with an nghttp2 client session
+    # (the library objects are inside libEcoSystem_WebSocket.a, WS9).
+    target_include_directories(eco-system-core-test PRIVATE
+        ${ECO_NGHTTP2_GEN_DIR} ${nghttp2_SOURCE_DIR}/lib/includes)
+    target_compile_definitions(eco-system-core-test PRIVATE NGHTTP2_STATICLIB)
     if(ECO_ASSERTS_ON)
         target_compile_options(eco-system-core-test PRIVATE -UNDEBUG)
     endif()

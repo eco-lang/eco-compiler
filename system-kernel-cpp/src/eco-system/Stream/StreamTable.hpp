@@ -19,6 +19,23 @@
 //                     (customStateEnc) and the value (G11).
 //   * Codec         — in-memory transformation over a C++ engine
 //                     (StreamCodec.hpp: zlib, UTF-8 encoder/decoder).
+//   * MappedSource  — a readable over a ByteChannel of TAGGED chunks
+//                     (plans/eco-system-websockets.md §3.3, W16). Unlike a
+//                     ChannelSource it reads ahead one chunk (one channel
+//                     read in flight while nothing is buffered; the chunk
+//                     waits as POD in rawQ). A chunk becomes a value when a
+//                     consumer takes it (a read, a parked read, a pipe):
+//                     the Elm closure mapFnEnc (fromWire) is applied to
+//                     ( tag, String, Bytes ) on the main thread (G11) and
+//                     the result is the value. A subscription reader
+//                     (attachReader) gets the chunks as POD instead, and
+//                     reads fail Locked meanwhile. Read-ahead requests are
+//                     uncounted (an idle source keeps nothing alive); a
+//                     parked read holds its own count, a pipe makes the
+//                     read in flight counted.
+//   A ChannelSink with mapFnEnc != 0 is a MAPPED SINK: each accepted value
+//   is passed to the closure (toWire : a -> ( Int, String, Bytes )) and
+//   written with ByteChannel::requestWriteTagged.
 //
 // Pipes (pipeThrough / pipeTo, StreamPipe.cpp): a pipe owns the readable side
 // of its source (pipedOut) and the writable side of its destination
@@ -46,6 +63,7 @@
 #include "eco-system/Core/ByteChannel.hpp"
 #include "eco-system/Core/Core.hpp"
 #include "eco-system/Core/Registry.hpp"
+#include "eco-system/Stream/Stream.hpp"
 #include "eco-system/Stream/StreamCodec.hpp"
 
 #include <cstdint>
@@ -55,7 +73,7 @@
 
 namespace Eco::System {
 
-enum class StreamKind : uint8_t { Identity, Custom, Codec, ChannelSource, ChannelSink };
+enum class StreamKind : uint8_t { Identity, Custom, Codec, ChannelSource, ChannelSink, MappedSource };
 enum class WState : uint8_t { Open, Closing, Closed, Errored };
 enum class RState : uint8_t { Open, Closed, Errored };
 
@@ -104,10 +122,28 @@ struct StreamPair {
     // Codec: the engine (zlib / UTF-8); off-heap.
     CodecPtr codec;
 
-    // ChannelSource / ChannelSink.
+    // ChannelSource / ChannelSink / MappedSource.
     std::unique_ptr<ByteChannel> channel;
 
+    // MappedSource: fromWire; mapped ChannelSink: toWire (0: a plain sink).
+    uint64_t mapFnEnc = 0;
+    // MappedSource: chunks read but not mapped yet (POD, at most one unless
+    // the end arrived behind it), the outstanding read-ahead request
+    // (synthetic token, 0 none) and whether it holds a pendingAsync count.
+    std::deque<ChannelResult> rawQ;
+    uint64_t readInFlight = 0;
+    bool readInFlightCounted = false;
+    int rErrno = 0;                    // the errno of a failed read (reader end result)
+    // MappedSource: the subscription reader (attachReader), a kick posted
+    // through the channel queue to hand it queued chunks / the end, and
+    // whether it has been told about the end.
+    ReaderFn reader = nullptr;
+    void* readerCtx = nullptr;
+    uint64_t readerKick = 0;
+    bool readerEndSent = false;
+
     bool pinned = false;               // stdio pairs: never erased
+    bool textSink = false;             // ChannelSink of Strings (createTextChannelSink)
 
     template <typename F>
     void forEachWord(F&& f) {
@@ -116,6 +152,7 @@ struct StreamPair {
         for (auto& pw : waitingForRoom) f(pw.valueEnc);
         f(customFnEnc);
         f(customStateEnc);
+        f(mapFnEnc);
     }
 };
 
@@ -134,7 +171,9 @@ void pumpStream(int64_t id);
 
 // --- Internal helpers shared by Stream.cpp and StreamPipe.cpp --------------
 
-inline bool streamReadLocked(const StreamPair* p) { return p->readLock || p->pipedOut; }
+inline bool streamReadLocked(const StreamPair* p) {
+    return p->readLock || p->pipedOut || p->reader != nullptr;
+}
 inline bool streamWriteLocked(const StreamPair* p) { return p->writeLock || p->pipedIn; }
 
 // Completes parked `token` (T9) with Task.succeed `value` / Task.fail
@@ -152,6 +191,22 @@ void streamCancelWritableNow(int64_t id, const std::string& reason);
 // (enqueue on a sink, pipe reads/writes/closes). Disjoint from Scheduler
 // resume tokens; takePendingResume on one is a harmless miss.
 uint64_t streamSyntheticToken();
+// Request ids that never hold a pendingAsync count (MappedSource
+// read-ahead, reader kicks): the channel dispatch releases nothing for an
+// orphaned one. Disjoint from both resume and synthetic tokens.
+uint64_t streamUncountedToken();
+bool streamIsUncountedToken(uint64_t token);
+
+// MappedSource: issues the read-ahead request if one is due (r Open,
+// nothing buffered or in flight, no reader kick pending). Counted iff a
+// pipe reads from the pair. No heap allocation.
+void streamMappedMaybeRead(int64_t id);
+// Mapped sink: applies toWire to `value` (rooted by the caller) and copies
+// the ( tag, String, Bytes ) result out (text = the String is non-empty;
+// `bytes` is then its UTF-8, else the Bytes). Calls Elm (G11): re-fetch
+// pairs afterwards.
+void streamMapForSink(uint64_t toWireEnc, HPointer value, int64_t& tag, bool& text,
+                      std::string& bytes);
 
 // Pipes (StreamPipe.cpp).
 // True if the pipe reading from `src` could take a value right now (a pipe

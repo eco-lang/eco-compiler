@@ -330,8 +330,10 @@ static HPointer listFromEncoded(const std::vector<uint64_t>& encoded) {
 void PlatformRuntime::dispatchEffects() {
     if (managers_.empty()) return;
 
-    HPointer cmdBag = decodeHP(activeBatch_.cmdBag);
-    HPointer subBag = decodeHP(activeBatch_.subBag);
+    // Each bag is decoded right before its gather: gathering the cmd bag
+    // calls the managers' cmdMap closures (PORT_005), which may GC, so a
+    // subBag decoded up front would be stale by the second gather.
+    // activeBatch_ (scanned while dispatchActive_) holds the current words.
 
     // Initialize empty entries for every registered manager so gatherEffects
     // can find the slot for any home it encounters.
@@ -341,8 +343,8 @@ void PlatformRuntime::dispatchEffects() {
     }
 
     HPointer nilTaggers = listNil();
-    gatherEffects(true,  cmdBag, effectsScratch_, nilTaggers);
-    gatherEffects(false, subBag, effectsScratch_, nilTaggers);
+    gatherEffects(true,  decodeHP(activeBatch_.cmdBag), effectsScratch_, nilTaggers);
+    gatherEffects(false, decodeHP(activeBatch_.subBag), effectsScratch_, nilTaggers);
 
     auto& sched = Scheduler::instance();
     for (auto& [home, per] : effectsScratch_) {

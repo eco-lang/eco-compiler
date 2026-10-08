@@ -81,6 +81,19 @@ struct TlsClientConfig {
 struct TlsServerConfig {
     std::shared_ptr<ssl_ctx_st> ctx;
     std::string alpnWire;              // server protocols, wire format ("" = ignore ALPN)
+    bool alpnNoAck = false;            // no overlap: no ALPN instead of the fatal alert
+};
+
+// What a server context does beyond Socket.Tls.listen's defaults (websockets
+// plan §3.5, Http.Server; WS3). The default is Socket.Tls.listen's behaviour.
+struct TlsServerMode {
+    // alpnFallback = NoAck: when the client offers no protocol of the server's
+    // list, the select callback returns SSL_TLSEXT_ERR_NOACK (the handshake
+    // completes without ALPN) instead of a fatal no_application_protocol alert.
+    bool alpnNoAck = false;
+    // RFC 9113 §9.2.2 (HTTP/2): TLS 1.2 cipher suites restricted to ECDHE
+    // with AEAD ciphers; TLS 1.3 suites are unaffected.
+    bool h2Ciphers = false;
 };
 
 // SysWorkPool worker (blocking: CA files). `mode`: 0 system, 1 trusted
@@ -95,7 +108,8 @@ std::shared_ptr<TlsClientConfig> buildTlsClientConfig(int64_t mode, const std::s
 std::shared_ptr<TlsServerConfig> buildTlsServerConfig(const std::string& certificateChain,
                                                       const std::string& privateKey,
                                                       const std::vector<std::string>& alpn,
-                                                      TlsError& err);
+                                                      TlsError& err,
+                                                      TlsServerMode mode = TlsServerMode());
 
 // "ERR_SSL_<REASON>" for a packed OpenSSL error code (0 → "ERR_SSL_UNKNOWN"),
 // and its message (ERR_error_string_n). Any thread.
