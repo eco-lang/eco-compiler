@@ -9,3 +9,4 @@ extern Testing::TestCase testEnsureHeadroomEndBelowPtr;
 extern Testing::TestCase testEnsureAtClampedBlockGCsInsteadOfAdvancing;
 extern Testing::TestCase testEnsureFailSoftTinyConfigTerminates;
 extern Testing::TestCase testEnsureAbandonedTailsSurviveValidateWalk;
+extern Testing::TestCase testEnsureAfterRequestMinorRunsOneMinor;

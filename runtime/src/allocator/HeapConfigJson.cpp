@@ -193,6 +193,7 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "major_gc_global_pressure_fraction",
         "major_gc_target_utilization",
         "major_gc_garbage_fraction",
+        "direct_alloc_minor_budget",
         "use_hybrid_dfs",
         "large_object_threshold",
         "large_ptr_nursery_divisor",
@@ -314,6 +315,9 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("major_gc_garbage_fraction"); it != doc.end())
         cfg.major_gc_garbage_fraction =
             parseFraction(*it, "major_gc_garbage_fraction");
+    // A multiplier, not a fraction (parseFraction rejects > 1); validate() checks the range.
+    if (auto it = doc.find("direct_alloc_minor_budget"); it != doc.end())
+        cfg.direct_alloc_minor_budget = parseDouble(*it, "direct_alloc_minor_budget");
     if (auto it = doc.find("use_hybrid_dfs"); it != doc.end())
         cfg.use_hybrid_dfs = parseBool(*it, "use_hybrid_dfs");
     if (auto it = doc.find("large_object_threshold"); it != doc.end())

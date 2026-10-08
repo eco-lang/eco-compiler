@@ -385,3 +385,34 @@ Testing::TestCase testEnsureHeadroomEndBelowPtr(
         EH_ASSERT(NTA::bumpEnd(nursery) >= NTA::bumpPtr(nursery));
         assertBumpCoherent(nursery);
     });
+
+// ============================================================================
+// (f) requestMinor (plans/large-body-gc-trigger.md D3): the debt's clamp
+// ============================================================================
+//
+// requestMinor sets bump_.end = bump_.ptr, so headroom is 0 and the next
+// ensure misses into its slow path, which runs exactly one minor and then
+// re-derives the end.
+
+Testing::TestCase testEnsureAfterRequestMinorRunsOneMinor(
+    "HEAP_041/079: ensure after requestMinor runs exactly one minor GC",
+    []() {
+        auto& alloc = initAllocator(pressureHeapConfig());
+        auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
+        EH_ASSERT(heap != nullptr);
+        NurserySpace& nursery = heap->getNursery();
+        alloc.minorGC();
+
+        EH_ASSERT(NTA::ensureHeadroom(nursery, 64));
+        EH_ASSERT(nursery.requestMinor());
+        EH_ASSERT(NTA::headroom(nursery) == 0);
+        EH_ASSERT(!NTA::ensureHeadroom(nursery, 64));
+        // A second request has nothing left to clamp.
+        EH_ASSERT(!nursery.requestMinor());
+
+        const uint64_t seq0 = nursery.minorSeq();
+        alloc.ensureNursery(64);
+        EH_ASSERT(nursery.minorSeq() == seq0 + 1);
+        EH_ASSERT(NTA::headroom(nursery) >= 64);
+        assertBumpCoherent(nursery);
+    });

@@ -416,6 +416,11 @@ inline Unboxable boxed(HPointer ptr) {
  * @return HPointer to the allocated string.
  *
  * Returns the empty string constant for zero-length input.
+ *
+ * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
+ * it may run a minor GC, a major GC, or (on the large split path, D4) a
+ * minor then a major before it copies. `chars` must therefore not point into
+ * the GC heap unless it is a rooted, pinned large body.
  */
 inline HPointer allocString(const u16* chars, size_t length) {
     if (length == 0) {
@@ -480,6 +485,12 @@ struct BlankString {
  * split-header path, the body is pinned in old gen and `chars` remains
  * stable across subsequent allocations — but callers should not depend on
  * that without checking the tag.
+ *
+ * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
+ * it may run a minor GC, a major GC, or (on the large split path, D4) a
+ * minor then a major. Any heap pointer the caller holds across it must be
+ * rooted; a source it copies from afterwards must not point into the GC heap
+ * unless it is a rooted, pinned large body.
  */
 inline BlankString allocStringBlank(size_t length) {
     if (length == 0) {
@@ -1602,6 +1613,11 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
  * @param data   Pointer to byte data.
  * @param length Number of bytes.
  * @return HPointer to the allocated ByteBuffer.
+ *
+ * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
+ * it may run a minor GC, a major GC, or (on the large split path, D4) a
+ * minor then a major before it copies. `data` must therefore not point into
+ * the GC heap unless it is a rooted, pinned large body.
  */
 inline HPointer allocByteBuffer(const u8* data, size_t length) {
     if (length == 0) return emptyBytes();
@@ -1644,6 +1660,12 @@ struct BlankByteBuffer {
  * Safety contract: do not allocate between getting `bytes` and finishing
  * the write. For payloads routing through the large-object split path
  * the body is pinned in old gen and `bytes` remains stable.
+ *
+ * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
+ * it may run a minor GC, a major GC, or (on the large split path, D4) a
+ * minor then a major. Any heap pointer the caller holds across it must be
+ * rooted; a source it copies from afterwards must not point into the GC heap
+ * unless it is a rooted, pinned large body.
  */
 inline BlankByteBuffer allocByteBufferBlank(size_t length) {
     // Empty Bytes is the embedded constant (HEAP_071); nothing to write.

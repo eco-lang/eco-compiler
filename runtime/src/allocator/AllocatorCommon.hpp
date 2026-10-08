@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -193,6 +194,14 @@ constexpr float MAJOR_GC_TARGET_UTILIZATION = 0.50f;
 
 // Fraction of old-gen committed that, once allocated since the last major, schedules another (0.0 disables).
 constexpr float MAJOR_GC_GARBAGE_FRACTION = 0.70f;
+
+// Multiple of the nursery's minor-GC threshold (object bytes) that allocation made directly
+// in the old generation (split large bodies, young large objects, pinned large objects)
+// may reach before the next allocation runs a minor GC (0 disables). The effective budget is
+// also capped at 1/32 of the old-gen cap (plans/large-body-gc-trigger.md D2). 1.0 chosen by the
+// Phase 4 self-compile A/B (2026-10-08): 0 / 0.5 / 1 / 2 all identical (the compiler never
+// reaches the budget: 0 debt requests), wall within noise.
+constexpr double DIRECT_ALLOC_MINOR_BUDGET = 1.0;
 
 // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS (virtual mapping is retained either way).
 constexpr bool DECOMMIT_ON_OLDGEN_RELEASE = true;
@@ -772,6 +781,10 @@ struct HeapConfig {
 
     // Fraction of old-gen committed allocated-since-last-major that schedules another major (0.0 disables).
     float major_gc_garbage_fraction = MAJOR_GC_GARBAGE_FRACTION;
+
+    // Direct old-gen allocation since the last minor that requests the next one, as a multiple
+    // of the nursery's minor threshold (0 disables; plans/large-body-gc-trigger.md D2).
+    double direct_alloc_minor_budget = DIRECT_ALLOC_MINOR_BUDGET;
 
     // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS.
     bool decommit_on_oldgen_release = DECOMMIT_ON_OLDGEN_RELEASE;
@@ -1375,6 +1388,13 @@ struct HeapConfig {
             major_gc_garbage_fraction >= 1.0f) {
             throw std::invalid_argument(
                 "major_gc_garbage_fraction must be in [0.0, 1.0)");
+        }
+
+        if (!std::isfinite(direct_alloc_minor_budget) ||
+            direct_alloc_minor_budget < 0.0 ||
+            direct_alloc_minor_budget > 64.0) {
+            throw std::invalid_argument(
+                "direct_alloc_minor_budget must be in [0.0, 64.0]");
         }
 
         // ========== 7. Small-Class Block Budget ==========

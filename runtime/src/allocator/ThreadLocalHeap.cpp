@@ -491,6 +491,43 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
     std::abort();
 }
 
+size_t ThreadLocalHeap::directAllocBudget() const {
+    const double f = config_->direct_alloc_minor_budget;
+    if (!(f > 0.0)) return 0;
+    size_t b = static_cast<size_t>(f * static_cast<double>(nursery_.minorThresholdBytes()));
+    // The cap bound keeps a minor inside the cycle pressure-finish window (D2, G2).
+    const size_t cap = parent_->getOldGenMaxBytes();
+    if (cap != 0) b = std::min(b, cap / 32);
+    return std::max<size_t>(b, 1);
+}
+
+void ThreadLocalHeap::noteDirectAlloc(size_t bytes) {
+    const uint64_t seq = nursery_.minorSeq();
+    if (seq != direct_debt_seq_) {   // a minor ran since the last note: the debt is paid
+        direct_debt_seq_ = seq;
+        direct_debt_bytes_ = 0;
+    }
+    direct_debt_bytes_ += bytes;
+#if ENABLE_GC_STATS
+    stats_.direct_debt_bytes_total += bytes;
+#endif
+    const size_t budget = directAllocBudget();
+    if (budget != 0 && direct_debt_bytes_ >= budget && nursery_.requestMinor()) {
+#if ENABLE_GC_STATS
+        stats_.minor_gc_debt_requests++;
+#endif
+    }
+}
+
+[[noreturn]] void ThreadLocalHeap::largeBodyExhausted(const char* kind, size_t body_size) {
+    std::fprintf(stderr,
+                 "eco: out of memory: cannot allocate a %zu-byte large %s body (old generation "
+                 "%zu of %zu bytes in use after a minor and a major GC)\n",
+                 body_size, kind, parent_->getOldGenCommittedBytes(),
+                 parent_->getOldGenMaxBytes());
+    std::abort();
+}
+
 void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
     // threaded-gc-04b HEAP_062: an old-gen cell that is YOUNG — registered
     // with the current minor color, so the next minor frees it unless it is
@@ -509,6 +546,7 @@ void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
         obj = old_gen_.allocateYoungLarge(size, tag, nursery_.minor_color_);
     }
     assert(obj && "Failed to allocate young large object.");
+    noteDirectAlloc(size);
     return obj;
 }
 
@@ -542,6 +580,7 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
     initHeaderForTag(hdr, tag, size);
     hdr->color = saved_color;
     hdr->pin = 1;
+    noteDirectAlloc(size);
     return obj;
 }
 
@@ -558,67 +597,112 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
     // body before we could wire it in (the body's color would be the
     // pre-flip minor color; the header that would have refreshed it via
     // markLargeBodySeen does not yet exist).
-    const size_t header_size = sizeof(LargeStringHeader);
-    void* header_obj = allocate(header_size, Tag_LargeStringHeader);
-    assert(header_obj && "Failed to allocate large string header in nursery");
-    LargeStringHeader* h = static_cast<LargeStringHeader*>(header_obj);
-    h->header.size = static_cast<u32>(length);
-    // Body field is null until step 4. A GC that visits the header here
-    // would see hp.ptr == 0 and skip the body slot via the markHPointer /
-    // markLargeBodySeen null guards.
-    h->body = hpFromBits(0);  // null HPointer (all fields zero)
-    HPointer header_hp = parent_->wrap(header_obj);
-
-    // Step 3: allocate body in old gen. old_gen_.allocate does NOT trigger a
-    // minor GC (only the nursery allocate above does), so header_obj stays
-    // put through this call. registerLargeBody runs with the post-step-1
-    // minor_color_, which matches the value the next minor GC's sweep will
-    // compare against.
+    //
+    // Recovery (plans/large-body-gc-trigger.md D4): a failed attempt abandons
+    // its header with a null body (unreachable garbage every GC path skips),
+    // runs a minor (first failure) or a major (second), and the retry starts
+    // again from the header. A third failure is fatal.
     const size_t body_size =
         (sizeof(ElmString) + length * sizeof(u16) + 7) & ~static_cast<size_t>(7);
-    void* body =
-        old_gen_.allocateLargeBody(body_size, length, Tag_String,
-                                   nursery_.minor_color_);
-    assert(body && "Failed to allocate large string body in old gen");
+    for (int attempt = 0;; ++attempt) {
+        const size_t header_size = sizeof(LargeStringHeader);
+        void* header_obj = allocate(header_size, Tag_LargeStringHeader);
+        assert(header_obj && "Failed to allocate large string header in nursery");
+        LargeStringHeader* h = static_cast<LargeStringHeader*>(header_obj);
+        h->header.size = static_cast<u32>(length);
+        // Body field is null until step 4. A GC that visits the header here
+        // would see hp.ptr == 0 and skip the body slot via the markHPointer /
+        // markLargeBodySeen null guards.
+        h->body = hpFromBits(0);  // null HPointer (all fields zero)
+        HPointer header_hp = parent_->wrap(header_obj);
 
-    if (chars && length > 0) {
-        ElmString* leaf = static_cast<ElmString*>(body);
-        std::memcpy(leaf->chars, chars, length * sizeof(u16));
+        // Step 3: allocate body in old gen. old_gen_.allocate does NOT trigger a
+        // minor GC (only the nursery allocate above does), so header_obj stays
+        // put through this call. registerLargeBody runs with the post-step-1
+        // minor_color_, which matches the value the next minor GC's sweep will
+        // compare against.
+        void* body =
+            old_gen_.allocateLargeBody(body_size, length, Tag_String,
+                                       nursery_.minor_color_);
+        if (!body) {
+            if (attempt == 0) {
+#if ENABLE_GC_STATS
+                stats_.large_body_recover_minors++;
+#endif
+                minorGC();
+                continue;
+            }
+            if (attempt == 1) {
+#if ENABLE_GC_STATS
+                stats_.large_body_recover_majors++;
+                stats_.major_gc_alloc_failure_triggers++;
+#endif
+                majorGC(GCStats::MajorReason::AllocFailure);
+                continue;
+            }
+            largeBodyExhausted("string", body_size);
+        }
+
+        if (chars && length > 0) {
+            ElmString* leaf = static_cast<ElmString*>(body);
+            std::memcpy(leaf->chars, chars, length * sizeof(u16));
+        }
+
+        // Step 4: wire body into header. No GC fires between body registration
+        // and this assignment, so the next minor GC scans an already-complete
+        // header → body link.
+        h->body = parent_->wrap(body);
+        noteDirectAlloc(body_size);
+        return header_hp;
     }
-
-    // Step 4: wire body into header. No GC fires between body registration
-    // and this assignment, so the next minor GC scans an already-complete
-    // header → body link.
-    h->body = parent_->wrap(body);
-    return header_hp;
 }
 
 HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
-    // Same ordering rationale as allocLargeString — see comment there.
-    const size_t header_size = sizeof(LargeByteHeader);
-    void* header_obj = allocate(header_size, Tag_LargeByteHeader);
-    assert(header_obj && "Failed to allocate large byte buffer header in nursery");
-    LargeByteHeader* h = static_cast<LargeByteHeader*>(header_obj);
-    h->header.size = static_cast<u32>(length);
-    h->body = hpFromBits(0);  // null HPointer (all fields zero)
-    HPointer header_hp = parent_->wrap(header_obj);
-
+    // Same ordering and recovery rationale as allocLargeString — see the comment there.
     const size_t body_size =
         (sizeof(ByteBuffer) + length + 7) & ~static_cast<size_t>(7);
-    void* body =
-        old_gen_.allocateLargeBody(body_size, length, Tag_ByteBuffer,
-                                   nursery_.minor_color_);
-    assert(body && "Failed to allocate large byte buffer body in old gen");
+    for (int attempt = 0;; ++attempt) {
+        const size_t header_size = sizeof(LargeByteHeader);
+        void* header_obj = allocate(header_size, Tag_LargeByteHeader);
+        assert(header_obj && "Failed to allocate large byte buffer header in nursery");
+        LargeByteHeader* h = static_cast<LargeByteHeader*>(header_obj);
+        h->header.size = static_cast<u32>(length);
+        h->body = hpFromBits(0);  // null HPointer (all fields zero)
+        HPointer header_hp = parent_->wrap(header_obj);
 
-    ByteBuffer* buf = static_cast<ByteBuffer*>(body);
-    if (data && length > 0) {
-        std::memcpy(buf->bytes, data, length);
-    } else if (length > 0) {
-        std::memset(buf->bytes, 0, length);
+        void* body =
+            old_gen_.allocateLargeBody(body_size, length, Tag_ByteBuffer,
+                                       nursery_.minor_color_);
+        if (!body) {
+            if (attempt == 0) {
+#if ENABLE_GC_STATS
+                stats_.large_body_recover_minors++;
+#endif
+                minorGC();
+                continue;
+            }
+            if (attempt == 1) {
+#if ENABLE_GC_STATS
+                stats_.large_body_recover_majors++;
+                stats_.major_gc_alloc_failure_triggers++;
+#endif
+                majorGC(GCStats::MajorReason::AllocFailure);
+                continue;
+            }
+            largeBodyExhausted("byte buffer", body_size);
+        }
+
+        ByteBuffer* buf = static_cast<ByteBuffer*>(body);
+        if (data && length > 0) {
+            std::memcpy(buf->bytes, data, length);
+        } else if (length > 0) {
+            std::memset(buf->bytes, 0, length);
+        }
+
+        h->body = parent_->wrap(body);
+        noteDirectAlloc(body_size);
+        return header_hp;
     }
-
-    h->body = parent_->wrap(body);
-    return header_hp;
 }
 
 void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {

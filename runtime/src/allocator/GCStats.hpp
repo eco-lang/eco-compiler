@@ -600,6 +600,12 @@ public:
 
     // ========== Minor GC Event Stats ==========
     uint64_t minor_gc_count = 0;
+    // plans/large-body-gc-trigger.md D6: direct old-gen allocation debt (D1), the minors it
+    // requested (D3), and the split-body recovery GCs (D4).
+    uint64_t direct_debt_bytes_total = 0;
+    uint64_t minor_gc_debt_requests = 0;
+    uint64_t large_body_recover_minors = 0;
+    uint64_t large_body_recover_majors = 0;
     uint64_t objects_survived = 0;
     uint64_t objects_promoted = 0;
     uint64_t bytes_freed = 0;             // Cumulative total across all GC cycles.

@@ -1,6 +1,6 @@
 # Plan: GC triggers for large-body allocation
 
-Status: **implementation-ready, v2** (2026-10-08). v1 was the draft; §11 is the review that
+Status: **implemented 2026-10-08 (D1-D6, gates in §10); Phase 0.2 native RSS bound and Phase 3.1 blocked by bag-page fragmentation, see §10.** v2 was implementation-ready (2026-10-08). v1 was the draft; §11 is the review that
 produced v2. Follow-up to R7 in `plans/eco-system-websockets.md` (§8, and the §10 Integration
 entry).
 
@@ -467,7 +467,83 @@ No model checks in CI.
 
 ## 10. Progress log
 
-(empty)
+**2026-10-08: D1-D6 implemented** (`ThreadLocalHeap.{hpp,cpp}`, `NurserySpace.hpp`,
+`AllocatorCommon.hpp`, `HeapConfigJson.cpp`, `GCStats.{hpp,cpp}`, `HeapHelpers.hpp`,
+`Allocator.hpp` test hook `oldGenReservationBytes`). HEAP_079 added, HEAP_026 amended.
+
+- **Phase 0.1 red:** not run against an unfixed build (the runtime was edited first). The
+  unfixed abort is on record from the stress suite the same day: `EcoSystemTransformChain -n 100`
+  aborted in `allocLargeString` ("Failed to allocate large string body in old gen") with old-gen
+  in use 21,474,492,416 of 21,474,836,480 B after 4 minors and 0 majors, while the old gen had
+  only 3.03 GB allocated (see the fragmentation finding below).
+- **Phase 0.1 / 1 tests:** `test/allocator/LargeBodyChurnTest.cpp`, isolated (forked) suite
+  `LargeBodyChurn`: (a) churn, (b) promoted garbage, (c) recovery only, (d) budget 0 is off,
+  (e) the knob. All pass. (c) asserts a recovery minor only when the old-gen ADDRESS range is
+  the test's own: a body allocation fails at `nursery_offset`, which the first initialize fixes
+  (first-init-wins), so after an earlier test reserved 24 GiB the reconfigured 32 MiB cap is only
+  a trigger figure. `EnsureHeadroomTest` (f) `requestMinor` passes.
+- **Phase 0.2:** `test/eco-system/src/LargeBytesChurnTest.elm` added. **Fails** natively: reads
+  2 GiB but RSS grows 6,998,320 KiB. The debt itself works (AOT build of the test: 33 minors,
+  33 debt requests, 2,048 MB direct, 2,007 MB of bodies freed at minors), but old-gen in use
+  peaks at 16,387 MB for 2 GB of bodies. Cause (not this plan's mechanism): **bag-page
+  fragmentation for bodies in (64 KiB, alloc_buffer_size)**. The largest size class is 64 KiB, so
+  `sizeClass(65,552)` = NUM_SIZE_CLASSES; `allocateFromBagPage`'s step 1
+  (`tryAllocateBySplittingLarger` from class 40) finds nothing, step 3 takes a fresh 512 KiB page
+  per body and pushes its 448 KiB tail as 64 KiB-class cells, 16 B too small for the next body.
+  8x the bytes per 64 KiB chunk (every eco/system stream chunk), 2x for 256 KiB bodies. Freed
+  bodies return to the same too-small class. `allocateFromBagPage` is a TLA-REGION: a fix is a
+  follow-up plan.
+- **Phase 2:** recovery loop + `largeBodyExhausted`. Manual fatal check
+  (`/tmp/large-body/KeepAll.elm`, every 64 KiB chunk kept, heap 64 MiB / nursery 256 KiB /
+  alloc_buffer 64 KiB): `eco: out of memory: cannot allocate a 65544-byte large byte buffer body
+  (old generation 33554432 of 33554432 bytes in use after a minor and a major GC)`, rc 134;
+  224 debt requests, 1 recovery minor, 1 recovery major, 10 majors.
+- **Phase 3.1 (Autobahn native `--no-split`):** NOT completed. The server cases ran to 13.1.4
+  with ws-echo-server VmHWM climbing 1.6 -> 5.2 -> 9.8 -> 11.6 GB; the harness host (15 GB)
+  ran out of memory and the run was stopped. No exit GC stats. Before the plan the same run
+  aborted at the cap; the trigger alone does not bound it (see the fragmentation finding).
+- **Phase 3.2:** `WebSocketStreamedMemoryTest` passes (KiB 0 / 2,048 both ways, bound 32 MiB);
+  bound left as is. WS6-style scratch loop (`Bytes.Encode`-built 256 KiB chunks) is not
+  representative: the encoder's nursery allocation runs minors itself (8 minors, 0 debt
+  requests); it shows the 2x bag-page waste (old-gen peak 502 MB for 250 MB of bodies).
+- **Phase 0.3 / 4 (Stage 7 self-compile A/B, 3 runs per cell, medians;
+  `heap-profiles/ws-dev-01/2026-10-08T18-06-26Z__large-body-ab`):** the baseline cell was
+  dropped (budget_0 = mechanism off stands in for "before"; same compiler MLIR in every cell):
+
+  | cell | wall s | CPU s | RSS GB | minors / majors | GC s | mutator % |
+  |---|---:|---:|---:|---:|---:|---:|
+  | budget_0 | 72.88 | 105.25 | 6.532 | 1313 / 7 | 3.06 | 95.8 |
+  | budget_0_5 | 73.22 | 105.69 | 6.524 | 1313 / 7 | 3.05 | 95.8 |
+  | budget_1 (default) | 73.20 | 105.13 | 6.524 | 1313 / 7 | 3.05 | 95.8 |
+  | budget_2 | 73.07 | 104.96 | 6.525 | 1313 / 7 | 3.05 | 95.8 |
+
+  Direct old-gen bytes 547.94 MB per run, **0 debt requests in every cell**: the compiler never
+  reaches the budget, so behaviour is identical (promoted bytes and output hash equal) and the
+  wall spread is noise. Default 1.0 accepted.
+- **TLA canary:** `sh test/scripts/check-tla-manifest.sh .` passes unchanged.
+- **§6 gates (2026-10-08):**
+  - `full`: JIT E2E 2,336 / 2,337; the one failure is `LargeBytesChurnTest` (bag-page
+    fragmentation, above). `full` stops there, so `run-js-e2e` was run by itself: 158 / 158
+    (2 skipped), `LargeBytesChurnTest` passes on JS.
+  - validate tree, `ECO_NURSERY_POISON=1` + `heap-config-gc-pressure.json`: `--filter eco-system`
+    160 / 160 (`LargeBytesChurnTest` passes under that config: its smaller alloc_buffer_size sends
+    64 KiB bodies to dedicated large blocks, which are reused); `--filter LargeBodyChurn` 5 / 5
+    after case (c) was cut from 20,000 to 2,000 buffers (it had timed out at 60 s: past the cap
+    nearly every allocation recovers with a validated minor).
+  - validate `stress-test -n 10` (`ECO_VALIDATE_FREELIST_DUP_SCAN=0`): 113 / 113.
+  - the same two validate runs with `ECO_NURSERY_REGIONS=1`: 160 / 160 and 5 / 5.
+  - `TEST_FILTER=eco- run-aot-e2e`: 173 / 174; the failure is `LargeBytesChurnTest` (as JIT).
+  - default `stress` (-n 100): 112 / 113. `EcoSystemTransformChain` (aborted before) PASSES; the
+    failure is `EcoSystemFileManySmall`, a 60 s timeout unrelated to this plan (10,000 files x
+    100 cycles at ~2.5 s per cycle, thread hand-off bound; Node's fs is 2x slower per cycle).
+  - TLA canary: passes unchanged.
+- **Status:** D1-D6 done and gated. Goals 2.1 (debt bounds direct bytes between minors), 2.2
+  (majors run, cycles finish: case (b), KeepAll's 10 majors), 2.3 (recovery + clear message) and
+  2.4 (no self-compile slowdown) are met. Not met: Phase 0.2's RSS bound natively and Phase 3.1
+  Autobahn `--no-split`, both blocked by the bag-page fragmentation above (a follow-up plan:
+  `allocateFromBagPage` is a TLA-REGION). `autobahn.sh` header left unchanged (`--no-split` does
+  NOT yet pass natively).
+
 
 ## 11. Review log (v1 → v2, 2026-10-08)
 

@@ -163,6 +163,17 @@ public:
     // modes; GCReport::minor_count (HEAP_076). (census_minor_seq_ exists only
     // in P1 census builds, so this is its own always-on counter.)
     uint64_t minorSeq() const { return minor_seq_; }
+    // The proactive minor-GC trip point in object bytes (computeAllocEnd's threshold).
+    size_t minorThresholdBytes() const { return threshold_total_bytes_; }
+    // Make the next allocation on every path (allocate/allocateSlow/allocateSlowRaw, the inline
+    // bump, ensureHeadroom) miss into its slow path and run a minor GC, which re-derives
+    // bump_.end (plans/large-body-gc-trigger.md D3). Returns false if a miss was already due
+    // (end <= ptr).
+    bool requestMinor() {
+        if (bump_.end <= bump_.ptr) return false;
+        bump_.end = bump_.ptr;
+        return true;
+    }
     // threaded-gc-05a (P§3.2, IM7): walks the survivor prefix
     // [fromBase(), bump_.ptr) left by the last minor GC, calling f(obj) for
     // every object. Valid only before the mutator allocates again; asserts

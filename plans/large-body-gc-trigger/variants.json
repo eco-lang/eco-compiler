@@ -1,0 +1,26 @@
+[
+ {
+  "name": "budget_0",
+  "overrides": {
+   "direct_alloc_minor_budget": 0
+  }
+ },
+ {
+  "name": "budget_0_5",
+  "overrides": {
+   "direct_alloc_minor_budget": 0.5
+  }
+ },
+ {
+  "name": "budget_1",
+  "overrides": {
+   "direct_alloc_minor_budget": 1.0
+  }
+ },
+ {
+  "name": "budget_2",
+  "overrides": {
+   "direct_alloc_minor_budget": 2.0
+  }
+ }
+]

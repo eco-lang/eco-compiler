@@ -861,6 +861,10 @@ void GCStats::combine(const GCStats& other) {
 
     // Combine Minor GC event stats.
     minor_gc_count += other.minor_gc_count;
+    direct_debt_bytes_total += other.direct_debt_bytes_total;
+    minor_gc_debt_requests += other.minor_gc_debt_requests;
+    large_body_recover_minors += other.large_body_recover_minors;
+    large_body_recover_majors += other.large_body_recover_majors;
     objects_survived += other.objects_survived;
     objects_promoted += other.objects_promoted;
     bytes_freed += other.bytes_freed;
@@ -1079,6 +1083,11 @@ void GCStats::print() const {
     // ========== Minor GC Event Stats ==========
     std::cout << "Minor GC:" << std::endl;
     std::cout << "  Minor GC cycles:       " << std::setw(12) << minor_gc_count << std::endl;
+    std::cout << "  Direct old-gen bytes:  " << std::setw(12) << std::fixed << std::setprecision(2)
+              << (direct_debt_bytes_total / (1024.0 * 1024.0)) << " MB" << std::endl;
+    std::cout << "  Debt minor requests:   " << std::setw(12) << minor_gc_debt_requests << std::endl;
+    std::cout << "  Lg-body recover minor: " << std::setw(12) << large_body_recover_minors << std::endl;
+    std::cout << "  Lg-body recover major: " << std::setw(12) << large_body_recover_majors << std::endl;
 
     if (objects_allocated > 0) {
         double survival_rate = (objects_survived * 100.0) / objects_allocated;
@@ -1838,6 +1847,10 @@ void GCStats::reset() {
 
     // Reset Minor GC stats.
     minor_gc_count = 0;
+    direct_debt_bytes_total = 0;
+    minor_gc_debt_requests = 0;
+    large_body_recover_minors = 0;
+    large_body_recover_majors = 0;
     objects_survived = 0;
     objects_promoted = 0;
     bytes_freed = 0;

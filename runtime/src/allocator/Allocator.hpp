@@ -698,6 +698,8 @@ public:
     static size_t sliceBytes(Allocator& a) { return a.getNurserySliceBytes(); }
     static size_t sliceSlotCount(Allocator& a) { return a.getNurserySliceSlotCount(); }
     static size_t liveNurseryRegionBytes(Allocator& a) { return a.heap_reserved - a.nursery_offset; }
+    // The old-gen address range (first-init-wins; plans/large-body-gc-trigger.md tests).
+    static size_t oldGenReservationBytes(Allocator& a) { return a.nursery_offset; }
 
     // Heap base address (start of the reserved region) — exposed for tests.
     static char* getHeapBase(Allocator& alloc) {

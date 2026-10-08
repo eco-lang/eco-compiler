@@ -19,6 +19,7 @@
 #include "allocator/AllocatorTest.hpp"
 #include "allocator/OldGenSpaceTest.hpp"
 #include "allocator/OldGenCapacityTest.hpp"
+#include "allocator/LargeBodyChurnTest.hpp"
 #include "allocator/OldGenLazySweepTest.hpp"
 #include "allocator/FreeListBackLinkTest.hpp"
 #include "allocator/ReservedArrayTest.hpp"
@@ -1120,6 +1121,16 @@ int main(int argc, char* argv[]) {
     // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
     // Run each case in a forked child so a SEGV/abort in one test only fails
     // that test instead of taking down the whole binary.
+    // GC triggers for large-body allocation (plans/large-body-gc-trigger.md).
+    // Forked per case: before the fix the churn aborted the process.
+    auto largeBodyChurnTests =
+        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("LargeBodyChurn");
+    largeBodyChurnTests->add(testLargeBodyChurnRunsMinors);
+    largeBodyChurnTests->add(testLargeBodyPromotedGarbageRunsMajors);
+    largeBodyChurnTests->add(testLargeBodyRecoveryWithoutBudget);
+    largeBodyChurnTests->add(testLargeBodyBudgetZeroIsOff);
+    largeBodyChurnTests->add(testDirectAllocMinorBudgetConfig);
+
     auto gcPressureTests = std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("GCPressure");
     // Group A — Allocator-API pressure tests.
     gcPressureTests->add(testNurseryChurnPromotesRootedFraction);
@@ -1154,6 +1165,7 @@ int main(int argc, char* argv[]) {
     gcPressureTests->add(testGCPauseStatsPercentiles);
     gcPressureTests->add(testGCPauseStatsCombine);
     gcPressureTests->add(testEnsureAtClampedBlockGCsInsteadOfAdvancing);
+    gcPressureTests->add(testEnsureAfterRequestMinorRunsOneMinor);
     gcPressureTests->add(testEnsureFailSoftTinyConfigTerminates);
     gcPressureTests->add(testEnsureAbandonedTailsSurviveValidateWalk);
     // threaded-gc-06 Step 1: fillers and object-byte accounting (HEAP_068).
@@ -1248,6 +1260,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(virtualDomKernelTests));
     suite.add(std::move(platformServicesTests));
     suite.add(std::move(gcPressureTests));
+    suite.add(std::move(largeBodyChurnTests));
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));

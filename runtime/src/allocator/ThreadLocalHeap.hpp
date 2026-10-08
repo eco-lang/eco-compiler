@@ -214,7 +214,19 @@ private:
     // A large closure-group region that cannot fit the nursery: fatal.
     [[noreturn]] void regionTooLarge(size_t total);
 
+    // plans/large-body-gc-trigger.md D1/D3: counts `bytes` allocated straight into the old
+    // generation against the debt since the last minor; at directAllocBudget() it clamps the
+    // nursery end (NurserySpace::requestMinor) so the next allocation runs a minor GC.
+    void noteDirectAlloc(size_t bytes);
+
+    // D4: a split body that still fails after a minor and a major GC: fatal.
+    [[noreturn]] void largeBodyExhausted(const char* kind, size_t body_size);
+
 public:
+
+    // D2: the direct old-gen bytes allowed between two minors (0 = the mechanism is off):
+    // min(direct_alloc_minor_budget x the nursery's minor threshold, old-gen cap / 32).
+    size_t directAllocBudget() const;
 
     // ========== Garbage Collection ==========
 
@@ -377,6 +389,11 @@ private:
     std::vector<void*> traceOldReachableForValidation(bool* complete);
 #endif
     friend struct PauseEndHook;
+
+    // D1: direct old-gen bytes since the minor numbered direct_debt_seq_ (nursery_.minorSeq());
+    // reset lazily when a minor has run since. Plain fields: one mutator (HEAP_007).
+    size_t direct_debt_bytes_ = 0;
+    uint64_t direct_debt_seq_ = 0;
 
 #if ENABLE_GC_STATS
     GCStats stats_;               // Thread-local GC statistics
