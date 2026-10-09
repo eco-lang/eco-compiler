@@ -43,6 +43,11 @@ namespace {
 using OA = OldGenSpaceTestAccess;
 using CS = OldGenSpace::CycleState;
 
+// Lists here allocate each Int before reading the list's root: argument
+// evaluation order is unspecified (right to left under the MS ABI), so
+// `cons(boxed(allocInt(v)), r.h, ...)` could pass a copy of r.h taken before a
+// GC inside allocInt moved it (a stale young pointer: TV6 on Windows).
+
 constexpr size_t KiB = 1024;
 constexpr size_t MiB = 1024 * 1024;
 
@@ -299,8 +304,8 @@ T0Result t0Scenario(bool incremental) {
     Root keep(a, alloc::listNil());
     Root drop(a, alloc::listNil());
     for (i64 i = 0; i < 3000; ++i) {
-        keep.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), keep.h, true);
-        drop.h = alloc::cons(alloc::boxed(alloc::allocInt(-i)), drop.h, true);
+        { const HPointer n = alloc::allocInt(i); keep.h = alloc::cons(alloc::boxed(n), keep.h, true); }
+        { const HPointer n = alloc::allocInt(-i); drop.h = alloc::cons(alloc::boxed(n), drop.h, true); }
     }
     a.minorGC();
     a.minorGC();
@@ -386,7 +391,7 @@ Testing::TestCase testIncrScheduleFixed(
         auto& a = initAllocator(incrConfig(4));
         Root keep(a, alloc::listNil());
         for (i64 i = 0; i < 2000; ++i)
-            keep.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), keep.h, true);
+            { const HPointer n = alloc::allocInt(i); keep.h = alloc::cons(alloc::boxed(n), keep.h, true); }
         a.minorGC();
         a.minorGC();
 #if ENABLE_GC_STATS
@@ -444,7 +449,7 @@ Testing::TestCase testIncrOldReachableOnlyFromSurvivor(
         for (int k = 0; k < 4; ++k) {
             Root tmp(a, alloc::listNil());
             for (i64 i = 0; i < 3000; ++i)
-                tmp.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), tmp.h, true);
+                { const HPointer n = alloc::allocInt(i); tmp.h = alloc::cons(alloc::boxed(n), tmp.h, true); }
             a.minorGC();
             a.minorGC();
         }
@@ -527,7 +532,7 @@ Testing::TestCase testIncrAllocateBlackEveryEntryPoint(
         // Promotion into a post-t0 uniform block.
         Root list(a, alloc::listNil());
         for (i64 i = 0; i < 500; ++i)
-            list.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), list.h, true);
+            { const HPointer n = alloc::allocInt(i); list.h = alloc::cons(alloc::boxed(n), list.h, true); }
         promoteToOldGen(a);
         void* head = a.resolve(list.h);
         TEST_ASSERT(!a.isInNursery(head));
@@ -615,7 +620,7 @@ Testing::TestCase testIncrTriggersSuppressed(
         auto& a = initAllocator(cfg);
         Root keep(a, alloc::listNil());
         for (i64 i = 0; i < 2000; ++i)
-            keep.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), keep.h, true);
+            { const HPointer n = alloc::allocInt(i); keep.h = alloc::cons(alloc::boxed(n), keep.h, true); }
         // The garbage trigger starts cycles on its own now; drive to one.
         for (int k = 0; k < 50 && !OA::cycleActive(og(a)); ++k) {
             churn(1000);
@@ -635,13 +640,13 @@ Testing::TestCase testIncrLiveBudgetUsesTracedLive(
         auto& a = initAllocator(incrConfig(4));
         Root keep(a, alloc::listNil());
         for (i64 i = 0; i < 2000; ++i)
-            keep.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), keep.h, true);
+            { const HPointer n = alloc::allocInt(i); keep.h = alloc::cons(alloc::boxed(n), keep.h, true); }
         a.minorGC();
         a.minorGC();
         startCycle(a);
         Root more(a, alloc::listNil());
         for (i64 i = 0; i < 2000; ++i)
-            more.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), more.h, true);
+            { const HPointer n = alloc::allocInt(i); more.h = alloc::cons(alloc::boxed(n), more.h, true); }
         runToHandoff(a);                           // the new list is promoted black
         TEST_ASSERT(OA::majorLive(og(a)) == OA::cycleTracedLive(og(a)));
         // The trigger baseline excludes the black bytes: they count as
@@ -750,7 +755,7 @@ Testing::TestCase testIncrNoReleaseDuringCycle(
         {
             Root big(a, alloc::listNil());
             for (i64 i = 0; i < 40000; ++i)
-                big.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), big.h, true);
+                { const HPointer n = alloc::allocInt(i); big.h = alloc::cons(alloc::boxed(n), big.h, true); }
             a.minorGC();
             a.minorGC();
         }                                             // all of it is dead now

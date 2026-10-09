@@ -66,6 +66,11 @@ struct Root {
     Root& operator=(const Root&) = delete;
 };
 
+// Lists here allocate each Int before reading the list's root: argument
+// evaluation order is unspecified (right to left under the MS ABI), so
+// `cons(boxed(allocInt(v)), r.h, ...)` could pass a copy of r.h taken before a
+// GC inside allocInt moved it (a stale young pointer: TV6 on Windows).
+
 }  // namespace
 
 Testing::TestCase testPromoRateEwmaDeterministic(
@@ -95,7 +100,7 @@ Testing::TestCase testOldAllocTotalMonotone(
             {
                 Root keep(a, alloc::listNil());
                 for (int i = 0; i < 20000; ++i) {
-                    keep.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), keep.h, true);
+                    { const HPointer n = alloc::allocInt(i); keep.h = alloc::cons(alloc::boxed(n), keep.h, true); }
                 }
                 a.minorGC();
                 a.minorGC();
@@ -163,7 +168,7 @@ Testing::TestCase testHeadroomFiresBeforePressure(
             for (int step = 0; step < 400; ++step) {
                 Root lst(a, alloc::listNil());
                 for (int i = 0; i < 10000; ++i) {
-                    lst.h = alloc::cons(alloc::boxed(alloc::allocInt(step * 10000 + i)), lst.h, true);
+                    { const HPointer n = alloc::allocInt(step * 10000 + i); lst.h = alloc::cons(alloc::boxed(n), lst.h, true); }
                 }
                 win.push_back(std::make_unique<Root>(a, lst.h));
                 if (win.size() > 12) win.erase(win.begin());
@@ -198,7 +203,7 @@ Testing::TestCase testPacedLiveBudgetFiresEarlierByHorizon(
             auto& a = initAllocator(cfg);
             OldGenSpace& o = og(a);
             Root keep(a, alloc::listNil());
-            for (int i = 0; i < 20000; ++i) keep.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), keep.h, true);
+            for (int i = 0; i < 20000; ++i) { const HPointer n = alloc::allocInt(i); keep.h = alloc::cons(alloc::boxed(n), keep.h, true); }
             a.minorGC();
             a.minorGC();
             while (OA::cycleActive(o)) a.minorGC();
@@ -227,7 +232,7 @@ Testing::TestCase testGarbageBackstop(
             auto& a = initAllocator(cfg);
             OldGenSpace& o = og(a);
             Root keep(a, alloc::listNil());
-            for (int i = 0; i < 20000; ++i) keep.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), keep.h, true);
+            for (int i = 0; i < 20000; ++i) { const HPointer n = alloc::allocInt(i); keep.h = alloc::cons(alloc::boxed(n), keep.h, true); }
             a.minorGC();
             a.minorGC();
             while (OA::cycleActive(o)) a.minorGC();
@@ -265,7 +270,7 @@ Testing::TestCase testPacingIgnoresMarkProgress(
             for (int step = 0; step < 300; ++step) {
                 Root lst(a, alloc::listNil());
                 for (int i = 0; i < 2000; ++i) {
-                    lst.h = alloc::cons(alloc::boxed(alloc::allocInt(step * 10000 + i)), lst.h, true);
+                    { const HPointer n = alloc::allocInt(step * 10000 + i); lst.h = alloc::cons(alloc::boxed(n), lst.h, true); }
                 }
                 win.push_back(std::make_unique<Root>(a, lst.h));
                 if (win.size() > 20) win.erase(win.begin());
