@@ -100,7 +100,10 @@ jobs:
         run: choco install ccache --no-progress -y
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        # Restore only: branch runs read master's newest ccache and never save
+        # one, so per-commit entries cannot pile up and evict the LLVM caches
+        # (10 GB Actions cache limit). Saved by "Save ccache" on master only.
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: win-aot-ccache-${{ github.sha }}
@@ -277,6 +280,15 @@ jobs:
               Write-Host "ERROR: bundled eco --help crashed with rc=$rc"; exit 1
           }
           Write-Host "OK: bundled eco.exe runs in isolation"
+
+      - name: Save ccache (master only)
+        # After the build/test steps, so it holds this run's objects; only on
+        # master (see "Restore ccache").
+        if: success() && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: win-aot-ccache-${{ github.sha }}
 
       - name: Upload AOT output + bundle + logs
         if: always()

@@ -64,7 +64,10 @@ jobs:
           sysctl hw.memsize hw.ncpu
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        # Restore only: branch runs read master's newest ccache and never save
+        # one, so per-commit entries cannot pile up and evict the LLVM caches
+        # (10 GB Actions cache limit). Saved by "Save ccache" on master only.
+        uses: actions/cache/restore@v4
         with:
           path: ~/Library/Caches/ccache
           key: mac-aot-ccache-${{ github.sha }}
@@ -183,6 +186,15 @@ jobs:
               echo "ERROR: bin/eco crashed (rc=$rc)"; exit 1
           fi
           echo "OK: bundled eco runs in isolation"
+
+      - name: Save ccache (master only)
+        # After the build/test steps, so it holds this run's objects; only on
+        # master (see "Restore ccache").
+        if: success() && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: mac-aot-ccache-${{ github.sha }}
 
       - name: ccache stats
         if: always()

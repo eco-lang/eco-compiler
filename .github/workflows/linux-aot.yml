@@ -96,7 +96,10 @@ jobs:
         run: docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        # Restore only: branch runs read master's newest ccache and never save
+        # one, so per-commit entries cannot pile up and evict the LLVM caches
+        # (10 GB Actions cache limit). Saved by "Save ccache" on master only.
+        uses: actions/cache/restore@v4
         with:
           # eco-dev sets CCACHE_DIR=/work/.ccache; /work is the bind-mounted
           # workspace, so the cache lands here and survives between runs.
@@ -185,6 +188,15 @@ jobs:
           for f in build/compiler/build-kernel/timing-*.txt; do
             [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
           done
+
+      - name: Save ccache (master only)
+        # After the build/test steps, so it holds this run's objects; only on
+        # master (see "Restore ccache").
+        if: success() && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: linux-bootstrap-ccache-${{ github.sha }}
 
       - name: ccache stats
         if: always()
