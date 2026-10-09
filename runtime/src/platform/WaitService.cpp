@@ -2,7 +2,16 @@
 #include "Scheduler.hpp"
 #include <cerrno>
 #include <chrono>
-#if !defined(_WIN32)
+#include <thread>
+#include <vector>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include "Spawn.hpp"
+#else
 #include <sys/wait.h>
 #endif
 
@@ -79,20 +88,36 @@ bool WaitService::hasReady(WaitLane lane) const {
 }
 
 #if defined(_WIN32)
-// Windows v1: process-spawning is not yet implemented in Process.cpp, so
-// no children ever get submit()'d here in practice. We still keep the
-// worker thread alive so `pending_` is drained if a future Process.cpp
-// path does start submitting; the worker simply parks on the CV until
-// a Windows-native implementation (per-child RegisterWaitForSingleObject
-// or a thread-per-child join) is wired in. See plans/build-on-windows.md
-// items 7 & 9.
+// Windows (plans/spawn-not-fork.md Phase 1): no SIGCHLD / waitpid. Each
+// submitted child gets a waiter thread that blocks on its process handle (the
+// one platform::spawnChild kept, or one opened by pid), reads the exit code
+// and routes it to the submit's lane, as the POSIX worker does. The exit
+// code is the raw status (exitCodeFromStatus is the identity here).
 void WaitService::workerLoop() {
     while (true) {
-        std::unique_lock<std::mutex> lk(pendingMutex_);
-        pendingCV_.wait(lk, [this] { return !pending_.empty(); });
-        // Pop and drop — no reaping yet. The Elm-side Process.wait task
-        // will never complete; this matches the documented v1 limitation.
-        pending_.clear();
+        std::vector<Pending> batch;
+        {
+            std::unique_lock<std::mutex> lk(pendingMutex_);
+            pendingCV_.wait(lk, [this] { return !pending_.empty(); });
+            batch.swap(pending_);
+        }
+        for (const Pending& p : batch) {
+            HANDLE h = static_cast<HANDLE>(Elm::platform::takeProcessHandle(p.pid));
+            if (!h) {
+                h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                static_cast<DWORD>(p.pid));
+            }
+            std::thread([this, h, p] {
+                DWORD code = 1;
+                if (h) {
+                    WaitForSingleObject(h, INFINITE);
+                    if (!GetExitCodeProcess(h, &code)) code = 1;
+                    CloseHandle(h);
+                }
+                pushReady(p.lane, Ready{p.token, exitCodeFromStatus(static_cast<int>(code)),
+                                        static_cast<int>(code)});
+            }).detach();
+        }
     }
 }
 #else

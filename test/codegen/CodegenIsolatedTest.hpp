@@ -466,9 +466,7 @@ public:
         auto summary = IsolatedTestRunner::runTestsParallel(
             pathsToRun,
             namesToRun,
-            [](const std::string& path) {
-                runCodegenTest(path);
-            }
+            "codegen"   // the child runs runCodegenTest(path) (main's runIsolatedChild)
         );
 
         // Store results for TestSuite integration

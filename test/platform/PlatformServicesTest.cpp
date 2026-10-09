@@ -7,6 +7,7 @@
 #include "PlatformServicesTest.hpp"
 #include "../../runtime/src/allocator/RuntimeExports.h"
 #include "../../runtime/src/platform/Scheduler.hpp"
+#include "../../runtime/src/platform/Spawn.hpp"
 #include "../../runtime/src/platform/TimerService.hpp"
 #include "../../runtime/src/platform/WaitService.hpp"
 #include "../allocator/TestHelpers.hpp"
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <thread>
 
 #if !defined(_WIN32)
@@ -153,20 +155,29 @@ void test_timer_cancel_after_fire_returns_false() {
 // ---- WaitService lanes (Phase 2 step 5) -------------------------------------
 
 #if !defined(_WIN32)
-pid_t forkExit(int code, int delayMs = 0) {
-    pid_t pid = ::fork();
-    if (pid == 0) {
-        if (delayMs > 0) ::usleep(static_cast<useconds_t>(delayMs) * 1000);
-        ::_exit(code);
-    }
-    return pid;
+// A child that exits with `code` after `delayMs`, or kills itself with
+// SIGKILL: a spawned /bin/sh (plans/spawn-not-fork.md: the harness does not
+// fork). Returns its pid, or -1.
+pid_t spawnShell(const std::string& script) {
+    Elm::platform::SpawnSpec spec;
+    spec.program = "/bin/sh";
+    spec.args = {"-c", script};
+    spec.shellKind = Elm::platform::kShellNone;
+    auto c = Elm::platform::spawnChild(spec, Elm::platform::StdioMode::Null, /*newSession=*/false);
+    return c.err == 0 ? static_cast<pid_t>(c.pid) : -1;
+}
+
+pid_t spawnExit(int code, int delayMs = 0) {
+    std::string script;
+    if (delayMs > 0) script = "sleep " + std::to_string(delayMs / 1000.0) + "; ";
+    return spawnShell(script + "exit " + std::to_string(code));
 }
 
 void test_wait_lanes_route_results() {
     initRuntime();
     auto& ws = WaitService::instance();
-    pid_t a = forkExit(3);
-    pid_t b = forkExit(4);
+    pid_t a = spawnExit(3);
+    pid_t b = spawnExit(4);
     TEST_ASSERT(a > 0 && b > 0);
     ws.submit(a, 101, WaitLane::EcoSystem);
     ws.submit(b, 102, WaitLane::EcoKernel);
@@ -188,11 +199,7 @@ void test_wait_lanes_route_results() {
 void test_wait_signal_death_is_128_plus_sig() {
     initRuntime();
     auto& ws = WaitService::instance();
-    pid_t pid = ::fork();
-    if (pid == 0) {
-        ::kill(::getpid(), SIGKILL);
-        ::_exit(0);  // not reached
-    }
+    pid_t pid = spawnShell("kill -9 $$");
     TEST_ASSERT(pid > 0);
     ws.submit(pid, 201, WaitLane::EcoSystem);
     TEST_ASSERT(waitFor([&] { return ws.hasReady(WaitLane::EcoSystem); }));
@@ -209,8 +216,8 @@ void test_wait_signal_death_is_128_plus_sig() {
 void test_wait_reaped_before_submit_is_delivered() {
     initRuntime();
     auto& ws = WaitService::instance();
-    pid_t slow = forkExit(5, /*delayMs=*/400);
-    pid_t fast = forkExit(7);
+    pid_t slow = spawnExit(5, /*delayMs=*/400);
+    pid_t fast = spawnExit(7);
     TEST_ASSERT(slow > 0 && fast > 0);
     ws.submit(slow, 301, WaitLane::EcoKernel);
     // The worker's waitpid(-1) reaps `fast` first; once reaped, the pid is

@@ -133,6 +133,13 @@ code moved verbatim (Linux/macOS behavior unchanged).
    `WaitForSingleObject`/`GetExitCodeProcess`. Self-contained module; the
    WaitService SIGCHLD logic becomes a waiter thread or
    `RegisterWaitForSingleObject`.
+   **Written (2026-10-09, plans/spawn-not-fork.md), not yet compiled on Windows:**
+   `runtime/src/platform/Spawn.cpp` has the `CreateProcessW` path (MSVC argv
+   quoting, `SearchPathW`, `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, a UTF-16 sorted
+   environment block, an opt-in kill-on-close Job object), `Eco.Process` and the
+   eco/system `ChildProcess` both use it, and `WaitService` waits per child on
+   its process handle. The test harnesses spawn their children through it too
+   (SYS_008), so Windows gets parallel, crash-isolated, timeout-killed tests.
 10. **File I/O** (`eco-kernel-cpp/src/eco-kernel/File.cpp`):
     `stat`/`S_ISDIR`/`opendir`/`readdir`/`access` →
     `std::filesystem` (`status`, `directory_iterator`, `perms`) — this

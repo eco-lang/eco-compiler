@@ -379,9 +379,7 @@ public:
         auto summary = IsolatedTestRunner::runTestsParallel(
             pathsToRun,
             namesToRun,
-            [](const std::string& path) {
-                runBFCodegenTest(path);
-            }
+            "bf-codegen"   // the child runs runBFCodegenTest(path) (main's runIsolatedChild)
         );
 
         lastPassCount_ = summary.passCount;

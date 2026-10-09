@@ -105,22 +105,12 @@ eco_system_module(FileSystem   POSIX
 # File streams are FdSource/FdSink pairs in the stream table (Phase 4 step 4.5).
 target_link_libraries(EcoSystem_FileSystem PUBLIC EcoSystem_Stream)
 eco_system_module(ChildProcess POSIX
-    src/eco-system/ChildProcess/Spawn.cpp
     src/eco-system/ChildProcess/ChildProcess.cpp
     src/eco-system/ChildProcess/ChildProcessExports.cpp
     src/eco-system/ChildProcess/ChildProcessManager.cpp)
 # External connections hand the child's pipes to Elm as streams (Phase 5).
 target_link_libraries(EcoSystem_ChildProcess PUBLIC EcoSystem_Stream)
-# posix_spawn_file_actions_addchdir_np (glibc >= 2.29, musl >= 1.1.24,
-# macOS >= 10.15); without it the child runs through /bin/sh to cd (step 5.2).
-if(NOT WIN32)
-    include(CheckCXXSymbolExists)
-    check_cxx_symbol_exists(posix_spawn_file_actions_addchdir_np "spawn.h"
-        ECO_SYSTEM_HAVE_ADDCHDIR_NP)
-    if(ECO_SYSTEM_HAVE_ADDCHDIR_NP)
-        target_compile_definitions(EcoSystem_ChildProcess PRIVATE ECO_SYSTEM_HAVE_ADDCHDIR_NP=1)
-    endif()
-endif()
+# The spawn primitive itself is runtime/src/platform/Spawn.cpp (plans/spawn-not-fork.md).
 eco_system_module(Terminal     POSIX
     src/eco-system/Terminal/Terminal.cpp
     src/eco-system/Terminal/TerminalExports.cpp

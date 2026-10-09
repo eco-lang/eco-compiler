@@ -69,6 +69,7 @@
 #include "kernel/KernelExportsTest.hpp"
 #include "kernel/VirtualDomKernelTest.hpp"
 #include "platform/PlatformServicesTest.hpp"
+#include "platform/SpawnTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
@@ -593,7 +594,157 @@ void runInteractive(const Testing::TestSuite& suite, const std::string& path = "
 // Main Entry Point
 // ============================================================================
 
+// The process-isolated suites (each case runs in a spawned child,
+// plans/spawn-not-fork.md Phase 3). Built in one place so that a child
+// (`--isolated-child … case <suite> <test>`) can rebuild exactly these, and
+// nothing else: building the E2E suites has side effects (the HTTP test
+// server, TestServerConfig.elm).
+struct IsolatedSuites {
+    std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> platformServices;
+    std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> sliceCrashers;
+    std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> largeBodyChurn;
+    std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> gcPressure;
+};
+
+static IsolatedSuites buildIsolatedSuites() {
+    IsolatedSuites s;
+    // Runtime platform services (Scheduler quiescence hook, TimerService
+    // cancel, WaitService lanes, exit code). Fork-isolated: their singletons
+    // start worker threads (WaitService reaps every child of the process).
+    s.platformServices =
+        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("PlatformServices");
+    registerPlatformServicesTests(*s.platformServices);
+    registerSpawnTests(*s.platformServices);
+
+    // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
+    // / Bytes.width on a slice under F3). Fork-isolated so each abort is reported
+    // as a single failed test rather than killing the binary.
+    s.sliceCrashers =
+        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("SliceCrashers");
+    registerSliceCrasherTests(*s.sliceCrashers);
+    registerKernelExportsCrasherTests(*s.sliceCrashers);
+
+    // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
+    // Run each case in a forked child so a SEGV/abort in one test only fails
+    // that test instead of taking down the whole binary.
+    // GC triggers for large-body allocation (plans/large-body-gc-trigger.md).
+    // Forked per case: before the fix the churn aborted the process.
+    s.largeBodyChurn =
+        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("LargeBodyChurn");
+    s.largeBodyChurn->add(testLargeBodyChurnRunsMinors);
+    s.largeBodyChurn->add(testLargeBodyPromotedGarbageRunsMajors);
+    s.largeBodyChurn->add(testLargeBodyRecoveryWithoutBudget);
+    s.largeBodyChurn->add(testLargeBodyBudgetZeroIsOff);
+    s.largeBodyChurn->add(testDirectAllocMinorBudgetConfig);
+    // The large-object space's free-space manager (plans/large-object-space.md D2).
+    s.largeBodyChurn->add(testLosCoalescesBothNeighbours);
+    s.largeBodyChurn->add(testLosBestFitAndExactReuse);
+    s.largeBodyChurn->add(testLosPageAlignsPageMultiples);
+    s.largeBodyChurn->add(testLosPoolsNeverShareABlock);
+    s.largeBodyChurn->add(testLosEmptyBlocksAndRemoval);
+    s.largeBodyChurn->add(testLosRandomChurnMatchesShadow);
+    s.largeBodyChurn->add(testLosPlacementOfEveryLargeKind);
+    s.largeBodyChurn->add(testLosChunkChurnReusesBlocks);
+    s.largeBodyChurn->add(testLosHeaderlessForwardingHazard);
+    s.largeBodyChurn->add(testLosHeaderless64KiBChunkIsExact);
+
+    s.gcPressure = std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("GCPressure");
+    // Group A — Allocator-API pressure tests.
+    s.gcPressure->add(testNurseryChurnPromotesRootedFraction);
+    s.gcPressure->add(testMajorGCTriggersAfterPromotionFloodAllocator);
+    s.gcPressure->add(testOldGenGrowsTowardCapWithoutFailure);
+    s.gcPressure->add(testCyclicGarbageBetweenGenerations);
+    // Group B — eco_alloc_* runtime tests.
+    s.gcPressure->add(testEcoAllocChurnSurvivesManyMinorGCs);
+    s.gcPressure->add(testEcoAllocClosureCapturesSurviveGC);
+    s.gcPressure->add(testEcoAllocRecordWithMixedFieldsAfterGC);
+    s.gcPressure->add(testEcoAllocStringChurnAndPromotion);
+    s.gcPressure->add(testEcoAllocConsListLongPromotion);
+    s.gcPressure->add(testEcoAllocCustomManyConstructors);
+    // Group C — Old-gen-focused tests.
+    s.gcPressure->add(testOldGenSizeClassChurn);
+    s.gcPressure->add(testLargeObjectPinnedAcrossMajorGC);
+    s.gcPressure->add(testFragmentationAndCoalescingAfterRepeatedSweeps);
+    s.gcPressure->add(testMajorGCInitiatedByOccupancyAndAllocFailure);
+    // Group D — Integration / mixed workloads.
+    s.gcPressure->add(testRandomizedPressureWorkload);
+    s.gcPressure->add(testRetentionRateSweep);
+    s.gcPressure->add(testStackRootRangeUnderPressure);
+    s.gcPressure->add(testSafepointPollingDrainsPressure);
+    // Group E — Adaptive lazy-sweep pacing.
+    s.gcPressure->add(testPanicSweepDrivesAllocationToCompletion);
+    // Group F — the ensure primitive behind capacity-check hoisting
+    // (HEAP_041). Reconfigures the heap to tiny/threshold-tripping shapes,
+    // so it rides the same fork isolation as the rest of this suite.
+    s.gcPressure->add(testEnsureHeadroomPostconditionAcrossAdvanceAndGC);
+    s.gcPressure->add(testEnsureHeadroomEndBelowPtr);
+    s.gcPressure->add(testGCPauseStatsMMU);
+    s.gcPressure->add(testGCPauseStatsPercentiles);
+    s.gcPressure->add(testGCPauseStatsCombine);
+    s.gcPressure->add(testEnsureAtClampedBlockGCsInsteadOfAdvancing);
+    s.gcPressure->add(testEnsureAfterRequestMinorRunsOneMinor);
+    s.gcPressure->add(testEnsureFailSoftTinyConfigTerminates);
+    s.gcPressure->add(testEnsureAbandonedTailsSurviveValidateWalk);
+    // threaded-gc-06 Step 1: fillers and object-byte accounting (HEAP_068).
+    s.gcPressure->add(testFillerSkippedBySurvivorWalk);
+    s.gcPressure->add(testTriggerCountsObjectBytes);
+    s.gcPressure->add(testGrowthCountsObjectBytes);
+    s.gcPressure->add(testFailSoftUsesObjectBytes);
+    s.gcPressure->add(testAllocEndCappedCounted);
+    // Group G — contiguous nursery extents + the slice layer (HEAP_042).
+    // Reconfigures the heap geometry, so it rides the same fork isolation.
+    s.gcPressure->add(testNurseryExtentsAreContiguousAndMirrored);
+    s.gcPressure->add(testNurseryGrowthExtendsInPlaceAndSurvivesGC);
+    s.gcPressure->add(testNurserySliceReleaseRetainsCommitAcrossReacquire);
+    s.gcPressure->add(testNurserySliceGeometryRebuiltOnReconfigure);
+    s.gcPressure->add(testNurseryAllocEndFailSoftWhenSurvivorsPastThreshold);
+
+    return s;
+}
+
+// `<self> --isolated-child <result> <kind> <args…>`: one test in this freshly
+// spawned process (SpawnedChildren.hpp). Kinds: `case <suite> <test>`,
+// `codegen <path>`, `bf-codegen <path>`, `elm <test|process> <mlir> <elm> <flags>`.
+static int runIsolatedChild(int argc, char* argv[]) {
+    if (argc < 4) {
+        std::cerr << "usage: " << argv[0] << " " << eco_test::kChildFlag << " <result> <kind> <args…>\n";
+        return 2;
+    }
+    const std::string result = argv[2];
+    const std::string kind = argv[3];
+    std::vector<std::string> args(argv + 3, argv + argc);   // args[0] = kind
+    if (kind == "case" && args.size() == 3) {
+        IsolatedSuites s = buildIsolatedSuites();
+        for (auto* suite : {s.platformServices.get(), s.sliceCrashers.get(), s.largeBodyChurn.get(),
+                            s.gcPressure.get()}) {
+            if (suite->getName() == args[1]) return suite->runCaseInChild(result, args[2]);
+        }
+        std::cerr << "isolated child: no isolated suite named '" << args[1] << "'\n";
+        return 2;
+    }
+    if (kind == "codegen" && args.size() == 2) {
+        return IsolatedTestRunner::runChild(result, [&] { CodegenIsolatedTest::runCodegenTest(args[1]); });
+    }
+    if (kind == "bf-codegen" && args.size() == 2) {
+        return IsolatedTestRunner::runChild(result, [&] { BFCodegenTest::runBFCodegenTest(args[1]); });
+    }
+    if (kind == "elm") {
+        return ElmE2EBase::runElmChild(result, args);
+    }
+    std::cerr << "isolated child: unknown kind '" << kind << "'\n";
+    return 2;
+}
+
 int main(int argc, char* argv[]) {
+    // A spawned test child: run the one test and leave without static
+    // destructors (the allocator and runtime singletons), as _exit did after
+    // a fork.
+    if (argc >= 2 && std::string(argv[1]) == eco_test::kChildFlag) {
+        const int rc = runIsolatedChild(argc, argv);
+        std::cout.flush();
+        std::fflush(nullptr);
+        std::_Exit(rc);
+    }
     TestConfig config = parseCommandLine(argc, argv);
 
     // Create test suites organized by component.
@@ -1105,95 +1256,11 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite virtualDomKernelTests("VirtualDomKernel");
     registerVirtualDomKernelTests(virtualDomKernelTests);
 
-    // Runtime platform services (Scheduler quiescence hook, TimerService
-    // cancel, WaitService lanes, exit code). Fork-isolated: their singletons
-    // start worker threads (WaitService reaps every child of the process).
-    auto platformServicesTests =
-        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("PlatformServices");
-    registerPlatformServicesTests(*platformServicesTests);
-
-    // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
-    // / Bytes.width on a slice under F3). Fork-isolated so each abort is reported
-    // as a single failed test rather than killing the binary.
-    auto sliceCrashersTests =
-        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("SliceCrashers");
-    registerSliceCrasherTests(*sliceCrashersTests);
-    registerKernelExportsCrasherTests(*sliceCrashersTests);
-
-    // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
-    // Run each case in a forked child so a SEGV/abort in one test only fails
-    // that test instead of taking down the whole binary.
-    // GC triggers for large-body allocation (plans/large-body-gc-trigger.md).
-    // Forked per case: before the fix the churn aborted the process.
-    auto largeBodyChurnTests =
-        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("LargeBodyChurn");
-    largeBodyChurnTests->add(testLargeBodyChurnRunsMinors);
-    largeBodyChurnTests->add(testLargeBodyPromotedGarbageRunsMajors);
-    largeBodyChurnTests->add(testLargeBodyRecoveryWithoutBudget);
-    largeBodyChurnTests->add(testLargeBodyBudgetZeroIsOff);
-    largeBodyChurnTests->add(testDirectAllocMinorBudgetConfig);
-    // The large-object space's free-space manager (plans/large-object-space.md D2).
-    largeBodyChurnTests->add(testLosCoalescesBothNeighbours);
-    largeBodyChurnTests->add(testLosBestFitAndExactReuse);
-    largeBodyChurnTests->add(testLosPageAlignsPageMultiples);
-    largeBodyChurnTests->add(testLosPoolsNeverShareABlock);
-    largeBodyChurnTests->add(testLosEmptyBlocksAndRemoval);
-    largeBodyChurnTests->add(testLosRandomChurnMatchesShadow);
-    largeBodyChurnTests->add(testLosPlacementOfEveryLargeKind);
-    largeBodyChurnTests->add(testLosChunkChurnReusesBlocks);
-    largeBodyChurnTests->add(testLosHeaderlessForwardingHazard);
-    largeBodyChurnTests->add(testLosHeaderless64KiBChunkIsExact);
-
-    auto gcPressureTests = std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("GCPressure");
-    // Group A — Allocator-API pressure tests.
-    gcPressureTests->add(testNurseryChurnPromotesRootedFraction);
-    gcPressureTests->add(testMajorGCTriggersAfterPromotionFloodAllocator);
-    gcPressureTests->add(testOldGenGrowsTowardCapWithoutFailure);
-    gcPressureTests->add(testCyclicGarbageBetweenGenerations);
-    // Group B — eco_alloc_* runtime tests.
-    gcPressureTests->add(testEcoAllocChurnSurvivesManyMinorGCs);
-    gcPressureTests->add(testEcoAllocClosureCapturesSurviveGC);
-    gcPressureTests->add(testEcoAllocRecordWithMixedFieldsAfterGC);
-    gcPressureTests->add(testEcoAllocStringChurnAndPromotion);
-    gcPressureTests->add(testEcoAllocConsListLongPromotion);
-    gcPressureTests->add(testEcoAllocCustomManyConstructors);
-    // Group C — Old-gen-focused tests.
-    gcPressureTests->add(testOldGenSizeClassChurn);
-    gcPressureTests->add(testLargeObjectPinnedAcrossMajorGC);
-    gcPressureTests->add(testFragmentationAndCoalescingAfterRepeatedSweeps);
-    gcPressureTests->add(testMajorGCInitiatedByOccupancyAndAllocFailure);
-    // Group D — Integration / mixed workloads.
-    gcPressureTests->add(testRandomizedPressureWorkload);
-    gcPressureTests->add(testRetentionRateSweep);
-    gcPressureTests->add(testStackRootRangeUnderPressure);
-    gcPressureTests->add(testSafepointPollingDrainsPressure);
-    // Group E — Adaptive lazy-sweep pacing.
-    gcPressureTests->add(testPanicSweepDrivesAllocationToCompletion);
-    // Group F — the ensure primitive behind capacity-check hoisting
-    // (HEAP_041). Reconfigures the heap to tiny/threshold-tripping shapes,
-    // so it rides the same fork isolation as the rest of this suite.
-    gcPressureTests->add(testEnsureHeadroomPostconditionAcrossAdvanceAndGC);
-    gcPressureTests->add(testEnsureHeadroomEndBelowPtr);
-    gcPressureTests->add(testGCPauseStatsMMU);
-    gcPressureTests->add(testGCPauseStatsPercentiles);
-    gcPressureTests->add(testGCPauseStatsCombine);
-    gcPressureTests->add(testEnsureAtClampedBlockGCsInsteadOfAdvancing);
-    gcPressureTests->add(testEnsureAfterRequestMinorRunsOneMinor);
-    gcPressureTests->add(testEnsureFailSoftTinyConfigTerminates);
-    gcPressureTests->add(testEnsureAbandonedTailsSurviveValidateWalk);
-    // threaded-gc-06 Step 1: fillers and object-byte accounting (HEAP_068).
-    gcPressureTests->add(testFillerSkippedBySurvivorWalk);
-    gcPressureTests->add(testTriggerCountsObjectBytes);
-    gcPressureTests->add(testGrowthCountsObjectBytes);
-    gcPressureTests->add(testFailSoftUsesObjectBytes);
-    gcPressureTests->add(testAllocEndCappedCounted);
-    // Group G — contiguous nursery extents + the slice layer (HEAP_042).
-    // Reconfigures the heap geometry, so it rides the same fork isolation.
-    gcPressureTests->add(testNurseryExtentsAreContiguousAndMirrored);
-    gcPressureTests->add(testNurseryGrowthExtendsInPlaceAndSurvivesGC);
-    gcPressureTests->add(testNurserySliceReleaseRetainsCommitAcrossReacquire);
-    gcPressureTests->add(testNurserySliceGeometryRebuiltOnReconfigure);
-    gcPressureTests->add(testNurseryAllocEndFailSoftWhenSurvivorsPastThreshold);
+    IsolatedSuites isolated = buildIsolatedSuites();
+    auto platformServicesTests = std::move(isolated.platformServices);
+    auto sliceCrashersTests = std::move(isolated.sliceCrashers);
+    auto largeBodyChurnTests = std::move(isolated.largeBodyChurn);
+    auto gcPressureTests = std::move(isolated.gcPressure);
 
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     //

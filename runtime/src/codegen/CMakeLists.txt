@@ -9,6 +9,20 @@
 # The generated files will be placed in the build directory under:
 #   ${CMAKE_CURRENT_BINARY_DIR}/include/eco/
 
+# plans/spawn-not-fork.md: ../platform/Spawn.cpp (the one spawn primitive, in
+# every runtime library below) uses posix_spawn_file_actions_addchdir_np where
+# it exists (glibc >= 2.29, musl >= 1.1.24, macOS >= 10.15); without it the
+# child runs through /bin/sh to cd.
+if(NOT WIN32)
+    include(CheckCXXSymbolExists)
+    check_cxx_symbol_exists(posix_spawn_file_actions_addchdir_np "spawn.h"
+        ECO_SPAWN_HAVE_ADDCHDIR_NP)
+    if(ECO_SPAWN_HAVE_ADDCHDIR_NP)
+        set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../platform/Spawn.cpp
+            PROPERTIES COMPILE_DEFINITIONS ECO_SPAWN_HAVE_ADDCHDIR_NP=1)
+    endif()
+endif()
+
 # Note: elm-kernel-cpp is included from the top-level CMakeLists.txt
 # The ElmKernel target is available for linking.
 
@@ -516,6 +530,7 @@ add_llvm_executable(ecoc
     ../platform/Scheduler.cpp
     ../platform/TimerService.cpp
     ../platform/WaitService.cpp
+    ../platform/Spawn.cpp
     ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
     ../platform/PortRuntime.cpp
@@ -646,6 +661,7 @@ add_mlir_library(EcoRunner
     ../platform/Scheduler.cpp
     ../platform/TimerService.cpp
     ../platform/WaitService.cpp
+    ../platform/Spawn.cpp
     ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
     ../platform/PortRuntime.cpp
@@ -739,6 +755,7 @@ add_library(EcoRuntimeStatic STATIC
     ../platform/Scheduler.cpp
     ../platform/TimerService.cpp
     ../platform/WaitService.cpp
+    ../platform/Spawn.cpp
     ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
     ../platform/PortRuntime.cpp

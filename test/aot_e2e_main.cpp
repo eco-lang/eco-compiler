@@ -25,6 +25,7 @@
 
 #include "CheckPatterns.hpp"
 #include "ChildStdin.hpp"
+#include "SpawnedChildren.hpp"
 #include "TestPort.hpp"
 #include "NodeBigStack.hpp"
 #include "TestServerConfig.hpp"
@@ -254,85 +255,16 @@ ProcResult spawn_capture(const std::vector<std::string>& argv,
                           const std::string& cwd,
                           std::size_t cap = 64 * 1024,
                           const std::optional<std::string>& stdin_text = std::nullopt) {
+    // plans/spawn-not-fork.md: spawned (posix_spawn / CreateProcessW), never forked.
+    eco_test::CapturedRun run = eco_test::runCaptured(argv, extra_env, cwd, stdin_text);
     ProcResult r;
-
-    int pipefd[2];
-    if (pipe(pipefd) < 0) {
-        r.output = "pipe() failed";
-        return r;
+    r.exit_code = run.exitCode;
+    r.term_signal = run.termSignal;
+    r.output = std::move(run.output);
+    if (r.output.size() > cap) {
+        r.output.resize(cap);
+        r.truncated = true;
     }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        ::close(pipefd[0]);
-        ::close(pipefd[1]);
-        r.output = "fork() failed";
-        return r;
-    }
-
-    if (pid == 0) {
-        // Child.
-        ::close(pipefd[0]);
-        if (dup2(pipefd[1], STDOUT_FILENO) < 0) _exit(127);
-        if (dup2(pipefd[1], STDERR_FILENO) < 0) _exit(127);
-        ::close(pipefd[1]);
-
-        {
-            std::string err = eco_test::redirectChildStdin(stdin_text);
-            if (!err.empty()) {
-                ::fprintf(stderr, "stdin setup failed: %s\n", err.c_str());
-                _exit(127);
-            }
-        }
-
-        if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
-            ::fprintf(stderr, "chdir(%s) failed: %s\n",
-                      cwd.c_str(), strerror(errno));
-            _exit(127);
-        }
-
-        for (const auto& e : extra_env) {
-            ::putenv(const_cast<char*>(e.c_str()));
-        }
-
-        std::vector<char*> c_argv;
-        c_argv.reserve(argv.size() + 1);
-        for (auto& a : argv) c_argv.push_back(const_cast<char*>(a.c_str()));
-        c_argv.push_back(nullptr);
-
-        execvp(c_argv[0], c_argv.data());
-        ::fprintf(stderr, "execvp(%s) failed: %s\n",
-                  c_argv[0], strerror(errno));
-        _exit(127);
-    }
-
-    // Parent.
-    ::close(pipefd[1]);
-    std::string buf;
-    buf.reserve(8192);
-    char tmp[4096];
-    ssize_t n;
-    while ((n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
-        if (buf.size() + static_cast<std::size_t>(n) <= cap) {
-            buf.append(tmp, static_cast<std::size_t>(n));
-        } else if (buf.size() < cap) {
-            buf.append(tmp, cap - buf.size());
-            r.truncated = true;
-        } else {
-            r.truncated = true;
-        }
-    }
-    ::close(pipefd[0]);
-
-    int wstatus = 0;
-    waitpid(pid, &wstatus, 0);
-    if (WIFEXITED(wstatus)) {
-        r.exit_code = WEXITSTATUS(wstatus);
-    } else if (WIFSIGNALED(wstatus)) {
-        r.term_signal = WTERMSIG(wstatus);
-        r.exit_code = 128 + r.term_signal;
-    }
-    r.output = std::move(buf);
     return r;
 }
 

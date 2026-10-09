@@ -141,6 +141,7 @@ add_executable(test
         kernel/KernelExportsTest.cpp
         kernel/VirtualDomKernelTest.cpp
         platform/PlatformServicesTest.cpp
+        platform/SpawnTest.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
@@ -177,6 +178,7 @@ target_compile_definitions(test PRIVATE
 # symbols (test/eco-kernel E2E suite drives the MVar kernel directly).
 # EcoKernel_GC: test/eco-kernel/src/GcReportTest.elm calls Eco.GC.
 # EcoKernel_File: test/eco-kernel/src/File{WriteBytesAtomic,ReadBytesRoundtrip}Test.elm call Eco.File.
+# EcoKernel_Process: test/eco-kernel/src/ProcessSpawnWaitTest.elm calls Eco.Process (plans/spawn-not-fork.md).
 if(APPLE)
     # ld64 has no --whole-archive; -force_load takes one archive path per
     # flag. The plain target names afterwards keep the CMake dependency
@@ -189,6 +191,7 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Http>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_GC>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_File>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Process>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Hash
@@ -196,6 +199,7 @@ if(APPLE)
         EcoKernel_Http
         EcoKernel_GC
         EcoKernel_File
+        EcoKernel_Process
     )
 elseif(WIN32)
     # /WHOLEARCHIVE: needs the .lib filename — bare target names get
@@ -210,6 +214,7 @@ elseif(WIN32)
         EcoKernel_Http
         EcoKernel_GC
         EcoKernel_File
+        EcoKernel_Process
     )
     target_link_options(test PRIVATE
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
@@ -219,6 +224,7 @@ elseif(WIN32)
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Http>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_GC>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_File>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Process>
     )
 else()
     target_link_libraries(test rapidcheck
@@ -230,6 +236,7 @@ else()
             EcoKernel_Http
             EcoKernel_GC
             EcoKernel_File
+            EcoKernel_Process
         -Wl,--no-whole-archive
     )
 endif()
@@ -332,8 +339,15 @@ endif() # NOT WIN32 (stress-test)
 # wrap their invocation in `sh -c`. Porting them lands with the
 # CreateProcessW pass that brings stress-elm back too.
 if(NOT WIN32)
+# plans/spawn-not-fork.md: the spawn primitive, compiled into the runners that
+# link no runtime library (the same addchdir_np feature check as the runtime).
+if(ECO_SPAWN_HAVE_ADDCHDIR_NP)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/runtime/src/platform/Spawn.cpp
+        PROPERTIES COMPILE_DEFINITIONS ECO_SPAWN_HAVE_ADDCHDIR_NP=1)
+endif()
 add_executable(mlir-equivalence
         mlir_equivalence_main.cpp
+        ${CMAKE_SOURCE_DIR}/runtime/src/platform/Spawn.cpp
 )
 target_compile_features(mlir-equivalence PRIVATE cxx_std_20)
 target_compile_options(mlir-equivalence PRIVATE -fexceptions)
@@ -381,6 +395,7 @@ add_custom_target(run-mlir-equivalence
 #     TEST_FILTER=Add cmake --build build --target run-aot-e2e
 add_executable(aot-e2e-runner
         aot_e2e_main.cpp
+        ${CMAKE_SOURCE_DIR}/runtime/src/platform/Spawn.cpp
 )
 target_compile_features(aot-e2e-runner PRIVATE cxx_std_20)
 target_compile_options(aot-e2e-runner PRIVATE -fexceptions)

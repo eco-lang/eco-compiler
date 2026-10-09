@@ -795,8 +795,8 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
 // The child does not verify CHECK patterns. It records the program's
 // eco-thread output and exit into the shared block (both at a normal end and,
 // through an atexit hook, when the program calls std::exit), and the parent
-// verifies CHECK / CHECK-NOT / EXIT against shared->output + the fork-pipe
-// text (raw fd 1/2 writes) after waitpid.
+// verifies CHECK / CHECK-NOT / EXIT against shared->output + the child's raw
+// stdout/stderr text (its output file) after the child ends.
 
 namespace detail {
 
@@ -836,7 +836,7 @@ inline void processOutputAtExit() {
 
 } // namespace detail
 
-// Runs one program in the current (forked child) process for a
+// Runs one program in the current (spawned child) process for a
 // checkProcessOutput suite. Throws on harness errors (missing MLIR,
 // CHECK-MLIR mismatch, JIT failure); returns the program's exit code on a
 // normal end. A program that calls std::exit never returns here.
@@ -902,7 +902,7 @@ inline int runElmProgramForProcessCheck(const std::string& mlirPath,
 
 // Parent-side verdict for a checkProcessOutput child that exited (not
 // signalled). Returns "" on pass, else the failure message. `combinedOut`
-// receives shared->output + the fork-pipe text.
+// receives shared->output + the child's raw output text.
 inline std::string verifyProcessOutcome(const std::string& elmPath,
                                         const ElmSharedTestResult* shared,
                                         const std::string& pipeOutput,
@@ -949,6 +949,100 @@ inline std::string verifyProcessOutcome(const std::string& elmPath,
 // Parallel Test Execution with GCStats
 // ============================================================================
 
+// StressFlags across the child's command line ("-" = none).
+inline std::string encodeStressFlags(const std::optional<ElmE2EBase::StressFlags>& flags) {
+    if (!flags.has_value()) return "-";
+    const auto& f = *flags;
+    return std::to_string(f.numLoops) + "," + std::to_string(f.maxSize) + "," +
+           std::to_string(f.timeoutMs) + "," + std::to_string(f.seed) + "," +
+           std::to_string(f.startMs) + "," + (f.verbose ? "1" : "0");
+}
+
+inline std::optional<ElmE2EBase::StressFlags> decodeStressFlags(const std::string& s) {
+    if (s == "-") return std::nullopt;
+    ElmE2EBase::StressFlags f;
+    long long v[6] = {0, 0, 0, 0, 0, 0};
+    std::sscanf(s.c_str(), "%lld,%lld,%lld,%lld,%lld,%lld", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+    f.numLoops = v[0];
+    f.maxSize = v[1];
+    f.timeoutMs = v[2];
+    f.seed = v[3];
+    f.startMs = v[4];
+    f.verbose = v[5] != 0;
+    return f;
+}
+
+// Child side of runMlirTestsParallel (plans/spawn-not-fork.md Phase 3):
+// `--isolated-child <result> elm <test|process> <mlir> <elm> <flags>`, in a
+// freshly spawned process. Returns the child's exit status.
+inline int runElmChild(const std::string& resultPath, const std::vector<std::string>& args) {
+    eco_test::childProcessSetup();
+    if (args.size() < 5) {
+        std::cerr << "elm child: expected <test|process> <mlir> <elm> <flags>" << std::endl;
+        return 2;
+    }
+    const bool processMode = args[1] == "process";
+    const std::string& mlirPath = args[2];
+    const std::string& elmPath = args[3];
+    const auto flags = decodeStressFlags(args[4]);
+    auto* shared = static_cast<ElmSharedTestResult*>(
+        eco_test::mapResultFile(resultPath, sizeof(ElmSharedTestResult)));
+    if (!shared) {
+        std::cerr << "elm child: cannot map result file " << resultPath << std::endl;
+        return 2;
+    }
+    auto recordError = [&](const char* what) {
+        shared->passed = false;
+        shared->completed = true;
+        std::strncpy(shared->error, what, sizeof(shared->error) - 1);
+        shared->error[sizeof(shared->error) - 1] = '\0';
+    };
+    int status = 1;
+    if (processMode) {
+        // stdin: the null device, or the `-- STDIN:` text (step 8c). The
+        // program's exit status becomes the child's.
+        int programExit = 1;
+        try {
+#if !defined(_WIN32)
+            std::string err = eco_test::redirectChildStdin(
+                eco_test::extractStdinDirective(readFile(elmPath)));
+            if (!err.empty()) throw std::runtime_error(err);
+#else
+            if (eco_test::extractStdinDirective(readFile(elmPath)).has_value())
+                throw std::runtime_error("-- STDIN: is not supported on Windows yet");
+#endif
+            programExit = runElmProgramForProcessCheck(mlirPath, elmPath, shared, flags);
+            shared->passed = true;
+            shared->completed = true;
+        } catch (const std::exception& e) {
+            recordError(e.what());
+        } catch (...) {
+            recordError("Unknown exception");
+        }
+        copyStatsToShared(shared);
+        status = shared->passed ? programExit : 1;
+    } else {
+        try {
+            runElmTestFromMlir(mlirPath, elmPath, flags);
+            shared->passed = true;
+            shared->completed = true;
+        } catch (const std::exception& e) {
+            recordError(e.what());
+        } catch (...) {
+            recordError("Unknown exception");
+        }
+        copyStatsToShared(shared);
+        status = shared->passed ? 0 : 1;
+    }
+    std::cout.flush();
+    std::cerr.flush();
+    std::fflush(nullptr);
+    return status;
+}
+
+// Runs each compiled Elm program in its own spawned child (up to
+// MAX_PARALLEL_TESTS at once), verifies it, and accumulates the children's
+// GCStats into the suite banner.
 inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
     const std::vector<std::string>& mlirPaths,
     const std::vector<std::string>& elmPaths,
@@ -973,379 +1067,70 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         long long v = std::atoll(env);
         if (v > 0) baseTimeoutSeconds = v;
     }
-    [[maybe_unused]] const int64_t childTimeoutSeconds =
+    const int childTimeoutSeconds = static_cast<int>(
         (flags.has_value() && flags->timeoutMs > 0)
             ? flags->timeoutMs / 1000 + baseTimeoutSeconds
-            : baseTimeoutSeconds;
+            : baseTimeoutSeconds);
 
-#if defined(_WIN32)
-    // Windows v1: serial in-process Elm E2E runner. No fork sandboxing —
-    // a crash in any Elm test kills the suite. Tests that depend on
-    // crash isolation will need a CreateProcessW + named-pipe port.
-    // checkProcessOutput is not honoured here (no fork, no exit status): the
-    // CHECK patterns are matched in-process against the eco-thread output.
-    (void)checkProcessOutput;
-    ParallelTestSummary summary;
-    for (size_t i = 0; i < numTests; i++) {
-        std::string err;
-        bool passed = true;
-        try {
-            runElmTestFromMlir(mlirPaths[i], elmPaths[i], flags);
-        } catch (const std::exception& e) {
-            err = e.what(); passed = false;
-        } catch (...) {
-            err = "non-std::exception thrown"; passed = false;
-        }
-        printTestResult(testNames[i], passed ? "" : err, passed, "");
-        if (passed) summary.passCount++;
-        else { summary.failCount++; summary.failedTests.push_back(testNames[i]); }
-    }
-    return summary;
-}
-#else
-    ParallelTestSummary summary;
-
-    struct ElmTestContext {
-        size_t index;
-        std::string mlirPath;
-        std::string elmPath;
-        std::string name;
-        ElmSharedTestResult* shared;
-        pid_t pid;
-        int outputPipe[2];
-        std::chrono::steady_clock::time_point startTime;
-        IsolatedTestResult result;
-        bool completed;
-        std::string capturedOutput;
-        // Process-output mode for this test: the suite's mode, or a test
-        // with an `-- EXIT:` directive in any suite (an EcoSystem* stress
-        // program that must end with System.exit because a listening
-        // server keeps it alive; plans/eco-system-library.md Phase 7).
-        bool processMode;
-    };
-
-    std::vector<ElmTestContext> contexts(numTests);
-    for (size_t i = 0; i < numTests; i++) {
-        contexts[i].index = i;
-        contexts[i].mlirPath = mlirPaths[i];
-        contexts[i].elmPath = elmPaths[i];
-        contexts[i].name = testNames[i];
-        contexts[i].shared = nullptr;
-        contexts[i].pid = 0;
-        contexts[i].completed = false;
-        contexts[i].processMode = checkProcessOutput;
-        if (!checkProcessOutput) {
+    // Process-output mode for each test: the suite's mode, or a test with an
+    // `-- EXIT:` directive in any suite (an EcoSystem* stress program that
+    // must end with System.exit because a listening server keeps it alive;
+    // plans/eco-system-library.md Phase 7).
+    std::vector<bool> processMode(numTests, checkProcessOutput);
+    if (!checkProcessOutput) {
+        for (size_t i = 0; i < numTests; i++) {
             try {
-                contexts[i].processMode =
-                    eco_test::extractExitDirective(readFile(elmPaths[i])).has_value();
+                processMode[i] = eco_test::extractExitDirective(readFile(elmPaths[i])).has_value();
             } catch (...) {
-                contexts[i].processMode = false;   // reported when the test runs
+                processMode[i] = false;   // reported when the test runs
             }
         }
     }
+    const std::string flagsArg = encodeStressFlags(flags);
 
-    for (auto& ctx : contexts) {
-        ctx.shared = static_cast<ElmSharedTestResult*>(mmap(
-            nullptr,
-            sizeof(ElmSharedTestResult),
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED | MAP_ANONYMOUS,
-            -1, 0
-        ));
-
-        if (ctx.shared == MAP_FAILED) {
-            for (auto& c : contexts) {
-                if (c.shared && c.shared != MAP_FAILED) {
-                    munmap(c.shared, sizeof(ElmSharedTestResult));
-                }
-            }
-            for (const auto& name : testNames) {
-                printTestResult(name, "", false, "Failed to allocate shared memory");
-                summary.failCount++;
-                summary.failedTests.push_back(name);
-            }
-            return summary;
-        }
-        std::memset(ctx.shared, 0, sizeof(ElmSharedTestResult));
-    }
-
-    std::vector<pid_t> activeChildren;
-    std::unordered_map<pid_t, size_t> pidToIndex;
-
-    installSigintHandler(&activeChildren);
-
-    size_t nextToFork = 0;
-    size_t testsCompleted = 0;
-
-    while (testsCompleted < numTests && !g_interrupted) {
-        while (activeChildren.size() < MAX_PARALLEL_TESTS &&
-               nextToFork < numTests &&
-               !g_interrupted) {
-
-            auto& ctx = contexts[nextToFork];
-
-            if (pipe(ctx.outputPipe) < 0) {
-                ctx.result.passed = false;
-                ctx.result.crashed = false;
-                ctx.result.error = "Pipe failed: " + std::string(strerror(errno));
-                ctx.completed = true;
-                testsCompleted++;
-                nextToFork++;
-                continue;
-            }
-
-            // Flush the parent's stdio buffers first: the child inherits them,
-            // and a process-output child flushes them (fflush(nullptr) /
-            // exit) into its output pipe, where the runner's own text would
-            // reach the CHECK patterns.
-            std::cout.flush();
-            std::fflush(nullptr);
+    auto run = eco_test::runSpawnedChildren(
+        testNames, sizeof(ElmSharedTestResult),
+        [&](size_t i) {
+            eco_test::ChildJob job;
+            job.args = {"elm", processMode[i] ? "process" : "test", mlirPaths[i], elmPaths[i], flagsArg};
             // A free port for the child, as ECO_TEST_PORT (TestPort.hpp,
             // plans/eco-system-library.md Phase 7 step 7.4).
+#if !defined(_WIN32)
             const int testPort = eco_test::pickFreeTcpPort();
-            pid_t pid = fork();
-
-            if (pid < 0) {
-                close(ctx.outputPipe[0]);
-                close(ctx.outputPipe[1]);
-                ctx.result.passed = false;
-                ctx.result.crashed = false;
-                ctx.result.error = "Fork failed: " + std::string(strerror(errno));
-                ctx.completed = true;
-                testsCompleted++;
-            } else if (pid == 0) {
-                close(ctx.outputPipe[0]);
-                dup2(ctx.outputPipe[1], STDOUT_FILENO);
-                dup2(ctx.outputPipe[1], STDERR_FILENO);
-                close(ctx.outputPipe[1]);
-
-                // A write to a closed pipe returns EPIPE instead of killing
-                // the test child (review R1.15).
-                std::signal(SIGPIPE, SIG_IGN);
-
-                if (testPort > 0) {
-                    ::setenv("ECO_TEST_PORT", std::to_string(testPort).c_str(), 1);
+            if (testPort > 0) job.env.push_back({"ECO_TEST_PORT", std::to_string(testPort)});
+#endif
+            job.timeoutSeconds = childTimeoutSeconds;
+            return job;
+        },
+        [&](size_t i, const eco_test::ChildOutcome& o) {
+            eco_test::ChildVerdict v;
+            v.output = o.output;
+            if (o.interrupted || o.timedOut || o.exit.signaled || !processMode[i]) {
+                v = eco_test::defaultVerdict<ElmSharedTestResult>(o, childTimeoutSeconds);
+                if (!o.interrupted && !o.timedOut && !o.exit.signaled) {
+                    const auto rec = eco_test::resultRecord<ElmSharedTestResult>(o);
+                    if (rec.completed) accumulateFromShared(&rec);
                 }
-
-                if (ctx.processMode) {
-                    // stdin: /dev/null, or the `-- STDIN:` text (step 8c).
-                    // The program's exit status becomes the child's.
-                    int programExit = 1;
-                    try {
-                        std::string err = eco_test::redirectChildStdin(
-                            eco_test::extractStdinDirective(readFile(ctx.elmPath)));
-                        if (!err.empty()) throw std::runtime_error(err);
-                        programExit = runElmProgramForProcessCheck(
-                            ctx.mlirPath, ctx.elmPath, ctx.shared, flags);
-                        ctx.shared->passed = true;
-                        ctx.shared->completed = true;
-                    } catch (const std::exception& e) {
-                        ctx.shared->passed = false;
-                        ctx.shared->completed = true;
-                        std::strncpy(ctx.shared->error, e.what(), sizeof(ctx.shared->error) - 1);
-                        ctx.shared->error[sizeof(ctx.shared->error) - 1] = '\0';
-                    } catch (...) {
-                        ctx.shared->passed = false;
-                        ctx.shared->completed = true;
-                        std::strncpy(ctx.shared->error, "Unknown exception", sizeof(ctx.shared->error) - 1);
-                    }
-                    copyStatsToShared(ctx.shared);
-                    _exit(ctx.shared->passed ? programExit : 1);
-                }
-
-                try {
-                    runElmTestFromMlir(ctx.mlirPath, ctx.elmPath, flags);
-                    ctx.shared->passed = true;
-                    ctx.shared->completed = true;
-                } catch (const std::exception& e) {
-                    ctx.shared->passed = false;
-                    ctx.shared->completed = true;
-                    std::strncpy(ctx.shared->error, e.what(), sizeof(ctx.shared->error) - 1);
-                    ctx.shared->error[sizeof(ctx.shared->error) - 1] = '\0';
-                } catch (...) {
-                    ctx.shared->passed = false;
-                    ctx.shared->completed = true;
-                    std::strncpy(ctx.shared->error, "Unknown exception", sizeof(ctx.shared->error) - 1);
-                }
-
-                copyStatsToShared(ctx.shared);
-                _exit(ctx.shared->passed ? 0 : 1);
-            } else {
-                close(ctx.outputPipe[1]);
-                ctx.pid = pid;
-                ctx.startTime = std::chrono::steady_clock::now();
-                activeChildren.push_back(pid);
-                pidToIndex[pid] = nextToFork;
+                return v;
             }
-
-            nextToFork++;
-        }
-
-        if (activeChildren.empty()) {
-            break;
-        }
-
-        int status;
-        pid_t finished = waitpid(-1, &status, WNOHANG);
-
-        if (finished > 0) {
-            auto it = pidToIndex.find(finished);
-            if (it != pidToIndex.end()) {
-                size_t idx = it->second;
-                auto& ctx = contexts[idx];
-
-                activeChildren.erase(
-                    std::remove(activeChildren.begin(), activeChildren.end(), finished),
-                    activeChildren.end()
-                );
-                pidToIndex.erase(it);
-
-                ctx.capturedOutput = readAllFromFd(ctx.outputPipe[0]);
-                close(ctx.outputPipe[0]);
-
-                if (WIFSIGNALED(status)) {
-                    ctx.result.passed = false;
-                    ctx.result.crashed = true;
-                    ctx.result.signal = WTERMSIG(status);
-                    ctx.result.error = "Test crashed: " + signalName(ctx.result.signal);
-                } else if (WIFEXITED(status) && ctx.processMode) {
-                    ctx.result.exitCode = WEXITSTATUS(status);
-                    std::string combined;
-                    std::string error;
-                    try {
-                        error = verifyProcessOutcome(ctx.elmPath, ctx.shared,
-                                                     ctx.capturedOutput,
-                                                     ctx.result.exitCode, combined);
-                    } catch (const std::exception& e) {
-                        error = e.what();
-                    }
-                    ctx.result.passed = error.empty();
-                    ctx.result.crashed = !ctx.shared->completed && !ctx.shared->programExited;
-                    ctx.result.error = error;
-                    ctx.result.output = combined;
-                    if (ctx.shared->completed) {
-                        accumulateFromShared(ctx.shared);
-                    }
-                } else if (WIFEXITED(status)) {
-                    ctx.result.exitCode = WEXITSTATUS(status);
-
-                    if (ctx.shared->completed) {
-                        ctx.result.passed = ctx.shared->passed;
-                        ctx.result.crashed = false;
-                        ctx.result.error = ctx.shared->error;
-                        ctx.result.output = ctx.shared->output;
-
-                        accumulateFromShared(ctx.shared);
-                    } else {
-                        ctx.result.passed = false;
-                        ctx.result.crashed = true;
-                        ctx.result.error = "Test exited unexpectedly (exit code " +
-                                           std::to_string(ctx.result.exitCode) + ")";
-                    }
-                } else {
-                    ctx.result.passed = false;
-                    ctx.result.crashed = true;
-                    ctx.result.error = "Unknown wait status";
-                }
-
-                printTestResult(ctx.name, ctx.capturedOutput,
-                                ctx.result.passed, ctx.result.error);
-
-                if (ctx.result.passed) {
-                    summary.passCount++;
-                } else {
-                    summary.failCount++;
-                    summary.failedTests.push_back(ctx.name);
-                }
-
-                ctx.completed = true;
-                testsCompleted++;
+            const auto rec = eco_test::resultRecord<ElmSharedTestResult>(o);
+            std::string combined;
+            try {
+                v.error = verifyProcessOutcome(elmPaths[i], &rec, o.output, o.exit.code, combined);
+            } catch (const std::exception& e) {
+                v.error = e.what();
             }
-        } else if (finished == 0) {
-            auto now = std::chrono::steady_clock::now();
+            v.passed = v.error.empty();
+            if (rec.completed) accumulateFromShared(&rec);
+            return v;
+        });
 
-            for (auto& ctx : contexts) {
-                if (ctx.pid > 0 && !ctx.completed) {
-                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                        now - ctx.startTime).count();
-
-                    if (elapsed >= childTimeoutSeconds) {
-                        kill(ctx.pid, SIGKILL);
-
-                        int status;
-                        waitpid(ctx.pid, &status, 0);
-
-                        ctx.capturedOutput = readAllFromFd(ctx.outputPipe[0]);
-                        close(ctx.outputPipe[0]);
-
-                        activeChildren.erase(
-                            std::remove(activeChildren.begin(), activeChildren.end(), ctx.pid),
-                            activeChildren.end()
-                        );
-                        pidToIndex.erase(ctx.pid);
-
-                        ctx.result.passed = false;
-                        ctx.result.crashed = true;
-                        ctx.result.error = "Test timed out after " +
-                                           std::to_string(childTimeoutSeconds) + " seconds";
-
-                        printTestResult(ctx.name, ctx.capturedOutput,
-                                        ctx.result.passed, ctx.result.error);
-
-                        summary.failCount++;
-                        summary.failedTests.push_back(ctx.name);
-
-                        ctx.completed = true;
-                        testsCompleted++;
-                    }
-                }
-            }
-
-            usleep(10000);
-        } else if (finished == -1 && errno != ECHILD) {
-            break;
-        }
-    }
-
-    if (g_interrupted) {
-        for (pid_t pid : activeChildren) {
-            kill(pid, SIGKILL);
-            int status;
-            waitpid(pid, &status, 0);
-        }
-
-        for (auto& ctx : contexts) {
-            if (!ctx.completed) {
-                if (ctx.pid > 0) {
-                    ctx.capturedOutput = readAllFromFd(ctx.outputPipe[0]);
-                    close(ctx.outputPipe[0]);
-                }
-                ctx.result.passed = false;
-                ctx.result.crashed = true;
-                ctx.result.error = "Test interrupted by user";
-
-                printTestResult(ctx.name, ctx.capturedOutput,
-                                ctx.result.passed, ctx.result.error);
-
-                summary.failCount++;
-                summary.failedTests.push_back(ctx.name);
-
-                ctx.completed = true;
-            }
-        }
-    }
-
-    restoreSigintHandler();
-
-    for (auto& ctx : contexts) {
-        if (ctx.shared && ctx.shared != MAP_FAILED) {
-            munmap(ctx.shared, sizeof(ElmSharedTestResult));
-        }
-    }
-
+    ParallelTestSummary summary;
+    summary.passCount = run.passCount;
+    summary.failCount = run.failCount;
+    summary.failedTests = std::move(run.failedTests);
     return summary;
 }
-#endif  // !_WIN32
 
 // ============================================================================
 // Test Discovery
@@ -1511,7 +1296,7 @@ public:
 
         IsolatedTestRunner::ParallelTestSummary summary;
         if (!mlirPaths.empty()) {
-            // Refresh startMs per-run so each fork sees a near-current zero
+            // Refresh startMs per-run so each child sees a near-current zero
             // point for wall-clock timeouts.
             auto flagsPerRun = stressFlags_;
             if (flagsPerRun.has_value()) {

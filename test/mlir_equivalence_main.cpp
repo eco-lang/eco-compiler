@@ -38,6 +38,7 @@
 #include <unistd.h>
 
 #include "NodeBigStack.hpp"
+#include "SpawnedChildren.hpp"
 
 namespace fs = std::filesystem;
 
@@ -103,79 +104,15 @@ ProcResult spawn_capture(const std::vector<std::string>& argv,
                           const std::vector<std::string>& extra_env,
                           const std::string& cwd,
                           std::size_t stderr_cap = 8192) {
+    // plans/spawn-not-fork.md: spawned (posix_spawn / CreateProcessW), never forked.
+    eco_test::CapturedRun run = eco_test::runCaptured(argv, extra_env, cwd);
     ProcResult r;
-
-    int pipefd[2];
-    if (pipe(pipefd) < 0) {
-        r.stderr_tail = "pipe() failed";
-        return r;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        ::close(pipefd[0]);
-        ::close(pipefd[1]);
-        r.stderr_tail = "fork() failed";
-        return r;
-    }
-
-    if (pid == 0) {
-        // Child.
-        ::close(pipefd[0]);
-        if (dup2(pipefd[1], STDOUT_FILENO) < 0) { _exit(127); }
-        if (dup2(pipefd[1], STDERR_FILENO) < 0) { _exit(127); }
-        ::close(pipefd[1]);
-
-        if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
-            ::fprintf(stderr, "chdir(%s) failed: %s\n", cwd.c_str(), strerror(errno));
-            _exit(127);
-        }
-
-        for (const auto& e : extra_env) {
-            // e is "KEY=VAL"
-            ::putenv(const_cast<char*>(e.c_str()));
-        }
-
-        std::vector<char*> c_argv;
-        c_argv.reserve(argv.size() + 1);
-        for (auto& a : argv) c_argv.push_back(const_cast<char*>(a.c_str()));
-        c_argv.push_back(nullptr);
-
-        execvp(c_argv[0], c_argv.data());
-        ::fprintf(stderr, "execvp(%s) failed: %s\n", c_argv[0], strerror(errno));
-        _exit(127);
-    }
-
-    // Parent.
-    ::close(pipefd[1]);
-
-    std::string buf;
-    buf.reserve(stderr_cap + 4096);
-    char tmp[4096];
-    ssize_t n;
-    while ((n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
-        // Keep the tail only.
-        buf.append(tmp, static_cast<std::size_t>(n));
-        if (buf.size() > stderr_cap * 4) {
-            buf.erase(0, buf.size() - stderr_cap * 2);
-        }
-    }
-    ::close(pipefd[0]);
-
-    int wstatus = 0;
-    waitpid(pid, &wstatus, 0);
-
-    if (WIFEXITED(wstatus)) {
-        r.exit_code = WEXITSTATUS(wstatus);
-    } else if (WIFSIGNALED(wstatus)) {
-        r.term_signal = WTERMSIG(wstatus);
-        r.exit_code = 128 + r.term_signal;
-    }
-
-    if (buf.size() > stderr_cap) {
-        r.stderr_tail = "... (truncated) ...\n" + buf.substr(buf.size() - stderr_cap);
+    r.exit_code = run.exitCode;
+    r.term_signal = run.termSignal;
+    if (run.output.size() > stderr_cap) {
+        r.stderr_tail = "... (truncated) ...\n" + run.output.substr(run.output.size() - stderr_cap);
     } else {
-        r.stderr_tail = std::move(buf);
+        r.stderr_tail = std::move(run.output);
     }
     return r;
 }

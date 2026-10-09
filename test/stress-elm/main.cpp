@@ -1,4 +1,6 @@
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <getopt.h>
 #include <iostream>
@@ -171,6 +173,20 @@ static void printSummary(const Testing::TestSuiteResult& r) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
+    // A spawned stress child (plans/spawn-not-fork.md Phase 3):
+    // `--isolated-child <result> elm <test|process> <mlir> <elm> <flags>`.
+    // Leaves without static destructors, as _exit did after a fork.
+    if (argc >= 2 && std::string(argv[1]) == eco_test::kChildFlag) {
+        int rc = 2;
+        if (argc >= 4 && std::string(argv[3]) == "elm") {
+            rc = ElmE2EBase::runElmChild(argv[2], std::vector<std::string>(argv + 3, argv + argc));
+        } else {
+            std::cerr << "stress-test: unknown isolated child kind\n";
+        }
+        std::cout.flush();
+        std::fflush(nullptr);
+        std::_Exit(rc);
+    }
     StressConfig config = parseCommandLine(argc, argv);
 
     // Translate CLI config into the StressFlags record passed to

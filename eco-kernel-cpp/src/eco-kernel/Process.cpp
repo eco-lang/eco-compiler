@@ -2,8 +2,10 @@
 //
 // Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
 // Phase 4a: `spawn`, `spawnProcess`, `wait` are returned as Task_Bindings so
-// `fork`+`execvp`+`waitpid` happen inside the binding evaluator at
-// scheduler-step time, not at kernel-call time.
+// the spawn and the wait happen inside the binding evaluator at
+// scheduler-step time, not at kernel-call time. The spawn is the runtime's
+// primitive (platform/Spawn.hpp: posix_spawnp / CreateProcessW, never fork;
+// plans/spawn-not-fork.md Phase 2).
 //
 // Phase 4a wraps `wait` in a binding with a BLOCKING evaluator — the
 // scheduler thread still blocks on `waitpid` until the child exits. Phase 4b
@@ -19,6 +21,7 @@
 #include "Process.hpp"
 #include "KernelHelpers.hpp"
 #include "TaskBinding.hpp"
+#include "platform/Spawn.hpp"
 #include "platform/WaitService.hpp"
 #include <cerrno>
 #include <cstdlib>
@@ -27,12 +30,6 @@
 #include <unordered_map>
 #include <vector>
 
-#if !defined(_WIN32)
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
-
 namespace Eco::Kernel::Process {
 
 // Map from child PID to pipe fd (stdin write end) if applicable.
@@ -40,15 +37,29 @@ static std::unordered_map<int64_t, int> s_streamHandles;
 
 namespace {
 
+// The child of `spawn` / `spawnProcess`: the program itself, no shell, its
+// stdout and stderr shared with ours (plans/spawn-not-fork.md Phase 2:
+// posix_spawnp / CreateProcessW, never fork). A program that cannot be
+// started fails the spawn Task (posix_spawn reports it; fork + execvp used to
+// "succeed" with a child that exited 127).
+Elm::platform::SpawnedChild startChild(const std::string& cmd, const std::vector<std::string>& args,
+                                       bool pipeStdin) {
+    Elm::platform::SpawnSpec spec;
+    spec.program = cmd;
+    spec.args = args;
+    spec.shellKind = Elm::platform::kShellNone;
+    Elm::platform::SpawnedChild child = Elm::platform::spawnChild(
+        spec, pipeStdin ? Elm::platform::StdioMode::StdinPipe : Elm::platform::StdioMode::Inherit,
+        /*newSession=*/false);
+#if defined(_WIN32)
+    // WaitService waits on the process handle (Spawn.hpp takeProcessHandle).
+    if (child.err == 0) Elm::platform::registerProcessHandle(child.pid, child.process);
+#endif
+    return child;
+}
+
 // Body for `spawn`. Captured payload is tuple2(cmd, args).
 HPointer spawnBody(HPointer captured) {
-#if defined(_WIN32)
-    // v1: process-spawning needs CreateProcessW + pipe plumbing per
-    // build-on-windows item 9 — TODO. Return a clear error so callers see
-    // it instead of silently hanging.
-    (void)captured;
-    return failErrno(ENOSYS, "", "Eco.Process.spawn not yet implemented on Windows");
-#else
     HPointer cmdHP;
     HPointer argsHP;
     {
@@ -60,33 +71,14 @@ HPointer spawnBody(HPointer captured) {
     std::string cmdStr = toString(Export::encode(cmdHP));
     std::vector<std::string> argStrs = listToStringVector(Export::encode(argsHP));
 
-    std::vector<char*> argv;
-    argv.push_back(const_cast<char*>(cmdStr.c_str()));
-    for (auto& a : argStrs) {
-        argv.push_back(const_cast<char*>(a.c_str()));
-    }
-    argv.push_back(nullptr);
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        int err = errno;
-        return failErrno(err, cmdStr, "fork failed");
-    }
-    if (pid == 0) {
-        execvp(argv[0], argv.data());
-        ::_exit(127);
-    }
-    return succeedInt(static_cast<int64_t>(pid));
-#endif
+    Elm::platform::SpawnedChild child = startChild(cmdStr, argStrs, /*pipeStdin=*/false);
+    if (child.err != 0) return failErrno(child.err, cmdStr, "spawn failed");
+    return succeedInt(child.pid);
 }
 
 // Body for `spawnProcess`. Captured payload is a Record of 5 boxed fields
 // in declaration order: [cmd, args, stdin_, stdout_, stderr_].
 HPointer spawnProcessBody(HPointer captured) {
-#if defined(_WIN32)
-    (void)captured;
-    return failErrno(ENOSYS, "", "Eco.Process.spawnProcess not yet implemented on Windows");
-#else
     HPointer cmdHP, argsHP, stdinHP, stdoutHP, stderrHP;
     {
         Record* rec = static_cast<Record*>(
@@ -105,53 +97,17 @@ HPointer spawnProcessBody(HPointer captured) {
     (void)stdoutCfg;  // "inherit" is the only currently-supported value
     (void)stderrCfg;
 
-    int stdinPipe[2] = {-1, -1};
-    bool pipeStdin = (stdinCfg == "pipe");
-    if (pipeStdin) {
-        if (pipe(stdinPipe) < 0) {
-            int err = errno;
-            return failErrno(err, cmdStr, "pipe failed");
-        }
-    }
-
-    std::vector<char*> argv;
-    argv.push_back(const_cast<char*>(cmdStr.c_str()));
-    for (auto& a : argStrs) {
-        argv.push_back(const_cast<char*>(a.c_str()));
-    }
-    argv.push_back(nullptr);
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        int err = errno;
-        if (pipeStdin) {
-            ::close(stdinPipe[0]);
-            ::close(stdinPipe[1]);
-        }
-        return failErrno(err, cmdStr, "fork failed");
-    }
-
-    if (pid == 0) {
-        if (pipeStdin) {
-            dup2(stdinPipe[0], STDIN_FILENO);
-            ::close(stdinPipe[0]);
-            ::close(stdinPipe[1]);
-        }
-        execvp(argv[0], argv.data());
-        ::_exit(127);
-    }
-
-    if (pipeStdin) {
-        ::close(stdinPipe[0]);
-    }
+    const bool pipeStdin = (stdinCfg == "pipe");
+    Elm::platform::SpawnedChild child = startChild(cmdStr, argStrs, pipeStdin);
+    if (child.err != 0) return failErrno(child.err, cmdStr, "spawn failed");
 
     using namespace Elm::alloc;
     std::vector<Unboxable> fields(2);
-    fields[0].i = static_cast<int64_t>(pid);
+    fields[0].i = child.pid;
 
     if (pipeStdin) {
-        int64_t handleId = stdinPipe[1];
-        s_streamHandles[handleId] = stdinPipe[1];
+        int64_t handleId = child.stdinFd;
+        s_streamHandles[handleId] = child.stdinFd;
         fields[1].p = justKind(unboxedInt(handleId), 1);
     } else {
         fields[1].p = nothing();
@@ -159,7 +115,6 @@ HPointer spawnProcessBody(HPointer captured) {
 
     HPointer rec = record(fields, 0b01);
     return succeed(rec);
-#endif
 }
 
 // PHASE-4b WaitService drain. Pops (token, exitCode) pairs queued by the
