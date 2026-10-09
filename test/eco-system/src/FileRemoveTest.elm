@@ -4,6 +4,8 @@ module FileRemoveTest exposing (main)
 step 4.6, Appendix E.3): removing a directory without `recursive` fails with
 node's code `ERR_FS_EISDIR` (so `errorIsDirectoryFound` is False), recursive
 removal deletes a whole tree, a symlink to a directory is removed as a link.
+`unlink` of a directory reports the OS errno: EISDIR on Linux, EPERM on macOS
+(both allowed by POSIX; node reports the same).
 -}
 
 -- CHECK: remove-file: ok f.txt
@@ -18,7 +20,7 @@ removal deletes a whole tree, a symlink to a directory is removed as a link.
 -- CHECK: remove-symlink-to-dir: ok [keep]
 -- CHECK: unlink: ok u.txt
 -- CHECK: unlink-missing: err ENOENT @u.txt
--- CHECK: unlink-dir: err EISDIR @keep
+-- CHECK: unlink-dir: err {{(EISDIR|EPERM)}} @keep
 -- EXIT: 0
 
 import FileTestHelp exposing (attempt, bytes, child, file, rawError)

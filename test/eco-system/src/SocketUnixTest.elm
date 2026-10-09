@@ -63,7 +63,8 @@ permissionsOf path =
         d =
             P.defaultRunOptions
     in
-    P.run "stat" [ "-c", "%a", Path.toPosixString path ] { d | shell = P.NoShell }
+    -- GNU stat takes `-c %a`, BSD (macOS) stat `-f %Lp`.
+    P.run "sh" [ "-c", "stat -c %a \"$1\" 2>/dev/null || stat -f %Lp \"$1\"", "sh", Path.toPosixString path ] { d | shell = P.NoShell }
         |> Task.map (\r -> String.trim (H.bytesToString r.stdout))
         |> Task.mapError (\_ -> "stat failed")
 

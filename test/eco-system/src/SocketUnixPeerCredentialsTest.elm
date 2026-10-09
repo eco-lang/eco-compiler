@@ -3,7 +3,8 @@ module SocketUnixPeerCredentialsTest exposing (main)
 -- SKIP-JS: Node has no peer credentials (plans/eco-system-sockets.md Appendix E)
 
 {-| `Socket.Unix.peerCredentials` (plans/eco-system-sockets.md §D.3): both ends of a Unix domain
-connection made by this program see this program's process id (`/proc/self`), user id and group id
+connection made by this program see this program's process id (the `$PPID` of a shell it runs:
+`/proc/self` is Linux-only), user id and group id
 (those of a directory it created); a TCP connection fails with `EINVAL`.
 -}
 
@@ -12,12 +13,14 @@ connection made by this program see this program's process id (`/proc/self`), us
 -- CHECK: tcp: EINVAL
 -- EXIT: 0
 
+import ProcessTestHelp exposing (bytesToString, noShell)
 import Socket
 import Socket.Unix
 import SocketTestHelp as H
 import System
 import System.File as File
 import System.File.Path as Path
+import System.Process as P
 import Task exposing (Task)
 
 
@@ -40,7 +43,7 @@ main : System.SimpleProgram ()
 main =
     H.program
         (\_ ->
-            fileErr (File.readLink (Path.fromPosixString "/proc/self"))
+            ownPid
                 |> Task.andThen
                     (\self ->
                         fileErr (File.makeTempDirectory "eco-sock-cred")
@@ -51,7 +54,7 @@ main =
                                             (\meta ->
                                                 let
                                                     expected =
-                                                        { pid = Path.toPosixString self |> String.toInt |> Maybe.withDefault -1
+                                                        { pid = self
                                                         , uid = meta.userID
                                                         , gid = meta.groupID
                                                         }
@@ -107,3 +110,10 @@ main =
                             |> Task.map (\tcp -> unixLines ++ [ "tcp: " ++ tcp ])
                     )
         )
+
+
+ownPid : Task String Int
+ownPid =
+    P.run "sh" [ "-c", "echo $PPID" ] noShell
+        |> Task.mapError (\_ -> "sh -c 'echo $PPID' failed")
+        |> Task.map (\r -> bytesToString r.stdout |> String.trim |> String.toInt |> Maybe.withDefault -1)

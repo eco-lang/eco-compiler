@@ -9,7 +9,7 @@ of `run` (plans/eco-system-library.md Phase 5 step 5.4).
 -- CHECK: replace: ok stdout=ECO_P5_A=replaced|ECO_P5_B=b| stderr=
 -- CHECK: inherit: ok stdout=unset| stderr=
 -- CHECK: cwd: ok stdout=/| stderr=
--- CHECK: cwd-shell: ok stdout=/tmp| stderr=
+-- CHECK: cwd-shell: ok stdout=/usr| stderr=
 -- EXIT: 0
 
 import Dict
@@ -47,6 +47,6 @@ main =
         , ( "cwd", describeRun (P.run "pwd" [ "-P" ] { noShell | workingDirectory = P.SetWorkingDirectory "/" }) )
         , ( "cwd-shell"
           , describeRun
-                (P.run "pwd" [] { noShell | shell = P.DefaultShell, workingDirectory = P.SetWorkingDirectory "/tmp" })
+                (P.run "pwd" [] { noShell | shell = P.DefaultShell, workingDirectory = P.SetWorkingDirectory "/usr" })
           )
         ]

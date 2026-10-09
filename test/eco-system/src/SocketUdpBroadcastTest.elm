@@ -2,10 +2,11 @@ module SocketUdpBroadcastTest exposing (main)
 
 {-| Broadcast needs the `broadcast` bind option (plans/eco-system-sockets.md §3.3.7, SF17): a send
 to `127.255.255.255` from a socket bound without it fails with `EACCES`
-(`errorIsPermissionDenied`); with it the send succeeds.
+(`errorIsPermissionDenied`); with it the send succeeds. macOS loopback (`lo0`) has no broadcast
+address, so there the send is plain unicast that succeeds either way, reported as `n/a on Darwin`.
 -}
 
--- CHECK: without broadcast: err EACCES denied True
+-- CHECK: without broadcast: {{(err EACCES denied True|n/a on Darwin)}}
 -- CHECK: with broadcast: ok
 -- EXIT: 0
 
@@ -21,7 +22,7 @@ import Task
 main : System.SimpleProgram ()
 main =
     H.program
-        (\_ ->
+        (\env ->
             H.testPort
                 |> Task.andThen
                     (\port_ ->
@@ -57,7 +58,7 @@ main =
                                                             U.closeAll [ plain, bcast ]
                                                                 |> Task.map
                                                                     (\_ ->
-                                                                        [ "without broadcast: " ++ without
+                                                                        [ "without broadcast: " ++ unlessDarwinLoopback env.platform without
                                                                         , "with broadcast: " ++ with
                                                                         ]
                                                                     )
@@ -66,3 +67,12 @@ main =
                                 )
                     )
         )
+
+
+unlessDarwinLoopback : System.Platform -> String -> String
+unlessDarwinLoopback platform without =
+    if platform == System.Darwin && without == "ok" then
+        "n/a on Darwin"
+
+    else
+        without

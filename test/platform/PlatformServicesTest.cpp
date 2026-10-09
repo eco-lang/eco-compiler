@@ -118,10 +118,10 @@ void test_quiescence_never_in_embed_mode() {
 void test_timer_cancel_pending() {
     initRuntime();
     auto& timers = TimerService::instance();
-    const std::uint64_t far = kBogusTokenBase + 10;
-    timers.schedule(60000.0, far);
-    TEST_ASSERT(timers.cancel(far));
-    TEST_ASSERT(!timers.cancel(far));                     // already removed
+    const std::uint64_t later = kBogusTokenBase + 10;
+    timers.schedule(60000.0, later);
+    TEST_ASSERT(timers.cancel(later));
+    TEST_ASSERT(!timers.cancel(later));                   // already removed
     TEST_ASSERT(!timers.cancel(kBogusTokenBase + 11));    // never scheduled
 
     // A cancelled short timer is never delivered; an uncancelled one is.

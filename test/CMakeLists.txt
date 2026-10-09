@@ -146,6 +146,14 @@ add_executable(test
 
 target_compile_features(test PRIVATE cxx_std_20)
 target_compile_options(test PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
+# KernelExportsTest catches Elm::BytesDecodeFailure thrown from the extern "C"
+# Elm_Kernel_Bytes_read_* exports. Under /EHsc ("extern C functions never
+# throw") those try/catch blocks are optimised away and the throw escapes as an
+# unknown exception, so this file uses /EHs /EHc- as ElmKernel_Bytes does.
+if(MSVC)
+    set_source_files_properties(kernel/KernelExportsTest.cpp PROPERTIES
+        COMPILE_OPTIONS "/EHs;/EHc-")
+endif()
 # Windows: provide our minimal getopt_long shim before <getopt.h> resolves —
 # the MSVC CRT has no getopt and main.cpp's command-line parsing relies on
 # it. See test/win32/getopt.h. Also bake the weak-symbol /alternatename TU

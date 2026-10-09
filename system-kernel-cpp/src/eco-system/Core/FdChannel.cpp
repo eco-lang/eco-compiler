@@ -23,6 +23,7 @@
 #include <climits>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -96,6 +97,7 @@ struct FdChannel::State {
     bool regular = false;   // regular file: write without chunking
     int64_t readRemaining = -1;     // FdChannelOptions::readLimit (channel thread only)
     bool truncateOnClose = false;   // FdChannelOptions::truncateOnClose
+    bool useSelect = false;  // poll() rejects this fd (channel thread only)
 
     std::mutex m;            // guards everything below
     std::deque<ReadReq> reads;
@@ -257,6 +259,31 @@ void failPending(State& st, int err) {
     for (auto& w : writes) postSimple(st.chanId, w.token, ChannelResult::Op::Write, err);
 }
 
+// poll() over pfd[0..n) by way of select(). macOS poll() answers POLLNVAL for
+// an open character device (/dev/null, a tty), which select() handles; the
+// channel thread switches to this once it sees that (all fds < FD_SETSIZE).
+int selectAsPoll(struct pollfd* pfd, int n) {
+    fd_set rd, wr;
+    FD_ZERO(&rd);
+    FD_ZERO(&wr);
+    int maxFd = -1;
+    for (int i = 0; i < n; ++i) {
+        pfd[i].revents = 0;
+        if (pfd[i].fd < 0) continue;
+        if (pfd[i].events & POLLIN) FD_SET(pfd[i].fd, &rd);
+        if (pfd[i].events & POLLOUT) FD_SET(pfd[i].fd, &wr);
+        if (pfd[i].fd > maxFd) maxFd = pfd[i].fd;
+    }
+    int r = ::select(maxFd + 1, &rd, &wr, nullptr, nullptr);
+    if (r <= 0) return r;
+    for (int i = 0; i < n; ++i) {
+        if (pfd[i].fd < 0) continue;
+        if (FD_ISSET(pfd[i].fd, &rd)) pfd[i].revents |= POLLIN;
+        if (FD_ISSET(pfd[i].fd, &wr)) pfd[i].revents |= POLLOUT;
+    }
+    return r;
+}
+
 // The channel thread. Owns the fd: it is the only closer (§3.4).
 void channelThread(std::shared_ptr<State> sp) {
     State& st = *sp;
@@ -282,7 +309,7 @@ void channelThread(std::shared_ptr<State> sp) {
         pfd[1].events = POLLIN;
         pfd[1].revents = 0;
 
-        int n = ::poll(pfd, 2, -1);
+        int n = st.useSelect ? selectAsPoll(pfd, 2) : ::poll(pfd, 2, -1);
         if (n < 0) {
             int e = errno;
             if (e == EINTR || e == EAGAIN) continue;
@@ -293,6 +320,11 @@ void channelThread(std::shared_ptr<State> sp) {
         if (pfd[0].fd < 0) continue;
         short rev = pfd[0].revents;
         if (rev & POLLNVAL) {
+            if (!st.useSelect && ::fcntl(st.fd, F_GETFD) != -1 && st.fd < FD_SETSIZE &&
+                st.wakeR < FD_SETSIZE) {
+                st.useSelect = true;   // open, but not pollable (macOS devices)
+                continue;
+            }
             failPending(st, EBADF);
             continue;
         }
