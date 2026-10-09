@@ -507,6 +507,27 @@ typedef struct elm_large_byte_header LargeByteHeader;
 static_assert(sizeof(LargeStringHeader) == 16, "LargeStringHeader must be 16 bytes");
 static_assert(sizeof(LargeByteHeader) == 16, "LargeByteHeader must be 16 bytes");
 
+// plans/large-object-space.md D4: the ONLY way to reach a large body's payload.
+// Bodies are pinned and never forwarded, so they are read raw (hpToAddr) and never
+// through Allocator::resolve: a header-less payload's first byte would be read as a
+// tag (Tag_Forward = 26). The length is ALWAYS the outer header's header.size.
+// Bodies are header-less (HEAP_081): the body address IS the payload.
+constexpr size_t kLargeBodyPayloadOffset = 0;
+inline void* largeBodyAddr(const LargeStringHeader* h) { return hpToAddr(h->body); }
+inline void* largeBodyAddr(const LargeByteHeader* h) { return hpToAddr(h->body); }
+inline u16* largeStringChars(const LargeStringHeader* h) {
+    return reinterpret_cast<u16*>(static_cast<char*>(largeBodyAddr(h)) + kLargeBodyPayloadOffset);
+}
+inline u8* largeBytesData(const LargeByteHeader* h) {
+    return reinterpret_cast<u8*>(static_cast<char*>(largeBodyAddr(h)) + kLargeBodyPayloadOffset);
+}
+// The UTF-16 units of a flat string: a Tag_String leaf or a Tag_LargeStringHeader.
+inline u16* flatStringChars(void* obj) {
+    if (static_cast<Header*>(obj)->tag == Tag_LargeStringHeader)
+        return largeStringChars(static_cast<LargeStringHeader*>(obj));
+    return static_cast<ElmString*>(obj)->chars;
+}
+
 // Structural view over a ByteBuffer: header.size = logical byte count;
 // `base` points to a Tag_ByteBuffer leaf or Tag_LargeByteHeader; `offset`
 // is the starting index. Slice-of-slice collapses at construction by

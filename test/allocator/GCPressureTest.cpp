@@ -902,9 +902,13 @@ Testing::TestCase testLargeObjectPinnedAcrossMajorGC(
             // for the pin/old-gen invariants.
             void* body = obj;
             if (getHeader(obj)->tag == Tag_LargeByteHeader) {
-                body = alloc.resolve(static_cast<LargeByteHeader*>(obj)->body);
+                body = largeBodyAddr(static_cast<LargeByteHeader*>(obj));
             }
-            GCP_ASSERT(getHeader(body)->pin == 1);
+            // plans/large-object-space.md D4: a split body is header-less
+            // payload in a raw (pinned) block; an unsplit object is pinned.
+            GCP_ASSERT(getHeader(obj)->tag == Tag_LargeByteHeader
+                           ? AllocatorTestAccess::getOldGen(alloc)->isRawBody(body)
+                           : getHeader(body)->pin == 1);
             GCP_ASSERT(alloc.isInOldGen(body));
 
             // Track the body's stable address (pinned), not the header's
@@ -927,21 +931,27 @@ Testing::TestCase testLargeObjectPinnedAcrossMajorGC(
         for (auto& p : pinned) {
             void* hdr_obj = alloc.resolve(p.slot);
             GCP_ASSERT(hdr_obj != nullptr);
-            // Resolve through the split header (if present) to the body.
-            ByteBuffer* b = nullptr;
+            // Resolve through the split header (if present) to the payload
+            // (plans/large-object-space.md D4: a header-less body).
+            const void* addr = nullptr;
+            const u8* bytes = nullptr;
             if (getHeader(hdr_obj)->tag == Tag_LargeByteHeader) {
-                b = static_cast<ByteBuffer*>(
-                    alloc.resolve(static_cast<LargeByteHeader*>(hdr_obj)->body));
+                auto* lh = static_cast<LargeByteHeader*>(hdr_obj);
+                addr = largeBodyAddr(lh);
+                bytes = largeBytesData(lh);
+                GCP_ASSERT(lh->header.size == kLargeSize);
             } else {
-                b = static_cast<ByteBuffer*>(hdr_obj);
+                ByteBuffer* b = static_cast<ByteBuffer*>(hdr_obj);
+                addr = b;
+                bytes = b->bytes;
+                GCP_ASSERT(b->header.tag == Tag_ByteBuffer);
+                GCP_ASSERT(b->header.size == kLargeSize);
             }
-            GCP_ASSERT(b != nullptr);
+            GCP_ASSERT(addr != nullptr);
             // Pinned BODY address must not have changed across major GCs.
-            GCP_ASSERT(reinterpret_cast<uintptr_t>(b) == p.initial_addr);
-            GCP_ASSERT(b->header.tag == Tag_ByteBuffer);
-            GCP_ASSERT(b->header.size == kLargeSize);
+            GCP_ASSERT(reinterpret_cast<uintptr_t>(addr) == p.initial_addr);
             for (size_t k = 0; k < kLargeSize; ++k) {
-                GCP_ASSERT(b->bytes[k] == p.expected[k]);
+                GCP_ASSERT(bytes[k] == p.expected[k]);
             }
         }
 
@@ -1005,10 +1015,9 @@ Testing::TestCase testFragmentationAndCoalescingAfterRepeatedSweeps(
             Tag t = static_cast<Tag>(getHeader(obj)->tag);
             GCP_ASSERT(t == Tag_ByteBuffer || t == Tag_LargeByteHeader);
             if (t == Tag_LargeByteHeader) {
-                ByteBuffer* body = static_cast<ByteBuffer*>(
-                    alloc.resolve(static_cast<LargeByteHeader*>(obj)->body));
+                void* body = largeBodyAddr(static_cast<LargeByteHeader*>(obj));
                 GCP_ASSERT(body != nullptr);
-                GCP_ASSERT(body->header.tag == Tag_ByteBuffer);
+                GCP_ASSERT(AllocatorTestAccess::getOldGen(alloc)->isRawBody(body));
             }
         }
         for (auto& l : live) {

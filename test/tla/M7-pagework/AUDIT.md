@@ -623,3 +623,18 @@ sections align to at most `/ALIGN` (4096 by default). Linux and macOS keep `alig
 before, the probe is one `ops_.populate` call in the constructor, before any job can be posted, on a
 page no other thread touches; MAPPING.md maps no step to it, and no atomic step, lock, shared location
 or memory order changed. **Verdict: no model change needed.**
+
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+
+Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
+
+Pins fired: region `AL.acquireOldGenBlock` (**c06879029f66**); census `OldGenSpace.cpp` (**714b07d48107**); grep `F.pageWorkCalls` (**583a216ad99d**: the new `releaseOldGenBlock(block + size, block_size - size)`).
+
+O7: `takeFreeAt`, after `onReuse` of a reused extent larger than the request, releases the tail with `releaseOldGenBlock` under the same `thread_mutex_` hold, i.e. PageWork sees `acq` then `rel`, two existing actions in an existing order. Can the tail release wait (CR-007's no-wait rule under `promo_mu_`)? `onRelease` waits only for an in-flight populate overlapping the extent; populates are posted only over `[bump, bump + ahead)` (`topUpWindow`), the bump never moves back, every free extent lies below it, and any populate overlapping the extent was awaited at its own release. So the tail release never waits: a validate-build assertion now aborts if it does (`release_waits` unchanged across it). **Verdict: no model change needed.**
+
+Also pinned for M7: region `OGS.lazySweep` (**f2052ad635f1**). The only change is in the legacy
+(`old_gen_bitmap_alloc` off) is_large arm: for a raw block (`kLosRaw`, a header-less body) it no longer
+loads the block-start header before the index lookup (a raw body is always tracked). No lock is taken or
+released differently, no release or PageWork call is added or reordered, and the sweep's slices under
+`promo_mu_` are unchanged (LOS blocks are never unswept, so they never enter it). **Verdict: no model
+change needed.**

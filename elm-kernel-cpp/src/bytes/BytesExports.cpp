@@ -228,9 +228,9 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
             size_t nchars = 0;
             std::u16string snapshot_storage;
             if (Elm::StringOps::isLeaf(strPtr)) {
-                ElmString* s = alloc::resolveStringBody(strPtr);
-                chars = s->chars;
-                nchars = s->header.size;
+                alloc::U16View s = alloc::flatStringView(strPtr);
+                chars = s.chars;
+                nchars = s.length;
             } else {
                 snapshot_storage = Elm::StringOps::toStdU16String(strPtr);
                 chars = reinterpret_cast<const u16*>(snapshot_storage.data());
@@ -325,9 +325,9 @@ int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
     size_t utf16_length = 0;
     std::u16string snapshot_storage;
     if (Elm::StringOps::isLeaf(ptr)) {
-        ElmString* s = alloc::resolveStringBody(ptr);
-        chars_data = s->chars;
-        utf16_length = s->header.size;
+        alloc::U16View s = alloc::flatStringView(ptr);
+        chars_data = s.chars;
+        utf16_length = s.length;
     } else {
         snapshot_storage = Elm::StringOps::toStdU16String(ptr);
         chars_data = reinterpret_cast<const u16*>(snapshot_storage.data());

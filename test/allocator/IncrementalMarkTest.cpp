@@ -181,7 +181,7 @@ HPointer bigString(size_t chars, u16 fill) {
 void* stringBody(Allocator& a, HPointer s) {
     void* h = a.resolve(s);
     if (getHeader(h)->tag != Tag_LargeStringHeader) throw std::runtime_error("not split");
-    return a.resolve(static_cast<LargeStringHeader*>(h)->body);
+    return largeBodyAddr(static_cast<LargeStringHeader*>(h));
 }
 
 #if !defined(_WIN32)
@@ -556,7 +556,7 @@ Testing::TestCase testIncrAllocateBlackEveryEntryPoint(
         TEST_ASSERT(marked(a, b1) && marked(a, b2) && marked(a, y_ptr) && marked(a, p));
         runToHandoff(a);
         checkLargeIntArray(a, y.h, 1500, 5, "YLOS allocated black");
-        TEST_ASSERT(static_cast<u16>(static_cast<ElmString*>(stringBody(a, s2.h))->chars[19999]) == 'b');
+        TEST_ASSERT(static_cast<u16*>(stringBody(a, s2.h))[19999] == 'b');   // header-less body (D4)
     });
 
 Testing::TestCase testIncrNoPreT0UniformReuse(

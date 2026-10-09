@@ -519,3 +519,11 @@ validate pre-walk and OldGenSpace scanChildren: reads only, abort on failure.
 `tla-trace` after the change: 150/150 rows as expected.
 
 **Verdict: no model change needed.**
+
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+
+Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
+
+Pins fired: regions `OGS.promoteYoungLarge` (**c9b5ac30eae3**), `OGS.registerLargeBody` (**b84bdbca9fc6**); greps `P6.M7` (**72090451cef4**), `P6.M9` (**0ec81764e070**).
+
+`promoteYoungLarge` (inside the `ylos_mu_` section of `Y_Lock`) now sets the entry's kind to 2 instead of erasing it and recycling the id; the owned-list removal and the `age` write are unchanged. `yPromoted[y]`'s observable effect is the same: `youngLargeMeta` accepts kind 1 only, so a promoted object is never reached again (`YlosOnce`). `registerLargeBody` gains an `owned` flag (false only for kind 2, registered by the mutator outside any minor). P6.M7/P6.M9: new mutator-only `allocated_bytes` adds and index walks (`losSweepAtMarkEnd`, `validateLosTracking`, compaction's LOS fix-up) outside the parallel minor. Ids are still never recycled inside the pause. **Verdict: no model change needed.**

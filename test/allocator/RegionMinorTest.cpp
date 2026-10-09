@@ -361,13 +361,9 @@ namespace {
 std::u16string readU16R(HPointer hp) {
     void* o = AllocatorTestAccess::fromPointer(hp);
     Header* h = getHeader(o);
-    if (h->tag == Tag_LargeStringHeader) {
-        o = AllocatorTestAccess::fromPointer(static_cast<LargeStringHeader*>(o)->body);
-        h = getHeader(o);
-    }
-    TEST_ASSERT(h->tag == Tag_String);
-    const ElmString* s = static_cast<const ElmString*>(o);
-    return std::u16string(reinterpret_cast<const char16_t*>(s->chars), h->size);
+    TEST_ASSERT(h->tag == Tag_String || h->tag == Tag_LargeStringHeader);
+    // flatStringChars reads a split body raw (plans/large-object-space.md D4).
+    return std::u16string(reinterpret_cast<const char16_t*>(flatStringChars(o)), h->size);
 }
 }  // namespace
 

@@ -152,8 +152,10 @@ Testing::TestCase testBitmapSplitBeforeVirginW6Rule(
     });
 
 Testing::TestCase testBitmapFreeBodyInUniformBlock(
-    "HEAP_027/054: freeing a body in a uniform block clears its bit; the cell is reused at once",
+    "LOS: a freed body returns its granules and clears its bit; the space is reused at once",
     []() {
+        // plans/large-object-space.md D2: bodies live in LOS blocks, never in
+        // uniform or mixed blocks; a free is a granule-bitmap clear.
         auto cfg = bitmapConfig(true);
         cfg.validate();
         auto& alloc = initAllocator(cfg);
@@ -161,22 +163,22 @@ Testing::TestCase testBitmapFreeBodyInUniformBlock(
         void* body = og.allocateLargeBody(64, 64 - 8, Tag_ByteBuffer, /*initial_color=*/false);
         TEST_ASSERT(body != nullptr);
         const BlockId b = OTA::blockIdFor(og, body);
+        TEST_ASSERT(og.isLosBlock(b));
+        const size_t g = og.largeObjectSpace().granuleBytes();
         const size_t live0 = OTA::metaOf(og, b).live_bytes;
+        TEST_ASSERT(live0 >= g);
         TEST_ASSERT(og.sweepNurseryLargeBodies(/*minor_color=*/true) == 1);
-        TEST_ASSERT(OTA::metaOf(og, b).live_bytes == live0 - 64);
-        TEST_ASSERT(OTA::freeListBytesIn(og, static_cast<char*>(body),
-                                         static_cast<char*>(body) + 64) == 0);
-        TEST_ASSERT(og.allocate(64) == body);     // rewound cursor
-#if ENABLE_GC_STATS
-        TEST_ASSERT(OTA::bitmapStats(og).uniform_cells_freed == 1);
-#endif
+        TEST_ASSERT(OTA::metaOf(og, b).live_bytes == live0 - g);
+        TEST_ASSERT(og.largeObjectSpace().usedGranules(b.v) == 0);
+        void* again = og.allocateLargeBody(64, 64 - 8, Tag_ByteBuffer, false);
+        TEST_ASSERT(again == body);               // the freed granule, at once
     });
 
 Testing::TestCase testBitmapFreeBodyInUnsweptMixedBlock(
-    "HEAP_027: freeing a body in an unswept mixed block only clears its bit; the gap sweep reclaims it once",
+    "LOS: a body block is never lazily swept; a rooted body survives a major, then frees once",
     []() {
         auto cfg = bitmapConfig(true);
-        cfg.initial_sweep_budget = cfg.sweep_work_budget;   // minimum: one slice (block stays unswept)
+        cfg.initial_sweep_budget = cfg.sweep_work_budget;   // minimum: one slice
         cfg.validate();
         auto& alloc = initAllocator(cfg);
         auto& og = oldGen(alloc);
@@ -184,26 +186,17 @@ Testing::TestCase testBitmapFreeBodyInUnsweptMixedBlock(
             og.allocateLargeBody(10 * 1024, 10 * 1024 - 8, Tag_ByteBuffer, false));
         TEST_ASSERT(body != nullptr);
         const BlockId b = OTA::blockIdFor(og, body);
-        TEST_ASSERT(OTA::demoted(og, b));      // a bag page: mixed
+        TEST_ASSERT(og.isLosBlock(b));
         Rooted roots(alloc);
         roots.add(body);
         roots.commit();
-        runMarkAndSweep(alloc);                // body marked (rooted)
-        if (OTA::metaOf(og, b).fully_swept) return;   // precondition not met: skip
-        const BlockInfo& bi = OTA::getBlockTable(og).info(b);
-        // The initial slice may already have stepped over the body inside
-        // this block; then the free must be a list push (the sweep will not
-        // come back). Either way the page ends up fully free, counted once.
-        const bool ahead = OTA::sweepWillReach(og, b, body);
-        const size_t before = OTA::freeListBytesIn(og, body, body + 10 * 1024);
+        runMarkAndSweep(alloc);                // body marked (rooted): kept
+        TEST_ASSERT(OTA::metaOf(og, b).fully_swept);
+        const size_t used = og.largeObjectSpace().usedGranules(b.v);
+        TEST_ASSERT(used == og.largeObjectSpace().granulesFor(10 * 1024));
         TEST_ASSERT(og.sweepNurseryLargeBodies(/*minor_color=*/true) == 1);
-        const size_t after = OTA::freeListBytesIn(og, body, body + 10 * 1024);
-        if (ahead) TEST_ASSERT(after == before);        // bit clear only
-        else       TEST_ASSERT(after > before);         // pushed
-        OTA::driveSweepToCompletion(og);
-        // The whole page ends up free, and its garbage is counted once.
-        TEST_ASSERT(OTA::metaOf(og, b).garbage_bytes == bi.totalBytes());
-        TEST_ASSERT(OTA::freeListBytesIn(og, bi.start, bi.end) == bi.totalBytes());
+        TEST_ASSERT(og.largeObjectSpace().usedGranules(b.v) == 0);
+        TEST_ASSERT(og.sweepNurseryLargeBodies(/*minor_color=*/true) == 0);   // once
     });
 
 Testing::TestCase testBitmapGapSweepDemotedBlock(

@@ -87,6 +87,15 @@ int notReached(const char* id, const char* why) {
     return kNotReached;
 }
 
+// A route that plans/large-object-space.md made unreachable BY CONSTRUCTION
+// (recorded as a "route retired" verdict in plans/threaded-gc-concurrency-
+// register.md): the scenario checks the new structure that rules it out and
+// passes. Distinct from notReached, which is a precondition that merely failed.
+int routeRetired(const char* id, const char* why) {
+    std::fprintf(stderr, "  %s child: route RETIRED: %s\n", id, why);
+    return kCorrect;
+}
+
 #if !defined(_WIN32)
 // Runs `scenario` in a forked child; returns the child's wait status.
 int runScenarioInChild(const char* id, const std::function<int()>& scenario) {
@@ -369,6 +378,9 @@ int cr018Scenario(bool idleUncounted) {
     // (1) A mixed block P from a fresh bag page, holding one object that dies.
     void* first = allocByteBuf(a, mid, 0x11);
     const BlockId P = OA::blockOf(og, first);
+    if (P.valid() && og.isLosBlock(P))
+        return routeRetired(id, "objects >= large_object_threshold live in LOS blocks, which the "
+                                "empty-block flip never takes (plans/large-object-space.md D2)");
     if (!P.valid() || OA::inUniformBlock(og, first)) return notReached(id, "the first object is not in a mixed block");
 
     // (2) A STW major finds P all-dead; the min_heap floor keeps it. Finish the sweep.
@@ -1686,6 +1698,9 @@ int cr037Scenario(uint32_t k, bool control) {
     const char* why = "";
     void* X = deadBodyAfterMajor(a, &j, &why);
     if (X == nullptr) return notReached(id, why);
+    if (og.isRawBody(X))
+        return routeRetired(id, "bodies (raw LOS pool) and YLOS objects (object pool) never share a block, so a "
+                                "YLOS never reuses a freed body's cell (plans/large-object-space.md D2/D4)");
     const uint64_t seq = R->minor_seq;
     HPointer e = alloc::allocInt(0xE37);
     a.getRootSet().addRoot(&e);
@@ -1775,6 +1790,9 @@ int cr017R1Scenario(bool control, uint32_t k = 1) {
     void* hdr = nullptr;
     void* X = deadBodyAfterMajor(a, &j, &why, &hdr);
     if (X == nullptr) return notReached(id, why);
+    if (og.isRawBody(X))
+        return routeRetired(id, "bodies (raw LOS pool) and YLOS objects (object pool) never share a block, so a "
+                                "YLOS never reuses a freed body's cell (plans/large-object-space.md D2/D4)");
     // Route witness: the major zapped the dead header copy (HEAP_074).
     if (!insideFiller(R->x[j], hdr)) return notReached(id, "the major did not zap the dead header copy");
     std::fprintf(stderr, "  %s child: the major zapped the dead header copy %p (extent %d)\n", id, hdr, j);
@@ -2843,6 +2861,7 @@ int cr035Scenario(bool lostArm, bool idleUncounted = true) {
     // (1) P: a bag page whose only object dies; a STW major (the floor keeps P).
     char* p0 = static_cast<char*>(oldByteBuf(og, 16 * 1024, 0x35));
     const BlockId P = OA::blockOf(og, p0);
+
     char* const X = OA::getBlockTable(og).info(P).start;
     if (!P.valid() || OA::inUniformBlock(og, p0) || p0 != X) return notReached(id, "the first object is not at a mixed page's start");
     a.majorGC();
@@ -2855,6 +2874,9 @@ int cr035Scenario(bool lostArm, bool idleUncounted = true) {
     const HPointer nil = alloc::listNil();
     HPointer Yp = alloc::arrayFromPointers(std::vector<HPointer>(1600, nil));
     void* Y = AllocatorTestAccess::fromPointer(Yp);
+    if (og.isLosBlock(OA::blockOf(og, Y)))
+        return routeRetired(id, "a YLOS lives in an LOS block, never carved into a mixed page, and the "
+                                "empty-block flip never takes an LOS block (plans/large-object-space.md D2)");
     if (Y != X || !og.isYoungLarge(Y)) return notReached(id, "Y is not a YLOS at P's start");
     if (!idleUncounted) {   // the plain run: CR-018's fix counts Y's Idle carve
         const uint64_t lb = OA::metaOf(og, P).live_bytes;
@@ -3205,7 +3227,13 @@ int cr038ZScenario(bool control) {
     if (R->minor_seq != seq0 + 4) return notReached(id, "an extra minor ran");
     if (!og.cycleActive()) return notReached(id, "the forced trigger did not start a mark cycle");
     const bool walked = OA::isMarked(og, Y);   // snapshotYoungLarge marks every young YLOS it walks
-    const bool zFreed = og.youngLargeMeta(Z) == nullptr && getHeader(Z)->tag == Tag_Free;
+    // A freed LOS cell has no Tag_Free header: its granules are free
+    // (plans/large-object-space.md D2).
+    const BlockId zb = OA::blockOf(og, Z);
+    const bool zCellFree = (zb.valid() && og.isLosBlock(zb))
+        ? !og.largeObjectSpace().isAllocated(zb.v, Z)
+        : getHeader(Z)->tag == Tag_Free;
+    const bool zFreed = og.youngLargeMeta(Z) == nullptr && zCellFree;
     const bool zGreyed = OA::isMarked(og, Z);
     const HPointer y0 = static_cast<ElmArray*>(Y)->elements[0].p;
     const bool slotZ = y0.ptr_ind == 0 && AllocatorTestAccess::fromPointer(y0) == Z;

@@ -326,6 +326,7 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
     config_ = config;
     allocator_ = allocator;
     num_size_classes_ = computeNumSizeClasses(config_->large_object_threshold);
+    los_.init(config_->alloc_buffer_size, OS_PAGE_SIZE);   // plans/large-object-space.md D2
     allocated_bytes = 0;
     small_class_bytes_ = 0;
     recomputeSmallClassLimit();
@@ -471,6 +472,10 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     }
     free_list_sentinel_count_ = 0;
     free_large_blocks_.clear();
+
+    // plans/large-object-space.md D2: the LOS starts empty (its blocks were
+    // torn down with blocks_); re-derive its geometry from the config.
+    los_.init(config_->alloc_buffer_size, OS_PAGE_SIZE);
 
     // Clear split-header body tracking.
     large_bodies_.clear();
@@ -1886,14 +1891,22 @@ void OldGenSpace::classifyBlocksAfterMark() {
         const BlockId id = blocks_.idAt(pos);
         BlockInfo& b = blocks_.info(id);
         BufferMetadata& meta = blocks_.meta(id);
+        if (b.los & kLosBlock) {
+            // plans/large-object-space.md D2: an LOS block's dead objects were
+            // freed at mark end (losSweepAtMarkEnd); nothing to classify.
+            meta.fully_swept = true;
+            continue;
+        }
         if (b.is_large) {
             // The former lazySweep is_large branch, verbatim in effect.
             const bool live = testAndClearMarkBitInBlock(id, b.start);
             if (!live) {
                 // A split-header body or a YLOS object (threaded-gc-04b):
                 // the index is authoritative, whatever the tag.
-                Header* hdr = reinterpret_cast<Header*>(b.start);
-                if (hdr->pin) {
+                // A raw block (HEAP_081) has no header: its body is tracked.
+                const bool tracked = (b.los & kLosRaw) != 0 ||
+                                     reinterpret_cast<Header*>(b.start)->pin;
+                if (tracked) {
                     auto it = large_body_index_.find(b.start);
                     if (it != large_body_index_.end()) {
                         retireIndexEntry(it->second);
@@ -2901,6 +2914,9 @@ void* OldGenSpace::allocateFromFreeLargeBlocks(size_t size) {
         // object so sweep walks one header.
         const size_t total = blk.totalBytes();
         blk.end_of_objects = blk.start + size;
+        // plans/large-object-space.md D4: a freed raw body's block is reused
+        // headered unless the raw allocator re-marks it (allocateRawCell).
+        blk.los = 0;
 
         // Reset metadata.
         {
@@ -2947,6 +2963,7 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         const BufferMetadata& meta = blocks_.meta(i);
         if (!meta.fully_swept || meta.live_bytes != 0) continue;
         if (blocks_.info(i).is_large) continue;
+        if (blocks_.info(i).los != 0) continue;   // LOS blocks are the LOS's (D2)
         // threaded-gc-06: a worker cursor's block holds unflushed pending
         // bytes (its live_bytes may read 0) and is invisible to detach.
         if (par_promo_active_ && blocks_.info(i).alloc_state == kAllocCurrent) continue;
@@ -3494,6 +3511,9 @@ void OldGenSpace::greyObject(MarkWorker& w, void* obj) {
 
     // Item 40: one test-and-set instead of isMarkedInBlock + setMarkBitInBlock.
     if (testAndSetMark<P>(block_id, obj)) return;
+    // plans/large-object-space.md D4 (HEAP_081): a header-less large body is
+    // pointer-free and has no header to scan: the bit is all its marking.
+    if (__builtin_expect(blocks_.info(block_id).los & kLosRaw, 0)) return;
     // M1 trace (b): a newly greyed object during a cycle; its scan gets the key.
     // (Markers run only inside a cycle; the mutator's serial greys outside
     // one are a STW major's.)
@@ -3733,6 +3753,13 @@ void OldGenSpace::scanChunk(MarkWorker& w, void* obj, uint32_t chunk) {
 template <class P>
 bool OldGenSpace::scanObject(MarkWorker& w, void* obj, BlockId block_index) {
     if (!obj) return false;
+#if ECO_HEAP_VALIDATE
+    if (isRawBody(obj)) {
+        std::fprintf(stderr, "[heap-validate] HEAP_081: scanObject on a header-less body %p\n", obj);
+        std::fflush(stderr);
+        std::abort();
+    }
+#endif
     Header* hdr = getHeader(obj);
 
     // Defensive: stale mark-stack entry pointing at a free cell or a
@@ -4068,6 +4095,9 @@ void OldGenSpace::im11Check(const char* where) {
             }
             continue;
         }
+        // HEAP_081: a header-less body is marked without a push, so it is never
+        // scanned: it is not part of the scanned closure IM11 counts.
+        if (isRawBody(obj)) continue;
         if (!closure.insert(reinterpret_cast<uintptr_t>(obj)).second) continue;
         if (hdr->tag == Tag_Process) {
             Process* pr = static_cast<Process*>(obj);
@@ -4175,7 +4205,9 @@ void OldGenSpace::resetBufferMetaForMark() {
         BufferMetadata& meta = blocks_.meta(id);
         meta.live_bytes = 0;
         meta.garbage_bytes = 0;
-        meta.fully_swept = false;
+        // An LOS block is never lazily swept (plans/large-object-space.md D2);
+        // its live_bytes counts in-cycle LOS allocations until mark end.
+        meta.fully_swept = isLosBlock(id);
     }
 }
 
@@ -4190,6 +4222,9 @@ void OldGenSpace::finalizeMetaAfterMark() {
     // clears them (plan P§3.4, trap 1).
     p1::onMarkEnd(*this);
     ++major_epoch_;
+    // plans/large-object-space.md D2: free unmarked LOS objects and set every
+    // LOS block's live_bytes to its used granules before the totals below.
+    losSweepAtMarkEnd();
 
     size_t total_live = 0;
     size_t total_heap = 0;
@@ -4313,9 +4348,12 @@ void OldGenSpace::prepareMetaForLazySweep() {
     for (size_t pos = 0; pos < blocks_.size(); ++pos) {
         // Preserve mark-derived live_bytes: the post-mark shrink decision
         // uses it, and lazy sweep recomputes the same value as it walks.
-        BufferMetadata& meta = blocks_.meta(blocks_.idAt(pos));
+        const BlockId id = blocks_.idAt(pos);
+        BufferMetadata& meta = blocks_.meta(id);
         meta.garbage_bytes = 0;
-        meta.fully_swept = false;
+        // plans/large-object-space.md D2: the LOS manages LOS blocks' space;
+        // the lazy sweep never walks them.
+        meta.fully_swept = isLosBlock(id);
     }
 }
 
@@ -4365,6 +4403,7 @@ void OldGenSpace::runPostMarkTail(GCStats* stats, MajorGCPhaseProfile* profile) 
     // preserves mark-derived live_bytes so reclaim's check is unchanged.
     transitionToSweeping();
     AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
+    losReleaseEmptyBlocks();   // plans/large-object-space.md D2
     adjustCapacityAfterMajorGC();
 #if ENABLE_GC_STATS
     // Phase B of the residency snapshot: post-reclaim, post-shrink, so
@@ -5863,8 +5902,10 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                     // can reach a body cell first when its only nursery
                     // header died; clear the side-table entry so future
                     // recycling doesn't clash with a stale id.
-                    const Header lh = loadHeaderRelaxed(sweep_cursor_);   // CR-019 (HEAP_062)
-                    if (lh.pin) {   // a body or a YLOS object: index is authoritative
+                    // A raw block (HEAP_081) has no header: its body is tracked.
+                    const bool raw_blk = (block.los & kLosRaw) != 0;
+                    const Header lh = raw_blk ? Header{} : loadHeaderRelaxed(sweep_cursor_);   // CR-019 (HEAP_062)
+                    if (raw_blk || lh.pin) {   // a body or a YLOS object: index is authoritative
                         auto it = large_body_index_.find(sweep_cursor_);
                         if (it != large_body_index_.end()) {
                             retireIndexEntry(it->second);
@@ -6393,6 +6434,7 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
         const BufferMetadata& meta = blocks_.meta(id);
         if (!meta.fully_swept || meta.live_bytes != 0) continue;
         if (blocks_.info(id).is_large) continue;
+        if (blocks_.info(id).los != 0) continue;   // the LOS releases its own (D2)
         // threaded-gc-07 (trap 4, F11): this light pass runs OUTSIDE pauses.
         if (blocks_.info(id).alloc_state == kAllocTenure && !test_shrink_ignores_tenure_) continue;
         const size_t bytes = blocks_.info(id).totalBytes();
@@ -6838,6 +6880,7 @@ OldGenSpace::reclaimAllDeadBlocksFromMeta() {
     for (size_t pos = 0; pos < blocks_.size(); ++pos) {
         const BlockId id = blocks_.idAt(pos);
         if (blocks_.info(id).is_large) continue;
+        if (blocks_.info(id).los != 0) continue;   // released by losReleaseEmptyBlocks (D2)
         if (blocks_.meta(id).live_bytes != 0) continue;
         if (blocks_.info(id).alloc_state == kAllocTenure) continue;   // threaded-gc-07 trap 4
         const size_t bytes = blocks_.info(id).totalBytes();
@@ -7088,6 +7131,7 @@ std::vector<BlockId> OldGenSpace::selectEvacuationSet(size_t max_live_to_move) {
         // Skip large/pinned blocks (sweep marks pinned via the object header,
         // but we identify the block via the is_large flag for clarity).
         if (blk.is_large) continue;
+        if (blk.los != 0) continue;   // LOS objects are pinned (D2)
         if (blk.end_of_objects > blk.start) {
             const Header* first_hdr =
                 reinterpret_cast<const Header*>(blk.start);
@@ -7316,6 +7360,21 @@ void OldGenSpace::fixReferencesSlice(size_t work_budget) {
 
         BlockInfo& block = blocks_.info(fix_id);
 
+        if (block.los != 0) {
+            // plans/large-object-space.md D2: an LOS block has no free-cell
+            // headers between its objects; fix the tracked objects in it.
+            if (!(block.los & kLosRaw)) {
+                for (const auto& kv : large_body_index_) {
+                    char* o = static_cast<char*>(kv.first);
+                    if (o >= block.start && o < block.end) fixPointersInObject(o);
+                }
+            }
+            work_done += block.totalBytes();
+            fixup_buffer_index_++;
+            fixup_cursor_ = nullptr;
+            continue;
+        }
+
         if (fixup_cursor_ == nullptr) {
             fixup_cursor_ = block.start;
         }
@@ -7478,13 +7537,11 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             // evacuated by the compactor, so their HPointer never moves.
             // fixHPointer is a no-op for non-forwarded targets, so this
             // case is here purely for tag coverage (HEAP_004).
-            LargeStringHeader* h = static_cast<LargeStringHeader*>(obj);
-            fixHPointer(h->body);
+            // HEAP_081: the body is header-less (fixHPointer would read its
+            // first payload byte as a tag) and pinned: nothing to fix.
             break;
         }
         case Tag_LargeByteHeader: {
-            LargeByteHeader* h = static_cast<LargeByteHeader*>(obj);
-            fixHPointer(h->body);
             break;
         }
         default:
@@ -7644,68 +7701,253 @@ void OldGenSpace::freeEvacuatedBuffers() {
 
 void* OldGenSpace::allocateTrackedCell(size_t total_size, size_t& cell_size,
                                        bool& is_large) {
+    total_size = (total_size + 7) & ~static_cast<size_t>(7);
+    // plans/large-object-space.md D2: an object that fits one LOS block lives
+    // in the LOS object pool; a larger one gets a dedicated is_large block (the
+    // huge tier). Neither shares a block with ordinary objects.
+    if (total_size <= los_.maxObjectBytes()) {
+        BlockId bid;
+        void* cell = allocateLos(total_size, /*raw=*/false, &bid);
+        if (!cell) return nullptr;
+        GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(alloc_stats_, total_size);
+        cell_size = los_.granulesFor(total_size) * los_.granuleBytes();
+        is_large = false;
+        // Header colour, allocate-black mark bit mid-cycle, and the block's
+        // live_bytes (HEAP_073: LOS block live = its used granules).
+        initObjectHeaderWithSize(cell, cell_size);
+        allocated_bytes += cell_size;
+        old_alloc_total_ += cell_size;   // 05c P-hat (monotone)
+#if ECO_HEAP_VALIDATE
+        if (cycleActive()) noteCycleAllocation(cell);   // threaded-gc-05a IM4
+#endif
+        return cell;
+    }
+    assert(total_size >= config_->alloc_buffer_size &&
+           "allocateTrackedCell: the LOS covers everything below one block");
     void* body = allocate(total_size);
     if (!body) return nullptr;
     GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(alloc_stats_, total_size);
-
-    // Decide whether the cell landed in a dedicated is_large block. The
-    // BBoP allocator places sizes >= alloc_buffer_size into is_large blocks.
-    is_large = (total_size >= config_->alloc_buffer_size);
-
-    // Cell footprint:
-    //   - For is_large: the cell owns the entire block (page-aligned, possibly
-    //     larger than total_size). cell_size = block totalBytes.
-    //   - For size-class cells: the allocator rounded our request up to the
-    //     block's size-class slot. We MUST record the slot size, not the
-    //     requested size, because pushSpanOnFreeLists uses cell_size to
-    //     re-emit free cells of exactly classToSize(cls). A request of
-    //     2056 in a 2048 slot, freed via pushSpanOnFreeLists with
-    //     span_bytes=2056 and cellSize=2048, would push one 2048 cell and
-    //     orphan an 8-byte Tag_Free placeholder past the slot boundary —
-    //     which lands in the next cell's header and corrupts the heap.
+    is_large = true;
     cell_size = total_size;
     if (contains(body)) {
         const BlockId blk_idx = blockIdFor(body);
-        if (blk_idx.valid()) {
-            const BlockInfo& blk = blocks_.info(blk_idx);
-            if (blk.is_large) {
-                cell_size = blk.totalBytes();
-            } else if (blk.size_class < NUM_SIZE_CLASSES) {
-                cell_size = classToSize(blk.size_class);
-            }
+        if (blk_idx.valid() && blocks_.info(blk_idx).is_large) {
+            cell_size = blocks_.info(blk_idx).totalBytes();
+            blocks_.info(blk_idx).los = 0;   // a reused block may have held a raw body
         }
     }
     return body;
 }
 
+// ---------------------------------------------------------------------------
+// plans/large-object-space.md D2 (HEAP_080): LOS blocks.
+// ---------------------------------------------------------------------------
+
+BlockId OldGenSpace::addLosBlock(bool raw) {
+    // An LOS block is a page taken exactly like a bag page (region bounds and
+    // page index grown by ensureBagPageAvailable), materialized as a block the
+    // size-class machinery never touches.
+    if (!ensureBagPageAvailable()) return NO_BLOCK_ID;
+    const auto extent = unassigned_blocks_.back();
+    unassigned_blocks_.pop_back();
+    assert(static_cast<size_t>(extent.second - extent.first) == config_->alloc_buffer_size);
+    BlockInfo bi;
+    bi.start = extent.first;
+    bi.end = extent.second;
+    bi.end_of_objects = extent.second;   // live_bytes is clamped to this span
+    bi.size_class = NUM_SIZE_CLASSES;
+    bi.is_large = false;
+    bi.los = static_cast<uint8_t>(kLosBlock | (raw ? kLosRaw : 0));
+    const BlockId id =
+        materializeBlock(bi, {0, 0, /*fully_swept=*/true}, bitmapBytesForBlock(bi));
+    los_.addBlock(id.v, bi.start, raw);
+    return id;
+}
+
+void* OldGenSpace::allocateLos(size_t bytes, bool raw, BlockId* block_out) {
+    uint32_t idv = BlockId::kNone;
+    void* p = los_.tryAllocate(bytes, raw, &idv);
+    if (p == nullptr) {
+        if (!addLosBlock(raw).valid()) return nullptr;
+        p = los_.tryAllocate(bytes, raw, &idv);
+        assert(p != nullptr && "allocateLos: a fresh LOS block must fit any LOS object");
+    }
+    *block_out = BlockId{idv};
+    return p;
+}
+
+void OldGenSpace::freeLosCell(BlockId id, void* cell, size_t cell_size) {
+    los_.free(id.v, cell, cell_size);
+    // A freed cell must not keep a stale mark bit (a deferred free is marked).
+    testAndClearMarkBitInBlock(id, cell);
+    BufferMetadata& bm = blocks_.meta(id);
+    bm.live_bytes = (bm.live_bytes >= cell_size) ? bm.live_bytes - cell_size : 0;
+    allocated_bytes = (allocated_bytes >= cell_size) ? allocated_bytes - cell_size : 0;
+    frag_stats_.live_bytes =
+        (frag_stats_.live_bytes >= cell_size) ? frag_stats_.live_bytes - cell_size : 0;
+#if ECO_HEAP_VALIDATE
+    std::memset(cell, 0xD8, cell_size);   // V4-style poison: nothing may read a freed LOS cell
+#endif
+}
+
+void OldGenSpace::losSweepAtMarkEnd() {
+    // Runs inside finalizeMetaAfterMark, after the marker live merge, with no
+    // cycle active (the same point processDeferredFrees frees at). Every LOS
+    // object is tracked in large_body_index_ (kinds 0/1/2); an unmarked one is
+    // garbage: free its granules and retire its index entry (a nursery-owned
+    // id is dropped by the next minor sweep, the CR-035 protocol).
+    for (auto it = large_body_index_.begin(); it != large_body_index_.end();) {
+        void* obj = it->first;
+        const BlockId bid = contains(obj) ? blockIdFor(obj) : NO_BLOCK_ID;
+        if (!bid.valid() || !isLosBlock(bid) || isMarkedInBlock(bid, obj)) {
+            ++it;
+            continue;
+        }
+        LargeBodyMeta& m = large_bodies_[it->second];
+        freeLosCell(bid, obj, m.cell_size);
+        retireIndexEntry(it->second);
+        it = large_body_index_.erase(it);
+    }
+    // HEAP_073 for LOS blocks: live_bytes is exactly the used granules (marker
+    // attribution covers scanned objects only, and raw bodies are never scanned).
+    for (size_t pos = 0; pos < blocks_.size(); ++pos) {
+        const BlockId id = blocks_.idAt(pos);
+        const BlockInfo& b = blocks_.info(id);
+        if (b.los & kLosBlock) {
+            blocks_.meta(id).live_bytes = los_.usedBytes(id.v);
+        } else if (b.is_large && (b.los & kLosRaw) && isMarkedInBlock(id, b.start)) {
+            // A marked raw huge body was never scanned: its bytes are live
+            // (else the shrink would release a live block, live_bytes == 0).
+            blocks_.meta(id).live_bytes = b.totalBytes();
+        }
+    }
+#if ECO_HEAP_VALIDATE
+    validateLosTracking("losSweepAtMarkEnd");
+#endif
+}
+
+#if ECO_HEAP_VALIDATE
+// HEAP_080: every allocated LOS granule belongs to a tracked object (an index
+// entry, or a deferred free still waiting for processDeferredFrees): an
+// untracked LOS object would never be freed (the LOS frees through the index).
+void OldGenSpace::validateLosTracking(const char* where) const {
+    std::unordered_map<uint32_t, size_t> tracked;
+    auto add = [&](void* p, size_t cs) {
+        if (p == nullptr || !contains(p)) return;
+        const BlockId b = blockIdFor(p);
+        if (b.valid() && isLosBlock(b)) tracked[b.v] += cs;
+    };
+    for (const auto& kv : large_body_index_) add(kv.first, large_bodies_[kv.second].cell_size);
+    for (const LargeBodyMeta& m : deferred_frees_) add(m.body_base, m.cell_size);
+    for (size_t pos = 0; pos < blocks_.size(); ++pos) {
+        const BlockId id = blocks_.idAt(pos);
+        if (!isLosBlock(id)) continue;
+        const size_t used = los_.usedBytes(id.v);
+        const auto it = tracked.find(id.v);
+        const size_t t = it == tracked.end() ? 0 : it->second;
+        if (used != t) {
+            std::fprintf(stderr, "[heap-validate] HEAP_080 (%s): LOS block %u has %zu used "
+                         "bytes but its tracked objects cover %zu\n", where, id.v, used, t);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+}
+#endif
+
+void OldGenSpace::losReleaseEmptyBlocks() {
+    const auto empty = los_.emptyBlocks();
+    const size_t keep = config_->los_empty_keep;
+    if (empty.size() <= keep) return;
+    // The same floor as reclaimAllDeadBlocksFromMeta / maybeShrinkCapacity:
+    // never drop committed below max(initial_old_gen_size, alloc_buffer_size).
+    const size_t min_heap =
+        std::max(config_->initial_old_gen_size, config_->alloc_buffer_size);
+    size_t current_heap = 0;
+    for (size_t pos = 0; pos < blocks_.size(); ++pos)
+        current_heap += blocks_.info(blocks_.idAt(pos)).totalBytes();
+    for (const auto& e : unassigned_blocks_)
+        current_heap += static_cast<size_t>(e.second - e.first);
+    for (size_t k = keep; k < empty.size(); ++k) {
+        const BlockId id{empty[k]};
+        const size_t bytes = blocks_.info(id).totalBytes();
+        if (current_heap < bytes || current_heap - bytes < min_heap) break;
+        los_.removeBlock(id.v);
+        releaseBlockToAllocator(id);
+        current_heap -= bytes;
+    }
+}
+
 void* OldGenSpace::allocateLargeBody(size_t total_size, size_t logical_size,
                                      Tag body_tag, bool initial_color) {
     assert(body_tag == Tag_String || body_tag == Tag_ByteBuffer);
+    // plans/large-object-space.md D4 (HEAP_081): `total_size` is the payload;
+    // the body has no header (its tag and length live in the owning large
+    // header). Raw LOS pool, or a raw huge-tier block.
+    (void)logical_size;
+    (void)body_tag;
+    size_t raw_cell = 0;
+    bool raw_large = false;
+    void* raw = allocateRawCell(total_size, raw_cell, raw_large);
+    if (!raw) return nullptr;
+    registerLargeBody(raw, raw_cell, raw_large, initial_color);
+    return raw;
+}
+
+void* OldGenSpace::allocateRawCell(size_t total_size, size_t& cell_size, bool& is_large) {
     total_size = (total_size + 7) & ~static_cast<size_t>(7);
-
-    size_t cell_size = 0;
-    bool body_is_large = false;
-    void* body = allocateTrackedCell(total_size, cell_size, body_is_large);
+    if (total_size <= los_.maxObjectBytes()) {
+        BlockId bid;
+        void* cell = allocateLos(total_size, /*raw=*/true, &bid);
+        if (!cell) return nullptr;
+        GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(alloc_stats_, total_size);
+        cell_size = los_.granulesFor(total_size) * los_.granuleBytes();
+        is_large = false;
+        attributeNewCell(bid, cell, cell_size);
+        allocated_bytes += cell_size;
+        old_alloc_total_ += cell_size;   // 05c P-hat (monotone)
+#if ECO_HEAP_VALIDATE
+        if (cycleActive()) noteCycleAllocation(cell);   // threaded-gc-05a IM4
+#endif
+        return cell;
+    }
+    // A raw huge-tier block (one body per page-rounded block). allocate()
+    // writes an object header at the block start; the payload overwrites it,
+    // and nothing reads it: kLosRaw tells every reader there is no header.
+    void* body = allocate(total_size);
     if (!body) return nullptr;
-
-    // The body is pointer-free; pinning keeps `body_base` stable for the
-    // entire lifetime so large_body_index_'s key remains valid. allocate()
-    // already zero-initialised the header and set color appropriately for
-    // the current GC phase; we only need to set tag/pin and the size.
-    //
-    // `header.size` is the LOGICAL content length (chars for Tag_String,
-    // bytes for Tag_ByteBuffer), not derived from `total_size`. The caller's
-    // 8-byte alignment of `total_size` would otherwise round the apparent
-    // length up and expose uninitialised padding bytes as content — see
-    // Heap.hpp:261-263 for the contract that the body's `header.size`
-    // matches the owning split-header's logical length.
-    Header* hdr = static_cast<Header*>(body);
-    hdr->tag = body_tag;
-    hdr->pin = 1;
-    hdr->size = static_cast<u32>(logical_size);
-
-    registerLargeBody(body, cell_size, body_is_large, initial_color);
+    GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(alloc_stats_, total_size);
+    const BlockId hid = blockIdFor(body);
+    assert(hid.valid() && blocks_.info(hid).is_large);
+    blocks_.info(hid).los = kLosRaw;
+    cell_size = blocks_.info(hid).totalBytes();
+    is_large = true;
     return body;
+}
+
+void OldGenSpace::attributeNewCell(BlockId block_id, void* obj, size_t cell_bytes) {
+    // initObjectHeaderWithSize without the header (a header-less LOS body):
+    // mid-cycle the cell is black (its mark bit), and its bytes count in
+    // live_bytes in every phase (HEAP_073).
+    const bool black = marking_active || gc_phase_ != GCPhase::Idle;
+    if (black) {
+#if ECO_HEAP_VALIDATE
+        assertCellWasWhite(block_id, obj);   // IM4
+#endif
+        setMarkBitAtomic(block_id, obj);
+    }
+    if (black || par_promo_active_) {
+        std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
+            .fetch_add(cell_bytes, std::memory_order_relaxed);
+    } else {
+        blocks_.meta(block_id).live_bytes += cell_bytes;
+    }
+}
+
+bool OldGenSpace::isRawBody(const void* p) const {
+    if (!contains(const_cast<void*>(p))) return false;
+    const BlockId id = blockIdFor(p);
+    return id.valid() && (blocks_.info(id).los & kLosRaw) != 0;
 }
 
 void* OldGenSpace::allocateYoungLarge(size_t size, Tag tag, bool initial_color) {
@@ -7740,6 +7982,27 @@ void* OldGenSpace::allocateYoungLarge(size_t size, Tag tag, bool initial_color) 
     return obj;
 }
 
+void* OldGenSpace::allocateOldLarge(size_t size, Tag tag) {
+    // plans/large-object-space.md D3: pinned pointer-free large objects and the
+    // permanent-space fallback. Born old in the LOS object pool (or the huge
+    // tier), tracked as kind 2 so the major GC frees them when unmarked.
+    size = (size + 7) & ~static_cast<size_t>(7);
+    size_t cell_size = 0;
+    bool is_large = false;
+    void* obj = allocateTrackedCell(size, cell_size, is_large);
+    if (!obj) return nullptr;
+    Header* hdr = getHeader(obj);
+    const u32 saved_color = hdr->color;
+    initHeaderForTag(hdr, tag, size);            // size / K / ext words (HEAP_019)
+    Header h = loadHeaderRelaxed(hdr);
+    h.color = saved_color;
+    h.pin = 1;
+    storeHeaderRelaxed(hdr, h);
+    registerLargeBody(obj, cell_size, is_large, /*minor_color=*/false, /*kind=*/2,
+                      /*owned=*/false);
+    return obj;
+}
+
 // TLA-REGION(OGS.promoteYoungLarge) begin
 void OldGenSpace::promoteYoungLarge(void* obj) {
     auto it = large_body_index_.find(obj);
@@ -7753,10 +8016,10 @@ void OldGenSpace::promoteYoungLarge(void* obj) {
             break;
         }
     }
-    large_body_index_.erase(it);
-    large_bodies_[id].body_base = nullptr;
-    large_bodies_[id].kind = 0;
-    free_large_body_ids_.push_back(id);
+    // plans/large-object-space.md D2: the object stays tracked as an old LOS
+    // object (kind 2, no longer nursery-owned) so the major GC frees it when
+    // unmarked; youngLargeMeta/youngLargeMember see kind 1 only.
+    large_bodies_[id].kind = 2;
     // An ordinary old object from here on (as a promoted copy: age 0). The
     // bounding box stays conservative until the minor-end recompute.
     // CR-019: a sweep slice under promo_mu_ may read this header word
@@ -7808,11 +8071,15 @@ void OldGenSpace::retireIndexEntry(LargeBodyId id) {
         alloc_stats_.lp.ylos_retired_major++;
 #endif
     large_bodies_[id].body_base = nullptr;
+    // plans/large-object-space.md: a kind-2 entry is never in
+    // nursery_owned_bodies_, so no minor stale-drop recycles its id.
+    if (large_bodies_[id].kind == 2) free_large_body_ids_.push_back(id);
 }
 
 // TLA-REGION(OGS.registerLargeBody) begin
 OldGenSpace::LargeBodyId OldGenSpace::registerLargeBody(
-        void* body, size_t cell_size, bool is_large, bool minor_color, uint8_t kind) {
+        void* body, size_t cell_size, bool is_large, bool minor_color, uint8_t kind,
+        bool owned) {
     LargeBodyId id;
     if (!free_large_body_ids_.empty()) {
         id = free_large_body_ids_.back();
@@ -7823,7 +8090,7 @@ OldGenSpace::LargeBodyId OldGenSpace::registerLargeBody(
         large_bodies_.push_back(LargeBodyMeta{body, cell_size, is_large, minor_color, kind});
     }
     large_body_index_[body] = id;
-    nursery_owned_bodies_.push_back(id);
+    if (owned) nursery_owned_bodies_.push_back(id);
     return id;
 }
 // TLA-REGION(OGS.registerLargeBody) end
@@ -7861,15 +8128,12 @@ void OldGenSpace::promoteLargeHeader(HPointer body_hp) {
             break;
         }
     }
-    // Fully untrack: the body is now governed by standard major-GC mark/sweep
-    // through the promoted header. Reclaiming the meta slot keeps the index
-    // map small and lets a future allocateLargeBody at the same address
-    // register cleanly.
-    large_body_index_.erase(it);
-    if (id < large_bodies_.size()) {
-        large_bodies_[id].body_base = nullptr;
-        free_large_body_ids_.push_back(id);
-    }
+    // plans/large-object-space.md D2: the body stays tracked as an old LOS
+    // object (kind 2, no longer nursery-owned): the LOS frees memory only
+    // through the index (losSweepAtMarkEnd / the huge-tier classify), so an
+    // untracked body would never be freed. Its header's minor marks
+    // (markLargeBodySeen, kind 0 only) no longer touch it.
+    if (id < large_bodies_.size()) large_bodies_[id].kind = 2;
 }
 
 // TLA-REGION(OGS.sweepNurseryLargeBodies) begin
@@ -7933,7 +8197,9 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
         // nursery_owned_bodies_ because the swap-remove search bailed at the
         // first match. Drop it without re-pushing onto free_large_body_ids_
         // (it's already there).
-        if (m.body_base == nullptr) {
+        if (m.body_base == nullptr || m.kind == 2) {
+            // (A kind-2 entry is an old LOS object, never owned: a stale
+            // duplicate of its id here must not free it.)
             nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
             nursery_owned_bodies_.pop_back();
             continue;
@@ -7988,6 +8254,17 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
     // and the is_large branch) are idempotent guards — they must NOT push
     // onto free_large_body_ids_; only this path recycles ids.
     large_body_index_.erase(m.body_base);
+
+    // plans/large-object-space.md D2: an LOS cell returns its granules to the
+    // LOS (coalescing is implicit in its bitmap); nothing goes on a free list.
+    if (!m.is_large && contains(m.body_base)) {
+        const BlockId lid = blockIdFor(m.body_base);
+        if (lid.valid() && isLosBlock(lid)) {
+            freeLosCell(lid, m.body_base, m.cell_size);
+            m.body_base = nullptr;
+            return;
+        }
+    }
 
     if (m.is_large) {
         // Body owns its block; route to free_large_blocks_ and reset metadata.

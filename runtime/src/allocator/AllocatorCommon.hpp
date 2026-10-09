@@ -203,6 +203,11 @@ constexpr float MAJOR_GC_GARBAGE_FRACTION = 0.70f;
 // reaches the budget: 0 debt requests), wall within noise.
 constexpr double DIRECT_ALLOC_MINOR_BUDGET = 1.0;
 
+// Empty LOS blocks kept for reuse after a major GC; beyond this many, empty LOS
+// blocks are released to the Allocator at the post-mark tail
+// (plans/large-object-space.md D2).
+constexpr size_t LOS_EMPTY_KEEP = 2;
+
 // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS (virtual mapping is retained either way).
 constexpr bool DECOMMIT_ON_OLDGEN_RELEASE = true;
 
@@ -785,6 +790,9 @@ struct HeapConfig {
     // Direct old-gen allocation since the last minor that requests the next one, as a multiple
     // of the nursery's minor threshold (0 disables; plans/large-body-gc-trigger.md D2).
     double direct_alloc_minor_budget = DIRECT_ALLOC_MINOR_BUDGET;
+
+    // Empty LOS blocks kept after a major GC (plans/large-object-space.md D2).
+    size_t los_empty_keep = LOS_EMPTY_KEEP;
 
     // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS.
     bool decommit_on_oldgen_release = DECOMMIT_ON_OLDGEN_RELEASE;

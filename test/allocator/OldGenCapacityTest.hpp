@@ -13,3 +13,4 @@ extern Testing::TestCase testShrinkHysteresisGuard;
 extern Testing::TestCase testShrinkHonorsFloor;
 extern Testing::TestCase testUnassignedBlocksShrink;
 extern Testing::TestCase testDecommitFlagPathExercised;
+extern Testing::TestCase testReusedExtentTailIsReleased;

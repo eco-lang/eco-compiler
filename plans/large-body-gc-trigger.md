@@ -537,6 +537,7 @@ No model checks in CI.
     failure is `EcoSystemFileManySmall`, a 60 s timeout unrelated to this plan (10,000 files x
     100 cycles at ~2.5 s per cycle, thread hand-off bound; Node's fs is 2x slower per cycle).
   - TLA canary: passes unchanged.
+- **2026-10-09:** the bag-page fragmentation that blocked Phase 0.2 and Phase 3.1 is fixed by `plans/large-object-space.md` (HEAP_080/HEAP_081); `LargeBytesChurnTest` now passes natively.
 - **Status:** D1-D6 done and gated. Goals 2.1 (debt bounds direct bytes between minors), 2.2
   (majors run, cycles finish: case (b), KeepAll's 10 majors), 2.3 (recovery + clear message) and
   2.4 (no self-compile slowdown) are met. Not met: Phase 0.2's RSS bound natively and Phase 3.1

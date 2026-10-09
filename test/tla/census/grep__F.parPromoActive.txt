@@ -7,6 +7,7 @@ runtime/src/allocator/OldGenSpace.cpp: assert(par_promo_active_);
 runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(par_promo_active_, 0)) {
 runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(par_promo_active_, 0)) {
 runtime/src/allocator/OldGenSpace.cpp: if (black || par_promo_active_) {
+runtime/src/allocator/OldGenSpace.cpp: if (black || par_promo_active_) {
 runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_ && blocks_.info(i).alloc_state == kAllocCurrent) continue;
 runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1)
 runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1) {

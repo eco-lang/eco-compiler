@@ -464,3 +464,9 @@ deterministic. No atomic step, lock, shared location or memory order changed. M2
 `k` as owner-only and models what an assist does (`J_Start`, `J_AssistCheck`), not how its budget is
 computed; the decision and `k` are unchanged.
 **Verdict: no model change needed.**
+
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+
+Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
+
+Pin fired: census `OldGenSpace.cpp` (**714b07d48107**): one relaxed `atomic_ref<uint64_t>::fetch_add` on `BufferMetadata::live_bytes` in `OldGenSpace::attributeNewCell` (allocate-black for a header-less LOS body), the same location and order as `initObjectHeaderWithSize`'s. Mutator only, no slice/ticket/termination state. **Verdict: no model change needed.**

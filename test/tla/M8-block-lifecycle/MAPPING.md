@@ -97,6 +97,13 @@ heaps it can end in; free choices stand for the thresholds the model cannot see 
 | `ResetForMark`, `MarkFrom`, `Clamp`, `Demote`, `ToSweeping`, `Classify`, `RetireDead` | `OGS:2983-3062`; the mark (`markOneObject`'s walk step); `finalizeMetaAfterMark` `:4040`; `demoteMostlyDeadUniformBlocks` `:4128` (never the heap-base block `:4148`); `transitionToSweeping` `:5451`; `classifyBlocksAfterMark` `:1815`; `retireDeadLargeBodies` `:1793` |
 | `FreeLBC`, `FreeUniformCell`, `SweepWillReach` | `freeLargeBodyCell` `OGS:7686` (large branch; uniform → `freeUniformCell` `:1014`; unswept mixed `:7763` → bit only; else `pushSpanOnFreeLists`); `sweepWillReach` `:1783` |
 | `SweepBodies`, `PromoteYL`, `Reach` | `sweepNurseryLargeBodies` `OGS:7581`; `promoteYoungLarge` `:7476`; `reachYoungLarge` `NS:1783` |
+| **LOS (`LOS = TRUE`, the code since 2026-10-09, plans/large-object-space.md, HEAP_080):** `LosAlloc`, `LosPlace` | `allocateLargePinned` / `allocateYoungLarge` → `OldGenSpace::allocateOldLarge` / `allocateYoungLarge` → `allocateTrackedCell` → `allocateLos` → `LargeObjectSpace::tryAllocate`, else `addLosBlock` (`ensureBagPageAvailable` + `materializeBlock`, `BlockInfo::los`) and retry; `initObjectHeaderWithSize` (= `Gate`) | all, `LosTracked`, `LosSeparation` |
+| `RegisterOld`; `Register` (kind 1) | `allocateOldLarge`'s `registerLargeBody(…, kind 2, owned = false)`; `allocateYoungLarge`'s kind-1 registration | `IndexFaithful`, `LosTracked` |
+| `FreeLosCell` (`FreeLBC`'s LOS arm) | `freeLargeBodyCell`'s LOS arm → `freeLosCell` (`LargeObjectSpace::free`, mark bit, `live_bytes`) | `NoLostObject`, `NoDoubleAlloc` |
+| `PromoteYL` (LOS) | `promoteYoungLarge` re-kinds the entry to 2 (no erase); `sweepNurseryLargeBodies` drops a kind-2 id without freeing | `LosTracked` (mutant `promote_untracks`) |
+| `LosSweep` (in `PostDrain` after the mark) | `losSweepAtMarkEnd` inside `finalizeMetaAfterMark`: unmarked tracked LOS entries freed and retired (kind-2 ids recycled), LOS `live_bytes` = used granules | `NoLostObject`, `LosTracked` |
+| `LosReleaseEmpty` (after `Reclaim`) | `losReleaseEmptyBlocks` after `reclaimAllDeadBlocksFromMeta`: empty LOS blocks beyond `los_empty_keep`, above the floor, through `releaseBlockToAllocator` | `NoLostObject`, `SideTablesFaithful` |
+| the LOS exclusions | `FlipOK`, `ReclaimPick`, `ShrinkPick` skip `los`; `ResetForMark` keeps an LOS block `fully_swept` (`resetBufferMetaForMark`, `prepareMetaForLazySweep`), so the sweep never walks it | `FlipTrustsTruth`, `BlockParseable` |
 
 ## 3. Abstractions, and why each is sound
 
@@ -118,6 +125,9 @@ heaps it can end in; free choices stand for the thresholds the model cannot see 
 | a page's old bytes after a re-materialization | `mem[s]` reset to "never written" (`j`) | the code may not rely on old contents (V4 poisons reused extents in validate builds); a stale header is garbage to the new block |
 | heap-base page (`heap_base`) | slot 1: never reused for a page request, never released from the bag, never demoted | `AL:785`, `OGS:6507-6512`, `OGS:4148` |
 | `allocated_bytes`, `frag_stats_`, garbage bytes, the small-class budget, statistics | absent | read only by triggers and sizing, which are free choices here |
+| the LOS free-space manager (`LargeObjectSpace`: 1 KiB granules, a bitmap per block, bins by largest free run, best fit, page alignment) | a model granule is an LOS granule; a run is free iff no allocated object covers it; any free run may be chosen | a superset of best fit; the bitmap/bins/largest-run bookkeeping is checked against such a shadow by `LargeObjectSpaceTest` (random churn) and `validate()` |
+| raw (header-less body) vs object LOS pools | one pool: the model's LOS objects are pinned and young large objects (all headered) | a body has no children and no header; its pool only decides `greyObject`'s no-push arm (M1) and the free path, which this model represents by the object pool |
+| `LOS = FALSE` | the placement before 2026-10-09 (bag pages, large blocks) | kept so the CR-018 / CR-035 rows, controls and mutants stay meaningful history; the code is `LOS = TRUE` |
 
 ## 4. Footprint rows (A3)
 
@@ -140,6 +150,8 @@ is the same table, serially; `H9` (`BlockInfo` of reachable blocks, the flip) �
 | `FlipTrustsTruth` | HEAP_051, HEAP_073 (what `live_bytes == 0` and `fully_swept` claim) | none (CR-018 fixed by counting in every phase) |
 | `SideTablesFaithful` | HEAP_048, HEAP_049, HEAP_054 | V7 / `validateOldGenMetadata` |
 | witnesses `NoSizeClassedBagCarve`, `NoSameIdSameStartReissue` | CR-029's route, CR-036's shape | — |
+| `LosTracked` | HEAP_080 (every LOS object is tracked: the LOS frees only through the index) | `validateLosTracking` at `losSweepAtMarkEnd` (validate) |
+| `LosSeparation` | HEAP_080 (pinned and young large objects live in LOS blocks, nothing else does) | `placeLarge`'s cap, `allocateTrackedCell` |
 
 `BlockParseable` exempts uniform blocks (bitmap-parsed, HEAP_024) and a mixed block the running
 sweep has still to walk (`phase = Sweeping ∧ ¬fs`: the gap sweep rewrites its dead space before

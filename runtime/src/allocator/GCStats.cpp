@@ -865,6 +865,17 @@ void GCStats::combine(const GCStats& other) {
     minor_gc_debt_requests += other.minor_gc_debt_requests;
     large_body_recover_minors += other.large_body_recover_minors;
     large_body_recover_majors += other.large_body_recover_majors;
+    los.allocs += other.los.allocs;
+    los.frees += other.los.frees;
+    los.alloc_bytes += other.los.alloc_bytes;
+    los.free_bytes += other.los.free_bytes;
+    los.object_bytes += other.los.object_bytes;
+    los.blocks_added += other.los.blocks_added;
+    los.blocks_removed += other.los.blocks_removed;
+    los.fit_misses += other.los.fit_misses;
+    los.aligned_allocs += other.los.aligned_allocs;
+    los.blocks_now += other.los.blocks_now;
+    los.used_bytes_now += other.los.used_bytes_now;
     objects_survived += other.objects_survived;
     objects_promoted += other.objects_promoted;
     bytes_freed += other.bytes_freed;
@@ -1088,6 +1099,14 @@ void GCStats::print() const {
     std::cout << "  Debt minor requests:   " << std::setw(12) << minor_gc_debt_requests << std::endl;
     std::cout << "  Lg-body recover minor: " << std::setw(12) << large_body_recover_minors << std::endl;
     std::cout << "  Lg-body recover major: " << std::setw(12) << large_body_recover_majors << std::endl;
+    std::cout << "  LOS allocs / frees:    " << std::setw(12) << los.allocs << " / " << los.frees << std::endl;
+    std::cout << "  LOS alloc bytes:       " << std::setw(12) << std::fixed << std::setprecision(2)
+              << (los.alloc_bytes / (1024.0 * 1024.0)) << " MB (objects "
+              << (los.object_bytes / (1024.0 * 1024.0)) << " MB)" << std::endl;
+    std::cout << "  LOS blocks now / used: " << std::setw(12) << los.blocks_now << " / "
+              << std::setprecision(2) << (los.used_bytes_now / (1024.0 * 1024.0)) << " MB" << std::endl;
+    std::cout << "  LOS blocks +/-:        " << std::setw(12) << los.blocks_added << " / " << los.blocks_removed
+              << "  (fit misses " << los.fit_misses << ", page-aligned " << los.aligned_allocs << ")" << std::endl;
 
     if (objects_allocated > 0) {
         double survival_rate = (objects_survived * 100.0) / objects_allocated;
@@ -1851,6 +1870,7 @@ void GCStats::reset() {
     minor_gc_debt_requests = 0;
     large_body_recover_minors = 0;
     large_body_recover_majors = 0;
+    los = LosStats{};
     objects_survived = 0;
     objects_promoted = 0;
     bytes_freed = 0;

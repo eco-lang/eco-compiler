@@ -55,6 +55,7 @@ runtime/src/allocator/GCStats.hpp: uint64_t residency_pinned_live_bytes = 0;
 runtime/src/allocator/OldGenSpace.cpp: "%zu: popcount %llu x %zu != live_bytes %zu\n", where, id.v,
 runtime/src/allocator/OldGenSpace.cpp: (allocated_bytes >= post_sweep_live_bytes_)
 runtime/src/allocator/OldGenSpace.cpp: (allocated_bytes >= post_sweep_live_bytes_)
+runtime/src/allocator/OldGenSpace.cpp: (frag_stats_.live_bytes >= cell_size) ? frag_stats_.live_bytes - cell_size : 0;
 runtime/src/allocator/OldGenSpace.cpp: * mark-derived live_bytes (the post-mark shrink decision depends on it).
 runtime/src/allocator/OldGenSpace.cpp: * post-mark live_bytes attribution differs from the post-sweep value
 runtime/src/allocator/OldGenSpace.cpp: ? (allocated_bytes - post_sweep_live_bytes_) : 0;
@@ -65,9 +66,13 @@ runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.bm.bitmap_free_bytes_at_majo
 runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.im.traced_live_bytes += cycle_traced_live_;
 runtime/src/allocator/OldGenSpace.cpp: allocated_bytes = frag_stats_.live_bytes;
 runtime/src/allocator/OldGenSpace.cpp: blocks_.meta(block_id).live_bytes += cell_bytes;
+runtime/src/allocator/OldGenSpace.cpp: blocks_.meta(block_id).live_bytes += cell_bytes;
 runtime/src/allocator/OldGenSpace.cpp: blocks_.meta(c.block).live_bytes += c.pending_live;
+runtime/src/allocator/OldGenSpace.cpp: blocks_.meta(id).live_bytes = b.totalBytes();
+runtime/src/allocator/OldGenSpace.cpp: blocks_.meta(id).live_bytes = los_.usedBytes(id.v);
 runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes -= m.cell_size;
 runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes -= m.cell_size;
+runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes = (bm.live_bytes >= cell_size) ? bm.live_bytes - cell_size : 0;
 runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes = 0;
 runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes = 0;
 runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes = 0;
@@ -87,6 +92,7 @@ runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes += size;
 runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes -= m.cell_size;
 runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes -= m.cell_size;
 runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes -= total;
+runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes =
 runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes = 0;
 runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes = 0;
 runtime/src/allocator/OldGenSpace.cpp: frag_stats_.live_bytes = 0;
@@ -119,6 +125,7 @@ runtime/src/allocator/OldGenSpace.cpp: post_sweep_live_bytes_ = total_live;
 runtime/src/allocator/OldGenSpace.cpp: profile->live_bytes_after = frag_stats_.live_bytes;
 runtime/src/allocator/OldGenSpace.cpp: size_t live_bytes;
 runtime/src/allocator/OldGenSpace.cpp: stats.recordBlockResidency(total, meta.live_bytes,
+runtime/src/allocator/OldGenSpace.cpp: std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
 runtime/src/allocator/OldGenSpace.cpp: std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
 runtime/src/allocator/OldGenSpace.cpp: std::atomic_ref<uint64_t>(blocks_.meta(c.block).live_bytes)
 runtime/src/allocator/OldGenSpace.cpp: std::atomic_ref<uint64_t>(blocks_.meta(id).live_bytes)

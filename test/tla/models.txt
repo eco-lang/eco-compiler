@@ -433,6 +433,11 @@ M8  M8-block-lifecycle  MC  mutants/idle_uncounted.cfg            quick  tlc  vi
 M8  M8-block-lifecycle  MC  mutants/idle_uncounted_flip.cfg       quick  tlc  violates:FlipTrustsTruth        # CR-018 pre-fix (A6)
 M8  M8-block-lifecycle  MC  mutants/flip_keeps_index.cfg          quick  tlc  violates:IndexFaithful          # CR-035 pre-fix (A6; with idle_uncounted)
 M8  M8-block-lifecycle  MC  mutants/flip_keeps_index_lost.cfg     quick  tlc  violates:NoLostObject           # CR-035 pre-fix S1 (A6; with idle_uncounted)
+# plans/large-object-space.md (2026-10-09): the large-object space (LOS = TRUE is the code since; the
+# rows above keep LOS = FALSE, the earlier placement, for the CR-018 / CR-035 history).
+M8  M8-block-lifecycle  MC  MC_quick_los.cfg                      quick  tlc  pass                            # HEAP_080: LOS placement, tracking, sweep, release
+M8  M8-block-lifecycle  MC  MC_quick_los_page.cfg                 quick  tlc  pass                            # ... whole-block LOS objects, exact-page promotions
+M8  M8-block-lifecycle  MC  mutants/los_promote_untracks.cfg      quick  tlc  violates:LosTracked             # the 2026-10-09 promotion leak (A6)
 
 # M8 deep tier (tla-check-deep): three pages, seven operations; broad without the former CR-018 /
 # CR-033 preconditions, and the fixed code (the defaults since 2026-09-30) with every request size.

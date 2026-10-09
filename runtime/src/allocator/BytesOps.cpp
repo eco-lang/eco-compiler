@@ -41,10 +41,10 @@ HPointer fromList(HPointer list) {
             StackRootRangeGuard guard(&list, 1, 0x1);
             hp = allocator.allocLargeByteBuffer(nullptr, count);
         }
-        ByteBuffer* dst = alloc::resolveByteBufferBody(allocator.resolve(hp));
+        u8* dst = largeBytesData(static_cast<LargeByteHeader*>(allocator.resolve(hp)));
         size_t i = 0;
         for (alloc::ListCursor lc(list); !lc.done() && i < count; lc.next()) {
-            dst->bytes[i++] = static_cast<u8>(lc.current().i & 0xFF);
+            dst[i++] = static_cast<u8>(lc.current().i & 0xFF);
         }
         return hp;
     }

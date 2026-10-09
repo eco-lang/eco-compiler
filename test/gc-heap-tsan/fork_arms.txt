@@ -13,6 +13,8 @@
 #             reach  the arm exits 1 (a window is reached; not a defect by itself)
 #             wontfix the arm exits 1 (accepted behaviour of a Won't-fix entry; passes in both modes, exit 0 = XPASS)
 #             flaky  report only
+#             retired the arm exits 0 saying "route RETIRED": its route is unreachable by construction
+#                    (a register "route retired" verdict; tsan rows only)
 # Arm exit codes: 0 not reproduced, 1 reproduced, 4 a precondition was missed (reached=0), any
 # other code / signal / timeout: an error.
 plain  quick  mut                    3  1  clean
@@ -34,8 +36,8 @@ tsan   quick  det-cr001:wf:inloop    3  0  clean                              # 
 tsan   quick  det-cr001:rf:tail      3  0  clean                              # CR-001, tail write (fixed 2026-09-30: atomic_ref)
 tsan   quick  det-cr001:wf:tail      3  0  clean                              # CR-001, tail write, reverse order (fixed 2026-09-30: atomic_ref)
 tsan   quick  det-cr002              3  0  clean                              # CR-002 sweep word read vs fetch_or (fixed 2026-09-30: finalized under promo_mu_)
-tsan   quick  det-cr019:t1first      3  0  clean                              # CR-019 YLOS header write vs sweep read (fixed 2026-10-01: relaxed atomic header word)
-tsan   quick  det-cr019:t2first      3  0  clean                              # CR-019, reverse order (fixed 2026-10-01)
+tsan   quick  det-cr019:t1first      3  0  retired                            # CR-019 YLOS header write vs sweep read (fixed 2026-10-01; route retired 2026-10-09: YLOS lives in LOS blocks, never swept)
+tsan   quick  det-cr019:t2first      3  0  retired                            # CR-019, reverse order (route retired 2026-10-09)
 tsan   quick  cr012:a                3  0  clean                              # CR-012(a) old_gen_in_use_bytes_ (relaxed atomic since 2026-10-01; the shared VALUE is won't-fix, CRT CR-012(a))
 tsan   quick  cr012:e                3  0  wontfix match=validatePageWork     # CR-012(e) validator vs virgin block (won't-fix: two live heaps need the opt-in, HEAP_007)
 plain  stress host-exit             20  1  flaky       # CR-031

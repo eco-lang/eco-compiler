@@ -93,10 +93,7 @@ inline std::pair<const u8*, u32> utf8Bytes(void* o) {
     if (bh->tag == Tag_StringUtf8Leaf) {
         p = static_cast<ElmStringUtf8Leaf*>(base)->bytes;
     } else if (bh->tag == Tag_LargeByteHeader) {
-        void* body = Allocator::resolveFast(
-            static_cast<LargeByteHeader*>(base)->body);
-        if (!body) return {nullptr, 0};
-        p = static_cast<ByteBuffer*>(body)->bytes;
+        p = largeBytesData(static_cast<LargeByteHeader*>(base));
     } else {
         // Tag_ByteBuffer
         p = static_cast<ByteBuffer*>(base)->bytes;
@@ -285,11 +282,8 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
     }
     if (hdr->tag == Tag_LargeStringHeader) {
         LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-        void* body = Allocator::resolveFast(h->body);
-        if (!body) return;
-        ElmString* leaf = static_cast<ElmString*>(body);
-        if (leaf->header.size > 0)
-            u16cb(static_cast<const u16*>(leaf->chars), leaf->header.size);
+        if (h->header.size > 0)
+            u16cb(static_cast<const u16*>(largeStringChars(h)), h->header.size);
         return;
     }
     if (hdr->tag == Tag_StringSlice) {
@@ -297,13 +291,7 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
         if (slc->header.size == 0) return;
         void* base = Allocator::resolveFast(slc->base);
         if (!base) return;
-        if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
-            LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
-            base = Allocator::resolveFast(lh->body);
-            if (!base) return;
-        }
-        ElmString* leaf = static_cast<ElmString*>(base);
-        u16cb(static_cast<const u16*>(leaf->chars + slc->offset), slc->header.size);
+        u16cb(static_cast<const u16*>(flatStringChars(base) + slc->offset), slc->header.size);
         return;
     }
     if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
@@ -328,24 +316,15 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
                 u16cb(static_cast<const u16*>(s->chars), s->header.size);
         } else if (h->tag == Tag_LargeStringHeader) {
             LargeStringHeader* lh = static_cast<LargeStringHeader*>(top);
-            void* body = Allocator::resolveFast(lh->body);
-            if (body) {
-                ElmString* leaf = static_cast<ElmString*>(body);
-                if (leaf->header.size > 0)
-                    u16cb(static_cast<const u16*>(leaf->chars), leaf->header.size);
-            }
+            if (lh->header.size > 0)
+                u16cb(static_cast<const u16*>(largeStringChars(lh)), lh->header.size);
         } else if (h->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
             if (slc->header.size > 0) {
                 void* base = Allocator::resolveFast(slc->base);
                 if (base) {
-                    if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
-                        LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
-                        base = Allocator::resolveFast(lh->body);
-                    }
-                    if (base) {
-                        ElmString* leaf = static_cast<ElmString*>(base);
-                        u16cb(static_cast<const u16*>(leaf->chars + slc->offset),
+                    {
+                        u16cb(static_cast<const u16*>(flatStringChars(base) + slc->offset),
                               slc->header.size);
                     }
                 }
@@ -424,23 +403,14 @@ inline u16 charAt(void* str, i64 index) {
         if (hdr->tag == Tag_LargeStringHeader) {
             // Split header: resolve to the Tag_String body and read chars[].
             LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-            void* body = allocator.resolve(h->body);
-            if (!body) return 0;
-            ElmString* leaf = static_cast<ElmString*>(body);
-            return leaf->chars[index];
+            return largeStringChars(h)[index];
         }
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             void* base = allocator.resolve(slc->base);
             if (!base) return 0;
-            // Slice's base may itself be a split header — resolve through it.
-            if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
-                LargeStringHeader* h = static_cast<LargeStringHeader*>(base);
-                base = allocator.resolve(h->body);
-                if (!base) return 0;
-            }
-            ElmString* leaf = static_cast<ElmString*>(base);
-            return leaf->chars[slc->offset + index];
+            // Slice's base may itself be a split header (flatStringChars reads through it).
+            return flatStringChars(base)[slc->offset + index];
         }
         if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
             // ASCII: the unit index is the byte index (bounds checked above).
@@ -622,22 +592,13 @@ inline std::pair<const u16*, u32> singleSegmentView(void* str) {
     }
     if (hdr->tag == Tag_LargeStringHeader) {
         LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-        void* body = Allocator::resolveFast(h->body);
-        if (!body) return {nullptr, 0};
-        ElmString* leaf = static_cast<ElmString*>(body);
-        return {leaf->chars, leaf->header.size};
+        return {largeStringChars(h), h->header.size};
     }
     if (hdr->tag == Tag_StringSlice) {
         ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
         void* base = Allocator::resolveFast(slc->base);
         if (!base) return {nullptr, 0};
-        if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
-            LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
-            base = Allocator::resolveFast(lh->body);
-            if (!base) return {nullptr, 0};
-        }
-        ElmString* leaf = static_cast<ElmString*>(base);
-        return {leaf->chars + slc->offset, slc->header.size};
+        return {flatStringChars(base) + slc->offset, slc->header.size};
     }
     return {nullptr, 0};
 }
@@ -1372,11 +1333,8 @@ inline std::u16string toStdU16String(void* str) {
     }
     if (hdr->tag == Tag_LargeStringHeader) {
         LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-        void* body = Allocator::instance().resolve(h->body);
-        if (!body) return {};
-        ElmString* leaf = static_cast<ElmString*>(body);
-        return std::u16string(reinterpret_cast<const char16_t*>(leaf->chars),
-                              leaf->header.size);
+        return std::u16string(reinterpret_cast<const char16_t*>(largeStringChars(h)),
+                              h->header.size);
     }
     if (hdr->tag == Tag_StringSlice) {
         ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
@@ -1384,14 +1342,8 @@ inline std::u16string toStdU16String(void* str) {
         u32 offset = slc->offset;
         void* base = Allocator::instance().resolve(slc->base);
         if (!base) return {};
-        // A slice's base can be a split-header — resolve through it.
-        if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
-            LargeStringHeader* h = static_cast<LargeStringHeader*>(base);
-            base = Allocator::instance().resolve(h->body);
-            if (!base) return {};
-        }
-        ElmString* leaf = static_cast<ElmString*>(base);
-        return std::u16string(reinterpret_cast<const char16_t*>(leaf->chars + offset), len);
+        // A slice's base can be a split-header (flatStringChars reads through it).
+        return std::u16string(reinterpret_cast<const char16_t*>(flatStringChars(base) + offset), len);
     }
     if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
         auto pr = utf8Bytes(str);
@@ -1421,30 +1373,18 @@ inline std::u16string toStdU16String(void* str) {
             std::memcpy(dst, s->chars, s->header.size * sizeof(u16));
             dst += s->header.size;
         } else if (h->tag == Tag_LargeStringHeader) {
-            // Split header: resolve to body and copy from its chars[].
+            // Split header: copy from its body's chars (raw accessor).
             LargeStringHeader* lh = static_cast<LargeStringHeader*>(top);
-            void* body = allocator.resolve(lh->body);
-            if (body) {
-                ElmString* leaf = static_cast<ElmString*>(body);
-                std::memcpy(dst, leaf->chars, leaf->header.size * sizeof(u16));
-                dst += leaf->header.size;
-            }
+            std::memcpy(dst, largeStringChars(lh), lh->header.size * sizeof(u16));
+            dst += lh->header.size;
         } else if (h->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
             void* base = allocator.resolve(slc->base);
             if (base) {
-                // A slice's base may be a Tag_LargeStringHeader; resolve
-                // through it to the body (mirrors charAt / top-level slice
-                // handler in this file).
-                if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
-                    LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
-                    base = allocator.resolve(lh->body);
-                }
-                if (base) {
-                    ElmString* leaf = static_cast<ElmString*>(base);
-                    std::memcpy(dst, leaf->chars + slc->offset, slc->header.size * sizeof(u16));
-                    dst += slc->header.size;
-                }
+                // A slice's base may be a Tag_LargeStringHeader (flatStringChars
+                // reads through it, mirroring charAt / the top-level slice handler).
+                std::memcpy(dst, flatStringChars(base) + slc->offset, slc->header.size * sizeof(u16));
+                dst += slc->header.size;
             }
         } else if (h->tag == Tag_StringUtf8View || h->tag == Tag_StringUtf8Leaf) {
             auto pr = utf8Bytes(top);

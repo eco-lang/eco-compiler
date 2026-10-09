@@ -50,7 +50,11 @@ CONSTANTS
     DemoteMax,   \* demote a uniform block iff live_bytes <= DemoteMax granules (-1: off)
     Cov,         \* record the paths taken in h.ev (coverage runs only; FALSE in every row)
     Keep(_),     \* scenario filter on an allocation's outcomes (MC.tla; TRUE but in CR-035's rows)
-    MUTANT       \* the negative controls and fix candidates switched on (AUDIT.md)
+    MUTANT,      \* the negative controls and fix candidates switched on (AUDIT.md)
+    LOS,         \* plans/large-object-space.md (2026-10-09): pinned and young large objects
+                 \* live in LOS blocks (TRUE: the code since then); FALSE: the earlier placement
+                 \* (bag pages, large blocks), kept for the CR-018/CR-035 rows' history
+    LosKeep      \* los_empty_keep: empty LOS blocks kept at the post-mark tail
 
 ASSUME CellSize[0] = 2 /\ NC >= 1 /\ NCLS > NC /\ NIds >= NS + 1 /\ InitPages <= NS
 ASSUME \A c \in 1..(NCLS - 1) : CellSize[c - 1] < CellSize[c] /\ CellSize[NCLS - 1] <= G
@@ -105,7 +109,7 @@ OH(o)  == [t |-> "o", v |-> o]
 FH(n)  == [t |-> "f", v |-> n]
 
 NoBlk  == [live |-> FALSE, s |-> 0, cls |-> 0, lg |-> FALSE, eoo |-> 0, st |-> "none",
-           lb |-> 0, fs |-> FALSE, marks |-> {}, lmark |-> FALSE]
+           lb |-> 0, fs |-> FALSE, marks |-> {}, lmark |-> FALSE, los |-> FALSE]
 NoObj  == [st |-> "N", s |-> 0, off |-> 0, sz |-> 0, root |-> FALSE, ylos |-> FALSE,
            pin |-> FALSE, age |-> 0]
 NoMeta == [base |-> Null, cs |-> 0, lg |-> FALSE, color |-> FALSE, kind |-> 0, o |-> 0]
@@ -175,7 +179,8 @@ Materialize(h, s, cls, lg, eoo, lb, fs) ==
                         !.reissue = @ \/ (reuse /\ h.blk[id].s = s),
                         !.ev = IF Cov /\ reuse /\ h.blk[id].s = s THEN @ \cup {"reissue"} ELSE @,
                         !.blk[id] = [live |-> TRUE, s |-> s, cls |-> cls, lg |-> lg, eoo |-> eoo,
-                                     st |-> "none", lb |-> lb, fs |-> fs, marks |-> {}, lmark |-> FALSE],
+                                     st |-> "none", lb |-> lb, fs |-> fs, marks |-> {}, lmark |-> FALSE,
+                                     los |-> FALSE],
                         !.order = Append(@, id),
                         !.owner[s] = id,
                         !.mem[s] = [g \in Offs |-> J]],
@@ -437,7 +442,7 @@ RECURSIVE ReclaimPick(_, _, _, _)
 ReclaimPick(h, i, cur, acc) ==
     IF i > Len(h.order) THEN acc
     ELSE LET id == h.order[i]  b == h.blk[id]
-             ok == ~b.lg /\ (b.lb = 0 \/ "reclaim_ignores_live" \in MUTANT) /\ cur - 1 >= MinHeap
+             ok == ~b.lg /\ ~b.los /\ (b.lb = 0 \/ "reclaim_ignores_live" \in MUTANT) /\ cur - 1 >= MinHeap
          IN ReclaimPick(h, i + 1, IF ok THEN cur - 1 ELSE cur, IF ok THEN Append(acc, id) ELSE acc)
 Reclaim(h) == LET ids == ReclaimPick(h, 1, CurHeap(h), <<>>) IN
               IF ids = <<>> THEN h ELSE Ev(ReleaseSeq(h, Reverse(ids), TRUE), "reclaim")
@@ -449,7 +454,7 @@ RECURSIVE ShrinkPick(_, _, _, _, _, _)
 ShrinkPick(h, i, cur, d, acc, lg) ==
     IF i < 1 \/ cur <= d THEN [cur |-> cur, acc |-> acc]
     ELSE LET id == h.order[i]  b == h.blk[id]
-             ok == b.fs /\ b.lb = 0 /\ b.lg = lg /\ cur - 1 >= d
+             ok == b.fs /\ b.lb = 0 /\ b.lg = lg /\ ~b.los /\ cur - 1 >= d
          IN ShrinkPick(h, i - 1, IF ok THEN cur - 1 ELSE cur, d, IF ok THEN Append(acc, id) ELSE acc, lg)
 \* releaseUnassignedBlockToAllocator (OGS:6500): never the heap-base extent (slot 1);
 \* pass 3 still counts the page (OGS:6242-6251)
@@ -590,7 +595,7 @@ FromFreeLarge(h, req, o) ==
 \* `lie`: a rooted object, or a registered young large object, is in the block.
 FlipOK(h, id, req) ==
     /\ h.blk[id].fs /\ (h.blk[id].lb = 0 \/ "flip_ignores_live" \in MUTANT)
-    /\ ~h.blk[id].lg /\ G >= req
+    /\ ~h.blk[id].lg /\ ~h.blk[id].los /\ G >= req
 Flip(h, id, req, o) ==
     LET s == h.blk[id].s
         lie == \/ \E x \in Objs : h.objs[x].st = "A" /\ h.objs[x].s = s /\ h.objs[x].root
@@ -624,6 +629,81 @@ Allocate(h, req, o) ==
            : h1 \in SweepSlice0(h, SizeClass(req))}
 
 -----------------------------------------------------------------------------
+(* plans/large-object-space.md D2 (HEAP_080): the LOS. allocateTrackedCell  *)
+(* -> allocateLos: LargeObjectSpace::tryAllocate over the LOS blocks, else  *)
+(* addLosBlock (a bag page materialized as an LOS block, born fully_swept,  *)
+(* end_of_objects = the block) and retry. A model granule stands for an LOS *)
+(* granule. A run is free iff no allocated object covers it: the code's     *)
+(* bitmap is unit-tested against such a shadow (LargeObjectSpaceTest); the  *)
+(* code's best fit is one of the runs chosen freely here.                  *)
+
+LosRunFree(h, s, off, sz) ==
+    /\ off + sz <= G
+    /\ \A x \in Objs : ~(/\ h.objs[x].st = "A" /\ h.objs[x].s = s
+                         /\ h.objs[x].off < off + sz /\ off < h.objs[x].off + h.objs[x].sz)
+\* initObjectHeaderWithSize at the cell (Gate: black mid-sweep, live_bytes in every phase)
+LosPlace(h, id, off, sz, o) ==
+    LET s == h.blk[id].s IN
+    Out([Gate(Ev(h, "los_alloc"), <<s, off>>, sz) EXCEPT !.mem[s][off] = OH(o)], <<s, off>>)
+LosAlloc(h, sz, o) ==
+    LET fits == {p \in Ids \X Offs : h.blk[p[1]].live /\ h.blk[p[1]].los
+                                     /\ LosRunFree(h, h.blk[p[1]].s, p[2], sz)}
+    IN IF fits # {} THEN {LosPlace(h, p[1], p[2], sz, o) : p \in fits}
+       ELSE LET h1 == EnsureBag(h) IN
+            IF h1.bag = <<>> THEN {Out(h1, Fail)}
+            ELSE LET s == h1.bag[Len(h1.bag)]
+                     m == Materialize([h1 EXCEPT !.bag = TruncLast(@)], s, Mixed, FALSE, G, 0, TRUE)
+                 IN {LosPlace([Ev(m.h, "los_block") EXCEPT !.blk[m.id].los = TRUE], m.id, 0, sz, o)}
+
+\* freeLargeBodyCell's LOS arm / freeLosCell: the granules return to the LOS (the
+\* object stops being allocated), the bit clears, live_bytes drops
+FreeLosCell(h, id, a, cs) ==
+    [Ev(h, "los_free") EXCEPT !.blk[id].lb = Sub0(@, cs), !.blk[id].marks = @ \ {a[2]},
+                              !.objs = FreeObjsAt(h.objs, a[1], a[2], cs)]
+
+\* a set as a sequence in ascending order (unordered_map iteration: any order is a
+\* free choice in the code; ascending here)
+RECURSIVE SetToSeq(_)
+SetToSeq(S) == IF S = {} THEN <<>> ELSE LET x == Min(S) IN <<x>> \o SetToSeq(S \ {x})
+
+RECURSIVE SumSz(_, _)
+SumSz(h, S) == IF S = {} THEN 0 ELSE LET o == CHOOSE x \in S : TRUE IN h.objs[o].sz + SumSz(h, S \ {o})
+
+\* losSweepAtMarkEnd (inside finalizeMetaAfterMark, after the mark): every unmarked
+\* tracked entry in an LOS block is freed and retired (retireIndexEntry: base =
+\* nullptr; a kind-2 id is recycled, an owned id is dropped by the next minor);
+\* then every LOS block's live_bytes = its used granules.
+LosSweep(h) ==
+    IF ~LOS THEN h
+    ELSE LET dead == {a \in Addrs : h.index[a] # 0 /\ BlockAt(h, a[1]) # 0
+                                    /\ h.blk[BlockAt(h, a[1])].los
+                                    /\ a[2] \notin h.blk[BlockAt(h, a[1])].marks}
+             h1 == [IF dead # {} THEN Ev(h, "los_sweep") ELSE h EXCEPT
+                     !.objs = [o \in Objs |-> IF h.objs[o].st = "A" /\ <<h.objs[o].s, h.objs[o].off>> \in dead
+                                              THEN [h.objs[o] EXCEPT !.st = "F"] ELSE h.objs[o]],
+                     !.meta = [m \in Metas |-> IF \E a \in dead : h.index[a] = m
+                                              THEN [h.meta[m] EXCEPT !.base = Null] ELSE h.meta[m]],
+                     !.freeMeta = @ \o SetToSeq({m \in Metas : (\E a \in dead : h.index[a] = m)
+                                                    /\ h.meta[m].kind = 2}),
+                     !.index = [a \in Addrs |-> IF a \in dead THEN 0 ELSE h.index[a]]]
+         IN [h1 EXCEPT !.blk = [i \in Ids |-> IF h1.blk[i].live /\ h1.blk[i].los
+                     THEN [h1.blk[i] EXCEPT !.lb = SumSz(h1, {o \in Objs : h1.objs[o].st = "A"
+                                                                        /\ h1.objs[o].s = h1.blk[i].s})]
+                     ELSE h1.blk[i]]]
+
+\* losReleaseEmptyBlocks (after the reclaim): empty LOS blocks beyond LosKeep, above
+\* the floor, released (releaseBlockToAllocator), lowest position first
+RECURSIVE LosReleaseFrom(_, _, _)
+LosReleaseFrom(h, kept, i) ==
+    IF i > Len(h.order) THEN h
+    ELSE LET id == h.order[i]  b == h.blk[id]
+             empty == b.los /\ ~\E o \in Objs : h.objs[o].st = "A" /\ h.objs[o].s = b.s
+         IN IF ~empty THEN LosReleaseFrom(h, kept, i + 1)
+            ELSE IF kept < LosKeep \/ CurHeap(h) - 1 < MinHeap THEN LosReleaseFrom(h, kept + 1, i + 1)
+            ELSE LosReleaseFrom(Ev(Release(h, id, TRUE), "los_release"), kept, i)
+LosReleaseEmpty(h) == IF LOS THEN LosReleaseFrom(h, 0, 1) ELSE h
+
+-----------------------------------------------------------------------------
 (* Young large objects and split-header bookkeeping (HEAP_026, HEAP_062).   *)
 
 \* registerLargeBody (OGS:7526) from allocateYoungLarge (OGS:7445) via
@@ -637,10 +717,21 @@ Register(h, o) ==
         m == IF reuse THEN h.freeMeta[Len(h.freeMeta)] ELSE h.mhw + 1
     IN [h EXCEPT !.freeMeta = IF reuse THEN TruncLast(@) ELSE @,
                  !.mhw = IF reuse THEN @ ELSE @ + 1,
-                 !.meta[m] = [base |-> a, cs |-> cs, lg |-> sz >= G, color |-> h.color,
+                 !.meta[m] = [base |-> a, cs |-> cs, lg |-> sz >= G /\ ~h.blk[id].los, color |-> h.color,
                               kind |-> 1, o |-> o],
                  !.index[a] = m,
                  !.owned = Append(@, m)]
+\* plans/large-object-space.md D3: allocateOldLarge registers a pinned object as kind 2
+\* (old, never nursery-owned)
+RegisterOld(h, o) ==
+    LET a == <<h.objs[o].s, h.objs[o].off>>
+        reuse == h.freeMeta # <<>>
+        m == IF reuse THEN h.freeMeta[Len(h.freeMeta)] ELSE h.mhw + 1
+    IN [h EXCEPT !.freeMeta = IF reuse THEN TruncLast(@) ELSE @,
+                 !.mhw = IF reuse THEN @ ELSE @ + 1,
+                 !.meta[m] = [base |-> a, cs |-> h.objs[o].sz, lg |-> FALSE, color |-> h.color,
+                              kind |-> 2, o |-> o],
+                 !.index[a] = m]
 MetaAvail(h) == h.freeMeta # <<>> \/ h.mhw < NMeta
 
 \* freeUniformCell (OGS:1014)
@@ -663,7 +754,8 @@ FreeLBC(h, m) ==
         h0 == [h EXCEPT !.index[a] = 0]
         id == BlockAt(h0, s)
         hN == [h0 EXCEPT !.meta[m].base = Null]
-    IN IF mm.lg
+    IN IF ~mm.lg /\ id # 0 /\ h0.blk[id].los THEN FreeLosCell(hN, id, a, mm.cs)
+       ELSE IF mm.lg
        THEN IF id = 0 \/ ~h0.blk[id].lg \/ id \in Range(h0.flarge) THEN Ev(hN, "freelbc_noop")
             ELSE [Ev(hN, "freelbc_large") EXCEPT !.blk[id].lb = 0, !.blk[id].fs = TRUE, !.blk[id].lmark = FALSE,
                             !.mem[s][0] = FH(G), !.flarge = Append(@, id),
@@ -682,7 +774,7 @@ RECURSIVE SweepBodies(_, _)
 SweepBodies(h, k) ==
     IF k > Len(h.owned) THEN h
     ELSE LET m == h.owned[k] IN
-         IF h.meta[m].base = Null THEN SweepBodies([h EXCEPT !.owned = SwapRemoveAt(@, k)], k)
+         IF h.meta[m].base = Null \/ h.meta[m].kind = 2 THEN SweepBodies([h EXCEPT !.owned = SwapRemoveAt(@, k)], k)
          ELSE IF h.meta[m].color = h.color THEN SweepBodies(h, k + 1)
          ELSE LET h1 == FreeLBC(h, m) IN
               SweepBodies([h1 EXCEPT !.freeMeta = Append(@, m), !.owned = SwapRemoveAt(@, k)], k)
@@ -690,6 +782,10 @@ SweepBodies(h, k) ==
 \* promoteYoungLarge (OGS:7476)
 PromoteYL(h, a, o) ==
     LET m == h.index[a] IN
+    IF LOS /\ "promote_untracks" \notin MUTANT
+    THEN [Ev(h, "promoteyl_los") EXCEPT !.owned = IF m \in Range(@) THEN SwapRemoveAt(@, FirstIdx(@, m)) ELSE @,
+                    !.meta[m].kind = 2, !.objs[o].age = 0, !.objs[o].ylos = FALSE]
+    ELSE
     [Ev(h, "promoteyl") EXCEPT !.owned = IF m \in Range(@) THEN SwapRemoveAt(@, FirstIdx(@, m)) ELSE @,
               !.index[a] = 0, !.meta[m].base = Null, !.meta[m].kind = 0,
               !.freeMeta = Append(@, m), !.objs[o].age = 0, !.objs[o].ylos = FALSE]
@@ -714,7 +810,7 @@ Reach(h, o) ==
 ResetForMark(h) ==
     [h EXCEPT !.blk = [i \in Ids |-> IF h.blk[i].live
                                      THEN [h.blk[i] EXCEPT !.marks = {}, !.lmark = FALSE, !.lb = 0,
-                                                           !.fs = FALSE, !.st = "none"]
+                                                           !.fs = h.blk[i].los, !.st = "none"]
                                      ELSE h.blk[i]],
               !.cur = [c \in UCls |-> NoCur], !.part = [c \in UCls |-> <<>>]]
 
@@ -791,8 +887,8 @@ ClassifyFrom(h, i) ==
 Classify(h) == ClassifyFrom(RetireDead(h), 1)
 
 PostDrain(h) ==
-    LET h6 == ToSweeping(Demote(Clamp(MarkFrom(ResetForMark(Sync(h)), 1)))) IN
-    UNION {SweepSlice0(Classify(h8), NCLS) : h8 \in AdjustCap(Reclaim(h6))}
+    LET h6 == ToSweeping(Demote(Clamp(LosSweep(MarkFrom(ResetForMark(Sync(h)), 1))))) IN
+    UNION {SweepSlice0(Classify(h8), NCLS) : h8 \in AdjustCap(LosReleaseEmpty(Reclaim(h6)))}
 Major(h) == UNION {PostDrain(h1) : h1 \in Drain(h)}
 
 -----------------------------------------------------------------------------
@@ -817,9 +913,11 @@ Create(h, o, a, sz, ylos, pin) ==
 \* retry after a major is another operation).
 AllocOp(h, sz, ylos, pin) ==
     LET o == NewObj(h)
+        los == LOS /\ pin /\ sz <= G
         S == {IF x.r = Fail THEN Tick(x.h)
-              ELSE LET h1 == Create(x.h, o, x.r, sz, ylos, pin) IN Tick(IF ylos THEN Register(h1, o) ELSE h1)
-              : x \in Allocate(h, sz, o)}
+              ELSE LET h1 == Create(x.h, o, x.r, sz, ylos, pin) IN
+                   Tick(IF ylos THEN Register(h1, o) ELSE IF los THEN RegisterOld(h1, o) ELSE h1)
+              : x \in IF los THEN LosAlloc(h, sz, o) ELSE Allocate(h, sz, o)}
     IN {n \in S : Keep(n)}
 
 Drop(h, o) == Tick([h EXCEPT !.objs[o].root = FALSE])
@@ -874,7 +972,7 @@ define
         /\ ~h.bad
         /\ \A id \in Ids :
               LET b == h.blk[id] IN
-              b.live /\ (b.lg \/ b.cls = Mixed) /\ ~(h.phase = "Sweeping" /\ ~b.fs)
+              b.live /\ (b.lg \/ b.cls = Mixed) /\ ~b.los /\ ~(h.phase = "Sweeping" /\ ~b.fs)
                   => Walk(h, b.s, 0, b.eoo)
     \* Every large_body_index_ entry names the registered young object at that address;
     \* every registered entry is indexed; recycled ids are clean; every rooted young
@@ -882,8 +980,9 @@ define
     IndexFaithful ==
         /\ \A a \in Addrs : h.index[a] # 0 =>
               LET m == h.index[a]  o == h.meta[m].o IN
-              /\ h.meta[m].base = a /\ h.meta[m].kind = 1 /\ m \in Range(h.owned)
-              /\ o \in Objs /\ Allocated(o) /\ ObjAddr(o) = a /\ h.objs[o].ylos
+              /\ h.meta[m].base = a /\ o \in Objs /\ Allocated(o) /\ ObjAddr(o) = a
+              /\ \/ h.meta[m].kind = 1 /\ m \in Range(h.owned) /\ h.objs[o].ylos
+                 \/ LOS /\ h.meta[m].kind = 2 /\ m \notin Range(h.owned) /\ ~h.objs[o].ylos
               /\ h.mem[a[1]][a[2]] = OH(o)
         /\ \A m \in Range(h.owned) : h.meta[m].base # Null => h.index[h.meta[m].base] = m
         /\ \A i \in 1..Len(h.freeMeta) :
@@ -896,11 +995,22 @@ define
     FreeListsInLiveBlocks ==
         \A c \in FLCls : \A a \in h.fl[c] :
             LET id == BlockAt(h, a[1]) IN
-            /\ id # 0 /\ ~h.blk[id].lg /\ h.blk[id].cls = Mixed
+            /\ id # 0 /\ ~h.blk[id].lg /\ h.blk[id].cls = Mixed /\ ~h.blk[id].los
             /\ a[2] + CellSize[c] <= h.blk[id].eoo
             /\ h.mem[a[1]][a[2]] = FH(CellSize[c])
     \* What the flip and the releases trust (live_bytes == 0, fully_swept) was true.
     FlipTrustsTruth == ~h.lie
+    \* plans/large-object-space.md (HEAP_080): every object in an LOS block is tracked
+    \* (the LOS frees only through the index), and the spaces are separate: pinned and
+    \* young large objects live in LOS blocks, promoted copies never do.
+    LosTracked ==
+        LOS => \A o \in Objs :
+                  Allocated(o) /\ BlockAt(h, h.objs[o].s) # 0 /\ h.blk[BlockAt(h, h.objs[o].s)].los =>
+                     h.index[ObjAddr(o)] # 0 /\ h.meta[h.index[ObjAddr(o)]].o = o
+    LosSeparation ==
+        LOS => \A o \in Objs :
+                  Allocated(o) /\ BlockAt(h, h.objs[o].s) # 0 =>
+                     (h.blk[BlockAt(h, h.objs[o].s)].los <=> (h.objs[o].pin /\ h.objs[o].sz <= G))
     \* The id- and address-keyed tables agree with the blocks.
     SideTablesFaithful ==
         /\ \A c \in UCls : \A i \in 1..Len(h.part[c]) :
@@ -929,7 +1039,7 @@ begin
 Top:
     while h.ops < MaxOps \/ h.minor do
         either      \* the mutator's direct old-gen allocation (allocateLargePinned)
-            await ~h.minor /\ FreshObj(h) # {};
+            await ~h.minor /\ FreshObj(h) # {} /\ (~LOS \/ MetaAvail(h));
             with sz \in MutSizes, n \in AllocOp(h, sz, FALSE, TRUE) do h := n end with;
         or          \* a young large object (allocateYoungLarge)
             await ~h.minor /\ FreshObj(h) # {} /\ MetaAvail(h);
@@ -1000,7 +1110,7 @@ BlockParseable ==
     /\ ~h.bad
     /\ \A id \in Ids :
           LET b == h.blk[id] IN
-          b.live /\ (b.lg \/ b.cls = Mixed) /\ ~(h.phase = "Sweeping" /\ ~b.fs)
+          b.live /\ (b.lg \/ b.cls = Mixed) /\ ~b.los /\ ~(h.phase = "Sweeping" /\ ~b.fs)
               => Walk(h, b.s, 0, b.eoo)
 
 
@@ -1008,8 +1118,9 @@ BlockParseable ==
 IndexFaithful ==
     /\ \A a \in Addrs : h.index[a] # 0 =>
           LET m == h.index[a]  o == h.meta[m].o IN
-          /\ h.meta[m].base = a /\ h.meta[m].kind = 1 /\ m \in Range(h.owned)
-          /\ o \in Objs /\ Allocated(o) /\ ObjAddr(o) = a /\ h.objs[o].ylos
+          /\ h.meta[m].base = a /\ o \in Objs /\ Allocated(o) /\ ObjAddr(o) = a
+          /\ \/ h.meta[m].kind = 1 /\ m \in Range(h.owned) /\ h.objs[o].ylos
+             \/ LOS /\ h.meta[m].kind = 2 /\ m \notin Range(h.owned) /\ ~h.objs[o].ylos
           /\ h.mem[a[1]][a[2]] = OH(o)
     /\ \A m \in Range(h.owned) : h.meta[m].base # Null => h.index[h.meta[m].base] = m
     /\ \A i \in 1..Len(h.freeMeta) :
@@ -1022,11 +1133,22 @@ IndexFaithful ==
 FreeListsInLiveBlocks ==
     \A c \in FLCls : \A a \in h.fl[c] :
         LET id == BlockAt(h, a[1]) IN
-        /\ id # 0 /\ ~h.blk[id].lg /\ h.blk[id].cls = Mixed
+        /\ id # 0 /\ ~h.blk[id].lg /\ h.blk[id].cls = Mixed /\ ~h.blk[id].los
         /\ a[2] + CellSize[c] <= h.blk[id].eoo
         /\ h.mem[a[1]][a[2]] = FH(CellSize[c])
 
 FlipTrustsTruth == ~h.lie
+
+
+
+LosTracked ==
+    LOS => \A o \in Objs :
+              Allocated(o) /\ BlockAt(h, h.objs[o].s) # 0 /\ h.blk[BlockAt(h, h.objs[o].s)].los =>
+                 h.index[ObjAddr(o)] # 0 /\ h.meta[h.index[ObjAddr(o)]].o = o
+LosSeparation ==
+    LOS => \A o \in Objs :
+              Allocated(o) /\ BlockAt(h, h.objs[o].s) # 0 =>
+                 (h.blk[BlockAt(h, h.objs[o].s)].los <=> (h.objs[o].pin /\ h.objs[o].sz <= G))
 
 SideTablesFaithful ==
     /\ \A c \in UCls : \A i \in 1..Len(h.part[c]) :
@@ -1060,7 +1182,7 @@ Init == (* Global variables *)
 
 Top == /\ pc["mut"] = "Top"
        /\ IF h.ops < MaxOps \/ h.minor
-             THEN /\ \/ /\ ~h.minor /\ FreshObj(h) # {}
+             THEN /\ \/ /\ ~h.minor /\ FreshObj(h) # {} /\ (~LOS \/ MetaAvail(h))
                         /\ \E sz \in MutSizes:
                              \E n \in AllocOp(h, sz, FALSE, TRUE):
                                h' = n

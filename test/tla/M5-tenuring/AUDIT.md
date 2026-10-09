@@ -1031,3 +1031,11 @@ validate pre-walk and OldGenSpace scanChildren: reads only, abort on failure.
 `tla-trace` after the change: 150/150 rows as expected.
 
 **Verdict: no model change needed.**
+
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+
+Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
+
+Pins fired: regions `OGS.greyObject` (**beee5d40d9af**), `OGS.sweepNurseryLargeBodies` (**5eae8e786621**), `OGS.promoteYoungLarge` (**c9b5ac30eae3**), `OGS.registerLargeBody` (**b84bdbca9fc6**).
+
+The tenure paths are unchanged: `lb_bodies`/`lb_seen`/`lb_promoted` still name bodies by address, `markLargeBodySeen` colours kind 0 only, `promoteLargeHeader` (now a re-kind to 2, keeping the entry, so trap 14's "promoted body still indexed" holds a fortiori) and `promoteYoungLarge` (re-kind) run at the merge as before. `YlosGen` = "stamp" (HEAP_072's `join_minor`) is still the code; id recycling changed only in that kind-2 retirements now recycle ids, and the model's `ylos_lbid` control already shows ids are not a stamp. With the LOS, bodies (raw pool) and YLOS (object pool) never share a cell, so the model's shared Y cells (`lalloc` bodies and YLOS) are a superset of the code's behaviours. `greyObject`'s raw arm: see M1. **Verdict: no model change needed.**

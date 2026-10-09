@@ -141,6 +141,16 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
         void *o = work.back();
         work.pop_back();
         order.push_back(o);
+        // plans/large-object-space.md D4 (HEAP_081): a large String/Bytes has a
+        // header-less body that is not a heap object; such values stay
+        // heap-resident (declined) rather than copied object by object.
+        {
+            const u32 t = static_cast<Header *>(o)->tag;
+            if (t == Tag_LargeStringHeader || t == Tag_LargeByteHeader) {
+                supported = false;
+                break;
+            }
+        }
         supported = visitHeapChildren(o, [&](HPointer &hp) {
             if (hp.ptr_ind != 0 || hp.ptr == 0)
                 return; // constant or null (e.g. unfilled capture slot)

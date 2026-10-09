@@ -606,6 +606,17 @@ public:
     uint64_t minor_gc_debt_requests = 0;
     uint64_t large_body_recover_minors = 0;
     uint64_t large_body_recover_majors = 0;
+    // plans/large-object-space.md: the large-object space (copied from each
+    // heap's LargeObjectSpace when the combined stats are built).
+    struct LosStats {
+        uint64_t allocs = 0, frees = 0;
+        uint64_t alloc_bytes = 0, free_bytes = 0;   // granule bytes
+        uint64_t object_bytes = 0;                  // requested bytes
+        uint64_t blocks_added = 0, blocks_removed = 0;
+        uint64_t fit_misses = 0, aligned_allocs = 0;
+        uint64_t blocks_now = 0, used_bytes_now = 0;
+    };
+    LosStats los;
     uint64_t objects_survived = 0;
     uint64_t objects_promoted = 0;
     uint64_t bytes_freed = 0;             // Cumulative total across all GC cycles.

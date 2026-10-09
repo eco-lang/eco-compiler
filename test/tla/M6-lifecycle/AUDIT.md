@@ -609,3 +609,11 @@ deterministic. No atomic step, lock, shared location or memory order changed. M6
 `runCycleStepConcurrent` for `U_Reap` and `U_Relaunch` (`reapBackground`, the relaunch, `bg_ep_`), which
 this edit does not touch.
 **Verdict: no model change needed.**
+
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+
+Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
+
+Pins fired: regions `OGS.reset` (**08e1c6a83562**), `AL.acquireOldGenBlock` (**c06879029f66**); census `OldGenSpace.cpp` (**714b07d48107**).
+
+`reset` re-initializes the mutator-only `LargeObjectSpace` (`los_.init`): no lock, thread or fork state. `acquireOldGenBlock`'s O7 tail release is an ordinary `releaseOldGenBlock` under the already-held recursive `thread_mutex_` (same lock, same layer, HEAP_075 unchanged). **Verdict: no model change needed.**

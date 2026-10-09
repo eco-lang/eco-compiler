@@ -27,6 +27,8 @@
 #                                 case group (1.* ... 10.*, and 12.1.* ... 13.7.*) gets a fresh
 #                                 server or fuzzingserver + client, so a crash or a leak stays in
 #                                 its group)
+#                                 Since plans/large-object-space.md (2026-10-09) --no-split passes natively in
+#                                 one process (server and client peak ~0.47 GB; before: 11.6 GB, killed).
 #   --no-build                    reuse the programs built by an earlier run
 #   --install-only                install the tools and stop
 #

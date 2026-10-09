@@ -11,6 +11,7 @@
 #include "RootSet.hpp"
 #include "GCStats.hpp"
 #include "BlockTable.hpp"
+#include "LargeObjectSpace.hpp"
 #include "MarkWork.hpp"
 #include "GCHelperPool.hpp"
 #include "MinorWork.hpp"
@@ -306,6 +307,23 @@ public:
     // initial color.
     void* allocateLargeBody(size_t total_size, size_t logical_size,
                             Tag body_tag, bool initial_color);
+
+    // plans/large-object-space.md D3 (HEAP_080): a pointer-free pinned large
+    // object or a permanent-space fallback of `size` bytes (>= LOT) in the LOS
+    // object pool (huge tier above one LOS block). Writes the header for `tag`
+    // (pin = 1) and tracks it as a kind-2 (old, not nursery-owned) entry, freed
+    // by the major GC when unmarked. nullptr on failure.
+    void* allocateOldLarge(size_t size, Tag tag);
+
+    // The largest uniform size class (8 KiB at defaults): old-gen objects above
+    // it live in the LOS (D3; the legacy nursery placement cap).
+    size_t largestUniformClassBytes() const { return classToSize(num_size_classes_ - 1); }
+
+    const LargeObjectSpace& largeObjectSpace() const { return los_; }
+    bool isLosBlock(BlockId id) const { return (blocks_.info(id).los & kLosBlock) != 0; }
+    // Is `p` in a raw block (an LOS raw block or a raw huge block): a
+    // header-less large body (HEAP_081)?
+    bool isRawBody(const void* p) const;
 
     // Records `body_hp` as still-live for `minor_color`. O(1) lookup; no-op if
     // the body isn't currently nursery-owned (e.g. promoted, or untracked).
@@ -1227,7 +1245,9 @@ public:
         size_t cell_size;   // Total cell footprint in bytes (includes Header).
         bool   is_large;    // True iff the body sits in a dedicated is_large block.
         bool   color;       // Last minor_color that observed a live header.
-        uint8_t kind = 0;   // 0 = split-header body; 1 = young large object (YLOS).
+        uint8_t kind = 0;   // 0 = split-header body; 1 = young large object (YLOS);
+                            // 2 = old LOS object (plans/large-object-space.md: pinned
+                            // pointer-free, permanent fallback, promoted YLOS; never owned).
         // Region nursery (HEAP_072): the minor at which this YLOS incarnation
         // joined a generation (0 = not yet). An extent's ylos_gen list names
         // objects by ADDRESS, and a major may free a dead member whose cell a
@@ -1317,6 +1337,7 @@ public:
     }
 
 private:
+    LargeObjectSpace                       los_;   // plans/large-object-space.md D2
     std::vector<LargeBodyMeta>             large_bodies_;
     std::unordered_map<void*, LargeBodyId> large_body_index_;
     std::vector<LargeBodyId>               nursery_owned_bodies_;
@@ -1838,11 +1859,35 @@ private:
 
     // Records a freshly-allocated body in tracking. Reuses a tombstone id from
     // free_large_body_ids_ when present.
+    // `owned` = false for kind 2 (old) entries, which are never nursery-owned.
     LargeBodyId registerLargeBody(void* body, size_t cell_size, bool is_large,
-                                  bool minor_color, uint8_t kind = 0);
-    // allocate() + the cell-footprint computation shared by the split-header
-    // body and YLOS allocators. Returns the cell and its footprint.
+                                  bool minor_color, uint8_t kind = 0, bool owned = true);
+    // The cell of a large object: an LOS block (plans/large-object-space.md D2;
+    // granule-rounded footprint) when it fits one, else a huge-tier is_large
+    // block. Returns the cell and its footprint; nullptr when the old gen is full.
     void* allocateTrackedCell(size_t total_size, size_t& cell_size, bool& is_large);
+
+    // ---- plans/large-object-space.md D2: the LOS ----
+    // Allocates `bytes` from the LOS pool (object pool unless `raw`), adding an
+    // LOS block when none has room. nullptr when the old gen cannot grow.
+    void* allocateLos(size_t bytes, bool raw, BlockId* block_out);
+    // A header-less body cell (D4): raw LOS pool, else a raw huge-tier block.
+    void* allocateRawCell(size_t total_size, size_t& cell_size, bool& is_large);
+    // initObjectHeaderWithSize's mark-bit and live_bytes part, no header.
+    void attributeNewCell(BlockId block_id, void* obj, size_t cell_bytes);
+
+    // Acquires and materializes one LOS block of alloc_buffer_size.
+    BlockId addLosBlock(bool raw);
+    // At mark end (finalizeMetaAfterMark): frees every unmarked tracked LOS
+    // entry and re-derives each LOS block's live_bytes from its used granules.
+    void losSweepAtMarkEnd();
+    // After the post-mark reclaim: releases empty LOS blocks beyond los_empty_keep.
+    void losReleaseEmptyBlocks();
+    // Frees an LOS cell's granules and its live accounting (no index work).
+    void freeLosCell(BlockId id, void* cell, size_t cell_size);
+#if ECO_HEAP_VALIDATE
+    void validateLosTracking(const char* where) const;
+#endif
 
     // Frees a body cell. For is_large bodies, hands the block to
     // free_large_blocks_ via markBlockAsFreeLarge. For size-class / split-

@@ -387,8 +387,9 @@ static void test_slice_of_slice_collapses() {
         u32 deepTag = alloc::getTag(deepBase);
         if (deepTag == Tag_LargeStringHeader) {
             LargeStringHeader* lh = static_cast<LargeStringHeader*>(deepBase);
-            void* body = alloc.resolve(lh->body);
-            RC_ASSERT(alloc::getTag(body) == Tag_String);
+            // plans/large-object-space.md D4: a header-less body in a raw block.
+            void* body = largeBodyAddr(lh);
+            RC_ASSERT(AllocatorTestAccess::getOldGen(Allocator::instance())->isRawBody(body));
         } else {
             RC_ASSERT(deepTag == Tag_String);
         }

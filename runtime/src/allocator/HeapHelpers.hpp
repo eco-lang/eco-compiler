@@ -512,9 +512,7 @@ inline BlankString allocStringBlank(size_t length) {
         HPointer hp = allocator.allocLargeString(nullptr, length);
         void* header_obj = allocator.resolve(hp);
         LargeStringHeader* lh = static_cast<LargeStringHeader*>(header_obj);
-        void* body = allocator.resolve(lh->body);
-        ElmString* leaf = static_cast<ElmString*>(body);
-        return BlankString{hp, leaf->chars, static_cast<u32>(length)};
+        return BlankString{hp, largeStringChars(lh), static_cast<u32>(length)};
     }
 
     ElmString* str = static_cast<ElmString*>(
@@ -627,11 +625,7 @@ inline size_t stringLength(void* str) {
 inline const u16* stringData(void* str) {
     Header* hdr = static_cast<Header*>(str);
     if (hdr->tag == Tag_LargeStringHeader) {
-        LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-        void* body = Allocator::instance().resolve(h->body);
-        assert(body && "Tag_LargeStringHeader body resolved to null");
-        ElmString* leaf = static_cast<ElmString*>(body);
-        return leaf->chars;
+        return largeStringChars(static_cast<LargeStringHeader*>(str));
     }
     assert(hdr->tag == Tag_String && "stringData() requires a flat Tag_String leaf or Tag_LargeStringHeader");
     ElmString* s = static_cast<ElmString*>(str);
@@ -1681,8 +1675,7 @@ inline BlankByteBuffer allocByteBufferBlank(size_t length) {
         HPointer hp = allocator.allocLargeByteBuffer(nullptr, length);
         void* header_obj = allocator.resolve(hp);
         LargeByteHeader* lh = static_cast<LargeByteHeader*>(header_obj);
-        ByteBuffer* body = static_cast<ByteBuffer*>(allocator.resolve(lh->body));
-        return BlankByteBuffer{hp, body->bytes, static_cast<u32>(length)};
+        return BlankByteBuffer{hp, largeBytesData(lh), static_cast<u32>(length)};
     }
 
     ByteBuffer* buf = static_cast<ByteBuffer*>(
@@ -1740,25 +1733,16 @@ inline const u8* byteBufferData(void* buf) {
     if (hdr->tag == Tag_ByteBufferSlice) {
         ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(buf);
         void* base = Allocator::instance().resolve(slc->base);
-        // Inline the LargeByteHeader follow here so this function stays
-        // independent of resolveByteBufferBody (which is defined further
-        // down the header to keep all string-side helpers together).
+        // The base is a flat Tag_ByteBuffer or a Tag_LargeByteHeader.
         Header* basehdr = static_cast<Header*>(base);
         if (basehdr->tag == Tag_LargeByteHeader) {
-            LargeByteHeader* h = static_cast<LargeByteHeader*>(base);
-            void* body = Allocator::instance().resolve(h->body);
-            ByteBuffer* b = static_cast<ByteBuffer*>(body);
-            return b->bytes + slc->offset;
+            return largeBytesData(static_cast<LargeByteHeader*>(base)) + slc->offset;
         }
         ByteBuffer* b = static_cast<ByteBuffer*>(base);
         return b->bytes + slc->offset;
     }
     if (hdr->tag == Tag_LargeByteHeader) {
-        LargeByteHeader* h = static_cast<LargeByteHeader*>(buf);
-        void* body = Allocator::instance().resolve(h->body);
-        assert(body && "Tag_LargeByteHeader body resolved to null");
-        ByteBuffer* b = static_cast<ByteBuffer*>(body);
-        return b->bytes;
+        return largeBytesData(static_cast<LargeByteHeader*>(buf));
     }
     ByteBuffer* b = static_cast<ByteBuffer*>(buf);
     return b->bytes;
@@ -2321,35 +2305,6 @@ inline bool isStringLeaf(void* obj) {
     return getTag(obj) == Tag_String;
 }
 
-/**
- * If `obj` is a Tag_LargeByteHeader (HEAP_026 split form), follow its body
- * HPointer to the underlying Tag_ByteBuffer in old gen and return that.
- * Otherwise return `obj` unchanged. Returns nullptr if `obj` is null or the
- * body resolves to nullptr.
- *
- * Use at every entry point that takes a `void* bytes` from the runtime/JIT
- * boundary (or from `Allocator::resolve`) and then accesses `bb->bytes[]` or
- * does pointer arithmetic on the byte payload. The returned `ByteBuffer*`
- * has the same field layout (`header.size`, `bytes[]`) as a flat ByteBuffer,
- * so downstream code keeps working unchanged.
- */
-inline ByteBuffer* resolveByteBufferBody(void* obj) {
-    if (!obj) return nullptr;
-    Header* hdr = static_cast<Header*>(obj);
-    if (hdr->tag == Tag_LargeByteHeader) {
-        LargeByteHeader* h = static_cast<LargeByteHeader*>(obj);
-        void* body = Allocator::instance().resolve(h->body);
-        return static_cast<ByteBuffer*>(body);
-    }
-    // A Tag_ByteBufferSlice does NOT have a ByteBuffer-shaped body; the
-    // slice's data starts at base->bytes + offset and runs for slc->header.size
-    // bytes. Callers that may receive any byte-container form must instead
-    // use byteBufferView, which handles all three tags transparently. Trip
-    // here loudly so any missed migration surfaces immediately.
-    assert(hdr->tag != Tag_ByteBufferSlice &&
-           "resolveByteBufferBody called on a Tag_ByteBufferSlice; use byteBufferView instead");
-    return static_cast<ByteBuffer*>(obj);
-}
 
 /**
  * Read-only view of a ByteBuffer in any structural form:
@@ -2368,21 +2323,34 @@ struct ByteBufferView {
     size_t length;
 };
 
+/**
+ * The payload of a flat byte buffer: a Tag_ByteBuffer or a Tag_LargeByteHeader
+ * (HEAP_026 split form; plans/large-object-space.md D4: the body is read raw and
+ * the length is always the outer header's). Not for slices: use byteBufferView.
+ */
+inline ByteBufferView flatBytesView(void* obj) {
+    Header* hdr = static_cast<Header*>(obj);
+    assert(hdr->tag != Tag_ByteBufferSlice &&
+           "flatBytesView called on a Tag_ByteBufferSlice; use byteBufferView instead");
+    if (hdr->tag == Tag_LargeByteHeader) {
+        return ByteBufferView{largeBytesData(static_cast<LargeByteHeader*>(obj)), hdr->size};
+    }
+    ByteBuffer* bb = static_cast<ByteBuffer*>(obj);
+    return ByteBufferView{bb->bytes, bb->header.size};
+}
+
 inline ByteBufferView byteBufferView(void* obj) {
     if (!obj) return ByteBufferView{nullptr, 0};
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_ByteBufferSlice) {
         ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(obj);
         void* base = Allocator::instance().resolve(slc->base);
-        // Construction collapses slice-of-slice and resolves through any
-        // Tag_LargeByteHeader, so `base` is always a flat Tag_ByteBuffer
-        // here. Re-derive via resolveByteBufferBody just in case a future
-        // path allowed slicing over a LargeByteHeader directly.
-        ByteBuffer* bb = resolveByteBufferBody(base);
-        return ByteBufferView{bb->bytes + slc->offset, slc->header.size};
+        // Construction collapses slice-of-slice; the base is a flat
+        // Tag_ByteBuffer or a Tag_LargeByteHeader (makeByteBufferSlice keeps
+        // a large header as the base).
+        return ByteBufferView{flatBytesView(base).data + slc->offset, slc->header.size};
     }
-    ByteBuffer* bb = resolveByteBufferBody(obj);
-    return ByteBufferView{bb->bytes, bb->header.size};
+    return flatBytesView(obj);
 }
 
 /**
@@ -2433,9 +2401,9 @@ inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
     if (length < MAKE_BYTEBUFFER_SLICE_MIN_LEN) {
         // Re-resolve base post-collapse — possible Tag_LargeByteHeader.
         void* obj = allocator.resolve(base);
-        ByteBuffer* src = resolveByteBufferBody(obj);
+        const u8* src = flatBytesView(obj).data;
         u8 tmp[MAKE_BYTEBUFFER_SLICE_MIN_LEN];
-        std::memcpy(tmp, src->bytes + offset, length);
+        std::memcpy(tmp, src + offset, length);
         return allocByteBuffer(tmp, length);
     }
 
@@ -2455,22 +2423,20 @@ inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
 }
 
 /**
- * Same idea for strings: resolves through Tag_LargeStringHeader to its
- * Tag_String body so callers can keep using `s->chars[i]` directly.
- *
- * Use this where a hot path bypasses StringOps::charAt for performance and
- * indexes `chars[]` directly. Code that goes through StringOps::charAt /
- * toStdU16String already handles the split form transparently.
+ * The units of a flat string: a Tag_String leaf or a Tag_LargeStringHeader
+ * (plans/large-object-space.md D4: the body is read raw and the length is
+ * always the outer header's). For a hot path that indexes chars directly;
+ * slices and ropes go through StringOps (charAt / toStdU16String / ensureFlat).
  */
-inline ElmString* resolveStringBody(void* obj) {
-    if (!obj) return nullptr;
+struct U16View {
+    const u16* chars;
+    u32 length;
+};
+inline U16View flatStringView(void* obj) {
     Header* hdr = static_cast<Header*>(obj);
-    if (hdr->tag == Tag_LargeStringHeader) {
-        LargeStringHeader* h = static_cast<LargeStringHeader*>(obj);
-        void* body = Allocator::instance().resolve(h->body);
-        return static_cast<ElmString*>(body);
-    }
-    return static_cast<ElmString*>(obj);
+    assert((hdr->tag == Tag_String || hdr->tag == Tag_LargeStringHeader) &&
+           "flatStringView requires a Tag_String leaf or a Tag_LargeStringHeader");
+    return U16View{flatStringChars(obj), hdr->size};
 }
 
 /**

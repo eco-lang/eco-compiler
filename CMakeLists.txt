@@ -425,6 +425,7 @@ add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/allocator/GCHelperPool.cpp
         runtime/src/allocator/GCFork.cpp
         runtime/src/allocator/PageWork.cpp
+        runtime/src/allocator/LargeObjectSpace.cpp
         runtime/src/allocator/P1Census.cpp
         ${ECO_ALLOCATOR_PLATFORM_SRCS}
         runtime/src/allocator/ThreadLocalHeap.cpp
@@ -1401,6 +1402,8 @@ add_custom_target(check
     # No GC root push may grow with the input
     # (plans/kernel-root-stack-bounded-rooting.md step 9).
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
+    # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-large-body-access.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
@@ -1441,6 +1444,8 @@ if(NOT WIN32)
 endif()
 add_custom_target(full
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
+    # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-large-body-access.sh ${CMAKE_SOURCE_DIR}
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-homes.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}

@@ -553,33 +553,24 @@ void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
 void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
     // size is already 8-byte aligned by the caller. Pointer-free tags only
     // (threaded-gc-04b V4): a pointer-bearing object is never born old.
+    // plans/large-object-space.md D3: it lives in the LOS object pool as a
+    // kind-2 (old) entry, freed by the major GC when unmarked.
     assert(!tagMayHoldPointers(tag) &&
            "allocateLargePinned: pointer-bearing objects go to the nursery or YLOS");
     noteLargeAlloc(LargePlacement::PointerFree, size, tag);
-    void* obj = old_gen_.allocate(size);
+    void* obj = old_gen_.allocateOldLarge(size, tag);
     if (!obj) {
         // Try once after a major GC to reclaim space.
 #if ENABLE_GC_STATS
         stats_.major_gc_alloc_failure_triggers++;
 #endif
         majorGC(GCStats::MajorReason::AllocFailure);
-        obj = old_gen_.allocate(size);
+        obj = old_gen_.allocateOldLarge(size, tag);
     }
     if (!obj) {
         assert(false && "Failed to allocate large pinned object in old gen.");
         return nullptr;
     }
-    GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, size);
-
-    Header* hdr = getHeader(obj);
-    // OldGenSpace::allocate already memset/colored the header. Re-init for
-    // tag (this preserves the zero color and overwrites tag/size fields),
-    // then set pin LAST so it survives any prior writes. Color was set by
-    // OldGenSpace::allocate based on GC phase; preserve it.
-    u32 saved_color = hdr->color;
-    initHeaderForTag(hdr, tag, size);
-    hdr->color = saved_color;
-    hdr->pin = 1;
     noteDirectAlloc(size);
     return obj;
 }
@@ -602,8 +593,8 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
     // its header with a null body (unreachable garbage every GC path skips),
     // runs a minor (first failure) or a major (second), and the retry starts
     // again from the header. A third failure is fatal.
-    const size_t body_size =
-        (sizeof(ElmString) + length * sizeof(u16) + 7) & ~static_cast<size_t>(7);
+    // plans/large-object-space.md D4 (HEAP_081): the body is the payload only.
+    const size_t body_size = (length * sizeof(u16) + 7) & ~static_cast<size_t>(7);
     for (int attempt = 0;; ++attempt) {
         const size_t header_size = sizeof(LargeStringHeader);
         void* header_obj = allocate(header_size, Tag_LargeStringHeader);
@@ -644,8 +635,7 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
         }
 
         if (chars && length > 0) {
-            ElmString* leaf = static_cast<ElmString*>(body);
-            std::memcpy(leaf->chars, chars, length * sizeof(u16));
+            std::memcpy(body, chars, length * sizeof(u16));
         }
 
         // Step 4: wire body into header. No GC fires between body registration
@@ -659,8 +649,8 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
 
 HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
     // Same ordering and recovery rationale as allocLargeString — see the comment there.
-    const size_t body_size =
-        (sizeof(ByteBuffer) + length + 7) & ~static_cast<size_t>(7);
+    // plans/large-object-space.md D4 (HEAP_081): the body is the payload only.
+    const size_t body_size = (length + 7) & ~static_cast<size_t>(7);
     for (int attempt = 0;; ++attempt) {
         const size_t header_size = sizeof(LargeByteHeader);
         void* header_obj = allocate(header_size, Tag_LargeByteHeader);
@@ -692,11 +682,10 @@ HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
             largeBodyExhausted("byte buffer", body_size);
         }
 
-        ByteBuffer* buf = static_cast<ByteBuffer*>(body);
         if (data && length > 0) {
-            std::memcpy(buf->bytes, data, length);
+            std::memcpy(body, data, length);
         } else if (length > 0) {
-            std::memset(buf->bytes, 0, length);
+            std::memset(body, 0, length);
         }
 
         h->body = parent_->wrap(body);
@@ -708,6 +697,13 @@ HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
 void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
     // Allocate directly in old generation - for permanent objects like string literals.
     size = (size + 7) & ~static_cast<size_t>(7);
+    if (size >= config_->large_object_threshold) {
+        // plans/large-object-space.md D3: a large permanent-space fallback
+        // lives in the LOS object pool (kind 2), never in an ordinary block.
+        void* big = old_gen_.allocateOldLarge(size, tag);
+        assert(big && "Failed to allocate a large permanent object in old gen.");
+        return big;
+    }
     void* obj = old_gen_.allocate(size);
     if (obj) {
         GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, size);
@@ -1521,6 +1517,7 @@ std::vector<void*> ThreadLocalHeap::traceOldReachableForValidation(bool* complet
         void* o = stack.back();
         stack.pop_back();
         if (old_gen_.contains(o)) old_out.push_back(o);
+        if (old_gen_.isRawBody(o)) continue;   // HEAP_081: header-less, no children
         visitHeapChildren(o, [&](HPointer& c) { push(c); });
     }
     return old_out;

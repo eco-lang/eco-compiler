@@ -458,20 +458,23 @@ void test_ylos_forced() {
 // ---------------------------------------------------------------------------
 // T6
 // ---------------------------------------------------------------------------
+// plans/large-object-space.md D3: nursery placement of a pointer-bearing large
+// object is capped at the largest uniform class (8 KiB) in both nursery modes,
+// so a wide object of ~9 KiB goes to the YLOS even with a 64 KiB nursery cap.
 void test_nursery_large() {
     auto& a = initAllocator(wideNurseryLarge());
 #if ENABLE_GC_STATS
-    const uint64_t n0 = tlhLp(a).nursery_allocs;
+    const uint64_t y0 = tlhLp(a).ylos_allocs;
 #endif
     const std::vector<Spec> specs = {{true, 1100}, {false, 1100}};
     std::vector<HPointer> roots(specs.size());
     for (size_t s = 0; s < specs.size(); ++s) {
         roots[s] = buildWide(specs[s].isC, specs[s].n);
         a.getRootSet().addRoot(&roots[s]);
-        TEST_ASSERT(a.isInNursery(a.resolve(roots[s])));
+        TEST_ASSERT(!a.isInNursery(a.resolve(roots[s])));
     }
 #if ENABLE_GC_STATS
-    TEST_ASSERT(tlhLp(a).nursery_allocs >= n0 + 1);
+    TEST_ASSERT(tlhLp(a).ylos_allocs >= y0 + 2);
 #endif
     for (int k = 0; k < 3; ++k) {
         churn();
@@ -734,7 +737,7 @@ void registerWideObjectTests(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase("wide: survive serial minors, promotion, major and compaction", test_serial_gc));
     suite.add(Testing::TestCase("wide: parallel minor", test_parallel_minor));
     suite.add(Testing::TestCase("wide: YLOS forced (1100/2040/2047 fields)", test_ylos_forced));
-    suite.add(Testing::TestCase("wide: nursery-large placement", test_nursery_large));
+    suite.add(Testing::TestCase("wide: large placement above the uniform cap is YLOS (D3)", test_nursery_large));
     suite.add(Testing::TestCase(
         "wide: region mode with concurrent tenuring and promotion_age 2 (CR-038 zap path)", test_region_k2));
     suite.add(Testing::TestCase("wide: concurrent mark t0 snapshot over a wide YLOS", test_conc_mark_wide_ylos));

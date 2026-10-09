@@ -77,6 +77,12 @@ void churn(size_t n) {
 // fills it with fresh Ints value(i) = i * mul, the kernel pattern: elements
 // rooted across the array's allocation, then pushed with no allocation in
 // between. Returns the array, rooted by the caller.
+// An Int array of exactly 8 KiB: >= LOT (8 KiB) and at the nursery placement
+// cap, the largest uniform class (plans/large-object-space.md D3).
+constexpr size_t kArrayAtCap = (8 * 1024 - sizeof(ElmArray)) / sizeof(Unboxable);
+static_assert((sizeof(ElmArray) + kArrayAtCap * sizeof(Unboxable)) == 8 * 1024,
+              "kArrayAtCap must make an 8 KiB array");
+
 HPointer makeLargeIntArray(Allocator& alloc, size_t n, i64 mul) {
     std::vector<HPointer> elems(n, alloc::listNil());
     StackRootRangeGuard guard(elems.data(), elems.size(), ~uint64_t{0});
@@ -200,7 +206,9 @@ Testing::TestCase testLargeArrayInNurseryKeepsChildren(
     "threaded-gc-04b: a nursery-placed large array keeps its children (S2)",
     []() {
         auto& alloc = initAllocator(smallConfig(2));      // cap 32 KiB
-        const size_t n = 2000;                            // 16 KB: over the threshold
+        // plans/large-object-space.md D3: nursery placement is capped at the
+        // largest uniform class (8 KiB); an 8 KiB array is >= LOT and fits it.
+        const size_t n = kArrayAtCap;
         HPointer arr = makeLargeIntArray(alloc, n, 7);
         alloc.getRootSet().addRoot(&arr);
         TEST_ASSERT(alloc.isInNursery(alloc.resolve(arr)));
@@ -218,7 +226,7 @@ Testing::TestCase testLargeArrayPromotesByCopy(
     "threaded-gc-04b: a nursery-placed large array promotes by copy, unpinned",
     []() {
         auto& alloc = initAllocator(smallConfig(2));
-        const size_t n = 2000;
+        const size_t n = kArrayAtCap;                     // 8 KiB (D3 cap)
         HPointer arr = makeLargeIntArray(alloc, n, 3);
         alloc.getRootSet().addRoot(&arr);
         alloc.minorGC();

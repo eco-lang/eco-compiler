@@ -20,6 +20,7 @@
 #include "allocator/OldGenSpaceTest.hpp"
 #include "allocator/OldGenCapacityTest.hpp"
 #include "allocator/LargeBodyChurnTest.hpp"
+#include "allocator/LargeObjectSpaceTest.hpp"
 #include "allocator/OldGenLazySweepTest.hpp"
 #include "allocator/FreeListBackLinkTest.hpp"
 #include "allocator/ReservedArrayTest.hpp"
@@ -659,6 +660,7 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testShrinkHonorsFloor);
     oldGenTests.add(testUnassignedBlocksShrink);
     oldGenTests.add(testDecommitFlagPathExercised);
+    oldGenTests.add(testReusedExtentTailIsReleased);
     // Lazy-sweep / mark-driven shrink coverage.
     oldGenTests.add(testAllDeadBlockReclaimSkipsCells);
     oldGenTests.add(testFreeListBackLinkEncodeRoundTrip);
@@ -1130,6 +1132,17 @@ int main(int argc, char* argv[]) {
     largeBodyChurnTests->add(testLargeBodyRecoveryWithoutBudget);
     largeBodyChurnTests->add(testLargeBodyBudgetZeroIsOff);
     largeBodyChurnTests->add(testDirectAllocMinorBudgetConfig);
+    // The large-object space's free-space manager (plans/large-object-space.md D2).
+    largeBodyChurnTests->add(testLosCoalescesBothNeighbours);
+    largeBodyChurnTests->add(testLosBestFitAndExactReuse);
+    largeBodyChurnTests->add(testLosPageAlignsPageMultiples);
+    largeBodyChurnTests->add(testLosPoolsNeverShareABlock);
+    largeBodyChurnTests->add(testLosEmptyBlocksAndRemoval);
+    largeBodyChurnTests->add(testLosRandomChurnMatchesShadow);
+    largeBodyChurnTests->add(testLosPlacementOfEveryLargeKind);
+    largeBodyChurnTests->add(testLosChunkChurnReusesBlocks);
+    largeBodyChurnTests->add(testLosHeaderlessForwardingHazard);
+    largeBodyChurnTests->add(testLosHeaderless64KiBChunkIsExact);
 
     auto gcPressureTests = std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("GCPressure");
     // Group A — Allocator-API pressure tests.

@@ -279,8 +279,12 @@ public:
         return size <= cap ? LargePlacement::Nursery : LargePlacement::Ylos;
     }
     LargePlacement placeLarge(size_t size, uint32_t tag) const {
+        // plans/large-object-space.md D3: in both nursery modes a pointer-bearing
+        // object larger than the largest uniform class goes to the YLOS, so a
+        // promotion never needs an old-gen cell outside the size classes.
         return placeLargeFor(size, tag, nursery_.capacityBytes(), *config_,
-                             nursery_.regionLargeCap());
+                             std::min(nursery_.regionLargeCap(),
+                                      old_gen_.largestUniformClassBytes()));
     }
 
     /** threaded-gc-05a: true while an incremental mark cycle runs (HEAP_063). */

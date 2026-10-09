@@ -541,3 +541,12 @@ Change: `g_probe_page` is `alignas(4096)` under `_WIN32` (a PE image's `/ALIGN` 
 link with LNK1164) and `alignas(65536)` elsewhere, as before. **w_pool_done**: the driver builds
 without `_WIN32` and the code it reduces is untouched. GenMC is not installed here; audited by
 reading. **Verdict: no driver change needed.**
+
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+
+Pin fired (W3, W4): census `runtime/src/allocator/OldGenSpace.cpp` (**714b07d48107**). The new concurrency lines are one relaxed `std::atomic_ref<uint64_t>(…live_bytes).fetch_add` in `OldGenSpace::attributeNewCell` (allocate-black for a header-less LOS body: the mutator, mid-cycle or under `par_promo_active_`), a copy of `initObjectHeaderWithSize`'s add to the same word with the same order. W3 (mark-byte RMWs, `testAndSetMark`, `setMarkBitAtomic`'s non-large branch) and W4 (block publication: `setRegionEnd` → `commitPageIndexThrough` → `materializeBlock` → `storeOwner`) are unchanged: an LOS block is published by the same `ensureBagPageAvailable` + `materializeBlock` sequence a bag page uses, and its mark bits are an ordinary arena slot. **Verdict: no driver change needed.**
+
+Also pinned for W3: region `OGS.lazySweep` (**f2052ad635f1**). Only the legacy is_large arm changed: a raw
+block (`kLosRaw`) skips the header load before its index lookup. The mark-byte reads and clears W3
+reduces (`testAndClearMarkBitInBlock`, the gap sweep's relaxed word loads) are untouched, and LOS blocks
+are never unswept, so the sweep never walks them. **Verdict: no driver change needed.**

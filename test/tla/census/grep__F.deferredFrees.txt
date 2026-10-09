@@ -4,6 +4,7 @@ runtime/src/allocator/OldGenSpace.cpp: deferred_frees_.clear();
 runtime/src/allocator/OldGenSpace.cpp: deferred_frees_.clear();
 runtime/src/allocator/OldGenSpace.cpp: deferred_frees_.push_back(m);
 runtime/src/allocator/OldGenSpace.cpp: for (LargeBodyMeta& m : deferred_frees_) {
+runtime/src/allocator/OldGenSpace.cpp: for (const LargeBodyMeta& m : deferred_frees_) add(m.body_base, m.cell_size);
 runtime/src/allocator/OldGenSpace.cpp: for (const LargeBodyMeta& m : deferred_frees_) cells.push_back(m.body_base);
 runtime/src/allocator/OldGenSpace.cpp: if (deferred_frees_.empty()) return;
 runtime/src/allocator/OldGenSpace.hpp: static size_t deferredFrees(const OldGenSpace& og) { return og.deferred_frees_.size(); }

@@ -370,31 +370,24 @@ HPointer slice(void* str, i64 start, i64 end) {
             return tinyFromU16(s->chars + start, slice_len);
         }
         if (hdr->tag == Tag_LargeStringHeader) {
+            // The body is pinned: its chars stay put across tinyFromU16's allocation.
             LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-            void* body = Allocator::resolveFast(h->body);
-            if (!body) return alloc::emptyString();
-            ElmString* leaf = static_cast<ElmString*>(body);
-            return tinyFromU16(leaf->chars + start, slice_len);
+            return tinyFromU16(largeStringChars(h) + start, slice_len);
         }
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             u32 baseOffset = slc->offset;
             void* baseObj = Allocator::resolveFast(slc->base);
             if (!baseObj) return alloc::emptyString();
-            if (static_cast<Header*>(baseObj)->tag == Tag_LargeStringHeader) {
-                LargeStringHeader* lh = static_cast<LargeStringHeader*>(baseObj);
-                baseObj = Allocator::resolveFast(lh->body);
-                if (!baseObj) return alloc::emptyString();
-            }
-            ElmString* leaf = static_cast<ElmString*>(baseObj);
-            assert(leaf->header.tag == Tag_String &&
-                   "Tag_StringSlice base must resolve to Tag_String "
-                   "(directly or via Tag_LargeStringHeader::body)");
+            assert((static_cast<Header*>(baseObj)->tag == Tag_String ||
+                    static_cast<Header*>(baseObj)->tag == Tag_LargeStringHeader) &&
+                   "Tag_StringSlice base must be a Tag_String or a Tag_LargeStringHeader");
+            // Both forms keep the logical length in their own header.size.
             assert(static_cast<u64>(baseOffset) + static_cast<u64>(start) +
                        static_cast<u64>(slice_len) <=
-                   static_cast<u64>(leaf->header.size) &&
+                   static_cast<u64>(static_cast<Header*>(baseObj)->size) &&
                    "slice range exceeds underlying leaf");
-            return tinyFromU16(leaf->chars + baseOffset + start, slice_len);
+            return tinyFromU16(flatStringChars(baseObj) + baseOffset + start, slice_len);
         }
         // Rope: walk leaf segments via forEachSegment, advancing past `start`
         // logical positions and writing the next `slice_len` units into the

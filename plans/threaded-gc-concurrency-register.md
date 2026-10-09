@@ -129,9 +129,9 @@ has its evidence and history below; CR-025 to CR-038 are new since the model pla
 | CR-002 | Gap sweep's plain word read shared a bitmap word with a batch-popped cell's `fetch_or` after the unlock | Fixed (2026-09-30: unswept-block cells finalized under `promo_mu_`, never stashed, HEAP_055; PM8); guards pass | S2 | M4, W3 |
 | CR-028 | The validate-only V11 header walk in `lazySweep` raced with workers writing popped cells | Fixed (2026-09-30: V11 deferred to `endParallelPromotion` for N > 1, HEAP_055); guard passes | S2 (validate builds) | M4 |
 | CR-016 | Empty-regular-block flip under `promo_mu_` vs a worker's stash or claimed chunk (exact-size promotion; test geometries) | Fixed (2026-09-30: no flip with N > 1 promotion workers, HEAP_054); guards pass | S1 (test geometries) | M4 |
-| CR-018 | After the sweep, mixed-block allocations are not counted in `live_bytes`, so the empty-block flip can take a live block (**serial**, not a concurrency defect) | Fixed (2026-09-30: live_bytes counted in every phase, HEAP_073); guards pass | S1 | — (unit test) |
+| CR-018 | After the sweep, mixed-block allocations are not counted in `live_bytes`, so the empty-block flip can take a live block (**serial**, not a concurrency defect) | Fixed (2026-09-30: live_bytes counted in every phase, HEAP_073); guards pass. **Route retired 2026-10-09** (plans/large-object-space.md D2): objects >= LOT now live in LOS blocks, which the empty-block flip skips; the guards report "route RETIRED" | S1 | — (unit test) |
 | CR-033 | `allocateFromBagPage`'s fresh-page carve leaves an 8-byte tail without a header (**serial**) | Fixed (2026-09-30: every nonzero bag-page tail gets a header, HEAP_024); guards pass | S1 in legacy allocation; benign in bitmap mode (default) | M8 |
-| CR-035 | The empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed (**serial**) | Fixed (2026-09-30: the flip retires its index range, HEAP_056; CR-018 removed the precondition); guards pass | S1 | M8, M4 |
+| CR-035 | The empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed (**serial**) | Fixed (2026-09-30: the flip retires its index range, HEAP_056; CR-018 removed the precondition); guards pass. **Route retired 2026-10-09** (plans/large-object-space.md D2): a YLOS lives in an LOS block, never in a mixed page, and the flip never takes an LOS block | S1 | M8, M4 |
 | CR-021 | Plain reads of region bounds and owner words while markers hold `atomic_ref`s ([atomics.ref.generic]/3) | Fixed | S2 (letter) | W4 |
 | CR-036 | IM5's t0-block check cannot see a same-id, same-start re-issue | Fixed (2026-09-30: per-id BlockTable generation in IM5's key); guards pass | G (validate) | M1, M4 |
 | CR-006 | gc-heap-tsan ran with `gc_thread_mode = 0`: the pool and concurrent marking were never under TSan together | Fixed (the `pool` arms, 0 warnings) | G | M6/M7 |
@@ -1209,6 +1209,9 @@ History:
 
 ### CR-018 — after the sweep, mixed-block allocations are not counted, so the empty-block flip can take a live block
 
+**2026-10-09 verdict: route retired** (plans/large-object-space.md D2, HEAP_080). The scenario needs an object of at least `large_object_threshold` carved into a mixed bag page; such objects now live in LOS blocks (`BlockInfo::los`), which `allocateFromEmptyRegularBlocks`, the reclaim and the shrink skip. The flip is still reachable from a huge-tier promotion (CR-016's guards), where HEAP_073's counting still holds. The guards now detect the LOS placement and report "route RETIRED" (`routeRetired` in `ConcurrencyRegisterTest.cpp`); the negative control can no longer produce the defect by construction.
+
+
 | | |
 |---|---|
 | Status | Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §3.2). Earlier: Reproduced (code and model, 2026-09-29), Guarded |
@@ -1884,6 +1887,9 @@ History:
   lazy sweep retires entries after the mutator resumes, so that prune is not enough.
 
 ### CR-035 — the empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed
+
+**2026-10-09 verdict: route retired** (plans/large-object-space.md D2, HEAP_080). The chain needs a YLOS carved at the start of a mixed page and a page-sized YLOS flipping that page; every YLOS (and every body) now lives in an LOS block, and the flip never takes an LOS block. `retireIndexRange` stays in the flip (a huge-tier promotion can still flip an empty regular block). The guards report "route RETIRED"; M8's `controls/cr035_*` and the `flip_keeps_index` mutants keep modelling the pre-LOS placement (see M8 AUDIT.md 2026-10-09).
+
 
 | | |
 |---|---|

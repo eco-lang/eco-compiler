@@ -445,15 +445,14 @@ bool verifyPatternedByteBuffer(HPointer& root, size_t expected_length) {
     // Tag_LargeByteHeader pointing at the Tag_ByteBuffer body in old gen.
     if (hdr->tag == Tag_LargeByteHeader) {
         if (hdr->size != expected_length) return false;
+        // plans/large-object-space.md D4 (HEAP_081): the body is header-less
+        // payload in a raw block; the length is the outer header's.
         LargeByteHeader* h = static_cast<LargeByteHeader*>(obj);
-        void* body = Allocator::instance().resolve(h->body);
-        if (!body) return false;
-        Header* bhdr = getHeader(body);
-        if (bhdr->tag != Tag_ByteBuffer) return false;
-        if (bhdr->size != expected_length) return false;
-        ByteBuffer* buf = static_cast<ByteBuffer*>(body);
+        if (!AllocatorTestAccess::getOldGen(Allocator::instance())->isRawBody(largeBodyAddr(h)))
+            return false;
+        const u8* bytes = largeBytesData(h);
         for (size_t i = 0; i < expected_length; i++) {
-            if (buf->bytes[i] != patternByte(i)) return false;
+            if (bytes[i] != patternByte(i)) return false;
         }
         return true;
     }
@@ -659,17 +658,14 @@ bool verifyPatternedSplitString(HPointer root, size_t expected_length) {
     Header* hdr = getHeader(obj);
     if (hdr->tag != Tag_LargeStringHeader) return false;
     if (hdr->size != expected_length) return false;
+    // plans/large-object-space.md D4 (HEAP_081): header-less payload, raw block.
     LargeStringHeader* lh = static_cast<LargeStringHeader*>(obj);
-    void* body = Allocator::instance().resolve(lh->body);
-    if (!body) return false;
-    Header* bhdr = getHeader(body);
-    if (bhdr->tag != Tag_String) return false;
-    if (bhdr->size != expected_length) return false;
-    if (bhdr->pin != 1) return false;
-    ElmString* leaf = static_cast<ElmString*>(body);
+    if (!AllocatorTestAccess::getOldGen(Allocator::instance())->isRawBody(largeBodyAddr(lh)))
+        return false;
+    const u16* chars = largeStringChars(lh);
     for (size_t i = 0; i < expected_length; ++i) {
         u16 expected = static_cast<u16>(0x4000 + (i % 0x4000));
-        if (leaf->chars[i] != expected) return false;
+        if (chars[i] != expected) return false;
     }
     return true;
 }
@@ -690,14 +686,14 @@ Testing::TestCase testLargeStringSplitHeaderLayout(
     TEST_ASSERT(hdr->size == SPLIT_STRING_LEN);
     TEST_ASSERT(alloc.isInNursery(obj));
 
+    // plans/large-object-space.md D4 (HEAP_081): the body is header-less
+    // payload in a raw LOS block; tag and length are the header's.
     LargeStringHeader* lh = static_cast<LargeStringHeader*>(obj);
-    void* body = alloc.resolve(lh->body);
+    void* body = largeBodyAddr(lh);
     TEST_ASSERT(body != nullptr);
     TEST_ASSERT(alloc.isInOldGen(body));
-    Header* bhdr = getHeader(body);
-    TEST_ASSERT(bhdr->tag == Tag_String);
-    TEST_ASSERT(bhdr->size == SPLIT_STRING_LEN);
-    TEST_ASSERT(bhdr->pin == 1);
+    TEST_ASSERT(AllocatorTestAccess::getOldGen(alloc)->isRawBody(body));
+    TEST_ASSERT(largeStringChars(lh) == static_cast<u16*>(body));
 
     alloc.getRootSet().removeRoot(&hp);
 });
@@ -718,14 +714,14 @@ Testing::TestCase testLargeByteSplitHeaderLayout(
     TEST_ASSERT(hdr->size == SPLIT_BYTE_LEN);
     TEST_ASSERT(alloc.isInNursery(obj));
 
+    // plans/large-object-space.md D4 (HEAP_081): header-less payload, raw LOS block.
     LargeByteHeader* lh = static_cast<LargeByteHeader*>(obj);
-    void* body = alloc.resolve(lh->body);
+    void* body = largeBodyAddr(lh);
     TEST_ASSERT(body != nullptr);
     TEST_ASSERT(alloc.isInOldGen(body));
-    Header* bhdr = getHeader(body);
-    TEST_ASSERT(bhdr->tag == Tag_ByteBuffer);
-    TEST_ASSERT(bhdr->size == SPLIT_BYTE_LEN);
-    TEST_ASSERT(bhdr->pin == 1);
+    TEST_ASSERT(AllocatorTestAccess::getOldGen(alloc)->isRawBody(body));
+    for (size_t i = 0; i < SPLIT_BYTE_LEN; ++i)
+        TEST_ASSERT(largeBytesData(lh)[i] == static_cast<u8>(i % 251));
 
     alloc.getRootSet().removeRoot(&hp);
 });
@@ -740,7 +736,7 @@ Testing::TestCase testSplitBodySurvivesMinorGCWithoutCopy(
     // Capture the body's raw address before any GC.
     void* obj0 = alloc.resolve(hp);
     LargeStringHeader* lh0 = static_cast<LargeStringHeader*>(obj0);
-    void* body0 = alloc.resolve(lh0->body);
+    void* body0 = largeBodyAddr(lh0);
     TEST_ASSERT(body0 != nullptr);
 
     // Allocate enough garbage to drive several minor GCs but keep the count
@@ -755,7 +751,7 @@ Testing::TestCase testSplitBodySurvivesMinorGCWithoutCopy(
     void* obj_after = alloc.resolve(hp);
     TEST_ASSERT(obj_after != nullptr);
     LargeStringHeader* lh_after = static_cast<LargeStringHeader*>(obj_after);
-    void* body_after = alloc.resolve(lh_after->body);
+    void* body_after = largeBodyAddr(lh_after);
     TEST_ASSERT(body_after == body0);
 
     // Payload still intact.
@@ -776,7 +772,7 @@ Testing::TestCase testSplitBodyEarlyReclamationOnDeadHeader(
     void* obj = alloc.resolve(hp);
     TEST_ASSERT(obj != nullptr);
     LargeByteHeader* lh = static_cast<LargeByteHeader*>(obj);
-    void* body0 = alloc.resolve(lh->body);
+    void* body0 = largeBodyAddr(lh);
     TEST_ASSERT(body0 != nullptr);
     TEST_ASSERT(OldGenSpaceTestAccess::isBodyTracked(
         *AllocatorTestAccess::getOldGen(alloc), body0));
@@ -796,7 +792,7 @@ Testing::TestCase testSplitPromotionTransfersOwnership(
 
     void* obj0 = alloc.resolve(hp);
     LargeStringHeader* lh0 = static_cast<LargeStringHeader*>(obj0);
-    void* body0 = alloc.resolve(lh0->body);
+    void* body0 = largeBodyAddr(lh0);
     TEST_ASSERT(OldGenSpaceTestAccess::isBodyTracked(
         *AllocatorTestAccess::getOldGen(alloc), body0));
 
@@ -817,7 +813,7 @@ Testing::TestCase testSplitPromotionTransfersOwnership(
     TEST_ASSERT(nursery_owned.empty());
 
     // Subsequent minor GCs (without major in between) must NOT free the body.
-    void* body_after = alloc.resolve(static_cast<LargeStringHeader*>(obj_after)->body);
+    void* body_after = largeBodyAddr(static_cast<LargeStringHeader*>(obj_after));
     TEST_ASSERT(body_after == body0);
     alloc.minorGC();
     TEST_ASSERT(verifyPatternedSplitString(hp, SPLIT_STRING_LEN));

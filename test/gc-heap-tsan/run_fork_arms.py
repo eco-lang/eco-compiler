@@ -61,7 +61,7 @@ def parse_registry(path):
             sys.exit(f"{path}:{n}: a tsan {expected} row needs match=<function in the report>")
         if tier not in ("quick", "stress"):
             sys.exit(f"{path}:{n}: tier must be quick or stress, not {tier}")
-        if expected not in ("clean", "xfail", "reach", "wontfix", "flaky"):
+        if expected not in ("clean", "xfail", "reach", "wontfix", "flaky", "retired"):
             sys.exit(f"{path}:{n}: expected must be clean, xfail, reach, wontfix or flaky, not {expected}")
         tag = raw.split("#", 1)[1].strip() if "#" in raw else ""
         rows.append(dict(line=n, flavor=flavor, tier=tier, arm=arm, trials=int(trials), seed=int(seed),
@@ -114,6 +114,9 @@ def run_tsan(exe, r, env, log_dir):
             rc, out = "timeout", ""
         warn = out.count("WARNING: ThreadSanitizer")
         reached = "REACHED" in out and "NOT REACHED" not in out
+        # plans/large-object-space.md: a route made unreachable BY CONSTRUCTION (the arm
+        # checks the structure that rules it out, exits 0 and says "route RETIRED").
+        retired = "route RETIRED" in out
         named = r["match"] is None or r["match"] in out
         if rc == 3 or "NOT REACHED" in out:
             v = 4
@@ -121,6 +124,8 @@ def run_tsan(exe, r, env, log_dir):
             v = 1
         elif rc == 0 and reached and not warn:
             v = 0
+        elif rc == 0 and retired and not warn:
+            v = 5
         else:
             v = "error"
         per.append(v)
@@ -131,6 +136,8 @@ def run_tsan(exe, r, env, log_dir):
         agg = "error"
     elif 4 in per:
         agg = 4
+    elif all(v == 5 for v in per):
+        agg = 5
     elif all(v == 1 for v in per):
         agg = 1
     elif all(v == 0 for v in per):
@@ -143,6 +150,10 @@ def run_tsan(exe, r, env, log_dir):
 
 
 def judge(expected, rc, strict):
+    if rc == 5:   # every trial reported its route retired
+        return "RETIRED" if expected == "retired" else "ERROR"
+    if expected == "retired":
+        return "ERROR"
     if rc not in (0, 1):
         return "ERROR"
     if expected == "flaky":

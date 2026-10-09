@@ -402,6 +402,14 @@ int ylosDetMain(int argc, char** argv) {
     const BlockId idY = OA::blockOf(og, Y);
     if (!og.isYoungLarge(Y)) return notReached("Y is not young after the major");
     if (OA::gcPhase(og) != GCPhase::Sweeping) return notReached("no sweep pending after the major");
+    if (idY.valid() && og.isLosBlock(idY)) {
+        // plans/large-object-space.md D2 (HEAP_080): a YLOS lives in an LOS block,
+        // which no sweep ever walks; the header-write-vs-sweep-read race has no
+        // route left. Recorded as "route retired" in the concurrency register.
+        std::printf("%s: route RETIRED: Y lives in an LOS block, never swept\n", arm.c_str());
+        std::fflush(stdout);
+        return 0;
+    }
     if (!idY.valid() || !OA::sweepWillReach(og, idY, Y)) return notReached("the sweep will not reach Y");
     // Pre-sweep until the next live object the sweep reaches is Y.
     const BlockTable& bt = OA::getBlockTable(og);

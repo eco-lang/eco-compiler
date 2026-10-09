@@ -10,6 +10,9 @@ runtime/src/allocator/OldGenSpace.cpp: auto it = large_body_index_.find(sweep_cu
 runtime/src/allocator/OldGenSpace.cpp: for (auto it = large_body_index_.begin();
 runtime/src/allocator/OldGenSpace.cpp: for (auto it = large_body_index_.begin(); it != large_body_index_.end();) {
 runtime/src/allocator/OldGenSpace.cpp: for (auto it = large_body_index_.begin(); it != large_body_index_.end();) {
+runtime/src/allocator/OldGenSpace.cpp: for (auto it = large_body_index_.begin(); it != large_body_index_.end();) {
+runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) add(kv.first, large_bodies_[kv.second].cell_size);
+runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) {
 runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) {
 runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) {
 runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) {
@@ -23,9 +26,8 @@ runtime/src/allocator/OldGenSpace.cpp: it != large_body_index_.end();) {
 runtime/src/allocator/OldGenSpace.cpp: it = large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: it = large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: it = large_body_index_.erase(it);
+runtime/src/allocator/OldGenSpace.cpp: it = large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: large_body_index_.clear();
-runtime/src/allocator/OldGenSpace.cpp: large_body_index_.erase(it);
-runtime/src/allocator/OldGenSpace.cpp: large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: large_body_index_.erase(it);

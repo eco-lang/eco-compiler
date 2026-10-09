@@ -5,6 +5,7 @@ runtime/src/allocator/Allocator.cpp: if (page_work_) commit_bytes = page_work_->
 runtime/src/allocator/Allocator.cpp: if (page_work_) commit_bytes = page_work_->onFreshBump(region_base, initial_size, &commit_from);
 runtime/src/allocator/Allocator.cpp: page_work_->onRelease(block, size, callerInPause());
 runtime/src/allocator/Allocator.cpp: page_work_->syncPoint(sync_epoch_, major_epoch_, heap_base + old_gen_committed,
+runtime/src/allocator/Allocator.cpp: releaseOldGenBlock(block + size, block_size - size);
 runtime/src/allocator/Allocator.cpp: void Allocator::releaseOldGenBlock(char* block, size_t size) {
 runtime/src/allocator/Allocator.hpp: char* acquireOldGenBlock(size_t size, AcquireWait w = AcquireWait::Allowed);
 runtime/src/allocator/Allocator.hpp: static char* acquireOldGenBlock(Allocator& a, size_t n) { return a.acquireOldGenBlock(n); }

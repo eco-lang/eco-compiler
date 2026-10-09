@@ -74,8 +74,8 @@ inline ParserStr parserView(HPointer hp) {
         auto pr = StringOps::utf8Bytes(obj);
         return ParserStr{nullptr, pr.first, static_cast<int64_t>(pr.second)};
     }
-    ElmString* s = alloc::resolveStringBody(obj);
-    return ParserStr{s->chars, nullptr, static_cast<int64_t>(s->header.size)};
+    alloc::U16View s = alloc::flatStringView(obj);
+    return ParserStr{s.chars, nullptr, static_cast<int64_t>(s.length)};
 }
 
 inline ParserStr resolveString(HPtr str) {

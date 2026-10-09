@@ -62,8 +62,17 @@ struct BlockInfo {
     // 2 Current (owned by cursor_[size_class]). Always 0 with the flag off.
     uint8_t alloc_state = 0;
 
+    // plans/large-object-space.md D2 (HEAP_080): kLosBlock marks an LOS block
+    // (alloc_buffer_size, size_class == NUM_SIZE_CLASSES, never on a free list,
+    // never swept, flipped, demoted or evacuated: LargeObjectSpace manages its
+    // space). kLosRaw: it holds header-less large bodies (D4), set on LOS blocks
+    // and on is_large blocks alike. Fixed at materialize; markers read it.
+    uint8_t los = 0;
+
     size_t totalBytes() const { return static_cast<size_t>(end - start); }
 };
+constexpr uint8_t kLosBlock = 1;
+constexpr uint8_t kLosRaw = 2;
 static_assert(sizeof(BlockInfo) == 40, "BlockInfo must stay 40 bytes");
 
 // ============================================================================

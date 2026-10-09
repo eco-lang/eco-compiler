@@ -916,6 +916,30 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
             if (heapTraceEnabled()) {
                 dumpHeapState("oldgen reused released block", block_size);
             }
+
+            // plans/large-object-space.md D1 (O7): the caller records only
+            // `size` as its extent and releases only that, so a larger
+            // extent's tail would be lost from old_gen_free_blocks_ and stay
+            // counted as in use. Hand the tail straight back as its own free
+            // extent: an ordinary release (thread_mutex_ is recursive), so
+            // PageWork sees reuse-then-release, two actions it already models.
+            if (block_size > size) {
+                assert(size % kPageSize == 0 && block_size % kPageSize == 0 &&
+                       "acquireOldGenBlock: extents and requests are OS-page multiples");
+#if ECO_HEAP_VALIDATE
+                // The tail lies below the bump and was awaited at its own release;
+                // populates are posted only above the bump (topUpWindow), so this
+                // release never waits (CR-007's no-wait rule under promo_mu_ holds).
+                const uint64_t waits0 = page_work_ ? page_work_->counters().release_waits : 0;
+#endif
+                releaseOldGenBlock(block + size, block_size - size);
+#if ECO_HEAP_VALIDATE
+                if (page_work_ && page_work_->counters().release_waits != waits0) {
+                    std::fprintf(stderr, "[heap-validate] O7: the tail release of a reused extent waited\n");
+                    std::abort();
+                }
+#endif
+            }
             return block;
     };
 
@@ -958,9 +982,8 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
         }
     }
 
-    // First-fit reuse from previously-released old-gen blocks. Splitting an
-    // oversized cell is out of scope; we accept the slack on a larger reuse
-    // since current callers request whole pages or whole large-block extents.
+    // First-fit reuse from previously-released old-gen blocks. A larger
+    // extent is split: takeFreeAt releases the tail as its own free extent.
     if (!skip_reuse) {
         for (auto it = old_gen_free_blocks_.begin();
              it != old_gen_free_blocks_.end(); ++it) {
@@ -1626,6 +1649,21 @@ GCStats Allocator::getCombinedStats() const {
         // threaded-gc-02: fold the bitmap cursors' pending counts first.
         heap->getOldGen().syncCursorLiveBytes();
         combined.combine(heap->getOldGen().getStats());
+        {   // plans/large-object-space.md: the heap's LOS counters.
+            const LargeObjectSpace& los = heap->getOldGen().largeObjectSpace();
+            const LargeObjectSpace::Stats& ls = los.stats();
+            combined.los.allocs += ls.allocs;
+            combined.los.frees += ls.frees;
+            combined.los.alloc_bytes += ls.alloc_bytes;
+            combined.los.free_bytes += ls.free_bytes;
+            combined.los.object_bytes += ls.object_bytes;
+            combined.los.blocks_added += ls.blocks_added;
+            combined.los.blocks_removed += ls.blocks_removed;
+            combined.los.fit_misses += ls.fit_misses;
+            combined.los.aligned_allocs += ls.aligned_allocs;
+            combined.los.blocks_now += los.blockCount();
+            combined.los.used_bytes_now += los.usedBytesTotal();
+        }
         combined.combine(heap->getStats());
     }
     if (runtime_start_ns_ != 0) {

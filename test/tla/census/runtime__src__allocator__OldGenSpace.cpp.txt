@@ -3,6 +3,7 @@
 ++pw.mutex_acquires;
 .fetch_add(c.pending_live, std::memory_order_relaxed);
 .fetch_add(cell_bytes, std::memory_order_relaxed);
+.fetch_add(cell_bytes, std::memory_order_relaxed);
 .fetch_add(cell_size, std::memory_order_relaxed);
 ECO_TLA_TRACE_ONLY(const uint64_t m4_old = promo_ctx_->shared[cls].w.load(std::memory_order_relaxed);)
 alloc_stats_.cm.bg_cpu_ns = bg_->stats().member_cpu_ns.load(std::memory_order_relaxed);
@@ -44,6 +45,7 @@ std::atomic_ref<GCPhase>(gc_phase_).load(std::memory_order_relaxed) != GCPhase::
 std::atomic_ref<GCPhase>(gc_phase_).load(std::memory_order_relaxed) != GCPhase::Idle;
 std::atomic_ref<GCPhase>(gc_phase_).load(std::memory_order_relaxed) == GCPhase::Sweeping &&
 std::atomic_ref<GCPhase>(gc_phase_).store(GCPhase::Idle, std::memory_order_relaxed);
+std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
 std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
 std::atomic_ref<uint64_t>(blocks_.meta(c.block).live_bytes)
 std::atomic_ref<uint64_t>(blocks_.meta(id).live_bytes)

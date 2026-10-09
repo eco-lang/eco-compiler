@@ -1011,7 +1011,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             // (HEAP_056): the bitmap cursor fills a gap between set bits and
             // leaves the gap's tail as stale bytes with no header, so the walk
             // visits set start bits only and steps a granule otherwise.
-            const bool bitmap_walk = oldgen.config_->old_gen_bitmap_alloc && !blk.is_large;
+            // plans/large-object-space.md D2: a raw LOS block holds header-less
+            // bodies (no pointers); an object LOS block is walked by its bits.
+            if (blk.los & kLosRaw) continue;
+            const bool bitmap_walk =
+                (oldgen.config_->old_gen_bitmap_alloc || blk.los != 0) && !blk.is_large;
             const bool uniform_bitmap = bitmap_walk && blk.size_class < oldgen.num_size_classes_;
             const size_t ucell = uniform_bitmap
                 ? OldGenSpace::classToSize(blk.size_class) : 8;

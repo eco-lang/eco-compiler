@@ -159,8 +159,11 @@ Testing::TestCase testLargeBlockReuseSameAddress(
 // 3. Empty-page conversion to large.
 // ----------------------------------------------------------------------------
 
+// plans/large-object-space.md D2: a large allocation takes an LOS block (from
+// the committed bag, else a fresh page); the empty-block flip is left to a
+// huge-tier promotion. Committed must not grow while free pages exist.
 Testing::TestCase testEmptyPageConvertedToLarge(
-    "Fully-free regular pages are repurposed for new large allocations", []() {
+    "Large allocations take an LOS block without growing committed while pages are free", []() {
     auto cfg = capacityHeapConfig();
     cfg.decommit_on_oldgen_release = false;
     auto& alloc = initAllocator(cfg);
@@ -189,11 +192,10 @@ Testing::TestCase testEmptyPageConvertedToLarge(
     alloc.getRootSet().addRoot(&big);
     const size_t committed_after = alloc.getOldGenCommittedBytes();
 
+    TEST_ASSERT(og.isLosBlock(OldGenSpaceTestAccess::blockIdFor(og, AllocatorTestAccess::fromPointer(big))));
     if (free_pages_before > 0) {
         // Reuse should have happened: committed counter unchanged.
         TEST_ASSERT(committed_after == committed_before);
-        // And one fewer fully-free page (the one we just claimed).
-        TEST_ASSERT(countFullyFreePages(og) < free_pages_before);
     }
 
     alloc.getRootSet().removeRoot(&big);
@@ -331,4 +333,45 @@ Testing::TestCase testDecommitFlagPathExercised(
         alloc.getRootSet().addRoot(&reuse);
         alloc.getRootSet().removeRoot(&reuse);
     }
+});
+
+// ----------------------------------------------------------------------------
+// 8. O7 (plans/large-object-space.md D1): reusing a released extent larger
+//    than the request hands out exactly the request and returns the tail as
+//    its own free extent; in-use bytes match what was handed out.
+// ----------------------------------------------------------------------------
+
+Testing::TestCase testReusedExtentTailIsReleased(
+    "O7: a reused larger extent is split; the tail is free and in-use is exact", []() {
+    auto cfg = capacityHeapConfig();
+    auto& alloc = initAllocator(cfg);
+    const size_t page = cfg.alloc_buffer_size;
+    auto onList = [&](char* p, size_t n) {
+        for (const auto& e : AllocatorTestAccess::freeBlocks(alloc)) {
+            if (e.first == p && e.second == n) return true;
+        }
+        return false;
+    };
+
+    const size_t u0 = alloc.getOldGenCommittedBytes();
+    char* x = AllocatorTestAccess::acquireOldGenBlock(alloc, 4 * page);
+    TEST_ASSERT(x != nullptr);
+    TEST_ASSERT(alloc.getOldGenCommittedBytes() == u0 + 4 * page);
+    AllocatorTestAccess::releaseOldGenBlock(alloc, x, 4 * page);
+    TEST_ASSERT(alloc.getOldGenCommittedBytes() == u0);
+
+    // Only x's extent is >= 2 pages, so first fit takes it and splits it.
+    char* y = AllocatorTestAccess::acquireOldGenBlock(alloc, 2 * page);
+    TEST_ASSERT(y == x);
+    TEST_ASSERT(alloc.getOldGenCommittedBytes() == u0 + 2 * page);
+    TEST_ASSERT(onList(x + 2 * page, 2 * page));
+
+    // The tail is reused for the next request of its size.
+    char* z = AllocatorTestAccess::acquireOldGenBlock(alloc, 2 * page);
+    TEST_ASSERT(z == x + 2 * page);
+    TEST_ASSERT(alloc.getOldGenCommittedBytes() == u0 + 4 * page);
+
+    AllocatorTestAccess::releaseOldGenBlock(alloc, y, 2 * page);
+    AllocatorTestAccess::releaseOldGenBlock(alloc, z, 2 * page);
+    TEST_ASSERT(alloc.getOldGenCommittedBytes() == u0);
 });
