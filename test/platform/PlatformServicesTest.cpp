@@ -59,6 +59,11 @@ constexpr std::uint64_t kBogusTokenBase = 0xEC05'0000'0000'0000ull;
 
 // ---- Scheduler quiescence hook (Phase 2 step 3) ----------------------------
 
+// The hook's listeners and armed flag are process-wide, and registration is
+// permanent: these tests need a fresh process each, which the Windows runner
+// (in-process, serial) does not give.
+#if !defined(_WIN32)
+
 int g_quiescenceCalls = 0;
 
 // First call starts one async op (a 5 ms timer holding a pendingAsync ref),
@@ -112,6 +117,8 @@ void test_quiescence_never_in_embed_mode() {
     sched.runEventLoop();
     TEST_ASSERT(calls == 0);
 }
+
+#endif  // !_WIN32
 
 // ---- TimerService::cancel (Phase 2 step 6) ----------------------------------
 
@@ -256,9 +263,11 @@ void test_exit_code_roundtrip() {
 }  // namespace
 
 void registerPlatformServicesTests(IsolatedTestRunner::IsolatedTestCaseSuite& suite) {
+#if !defined(_WIN32)
     suite.add(Testing::TestCase("platform-services/PS1 quiescence fires once per arming", test_quiescence_fires_once_per_arming));
     suite.add(Testing::TestCase("platform-services/PS2 quiescence listener without async exits", test_quiescence_listener_without_async_exits));
     suite.add(Testing::TestCase("platform-services/PS3 quiescence never in embed mode", test_quiescence_never_in_embed_mode));
+#endif
     suite.add(Testing::TestCase("platform-services/PS4 timer cancel pending", test_timer_cancel_pending));
     suite.add(Testing::TestCase("platform-services/PS5 timer cancel after fire", test_timer_cancel_after_fire_returns_false));
 #if !defined(_WIN32)
