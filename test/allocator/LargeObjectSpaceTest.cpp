@@ -10,6 +10,9 @@
 #include <map>
 #include <random>
 #include <vector>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 #include "Allocator.hpp"
 #include "Heap.hpp"
@@ -28,14 +31,30 @@ constexpr size_t kBlock = 512 * 1024;
 constexpr size_t kPage = 4096;
 constexpr size_t KiB = 1024;
 
+// The MSVC CRT has no std::aligned_alloc.
+char* alignedBlock() {
+#if defined(_WIN32)
+    return static_cast<char*>(_aligned_malloc(kBlock, kBlock));
+#else
+    return static_cast<char*>(std::aligned_alloc(kBlock, kBlock));
+#endif
+}
+
+void freeBlock(char* b) {
+#if defined(_WIN32)
+    _aligned_free(b);
+#else
+    std::free(b);
+#endif
+}
+
 // Plain, block-aligned memory standing in for LOS blocks.
 struct Arena {
     std::vector<char*> blocks;
     explicit Arena(size_t n) {
-        for (size_t i = 0; i < n; ++i)
-            blocks.push_back(static_cast<char*>(std::aligned_alloc(kBlock, kBlock)));
+        for (size_t i = 0; i < n; ++i) blocks.push_back(alignedBlock());
     }
-    ~Arena() { for (char* b : blocks) std::free(b); }
+    ~Arena() { for (char* b : blocks) freeBlock(b); }
 };
 
 void assertValid(const LargeObjectSpace& los) {
