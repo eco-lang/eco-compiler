@@ -322,3 +322,42 @@ unaffected: the compiler binary already runs region mode.
   "Stream error in the HTTP/2 framing layer", before the 431 is read). Legacy: 0/10. Alone it passes
   6/6 in both modes. This looks like a timing race in the test or the HTTP/2 server that region
   timing makes more likely, not a heap fault (no validator fired).
+
+### Final gates, round 1 (all on the finished Phase 1–4 tree)
+- `full` 2,369/2,369 and JS 162/162. `stress` 114/114. Validate `stress-test` 114/114.
+  `run-aot-e2e` 1,133/1,133. `register-guards` (strict): green, harness arms 20 PASS, 2 RETIRED,
+  1 WONTFIX. Bootstrap: 4b, 8c and 9b all pass.
+- Validate unit+E2E: **32 failures**, all from the validate build:
+  - **Geometry (26):** validate builds add the eden-flip extent (5 extents, not 4), so configs that
+    fit 4 overflowed. Eight more test configs pin `nursery_max_block_count`: EnsureHeadroom,
+    FreeListBackLink, GCHelper, OldGenBitmapAlloc, OldGenLazySweep, OldGenSmallClassBudget (2),
+    OldGenSweepOnDemand and P1Census.
+  - **HEAP_041/042 ensure tests (3):** they checked the bump pointer against the legacy from-space
+    (`NTA::fromBase/fromEnd`), which the eden flip moves away from. New `NTA::allocBase/allocEnd`
+    give the extent the bump allocates in (from-space, or the current eden).
+  - **P1 detector O (2) and N (1):** the timing fix is `tenureMerge`. The YLOS case exposed F4.
+- **F4 (fixed):** on the region nursery, P1 detector O never watched YLOS objects promoted in
+  place. `mergeJob` promotes them at step (4), after its `p1::recordPromoted` call at step (2), and
+  only copies were logged; the legacy minor logs them (NurseryParallel.cpp). `mergeJob` now records
+  them after their child slots are resolved (census builds only). M1 and M5 AUDIT entries are
+  written and the manifest is updated.
+- **F5 (open, minor):** detector N's region form re-hashes a minor's census in the next minor's
+  tenure join, so a fresh heap's first minor (no job yet) is never checked. Steady state is covered.
+  The test warms the pipeline up with one rooted survivor and one minor.
+- **The first HTTP/2 control was invalid.** It overlapped my rebuild of
+  `build-validate/test/test` ("Permission denied" from region run 22 on, and every legacy run).
+  Region runs 1–21 (alone, with poison) all passed. It is being rerun cleanly.
+
+### Final gates, round 2 (after the validate fixes, F4, and the HTTP/2 test fix)
+- Validate unit+E2E **2,370/2,370**. `full` **2,369/2,369** and JS 162/162. `tla-trace --model M5`
+  29/29 as expected. `tla-canary` green.
+- **F3 control** (original test, alone, `ECO_NURSERY_POISON=1` and the pressure config, validate
+  build): region 0/30, legacy 0/30. Alone, it never fails in either mode, so the trigger is
+  contention from the suite's 8 parallel programs, not the nursery mode.
+- **F3 fixed:** the two early-answer steps ("big body", "chunked big body") moved from curl to the
+  Node peer (`h2.js upload <n> <length|none>`, `HttpServerH2Help.elm`). Node's client keeps a
+  response that is followed by RST_STREAM(NO_ERROR), where curl 7.88 may drop it (error 92). The
+  output format and CHECK lines are unchanged. Fixed test, region validate, alone: 0/30. Region
+  validate eco-system suite: 10/10 runs with the test passing (it failed about 1 in 4 before). The
+  one other failure in those runs was the known `WebSocketFramingErrorsTest` 60 s timeout, in 1 of
+  10. Release: 3/3. JS target (`run-js-e2e`): pass.

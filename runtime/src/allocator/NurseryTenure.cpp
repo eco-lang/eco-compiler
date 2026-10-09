@@ -763,6 +763,9 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
         return d;
     };
     uint64_t ylos_prom = 0, ylos_freed = 0;
+#if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
+    std::vector<void*> ylos_prom_log;
+#endif
     if (heal) {
         for (size_t k = 0; k < st.ylos.size(); ++k) {
             void* y = const_cast<char*>(st.ylos[k].obj);
@@ -775,8 +778,17 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
                 char* c = static_cast<char*>(Allocator::fromPointerRaw(hp));
                 if (c >= J.base && c < J.surv_top) hp = Allocator::toPointerRaw(resolveT(c));
             });
+#if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
+            ylos_prom_log.push_back(y);
+#endif
         }
     }
+#if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
+    // P1 detector O watches an object from its promotion: in-place YLOS
+    // promotions too, as the legacy minor logs them (NurseryParallel.cpp),
+    // recorded after their children are resolved (O hashes the contents).
+    p1::recordPromoted(&oldgen, ylos_prom_log);
+#endif
     // (5) The heal: every recorded slot of a G_m copy / generation-m YLOS
     // object that points into the tenured extent gets its copy.
     uint64_t healed = 0;

@@ -1039,3 +1039,16 @@ Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct la
 Pins fired: regions `OGS.greyObject` (**beee5d40d9af**), `OGS.sweepNurseryLargeBodies` (**5eae8e786621**), `OGS.promoteYoungLarge` (**c9b5ac30eae3**), `OGS.registerLargeBody` (**b84bdbca9fc6**).
 
 The tenure paths are unchanged: `lb_bodies`/`lb_seen`/`lb_promoted` still name bodies by address, `markLargeBodySeen` colours kind 0 only, `promoteLargeHeader` (now a re-kind to 2, keeping the entry, so trap 14's "promoted body still indexed" holds a fortiori) and `promoteYoungLarge` (re-kind) run at the merge as before. `YlosGen` = "stamp" (HEAP_072's `join_minor`) is still the code; id recycling changed only in that kind-2 retirements now recycle ids, and the model's `ylos_lbid` control already shows ids are not a stamp. With the LOS, bodies (raw pool) and YLOS (object pool) never share a cell, so the model's shared Y cells (`lalloc` bodies and YLOS) are a superset of the code's behaviours. `greyObject`'s raw arm: see M1. **Verdict: no model change needed.**
+
+## 2026-10-09 — plans/region-nursery-everywhere.md: mergeJob records in-place YLOS promotions for P1 detector O (GC_MODEL_001)
+
+Pin fired: region `NT.mergeJob` (**cce0534231b1**).
+
+Change: census builds only (`ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED`). Step (4) of the merge, which
+promotes the tenured generation's reached YLOS objects in place, now collects them in a local vector.
+After the loop it calls `p1::recordPromoted` with that vector, so detector O watches those objects
+from their promotion, as it already watched the job's copies (step (2)) and the legacy minor's
+in-place promotions. The region unit tests found the gap. It is the same mutator thread in the same
+pause, and the same census lock as step (2)'s existing call, taken after step (4)'s child-slot
+resolution and before the heal. No atomic step, GC lock, shared heap location or memory order
+changed; in release builds the region compiles to the same code. **Verdict: no model change needed.**

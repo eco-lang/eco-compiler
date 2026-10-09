@@ -6,7 +6,8 @@ module HttpServerHttp2LimitsTest exposing (main)
     raw Node peer: curl may refuse to send a list over the advertised MAX_HEADER_LIST_SIZE once it
     has the server's SETTINGS, so with curl the outcome depends on timing);
   - a body over `maxBodySize` is answered 413, by `content-length` (before the body) and, without
-    one, by its running total;
+    one, by its running total (sent by the Node peer: the server answers before the upload ends and
+    resets the stream with NO_ERROR, and curl may drop that answer as error 92 under load);
   - rapid reset (CVE-2023-44487): with the default (no `maxConcurrentStreams`), a client that
     opens and cancels 1100 streams at once gets GOAWAY from the stream reset rate limit (burst
     1000; nghttp2 and Node both use INTERNAL_ERROR) and the connection ends;
@@ -68,10 +69,8 @@ client tools servers =
             [ H.node tools server "big-header" [ "2500" ] |> Task.map (prefixed "big header")
             , step "small header" [ "-H", "X-Small: " ++ String.repeat 500 "a" ] "/h"
                 |> Task.map List.singleton
-            , step "big body" [ "--data-binary", String.repeat 1500 "b" ] "/b"
-                |> Task.map List.singleton
-            , step "chunked big body" [ "--data-binary", String.repeat 1500 "b", "-H", "Content-Length:" ] "/b"
-                |> Task.map List.singleton
+            , H.node tools server "upload" [ "1500", "length" ] |> Task.map (prefixed "big body")
+            , H.node tools server "upload" [ "1500", "none" ] |> Task.map (prefixed "chunked big body")
             , step "small body" [ "--data-binary", String.repeat 900 "b" ] "/b"
                 |> Task.map List.singleton
             , H.node tools server "rapid-reset" [ "1100" ] |> Task.map (prefixed "rapid reset")

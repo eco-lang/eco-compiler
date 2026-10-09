@@ -708,3 +708,16 @@ Pins fired: regions `OGS.greyObject` (**beee5d40d9af**), `OGS.scanObject` (**4fb
 Re-audit against MAPPING. `greyObject`: after `testAndSetMark` a raw block's object returns without a push. A header-less body has no children (pointer-free), so its scan was a no-op: the marked set and every `SnapshotClosure`/IM1/IM2 fact are unchanged; it simply consumes no ticket (IM11's closure skips raw bodies, IM12 unchanged). `scanObject` gains only a validate abort. `classifyBlocksAfterMark`: an LOS block is skipped (its dead objects were freed earlier in the same handoff tail by `losSweepAtMarkEnd`, still with no cycle active: IM5's `!cycleActive()` assert in `freeLargeBodyCell` precedes the new LOS arm, and the release asserts are unchanged); the is_large arm no longer reads a raw block's header. `sweepNurseryLargeBodies`: a kind-2 entry is dropped without a free; deferral during a cycle is unchanged (`F.deferredFrees` adds only a validate reader). `promoteYoungLarge` still touches only the index entry and `Header.age` (it re-kinds instead of erasing; `youngLargeMeta` sees kind 1 only, as before after an erase). H2/H9: the LOS allocation calls `noteCycleAllocation` (IM4) and materializes its block exactly like a bag page; allocate-black is `attributeNewCell` (the census line: the same relaxed `atomic_ref` add on `live_bytes` as `initObjectHeaderWithSize`, same word, same order). **Verdict: no model change needed.**
 
 Also fired in the same run, from an unrelated change (the 2026-10-09 tree sync, not plans/large-object-space.md): grep `F.vnodeRegistry` (**e3b0c44298fc**, the empty match: every line removed). The pinned footprint is the latent unregistered store `static std::vector<VNodePtr> vnodeRegistry` in `elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp`, which the sync deleted (the virtual-dom kernels are now `HtmlWriter.cpp`, `VirtualDomExports.cpp`, `XssFilters.cpp`). Checked: none of them keeps a namespace-scope or static mutable container (grep of `elm-kernel-cpp/src/virtual-dom/*.cpp` for static/namespace-scope stores: none), so no off-heap store of heap values replaced it. A removed store cannot hide a root. **Verdict: no model change needed** (the grep now pins the absence).
+
+## 2026-10-09 — plans/region-nursery-everywhere.md: mergeJob records in-place YLOS promotions for P1 detector O (GC_MODEL_001)
+
+Pin fired: region `NT.mergeJob` (**cce0534231b1**).
+
+Change: census builds only (`ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED`). Step (4) of the merge, which
+promotes the tenured generation's reached YLOS objects in place, now collects them in a local vector.
+After the loop it calls `p1::recordPromoted` with that vector, so detector O watches those objects
+from their promotion, as it already watched the job's copies (step (2)) and the legacy minor's
+in-place promotions. The region unit tests found the gap. It is the same mutator thread in the same
+pause, and the same census lock as step (2)'s existing call, taken after step (4)'s child-slot
+resolution and before the heal. No atomic step, GC lock, shared heap location or memory order
+changed; in release builds the region compiles to the same code. **Verdict: no model change needed.**

@@ -549,6 +549,7 @@ Testing::TestCase testYlosCensusPromotedInPlaceRecorded(
         alloc.minorGC();
         const uint64_t rec0 = p1::countsForTesting().o_recorded;
         alloc.minorGC();                                  // promoted in place
+        tenureMerge(alloc);
         void* a0 = alloc.resolve(arr);
         TEST_ASSERT(!oldGen(alloc).isYoungLarge(a0));
         TEST_ASSERT(p1::countsForTesting().o_recorded > rec0);
@@ -568,6 +569,13 @@ Testing::TestCase testYlosCensusSurvivorChecked(
         auto& alloc = initAllocator(smallConfig(0));
         auto& nursery = AllocatorTestAccess::getThreadHeap(alloc)->getNursery();
         NurserySpaceTestAccess::setSurvivorWriteCensus(nursery, true);
+        // Region nursery: detector N re-hashes a minor's census in the NEXT
+        // minor's tenure join, which needs a running job; on a fresh heap the
+        // first minor has none. A rooted survivor and one minor start the
+        // pipeline, so the minors below are the steady state.
+        HPointer warm = alloc::listNil();
+        alloc.getRootSet().addRoot(&warm);
+        if (alloc.getConfig().nursery_regions == 1) { warm = alloc::allocInt(1); alloc.minorGC(); }
         HPointer arr = makeLargeIntArray(alloc, 1500, 1);
         alloc.getRootSet().addRoot(&arr);
         alloc.minorGC();                                  // recorded: young survivor
@@ -577,12 +585,16 @@ Testing::TestCase testYlosCensusSurvivorChecked(
         TEST_ASSERT(c1.mismatched == 0);
         NurserySpaceTestAccess::setSurvivorWriteCensus(nursery, false);
         alloc.getRootSet().removeRoot(&arr);
+        alloc.getRootSet().removeRoot(&warm);
 
         // A survivor that is written: the next minor's check catches it.
         auto& alloc2 = initAllocator(smallConfig(0));
         auto& nursery2 = AllocatorTestAccess::getThreadHeap(alloc2)->getNursery();
         NurserySpaceTestAccess::resetSurvivorWriteCensus();
         NurserySpaceTestAccess::setSurvivorWriteCensus(nursery2, true);
+        HPointer warm2 = alloc::listNil();
+        alloc2.getRootSet().addRoot(&warm2);
+        if (alloc2.getConfig().nursery_regions == 1) { warm2 = alloc::allocInt(2); alloc2.minorGC(); }
         HPointer arr2 = makeLargeIntArray(alloc2, 1500, 1);
         alloc2.getRootSet().addRoot(&arr2);
         alloc2.minorGC();                                 // recorded (age 1, young)
@@ -595,6 +607,7 @@ Testing::TestCase testYlosCensusSurvivorChecked(
         TEST_ASSERT(c2.mismatched >= 1);
         NurserySpaceTestAccess::setSurvivorWriteCensus(nursery2, false);
         alloc2.getRootSet().removeRoot(&arr2);
+        alloc2.getRootSet().removeRoot(&warm2);
 #endif
     });
 

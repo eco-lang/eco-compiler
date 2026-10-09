@@ -20,6 +20,7 @@ HeapConfig smallClassBudgetConfig(size_t budget_bytes,
     HeapConfig cfg;
     cfg.alloc_buffer_size       = 32 * 1024;
     cfg.nursery_block_count     = 4;
+    cfg.nursery_max_block_count = cfg.nursery_block_count;   // a region heap slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size    = 256 * 1024;
     cfg.max_heap_size           = 64ULL * 1024 * 1024;
     cfg.large_object_threshold  = 8 * 1024;
@@ -194,6 +195,7 @@ Testing::TestCase testSmallClassBudgetDebitsOnRelease(
     HeapConfig cfg;
     cfg.alloc_buffer_size       = kPage;
     cfg.nursery_block_count     = 4;
+    cfg.nursery_max_block_count = cfg.nursery_block_count;   // a region heap slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size    = kPage;          // floor = 1 page.
     cfg.max_heap_size           = 64ULL * 1024 * 1024;
     cfg.large_object_threshold  = 8 * 1024;

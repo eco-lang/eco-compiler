@@ -152,7 +152,7 @@ region  1b0ea920dd7b6b2d875db66434ca1ed3f42f60572fbde33d3376d01327fe7dbb  runtim
 region  e97f0c977bb653d6a070c5ca5c7409fdfa80afe999042859a8824d368c912846  runtime/src/allocator/NurseryTenure.cpp  NT.runJobExact  M5
 region  c844a0dfc358cfeb55c2330c1b0b83bb9f732cb9434aa52778604d41826cf8ca  runtime/src/allocator/NurseryTenure.cpp  NT.tenureLaunch  M5,M6
 region  7aa6e6cef0bcaf60cf6e47061aa26e6da21c94847210cd0add668e579cc28124  runtime/src/allocator/NurseryTenure.cpp  NT.tenureJoin  M5,M6,w_running_chain
-region  2892c92bf479d3bb846f516709ae06d9c52f91b509d8a0b5a7e8e4a416f140df  runtime/src/allocator/NurseryTenure.cpp  NT.mergeJob  M1,M5
+region  cce0534231b1bfe4a3c81c4084179c733b1747a714c7a5cd08420f4228d8c513  runtime/src/allocator/NurseryTenure.cpp  NT.mergeJob  M1,M5
 region  ef8d3b675e250d8dfb5f8fdd41de80592e9239642039e1f410309452e4e3d5af  runtime/src/allocator/NurseryTenure.cpp  NT.tenureTeardown  M5,M6,M7
 region  53fc7d8f27b86926d194f3f8c205068ad4b647e52aa435d3f3b2a078b2486066  runtime/src/allocator/NurseryTenure.cpp  NT.TenureParEnv  M2,M5,M7,W5
 region  c7962acf2a5c1d1b43b09d95c8455f5e2214a03e45cfb852d64f63e415b481de  runtime/src/allocator/NurseryTenure.cpp  NT.tenureParDistribute  M2,M5

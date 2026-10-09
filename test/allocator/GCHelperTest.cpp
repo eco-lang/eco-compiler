@@ -631,6 +631,7 @@ HeapConfig modeConfig(uint32_t mode, size_t ahead) {
     HeapConfig cfg;
     cfg.alloc_buffer_size       = 32 * 1024;
     cfg.nursery_block_count     = 8;
+    cfg.nursery_max_block_count = cfg.nursery_block_count;   // a region heap slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size    = 64 * 1024;
     cfg.max_heap_size           = 256ULL * 1024 * 1024;
     cfg.large_object_threshold  = 8 * 1024;

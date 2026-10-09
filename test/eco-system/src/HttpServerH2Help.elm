@@ -404,6 +404,11 @@ node tools server mode args =
     waiting for the server's SETTINGS; prints the response status (or the reset code).
   - `connect <protocol>`: an extended CONNECT (`:protocol`) to `/ws` after the server's SETTINGS;
     prints ENABLE_CONNECT_PROTOCOL, the response status, and how the stream ended.
+  - `upload <n> <length|none>`: one POST of `n` bytes to `/b`, with a `content-length` or without
+    one; prints the answer in `curlLines`' format (status | sorted headers without `date` | body).
+    A server may answer before the upload ends and then reset the stream with NO_ERROR (RFC 9113
+    §8.1). Node's client keeps that answer, where curl 7.88 may drop it (error 92, `curl` above), so
+    the early-answer cases use this peer.
 
 No backslash appears in the script (Elm string escapes).
 
@@ -594,6 +599,34 @@ if (mode === 'concurrency') {
     r.on('error', (e) => out('stream error ' + e.code));
     r.on('close', () => { out('stream closed ' + codeName(r.rstCode)); session.close(() => process.exit(0)); });
   });
+} else if (mode === 'upload') {
+  const n = Number(argS || 0), withLength = process.argv[6] !== 'none';
+  const session = connect();
+  session.on('error', () => {});
+  const headers = { ':method': 'POST', ':path': '/b' };
+  if (withLength) headers['content-length'] = String(n);
+  const r = session.request(headers);
+  let status = 0, body = '', done = false;
+  const hs = [];
+  r.setEncoding('utf8');
+  r.on('response', (h) => {
+    status = h[':status'];
+    for (const k of Object.keys(h)) if (k[0] !== ':' && k !== 'date') hs.push(k + ': ' + h[k]);
+    hs.sort();
+  });
+  r.on('data', (d) => { body += d; });
+  r.on('error', () => {});
+  const finish = () => {
+    if (done) return;
+    done = true;
+    out(status ? 'HTTP/2 ' + status + ' | ' + hs.join(', ') + ' | ' + body : 'no response (reset ' + codeName(r.rstCode) + ')');
+    session.destroy();
+    process.exit(0);
+  };
+  r.on('end', finish);
+  r.on('close', finish);
+  r.write('b'.repeat(n));
+  r.end();
 } else {
   out('unknown mode ' + mode);
 }

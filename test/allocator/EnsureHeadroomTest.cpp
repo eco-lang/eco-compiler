@@ -67,6 +67,7 @@ HeapConfig tinyThresholdConfig() {
     HeapConfig cfg;
     cfg.alloc_buffer_size      = 16 * 1024;
     cfg.nursery_block_count    = 16;   // 8 blocks per semi-space = 128 KiB
+    cfg.nursery_max_block_count = cfg.nursery_block_count;   // a region heap slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size   = 256 * 1024;
     cfg.max_heap_size          = 64ULL * 1024 * 1024;
     cfg.large_object_threshold = 16 * 1024;
@@ -89,8 +90,8 @@ void* uncheckedBumpInt(NurserySpace& nursery, i64 value) {
 // base <= ptr <= end <= extent end. Under the block design this needed an
 // index/pointer coherence check; contiguity reduces it to the ordering.
 void assertBumpCoherent(NurserySpace& nursery) {
-    char* base = NTA::fromBase(nursery);
-    char* end  = NTA::fromEnd(nursery);
+    char* base = NTA::allocBase(nursery);   // from-space, or the region eden
+    char* end  = NTA::allocEnd(nursery);
     EH_ASSERT(base != nullptr);
     EH_ASSERT(NTA::bumpPtr(nursery) >= base);
     EH_ASSERT(NTA::bumpPtr(nursery) <= NTA::bumpEnd(nursery));
@@ -200,8 +201,8 @@ Testing::TestCase testEnsureAtClampedBlockGCsInsteadOfAdvancing(
             uncheckedBumpInt(nursery, static_cast<i64>(j));
         }
 
-        char* base = NTA::fromBase(nursery);
-        char* extent_end = NTA::fromEnd(nursery);
+        char* base = NTA::allocBase(nursery);   // from-space, or the region eden
+        char* extent_end = NTA::allocEnd(nursery);
         EH_ASSERT(base != nullptr);
         // Precondition: mid-extent, not at its end.
         EH_ASSERT(NTA::bumpPtr(nursery) > base);

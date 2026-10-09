@@ -731,6 +731,16 @@ public:
         return nursery.fromBase() + nursery.from_capacity_bytes_;
     }
 
+    // The extent the bump pointer allocates in: from-space on the legacy
+    // nursery, the current eden on the region nursery (HEAP_069; the eden
+    // flip of validate builds moves it between two extents).
+    static char* allocBase(const NurserySpace& nursery) {
+        return nursery.rg_ ? nursery.rg_->eden_base : nursery.fromBase();
+    }
+    static char* allocEnd(const NurserySpace& nursery) {
+        return nursery.rg_ ? nursery.rg_->eden_base + nursery.rg_->set.capacity : fromEnd(nursery);
+    }
+
     static size_t growthCeiling(const NurserySpace& nursery) {
         return nursery.growth_ceiling_bytes_;
     }

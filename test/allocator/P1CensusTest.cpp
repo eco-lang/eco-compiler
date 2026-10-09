@@ -37,6 +37,7 @@ HeapConfig smallConfig() {
     HeapConfig cfg;
     cfg.alloc_buffer_size       = 32 * 1024;
     cfg.nursery_block_count     = 4;
+    cfg.nursery_max_block_count = cfg.nursery_block_count;   // a region heap slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size    = 256 * 1024;
     cfg.max_heap_size           = 256ULL * 1024 * 1024;
     cfg.large_object_threshold  = 8 * 1024;
@@ -130,6 +131,7 @@ Testing::TestCase testP1OldGenCatchesWriteAfterPromotion(
         alloc.getRootSet().addRoot(&obj);
         alloc.minorGC();                       // age 1
         alloc.minorGC();                       // promoted; recorded after the drain
+        tenureMerge(alloc);                    // region: recorded at the tenure job's merge
         TEST_ASSERT(p1::countsForTesting().o_recorded >= 1);
         static_cast<Custom*>(alloc.resolve(obj))->values[1].i = 99;   // the violation
         alloc.majorGC();                       // major-start verify
@@ -180,6 +182,7 @@ Testing::TestCase testP1OldGenPruneDropsDead(
         alloc.getRootSet().addRoot(&obj);
         alloc.minorGC();
         alloc.minorGC();                       // promoted + recorded
+        tenureMerge(alloc);                    // region: at the tenure job's merge
         const uint64_t entries = p1::countsForTesting().o_entries;
         TEST_ASSERT(entries >= 1);
         alloc.getRootSet().removeRoot(&obj);   // now garbage
