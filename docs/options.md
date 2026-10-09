@@ -607,7 +607,7 @@ All runtime heap/GC tuning lives in one struct, `Elm::HeapConfig` (`runtime/src/
 | 1. Struct defaults | `Allocator::initialize(const HeapConfig& = HeapConfig())` starts from the in-class initializers. The generated-program entry calls `initialize()` with no arguments, so it gets pure struct defaults. | `runtime/src/allocator/Allocator.hpp:84`, `runtime/src/codegen/eco_entry.cpp:103` |
 | 2. `ECO_HEAP_CONFIG` | If set and non-empty, it must be a **file path** to a JSON object. Inline JSON is not accepted: the value goes to `std::ifstream`. Keys are applied on top of step 1. An **unknown key throws** (`std::invalid_argument`), so the program fails at heap init. | `runtime/src/allocator/HeapConfigJson.cpp:485-489`, `:154-275` |
 | 3. `ECO_GC_*` / region env vars | Applied after the JSON file, so **env beats JSON** (see the env table). | `HeapConfigJson.cpp:591-612`, `Allocator.cpp:246` |
-| 4. `resolveNurseryRegions()` | `nursery_regions = 2` (auto) becomes 1 or 0 (see `nursery_regions` below). | `AllocatorCommon.hpp:949-951`, `Allocator.cpp:247` |
+| 4. `resolveNurseryRegions()` | `nursery_regions = 2` (auto) becomes 1; an incompatible config throws (see `nursery_regions` below). | `AllocatorCommon.hpp:949-951`, `Allocator.cpp:247` |
 | 5. `validate()` | Range and cross-field checks. On failure it throws `std::invalid_argument`. | `AllocatorCommon.hpp:953-1386` |
 | First-init-only geometry | The reservation and the nursery/old-gen split (`nursery_offset`) are computed once, on the first `initialize()`. `reset()` re-derives slice geometry but never the region. | `Allocator.cpp:282-286` |
 
@@ -625,7 +625,7 @@ That file lists all **88** keys at their current struct defaults, and so does `h
 - Even that config is immediately overwritten by the test's own programmatic config.
 - The one lasting effect is the first-init region split and the helper jitter.
 
-`initAllocator` also pins `nursery_regions = 0` (legacy nursery) (`TestHelpers.cpp:52-56`). Tests opt into the region nursery through `initRegionAllocator`. To change minor threads across the whole suite, use `ECO_TEST_MINOR_THREADS`, which is applied into each test config (`TestHelpers.cpp:17-31`).
+`initAllocator` takes the config as given, so unit tests run the region nursery by default. `initLegacyAllocator` is the only route to the legacy nursery, for the tests whose subject it is (plans/region-nursery-everywhere.md). E2E children re-install the production config at every `EcoRunner::reset()` (`Allocator::environmentConfig()`), and `test/RegionNurseryGuard.hpp` fails any E2E program that is not on the region nursery unless the environment asks for legacy. To change minor threads across the whole suite, use `ECO_TEST_MINOR_THREADS`, which is applied into each test config (`TestHelpers.cpp:17-31`).
 
 **Other programmatic config.** `runtime/src/main.cpp:693-696`, the standalone runtime stress harness, sets `max_heap_size = 2G` and `use_hybrid_dfs` from its CLI.
 
@@ -638,7 +638,7 @@ That file lists all **88** keys at their current struct defaults, and so does `h
 | `max_heap_size` | bytes | 24 GiB | Virtual reservation for the whole heap; the old-gen cap is this minus the nursery region. Must be > 0 and ≤ 8 TB (the HPointer limit). | `AllocatorCommon.hpp:75,604`; `Allocator.cpp:258` |
 | `nursery_region_bytes` | bytes | 0 = policy `min(4 GiB, max_heap_size/2)` → 4 GiB | Address space for the nursery region; the old gen gets the rest (HEAP_043). If nonzero it must be a multiple of `2*alloc_buffer_size`, ≥ `nursery_max_block_count*alloc_buffer_size`, and ≤ `max_heap_size/2`. | `AllocatorCommon.hpp:88,618,840-848,1119-1138` |
 | `alloc_buffer_size` | bytes | 512 KiB | Size of one nursery block and one old-gen BBoP page. Must be ≥ the OS page, ≤ the old-gen cap, and must divide `initial_old_gen_size`. | `AllocatorCommon.hpp:91,621` |
-| `large_object_threshold` | bytes | 8 KiB | At or above this, an allocation bypasses the nursery (split header for strings/bytes). Must be ≤ `alloc_buffer_size`. For the region nursery it must also be ≤ the largest old-gen size class + 8; otherwise `nursery_regions` auto falls back to legacy. | `AllocatorCommon.hpp:94,624,925-935` |
+| `large_object_threshold` | bytes | 8 KiB | At or above this, an allocation bypasses the nursery (split header for strings/bytes). Must be ≤ `alloc_buffer_size`. For the region nursery it must also be ≤ the largest old-gen size class + 8; otherwise `nursery_regions` auto throws (set 0 for the legacy nursery). | `AllocatorCommon.hpp:94,624,925-935` |
 | `large_ptr_nursery_divisor` | u32 | 8 | A large pointer-bearing object goes to the nursery if its size ≤ min(nursery capacity / divisor, max size); otherwise it goes to the young LOS (YLOS). 0 = always YLOS. | `AllocatorCommon.hpp:100,629` |
 | `large_ptr_nursery_max_size` | bytes (multiple of 8) | 128 KiB | Fixed upper bound for the placement rule above. 0 = no fixed bound. | `AllocatorCommon.hpp:103,630` |
 
@@ -670,7 +670,7 @@ That file lists all **88** keys at their current struct defaults, and so does `h
 | `minor_parallel_min_bytes` | bytes | 4 MiB | A minor with less from-space object data than this runs serially. Also gates the parallel tenure engine. | `:241,719`; `NurseryParallel.cpp:598`, `NurseryTenure.cpp:535` |
 | `minor_prefetch_children` | bool | true | Child prefetch in the parallel minor. | `:242,720` |
 | `minor_fifo_order` | bool | false (LIFO, depth-first) | Grey order of the parallel minor. This is a retention input: promotion order changes the old-gen peak. | `:246,721`; `NurseryParallel.cpp:646` |
-| `nursery_regions` | u32: 0 / 1 / 2 | **2 = auto** | 0 = legacy semi-space nursery. 1 = region nursery (eden + survivor extents, HEAP_069); throws if incompatible. 2 = region nursery when compatible, else legacy. Compatible means: `promotion_age` 1..3, `old_gen_bitmap_alloc`, LOT ≤ largest class + 8, and ≥ 1 heap slot. **At defaults this resolves to 1.** | `:263,724,912-951` |
+| `nursery_regions` | u32: 0 / 1 / 2 | **2 = auto** | 0 = legacy semi-space nursery. 1 = region nursery (eden + survivor extents, HEAP_069); throws if incompatible. 2 = region nursery; an incompatible config throws (never a silent fallback to legacy; legacy must be 0, explicitly). Compatible means: `promotion_age` 1..3, `old_gen_bitmap_alloc`, LOT ≤ largest class + 8, and ≥ 1 heap slot. **At defaults this resolves to 1.** | `:263,724,912-951` |
 | `nursery_region_eden_flip` | i32: −1 / 0 / 1 | −1 = on only in `ECO_HEAP_VALIDATE` builds | Double-buffered (quarantined) eden in the region nursery. Adds one extent per slot. | `:264,725,880-883` |
 | `tenure_mode` | u32: 1 / 2 | **2 = concurrent** | Region-nursery tenure job. 1 = runs in the hand-over pause (exact reference). 2 = runs on the heap's tenure collector during the next epoch (TG7d default). | `:265,726` |
 | `tenure_sync_threads` | u32, 0..64 | 1 | Threads for a synchronous tenure job. 1 = exact engine; 0 = the minor's worker count. | `:266,727`; `NurseryTenure.cpp:520` |

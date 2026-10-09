@@ -45,6 +45,9 @@ HeapConfig churnHeapConfig() {
     HeapConfig cfg;
     cfg.alloc_buffer_size    = 64 * 1024;
     cfg.nursery_block_count  = 4;                 // 256 KiB nursery.
+    // plans/region-nursery-everywhere.md Phase 3: a fixed nursery, so the region
+    // layout's heap slot (extents x the max nursery side) fits this small heap.
+    cfg.nursery_max_block_count = 4;
     cfg.initial_old_gen_size = 256 * 1024;
     cfg.max_heap_size        = 64ULL * 1024 * 1024;
     cfg.validate();

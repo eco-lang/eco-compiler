@@ -31,17 +31,21 @@ static HeapConfig withTestMinorThreads(const HeapConfig& in) {
     return c;
 }
 
-// threaded-gc-07 (TG7d): the region nursery is the runtime default, but the
-// unit tests written against the legacy semi-space nursery assert its timing
-// (promotion at the first minor, from/to spaces, small nursery shapes), so
-// initAllocator pins nursery_regions = 0. The region tests opt in with
-// initRegionAllocator, which honours their config as given.
+// plans/region-nursery-everywhere.md Phase 3: unit tests run the production
+// nursery. initAllocator takes the config as given, so the default (auto)
+// resolves to the region nursery (HEAP_069) and an incompatible config throws
+// (Phase 1). initLegacyAllocator is the ONLY way a unit test gets the legacy
+// semi-space nursery: tests whose subject is that nursery, and the legacy arm
+// of the legacy-k == region-k oracle.
 static Allocator& initAllocatorWith(const HeapConfig& config) {
     auto& alloc = Allocator::instance();
-    // Ensure the global heap mmap exists. On the first ever call this seeds
-    // config_ with `config`; subsequent calls are no-ops because `initialize`
-    // exits early when `initialized` is true.
-    alloc.initialize(config);
+    // Ensure the global heap mmap exists. The address space and the region
+    // nursery's geometry are first-init-wins (Allocator::rebuildNurserySliceTable),
+    // so the first ever call reserves with the DEFAULT config -- what an
+    // unfiltered run's first test does anyway -- and every later config, in any
+    // test order or filter, fits the same reservation. Subsequent calls are
+    // no-ops because `initialize` exits early when `initialized` is true.
+    alloc.initialize(HeapConfig());
     // Reset clears thread heaps and updates config_ to the new value (this
     // is the path that takes effect for every call after the first).
     AllocatorTestAccess::reset(alloc, &config);
@@ -50,13 +54,13 @@ static Allocator& initAllocatorWith(const HeapConfig& config) {
 }
 
 Allocator& initAllocator(const HeapConfig& config_in) {
+    return initAllocatorWith(withTestMinorThreads(config_in));
+}
+
+Allocator& initLegacyAllocator(const HeapConfig& config_in) {
     HeapConfig config = withTestMinorThreads(config_in);
     config.nursery_regions = 0;
     return initAllocatorWith(config);
-}
-
-Allocator& initRegionAllocator(const HeapConfig& config_in) {
-    return initAllocatorWith(withTestMinorThreads(config_in));
 }
 
 HeapConfig scaledHeapConfig(int rc_size) {
@@ -190,8 +194,18 @@ void unregisterRoots(Allocator& alloc, std::vector<HPointer>& roots) {
 // 4. Promote Objects to Old Gen
 // ============================================================================
 
+// Legacy: an object is promoted by the minor that finds it at promotion_age.
+// Region (HEAP_069/HEAP_070): it ages in the survivor extents, the hand-over
+// minor builds the tenure job that promotes it, and the next minor merges the
+// job, so its roots name the old copy one minor later.
+void tenureMerge(Allocator& alloc) {
+    if (alloc.getConfig().nursery_regions == 1) alloc.minorGC();
+}
+
 void promoteToOldGen(Allocator& alloc) {
-    for (u32 i = 0; i <= PROMOTION_AGE; i++) {
+    const HeapConfig& c = alloc.getConfig();
+    const u32 minors = c.promotion_age + (c.nursery_regions == 1 ? 2u : 1u);
+    for (u32 i = 0; i < minors; i++) {
         alloc.minorGC();
     }
 }

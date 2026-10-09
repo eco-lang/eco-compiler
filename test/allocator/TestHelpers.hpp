@@ -43,12 +43,14 @@ namespace TestHelpers {
 
 // Initialize Allocator for testing: get instance, init thread, reset state.
 // If config is provided, resets Allocator with new configuration parameters.
-// Returns reference to the singleton for convenience.
+// Returns reference to the singleton for convenience. The config is taken as
+// given: by default the region nursery, the production one
+// (plans/region-nursery-everywhere.md Phase 3).
 Allocator& initAllocator(const HeapConfig& config = HeapConfig());
 
-// threaded-gc-07: initAllocator pins the legacy nursery (nursery_regions = 0);
-// the region tests use this one, which takes the config as given.
-Allocator& initRegionAllocator(const HeapConfig& config);
+// The legacy semi-space nursery (nursery_regions = 0). Only for tests whose
+// subject is that nursery, or the legacy arm of a legacy-vs-region oracle.
+Allocator& initLegacyAllocator(const HeapConfig& config = HeapConfig());
 
 // Creates a HeapConfig scaled to the given RapidCheck size.
 // At size 0-100, uses minimum nursery (64KB).
@@ -110,6 +112,13 @@ void unregisterRoots(Allocator& alloc, std::vector<HPointer>& roots);
 
 // Run enough minor GCs to promote objects (PROMOTION_AGE + 1 cycles)
 void promoteToOldGen(Allocator& alloc);
+
+// plans/region-nursery-everywhere.md Phase 3: on the region nursery (HEAP_069/
+// HEAP_070) the hand-over minor builds the tenure job that promotes the
+// generation (copies, YLOS objects in place, dead young bodies freed), and the
+// NEXT minor merges it; the legacy nursery does it all in the hand-over minor.
+// Runs that merging minor in region mode; a no-op on the legacy nursery.
+void tenureMerge(Allocator& alloc);
 
 // ============================================================================
 // 5. Verify ElmInt Values

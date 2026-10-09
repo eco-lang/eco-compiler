@@ -113,7 +113,7 @@ Testing::TestCase testGangSizedForMinorAndMark(
         cfg.gc_mark_threads = 2;
         cfg.gc_minor_threads = 6;
         cfg.validate();
-        auto& a = initAllocator(cfg);
+        auto& a = initLegacyAllocator(cfg);
         OldGenSpace& og = AllocatorTestAccess::getThreadHeap(a)->getOldGen();
         TEST_ASSERT(og.minorThreads() == 6);
         gc::GCMarkGang& g = og.ensureGang();
@@ -156,7 +156,7 @@ NurserySpace& nurseryOf(Allocator& a) { return heapOf(a)->getNursery(); }
 
 // Threads 0 = the serial path; 1 = the forced one-worker engine; > 1 parallel.
 Allocator& initMinor(uint32_t threads) {
-    auto& a = initAllocator(minorConfig(threads == 0 ? 1 : threads));
+    auto& a = initLegacyAllocator(minorConfig(threads == 0 ? 1 : threads));
     nurseryOf(a).test_force_parallel_engine_ = threads == 1;
     return a;
 }
@@ -397,7 +397,7 @@ Testing::TestCase testParMinorFallbackSpace(
         HeapConfig cfg = minorConfig(4);
         cfg.minor_lab_bytes = 256 * 1024;      // 4 x 256 KiB of LABs > a 1 MiB side's slack
         cfg.validate();
-        auto& a = initAllocator(cfg);
+        auto& a = initLegacyAllocator(cfg);
 #if ENABLE_GC_STATS
         const uint64_t s0 = nurseryOf(a).getStats().pmin.serial_space;
         for (int i = 0; i < 200000; ++i) (void)alloc::allocInt(i);
@@ -413,7 +413,7 @@ Testing::TestCase testParMinorFallbackSmall(
         HeapConfig cfg = minorConfig(4);
         cfg.minor_parallel_min_bytes = 64ULL * 1024 * 1024;
         cfg.validate();
-        auto& a = initAllocator(cfg);
+        auto& a = initLegacyAllocator(cfg);
 #if ENABLE_GC_STATS
         const uint64_t s0 = nurseryOf(a).getStats().pmin.serial_small;
         const uint64_t p0 = nurseryOf(a).getStats().pmin.minors_parallel;
@@ -483,7 +483,7 @@ uint64_t cycleWorkload(uint32_t threads, uint64_t* cycles_out) {
     cfg.conc_mark_threads = 2;
     cfg.conc_mark_assist_lag = 1;
     cfg.validate();
-    auto& a = initAllocator(cfg);
+    auto& a = initLegacyAllocator(cfg);
     nurseryOf(a).test_force_parallel_engine_ = threads == 1;
     ThreadLocalHeap* h = heapOf(a);
     uint64_t sum = 0, cycles = 0;

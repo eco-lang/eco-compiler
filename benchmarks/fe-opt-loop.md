@@ -900,6 +900,38 @@ Default leg (flag off):
   left are fewer union-find operations (algorithmic) or mutation, which the user's immutability
   rule excludes.
 
+### LOS: separate large-object space, header-less large String/Bytes bodies (plans/large-object-space.md, 2026-10-09): **regression check, no LOS cost visible (FLAT-to-worse across a moved tree)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 69.05 | 24.9 | 25.9 | 12.4 | 2.77 | 1344 | 7 | 6439 | 6386904 | 13500784 | same |
+| r2 | 68.59 | 24.5 | 25.5 | 12.7 | 2.74 | 1344 | 7 | 6439 | 6413200 | 13500784 | same |
+| r3 | 68.70 | 24.7 | 26.1 | 12.5 | 2.73 | 1344 | 7 | 6439 | 6395480 | 13500784 | same |
+| **median** | **68.70** | 24.7 | 25.9 | 12.5 | 2.74 | 1344 | 7 | 6439 | 6395480 | 13500784 | |
+| Δ vs noCS | +1.06 (spread 0.46) | +0.2 | +0.8 | +0.4 | −0.01 | +42 | +1 | +70 | −158,208 | +136,265 (+1.0 %, source moved) | |
+
+- **What:** not a front-end step. This is the runtime change of plans/large-object-space.md (O7
+  tail-release fix, LOS blocks separate from ordinary old gen (HEAP_080), header-less large
+  String/Bytes bodies (HEAP_081), exact 64 KiB buffers), measured by the unchanged protocol on
+  the current tree. `eco-compiler-eco-compiler-ab` (today's bootstrap) compiled the current source to
+  `ecolos.mlir`, which was lowered to `eco-optlos`; `eco-optlos` reproduces `ecolos.mlir` (A == B,
+  no extra turn).
+- **Checks:** the three runs are deterministic and at the fixed point. rc 0 on every run, no `[gc-stats] SIG`.
+  `.ecot` 8,644,130 B.
+- **Verdict:** this is **not an A/B**. Since noCS (2026-10-04), the tree has taken wide objects,
+  the eco-system/WebSocket kernels, Bytes decode and the large-body GC trigger. The compiler
+  source grew (out.mlir +1.0 %, `.ecot` +96 KB), and so did the work: minors +42, majors +1,
+  promoted +70 MiB. Wall +1.06 s is outside the 0.52/0.46 band, but the phases that moved are
+  mono (+0.8) and codegen (+0.4). Those are the Elm phases whose input grew, and GC time is flat
+  (−0.01 s). The self-compile makes almost no large String/Bytes values, so the LOS is near-idle
+  here, and the runtime change has no visible cost on this workload. Max RSS −158 MB is the one
+  stat that moved the right way; its O7 tail release is the plausible cause, but it is not
+  attributed. The new reference for this loop is LOS.
+- **Gates (fresh, after the triple):** `full` E2E 2,369/2,369 and JS 162/162 (3 skips). `stress`
+  113/114: the one failure was `EcoSystemFileManySmall`, which timed out at the 60 s limit from its
+  test sizing. It was resized from 100 to 10 files per `maxSize` (10,000 to 1,000 per cycle), and
+  `stress` is now **114/114**. The rest are in plans/large-object-space.md §10.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1177,3 +1209,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | noCS | 67.64 | +3.16 | 1302 | 6 | 6369 | 6553688 | LOSS by §4, SHIPS (remove Eco.CellStore, immutable Array store; user decision: immutability rule; pcb +1.2 s, mono +1.8 s, GC time −0.56 s) | tidy-check |
 | uf1 | 67.64 | 0.00 | 1304 | 6 | 6366 | 6600748 | LOSS (FLAT, not a deletion: UnionFind on bare array + Int compares; reverted) | noCS |
 | uf2 | 68.57 | +0.93 | 1310 | 6 | 6364 | 6537156 | LOSS (FLAT: adjustRank no-op write skip; pcb unchanged, minor +8; reverted) | noCS |
+| LOS | 68.70 | +1.06 | 1344 | 7 | 6439 | 6395480 | — (regression check across a moved tree, not an A/B: large-object space + header-less large bodies; GC time flat, mono +0.8 / codegen +0.4 from grown source, RSS −158 MB; fixed point + deterministic) | noCS |

@@ -324,8 +324,14 @@ EcoRunner::EcoRunner(EcoRunner&&) noexcept = default;
 EcoRunner& EcoRunner::operator=(EcoRunner&&) noexcept = default;
 
 void EcoRunner::reset() {
-    // Reset the allocator to clean state
-    Elm::AllocatorTestAccess::reset(Elm::Allocator::instance());
+    // Reset the allocator to a clean heap running the PRODUCTION configuration
+    // (plans/region-nursery-everywhere.md Phase 2). Without a config, reset()
+    // keeps config_, and an E2E child forked from the test process inherits
+    // whatever the last in-process unit test installed (it was the legacy
+    // nursery for every E2E program until 2026-10-09).
+    uint32_t jitter = 0;
+    const Elm::HeapConfig cfg = Elm::Allocator::environmentConfig(Elm::HeapConfig(), jitter);
+    Elm::AllocatorTestAccess::reset(Elm::Allocator::instance(), &cfg);
 }
 
 RunResult EcoRunner::run(const std::string& source) {

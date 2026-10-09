@@ -13,7 +13,7 @@
  *     under a reconfigure (a stale record would skip committing pages that
  *     were never mapped at the new slot base).
  *
- * Heaps are configured PROGRAMMATICALLY (initAllocator(cfg)); an
+ * Heaps are configured PROGRAMMATICALLY (initLegacyAllocator(cfg)); an
  * ECO_HEAP_CONFIG env file would apply to every initialize in the binary.
  */
 
@@ -114,7 +114,7 @@ void dropRoots(Allocator& alloc, std::vector<HPointer>& roots) {
 Testing::TestCase testNurseryExtentsAreContiguousAndMirrored(
     "HEAP_042: semi-spaces are contiguous, equal-sized, low < high extents",
     []() {
-        auto& alloc = initAllocator(growableHeapConfig());
+        auto& alloc = initLegacyAllocator(growableHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NC_ASSERT(heap != nullptr);
         NurserySpace& nursery = heap->getNursery();
@@ -174,7 +174,7 @@ Testing::TestCase testNurseryExtentsAreContiguousAndMirrored(
 Testing::TestCase testNurseryGrowthExtendsInPlaceAndSurvivesGC(
     "HEAP_042: growth extends extents in place and the grown region still collects",
     []() {
-        auto& alloc = initAllocator(growableHeapConfig());
+        auto& alloc = initLegacyAllocator(growableHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NC_ASSERT(heap != nullptr);
         NurserySpace& nursery = heap->getNursery();
@@ -245,7 +245,7 @@ Testing::TestCase testNurseryGrowthExtendsInPlaceAndSurvivesGC(
 Testing::TestCase testNurserySliceReleaseRetainsCommitAcrossReacquire(
     "HEAP_042: a released slice slot is reused and its committed pages retained",
     []() {
-        auto& alloc = initAllocator(growableHeapConfig());
+        auto& alloc = initLegacyAllocator(growableHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NC_ASSERT(heap != nullptr);
 
@@ -312,7 +312,7 @@ Testing::TestCase testNurserySliceGeometryRebuiltOnReconfigure(
     []() {
         // First geometry: 16 KiB pages.
         {
-            auto& alloc = initAllocator(growableHeapConfig());
+            auto& alloc = initLegacyAllocator(growableHeapConfig());
             auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
             NC_ASSERT(heap != nullptr);
             std::vector<HPointer> roots;
@@ -323,7 +323,7 @@ Testing::TestCase testNurserySliceGeometryRebuiltOnReconfigure(
 
         // Second geometry: 32 KiB pages — every slot base moves.
         {
-            auto& alloc = initAllocator(otherGeometryConfig());
+            auto& alloc = initLegacyAllocator(otherGeometryConfig());
             auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
             NC_ASSERT(heap != nullptr);
             NurserySpace& nursery = heap->getNursery();
@@ -355,7 +355,7 @@ Testing::TestCase testNurserySliceGeometryRebuiltOnReconfigure(
 
         // Back to the first geometry, to prove the rebuild is not one-way.
         {
-            auto& alloc = initAllocator(growableHeapConfig());
+            auto& alloc = initLegacyAllocator(growableHeapConfig());
             auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
             NC_ASSERT(heap != nullptr);
             NurserySpace& nursery = heap->getNursery();
@@ -391,7 +391,7 @@ Testing::TestCase testNurseryAllocEndFailSoftWhenSurvivorsPastThreshold(
         cfg.nursery_gc_threshold     = 0.10f;  // trip at 10% of the extent
         cfg.validate();
 
-        auto& alloc = initAllocator(cfg);
+        auto& alloc = initLegacyAllocator(cfg);
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NC_ASSERT(heap != nullptr);
         NurserySpace& nursery = heap->getNursery();

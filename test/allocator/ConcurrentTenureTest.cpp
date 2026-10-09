@@ -73,7 +73,7 @@ struct Run {
 // A deterministic workload with a major every 40 minors of mutator time.
 Run runScript(const HeapConfig& cfg, uint64_t seed, uint64_t stop_after, uint64_t sleep_us,
               bool majors = true) {
-    auto& a = initRegionAllocator(cfg);
+    auto& a = initAllocator(cfg);
     NurserySpace& ns = nurseryOf(a);
     ns.test_record_layout_ = true;
     ns.test_layout_.clear();
@@ -211,7 +211,7 @@ Testing::TestCase testTenureForkChild(
     "threaded-gc-07: fork while a tenure job runs: parent and child each finish it and continue",
     []() {
 #if !defined(_WIN32)
-        auto& a = initRegionAllocator(tenureConfig(2));
+        auto& a = initAllocator(tenureConfig(2));
         NurserySpace& ns = nurseryOf(a);
         minortest::Workload w(a, 64, 61);
         w.run(5000);
@@ -249,7 +249,7 @@ Testing::TestCase testTenureExitWhileRunning(
 #if !defined(_WIN32)
         const pid_t pid = fork();
         if (pid == 0) {
-            auto& a = initRegionAllocator(tenureConfig(2));
+            auto& a = initAllocator(tenureConfig(2));
             NurserySpace& ns = nurseryOf(a);
             minortest::Workload w(a, 64, 71);
             for (int g = 0; g < 6; ++g) {
@@ -278,7 +278,7 @@ uint64_t cycleScript(uint32_t mode, uint32_t threads) {
     cfg.conc_mark_threads = 2;
     cfg.conc_mark_assist_lag = 1;
     cfg.validate();
-    auto& a = initRegionAllocator(cfg);
+    auto& a = initAllocator(cfg);
     ThreadLocalHeap* h = heapOf(a);
     uint64_t sum = 0;
     {
@@ -313,7 +313,7 @@ namespace {
 bool childAbortsT(uint32_t mode, const std::function<void(Allocator&)>& arm) {
     const pid_t pid = fork();
     if (pid == 0) {
-        auto& a = initRegionAllocator(tenureConfig(mode));
+        auto& a = initAllocator(tenureConfig(mode));
         arm(a);
         minortest::Workload w(a, 128, 3);
         for (int g = 0; g < 30; ++g) {
@@ -353,7 +353,7 @@ Testing::TestCase testTenureBodyRemarkControl(
 #if !defined(_WIN32)
         const pid_t pid = fork();
         if (pid == 0) {
-            auto& a = initRegionAllocator(tenureConfig(1));
+            auto& a = initAllocator(tenureConfig(1));
             nurseryOf(a).test_no_body_remark_ = true;
             std::u16string big(40000, u'q');
             HPointer s = alloc::allocString(big);
@@ -373,7 +373,7 @@ Testing::TestCase testTenureBodyRemarkControl(
 Testing::TestCase testTenureShrinkSkipsGranted(
     "threaded-gc-07: a granted block is never released, detached or reused before the merge",
     []() {
-        auto& a = initRegionAllocator(tenureConfig(1));
+        auto& a = initAllocator(tenureConfig(1));
         OldGenSpace& og = oldgenOf(a);
         {
             minortest::Workload w(a, 128, 91);
@@ -446,7 +446,7 @@ Testing::TestCase testTenureRespawnAndForkStorm(
         HeapConfig cfg = tenureConfig(2, 1, 0);
         cfg.tenure_collector_threads = 2;
         cfg.validate();
-        auto& a = initRegionAllocator(cfg);
+        auto& a = initAllocator(cfg);
         {
             minortest::Workload w(a, 32, 5);
             w.run(2000);
@@ -534,7 +534,7 @@ Testing::TestCase testTenureFifoOrder(
 Testing::TestCase testTenureYlosCellReuse(
     "threaded-gc-07: a new YLOS object in a generation member's freed cell stays young (HEAP_072)",
     []() {
-        auto& a = initRegionAllocator(tenureConfig(1));
+        auto& a = initAllocator(tenureConfig(1));
         OldGenSpace& og = oldgenOf(a);
         constexpr size_t kElems = 1600;   // 12.8 KB > large_object_threshold: a YLOS array
         auto freshArray = [&](int64_t base) {

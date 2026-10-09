@@ -485,9 +485,7 @@ bool verifyPatternedArray(HPointer& root, size_t expected_length) {
 }
 
 void runFullGCCycle(Allocator& alloc) {
-    for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-        alloc.minorGC();
-    }
+    TestHelpers::promoteToOldGen(alloc);   // region: the tenure job promotes one minor later
     alloc.majorGC();
 }
 
@@ -796,10 +794,9 @@ Testing::TestCase testSplitPromotionTransfersOwnership(
     TEST_ASSERT(OldGenSpaceTestAccess::isBodyTracked(
         *AllocatorTestAccess::getOldGen(alloc), body0));
 
-    // Drive enough minor GCs to age past PROMOTION_AGE and promote the header.
-    for (u32 i = 0; i <= PROMOTION_AGE; ++i) {
-        alloc.minorGC();
-    }
+    // Drive enough minor GCs to age past PROMOTION_AGE and promote the header
+    // (region: the tenure job promotes it, merged one minor later).
+    TestHelpers::promoteToOldGen(alloc);
 
     // Header now lives in old gen.
     void* obj_after = alloc.resolve(hp);

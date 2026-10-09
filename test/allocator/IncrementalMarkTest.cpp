@@ -108,8 +108,7 @@ bool marked(Allocator& a, const void* obj) { return OA::isMarked(og(a), obj); }
 // cycle active, or the minors are cycle steps.
 HPointer oldInt(Allocator& a, i64 v) {
     Root r(a, alloc::allocInt(v));
-    a.minorGC();
-    a.minorGC();
+    promoteToOldGen(a);   // legacy: promotion_age + 1 minors; region: + 2 (the tenure job)
     if (a.isInNursery(a.resolve(r.h))) throw std::runtime_error("oldInt: not promoted");
     return r.h;
 }
@@ -436,6 +435,7 @@ Testing::TestCase testIncrOldReachableOnlyFromSurvivor(
         Root x(a, tupleOf(o, o));
         startCycle(a);                       // X survives (age 1) and is walked
         a.minorGC();                         // X promoted black: never traced
+        tenureMerge(a);
         TEST_ASSERT(!a.isInNursery(a.resolve(x.h)));
         runToHandoffDue(a);
         TEST_ASSERT(marked(a, o_ptr));
@@ -528,8 +528,7 @@ Testing::TestCase testIncrAllocateBlackEveryEntryPoint(
         Root list(a, alloc::listNil());
         for (i64 i = 0; i < 500; ++i)
             list.h = alloc::cons(alloc::boxed(alloc::allocInt(i)), list.h, true);
-        a.minorGC();
-        a.minorGC();
+        promoteToOldGen(a);
         void* head = a.resolve(list.h);
         TEST_ASSERT(!a.isInNursery(head));
         TEST_ASSERT(marked(a, head));
@@ -567,8 +566,7 @@ Testing::TestCase testIncrNoPreT0UniformReuse(
         std::vector<HPointer> v(n, alloc::listNil());
         for (auto& h : v) a.getRootSet().addRoot(&h);
         for (size_t i = 0; i < n; ++i) v[i] = alloc::allocInt(static_cast<i64>(i));
-        a.minorGC();
-        a.minorGC();
+        promoteToOldGen(a);
         std::vector<void*> dead;
         for (size_t i = 0; i < n; i += 2) {
             dead.push_back(a.resolve(v[i]));
@@ -589,8 +587,7 @@ Testing::TestCase testIncrNoPreT0UniformReuse(
         std::vector<HPointer> w(1500, alloc::listNil());
         for (auto& h : w) a.getRootSet().addRoot(&h);
         for (size_t i = 0; i < w.size(); ++i) w[i] = alloc::allocInt(static_cast<i64>(i));
-        a.minorGC();
-        a.minorGC();
+        promoteToOldGen(a);
         TEST_ASSERT(OA::cycleActive(og(a)));
         size_t reused = 0;
         for (auto& h : w) if (dead_uniform.count(a.resolve(h))) ++reused;
@@ -600,8 +597,7 @@ Testing::TestCase testIncrNoPreT0UniformReuse(
         std::vector<HPointer> z(1500, alloc::listNil());
         for (auto& h : z) a.getRootSet().addRoot(&h);
         for (size_t i = 0; i < z.size(); ++i) z[i] = alloc::allocInt(static_cast<i64>(i));
-        a.minorGC();
-        a.minorGC();
+        promoteToOldGen(a);
         size_t reused_after = 0;
         for (auto& h : z) if (dead_uniform.count(a.resolve(h))) ++reused_after;
         TEST_ASSERT(reused_after > 0);
@@ -695,6 +691,7 @@ Testing::TestCase testIncrDeferredBodyFree(
         TEST_ASSERT(marked(a, body));
         s.h = alloc::listNil();
         a.minorGC();                                  // the header dies here
+        tenureMerge(a);                               // region: its extent retires
         TEST_ASSERT(OA::cycleActive(og(a)));
         TEST_ASSERT(OA::deferredFrees(og(a)) == 1);
         TEST_ASSERT(marked(a, body));                 // still allocated
@@ -717,6 +714,7 @@ Testing::TestCase testIncrDeferredYlosFree(
         TEST_ASSERT(marked(a, y_ptr));
         y.h = alloc::listNil();
         a.minorGC();
+        tenureMerge(a);
         TEST_ASSERT(OA::deferredFrees(og(a)) == 1);
         TEST_ASSERT(marked(a, y_ptr));
         runToHandoff(a);
@@ -733,6 +731,7 @@ Testing::TestCase testIncrYlosPromotedInPlaceDuringCycle(
         startCycle(a);                                // age 0 -> 1
         TEST_ASSERT(og(a).isYoungLarge(y_ptr));
         a.minorGC();                                  // promoted in place
+        tenureMerge(a);
         TEST_ASSERT(!og(a).isYoungLarge(y_ptr));
         TEST_ASSERT(OA::deferredFrees(og(a)) == 0);
         runToHandoffDue(a);
@@ -914,14 +913,17 @@ Testing::TestCase testIncrNegativeSkipExternal(
 Testing::TestCase testIncrNegativeSkipAllocateBlack(
     "threaded-gc-05a: negative control — no allocate-black leaves promotions white",
     []() {
+        // The hook removes the LEGACY promotion path's allocate-black, so this
+        // control runs the legacy nursery explicitly. The region tenure job's
+        // allocation bit IS the mark (a post-t0 grant block, OldGenTenure.cpp);
+        // its own negative control is TV5's t0-block grant (ConcurrentTenureTest).
         TEST_ASSERT(expectHole([]() -> int {
-            auto& a = initAllocator(incrConfig(8));
+            auto& a = initLegacyAllocator(incrConfig(8));
             Root seed(a, oldInt(a, 1));
             startCycle(a);
             OA::setSkipAllocateBlack(og(a), true);
             Root x(a, alloc::allocInt(99));
-            a.minorGC();
-            a.minorGC();                              // promoted (IM4 aborts here)
+            promoteToOldGen(a);                       // promoted (IM4 aborts here)
             void* p = a.resolve(x.h);
             OA::setSkipAllocateBlack(og(a), false);
             return (!a.isInNursery(p) && !marked(a, p)) ? 0 : 1;

@@ -4,6 +4,7 @@
 #include "ChildStdin.hpp"
 #include "TestPort.hpp"
 #include "NodeBigStack.hpp"
+#include "RegionNurseryGuard.hpp"
 #include "IsolatedTestRunner.hpp"
 #include "TestSuite.hpp"
 #include "../runtime/src/codegen/EcoRunner.hpp"
@@ -745,6 +746,7 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
 
     auto& runner = getRunner();
     runner.reset();
+    eco_test::requireRegionNursery();
 
     // Flags reach the program as arbitrary JSON decoded by its
     // compiler-generated flags decoder (Phase 5). Sources, in priority
@@ -860,6 +862,7 @@ inline int runElmProgramForProcessCheck(const std::string& mlirPath,
 
     auto& runner = getRunner();
     runner.reset();
+    eco_test::requireRegionNursery();
     // Capture into our own leaked stream instead of the runner's thread-local
     // buffer, so the atexit hook can still read it.
     eco::EcoRunner::Options opts = runner.getOptions();

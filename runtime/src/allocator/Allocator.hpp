@@ -84,6 +84,10 @@ public:
     // Validates config parameters and throws std::invalid_argument on failure.
     // Must be called before any thread calls initThread().
     void initialize(const HeapConfig& config = HeapConfig());
+    // The production configuration for `base`: $ECO_HEAP_CONFIG, then the
+    // ECO_GC_* / ECO_NURSERY_* variables, resolved and validated (throws on an
+    // invalid one). initialize() uses it; so does EcoRunner::reset().
+    static HeapConfig environmentConfig(const HeapConfig& base, uint32_t& helper_jitter_us);
 
     // Returns the heap configuration. Read-only.
     const HeapConfig& getConfig() const { return config_; }

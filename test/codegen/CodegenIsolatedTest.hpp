@@ -4,6 +4,7 @@
 #include "../IsolatedTestRunner.hpp"
 #include "../TestSuite.hpp"
 #include "../../runtime/src/codegen/EcoRunner.hpp"
+#include "../RegionNurseryGuard.hpp"
 
 #include <algorithm>
 #include <array>
@@ -200,6 +201,7 @@ inline void runJITTest(const std::string& testPath, const std::string& content) 
 
     // Reset heap for test isolation
     runner.reset();
+    eco_test::requireRegionNursery();
 
     // Run the test
     auto result = runner.runFile(testPath);

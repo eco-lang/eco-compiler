@@ -99,7 +99,7 @@ struct Run {
 // A fixed schedule: one minor every `every` workload steps.
 Run runScript(const HeapConfig& cfg, uint64_t seed, size_t minors, size_t every,
               uint64_t stop_after = 0, uint64_t sleep_us = 0) {
-    auto& a = cfg.nursery_regions == 0 ? initAllocator(cfg) : initRegionAllocator(cfg);
+    auto& a = cfg.nursery_regions == 0 ? initLegacyAllocator(cfg) : initAllocator(cfg);
     NurserySpace& ns = nurseryOf(a);
     const bool regions = ns.regionMode();
     if (regions) {
@@ -185,7 +185,7 @@ void dump(const char* what, const Run& x, const Run& y) {
 bool childAborts(uint32_t k, const std::function<void(Allocator&)>& arm) {
     const pid_t pid = fork();
     if (pid == 0) {
-        auto& a = initRegionAllocator(ageConfig(1, k));
+        auto& a = initAllocator(ageConfig(1, k));
         arm(a);
         minortest::Workload w(a, 64, 5);
         for (int g = 0; g < 120; ++g) {
@@ -234,7 +234,7 @@ Testing::TestCase testAgeLifetime(
     []() {
         for (uint32_t k : {1u, 2u, 3u}) {
             for (uint32_t j = 0; j <= 4; ++j) {
-                auto& a = initRegionAllocator(ageConfig(1, k));
+                auto& a = initAllocator(ageConfig(1, k));
                 const uint64_t t0 = regionOf(a).rs.tenured;
                 HPointer x = alloc::allocInt(1000 + j);
                 a.getRootSet().addRoot(&x);
@@ -256,7 +256,7 @@ Testing::TestCase testAgeNoNepotismAndZap(
     "threaded-gc-07b: a dead ageing holder does not tenure its target; the merge zaps it; a live one does",
     []() {
         for (bool keep : {false, true}) {
-            auto& a = initRegionAllocator(ageConfig(1, 3));
+            auto& a = initAllocator(ageConfig(1, 3));
             RegionState& R = regionOf(a);
             const uint64_t t0 = R.rs.tenured;
             HPointer x = alloc::allocInt(77);
@@ -300,7 +300,7 @@ Testing::TestCase testAgeNoNepotismAndZap(
 Testing::TestCase testAgeHealThroughMark(
     "threaded-gc-07b: a live ageing holder's slot names the tenured copy after the merge (k = 3)",
     []() {
-        auto& a = initRegionAllocator(ageConfig(1, 3));
+        auto& a = initAllocator(ageConfig(1, 3));
         HPointer x = alloc::allocInt(4242);
         HPointer h = alloc::listNil();
         a.getRootSet().addRoot(&x);
@@ -334,7 +334,7 @@ Testing::TestCase testAgeYoungLarge(
     "threaded-gc-07b: a YLOS object ages with its generation: promoted in place if live at k, freed if not",
     []() {
         for (bool keep : {true, false}) {
-            auto& a = initRegionAllocator(ageConfig(1, 3));
+            auto& a = initAllocator(ageConfig(1, 3));
             OldGenSpace& og = oldgenOf(a);
             HPointer y = alloc::listNil();
             HPointer h = alloc::listNil();

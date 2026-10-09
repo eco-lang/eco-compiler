@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <string>
 #include "Heap.hpp"
 
 // Enable extra GC assertions and nursery invariants in debug builds.
@@ -1007,6 +1008,29 @@ struct HeapConfig {
         const size_t per = regionExtents() * regionStrideBytes();
         return per == 0 ? 0 : nurseryRegionBytes() / per;
     }
+    // The smallest max_heap_size whose default nursery region holds `slots`
+    // region heap slots of this geometry: on a small heap the region is half
+    // the heap (nurseryRegionBytes), so 2 x slots x extents x stride. For GC
+    // pressure tests that want a heap "just big enough" for the region
+    // nursery (plans/region-nursery-everywhere.md). The nursery's MAXIMUM size
+    // sets the stride, so pin nursery_max_block_count to keep it small.
+    // Meaningful when nursery_region_bytes is 0 and the result stays below
+    // 2 x DEFAULT_NURSERY_REGION_BYTES.
+    size_t minRegionHeapBytes(size_t slots = 1) const {
+        return 2 * slots * regionExtents() * regionStrideBytes();
+    }
+    // regionIncompatibility() as a message, with the minimum heap size when
+    // the reason is a missing heap slot.
+    std::string regionIncompatibilityMessage() const {
+        const char* why = regionIncompatibility();
+        if (!why) return std::string();
+        std::string m = why;
+        if (regionSlots() == 0 && nursery_region_bytes == 0) {
+            m += " (this geometry needs max_heap_size >= " +
+                 std::to_string(minRegionHeapBytes() >> 20) + " MiB, or a smaller nursery_max_block_count)";
+        }
+        return m;
+    }
 
     // Default constructor uses in-class member initializers.
     HeapConfig() = default;
@@ -1015,7 +1039,7 @@ struct HeapConfig {
     // Throws std::invalid_argument with descriptive message on validation failure.
     // threaded-gc-07 (TG7d): why this config cannot run the region nursery,
     // or nullptr when it can. validate() throws it for nursery_regions = 1;
-    // resolveNurseryRegions() turns auto (2) into 0 on it.
+    // resolveNurseryRegions() throws it for auto (2).
     const char* regionIncompatibility() const {
         if (promotion_age < 1 || promotion_age > 3) {
             return "nursery_regions = 1 requires promotion_age (the tenure age k) in 1..3";
@@ -1048,10 +1072,20 @@ struct HeapConfig {
         return nullptr;
     }
 
-    // Resolves nursery_regions = 2 (auto) to 1 or 0. The Allocator calls it on
-    // every config it adopts, before validate().
+    // Resolves nursery_regions = 2 (auto) to 1. The Allocator calls it on
+    // every config it adopts, before validate(). plans/region-nursery-everywhere.md
+    // Phase 1: auto never falls back to the legacy nursery. An incompatible
+    // config throws in every build (uncaught at Allocator::initialize, the
+    // process stops with the reason); the legacy nursery must be asked for
+    // explicitly with nursery_regions = 0.
     void resolveNurseryRegions() {
-        if (nursery_regions == 2) nursery_regions = regionIncompatibility() ? 0 : 1;
+        if (nursery_regions != 2) return;
+        if (regionIncompatibility()) {
+            throw std::invalid_argument(
+                "nursery_regions = 2 (auto): " + regionIncompatibilityMessage() +
+                "; set nursery_regions = 0 to run the legacy nursery");
+        }
+        nursery_regions = 1;
     }
 
     void validate() const {
@@ -1340,7 +1374,7 @@ struct HeapConfig {
             throw std::invalid_argument("shadow_granule_log2 must be 3 or 4");
         }
         if (nursery_regions == 1) {
-            if (const char* why = regionIncompatibility()) throw std::invalid_argument(why);
+            if (regionIncompatibility()) throw std::invalid_argument(regionIncompatibilityMessage());
         }
 
         // ========== 5. Promotion Constraints ==========

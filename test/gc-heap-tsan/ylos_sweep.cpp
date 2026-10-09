@@ -212,7 +212,10 @@ HeapConfig ylosConfig(unsigned workers, unsigned age, size_t sweep_bytes) {
     cfg.decommit_on_oldgen_release = false;
     cfg.gc_thread_mode = 0;
     cfg.incremental_mark = false;              // STW majors: the sweep starts at a known point
-    cfg.nursery_regions = 0;                   // the legacy parallel minor (phase 6)
+    // The legacy parallel minor (phase 6), explicitly (plans/region-nursery-everywhere.md
+    // Phase 4): CR-019's route -- a parallel minor sweeping a mixed block whose young YLOS
+    // another worker ages -- exists only on the legacy nursery (and is retired by HEAP_080).
+    cfg.nursery_regions = 0;
     cfg.promotion_age = age;
     cfg.small_class_heap_budget_bytes = 0;     // sweep-on-demand before a virgin block
     cfg.minor_sweep_divisor = 0;               // no pre-drain slice: the workers sweep

@@ -782,3 +782,14 @@ Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct la
 Pins fired: regions `OGS.allocateFromEmptyRegularBlocks` (**01961268bb26**), `OGS.lazySweep` (**f2052ad635f1**), `OGS.maybeShrinkCapacity` (**90bb953ccd90**); census `OldGenSpace.cpp` (**714b07d48107**); greps `H2` (**548900ba8616**), `H9` (**88d1d8251ae0**), `P6.M7` (**72090451cef4**), `P6.M9` (**0ec81764e070**), `P6.M16` (**775e4a9c5e8c**), `F.parPromoActive` (**73c591603c9e**).
 
 LOS blocks never enter M4's paths: they are never `Current`/`Queued`/tenure-granted, never on `partial_` or a free list, born and kept `fully_swept` (the sweep and its slices under `promo_mu_` skip them), and the flip and shrink now skip them explicitly (`los != 0`). A promotion never allocates an LOS cell (nursery placement is capped at the largest uniform class). `lazySweep`'s legacy is_large arm no longer reads a raw block's header (a branch the bitmap-mode model does not take). The census/P6.M16/F.parPromoActive lines are `attributeNewCell`'s, a mutator-only copy of `initObjectHeaderWithSize`'s live-bytes add (atomic when `par_promo_active_`, as there). **Verdict: no model change needed.**
+
+## 2026-10-09 — plans/region-nursery-everywhere.md: promo_sweep keeps the legacy nursery, explicitly (GC_MODEL_001)
+
+Pin fired: file `test/gc-heap-tsan/promo_sweep.cpp` (**1b739c760ed8**).
+
+Change: comments only. `promoConfig` still sets `cfg.nursery_regions = 0`; the one-line comment beside
+it became four lines explaining why it stays legacy now that every other harness defaults to the region
+nursery. The route M4 models, parallel promotion workers allocating cells in blocks that a pending lazy
+sweep still owns, exists only on the legacy minor. The region tenure job promotes only into
+`kAllocTenure` grant blocks, which no sweep path may select (HEAP_070). The driver's heap, scenario,
+probes and trace output are unchanged, and no runtime code is touched. **Verdict: no model change needed.**

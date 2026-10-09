@@ -193,7 +193,7 @@ struct Opts {
     bool pool = true;              // gc_thread_mode 2 (the helper pool); false: 0
     // The region nursery (threaded-gc-07; CR-013 arms): k = 1, tenure mode 2, one
     // exact collector (tenure_b = 1) or L3 with tenure_b members (> 1), help on.
-    bool regions = false;
+    bool regions = true;           // plans/region-nursery-everywhere.md Phase 4: the default; false = legacy, explicit
     unsigned tenure_b = 1;
     bool conc = true;              // false: no mark cycle machinery (conc_mark 0, STW majors only)
     size_t blocks = 0;             // nursery_block_count (0: the default below)
@@ -850,7 +850,12 @@ int trialDet(int which, uint64_t seed) {
     Opts o;
     o.old_pairs = 4000;
     o.slices = 6;
-    if (exit_arm) o.pool = false;                        // CR-003's drain would hang the child first
+    if (exit_arm) o.pool = false;
+    // det-cr004 runs the legacy nursery, explicitly (plans/region-nursery-everywhere.md
+    // §5 finding F1): on the region nursery no minor relaunches the fork-stopped
+    // episode on this gang (no-relaunch, even with T = 32), so the window this arm
+    // builds is never reached. The fork hold under test is the background gang's.
+    if (which == kDetCr004) o.regions = false;                        // CR-003's drain would hang the child first
     Allocator& a = initHeap(o);
     Heap hp(a, seed, o);
     Elm::tlatrace::setProbe(&onProbe);

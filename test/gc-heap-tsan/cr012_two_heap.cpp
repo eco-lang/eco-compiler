@@ -44,7 +44,7 @@ int cr012Main(int argc, char** argv) {
     cfg.old_gen_bitmap_alloc = true;
     cfg.conc_mark = 0;
     cfg.incremental_mark = false;
-    cfg.nursery_regions = 0;
+    cfg.nursery_regions = 1;   // plans/region-nursery-everywhere.md Phase 4 (legacy until 2026-10-09)
     cfg.gc_thread_mode = arm == 'e' ? 2 : 0;
     cfg.gc_helper_threads = 1;
     cfg.commit_ahead_bytes = 0;

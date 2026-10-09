@@ -58,6 +58,9 @@ i64 intOf(Allocator& a, HPointer hp) {
 // background markers' episodes.
 // threaded-gc-07 Step 10: `regions` runs the region nursery in tenure mode 2
 // with `collectors` tenure collector threads (1 = the exact engine; > 1 = L3).
+// It is the default (plans/region-nursery-everywhere.md Phase 4); only the
+// TLA+ trace scenarios named legacy-* and the CR-019 ylos-sweep arm (a legacy
+// parallel minor by construction) still run the legacy nursery.
 // Knobs: the defaults are the TSan scenarios' values; the fork, major and
 // trace knobs act only in a TLA+ trace build.
 struct Knobs {
@@ -190,7 +193,7 @@ void forkNow() {
 #endif
 
 void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
-              bool regions = false, unsigned collectors = 1, unsigned age = 1,
+              bool regions = true, unsigned collectors = 1, unsigned age = 1,
               const Knobs& kn = Knobs{}) {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 32 * 1024;
@@ -212,7 +215,9 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
     cfg.conc_mark_threads = bg;
     cfg.conc_mark_priority = 0;
     cfg.conc_mark_assist_lag = 1;
-    cfg.nursery_regions = 0;   // TG7d: the default is auto; legacy scenarios pin it off
+    // plans/region-nursery-everywhere.md Phase 4: region is the default; a
+    // legacy scenario (regions = false) asks for nursery_regions = 0 explicitly.
+    cfg.nursery_regions = 0;
     if (regions) {
         cfg.nursery_regions = 1;
         cfg.tenure_mode = 2;
@@ -537,8 +542,8 @@ struct ListEntry {
     unsigned collectors, age;
 };
 const ListEntry kDefaultList[] = {
-    {2, 4, 1, 1, false, 1, 1}, {4, 16, 2, 1, false, 1, 1}, {3, 8, 3, 1, false, 1, 1},
-    {2, 4, 4, 4, false, 1, 1}, {4, 16, 5, 3, false, 1, 1},
+    {2, 4, 1, 1, true, 1, 1}, {4, 16, 2, 1, true, 1, 1}, {3, 8, 3, 1, true, 1, 1},
+    {2, 4, 4, 4, true, 1, 1}, {4, 16, 5, 3, true, 1, 1},
     {2, 4, 6, 4, true, 1, 1},  {2, 4, 7, 4, true, 4, 1},
     {2, 4, 8, 4, true, 1, 2},  {2, 4, 9, 4, true, 1, 3},
 };
@@ -626,6 +631,9 @@ int main(int argc, char** argv) {
     if (argc >= 2 && std::strcmp(argv[1], "det-cr019") == 0) return ylosDetMain(argc - 1, argv + 1);
     if (argc >= 2 && std::strncmp(argv[1], "det-cr0", 7) == 0) return promoDetMain(argc - 1, argv + 1);
     if (argc >= 2 && std::strcmp(argv[1], "cr012") == 0) return cr012Main(argc - 1, argv + 1);
+    // plans/region-nursery-everywhere.md Phase 4: every scenario of the default
+    // run is on the region nursery (scenarios 1-5 and 10 were legacy until
+    // 2026-10-09).
     scenario(2, 4, 1);
     scenario(4, 16, 2);
     scenario(3, 8, 3);
@@ -641,12 +649,12 @@ int main(int argc, char** argv) {
     scenario(2, 4, 8, 4, /*regions=*/true, /*collectors=*/1, /*age=*/2);
     scenario(2, 4, 9, 4, /*regions=*/true, /*collectors=*/1, /*age=*/3);
     // Register CR-006 and CR-020: the helper pool (gc_thread_mode 2) and the
-    // young large object families, one legacy parallel-minor scenario and one
-    // region scenario (the `pool` arm runs all nine).
+    // young large object families, two region scenarios (the `pool` arm runs
+    // all nine).
     Knobs pool_ylos;
     pool_ylos.pool = true;
     pool_ylos.ylos_every = 2;
-    scenario(2, 4, 10, 4, /*regions=*/false, 1, 1, pool_ylos);
+    scenario(2, 4, 10, 4, /*regions=*/true, 1, 1, pool_ylos);
     scenario(2, 4, 11, 4, /*regions=*/true, 1, 1, pool_ylos);
     // Register CR-019 (fixed 2026-10-01, register-fixes 6.1): the ylos-sweep
     // arm at its defaults (a legacy parallel minor sweeps a mixed block whose

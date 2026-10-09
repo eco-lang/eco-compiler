@@ -170,8 +170,7 @@ std::vector<void*> buildGraph(Allocator& a, size_t n, uint64_t seed,
         HPointer t = alloc::tuple2(alloc::boxed(rx.h), alloc::boxed(ry.h), 0);
         list.h = alloc::cons(alloc::boxed(t), list.h, true);
     }
-    a.minorGC();
-    a.minorGC();
+    promoteToOldGen(a);   // legacy: promotion_age + 1 minors; region: + 2 (the tenure job)
     std::vector<void*> addrs;
     for (HPointer c = list.h; !alloc::isNil(c);) {
         Cons* cell = static_cast<Cons*>(a.resolve(c));

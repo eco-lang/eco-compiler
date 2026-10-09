@@ -103,7 +103,7 @@ size_t measureListLocality(HPointer head) {
 
 Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable objects from roots", []() {
         rc::check([](const HeapGraphDesc &graph) {
-            auto &alloc = initAllocator();
+            auto &alloc = initLegacyAllocator();
 
             // Allocate heap from description (RapidCheck can shrink this!)
             std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
@@ -131,7 +131,7 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
             // Size-scaled: num_cycles 2-5 at size 0, up to 2-15 at size 1000
             int num_cycles = *rc::sizedRange<int>(2, 5, 0.01);
 
-            auto &alloc = initAllocator();
+            auto &alloc = initLegacyAllocator();
 
             // Allocate complex heap graph as long-lived roots.
             std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
@@ -163,7 +163,7 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
         rc::check([](const HeapGraphDesc &graph) {
             // Use heap size scaled to RapidCheck size to handle larger test inputs.
             int rc_size = *rc::currentSize();
-            auto& alloc = initAllocatorScaled(rc_size);
+            auto& alloc = initLegacyAllocator(scaledHeapConfig(rc_size));
             auto *nursery = AllocatorTestAccess::getNursery(alloc);
 
             if (nursery == nullptr) {
@@ -227,7 +227,7 @@ Testing::TestCase testListSurvivesGCWithHybridDFS("List survives minor GC with h
         // Initialize with hybrid DFS enabled (default)
         HeapConfig config;
         config.use_hybrid_dfs = true;
-        auto& alloc = initAllocator(config);
+        auto& alloc = initLegacyAllocator(config);
 
         // Build a list
         UnboxedList list = buildUnboxedList(alloc, list_length);
@@ -257,7 +257,7 @@ Testing::TestCase testListSurvivesGCWithBFS("List survives minor GC with BFS onl
         // Initialize with hybrid DFS disabled
         HeapConfig config;
         config.use_hybrid_dfs = false;
-        auto& alloc = initAllocator(config);
+        auto& alloc = initLegacyAllocator(config);
 
         // Build a list
         UnboxedList list = buildUnboxedList(alloc, list_length);
@@ -287,7 +287,7 @@ Testing::TestCase testMultipleListsSurviveGCWithHybridDFS("Multiple lists surviv
 
         HeapConfig config;
         config.use_hybrid_dfs = true;
-        auto& alloc = initAllocator(config);
+        auto& alloc = initLegacyAllocator(config);
 
         // Build multiple lists - reserve space first to avoid reallocation
         // invalidating root pointers
@@ -328,7 +328,7 @@ Testing::TestCase testMultipleListsSurviveGCWithBFS("Multiple lists survive mino
 
         HeapConfig config;
         config.use_hybrid_dfs = false;
-        auto& alloc = initAllocator(config);
+        auto& alloc = initLegacyAllocator(config);
 
         // Build multiple lists - reserve space first to avoid reallocation
         // invalidating root pointers
@@ -369,7 +369,7 @@ Testing::TestCase testListLocalityImprovedByHybridDFS("Hybrid DFS improves list 
         // Test with hybrid DFS enabled
         HeapConfig config_dfs;
         config_dfs.use_hybrid_dfs = true;
-        auto& alloc_dfs = initAllocator(config_dfs);
+        auto& alloc_dfs = initLegacyAllocator(config_dfs);
 
         UnboxedList list_dfs = buildUnboxedList(alloc_dfs, LIST_LENGTH);
         alloc_dfs.getRootSet().addRoot(&list_dfs.head);
@@ -386,7 +386,7 @@ Testing::TestCase testListLocalityImprovedByHybridDFS("Hybrid DFS improves list 
         // Test with hybrid DFS disabled (pure BFS)
         HeapConfig config_bfs;
         config_bfs.use_hybrid_dfs = false;
-        auto& alloc_bfs = initAllocator(config_bfs);
+        auto& alloc_bfs = initLegacyAllocator(config_bfs);
 
         UnboxedList list_bfs = buildUnboxedList(alloc_bfs, LIST_LENGTH);
         alloc_bfs.getRootSet().addRoot(&list_bfs.head);
@@ -419,7 +419,7 @@ Testing::TestCase testListSurvivesMultipleGCCyclesWithHybridDFS("List survives m
 
         HeapConfig config;
         config.use_hybrid_dfs = true;
-        auto& alloc = initAllocator(config);
+        auto& alloc = initLegacyAllocator(config);
 
         UnboxedList list = buildUnboxedList(alloc, list_length);
         alloc.getRootSet().addRoot(&list.head);
@@ -445,7 +445,7 @@ Testing::TestCase testListSurvivesMultipleGCCyclesWithBFS("List survives multipl
 
         HeapConfig config;
         config.use_hybrid_dfs = false;
-        auto& alloc = initAllocator(config);
+        auto& alloc = initLegacyAllocator(config);
 
         UnboxedList list = buildUnboxedList(alloc, list_length);
         alloc.getRootSet().addRoot(&list.head);
@@ -471,7 +471,7 @@ Testing::TestCase testDeepListLocalityCopying("Deep list with two-pass spine cop
 
         HeapConfig config;
         config.use_hybrid_dfs = true;
-        auto& alloc = initAllocator(config);
+        auto& alloc = initLegacyAllocator(config);
 
         UnboxedList list = buildUnboxedList(alloc, LIST_LENGTH);
         alloc.getRootSet().addRoot(&list.head);
@@ -501,7 +501,7 @@ Testing::TestCase testDeepListLocalityCopying("Deep list with two-pass spine cop
 // walk is compiled out and this is a plain promotion roundtrip.
 Testing::UnitTest testPromotedBoxedIntsValidateWalk(
     "Promoted boxed Ints with adversarial values survive the old-gen validate walk", []() {
-        auto& alloc = initAllocator();
+        auto& alloc = initLegacyAllocator();
 
         std::vector<i64> values(64, 25);
         RootedInts ints = createRootedIntsWithValues(alloc, values);
@@ -535,7 +535,7 @@ Testing::UnitTest testPromotedBoxedIntsValidateWalk(
 // counted, keyed by (tag, ctor, first differing word); an untouched survivor
 // must not be; a builder object must be skipped (writes are allowed there).
 Testing::TestCase testSurvivorWriteCensus("threaded-gc-00: survivor-write census counts writes into survived objects", []() {
-    auto& alloc = initAllocator();
+    auto& alloc = initLegacyAllocator();
     auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
     NurserySpace& nursery = heap->getNursery();
     NurserySpaceTestAccess::setSurvivorWriteCensus(nursery, true);

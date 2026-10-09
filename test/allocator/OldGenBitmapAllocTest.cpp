@@ -290,7 +290,9 @@ Testing::TestCase testDemoteLiveFractionLever(
                 cfg.demote_live_fraction = k.f;
                 cfg.small_class_heap_budget_bytes = 0;
                 cfg.validate();
-                auto& alloc = initAllocator(cfg);
+                // Bitmap allocation off is the legacy old gen, which only the legacy
+                // nursery can run (HEAP_069): that arm asks for it explicitly.
+                auto& alloc = flag ? initAllocator(cfg) : initLegacyAllocator(cfg);
                 auto& og = oldGen(alloc);
                 // One full block per class, with 10 % / 40 % / 60 % rooted.
                 const size_t sizes[] = {16, 24, 32};

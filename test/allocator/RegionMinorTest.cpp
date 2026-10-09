@@ -70,7 +70,7 @@ struct Counts {
 };
 
 Counts workloadCounts(const HeapConfig& cfg, uint64_t seed, size_t steps) {
-    auto& a = initRegionAllocator(cfg);
+    auto& a = initAllocator(cfg);
     Counts c;
     {
         minortest::Workload w(a, 128, seed);
@@ -124,21 +124,58 @@ Testing::TestCase testRegionConfigValidation(
         TEST_ASSERT(threw);
         applyRegionEnv(c, "2", nullptr, nullptr);
         TEST_ASSERT(c.nursery_regions == 2);
-        // TG7d: auto (the default) resolves to regions on a compatible config
-        // and to the legacy nursery on an incompatible one; it never throws.
+        // TG7d: auto (the default) resolves to regions on a compatible config.
+        // plans/region-nursery-everywhere.md Phase 1: on an incompatible one it
+        // THROWS (naming the reason) instead of falling back to the legacy
+        // nursery; the same config runs legacy only when 0 is explicit.
         TEST_ASSERT(HeapConfig().nursery_regions == 2);
         HeapConfig autoc = regionConfig(1, 1);
         autoc.nursery_regions = 2;
         autoc.resolveNurseryRegions();
         TEST_ASSERT(autoc.nursery_regions == 1);
-        autoc = regionConfig(1, 1);
-        autoc.nursery_regions = 2;
-        autoc.old_gen_bitmap_alloc = false;
-        autoc.incremental_mark = false;
-        autoc.validate();
-        autoc.resolveNurseryRegions();
-        TEST_ASSERT(autoc.nursery_regions == 0);
-        autoc.validate();
+        auto autoThrows = [](HeapConfig c, const char* reason) {
+            c.nursery_regions = 2;
+            try { c.resolveNurseryRegions(); } catch (const std::invalid_argument& e) {
+                const std::string what = e.what();
+                return what.find("nursery_regions = 2 (auto)") != std::string::npos &&
+                       what.find(reason) != std::string::npos &&
+                       what.find("set nursery_regions = 0") != std::string::npos;
+            }
+            return false;
+        };
+        HeapConfig noBitmap = regionConfig(1, 1);
+        noBitmap.old_gen_bitmap_alloc = false;
+        noBitmap.incremental_mark = false;
+        TEST_ASSERT(autoThrows(noBitmap, "old_gen_bitmap_alloc"));
+        noBitmap.nursery_regions = 0;
+        noBitmap.resolveNurseryRegions();
+        TEST_ASSERT(noBitmap.nursery_regions == 0);
+        noBitmap.validate();
+        HeapConfig bigLot = regionConfig(1, 1);
+        bigLot.large_object_threshold = 128 * 1024;
+        TEST_ASSERT(autoThrows(bigLot, "large_object_threshold"));
+        HeapConfig noSlot = regionConfig(1, 1);
+        noSlot.max_heap_size = 16ULL * 1024 * 1024;
+        noSlot.nursery_max_block_count = 1024;
+        TEST_ASSERT(autoThrows(noSlot, "smaller than one heap slot"));
+        HeapConfig aged4 = regionConfig(1, 1);
+        aged4.promotion_age = 4;
+        TEST_ASSERT(autoThrows(aged4, "promotion_age"));
+        // A pressure heap "just big enough" for the region nursery: a pinned
+        // 4-block nursery of 64 KiB buffers has a 128 KiB stride, and
+        // minRegionHeapBytes() is the smallest heap holding one slot.
+        HeapConfig tight;
+        tight.alloc_buffer_size = 64 * 1024;
+        tight.nursery_block_count = tight.nursery_max_block_count = 4;
+        TEST_ASSERT(tight.regionStrideBytes() == 128 * 1024);
+        tight.max_heap_size = tight.minRegionHeapBytes();
+        TEST_ASSERT(tight.max_heap_size == 2 * tight.regionExtents() * 128 * 1024);
+        TEST_ASSERT(tight.regionSlots() == 1 && tight.regionIncompatibility() == nullptr);
+        tight.max_heap_size = tight.minRegionHeapBytes(2);
+        TEST_ASSERT(tight.regionSlots() == 2);
+        tight.max_heap_size = tight.minRegionHeapBytes() - tight.alloc_buffer_size;
+        TEST_ASSERT(tight.regionSlots() == 0);
+        TEST_ASSERT(autoThrows(tight, "needs max_heap_size >="));
         // threaded-gc-07b: promotion_age is the region tenure age k (1..3);
         // a heap slot then holds k + 3 extents (+1 with eden flip).
         HeapConfig aged = regionConfig(1, 1);
@@ -175,7 +212,7 @@ Testing::TestCase testRegionGeometry(
         for (int flip : {0, 1}) {
             HeapConfig cfg = regionConfig(1, 1);
             cfg.nursery_region_eden_flip = flip;
-            auto& a = initRegionAllocator(cfg);
+            auto& a = initAllocator(cfg);
             RegionState* R = NTA::region(nurseryOf(a));
             TEST_ASSERT(R != nullptr);
             const unsigned n = flip ? 5u : 4u;
@@ -204,7 +241,7 @@ Testing::TestCase testRegionLegacyGeometryUnchanged(
     "threaded-gc-07: with regions off the slot table is the legacy table",
     []() {
         HeapConfig cfg = regionConfig(0, 1);
-        auto& a = initRegionAllocator(cfg);
+        auto& a = initAllocator(cfg);
         TEST_ASSERT(!nurseryOf(a).regionMode());
         TEST_ASSERT(AllocatorTestAccess::regionSlotCount(a) == 0);
         TEST_ASSERT(AllocatorTestAccess::sliceBytes(a) == cfg.nurserySliceBytes());
@@ -247,7 +284,7 @@ Testing::TestCase testRegionLongListTenured(
     "threaded-gc-07: a 100,000-cell list is copied, handed over and tenured in spine runs",
     []() {
         for (uint32_t n : {1u, 4u}) {
-            auto& a = initRegionAllocator(regionConfig(1, n));
+            auto& a = initAllocator(regionConfig(1, n));
             HPointer l = alloc::listNil();
             a.getRootSet().addRoot(&l);
             int64_t expect = 0;
@@ -288,7 +325,7 @@ Testing::TestCase testRegionLongListTenured(
 Testing::TestCase testRegionRootResolve(
     "threaded-gc-07: a root holding a hand-over object ends up at its old copy; heals from Fresh",
     []() {
-        auto& a = initRegionAllocator(regionConfig(1, 1));
+        auto& a = initAllocator(regionConfig(1, 1));
         HPointer old_obj = alloc::allocInt(4242);
         HPointer holder = alloc::listNil();
         a.getRootSet().addRoot(&old_obj);
@@ -314,7 +351,7 @@ Testing::TestCase testRegionEveryTagTenured(
     "threaded-gc-07: every shape survives fill -> hand-over -> tenured -> old with its contents",
     []() {
         for (uint32_t n : {1u, 4u}) {
-            auto& a = initRegionAllocator(regionConfig(1, n));
+            auto& a = initAllocator(regionConfig(1, n));
             minortest::Workload w(a, 64, 7 + n);
             w.run(3000);
             uint64_t sum = w.checksum();
@@ -333,7 +370,7 @@ Testing::TestCase testRegionEveryTagTenured(
 Testing::TestCase testRegionBuilderStaysInArea(
     "threaded-gc-07: a builder lives in builder areas at age 0, then ages and tenures once cleared",
     []() {
-        auto& a = initRegionAllocator(regionConfig(1, 4));
+        auto& a = initAllocator(regionConfig(1, 4));
         HPointer b = alloc::allocArrayBuilder(16);
         a.getRootSet().addRoot(&b);
         for (int g = 0; g < 5; ++g) {
@@ -371,7 +408,7 @@ Testing::TestCase testRegionLargeBodies(
     "threaded-gc-07: split-header bodies follow their headers through hand-over and tenure",
     []() {
         for (uint32_t n : {1u, 4u}) {
-            auto& a = initRegionAllocator(regionConfig(1, n));
+            auto& a = initAllocator(regionConfig(1, n));
             std::u16string big(40000, u'x');
             for (size_t i = 0; i < big.size(); i += 97) big[i] = static_cast<char16_t>(u'a' + (i % 26));
             HPointer s1 = alloc::allocString(big);
@@ -399,7 +436,7 @@ Testing::TestCase testRegionLargeBodies(
 Testing::TestCase testRegionYlosGenerations(
     "threaded-gc-07: YLOS generations: reached from a root, only through a tenuring object, or not at all",
     []() {
-        auto& a = initRegionAllocator(regionConfig(1, 1));
+        auto& a = initAllocator(regionConfig(1, 1));
         OldGenSpace& og = oldgenOf(a);
         auto makeArray = [&](size_t len, i64 base) {
             std::vector<HPointer> elems(len, alloc::listNil());
@@ -453,7 +490,7 @@ Testing::TestCase testRegionYlosGenerations(
 Testing::TestCase testRegionRetentionBound(
     "threaded-gc-07: at most two survivor extents are in use between minors (200+ minors)",
     []() {
-        auto& a = initRegionAllocator(regionConfig(1, 4));
+        auto& a = initAllocator(regionConfig(1, 4));
         {
             minortest::Workload w(a, 256, 99);
             w.run(200000);
@@ -472,7 +509,7 @@ Testing::TestCase testRegionStwMajorBetweenMinors(
     []() {
         HeapConfig cfg = regionConfig(1, 1);
         cfg.incremental_mark = false;
-        auto& a = initRegionAllocator(cfg);
+        auto& a = initAllocator(cfg);
         HPointer l = alloc::listNil();
         a.getRootSet().addRoot(&l);
         int64_t expect = 0;
@@ -531,7 +568,7 @@ Testing::TestCase testRegionParallelSuite(
             HeapConfig cfg = regionConfig(1, 4);
             cfg.tenure_sync_threads = sync;
             cfg.validate();
-            auto& a = initRegionAllocator(cfg);
+            auto& a = initAllocator(cfg);
             minortest::Workload w(a, 128, 5 + sync);
             for (int g = 0; g < 40; ++g) {
                 w.run(3000);
@@ -570,7 +607,7 @@ namespace {
     cfg.incremental_mark_min_slice_units = 64;
     cfg.conc_mark = 1;
     cfg.validate();
-    auto& a = initRegionAllocator(cfg);
+    auto& a = initAllocator(cfg);
     ThreadLocalHeap* h = heapOf(a);
     HPointer o = alloc::allocInt(4242);
     a.getRootSet().addRoot(&o);

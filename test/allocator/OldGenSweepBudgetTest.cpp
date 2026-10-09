@@ -19,6 +19,9 @@ HeapConfig sweepBudgetConfig(size_t max_heap_size_bytes) {
     HeapConfig cfg;
     cfg.alloc_buffer_size       = 32 * 1024;
     cfg.nursery_block_count     = 4;
+    // plans/region-nursery-everywhere.md Phase 3: a fixed nursery, so the region
+    // layout's heap slot (extents x the max nursery side) fits this small heap.
+    cfg.nursery_max_block_count = 4;
     cfg.initial_old_gen_size    = 64 * 1024;
     cfg.max_heap_size           = max_heap_size_bytes;
     cfg.large_object_threshold  = 8 * 1024;

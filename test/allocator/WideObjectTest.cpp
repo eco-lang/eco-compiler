@@ -490,7 +490,7 @@ void test_nursery_large() {
 // T7
 // ---------------------------------------------------------------------------
 void test_region_k2() {
-    auto& a = initRegionAllocator(wideRegion());
+    auto& a = initAllocator(wideRegion());
 #if ENABLE_GC_STATS
     const auto& rg = tlh(a)->getNursery().getStats().rg;
     const uint64_t minors0 = rg.minors, tenured0 = rg.tenured;

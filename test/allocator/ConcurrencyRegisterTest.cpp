@@ -354,6 +354,7 @@ HeapConfig cr018Config() {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 64 * 1024;
     cfg.nursery_block_count = 4;
+    cfg.nursery_max_block_count = 4;   // region slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size = 256 * 1024;   // 4 pages: the min_heap floor keeps the block
     cfg.max_heap_size = 64ULL * 1024 * 1024;
     cfg.large_object_threshold = 8 * 1024;   // 16/32/64 KiB are mixed-only classes
@@ -500,7 +501,7 @@ HeapConfig cr017Config(uint32_t k) {
 
 int cr017Scenario(uint32_t k) {
     const char* id = k == 1 ? "CR-017 (k=1)" : "CR-017 (k=2)";
-    auto& a = initRegionAllocator(cr017Config(k));
+    auto& a = initAllocator(cr017Config(k));
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     NurserySpace& ns = h->getNursery();
     OldGenSpace& og = h->getOldGen();
@@ -581,7 +582,7 @@ bool insideFiller(const region::Extent& X, const void* p) {
 
 int cr017TripwireScenario(uint32_t k, bool control) {
     const char* id = control ? "HEAP_074 tripwire control" : "HEAP_074 tripwire";
-    auto& a = initRegionAllocator(cr017Config(k));
+    auto& a = initAllocator(cr017Config(k));
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     NurserySpace& ns = h->getNursery();
     RegionState* R = NurserySpaceTestAccess::region(ns);
@@ -693,11 +694,15 @@ HeapConfig cr029Config(bool bitmap) {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 64 * 1024;
     cfg.nursery_block_count = 4;
+    cfg.nursery_max_block_count = 4;   // region slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size = 256 * 1024;
     cfg.max_heap_size = 64ULL * 1024 * 1024;
     cfg.large_object_threshold = 8 * 1024;   // size classes up to 8 KiB; 16/32/64 KiB are mixed-only
     cfg.decommit_on_oldgen_release = false;
     cfg.old_gen_bitmap_alloc = bitmap;
+    // Bitmap allocation off is the legacy old gen, which only the legacy nursery
+    // runs (HEAP_069): that arm asks for it explicitly.
+    if (!bitmap) cfg.nursery_regions = 0;
     cfg.gc_thread_mode = 0;
     cfg.gc_mark_threads = 1;
     cfg.incremental_mark = false;
@@ -931,6 +936,7 @@ HeapConfig tailConfig(size_t lot, size_t sweep, double demote) {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 64 * 1024;
     cfg.nursery_block_count = 4;
+    cfg.nursery_max_block_count = 4;   // region slot fits (plans/region-nursery-everywhere.md)
     cfg.initial_old_gen_size = 256 * 1024;   // the floor keeps all-dead blocks at the major
     cfg.max_heap_size = 64ULL << 20;
     cfg.large_object_threshold = lot;
@@ -1688,7 +1694,7 @@ void* deadBodyAfterMajor(Allocator& a, int* ext, const char** why, void** hdr_ou
 
 int cr037Scenario(uint32_t k, bool control) {
     const char* id = control ? "CR-037 control" : (k == 1 ? "CR-037 (k=1)" : "CR-037 (k=2)");
-    auto& a = initRegionAllocator(cr017Config(k));
+    auto& a = initAllocator(cr017Config(k));
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     NurserySpace& ns = h->getNursery();
     OldGenSpace& og = h->getOldGen();
@@ -1780,7 +1786,7 @@ bool waitBg(OldGenSpace& og, int ms = 20000) {   // = ConcurrentMarkTest.cpp wai
 int cr017R1Scenario(bool control, uint32_t k = 1) {
     const char* id = k == 1 ? (control ? "CR-017 R1 control" : "CR-017 R1")
                             : (control ? "CR-017 R1 control (k=2)" : "CR-017 R1 (k=2)");
-    auto& a = initRegionAllocator(cr017ConcConfig(k));
+    auto& a = initAllocator(cr017ConcConfig(k));
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     OldGenSpace& og = h->getOldGen();
     RegionState* R = NurserySpaceTestAccess::region(h->getNursery());
@@ -1888,7 +1894,7 @@ int cr017R2Scenario(bool control) {
     HeapConfig cfg = cr017ConcConfig(1, 32 * 1024);
     cfg.demote_live_fraction = 0.0;
     cfg.validate();
-    auto& a = initRegionAllocator(cfg);
+    auto& a = initAllocator(cfg);
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     NurserySpace& ns = h->getNursery();
     OldGenSpace& og = h->getOldGen();
@@ -2724,6 +2730,9 @@ namespace {
 HeapConfig cr033Config(bool bitmap) {
     HeapConfig cfg = cr018Config();
     cfg.old_gen_bitmap_alloc = bitmap;
+    // Bitmap allocation off is the legacy old gen, which only the legacy nursery
+    // runs (HEAP_069): that arm asks for it explicitly.
+    if (!bitmap) cfg.nursery_regions = 0;
     cfg.gc_mark_threads = 1;
     cfg.commit_ahead_bytes = 0;
     cfg.validate();
@@ -3073,7 +3082,7 @@ namespace {
 int cr038Scenario(bool control) {
     const char* id = control ? "CR-038 control (live Y)" : "CR-038";
     abortMeansNotReached();
-    auto& a = initRegionAllocator(cr017Config(2));
+    auto& a = initAllocator(cr017Config(2));
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     NurserySpace& ns = h->getNursery();
     OldGenSpace& og = h->getOldGen();
@@ -3178,7 +3187,7 @@ namespace {
 
 int cr038ZScenario(bool control) {
     const char* id = control ? "CR-039 control (Z live)" : "CR-039";
-    auto& a = initRegionAllocator(cr017Config(2));
+    auto& a = initAllocator(cr017Config(2));
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     NurserySpace& ns = h->getNursery();
     OldGenSpace& og = h->getOldGen();

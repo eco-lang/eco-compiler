@@ -242,6 +242,20 @@ Allocator::~Allocator() {
 }
 // TLA-REGION(AL.destructor) end
 
+// The configuration a process runs: `base`, then the JSON overrides from
+// $ECO_HEAP_CONFIG (HeapConfigJson.hpp), then the ECO_GC_* / ECO_NURSERY_*
+// variables (threaded-gc-03: they win over JSON), resolved and validated.
+// initialize() adopts it; EcoRunner::reset() re-installs it in every E2E
+// child (plans/region-nursery-everywhere.md Phase 2).
+HeapConfig Allocator::environmentConfig(const HeapConfig& base, uint32_t& helper_jitter_us) {
+    HeapConfig c = base;
+    applyHeapConfigFromEnv(c);
+    applyGcThreadEnv(c, helper_jitter_us);
+    c.resolveNurseryRegions();   // TG7d: auto -> 1; incompatible throws
+    c.validate();
+    return c;
+}
+
 // Initializes the allocator with the given configuration.
 // Validates config and reserves address space. Physical memory committed lazily.
 void Allocator::initialize(const HeapConfig& config) {
@@ -258,12 +272,7 @@ void Allocator::initialize(const HeapConfig& config) {
     // Apply JSON overrides from $ECO_HEAP_CONFIG, if set, on top of the
     // caller-supplied defaults. Lets us tweak heap parameters without a
     // rebuild — see HeapConfigJson.hpp for the recognised keys.
-    config_ = config;
-    applyHeapConfigFromEnv(config_);
-    // threaded-gc-03: ECO_GC_THREAD / ECO_GC_HELPER_JITTER_US win over JSON.
-    applyGcThreadEnv(config_, helper_jitter_us_);
-    config_.resolveNurseryRegions();   // threaded-gc-07 TG7d: auto -> 1 or 0
-    config_.validate();
+    config_ = environmentConfig(config, helper_jitter_us_);
 
     heap_reserved = config_.max_heap_size;
 
@@ -1217,7 +1226,7 @@ void Allocator::reset(const HeapConfig* new_config) {
     // Update config if provided.
     if (new_config) {
         HeapConfig c = *new_config;
-        c.resolveNurseryRegions();   // threaded-gc-07 TG7d: auto -> 1 or 0
+        c.resolveNurseryRegions();   // TG7d: auto -> 1; incompatible throws
         c.validate();
         config_ = c;
     }

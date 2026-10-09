@@ -231,7 +231,8 @@ Testing::TestCase testLargeArrayPromotesByCopy(
         alloc.getRootSet().addRoot(&arr);
         alloc.minorGC();
         TEST_ASSERT(alloc.isInNursery(alloc.resolve(arr)));   // age 0 -> 1
-        alloc.minorGC();                                       // promoted
+        alloc.minorGC();                                       // promoted (region: tenured)
+        tenureMerge(alloc);
         ElmArray* a = static_cast<ElmArray*>(alloc.resolve(arr));
         TEST_ASSERT(!alloc.isInNursery(a));
         TEST_ASSERT(a->header.pin == 0);
@@ -328,6 +329,7 @@ Testing::TestCase testYlosAgesAndPromotesInPlace(
         ElmArray* a = static_cast<ElmArray*>(a0);
         TEST_ASSERT(alloc.isInNursery(alloc.resolve(a->elements[0].p)));
         alloc.minorGC();
+        tenureMerge(alloc);
         TEST_ASSERT(alloc.resolve(arr) == a0);           // same address
         TEST_ASSERT(!og.isYoungLarge(a0));
         TEST_ASSERT(og.youngLargeCount() == 0);
@@ -461,6 +463,7 @@ Testing::TestCase testYlosBuilderNeverAges(
         alloc.minorGC();                                  // age 0 -> 1
         TEST_ASSERT(og.isYoungLarge(a0));
         alloc.minorGC();                                  // promoted in place
+        tenureMerge(alloc);
         TEST_ASSERT(!og.isYoungLarge(a0));
         checkLargeIntArray(alloc, arr, n, 11, "builder promoted");
         alloc.majorGC();

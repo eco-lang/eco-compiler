@@ -191,7 +191,11 @@ HeapConfig promoConfig(unsigned workers) {
     cfg.decommit_on_oldgen_release = false;
     cfg.gc_thread_mode = 0;
     cfg.incremental_mark = false;              // STW majors: no cycle overlaps the sweep
-    cfg.nursery_regions = 0;                   // the legacy parallel minor (phase 6)
+    // The legacy parallel minor (phase 6), explicitly (plans/region-nursery-everywhere.md
+    // Phase 4): the route under test -- workers promoting into blocks that a pending lazy
+    // sweep still owns -- does not exist on the region nursery, whose tenure job promotes
+    // only into kAllocTenure grant blocks that no sweep path may select (HEAP_070).
+    cfg.nursery_regions = 0;
     cfg.promotion_age = 1;
     cfg.small_class_heap_budget_bytes = 0;     // no virgin block before sweep-on-demand
     cfg.minor_sweep_divisor = 0;               // no pre-drain slice: the workers sweep

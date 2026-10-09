@@ -63,7 +63,7 @@ uint64_t allocsUntilNextMinor(ThreadLocalHeap* heap) {
 Testing::TestCase testFillerSkippedBySurvivorWalk(
     "HEAP_068: forEachSurvivor skips fillers and reports object bytes",
     []() {
-        auto& alloc = initAllocator(pressureHeapConfig());
+        auto& alloc = initLegacyAllocator(pressureHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NurserySpace& nursery = heap->getNursery();
         // Some rooted survivors, then a minor so the prefix is exact.
@@ -105,7 +105,7 @@ Testing::TestCase testTriggerCountsObjectBytes(
 #if ENABLE_GC_STATS
         uint64_t with_filler = 0, without = 0;
         for (int arm = 0; arm < 2; ++arm) {
-            auto& alloc = initAllocator(pressureHeapConfig());
+            auto& alloc = initLegacyAllocator(pressureHeapConfig());
             auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
             NurserySpace& nursery = heap->getNursery();
             alloc.minorGC();
@@ -128,7 +128,7 @@ Testing::TestCase testTriggerCountsObjectBytes(
 Testing::TestCase testGrowthCountsObjectBytes(
     "HEAP_068: nursery growth reads object bytes, not filler bytes",
     []() {
-        auto& alloc = initAllocator(pressureHeapConfig());
+        auto& alloc = initLegacyAllocator(pressureHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NurserySpace& nursery = heap->getNursery();
         const size_t cap = NTA::capacity(nursery);
@@ -145,7 +145,7 @@ Testing::TestCase testGrowthCountsObjectBytes(
 Testing::TestCase testFailSoftUsesObjectBytes(
     "HEAP_068: the fail-soft test and the clamp count object bytes",
     []() {
-        auto& alloc = initAllocator(pressureHeapConfig());
+        auto& alloc = initLegacyAllocator(pressureHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NurserySpace& nursery = heap->getNursery();
         alloc.minorGC();
@@ -164,7 +164,7 @@ Testing::TestCase testFailSoftUsesObjectBytes(
 Testing::TestCase testAllocEndCappedCounted(
     "HEAP_068: a filler pushing threshold + fillers past the extent is capped and counted",
     []() {
-        auto& alloc = initAllocator(pressureHeapConfig());
+        auto& alloc = initLegacyAllocator(pressureHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         NurserySpace& nursery = heap->getNursery();
         alloc.minorGC();

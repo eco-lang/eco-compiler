@@ -205,6 +205,9 @@ HeapConfig losHeapConfig() {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 512 * 1024;
     cfg.nursery_block_count = 4;
+    // plans/region-nursery-everywhere.md Phase 3: a fixed nursery, so the region
+    // layout's heap slot (extents x the max nursery side) fits this small heap.
+    cfg.nursery_max_block_count = 4;
     cfg.initial_old_gen_size = 2 * 1024 * 1024;
     cfg.max_heap_size = 256ULL * 1024 * 1024;
     cfg.large_ptr_nursery_divisor = 0;   // every pointer-bearing object >= LOT is a YLOS

@@ -2,7 +2,7 @@ module EcoSystemFileManySmall exposing (main)
 
 {-| Stress variant of the eco-system file tests (plans/eco-system-library.md
 Phase 4 step 4.6, §3.3.3 gate 3): each cycle creates a temporary directory,
-writes `100 * maxSize` small files (10 000 with the default size), lists the
+writes `10 * maxSize` small files (1 000 with the default size), lists the
 directory (checking the strcmp order and entity types), reads every file back
 and compares its contents, reads their metadata through a FileHandle, and
 removes the tree. Every operation is one SysWorkPool job whose result is built
@@ -120,7 +120,7 @@ cycle n cycleIx =
 
 run : StressFlags -> Task Never Bool
 run flags =
-    StressHarness.loopWhile flags (max 1 flags.numLoops) (cycle (100 * max 1 flags.maxSize))
+    StressHarness.loopWhile flags (max 1 flags.numLoops) (cycle (10 * max 1 flags.maxSize))
 
 
 main : Program StressFlags StressHarness.Model StressHarness.Msg

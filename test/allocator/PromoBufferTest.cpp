@@ -77,7 +77,7 @@ struct Outcome {
 };
 
 Outcome runScript(bool via_ctx, uint64_t seed, size_t steps) {
-    auto& a = initAllocator(promoConfig());
+    auto& a = initLegacyAllocator(promoConfig());
     tlh(a)->getNursery().test_serial_promo_via_ctx_ = via_ctx;
     if (std::getenv("PB_DEBUG")) std::fprintf(stderr, "[pb] arm via_ctx=%d seed=%llu\n", (int)via_ctx, (unsigned long long)seed);
     Outcome o{};
@@ -129,7 +129,7 @@ Testing::TestCase testPromoViaCtxMatchesSerial(
 Testing::TestCase testWorkerCursorReturnedToFront(
     "threaded-gc-06: chunked promotion shares a block; a retired block with cells left goes to the FRONT (W6)",
     []() {
-        auto& a = initAllocator(promoConfig());
+        auto& a = initLegacyAllocator(promoConfig());
         OldGenSpace& g = og(a);
         const size_t cls = OA::sizeClass(sizeof(Tuple2));
         OldGenSpace::PromoCtx& ctx = g.promoCtx();
@@ -169,7 +169,7 @@ Testing::TestCase testWorkerCursorReturnedToFront(
 Testing::TestCase testLadderUnderMutexAccounting(
     "threaded-gc-06: every promotion byte is accounted after the merge (PM6)",
     []() {
-        auto& a = initAllocator(promoConfig());
+        auto& a = initLegacyAllocator(promoConfig());
         OldGenSpace& g = og(a);
         const size_t before = OA::allocatedBytes(g);
         OldGenSpace::PromoCtx& ctx = g.promoCtx();
