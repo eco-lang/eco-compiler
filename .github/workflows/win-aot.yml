@@ -179,6 +179,29 @@ jobs:
             Where-Object { $_ -notmatch '^OK, passed' } | Select-Object -Last 40 | Write-Host
           exit $rc
 
+      # TEMP(diag): the full run dies with a TV6 tenure fatal around the
+      # threaded-gc-05c pacing tests, and buffered stdout hides which test.
+      # Run each test from #200 to #260 in its own process and report it.
+      - name: TEMP(diag) per-test runs around the TV6 crash
+        if: always()
+        shell: pwsh
+        run: |
+          $names = & build\test\test.exe --list 2>$null |
+            ForEach-Object { if ($_ -match '^\s*(\d+)\.\s+(.*)$') { [pscustomobject]@{ n = [int]$Matches[1]; name = $Matches[2] } } } |
+            Where-Object { $_.n -ge 200 -and $_.n -le 260 }
+          $grp = Start-Process -FilePath build\test\test.exe -ArgumentList @('--filter', 'threaded-gc-05c') `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\diag-05c.txt" -RedirectStandardError "$env:RUNNER_TEMP\diag-05c.err"
+          Write-Host ("all threaded-gc-05c in one process: rc=0x{0:X8} {1}" -f $grp.ExitCode,
+            (Get-Content "$env:RUNNER_TEMP\diag-05c.err" -ErrorAction SilentlyContinue | Select-String -Pattern 'FATAL|Assertion' | Select-Object -First 1))
+          foreach ($t in $names) {
+            $out = "$env:RUNNER_TEMP\diag-$($t.n).txt"
+            $p = Start-Process -FilePath build\test\test.exe -ArgumentList @('--filter', "`"$($t.name)`"") `
+              -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+            $fatal = (Get-Content "$out.err" -ErrorAction SilentlyContinue | Select-String -Pattern 'FATAL|Assertion' | Select-Object -First 1)
+            Write-Host ("#{0} rc=0x{1:X8} {2} {3}" -f $t.n, $p.ExitCode, $t.name, $fatal)
+          }
+          exit 0
+
       # ---- Gateway 4: the full Stage 6-9 self-host chain. Split into
       #      separately-timed steps so the Actions UI shows per-stage
       #      durations. eco-boot-native + the runtime are already built above. ----
