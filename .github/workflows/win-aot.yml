@@ -49,6 +49,7 @@ jobs:
       # so it stays well under the 10 GB repo cache budget.
       CCACHE_DIR: ${{ github.workspace }}\.ccache
       CCACHE_MAXSIZE: '1G'
+      CCACHE_LOGFILE: ${{ github.workspace }}\ccache.log
     steps:
       - uses: actions/checkout@v4
 
@@ -164,7 +165,15 @@ jobs:
       - name: ccache stats
         if: always()
         shell: pwsh
-        run: ccache -s -v
+        run: |
+          ccache -s -v
+          # Surface why calls were uncacheable (as annotations, visible mid-run).
+          if (Test-Path $env:CCACHE_LOGFILE) {
+            Select-String -Path $env:CCACHE_LOGFILE -Pattern 'unsupported|too hard' |
+              Select-Object -First 5 | ForEach-Object { Write-Host "::warning title=ccache::$($_.Line)" }
+            Select-String -Path $env:CCACHE_LOGFILE -Pattern 'Command line:' |
+              Select-Object -First 1 | ForEach-Object { Write-Host "::warning title=ccache cmd::$($_.Line)" }
+          }
 
       - name: Run JIT E2E tests
         shell: pwsh
