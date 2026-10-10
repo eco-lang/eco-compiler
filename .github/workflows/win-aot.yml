@@ -112,8 +112,8 @@ jobs:
       - name: Configure (win-build preset)
         shell: pwsh
         # ccache wraps clang-cl via the compiler launcher; populates .ccache for
-        # the next run. Released builds carry no /Zi debug info, so the MSVC-mode
-        # ccache /Z7 caveat does not apply.
+        # the next run. ccache refuses /Zi (shared PDB), so the win-build preset
+        # uses /Z7 (debug info in each object).
         run: cmake --preset win-build -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails fast. ----
@@ -160,6 +160,11 @@ jobs:
         # aot-e2e-runner stay gated behind NOT WIN32.
         shell: pwsh
         run: cmake --build build --target test -- -k 20
+
+      - name: ccache stats
+        if: always()
+        shell: pwsh
+        run: ccache -s -v
 
       - name: Run JIT E2E tests
         shell: pwsh
