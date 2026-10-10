@@ -15,6 +15,7 @@
 #include "platform/Scheduler.hpp"
 #include "platform/PlatformRuntime.hpp"
 #include <string>
+#include <vector>
 
 using namespace Elm;
 using namespace Elm::alloc;
@@ -243,32 +244,75 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
 }
 
 // cmdMap : (a -> b) -> MyCmd a -> MyCmd b
-// Maps over the message type in Http commands
+// Maps the message type of an Http command, as stock elm/http's cmdMap does:
+//
+//     cmdMap func cmd =
+//         case cmd of
+//             Cancel tracker -> Cancel tracker
+//             Request r -> Request { r | expect = Elm.Kernel.Http.mapExpect func r.expect }
+//
+// so the response reaches the app through every Cmd.map tagger (`mapper` is
+// PlatformRuntime's applyTaggers closure, PORT_005). Until 2026-10-10 a
+// Request came back unchanged and the tagger was dropped: the app received
+// the inner message as its own Msg type (a wrong-layout value; SIGSEGV in
+// update). plans/http-cmdmap-native-crash.md, test elm-http/HttpCmdMapTest.
 static void* httpCmdMapEvaluator(void* args[]) {
     // args[0] = mapper function
     // args[1] = original cmd
 
     auto& allocator = Allocator::instance();
 
-    // Root mapper and origCmd across allocClosure / closureCapture /
-    // taskAndThen — each is a GC point that would otherwise leave the
-    // by-value HPointer locals pointing at the pre-swap location.
+    // Root mapper and origCmd across every allocation below (mapExpect,
+    // the new Request record, allocClosure / taskAndThen): each is a GC
+    // point that would otherwise leave the by-value locals stale.
     HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer origCmd = decodeHP(reinterpret_cast<uint64_t>(args[1]));
     Elm::StackRootGuard guards(&mapper, &origCmd);
 
-    // If the command is a Task, wrap it with map/andThen
     void* cmdPtr = allocator.resolve(origCmd);
     if (!cmdPtr) {
         return reinterpret_cast<void*>(encodeHP(origCmd));
     }
 
     Header* header = static_cast<Header*>(cmdPtr);
+    if (header->tag == Tag_Custom) {
+        // Stock elm/http command: Cancel = ctor 0 (no message inside),
+        // Request = ctor 1 [record].
+        Custom* cmd = static_cast<Custom*>(cmdPtr);
+        if (cmd->ctor != 1) {
+            return reinterpret_cast<void*>(encodeHP(origCmd));
+        }
+        HPointer reqHP = cmd->values[0].p;
+        Elm::StackRootGuard reqRoot(&reqHP);
+        void* reqPtr = allocator.resolve(reqHP);
+        if (!reqPtr || static_cast<Header*>(reqPtr)->tag != Tag_Record) {
+            return reinterpret_cast<void*>(encodeHP(origCmd));
+        }
+        // expect = mapExpect func r.expect (allocates: re-resolve after).
+        constexpr int kReqExpect = 2;   // alphabetical: allowCookies…, body, expect, …
+        HPointer expect = static_cast<Record*>(reqPtr)->values[kReqExpect].p;
+        HPointer mappedExpect = decodeHP(Elm_Kernel_Http_mapExpect(
+            HPtr::fromBits(encodeHP(mapper)), HPtr::fromBits(encodeHP(expect))).toBits());
+        Elm::StackRootGuard expectRoot(&mappedExpect);
+
+        // { r | expect = mappedExpect }: the same fields and slot kinds.
+        Record* req = static_cast<Record*>(allocator.resolve(reqHP));
+        const u32 n = req->header.size;
+        std::vector<Unboxable> fields(req->values, req->values + n);
+        fields[kReqExpect].p = mappedExpect;
+        HPointer newReq = record(fields, req->unboxed);
+        Elm::StackRootGuard newReqRoot(&newReq);
+
+        std::vector<Unboxable> wrap(1);
+        wrap[0].p = newReq;
+        HPointer newCmd = custom(1, wrap, 0);
+        return reinterpret_cast<void*>(encodeHP(newCmd));
+    }
     if (header->tag != Tag_Task) {
         return reinterpret_cast<void*>(encodeHP(origCmd));
     }
 
-    // Create andThen callback that applies mapper to result
+    // A command that is already a Task (onEffects' fallback): map its result.
     HPointer mapCl = allocClosure(httpMapHandler, 2);
     Elm::StackRootGuard mapClRoot(&mapCl);
     void* clPtr = allocator.resolve(mapCl);
@@ -281,6 +325,53 @@ static void* httpCmdMapEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(mappedTask));
 }
 
+// (toMsg >> func) progress: the composed toMsg of a mapped subscription.
+// Captures: args[0] = func, args[1] = toMsg; args[2] = the Progress.
+static void* httpSubComposeEvaluator(void* args[]) {
+    HPointer func = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    Elm::StackRootGuard funcRoot(&func);
+    uint64_t progressEnc = reinterpret_cast<uint64_t>(args[2]);
+    uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(reinterpret_cast<uint64_t>(args[1])),
+                                        &progressEnc, 1).toBits();
+    HPtr res = eco_apply_closure(HPtr::fromBits(encodeHP(func)), &msgEnc, 1);
+    return reinterpret_cast<void*>(res.toBits());
+}
+
+// subMap : (a -> b) -> MySub a -> MySub b, as stock elm/http's:
+//
+//     subMap func (MySub tracker toMsg) = MySub tracker (toMsg >> func)
+//
+// Registered since 2026-10-10: with subMap = Nil the runtime applied the
+// Sub.map taggers to the MySub value itself, so Http.track progress under
+// Sub.map never reached the app (plans/http-cmdmap-native-crash.md).
+static void* httpSubMapEvaluator(void* args[]) {
+    auto& allocator = Allocator::instance();
+    HPointer func = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer sub = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    Elm::StackRootGuard guards(&func, &sub);
+
+    void* subPtr = allocator.resolve(sub);
+    if (!subPtr || static_cast<Header*>(subPtr)->tag != Tag_Custom) {
+        return reinterpret_cast<void*>(encodeHP(sub));
+    }
+    // MySub tracker toMsg: Custom ctor 0, [tracker (String), toMsg].
+    HPointer tracker = static_cast<Custom*>(subPtr)->values[0].p;
+    HPointer toMsg = static_cast<Custom*>(subPtr)->values[1].p;
+    Elm::StackRootGuard fieldRoots(&tracker, &toMsg);
+
+    HPointer composed = allocClosure(httpSubComposeEvaluator, 3);
+    Elm::StackRootGuard composedRoot(&composed);
+    if (void* clPtr = allocator.resolve(composed)) {
+        closureCapture(clPtr, boxed(func), true);
+        closureCapture(clPtr, boxed(toMsg), true);
+    }
+    std::vector<Unboxable> fields(2);
+    fields[0].p = tracker;
+    fields[1].p = composed;
+    HPointer mapped = custom(0, fields, 0);
+    return reinterpret_cast<void*>(encodeHP(mapped));
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -290,17 +381,21 @@ static void* httpCmdMapEvaluator(void* args[]) {
 extern "C" {
 
 void eco_register_http_effect_manager() {
-    // Create init closure
+    // Each closure stays rooted across the later allocations (each a GC point).
     HPointer initCl = allocClosure(httpInitEvaluator, 0);
+    Elm::StackRootGuard initRoot(&initCl);
 
-    // Create onEffects closure (4-arg curried)
+    // onEffects (4-arg curried), onSelfMsg (3-arg), cmdMap (2-arg).
     HPointer onEffectsCl = allocClosure(httpOnEffectsEvaluator, 4);
-
-    // Create onSelfMsg closure (3-arg curried)
+    Elm::StackRootGuard onEffectsRoot(&onEffectsCl);
     HPointer onSelfMsgCl = allocClosure(httpOnSelfMsgEvaluator, 3);
-
-    // Create cmdMap closure (2-arg)
+    Elm::StackRootGuard onSelfMsgRoot(&onSelfMsgCl);
     HPointer cmdMapCl = allocClosure(httpCmdMapEvaluator, 2);
+    Elm::StackRootGuard cmdMapRoot(&cmdMapCl);
+
+    // subMap (2-arg): Http.track under Sub.map.
+    HPointer subMapCl = allocClosure(httpSubMapEvaluator, 2);
+    Elm::StackRootGuard subMapRoot(&subMapCl);
 
     // Register with PlatformRuntime
     PlatformRuntime::ManagerInfo info;
@@ -308,7 +403,7 @@ void eco_register_http_effect_manager() {
     info.onEffects = encodeHP(onEffectsCl);
     info.onSelfMsg = encodeHP(onSelfMsgCl);
     info.cmdMap = encodeHP(cmdMapCl);
-    info.subMap = encodeHP(listNil());  // No subscriptions
+    info.subMap = encodeHP(subMapCl);
 
     PlatformRuntime::instance().registerManager("Http", info);
 }
