@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 project(EcoRuntime LANGUAGES C CXX)
 
+# Newer CMake gives clang-cl gcc-style depfiles (-clang:-MD -clang:-MF ...),
+# which ccache refuses as an unsupported option, so no Windows compile was
+# cached. Under ccache, use MSVC-style /showIncludes dependencies instead.
+if(MSVC AND CMAKE_CXX_COMPILER_LAUNCHER MATCHES "ccache")
+    foreach(lang C CXX)
+        set(CMAKE_DEPFILE_FLAGS_${lang} "/showIncludes")
+        set(CMAKE_${lang}_DEPFILE_FORMAT msvc)
+        set(CMAKE_NINJA_DEPTYPE_${lang} msvc)
+    endforeach()
+endif()
+
 # All project archives are built position-independent so eco can link them
 # into shared-library outputs (.so/.node host embedding) as well as PIE
 # executables. See plans/native-ports-and-embedding.md (Phase 3).
