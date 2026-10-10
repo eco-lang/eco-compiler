@@ -187,6 +187,7 @@ target_compile_definitions(test PRIVATE
 # EcoKernel_GC: test/eco-kernel/src/GcReportTest.elm calls Eco.GC.
 # EcoKernel_File: test/eco-kernel/src/File{WriteBytesAtomic,ReadBytesRoundtrip}Test.elm call Eco.File.
 # EcoKernel_Process: test/eco-kernel/src/ProcessSpawnWaitTest.elm calls Eco.Process (plans/spawn-not-fork.md).
+# EcoKernel_Env: the elm-http and eco-kernel TestServerConfig modules read the test server's URLs with Eco.Env.
 if(APPLE)
     # ld64 has no --whole-archive; -force_load takes one archive path per
     # flag. The plain target names afterwards keep the CMake dependency
@@ -200,6 +201,7 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_GC>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_File>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Process>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Env>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Hash
@@ -208,6 +210,7 @@ if(APPLE)
         EcoKernel_GC
         EcoKernel_File
         EcoKernel_Process
+        EcoKernel_Env
     )
 elseif(WIN32)
     # /WHOLEARCHIVE: needs the .lib filename — bare target names get
@@ -223,6 +226,7 @@ elseif(WIN32)
         EcoKernel_GC
         EcoKernel_File
         EcoKernel_Process
+        EcoKernel_Env
     )
     target_link_options(test PRIVATE
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
@@ -233,6 +237,7 @@ elseif(WIN32)
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_GC>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_File>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Process>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Env>
     )
 else()
     target_link_libraries(test rapidcheck
@@ -245,6 +250,7 @@ else()
             EcoKernel_GC
             EcoKernel_File
             EcoKernel_Process
+            EcoKernel_Env
         -Wl,--no-whole-archive
     )
 endif()

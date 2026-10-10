@@ -5,27 +5,29 @@ module HttpExpectWhateverTest exposing (main)
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = Done (Result Http.Error ())
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), req )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-req : Cmd Msg
-req =
+req : TestServerConfig.Server -> Cmd Msg
+req server =
     Http.request
         { method = "POST"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/status/204"
+        , url = server.baseUrl ++ "/status/204"
         , body = Http.emptyBody
         , expect = Http.expectWhatever Done
         , timeout = Nothing
@@ -36,6 +38,9 @@ req =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, req server )
+
         Done (Ok ()) ->
             let
                 _ =

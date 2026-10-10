@@ -17,14 +17,15 @@ import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
 import Task exposing (Task)
+import TestServerConfig
 
 
-get : String -> Task x (Result String (Stream.Readable Bytes))
-get path =
+get : TestServerConfig.Server -> String -> Task x (Result String (Stream.Readable Bytes))
+get server path =
     Http.Stream.task
         { method = "GET"
         , headers = []
-        , url = H.url path
+        , url = H.url server path
         , body = Http.Stream.emptyBody
         , resolver =
             Http.Stream.streamResolver
@@ -47,17 +48,17 @@ get path =
 
 main =
     H.program
-        (\_ ->
+        (\server _ ->
             H.now
                 |> Task.andThen
                     (\t0 ->
-                        get "/slow?ms=3000"
+                        get server "/slow?ms=3000"
                             |> Task.andThen
                                 (\slow ->
                                     H.elapsedSince t0
                                         |> Task.andThen
                                             (\dt ->
-                                                get "/drip?bytes=1024&ms=1000"
+                                                get server "/drip?bytes=1024&ms=1000"
                                                     |> Task.andThen
                                                         (\drip ->
                                                             (case drip of

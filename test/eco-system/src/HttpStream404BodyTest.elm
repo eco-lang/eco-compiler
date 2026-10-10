@@ -20,10 +20,12 @@ import Stream
 import Stream.Log
 import System
 import Task
+import TestServerConfig
 
 
 type Msg
     = Got (Result String ( Http.Metadata, Stream.Readable Bytes ))
+    | GotServer TestServerConfig.Server
     | Logged
 
 
@@ -33,27 +35,32 @@ main =
         { init =
             \env ->
                 ( env
-                , Http.Stream.request
-                    { method = "GET"
-                    , headers = []
-                    , url = H.url "/status/404"
-                    , body = Http.Stream.emptyBody
-                    , expect =
-                        Http.Stream.expectStreamResponse Got
-                            (\r ->
-                                case r of
-                                    Http.BadStatus_ meta body ->
-                                        Ok ( meta, body )
-
-                                    _ ->
-                                        Err "not BadStatus_"
-                            )
-                    , timeout = Nothing
-                    }
+                , Task.perform GotServer TestServerConfig.server
                 )
         , update =
             \msg env ->
                 case msg of
+                    GotServer server ->
+                        ( env
+                        , Http.Stream.request
+                            { method = "GET"
+                            , headers = []
+                            , url = H.url server "/status/404"
+                            , body = Http.Stream.emptyBody
+                            , expect =
+                                Http.Stream.expectStreamResponse Got
+                                    (\r ->
+                                        case r of
+                                            Http.BadStatus_ meta body ->
+                                                Ok ( meta, body )
+        
+                                            _ ->
+                                                Err "not BadStatus_"
+                                    )
+                            , timeout = Nothing
+                            }
+                        )
+
                     Got (Ok ( meta, body )) ->
                         ( env
                         , H.readAllString body

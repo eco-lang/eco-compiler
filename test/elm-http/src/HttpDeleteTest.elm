@@ -5,27 +5,29 @@ module HttpDeleteTest exposing (main)
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = Got (Result Http.Error String)
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), del )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-del : Cmd Msg
-del =
+del : TestServerConfig.Server -> Cmd Msg
+del server =
     Http.request
         { method = "DELETE"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/anything"
+        , url = server.baseUrl ++ "/anything"
         , body = Http.emptyBody
         , expect = Http.expectString Got
         , timeout = Nothing
@@ -36,6 +38,9 @@ del =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, del server )
+
         Got (Ok body) ->
             let
                 _ =

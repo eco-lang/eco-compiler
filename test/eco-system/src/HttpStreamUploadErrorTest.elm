@@ -23,14 +23,15 @@ import Process
 import Stream
 import System
 import Task exposing (Task)
+import TestServerConfig
 
 
-upload : Stream.Readable Bytes -> Task x String
-upload source =
+upload : TestServerConfig.Server -> Stream.Readable Bytes -> Task x String
+upload server source =
     Http.Stream.task
         { method = "POST"
         , headers = []
-        , url = H.url "/anything"
+        , url = H.url server "/anything"
         , body = Http.Stream.streamBody "text/plain" source
         , resolver =
             Http.Stream.streamResolver
@@ -53,7 +54,7 @@ upload source =
 main : System.SimpleProgram ()
 main =
     H.program
-        (\_ ->
+        (\server _ ->
             Stream.identityTransformation
                 |> Task.andThen
                     (\t ->
@@ -63,7 +64,7 @@ main =
                                 |> Task.andThen (\_ -> Stream.cancelWritable "boom" (Stream.writable t))
                                 |> Task.onError (\_ -> Task.succeed ())
                             )
-                            |> Task.andThen (\_ -> upload (Stream.readable t))
+                            |> Task.andThen (\_ -> upload server (Stream.readable t))
                     )
                 |> Task.andThen
                     (\cancelled ->
@@ -72,7 +73,7 @@ main =
                                 (\t ->
                                     Process.spawn (Stream.read (Stream.readable t) |> Task.onError (\_ -> Task.succeed (H.bytesOf "")))
                                         |> Task.andThen (\_ -> Process.sleep 10)
-                                        |> Task.andThen (\_ -> upload (Stream.readable t))
+                                        |> Task.andThen (\_ -> upload server (Stream.readable t))
                                         |> Task.andThen
                                             (\locked ->
                                                 -- release the parked reader so nothing is left waiting

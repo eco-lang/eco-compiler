@@ -235,8 +235,25 @@ through `--run-case` (crash isolation now real), and the E2E suites `build-on-wi
   the mapped result file. All `mmap(MAP_ANONYMOUS)` + `fork` code and both Windows serial
   fallbacks are deleted.
 - `aot_e2e_main` / `mlir_equivalence_main` `spawn_capture` now call `eco_test::runCaptured`.
-- Not done (§3 Phase 3 step 5, separable): `TestServerConfig.elm` is still rewritten per run, so
-  two test binaries still cannot run at once.
+- §3 Phase 3 step 5 **done 2026-10-10**: the HTTP test server's URLs reach every test through the
+  environment (`ECO_TEST_HTTP_URL`, `ECO_TEST_HTTPS_URL`; `TestServerConfig::prepare()` sets them
+  in the test process, and spawned children inherit them). `TestServerConfig.elm` is checked-in
+  source in elm-http, eco-kernel and eco-system (`server : Task x Server`, via `Eco.Env.lookup` or
+  `System.getEnvironmentVariables`). 18 elm-http tests, `HttpGetArchiveTest` and 13 eco-system
+  Http.Stream tests fetch the server first and then send. elm-http now depends on `eco/kernel`.
+  `EcoKernel_Env` is whole-archived into `test`. The JS runner passes the URLs in node's
+  environment instead of generating the module. Nothing writes into `test/<pkg>/src` or touches
+  sources any more.
+  - **Demonstrated:**
+    - `full` 2,379/0, JS 162/162, AOT 1,134/0, with no source mtime changed;
+    - three rounds of the elm-http, eco-kernel and eco-system suites with `build/test/test` and
+      `build-validate/test/test` running concurrently: every round green in both;
+    - both whole binaries side by side: 2,379/0 and 2,380/0;
+    - repeat runs recompile nothing ("All N tests cached").
+  - Still unsafe: two runs from the SAME build tree (shared `eco-stuff` compile caches).
+  - **Found:** `Cmd.map` with a non-identity tagger over an Http command crashes on the native
+    target (plans/http-cmdmap-native-crash.md). The tests avoid it: each has its own `GotServer`
+    message, so there is no wrapper.
 
 ### Phase 4
 No change: the fork-subject tests, the fork harness and the register-guards fork rows keep `fork()`
@@ -258,7 +275,7 @@ that E2E children inherit nothing. `docs/options.md` describes the child mode.
 | `run-aot-e2e` (spawned via `runCaptured`) | 1,134/1,134 |
 | `run-mlir-equivalence` (spawned via `runCaptured`) | 979/979 |
 | `register-guards` (strict) | green |
-| `tla-canary` | green (no TLA region touched) |
+| `tla-canary` | **was RED, misreported as green** (warn mode exits 0; the log line was read by exit code only). Pin `F.fork` (M6) moved because no runtime or kernel source calls `fork()` any more. M6 AUDIT entry written 2026-10-09 (no model change: M6 models fork as an outside thread's action, still exercised by the fork tests); manifest updated; now clean. |
 | kernel licence | green after the Process re-audit |
 | bootstrap | 4b, 8c and 9b pass |
 

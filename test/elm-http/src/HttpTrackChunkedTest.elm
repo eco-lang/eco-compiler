@@ -5,10 +5,12 @@ module HttpTrackChunkedTest exposing (main)
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = GotProgress Http.Progress
+    | GotServer TestServerConfig.Server
     | Got (Result Http.Error String)
 
 
@@ -21,18 +23,18 @@ type alias Model =
 main : Program () Model Msg
 main =
     Platform.worker
-        { init = \_ -> ( Model 0 False, get )
+        { init = \_ -> ( Model 0 False, Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Http.track "c" GotProgress
         }
 
 
-get : Cmd Msg
-get =
+get : TestServerConfig.Server -> Cmd Msg
+get server =
     Http.request
         { method = "GET"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/drip-chunked?bytes=2048&ms=400"
+        , url = server.baseUrl ++ "/drip-chunked?bytes=2048&ms=400"
         , body = Http.emptyBody
         , expect = Http.expectString Got
         , timeout = Nothing
@@ -43,6 +45,9 @@ get =
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, get server )
+
         GotProgress progress ->
             case progress of
                 Http.Sending _ ->

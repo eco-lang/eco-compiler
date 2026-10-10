@@ -10,23 +10,24 @@ import TestServerConfig
 
 type Msg
     = Got (Result String String)
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), Task.attempt Got fetch )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-fetch : Task String String
-fetch =
+fetch : TestServerConfig.Server -> Task String String
+fetch server =
     Http.task
         { method = "GET"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/anything"
+        , url = server.baseUrl ++ "/anything"
         , body = Http.emptyBody
         , resolver = Http.stringResolver resolve
         , timeout = Nothing
@@ -46,6 +47,9 @@ resolve response =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, Task.attempt Got (fetch server) )
+
         Got (Ok body) ->
             let
                 _ =

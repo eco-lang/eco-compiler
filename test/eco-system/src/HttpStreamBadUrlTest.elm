@@ -50,7 +50,7 @@ attempt url =
 
 main =
     H.program
-        (\_ ->
+        (\_ _ ->
             Task.map3 (\a b c -> [ "malformed: " ++ a, "scheme: " ++ b, "refused: " ++ c ])
                 (attempt "http://exa mple.com/")
                 (attempt "file:///etc/passwd")

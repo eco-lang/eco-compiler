@@ -23,11 +23,11 @@ import Task
 
 main =
     H.program
-        (\_ ->
+        (\server _ ->
             Http.Stream.task
                 { method = "GET"
                 , headers = []
-                , url = H.url "/drip-chunked?bytes=4096&ms=800"
+                , url = H.url server "/drip-chunked?bytes=4096&ms=800"
                 , body = Http.Stream.emptyBody
                 , resolver =
                     Http.Stream.streamResolver

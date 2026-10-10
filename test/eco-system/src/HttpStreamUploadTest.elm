@@ -39,14 +39,14 @@ echoDecoder =
 
 main =
     H.program
-        (\_ ->
+        (\server _ ->
             H.streamErr (Stream.fromList [ H.bytesOf "hello ", H.bytesOf "stream ", H.bytesOf "world" ])
                 |> Task.andThen
                     (\source ->
                         Http.Stream.task
                             { method = "PUT"
                             , headers = []
-                            , url = H.url "/anything"
+                            , url = H.url server "/anything"
                             , body = Http.Stream.streamBody "text/plain" source
                             , resolver = Http.Stream.streamResolver (\r -> Ok r)
                             , timeout = Just 10000

@@ -5,25 +5,27 @@ module HttpMultipartTest exposing (main)
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = Got (Result Http.Error String)
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), post )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-post : Cmd Msg
-post =
+post : TestServerConfig.Server -> Cmd Msg
+post server =
     Http.post
-        { url = TestServerConfig.baseUrl ++ "/anything"
+        { url = server.baseUrl ++ "/anything"
         , body =
             Http.multipartBody
                 [ Http.stringPart "alpha" "one"
@@ -36,6 +38,9 @@ post =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, post server )
+
         Got (Ok body) ->
             let
                 ok =

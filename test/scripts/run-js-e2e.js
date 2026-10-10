@@ -9,9 +9,9 @@
 // For every test/eco-system/src/*.elm with a top-level `main`:
 //   1. The test project (elm.json + src/*.elm) is mirrored into <build>/test/js-e2e/project
 //      (files are only rewritten when their content changed, so the compiler's caches and
-//      this runner's up-to-date checks keep working), together with a generated
-//      TestServerConfig.elm pointing at this runner's HTTP test server
-//      (js-e2e-http-server.js, the twin of test/TestHttpServer.hpp).
+//      this runner's up-to-date checks keep working). The checked-in TestServerConfig.elm
+//      reads this runner's HTTP test server (js-e2e-http-server.js, the twin of
+//      test/TestHttpServer.hpp) from ECO_TEST_HTTP_URL / ECO_TEST_HTTPS_URL.
 //   2. Each test is compiled with the Stage-1 compiler (compiler/bin/index.js + guida.js)
 //      to <build>/test/js-e2e/out/<Name>.js, with --local-package eco/system=<repo>/system-kernel-cpp.
 //      A test is recompiled when its .js is older than the test, any helper module,
@@ -22,6 +22,8 @@
 //      Elm.<Name>.init()) in its own child process, cwd <build>/test/js-e2e, with:
 //        stdin          the `-- STDIN:` text through a pipe, else /dev/null
 //        ECO_TEST_PORT  a free TCP port (test/TestPort.hpp)
+//        ECO_TEST_HTTP_URL, ECO_TEST_HTTPS_URL  the HTTP test server (test/TestServerConfig.hpp;
+//                       no HTTPS here: both name the plain HTTP port)
 //      and passes iff it exits on its own within the timeout (default 60 s) with the
 //      `-- EXIT: <n>` status (default 0) and its stdout+stderr satisfy the CHECK-family
 //      directives (test/CheckPatterns.hpp semantics: CHECK, CHECK-NOT, CHECK-DAG,
@@ -269,13 +271,6 @@ function newestMtime(dir) {
     return newest;
 }
 
-function serverConfigElm(port) {
-    return 'module TestServerConfig exposing (baseUrl, httpsBaseUrl)\n\n\n' +
-        'baseUrl : String\nbaseUrl =\n    "http://127.0.0.1:' + port + '"\n\n\n' +
-        '{-| The JS runner serves no HTTPS; this points at the plain HTTP port. -}\n' +
-        'httpsBaseUrl : String\nhttpsBaseUrl =\n    "https://127.0.0.1:' + port + '"\n';
-}
-
 // --- Child processes --------------------------------------------------------------------------
 
 function run(cmd, args, options) {
@@ -348,28 +343,25 @@ async function main() {
     // 1. Mirror the project; discover the tests.
     writeIfChanged(path.join(project, 'elm.json'), fs.readFileSync(path.join(testDir, 'elm.json')));
     const tests = [];
-    const sources = fs.readdirSync(srcDir).filter((f) => f.endsWith('.elm') && f !== 'TestServerConfig.elm').sort();
+    const sources = fs.readdirSync(srcDir).filter((f) => f.endsWith('.elm')).sort();
     for (const f of sources) {
         const content = fs.readFileSync(path.join(srcDir, f), 'utf8');
         writeIfChanged(path.join(project, 'src', f), content);
         if (/^main\b/m.test(content)) tests.push({ name: f.slice(0, -4), content });
     }
     for (const f of fs.readdirSync(path.join(project, 'src'))) {
-        if (f.endsWith('.elm') && f !== 'TestServerConfig.elm' && !sources.includes(f)) {
+        if (f.endsWith('.elm') && !sources.includes(f)) {
             fs.unlinkSync(path.join(project, 'src', f));   // a test that was deleted upstream
         }
     }
 
-    // The HTTP test server, on the port of the previous run if it is still free (so
-    // TestServerConfig.elm, and everything importing it, stays unchanged).
-    const configFile = path.join(project, 'src', 'TestServerConfig.elm');
-    let previousPort = 0;
-    try {
-        const m = /127\.0\.0\.1:(\d+)/.exec(fs.readFileSync(configFile, 'utf8'));
-        if (m) previousPort = parseInt(m[1], 10);
-    } catch (e) { /* first run */ }
-    const server = await startTestHttpServer(previousPort);
-    writeIfChanged(configFile, serverConfigElm(server.port));
+    // The HTTP test server, on an ephemeral port; the tests read its URL from the
+    // environment (TestServerConfig.elm), so nothing is regenerated per run.
+    const server = await startTestHttpServer(0);
+    const serverEnv = {
+        ECO_TEST_HTTP_URL: 'http://127.0.0.1:' + server.port,
+        ECO_TEST_HTTPS_URL: 'https://127.0.0.1:' + server.port,
+    };
 
     const selected = tests.filter((t) =>
         !opts.filters.length || opts.filters.some((f) => ('eco-system/' + t.name).includes(f)));
@@ -444,7 +436,7 @@ async function main() {
             const child = spawn(process.execPath, [t.name + '.run.js'], {
                 cwd: outDir,
                 stdio: [stdin, 'pipe', 'pipe'],
-                env: Object.assign({}, process.env, { ECO_TEST_PORT: String(port) }),
+                env: Object.assign({}, process.env, serverEnv, { ECO_TEST_PORT: String(port) }),
             });
             if (typeof stdin === 'number') fs.closeSync(stdin);
             const chunks = [];

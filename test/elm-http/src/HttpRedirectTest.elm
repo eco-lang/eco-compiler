@@ -5,25 +5,27 @@ module HttpRedirectTest exposing (main)
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = Got (Result Http.Error String)
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), get )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-get : Cmd Msg
-get =
+get : TestServerConfig.Server -> Cmd Msg
+get server =
     Http.get
-        { url = TestServerConfig.baseUrl ++ "/redirect"
+        { url = server.baseUrl ++ "/redirect"
         , expect = Http.expectString Got
         }
 
@@ -31,6 +33,9 @@ get =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, get server )
+
         Got (Ok body) ->
             let
                 _ =

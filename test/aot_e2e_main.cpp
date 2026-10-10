@@ -111,29 +111,17 @@ bool preflight() {
 // In-process HTTP server for the elm-http, eco-kernel/HttpGetArchive and
 // eco-system Http.Stream tests.
 //
-// Mirrors the JIT runner's `ElmHttpTest::prepareServer` /
-// `EcoKernelTest::prepareServer`: start the singleton TestHttpServer in this
-// parent process and write a generated `TestServerConfig.elm` for each HTTP
-// test package, carrying the server's ephemeral baseUrl and httpsBaseUrl.
-// Forked test children inherit the parent's listening sockets and
-// reach the server at 127.0.0.1:<port>.
+// Mirrors the JIT runner: start the singleton TestHttpServer in this process
+// and publish its URLs in the environment (TestServerConfig.hpp). Every AOT
+// executable is spawned with this environment, and each package's checked-in
+// `TestServerConfig` module reads the URLs at run time, so nothing is
+// regenerated or recompiled per run.
 //
 // Without this step, every HTTP test in Gate B would surface as
 // `err: "NetworkError"` from libcurl failing to connect.
-//
-// Called before the per-test pre-clean (which wipes the per-package
-// `eco-stuff/<version>/` artifact caches), so each test re-compiles against the
-// current port.
 // ----------------------------------------------------------------------------
 void prepare_http_server() {
-    // elm-http, eco-kernel (HttpGetArchiveTest) and eco-system (Http.Stream)
-    // import `TestServerConfig`; one shared generator (TestServerConfig.hpp)
-    // writes it and bumps every test-source mtime so any per-test cache
-    // miss-detection that compares source mtime against cached artifact mtime
-    // fires (belt-and-braces alongside the per-test eco-stuff wipe in main()).
-    for (const char* pkg : {"elm-http", "eco-kernel", "eco-system"}) {
-        TestServerConfig::prepare(std::string(REPO_ROOT) + "/test/" + pkg + "/src");
-    }
+    TestServerConfig::prepare();
 }
 
 // ----------------------------------------------------------------------------
@@ -572,10 +560,9 @@ int main(int argc, char** argv) {
         cases = std::move(runnable);
     }
 
-    // Start the in-process test HTTP server (singleton) and write the
-    // per-package TestServerConfig.elm files BEFORE the pre-clean wipes the
-    // shared artifact cache. The first compile of each HTTP test then picks
-    // up the live port. Mirrors what main.cpp does for the JIT suite.
+    // Start the in-process test HTTP server (singleton) and publish its URLs
+    // in the environment the spawned executables inherit. Mirrors what
+    // main.cpp does for the JIT suite.
     prepare_http_server();
 
     // Pre-clean every compiler-version dir (`<pkg>/eco-stuff/<version>/`, which

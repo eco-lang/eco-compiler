@@ -2,8 +2,8 @@ module HttpStreamTestHelp exposing (bytesOf, countChunks, describeHttpError, ela
 
 {-| Shared helpers for the Http.Stream tests (not a test: no `main`).
 
-The tests talk to the in-process TestHttpServer of the test runner through the
-generated `TestServerConfig` module, and print their observations to the
+The tests talk to the test runner's HTTP test server, whose URLs come from the
+environment (`TestServerConfig.server`), and print their observations to the
 program's real stdout through `Stream.Log`, so the `-- CHECK:` patterns are
 matched against raw fd output.
 
@@ -20,15 +20,16 @@ import TestServerConfig
 import Time
 
 
-{-| A simple program that runs `run env` and prints every line it returns, or
-`error: <reason>` if it fails.
+{-| A simple program that runs `run server env` and prints every line it
+returns, or `error: <reason>` if it fails.
 -}
-program : (System.Environment -> Task String (List String)) -> System.SimpleProgram ()
+program : (TestServerConfig.Server -> System.Environment -> Task String (List String)) -> System.SimpleProgram ()
 program run =
     System.defineSimpleProgram
         (\env ->
             System.endSimpleProgram
-                (run env
+                (TestServerConfig.server
+                    |> Task.andThen (\server -> run server env)
                     |> Task.map (String.join "\n")
                     |> Task.onError (\err -> Task.succeed ("error: " ++ err))
                     |> Task.andThen (Stream.Log.line env.stdout)
@@ -36,9 +37,9 @@ program run =
         )
 
 
-url : String -> String
-url path =
-    TestServerConfig.baseUrl ++ path
+url : TestServerConfig.Server -> String -> String
+url server path =
+    server.baseUrl ++ path
 
 
 describeHttpError : Http.Error -> String

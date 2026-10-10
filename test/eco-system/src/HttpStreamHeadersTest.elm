@@ -24,11 +24,11 @@ import Task
 
 main =
     H.program
-        (\_ ->
+        (\server _ ->
             Http.Stream.task
                 { method = "GET"
                 , headers = [ Http.header "X-Custom" "eco-value", Http.header "X-Empty-Safe" "two words" ]
-                , url = H.url "/echo-headers?dup=1"
+                , url = H.url server "/echo-headers?dup=1"
                 , body = Http.Stream.emptyBody
                 , resolver =
                     Http.Stream.streamResolver

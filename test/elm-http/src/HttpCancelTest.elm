@@ -11,6 +11,7 @@ import TestServerConfig
 
 type Msg
     = GotProgress Http.Progress
+    | GotServer TestServerConfig.Server
     | DoCancel
     | CheckDone
     | Got (Result Http.Error String)
@@ -23,7 +24,7 @@ type alias Model =
 main : Program () Model Msg
 main =
     Platform.worker
-        { init = \_ -> ( Model False, Cmd.batch [ get, after 100 DoCancel ] )
+        { init = \_ -> ( Model False, Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Http.track "p" GotProgress
         }
@@ -34,12 +35,12 @@ after ms msg =
     Task.perform (\_ -> msg) (Process.sleep ms)
 
 
-get : Cmd Msg
-get =
+get : TestServerConfig.Server -> Cmd Msg
+get server =
     Http.request
         { method = "GET"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/drip?bytes=8192&ms=1500"
+        , url = server.baseUrl ++ "/drip?bytes=8192&ms=1500"
         , body = Http.emptyBody
         , expect = Http.expectString Got
         , timeout = Nothing
@@ -50,6 +51,9 @@ get =
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, Cmd.batch [ get server, after 100 DoCancel ] )
+
         GotProgress _ ->
             ( model, Cmd.none )
 

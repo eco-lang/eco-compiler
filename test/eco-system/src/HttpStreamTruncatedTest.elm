@@ -21,11 +21,11 @@ import Task
 
 main =
     H.program
-        (\_ ->
+        (\server _ ->
             Http.Stream.task
                 { method = "GET"
                 , headers = []
-                , url = H.url "/truncate"
+                , url = H.url server "/truncate"
                 , body = Http.Stream.emptyBody
                 , resolver =
                     Http.Stream.streamResolver

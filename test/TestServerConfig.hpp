@@ -1,14 +1,23 @@
 #pragma once
-//===- TestServerConfig.hpp - TestServerConfig.elm for HTTP E2E suites ----===//
+//===- TestServerConfig.hpp - the HTTP test server's URLs, for E2E tests --===//
 //
 // The E2E suites that talk to the in-process TestHttpServer (elm-http,
-// eco-kernel, eco-system; JIT runner and AOT runner) import a generated
-// `TestServerConfig` module carrying the server's ephemeral URLs. This is the
-// one generator they all call (plans/eco-system-library.md Phase 8 step 8.3,
-// review finding R3.20).
+// eco-kernel, eco-system; JIT runner and AOT runner) learn its ephemeral URLs
+// from the ENVIRONMENT: prepare() publishes them in this process's
+// environment, which every spawned test child inherits (SpawnedChildren.hpp,
+// SYS_008), and each package's checked-in `TestServerConfig` module reads them
+// at run time (Eco.Env.lookup / System.getEnvironmentVariables).
 //
-// The generated file has no `main`, so test discovery skips it while it stays
-// importable; it is git-ignored in every package that uses it.
+// Nothing is written into the source tree and no source is touched, so a run
+// recompiles nothing because of the server, and the test binaries of
+// different build trees (build/, build-validate/) can run at the same time,
+// each with its own server. (It replaces a generated TestServerConfig.elm with
+// the ports baked in, written into the shared test/<pkg>/src/ and followed by
+// bumping every source's mtime so the harness recompiled against it.)
+//
+//   ECO_TEST_HTTP_URL   http://127.0.0.1:<port>
+//   ECO_TEST_HTTPS_URL  https://127.0.0.1:<httpsPort>
+//   CURL_CA_BUNDLE      the server's throwaway CA, so HTTPS verifies the peer
 //
 // POSIX only: TestHttpServer.hpp is BSD-sockets + OpenSSL (the Windows
 // runners skip the E2E suites).
@@ -19,52 +28,19 @@
 #include "TestHttpServer.hpp"
 
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <string>
 
 namespace TestServerConfig {
 
-// Writes `<srcDir>/TestServerConfig.elm` exposing `baseUrl` and
-// `httpsBaseUrl` for the given ports.
-inline void writeElmModule(const std::string& srcDir, int port, int httpsPort) {
-    std::ofstream out(srcDir + "/TestServerConfig.elm", std::ios::trunc);
-    out << "module TestServerConfig exposing (baseUrl, httpsBaseUrl)\n\n\n"
-        << "baseUrl : String\n"
-        << "baseUrl =\n"
-        << "    \"http://127.0.0.1:" << port << "\"\n\n\n"
-        << "httpsBaseUrl : String\n"
-        << "httpsBaseUrl =\n"
-        << "    \"https://127.0.0.1:" << httpsPort << "\"\n";
-}
-
-// The server binds an ephemeral port each run, so baseUrl changes — but the
-// harness caches each test's .mlir by that test's own mtime and would not
-// notice the (unchanged-mtime) dependency change. Bump the mtime of every
-// test source so needsRecompile fires and each test recompiles against the
-// current port. (Touching sources uses the compiler's normal incremental
-// path — unlike deleting the .mlir cache, which corrupts eco-stuff/.)
-inline void touchElmSources(const std::string& srcDir) {
-    std::error_code ec;
-    auto now = std::filesystem::file_time_type::clock::now();
-    for (auto& e : std::filesystem::directory_iterator(srcDir, ec)) {
-        if (e.path().extension() == ".elm") {
-            std::filesystem::last_write_time(e.path(), now, ec);
-        }
-    }
-}
-
-// Starts the shared server singleton (in the PARENT test process, before any
-// test forks), points libcurl in the forked children at its throwaway CA so
-// HTTPS requests verify the peer, writes `<srcDir>/TestServerConfig.elm` and
-// bumps the sources' mtimes.
-inline void prepare(const std::string& srcDir) {
+// Starts the shared server singleton (once per process) and publishes its
+// URLs in the environment the test children inherit.
+inline void prepare() {
     auto& server = ElmHttpTestServer::TestHttpServer::instance();
     if (!server.certPath().empty()) {
         setenv("CURL_CA_BUNDLE", server.certPath().c_str(), 1);
     }
-    writeElmModule(srcDir, server.port(), server.httpsPort());
-    touchElmSources(srcDir);
+    setenv("ECO_TEST_HTTP_URL", ("http://127.0.0.1:" + std::to_string(server.port())).c_str(), 1);
+    setenv("ECO_TEST_HTTPS_URL", ("https://127.0.0.1:" + std::to_string(server.httpsPort())).c_str(), 1);
 }
 
 }  // namespace TestServerConfig

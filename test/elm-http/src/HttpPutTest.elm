@@ -5,27 +5,29 @@ module HttpPutTest exposing (main)
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = Got (Result Http.Error String)
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), put )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-put : Cmd Msg
-put =
+put : TestServerConfig.Server -> Cmd Msg
+put server =
     Http.request
         { method = "PUT"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/anything"
+        , url = server.baseUrl ++ "/anything"
         , body = Http.stringBody "text/plain" "ping"
         , expect = Http.expectString Got
         , timeout = Nothing
@@ -36,6 +38,9 @@ put =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, put server )
+
         Got (Ok body) ->
             let
                 _ =

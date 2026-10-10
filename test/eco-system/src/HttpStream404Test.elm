@@ -18,10 +18,12 @@ import Stream
 import Stream.Log
 import System
 import Task
+import TestServerConfig
 
 
 type Msg
     = GotStream (Result Http.Error ( Http.Metadata, Stream.Readable Bytes ))
+    | GotServer TestServerConfig.Server
     | Logged
 
 
@@ -31,18 +33,23 @@ main =
         { init =
             \env ->
                 ( env
-                , Http.Stream.request
-                    { method = "GET"
-                    , headers = []
-                    , url = H.url "/status/404"
-                    , body = Http.Stream.emptyBody
-                    , expect = Http.Stream.expectStream GotStream
-                    , timeout = Nothing
-                    }
+                , Task.perform GotServer TestServerConfig.server
                 )
         , update =
             \msg env ->
                 case msg of
+                    GotServer server ->
+                        ( env
+                        , Http.Stream.request
+                            { method = "GET"
+                            , headers = []
+                            , url = H.url server "/status/404"
+                            , body = Http.Stream.emptyBody
+                            , expect = Http.Stream.expectStream GotStream
+                            , timeout = Nothing
+                            }
+                        )
+
                     GotStream result ->
                         let
                             text =

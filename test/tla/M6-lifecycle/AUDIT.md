@@ -587,6 +587,18 @@ workers take only the pool's `m_` (HEAP_058), exactly like `drainHelperWork` and
 CR-015 shape, `pool_host_fork_*` rows). No new atomic, thread, job kind or fork-handler state.
 **Verdict: no model change needed** (M7 models the drain step itself: `DiscardAllPending`).
 
+## 2026-10-09 — plans/spawn-not-fork.md: Eco.Process spawns with posix_spawn, no runtime fork() left (GC_MODEL_001)
+
+Pin `F.fork` (grep) moved, new hash prefix `e3b0c44298fc`: the grep now matches nothing. The two
+`fork()` calls in `eco-kernel-cpp/src/eco-kernel/Process.cpp` (`spawn`, `spawnProcess`) were replaced
+by `Elm::platform::spawnChild` (posix_spawnp; SYS_007), so no runtime or kernel source calls `fork()`.
+M6 models a fork as an action of an arbitrary thread (the host or an embedder), with HEAP_075's
+prepare/parent/child layers and the child continuing on the forker's heap. That is unchanged and is still
+exercised by the fork harness and the fork unit tests, which keep forking. `posix_spawn` runs no
+pthread_atfork handler (pinned by test/platform/SpawnTest.cpp S1), so a spawn is not a fork in M6's
+sense. No fork handler, lock, layer or lifecycle state changed.
+**Verdict: no model change needed.**
+
 ## 2026-10-06 — eco-kernel-cpp/src/eco renamed to src/eco-kernel (GC_MODEL_001)
 
 Pin `F.fork` (grep) moved, new hash prefix `a6e632eaf3ea`. The kernel C++ directory was renamed so

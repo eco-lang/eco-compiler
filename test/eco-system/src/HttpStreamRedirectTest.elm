@@ -21,11 +21,11 @@ import Task
 
 main =
     H.program
-        (\_ ->
+        (\server _ ->
             Http.Stream.task
                 { method = "GET"
                 , headers = []
-                , url = H.url "/redirect"
+                , url = H.url server "/redirect"
                 , body = Http.Stream.emptyBody
                 , resolver =
                     Http.Stream.streamResolver
@@ -45,7 +45,7 @@ main =
                             |> Task.map
                                 (\_ ->
                                     [ "status: " ++ String.fromInt meta.statusCode
-                                    , "final url: " ++ (if meta.url == H.url "/anything" then "True" else "False (" ++ meta.url ++ ")")
+                                    , "final url: " ++ (if meta.url == H.url server "/anything" then "True" else "False (" ++ meta.url ++ ")")
                                     , "location header: " ++ (if Dict.member "location" meta.headers then "True" else "False")
                                     , "content-type: " ++ Maybe.withDefault "-" (Dict.get "content-type" meta.headers)
                                     ]

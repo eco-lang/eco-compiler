@@ -30,11 +30,10 @@ inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSu
 #else
 
 // Start the shared in-process server (a singleton, also used by elm-http and
-// eco-system) and write the generated TestServerConfig.elm carrying its base
-// URL, so the Eco.Http getArchive test can hit /package.zip
-// (TestServerConfig.hpp).
+// eco-system) and publish its URLs to the test children, so the Eco.Http
+// getArchive test can hit /package.zip (TestServerConfig.hpp).
 inline void prepareServer() {
-    TestServerConfig::prepare(ElmE2EBase::findTestDir("eco-kernel") + "/src");
+    TestServerConfig::prepare();
 }
 
 inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSuite() {

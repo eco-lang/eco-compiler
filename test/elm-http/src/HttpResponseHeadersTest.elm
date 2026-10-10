@@ -10,27 +10,29 @@ import Dict
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = Got (Result String String)
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), get )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-get : Cmd Msg
-get =
+get : TestServerConfig.Server -> Cmd Msg
+get server =
     Http.request
         { method = "GET"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/echo-headers"
+        , url = server.baseUrl ++ "/echo-headers"
         , body = Http.emptyBody
         , expect = Http.expectStringResponse Got toResult
         , timeout = Nothing
@@ -56,6 +58,9 @@ toResult response =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, get server )
+
         Got (Ok v) ->
             let
                 _ =

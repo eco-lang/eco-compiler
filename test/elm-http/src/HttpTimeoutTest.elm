@@ -5,27 +5,29 @@ module HttpTimeoutTest exposing (main)
 import Http
 import Platform
 import TestServerConfig
+import Task
 
 
 type Msg
     = Got (Result Http.Error String)
+    | GotServer TestServerConfig.Server
 
 
 main : Program () () Msg
 main =
     Platform.worker
-        { init = \_ -> ( (), req )
+        { init = \_ -> ( (), Task.perform GotServer TestServerConfig.server )
         , update = update
         , subscriptions = \_ -> Sub.none
         }
 
 
-req : Cmd Msg
-req =
+req : TestServerConfig.Server -> Cmd Msg
+req server =
     Http.request
         { method = "GET"
         , headers = []
-        , url = TestServerConfig.baseUrl ++ "/slow?ms=3000"
+        , url = server.baseUrl ++ "/slow?ms=3000"
         , body = Http.emptyBody
         , expect = Http.expectString Got
         , timeout = Just 100
@@ -55,6 +57,9 @@ errLabel err =
 update : Msg -> () -> ( (), Cmd Msg )
 update msg model =
     case msg of
+        GotServer server ->
+            ( model, req server )
+
         Got (Ok _) ->
             let
                 _ =

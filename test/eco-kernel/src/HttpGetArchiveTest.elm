@@ -27,7 +27,9 @@ type Msg
 init : () -> ( (), Cmd Msg )
 init _ =
     ( ()
-    , Task.perform Got (Eco.Http.getArchive (TestServerConfig.baseUrl ++ "/package.zip"))
+    , TestServerConfig.server
+        |> Task.andThen (\server -> Eco.Http.getArchive (server.baseUrl ++ "/package.zip"))
+        |> Task.perform Got
     )
 
 

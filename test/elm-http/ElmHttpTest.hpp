@@ -25,16 +25,18 @@ inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildElmHttpTestSuit
 }  // namespace ElmHttpTest
 #else
 
-// Start the in-process reflector server (parent process) and write the
-// generated TestServerConfig.elm (baseUrl, httpsBaseUrl) the .elm request
-// tests import, before the suite forks per-test children (TestServerConfig.hpp).
+// Start the in-process reflector server and publish its URLs in the
+// environment every spawned test child inherits (TestServerConfig.hpp).
 inline void prepareServer() {
-    TestServerConfig::prepare(ElmE2EBase::findTestDir("elm-http") + "/src");
+    TestServerConfig::prepare();
 }
 
 inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildElmHttpTestSuite() {
     prepareServer();
-    return ElmE2EBase::buildTestSuite("elm-http", "Elm Http E2E", "elm-http/");
+    // TestServerConfig reads the server's URLs with Eco.Env (eco/kernel).
+    std::string extraFlags =
+        std::string(" --local-package eco/kernel=") + REPO_ROOT + "/eco-kernel-cpp";
+    return ElmE2EBase::buildTestSuite("elm-http", "Elm Http E2E", "elm-http/", extraFlags);
 }
 
 }  // namespace ElmHttpTest

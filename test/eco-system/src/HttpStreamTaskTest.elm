@@ -19,14 +19,15 @@ import Json.Decode as D
 import Json.Encode as E
 import Stream
 import Task exposing (Task)
+import TestServerConfig
 
 
-echo : String -> String -> Http.Stream.Body -> Task String ( String, String )
-echo label method body =
+echo : TestServerConfig.Server -> String -> String -> Http.Stream.Body -> Task String ( String, String )
+echo server label method body =
     Http.Stream.task
         { method = method
         , headers = []
-        , url = H.url "/anything"
+        , url = H.url server "/anything"
         , body = body
         , resolver =
             Http.Stream.streamResolver
@@ -57,14 +58,14 @@ echo label method body =
 
 main =
     H.program
-        (\_ ->
-            echo "string" "POST" (Http.Stream.stringBody "text/plain" "abc")
+        (\server _ ->
+            echo server "string" "POST" (Http.Stream.stringBody "text/plain" "abc")
                 |> Task.andThen
                     (\( a, _ ) ->
-                        echo "json" "POST" (Http.Stream.jsonBody (E.object [ ( "n", E.int 1 ) ]))
+                        echo server "json" "POST" (Http.Stream.jsonBody (E.object [ ( "n", E.int 1 ) ]))
                             |> Task.andThen
                                 (\( b, _ ) ->
-                                    echo "bytes" "PATCH" (Http.Stream.bytesBody "application/octet-stream" (H.bytesOf "raw"))
+                                    echo server "bytes" "PATCH" (Http.Stream.bytesBody "application/octet-stream" (H.bytesOf "raw"))
                                         |> Task.map (\( c, statusText ) -> [ a, b, c, "status text: " ++ statusText ])
                                 )
                     )
