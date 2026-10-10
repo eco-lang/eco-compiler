@@ -344,6 +344,9 @@ if(ECO_STATIC OR WIN32)
         # needed. See plans/build-on-windows.md (Dependency stack).
         set(CURL_USE_OPENSSL  OFF CACHE BOOL "" FORCE)
         set(CURL_USE_SCHANNEL ON  CACHE BOOL "" FORCE)
+        # curl's extra warnings reach clang-cl as /clang:-W... options,
+        # which ccache refuses, so no curl source would be cached.
+        set(PICKY_COMPILER    OFF CACHE BOOL "" FORCE)
     else()
         set(CURL_USE_OPENSSL  ON  CACHE BOOL "" FORCE)
     endif()

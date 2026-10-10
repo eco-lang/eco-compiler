@@ -169,9 +169,11 @@ jobs:
           ccache -s -v
           # Surface why calls were uncacheable (as annotations, visible mid-run).
           if (Test-Path $env:CCACHE_LOGFILE) {
-            Select-String -Path $env:CCACHE_LOGFILE -Pattern 'Compiler option (.*) is unsupported' |
+            $refused = Select-String -Path $env:CCACHE_LOGFILE -Pattern 'Compiler option (.*) is unsupported'
+            Write-Host "::warning title=ccache unsupported total::$($refused.Count) refusal lines"
+            $refused |
               ForEach-Object { $o = $_.Matches[0].Groups[1].Value; $o.Substring(0, [Math]::Min(40, $o.Length)) } |
-              Group-Object | Sort-Object Count -Descending | Select-Object -First 8 |
+              Group-Object | Sort-Object Count -Descending | Select-Object -First 25 |
               ForEach-Object { Write-Host "::warning title=ccache unsupported::$($_.Count) x $($_.Name)" }
           }
 
