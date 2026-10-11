@@ -49,9 +49,9 @@ jobs:
       # so it stays well under the 10 GB repo cache budget.
       CCACHE_DIR: ${{ github.workspace }}\.ccache
       CCACHE_MAXSIZE: '1G'
-      CCACHE_LOGFILE: ${{ github.workspace }}\ccache.log
-      # curl adds /clang:-Werror-implicit-function-declaration even with
-      # PICKY_COMPILER off; warning flags don't change the object.
+      # ccache refuses clang-cl's /clang:<arg> pass-through options. curl adds
+      # /clang:-Werror-implicit-function-declaration even with PICKY_COMPILER
+      # off; warning flags don't change the object, so let ccache skip them.
       CCACHE_IGNOREOPTIONS: '/clang:-W* -clang:-W*'
     steps:
       - uses: actions/checkout@v4
@@ -121,8 +121,9 @@ jobs:
       - name: Configure (win-build preset)
         shell: pwsh
         # ccache wraps clang-cl via the compiler launcher; populates .ccache for
-        # the next run. ccache refuses /Zi (shared PDB), so the win-build preset
-        # uses /Z7 (debug info in each object).
+        # the next run. Under ccache the top-level CMakeLists.txt switches
+        # clang-cl to /showIncludes dependencies (ccache refuses the default
+        # -clang:-MD depfile options).
         run: cmake --preset win-build -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails fast. ----
@@ -173,21 +174,7 @@ jobs:
       - name: ccache stats
         if: always()
         shell: pwsh
-        run: |
-          ccache -s -v
-          # Surface why calls were uncacheable (as annotations).
-          if (Test-Path $env:CCACHE_LOGFILE) {
-            $lines = Get-Content $env:CCACHE_LOGFILE
-            $lines | Select-String 'Result: (\S+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value } |
-              Group-Object | ForEach-Object { Write-Host "::warning title=ccache results::$($_.Count) x $($_.Name)" }
-            $refusals = $lines | Select-String 'Result: unsupported_compiler_option' | Select-Object -First 3
-            foreach ($r in $refusals) {
-              $id = ([regex]'^\[\S+ (\d+)').Match($r.Line).Groups[1].Value
-              $ctx = $lines[0..($r.LineNumber - 1)] | Where-Object { $_ -match "^\[\S+ $id\s*\]" } |
-                Select-Object -Last 8 | ForEach-Object { $_.Substring(0, [Math]::Min(400, $_.Length)) }
-              Write-Host "::warning title=ccache refused call::$($ctx -join ' || ')"
-            }
-          }
+        run: ccache -s
 
       - name: Run JIT E2E tests
         shell: pwsh
