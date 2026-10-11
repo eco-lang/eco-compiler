@@ -50,6 +50,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}\.ccache
       CCACHE_MAXSIZE: '1G'
       CCACHE_LOGFILE: ${{ github.workspace }}\ccache.log
+      # curl adds /clang:-Werror-implicit-function-declaration even with
+      # PICKY_COMPILER off; warning flags don't change the object.
+      CCACHE_IGNOREOPTIONS: '/clang:-W* -clang:-W*'
     steps:
       - uses: actions/checkout@v4
 
@@ -167,14 +170,15 @@ jobs:
         shell: pwsh
         run: |
           ccache -s -v
-          # Surface why calls were uncacheable (as annotations, visible mid-run).
+          # Surface why calls were uncacheable (as annotations).
           if (Test-Path $env:CCACHE_LOGFILE) {
-            $refused = Select-String -Path $env:CCACHE_LOGFILE -Pattern 'Compiler option (.*) is unsupported'
-            Write-Host "::warning title=ccache unsupported total::$($refused.Count) refusal lines"
-            $refused |
-              ForEach-Object { $o = $_.Matches[0].Groups[1].Value; $o.Substring(0, [Math]::Min(40, $o.Length)) } |
-              Group-Object | Sort-Object Count -Descending | Select-Object -First 25 |
-              ForEach-Object { Write-Host "::warning title=ccache unsupported::$($_.Count) x $($_.Name)" }
+            Get-Content $env:CCACHE_LOGFILE |
+              Where-Object { $_ -match '(?i)unsupported|too hard|not supported' -and $_ -notmatch 'Command line:|Executing ' } |
+              ForEach-Object { $m = $_ -replace '^\[[^\]]*\]\s*', ''; $m.Substring(0, [Math]::Min(80, $m.Length)) } |
+              Group-Object | Sort-Object Count -Descending | Select-Object -First 20 |
+              ForEach-Object { Write-Host "::warning title=ccache refusal::$($_.Count) x $($_.Name)" }
+            Select-String -Path $env:CCACHE_LOGFILE -Pattern 'Command line:.*elm-kernel-cpp' |
+              Select-Object -First 1 | ForEach-Object { Write-Host "::warning title=ccache kernel cmd::$($_.Line)" }
           }
 
       - name: Run JIT E2E tests
