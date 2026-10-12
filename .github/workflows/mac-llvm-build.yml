@@ -1,0 +1,66 @@
+# plans/mac-self-contained-bundle.md step 2: the LLVM 21.1.8 + MLIR source
+# build for arm64 macOS (static, minimum macOS 15.0), cached so mac-aot
+# restores it in seconds. Mirrors win-llvm-build. eco links these archives
+# statically, so the shipped eco needs nothing from Homebrew at run time.
+name: mac-llvm-build
+
+on:
+  push:
+    branches: ['ci/**', 'master']
+    paths:
+      - 'experiments/mac-llvm-build/**'
+      - 'test/scripts/check-macho-floor.sh'
+      - '.github/workflows/mac-llvm-build.yml'
+  workflow_dispatch:
+  schedule:
+    # Weekly safety touch so the install-tree cache never evicts even if the
+    # daily mac-aot build is paused. A cache hit is a cheap no-op; a cold
+    # cache rebuilds (and re-populates) the install tree.
+    - cron: '0 5 * * 3'
+
+jobs:
+  build:
+    runs-on: macos-15
+    # LLVM+MLIR Release on the 3-vCPU arm64 runner: expected 2-3 h cold.
+    timeout-minutes: 330
+    env:
+      LLVM_INSTALL_DIR: ${{ github.workspace }}/experiments/mac-llvm-build/out/llvm-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LLVM install tree
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: experiments/mac-llvm-build/out/llvm-install
+          # Bump the trailing version when configure flags change so the
+          # cache is rebuilt rather than producing stale archives. Keep the
+          # key in step with mac-aot.yml's restore.
+          key: mac-llvm-mlir-21.1.8-arm64-macos15.0-release-v1
+
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: brew install ninja
+
+      - name: Build LLVM + MLIR
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: experiments/mac-llvm-build/build.sh
+
+      - name: Report cached install metadata
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: |
+          du -sh "$LLVM_INSTALL_DIR"
+          "$LLVM_INSTALL_DIR/bin/llc" --version | head -4
+          "$LLVM_INSTALL_DIR/bin/mlir-opt" --version | head -2
+          test/scripts/check-macho-floor.sh 15.0 \
+            "$LLVM_INSTALL_DIR/bin/mlir-opt" "$LLVM_INSTALL_DIR/lib/libMLIRIR.a"
+
+      - name: Upload configure logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-llvm-build-out
+          path: |
+            experiments/mac-llvm-build/out/build/CMakeCache.txt
+            experiments/mac-llvm-build/out/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
