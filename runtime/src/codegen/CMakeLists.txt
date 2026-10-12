@@ -66,6 +66,13 @@ include(HandleLLVMOptions)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 
+# createEcoTargetMachine (EcoBackend.cpp) stamps AOT objects with the same
+# minimum macOS version as eco itself; see ECO_MACOS_MIN in the top-level
+# CMakeLists.txt.
+if(APPLE)
+    add_compile_definitions(ECO_MACOS_MIN="${ECO_MACOS_MIN}")
+endif()
+
 # --- macOS: single-copy LLVM/MLIR linkage -----------------------------------
 # Homebrew's llvm@21 ships BOTH the static component archives (libLLVMCore.a,
 # libMLIRIR.a, ...) AND the aggregate shared libs (libLLVM.dylib,
@@ -1229,31 +1236,17 @@ endif()
 # SDK as .tbd stubs, and ld64 ad-hoc-signs arm64 outputs automatically. The
 # only project-time dep not in the SDK is libzip — bundled as a static .a.
 #
+# The clang driver and SDK are NOT baked in here: linkExecutableDarwin asks
+# xcrun for them when it links, so an installed bundle works with whatever
+# Xcode or Command Line Tools the user's Mac has (plans/mac-self-contained-
+# bundle.md step 1).
+#
 # The Linux Phase 3 discovery above still ran on Darwin but produces
 # nonsense paths (clang's `-print-file-name=Scrt1.o` returns the filename
 # unchanged when the file doesn't exist). Those constants are emitted into
 # EcoBootConfig.h for layout-stability across platforms but the Darwin
 # code path in EcoNativeDriver.cpp never reads them.
 if(APPLE)
-    execute_process(
-        COMMAND xcrun -f clang
-        OUTPUT_VARIABLE ECO_DARWIN_CLANG
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE _xcrun_rc)
-    if(NOT _xcrun_rc EQUAL 0 OR ECO_DARWIN_CLANG STREQUAL "")
-        message(FATAL_ERROR
-            "Eco AOT (Darwin): `xcrun -f clang` failed. "
-            "Install Xcode Command Line Tools (xcode-select --install).")
-    endif()
-    execute_process(
-        COMMAND xcrun --show-sdk-path
-        OUTPUT_VARIABLE ECO_DARWIN_SDK_ROOT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE _xcrun_rc)
-    if(NOT _xcrun_rc EQUAL 0 OR ECO_DARWIN_SDK_ROOT STREQUAL "")
-        message(FATAL_ERROR "Eco AOT (Darwin): `xcrun --show-sdk-path` failed.")
-    endif()
-
     # Target arch — match host. Cross-arch (lipo / universal binaries) is a
     # follow-up; AOT users can already pick `eco make --target=…` if we ever
     # plumb that, but for v1 the host arch is the only target.
@@ -1304,9 +1297,8 @@ if(APPLE)
         CACHE INTERNAL "brew openssl@3 libcrypto.a (Darwin AOT link)")
 
     message(STATUS "Eco AOT (Darwin) paths:")
-    message(STATUS "  clang:       ${ECO_DARWIN_CLANG}")
-    message(STATUS "  SDK root:    ${ECO_DARWIN_SDK_ROOT}")
     message(STATUS "  arch:        ${ECO_DARWIN_ARCH}")
+    message(STATUS "  macOS min:   ${ECO_MACOS_MIN}")
     message(STATUS "  libzip.a:    ${ECO_DARWIN_LIBZIP_A}")
     message(STATUS "  libssl.a:    ${ECO_DARWIN_LIBSSL_A}")
     message(STATUS "  libcrypto.a: ${ECO_DARWIN_LIBCRYPTO_A}")
@@ -1314,8 +1306,6 @@ else()
     # Stubbed empty on non-Darwin so the EcoBootConfig.h emission below is
     # platform-uniform; EcoNativeDriver.cpp's non-Darwin code paths never
     # read these.
-    set(ECO_DARWIN_CLANG "")
-    set(ECO_DARWIN_SDK_ROOT "")
     set(ECO_DARWIN_ARCH "")
     set(ECO_DARWIN_LIBZIP_A "")
     set(ECO_DARWIN_LIBSSL_A "")
@@ -1613,14 +1603,12 @@ string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 # Consumed by linkExecutableDarwin() in EcoNativeDriver.cpp. Empty strings
 # on non-Darwin builds; the non-Darwin code paths never read them.
 #
-# darwinClang is configured-time absolute (xcrun -f clang) on Darwin; for
-# the installed bundle it falls back to xcrun (PATH-resolved by the OS)
-# since users may not have the same Xcode prefix as the build host.
+# darwinMacosMin is the minimum macOS version (ECO_MACOS_MIN) stamped into
+# AOT objects and passed to the link; empty on non-Darwin builds.
 string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Phase 3 (Darwin): AOT link driver config ---\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT
-    "inline const char *darwinClang             = \"${ECO_DARWIN_CLANG}\";\n"
-    "inline const char *darwinSdkRoot           = \"${ECO_DARWIN_SDK_ROOT}\";\n"
     "inline const char *darwinArch              = \"${ECO_DARWIN_ARCH}\";\n"
+    "inline const char *darwinMacosMin          = \"${ECO_MACOS_MIN}\";\n"
     "inline RuntimeFile darwinLibzipA           {\"libzip.a\",    \"project\", \"${ECO_DARWIN_LIBZIP_A}\"};\n"
     "inline RuntimeFile darwinLibsslA           {\"libssl.a\",    \"project\", \"${ECO_DARWIN_LIBSSL_A}\"};\n"
     "inline RuntimeFile darwinLibcryptoA        {\"libcrypto.a\", \"project\", \"${ECO_DARWIN_LIBCRYPTO_A}\"};\n\n")

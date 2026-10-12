@@ -135,7 +135,12 @@ jobs:
         run: cmake --build build --target eco-boot-native -- -k 20
 
       - name: Build Stage 9 — unified eco binary (full bootstrap chain)
-        run: cmake --build build --target eco -- -k 20
+        # Logged so the floor gate below can scan the Stage 6-9 links for
+        # ld64's "built for newer macOS version" warnings.
+        run: |
+          set +e
+          cmake --build build --target eco -- -k 20 2>&1 | tee /tmp/eco-build.log
+          exit ${PIPESTATUS[0]}
 
       - name: Verify Mach-O output (Stage 9 unified eco)
         run: |
@@ -174,7 +179,10 @@ jobs:
         # Extract the tarball to a fresh prefix and run bin/eco from there.
         # resolveFile() finds the project archives via
         # <exe>/../lib/eco-runtime/project — confirms the bundle is
-        # self-contained (no implicit dep on the build tree).
+        # self-contained (no implicit dep on the build tree). Then build
+        # Hello.elm with it, as the Linux bundle smoke does
+        # (docker/static-build.Dockerfile): the link finds clang and the SDK
+        # through xcrun at link time, not through build-host paths.
         run: |
           set +e
           mkdir -p /tmp/eco-bundle && cd /tmp/eco-bundle
@@ -186,6 +194,54 @@ jobs:
               echo "ERROR: bin/eco crashed (rc=$rc)"; exit 1
           fi
           echo "OK: bundled eco runs in isolation"
+
+          mkdir -p /tmp/eco-smoke/src && cd /tmp/eco-smoke
+          cp "$GITHUB_WORKSPACE"/compiler/examples/elm.json elm.json
+          cp "$GITHUB_WORKSPACE"/compiler/examples/src/Hello.elm src/Hello.elm
+          /tmp/eco-bundle/bin/eco make src/Hello.elm --output=hello || {
+              echo "ERROR: bundled eco make failed"; exit 1; }
+          test -x ./hello || { echo "ERROR: no hello executable"; exit 1; }
+          # Hello.elm is browser-style Html; headless it exits non-zero, so
+          # only a crash (signal) fails the smoke.
+          ./hello >/dev/null 2>&1
+          rc=$?
+          if [ $rc -ge 128 ]; then
+              echo "ERROR: hello crashed (rc=$rc)"; exit 1
+          fi
+          echo "OK: bundled eco built a runnable hello (rc=$rc)"
+
+      - name: Check macOS floor and linked libraries
+        # The floor (CMAKE_OSX_DEPLOYMENT_TARGET, 15.0) must hold for eco, the
+        # programs it links and every archive the bundle ships, including
+        # brew's openssl statics. A runner-image or bottle change that raises
+        # it fails here. eco must not load OpenSSL from Homebrew.
+        run: |
+          set -e
+          min=15.0
+          eco=/tmp/eco-bundle/bin/eco
+          test/scripts/check-macho-floor.sh "$min" \
+            "$eco" \
+            build/compiler/build-kernel/bin/eco-compiler \
+            /tmp/eco-smoke/hello \
+            /tmp/eco-bundle/lib/eco-runtime/project/*.a
+          if grep -n "built for newer" /tmp/eco-build.log; then
+              echo "ERROR: a link mixed in objects built for a newer macOS than $min"
+              exit 1
+          fi
+          echo "=== otool -L bin/eco ==="
+          otool -L "$eco"
+          if otool -L "$eco" | grep -i openssl; then
+              echo "ERROR: eco loads OpenSSL dynamically (expected static)"
+              exit 1
+          fi
+          echo "=== otool -L hello ==="
+          otool -L /tmp/eco-smoke/hello
+          if otool -L /tmp/eco-smoke/hello | tail -n +2 \
+              | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+              echo "ERROR: hello links a library outside macOS"
+              exit 1
+          fi
+          echo "OK: macOS floor $min holds; no Homebrew OpenSSL at run time"
 
       - name: Save ccache (master only)
         # After the build/test steps, so it holds this run's objects; only on
@@ -222,6 +278,7 @@ jobs:
             build/compiler/build-kernel/timing-*.txt
             /tmp/codesign.txt
             /tmp/help.txt
+            /tmp/eco-build.log
             /tmp/test_output.txt
             /tmp/elm-tests.log
           if-no-files-found: warn

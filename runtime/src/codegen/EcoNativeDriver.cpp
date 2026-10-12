@@ -10,7 +10,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "EcoNativeDriver.h"
+#include <cstdlib>
 #include <cstring>
+#include <optional>
 #include "EcoNativeAPI.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -41,6 +43,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
@@ -516,7 +519,56 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
 }
 
 #if defined(__APPLE__)
-// Darwin AOT link: invoke clang (xcrun-resolved at configure time) as the
+// Run `/usr/bin/xcrun <xcrunArgs>` and return its stdout with trailing
+// whitespace trimmed, or "" if xcrun fails. /usr/bin/xcrun ships with macOS
+// itself; it fails when neither Xcode nor the Command Line Tools is installed.
+static std::string runXcrun(llvm::ArrayRef<llvm::StringRef> xcrunArgs) {
+    llvm::SmallString<128> outPath;
+    if (llvm::sys::fs::createTemporaryFile("eco-xcrun", "txt", outPath))
+        return "";
+    llvm::FileRemover removeOut(outPath);
+
+    llvm::SmallVector<llvm::StringRef> args{"/usr/bin/xcrun"};
+    args.append(xcrunArgs.begin(), xcrunArgs.end());
+    // Empty redirect = /dev/null: keep xcrun's own diagnostics off the
+    // user's terminal; linkExecutableDarwin prints a clearer one.
+    std::optional<llvm::StringRef> redirects[] = {llvm::StringRef(""),
+                                                   llvm::StringRef(outPath),
+                                                   llvm::StringRef("")};
+    int rc = llvm::sys::ExecuteAndWait(args[0], args, /*env=*/std::nullopt,
+                                       redirects);
+    if (rc != 0)
+        return "";
+    auto buf = llvm::MemoryBuffer::getFile(outPath);
+    if (!buf)
+        return "";
+    return (*buf)->getBuffer().rtrim().str();
+}
+
+// The Apple link driver and SDK, found when eco links rather than baked in
+// at configure time, so an installed bundle works with whatever Xcode or
+// Command Line Tools the user's Mac has. $SDKROOT overrides the SDK, as it
+// does for Apple's own tools. Resolved once per process.
+struct DarwinToolchain {
+    std::string clang;
+    std::string sdkRoot;
+};
+
+static const DarwinToolchain &darwinToolchain() {
+    static const DarwinToolchain tc = [] {
+        DarwinToolchain t;
+        t.clang = runXcrun({"--sdk", "macosx", "-f", "clang"});
+        const char *sdkEnv = std::getenv("SDKROOT");
+        if (sdkEnv && *sdkEnv)
+            t.sdkRoot = sdkEnv;
+        else
+            t.sdkRoot = runXcrun({"--sdk", "macosx", "--show-sdk-path"});
+        return t;
+    }();
+    return tc;
+}
+
+// Darwin AOT link: invoke clang (found via xcrun at link time) as the
 // link driver and let it figure out crt/SDK details. ld64 is much more
 // integrated than ld.bfd/lld for Mach-O — Apple ships no crt objects (the
 // dynamic loader does startup), and libSystem/libc++/libcurl/libz are
@@ -548,16 +600,30 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
         return resolvedStrings.back();
     };
 
+    const DarwinToolchain &tc = darwinToolchain();
+    if (tc.clang.empty() || tc.sdkRoot.empty()) {
+        llvm::errs()
+            << "Error: building a macOS executable needs the Xcode Command "
+               "Line Tools (the linker and the macOS SDK), and xcrun could "
+               "not find them. Install them with:\n"
+               "    xcode-select --install\n";
+        return 1;
+    }
+
     llvm::SmallVector<llvm::StringRef> args;
-    args.push_back(eco::config::darwinClang);
+    args.push_back(tc.clang);
 
     // SDK + arch. -isysroot tells clang where to find libSystem/libc++/
     // libcurl/libz .tbd stubs; -arch is set explicitly so the link is
-    // robust under Rosetta / cross-arch scenarios.
+    // robust under Rosetta / cross-arch scenarios. The minimum macOS version
+    // matches the one stamped into the objects (createEcoTargetMachine) and
+    // into the runtime archives (CMAKE_OSX_DEPLOYMENT_TARGET).
     args.push_back("-isysroot");
-    args.push_back(eco::config::darwinSdkRoot);
+    args.push_back(tc.sdkRoot);
     args.push_back("-arch");
     args.push_back(eco::config::darwinArch);
+    args.push_back(push(std::string("-mmacosx-version-min=") +
+                        eco::config::darwinMacosMin));
 
     args.push_back("-o");
     args.push_back(outputPath);
@@ -625,7 +691,7 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
     }
 
     std::string errMsg;
-    int rc = llvm::sys::ExecuteAndWait(eco::config::darwinClang, args,
+    int rc = llvm::sys::ExecuteAndWait(tc.clang, args,
                                        /*env=*/std::nullopt,
                                        /*redirects=*/{},
                                        /*secondsToWait=*/0,

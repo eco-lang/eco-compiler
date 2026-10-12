@@ -1,5 +1,22 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Minimum macOS version for eco and for every program it builds (both link the
+# runtime archives). Must be a cache entry before project() to take effect.
+# 15.0: every Apple Silicon Mac runs it, and it matches the macos-15 CI runner
+# and the Homebrew bottles built there (plans/mac-self-contained-bundle.md).
+# Ignored on other platforms.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING
+    "Minimum macOS version for eco and the programs it builds")
+
 project(EcoRuntime LANGUAGES C CXX)
+
+# Read by EcoBootConfig.h (darwinMacosMin): AOT objects and the Darwin link
+# are stamped with the same floor as eco itself.
+if(APPLE)
+    set(ECO_MACOS_MIN "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+else()
+    set(ECO_MACOS_MIN "")
+endif()
 
 # Newer CMake gives clang-cl gcc-style depfiles (-clang:-MD -clang:-MF ...),
 # which ccache refuses as an unsupported option, so no Windows compile was
@@ -258,6 +275,23 @@ option(ECO_LINK_WITH_BFD
 option(ECO_KERNEL_DEBUG
        "Enable stderr tracing inside the HTTP / File / zip kernel paths"
        OFF)
+
+if(APPLE)
+    # Link brew's openssl@3 static archives into eco, as the Darwin AOT link
+    # already does for user programs. Without this FindOpenSSL picks
+    # libssl.3.dylib and eco needs `brew install openssl@3` at run time.
+    # curl and zlib stay the SDK's system dylibs, so no global suffix change.
+    # Same before-any-add_subdirectory() constraint as the block below.
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    if(NOT OPENSSL_ROOT_DIR)
+        foreach(_eco_ssl_root /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3)
+            if(EXISTS "${_eco_ssl_root}/lib/libssl.a")
+                set(OPENSSL_ROOT_DIR "${_eco_ssl_root}")
+                break()
+            endif()
+        endforeach()
+    endif()
+endif()
 
 if(ECO_STATIC OR WIN32)
     # MUST be set BEFORE any add_subdirectory() that calls find_package on

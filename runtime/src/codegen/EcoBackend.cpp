@@ -892,7 +892,16 @@ unsigned choosePartitionCount(const Module &m, unsigned request, bool eligible) 
 
 std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
                                                       unsigned optLevel) {
-    auto triple = sys::getDefaultTargetTriple();
+    std::string triple = sys::getDefaultTargetTriple();
+#if defined(__APPLE__) && defined(ECO_MACOS_MIN)
+    // Stamp the minimum macOS version eco and the runtime archives are built
+    // for (ECO_MACOS_MIN, from CMAKE_OSX_DEPLOYMENT_TARGET) into the objects'
+    // LC_BUILD_VERSION, rather than the darwin<N> version of whatever host
+    // LLVM was built on.
+    triple = Triple(Triple(triple).getArchName(), "apple",
+                    std::string("macosx") + ECO_MACOS_MIN)
+                 .str();
+#endif
     module.setTargetTriple(Triple(triple));
 
     std::string error;
