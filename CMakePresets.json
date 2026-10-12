@@ -37,8 +37,8 @@
     },
     {
       "name": "mac-build",
-      "displayName": "Mac build (RelWithDebInfo, brew llvm@21, full runtime)",
-      "description": "Full configure on macOS: runtime, kernels, tests, compiler. LLVM/MLIR from the brew llvm@21 keg; AppleClang + ld64 (no lld). See plans/build-on-mac.md M3.",
+      "displayName": "Mac build (RelWithDebInfo, static LLVM 21.1.8 via $ECO_MAC_DEPS_DIR, full runtime)",
+      "description": "Full configure on macOS (arm64): runtime, kernels, tests, compiler. LLVM/MLIR 21.1.8 static archives from the install tree experiments/mac-llvm-build/build.sh produces; set ECO_MAC_DEPS_DIR to that prefix before running this preset. AppleClang + ld64 (no lld). Minimum macOS comes from CMAKE_OSX_DEPLOYMENT_TARGET (15.0, top-level CMakeLists.txt). See plans/mac-self-contained-bundle.md.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
@@ -46,7 +46,8 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
         "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
-        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/llvm@21"
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_PREFIX_PATH": "$env{ECO_MAC_DEPS_DIR}"
       }
     },
     {

@@ -2,9 +2,12 @@
 # the shippable Darwin distribution bundle, in one job.
 #
 # This replaces the former three-workflow split (mac-bootstrap / mac-runtime /
-# mac-aot). macOS has a single toolchain (brew llvm@21), so there is no
-# structural reason to split test-vs-ship; folding them removes two redundant
-# brew-llvm-installs + configures per push (macOS runners bill at 10x).
+# mac-aot). macOS has a single toolchain (the static LLVM 21.1.8 tree cached by
+# mac-llvm-build), so there is no structural reason to split test-vs-ship;
+# folding them removes two redundant configures per push (macOS runners bill
+# at 10x). The bundle-smoke job then installs the bundle on a fresh runner set
+# up like a typical user's Mac (Command Line Tools only, no Homebrew LLVM or
+# OpenSSL).
 #
 # Steps run cheap -> expensive (fail-fast), mirroring linux's gate order:
 #   1. front-end stages 1-5      (pure Node; no LLVM needed) — was mac-bootstrap
@@ -27,6 +30,7 @@ on:
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
       - 'version.txt'
+      - 'system-kernel-cpp/**'
       - '.github/workflows/mac-aot.yml'
   workflow_dispatch:
   schedule:
@@ -38,20 +42,37 @@ jobs:
   aot:
     runs-on: macos-15
     timeout-minutes: 90
+    env:
+      # The static LLVM/MLIR install tree the mac-build preset links
+      # (CMAKE_PREFIX_PATH=$ECO_MAC_DEPS_DIR).
+      ECO_MAC_DEPS_DIR: ${{ github.workspace }}/experiments/mac-llvm-build/out/llvm-install
     steps:
       - uses: actions/checkout@v4
+
+      - name: Restore LLVM 21.1.8 install tree (from mac-llvm-build)
+        # fail-on-cache-miss: the LLVM source build is mac-llvm-build's job
+        # (2-3 h). A cold cache fails fast and legibly — run mac-llvm-build,
+        # then re-run this. Same contract as win-aot and linux-aot.
+        uses: actions/cache/restore@v4
+        with:
+          path: experiments/mac-llvm-build/out/llvm-install
+          key: mac-llvm-mlir-21.1.8-arm64-macos15.0-release-v1
+          fail-on-cache-miss: true
 
       - name: Install dependencies
         run: |
           # libzip is vendored via FetchContent on APPLE (see
           # eco-kernel-cpp/CMakeLists.txt) so brew's libzip is not needed.
-          # pkgconf is still useful for kernel curl/ssl probes. rapidcheck is
-          # a configure-time dep of the ecor target (find_package); Homebrew has
-          # no formula for it, so build it from source.
-          brew install llvm@21 openssl@3 pnpm gnu-time pkgconf ccache
+          # openssl@3 provides the static libssl.a/libcrypto.a linked into eco
+          # and user programs. pkgconf is still useful for kernel curl/ssl
+          # probes. rapidcheck is a configure-time dep of the ecor target
+          # (find_package); Homebrew has no formula for it, so build it from
+          # source, for the same minimum macOS as everything else.
+          brew install openssl@3 pnpm gnu-time pkgconf ccache
           git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
           cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
           cmake --build /tmp/rapidcheck/build
           sudo cmake --install /tmp/rapidcheck/build
 
@@ -214,7 +235,8 @@ jobs:
         # The floor (CMAKE_OSX_DEPLOYMENT_TARGET, 15.0) must hold for eco, the
         # programs it links and every archive the bundle ships, including
         # brew's openssl statics. A runner-image or bottle change that raises
-        # it fails here. eco must not load OpenSSL from Homebrew.
+        # it fails here. eco must load nothing from Homebrew (LLVM/MLIR and
+        # OpenSSL are linked statically).
         run: |
           set -e
           min=15.0
@@ -230,8 +252,9 @@ jobs:
           fi
           echo "=== otool -L bin/eco ==="
           otool -L "$eco"
-          if otool -L "$eco" | grep -i openssl; then
-              echo "ERROR: eco loads OpenSSL dynamically (expected static)"
+          if otool -L "$eco" | tail -n +2 \
+              | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+              echo "ERROR: eco links a library outside macOS (expected static LLVM/MLIR/OpenSSL)"
               exit 1
           fi
           echo "=== otool -L hello ==="
@@ -241,7 +264,7 @@ jobs:
               echo "ERROR: hello links a library outside macOS"
               exit 1
           fi
-          echo "OK: macOS floor $min holds; no Homebrew OpenSSL at run time"
+          echo "OK: macOS floor $min holds; eco and hello load only macOS libraries"
 
       - name: Save ccache (master only)
         # After the build/test steps, so it holds this run's objects; only on
@@ -283,3 +306,100 @@ jobs:
             /tmp/elm-tests.log
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Upload the Darwin bundle for bundle-smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-bundle
+          path: build/eco-*-darwin.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Install the bundle on a fresh runner set up like a typical user's Mac:
+  # Xcode Command Line Tools (the linker and SDK `eco make` needs), no Xcode
+  # app, no Homebrew LLVM or OpenSSL, a clean HOME and a minimal PATH. The
+  # runner is macos-15, the bundle's minimum macOS. eco make on a clean HOME
+  # downloads and unpacks the packages itself, exercising eco's curl, zip/zlib
+  # and OpenSSL code (plans/mac-self-contained-bundle.md step 2).
+  bundle-smoke:
+    needs: aot
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            compiler/examples
+            test/scripts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-bundle
+          path: dist
+
+      - name: Hide Xcode and Homebrew's LLVM and OpenSSL
+        run: |
+          set -e
+          sudo mkdir -p /opt/hidden
+          for d in /Applications/Xcode*.app /opt/homebrew/opt/llvm* /opt/homebrew/opt/openssl* \
+                   /opt/homebrew/Cellar/llvm* /opt/homebrew/Cellar/openssl*; do
+              [ -e "$d" ] || continue
+              echo "hiding $d"
+              sudo mv "$d" /opt/hidden/
+          done
+          test -d /Library/Developer/CommandLineTools || {
+              echo "ERROR: the runner has no Command Line Tools"; exit 1; }
+          sudo xcode-select -s /Library/Developer/CommandLineTools
+          sdk=$(xcrun --sdk macosx --show-sdk-path)
+          echo "SDK: $sdk"
+          case "$sdk" in
+              /Library/Developer/CommandLineTools/*) ;;
+              *) echo "ERROR: xcrun still resolves an Xcode SDK"; exit 1 ;;
+          esac
+          ls /opt/homebrew/opt 2>/dev/null | grep -iE '^(llvm|openssl)' && {
+              echo "ERROR: Homebrew LLVM/OpenSSL still present"; exit 1; } || true
+
+      - name: Install the bundle and build programs with it
+        run: |
+          set -e
+          root="$RUNNER_TEMP/eco install"
+          home="$RUNNER_TEMP/home"
+          proj="$RUNNER_TEMP/project"
+          mkdir -p "$root" "$home" "$proj/src"
+          tar -xzf dist/eco-*-darwin.tar.gz -C "$root"
+          eco=$(find "$root" -path '*/bin/eco' -type f | head -1)
+          echo "eco: $eco"
+          cp compiler/examples/elm.json "$proj/elm.json"
+          cp compiler/examples/src/Hello.elm compiler/examples/src/Quotes.elm "$proj/src/"
+          run() { env -i PATH=/usr/bin:/bin HOME="$home" "$@"; }
+
+          run "$eco" --help | head -5
+          cd "$proj"
+          run "$eco" make src/Hello.elm --output=hello
+          run "$eco" make src/Quotes.elm --output=quotes
+          for p in hello quotes; do
+              test -x "./$p" || { echo "ERROR: no $p executable"; exit 1; }
+              # Browser-style programs exit non-zero headless; only a crash
+              # (a signal) fails the smoke.
+              set +e
+              run "./$p" >/dev/null 2>&1
+              rc=$?
+              set -e
+              if [ $rc -ge 128 ]; then echo "ERROR: $p crashed (rc=$rc)"; exit 1; fi
+              echo "OK: $p ran (rc=$rc)"
+          done
+
+          echo "=== otool -L eco hello quotes ==="
+          for f in "$eco" ./hello ./quotes; do
+              otool -L "$f"
+              if otool -L "$f" | tail -n +2 \
+                  | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+                  echo "ERROR: $f links a library outside macOS"; exit 1
+              fi
+          done
+          "$GITHUB_WORKSPACE"/test/scripts/check-macho-floor.sh 15.0 "$eco" ./hello ./quotes
+          for f in hello quotes; do
+              codesign -dv "./$f" 2>&1 | tee "/tmp/codesign-$f.txt"
+              grep -q adhoc "/tmp/codesign-$f.txt" || { echo "ERROR: $f is not ad-hoc signed"; exit 1; }
+          done
+          echo "OK: the bundle installs and builds runnable programs with only the Command Line Tools"

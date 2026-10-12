@@ -840,9 +840,9 @@ function(eco_apply_unified_link target)
         #
         # IMPORTANT: `-Wl,-force_load,$<TARGET_FILE:X>` only injects the
         # archive's file path. It does NOT carry through the target's
-        # INTERFACE_LINK_LIBRARIES (e.g. EcoNativeDriverStatic's PUBLIC dep
-        # on the brew libLLVM/libMLIR dylibs, which is where all backend
-        # targets — LLVMInitializeAArch64* etc. — live). The bare target
+        # INTERFACE_LINK_LIBRARIES (e.g. EcoNativeDriverStatic's PUBLIC deps
+        # on the static LLVM/MLIR component archives, which is where the
+        # backend — LLVMInitializeAArch64* etc. — lives). The bare target
         # names below the force_load lines exist so target_link_libraries
         # walks the INTERFACE graph; ld64 dedupes the duplicate archive
         # path automatically.
