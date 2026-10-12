@@ -55,7 +55,7 @@ fi
 # beyond what macOS itself provides.
 echo "=== configure (macOS $macos_min, arm64) ==="
 cmake -G Ninja -S "$src_root/llvm" -B "$build_dir" \
-    "${launcher[@]}" \
+    ${launcher[@]+"${launcher[@]}"} \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$install_dir" \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
