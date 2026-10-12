@@ -345,7 +345,8 @@ jobs:
                    /opt/homebrew/Cellar/llvm* /opt/homebrew/Cellar/openssl*; do
               [ -e "$d" ] || continue
               echo "hiding $d"
-              sudo mv "$d" /opt/hidden/
+              # Unique name per path: opt/llvm@18 and Cellar/llvm@18 clash.
+              sudo mv "$d" "/opt/hidden/$(echo "$d" | tr / _)"
           done
           test -d /Library/Developer/CommandLineTools || {
               echo "ERROR: the runner has no Command Line Tools"; exit 1; }
