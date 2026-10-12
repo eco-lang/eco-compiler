@@ -9,6 +9,22 @@ On other systems or if you want a local install, you can unpack the .zip or .tar
 Unpack it into `/usr/local/` or some other place. For the purposes of this guide, we will assume
 you unpacked into `/usr/local/` so adjust paths as necessary.
 
+On macOS (Apple Silicon, macOS 15 or later) the release is the `arm64-darwin` tarball. `eco make`
+links your program with Apple's linker, so install the Xcode Command Line Tools once if you do
+not have them already (`git` asks for them too):
+
+    xcode-select --install
+
+Then download and unpack the release with `curl`, for example:
+
+    curl -L https://github.com/eco-lang/eco-compiler/releases/download/v0.2.0-daily/eco-0.2.0-arm64-darwin.tar.gz \
+        | sudo tar -xz -C /usr/local
+
+Nothing else is needed: no Homebrew packages and no paths to configure. Download with `curl`
+rather than a web browser. A browser marks the download as quarantined, and macOS then refuses to
+run `eco` because it is not signed by an Apple-registered developer; if that happens, clear the
+mark with `xattr -dr com.apple.quarantine` on the unpacked files.
+
 # Run an example
 
 In the distribution there is a `/share/eco/examples` folder. 

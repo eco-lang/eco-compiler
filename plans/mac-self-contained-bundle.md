@@ -80,10 +80,11 @@ Tools plus brew LLVM (until step 2).
    Run `xcrun` through `llvm::sys::ExecuteAndWait` with stdout redirected to
    a temp file. Drop `darwinClang` / `darwinSdkRoot` from `EcoBootConfig.h`
    and the misleading comment with them.
-2. **macOS floor.** Add `ECO_MACOS_MIN` (default `15.0`) and set
-   `CMAKE_OSX_DEPLOYMENT_TARGET` from it in the `mac-build` and
-   `mac-frontend` presets. FetchContent'd libzip inherits it.
-   - Bake `ECO_MACOS_MIN` into `EcoBootConfig.h`.
+2. **macOS floor.** Default `CMAKE_OSX_DEPLOYMENT_TARGET` to `15.0` as a
+   cache entry before `project()` in the top-level `CMakeLists.txt` (one
+   place for every preset; FetchContent'd libzip inherits it), and derive
+   `ECO_MACOS_MIN` from it.
+   - Bake `ECO_MACOS_MIN` into `EcoBootConfig.h` (`darwinMacosMin`).
    - `createEcoTargetMachine` on `__APPLE__`: use `arm64-apple-macosx<min>`
      instead of the host default triple, so AOT objects carry the floor in
      `LC_BUILD_VERSION`.
@@ -160,8 +161,10 @@ floor gate); building it ourselves is only needed if that gate ever trips.
      `env -i PATH=/usr/bin:/bin HOME=<fresh dir>`.
    - `bin/eco --help`; `bin/eco make` on `compiler/examples/src/Hello.elm`
      (as the Linux smoke in `docker/static-build.Dockerfile:298-314` does);
-     run `./hello` and fail on SIGSEGV/SIGABRT. Also build and run one program
-     that uses the curl, zlib and OpenSSL-backed kernels.
+     run `./hello` and fail on SIGSEGV/SIGABRT. Also build and run
+     `Quotes.elm` (uses `elm/http`). With a clean `HOME`, `eco make`
+     downloads and unpacks the packages itself, which exercises eco's own
+     curl, libzip/zlib and OpenSSL code.
    - Checks: `otool -L` on `bin/eco` and on the outputs shows only
      `/usr/lib/*` and `/System/Library/*`; `vtool -show-build` shows
      `minos 15.0`; `codesign -dv` shows `adhoc`.

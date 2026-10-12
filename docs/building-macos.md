@@ -1,18 +1,34 @@
 # Building on macOS
 
 Eco builds natively on macOS — both the front-end bootstrap and the full
-runtime + AOT pipeline. Apple Silicon (`arm64`) is the supported target;
-Intel Macs (`x86_64`) build with the same instructions but are not yet
-verified in CI.
+runtime + AOT pipeline. Apple Silicon (`arm64`) on macOS 15.0 or later is
+the supported target; Intel Macs are not supported.
 
 The Mach-O AOT output uses the system linker (`ld64`) and the macOS SDK
 directly. The static-musl distribution path documented in
 [`docs/building.md`](building.md) does NOT apply: macOS forbids static
 linking `libSystem` and guarantees ABI stability of its system dylibs, so
-the bundle dynamically links `libSystem` / `libc++` / `libcurl` / `libz`
-from the SDK and statically links only Eco's own archives plus a small
-set of dependencies the SDK doesn't carry (`libzip`, `libssl`,
-`libcrypto`).
+`eco` and the programs it builds dynamically link `libSystem` / `libc++` /
+`libcurl` / `libz` from macOS and statically link everything else: LLVM and
+MLIR (in `eco` only), Eco's own archives, and the dependencies macOS doesn't
+carry (`libzip`, `libssl`, `libcrypto`). Nothing is loaded from Homebrew at
+run time.
+
+**Minimum macOS.** `CMAKE_OSX_DEPLOYMENT_TARGET` defaults to 15.0 in the
+top-level `CMakeLists.txt`; it applies to `eco`, the bundled archives and
+(via the target triple and `-mmacosx-version-min`) every program `eco make`
+links. Every Apple Silicon Mac can run macOS 15. The `mac-aot` workflow
+fails if anything shipped or linked needs a newer macOS
+(`test/scripts/check-macho-floor.sh`).
+
+## Using the bundle
+
+Users need only the Xcode Command Line Tools (`xcode-select --install`),
+which supply the linker and SDK `eco make` links against. `eco` finds them
+through `xcrun` each time it links (`$SDKROOT` overrides the SDK), so the
+bundle works wherever it is unpacked, with whichever Xcode or Command Line
+Tools the Mac has. See [`docs/getting-started.md`](getting-started.md) for
+installation.
 
 ## Prerequisites
 
@@ -34,7 +50,7 @@ xcrun --show-sdk-path      # → an existing path to a MacOSX.sdk
 ### 2. Homebrew packages
 
 ```bash
-brew install cmake ninja node pnpm llvm@21 openssl@3 gnu-time pkgconf ccache
+brew install cmake ninja node pnpm openssl@3 gnu-time pkgconf ccache
 brew install rapidcheck    # required by the runtime test harness
 ```
 
@@ -42,8 +58,7 @@ brew install rapidcheck    # required by the runtime test harness
 |---|---|
 | `cmake`, `ninja` | Build driver. CMake ≥ 3.20. |
 | `node`, `pnpm` | Node 22+, used by the Stage 1–5 bootstrap (pure JS). |
-| `llvm@21` | LLVM 21.1.8 + MLIR (brew bottle, ~minutes). The aggregate `libLLVM` / `libMLIR` dylibs carry every backend incl. AArch64. |
-| `openssl@3` | The vendored libzip's `zip_crypto_openssl.c` references EVP_*; `Http.cpp` uses SHA1. Keg-only at `/opt/homebrew/opt/openssl@3/`. |
+| `openssl@3` | TLS in `eco/system`, SHA1 in `Http.cpp`, and the vendored libzip's crypto. Its static `libssl.a` / `libcrypto.a` are linked into `eco` and into user programs, so the bundle does not need Homebrew at run time. |
 | `gnu-time` | The bootstrap's stage timing logs invoke GNU time as `gtime`. |
 | `pkgconf` | Kernel-side curl/openssl probes. |
 | `ccache` | Optional, dramatically speeds up rebuilds. |
@@ -53,9 +68,20 @@ brew install rapidcheck    # required by the runtime test harness
 FetchContent on macOS so the AOT bundle ships its own `libzip.a` without
 a `/opt/homebrew` runtime dep.
 
-`brew install llvm@21` warns about a conflict with `llvm@18` if the latter
-is preinstalled. Ignore the warning — the build uses absolute keg paths
-via `CMAKE_PREFIX_PATH=/opt/homebrew/opt/llvm@21`, never `brew link`.
+### 3. LLVM/MLIR 21.1.8 (static)
+
+`eco` links LLVM and MLIR statically from a pinned 21.1.8 install tree, the
+same version as the Linux and Windows builds. Homebrew's `llvm@21` is not
+used: it is built around its shared `libLLVM.dylib`, which a shipped `eco`
+cannot rely on. Build the tree once (roughly an hour on an M-series Mac):
+
+```bash
+experiments/mac-llvm-build/build.sh     # → experiments/mac-llvm-build/out/llvm-install
+export ECO_MAC_DEPS_DIR=$PWD/experiments/mac-llvm-build/out/llvm-install
+```
+
+The `mac-build` preset reads `ECO_MAC_DEPS_DIR` as its `CMAKE_PREFIX_PATH`.
+CI builds the same tree in the `mac-llvm-build` workflow and caches it.
 
 ## CMake presets
 
@@ -64,7 +90,7 @@ Two macOS-specific presets:
 | Preset | Build dir | Purpose |
 |---|---|---|
 | `mac-frontend` | `build/` | Front-end only. Configures `compiler/` via `ECO_FRONTEND_ONLY=ON`; pure Node/Elm bootstrap through Stage 5 (eco-compiler.mlir). No LLVM/MLIR / runtime / kernels / tests. Fast (~4 min on a clean build). |
-| `mac-build` | `build/` | Full configure: runtime, kernels, tests, compiler. LLVM/MLIR from brew `llvm@21`. AppleClang + ld64 (no lld). |
+| `mac-build` | `build/` | Full configure: runtime, kernels, tests, compiler. Static LLVM/MLIR 21.1.8 from `$ECO_MAC_DEPS_DIR`. AppleClang + ld64 (no lld). |
 
 Both are gated on `${hostSystemName} == Darwin` so they only appear in
 `cmake --list-presets` on macOS hosts.
@@ -107,9 +133,9 @@ mkdir -p /tmp/eco-install && tar -xzf build/eco-*-darwin.tar.gz -C /tmp/eco-inst
 /tmp/eco-install/bin/eco --help
 ```
 
-The bundle is self-contained — `eco`'s runtime resolves project
-archives via `<exe>/../lib/eco-runtime/project/` (same code path as
-Linux), so any extraction prefix works.
+The bundle is self-contained apart from the Command Line Tools — `eco`'s
+runtime resolves project archives via `<exe>/../lib/eco-runtime/project/`
+(same code path as Linux), so any extraction prefix works.
 
 ## Bundle layout
 
@@ -172,13 +198,13 @@ workflow under `.github/workflows/`:
 
 | Workflow | What it checks (cheap → expensive, fail-fast) |
 |---|---|
-| `mac-aot` | Full configure (`mac-build`); front-end Stages 1-5; the elm-tests suite; runtime + JIT E2E test binary; the full Stage 9 bootstrap (`--target eco`); Mach-O verification (`file` + `codesign -dv` + `--help`); CPack bundle; and a self-contained bundle smoke-test. |
+| `mac-llvm-build` | Builds the static LLVM/MLIR 21.1.8 tree (`experiments/mac-llvm-build/build.sh`, 2-3 h cold) and caches it; a weekly run keeps the cache warm. |
+| `mac-aot` | Restores that tree; full configure (`mac-build`); front-end Stages 1-5; the elm-tests suite; runtime + JIT E2E test binary; the full Stage 9 bootstrap (`--target eco`); Mach-O verification (`file` + `codesign -dv` + `--help`); CPack bundle; a bundle smoke-test that builds `Hello.elm`; the macOS-floor and linked-library gate. Its `bundle-smoke` job then installs the bundle on a fresh runner with only the Command Line Tools (Xcode app and Homebrew LLVM/OpenSSL moved aside, clean `HOME`, minimal `PATH`) and builds and runs two programs. |
 
 `mac-aot` runs on the free `macos-15` (arm64, M-class) hosted runner.
 It supersedes the former `mac-bootstrap` (front-end) and `mac-runtime`
 (JIT) workflows, which were folded in as gateway steps so a single run
-both tests and ships — and so a push installs LLVM via brew once, not
-three times.
+both tests and ships.
 Private repos burn macOS minutes at 10×; the free tier covers public
 repos like this one without metering.
 
@@ -186,18 +212,26 @@ repos like this one without metering.
 
 The following are NOT yet supported on macOS:
 
-- **`x86_64-apple-darwin`.** The code is platform-conditioned on
-  `__aarch64__` for the GC's 16 KiB page size and the codegen CPU
-  (`apple-m1`); Intel host builds will configure but are not in CI.
+- **`x86_64-apple-darwin`.** Intel Macs are out of scope: the LLVM tree
+  carries only the AArch64 backend, and the code is platform-conditioned
+  on `__aarch64__` for the GC's 16 KiB page size and the codegen CPU
+  (`apple-m1`).
+- **Linking without the Command Line Tools.** A bundled `ld64.lld` plus
+  generated `.tbd` stubs would remove the last prerequisite; see the
+  follow-up in [`plans/mac-self-contained-bundle.md`](../plans/mac-self-contained-bundle.md).
 - **`.dylib` / `.node` outputs.** `linkExecutableDarwin()` currently
   errors on `sharedLib`; the Stage D `LinkProfile::GlibcBundleShared`
   refactor has no Mach-O counterpart yet.
 - **CommonCrypto for SHA + libzip.** `Http.cpp`'s `SHA1()` and the
   vendored libzip's crypto backend both pull in OpenSSL; the elegant
   alternative is `CC_SHA1` + `ENABLE_COMMONCRYPTO`. Replacing them
-  removes the brew `openssl@3` dep entirely.
+  would remove the brew `openssl@3` build dependency (eco/system's TLS
+  also uses OpenSSL).
 - **Notarized `.pkg` / Homebrew formula.** The v1 bundle is the
-  tarball; both packaging formats are deferred.
+  tarball, ad-hoc signed only; downloaded with a browser it is
+  quarantined and blocked by Gatekeeper (see
+  [`docs/getting-started.md`](getting-started.md)). Both packaging
+  formats are deferred.
 - **Universal binaries.** AOT codegen targets the host arch only.
 
 ## Reference
