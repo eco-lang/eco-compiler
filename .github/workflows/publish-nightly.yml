@@ -5,8 +5,8 @@
 # their distributable bundles, and refreshes a single rolling pre-release.
 #
 # The tag is derived from version.txt: v<version>-daily (e.g. v0.1.0-daily).
-# It is MOVED to the newest built commit on every run (delete-and-recreate) so
-# tags never accumulate. Assets are anonymously downloadable at
+# It is MOVED to the newest built commit on every run (the new release is
+# staged as a draft, then swapped in for the old one) so tags never accumulate. Assets are anonymously downloadable at
 #   https://github.com/eco-lang/eco-compiler/releases/download/v<ver>-daily/<asset>
 name: publish-nightly
 
@@ -105,21 +105,56 @@ jobs:
           cat notes.md
 
       - name: Move the rolling tag + refresh assets
+        # Replace the release only once its successor is ready, so a failure
+        # anywhere before the swap leaves the current nightly in place (a
+        # delete-then-create here once deleted it and then failed to create).
+        #   1. Probe: create and delete a throwaway tag at the target commit.
+        #      GitHub refuses the workflow token a tag at some commits (on
+        #      2026-10-13, one whose .github/workflows differed from master's
+        #      head: "HTTP 403: Resource not accessible by integration"), and
+        #      the release's own tag would fail the same way.
+        #   2. Stage: a draft release (drafts create no tag) carrying every
+        #      asset; any failure deletes the draft.
+        #   3. Swap: delete the old release and its tag, then publish the draft
+        #      under the rolling tag, which creates the tag at the target.
         env:
           GH_TOKEN: ${{ github.token }}
           DAILY_TAG: ${{ steps.meta.outputs.daily_tag }}
           SHA: ${{ steps.meta.outputs.sha }}
         run: |
           set -euo pipefail
-          # Delete-and-recreate so the release and its tag always agree on the
-          # target commit, and the rolling tag is moved rather than duplicated.
+          repo="$GITHUB_REPOSITORY"
+          title="Nightly $DAILY_TAG ($(date -u '+%Y-%m-%d'))"
+
+          probe="eco-nightly-probe-$GITHUB_RUN_ID"
+          if ! gh api -X POST "repos/$repo/git/refs" \
+                -f ref="refs/tags/$probe" -f sha="$SHA" >/dev/null 2>probe.err; then
+            echo "::error::cannot create a tag at $SHA: $(cat probe.err). Keeping the current $DAILY_TAG release."
+            exit 1
+          fi
+          gh api -X DELETE "repos/$repo/git/refs/tags/$probe" >/dev/null
+
+          id=$(gh api -X POST "repos/$repo/releases" \
+                 -f tag_name="$DAILY_TAG-next-$GITHUB_RUN_ID" -f target_commitish="$SHA" \
+                 -f name="$title" -F body=@notes.md -F draft=true -F prerelease=true \
+                 --jq .id)
+          trap 'gh api -X DELETE "repos/$repo/releases/$id" >/dev/null 2>&1 || true' ERR
+          for f in dist/*; do
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "https://uploads.github.com/repos/$repo/releases/$id/assets?name=$(basename "$f")" \
+              >/dev/null
+            echo "staged $(basename "$f")"
+          done
+          trap - ERR
+
           gh release delete "$DAILY_TAG" --cleanup-tag --yes 2>/dev/null || true
-          gh release create "$DAILY_TAG" \
-            --target "$SHA" \
-            --prerelease \
-            --title "Nightly $DAILY_TAG ($(date -u '+%Y-%m-%d'))" \
-            --notes-file notes.md \
-            dist/*
+          gh api -X PATCH "repos/$repo/releases/$id" \
+            -f tag_name="$DAILY_TAG" -f target_commitish="$SHA" -F draft=false >/dev/null
+          gh release view "$DAILY_TAG" --json tagName,url,assets \
+            --jq '"published \(.tagName) with \(.assets|length) assets: \(.url)"'
 
       - name: Prune stale -daily pre-releases (only after a version bump)
         env:
@@ -131,3 +166,8 @@ jobs:
             -q '.[] | select(.isPrerelease) | .tagName' \
             | grep -E '^v.*-daily$' | grep -vx "$DAILY_TAG" \
             | xargs -r -n1 -I{} gh release delete {} --cleanup-tag --yes || true
+          # Drafts a failed "Move the rolling tag" left behind (tag_name
+          # <daily>-next-<run id>; drafts own no tag, so delete by release id).
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            -q '.[] | select(.draft and (.tag_name | test("-daily-next-[0-9]+$"))) | .id' \
+            | xargs -r -n1 -I{} gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/{}" || true
