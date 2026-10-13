@@ -44,6 +44,7 @@ on:
       - 'docker/static-build.Dockerfile'
       - 'docker/llvm-alpine.Dockerfile'
       - '.github/workflows/linux-aot.yml'
+      - '.github/scripts/prune-caches.sh'
   workflow_dispatch:
   schedule:
     # Daily build keeps the debian + alpine LLVM caches accessed (a restore
@@ -61,6 +62,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    # actions: write lets "Prune superseded ccache entries" delete caches
+    # (the repository's default token is read-only).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -198,6 +204,19 @@ jobs:
           path: .ccache
           key: linux-bootstrap-ccache-${{ github.sha }}
 
+      - name: Prune superseded ccache entries
+        # Keep only the newest linux-bootstrap-ccache-* entry on master (the one just saved):
+        # restore-keys only ever reads the newest, and per-commit entries
+        # otherwise pile up and push the LLVM caches out of the 10 GB limit.
+        # Other refs save nothing, so they dry-run it instead: list what
+        # master's prune would delete and check the token may delete caches.
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.ref != 'refs/heads/master' && '1' || '' }}
+        run: .github/scripts/prune-caches.sh linux-bootstrap-ccache-
+
       - name: ccache stats
         if: always()
         run: |
@@ -225,6 +244,11 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    # actions: write lets "Prune superseded bundle ccache entries" delete
+    # caches (the repository's default token is read-only).
+    permissions:
+      contents: read
+      actions: write
     # Throwaway registry on localhost:5000. The cached alpine LLVM base image is
     # `docker load`ed into the host daemon, but the cache-dance below forces a
     # `docker-container` buildx driver, which CANNOT see the host daemon's image
@@ -331,6 +355,18 @@ jobs:
           [ "$needed" -eq 0 ] || { echo "ERROR: eco is not fully static"; exit 1; }
           ./eco --version || true
           echo "OK: eco is a fully-static binary"
+
+      - name: Prune superseded bundle ccache entries
+        # Unlike the other ccaches, "Restore bundle ccache" is actions/cache,
+        # which saves a new entry in its post step on every ref: the
+        # buildkit-cache-dance post step must sync the BuildKit mount back to
+        # ccache-bundle first, so an explicit save step here would store stale
+        # objects. Prune this ref's older entries now, keeping the newest; the
+        # post step then adds this run's, leaving at most two (~15 MB each).
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/prune-caches.sh bundle-ccache- "${{ github.ref }}"
 
       - name: Upload distribution bundles
         if: always()

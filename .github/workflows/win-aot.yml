@@ -30,6 +30,7 @@ on:
       - 'CMakePresets.json'
       - 'version.txt'
       - '.github/workflows/win-aot.yml'
+      - '.github/scripts/prune-caches.sh'
   workflow_dispatch:
   schedule:
     # Daily build keeps the LLVM-MSVC install-tree cache accessed (a restore
@@ -42,6 +43,11 @@ jobs:
     # Actual wall-clock is ~60 min (Stage 6 ~9m + Stage 7 ~15m + Stage 8/9
     # ~22m + the JIT gateway ~6m); 240 leaves ample headroom under the 6h cap.
     timeout-minutes: 240
+    # actions: write lets "Prune superseded ccache entries" delete caches
+    # (the repository's default token is read-only).
+    permissions:
+      contents: read
+      actions: write
     env:
       LLVM_DIR: ${{ github.workspace }}\experiments\win-llvm-build\out\llvm-install
       # ccache reuses object files for unchanged TUs across runs (the eco build
@@ -304,6 +310,19 @@ jobs:
         with:
           path: .ccache
           key: win-aot-ccache-${{ github.sha }}
+
+      - name: Prune superseded ccache entries
+        # Keep only the newest win-aot-ccache-* entry on master (the one just saved):
+        # restore-keys only ever reads the newest, and per-commit entries
+        # otherwise pile up and push the LLVM caches out of the 10 GB limit.
+        # Other refs save nothing, so they dry-run it instead: list what
+        # master's prune would delete and check the token may delete caches.
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.ref != 'refs/heads/master' && '1' || '' }}
+        run: .github/scripts/prune-caches.sh win-aot-ccache-
 
       - name: Upload AOT output + bundle + logs
         if: always()

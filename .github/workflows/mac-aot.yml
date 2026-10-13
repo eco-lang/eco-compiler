@@ -32,6 +32,7 @@ on:
       - 'version.txt'
       - 'system-kernel-cpp/**'
       - '.github/workflows/mac-aot.yml'
+      - '.github/scripts/prune-caches.sh'
   workflow_dispatch:
   schedule:
     # Daily build keeps the workflow exercised. (schedule only fires from the
@@ -42,6 +43,11 @@ jobs:
   aot:
     runs-on: macos-15
     timeout-minutes: 90
+    # actions: write lets "Prune superseded ccache entries" delete caches
+    # (the repository's default token is read-only).
+    permissions:
+      contents: read
+      actions: write
     env:
       # The static LLVM/MLIR install tree the mac-build preset links
       # (CMAKE_PREFIX_PATH=$ECO_MAC_DEPS_DIR).
@@ -274,6 +280,19 @@ jobs:
         with:
           path: ~/Library/Caches/ccache
           key: mac-aot-ccache-${{ github.sha }}
+
+      - name: Prune superseded ccache entries
+        # Keep only the newest mac-aot-ccache-* entry on master (the one just saved):
+        # restore-keys only ever reads the newest, and per-commit entries
+        # otherwise pile up and push the LLVM caches out of the 10 GB limit.
+        # Other refs save nothing, so they dry-run it instead: list what
+        # master's prune would delete and check the token may delete caches.
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.ref != 'refs/heads/master' && '1' || '' }}
+        run: .github/scripts/prune-caches.sh mac-aot-ccache-
 
       - name: ccache stats
         if: always()
