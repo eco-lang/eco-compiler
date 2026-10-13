@@ -7,6 +7,13 @@ build-profile/
 # Caches and profiling output — never needed in a build context, and large
 # (.ccache and heap-profiles alone were ~1 GB of the context before this).
 .ccache/
+# linux-aot bundle job: the host side of the BuildKit ccache mount
+# (buildkit-cache-dance), and the bundles "Export distribution bundles" writes.
+# Both change between that job's docker builds, so leaving them in the context
+# broke the `COPY . .` layer cache and made "Verify fully-static eco binary"
+# rebuild eco from scratch (~36 min).
+ccache-bundle/
+dist/
 .pnpm-store/
 heap-profiles/
 .serena/
