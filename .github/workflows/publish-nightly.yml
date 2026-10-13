@@ -12,8 +12,8 @@ name: publish-nightly
 
 on:
   schedule:
-    # After the 06:00-06:40 build crons clear. linux's serial test->bundle
-    # chain is the slowest; see plans/nightly-build-publishing.md (Risks).
+    # After the 06:00-06:40 build crons clear; linux-aot (its three jobs in
+    # parallel) is the slowest; see plans/nightly-build-publishing.md (Risks).
     - cron: '0 10 * * *'
   workflow_dispatch: {}
 

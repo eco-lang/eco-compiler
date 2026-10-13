@@ -39,6 +39,12 @@ on:
     # default branch, so this is inert until merged to master.)
     - cron: '0 6 * * *'
 
+# A newer push to the same branch cancels this run. Master runs each get a
+# group of their own, so they are never cancelled or queued behind another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   aot:
     runs-on: macos-15

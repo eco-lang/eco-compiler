@@ -1,21 +1,24 @@
-# Linux — single consolidated build: the full bootstrap + every test gateway,
-# then the shippable fully-static distribution bundle.
+# Linux — the full bootstrap + every test gateway, and the shippable
+# fully-static distribution bundle.
 #
-# Unlike mac/win (one toolchain), Linux runs TWO toolchains and so this
-# workflow has TWO jobs:
+# Unlike mac/win (one toolchain), Linux runs TWO toolchains. Three jobs run
+# in parallel:
 #
-#   job `test`   (glibc / debian, docker/eco-dev.Dockerfile): the full
-#                9-stage self-hosting bootstrap + all test gateways
-#                (Gate A `full`+JIT-E2E, elm-tests, stress, bootstrap stages
-#                incl. JS-4b & native-8c fixed points, Gate B AOT-E2E).
-#                This is the former `linux-bootstrap` workflow.
+#   job `test`      (glibc / debian, docker/eco-dev.Dockerfile): Gate A
+#                   (`full`: clean rebuild + JIT-E2E), elm-tests, stress.
 #
-#   job `bundle` (musl / alpine, docker/static-build.Dockerfile,
-#                `needs: test`): builds the fully-static `eco`, runs the
-#                smoke/ELF-contract gates, and exports the release bundle set
-#                (.tar.gz / .zip / .deb). This is the former `linux-aot`.
-#                It runs only if `test` is green, so we never ship an artifact
-#                that failed the gateways.
+#   job `bootstrap` (same image): the full 9-stage self-hosting bootstrap
+#                   incl. the JS-4b & native-8c fixed points, then Gate B
+#                   (AOT-E2E). `test` + `bootstrap` are the former
+#                   `linux-bootstrap` workflow, split to halve its wall clock.
+#
+#   job `bundle`    (musl / alpine, docker/static-build.Dockerfile): builds
+#                   the fully-static `eco`, runs the smoke/ELF-contract gates,
+#                   and exports the release bundle set (.tar.gz / .zip /
+#                   .deb). It no longer waits for the gateways: publish-nightly
+#                   and release only take a run whose overall conclusion is
+#                   success, so a bundle from a run with a failed gateway is
+#                   never shipped.
 #
 # We ship the musl-static binary (portability) but validate the suite on
 # glibc, where the dev toolchain lives and the self-host bootstrap is reliable
@@ -43,6 +46,7 @@ on:
       - 'docker/llvm-debian.Dockerfile'
       - 'docker/static-build.Dockerfile'
       - 'docker/llvm-alpine.Dockerfile'
+      - '.dockerignore'
       - '.github/workflows/linux-aot.yml'
       - '.github/scripts/prune-caches.sh'
   workflow_dispatch:
@@ -55,9 +59,19 @@ env:
   LLVM_VERSION: '21.1.8'
   DOCKER_BUILDKIT: '1'
 
+# A newer push to the same branch cancels this run. Master runs each get a
+# group of their own, so they are never cancelled or queued behind another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ===========================================================================
-  # Gateway suite — full bootstrap + tests on the glibc dev image.
+  # Gateway suites on the glibc dev image, in two parallel jobs (each about
+  # 50 min; one job ran them serially in ~95 min). `test`: Gate A (clean
+  # rebuild + JIT E2E + eco-system core), elm-tests, stress. `bootstrap`: the
+  # 9-stage self-host chain with its fixed-point gates, then Gate B (AOT E2E).
+  # Both build from the same restored ccache, which `test` saves on master.
   # ===========================================================================
   test:
     runs-on: ubuntu-latest
@@ -104,7 +118,8 @@ jobs:
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
         # one, so per-commit entries cannot pile up and evict the LLVM caches
-        # (10 GB Actions cache limit). Saved by "Save ccache" on master only.
+        # (10 GB Actions cache limit). Saved by the test job's "Save ccache" on
+        # master only; the bootstrap job compiles the same C++ and reuses it.
         uses: actions/cache/restore@v4
         with:
           # eco-dev sets CCACHE_DIR=/work/.ccache; /work is the bind-mounted
@@ -113,12 +128,12 @@ jobs:
           key: linux-bootstrap-ccache-${{ github.sha }}
           restore-keys: linux-bootstrap-ccache-
 
-      - name: Bootstrap pipeline + test gateways (inside eco-dev)
+      - name: Gate A, elm-tests and stress (inside eco-dev)
         run: |
           # The script runs in /work (bind-mounted) and is exec'd by the
           # eco-dev entrypoint as the host-uid user (gosu), inheriting the
           # image's LLVM/ccache/clang environment.
-          cat > ci-linux-bootstrap.sh <<'EOS'
+          cat > ci-linux-test.sh <<'EOS'
           #!/usr/bin/env bash
           set -euo pipefail
           # Self-compilation (Stages 2+) needs a 12 GB Node heap.
@@ -155,45 +170,12 @@ jobs:
           echo "::group::Stress tests"
           cmake --build build --target stress
           echo "::endgroup::"
-
-          echo "::group::Full bootstrap (stages 1-9 + fixed-point gates)"
-          cmake --build build --target bootstrap
-          echo "::endgroup::"
-
-          echo "::group::Gate B — AOT E2E (target: run-aot-e2e)"
-          set +e
-          cmake --build build --target run-aot-e2e 2>&1 | tee /work/ci-logs/aot-e2e.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            # FlagsRecordTest and PortEchoTest need program flags / port stdin
-            # that the AOT harness (run_elf) does not feed; both pass under the
-            # JIT gate above. Tolerate exactly those two — any other AOT
-            # failure is a real regression and must fail the build.
-            unexpected="$(grep -E '^FAIL ' /work/ci-logs/aot-e2e.log | grep -vE 'FlagsRecordTest|PortEchoTest' || true)"
-            if [ -n "$unexpected" ]; then
-              echo "ERROR: unexpected AOT E2E failures:"; echo "$unexpected"; exit 1
-            fi
-            echo "OK: AOT E2E — only the known harness-limited tests failed (FlagsRecordTest, PortEchoTest)"
-          fi
-          echo "::endgroup::"
           EOS
-          chmod +x ci-linux-bootstrap.sh
+          chmod +x ci-linux-test.sh
           docker run --rm \
             -v "$PWD":/work \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-            eco-dev bash /work/ci-linux-bootstrap.sh
-
-      - name: Report outputs and timings
-        if: always()
-        run: |
-          echo "=== bootstrap outputs ==="
-          ls -la build/compiler/build-xhr/bin/ 2>/dev/null || true
-          ls -la build/compiler/build-kernel/bin/ 2>/dev/null || true
-          echo "=== stage timing logs ==="
-          for f in build/compiler/build-kernel/timing-*.txt; do
-            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
-          done
+            eco-dev bash /work/ci-linux-test.sh
 
       - name: Save ccache (master only)
         # After the build/test steps, so it holds this run's objects; only on
@@ -224,24 +206,140 @@ jobs:
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             eco-dev bash -lc 'ccache -s | head -15' || true
 
-      - name: Upload bootstrap logs
+      - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: linux-test-logs
           path: |
-            build/compiler/build-kernel/timing-*.txt
             ci-logs/elm-tests.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
+      - name: Restore LLVM debian base image (from linux-llvm-build-debian)
+        # fail-on-cache-miss: the debian base is warmed by linux-llvm-build-debian
+        # and consumed here, so linux-aot never drops into the slow ~1h inline
+        # LLVM rebuild. A cold cache fails fast and legibly — run
+        # linux-llvm-build-debian first, then re-run. (Same contract as the
+        # alpine base in the bundle job.)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/eco-llvm-debian.tar.gz
+          # Same key linux-llvm-build-debian writes, so a warm cache is reused.
+          key: eco-llvm-debian-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-debian.Dockerfile') }}
+          fail-on-cache-miss: true
+
+      - name: Load LLVM debian base image
+        run: |
+          img="eco-llvm-debian:${{ env.LLVM_VERSION }}"
+          echo "Loading cached $img ..."
+          gunzip -c /tmp/eco-llvm-debian.tar.gz | docker load
+          docker image ls "$img"
+
+      - name: Build eco-dev image
+        # INSTALL_TLA=0: CI runs no TLA+ model checks (they are local gates),
+        # so skip the JRE, the TLA+ jars and Apalache (~240 MB of downloads).
+        run: docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
+
+      - name: Restore ccache
+        # Restore only: branch runs read master's newest ccache and never save
+        # one, so per-commit entries cannot pile up and evict the LLVM caches
+        # (10 GB Actions cache limit). Saved by the test job's "Save ccache" on
+        # master only; the bootstrap job compiles the same C++ and reuses it.
+        uses: actions/cache/restore@v4
+        with:
+          # eco-dev sets CCACHE_DIR=/work/.ccache; /work is the bind-mounted
+          # workspace, so the cache lands here and survives between runs.
+          path: .ccache
+          key: linux-bootstrap-ccache-${{ github.sha }}
+          restore-keys: linux-bootstrap-ccache-
+
+      - name: Full bootstrap and Gate B (inside eco-dev)
+        run: |
+          cat > ci-linux-bootstrap.sh <<'EOS'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          # Self-compilation (Stages 2+) needs a 12 GB Node heap.
+          export NODE_OPTIONS="--max-old-space-size=12000"
+          # Logs go under the bind-mounted workspace so the host upload step
+          # (which runs outside the container) can collect them.
+          mkdir -p /work/ci-logs
+
+          echo "::group::Configure (build preset)"
+          cmake --preset build
+          echo "::endgroup::"
+
+          echo "::group::Build (runtime, kernels, eco-boot-native)"
+          cmake --build build
+          echo "::endgroup::"
+
+          echo "::group::Full bootstrap (stages 1-9 + fixed-point gates)"
+          cmake --build build --target bootstrap
+          echo "::endgroup::"
+
+          echo "::group::Gate B — AOT E2E (target: run-aot-e2e)"
+          set +e
+          cmake --build build --target run-aot-e2e 2>&1 | tee /work/ci-logs/aot-e2e.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            # FlagsRecordTest and PortEchoTest need program flags / port stdin
+            # that the AOT harness (run_elf) does not feed; both pass under the
+            # JIT gate. Tolerate exactly those two — any other AOT failure is a
+            # real regression and must fail the build.
+            unexpected="$(grep -E '^FAIL ' /work/ci-logs/aot-e2e.log | grep -vE 'FlagsRecordTest|PortEchoTest' || true)"
+            if [ -n "$unexpected" ]; then
+              echo "ERROR: unexpected AOT E2E failures:"; echo "$unexpected"; exit 1
+            fi
+            echo "OK: AOT E2E — only the known harness-limited tests failed (FlagsRecordTest, PortEchoTest)"
+          fi
+          echo "::endgroup::"
+          EOS
+          chmod +x ci-linux-bootstrap.sh
+          docker run --rm \
+            -v "$PWD":/work \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            eco-dev bash /work/ci-linux-bootstrap.sh
+
+      - name: Report outputs and timings
+        if: always()
+        run: |
+          echo "=== bootstrap outputs ==="
+          ls -la build/compiler/build-xhr/bin/ 2>/dev/null || true
+          ls -la build/compiler/build-kernel/bin/ 2>/dev/null || true
+          echo "=== stage timing logs ==="
+          for f in build/compiler/build-kernel/timing-*.txt; do
+            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+          done
+
+      - name: Upload bootstrap logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bootstrap-logs
+          path: |
+            build/compiler/build-kernel/timing-*.txt
             ci-logs/aot-e2e.log
           if-no-files-found: warn
           retention-days: 7
 
   # ===========================================================================
-  # Distribution — fully-static musl binary + release bundles. Ships only if
-  # the gateway suite (`test`) is green.
+  # Distribution — fully-static musl binary + release bundles. Runs alongside
+  # the gateways; ships only from a run where they are green too (see top).
   # ===========================================================================
   bundle:
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 300
     # actions: write lets "Prune superseded bundle ccache entries" delete

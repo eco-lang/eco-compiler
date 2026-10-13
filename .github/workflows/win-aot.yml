@@ -37,6 +37,12 @@ on:
     # resets GitHub's 7-day eviction timer). Inert until merged to master.
     - cron: '40 6 * * *'
 
+# A newer push to the same branch cancels this run. Master runs each get a
+# group of their own, so they are never cancelled or queued behind another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   aot:
     runs-on: windows-latest
