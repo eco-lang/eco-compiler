@@ -364,31 +364,52 @@ Testing::TestCase testParMinorStealing(
     "threaded-gc-06: a single wide root is shared by stealing (4 workers)",
     []() {
         auto& a = initMinor(4);
-        std::vector<HPointer> elems(50000, alloc::listNil());
-        HPointer arr = alloc::listNil();
-        {
-            StackRootRangeGuard guard(elems.data(), elems.size(), ~uint64_t{0});
-            for (size_t i = 0; i < elems.size(); ++i) {
-                const HPointer x = alloc::allocInt(static_cast<i64>(i));
-                elems[i] = alloc::tuple2(alloc::boxed(x), alloc::boxed(x), 0);
-            }
-            arr = alloc::arrayFromPointers(elems);
-        }
-        a.getRootSet().addRoot(&arr);
+        // Whether a helper steals before the initiating worker copies the whole
+        // root itself is a scheduling race, not a GC property: the parallel
+        // phase lasts a few ms, and on a busy 3-vCPU CI runner (4 workers) a
+        // helper may not be scheduled before it ends. So each attempt builds a
+        // fresh root, and stealing must show up within kAttempts minors; the
+        // first steal ends the loop, so a normal run is one attempt (~10 ms).
+        // Every attempt checks the copied graph.
+        constexpr int kAttempts = 20;
 #if ENABLE_GC_STATS
-        const uint64_t st0 = nurseryOf(a).getStats().pmin.steals;
-        a.minorGC();
-        TEST_ASSERT(nurseryOf(a).getStats().pmin.steals > st0);
-#else
-        a.minorGC();
+        bool stole = false;
 #endif
-        ElmArray* ar = static_cast<ElmArray*>(AllocatorTestAccess::fromPointer(arr));
-        for (u32 i = 0; i < ar->length; ++i) {
-            Tuple2* t = static_cast<Tuple2*>(AllocatorTestAccess::fromPointer(ar->elements[i].p));
-            TEST_ASSERT(static_cast<ElmInt*>(AllocatorTestAccess::fromPointer(t->a.p))->value == static_cast<i64>(i));
-            TEST_ASSERT(t->a.p.ptr == t->b.p.ptr);   // one copy, shared
+        for (int attempt = 0; attempt < kAttempts; ++attempt) {
+            std::vector<HPointer> elems(50000, alloc::listNil());
+            HPointer arr = alloc::listNil();
+            {
+                StackRootRangeGuard guard(elems.data(), elems.size(), ~uint64_t{0});
+                for (size_t i = 0; i < elems.size(); ++i) {
+                    const HPointer x = alloc::allocInt(static_cast<i64>(i));
+                    elems[i] = alloc::tuple2(alloc::boxed(x), alloc::boxed(x), 0);
+                }
+                arr = alloc::arrayFromPointers(elems);
+            }
+            a.getRootSet().addRoot(&arr);
+#if ENABLE_GC_STATS
+            const uint64_t st0 = nurseryOf(a).getStats().pmin.steals;
+            a.minorGC();
+            stole = nurseryOf(a).getStats().pmin.steals > st0;
+#else
+            a.minorGC();
+#endif
+            ElmArray* ar = static_cast<ElmArray*>(AllocatorTestAccess::fromPointer(arr));
+            for (u32 i = 0; i < ar->length; ++i) {
+                Tuple2* t = static_cast<Tuple2*>(AllocatorTestAccess::fromPointer(ar->elements[i].p));
+                TEST_ASSERT(static_cast<ElmInt*>(AllocatorTestAccess::fromPointer(t->a.p))->value == static_cast<i64>(i));
+                TEST_ASSERT(t->a.p.ptr == t->b.p.ptr);   // one copy, shared
+            }
+            a.getRootSet().removeRoot(&arr);
+#if ENABLE_GC_STATS
+            if (stole) break;
+#else
+            break;   // without stats there is no steal count to wait for
+#endif
         }
-        a.getRootSet().removeRoot(&arr);
+#if ENABLE_GC_STATS
+        TEST_ASSERT(stole);
+#endif
     });
 
 Testing::TestCase testParMinorFallbackSpace(
