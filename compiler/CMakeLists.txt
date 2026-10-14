@@ -226,10 +226,10 @@ add_custom_command(
 )
 add_custom_target(eco-system-docs ALL DEPENDS ${ECO_SYSTEM_DIR}/docs.json)
 
-# The eco/system example programs (examples/system, plans/eco-system-library.md Phase 9.3) are
-# compiled, not run, by `full`, so an API change that breaks them is caught. Output goes to the
-# build tree; the examples' own eco-stuff/ cache is git-ignored.
-file(GLOB _eco_system_examples CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/system/src/*.elm)
+# The example programs (examples/src, plans/eco-system-library.md Phase 9.3) are compiled, not run,
+# by `full`, so an API change that breaks them is caught. Output goes to the build tree; the
+# examples' own eco-stuff/ cache is git-ignored.
+file(GLOB _eco_system_examples CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/src/*.elm)
 set(_eco_system_example_cmds)
 foreach(_ex ${_eco_system_examples})
     get_filename_component(_name ${_ex} NAME_WE)
@@ -242,8 +242,8 @@ endforeach()
 add_custom_target(eco-system-examples
     ${_eco_system_example_cmds}
     DEPENDS guida
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system
-    COMMENT "Compiling the eco/system examples (examples/system)"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/examples
+    COMMENT "Compiling the example programs (examples/src)"
     VERBATIM
 )
 

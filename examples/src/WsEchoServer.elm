@@ -3,7 +3,7 @@ module WsEchoServer exposing (main)
 {-| A WebSocket echo server on `Http.Server`: every message a client sends comes back unchanged.
 
     eco make src/WsEchoServer.elm --output=ws-echo-server && ./ws-echo-server 9001
-    ./ws-client ws://127.0.0.1:9001/ hello      # examples/system/src/WsClient.elm
+    ./ws-client ws://127.0.0.1:9001/ hello      # examples/src/WsClient.elm
 
 Arguments, all optional, in any order:
 

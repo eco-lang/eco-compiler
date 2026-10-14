@@ -1,18 +1,16 @@
 module Hello exposing (main)
 
-import Eco.Console
-import Platform
-import Task
+{-| Hello world: print a greeting to stdout.
+
+    eco make src/Hello.elm --output=hello && ./hello
+
+-}
+
+import Stream.Log
+import System
 
 
-main : Program () () ()
+main : System.SimpleProgram msg
 main =
-    Platform.worker
-        { init =
-            \_ ->
-                ( ()
-                , Task.attempt (always ()) (Eco.Console.write Eco.Console.stdout "Hello World!\n")
-                )
-        , update = \_ model -> ( model, Cmd.none )
-        , subscriptions = \_ -> Sub.none
-        }
+    System.defineSimpleProgram
+        (\env -> System.endSimpleProgram (Stream.Log.line env.stdout "Hello World!"))

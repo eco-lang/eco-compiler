@@ -6,7 +6,7 @@
 CONF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$CONF_DIR/../.." && pwd)
 BUILD=${ECO_BUILD_DIR:-$REPO/build}
-EXAMPLES=$REPO/examples/system
+EXAMPLES=$REPO/examples
 
 log() { printf '[%s] %s\n' "$(basename "$0")" "$*" >&2; }
 die() { log "error: $*"; exit 1; }
@@ -23,12 +23,15 @@ fetch() {
     echo "$sum  $out" | sha256sum -c --quiet - || die "checksum mismatch: $out (delete it to retry)"
 }
 
-# build_program MODULE NAME WORKDIR BACKENDS: compile examples/system/src/MODULE.elm with the
-# Stage-1 compiler (compiler/bin/index.js) for each backend in BACKENDS ("native", "js" or both):
+# build_program MODULE NAME WORKDIR BACKENDS: compile MODULE.elm (from test/conformance/src when it
+# is there, such as the Autobahn client, else examples/src) with the Stage-1 compiler
+# (compiler/bin/index.js) for each backend in BACKENDS ("native", "js" or both):
 #   native: MODULE.elm -> WORKDIR/NAME.mlir -> eco-boot-native -> WORKDIR/NAME
 #   js:     MODULE.elm -> WORKDIR/NAME.js plus a launcher WORKDIR/NAME.run.js
 build_program() {
     local module=$1 name=$2 work=$3 backends=$4
+    local project=$EXAMPLES
+    [ -f "$CONF_DIR/src/$module.elm" ] && project=$CONF_DIR
     local guida=$BUILD/compiler/build-xhr/bin/guida.js
     local native=$BUILD/runtime/src/codegen/eco-boot-native
     [ -f "$guida" ] || die "missing $guida (cmake --build build --target guida)"
@@ -37,7 +40,7 @@ build_program() {
     *native*)
         [ -x "$native" ] || die "missing $native (cmake --build build --target eco-boot-native)"
         log "compiling $module (native)"
-        (cd "$EXAMPLES" && GUIDA_JS_PATH=$guida node "$REPO/compiler/bin/index.js" make "src/$module.elm" \
+        (cd "$project" && GUIDA_JS_PATH=$guida node "$REPO/compiler/bin/index.js" make "src/$module.elm" \
             --local-package "eco/system=$REPO/system-kernel-cpp" --output="$work/$name.mlir") \
             >"$work/$name.native-build.log" 2>&1 || { cat "$work/$name.native-build.log" >&2; die "compile failed: $module"; }
         "$native" "$work/$name.mlir" -o "$work/$name" >>"$work/$name.native-build.log" 2>&1 \
@@ -47,7 +50,7 @@ build_program() {
     case " $backends " in
     *js*)
         log "compiling $module (js)"
-        (cd "$EXAMPLES" && GUIDA_JS_PATH=$guida node "$REPO/compiler/bin/index.js" make "src/$module.elm" \
+        (cd "$project" && GUIDA_JS_PATH=$guida node "$REPO/compiler/bin/index.js" make "src/$module.elm" \
             --local-package "eco/system=$REPO/system-kernel-cpp" --output="$work/$name.js") \
             >"$work/$name.js-build.log" 2>&1 || { cat "$work/$name.js-build.log" >&2; die "compile failed: $module (js)"; }
         printf "require('./%s.js').Elm.%s.init();\n" "$name" "$module" >"$work/$name.run.js"

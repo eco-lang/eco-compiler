@@ -148,7 +148,7 @@ lib/eco-runtime/project/
   libEcoKernel_*.a                     # 9 Eco kernel modules
   libzip.a, libssl.a, libcrypto.a      # deps not in the SDK
 share/eco/kernel/eco-kernel-cpp/       # Elm sources for `import Eco.*`
-share/eco/examples/hello/              # starter project
+share/eco/examples/                    # example project (Hello, eco/system)
 ```
 
 A typical bundle is ~30 MB compressed. Notable contrasts with the Linux
@@ -179,12 +179,12 @@ v1 release is the tarball above.
 ## Running a sample program
 
 ```bash
-cd share/eco/examples/hello
+cd share/eco/examples
 ../../bin/eco make src/Hello.elm --output=hello
 file hello
 # hello: Mach-O 64-bit executable arm64
 ./hello
-# Hello, World!
+# Hello World!
 ```
 
 The first `eco make` invocation pulls a few packages from the Elm package

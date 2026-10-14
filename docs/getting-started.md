@@ -33,7 +33,7 @@ Copy that folder to your home dir so you have write access and can build there. 
 and run the hello world example:
 
     cp -R /usr/local/share/eco/examples ~/
-    cd ~/examples/hello
+    cd ~/examples
     eco make src/Hello.elm --output=hello
 
 Run it:
@@ -69,10 +69,9 @@ main =
 its stdin, stdout and stderr as streams, the platform and CPU architecture, and the path of the
 executable.
 
-The `examples/system` folder of the distribution holds small complete programs:
+The same `examples` folder holds small complete `eco/system` programs:
 
-    cp -R /usr/local/share/eco/examples/system ~/eco-system-examples
-    cd ~/eco-system-examples
+    cd ~/examples
     eco make src/Cat.elm --output=cat
     ./cat elm.json
     eco make src/Ls.elm --output=ls

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# h2spec 2.6.0 against Http.Server's HTTP/2 (examples/system/src/WsEchoServer.elm with TLS and
+# h2spec 2.6.0 against Http.Server's HTTP/2 (examples/src/WsEchoServer.elm with TLS and
 # --http2), compared with the baseline in test/conformance/h2spec-baseline.txt.
 #
 # LOCAL ONLY: never run this in CI (plans/eco-system-websockets.md W18, Appendix F). It downloads

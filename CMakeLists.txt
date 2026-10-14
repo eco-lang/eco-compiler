@@ -674,21 +674,10 @@ if(ECO_STATIC_MUSL)
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
-    # Starter examples — Elm sources only. The in-tree examples/ IS the hello
-    # project (elm.json + src/Hello.elm at its root), so install its contents
-    # into share/eco/examples/hello/ to give us room for sibling examples
-    # later. The prebuilt examples/hello ELF doesn't match the *.elm /
-    # elm.json filter and drops out.
+    # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
+    # Elm sources only; build outputs and caches don't match the filter and drop out.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
-            DESTINATION share/eco/examples/hello
-            COMPONENT Bundle
-            FILES_MATCHING
-                PATTERN "elm.json"
-                PATTERN "*.elm"
-                REGEX "/system(/|$)" EXCLUDE)
-    # eco/system examples (cat, ls, an HTTP echo server): plans/eco-system-library.md Phase 9.3.
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system/
-            DESTINATION share/eco/examples/system
+            DESTINATION share/eco/examples
             COMPONENT Bundle
             FILES_MATCHING
                 PATTERN "elm.json"
@@ -766,7 +755,7 @@ endif()
 #   <prefix>/lib/eco-runtime/project/{libzip,libssl,libcrypto}.a
 #   <prefix>/share/eco/kernel/eco-kernel-cpp/
 #   <prefix>/share/eco/system/system-kernel-cpp/
-#   <prefix>/share/eco/examples/hello/
+#   <prefix>/share/eco/examples/
 #
 # Notes vs Linux Stage C:
 #   - No crt subdir; ld64 needs no user-supplied startup objects.
@@ -851,16 +840,9 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
+    # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
-            DESTINATION share/eco/examples/hello
-            COMPONENT BundleDarwin
-            FILES_MATCHING
-                PATTERN "elm.json"
-                PATTERN "*.elm"
-                REGEX "/system(/|$)" EXCLUDE)
-    # eco/system examples (cat, ls, an HTTP echo server): plans/eco-system-library.md Phase 9.3.
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system/
-            DESTINATION share/eco/examples/system
+            DESTINATION share/eco/examples
             COMPONENT BundleDarwin
             FILES_MATCHING
                 PATTERN "elm.json"
@@ -945,16 +927,9 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
+    # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
-            DESTINATION share/eco/examples/hello
-            COMPONENT BundleWindows
-            FILES_MATCHING
-                PATTERN "elm.json"
-                PATTERN "*.elm"
-                REGEX "/system(/|$)" EXCLUDE)
-    # eco/system examples (cat, ls, an HTTP echo server): plans/eco-system-library.md Phase 9.3.
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system/
-            DESTINATION share/eco/examples/system
+            DESTINATION share/eco/examples
             COMPONENT BundleWindows
             FILES_MATCHING
                 PATTERN "elm.json"

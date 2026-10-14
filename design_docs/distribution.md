@@ -60,7 +60,7 @@ eco-0.1.0-x86_64-linux-musl/
 │        └─ libEcoKernel_*.a                   ( 9)
 └─ share/eco/
    ├─ kernel/eco-kernel-cpp/                   (the eco/kernel Elm package sources)
-   └─ examples/hello/                          (starter example: elm.json + src/Hello.elm)
+   └─ examples/                                (example project: elm.json + src/*.elm)
 ```
 
 `bin/` and `lib/eco-runtime/` must remain siblings. The runtime resolver
