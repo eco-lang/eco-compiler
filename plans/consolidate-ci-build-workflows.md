@@ -22,7 +22,7 @@ Net: **11 workflows → 5**.
 
 This is a deliberate reversal of the usual "fast-feedback ladder" argument
 (see *Trade-offs accepted* below). The cache-eviction objection that made
-this risky is removed by the maintainer's stated plan: **daily scheduled
+this risky is removed by the maintainer's stated plan: **nightly scheduled
 builds keep the LLVM caches warm, and/or self-hosted runners host the
 LLVM-from-source builds.**
 
@@ -183,22 +183,22 @@ cmake/**, CMakeLists.txt, CMakePresets.json, version.txt,
 <platform dockerfiles/preset bits>, .github/workflows/<platform>-aot.yml
 ```
 
-Keep `workflow_dispatch`. **Add `schedule:` (daily cron)** to all three
-`-aot` workflows — this *is* the maintainer's "daily build" and, as a side
+Keep `workflow_dispatch`. **Add `schedule:` (nightly cron)** to all three
+`-aot` workflows — this *is* the maintainer's "nightly build" and, as a side
 effect, resets the 7-day cache-eviction timer on every restore.
 
 ### Cache strategy (resolves the current red runs)
 
-1. **Daily `schedule` on the `-aot` workflows** keeps the LLVM caches accessed
+1. **Nightly `schedule` on the `-aot` workflows** keeps the LLVM caches accessed
    → never evicted. A scheduled *restore* counts as access; it does **not**
    rebuild LLVM (rebuild happens only when `LLVM_VERSION` / the base
-   Dockerfile hash changes). So the daily cost is the normal build, not a
+   Dockerfile hash changes). So the nightly cost is the normal build, not a
    3 h LLVM recompile.
 2. **Keep `linux-llvm-build` / `win-llvm-build`** as the warmers, triggered on
    their Dockerfile/version changes (unchanged) **plus** a weekly safety
    `schedule`.
 3. **linux-aot `bundle` job: switch to `fail-on-cache-miss: true`** (matching
-   win) and **drop the self-build fallback** that OOMs. With the daily warm
+   win) and **drop the self-build fallback** that OOMs. With the nightly warm
    cache this is safe, and it converts the current 3 h-then-die failure into a
    fast, legible "cache cold — run the warmer" error. *(If the maintainer
    prefers resilience over speed, keep the fallback but move the LLVM source
@@ -240,7 +240,7 @@ then linux.
    LLVM-cache restore + combined run is green and well under 240.
 4. **linux:** rewrite `linux-aot.yml` as the two-job (`test` → `bundle`)
    workflow; set `fail-on-cache-miss`; confirm the warmer keeps the cache hot.
-5. **Add the daily `schedule`** to all three `-aot` workflows and a weekly one
+5. **Add the nightly `schedule`** to all three `-aot` workflows and a weekly one
    to the warmers.
 6. **Delete** `mac-bootstrap.yml`, `mac-runtime.yml`, `win-bootstrap.yml`,
    `win-runtime.yml`, `linux-bootstrap.yml` in the same PR that lands the
@@ -265,13 +265,13 @@ then linux.
   way, and nothing else.
 - mac-aot ≤ 90 m, win-aot ≤ 240 m, linux `test` ≤ 180 m / `bundle` ≤ 180 m on
   warm caches.
-- A daily scheduled run keeps the linux + win LLVM caches from evicting (no
+- A nightly scheduled run keeps the linux + win LLVM caches from evicting (no
   `fail-on-cache-miss` failures across a 7-day window).
 
 ## Risks & open questions
 
 1. **LLVM-from-source reliability on hosted runners.** The warmers OOM on a
-   *cold* rebuild (7 GB linux / 4-vCPU win). The daily schedule avoids routine
+   *cold* rebuild (7 GB linux / 4-vCPU win). The nightly schedule avoids routine
    rebuilds, but an `LLVM_VERSION` bump still triggers one. *Mitigation:* the
    maintainer's self-hosted-runner option, or a higher-RAM runner label, for
    the warmer jobs specifically.
@@ -282,7 +282,7 @@ then linux.
 3. **Single-job log size / debuggability on linux.** The two-job split keeps
    glibc-test failures separate from musl-ship failures; if a future "one job"
    push is wanted, it is blocked on the `Map.!` musl bootstrap bug.
-4. **`schedule` only runs from the default branch** — the daily build won't
+4. **`schedule` only runs from the default branch** — the nightly build won't
    exist until the unified files are merged to master (expected; noted so the
    warm-cache benefit isn't assumed during the `ci/**` iteration phase).
 
@@ -290,7 +290,7 @@ then linux.
 
 ~1 day. It is YAML restructuring, not build-system change: the steps already
 exist and are proven per platform — this concatenates them in fail-fast order,
-adds the daily schedule + `fail-on-cache-miss`, and deletes five files. mac is
+adds the nightly schedule + `fail-on-cache-miss`, and deletes five files. mac is
 ~1 h; win ~2 h (cache wiring); linux ~half a day (the two-job split + verifying
 the warmer keeps the cache hot).
 </content>

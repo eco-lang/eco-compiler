@@ -51,7 +51,7 @@ on:
       - '.github/scripts/prune-caches.sh'
   workflow_dispatch:
   schedule:
-    # Daily build keeps the debian + alpine LLVM caches accessed (a restore
+    # Nightly build keeps the debian + alpine LLVM caches accessed (a restore
     # resets GitHub's 7-day eviction timer). Inert until merged to master.
     - cron: '20 6 * * *'
 
@@ -372,7 +372,7 @@ jobs:
         # hosted runner (it was the cause of the 3h+ "runner lost
         # communication" failures), so we DO NOT fall back to a local build.
         # The cache is populated by linux-llvm-build-alpine and kept warm by the
-        # daily schedule; a cold cache fails fast and legibly — re-run
+        # nightly schedule; a cold cache fails fast and legibly — re-run
         # linux-llvm-build-alpine.
         uses: actions/cache@v4
         with:

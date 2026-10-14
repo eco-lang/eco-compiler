@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
   schedule:
     # Weekly safety touch so the alpine base-image cache never evicts even if
-    # the daily linux-aot build is paused. A cache hit is a cheap no-op; a cold
+    # the nightly linux-aot build is paused. A cache hit is a cheap no-op; a cold
     # cache rebuilds (and re-populates) the base image.
     - cron: '0 5 * * 1'
 

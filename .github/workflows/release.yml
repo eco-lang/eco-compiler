@@ -5,7 +5,7 @@
 # fails if any platform lacks a green build for it — provenance matters for a
 # stable release. Published as a non-prerelease, so /releases/latest flips to it.
 #
-# The rolling nightly tag (v*-daily) is excluded so moving it never cuts a
+# The rolling nightly tag (v*-nightly) is excluded so moving it never cuts a
 # stable release (GITHUB_TOKEN-created tags also do not cascade-trigger, but the
 # exclusion is explicit belt-and-suspenders).
 name: release
@@ -14,7 +14,7 @@ on:
   push:
     tags:
       - 'v*'
-      - '!v*-daily'
+      - '!v*-nightly'
 
 permissions:
   contents: write

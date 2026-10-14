@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
   schedule:
     # Weekly safety touch so the install-tree cache never evicts even if the
-    # daily mac-aot build is paused. A cache hit is a cheap no-op; a cold
+    # nightly mac-aot build is paused. A cache hit is a cheap no-op; a cold
     # cache rebuilds (and re-populates) the install tree.
     - cron: '0 5 * * 3'
 

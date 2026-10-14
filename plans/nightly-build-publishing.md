@@ -14,7 +14,7 @@ download and run, in two tiers:
 The nightly uses a **decoupled publish workflow** (a separate `publish-nightly`
 job that pulls the latest successful artifacts from the three build workflows —
 *not* atomic, *not* a per-build upload step) and a **single rolling tag** of the
-form `v<version>-daily` (e.g. `v0.1.0-daily`) that is **moved** to the newest
+form `v<version>-nightly` (e.g. `v0.1.0-nightly`) that is **moved** to the newest
 built commit on every run, so tags do not accumulate.
 
 ## Current state (verified)
@@ -24,8 +24,8 @@ built commit on every run, so tags do not accumulate.
   distribution channel** — run artifacts require a GitHub login to download
   (even on a public repo) and expire (≤90 days).
 - `version.txt` = `0.1.0` and is the single source of truth for the bundle
-  version (read by `CMakeLists.txt` / CPack). The daily tag derives from it:
-  `v0.1.0-daily`.
+  version (read by `CMakeLists.txt` / CPack). The nightly tag derives from it:
+  `v0.1.0-nightly`.
 - The produced asset names are already **platform-unique**, so they coexist in
   one flat release with no collisions:
   | Platform | Asset(s) |
@@ -39,21 +39,21 @@ built commit on every run, so tags do not accumulate.
 
 ```
   mac-aot ─┐
- linux-aot ─┤  (build daily, each on its own cron; upload-artifact as today)
+ linux-aot ─┤  (build nightly, each on its own cron; upload-artifact as today)
    win-aot ─┘
               │  latest *successful* run per workflow
               ▼
        publish-nightly  (scheduled after the builds + manual)
               │  gh run download → collect *.tar.gz/*.zip/*.deb → SHA256SUMS
               ▼
-   GitHub pre-release  tag = v<version>-daily   (tag MOVED each run)
+   GitHub pre-release  tag = v<version>-nightly   (tag MOVED each run)
               │
    (promote) push tag v<version>  ──►  release.yml  ──►  permanent Release
 ```
 
 GitHub **Releases** are the channel: assets get stable, anonymous URLs that
 never expire —
-`https://github.com/eco-lang/eco-compiler/releases/download/v0.1.0-daily/<asset>`
+`https://github.com/eco-lang/eco-compiler/releases/download/v0.1.0-nightly/<asset>`
 — and `…/releases/latest/download/<asset>` keeps pointing at the newest
 *stable* (non-prerelease) tag.
 
@@ -101,38 +101,38 @@ after the builds," not exact.
    the **newest** of the three source-run commits (the most honest single
    commit when builds span days), and record all three in the notes.
    ```bash
-   DAILY_TAG="v$(cat version.txt)-daily"
+   NIGHTLY_TAG="v$(cat version.txt)-nightly"
    SHA=$(jq -rs 'max_by(.createdAt).headSha' stage/*.meta.json)
    ```
 4. **Move the tag + refresh assets in one shot.** Delete the existing rolling
    release *and its tag*, then recreate at the new commit. This is what keeps a
    **single** moving tag instead of accumulating dated tags:
    ```bash
-   gh release delete "$DAILY_TAG" --cleanup-tag --yes 2>/dev/null || true
-   gh release create "$DAILY_TAG" \
+   gh release delete "$NIGHTLY_TAG" --cleanup-tag --yes 2>/dev/null || true
+   gh release create "$NIGHTLY_TAG" \
      --target "$SHA" --prerelease \
-     --title  "Nightly $DAILY_TAG ($(date -u +%Y-%m-%d))" \
+     --title  "Nightly $NIGHTLY_TAG ($(date -u +%Y-%m-%d))" \
      --notes-file notes.md \
      dist/*
    ```
    `notes.md` lists the UTC build date, the resolved `$SHA`, and each
    platform's source-run URL + commit (from the `.meta.json` files) for
    traceability, plus the `SHA256SUMS` body.
-5. **Prune stale `-daily` releases** (only matters across a `version.txt` bump,
+5. **Prune stale `-nightly` releases** (only matters across a `version.txt` bump,
    when the tag name changes):
    ```bash
    gh release list --json tagName,isPrerelease \
      -q '.[] | select(.isPrerelease) | .tagName' \
-     | grep -E '^v.*-daily$' | grep -vx "$DAILY_TAG" \
+     | grep -E '^v.*-nightly$' | grep -vx "$NIGHTLY_TAG" \
      | xargs -r -n1 -I{} gh release delete {} --cleanup-tag --yes
    ```
 
 ### Optional polish (note, don't block on)
 
-- **Skip when unchanged:** if `$SHA` already equals the commit on `$DAILY_TAG`,
+- **Skip when unchanged:** if `$SHA` already equals the commit on `$NIGHTLY_TAG`,
   skip the republish so an idle day doesn't churn the release.
 - Tags (re)created by `GITHUB_TOKEN` do **not** trigger other workflows, so the
-  moving `-daily` tag will not accidentally fire `release.yml` (Part 2 also
+  moving `-nightly` tag will not accidentally fire `release.yml` (Part 2 also
   excludes it explicitly).
 
 ## Part 2 — `release.yml` (promotion to stable)
@@ -143,7 +143,7 @@ Same decoupled download, keyed to a real version tag, published as a permanent
 ```yaml
 on:
   push:
-    tags: ['v*', '!v*-daily']    # real versions only; never the rolling tag
+    tags: ['v*', '!v*-nightly']    # real versions only; never the rolling tag
 permissions:
   contents: write
 ```
@@ -168,8 +168,8 @@ gh release create "${GITHUB_REF_NAME}" \
 **Promotion process:** bump `version.txt` → merge to `master` → let the three
 builds go green → push an annotated `v0.1.0` tag at that commit → `release.yml`
 assembles the stable Release, and `…/releases/latest/` flips to it. (The bump
-also renames the rolling tag to `v0.2.0-daily`; Part 1 step 5 deletes the old
-`v0.1.0-daily`.)
+also renames the rolling tag to `v0.2.0-nightly`; Part 1 step 5 deletes the old
+`v0.1.0-nightly`.)
 
 ## Part 3 — supporting changes to the build workflows
 
@@ -195,14 +195,14 @@ These consume the release; none require changing the build/publish design.
 ## Acceptance criteria
 
 - A scheduled `publish-nightly` run produces/updates a single pre-release tagged
-  `v0.1.0-daily` carrying all five platform assets + `SHA256SUMS`, downloadable
-  **anonymously** via the stable `releases/download/v0.1.0-daily/<asset>` URLs.
+  `v0.1.0-nightly` carrying all five platform assets + `SHA256SUMS`, downloadable
+  **anonymously** via the stable `releases/download/v0.1.0-nightly/<asset>` URLs.
 - Re-running it **moves** the tag to the newest built commit and replaces the
-  assets — the repo never accumulates more than one `*-daily` tag/release.
+  assets — the repo never accumulates more than one `*-nightly` tag/release.
 - The release notes name each platform's source run + commit and the UTC date.
 - Pushing `v0.1.0` (after green builds at that commit) yields a permanent,
   non-prerelease Release; `releases/latest` points at it; pushing the rolling
-  `-daily` tag never triggers `release.yml`.
+  `-nightly` tag never triggers `release.yml`.
 - Build-workflow run artifacts expire in 7 days; releases do not expire.
 
 ## Risks / decisions

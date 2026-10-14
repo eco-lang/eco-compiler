@@ -4,10 +4,10 @@
 # atomic. It collects the LATEST SUCCESSFUL run of each `-aot` workflow, gathers
 # their distributable bundles, and refreshes a single rolling pre-release.
 #
-# The tag is derived from version.txt: v<version>-daily (e.g. v0.1.0-daily).
+# The tag is derived from version.txt: v<version>-nightly (e.g. v0.1.0-nightly).
 # It is MOVED to the newest built commit on every run (the new release is
 # staged as a draft, then swapped in for the old one) so tags never accumulate. Assets are anonymously downloadable at
-#   https://github.com/eco-lang/eco-compiler/releases/download/v<ver>-daily/<asset>
+#   https://github.com/eco-lang/eco-compiler/releases/download/v<ver>-nightly/<asset>
 name: publish-nightly
 
 on:
@@ -65,17 +65,17 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          daily_tag="v$(tr -d '[:space:]' < version.txt)-daily"
+          nightly_tag="v$(tr -d '[:space:]' < version.txt)-nightly"
           # Target the newest of the three source-run commits — the most honest
           # single commit when builds span days.
           sha=$(jq -rs 'max_by(.createdAt).headSha' stage/*.meta.json)
-          echo "daily_tag=$daily_tag" >> "$GITHUB_OUTPUT"
+          echo "nightly_tag=$nightly_tag" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Rolling tag $daily_tag -> $sha"
+          echo "Rolling tag $nightly_tag -> $sha"
 
       - name: Build release notes
         env:
-          DAILY_TAG: ${{ steps.meta.outputs.daily_tag }}
+          NIGHTLY_TAG: ${{ steps.meta.outputs.nightly_tag }}
           SHA: ${{ steps.meta.outputs.sha }}
         run: |
           set -euo pipefail
@@ -119,23 +119,23 @@ jobs:
         #      under the rolling tag, which creates the tag at the target.
         env:
           GH_TOKEN: ${{ github.token }}
-          DAILY_TAG: ${{ steps.meta.outputs.daily_tag }}
+          NIGHTLY_TAG: ${{ steps.meta.outputs.nightly_tag }}
           SHA: ${{ steps.meta.outputs.sha }}
         run: |
           set -euo pipefail
           repo="$GITHUB_REPOSITORY"
-          title="Nightly $DAILY_TAG ($(date -u '+%Y-%m-%d'))"
+          title="Nightly $NIGHTLY_TAG ($(date -u '+%Y-%m-%d'))"
 
           probe="eco-nightly-probe-$GITHUB_RUN_ID"
           if ! gh api -X POST "repos/$repo/git/refs" \
                 -f ref="refs/tags/$probe" -f sha="$SHA" >/dev/null 2>probe.err; then
-            echo "::error::cannot create a tag at $SHA: $(cat probe.err). Keeping the current $DAILY_TAG release."
+            echo "::error::cannot create a tag at $SHA: $(cat probe.err). Keeping the current $NIGHTLY_TAG release."
             exit 1
           fi
           gh api -X DELETE "repos/$repo/git/refs/tags/$probe" >/dev/null
 
           id=$(gh api -X POST "repos/$repo/releases" \
-                 -f tag_name="$DAILY_TAG-next-$GITHUB_RUN_ID" -f target_commitish="$SHA" \
+                 -f tag_name="$NIGHTLY_TAG-next-$GITHUB_RUN_ID" -f target_commitish="$SHA" \
                  -f name="$title" -F body=@notes.md -F draft=true -F prerelease=true \
                  --jq .id)
           trap 'gh api -X DELETE "repos/$repo/releases/$id" >/dev/null 2>&1 || true' ERR
@@ -150,24 +150,26 @@ jobs:
           done
           trap - ERR
 
-          gh release delete "$DAILY_TAG" --cleanup-tag --yes 2>/dev/null || true
+          gh release delete "$NIGHTLY_TAG" --cleanup-tag --yes 2>/dev/null || true
           gh api -X PATCH "repos/$repo/releases/$id" \
-            -f tag_name="$DAILY_TAG" -f target_commitish="$SHA" -F draft=false >/dev/null
-          gh release view "$DAILY_TAG" --json tagName,url,assets \
+            -f tag_name="$NIGHTLY_TAG" -f target_commitish="$SHA" -F draft=false >/dev/null
+          gh release view "$NIGHTLY_TAG" --json tagName,url,assets \
             --jq '"published \(.tagName) with \(.assets|length) assets: \(.url)"'
 
-      - name: Prune stale -daily pre-releases (only after a version bump)
+      - name: Prune stale -nightly pre-releases (only after a version bump)
         env:
           GH_TOKEN: ${{ github.token }}
-          DAILY_TAG: ${{ steps.meta.outputs.daily_tag }}
+          NIGHTLY_TAG: ${{ steps.meta.outputs.nightly_tag }}
         run: |
           set -euo pipefail
+          # -daily is the rolling tag's old name (until 2026-10-14); matching
+          # it removes the last v0.2.0-daily release on the first run.
           gh release list --json tagName,isPrerelease \
             -q '.[] | select(.isPrerelease) | .tagName' \
-            | grep -E '^v.*-daily$' | grep -vx "$DAILY_TAG" \
+            | grep -E '^v.*-(nightly|daily)$' | grep -vx "$NIGHTLY_TAG" \
             | xargs -r -n1 -I{} gh release delete {} --cleanup-tag --yes || true
           # Drafts a failed "Move the rolling tag" left behind (tag_name
-          # <daily>-next-<run id>; drafts own no tag, so delete by release id).
+          # <nightly>-next-<run id>; drafts own no tag, so delete by release id).
           gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            -q '.[] | select(.draft and (.tag_name | test("-daily-next-[0-9]+$"))) | .id' \
+            -q '.[] | select(.draft and (.tag_name | test("-nightly-next-[0-9]+$"))) | .id' \
             | xargs -r -n1 -I{} gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/{}" || true

@@ -17,7 +17,7 @@ not have them already (`git` asks for them too):
 
 Then download and unpack the release with `curl`, for example:
 
-    curl -L https://github.com/eco-lang/eco-compiler/releases/download/v0.2.0-daily/eco-0.2.0-arm64-darwin.tar.gz \
+    curl -L https://github.com/eco-lang/eco-compiler/releases/download/v0.2.0-nightly/eco-0.2.0-arm64-darwin.tar.gz \
         | sudo tar -xz -C /usr/local
 
 Nothing else is needed: no Homebrew packages and no paths to configure. Download with `curl`

@@ -35,7 +35,7 @@ on:
       - '.github/scripts/prune-caches.sh'
   workflow_dispatch:
   schedule:
-    # Daily build keeps the workflow exercised. (schedule only fires from the
+    # Nightly build keeps the workflow exercised. (schedule only fires from the
     # default branch, so this is inert until merged to master.)
     - cron: '0 6 * * *'
 

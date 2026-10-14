@@ -33,7 +33,7 @@ on:
       - '.github/scripts/prune-caches.sh'
   workflow_dispatch:
   schedule:
-    # Daily build keeps the LLVM-MSVC install-tree cache accessed (a restore
+    # Nightly build keeps the LLVM-MSVC install-tree cache accessed (a restore
     # resets GitHub's 7-day eviction timer). Inert until merged to master.
     - cron: '40 6 * * *'
 
@@ -78,7 +78,7 @@ jobs:
 
       - name: Restore LLVM 21.1.8 install tree (from win-llvm-build / E-W3)
         # fail-on-cache-miss: the LLVM source build is the job of win-llvm-build
-        # (kept warm by the daily schedule). A cold cache fails fast and
+        # (kept warm by the nightly schedule). A cold cache fails fast and
         # legibly — re-run win-llvm-build — rather than silently degrading.
         uses: actions/cache@v4
         with:
