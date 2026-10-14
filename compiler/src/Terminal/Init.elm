@@ -161,7 +161,7 @@ init : Bool -> Task Never (Result Exit.Init ())
 init package =
     -- Locate the bundled packages (`eco/kernel`, `eco/system`; next to the
     -- executable) so the dependency solver can resolve them: the scaffolded
-    -- application depends on eco/kernel for console IO, and both ship with eco
+    -- application depends on eco/system for console IO, and both ship with eco
     -- rather than the package registry.
     Stuff.resolveBundledPackages []
         |> Task.andThen (Solver.initEnv Registry.Normal)
@@ -347,15 +347,19 @@ verify cache connection registry constraints =
 
 
 {-| Default direct dependencies for a new application. eco is geared toward CLI
-and server-side programs, so the scaffold is a console app: `eco/kernel` (bundled
-with eco) provides the IO primitives and `elm/core` provides `Platform.worker`,
-`Task`, and friends. A browser app can add `elm/browser`/`elm/html` with
-`eco install`.
+and server-side programs, so the scaffold is a console app: `eco/system` (bundled
+with eco) provides the program definition, the environment and stdin/stdout/stderr
+streams, and `elm/core` provides `Task` and friends. A browser app can add
+`elm/browser`/`elm/html` with `eco install`.
+
+`eco/kernel` is deliberately absent: it is the compiler's internal IO layer, not a
+package for applications. It is still resolvable (bundled, `eco install
+eco/kernel`) but is never added by default.
 -}
 defaults : Dict Pkg.Name Con.Constraint
 defaults =
     Dict.fromList
-        [ ( Pkg.ecoKernel, Con.anything )
+        [ ( Pkg.ecoSystem, Con.anything )
         , ( Pkg.core, Con.anything )
         ]
 
@@ -382,53 +386,23 @@ packageTestDefaults =
     Dict.empty
 
 
-{-| Starter module for an application project: a "Hello World!" console program.
-It uses the Task-based `Eco.Console.write` (not the side-effecting `Eco.Console.log`)
-so output flows through the normal command/Task machinery, and only needs the
-default dependencies (`eco/kernel`, `elm/core`) so `eco make src/Main.elm`
-succeeds immediately.
+{-| Starter module for an application project: a "Hello World!" console program
+built with `eco/system`, the same shape as the getting-started guide. It only
+needs the default dependencies (`eco/system`, `elm/core`) so
+`eco make src/Main.elm` succeeds immediately.
 -}
 appExample : String
 appExample =
     """module Main exposing (main)
 
-import Eco.Console
-import Platform
-import Task
+import Stream.Log
+import System
 
 
-type alias Model =
-    {}
-
-
-type Msg
-    = Done
-
-
-main : Program () Model Msg
+main : System.SimpleProgram msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = subscriptions
-        }
-
-
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( {}
-    , Task.attempt (always Done) (Eco.Console.write Eco.Console.stdout "Hello World!\\n")
-    )
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update _ model =
-    ( model, Cmd.none )
-
-
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.none
+    System.defineSimpleProgram
+        (\\env -> System.endSimpleProgram (Stream.Log.line env.stdout "Hello World!"))
 """
 
 

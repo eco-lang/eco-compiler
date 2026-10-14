@@ -379,13 +379,9 @@ addAppPackageFromScratch :
     -> Bool
     -> Task Exit.Install (Changes V.Version)
 addAppPackageFromScratch cache connection registry pkg outline forTest =
-    case Registry.getVersions_ pkg registry of
-        Err suggestions ->
-            throwUnknownPackageError connection pkg suggestions
-
-        Ok _ ->
-            Task.io (Solver.addToApp cache connection registry pkg outline forTest)
-                |> Task.andThen (handleAppSolverResult pkg)
+    checkPackageKnown cache connection registry pkg
+        |> Task.andThen (\_ -> Task.io (Solver.addToApp cache connection registry pkg outline forTest))
+        |> Task.andThen (handleAppSolverResult pkg)
 
 
 handleAppSolverResult : Pkg.Name -> Solver.SolverResult Solver.AppSolution -> Task Exit.Install (Changes V.Version)
@@ -402,6 +398,25 @@ handleAppSolverResult pkg result =
 
         Solver.SolverErr exit ->
             Task.throw (Exit.InstallHadSolverTrouble exit)
+
+
+{-| Fail with an unknown-package error unless `pkg` is in the registry or is a
+locally linked package. The bundled packages (`eco/kernel`, `eco/system`, found
+next to the executable by `Stuff.resolveBundledPackages`) are never in the
+registry, but the solver resolves them (`Solver.getRelevantVersions`).
+-}
+checkPackageKnown : Stuff.PackageCache -> Solver.Connection -> Registry.Registry -> Pkg.Name -> Task Exit.Install ()
+checkPackageKnown cache connection registry pkg =
+    if Stuff.isLocalPackage cache pkg then
+        Task.succeed ()
+
+    else
+        case Registry.getVersions_ pkg registry of
+            Err suggestions ->
+                throwUnknownPackageError connection pkg suggestions
+
+            Ok _ ->
+                Task.succeed ()
 
 
 throwUnknownPackageError : Solver.Connection -> Pkg.Name -> List Pkg.Name -> Task Exit.Install a
@@ -455,17 +470,13 @@ makePkgPlanForTest cache connection registry pkg info =
         Task.succeed AlreadyInstalled
 
     else
-        case Registry.getVersions_ pkg registry of
-            Err suggestions ->
-                throwUnknownPackageError connection pkg suggestions
-
-            Ok (Registry.KnownVersions _ _) ->
-                let
-                    cons =
-                        Dict.insert pkg C.anything info.test
-                in
-                Task.io (Solver.verify cache connection registry cons)
-                    |> Task.andThen (handlePkgTestSolverResult pkg info)
+        let
+            cons =
+                Dict.insert pkg C.anything info.test
+        in
+        checkPackageKnown cache connection registry pkg
+            |> Task.andThen (\_ -> Task.io (Solver.verify cache connection registry cons))
+            |> Task.andThen (handlePkgTestSolverResult pkg info)
 
 
 handlePkgTestSolverResult :
@@ -556,20 +567,16 @@ addPkgDependencyFromScratch :
     -> PkgOutlineInfo
     -> Task Exit.Install (Changes C.Constraint)
 addPkgDependencyFromScratch cache connection registry pkg info =
-    case Registry.getVersions_ pkg registry of
-        Err suggestions ->
-            throwUnknownPackageError connection pkg suggestions
+    let
+        old =
+            Dict.union info.deps info.test
 
-        Ok (Registry.KnownVersions _ _) ->
-            let
-                old =
-                    Dict.union info.deps info.test
-
-                cons =
-                    Dict.insert pkg C.anything old
-            in
-            Task.io (Solver.verify cache connection registry cons)
-                |> Task.andThen (handlePkgDepsSolverResult pkg info old)
+        cons =
+            Dict.insert pkg C.anything old
+    in
+    checkPackageKnown cache connection registry pkg
+        |> Task.andThen (\_ -> Task.io (Solver.verify cache connection registry cons))
+        |> Task.andThen (handlePkgDepsSolverResult pkg info old)
 
 
 handlePkgDepsSolverResult :
