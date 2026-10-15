@@ -107,12 +107,12 @@ FROM ${LLVM_IMAGE} AS llvm
 FROM ${DEBIAN_IMAGE} AS glibc-runtime
 ARG DEBIAN_FRONTEND=noninteractive
 ARG LLVM_APT_MAJOR=21
-ARG LLVM_APT_KEY_FPR=6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+ARG LLVM_APT_SIGNER_FPR=6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
 
 # apt.llvm.org for bookworm, its signing key checked by fingerprint.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
  && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /tmp/llvm.key \
- && gpg --show-keys --with-colons /tmp/llvm.key | grep -q "^fpr:::::::::${LLVM_APT_KEY_FPR}:" \
+ && gpg --show-keys --with-colons /tmp/llvm.key | grep -q "^fpr:::::::::${LLVM_APT_SIGNER_FPR}:" \
  && gpg --dearmor -o /usr/share/keyrings/apt.llvm.org.gpg /tmp/llvm.key \
  && rm /tmp/llvm.key \
  && echo "deb [signed-by=/usr/share/keyrings/apt.llvm.org.gpg] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-${LLVM_APT_MAJOR} main" \

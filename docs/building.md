@@ -30,7 +30,9 @@ docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.8 .
 # 1b. Glibc dev image (needs eco-llvm-debian).
 docker build -f docker/eco-dev.Dockerfile -t eco-dev .
 
-# 1c. Static `eco` binary (FROM scratch; needs eco-llvm-alpine).
+# 1c. Static `eco` binary (FROM scratch; needs eco-llvm-alpine). This makes an
+#     image, not files on the host: for the release bundles in dist/, see
+#     section 2 (--target eco-bundle -o ./dist).
 docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
 
 # 1d. Musl interactive dev image (needs eco-llvm-alpine).
