@@ -11,6 +11,10 @@
 #include <string>
 #include <algorithm>
 #include <iomanip>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
 
 using namespace Elm;
 
@@ -61,6 +65,64 @@ static void test_empty_string_has_length_zero() {
 
         HPointer str = alloc::emptyString();
         RC_ASSERT(StringOps::isEmpty(str));
+    });
+}
+
+// ============================================================================
+// Float formatting (String.fromFloat, JSON, HTML) — JavaScript's Number::toString
+// ============================================================================
+
+static std::string formatFloat(double x) {
+    char buf[32];
+    size_t n = StringOps::formatFloatShortest(x, buf);
+    return std::string(buf, n);
+}
+
+// Expected text from node's String(x): plain digits from 1e-7 up to 1e21, exponent form outside.
+// std::to_chars alone picks the shorter notation ("1e+09"), which made the self-hosted compiler
+// emit the JS literal `1e+09.0`.
+static void test_formatFloat_matches_javascript() {
+    rc::check("formatFloatShortest matches JavaScript's Number::toString", []() {
+        const std::pair<double, const char*> cases[] = {
+            {0.0, "0"},
+            {-0.0, "0"},
+            {1e9, "1000000000"},
+            {-1e9, "-1000000000"},
+            {1e20, "100000000000000000000"},
+            {1e21, "1e+21"},
+            {1.5e300, "1.5e+300"},
+            {0.000001, "0.000001"},
+            {-0.000001, "-0.000001"},
+            {0.0000015, "0.0000015"},
+            {1e-7, "1e-7"},
+            {1.25e-7, "1.25e-7"},
+            {0.1, "0.1"},
+            {3.14, "3.14"},
+            {123456789.125, "123456789.125"},
+            {5e-324, "5e-324"},
+            {1.7976931348623157e308, "1.7976931348623157e+308"},
+            {9007199254740993.0, "9007199254740992"},
+            {std::numeric_limits<double>::quiet_NaN(), "NaN"},
+            {std::numeric_limits<double>::infinity(), "Infinity"},
+            {-std::numeric_limits<double>::infinity(), "-Infinity"},
+        };
+        for (const auto& [x, want] : cases) {
+            RC_ASSERT(formatFloat(x) == std::string(want));
+        }
+        // The heap String goes through the same formatter.
+        initAllocator();
+        RC_ASSERT(getString(StringOps::fromFloat(1e9)) == "1000000000");
+    });
+}
+
+static void test_formatFloat_round_trips() {
+    rc::check("formatFloatShortest text parses back to the same double", []() {
+        const u64 bits = *rc::gen::arbitrary<u64>();
+        double x;
+        std::memcpy(&x, &bits, sizeof x);
+        RC_PRE(std::isfinite(x));
+        const std::string text = formatFloat(x);
+        RC_ASSERT(std::strtod(text.c_str(), nullptr) == (x == 0.0 ? 0.0 : x));
     });
 }
 
@@ -646,6 +708,10 @@ void registerStringOpsTests(Testing::TestSuite& suite) {
     // Transformation tests
     suite.add(Testing::TestCase("StringOps::toUpper converts lowercase", test_toUpper_converts_lowercase));
     suite.add(Testing::TestCase("StringOps::reverse twice is identity", test_reverse_twice_is_identity));
+    suite.add(Testing::TestCase("StringOps::formatFloatShortest matches JavaScript",
+                                test_formatFloat_matches_javascript));
+    suite.add(Testing::TestCase("StringOps::formatFloatShortest round-trips",
+                                test_formatFloat_round_trips));
 
     // Conversion tests
     suite.add(Testing::TestCase("StringOps::toInt parses integers", test_toInt_parses_integers));

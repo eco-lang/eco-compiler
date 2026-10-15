@@ -1157,9 +1157,17 @@ inline HPointer fromInt(i64 n) {
 /**
  * Writes the text String.fromFloat produces for `n` into `buf` (at least 32
  * bytes) and returns its length: "NaN", "Infinity", "-Infinity", "0" for both
- * zeros, else the shortest round-trip form from std::to_chars. Shared with the
- * HTML serializer (plans/elm-html-native-kernel.md P0.2), so property text and
- * String.fromFloat agree natively.
+ * zeros, else JavaScript's Number.prototype.toString text (ECMAScript
+ * Number::toString): the shortest round-trip digits, written in fixed
+ * notation for 1e-7 < |n| < 1e21 ("1000000000", "0.000001") and in exponent
+ * form otherwise ("1e+21", "1e-7", "1.5e+300"). Shared with the HTML
+ * serializer (plans/elm-html-native-kernel.md P0.2) and the JSON encoder, so
+ * all of them agree with Elm on JavaScript.
+ *
+ * std::to_chars without a format picks whichever of fixed or scientific is
+ * shorter ("1e+09" for 1e9), which is not JavaScript's choice: it made the
+ * self-hosted compiler emit the float literal 1.0e9 as `1e+09.0` in generated
+ * JavaScript. Only its digits and exponent are used here.
  */
 inline size_t formatFloatShortest(f64 n, char* buf) {
     if (std::isnan(n)) {
@@ -1178,11 +1186,58 @@ inline size_t formatFloatShortest(f64 n, char* buf) {
         buf[0] = '0';
         return 1;
     }
-    // Use std::to_chars for the shortest round-trip representation,
-    // matching JavaScript/Elm's Number.prototype.toString() behavior.
-    auto [ptr, ec] = std::to_chars(buf, buf + 32, n);
+    // The shortest round-trip digits, as "[-]d[.ddd]e(+|-)xx".
+    char sci[32];
+    auto [sciEnd, ec] = std::to_chars(sci, sci + sizeof(sci), n, std::chars_format::scientific);
     (void)ec;
-    return static_cast<size_t>(ptr - buf);
+    const char* p = sci;
+    size_t len = 0;
+    if (*p == '-') {
+        buf[len++] = '-';
+        ++p;
+    }
+    char digits[20];
+    int k = 0;
+    for (; p < sciEnd && *p != 'e'; ++p) {
+        if (*p != '.')
+            digits[k++] = *p;
+    }
+    int exp10 = 0;
+    std::from_chars(p + 1 + (p[1] == '+' ? 1 : 0), sciEnd, exp10);
+
+    // ECMAScript Number::toString: the value is 0.d1..dk x 10^point.
+    const int point = exp10 + 1;
+    auto put = [&](char c) { buf[len++] = c; };
+    if (k <= point && point <= 21) {
+        // Integer: the digits, then zeros ("1000000000").
+        for (int i = 0; i < k; ++i) put(digits[i]);
+        for (int i = k; i < point; ++i) put('0');
+    } else if (0 < point && point <= 21) {
+        // Decimal point inside the digits ("3.14").
+        for (int i = 0; i < point; ++i) put(digits[i]);
+        put('.');
+        for (int i = point; i < k; ++i) put(digits[i]);
+    } else if (-6 < point && point <= 0) {
+        // Leading zeros after the point ("0.000001").
+        put('0');
+        put('.');
+        for (int i = point; i < 0; ++i) put('0');
+        for (int i = 0; i < k; ++i) put(digits[i]);
+    } else {
+        // Exponent form ("1e+21", "1.5e-7").
+        put(digits[0]);
+        if (k > 1) {
+            put('.');
+            for (int i = 1; i < k; ++i) put(digits[i]);
+        }
+        put('e');
+        const int e = point - 1;
+        put(e < 0 ? '-' : '+');
+        auto [expEnd, ec2] = std::to_chars(buf + len, buf + 32, e < 0 ? -e : e);
+        (void)ec2;
+        len = static_cast<size_t>(expEnd - buf);
+    }
+    return len;
 }
 
 /**

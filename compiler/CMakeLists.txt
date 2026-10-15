@@ -833,6 +833,13 @@ function(eco_apply_unified_link target)
         endif()
     endforeach()
 
+    # mimalloc replaces musl's malloc in eco itself too (plans/bundle-runtime-performance.md,
+    # B): MLIR/LLVM lowering allocates heavily. As one of the target's objects it comes before
+    # every archive and libc.a on the link line, so its definitions win.
+    if(ECO_STATIC_MUSL)
+        target_sources(${target} PRIVATE $<TARGET_OBJECTS:mimalloc-obj>)
+    endif()
+
     if(APPLE)
         # Darwin link line: ld64 via Apple Clang driver, no group syntax,
         # -force_load instead of --whole-archive, no libgcc/libstdc++/

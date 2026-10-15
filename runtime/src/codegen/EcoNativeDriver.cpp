@@ -1090,6 +1090,10 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         args.push_back(push(resolveFile(eco::config::crt1ObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtiObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtbeginObjStatic)));
+        // mimalloc replaces musl's malloc (plans/bundle-runtime-performance.md, B). As an
+        // object ahead of every archive, its malloc/free/... are the definitions the linker
+        // takes, so musl's allocator in libc.a is never pulled in.
+        args.push_back(push(resolveFile(eco::config::mimallocObjStatic)));
     } else if (profile == LinkProfile::GlibcBundleShared) {
         args.push_back(push(resolveFile(eco::config::glibcCrtiObj)));
         args.push_back(push(resolveFile(eco::config::glibcCrtbeginObj)));

@@ -83,11 +83,17 @@ generate mode parentModule expression =
             JS.ExprTrackedInt parentModule start int |> JsExpr
 
         Opt.Float (A.Region start _) float ->
-            (if float == toFloat (floor float) then
-                String.fromFloat float ++ ".0"
+            let
+                text =
+                    String.fromFloat float
+            in
+            -- Mark whole numbers as floats ("42.0"), but only when the text is plain digits:
+            -- from 1e21 on it is already in exponent form ("1e+21"), where ".0" is not JS.
+            (if float == toFloat (floor float) && not (String.contains "e" text) && not (String.contains "." text) then
+                text ++ ".0"
 
              else
-                String.fromFloat float
+                text
             )
                 |> JS.ExprTrackedFloat parentModule start
                 |> JsExpr

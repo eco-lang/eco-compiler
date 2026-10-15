@@ -1458,7 +1458,10 @@ if(ECO_STATIC_MUSL)
         "inline RuntimeFile crtnObjStatic       {\"${_crtn_name}\",       \"crt\", \"${ECO_CRTN_O}\"};\n"
         "inline RuntimeFile crtbeginObjStatic   {\"${_crtbegin_name}\",   \"crt\", \"${ECO_CRTBEGIN_O_STATIC}\"};\n"
         "inline RuntimeFile crtendObjStatic     {\"${_crtend_name}\",     \"crt\", \"${ECO_CRTEND_O_STATIC}\"};\n"
-        "inline RuntimeFile bundledLinker       {\"ld.lld\",              \"\",    \"${ECO_BUILD_LD_LLD}\"};\n")
+        "inline RuntimeFile bundledLinker       {\"ld.lld\",              \"\",    \"${ECO_BUILD_LD_LLD}\"};\n"
+        # mimalloc's object file, linked ahead of libc.a so it replaces musl's malloc
+        # (plans/bundle-runtime-performance.md, B); vendored in the top-level CMakeLists.txt.
+        "inline RuntimeFile mimallocObjStatic   {\"mimalloc.o\",          \"\",    \"$<TARGET_OBJECTS:mimalloc-obj>\"};\n")
 else()
     string(APPEND ECO_BOOT_CONFIG_CONTENT
         "inline RuntimeFile libcStaticA         {\"\", \"\", \"\"};\n"
@@ -1470,7 +1473,8 @@ else()
         "inline RuntimeFile crtnObjStatic       {\"\", \"\", \"\"};\n"
         "inline RuntimeFile crtbeginObjStatic   {\"\", \"\", \"\"};\n"
         "inline RuntimeFile crtendObjStatic     {\"\", \"\", \"\"};\n"
-        "inline RuntimeFile bundledLinker       {\"\", \"\", \"\"};\n")
+        "inline RuntimeFile bundledLinker       {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile mimallocObjStatic   {\"\", \"\", \"\"};\n")
 endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
 
@@ -1609,6 +1613,10 @@ endforeach()
 foreach(mod ${ECO_SYSTEM_MODS})
     list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoSystem_${mod})
 endforeach()
+if(ECO_STATIC_MUSL)
+    # mimalloc.o is linked into every program (eco::config::mimallocObjStatic).
+    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS mimalloc-obj)
+endif()
 add_dependencies(eco-boot-native ${ECO_BOOT_NATIVE_RUNTIME_DEPS})
 
 target_compile_features(eco-boot-native PRIVATE cxx_std_20)

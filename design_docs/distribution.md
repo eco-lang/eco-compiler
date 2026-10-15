@@ -38,6 +38,7 @@ eco-0.1.0-x86_64-linux-musl/
 │  │  ├─ clang_rt.crtbegin-x86_64.o            (compiler-rt)
 │  │  └─ clang_rt.crtend-x86_64.o              (compiler-rt)
 │  ├─ libc.a, libc++.a, libc++abi.a, libunwind.a, libclang_rt.builtins-x86_64.a
+│  ├─ mimalloc.o                               (malloc for programs eco builds; linked ahead of libc.a)
 │  ├─ libcurl.a, libssl.a, libcrypto.a, libzip.a, libz.a
 │  ├─ project/
 │  │  ├─ libEcoEntryStatic.a

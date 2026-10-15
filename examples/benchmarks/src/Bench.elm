@@ -8,6 +8,7 @@ module Bench exposing (main)
     ./bench --warmup 10 --runs 25        # more samples
     ./bench --list                       # the workloads and what each one stresses
     ./bench --print nbody=1000           # a workload's standard benchmark output, untimed
+    ./bench --json                       # the results as JSON (what run.mjs reads)
 
 Each workload is a module exposing `bench : Int -> Int`. It runs `--warmup` times untimed, then
 `--runs` times timed; the table shows the median and fastest run in milliseconds (lower is
@@ -28,6 +29,7 @@ import FannkuchRedux
 import Fasta
 import Fib
 import FloatSum
+import Json.Encode as Encode
 import ListFilter
 import ListFold
 import ListMap
@@ -90,6 +92,7 @@ type alias Options =
     , runs : Int
     , list : Bool
     , print : Bool
+    , json : Bool
     , selected : List ( Workload, Int )
     }
 
@@ -105,6 +108,9 @@ parseArgs args options =
 
         "--print" :: rest ->
             parseArgs rest { options | print = True }
+
+        "--json" :: rest ->
+            parseArgs rest { options | json = True }
 
         "--warmup" :: n :: rest ->
             count "--warmup" 0 n |> Result.andThen (\w -> parseArgs rest { options | warmup = w })
@@ -242,28 +248,76 @@ row name size result check med fastest =
         ++ String.padLeft 9 ' ' fastest
 
 
-{-| Run one workload and print its row; succeeds with whether its checksum was wrong.
+type alias Outcome =
+    { workload : Workload
+    , size : Int
+    , measurement : Measurement
+    , check : String
+    }
+
+
+{-| Run one workload; in table mode, print its row as soon as it is done.
 -}
-runOne : System.Environment -> Options -> ( Workload, Int ) -> Task x Bool
+runOne : System.Environment -> Options -> ( Workload, Int ) -> Task x Outcome
 runOne env options ( w, size ) =
     measure options w size
         |> Task.andThen
             (\m ->
                 let
-                    ( check, wrong ) =
-                        if size /= w.size then
-                            ( "-", False )
-
-                        else if m.result == w.expected then
-                            ( "ok", False )
-
-                        else
-                            ( "WRONG", True )
+                    outcome =
+                        Outcome w size m (checkResult w size m.result)
                 in
-                Stream.Log.line env.stdout
-                    (row w.name (String.fromInt size) (String.fromInt m.result) check (String.fromFloat m.median) (String.fromInt m.fastest))
-                    |> Task.map (\_ -> wrong)
+                if options.json then
+                    Task.succeed outcome
+
+                else
+                    Stream.Log.line env.stdout
+                        (row w.name (String.fromInt size) (String.fromInt m.result) outcome.check (String.fromFloat m.median) (String.fromInt m.fastest))
+                        |> Task.map (\_ -> outcome)
             )
+
+
+{-| "ok" or "WRONG" at the default size, where the result is known; "-" otherwise.
+-}
+checkResult : Workload -> Int -> Int -> String
+checkResult w size result =
+    if size /= w.size then
+        "-"
+
+    else if result == w.expected then
+        "ok"
+
+    else
+        "WRONG"
+
+
+encodeOutcomes : Options -> List Outcome -> String
+encodeOutcomes options outcomes =
+    let
+        encodeOutcome o =
+            Encode.object
+                [ ( "name", Encode.string o.workload.name )
+                , ( "size", Encode.int o.size )
+                , ( "result", Encode.int o.measurement.result )
+                , ( "expected"
+                  , if o.size == o.workload.size then
+                        Encode.int o.workload.expected
+
+                    else
+                        Encode.null
+                  )
+                , ( "check", Encode.string o.check )
+                , ( "medianMs", Encode.float o.measurement.median )
+                , ( "fastestMs", Encode.int o.measurement.fastest )
+                ]
+    in
+    Encode.encode 2
+        (Encode.object
+            [ ( "warmup", Encode.int options.warmup )
+            , ( "runs", Encode.int options.runs )
+            , ( "workloads", Encode.list encodeOutcome outcomes )
+            ]
+        )
 
 
 runAll : System.Environment -> Options -> Task x ()
@@ -276,21 +330,44 @@ runAll env options =
             else
                 options.selected
 
-        step one wrongSoFar =
-            wrongSoFar |> Task.andThen (\n -> runOne env options one |> Task.map (\wrong -> if wrong then n + 1 else n))
-    in
-    Stream.Log.line env.stdout
-        ("warmup " ++ String.fromInt options.warmup ++ ", runs " ++ String.fromInt options.runs ++ "; times in ms, lower is better\n")
-        |> Task.andThen (\_ -> Stream.Log.line env.stdout (row "workload" "size" "result" "check" "median" "fastest"))
-        |> Task.andThen (\_ -> List.foldl step (Task.succeed 0) chosen)
-        |> Task.andThen
-            (\wrong ->
-                if wrong > 0 then
-                    Stream.Log.line env.stderr (String.fromInt wrong ++ " workload(s) gave a wrong result")
-                        |> Task.andThen (\_ -> System.setExitCode 1)
+        step one doneSoFar =
+            doneSoFar |> Task.andThen (\done -> runOne env options one |> Task.map (\o -> o :: done))
 
-                else
-                    Task.succeed ()
+        header =
+            if options.json then
+                Task.succeed ()
+
+            else
+                Stream.Log.line env.stdout
+                    ("warmup " ++ String.fromInt options.warmup ++ ", runs " ++ String.fromInt options.runs ++ "; times in ms, lower is better\n")
+                    |> Task.andThen (\_ -> Stream.Log.line env.stdout (row "workload" "size" "result" "check" "median" "fastest"))
+    in
+    header
+        |> Task.andThen (\_ -> List.foldl step (Task.succeed []) chosen)
+        |> Task.map List.reverse
+        |> Task.andThen
+            (\outcomes ->
+                let
+                    wrong =
+                        List.length (List.filter (\o -> o.check == "WRONG") outcomes)
+
+                    report =
+                        if options.json then
+                            Stream.Log.line env.stdout (encodeOutcomes options outcomes)
+
+                        else
+                            Task.succeed ()
+                in
+                report
+                    |> Task.andThen
+                        (\_ ->
+                            if wrong > 0 then
+                                Stream.Log.line env.stderr (String.fromInt wrong ++ " workload(s) gave a wrong result")
+                                    |> Task.andThen (\_ -> System.setExitCode 1)
+
+                            else
+                                Task.succeed ()
+                        )
             )
 
 
@@ -334,7 +411,7 @@ main =
     System.defineSimpleProgram
         (\env ->
             System.endSimpleProgram
-                (case parseArgs (List.drop 1 env.args) (Options 3 11 False False []) of
+                (case parseArgs (List.drop 1 env.args) (Options 3 11 False False False []) of
                     Ok options ->
                         if options.list then
                             listWorkloads env

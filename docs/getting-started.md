@@ -89,6 +89,10 @@ checks its result; `./bench --print nbody=1000` shows a standard benchmark's usu
     eco make src/Bench.elm --output=bench
     ./bench                   # all workloads; ./bench --list shows them, ./bench fib sort runs two
 
+With the official `elm` compiler and `node` also installed, `node run.mjs` in the same folder builds
+the workloads with both compilers and prints a table comparing official Elm (JavaScript), eco's
+JavaScript and eco native.
+
 Notes:
 
 - `eco/system` is resolved from the distribution automatically, like `eco/kernel`; `eco install

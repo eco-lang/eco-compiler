@@ -222,6 +222,42 @@ option(ECO_STATIC_MUSL
        OFF)
 if(ECO_STATIC_MUSL)
     set(ECO_STATIC ON CACHE BOOL "Static-link eco (forced on by ECO_STATIC_MUSL)" FORCE)
+
+    # Build without Alpine's hardening defaults (plans/bundle-runtime-performance.md, A). The
+    # bundle is compiled by Alpine's packaged clang, which turns on -fstack-protector-strong and
+    # _FORTIFY_SOURCE=2 (Alpine's fortify-headers) by default. In the runtime and kernel
+    # archives every program eco builds links, that added a canary to most functions and inline
+    # overlap checks plus a trap around every std::memcpy bit-cast, nearly doubling the cost of
+    # small hot functions (eco_get_tag: 45 -> 140 instructions). The dev and glibc builds have
+    # never used either. Set here, before any target or FetchContent dependency is added, so
+    # the vendored libraries (curl, libzip, mimalloc) are built the same way.
+    set(ECO_MUSL_NO_HARDENING_FLAGS -fno-stack-protector -U_FORTIFY_SOURCE)
+    add_compile_options(${ECO_MUSL_NO_HARDENING_FLAGS})
+
+    # Fail the configure if the compiler still defines either after these flags (for example a
+    # toolchain that injects its defaults after the user's flags).
+    include(CheckCSourceCompiles)
+    include(CheckCXXSourceCompiles)
+    list(JOIN ECO_MUSL_NO_HARDENING_FLAGS " " _eco_no_hardening)
+    set(CMAKE_REQUIRED_FLAGS "-O2 ${_eco_no_hardening}")
+    set(_eco_no_hardening_src [=[
+#include <string.h>
+#if defined(_FORTIFY_SOURCE) && _FORTIFY_SOURCE > 0
+#error "_FORTIFY_SOURCE is still enabled"
+#endif
+#if defined(__SSP__) || defined(__SSP_STRONG__) || defined(__SSP_ALL__) || defined(__SSP_EXPLICIT__)
+#error "the stack protector is still enabled"
+#endif
+int main(void) { return 0; }
+]=])
+    check_c_source_compiles("${_eco_no_hardening_src}" ECO_MUSL_C_UNHARDENED)
+    check_cxx_source_compiles("${_eco_no_hardening_src}" ECO_MUSL_CXX_UNHARDENED)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(NOT ECO_MUSL_C_UNHARDENED OR NOT ECO_MUSL_CXX_UNHARDENED)
+        message(FATAL_ERROR "The compiler still enables _FORTIFY_SOURCE or the stack protector "
+            "with '${_eco_no_hardening}'; the bundle runtime would be built hardened "
+            "(plans/bundle-runtime-performance.md, A).")
+    endif()
 endif()
 
 # Stage D: archive-only configure mode for the glibc OUTPUT runtime — the
@@ -446,6 +482,33 @@ if(ECO_STATIC OR WIN32)
             message(FATAL_ERROR "Stage D: vendored zlib did not produce the 'zlibstatic' target")
         endif()
     endif()
+
+    # mimalloc replaces musl's malloc in the static musl build: in `eco` itself and in every
+    # program it builds (plans/bundle-runtime-performance.md, B). musl's mallocng is slow and
+    # takes a global lock on every call once a second thread exists, which in eco is always
+    # (GC helper threads); kernel paths that allocate per call (List.sort, ListOps scratch
+    # vectors) spent about 28 % of their time in it. Built as mimalloc's single object file
+    # (the `mimalloc-obj` target), which is linked BEFORE libc.a so its malloc/free/... (and
+    # musl's internal __libc_malloc/__libc_calloc/__libc_realloc/__libc_free, under
+    # MI_LIBC_MUSL) are the definitions the linker takes, and musl's allocator is never pulled
+    # in. The object goes into the bundle as lib/eco-runtime/mimalloc.o.
+    if(ECO_STATIC_MUSL)
+        set(MI_LIBC_MUSL      ON  CACHE BOOL "" FORCE)
+        set(MI_OVERRIDE       ON  CACHE BOOL "" FORCE)
+        set(MI_BUILD_OBJECT   ON  CACHE BOOL "" FORCE)
+        set(MI_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
+        set(MI_BUILD_STATIC   OFF CACHE BOOL "" FORCE)
+        set(MI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(mimalloc_vendored
+            GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+            GIT_TAG v2.5.2
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(mimalloc_vendored)
+        if(NOT TARGET mimalloc-obj)
+            message(FATAL_ERROR "vendored mimalloc did not produce the 'mimalloc-obj' target")
+        endif()
+    endif()
 endif()
 
 # Stage D archive-only mode: ecor (needs rapidcheck), the test tree and the
@@ -576,6 +639,7 @@ endif()
 #   <prefix>/bin/eco
 #   <prefix>/lib/eco-runtime/ld.lld
 #   <prefix>/lib/eco-runtime/{libc,libc++,libc++abi,libunwind,libclang_rt.builtins-*}.a
+#   <prefix>/lib/eco-runtime/mimalloc.o   (replaces musl malloc in programs eco builds)
 #   <prefix>/lib/eco-runtime/{libcurl,libssl,libcrypto,libzip,libz}.a
 #   <prefix>/lib/eco-runtime/crt/{crt1,crti,crtn,clang_rt.crtbegin-*,clang_rt.crtend-*}.o
 #   <prefix>/lib/eco-runtime/project/lib{ElmKernel_*,EcoKernel_*,EcoSystem_*,Eco*Static}.a
@@ -601,6 +665,13 @@ if(ECO_STATIC_MUSL)
         ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY} ${ECO_LIBZ_A}
         DESTINATION lib/eco-runtime
         COMPONENT Bundle)
+
+    # mimalloc's single object file, linked ahead of libc.a in every program eco builds
+    # (eco::config::mimallocObjStatic; plans/bundle-runtime-performance.md, B).
+    install(FILES $<TARGET_OBJECTS:mimalloc-obj>
+            DESTINATION lib/eco-runtime
+            RENAME mimalloc.o
+            COMPONENT Bundle)
 
     # crt objects.
     install(FILES
@@ -674,16 +745,20 @@ if(ECO_STATIC_MUSL)
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
-    # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
-    # Elm sources only; build outputs and caches don't match the filter and drop out.
+    # Example programs (Hello plus the eco/system examples) and the benchmarks project: Elm
+    # sources, elm.json files, the benchmarks' run.mjs and READMEs; build outputs and caches
+    # don't match the filter and drop out.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples
             COMPONENT Bundle
             FILES_MATCHING
                 PATTERN "elm.json"
                 PATTERN "*.elm"
+                PATTERN "*.mjs"
+                PATTERN "README.md"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
-                REGEX "/eco-stuff(/|$)" EXCLUDE)
+                REGEX "/eco-stuff(/|$)" EXCLUDE
+                REGEX "/build(/|$)" EXCLUDE)
 
     # Stage D: merge the Debian-built glibc output-runtime tree into the
     # bundle. ECO_GLIBC_RUNTIME_TREE points at the tree staged by the
@@ -847,8 +922,11 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
             FILES_MATCHING
                 PATTERN "elm.json"
                 PATTERN "*.elm"
+                PATTERN "*.mjs"
+                PATTERN "README.md"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
-                REGEX "/eco-stuff(/|$)" EXCLUDE)
+                REGEX "/eco-stuff(/|$)" EXCLUDE
+                REGEX "/build(/|$)" EXCLUDE)
 endif()
 
 #-------------------------------------------------------------------------------
@@ -934,8 +1012,11 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
             FILES_MATCHING
                 PATTERN "elm.json"
                 PATTERN "*.elm"
+                PATTERN "*.mjs"
+                PATTERN "README.md"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
-                REGEX "/eco-stuff(/|$)" EXCLUDE)
+                REGEX "/eco-stuff(/|$)" EXCLUDE
+                REGEX "/build(/|$)" EXCLUDE)
 endif()
 
 #-------------------------------------------------------------------------------
