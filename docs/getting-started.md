@@ -80,6 +80,15 @@ The same `examples` folder holds small complete `eco/system` programs:
     ./http-echo 8080 &
     curl -d hello http://127.0.0.1:8080/some/path
 
+`examples/benchmarks` is a separate project of compute benchmarks: small workloads (recursion,
+allocation, lists, `Dict`, floats, sorting), standard ones (nbody, spectral-norm, fannkuch-redux,
+nsieve, merkletrees, lru, fasta) and n-queens. `Bench.elm` times each workload in-process and
+checks its result; `./bench --print nbody=1000` shows a standard benchmark's usual output.
+
+    cd ~/examples/benchmarks
+    eco make src/Bench.elm --output=bench
+    ./bench                   # all workloads; ./bench --list shows them, ./bench fib sort runs two
+
 Notes:
 
 - `eco/system` is resolved from the distribution automatically, like `eco/kernel`; `eco install

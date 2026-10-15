@@ -226,9 +226,10 @@ add_custom_command(
 )
 add_custom_target(eco-system-docs ALL DEPENDS ${ECO_SYSTEM_DIR}/docs.json)
 
-# The example programs (examples/src, plans/eco-system-library.md Phase 9.3) are compiled, not run,
-# by `full`, so an API change that breaks them is caught. Output goes to the build tree; the
-# examples' own eco-stuff/ cache is git-ignored.
+# The example programs (examples/src, plans/eco-system-library.md Phase 9.3) and the compute
+# benchmarks (examples/benchmarks, their own project) are compiled, not run, by `full`, so an API
+# change that breaks them is caught. Output goes to the build tree; the examples' own eco-stuff/
+# cache is git-ignored.
 file(GLOB _eco_system_examples CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/src/*.elm)
 set(_eco_system_example_cmds)
 foreach(_ex ${_eco_system_examples})
@@ -239,11 +240,17 @@ foreach(_ex ${_eco_system_examples})
             --local-package eco/system=${ECO_SYSTEM_DIR}
             --output=${CMAKE_BINARY_DIR}/eco-system-examples/${_name}.mlir)
 endforeach()
+list(APPEND _eco_system_example_cmds
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_SOURCE_DIR}/examples/benchmarks
+        ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
+        ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make src/Bench.elm
+        --local-package eco/system=${ECO_SYSTEM_DIR}
+        --output=${CMAKE_BINARY_DIR}/eco-system-examples/Bench.mlir)
 add_custom_target(eco-system-examples
     ${_eco_system_example_cmds}
     DEPENDS guida
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/examples
-    COMMENT "Compiling the example programs (examples/src)"
+    COMMENT "Compiling the example programs (examples/src, examples/benchmarks)"
     VERBATIM
 )
 
