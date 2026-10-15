@@ -110,6 +110,21 @@ function(eco_drop_no_exceptions_define target)
     endif()
 endfunction()
 
+# Assertions in the runtime archives every program links (EcoRuntimeStatic, EcoEntryStatic,
+# EcoEmbedStatic, EcoNodeGlue) follow ECO_ASSERTS_ON, which is OFF for Release. HandleLLVMOptions
+# (above) adds -UNDEBUG to every C/C++ compile in this directory when LLVM was built with
+# assertions, as our LLVM images are, which kept assert() alive in the release bundle's runtime
+# (plans/bundle-runtime-performance.md, C). These targets include no LLVM/MLIR headers, so they
+# can re-define NDEBUG; as a compile option it comes after the directory's -UNDEBUG. Targets
+# that use LLVM/MLIR headers keep LLVM's setting.
+function(eco_runtime_asserts target)
+    if(ECO_ASSERTS_ON)
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -DNDEBUG)
+    endif()
+endfunction()
+
 # Include directory for generated headers
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 
@@ -708,9 +723,7 @@ target_include_directories(EcoRuntimeStatic PRIVATE
 
 target_compile_features(EcoRuntimeStatic PRIVATE cxx_std_20)
 target_compile_options(EcoRuntimeStatic PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
-if(ECO_ASSERTS_ON)
-    target_compile_options(EcoRuntimeStatic PRIVATE -UNDEBUG)
-endif()
+eco_runtime_asserts(EcoRuntimeStatic)
 
 # PUBLIC so AOT consumers inherit LLVM libunwind's include dir, library, and
 # rpath flag. See cmake/LLVMLibunwind.cmake.
@@ -767,9 +780,7 @@ target_include_directories(EcoEmbedStatic PRIVATE
 
 target_compile_features(EcoEmbedStatic PRIVATE cxx_std_20)
 target_compile_options(EcoEmbedStatic PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
-if(ECO_ASSERTS_ON)
-    target_compile_options(EcoEmbedStatic PRIVATE -UNDEBUG)
-endif()
+eco_runtime_asserts(EcoEmbedStatic)
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoEmbedStatic PRIVATE ECO_GC_DEBUG=1)
 endif()
@@ -800,15 +811,14 @@ if(ECO_NODE_API_INCLUDE_DIR)
     )
     target_compile_features(EcoNodeGlue PRIVATE cxx_std_20)
     target_compile_options(EcoNodeGlue PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
+    eco_runtime_asserts(EcoNodeGlue)
 else()
     message(STATUS "node_api.h not found — .node output targets disabled")
 endif()
 
 target_compile_features(EcoEntryStatic PRIVATE cxx_std_20)
 target_compile_options(EcoEntryStatic PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
-if(ECO_ASSERTS_ON)
-    target_compile_options(EcoEntryStatic PRIVATE -UNDEBUG)
-endif()
+eco_runtime_asserts(EcoEntryStatic)
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoEntryStatic PRIVATE ECO_GC_DEBUG=1)
 endif()

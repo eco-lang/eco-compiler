@@ -92,6 +92,26 @@ Two causes, both in how the bundle's runtime and kernel archives
   the new bundle; musl's allocator symbols must be absent from a bundle-built program
   (`llvm-nm prog | grep -E 'alloc_slot|get_meta|__libc_malloc_impl'` prints nothing).
 
+### C. Turn off assertions in the release runtime (done)
+
+- Found after A and B: `eco_get_tag` and 274 other eco runtime functions in a bundle-built program
+  still called `__assert_fail`, although `ECO_ASSERTS_ON` defaults to OFF for Release "so shipped
+  binaries don't pay the runtime cost". Cause: `runtime/src/codegen/CMakeLists.txt` includes
+  LLVM's `HandleLLVMOptions`, which adds `-UNDEBUG` to every C/C++ compile in that directory when
+  LLVM was built with `LLVM_ENABLE_ASSERTIONS=ON` (both our LLVM images are). That directory owns
+  `EcoRuntimeStatic` (allocator, GC, runtime exports), which every program links. The kernel
+  archives live in other directories and already honoured `NDEBUG` in Release, so the old bundle
+  also mixed assert-on runtime with assert-off kernels.
+- Fix: `eco_runtime_asserts(target)` in `runtime/src/codegen/CMakeLists.txt` re-applies
+  `ECO_ASSERTS_ON` to the program-side runtime targets (`EcoRuntimeStatic`, `EcoEntryStatic`,
+  `EcoEmbedStatic`, `EcoNodeGlue`): `-UNDEBUG` when ON, else `-DNDEBUG` as a compile option, which
+  comes after the directory's `-UNDEBUG`. These targets include no LLVM/MLIR headers; the
+  LLVM-using targets keep LLVM's setting. Dev builds (`ECO_ASSERTS_ON` ON) are unchanged.
+- Safety: all 284 `assert(...)` in the affected sources parsed; none has a side effect (the five
+  flagged call `const` getters). No shared header has `NDEBUG`-conditional members.
+- Measured (glibc, same generated code, best of two runs): with the runtime's assertions off the
+  benchmarks total 796 ms against 816 ms (-2.5 %); sort -10 %, nsieve -10 %; all results correct.
+
 ## Open questions
 
 - How much of the gap A and B each close; measure after each with `node run.mjs` and the
@@ -123,3 +143,7 @@ Two causes, both in how the bundle's runtime and kernel archives
   `StringOpsTest.cpp` unit tests (JavaScript table, round-trip property) pass; elm-tests
   14,118/0 after the JS generator change. Host follow-up: rebuild the bundle, then
   `node run.mjs` (the self-hosted `eco` needs the formatter fix to emit valid JS).
+- 2026-10-15: C implemented (release runtime built with NDEBUG); checked with an
+  `ECO_ASSERTS_ON=OFF` build tree: `libEcoRuntimeStatic.a` has no `__assert_fail` references
+  (dev: 18 members), programs link and run correctly, -2.5 % total. Host follow-up: rebuild the
+  bundle and confirm `eco_get_tag` no longer calls `__assert_fail`.
