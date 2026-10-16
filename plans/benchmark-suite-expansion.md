@@ -110,7 +110,7 @@ in `test/elm-{bytes,json,parser}`).
   every intermediate value below 2^53 (reduce modulo a prime after each `*`, no division).
   Check: the parsed and evaluated value equals the generator's, exactly, at every size.
 
-## Batch 2 (16 benchmarks and workloads: two more per area)
+## Batch 2 (16 benchmarks and workloads: two more per area) — done 2026-10-16
 
 - **dijkstra** (`Dijkstra.elm`, Dict). Shortest paths on an `n` x `n` grid with generated edge
   weights; distances in a `Dict (Int, Int) Int`, the frontier a `Dict (Int, Int) ()` keyed by
@@ -309,3 +309,62 @@ in `test/elm-{bytes,json,parser}`).
   more would cross eco's list-chunking cutoff and change what it measures natively.
 - 2026-10-16: tests after the BytesFusion fix: elm-tests 14,118/0; `--target full` JIT E2E
   2,385/2,385 (new `BytesEncodeRecordListFusionTest` included), JS E2E 162/162 (3 skipped).
+- 2026-10-16: batch 2 implemented: `Dijkstra`, `WordFreq`, `Sudoku`, `FloodFill`, `MatMul`,
+  `FloydWarshall`, `Levenshtein`, `UnicodeString`, `NSieveBits`, `Crc32`, `Base64`, `Utf8Bytes`,
+  `JsonShapes`, `JsonDecoders`, `JsonParser`, `SExpr` (42 workloads in all). Done-means: all 42
+  pass on elm, eco-js and eco native at their defaults, and in a bundle build; the 16 pass at 72
+  other sizes on eco native and eco-js (one bug found and fixed: floyd-warshall's ring had a
+  self-loop at n = 1); a mutation of each fails its check, after two fixes the mutations
+  forced: base64 gained two vectors that produce `+` and `/` (a swapped alphabet passed the
+  RFC's, which never do), and flood-fill's maze was rebuilt (its corner was a 6-cell pocket at
+  every size, so the timed work was the check, not the fill; now 98 % of the open cells are
+  reached). Reference values (crc32, levenshtein) came from Python scripts not kept in the
+  repository. Changes from the plan:
+  - dijkstra uses Dial's bucket queue (`Dict Int (List node)`; elm/core's `Dict` has no cheap
+    minimum) and is checked by the shortest-path certificate at every size instead of a second
+    Dijkstra.
+  - sudoku generates its puzzles (shuffled valid grids, 26 givens) instead of embedding plb2's.
+  - matmul is checked against a closed form of plb2's generator at every element.
+  - floyd-warshall uses unit edges (ring plus chords), checked by BFS rows.
+  - levenshtein: exact checks for structured pairs, bounds for edited ones, Python totals at
+    known sizes.
+  - unicode-string and utf8-bytes use Basic Multilingual Plane characters only (finding 5), and
+    unicode-string checks only the ASCII part of `toUpper` (finding 6).
+  - json-parser runs on json's documents (up to 1.2 M characters; `Encode.encode` gives a flat
+    string, so finding 3 does not apply); sexpr runs 300-leaf programs under a self-applied
+    recursive fib.
+- More findings:
+  5. **eco native `Char` is one UTF-16 code unit, not a code point.** `Char.fromCode 0x1F600` is
+     U+FFFF and `String.toList` of a literal emoji gives its two surrogates (55357, 56832) where
+     Elm gives one `Char` (128512); any per-character code over text outside the BMP (emoji, CJK
+     extensions) diverges natively. This follows eco's representation (Char is `i16`,
+     REP_BOUNDARY_003), so changing it is a design decision.
+  6. **eco native `String.toUpper` / `Char.toUpper` map ASCII only** (`elm-kernel-cpp/src/core/
+     Char.cpp`: "TODO: Full Unicode case conversion requires ICU"); Elm (JavaScript) maps é to É,
+     ж to Ж. `toLower` is likely the same.
+  7. Native JSON is slow across the board, not just in `json`: json-shapes 482 ms and
+     json-decoders 780 ms (dev; 335 and 537 bundle) against 230 and 237 on Elm.
+- 2026-10-16: batch 2 results (median ms of 11 after 3 warm-ups, a process per workload and
+  backend):
+
+  | workload | size | elm | eco-js | eco dev | eco bundle |
+  |---|---:|---:|---:|---:|---:|
+  | dijkstra | 240 | 241.7 | 238 | 136 | 147 |
+  | word-freq | 220,000 | 262.3 | 255 | 122 | 111 |
+  | sudoku | 340 | 254.5 | 255 | 177 | 172 |
+  | flood-fill | 300 | 246.6 | 244 | 96 | 102 |
+  | matmul | 165 | 232.6 | 227 | 50 | 60 |
+  | floyd-warshall | 130 | 232.6 | 223 | 44 | 50 |
+  | levenshtein | 70 | 224.4 | 220 | 258 | 200 |
+  | unicode-string | 52,000 | 258.9 | 258 | 160 | 139 |
+  | nsieve-bits | 5 | 229.9 | 225 | 125 | 136 |
+  | crc32 | 1,000,000 | 227.2 | 246 | 30 | 29 |
+  | base64 | 190,000 | 219.2 | 223 | 44 | 37 |
+  | utf8-bytes | 500,000 | 278.9 | 282 | 71 | 63 |
+  | json-shapes | 6,000 | 230.0 | 220 | 482 | 335 |
+  | json-decoders | 35,000 | 237.2 | 236 | 780 | 537 |
+  | json-parser | 10,000 | 223.5 | 220 | 248 | 229 |
+  | sexpr | 230 | 229.3 | 215 | 227 | 225 |
+
+  All 42 workloads: elm 11,909 ms, eco-js 11,778, eco dev 8,068, eco bundle 7,207 (1.65x
+  faster than Elm in total, faster on 35 of the 42).

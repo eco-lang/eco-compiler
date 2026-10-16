@@ -34,36 +34,52 @@ files. n-queens counts the solutions of the n-queens puzzle.
 
 -}
 
+import Base64
 import BinaryTrees
 import Brainfuck
 import BytesCodec
+import Crc32
 import DictOps
+import Dijkstra
 import ExprParser
 import FannkuchRedux
 import Fasta
 import Fib
 import FloatSum
+import FloodFill
+import FloydWarshall
 import Json.Encode as Encode
 import JsonCoords
+import JsonDecoders
+import JsonParser
+import JsonShapes
 import KNucleotide
+import Levenshtein
 import Life
 import ListFilter
 import ListFold
 import ListMap
 import Lru
 import Mandelbrot
+import MatMul
 import MerkleTrees
 import NBody
 import NQueens
 import NSieve
+import NSieveBits
 import RevComp
+import SExpr
 import Sha256
 import Sort
 import SpectralNorm
 import Stream.Log
+import Sudoku
 import System
 import Task exposing (Task)
 import Time
+import UnicodeString
+import Utf8Bytes
+import WordFreq
 
 
 
@@ -107,6 +123,22 @@ workloads =
     , Workload "bytes-dynamic" "the same, decoder chosen at run time" BytesCodec.benchDynamic 500000 Nothing
     , Workload "json" "encode, decode and average size coordinate objects" JsonCoords.bench 90000 Nothing
     , Workload "expr-parser" "elm/parser: parse and evaluate size expressions of 1,000 numbers" ExprParser.bench 160 Nothing
+    , Workload "dijkstra" "shortest paths on a size x size grid: Dict of (Int, Int)" Dijkstra.bench 240 Nothing
+    , Workload "word-freq" "word counts of size words: String.words and Dict String Int" WordFreq.bench 220000 Nothing
+    , Workload "sudoku" "solve size puzzles: Set Int candidates, propagation and search" Sudoku.bench 340 Nothing
+    , Workload "flood-fill" "flood fill of a size x size grid: Set (Int, Int)" FloodFill.bench 300 Nothing
+    , Workload "matmul" "multiply two size x size Array (Array Float)" MatMul.bench 165 Nothing
+    , Workload "floyd-warshall" "all-pairs shortest paths on a flat Array Int, size nodes" FloydWarshall.bench 130 Nothing
+    , Workload "levenshtein" "edit distance of size pairs of ~300-character strings" Levenshtein.bench 70 Nothing
+    , Workload "unicode-string" "String functions on size words of non-ASCII text" UnicodeString.bench 52000 Nothing
+    , Workload "nsieve-bits" "nsieve with flags packed 32 to an Int: Bitwise" NSieveBits.bench 5 Nothing
+    , Workload "crc32" "CRC-32 of size bytes: Bitwise and a table lookup" Crc32.bench 1000000 Nothing
+    , Workload "base64" "Base64 encode and decode size bytes" Base64.bench 190000 Nothing
+    , Workload "utf8-bytes" "Encode.string and Decode.string of size code points" Utf8Bytes.bench 500000 Nothing
+    , Workload "json-shapes" "canada, twitter and citm-shaped JSON round trips, scaled by size" JsonShapes.bench 6000 Nothing
+    , Workload "json-decoders" "andMap, andThen, oneOf and lazy decoders over size items" JsonDecoders.bench 35000 Nothing
+    , Workload "json-parser" "elm/parser JSON parser on json's document of size objects" JsonParser.bench 10000 Nothing
+    , Workload "sexpr" "read and evaluate size Lisp programs with elm/parser" SExpr.bench 230 Nothing
     ]
 
 

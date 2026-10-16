@@ -1,4 +1,4 @@
-module JsonCoords exposing (bench)
+module JsonCoords exposing (Coordinate, averages, bench, decoder, document)
 
 {-| The kostya/benchmarks JSON benchmark: encode a document of `n` coordinate objects
 (`{"x", "y", "z", "name", "opts"}`) with `Json.Encode`, decode the text back with

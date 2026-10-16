@@ -1,4 +1,4 @@
-module NSieve exposing (bench, output)
+module NSieve exposing (bench, known, output)
 
 {-| nsieve: count the primes below `10000 * 2^n`, `10000 * 2^(n-1)` and `10000 * 2^(n-2)` with
 the sieve of Eratosthenes. The flags are a persistent `Array Bool`, so this measures `Array.set`.

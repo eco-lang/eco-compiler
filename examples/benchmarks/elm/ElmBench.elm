@@ -9,32 +9,48 @@ are those of `Bench.elm`.
 
 -}
 
+import Base64
 import BinaryTrees
 import Brainfuck
 import BytesCodec
+import Crc32
 import DictOps
+import Dijkstra
 import ExprParser
 import FannkuchRedux
 import Fasta
 import Fib
 import FloatSum
+import FloodFill
+import FloydWarshall
 import JsonCoords
+import JsonDecoders
+import JsonParser
+import JsonShapes
 import KNucleotide
+import Levenshtein
 import Life
 import ListFilter
 import ListFold
 import ListMap
 import Lru
 import Mandelbrot
+import MatMul
 import MerkleTrees
 import NBody
 import NQueens
 import NSieve
+import NSieveBits
 import Platform
 import RevComp
+import SExpr
 import Sha256
 import Sort
 import SpectralNorm
+import Sudoku
+import UnicodeString
+import Utf8Bytes
+import WordFreq
 
 
 port toBench : ({ name : String, size : Int } -> msg) -> Sub msg
@@ -123,6 +139,54 @@ bench name =
 
         "expr-parser" ->
             Just ExprParser.bench
+
+        "dijkstra" ->
+            Just Dijkstra.bench
+
+        "word-freq" ->
+            Just WordFreq.bench
+
+        "sudoku" ->
+            Just Sudoku.bench
+
+        "flood-fill" ->
+            Just FloodFill.bench
+
+        "matmul" ->
+            Just MatMul.bench
+
+        "floyd-warshall" ->
+            Just FloydWarshall.bench
+
+        "levenshtein" ->
+            Just Levenshtein.bench
+
+        "unicode-string" ->
+            Just UnicodeString.bench
+
+        "nsieve-bits" ->
+            Just NSieveBits.bench
+
+        "crc32" ->
+            Just Crc32.bench
+
+        "base64" ->
+            Just Base64.bench
+
+        "utf8-bytes" ->
+            Just Utf8Bytes.bench
+
+        "json-shapes" ->
+            Just JsonShapes.bench
+
+        "json-decoders" ->
+            Just JsonDecoders.bench
+
+        "json-parser" ->
+            Just JsonParser.bench
+
+        "sexpr" ->
+            Just SExpr.bench
 
         _ ->
             Nothing
