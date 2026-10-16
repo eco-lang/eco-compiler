@@ -835,9 +835,11 @@ function(eco_apply_unified_link target)
 
     # mimalloc replaces musl's malloc in eco itself too (plans/bundle-runtime-performance.md,
     # B): MLIR/LLVM lowering allocates heavily. As one of the target's objects it comes before
-    # every archive and libc.a on the link line, so its definitions win.
+    # every archive and libc.a on the link line, so its definitions win. LLVM libc's memory
+    # functions replace musl's the same way (D).
     if(ECO_STATIC_MUSL)
-        target_sources(${target} PRIVATE $<TARGET_OBJECTS:mimalloc-obj>)
+        target_sources(${target} PRIVATE $<TARGET_OBJECTS:mimalloc-obj>
+                                         $<TARGET_OBJECTS:eco-memfuncs-obj>)
     endif()
 
     if(APPLE)

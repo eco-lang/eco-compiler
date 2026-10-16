@@ -1471,7 +1471,10 @@ if(ECO_STATIC_MUSL)
         "inline RuntimeFile bundledLinker       {\"ld.lld\",              \"\",    \"${ECO_BUILD_LD_LLD}\"};\n"
         # mimalloc's object file, linked ahead of libc.a so it replaces musl's malloc
         # (plans/bundle-runtime-performance.md, B); vendored in the top-level CMakeLists.txt.
-        "inline RuntimeFile mimallocObjStatic   {\"mimalloc.o\",          \"\",    \"$<TARGET_OBJECTS:mimalloc-obj>\"};\n")
+        "inline RuntimeFile mimallocObjStatic   {\"mimalloc.o\",          \"\",    \"$<TARGET_OBJECTS:mimalloc-obj>\"};\n"
+        # LLVM libc's memcpy/memmove/memset/bcmp/memcmp as one object, linked ahead of libc.a
+        # in place of musl's (plans/bundle-runtime-performance.md, D); top-level CMakeLists.txt.
+        "inline RuntimeFile memfuncsObjStatic   {\"memfuncs.o\",          \"\",    \"$<TARGET_OBJECTS:eco-memfuncs-obj>\"};\n")
 else()
     string(APPEND ECO_BOOT_CONFIG_CONTENT
         "inline RuntimeFile libcStaticA         {\"\", \"\", \"\"};\n"
@@ -1484,7 +1487,8 @@ else()
         "inline RuntimeFile crtbeginObjStatic   {\"\", \"\", \"\"};\n"
         "inline RuntimeFile crtendObjStatic     {\"\", \"\", \"\"};\n"
         "inline RuntimeFile bundledLinker       {\"\", \"\", \"\"};\n"
-        "inline RuntimeFile mimallocObjStatic   {\"\", \"\", \"\"};\n")
+        "inline RuntimeFile mimallocObjStatic   {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile memfuncsObjStatic   {\"\", \"\", \"\"};\n")
 endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
 
@@ -1624,8 +1628,9 @@ foreach(mod ${ECO_SYSTEM_MODS})
     list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoSystem_${mod})
 endforeach()
 if(ECO_STATIC_MUSL)
-    # mimalloc.o is linked into every program (eco::config::mimallocObjStatic).
-    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS mimalloc-obj)
+    # mimalloc.o and memfuncs.o are linked into every program
+    # (eco::config::mimallocObjStatic, memfuncsObjStatic).
+    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS mimalloc-obj eco-memfuncs-obj)
 endif()
 add_dependencies(eco-boot-native ${ECO_BOOT_NATIVE_RUNTIME_DEPS})
 

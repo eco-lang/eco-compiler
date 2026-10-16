@@ -112,6 +112,66 @@ Two causes, both in how the bundle's runtime and kernel archives
 - Measured (glibc, same generated code, best of two runs): with the runtime's assertions off the
   benchmarks total 796 ms against 816 ms (-2.5 %); sort -10 %, nsieve -10 %; all results correct.
 
+### D. Replace musl's memory functions with LLVM libc's (done)
+
+- Why: musl's x86_64 `memcpy.s` is a `rep movsq` loop with no SIMD, and `memmove`/`memset`/
+  `memcmp`/`bcmp` are no better. Measured before building (`bench-bundle` after A-C, perf in the
+  dev container): `memcpy` is 9.5-10.6 % of fannkuch-redux, 1.7 % of nsieve, outside the top 15
+  for sort and fasta. A gdb breakpoint over 5,000 fannkuch calls: callers `ListOps::take` (70 %),
+  `ListOps::append` (16 %), `ListChainReverseWriter` (14 %); sizes 0 bytes 41 %, 16 bytes 27 %,
+  32 bytes 20 %, 64 bytes 12 %, nothing larger. musl's `memcpy.s` has no CFI, so perf cannot
+  unwind out of it; the gdb breakpoint is how to find callers.
+- Source: LLVM libc's `memcpy`, `memmove`, `memset`, `memcmp` (`src/string/`) and `bcmp`
+  (`src/strings/`) from llvm-project `llvmorg-21.1.8`, the same release as our LLVM;
+  Apache-2.0 with LLVM exception. LLVM publishes no per-project libc tarball (only the 159 MB
+  monorepo one), so the five entry points and the 106 headers they include (612 KB with the
+  licence) are vendored in `runtime/third_party/llvm-libc/libc/` at their upstream paths, with
+  a README giving the tarball's SHA-256 and `update.sh`, which refreshes them from a release
+  (checked: it reproduces the vendored tree byte for byte). `eco_memfuncs.cpp` there includes
+  the five, so they build as ONE object, the same shape as `mimalloc.o`.
+- All five are replaced together. musl's `memmove.s` jumps to `__memcpy_fwd`, a label inside
+  `memcpy.s`; checked against musl 1.2.5: an object defining only `memcpy` fails the link with
+  "multiple definition of `memcpy`".
+- Build: `eco-memfuncs-obj` in the top-level `CMakeLists.txt` (`ECO_STATIC_MUSL`, next to
+  `mimalloc-obj`): C++17, `-O3 -march=x86-64-v3 -ffreestanding -fno-builtin -fno-exceptions
+  -fno-rtti -fno-lto -fasynchronous-unwind-tables -mllvm -tail-merge-threshold=0`,
+  `LIBC_NAMESPACE=__llvm_libc_eco`, `LIBC_COPT_PUBLIC_PACKAGING`,
+  `LIBC_COPT_MEMCPY_X86_USE_REPMOVSB_FROM_SIZE=2048`; plus the directory's
+  `-fno-stack-protector -U_FORTIFY_SOURCE` from A.
+  - `-march=x86-64-v3` is the AOT target (`kEcoTargetCPU`); musl has no IFUNC, so no runtime
+    dispatch, and the two must change together.
+  - The `rep movsb` threshold: LLVM's default never uses it, and its AVX loop lost to musl from
+    64 KiB up (64 KiB: 2,594 vs 2,197 ns). From 2 KiB, `rep movsb` was the fastest of the three
+    at every size from 1 KiB to 1 MiB; a 1 KiB threshold slowed 1 KiB copies (13.0 vs 8.8 ns).
+    Measured on this container's Xeon 6521P; `rep movsb` speed varies by CPU.
+  - Unwind tables are kept (LLVM libc drops them, and `-ffreestanding` did too with clang 14),
+    so perf and gdb unwind out of the new `memcpy`.
+- Programs eco builds: `eco::config::memfuncsObjStatic` in `EcoBootConfig.h`
+  (`runtime/src/codegen/CMakeLists.txt`), pushed right after `mimallocObjStatic` for
+  `LinkProfile::MuslStaticExe` (`EcoNativeDriver.cpp`); installed as
+  `lib/eco-runtime/memfuncs.o` (`design_docs/distribution.md`); `eco-boot-native` depends on it.
+- `eco` itself: `$<TARGET_OBJECTS:eco-memfuncs-obj>` next to mimalloc in `eco_apply_unified_link`
+  (`compiler/CMakeLists.txt`).
+- Everything else in the static link (libc++, OpenSSL, zlib, mimalloc, musl's own internal calls)
+  resolves to the new definitions without being rebuilt. Scope: musl bundle only.
+- Smoke check (`docker/static-build.Dockerfile`, after the hello smoke test): the bundle has
+  `lib/eco-runtime/memfuncs.o`; the `hello` the bundled eco builds has no `__memcpy_fwd` and does
+  have `__llvm_libc_eco` symbols; `test/memfuncs/memfuncs_check.c` (every size 0..1024 at many
+  source/destination misalignments, a sweep to 1 MiB, guard bytes, `memmove` overlapping both
+  ways, `memcmp`/`bcmp` sign and difference position) is linked against the bundle's
+  `memfuncs.o` and musl and must pass.
+- Checked here (no Alpine): the sources compile without warnings under clang 14 and clang 19.1.7
+  (zig's, musl target), as C++17 and C++20; the CMake block, run verbatim in a standalone
+  project, gives one object with the flags above (`-std=c++17` over a C++20 project) and no
+  undefined symbols; linked against musl 1.2.5 built from source, `memfuncs_check` passes
+  24,276 cases, has no `__memcpy_fwd`, and `memcpy` has `ymm` moves and `rep movsb`. Speed
+  against musl 1.2.5: fannkuch's copy mix 14.3 -> 2.1 ns per call, 64 bytes 33.3 -> 1.8 ns,
+  4 KiB 157 -> 26 ns, backward `memmove` of 1 MiB 257 -> 17.7 us, `memset` within 10 % at every
+  size. The dev (glibc) build reconfigures and `eco-boot-native` rebuilds (empty
+  `memfuncsObjStatic`).
+- Check on the host: the Docker bundle build (its smoke tests, including the new one), then
+  `./bench` median before/after with the rebuilt bundle, and the fannkuch perf report again.
+
 ## Open questions
 
 - How much of the gap A and B each close; measure after each with `node run.mjs` and the
@@ -147,3 +207,19 @@ Two causes, both in how the bundle's runtime and kernel archives
   `ECO_ASSERTS_ON=OFF` build tree: `libEcoRuntimeStatic.a` has no `__assert_fail` references
   (dev: 18 members), programs link and run correctly, -2.5 % total. Host follow-up: rebuild the
   bundle and confirm `eco_get_tag` no longer calls `__assert_fail`.
+- 2026-10-15: A-C confirmed working on the host with the rebuilt bundle. D (LLVM libc
+  `memcpy`/`memmove`/`memset`/`bcmp`/`memcmp` replacing musl's) planned; next, the perf report
+  and Alpine `__config_site` hardening check on the host.
+- 2026-10-15: profiled `bench-bundle` here (see D, "Measured before building"). Also found:
+  fannkuch spends a further ~20 % in mimalloc `operator new[]`/`delete[]` from the per-call
+  `std::vector` scratch in `ListOps::take`/`append`/`reverse` (out of scope, as before); the sort
+  path (`__stable_sort`, `Utils::cmp`) has no libc++ hardening traps (no `ud2`, no
+  `__libcpp_verbose_abort`), so the sort gap against the dev build is libc++'s `stable_sort`
+  against libstdc++'s plus two `resolve` calls per comparison, not the toolchain; the remaining
+  `__stack_chk_fail` users are OpenSSL and libc++'s out-of-line iostream/locale code, none in eco.
+  The bundle's libc++ is Alpine's 19.1.4 (ABI tag `ne190104`), not 21 as
+  `docker/static-build.Dockerfile` says.
+- 2026-10-15: D implemented (LLVM libc 21.1.8 memory functions vendored in
+  `runtime/third_party/llvm-libc`, `memfuncs.o` linked ahead of libc.a in programs and in `eco`,
+  Alpine smoke check added) and checked as far as this container allows; host Docker build and
+  benchmark outstanding.

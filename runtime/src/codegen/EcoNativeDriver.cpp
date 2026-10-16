@@ -1094,6 +1094,9 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         // object ahead of every archive, its malloc/free/... are the definitions the linker
         // takes, so musl's allocator in libc.a is never pulled in.
         args.push_back(push(resolveFile(eco::config::mimallocObjStatic)));
+        // LLVM libc's memcpy/memmove/memset/bcmp/memcmp replace musl's the same way
+        // (plans/bundle-runtime-performance.md, D).
+        args.push_back(push(resolveFile(eco::config::memfuncsObjStatic)));
     } else if (profile == LinkProfile::GlibcBundleShared) {
         args.push_back(push(resolveFile(eco::config::glibcCrtiObj)));
         args.push_back(push(resolveFile(eco::config::glibcCrtbeginObj)));

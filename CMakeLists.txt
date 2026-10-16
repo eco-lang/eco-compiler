@@ -509,6 +509,42 @@ if(ECO_STATIC OR WIN32)
             message(FATAL_ERROR "vendored mimalloc did not produce the 'mimalloc-obj' target")
         endif()
     endif()
+
+    # LLVM libc's memcpy/memmove/memset/bcmp/memcmp replace musl's in the static musl build,
+    # in `eco` itself and in every program it builds (plans/bundle-runtime-performance.md, D).
+    # musl's x86_64 memcpy is a `rep movsq` loop; on the 0-64 byte copies the list kernels make
+    # it cost about 10 % of fannkuch-redux. Vendored under runtime/third_party/llvm-libc and
+    # built as ONE object file (eco_memfuncs.cpp includes the five entry points), linked
+    # BEFORE libc.a like mimalloc.o, so musl's archive members are never pulled in. The five
+    # go together: musl's memmove jumps into its memcpy (__memcpy_fwd), so replacing memcpy
+    # alone fails the link with a duplicate memcpy. The object goes into the bundle as
+    # lib/eco-runtime/memfuncs.o.
+    #   -march=x86-64-v3: the AOT target (kEcoTargetCPU in runtime/src/codegen/EcoBackend.h);
+    #     LLVM libc picks its code at compile time and musl has no IFUNC, so keep the two in
+    #     step.
+    #   -ffreestanding -fno-builtin: clang must not turn the copy loops back into calls to
+    #     memcpy.
+    #   LIBC_COPT_PUBLIC_PACKAGING: give the functions their C names.
+    #   LIBC_COPT_MEMCPY_X86_USE_REPMOVSB_FROM_SIZE=2048: LLVM's default never uses
+    #     `rep movsb`, and its AVX loop was slower than musl's from 64 KiB up; from 2 KiB
+    #     `rep movsb` was the fastest of the three at every size measured.
+    #   -mllvm -tail-merge-threshold=0: as LLVM libc's own x86 memcpy build.
+    #   -fasynchronous-unwind-tables: LLVM libc drops them (and -ffreestanding can), but
+    #     with them perf and gdb can unwind out of memcpy, which they cannot do through musl's.
+    if(ECO_STATIC_MUSL)
+        set(_eco_llvm_libc_dir ${CMAKE_CURRENT_SOURCE_DIR}/runtime/third_party/llvm-libc)
+        add_library(eco-memfuncs-obj OBJECT ${_eco_llvm_libc_dir}/eco_memfuncs.cpp)
+        target_include_directories(eco-memfuncs-obj PRIVATE ${_eco_llvm_libc_dir}/libc)
+        target_compile_definitions(eco-memfuncs-obj PRIVATE
+            LIBC_NAMESPACE=__llvm_libc_eco
+            LIBC_COPT_PUBLIC_PACKAGING
+            LIBC_COPT_MEMCPY_X86_USE_REPMOVSB_FROM_SIZE=2048)
+        set_target_properties(eco-memfuncs-obj PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS OFF)
+        target_compile_options(eco-memfuncs-obj PRIVATE
+            -O3 -march=x86-64-v3 -ffreestanding -fno-builtin
+            -fno-exceptions -fno-rtti -fno-lto -fasynchronous-unwind-tables
+            "SHELL:-mllvm -tail-merge-threshold=0")
+    endif()
 endif()
 
 # Stage D archive-only mode: ecor (needs rapidcheck), the test tree and the
@@ -640,6 +676,7 @@ endif()
 #   <prefix>/lib/eco-runtime/ld.lld
 #   <prefix>/lib/eco-runtime/{libc,libc++,libc++abi,libunwind,libclang_rt.builtins-*}.a
 #   <prefix>/lib/eco-runtime/mimalloc.o   (replaces musl malloc in programs eco builds)
+#   <prefix>/lib/eco-runtime/memfuncs.o   (replaces musl memcpy/memmove/memset/bcmp/memcmp)
 #   <prefix>/lib/eco-runtime/{libcurl,libssl,libcrypto,libzip,libz}.a
 #   <prefix>/lib/eco-runtime/crt/{crt1,crti,crtn,clang_rt.crtbegin-*,clang_rt.crtend-*}.o
 #   <prefix>/lib/eco-runtime/project/lib{ElmKernel_*,EcoKernel_*,EcoSystem_*,Eco*Static}.a
@@ -671,6 +708,13 @@ if(ECO_STATIC_MUSL)
     install(FILES $<TARGET_OBJECTS:mimalloc-obj>
             DESTINATION lib/eco-runtime
             RENAME mimalloc.o
+            COMPONENT Bundle)
+
+    # LLVM libc's memory functions as one object file, linked ahead of libc.a in every program
+    # eco builds (eco::config::memfuncsObjStatic; plans/bundle-runtime-performance.md, D).
+    install(FILES $<TARGET_OBJECTS:eco-memfuncs-obj>
+            DESTINATION lib/eco-runtime
+            RENAME memfuncs.o
             COMPONENT Bundle)
 
     # crt objects.

@@ -313,6 +313,27 @@ RUN mkdir -p /tmp/eco-smoke \
     fi \
  && echo "OK: bundle smoke test passed — eco produced a static hello binary (rc=$hello_rc)"
 
+# LLVM libc's memory functions (plans/bundle-runtime-performance.md, D): the bundle's
+# memfuncs.o must replace musl's in what eco builds (no __memcpy_fwd, the label inside musl's
+# memcpy.s, and LLVM libc's namespace present), and must be correct: test/memfuncs is linked
+# against the bundle's memfuncs.o ahead of musl's libc.a, as eco links programs, and run.
+RUN cd /tmp/eco-smoke \
+ && test -f lib/eco-runtime/memfuncs.o \
+ && if nm ./hello | grep -q __memcpy_fwd; then \
+        echo "FATAL: hello still links musl's memcpy (__memcpy_fwd present)" >&2; exit 1; \
+    fi \
+ && if ! nm ./hello | grep -q __llvm_libc_eco; then \
+        echo "FATAL: hello does not contain LLVM libc's memory functions" >&2; exit 1; \
+    fi \
+ && clang -O2 -fno-builtin -U_FORTIFY_SOURCE -fno-stack-protector -static \
+          /eco/test/memfuncs/memfuncs_check.c \
+          lib/eco-runtime/memfuncs.o -o /tmp/memfuncs-check \
+ && if nm /tmp/memfuncs-check | grep -q __memcpy_fwd; then \
+        echo "FATAL: memfuncs-check still links musl's memcpy" >&2; exit 1; \
+    fi \
+ && /tmp/memfuncs-check \
+ && echo "OK: memfuncs.o replaces musl's memory functions and passes test/memfuncs"
+
 # Stage D negative check (plans/stage-d-hybrid-link-profiles.md, step 7.4):
 # the extracted bundle must carry the glibc link-input tree, and with it
 # deleted a `.node` link attempt must fail with the capability error from
