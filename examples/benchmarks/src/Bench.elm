@@ -35,12 +35,18 @@ files. n-queens counts the solutions of the n-queens puzzle.
 -}
 
 import BinaryTrees
+import Brainfuck
+import BytesCodec
 import DictOps
+import ExprParser
 import FannkuchRedux
 import Fasta
 import Fib
 import FloatSum
 import Json.Encode as Encode
+import JsonCoords
+import KNucleotide
+import Life
 import ListFilter
 import ListFold
 import ListMap
@@ -50,6 +56,8 @@ import MerkleTrees
 import NBody
 import NQueens
 import NSieve
+import RevComp
+import Sha256
 import Sort
 import SpectralNorm
 import Stream.Log
@@ -90,6 +98,15 @@ workloads =
     , Workload "lru" "100-entry LRU cache on Dict, size rounds" Lru.bench 120000 (Just Lru.output)
     , Workload "fasta" "generate 10 x size DNA characters as text" Fasta.bench 350000 (Just Fasta.output)
     , Workload "nqueens" "count the solutions on a size x size board" NQueens.bench 12 Nothing
+    , Workload "k-nucleotide" "Dict String Int counts of k-mers in fasta's output" KNucleotide.bench 9000 (Just KNucleotide.output)
+    , Workload "life" "Game of Life from an R-pentomino: Set and Dict of (Int, Int)" Life.bench 700 Nothing
+    , Workload "brainfuck" "interpreter on Array Int, size runs of a 965k-step program" Brainfuck.bench 4 (Just Brainfuck.output)
+    , Workload "revcomp" "reverse-complement fasta's output: String.reverse and map" RevComp.bench 70000 (Just RevComp.output)
+    , Workload "sha256" "SHA-256 hash chain of size digests: Bitwise on 32-bit words" Sha256.bench 5000 (Just Sha256.output)
+    , Workload "bytes-static" "encode and decode size records, decoder known at compile time" BytesCodec.benchStatic 500000 Nothing
+    , Workload "bytes-dynamic" "the same, decoder chosen at run time" BytesCodec.benchDynamic 500000 Nothing
+    , Workload "json" "encode, decode and average size coordinate objects" JsonCoords.bench 90000 Nothing
+    , Workload "expr-parser" "elm/parser: parse and evaluate size expressions of 1,000 numbers" ExprParser.bench 160 Nothing
     ]
 
 

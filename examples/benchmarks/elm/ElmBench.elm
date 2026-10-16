@@ -10,11 +10,17 @@ are those of `Bench.elm`.
 -}
 
 import BinaryTrees
+import Brainfuck
+import BytesCodec
 import DictOps
+import ExprParser
 import FannkuchRedux
 import Fasta
 import Fib
 import FloatSum
+import JsonCoords
+import KNucleotide
+import Life
 import ListFilter
 import ListFold
 import ListMap
@@ -25,6 +31,8 @@ import NBody
 import NQueens
 import NSieve
 import Platform
+import RevComp
+import Sha256
 import Sort
 import SpectralNorm
 
@@ -88,6 +96,33 @@ bench name =
 
         "nqueens" ->
             Just NQueens.bench
+
+        "k-nucleotide" ->
+            Just KNucleotide.bench
+
+        "life" ->
+            Just Life.bench
+
+        "brainfuck" ->
+            Just Brainfuck.bench
+
+        "revcomp" ->
+            Just RevComp.bench
+
+        "sha256" ->
+            Just Sha256.bench
+
+        "bytes-static" ->
+            Just BytesCodec.benchStatic
+
+        "bytes-dynamic" ->
+            Just BytesCodec.benchDynamic
+
+        "json" ->
+            Just JsonCoords.bench
+
+        "expr-parser" ->
+            Just ExprParser.bench
 
         _ ->
             Nothing

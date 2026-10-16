@@ -1,4 +1,4 @@
-module Output exposing (checksum, fixed9)
+module Output exposing (checksum, fixed3, fixed9)
 
 {-| Helpers for the workloads that produce the standard text output of their benchmark: a
 checksum of that text (the result `bench` returns) and C's `%.9f` float formatting.
@@ -15,10 +15,22 @@ checksum text =
 {-| Format a float with nine decimals, like `printf("%.9f")`.
 -}
 fixed9 : Float -> String
-fixed9 x =
+fixed9 =
+    fixed 9 1000000000
+
+
+{-| Format a float with three decimals, like `printf("%.3f")`.
+-}
+fixed3 : Float -> String
+fixed3 =
+    fixed 3 1000
+
+
+fixed : Int -> Int -> Float -> String
+fixed decimals scale x =
     let
         scaled =
-            round (x * 1.0e9)
+            round (x * toFloat scale)
 
         digits =
             abs scaled
@@ -29,6 +41,6 @@ fixed9 x =
      else
         ""
     )
-        ++ String.fromInt (digits // 1000000000)
+        ++ String.fromInt (digits // scale)
         ++ "."
-        ++ String.padLeft 9 '0' (String.fromInt (remainderBy 1000000000 digits))
+        ++ String.padLeft decimals '0' (String.fromInt (remainderBy scale digits))

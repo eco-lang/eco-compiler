@@ -83,6 +83,7 @@ type EncoderNode
     | EUtf8 Mono.MonoExpr
     | ELoop
         { itemVar : String
+        , itemType : Mono.MonoType
         , itemNodes : List EncoderNode
         , iterExpr : Mono.MonoExpr
         , countExpr : Mono.MonoExpr
@@ -668,18 +669,18 @@ reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
     case mapFn of
         Mono.MonoClosure info body _ ->
             case info.params of
-                [ ( paramName, _ ) ] ->
-                    buildLoopNode bodyLookup registry exprCache paramName body iterExpr countExpr
+                [ ( paramName, paramType ) ] ->
+                    buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr
 
                 _ ->
                     Nothing
 
         Mono.MonoVarGlobal _ specId _ ->
             case Dict.get specId bodyLookup of
-                Just ( [ ( paramName, _ ) ], body ) ->
-                    buildLoopNode bodyLookup registry exprCache paramName body iterExpr countExpr
+                Just ( [ ( paramName, paramType ) ], body ) ->
+                    buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr
 
-                Just ( [ ( paramName, _ ), ( extraName, _ ) ], body ) ->
+                Just ( [ ( paramName, paramType ), ( extraName, _ ) ], body ) ->
                     -- η-EXPANDED helper (2026-09-11). `Encoder` is an arrow
                     -- alias, so pre-mono η-expansion rewrites
                     -- `encodeByte n = E.unsignedInt8 n` to
@@ -690,7 +691,7 @@ reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
                     -- nowhere else in the body (`FusionGlobalMapFnTest`).
                     case etaReduceTrailingParam extraName body of
                         Just reduced ->
-                            buildLoopNode bodyLookup registry exprCache paramName reduced iterExpr countExpr
+                            buildLoopNode bodyLookup registry exprCache paramName paramType reduced iterExpr countExpr
 
                         Nothing ->
                             Nothing
@@ -785,16 +786,20 @@ peelParams k funcType =
                 Nothing
 
 
-{-| Shared body-reification step for both `reifyMapBody` arms.
+{-| Shared body-reification step for both `reifyMapBody` arms. `paramType` is
+the type of the list's elements, which the emitter needs to project each head
+at its own SSA type (REP_BOUNDARY_003): the body's writes are primitive, but the
+item itself can be anything they read from, a record for instance.
 -}
-buildLoopNode : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
-buildLoopNode bodyLookup registry exprCache paramName body iterExpr countExpr =
+buildLoopNode : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> Mono.MonoType -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
+buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr =
     case reifyEncoderHelp bodyLookup registry exprCache body of
         Just bodyNodes ->
             if List.all hasConstantWidth bodyNodes then
                 Just
                     (ELoop
                         { itemVar = paramName
+                        , itemType = paramType
                         , itemNodes = bodyNodes
                         , iterExpr = iterExpr
                         , countExpr = countExpr
@@ -973,6 +978,7 @@ nodeToOp cursorName node =
             WriteEachItem
                 { cursorName = cursorName
                 , itemVar = r.itemVar
+                , itemType = r.itemType
                 , bodyOps = List.map (nodeToOp cursorName) r.itemNodes
                 , iterExpr = r.iterExpr
                 , itemByteWidth = sumConstWidths r.itemNodes

@@ -665,6 +665,7 @@ references resolve correctly through the standard compileExpr callback.
 emitWriteEachItem :
     { cursorName : String
     , itemVar : String
+    , itemType : Mono.MonoType
     , bodyOps : List Op
     , iterExpr : Mono.MonoExpr
     , itemByteWidth : Int
@@ -779,23 +780,20 @@ emitWriteEachItem r state =
         ( afterListArg, ctx17 ) =
             Context.freshVar ctx16
 
-        -- A WriteEachItem loop body only ever contains primitive number
-        -- writes (buildLoopNode restricts it to EU8/EU16/EU32/EF32/EF64), so
-        -- the per-iteration item is always an UNBOXED number: Int heads are
-        -- i64, Float heads are f64. Projecting the head as `!eco.value` and
-        -- then `eco.unbox`-ing it (resolve + load) is wrong for unboxed heads
-        -- — the raw scalar word gets reinterpreted as an HPointer, and under
-        -- the current representation an unboxed int like 7 has the ptr_ind bit
-        -- set, so eco_resolve_hptr rejects it as an embedded constant. Project
-        -- the head directly in its natural scalar type instead: the i64/f64
-        -- `eco.project.list_head` lowering (eco_cons_head_i64/f64) reads the
-        -- head correctly whether it is stored boxed or unboxed.
+        -- Project the head at the element type's SSA type (REP_BOUNDARY_003):
+        -- i64 for Int, f64 for Float, i16 for Char, `!eco.value` for anything
+        -- else. The body's writes are always primitive (buildLoopNode restricts
+        -- them to EU8/EU16/EU32/EF32/EF64), but the item is whatever they read
+        -- from: a number written directly, or a record whose fields they read.
+        -- An Int or Float head must not be projected as `!eco.value` and then
+        -- `eco.unbox`-ed (resolve + load): the raw scalar word would be
+        -- reinterpreted as an HPointer, and an unboxed int like 7 has the
+        -- ptr_ind bit set, so eco_resolve_hptr rejects it as an embedded
+        -- constant. The i64/f64 `eco.project.list_head` lowering
+        -- (eco_cons_head_i64/f64) reads the head whether it is stored boxed or
+        -- unboxed.
         headType =
-            if List.all isFloatWrite r.bodyOps && not (List.isEmpty r.bodyOps) then
-                F64
-
-            else
-                I64
+            Types.monoTypeToAbi r.itemType
 
         ( headVar, ctx18 ) =
             Context.freshVar ctx17
@@ -823,10 +821,11 @@ emitWriteEachItem r state =
                     )
                 |> Ops.opBuilder.build
 
-        -- Bind itemVar -> headVar (in its natural scalar type) so body
-        -- MonoExpr lookups resolve. Because the head is already the unboxed
-        -- i64/f64, the write op's `ensureUnboxed` is a no-op (no stray
-        -- eco.unbox / eco_resolve_hptr on a raw scalar word).
+        -- Bind itemVar -> headVar (at its SSA type) so body MonoExpr lookups
+        -- resolve. A number head is already the unboxed i64/f64, so the write
+        -- op's `ensureUnboxed` is a no-op (no stray eco.unbox /
+        -- eco_resolve_hptr on a raw scalar word); a record head is projected
+        -- from by the body as usual.
         ctxBody =
             Context.addVarMapping r.itemVar headVar headType ctx21
 
@@ -873,24 +872,6 @@ emitWriteEachItem r state =
         , cursor = whileCursorResult
         , ops = whileOp :: (List.reverse iterResult.ops ++ state.ops)
     }
-
-
-{-| True for the float primitive write ops. Used to decide whether a
-`WriteEachItem` loop's per-iteration item head is an unboxed f64 (all body
-writes are floats) or an unboxed i64 (the Int default). See `emitWriteEachItem`.
--}
-isFloatWrite : Op -> Bool
-isFloatWrite op =
-    case op of
-        WriteF32 _ _ _ ->
-            True
-
-        WriteF64 _ _ _ ->
-            True
-
-        _ ->
-            False
-
 
 
 -- ============================================================================

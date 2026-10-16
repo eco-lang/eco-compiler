@@ -96,8 +96,9 @@ unsigned, but nothing here prevents a signed value being written with them.
 `WriteUtf8` writes the string its expression produces as UTF-8.
 
 `WriteEachItem` writes every element of a list. `iterExpr` produces the list,
-`bodyOps` are the writes for one element, and `itemVar` is the name by which
-the expressions in `bodyOps` refer to the current element. `itemByteWidth` is
+`bodyOps` are the writes for one element, `itemVar` is the name by which
+the expressions in `bodyOps` refer to the current element, and `itemType` is
+the element's type. `itemByteWidth` is
 the number of bytes `bodyOps` write for one element, which must be the same for
 every element.
 
@@ -119,6 +120,7 @@ type Op
     | WriteEachItem
         { cursorName : String
         , itemVar : String
+        , itemType : Mono.MonoType
         , bodyOps : List Op
         , iterExpr : Mono.MonoExpr
         , itemByteWidth : Int
