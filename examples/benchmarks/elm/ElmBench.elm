@@ -9,11 +9,18 @@ are those of `Bench.elm`.
 
 -}
 
+import Adler32
+import ArrayBuild
 import Base64
+import BinaryFormat
 import BinaryTrees
 import Brainfuck
 import BytesCodec
 import Crc32
+import CsvParser
+import CsvSplit
+import DictAlgebra
+import DictKeys
 import DictOps
 import Dijkstra
 import ExprParser
@@ -25,10 +32,13 @@ import FloodFill
 import FloydWarshall
 import JsonCoords
 import JsonDecoders
+import JsonDict
+import JsonEncode
 import JsonParser
 import JsonShapes
 import KNucleotide
 import Levenshtein
+import Lexer
 import Life
 import ListFilter
 import ListFold
@@ -42,11 +52,17 @@ import NQueens
 import NSieve
 import NSieveBits
 import Platform
+import Popcount
+import Prng
 import RevComp
 import SExpr
+import SetAlgebra
+import SetDistinct
 import Sha256
+import ShuffleSort
 import Sort
 import SpectralNorm
+import StringBuild
 import Sudoku
 import UnicodeString
 import Utf8Bytes
@@ -187,6 +203,66 @@ bench name =
 
         "sexpr" ->
             Just SExpr.bench
+
+        "dict-algebra" ->
+            Just DictAlgebra.bench
+
+        "dict-int" ->
+            Just DictKeys.benchInt
+
+        "dict-string" ->
+            Just DictKeys.benchString
+
+        "dict-tuple" ->
+            Just DictKeys.benchTuple
+
+        "set-algebra" ->
+            Just SetAlgebra.bench
+
+        "set-distinct" ->
+            Just SetDistinct.bench
+
+        "shuffle-sort" ->
+            Just ShuffleSort.bench
+
+        "array-build" ->
+            Just ArrayBuild.bench
+
+        "csv-split" ->
+            Just CsvSplit.bench
+
+        "string-append" ->
+            Just StringBuild.benchAppend
+
+        "string-join" ->
+            Just StringBuild.benchJoin
+
+        "string-concat" ->
+            Just StringBuild.benchConcat
+
+        "prng" ->
+            Just Prng.bench
+
+        "popcount" ->
+            Just Popcount.bench
+
+        "binary-format" ->
+            Just BinaryFormat.bench
+
+        "adler32" ->
+            Just Adler32.bench
+
+        "json-dict" ->
+            Just JsonDict.bench
+
+        "json-encode" ->
+            Just JsonEncode.bench
+
+        "csv-parser" ->
+            Just CsvParser.bench
+
+        "lexer" ->
+            Just Lexer.bench
 
         _ ->
             Nothing

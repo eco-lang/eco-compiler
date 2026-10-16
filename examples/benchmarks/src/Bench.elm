@@ -34,11 +34,18 @@ files. n-queens counts the solutions of the n-queens puzzle.
 
 -}
 
+import Adler32
+import ArrayBuild
 import Base64
+import BinaryFormat
 import BinaryTrees
 import Brainfuck
 import BytesCodec
 import Crc32
+import CsvParser
+import CsvSplit
+import DictAlgebra
+import DictKeys
 import DictOps
 import Dijkstra
 import ExprParser
@@ -51,10 +58,13 @@ import FloydWarshall
 import Json.Encode as Encode
 import JsonCoords
 import JsonDecoders
+import JsonDict
+import JsonEncode
 import JsonParser
 import JsonShapes
 import KNucleotide
 import Levenshtein
+import Lexer
 import Life
 import ListFilter
 import ListFold
@@ -67,12 +77,18 @@ import NBody
 import NQueens
 import NSieve
 import NSieveBits
+import Popcount
+import Prng
 import RevComp
 import SExpr
+import SetAlgebra
+import SetDistinct
 import Sha256
+import ShuffleSort
 import Sort
 import SpectralNorm
 import Stream.Log
+import StringBuild
 import Sudoku
 import System
 import Task exposing (Task)
@@ -139,6 +155,26 @@ workloads =
     , Workload "json-decoders" "andMap, andThen, oneOf and lazy decoders over size items" JsonDecoders.bench 35000 Nothing
     , Workload "json-parser" "elm/parser JSON parser on json's document of size objects" JsonParser.bench 10000 Nothing
     , Workload "sexpr" "read and evaluate size Lisp programs with elm/parser" SExpr.bench 230 Nothing
+    , Workload "dict-algebra" "Dict union, intersect, diff and merge over size keys" DictAlgebra.bench 56000 Nothing
+    , Workload "dict-int" "Dict build and lookup of size Int keys" DictKeys.benchInt 200000 Nothing
+    , Workload "dict-string" "the same with String keys" DictKeys.benchString 130000 Nothing
+    , Workload "dict-tuple" "the same with (Int, Int) keys" DictKeys.benchTuple 150000 Nothing
+    , Workload "set-algebra" "Set union, intersect, diff and filter over size members" SetAlgebra.bench 70000 Nothing
+    , Workload "set-distinct" "Set.fromList of size values, mostly duplicates" SetDistinct.bench 230000 Nothing
+    , Workload "shuffle-sort" "Fisher-Yates shuffle of an Array of size, then List.sort" ShuffleSort.bench 210000 Nothing
+    , Workload "array-build" "Array.push size elements, then slice and append rounds" ArrayBuild.bench 140000 Nothing
+    , Workload "csv-split" "String.split CSV: size documents of 400 rows" CsvSplit.bench 800 Nothing
+    , Workload "string-append" "build text from size pieces with ++" StringBuild.benchAppend 300000 Nothing
+    , Workload "string-join" "the same with String.join" StringBuild.benchJoin 300000 Nothing
+    , Workload "string-concat" "the same with String.concat" StringBuild.benchConcat 250000 Nothing
+    , Workload "prng" "xorshift32 and xorshift128, size steps: Bitwise" Prng.bench 2000000 Nothing
+    , Workload "popcount" "popcount, trailing zeros and bit reversal over 0 .. size-1" Popcount.bench 1200000 Nothing
+    , Workload "binary-format" "encode and decode a chunked binary file of size chunks" BinaryFormat.bench 13000 Nothing
+    , Workload "adler32" "Adler-32 of size bytes, read with Decode.loop" Adler32.bench 1000000 Nothing
+    , Workload "json-dict" "Decode.dict and keyValuePairs over an object of size keys" JsonDict.bench 43000 Nothing
+    , Workload "json-encode" "Encode.encode 0 and 4 of size nested objects" JsonEncode.bench 7000 Nothing
+    , Workload "csv-parser" "elm/parser CSV: size documents of 400 rows" CsvParser.bench 340 Nothing
+    , Workload "lexer" "elm/parser lexer: size documents of 600 tokens" Lexer.bench 125 Nothing
     ]
 
 

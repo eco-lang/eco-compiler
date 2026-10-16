@@ -177,7 +177,7 @@ in `test/elm-{bytes,json,parser}`).
   list). Check: the program's result against a closed form (fib by the iterative formula, the
   fold by its arithmetic sum).
 
-## Batch 3 (16 benchmarks, 20 workloads: the remainder)
+## Batch 3 (16 benchmarks, 20 workloads: the remainder) — done 2026-10-16
 
 - **dict-algebra** (`DictAlgebra.elm`, Dict). `union`, `intersect`, `diff`, `merge` on two large
   overlapping dicts with arithmetic-progression keys, repeated. Check: closed-form sizes and value
@@ -368,3 +368,71 @@ in `test/elm-{bytes,json,parser}`).
 
   All 42 workloads: elm 11,909 ms, eco-js 11,778, eco dev 8,068, eco bundle 7,207 (1.65x
   faster than Elm in total, faster on 35 of the 42).
+- 2026-10-16: batch 3 implemented: `DictAlgebra`, `DictKeys` (dict-int, dict-string,
+  dict-tuple), `SetAlgebra`, `SetDistinct`, `ShuffleSort`, `ArrayBuild`, `CsvSplit`,
+  `StringBuild` (string-append, string-join, string-concat), `Prng`, `Popcount`,
+  `BinaryFormat`, `Adler32`, `JsonDict`, `JsonEncode`, `CsvParser`, `Lexer`: the plan is
+  complete, 62 workloads. Done-means: all 62 pass on elm, eco-js and eco native at their
+  defaults (each 200+ ms on Elm); the 20 pass at 72 other sizes on eco native and eco-js; a
+  mutation of each fails its check (including three subtle ones: a Sattolo-style shuffle that
+  still permutes, caught by the replay of the last 100 swaps; `floor` for `round` when reading
+  prices; `Parser.token` for `Parser.keyword`, which lexes `iffy` as `if` + `fy`). Bugs of my
+  own found on the way: string-build's checksum combination overflowed 2^53 on the JavaScript
+  backends (now multiplies in 16-bit halves). Changes from the plan:
+  - prng uses xorshift32 and xorshift128 (Marsaglia 2003, whose published first outputs are
+    checked every run) instead of PCG32, which would need 64-bit multiplication in 16-bit limbs.
+  - shuffle-sort's check replays the first 100 swaps over a sparse `Dict` (the last 100
+    positions are final after them) instead of predicting first elements.
+  - csv-split / csv-parser and lexer use documents under 128 Ki characters (400 rows; 600
+    tokens) so the native parser kernel bug (finding 3) cannot fire; `n` counts documents.
+  - json-encode compares round trips with object fields sorted (finding 8).
+- More findings:
+  8. **eco native `Encode.object` writes the fields sorted by key**; Elm (JavaScript) keeps the
+     order given (`{"id":..,"name":..}` comes out `{"active":..,"dims":..,...}`). Lengths are
+     unchanged, but anything that depends on field order (keyValuePairs after a round trip,
+     byte-for-byte output) differs.
+  9. **FIXED: eco native decoded corrupt Ints, Floats and Chars from `Decode.list`,
+     `Decode.dict` and `Decode.keyValuePairs`** unless the element decoder was a bare
+     `Decode.int` / `Decode.float`: `Decode.list (Decode.field "v" Decode.int)` over
+     `[1, 2, 40]`-valued objects summed to 3362959422864 (pointer bits read as numbers).
+     `JsonExports.cpp` `runDecoder` chose each list head's / tuple value's slot kind from the
+     element decoder's top constructor; it now takes it from the decoded value (`decodedSlot`:
+     Tag_Int / Tag_Float / Tag_Char unboxed, everything else boxed). `Decode.array` was not
+     affected. Regression test `test/elm-json/src/DecodeUnboxedSlotsTest.elm`; the 33 licensed
+     Json kernel rows (KernelSetFacts / KernelIntrinsics) re-audited (representation only) and
+     the LSS_022 manifest updated. The release bundle in `dist/` predates the fix: json-dict
+     fails there, as expected, until the bundle is rebuilt.
+  10. `Debug.toString` of a tuple prints `(3, 186)` on eco native and `(3,186)` in Elm (debug
+      output only).
+  Performance notes: eco native is slower than Elm on string-append (328 vs 249 ms; repeated
+  `++` onto a long string), csv-split (333 vs 231), csv-parser, json-dict and json-encode.
+- 2026-10-16: batch 3 results (median ms of 11 after 3 warm-ups, a process per workload and
+  backend; the bundle is the 12:04 release build, without the finding 9 fix):
+
+  | workload | size | elm | eco-js | eco dev | eco bundle |
+  |---|---:|---:|---:|---:|---:|
+  | dict-algebra | 56,000 | 254.4 | 257 | 119 | 131 |
+  | dict-int | 200,000 | 278.3 | 279 | 133 | 141 |
+  | dict-string | 130,000 | 234.4 | 236 | 150 | 142 |
+  | dict-tuple | 150,000 | 253.8 | 255 | 148 | 153 |
+  | set-algebra | 70,000 | 255.7 | 251 | 127 | 145 |
+  | set-distinct | 230,000 | 268.0 | 271 | 151 | 158 |
+  | shuffle-sort | 210,000 | 250.3 | 248 | 181 | 191 |
+  | array-build | 140,000 | 232.4 | 233 | 95 | 84 |
+  | csv-split | 800 | 230.6 | 229 | 333 | 314 |
+  | string-append | 300,000 | 248.5 | 244 | 328 | 295 |
+  | string-join | 300,000 | 240.0 | 240 | 250 | 216 |
+  | string-concat | 250,000 | 238.0 | 248 | 198 | 171 |
+  | prng | 2,000,000 | 294.7 | 296 | 14 | 18 |
+  | popcount | 1,200,000 | 226.4 | 236 | 35 | 35 |
+  | binary-format | 13,000 | 246.5 | 231 | 163 | 151 |
+  | adler32 | 1,000,000 | 271.2 | 265 | 76 | 73 |
+  | json-dict | 43,000 | 251.6 | 254 | 379 | 278 (fails: no fix) |
+  | json-encode | 7,000 | 247.4 | 252 | 337 | 237 |
+  | csv-parser | 340 | 210.7 | 206 | 252 | 257 |
+  | lexer | 125 | 209.7 | 212 | 159 | 184 |
+
+  All 62 workloads: elm 16,889 ms, eco-js 16,676, eco dev 11,617, eco bundle 10,707 (1.58x
+  faster than Elm in total; the bundle is faster than Elm on 51 of the 62, the dev build on 48).
+- 2026-10-16: tests after the finding 9 fix: elm-tests 14,118/0; `--target full` JIT E2E
+  2,386/2,386 (new `DecodeUnboxedSlotsTest` included), JS E2E 162/162 (3 skipped).

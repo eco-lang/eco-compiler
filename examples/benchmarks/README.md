@@ -21,8 +21,15 @@ Each workload checks itself as strongly as it can, at whatever size it runs:
   the same grid), matmul (a closed form, within rounding), floyd-warshall (symmetry, zero diagonal
   and four rows against BFS), unicode-string (lengths, sums and positions from the code points;
   only the ASCII part of `toUpper`), base64 (the round trip and the RFC vectors), utf8-bytes,
-  json-shapes and json-decoders (the round trip to the generated value) and json-parser
-  (agreement with `Json.Decode`). spectral-norm must lie within `6 / n^3` of its limit (a bound
+  json-shapes and json-decoders (the round trip to the generated value), json-parser (agreement
+  with `Json.Decode`), dict-algebra, set-algebra and popcount (closed forms), dict-int,
+  dict-string, dict-tuple and set-distinct (recomputed without the structure), shuffle-sort (a
+  permutation, and its last 100 positions against a sparse replay of the first 100 swaps),
+  array-build (closed-form rotations), csv-split and csv-parser (the generator's sums),
+  string-append, string-join and string-concat (length and checksum combined from the pieces),
+  binary-format (the round trip and every chunk's CRC), json-dict (the generator's sums),
+  json-encode (both texts' lengths from the value, and the round trip) and lexer (the
+  generator's token counts). spectral-norm must lie within `6 / n^3` of its limit (a bound
   measured with a C program from 1 to 5,500).
 - Exactly against a table that covers every feasible size: fannkuch-redux (1-12 items, from the
   standard C algorithm), nsieve (2-14, from a separate sieve), n-queens (up to 18, OEIS
@@ -35,9 +42,11 @@ Each workload checks itself as strongly as it can, at whatever size it runs:
   fasta (elsewhere the output's length), k-nucleotide and revcomp (the Benchmarks Game's
   published outputs and a Python reference; elsewhere every k's counts add up to the positions,
   and reverse-complementing twice gives the input back), sha256 (Python's `hashlib`; elsewhere
-  the FIPS test vectors), crc32 (Python's `zlib`; elsewhere the standard check value) and
+  the FIPS test vectors), crc32 (Python's `zlib`; elsewhere the standard check value),
   levenshtein (a Python implementation; elsewhere the structured pairs exactly and every edited
-  pair within its bounds). At sizes outside their tables these can pass a subtly wrong result.
+  pair within its bounds), prng (a Python implementation; elsewhere Marsaglia's published first
+  outputs) and adler32 (Python's `zlib`; elsewhere the standard example). At sizes outside their
+  tables these can pass a subtly wrong result.
 
 Each module's documentation says where its table comes from. The check runs inside the timed
 region, and costs little next to the work, except revcomp's, which reverse-complements
@@ -92,3 +101,8 @@ dijkstra and word-freq (Dict), sudoku (plb2, Norvig) and flood-fill (Set), matmu
 kostya) and floyd-warshall (Array), levenshtein and unicode-string (String), nsieve-bits
 (Shootout) and crc32 (Bitwise), base64 (kostya) and utf8-bytes (Bytes), json-shapes
 (nativejson-benchmark's corpus shapes) and json-decoders (JSON), json-parser and sexpr (Parser).
+Batch 3 completes the plan: dict-algebra and dict-int / dict-string / dict-tuple (Dict),
+set-algebra and set-distinct (Set), shuffle-sort and array-build (Array), csv-split and
+string-append / string-join / string-concat (String), prng and popcount (Bitwise),
+binary-format and adler32 (Bytes), json-dict and json-encode (JSON), csv-parser and lexer
+(Parser).

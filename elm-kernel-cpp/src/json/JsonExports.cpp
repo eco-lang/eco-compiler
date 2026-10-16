@@ -686,6 +686,32 @@ static u16 decoderCtorOf(Allocator& allocator, HPointer decHP) {
     return c->ctor;
 }
 
+// The heap-slot form of a decoded value: its kind (0 boxed, 1 Int, 2 Float, 3 Char) and the slot
+// contents, read off the value itself. Only Int, Float and Char are unboxed in heap fields
+// (REP_*), and the compiled code that reads a list head or tuple field of one of those types
+// reads the unboxed scalar. The element decoder's top constructor cannot decide this:
+// `Decode.field "v" Decode.int` and `Decode.map f Decode.int` decode Ints but are DEC_FIELD /
+// DEC_MAP, and a slot left boxed there hands the pointer's bits to the reader as the number.
+static u8 decodedSlot(Allocator& allocator, HPointer v, Unboxable& slot) {
+    slot.p = v;
+    if (isEmbeddedConstant(v)) return 0;
+    void* obj = allocator.resolve(v);
+    switch (getTag(obj)) {
+        case Tag_Int:
+            slot.i = static_cast<ElmInt*>(obj)->value;
+            return 1;
+        case Tag_Float:
+            slot.f = static_cast<ElmFloat*>(obj)->value;
+            return 2;
+        case Tag_Char:
+            slot.i = 0;
+            slot.c = static_cast<ElmChar*>(obj)->value;
+            return 3;
+        default:
+            return 0;
+    }
+}
+
 static uint64_t makeDecoder1(u16 ctor, uint64_t arg) {
     HPointer payload = Export::decode(arg);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
@@ -860,20 +886,13 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 return makeErr("Expecting a LIST");
             }
 
-            // Get element decoder handle and infer cons-head kind. The kind
-            // decision is made up-front on the *static* sub-decoder type, so a
-            // brief raw-pointer use here (no GC point) is safe.
             // Elements are read through the rooted jvalHP (resolveJval) with
-            // jsonArrayAt, either representation (threaded-gc-04b D5).
+            // jsonArrayAt, either representation (threaded-gc-04b D5). Each
+            // head's kind comes from the decoded value (decodedSlot); every
+            // element has the list's element type, so they all agree, and the
+            // first one decoded gives the chunk chain's kind.
             HPointer elemDecHP = decoder->values[0].p;
             u8 elemConsKind = 0;  // 0 = boxed
-            {
-                switch (decoderCtorOf(allocator, elemDecHP)) {
-                    case DEC_INT:   elemConsKind = 1; break;  // unboxed i64
-                    case DEC_FLOAT: elemConsKind = 2; break;  // unboxed f64
-                    default:        elemConsKind = 0; break;  // boxed HPointer
-                }
-            }
 
             // Length (primitive snapshot).
             const u32 len = jsonArrayLength(jval);
@@ -895,18 +914,11 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                         return elemResult;
                     }
                     HPointer elemVal = getOkValue(elemResult);
-                    if (elemConsKind == 1) {
-                        ElmInt* ei = static_cast<ElmInt*>(
-                            allocator.resolve(elemVal));
-                        eco_scratch_push_scalar(
-                            static_cast<uint64_t>(ei->value), 1);
-                    } else if (elemConsKind == 2) {
-                        ElmFloat* ef = static_cast<ElmFloat*>(
-                            allocator.resolve(elemVal));
-                        Unboxable fbits;
-                        fbits.f = ef->value;
-                        eco_scratch_push_scalar(
-                            static_cast<uint64_t>(fbits.i), 2);
+                    Unboxable slot;
+                    u8 kind = decodedSlot(allocator, elemVal, slot);
+                    if (i == static_cast<i64>(len) - 1) elemConsKind = kind;
+                    if (kind != 0) {
+                        eco_scratch_push_scalar(static_cast<uint64_t>(slot.i), kind);
                     } else {
                         eco_scratch_push_boxed(
                             HPtr::fromBits(hpBits(elemVal)));
@@ -934,17 +946,10 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 HPointer elemVal = getOkValue(elemResult);
 
                 // Unwrap primitive wrappers so the Cons head holds the unboxed
-                // value directly when the caller expects that representation.
+                // value directly, as compiled code reads an Int, Float or Char
+                // head (decodedSlot).
                 Unboxable headSlot;
-                if (elemConsKind == 1) {
-                    ElmInt* ei = static_cast<ElmInt*>(allocator.resolve(elemVal));
-                    headSlot.i = ei->value;
-                } else if (elemConsKind == 2) {
-                    ElmFloat* ef = static_cast<ElmFloat*>(allocator.resolve(elemVal));
-                    headSlot.f = ef->value;
-                } else {
-                    headSlot.p = elemVal;
-                }
+                elemConsKind = decodedSlot(allocator, elemVal, headSlot);
                 // `cons` allocates; `result` is rooted via listRoots above.
                 // For boxed heads the head HPointer must also stay valid.
                 if (elemConsKind == 0) {
@@ -1065,18 +1070,10 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 return makeErr("Expecting an OBJECT");
             }
 
-            // Snapshot the value-decoder handle and infer the unboxed kind for
-            // the tuple's value slot up front (no GC point in this block).
+            // The tuple's value slot takes the kind of each decoded value
+            // (decodedSlot): compiled code reads a `(String, Int)` field as
+            // an unboxed Int, whatever decoder produced it.
             HPointer valDecHP = decoder->values[0].p;
-            u8 valKind;
-            {
-                switch (decoderCtorOf(allocator, valDecHP)) {
-                    case DEC_INT:   valKind = 1; break;  // unboxed i64
-                    case DEC_FLOAT: valKind = 2; break;  // unboxed f64
-                    default:        valKind = 0; break;  // boxed HPointer
-                }
-            }
-            u64 tupleBitmap = static_cast<u64>(valKind) << 2;
 
             // Collect key/value tuple HPointers into a buffer (no allocations
             // here; safe to walk with raw pointers if we re-resolve cell on
@@ -1122,15 +1119,8 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 HPointer decodedVal = getOkValue(valResult);
 
                 Unboxable valSlot;
-                if (valKind == 1) {
-                    ElmInt* ei = static_cast<ElmInt*>(allocator.resolve(decodedVal));
-                    valSlot.i = ei->value;
-                } else if (valKind == 2) {
-                    ElmFloat* ef = static_cast<ElmFloat*>(allocator.resolve(decodedVal));
-                    valSlot.f = ef->value;
-                } else {
-                    valSlot.p = decodedVal;
-                }
+                u8 valKind = decodedSlot(allocator, decodedVal, valSlot);
+                u64 tupleBitmap = static_cast<u64>(valKind) << 2;
 
                 // Root the (possibly heap-pointer) value slot across `tuple2`.
                 if (valKind == 0) rs.pushStackRootRange(&valSlot.p, 1, 1);
