@@ -19,6 +19,10 @@ times timed (the check included); the table shows the median and fastest run in 
 (lower is better; `Time.now` has 1 ms resolution). The program exits with status 1 if any run of
 any workload fails its check.
 
+The default sizes make every workload take at least 200 ms on the official Elm compiler's
+JavaScript, each run in a process of its own (as `run.mjs` does), so that timer resolution and
+start-up costs stay small next to the work.
+
 All the chosen workloads run one after another in this one program, so a workload's timings can
 depend on what ran before it (heap state, for one). `run.mjs` runs each workload in a program
 of its own.
@@ -69,23 +73,23 @@ type alias Workload =
 
 workloads : List Workload
 workloads =
-    [ Workload "fib" "naive recursion: calls and integer arithmetic" Fib.bench 35 Nothing
-    , Workload "binary-trees" "allocation and GC churn: trees of depth 14, size times" BinaryTrees.bench 60 Nothing
-    , Workload "list-map" "range, map, sum" ListMap.bench 1000000 Nothing
-    , Workload "list-filter" "range, filter, sum" ListFilter.bench 1000000 Nothing
-    , Workload "list-fold" "range, fold" ListFold.bench 1000000 Nothing
-    , Workload "dict" "Dict build, lookup and fold" DictOps.bench 100000 Nothing
-    , Workload "mandelbrot" "float arithmetic on a size x size grid" Mandelbrot.bench 400 Nothing
-    , Workload "sort" "List.sort of pseudo-random Ints" Sort.bench 100000 Nothing
+    [ Workload "fib" "naive recursion: calls and integer arithmetic" Fib.bench 38 Nothing
+    , Workload "binary-trees" "allocation and GC churn: trees of depth 14, size times" BinaryTrees.bench 1100 Nothing
+    , Workload "list-map" "range, map, sum" ListMap.bench 2000000 Nothing
+    , Workload "list-filter" "range, filter, sum" ListFilter.bench 2000000 Nothing
+    , Workload "list-fold" "range, fold" ListFold.bench 3000000 Nothing
+    , Workload "dict" "Dict build, lookup and fold" DictOps.bench 350000 Nothing
+    , Workload "mandelbrot" "float arithmetic on a size x size grid" Mandelbrot.bench 2200 Nothing
+    , Workload "sort" "List.sort of pseudo-random Ints" Sort.bench 600000 Nothing
     , Workload "float-sum" "List Float map and fold" FloatSum.bench 1000000 Nothing
     , Workload "nbody" "planet simulation: Float records, size steps" NBody.bench 100000 (Just NBody.output)
     , Workload "spectral-norm" "power method on a size x size matrix: Float loops" SpectralNorm.bench 1000 (Just SpectralNorm.output)
-    , Workload "fannkuch-redux" "pancake flips over every permutation of size items" FannkuchRedux.bench 8 (Just FannkuchRedux.output)
-    , Workload "nsieve" "three sieves of Eratosthenes on Array Bool" NSieve.bench 4 (Just NSieve.output)
-    , Workload "merkletrees" "hashed binary trees of depth up to size" MerkleTrees.bench 15 (Just MerkleTrees.output)
-    , Workload "lru" "100-entry LRU cache on Dict, size rounds" Lru.bench 100000 (Just Lru.output)
-    , Workload "fasta" "generate 10 x size DNA characters as text" Fasta.bench 50000 (Just Fasta.output)
-    , Workload "nqueens" "count the solutions on a size x size board" NQueens.bench 11 Nothing
+    , Workload "fannkuch-redux" "pancake flips over every permutation of size items" FannkuchRedux.bench 9 (Just FannkuchRedux.output)
+    , Workload "nsieve" "three sieves of Eratosthenes on Array Bool" NSieve.bench 5 (Just NSieve.output)
+    , Workload "merkletrees" "hashed binary trees of depth up to size" MerkleTrees.bench 16 (Just MerkleTrees.output)
+    , Workload "lru" "100-entry LRU cache on Dict, size rounds" Lru.bench 120000 (Just Lru.output)
+    , Workload "fasta" "generate 10 x size DNA characters as text" Fasta.bench 350000 (Just Fasta.output)
+    , Workload "nqueens" "count the solutions on a size x size board" NQueens.bench 12 Nothing
     ]
 
 

@@ -5,6 +5,9 @@ workload in `src/` is a module exposing `bench : Int -> Bool` that uses only `el
 same source builds with both compilers. `bench` does the work at the given size and checks its
 own result.
 
+The default sizes make every workload take at least 200 ms on the official compiler's
+JavaScript, each run in a process of its own.
+
 ## How results are checked
 
 Each workload checks itself as strongly as it can, at whatever size it runs:
