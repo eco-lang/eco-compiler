@@ -1,6 +1,7 @@
 module Fib exposing (bench)
 
-{-| Naive recursion: call overhead and integer arithmetic, almost no allocation.
+{-| Naive recursion: call overhead and integer arithmetic, almost no allocation. Checked
+against an iterative Fibonacci.
 -}
 
 
@@ -13,6 +14,15 @@ fib n =
         fib (n - 1) + fib (n - 2)
 
 
-bench : Int -> Int
+iterate : Int -> Int -> Int -> Int
+iterate n a b =
+    if n <= 0 then
+        a
+
+    else
+        iterate (n - 1) b (a + b)
+
+
+bench : Int -> Bool
 bench n =
-    fib n
+    fib n == iterate n 0 1

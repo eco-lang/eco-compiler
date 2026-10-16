@@ -5,10 +5,13 @@ from two linear congruential generators; report the hits and misses. `Dict` chur
 
 The cache keeps entries by key, each with the "time" of its last use, plus the keys by that time,
 so the least recently used entry is the one with the smallest live time.
+
+Every round is a hit or a miss, so they must add up to `n`. There is no cheaper way to know the
+split than to run a cache, so it is checked exactly only at the sizes in `known` (on which the
+official Elm compiler, eco's JavaScript and eco's native code agree).
 -}
 
 import Dict exposing (Dict)
-import Output
 
 
 type alias Cache =
@@ -125,6 +128,13 @@ run i seed0 seed1 hits misses cache =
                 run (i - 1) s0 s1 hits (misses + 1) cache2
 
 
+{-| Hits and misses for a cache of 100 entries and `n` rounds.
+-}
+hitsAndMisses : Int -> ( Int, Int )
+hitsAndMisses n =
+    run n 0 1 0 0 (empty 100)
+
+
 {-| The benchmark's standard output for a cache of 100 entries and `n` rounds: hits, then
 misses.
 -}
@@ -132,11 +142,30 @@ output : Int -> String
 output n =
     let
         ( hits, misses ) =
-            run n 0 1 0 0 (empty 100)
+            hitsAndMisses n
     in
     String.fromInt hits ++ "\n" ++ String.fromInt misses ++ "\n"
 
 
-bench : Int -> Int
+{-| `( rounds, ( hits, misses ) )`.
+-}
+known : List ( Int, ( Int, Int ) )
+known =
+    [ ( 100000, ( 9616, 90384 ) ), ( 120000, ( 11506, 108494 ) ) ]
+
+
+bench : Int -> Bool
 bench n =
-    Output.checksum (output n)
+    let
+        ( hits, misses ) =
+            hitsAndMisses n
+    in
+    hits + misses
+        == n
+        && (case List.filter (\( rounds, _ ) -> rounds == n) known of
+                ( _, expected ) :: _ ->
+                    ( hits, misses ) == expected
+
+                [] ->
+                    True
+           )

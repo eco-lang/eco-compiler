@@ -2,6 +2,11 @@ module SpectralNorm exposing (bench, output)
 
 {-| Spectral norm: approximate the spectral norm of an infinite matrix `A` (truncated to n x n)
 with ten rounds of the power method on `AᵀA`. Float division in nested loops over lists.
+
+The norm of the infinite matrix is 1.274224152821228. The truncated one approaches it from below,
+by less than `5 / n^3` at every size (computed with a C program from 1 to 5,500: 0.27 at 1,
+4.2e-6 at 100, 4.7e-9 at 1,000), so the result must lie between `limit - 6 / n^3` and `limit`,
+give or take 1e-12 of rounding.
 -}
 
 import Output
@@ -63,10 +68,10 @@ powerMethod indices rounds u =
         powerMethod indices (rounds - 1) u2
 
 
-{-| The benchmark's standard output: the norm with nine decimals.
+{-| The norm, computed from an `n` x `n` truncation.
 -}
-output : Int -> String
-output n =
+norm : Int -> Float
+norm n =
     let
         indices =
             List.range 0 (n - 1)
@@ -80,9 +85,28 @@ output n =
         vv =
             List.foldl (+) 0 (List.map2 (*) v v)
     in
-    Output.fixed9 (sqrt (vBv / vv)) ++ "\n"
+    sqrt (vBv / vv)
 
 
-bench : Int -> Int
+{-| The benchmark's standard output: the norm with nine decimals.
+-}
+output : Int -> String
+output n =
+    Output.fixed9 (norm n) ++ "\n"
+
+
+limit : Float
+limit =
+    1.274224152821228
+
+
+bench : Int -> Bool
 bench n =
-    Output.checksum (output n)
+    let
+        x =
+            norm n
+
+        f =
+            toFloat n
+    in
+    x <= limit + 1.0e-12 && x >= limit - 6 / (f * f * f) - 1.0e-12

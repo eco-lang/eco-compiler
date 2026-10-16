@@ -1,7 +1,10 @@
 // Build and run the compute benchmarks on three backends and compare them:
 //
-//   elm         the official Elm compiler's JavaScript (elm/ElmBench.elm), run in this process
+//   elm         the official Elm compiler's JavaScript (elm/ElmBench.elm), run under node
 //   eco-js      eco's JavaScript backend (src/Bench.elm), run under node
+//
+// Both JavaScript builds use --optimize. eco's native backend ignores it, so the native build
+// does not pass it.
 //   eco-native  eco's native backend (src/Bench.elm)
 //
 // Needs `eco`, `elm` (0.19.1) and `node` on the PATH; set ECO or ELM to use other binaries.
@@ -12,11 +15,11 @@
 //   node run.mjs --skip-elm              without the official compiler (also --skip-js)
 //   node run.mjs --no-build              reuse the programs in build/
 //
-// Every backend must compute the same result for each workload, and at the default sizes the
-// result must be the known one; otherwise the script exits with status 1. Times are medians in
-// milliseconds after the warm-up runs. eco times itself with Time.now (1 ms resolution); the
-// official elm build is timed here with process.hrtime. The table goes to stdout and every
-// figure to build/results.json.
+// Each workload runs on each backend in a process of its own, so no workload's timings depend on
+// the ones before it. Every workload checks its own result (see Bench.elm); if a check fails on
+// any backend the script exits with status 1. Times are medians in milliseconds after the warm-up
+// runs. eco times itself with Time.now (1 ms resolution); the official elm build is timed with
+// process.hrtime. The table goes to stdout and every figure to build/results.json.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -33,6 +36,59 @@ const ELM = process.env.ELM || "elm";
 function fail(message, code = 2) {
   console.error(`run.mjs: ${message}`);
   process.exit(code);
+}
+
+function median(xs) {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// ---- official elm worker: `node run.mjs --elm-worker NAME SIZE --warmup W --runs R` -----------
+//
+// Runs one workload of build/elm-bench.js in this process (run.mjs starts one per workload) and
+// prints `{ "ok": ..., "medianMs": ..., "fastestMs": ... }`. Timed with process.hrtime: the
+// reply on the `fromBench` port ends each run, taken in the port callback itself.
+
+if (process.argv[2] === "--elm-worker") {
+  const [name, size, , warmup, , runs] = process.argv.slice(3);
+  const elmJs = path.join(build, "elm-bench.js");
+  let app;
+  try {
+    app = require(elmJs).Elm.ElmBench.init();
+  } catch (e) {
+    fail(`cannot load ${elmJs}: ${e.message} (build it first, without --no-build)`);
+  }
+  let pending = null;
+  app.ports.fromBench.subscribe((value) => {
+    const end = process.hrtime.bigint();
+    const p = pending;
+    pending = null;
+    p?.({ value, end });
+  });
+  const once = () =>
+    new Promise((resolve) => {
+      pending = resolve;
+      app.ports.toBench.send({ name, size: Number(size) });
+    });
+  const timed = async () => {
+    const start = process.hrtime.bigint();
+    const { value, end } = await once();
+    if (value === null) fail(`elm-bench.js has no workload ${name}`);
+    return { ok: value, ms: Number(end - start) / 1e6 };
+  };
+  for (let i = 0; i < Number(warmup); i++) await timed();
+  const samples = [];
+  let ok = true;
+  for (let i = 0; i < Number(runs); i++) {
+    const r = await timed();
+    samples.push(r.ms);
+    ok = ok && r.ok;
+  }
+  console.log("{");
+  console.log(`  "ok": ${ok}, "medianMs": ${median(samples)}, "fastestMs": ${Math.min(...samples)}`);
+  console.log("}");
+  process.exit(0);
 }
 
 // ---- options ---------------------------------------------------------------------------------
@@ -57,7 +113,6 @@ for (let i = 0; i < args.length; i++) {
   } else if (a.startsWith("-")) fail(`unknown option ${a} (see --help)`);
   else opts.selected.push(a);
 }
-const benchArgs = ["--json", "--warmup", String(opts.warmup), "--runs", String(opts.runs), ...opts.selected];
 
 // ---- build -----------------------------------------------------------------------------------
 
@@ -83,7 +138,7 @@ if (opts.build) {
   run(ECO, ["make", "src/Bench.elm", `--output=${nativeBin}`], dir, "eco make (native)");
   if (!opts.skipJs) {
     console.log("building eco JavaScript ...");
-    run(ECO, ["make", "src/Bench.elm", `--output=${ecoJs}`], dir, "eco make (JavaScript)");
+    run(ECO, ["make", "src/Bench.elm", "--optimize", `--output=${ecoJs}`], dir, "eco make (JavaScript)");
   }
   if (!opts.skipElm) {
     console.log("building official elm JavaScript ...");
@@ -92,13 +147,17 @@ if (opts.build) {
 }
 fs.writeFileSync(ecoJsLauncher, "require('./bench.js').Elm.Bench.init();\n");
 
-// ---- eco runs --------------------------------------------------------------------------------
+// ---- one workload on one backend, in a process of its own ----------------------------------
+//
+// Every (workload, backend) pair runs in a fresh process: a workload's timings cannot depend on
+// what ran before it (heap left full, GC debt, JIT state), and the order of the workloads does not
+// matter. Inside that process the warm-up runs and the timed runs share the heap and the JIT, which
+// is what the warm-up is for.
 
-// Run an eco build of Bench.elm with --json and return its report. Its stdout may carry other text
-// after the JSON document (a development build of eco prints GC statistics at exit), so read the
+// Run an eco build of Bench.elm and parse the JSON document it prints. Its stdout may carry other
+// text after the document (a development build of eco prints GC statistics at exit), so read the
 // document from its opening `{` line to its closing `}` line.
-function runEco(command, commandArgs, label) {
-  console.log(`running ${label} ...`);
+function runJson(command, commandArgs, label) {
   const r = spawnSync(command, commandArgs, { cwd: dir, encoding: "utf8", maxBuffer: 1 << 26 });
   if (r.error) fail(`cannot run ${label}: ${r.error.message} (build it first, without --no-build)`);
   const lines = r.stdout.split("\n");
@@ -115,89 +174,59 @@ function runEco(command, commandArgs, label) {
   return JSON.parse(lines.slice(start, end + 1).join("\n"));
 }
 
-const native = runEco(nativeBin, benchArgs, "eco native");
-const ecoJsReport = opts.skipJs ? null : runEco(process.execPath, [ecoJsLauncher, ...benchArgs], "eco JavaScript");
+const timing = ["--warmup", String(opts.warmup), "--runs", String(opts.runs)];
 
-// ---- official elm, in this process -----------------------------------------------------------
-
-function median(xs) {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+function runEco(command, prefix, w, label) {
+  const report = runJson(command, [...prefix, "--json", ...timing, `${w.name}=${w.size}`], `${label} ${w.name}`);
+  return report.workloads[0];
 }
 
-async function runElm(workloads) {
-  console.log("running official elm ...");
-  let app;
-  try {
-    app = require(elmJs).Elm.ElmBench.init();
-  } catch (e) {
-    fail(`cannot load ${elmJs}: ${e.message} (build it first, without --no-build)`);
-  }
-  // One request at a time: the reply ends the timing (taken in the port callback itself).
-  let pending = null;
-  app.ports.fromBench.subscribe((value) => {
-    const end = process.hrtime.bigint();
-    const p = pending;
-    pending = null;
-    p?.({ value, end });
-  });
-  const once = (name, size) =>
-    new Promise((resolve) => {
-      pending = resolve;
-      app.ports.toBench.send({ name, size });
-    });
-  const timed = async (name, size) => {
-    const start = process.hrtime.bigint();
-    const { value, end } = await once(name, size);
-    return { value, ms: Number(end - start) / 1e6 };
-  };
-  const report = {};
-  for (const w of workloads) {
-    for (let i = 0; i < opts.warmup; i++) await timed(w.name, w.size);
-    const samples = [];
-    let result = null;
-    for (let i = 0; i < opts.runs; i++) {
-      const { value, ms } = await timed(w.name, w.size);
-      samples.push(ms);
-      result = value;
-    }
-    report[w.name] = { result, medianMs: median(samples), fastestMs: Math.min(...samples) };
-  }
-  return report;
+function runElm(w) {
+  return runJson(process.execPath, [fileURLToPath(import.meta.url), "--elm-worker", w.name, String(w.size), ...timing], `elm ${w.name}`);
 }
 
-const elm = opts.skipElm ? null : await runElm(native.workloads);
+// ---- the workloads ---------------------------------------------------------------------------
 
-// ---- compare and report ----------------------------------------------------------------------
+const all = runJson(nativeBin, ["--list", "--json"], "eco native --list").workloads;
+const chosen = opts.selected.length
+  ? opts.selected.map((arg) => {
+      const [name, size] = arg.split("=");
+      const w = all.find((x) => x.name === name.toLowerCase());
+      if (!w) fail(`unknown workload ${name} (see ${path.relative(process.cwd(), nativeBin) || "bench"} --list)`);
+      const n = size === undefined ? w.size : Number(size);
+      if (!Number.isInteger(n) || n < 1) fail(`${name} needs a whole-number size of at least 1`);
+      return { name: w.name, size: n };
+    })
+  : all.map((w) => ({ name: w.name, size: w.size }));
 
 const problems = [];
-const rows = native.workloads.map((n) => {
-  const js = ecoJsReport?.workloads.find((w) => w.name === n.name && w.size === n.size);
-  const e = elm?.[n.name];
-  // Results as numbers: official elm's Int is a JavaScript double, so compare in that type.
-  const results = [["eco-native", n.result], ["eco-js", js?.result], ["elm", e?.result]].filter(([, v]) => v != null);
-  if (results.some(([, v]) => Number(v) !== Number(n.result))) {
-    problems.push(`${n.name}: backends disagree (${results.map(([b, v]) => `${b} ${v}`).join(", ")})`);
-  }
-  if (n.check === "WRONG") problems.push(`${n.name}: result ${n.result}, expected ${n.expected}`);
-  return {
-    name: n.name,
-    size: n.size,
-    result: n.result,
+const rows = [];
+for (const w of chosen) {
+  console.log(`running ${w.name} (size ${w.size}) ...`);
+  const e = opts.skipElm ? null : runElm(w);
+  const js = opts.skipJs ? null : runEco(process.execPath, [ecoJsLauncher], w, "eco JavaScript");
+  const n = runEco(nativeBin, [], w, "eco native");
+  const failed = [["elm", e], ["eco-js", js], ["eco-native", n]].filter(([, r]) => r && !r.ok).map(([b]) => b);
+  if (failed.length) problems.push(`${w.name} (size ${w.size}): check failed on ${failed.join(", ")}`);
+  rows.push({
+    name: w.name,
+    size: w.size,
+    ok: failed.length === 0,
     elm: e?.medianMs ?? null,
     ecoJs: js?.medianMs ?? null,
     ecoNative: n.medianMs,
-  };
-});
+  });
+}
+
+// ---- report ----------------------------------------------------------------------------------
 
 const fmt = (x) => (x == null ? "-" : x.toFixed(x < 10 ? 2 : 1)).padStart(11);
 const ratio = (r) => (r.elm == null || r.ecoNative === 0 ? "-" : `${(r.elm / r.ecoNative).toFixed(1)}x`).padStart(15);
-console.log(`\nwarmup ${opts.warmup}, runs ${opts.runs}; median ms, lower is better\n`);
-console.log("workload".padEnd(16) + "size".padStart(9) + "elm".padStart(11) + "eco-js".padStart(11) + "eco-native".padStart(11) + "native vs elm".padStart(15));
-console.log("-".repeat(73));
+console.log(`\nwarmup ${opts.warmup}, runs ${opts.runs}, one process per workload and backend; median ms, lower is better\n`);
+console.log("workload".padEnd(16) + "size".padStart(9) + "check".padStart(7) + "elm".padStart(11) + "eco-js".padStart(11) + "eco-native".padStart(11) + "native vs elm".padStart(15));
+console.log("-".repeat(80));
 for (const r of rows) {
-  console.log(r.name.padEnd(16) + String(r.size).padStart(9) + fmt(r.elm) + fmt(r.ecoJs) + fmt(r.ecoNative) + ratio(r));
+  console.log(r.name.padEnd(16) + String(r.size).padStart(9) + (r.ok ? "ok" : "WRONG").padStart(7) + fmt(r.elm) + fmt(r.ecoJs) + fmt(r.ecoNative) + ratio(r));
 }
 fs.writeFileSync(path.join(build, "results.json"), JSON.stringify({ warmup: opts.warmup, runs: opts.runs, workloads: rows }, null, 2) + "\n");
 console.log(`\nwrote ${path.relative(process.cwd(), path.join(build, "results.json")) || "build/results.json"}`);

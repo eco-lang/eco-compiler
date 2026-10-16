@@ -1,6 +1,7 @@
 module BinaryTrees exposing (bench)
 
-{-| Allocation and GC churn: build many short-lived trees of depth 14 and walk them.
+{-| Allocation and GC churn: build many short-lived trees of depth 14 and walk them. A tree of
+depth 14 has 2^15 - 1 nodes and leaves, which is what each walk must count.
 -}
 
 
@@ -37,6 +38,6 @@ run k acc =
         run (k - 1) (acc + check (build 14))
 
 
-bench : Int -> Int
+bench : Int -> Bool
 bench n =
-    run n 0
+    run n 0 == n * (2 ^ 15 - 1)

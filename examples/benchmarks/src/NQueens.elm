@@ -1,7 +1,8 @@
 module NQueens exposing (bench)
 
 {-| n-queens: count every way to place `n` queens on an n x n board with no two attacking each
-other, by backtracking one row at a time. Recursion and short lists.
+other, by backtracking one row at a time. Recursion and short lists. The counts for boards up to
+18 x 18 are known (OEIS A000170); larger boards fail the check.
 -}
 
 
@@ -39,6 +40,13 @@ solutions n row placed =
             (List.range 0 (n - 1))
 
 
-bench : Int -> Int
+{-| The number of solutions for boards of size 0 to 18 (OEIS A000170).
+-}
+known : List Int
+known =
+    [ 1, 1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624 ]
+
+
+bench : Int -> Bool
 bench n =
-    solutions n 0 []
+    List.head (List.drop n known) == Just (solutions n 0 [])

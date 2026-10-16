@@ -3,10 +3,12 @@ module FannkuchRedux exposing (bench, output)
 {-| Fannkuch-redux: for every permutation of `0 .. n-1`, count the pancake flips (reverse the
 first `p[0] + 1` elements) until `0` comes first; report the maximum and an alternating-sign
 checksum over the permutations in the standard order. Short lists rebuilt constantly.
+
+Both numbers must match `known`, computed for 1 to 12 items by the benchmark's standard C
+algorithm; 13 items and more fail the check (13! permutations would take hours).
 -}
 
 import Array exposing (Array)
-import Output
 
 
 flips : List Int -> Int
@@ -99,20 +101,38 @@ loop total idx sign s =
                 counted
 
 
-{-| The benchmark's standard output: the checksum and the maximum number of flips.
+{-| The checksum and the maximum number of flips over every permutation of `n` items.
 -}
-output : Int -> String
-output n =
+run : Int -> ( Int, Int )
+run n =
     let
         total =
             List.product (List.range 1 n)
 
         s =
-            loop total 0 True (State (List.range 0 (n - 1)) (Array.repeat (n + 1) 0) 0 1)
+            loop total 0 True (State (List.range 0 (n - 1)) (Array.repeat (n + 1) 0) 0 0)
     in
-    String.fromInt s.checksum ++ "\nPfannkuchen(" ++ String.fromInt n ++ ") = " ++ String.fromInt s.maxFlips ++ "\n"
+    ( s.checksum, s.maxFlips )
 
 
-bench : Int -> Int
+{-| The benchmark's standard output: the checksum and the maximum number of flips.
+-}
+output : Int -> String
+output n =
+    let
+        ( checksum, maxFlips ) =
+            run n
+    in
+    String.fromInt checksum ++ "\nPfannkuchen(" ++ String.fromInt n ++ ") = " ++ String.fromInt maxFlips ++ "\n"
+
+
+{-| `( checksum, maximum flips )` for 1 to 12 items.
+-}
+known : List ( Int, Int )
+known =
+    [ ( 0, 0 ), ( -1, 1 ), ( 2, 2 ), ( 4, 4 ), ( 11, 7 ), ( 49, 10 ), ( 228, 16 ), ( 1616, 22 ), ( 8629, 30 ), ( 73196, 38 ), ( 556355, 51 ), ( 3968050, 65 ) ]
+
+
+bench : Int -> Bool
 bench n =
-    Output.checksum (output n)
+    n >= 1 && List.head (List.drop (n - 1) known) == Just (run n)

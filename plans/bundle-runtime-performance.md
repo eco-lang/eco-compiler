@@ -223,3 +223,15 @@ Two causes, both in how the bundle's runtime and kernel archives
   `runtime/third_party/llvm-libc`, `memfuncs.o` linked ahead of libc.a in programs and in `eco`,
   Alpine smoke check added) and checked as far as this container allows; host Docker build and
   benchmark outstanding.
+- 2026-10-16: D measured on the host with the rebuilt bundle (`./bench`, median ms; the A+B
+  host run above -> after C+D, dev build in brackets; C alone was about -2.5 %): fannkuch-redux
+  67 -> 51 (70), sort 43 -> 39 (32), fasta 61 -> 52 (63), nsieve 123 -> 105 (108), nqueens
+  68 -> 66 (69), float-sum 48 -> 49 (55). The bundle now matches or beats the dev build
+  everywhere except sort (libc++ `stable_sort` under clang 19 plus two `resolve` calls per
+  comparison; a scalar-key `sortBy` fast path was proposed and deferred). nsieve's gain is
+  larger than its 1.7 % `memcpy` share predicts; not yet explained (one run each, no perf).
+- 2026-10-16: same machine, one run each (`node run.mjs --no-build` for elm/eco-js/dev native,
+  then `bench-bundle --json`, 3 warmup + 11 runs): totals elm 1,990 ms, eco-js 2,258, dev native
+  825, bundle 813. Bundle vs dev: fannkuch-redux 0.71, list-fold 0.78, fasta 0.82, float-sum
+  0.88; slower on merkletrees 1.26 (88 vs 70 ms), sort 1.22, binary-trees 1.17, nbody 1.08,
+  lru 1.07. merkletrees is the new largest gap; not yet profiled.

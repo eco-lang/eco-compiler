@@ -2,6 +2,12 @@ module NBody exposing (bench, output)
 
 {-| n-body: simulate the Jovian planets around the Sun for `n` steps of 0.01 days, reporting the
 system's energy before and after. Float arithmetic on records, rebuilt at every step.
+
+The energy before is the benchmark's published -0.169075164, at every `n`. The integrator
+conserves energy closely, so the energy after must stay within 1e-4 of it: the published outputs
+drift by at most 1.3e-5 (-0.169087605 after 1,000 steps, -0.169059907 after 50,000,000). That
+alone would pass a different but still energy-conserving simulation, so at the sizes in `known`
+the energy after must also match exactly, to nine decimals.
 -}
 
 import Output
@@ -173,17 +179,49 @@ steps n bodies =
         steps (n - 1) (advance 0.01 bodies)
 
 
+{-| The system's energy before and after `n` steps.
+-}
+energies : Int -> ( Float, Float )
+energies n =
+    let
+        start =
+            offsetMomentum initialBodies
+    in
+    ( energy start, energy (steps n start) )
+
+
 {-| The benchmark's standard output: the energy before and after `n` steps.
 -}
 output : Int -> String
 output n =
     let
-        start =
-            offsetMomentum initialBodies
+        ( before, after ) =
+            energies n
     in
-    Output.fixed9 (energy start) ++ "\n" ++ Output.fixed9 (energy (steps n start)) ++ "\n"
+    Output.fixed9 before ++ "\n" ++ Output.fixed9 after ++ "\n"
 
 
-bench : Int -> Int
+{-| The energy after `n` steps: the benchmark's published outputs for 1,000 and 50,000,000
+steps, and 100,000 (the default), on which the official Elm compiler, eco's JavaScript and eco's
+native code agree.
+-}
+known : List ( Int, String )
+known =
+    [ ( 1000, "-0.169087605" ), ( 100000, "-0.169079859" ), ( 50000000, "-0.169059907" ) ]
+
+
+bench : Int -> Bool
 bench n =
-    Output.checksum (output n)
+    let
+        ( before, after ) =
+            energies n
+
+        matchesKnown =
+            case List.filter (\( count, _ ) -> count == n) known of
+                ( _, expected ) :: _ ->
+                    Output.fixed9 after == expected
+
+                [] ->
+                    True
+    in
+    Output.fixed9 before == "-0.169075164" && abs (after - before) <= 1.0e-4 && matchesKnown

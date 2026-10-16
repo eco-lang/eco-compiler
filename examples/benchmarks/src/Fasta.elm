@@ -3,6 +3,10 @@ module Fasta exposing (bench, output)
 {-| fasta: generate DNA sequences in FASTA format, 60 characters a line: `2n` characters
 repeating a fixed sequence, then `3n` and `5n` characters drawn at random (a linear
 congruential generator) from two weighted alphabets. String building.
+
+The output must have the length the format implies at every size. Its exact text is checked
+only at the sizes in `known`, by a checksum (on which the official Elm compiler, eco's JavaScript
+and eco's native code agree).
 -}
 
 import Output
@@ -127,6 +131,21 @@ randomFasta table n seed =
     go n seed []
 
 
+headerOne : String
+headerOne =
+    ">ONE Homo sapiens alu"
+
+
+headerTwo : String
+headerTwo =
+    ">TWO IUB ambiguity codes"
+
+
+headerThree : String
+headerThree =
+    ">THREE Homo sapiens frequency"
+
+
 {-| The benchmark's standard output.
 -}
 output : Int -> String
@@ -139,13 +158,43 @@ output n =
             randomFasta (cumulative homoSapiens) (n * 5) seed
     in
     String.join "\n"
-        ((">ONE Homo sapiens alu" :: repeatFasta alu (n * 2))
-            ++ (">TWO IUB ambiguity codes" :: two)
-            ++ (">THREE Homo sapiens frequency" :: three)
+        ((headerOne :: repeatFasta alu (n * 2))
+            ++ (headerTwo :: two)
+            ++ (headerThree :: three)
         )
         ++ "\n"
 
 
-bench : Int -> Int
+{-| Three headers and `2n + 3n + 5n` characters in lines of 60, every line ending in a newline.
+-}
+expectedLength : Int -> Int
+expectedLength n =
+    let
+        lines chars =
+            (chars + width - 1) // width
+    in
+    String.length headerOne + String.length headerTwo + String.length headerThree + 10 * n + 3 + lines (2 * n) + lines (3 * n) + lines (5 * n)
+
+
+{-| `( n, checksum of the output )`.
+-}
+known : List ( Int, Int )
+known =
+    [ ( 50000, 112894163 ), ( 350000, 640352613 ) ]
+
+
+bench : Int -> Bool
 bench n =
-    Output.checksum (output n)
+    let
+        text =
+            output n
+    in
+    String.length text
+        == expectedLength n
+        && (case List.filter (\( size, _ ) -> size == n) known of
+                ( _, expected ) :: _ ->
+                    Output.checksum text == expected
+
+                [] ->
+                    True
+           )

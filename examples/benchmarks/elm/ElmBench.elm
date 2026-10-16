@@ -2,8 +2,8 @@ port module ElmBench exposing (main)
 
 {-| The workloads for the official Elm compiler, which cannot build `Bench.elm` (an eco/system
 program). `run.mjs` sends `{ name, size }` on `toBench`; the worker runs that workload's `bench`
-and sends the result back on `fromBench` (`-1` for an unknown name). The names are those of
-`Bench.elm`.
+and sends back on `fromBench` whether its check passed (`null` for an unknown name). The names
+are those of `Bench.elm`.
 
     elm make ElmBench.elm --optimize --output=../build/elm-bench.js
 
@@ -32,10 +32,10 @@ import SpectralNorm
 port toBench : ({ name : String, size : Int } -> msg) -> Sub msg
 
 
-port fromBench : Int -> Cmd msg
+port fromBench : Maybe Bool -> Cmd msg
 
 
-bench : String -> Maybe (Int -> Int)
+bench : String -> Maybe (Int -> Bool)
 bench name =
     case name of
         "fib" ->
@@ -100,14 +100,7 @@ main =
         , update =
             \request model ->
                 ( model
-                , fromBench
-                    (case bench request.name of
-                        Just run ->
-                            run request.size
-
-                        Nothing ->
-                            -1
-                    )
+                , fromBench (Maybe.map (\run -> run request.size) (bench request.name))
                 )
         , subscriptions = \_ -> toBench identity
         }
