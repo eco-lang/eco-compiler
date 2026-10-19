@@ -12,13 +12,11 @@ import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.writeLineAsBytes ("to stderr: " ++ String.fromInt 42) env.stderr
-                    |> Task.map (\_ -> ())
-                    |> Task.onError (\_ -> Task.succeed ())
-                )
+            Stream.writeLine ("to stderr: " ++ String.fromInt 42) env.stderr
+                |> Task.map (\_ -> ())
+                |> Task.onError (\_ -> Task.succeed ())
         )

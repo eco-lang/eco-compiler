@@ -33,7 +33,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -102,7 +102,7 @@ wholeCase listener =
     W.rssKiB
         |> Task.andThen
             (\rss0 ->
-                H.async (W.acceptOne listener |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.closed ws |> Task.map (\info -> ( end, info )))))
+                H.async (W.acceptOne listener |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.awaitClose ws |> Task.map (\info -> ( end, info )))))
                     |> Task.andThen
                         (\serverDone ->
                             W.rawHandshakeHead listener [ "Sec-WebSocket-Extensions: permessage-deflate" ] firstFrame
@@ -170,7 +170,7 @@ streamedCase listener =
                                                         )
                                                         |> Task.andThen
                                                             (\written ->
-                                                                Stream.read (WebSocket.streamedReadable server)
+                                                                Stream.read (WebSocket.readableStreamed server)
                                                                     |> Task.mapError Stream.errorToString
                                                                     |> Task.andThen
                                                                         (\m ->
@@ -186,7 +186,7 @@ streamedCase listener =
                                                                                                 Task.fail "expected binary"
                                                                                         )
                                                                                             |> Task.andThen (\_ -> written)
-                                                                                            |> Task.andThen (\_ -> Stream.read (WebSocket.streamedReadable server) |> Task.mapError Stream.errorToString)
+                                                                                            |> Task.andThen (\_ -> Stream.read (WebSocket.readableStreamed server) |> Task.mapError Stream.errorToString)
                                                                                             |> Task.andThen
                                                                                                 (\next ->
                                                                                                     case next of
@@ -205,7 +205,7 @@ streamedCase listener =
                                                                                                                     |> Task.andThen (\_ -> W.rawReadAll conn)
                                                                                                                     |> Task.andThen
                                                                                                                         (\_ ->
-                                                                                                                            Stream.read (WebSocket.streamedReadable server)
+                                                                                                                            Stream.read (WebSocket.readableStreamed server)
                                                                                                                                 |> Task.map (\_ -> "a message")
                                                                                                                                 |> Task.onError (\e -> Task.succeed (Stream.errorToString e))
                                                                                                                         )

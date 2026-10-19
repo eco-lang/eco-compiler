@@ -1,6 +1,6 @@
 module HttpServerTlsTest exposing (main)
 
-{-| HTTPS (plans/eco-system-websockets.md §3.5, §4 WS3): `createServerWith` with `tls`, reached
+{-| HTTPS (plans/eco-system-websockets.md §3.5, §4 WS3): `listen` with `tls`, reached
 by raw HTTP/1.1 over `Socket.Tls` clients trusting the test CA. Request URLs start with
 `https://`; the server chooses ALPN itself (`http/1.1`), ignoring the `alpn` of its
 `Socket.Tls.ServerOptions` (here `[ "h2" ]`); a client offering `h2` first still gets `http/1.1`
@@ -33,7 +33,6 @@ it; an unusable key fails with an `ERR_SSL_` code. (`Socket.Tls.listen` keeps th
 -- EXIT: 0
 
 import Http.Server as Server exposing (HttpVersion(..))
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Socket
 import Socket.Address as Address exposing (Family(..))
@@ -56,15 +55,15 @@ version v =
             "Http2"
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     -- The Host header carries no port, so the URL has none: "GET https://localhost/a".
-    ( [ Server.requestInfo request ++ " " ++ version request.version ]
-    , H.Now (response |> Response.setBody (String.dropLeft 1 request.url.path))
+    ( [ Server.requestToString request ++ " " ++ version request.version ]
+    , H.Now (response |> Server.setBody (String.dropLeft 1 request.url.path))
     )
 
 
-withTls : Server.ServerOptions -> Server.ServerOptions
+withTls : Server.ListenOptions -> Server.ListenOptions
 withTls options =
     { options | tls = Just (T.server [ "h2" ]) }
 
@@ -108,21 +107,21 @@ then_ next before =
     before |> Task.andThen (\lines -> next |> Task.map (\more -> lines ++ more))
 
 
-startError : Server.ServerOptions -> Task String String
+startError : Server.ListenOptions -> Task String String
 startError options =
-    Server.createServerWith options
-        |> Task.andThen (\s -> Server.closeServer s |> Task.map (\_ -> "started"))
-        |> Task.onError (\(Server.ServerError e) -> Task.succeed e.code)
+    Server.listen options
+        |> Task.andThen (\s -> Server.close s |> Task.map (\_ -> "started"))
+        |> Task.onError (\e -> Task.succeed (Server.errorCode e))
 
 
 client : Server.Server -> Task String (List String)
 client server =
     let
         port_ =
-            Server.serverPort server
+            (Server.endpoint server).port_
 
         plain =
-            Server.defaultServerOptions (Address.loopback IPv4) 0
+            Server.defaultListenOptions (Address.loopback IPv4) 0
     in
     session "http/1.1"
         [ "http/1.1" ]
@@ -139,12 +138,12 @@ client server =
                 |> Task.map (\code -> [ "http2 without tls: " ++ code ])
             )
         |> then_
-            (Server.createServerWith (withTls { plain | http2 = True })
-                |> Task.mapError (\(Server.ServerError e) -> e.code)
+            (Server.listen (withTls { plain | http2 = True })
+                |> Task.mapError Server.errorCode
                 |> Task.andThen
                     (\s2 ->
-                        session "http2 with tls" [ "h2", "http/1.1" ] (\_ -> Task.succeed []) (Server.serverPort s2)
-                            |> Task.andThen (\lines -> Server.closeServer s2 |> Task.map (\_ -> lines))
+                        session "http2 with tls" [ "h2", "http/1.1" ] (\_ -> Task.succeed []) ((Server.endpoint s2).port_)
+                            |> Task.andThen (\lines -> Server.close s2 |> Task.map (\_ -> lines))
                     )
             )
         |> then_

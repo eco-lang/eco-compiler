@@ -1,4 +1,4 @@
-//===- WatchService.cpp - File system watcher thread for System.File -----===//
+//===- WatchService.cpp - File system watcher thread for FileSystem -----===//
 //
 // See WatchService.hpp. Leaky singleton with detached threads (§3.4). The
 // threads touch only POD (G1): they queue raw records under `qMutex` and wake

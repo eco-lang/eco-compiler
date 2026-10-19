@@ -21,13 +21,12 @@ as `<binary N bytes>`; the last line tells how the connection ended.
 
 import Bytes exposing (Bytes)
 import Bytes.Decode
+import FileSystem
+import Path
 import Socket
 import Socket.Tls
 import Stream
-import Stream.Log
 import System
-import System.File
-import System.File.Path
 import Task exposing (Task)
 import WebSocket
 
@@ -41,9 +40,9 @@ type alias Options =
     }
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
             case parseArgs (List.drop 1 env.args) { url = Nothing, caFile = Nothing, insecure = False, compression = True, messages = [] } of
                 Ok ({ url } as options) ->
@@ -52,10 +51,9 @@ main =
                             run env.stdout u options
                                 |> Task.onError
                                     (\problem ->
-                                        Stream.Log.line env.stderr ("ws-client: " ++ problem)
+                                        Stream.logLine ("ws-client: " ++ problem) env.stderr
                                             |> Task.andThen (\_ -> System.setExitCode 1)
                                     )
-                                |> System.endSimpleProgram
 
                         Nothing ->
                             usage env.stderr "missing URL"
@@ -65,11 +63,10 @@ main =
         )
 
 
-usage : Stream.Writable Bytes -> String -> Cmd msg
+usage : Stream.Writable Bytes -> String -> Task Never ()
 usage stderr problem =
-    Stream.Log.line stderr ("ws-client: " ++ problem ++ "\nusage: ws-client URL [--cacert FILE | --insecure] [--no-compression] [MESSAGE ...]")
+    Stream.logLine ("ws-client: " ++ problem ++ "\nusage: ws-client URL [--cacert FILE | --insecure] [--no-compression] [MESSAGE ...]") stderr
         |> Task.andThen (\_ -> System.setExitCode 2)
-        |> System.endSimpleProgram
 
 
 parseArgs : List String -> Options -> Result String Options
@@ -122,7 +119,7 @@ run stdout url options =
             )
         |> Task.andThen
             (\ws ->
-                Stream.Log.line stdout ("connected to " ++ url ++ describe ws)
+                Stream.logLine ("connected to " ++ url ++ describe ws) stdout
                     |> Task.andThen (\_ -> sendAll options.messages ws)
                     |> Task.andThen
                         (\_ ->
@@ -135,8 +132,8 @@ run stdout url options =
                                 )
                                 ws
                         )
-                    |> Task.andThen (\_ -> WebSocket.closed ws)
-                    |> Task.andThen (\info -> Stream.Log.line stdout (describeClose info))
+                    |> Task.andThen (\_ -> WebSocket.awaitClose ws)
+                    |> Task.andThen (\info -> Stream.logLine (describeClose info) stdout)
             )
 
 
@@ -144,8 +141,8 @@ verification : Options -> Task String Socket.Tls.Verification
 verification options =
     case options.caFile of
         Just file ->
-            System.File.readFile (System.File.Path.fromPosixString file)
-                |> Task.mapError System.File.errorToString
+            FileSystem.readFile (Path.fromPosixString file)
+                |> Task.mapError FileSystem.errorToString
                 |> Task.map
                     (\bytes ->
                         Bytes.Decode.decode (Bytes.Decode.string (Bytes.width bytes)) bytes
@@ -196,7 +193,7 @@ receive stdout remaining ws =
                 (\received ->
                     case received of
                         Just message ->
-                            Stream.Log.line stdout (showMessage message)
+                            Stream.logLine (showMessage message) stdout
                                 |> Task.andThen (\_ -> receive stdout (remaining - 1) ws)
 
                         Nothing ->

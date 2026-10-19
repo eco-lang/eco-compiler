@@ -28,7 +28,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -48,7 +48,7 @@ serverCase : Socket.Listener -> ( String, Bytes ) -> Task String String
 serverCase listener ( label, bytes ) =
     H.async
         (W.acceptOne listener
-            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.closed ws |> Task.map (\info -> ( end, info ))))
+            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.awaitClose ws |> Task.map (\info -> ( end, info ))))
         )
         |> Task.andThen
             (\serverDone ->
@@ -71,7 +71,7 @@ droppedCase : Socket.Listener -> Task String String
 droppedCase listener =
     H.async
         (W.acceptOne listener
-            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.closed ws |> Task.map (\info -> ( end, info ))))
+            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.awaitClose ws |> Task.map (\info -> ( end, info ))))
         )
         |> Task.andThen
             (\serverDone ->
@@ -115,7 +115,7 @@ serverCloseCase listener =
                                                                         (\chunk ->
                                                                             W.rawWrite (W.maskedFrame True 0 8 (W.closePayload 1001 "")) conn
                                                                                 |> Task.andThen (\_ -> W.rawReadAll conn)
-                                                                                |> Task.andThen (\_ -> WebSocket.closed ws)
+                                                                                |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                                                                 |> Task.map
                                                                                     (\info ->
                                                                                         [ "unsendable: " ++ String.join ", " refused

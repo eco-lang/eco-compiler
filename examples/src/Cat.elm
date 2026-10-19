@@ -6,17 +6,16 @@ module Cat exposing (main)
 
 -}
 
+import FileSystem
 import Stream
-import Stream.Log
 import System
-import System.File as File
-import System.File.Path as Path
+import Path
 import Task exposing (Task)
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram (\env -> System.endSimpleProgram (run env))
+    System.simpleProgram run
 
 
 run : System.Environment -> Task Never ()
@@ -36,12 +35,12 @@ run env =
 
 catFile : System.Environment -> String -> Task Never ()
 catFile env path =
-    File.readFile (Path.fromPosixString path)
-        |> Task.andThen (Stream.Log.bytes env.stdout)
-        |> Task.onError (\err -> fail env ("cat: " ++ File.errorToString err))
+    FileSystem.readFile (Path.fromPosixString path)
+        |> Task.andThen (\contents -> Stream.log contents env.stdout)
+        |> Task.onError (\err -> fail env ("cat: " ++ FileSystem.errorToString err))
 
 
 fail : System.Environment -> String -> Task Never ()
 fail env message =
-    Stream.Log.line env.stderr message
+    Stream.logLine message env.stderr
         |> Task.andThen (\_ -> System.setExitCode 1)

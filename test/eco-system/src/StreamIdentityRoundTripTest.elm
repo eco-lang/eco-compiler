@@ -12,6 +12,7 @@ unboxed element types.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamTestHelp
 import System
 import Task exposing (Task)
@@ -19,11 +20,11 @@ import Task exposing (Task)
 
 roundTrip : List a -> Task Stream.Error (List a)
 roundTrip values =
-    Stream.identityTransformationWithOptions { readCapacity = 8, writeCapacity = 8 }
+    Stream.Transformation.identityWith { readCapacity = 8, writeCapacity = 8 }
         |> Task.andThen
             (\t ->
-                List.foldl (\v acc -> acc |> Task.andThen (Stream.write v)) (Task.succeed (Stream.writable t)) values
-                    |> Task.andThen (\_ -> readN (List.length values) (Stream.readable t) [])
+                List.foldl (\v acc -> acc |> Task.andThen (Stream.write v)) (Task.succeed (Stream.Transformation.writable t)) values
+                    |> Task.andThen (\_ -> readN (List.length values) (Stream.Transformation.readable t) [])
             )
 
 
@@ -36,7 +37,7 @@ readN n r acc =
         Stream.read r |> Task.andThen (\v -> readN (n - 1) r (v :: acc))
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
@@ -51,11 +52,11 @@ main =
                 (roundTrip [ 1, 2, 3 ])
                 (roundTrip [ "a", "bc", "" ])
                 (roundTrip [ { n = 3, s = "x" }, { n = 7, s = "y" } ])
-                (Stream.identityTransformation
+                (Stream.Transformation.identity
                     |> Task.andThen
                         (\t ->
-                            Stream.write 42 (Stream.writable t)
-                                |> Task.andThen (\_ -> Stream.read (Stream.readable t))
+                            Stream.write 42 (Stream.Transformation.writable t)
+                                |> Task.andThen (\_ -> Stream.read (Stream.Transformation.readable t))
                         )
                 )
         )

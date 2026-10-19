@@ -21,7 +21,7 @@ namespace Eco::System::HttpSrv {
 ListenResult listenOn(const std::string& host, int64_t port) {
     ListenResult r;
     r.code = "ENOTSUP";
-    r.message = "eco/system: Http.Server.createServer is not supported on Windows yet (" + host +
+    r.message = "eco/system: Http.Server.listenOnHost is not supported on Windows yet (" + host +
                 ":" + std::to_string(port) + ")";
     return r;
 }

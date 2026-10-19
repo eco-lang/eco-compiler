@@ -19,6 +19,7 @@ pipeTo defaults; Phase 6 step 6.3):
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamCodecHelp exposing (readAll)
 import StreamTestHelp exposing (describe, logEvent, sleep, spawnLogged)
 import System
@@ -27,14 +28,14 @@ import Task exposing (Task)
 
 sourceError : Task Stream.Error String
 sourceError =
-    Task.map3 (\log src dst -> ( log, src, dst )) StreamTestHelp.eventLog Stream.identityTransformation Stream.identityTransformation
+    Task.map3 (\log src dst -> ( log, src, dst )) StreamTestHelp.eventLog Stream.Transformation.identity Stream.Transformation.identity
         |> Task.andThen
             (\( log, src, dst ) ->
-                spawnLogged log "pipe" (Stream.pipeTo (Stream.writable dst) (Stream.readable src))
+                spawnLogged log "pipe" (Stream.pipeTo (Stream.Transformation.writable dst) (Stream.Transformation.readable src))
                     |> Task.andThen (\_ -> sleep)
-                    |> Task.andThen (\_ -> Stream.cancelWritable "boom" (Stream.writable src))
+                    |> Task.andThen (\_ -> Stream.cancelWritable "boom" (Stream.Transformation.writable src))
                     |> Task.andThen (\_ -> sleep)
-                    |> Task.andThen (\_ -> describe (Stream.read (Stream.readable dst)))
+                    |> Task.andThen (\_ -> describe (Stream.read (Stream.Transformation.readable dst)))
                     |> Task.andThen
                         (\dstRead ->
                             StreamTestHelp.finishLog log
@@ -45,14 +46,14 @@ sourceError =
 
 destError : Task Stream.Error String
 destError =
-    Task.map3 (\log src dst -> ( log, src, dst )) StreamTestHelp.eventLog Stream.identityTransformation Stream.identityTransformation
+    Task.map3 (\log src dst -> ( log, src, dst )) StreamTestHelp.eventLog Stream.Transformation.identity Stream.Transformation.identity
         |> Task.andThen
             (\( log, src, dst ) ->
-                spawnLogged log "pipe" (Stream.pipeTo (Stream.writable dst) (Stream.readable src))
+                spawnLogged log "pipe" (Stream.pipeTo (Stream.Transformation.writable dst) (Stream.Transformation.readable src))
                     |> Task.andThen (\_ -> sleep)
-                    |> Task.andThen (\_ -> Stream.cancelReadable "stop" (Stream.readable dst))
+                    |> Task.andThen (\_ -> Stream.cancelReadable "stop" (Stream.Transformation.readable dst))
                     |> Task.andThen (\_ -> sleep)
-                    |> Task.andThen (\_ -> describe (Stream.write "late" (Stream.writable src)))
+                    |> Task.andThen (\_ -> describe (Stream.write "late" (Stream.Transformation.writable src)))
                     |> Task.andThen
                         (\srcWrite ->
                             StreamTestHelp.finishLog log
@@ -63,15 +64,15 @@ destError =
 
 chainError : Task Stream.Error String
 chainError =
-    Task.map2 Tuple.pair Stream.identityTransformation Stream.identityTransformation
+    Task.map2 Tuple.pair Stream.Transformation.identity Stream.Transformation.identity
         |> Task.andThen
             (\( first, middle ) ->
-                Stream.pipeThrough middle (Stream.readable first)
-                    |> Task.andThen (Stream.awaitAndPipeThrough Stream.identityTransformation)
+                Stream.pipeThrough middle (Stream.Transformation.readable first)
+                    |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.identity)
                     |> Task.andThen
                         (\end ->
-                            Stream.write "v" (Stream.writable first)
-                                |> Task.andThen (\_ -> Stream.cancelWritable "mid" (Stream.writable first))
+                            Stream.write "v" (Stream.Transformation.writable first)
+                                |> Task.andThen (\_ -> Stream.cancelWritable "mid" (Stream.Transformation.writable first))
                                 |> Task.andThen (\_ -> describe (readAll end))
                         )
             )
@@ -79,11 +80,11 @@ chainError =
 
 closedDest : Task Stream.Error String
 closedDest =
-    Task.map2 Tuple.pair (Stream.fromList [ "a" ]) Stream.identityTransformation
+    Task.map2 Tuple.pair (Stream.fromList [ "a" ]) Stream.Transformation.identity
         |> Task.andThen
             (\( src, dst ) ->
-                Stream.closeWritable (Stream.writable dst)
-                    |> Task.andThen (\_ -> describe (Stream.pipeTo (Stream.writable dst) src))
+                Stream.closeWritable (Stream.Transformation.writable dst)
+                    |> Task.andThen (\_ -> describe (Stream.pipeTo (Stream.Transformation.writable dst) src))
                     |> Task.andThen
                         (\piped ->
                             describe (Stream.read src)
@@ -92,7 +93,7 @@ closedDest =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->

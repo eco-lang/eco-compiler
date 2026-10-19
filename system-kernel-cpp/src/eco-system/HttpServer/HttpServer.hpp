@@ -22,7 +22,7 @@
 namespace Eco::System {
 
 // createServer : String -> Int -> Task ( String, String ) ( Int, Int )
-// captured = ( host, port ) mask 0x4. Result ( serverId, boundPort ).
+// captured = ( host, port ) mask 0x4. Result ( serverId, boundAddress, boundPort ).
 HPointer httpServerCreateServerBody(HPointer captured, HPointer resume);
 
 // createServerWith : ( ( String, Int ), ( Bool, Int ) ) -> Maybe ( String, String )

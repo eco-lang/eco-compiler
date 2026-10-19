@@ -1,4 +1,4 @@
-//===- FileSystemManager.cpp - The C++ effect manager of `System.File` ----===//
+//===- FileSystemManager.cpp - The C++ effect manager of `FileSystem` ----===//
 //
 // plans/eco-system-library.md §3.6, Phase 4 step 4.5 and Appendix C.0 /
 // C.2. Layout: FileSystemManager.hpp.
@@ -131,7 +131,7 @@ void watchDrain() {
         } catch (const std::exception& e) {
             ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
         } catch (...) {
-            ::Eco::Kernel::reportFatal("unknown native exception in System.File watch delivery");
+            ::Eco::Kernel::reportFatal("unknown native exception in FileSystem watch delivery");
         }
     }
 }
@@ -174,7 +174,7 @@ void* onEffectsEval(void* args[]) {
 
 #if defined(_WIN32)
     if (!wanted.empty())
-        ::Eco::Kernel::reportFatal("eco/system: System.File.watch is not supported on Windows yet");
+        ::Eco::Kernel::reportFatal("eco/system: FileSystem.watch is not supported on Windows yet");
 #endif
 
     // Registry update and service calls: POD only, no heap allocation while
@@ -263,7 +263,7 @@ using namespace Eco::System;
 namespace {
 
 // Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "System.File". No commands: cmdMap is nil.
+// registers them under "FileSystem". No commands: cmdMap is nil.
 void registerFileManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();
@@ -276,12 +276,12 @@ void registerFileManager() {
     subMapCl = alloc::allocClosure(&subMapEval, 2);
     PlatformRuntime::ManagerInfo info{enc(initCl), enc(effCl), enc(selfCl),
                                       enc(alloc::listNil()), enc(subMapCl)};
-    PlatformRuntime::instance().registerManager("System.File", info);   // no allocation after encode
+    PlatformRuntime::instance().registerManager("FileSystem", info);   // no allocation after encode
 }
 
 } // namespace
 
-extern "C" uint64_t Eco_System_registerManager_System_File() {
+extern "C" uint64_t Eco_System_registerManager_FileSystem() {
     ECO_KERNEL_GUARD(
         registerFileManager();
         return enc(alloc::unit());

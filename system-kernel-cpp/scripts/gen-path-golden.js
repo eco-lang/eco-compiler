@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// gen-path-golden.js — golden tables for System.File.Path (plans/eco-system-library.md Phase 4.1).
+// gen-path-golden.js — golden tables for Path (plans/eco-system-library.md Phase 4.1).
 //
 // The oracle is gren-node's implementation: Gren/Kernel/FilePath.js (node:path `normalize` then
 // `parse`, in the posix or win32 flavour) plus the pure logic of FileSystem/Path.gren, ported
-// below on top of the real node:path. The pure-Elm System.File.Path must reproduce every value.
+// below on top of the real node:path. The pure-Elm Path module must reproduce every value.
 //
 // Deviation from FilePath.js, per Appendix E.2: FilePath.js prepends a `./` directory entry when the
 // input starts with `.` + the *native* separator. That quirk is kept for the posix flavour only
@@ -286,7 +286,7 @@ const header = `module PathGolden exposing (CombineCase, JoinCase, ParseCase, co
 
 {-| GENERATED FILE — do not edit.
 
-Golden tables for System.File.Path, produced by running gren-node's FilePath.js / Path.gren
+Golden tables for Path, produced by running gren-node's FilePath.js / Path.gren
 semantics on node ${process.version} (node:path posix and win32 normalize + parse).
 
 Regenerate from system-kernel-cpp/ with:

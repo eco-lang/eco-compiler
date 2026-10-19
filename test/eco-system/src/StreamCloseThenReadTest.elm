@@ -12,38 +12,39 @@ parked on an empty stream is woken with `Closed` by the close.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamTestHelp exposing (logEvent, sleep, spawnLogged)
 import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
-            Stream.identityTransformationWithOptions { readCapacity = 4, writeCapacity = 4 }
+            Stream.Transformation.identityWith { readCapacity = 4, writeCapacity = 4 }
                 |> Task.andThen
                     (\t ->
-                        Stream.write "a" (Stream.writable t)
+                        Stream.write "a" (Stream.Transformation.writable t)
                             |> Task.andThen (Stream.write "b")
                             |> Task.andThen Stream.closeWritable
-                            |> Task.andThen (\_ -> Task.map2 (\x y -> x ++ "," ++ y) (Stream.read (Stream.readable t)) (Stream.read (Stream.readable t)))
+                            |> Task.andThen (\_ -> Task.map2 (\x y -> x ++ "," ++ y) (Stream.read (Stream.Transformation.readable t)) (Stream.read (Stream.Transformation.readable t)))
                             |> Task.andThen
                                 (\buffered ->
                                     Task.map2 Tuple.pair
-                                        (StreamTestHelp.describe (Stream.read (Stream.readable t)))
-                                        (StreamTestHelp.describe (Stream.read (Stream.readable t)))
+                                        (StreamTestHelp.describe (Stream.read (Stream.Transformation.readable t)))
+                                        (StreamTestHelp.describe (Stream.read (Stream.Transformation.readable t)))
                                         |> Task.map (\( d1, d2 ) -> [ "buffered: " ++ buffered, "after drain: " ++ d1, "again: " ++ d2 ])
                                 )
                     )
                 |> Task.andThen
                     (\lines ->
-                        Task.map2 Tuple.pair StreamTestHelp.eventLog Stream.identityTransformation
+                        Task.map2 Tuple.pair StreamTestHelp.eventLog Stream.Transformation.identity
                             |> Task.andThen
                                 (\( log, t ) ->
-                                    spawnLogged log "parked" (Stream.read (Stream.readable t))
+                                    spawnLogged log "parked" (Stream.read (Stream.Transformation.readable t))
                                         |> Task.andThen (\_ -> sleep)
-                                        |> Task.andThen (\_ -> Stream.closeWritable (Stream.writable t))
+                                        |> Task.andThen (\_ -> Stream.closeWritable (Stream.Transformation.writable t))
                                         |> Task.andThen (\_ -> sleep)
                                         |> Task.andThen (\_ -> logEvent log "closed")
                                         |> Task.andThen (\_ -> StreamTestHelp.finishLog log)

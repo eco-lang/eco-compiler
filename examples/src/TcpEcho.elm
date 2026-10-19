@@ -14,7 +14,6 @@ import Socket
 import Socket.Address as Address
 import Socket.Tcp
 import Stream
-import Stream.Log
 import System
 import Task
 
@@ -30,11 +29,12 @@ type Msg
     = Listening (Result Socket.Error Socket.Listener)
     | Connected Socket.Connection
     | Done
+    | Exit Int
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = init
         , update = update
         , subscriptions = subscriptions
@@ -63,27 +63,28 @@ update msg model =
     case msg of
         Listening (Ok listener) ->
             ( { model | listener = Just listener }
-            , System.endSimpleProgram
-                (Stream.Log.line model.stdout ("listening on " ++ endpointToString (Socket.listenerEndpoint listener)))
+            , Stream.logLine ("listening on " ++ endpointToString (Socket.listenerEndpoint listener)) model.stdout
+                |> Task.perform (\_ -> Done)
             )
 
         Listening (Err err) ->
             ( model
-            , Cmd.batch
-                [ System.endSimpleProgram (Stream.Log.line model.stderr ("tcp-echo: " ++ Socket.errorToString err))
-                , System.exitWithCode 1
-                ]
+            , Stream.logLine ("tcp-echo: " ++ Socket.errorToString err) model.stderr
+                |> Task.perform (\_ -> Exit 1)
             )
 
         Connected conn ->
             ( model
-            , Stream.Log.line model.stdout ("connection from " ++ endpointToString (Socket.remoteEndpoint conn))
+            , Stream.logLine ("connection from " ++ endpointToString (Socket.remoteEndpoint conn)) model.stdout
                 |> Task.andThen (\_ -> Stream.pipeTo (Socket.writable conn) (Socket.readable conn))
                 |> Task.attempt (\_ -> Done)
             )
 
         Done ->
             ( model, Cmd.none )
+
+        Exit code ->
+            ( model, System.exitWithCode code )
 
 
 endpointToString : Address.Endpoint -> String

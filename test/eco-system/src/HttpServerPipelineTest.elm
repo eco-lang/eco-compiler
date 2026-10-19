@@ -15,12 +15,11 @@ back; the responses arrive in request order on the same connection.
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Task exposing (Task)
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler answered request response =
     let
         path =
@@ -38,7 +37,7 @@ handler answered request response =
                     "three"
 
         reply =
-            response |> Response.setBody body
+            response |> Server.setBody body
     in
     ( [ "got " ++ path ++ " after [" ++ String.join "," answered ++ "]" ]
     , if path == "/1" then

@@ -29,6 +29,7 @@ import Socket.Address as Address exposing (Endpoint(..), Family(..))
 import Socket.Tcp
 import Socket.Udp
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
 import Task exposing (Task)
 
@@ -80,16 +81,16 @@ stream).
 -}
 async : Task Never a -> Task x (Task Never (Maybe a))
 async task =
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
                 Process.spawn
                     (task
-                        |> Task.andThen (\v -> Stream.write v (Stream.writable t) |> Task.map (\_ -> ()) |> Task.onError (\_ -> Task.succeed ()))
+                        |> Task.andThen (\v -> Stream.write v (Stream.Transformation.writable t) |> Task.map (\_ -> ()) |> Task.onError (\_ -> Task.succeed ()))
                     )
                     |> Task.map
                         (\_ ->
-                            Stream.read (Stream.readable t)
+                            Stream.read (Stream.Transformation.readable t)
                                 |> Task.map Just
                                 |> Task.onError (\_ -> Task.succeed Nothing)
                         )

@@ -1,6 +1,6 @@
 module FileRemoveTest exposing (main)
 
-{-| `System.File.remove` and `unlink` (plans/eco-system-library.md Phase 4
+{-| `FileSystem.remove` and `unlink` (plans/eco-system-library.md Phase 4
 step 4.6, Appendix E.3): removing a directory without `recursive` fails with
 node's code `ERR_FS_EISDIR` (so `errorIsDirectoryFound` is False), recursive
 removal deletes a whole tree, a symlink to a directory is removed as a link.
@@ -23,10 +23,10 @@ removal deletes a whole tree, a symlink to a directory is removed as a link.
 -- CHECK: unlink-dir: err {{(EISDIR|EPERM)}} @keep
 -- EXIT: 0
 
+import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file, rawError)
+import Path
 import System
-import System.File as File
-import System.File.Path as Path
 import Task
 
 
@@ -57,7 +57,7 @@ entityName e =
             "Pipe"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

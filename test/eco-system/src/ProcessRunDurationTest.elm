@@ -14,8 +14,8 @@ holds for the default shell, which may leave `sleep` running behind a killed
 -- CHECK: finished: ok stdout=done| stderr= fast: True
 -- EXIT: 0
 
+import ChildProcess as P
 import ProcessTestHelp exposing (describeRun, noShell, simpleRun)
-import System.Process as P
 import Task exposing (Task)
 import Time
 

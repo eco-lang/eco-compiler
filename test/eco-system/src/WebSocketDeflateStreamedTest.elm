@@ -32,7 +32,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -63,7 +63,7 @@ b =
 
 next : WebSocket.WebSocket WebSocket.Streamed -> Task String WebSocket.StreamedMessage
 next ws =
-    Stream.read (WebSocket.streamedReadable ws) |> Task.mapError Stream.errorToString
+    Stream.read (WebSocket.readableStreamed ws) |> Task.mapError Stream.errorToString
 
 
 server : WebSocket.WebSocket WebSocket.Streamed -> Task String String
@@ -177,7 +177,7 @@ run _ =
                                                                     |> Task.andThen (\_ -> serverDone)
                                                                     |> Task.andThen
                                                                         (\( s, serverLines ) ->
-                                                                            WebSocket.closed client
+                                                                            WebSocket.awaitClose client
                                                                                 |> Task.map
                                                                                     (\ci ->
                                                                                         [ "compression: client "

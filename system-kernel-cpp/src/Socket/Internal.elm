@@ -17,7 +17,7 @@ so `Socket.Tcp` and `Socket.Tls` share one copy of each.
 import Bytes exposing (Bytes)
 import Socket.Address as Address exposing (Address, Endpoint(..), Family(..), InetEndpoint)
 import Stream.Internal exposing (Readable(..), Writable(..))
-import System.File.Path as Path
+import Path
 
 
 {-| A stream connection (TCP, Unix or TLS): its connection-table id, its two stream-table faces

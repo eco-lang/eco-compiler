@@ -1,23 +1,24 @@
-module Http.Dom exposing
+module Html.Dom exposing
     ( Node(..), Fact(..), Tagger, Handler
-    , fromNode, fromAttribute
-    , attributes, render, toString
+    , fromHtml, fromAttribute
+    , attributes, toString, htmlToString
     )
 
 {-| A transparent view of [`Html`](/packages/elm/html/latest/Html#Html) and `Svg` values (that
 is, `VirtualDom.Node` values), and their serialization to HTML text.
 
 `Html` is opaque in elm/html, so a server could otherwise build pages but never send them.
-[`fromNode`](#fromNode) turns any `Html msg` into a [`Node`](#Node) you can pattern-match on,
-and [`toString`](#toString) renders it. To answer an HTTP request with a page, use
-[`Http.Server.Response.setBodyAsHtml`](Http-Server-Response#setBodyAsHtml), which serializes
+[`fromHtml`](#fromHtml) turns any `Html msg` into a [`Node`](#Node) you can pattern-match on,
+and [`toString`](#toString) renders a `Node` ([`htmlToString`](#htmlToString) renders `Html`
+directly). To answer an HTTP request with a page, use
+[`Http.Server.setBodyAsHtml`](Http-Server#setBodyAsHtml), which serializes
 straight into the response without building a `String` first.
 
     import Html exposing (div, text)
     import Html.Attributes exposing (class)
-    import Http.Dom
+    import Html.Dom
 
-    Http.Dom.toString (div [ class "greeting" ] [ text "Hello & welcome" ])
+    Html.Dom.htmlToString (div [ class "greeting" ] [ text "Hello & welcome" ])
         --> "<div class=\"greeting\">Hello &amp; welcome</div>"
 
 **What the serializer produces.** Attributes are the ones a browser would end up with after
@@ -48,12 +49,12 @@ compares functions, so it has the same restriction as `==` on `Html`.
 
 # Converting
 
-@docs fromNode, fromAttribute
+@docs fromHtml, fromAttribute
 
 
 # Rendering
 
-@docs attributes, render, toString
+@docs attributes, toString, htmlToString
 
 -}
 
@@ -98,11 +99,11 @@ type Handler
     = Handler
 
 
-{-| View any `Html msg` (or `Svg msg`) as a `Node`. On the native target this costs nothing:
+{-| View any `Html msg` (or `Svg msg`) as a `Node`. This was `fromNode`. On the native target this costs nothing:
 an `Html` value already is a `Node`.
 -}
-fromNode : VirtualDom.Node msg -> Node
-fromNode =
+fromHtml : VirtualDom.Node msg -> Node
+fromHtml =
     Eco.Kernel.Dom.fromNode
 
 
@@ -114,13 +115,14 @@ fromAttribute =
 
 
 {-| Serialize `Html` (or `Svg`) to HTML text. The result has no `<!DOCTYPE html>`; add one
-yourself for a whole document, or use `Http.Server.Response.setBodyAsHtml`, which adds it when
+yourself for a whole document, or use `Http.Server.setBodyAsHtml`, which adds it when
 the root element is `html`.
 
-This is `render << fromNode`, computed natively without building a `Node` view first.
+This is `toString << fromHtml`, computed natively without building a `Node` view first. This was
+`toString`; the `Node` serializer was `render`.
 -}
-toString : VirtualDom.Node msg -> String
-toString =
+htmlToString : VirtualDom.Node msg -> String
+htmlToString =
     Eco.Kernel.Dom.toString
 
 
@@ -150,10 +152,11 @@ type Work
     | Emit String
 
 
-{-| Serialize a `Node` to HTML text, exactly as [`toString`](#toString) does.
+{-| Serialize a `Node` to HTML text, exactly as [`htmlToString`](#htmlToString) does. This was
+`render`.
 -}
-render : Node -> String
-render node =
+toString : Node -> String
+toString node =
     renderLoop [ Visit False node ] []
 
 

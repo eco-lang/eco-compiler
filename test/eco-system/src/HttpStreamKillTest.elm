@@ -31,7 +31,7 @@ import Http.Stream
 import HttpStreamTestHelp as H
 import Process
 import Stream
-import Stream.Log
+import Stream.Transformation
 import System
 import Task exposing (Task)
 import TestServerConfig
@@ -57,8 +57,8 @@ killBeforeHeaders server env =
     Process.spawn
         (Http.Stream.task
             { method = "GET", headers = [], url = H.url server "/slow?ms=3000", body = Http.Stream.emptyBody, resolver = Http.Stream.streamResolver body, timeout = Nothing }
-            |> Task.andThen (\_ -> Stream.Log.line env.stdout "slow completed")
-            |> Task.onError (\_ -> Stream.Log.line env.stdout "slow completed with an error")
+            |> Task.andThen (\_ -> Stream.logLine "slow completed" env.stdout)
+            |> Task.onError (\_ -> Stream.logLine "slow completed with an error" env.stdout)
         )
         |> Task.andThen (\pid -> Process.sleep 100 |> Task.andThen (\_ -> Process.kill pid))
         |> Task.map (\_ -> "killed while waiting for headers")
@@ -66,26 +66,26 @@ killBeforeHeaders server env =
 
 killMidUpload : TestServerConfig.Server -> System.Environment -> Task String (List String)
 killMidUpload server env =
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
                 Process.spawn
                     (Http.Stream.task
-                        { method = "POST", headers = [], url = H.url server "/anything", body = Http.Stream.streamBody "text/plain" (Stream.readable t), resolver = Http.Stream.streamResolver body, timeout = Nothing }
-                        |> Task.andThen (\_ -> Stream.Log.line env.stdout "upload completed")
-                        |> Task.onError (\_ -> Stream.Log.line env.stdout "upload completed with an error")
+                        { method = "POST", headers = [], url = H.url server "/anything", body = Http.Stream.streamBody "text/plain" (Stream.Transformation.readable t), resolver = Http.Stream.streamResolver body, timeout = Nothing }
+                        |> Task.andThen (\_ -> Stream.logLine "upload completed" env.stdout)
+                        |> Task.onError (\_ -> Stream.logLine "upload completed with an error" env.stdout)
                     )
                     |> Task.andThen
                         (\pid ->
-                            describe (Stream.write (H.bytesOf "part one") (Stream.writable t))
+                            describe (Stream.write (H.bytesOf "part one") (Stream.Transformation.writable t))
                                 |> Task.andThen
                                     (\first ->
                                         Process.sleep 200
                                             |> Task.andThen (\_ -> Process.kill pid)
                                             |> Task.andThen (\_ -> Process.sleep 200)
-                                            |> Task.andThen (\_ -> describe (Stream.write (H.bytesOf "x") (Stream.writable t)))
+                                            |> Task.andThen (\_ -> describe (Stream.write (H.bytesOf "x") (Stream.Transformation.writable t)))
                                             |> Task.andThen (\_ -> Process.sleep 200)
-                                            |> Task.andThen (\_ -> describe (Stream.write (H.bytesOf "y") (Stream.writable t)))
+                                            |> Task.andThen (\_ -> describe (Stream.write (H.bytesOf "y") (Stream.Transformation.writable t)))
                                             |> Task.map
                                                 (\after ->
                                                     [ "first write: " ++ first
@@ -111,7 +111,7 @@ cancelMidDownload server =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\server env ->

@@ -10,10 +10,10 @@ the handler.
 -- CHECK: interrupted: True run: ok
 -- EXIT: 0
 
+import ChildProcess as P
 import ProcessTestHelp exposing (noShell)
-import Stream.Log
+import Stream
 import System
-import System.Process as P
 import Task
 
 
@@ -37,16 +37,16 @@ report model =
         ( True, Just r ) ->
             ( model
             , Task.perform (\_ -> Logged)
-                (Stream.Log.line model.env.stdout ("interrupted: True run: " ++ r))
+                (Stream.logLine ("interrupted: True run: " ++ r) model.env.stdout)
             )
 
         _ ->
             ( model, Cmd.none )
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = \env -> ( { env = env, interrupted = False, run = Nothing }, Task.perform (\_ -> Start) (Task.succeed ()) )
         , update =
             \msg model ->

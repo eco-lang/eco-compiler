@@ -142,6 +142,13 @@ struct StreamPair {
     uint64_t readerKick = 0;
     bool readerEndSent = false;
 
+    // Stream.readLine (plans/eco-system-api-refactor.md D18): bytes read past
+    // the last line handed out, POD (off-heap, never scanned). `carryPos` is
+    // the start of the unread part; the buffer is compacted when it passes
+    // half the size. `read` hands the unread part out first.
+    std::string carry;
+    size_t carryPos = 0;
+
     bool pinned = false;               // stdio pairs: never erased
     bool textSink = false;             // ChannelSink of Strings (createTextChannelSink)
 
@@ -220,6 +227,9 @@ void streamSchedulePipe(int64_t pipeId);
 // Stream kernel bodies (Stream.cpp), bound by StreamExports.cpp.
 HPointer streamIdentityBody(HPointer captured);
 HPointer streamReadBody(HPointer captured, HPointer resume);
+HPointer streamReadChunkBody(HPointer captured, HPointer resume);
+HPointer streamCarryLineBody(HPointer captured);
+HPointer streamCarryAppendBody(HPointer captured);
 HPointer streamWriteBody(HPointer captured, HPointer resume);
 HPointer streamEnqueueBody(HPointer captured, HPointer resume);
 HPointer streamCloseWritableBody(HPointer captured, HPointer resume);

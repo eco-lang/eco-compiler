@@ -8,27 +8,27 @@ server keeps it alive.
 -}
 
 -- CHECK: first: started
--- CHECK: second: EADDRINUSE listen EADDRINUSE:
+-- CHECK: second: EADDRINUSE: listen EADDRINUSE:
 -- CHECK: third: ENOTFOUND
 -- EXIT: 0
 
 import Http.Server as Server
 import HttpServerTestHelp as Help
-import Stream.Log
+import Stream
 import System
 import Task exposing (Task)
 
 
 attempt : String -> Int -> Task Never String
 attempt host port_ =
-    Server.createServer { host = host, port_ = port_ }
+    Server.listenOnHost host port_
         |> Task.map (\_ -> "started")
-        |> Task.onError (\(Server.ServerError e) -> Task.succeed (e.code ++ " " ++ e.message))
+        |> Task.onError (\e -> Task.succeed (Server.errorToString e))
 
 
-main : System.Program () ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( ()
@@ -41,7 +41,7 @@ main =
                                 (attempt "127.0.0.1" p)
                                 (attempt "no-such-host.invalid" p)
                         )
-                    |> Task.andThen (\lines -> Stream.Log.line env.stdout (String.join "\n" lines))
+                    |> Task.andThen (\lines -> Stream.logLine (String.join "\n" lines) env.stdout)
                     |> Task.perform (\_ -> ())
                 )
         , update = \_ model -> ( model, System.exit )

@@ -14,14 +14,14 @@ effect on a Unix domain connection.
 -- CHECK: unix keepAlive: ok
 -- EXIT: 0
 
+import FileSystem as File
+import Path
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
 import Socket.Unix
 import SocketTestHelp as H
 import System
-import System.File as File
-import System.File.Path as Path
 import Task exposing (Task)
 
 
@@ -31,7 +31,7 @@ connectPair listener connect =
         |> Task.andThen (\accepted -> connect |> Task.andThen (\c -> accepted |> Task.map (\s -> ( c, s ))))
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

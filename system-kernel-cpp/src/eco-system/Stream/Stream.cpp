@@ -1071,8 +1071,11 @@ HPointer streamDecompressorBody(HPointer captured) {
     )
 }
 
-// read : Int -> Task SErr a — payload: boxed Int id.
-HPointer streamReadBody(HPointer captured, HPointer resume) {
+namespace {
+
+// read / readChunk. With `carryFirst` (read), the unread carry of
+// Stream.readLine is handed out first, as one Bytes value.
+HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
     uint64_t token = 0;
     bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(SErr, resume, token, counted,
@@ -1081,6 +1084,12 @@ HPointer streamReadBody(HPointer captured, HPointer resume) {
         StreamPair* p = streamTable().find(id);
         if (!p) return resumeNow(resume, failSErr(kSErrClosed, ""));
         if (streamReadLocked(p)) return resumeNow(resume, failSErr(kSErrLocked, ""));
+        if (carryFirst && p->carryPos < p->carry.size()) {
+            std::string rest = p->carry.substr(p->carryPos);   // G3: copy out first
+            p->carry.clear();
+            p->carryPos = 0;
+            return resumeNow(resume, succeed(makeBytes(rest)));
+        }
         if (p->kind == StreamKind::MappedSource && p->readQ.empty() && !p->rawQ.empty()) {
             mapHead(id);                        // the chunk read ahead (calls Elm, G11)
             p = streamTable().find(id);
@@ -1114,6 +1123,71 @@ HPointer streamReadBody(HPointer captured, HPointer resume) {
         }
         pumpStream(id);                         // MappedSource: issues the read-ahead if due
         return alloc::unit();
+    )
+}
+
+} // namespace
+
+// read : Int -> Task SErr a — payload: boxed Int id.
+HPointer streamReadBody(HPointer captured, HPointer resume) {
+    return readImpl(captured, resume, /*carryFirst=*/true);
+}
+
+// readChunk : Int -> Task SErr Bytes — read, ignoring the carry (D18).
+HPointer streamReadChunkBody(HPointer captured, HPointer resume) {
+    return readImpl(captured, resume, /*carryFirst=*/false);
+}
+
+// carryLine : Bool -> Int -> Task Never (Maybe Bytes) — payload tuple2(Int atEnd (0/1),
+// Int id), mask 0x5. The next line of the carry without its "\n" (and a "\r"
+// before it); with atEnd /= 0 and no newline, the rest of the carry if any.
+HPointer streamCarryLineBody(HPointer captured) {
+    ECO_SYSTEM_BODY_GUARD(Never,
+        int64_t atEnd = 0, id = 0;
+        {
+            Tuple2* t = asTuple2(captured);   // no allocation in scope
+            atEnd = t->a.i;
+            id = t->b.i;
+        }
+        StreamPair* p = streamTable().find(id);
+        if (!p || p->carryPos >= p->carry.size()) return succeed(alloc::nothing());
+        std::string line;   // G3: copy out, update the carry, then allocate
+        const char* base = p->carry.data() + p->carryPos;
+        size_t avail = p->carry.size() - p->carryPos;
+        const void* nl = std::memchr(base, '\n', avail);
+        if (nl) {
+            size_t len = static_cast<const char*>(nl) - base;
+            line.assign(base, len);
+            p->carryPos += len + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+        } else if (atEnd != 0) {
+            line.assign(base, avail);
+            p->carryPos = p->carry.size();
+        } else {
+            return succeed(alloc::nothing());
+        }
+        if (p->carryPos >= p->carry.size()) {
+            p->carry.clear();
+            p->carryPos = 0;
+        } else if (p->carryPos > p->carry.size() / 2) {
+            p->carry.erase(0, p->carryPos);
+            p->carryPos = 0;
+        }
+        HPointer bytes = makeBytes(line);
+        return succeed(alloc::just(alloc::boxed(bytes), true));   // fresh: `just` roots it
+    )
+}
+
+// carryAppend : Bytes -> Int -> Task Never () — payload tuple2(boxed Bytes, Int id),
+// mask 0x4. A missing pair (closed and erased) drops the bytes.
+HPointer streamCarryAppendBody(HPointer captured) {
+    ECO_SYSTEM_BODY_GUARD(Never,
+        HPointer b = alloc::listNil();
+        int64_t id = 0;
+        payloadBoxedAndId(captured, b, id);
+        std::string data = toStdBytes(b);   // G3: copy out first
+        if (StreamPair* p = streamTable().find(id)) p->carry.append(data);
+        return succeedUnit();
     )
 }
 

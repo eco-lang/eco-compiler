@@ -152,8 +152,9 @@ void* initEval(void*[]) {
 // onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
+    HPointer cmds = dec(args[1]);
     HPointer subs = dec(args[2]);
-    Elm::StackRootGuard g(&router, &subs);
+    Elm::StackRootGuard g(&router, &cmds, &subs);
 
     // A non-allocating walk (G5): copy every field out.
     std::map<int64_t, std::vector<uint64_t>> wanted;
@@ -180,12 +181,37 @@ void* onEffectsEval(void* args[]) {
     }
     HttpSrv::httpTablesSubscriptionsChanged();   // parked requests: from the drain
 
+    // Commands (send): spawn every Respond task, as SystemManager does for Execute
+    // (allocates; the cursor stays rooted).
+    bool spawned = false;
+    {
+        alloc::RootedListCursor c(cmds);
+        Unboxable head;
+        u8 kind;
+        while (c.read(head, kind)) {
+            HPointer task;
+            {
+                Custom* cmd = static_cast<Custom*>(Allocator::instance().resolve(head.p));
+                task = cmd->values[RESPOND_TASK_FIELD].p;   // no allocation in scope
+            }
+            Scheduler::instance().rawSpawn(task);           // allocProcess roots `task`
+            spawned = true;
+            c.advance();
+        }
+    }
+    if (spawned) Scheduler::instance().drain();
+
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
 // onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
+}
+
+// cmdMap : (a -> b) -> MyCmd a -> MyCmd b — Respond carries no msg.
+void* cmdMapEval(void* args[]) {
+    return args[1];
 }
 
 // The composed tagger of subMap: args[0] = f, args[1] = old tagger,
@@ -235,7 +261,7 @@ using namespace Eco::System;
 namespace {
 
 // Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "Http.Server". Subscriptions only: no cmdMap.
+// registers them under "Http.Server". Commands (send) and subscriptions (onRequest).
 void registerHttpServerManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();
@@ -246,6 +272,7 @@ void registerHttpServerManager() {
     initCl = alloc::allocClosure(&initEval, 0);
     effCl = alloc::allocClosure(&onEffectsEval, 4);
     selfCl = alloc::allocClosure(&onSelfMsgEval, 3);
+    cmdMapCl = alloc::allocClosure(&cmdMapEval, 2);
     subMapCl = alloc::allocClosure(&subMapEval, 2);
     PlatformRuntime::ManagerInfo info{enc(initCl), enc(effCl), enc(selfCl),
                                       enc(cmdMapCl), enc(subMapCl)};

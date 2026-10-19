@@ -26,7 +26,7 @@ import WebSocketSha1 exposing (acceptFor)
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -50,7 +50,7 @@ silentPeer listener =
                             W.readAll ws
                                 |> Task.andThen
                                     (\( _, end ) ->
-                                        WebSocket.closed ws
+                                        WebSocket.awaitClose ws
                                             |> Task.andThen
                                                 (\info ->
                                                     serverDone
@@ -78,7 +78,7 @@ pingCase listener =
                                     (\rtt ->
                                         WebSocket.close WebSocket.Normal "" ws
                                             |> Task.mapError W.wsErr
-                                            |> Task.andThen (\_ -> WebSocket.closed ws)
+                                            |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                             |> Task.andThen (\_ -> W.describe (WebSocket.ping ws))
                                             |> Task.andThen (\after -> serverDone |> Task.map (\_ -> after))
                                             |> Task.map (\after -> "ping: rtt ok " ++ H.boolString (rtt >= 0 && rtt < 5000) ++ " | after close " ++ after)
@@ -120,7 +120,7 @@ trickle listener =
                                 |> Task.andThen
                                     (\( got, _ ) ->
                                         serverDone
-                                            |> Task.andThen (\_ -> WebSocket.closed ws)
+                                            |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                             |> Task.map (\info -> "trickle: " ++ String.join " | " (List.map W.messageString got) ++ " | " ++ W.closeInfoString info)
                                     )
                         )
@@ -160,7 +160,7 @@ backpressure listener =
                                             |> Task.andThen (\_ -> serverDone)
                                             |> Task.andThen
                                                 (\frames ->
-                                                    WebSocket.closed ws
+                                                    WebSocket.awaitClose ws
                                                         |> Task.map
                                                             (\info ->
                                                                 "backpressure: read "

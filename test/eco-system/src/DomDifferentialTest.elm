@@ -1,8 +1,8 @@
 module DomDifferentialTest exposing (main)
 
 {-| Differential test of the two serializers (plans/elm-html-native-kernel.md
-P5, VDOM_005): 2,000 pseudo-random trees, each rendered by `Http.Dom.toString`
-(natively the C++ HtmlWriter) and by `Http.Dom.render << Http.Dom.fromNode` (the
+P5, VDOM_005): 2,000 pseudo-random trees, each rendered by `Html.Dom.toString`
+(natively the C++ HtmlWriter) and by `Html.Dom.render << Html.Dom.fromNode` (the
 Elm reference). The vocabulary includes token-breaking tags and attribute names,
 every kind of property value, styles, classList, map, Keyed and lazy.
 -}
@@ -16,9 +16,9 @@ import Html exposing (Attribute, Html)
 import Html.Attributes as A
 import Html.Keyed as Keyed
 import Html.Lazy as Lazy
-import Http.Dom as Dom
+import Html.Dom as Dom
 import Json.Encode as Encode
-import Stream.Log
+import Stream
 import System
 import VirtualDom
 
@@ -222,7 +222,7 @@ count i seed mismatches =
                 tree 4 seed
 
             same =
-                Dom.toString h == Dom.render (Dom.fromNode h)
+                Dom.htmlToString h == Dom.toString (Dom.fromHtml h)
         in
         count (i + 1)
             s1
@@ -234,12 +234,10 @@ count i seed mismatches =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.Log.line env.stdout
-                    ("trees: 2000\nmismatches: " ++ String.fromInt (count 0 42 0))
+            (Stream.logLine ("trees: 2000\nmismatches: " ++ String.fromInt (count 0 42 0)) env.stdout
                 )
         )

@@ -14,7 +14,6 @@ concatenated, so stdin holds "abc\ndef\n".
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Stream
-import Stream.Log
 import System
 import Task
 
@@ -25,12 +24,11 @@ bytesToString bytes =
         |> Maybe.withDefault "<invalid>"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.readUntilClosed (\chunk acc -> Ok (chunk :: acc)) [] env.stdin
+            (Stream.readUntilClosed (\chunk acc -> Ok (chunk :: acc)) [] env.stdin
                     |> Task.map
                         (\chunks ->
                             let
@@ -51,6 +49,6 @@ main =
                                    )
                         )
                     |> Task.onError (\err -> Task.succeed ("error: " ++ Stream.errorToString err))
-                    |> Task.andThen (Stream.Log.line env.stdout)
+                    |> Task.andThen ((\logged -> Stream.logLine logged env.stdout))
                 )
         )

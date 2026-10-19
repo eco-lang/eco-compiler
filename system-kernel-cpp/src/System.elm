@@ -1,46 +1,50 @@
 effect module System where { command = MyCmd, subscription = MySub } exposing
-    ( Program, ProgramConfiguration, defineProgram
-    , SimpleProgram, defineSimpleProgram, endSimpleProgram
-    , Environment, getEnvironmentVariables, Platform(..), getPlatform, CpuArchitecture(..), getCpuArchitecture
+    ( simpleProgram
+    , Environment, environmentVariables, Platform(..), CpuArchitecture(..)
     , exit, exitWithCode, setExitCode
     , onEmptyEventLoop, onSignalInterrupt, onSignalTerminate
     )
 
-{-| An Eco system program is defined much like an Elm `Platform.worker`, except that it is
-handed an [`Environment`](#Environment) when it starts. The environment tells you which
-platform you are running on, which arguments the program was invoked with, and gives you the
-standard input, output and error streams.
+{-| An Eco system program is an ordinary Elm `Platform.Program` whose flags are the
+[`Environment`](#Environment). Eco builds the environment when the program starts and hands it
+to `init`: it tells you which platform you are running on, which arguments the program was
+invoked with and when it started, and gives you the standard input, output and error streams.
 
 Long-lived programs that keep state, react to messages and listen to subscriptions are made
-with [`defineProgram`](#defineProgram). Short-lived programs that run a single task and then
-finish are made with [`defineSimpleProgram`](#defineSimpleProgram):
+with `Platform.worker`:
 
-    main : System.SimpleProgram msg
+    main : Platform.Program System.Environment Model Msg
     main =
-        System.defineSimpleProgram
-            (\env ->
-                System.endSimpleProgram
-                    (Stream.Log.line env.stdout "Hello, world!")
-            )
+        Platform.worker
+            { init = \env -> ( initialModel env, Cmd.none )
+            , update = update
+            , subscriptions = subscriptions
+            }
+
+Short-lived programs that run a single task and then finish are made with
+[`simpleProgram`](#simpleProgram):
+
+    main : Platform.Program System.Environment () ()
+    main =
+        System.simpleProgram
+            (\env -> Stream.logLine "Hello, world!" env.stdout)
+
+The flags type `System.Environment` is supplied by the Eco compiler and runtime; it cannot be
+passed in from JavaScript like ordinary JSON flags.
 
 This module is a port of the `Node` module of gren-node. Every subsystem (files, processes, the
 terminal, the HTTP server) can be used directly once the program has started; there is nothing
 to set up first.
 
 
-# Program
-
-@docs Program, ProgramConfiguration, defineProgram
-
-
 # Simple Program
 
-@docs SimpleProgram, defineSimpleProgram, endSimpleProgram
+@docs simpleProgram
 
 
 # Environment information
 
-@docs Environment, getEnvironmentVariables, Platform, getPlatform, CpuArchitecture, getCpuArchitecture
+@docs Environment, environmentVariables, Platform, CpuArchitecture
 
 
 # Exit
@@ -61,8 +65,10 @@ import Platform
 import Process
 import Stream
 import Stream.Internal
-import System.File.Path exposing (Path)
+import Path exposing (Path)
+import Json.Decode
 import Task exposing (Task)
+import Time
 
 
 
@@ -78,8 +84,11 @@ import Task exposing (Task)
     first element, `args[0]`, is the program as it was invoked. This differs from gren-node,
     where the list starts with the path to the `node` binary followed by the script path, so a
     gren program that drops two leading arguments must drop only one here.
+  - `startTime` is the time the program started, read once at startup, so `init` doesn't need
+    to ask for the time first.
   - `stdout`, `stderr` and `stdin` are streams you can use to communicate with the outside
-    world. Take a closer look at the `Stream` module for more information.
+    world. Take a closer look at the `Stream` module for more information; `Stream.readLine`
+    reads standard input line by line.
 
 -}
 type alias Environment =
@@ -87,6 +96,7 @@ type alias Environment =
     , cpuArchitecture : CpuArchitecture
     , applicationPath : Path
     , args : List String
+    , startTime : Time.Posix
     , stdout : Stream.Writable Bytes
     , stderr : Stream.Writable Bytes
     , stdin : Stream.Readable Bytes
@@ -105,16 +115,6 @@ type Platform
     | SunOS
     | Aix
     | UnknownPlatform String
-
-
-{-| Retrieve the platform of the computer running the application. The same value is
-available as `platform` in the [`Environment`](#Environment).
--}
-getPlatform : Task x Platform
-getPlatform =
-    kGetPlatform
-        |> Task.map platformFromString
-        |> Task.mapError never
 
 
 platformFromString : String -> Platform
@@ -162,16 +162,6 @@ type CpuArchitecture
     | UnknownArchitecture String
 
 
-{-| Retrieve the CPU architecture of the computer running the application. The same value is
-available as `cpuArchitecture` in the [`Environment`](#Environment).
--}
-getCpuArchitecture : Task x CpuArchitecture
-getCpuArchitecture =
-    kGetCpuArchitecture
-        |> Task.map archFromString
-        |> Task.mapError never
-
-
 archFromString : String -> CpuArchitecture
 archFromString arch =
     case String.toLower arch of
@@ -212,169 +202,77 @@ archFromString arch =
 {-| Get a `Dict` of the environment variables of the running process, mapping each variable
 name to its value.
 -}
-getEnvironmentVariables : Task x (Dict String String)
-getEnvironmentVariables =
+environmentVariables : Task x (Dict String String)
+environmentVariables =
     kGetEnvironmentVariables
         |> Task.map Dict.fromList
         |> Task.mapError never
 
 
-{-| Gather the [`Environment`](#Environment). The standard streams are created once per
-process; every program sees the same three streams.
+{-| The flags decoder of every eco/system program (plans/eco-system-api-refactor.md D13).
+
+The Eco compiler uses this decoder for a `main` whose flags are [`Environment`](#Environment)
+(`Compiler.Elm.EcoEnvironment`) instead of synthesizing a JSON decoder. It ignores the host's
+flags JSON and builds the environment through the kernel. The JSON value is passed to the kernel
+only so that the call depends on the decoder's argument and can never be hoisted out of it.
+
 -}
-initializeEnvironment : Task Never Environment
-initializeEnvironment =
-    kEnvironment
-        |> Task.map
-            (\( ( platform, arch, applicationPath ), args, ( stdin, stdout, stderr ) ) ->
-                { platform = platformFromString platform
-                , cpuArchitecture = archFromString arch
-                , applicationPath = System.File.Path.fromPosixString applicationPath
-                , args = args
-                , stdout = Stream.Internal.Writable stdout
-                , stderr = Stream.Internal.Writable stderr
-                , stdin = Stream.Internal.Readable stdin
-                }
-            )
+environmentDecoder : Json.Decode.Decoder Environment
+environmentDecoder =
+    Json.Decode.map toEnvironment Json.Decode.value
+
+
+toEnvironment : Json.Decode.Value -> Environment
+toEnvironment json =
+    let
+        ( ( platform, arch, applicationPath ), ( args, startMillis ), ( stdin, stdout, stderr ) ) =
+            kEnvironmentNow json
+    in
+    { platform = platformFromString platform
+    , cpuArchitecture = archFromString arch
+    , applicationPath = Path.fromPosixString applicationPath
+    , args = args
+    , startTime = Time.millisToPosix startMillis
+    , stdout = Stream.Internal.Writable stdout
+    , stderr = Stream.Internal.Writable stderr
+    , stdin = Stream.Internal.Readable stdin
+    }
 
 
 
 -- PROGRAMS
 
 
-{-| The definition of an Eco system program. Create one with
-[`defineProgram`](#defineProgram) or [`defineSimpleProgram`](#defineSimpleProgram).
-
-The program's flags are always `()`, and its model and messages are wrapped so that your own
-`init` only runs once the [`Environment`](#Environment) has been gathered.
-
--}
-type alias Program model msg =
-    Platform.Program () (Model model) (Msg model msg)
-
-
-type Model model
-    = Uninitialized
-    | Initialized model
-
-
-type Msg model msg
-    = InitDone ( model, Cmd msg )
-    | MsgReceived msg
-
-
-{-| The functions that define a program.
-
-  - `init` receives the [`Environment`](#Environment) and returns the initial model together
-    with a command to run.
-  - `update` and `subscriptions` work exactly as they do for `Platform.worker`.
-
-Subscriptions are not active until `init` has run.
-
--}
-type alias ProgramConfiguration model msg =
-    { init : Environment -> ( model, Cmd msg )
-    , update : msg -> model -> ( model, Cmd msg )
-    , subscriptions : model -> Sub msg
-    }
-
-
-{-| Define a program with access to long-lived state and the ability to respond to messages
-and listen to subscriptions. If you want to define a simple and short-lived program, chances
-are you're looking for [`defineSimpleProgram`](#defineSimpleProgram) instead.
-
-The program keeps running for as long as it has pending work or active subscriptions, or
-until it calls [`exit`](#exit) or [`exitWithCode`](#exitWithCode).
-
--}
-defineProgram : ProgramConfiguration model msg -> Program model msg
-defineProgram config =
-    Platform.worker
-        { init = initProgram config.init
-        , update = update config.update
-        , subscriptions = subscriptions config.subscriptions
-        }
-
-
-initProgram : (Environment -> ( model, Cmd msg )) -> () -> ( Model model, Cmd (Msg model msg) )
-initProgram appInit _ =
-    ( Uninitialized
-    , initializeEnvironment
-        |> Task.map appInit
-        |> Task.perform InitDone
-    )
-
-
-update : (msg -> model -> ( model, Cmd msg )) -> Msg model msg -> Model model -> ( Model model, Cmd (Msg model msg) )
-update appUpdate msg model =
-    case model of
-        Uninitialized ->
-            case msg of
-                InitDone ( initModel, initCmd ) ->
-                    ( Initialized initModel, Cmd.map MsgReceived initCmd )
-
-                MsgReceived _ ->
-                    -- Ignore
-                    ( model, Cmd.none )
-
-        Initialized appModel ->
-            case msg of
-                InitDone _ ->
-                    -- Ignore
-                    ( model, Cmd.none )
-
-                MsgReceived appMsg ->
-                    let
-                        ( newModel, cmd ) =
-                            appUpdate appMsg appModel
-                    in
-                    ( Initialized newModel, Cmd.map MsgReceived cmd )
-
-
-subscriptions : (model -> Sub msg) -> Model model -> Sub (Msg model msg)
-subscriptions appSubs model =
-    case model of
-        Uninitialized ->
-            Sub.none
-
-        Initialized appModel ->
-            Sub.map MsgReceived (appSubs appModel)
-
-
-{-| A program that runs a single command and then finishes. It has no model of its own.
-
-This is `Program () msg`: a [`Program`](#Program) whose model is `()`. In gren-node a simple
-program had its own, unrelated program type.
-
--}
-type alias SimpleProgram msg =
-    Program () msg
-
-
 {-| Define a simple program that doesn't require long-lived state or the ability to respond to
 messages or subscriptions. Ideal for simple and short-lived programs.
 
-The function receives the [`Environment`](#Environment) and returns the command to run, which
-is usually built with [`endSimpleProgram`](#endSimpleProgram). Messages produced by that
-command are ignored.
+The function receives the [`Environment`](#Environment) and returns the task to run. The
+result of the task is ignored: the program ends once the task, and any IO it started, has
+completed. To end with a non-zero exit code, finish the task with
+[`setExitCode`](#setExitCode).
+
+    main : Platform.Program System.Environment () ()
+    main =
+        System.simpleProgram
+            (\env ->
+                case List.drop 1 env.args of
+                    [] ->
+                        Stream.logLine "usage: greet NAME" env.stderr
+                            |> Task.andThen (\_ -> System.setExitCode 2)
+
+                    name :: _ ->
+                        Stream.logLine ("Hello, " ++ name ++ "!") env.stdout
+            )
 
 -}
-defineSimpleProgram : (Environment -> Cmd msg) -> SimpleProgram msg
-defineSimpleProgram appInit =
-    defineProgram
-        { init = \env -> ( (), appInit env )
+simpleProgram : (Environment -> Task Never a) -> Platform.Program Environment () ()
+simpleProgram run =
+    Platform.worker
+        { init = \env -> ( (), command (Execute (Task.map (\_ -> ()) (run env))) )
         , update = \_ model -> ( model, Cmd.none )
         , subscriptions = \_ -> Sub.none
         }
 
-
-{-| When defining a program with [`defineSimpleProgram`](#defineSimpleProgram), use this
-function to define the final task to execute. The result of the task is ignored; the program
-ends once the task, and any IO it started, has completed.
--}
-endSimpleProgram : Task Never a -> Cmd msg
-endSimpleProgram task =
-    command (Execute (Task.map (\_ -> ()) task))
 
 
 
@@ -405,7 +303,7 @@ If all you want is to signal that your application exited due to an error, 1 is 
 -}
 exitWithCode : Int -> Cmd msg
 exitWithCode code =
-    endSimpleProgram (kExitWithCode code)
+    command (Execute (kExitWithCode code))
 
 
 {-| Set the exit code that the program will return once it finishes.
@@ -642,19 +540,10 @@ onSelfMsg router event state =
 -- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.1).
 
 
-kEnvironment : Task Never ( ( String, String, String ), List String, ( Int, Int, Int ) )
-kEnvironment =
-    Eco.Kernel.System.environment
 
-
-kGetPlatform : Task Never String
-kGetPlatform =
-    Eco.Kernel.System.getPlatform
-
-
-kGetCpuArchitecture : Task Never String
-kGetCpuArchitecture =
-    Eco.Kernel.System.getCpuArchitecture
+kEnvironmentNow : Json.Decode.Value -> ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
+kEnvironmentNow =
+    Eco.Kernel.System.environmentNow
 
 
 kGetEnvironmentVariables : Task Never (List ( String, String ))

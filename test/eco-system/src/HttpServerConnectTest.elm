@@ -13,18 +13,17 @@ after the request are never parsed or tunnelled.
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Task exposing (Task)
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     ( [ Server.methodToString request.method
             ++ " upgrade "
             ++ (request.upgrade |> Maybe.map ((++) "Just ") |> Maybe.withDefault "Nothing")
       ]
-    , H.Now (response |> Response.setBody "no tunnel")
+    , H.Now (response |> Server.setBody "no tunnel")
     )
 
 

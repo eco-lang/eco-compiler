@@ -1,20 +1,19 @@
 module HelloStdoutTest exposing (main)
 
 {-| The README hello world (plans/eco-system-library.md Phase 3 step 3.6):
-`Stream.Log.line env.stdout` writes to the program's real stdout (fd 1).
+`Stream.logLine env.stdout` writes to the program's real stdout (fd 1).
 -}
 
 -- CHECK: Hello, eco/system!
 -- EXIT: 0
 
-import Stream.Log
+import Stream
 import System
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.Log.line env.stdout "Hello, eco/system!")
+            Stream.logLine "Hello, eco/system!" env.stdout
         )

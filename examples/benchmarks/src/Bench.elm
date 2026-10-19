@@ -87,7 +87,7 @@ import Sha256
 import ShuffleSort
 import Sort
 import SpectralNorm
-import Stream.Log
+import Stream
 import StringBuild
 import Sudoku
 import System
@@ -364,8 +364,7 @@ runOne env options ( w, size ) =
                     Task.succeed outcome
 
                 else
-                    Stream.Log.line env.stdout
-                        (row w.name (String.fromInt size) (checkText m.ok) (String.fromFloat m.median) (String.fromInt m.fastest))
+                    Stream.logLine (row w.name (String.fromInt size) (checkText m.ok) (String.fromFloat m.median) (String.fromInt m.fastest)) env.stdout
                         |> Task.map (\_ -> outcome)
             )
 
@@ -418,9 +417,8 @@ runAll env options =
                 Task.succeed ()
 
             else
-                Stream.Log.line env.stdout
-                    ("warmup " ++ String.fromInt options.warmup ++ ", runs " ++ String.fromInt options.runs ++ "; times in ms, lower is better\n")
-                    |> Task.andThen (\_ -> Stream.Log.line env.stdout (row "workload" "size" "check" "median" "fastest"))
+                Stream.logLine ("warmup " ++ String.fromInt options.warmup ++ ", runs " ++ String.fromInt options.runs ++ "; times in ms, lower is better\n") env.stdout
+                    |> Task.andThen (\_ -> Stream.logLine (row "workload" "size" "check" "median" "fastest") env.stdout)
     in
     header
         |> Task.andThen (\_ -> List.foldl step (Task.succeed []) chosen)
@@ -433,7 +431,7 @@ runAll env options =
 
                     report =
                         if options.json then
-                            Stream.Log.line env.stdout (encodeOutcomes options outcomes)
+                            Stream.logLine (encodeOutcomes options outcomes) env.stdout
 
                         else
                             Task.succeed ()
@@ -442,7 +440,7 @@ runAll env options =
                     |> Task.andThen
                         (\_ ->
                             if wrong > 0 then
-                                Stream.Log.line env.stderr (String.fromInt wrong ++ " workload(s) gave a wrong result")
+                                Stream.logLine (String.fromInt wrong ++ " workload(s) gave a wrong result") env.stderr
                                     |> Task.andThen (\_ -> System.setExitCode 1)
 
                             else
@@ -462,13 +460,13 @@ listWorkloads env options =
               )
             ]
             |> Encode.encode 2
-            |> Stream.Log.line env.stdout
+            |> (\json -> Stream.logLine json env.stdout)
 
     else
         workloads
             |> List.map (\w -> String.padRight 14 ' ' w.name ++ String.padLeft 9 ' ' (String.fromInt w.size) ++ "  " ++ w.about)
             |> String.join "\n"
-            |> Stream.Log.line env.stdout
+            |> (\listing -> Stream.logLine listing env.stdout)
 
 
 
@@ -476,7 +474,7 @@ printOutputs : System.Environment -> Options -> Task x ()
 printOutputs env options =
     case options.selected of
         [] ->
-            Stream.Log.line env.stderr "bench: --print needs a workload"
+            Stream.logLine "bench: --print needs a workload" env.stderr
                 |> Task.andThen (\_ -> System.setExitCode 2)
 
         selected ->
@@ -485,10 +483,10 @@ printOutputs env options =
                     (\( w, size ) ->
                         case w.output of
                             Just output ->
-                                Stream.Log.string env.stdout (output size)
+                                Stream.logString (output size) env.stdout
 
                             Nothing ->
-                                Stream.Log.line env.stdout (checkText (w.bench size))
+                                Stream.logLine (checkText (w.bench size)) env.stdout
                     )
                 |> Task.sequence
                 |> Task.map (\_ -> ())
@@ -498,24 +496,22 @@ printOutputs env options =
 -- MAIN
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (case parseArgs (List.drop 1 env.args) (Options 3 11 False False False []) of
-                    Ok options ->
-                        if options.list then
-                            listWorkloads env options
+            case parseArgs (List.drop 1 env.args) (Options 3 11 False False False []) of
+                Ok options ->
+                    if options.list then
+                        listWorkloads env options
 
-                        else if options.print then
-                            printOutputs env options
+                    else if options.print then
+                        printOutputs env options
 
-                        else
-                            runAll env options
+                    else
+                        runAll env options
 
-                    Err problem ->
-                        Stream.Log.line env.stderr ("bench: " ++ problem)
-                            |> Task.andThen (\_ -> System.setExitCode 2)
-                )
+                Err problem ->
+                    Stream.logLine ("bench: " ++ problem) env.stderr
+                        |> Task.andThen (\_ -> System.setExitCode 2)
         )

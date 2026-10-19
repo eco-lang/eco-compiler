@@ -11,8 +11,8 @@ a signal reports -1, as node does.
 -- CHECK: signalled: ProgramError -1
 -- EXIT: 0
 
+import ChildProcess as P
 import ProcessTestHelp exposing (describeRun, noShell, simpleRun)
-import System.Process as P
 
 
 main =

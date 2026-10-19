@@ -7,7 +7,7 @@ module HttpServerRawHelp exposing
 {-| Shared helpers for the `Http.Server` tests that talk raw HTTP/1.1 (not a test: no `main`;
 plans/eco-system-websockets.md §4 WS2).
 
-Every test creates a server with `createServerWith` on 127.0.0.1, port 0 (the options can be
+Every test creates a server with `listen` on 127.0.0.1, port 0 (the options can be
 changed per test), subscribes to it, and runs a client task in the same program that talks to the
 server over plain `Socket.Tcp` connections, writing requests byte for byte and parsing the
 responses itself (status, `Connection` header, body by `Content-Length`). The server's handler
@@ -21,14 +21,12 @@ import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
 import Dict
-import Http.Server as Server exposing (Request, Server, ServerOptions)
-import Http.Server.Response as Response exposing (Response)
+import Http.Server as Server exposing (Request, Server, ListenOptions, Response)
 import Process
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
 import Stream
-import Stream.Log
 import System
 import Task exposing (Task)
 
@@ -43,7 +41,7 @@ type Answer
 
 
 type alias Config =
-    { options : ServerOptions -> ServerOptions
+    { options : ListenOptions -> ListenOptions
     , handler : List String -> Request -> Response -> ( List String, Answer )
     , client : Server -> Task String (List String)
     , exitAtEnd : Bool
@@ -51,7 +49,7 @@ type alias Config =
 
 
 type Msg
-    = Started (Result Server.ServerError Server)
+    = Started (Result Server.Error Server)
     | GotRequest Request Response
     | SendLater String Response
     | ClientDone (Result String (List String))
@@ -70,13 +68,13 @@ type alias Model =
 {-| The program of a raw-client test. The handler gets the paths of the requests answered so far
 (oldest first; a delayed answer counts once it is sent).
 -}
-program : Config -> System.Program Model Msg
+program : Config -> Platform.Program System.Environment Model Msg
 program config =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, server = Nothing, lines = [], answered = [] }
-                , Server.createServerWith (config.options (Server.defaultServerOptions (Address.loopback IPv4) 0))
+                , Server.listen (config.options (Server.defaultListenOptions (Address.loopback IPv4) 0))
                     |> Task.attempt Started
                 )
         , update = update config
@@ -99,8 +97,8 @@ update config msg model =
             , config.client server |> Task.attempt ClientDone
             )
 
-        Started (Err (Server.ServerError e)) ->
-            finish config { model | lines = [ "server error: " ++ e.code ++ " " ++ e.message ] } []
+        Started (Err e) ->
+            finish config { model | lines = [ "server error: " ++ Server.errorToString e ] } []
 
         GotRequest request response ->
             let
@@ -115,7 +113,7 @@ update config msg model =
             in
             case answer of
                 Now reply ->
-                    ( { logged | answered = logged.answered ++ [ path ] }, Response.send reply )
+                    ( { logged | answered = logged.answered ++ [ path ] }, Server.send reply )
 
                 After ms reply ->
                     ( logged, Process.sleep (toFloat ms) |> Task.perform (\_ -> SendLater path reply) )
@@ -124,7 +122,7 @@ update config msg model =
                     ( logged, Cmd.none )
 
         SendLater path reply ->
-            ( { model | answered = model.answered ++ [ path ] }, Response.send reply )
+            ( { model | answered = model.answered ++ [ path ] }, Server.send reply )
 
         ClientDone (Ok lines) ->
             finish config model lines
@@ -143,8 +141,7 @@ finish : Config -> Model -> List String -> ( Model, Cmd Msg )
 finish config model clientLines =
     let
         out =
-            Stream.Log.line model.env.stdout
-                (String.join "\n" (model.lines ++ List.map (\l -> "client: " ++ l) clientLines))
+            Stream.logLine (String.join "\n" (model.lines ++ List.map (\l -> "client: " ++ l) clientLines)) model.env.stdout
     in
     if config.exitAtEnd then
         ( model, Task.perform (\_ -> Exit) out )
@@ -178,7 +175,7 @@ sleep ms =
 -}
 connect : Server -> Task String Socket.Connection
 connect server =
-    Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) (Server.serverPort server))
+    Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) ((Server.endpoint server).port_))
         |> Task.mapError Socket.errorToString
 
 

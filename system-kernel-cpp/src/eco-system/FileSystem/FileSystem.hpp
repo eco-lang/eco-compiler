@@ -8,7 +8,7 @@
 //                           S-mode directory getters, the open-handle table.
 //   FileSystemOps.cpp       the POSIX worker operations (POD only, G1).
 //   FileSystemOpsWin32.cpp  Windows: every operation fails with ENOTSUP (§1).
-//   FileSystemManager.*     the `System.File` effect manager (C.2).
+//   FileSystemManager.*     the `FileSystem` effect manager (C.2).
 //   WatchService.*          the watcher thread (inotify / 1 s polling).
 //
 // Payload of every P-mode kernel (packFsArgs): one nested tuple
@@ -56,6 +56,7 @@ struct FsRes {
     int64_t n = 0;              // Int; the fd of a stream
     int64_t readLimit = -1;     // ReadStream: FdChannelOptions::readLimit
     bool truncateOnClose = false;   // WriteStream: FdChannelOptions::truncateOnClose
+    bool syncOnClose = false;       // WriteStream: FdChannelOptions::syncOnClose
     std::string data;           // Str / Bytes
     std::vector<int64_t> ints;  // Ints (metadata, B.3 stat)
     std::vector<std::pair<std::string, int64_t>> entries;   // Dir

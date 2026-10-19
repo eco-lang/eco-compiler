@@ -13,6 +13,7 @@ second writer regularly finds the write lock held and retries after a yield
 
 import Process
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
 import Task exposing (Task)
 
@@ -59,12 +60,12 @@ cycle perWriter _ =
                 ++ List.map (\k -> "b" ++ String.fromInt k) (List.range 1 perWriter)
                 |> List.sort
     in
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
-                Process.spawn (writer "a" 1 perWriter (Stream.writable t))
-                    |> Task.andThen (\_ -> Process.spawn (writer "b" 1 perWriter (Stream.writable t)))
-                    |> Task.andThen (\_ -> readN (2 * perWriter) (Stream.readable t) [])
+                Process.spawn (writer "a" 1 perWriter (Stream.Transformation.writable t))
+                    |> Task.andThen (\_ -> Process.spawn (writer "b" 1 perWriter (Stream.Transformation.writable t)))
+                    |> Task.andThen (\_ -> readN (2 * perWriter) (Stream.Transformation.readable t) [])
             )
         |> Task.map (\got -> List.sort got == expected)
         |> Task.onError (\_ -> Task.succeed False)

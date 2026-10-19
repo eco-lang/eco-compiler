@@ -1,49 +1,76 @@
-effect module Http.Server where { subscription = MySub } exposing
-    ( Server, ServerError(..), createServer
-    , ServerOptions, defaultServerOptions, createServerWith, serverPort, closeServer, closeServerWithin
-    , Request, Method(..), HttpVersion(..), methodToString, bodyAsString, bodyFromJson, requestInfo
-    , onRequest
+effect module Http.Server where { command = MyCmd, subscription = MySub } exposing
+    ( Server, ListenOptions, defaultListenOptions, listen, listenOnHost, endpoint, close, closeWithin
+    , Request, Method(..), HttpVersion(..), methodToString, bodyAsString, bodyAsJson, requestToString, onRequest
+    , Response, send
+    , setStatus, setHeader, appendHeader
+    , setBody, setBodyAsString, setBodyAsBytes, setBodyAsHtml
     , upgradeRequest
+    , Error, errorCode, errorToString
+    , errorIsAddressInUse, errorIsAddressNotAvailable, errorIsHostNotFound, errorIsPermissionDenied, errorIsCertificateInvalid
     )
 
 {-| Create a server that can respond to HTTP requests.
 
-You write your server using The Elm Architecture: create a [`Server`](#Server) with
-[`createServer`](#createServer), subscribe to its requests with [`onRequest`](#onRequest), and
-answer each request with a command built from [`Http.Server.Response`](Http-Server-Response) in
-your `update` function.
+You write your server using The Elm Architecture: start a [`Server`](#Server) with
+[`listen`](#listen) or [`listenOnHost`](#listenOnHost), subscribe to its requests with
+[`onRequest`](#onRequest), and answer each request by building up its [`Response`](#Response)
+and [`send`](#send)ing it from your `update` function:
+
+    GotRequest request response ->
+        ( model
+        , response
+            |> Http.Server.setHeader "Content-Type" "text/html"
+            |> Http.Server.setBody "<html>Hello there!</html>"
+            |> Http.Server.send
+        )
 
 The server speaks HTTP/1.1 (and HTTP/1.0) with keep-alive: a connection serves one request after
 the other, and requests a client sends ahead of their answers (pipelining) are handed to you one
 at a time, in order, each after the previous one was answered. Request sizes and the time a client
-may take to send a request are limited (see [`ServerOptions`](#ServerOptions)); requests that break
+may take to send a request are limited (see [`ListenOptions`](#ListenOptions)); requests that break
 the limits or the HTTP rules are answered by the server itself (400, 408, 413, 417, 431, 505) and
 never reach your program.
 
-Unlike gren-node's `HttpServer` module, there is no permission value and no `initialize`.
+Unlike gren-node's `HttpServer` module, there is no permission value and no `initialize`, and
+the response functions of gren's `HttpServer.Response` are part of this module.
 
 
 ## Servers
 
-@docs Server, ServerError, createServer
-@docs ServerOptions, defaultServerOptions, createServerWith, serverPort, closeServer, closeServerWithin
+@docs Server, ListenOptions, defaultListenOptions, listen, listenOnHost, endpoint, close, closeWithin
 
 
 ## Requests
 
-@docs Request, Method, HttpVersion, methodToString, bodyAsString, bodyFromJson, requestInfo
+@docs Request, Method, HttpVersion, methodToString, bodyAsString, bodyAsJson, requestToString, onRequest
 
 
-## Responding to requests
+## Responses
 
-@docs onRequest
+A fresh response has status `200`, no headers and an empty body.
 
-See [`Http.Server.Response`](Http-Server-Response) for more details on responding to requests.
+@docs Response, send
+
+
+### Status and headers
+
+@docs setStatus, setHeader, appendHeader
+
+
+### Body
+
+@docs setBody, setBodyAsString, setBodyAsBytes, setBodyAsHtml
 
 
 ## WebSockets
 
 @docs upgradeRequest
+
+
+## Errors
+
+@docs Error, errorCode, errorToString
+@docs errorIsAddressInUse, errorIsAddressNotAvailable, errorIsHostNotFound, errorIsPermissionDenied, errorIsCertificateInvalid
 
 -}
 
@@ -52,17 +79,18 @@ import Dict exposing (Dict)
 import Eco.Kernel.HttpServer
 import Eco.Kernel.Stream
 import Eco.Kernel.WebSocket
-import Http.Server.Internal as Internal
-import Http.Server.Response
+import Html.Dom as Dom
+import Http.Server.Internal as Internal exposing (Body(..))
 import Json.Decode
 import Platform
 import Process
 import Socket
-import Socket.Address exposing (Address)
+import Socket.Address exposing (Address, InetEndpoint)
 import Socket.Internal
 import Socket.Tls
 import Task exposing (Task)
 import Url exposing (Url)
+import VirtualDom
 import WebSocket
 import WebSocket.Internal
 
@@ -74,43 +102,54 @@ import WebSocket.Internal
 {-| An HTTP server listening on a host and port.
 -}
 type Server
-    = Server { id : Int, port_ : Int }
+    = Server { id : Int, endpoint : InetEndpoint }
 
 
-{-| Error code and message from the operating system, most likely from a failed attempt to start
-the server. The code is the name of the system error, for example `"EADDRINUSE"` when the port is
-already taken.
--}
-type ServerError
-    = ServerError { code : String, message : String }
+{-| Task to start a [`Server`](#Server) listening on the given host name and port, with the limits
+and timeouts of [`defaultListenOptions`](#defaultListenOptions). The name is resolved as with
+[`Socket.lookup`](Socket#lookup), and an address literal such as `"127.0.0.1"` or `"::1"` is used
+as it is; the empty string listens on all interfaces. Port 0 lets the system pick a free port
+([`endpoint`](#endpoint) tells which).
 
+    Http.Server.listenOnHost "localhost" 8080
 
-{-| Task to create a [`Server`](#Server) listening on the given host and port, with the limits
-and timeouts of [`defaultServerOptions`](#defaultServerOptions). Port 0 lets the system pick a
-free port ([`serverPort`](#serverPort) tells which).
+A name that cannot be resolved fails with [`errorIsHostNotFound`](#errorIsHostNotFound). A
+listening server keeps the program running until it is closed with [`close`](#close).
 
-    Http.Server.createServer { host = "127.0.0.1", port_ = 8080 }
-
-A listening server keeps the program running until it is closed with
-[`closeServer`](#closeServer).
+This was `createServer`.
 
 -}
-createServer : { host : String, port_ : Int } -> Task ServerError Server
-createServer options =
-    kCreateServer options.host options.port_
-        |> Task.map (\( id, port_ ) -> Server { id = id, port_ = port_ })
-        |> Task.mapError toServerError
+listenOnHost : String -> Int -> Task Error Server
+listenOnHost host port_ =
+    kCreateServer host port_
+        |> Task.map toServer
+        |> Task.mapError toError
 
 
-toServerError : ( String, String ) -> ServerError
-toServerError ( code, message ) =
-    ServerError { code = code, message = message }
+{-| The kernel's result: ( id, bound address text, bound port ).
+-}
+toServer : ( Int, String, Int ) -> Server
+toServer ( id, address, port_ ) =
+    Server
+        { id = id
+        , endpoint =
+            { address =
+                Socket.Address.fromString address
+                    |> Maybe.withDefault (Socket.Address.any Socket.Address.IPv4)
+            , port_ = port_
+            }
+        }
 
 
-{-| How to run a server, for [`createServerWith`](#createServerWith).
+toError : ( String, String ) -> Error
+toError ( code, message ) =
+    Error { code = code, message = message }
+
+
+{-| How to run a server, for [`listen`](#listen).
 
   - `address`, `port_`: where to listen. Port 0 lets the system pick a free port
-    ([`serverPort`](#serverPort) tells which).
+    ([`endpoint`](#endpoint) tells which).
   - `tls`: serve HTTPS (and so `wss` WebSockets) with this certificate chain and key; request
     URLs then start with `https://`. Its `alpn` field is ignored: the server chooses the
     application protocol itself (ALPN `h2` and `http/1.1` with `http2`, else `http/1.1`), and a
@@ -141,7 +180,7 @@ A timeout of 0 or less is no timeout. There is no time limit on your program's a
 connection waits for it (a client that gives up just closes the connection).
 
 -}
-type alias ServerOptions =
+type alias ListenOptions =
     { address : Address
     , port_ : Int
     , tls : Maybe Socket.Tls.ServerOptions
@@ -160,11 +199,11 @@ type alias ServerOptions =
 16 MiB, header blocks up to 64 KiB, a 5 second keep-alive timeout, a 60 second headers timeout and
 a 300 second request timeout.
 
-    Http.Server.defaultServerOptions (Socket.Address.loopback Socket.Address.IPv4) 8080
+    Http.Server.defaultListenOptions (Socket.Address.loopback Socket.Address.IPv4) 8080
 
 -}
-defaultServerOptions : Address -> Int -> ServerOptions
-defaultServerOptions address port_ =
+defaultListenOptions : Address -> Int -> ListenOptions
+defaultListenOptions address port_ =
     { address = address
     , port_ = port_
     , tls = Nothing
@@ -179,23 +218,25 @@ defaultServerOptions address port_ =
     }
 
 
-{-| Task to create a [`Server`](#Server) with [`ServerOptions`](#ServerOptions).
+{-| Task to start a [`Server`](#Server) listening as the [`ListenOptions`](#ListenOptions) say.
 
-Fails like [`createServer`](#createServer), with `EINVAL` when `http2` is set without `tls`, and
+Fails with an [`Error`](#Error): for example [`errorIsAddressInUse`](#errorIsAddressInUse) when the
+port is taken, [`errorIsCertificateInvalid`](#errorIsCertificateInvalid) when the certificate or key
+cannot be used, and `EINVAL` when `http2` is set without `tls`, and
 with an `"ERR_SSL_"` code when the certificate or key cannot be used.
 
     let
         options =
-            Http.Server.defaultServerOptions (Socket.Address.loopback Socket.Address.IPv4) 8443
+            Http.Server.defaultListenOptions (Socket.Address.loopback Socket.Address.IPv4) 8443
     in
-    Http.Server.createServerWith
+    Http.Server.listen
         { options | tls = Just { certificateChain = cert, privateKey = key, alpn = [] } }
 
 -}
-createServerWith : ServerOptions -> Task ServerError Server
-createServerWith options =
+listen : ListenOptions -> Task Error Server
+listen options =
     if options.http2 && options.tls == Nothing then
-        Task.fail (ServerError { code = "EINVAL", message = "createServerWith: http2 requires tls" })
+        Task.fail (Error { code = "EINVAL", message = "listen: http2 requires tls" })
 
     else
         kCreateServerWith
@@ -206,8 +247,8 @@ createServerWith options =
             ( ( options.keepAliveTimeout, options.headersTimeout, options.requestTimeout )
             , ( options.maxBodySize, options.maxHeaderSize, limit options.maxConcurrentStreams )
             )
-            |> Task.map (\( id, port_ ) -> Server { id = id, port_ = port_ })
-            |> Task.mapError toServerError
+            |> Task.map toServer
+            |> Task.mapError toError
 
 
 {-| A limit for the kernel: -1 is none.
@@ -222,19 +263,18 @@ limit value =
             -1
 
 
-{-| The port a server listens on: the one it was created with, or, for port 0, the one the system
-picked.
+{-| The address and port a server listens on. For port 0 this is the port the system picked.
 -}
-serverPort : Server -> Int
-serverPort (Server s) =
-    s.port_
+endpoint : Server -> InetEndpoint
+endpoint (Server s) =
+    s.endpoint
 
 
-{-| Stop a server gracefully, within 5 seconds: [`closeServerWithin`](#closeServerWithin) 5000.
+{-| Stop a server gracefully, within 5 seconds: [`closeWithin`](#closeWithin) 5000.
 -}
-closeServer : Server -> Task x ()
-closeServer =
-    closeServerWithin 5000
+close : Server -> Task x ()
+close =
+    closeWithin 5000
 
 
 {-| Stop a server gracefully, within the given number of milliseconds. The server stops accepting
@@ -246,8 +286,8 @@ closed. WebSocket connections are not affected.
 Closing a server twice is fine. A closed server no longer keeps the program running.
 
 -}
-closeServerWithin : Int -> Server -> Task x ()
-closeServerWithin deadline (Server s) =
+closeWithin : Int -> Server -> Task x ()
+closeWithin deadline (Server s) =
     kCloseServer s.id deadline
         |> Task.mapError never
 
@@ -435,8 +475,8 @@ bodyAsString request =
 {-| Decode the request body as JSON. A body that is not valid UTF-8 is treated as the empty
 string, so the decoder fails.
 -}
-bodyFromJson : Json.Decode.Decoder a -> Request -> Result Json.Decode.Error a
-bodyFromJson decoder request =
+bodyAsJson : Json.Decode.Decoder a -> Request -> Result Json.Decode.Error a
+bodyAsJson decoder request =
     request
         |> bodyAsString
         |> Maybe.withDefault ""
@@ -445,11 +485,11 @@ bodyFromJson decoder request =
 
 {-| Get a string representation of the request, for example `"GET http://localhost:8080/"`.
 
-Good for logging.
+Good for logging. This was `requestInfo`.
 
 -}
-requestInfo : Request -> String
-requestInfo request =
+requestToString : Request -> String
+requestToString request =
     let
         method =
             case request.method of
@@ -463,14 +503,14 @@ requestInfo request =
 
 
 {-| Subscribe to incoming HTTP requests on a server. For every request you receive the
-[`Request`](#Request) and a fresh [`Response`](Http-Server-Response#Response) that answers it.
+[`Request`](#Request) and a fresh [`Response`](#Response) that answers it.
 
     subscriptions : Model -> Sub Msg
     subscriptions model =
         Http.Server.onRequest model.server GotRequest
 
 -}
-onRequest : Server -> (Request -> Http.Server.Response.Response -> msg) -> Sub msg
+onRequest : Server -> (Request -> Response -> msg) -> Sub msg
 onRequest (Server s) toMsg =
     subscription
         (OnRequest s.id
@@ -482,7 +522,7 @@ onRequest (Server s) toMsg =
 
 {-| Answer a WebSocket opening request (a [`Request`](#Request) whose `upgrade` is
 `Just "websocket"`, over HTTP/1.1 or HTTP/2) instead of sending its
-[`Response`](Http-Server-Response#Response): the result is a
+[`Response`](#Response): the result is a
 [`WebSocket.Upgrade`](WebSocket#Upgrade), to answer with
 [`WebSocket.accept`](WebSocket#accept) or [`WebSocket.reject`](WebSocket#reject). The `Response`
 is used up: sending it later does nothing.
@@ -499,7 +539,7 @@ is used up: sending it later does nothing.
             ...
 
 The opening request is checked by `WebSocket.accept` (which answers a request that breaks the
-rules 400 or 426 itself), exactly as for [`WebSocket.upgradeRequest`](WebSocket#upgradeRequest).
+rules 400 or 426 itself), exactly as for [`WebSocket.receiveUpgrade`](WebSocket#receiveUpgrade).
 Requests the client sent before this one on the same connection are answered first: the `101`
 follows their responses. Over TLS the result is a `wss` WebSocket.
 
@@ -510,14 +550,14 @@ handshake ends the stream (`END_STREAM`) and an aborted WebSocket resets it (`CA
 WebSocket counts against `maxConcurrentStreams` like any request, when it is set. Another
 `:protocol` is answered `501` by the server itself.
 
-The WebSocket does not belong to the server: [`closeServer`](#closeServer) leaves it open (over
+The WebSocket does not belong to the server: [`close`](#close) leaves it open (over
 HTTP/2, until the close deadline, which ends the connection it shares).
 
 Fails with `EINVAL` when the request does not ask for a WebSocket, or was already answered (or
 upgraded), and with `ECANCELED` when its connection is gone.
 
 -}
-upgradeRequest : Request -> Http.Server.Response.Response -> Task Socket.Error WebSocket.Upgrade
+upgradeRequest : Request -> Response -> Task Socket.Error WebSocket.Upgrade
 upgradeRequest request (Internal.Response r) =
     if request.upgrade /= Just "websocket" then
         Task.fail
@@ -533,7 +573,7 @@ upgradeRequest request (Internal.Response r) =
 
 {-| A fresh response: status 200, no headers, empty body.
 -}
-freshResponse : Int -> Http.Server.Response.Response
+freshResponse : Int -> Response
 freshResponse key =
     Internal.Response
         { key = key
@@ -541,6 +581,238 @@ freshResponse key =
         , headers = []
         , body = Internal.StringBody ""
         }
+
+
+
+-- RESPONSES
+
+
+{-| An HTTP response to a single request. You receive one from
+[`onRequest`](#onRequest) together with the request it answers.
+-}
+type alias Response =
+    Internal.Response
+
+
+{-| Command to send an HTTP response.
+
+The response is written with a `Content-Length` header and the connection is closed afterwards.
+Send each response only once. An HTML body (see [`setBodyAsHtml`](#setBodyAsHtml)) is serialized
+as it is sent.
+
+-}
+send : Response -> Cmd msg
+send (Internal.Response r) =
+    case r.body of
+        HtmlBody node ->
+            command (Respond (kRespondHtml r.key r.status (withHtmlContentType r.headers) (isDocument node) node))
+
+        _ ->
+            command (Respond (kRespond r.key r.status r.headers (bodyBytes r.body)))
+
+
+bodyBytes : Body -> Bytes
+bodyBytes body =
+    case body of
+        StringBody s ->
+            kStringToUtf8 s
+
+        BytesBody b ->
+            b
+
+        HtmlBody node ->
+            kStringToUtf8 (Dom.toString node)
+
+
+{-| Add `Content-Type: text/html; charset=utf-8` unless the response already has a
+Content-Type (the name compared case-insensitively).
+-}
+withHtmlContentType : List ( String, List String ) -> List ( String, List String )
+withHtmlContentType headers =
+    if List.any (\( name, _ ) -> String.toLower name == "content-type") headers then
+        headers
+
+    else
+        ( "Content-Type", [ "text/html; charset=utf-8" ] ) :: headers
+
+
+{-| Whether the page gets `<!DOCTYPE html>`: its root, seen through `Html.map`, is an HTML
+`html` element.
+-}
+isDocument : Dom.Node -> Bool
+isDocument node =
+    case node of
+        Dom.Mapped _ inner ->
+            isDocument inner
+
+        Dom.Element Nothing tag _ _ ->
+            String.toLower tag == "html"
+
+        Dom.KeyedElement Nothing tag _ _ ->
+            String.toLower tag == "html"
+
+        _ ->
+            False
+
+
+{-| Set the HTTP status code of a response.
+
+    response |> Http.Server.setStatus 404
+
+-}
+setStatus : Int -> Response -> Response
+setStatus status (Internal.Response r) =
+    Internal.Response { r | status = status }
+
+
+{-| Set a header on a response, replacing any values it already has.
+-}
+setHeader : String -> String -> Response -> Response
+setHeader key value (Internal.Response r) =
+    Internal.Response { r | headers = updateHeader key (\_ -> [ value ]) r.headers }
+
+
+{-| Append a value to an existing header. If the header does not exist yet, it will be created.
+Use this for headers that may appear more than once, such as `Set-Cookie`.
+-}
+appendHeader : String -> String -> Response -> Response
+appendHeader key value (Internal.Response r) =
+    Internal.Response { r | headers = updateHeader key (\old -> old ++ [ value ]) r.headers }
+
+
+{-| Replace the values of header `key` (the name matches exactly, as in gren's `Dict`), keeping
+its position, or append it with `f []` if it is not there yet.
+-}
+updateHeader : String -> (List String -> List String) -> List ( String, List String ) -> List ( String, List String )
+updateHeader key f headers =
+    if List.any (\( k, _ ) -> k == key) headers then
+        List.map
+            (\( k, vs ) ->
+                if k == key then
+                    ( k, f vs )
+
+                else
+                    ( k, vs )
+            )
+            headers
+
+    else
+        headers ++ [ ( key, f [] ) ]
+
+
+{-| Alias for [`setBodyAsString`](#setBodyAsString).
+-}
+setBody : String -> Response -> Response
+setBody =
+    setBodyAsString
+
+
+{-| Set the body of the response to a string. It is sent encoded as UTF-8.
+-}
+setBodyAsString : String -> Response -> Response
+setBodyAsString body (Internal.Response r) =
+    Internal.Response { r | body = StringBody body }
+
+
+{-| Set the body of the response to some bytes.
+-}
+setBodyAsBytes : Bytes -> Response -> Response
+setBodyAsBytes body (Internal.Response r) =
+    Internal.Response { r | body = BytesBody body }
+
+
+{-| Set the body of the response to an HTML page or fragment built with
+[elm/html](/packages/elm/html/latest/) (or `Svg`).
+
+    response
+        |> Http.Server.setBodyAsHtml
+            (Html.node "html" [] [ Html.node "body" [] [ Html.text "Hello!" ] ])
+        |> Http.Server.send
+
+When the response is sent:
+
+  - the HTML is serialized as [`Html.Dom.htmlToString`](Html-Dom#htmlToString) does, straight into the
+    response (natively no `String` is built);
+  - `<!DOCTYPE html>` is written first when the root element is `html`;
+  - `Content-Type: text/html; charset=utf-8` is added unless the response already has a
+    Content-Type header.
+
+-}
+setBodyAsHtml : VirtualDom.Node msg -> Response -> Response
+setBodyAsHtml node (Internal.Response r) =
+    Internal.Response { r | body = HtmlBody (Dom.fromHtml node) }
+
+
+
+-- ERRORS
+
+
+{-| An error from starting a server: the error code (an errno name such as `"EADDRINUSE"`, a
+resolver code, or an `"ERR_SSL_"` code for a certificate or key that cannot be used) and a human
+readable message. Use the `errorIs…` functions below to check for the common cases.
+
+This replaces gren-node's `ServerError` constructor.
+
+-}
+type Error
+    = Error { code : String, message : String }
+
+
+{-| The error code, for example `"EADDRINUSE"`.
+-}
+errorCode : Error -> String
+errorCode (Error e) =
+    e.code
+
+
+{-| A human readable description of the error: the code, `": "`, and a message.
+-}
+errorToString : Error -> String
+errorToString (Error e) =
+    e.code ++ ": " ++ e.message
+
+
+codeIn : List String -> Error -> Bool
+codeIn codes (Error e) =
+    List.member e.code codes
+
+
+{-| `True` if the port is already in use (`EADDRINUSE`).
+-}
+errorIsAddressInUse : Error -> Bool
+errorIsAddressInUse =
+    codeIn [ "EADDRINUSE" ]
+
+
+{-| `True` if the address cannot be used here (`EADDRNOTAVAIL`, `EAFNOSUPPORT`): it does not belong
+to this machine, or the system does not support its family.
+-}
+errorIsAddressNotAvailable : Error -> Bool
+errorIsAddressNotAvailable =
+    codeIn [ "EADDRNOTAVAIL", "EAFNOSUPPORT" ]
+
+
+{-| `True` if the host name given to [`listenOnHost`](#listenOnHost) could not be resolved
+(`ENOTFOUND`, `EAI_AGAIN`, `EAI_FAIL`).
+-}
+errorIsHostNotFound : Error -> Bool
+errorIsHostNotFound =
+    codeIn [ "ENOTFOUND", "EAI_AGAIN", "EAI_FAIL" ]
+
+
+{-| `True` if the operating system refused to listen (`EACCES`, `EPERM`), for example on a
+privileged port.
+-}
+errorIsPermissionDenied : Error -> Bool
+errorIsPermissionDenied =
+    codeIn [ "EACCES", "EPERM" ]
+
+
+{-| `True` if the TLS certificate chain or private key cannot be used (an `"ERR_SSL_"` code).
+-}
+errorIsCertificateInvalid : Error -> Bool
+errorIsCertificateInvalid (Error e) =
+    String.startsWith "ERR_SSL_" e.code
 
 
 
@@ -557,6 +829,15 @@ freshResponse key =
 -- constructor layout of MySub is mirrored by HttpServerManager.hpp: keep them in sync.
 -- The tagger argument is ( ( method, absoluteUrl ), ( headers, body ), ( responseKey, flags,
 -- upgradeToken ) ) (plans/eco-system-websockets.md Appendix C.1).
+
+
+type MyCmd msg
+    = Respond (Task Never ())
+
+
+cmdMap : (a -> b) -> MyCmd a -> MyCmd b
+cmdMap _ (Respond task) =
+    Respond task
 
 
 type MySub msg
@@ -593,8 +874,8 @@ init =
     Task.succeed Dict.empty
 
 
-onEffects : Platform.Router msg Event -> List (MySub msg) -> State msg -> Task Never (State msg)
-onEffects router subs state =
+onEffects : Platform.Router msg Event -> List (MyCmd msg) -> List (MySub msg) -> State msg -> Task Never (State msg)
+onEffects router cmds subs state =
     let
         -- Effects arrive in reverse order of declaration.
         grouped =
@@ -623,7 +904,10 @@ onEffects router subs state =
                                     |> Task.map (\pid -> ( id, { taggers = taggers, listener = pid } ))
                     )
     in
-    Task.sequence stopped
+    List.reverse cmds
+        |> List.map (\(Respond task) -> Process.spawn task)
+        |> Task.sequence
+        |> Task.andThen (\_ -> Task.sequence stopped)
         |> Task.andThen (\_ -> Task.sequence running)
         |> Task.map Dict.fromList
 
@@ -649,7 +933,7 @@ onSelfMsg router (Incoming id (( _, _, ( key, _, _ ) ) as arg)) state =
 -- plans/eco-system-websockets.md Appendix B.2).
 
 
-kCreateServer : String -> Int -> Task ( String, String ) ( Int, Int )
+kCreateServer : String -> Int -> Task ( String, String ) ( Int, String, Int )
 kCreateServer =
     Eco.Kernel.HttpServer.createServer
 
@@ -658,7 +942,7 @@ kCreateServerWith :
     ( ( String, Int ), ( Bool, Int ) )
     -> Maybe ( String, String )
     -> ( ( Int, Int, Int ), ( Int, Int, Int ) )
-    -> Task ( String, String ) ( Int, Int )
+    -> Task ( String, String ) ( Int, String, Int )
 kCreateServerWith =
     Eco.Kernel.HttpServer.createServerWith
 
@@ -676,6 +960,21 @@ kTakeUpgrade =
 kAcceptFor : String -> String
 kAcceptFor =
     Eco.Kernel.WebSocket.acceptFor
+
+
+kRespond : Int -> Int -> List ( String, List String ) -> Bytes -> Task Never ()
+kRespond =
+    Eco.Kernel.HttpServer.respond
+
+
+kRespondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Dom.Node -> Task Never ()
+kRespondHtml =
+    Eco.Kernel.HttpServer.respondHtml
+
+
+kStringToUtf8 : String -> Bytes
+kStringToUtf8 =
+    Eco.Kernel.Stream.stringToUtf8
 
 
 kUtf8ToString : Bytes -> Maybe String

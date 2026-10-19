@@ -15,7 +15,7 @@ limit (107 bytes of UTF-8 on Linux, 103 on macOS); a longer one fails with `ENAM
 import Eco.Kernel.Socket
 import Socket
 import Socket.Internal as Internal
-import System.File.Path as Path exposing (Path)
+import Path exposing (Path)
 import Task exposing (Task)
 
 

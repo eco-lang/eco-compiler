@@ -1,13 +1,15 @@
 //===- System.cpp - eco/system kernel module System (bodies) --------------===//
 //
 // plans/eco-system-library.md Appendix B.1 and §3.7 / §3.8:
-//   * environment   — ((platform, arch, applicationPath), argv, (stdin,
-//                     stdout, stderr) pair ids). The stdio pairs are an
-//                     FdSource on fd 0 and FdSinks on fds 1 and 2, created
-//                     lazily once per process (per heap generation, F24) and
-//                     pinned; fds 0–2 are never closed (§3.4).
-//   * getPlatform / getCpuArchitecture — compile-time values, Node's
-//                     spellings (§3.8).
+//   * environmentNow — ((platform, arch, applicationPath), (argv, start
+//                     time in ms), (stdin, stdout, stderr) pair ids); a plain
+//                     value, built while the flags are decoded, before `init`
+//                     (plans/eco-system-api-refactor.md D13). The stdio pairs
+//                     are an FdSource on fd 0 and FdSinks on fds 1 and 2,
+//                     created lazily once per process (per heap generation,
+//                     F24) and pinned; fds 0–2 are never closed (§3.4).
+//                     Platform and architecture are compile-time values,
+//                     Node's spellings (§3.8).
 //   * getEnvironmentVariables — `environ`, split at the first '='.
 //   * exitWithCode  — standalone: fflush + std::exit; embed: set the code
 //                     and request a stop (§3.7).
@@ -28,6 +30,7 @@
 #include "eco-system/Stream/StreamTable.hpp"
 #include "allocator/RuntimeExports.h"
 
+#include <chrono>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -223,47 +226,38 @@ int64_t payloadInt(HPointer captured) {
 
 } // namespace
 
-// environment : Task Never ( ( String, String, String ), List String, ( Int, Int, Int ) )
-HPointer systemEnvironmentBody(HPointer /*captured*/) {
-    ECO_SYSTEM_BODY_GUARD(Never,
-        // G3: gather everything first.
-        std::string plat = platformName();
-        std::string arch = archName();
-        std::string app = applicationPath();
-        std::vector<std::string> args = processArgs();
-        int64_t ids[3];
-        stdioIds(ids);
+// environmentNow : Json.Value -> ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
+// (plans/eco-system-api-refactor.md D13, §10.1). Called once, from System.environmentDecoder,
+// while the runtime decodes the program's flags right before `init` (main thread). Not a Task:
+// the work it does (reading argv, creating the stdio pairs once per heap generation) is the
+// startup of the program itself.
+HPointer systemEnvironmentNow() {
+    // G3: gather everything first.
+    std::string plat = platformName();
+    std::string arch = archName();
+    std::string app = applicationPath();
+    std::vector<std::string> args = processArgs();
+    int64_t startMillis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+    int64_t ids[3];
+    stdioIds(ids);
 
-        HPointer platHP = alloc::allocStringFromUTF8(plat);
-        HPointer archHP = alloc::listNil(), appHP = alloc::listNil();
-        HPointer names = alloc::listNil(), argList = alloc::listNil();
-        Elm::StackRootGuard g({&platHP, &archHP, &appHP, &names, &argList});
-        archHP = alloc::allocStringFromUTF8(arch);
-        appHP = alloc::allocStringFromUTF8(app);
-        names = alloc::tuple3(alloc::boxed(platHP), alloc::boxed(archHP),
-                              alloc::boxed(appHP), 0);
-        argList = stringList(args);
-        HPointer stdio = alloc::tuple3(alloc::unboxedInt(ids[0]), alloc::unboxedInt(ids[1]),
-                                       alloc::unboxedInt(ids[2]), 0x15);
-        // `stdio` is fresh and goes straight into the helper (G4).
-        HPointer result = alloc::tuple3(alloc::boxed(names), alloc::boxed(argList),
-                                        alloc::boxed(stdio), 0);
-        return succeed(result);
-    )
-}
-
-// getPlatform : Task Never String
-HPointer systemGetPlatformBody(HPointer /*captured*/) {
-    ECO_SYSTEM_BODY_GUARD(Never,
-        return succeedString(platformName());
-    )
-}
-
-// getCpuArchitecture : Task Never String
-HPointer systemGetCpuArchitectureBody(HPointer /*captured*/) {
-    ECO_SYSTEM_BODY_GUARD(Never,
-        return succeedString(archName());
-    )
+    HPointer platHP = alloc::allocStringFromUTF8(plat);
+    HPointer archHP = alloc::listNil(), appHP = alloc::listNil();
+    HPointer names = alloc::listNil(), argList = alloc::listNil(), argsTime = alloc::listNil();
+    Elm::StackRootGuard g({&platHP, &archHP, &appHP, &names, &argList, &argsTime});
+    archHP = alloc::allocStringFromUTF8(arch);
+    appHP = alloc::allocStringFromUTF8(app);
+    names = alloc::tuple3(alloc::boxed(platHP), alloc::boxed(archHP),
+                          alloc::boxed(appHP), 0);
+    argList = stringList(args);
+    // ( List String, Int ): slot 1 unboxed (2 bits per slot: mask 0x4, HEAP_046).
+    argsTime = alloc::tuple2(alloc::boxed(argList), alloc::unboxedInt(startMillis), 0x4);
+    HPointer stdio = alloc::tuple3(alloc::unboxedInt(ids[0]), alloc::unboxedInt(ids[1]),
+                                   alloc::unboxedInt(ids[2]), 0x15);
+    // `stdio` is fresh and goes straight into the helper (G4).
+    return alloc::tuple3(alloc::boxed(names), alloc::boxed(argsTime), alloc::boxed(stdio), 0);
 }
 
 // getEnvironmentVariables : Task Never (List ( String, String ))

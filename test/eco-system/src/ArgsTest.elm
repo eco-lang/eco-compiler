@@ -10,7 +10,7 @@ the absolute path of the running executable.
 -- CHECK: applicationPath absolute: True
 -- EXIT: 0
 
-import Stream.Log
+import Stream
 import System
 
 
@@ -23,17 +23,16 @@ boolString b =
         "False"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.Log.line env.stdout
-                    (String.join "\n"
-                        [ "args >= 1: " ++ boolString (List.length env.args >= 1)
-                        , "argv0 non-empty: " ++ boolString (List.head env.args |> Maybe.map (not << String.isEmpty) |> Maybe.withDefault False)
-                        , "applicationPath absolute: " ++ boolString (env.applicationPath.root == "/" && env.applicationPath.filename /= "")
-                        ]
-                    )
+            Stream.logLine
+                (String.join "\n"
+                    [ "args >= 1: " ++ boolString (List.length env.args >= 1)
+                    , "argv0 non-empty: " ++ boolString (List.head env.args |> Maybe.map (not << String.isEmpty) |> Maybe.withDefault False)
+                    , "applicationPath absolute: " ++ boolString (env.applicationPath.root == "/" && env.applicationPath.filename /= "")
+                    ]
                 )
+                env.stdout
         )

@@ -10,10 +10,8 @@ The port is the first argument (default 8080). The server runs until the process
 -}
 
 import Bytes exposing (Bytes)
-import Http.Server as Server exposing (Request, Server)
-import Http.Server.Response as Response exposing (Response)
+import Http.Server as Server exposing (Request, Response, Server)
 import Stream
-import Stream.Log
 import System
 import Task
 import Url
@@ -27,13 +25,15 @@ type alias Model =
 
 
 type Msg
-    = Started Int (Result Server.ServerError Server)
+    = Started (Result Server.Error Server)
     | Received Request Response
+    | Logged
+    | Exit Int
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = init
         , update = update
         , subscriptions = subscriptions
@@ -52,35 +52,39 @@ init env =
                 |> Maybe.withDefault 8080
     in
     ( { stdout = env.stdout, stderr = env.stderr, server = Nothing }
-    , Task.attempt (Started port_) (Server.createServer { host = "127.0.0.1", port_ = port_ })
+    , Task.attempt Started (Server.listenOnHost "127.0.0.1" port_)
     )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        Started port_ (Ok server) ->
+        Started (Ok server) ->
             ( { model | server = Just server }
-            , System.endSimpleProgram
-                (Stream.Log.line model.stdout ("listening on http://127.0.0.1:" ++ String.fromInt port_))
+            , Stream.logLine ("listening on http://127.0.0.1:" ++ String.fromInt (Server.endpoint server).port_) model.stdout
+                |> Task.perform (\_ -> Logged)
             )
 
-        Started _ (Err (Server.ServerError err)) ->
+        Started (Err err) ->
             ( model
-            , Cmd.batch
-                [ System.endSimpleProgram (Stream.Log.line model.stderr ("http-echo: " ++ err.message))
-                , System.exitWithCode 1
-                ]
+            , Stream.logLine ("http-echo: " ++ Server.errorToString err) model.stderr
+                |> Task.perform (\_ -> Exit 1)
             )
 
         Received request response ->
             ( model
             , response
-                |> Response.setStatus 200
-                |> Response.setHeader "Content-Type" "text/plain; charset=utf-8"
-                |> Response.setBodyAsString (echo request)
-                |> Response.send
+                |> Server.setStatus 200
+                |> Server.setHeader "Content-Type" "text/plain; charset=utf-8"
+                |> Server.setBodyAsString (echo request)
+                |> Server.send
             )
+
+        Logged ->
+            ( model, Cmd.none )
+
+        Exit code ->
+            ( model, System.exitWithCode code )
 
 
 echo : Request -> String

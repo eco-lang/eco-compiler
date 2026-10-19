@@ -20,7 +20,6 @@ empty one.
 
 import Http
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerTestHelp as Help
 import System
 import Task
@@ -32,7 +31,7 @@ handler request response =
         info =
             case request.method of
                 Server.UNKNOWN _ ->
-                    " info=" ++ Server.requestInfo request
+                    " info=" ++ Server.requestToString request
 
                 _ ->
                     ""
@@ -44,7 +43,7 @@ handler request response =
             ++ (Server.bodyAsString request |> Maybe.withDefault "<invalid>")
             ++ info
       ]
-    , response |> Response.setBody (Server.methodToString request.method)
+    , response |> Server.setBody (Server.methodToString request.method)
     )
 
 
@@ -64,6 +63,6 @@ client base =
         |> Task.sequence
 
 
-main : System.Program Help.Model Help.Msg
+main : Platform.Program System.Environment Help.Model Help.Msg
 main =
     Help.program { handler = handler, client = client }

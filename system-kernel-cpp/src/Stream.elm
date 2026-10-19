@@ -1,9 +1,9 @@
 module Stream exposing
-    ( Readable, fromList, read, readBytesAsString, readUntilClosed, cancelReadable
-    , Writable, write, writeStringAsBytes, writeLineAsBytes, enqueue, closeWritable, cancelWritable
+    ( Readable, fromList, read, readString, readLine, readUntilClosed, cancelReadable
+    , Writable, write, writeString, writeLine, enqueue, closeWritable, cancelWritable
+    , log, logString, logLine
     , Error(..), errorToString
-    , Transformation, identityTransformation, identityTransformationWithOptions, nullTransformation, CustomTransformationAction(..), customTransformation, customTransformationWithOptions, readable, writable, pipeThrough, awaitAndPipeThrough, pipeTo
-    , textEncoder, textDecoder, gzipCompression, deflateCompression, deflateRawCompression, gzipDecompression, deflateDecompression, deflateRawDecompression
+    , Transformation, pipeThrough, awaitAndPipeThrough, pipeTo
     )
 
 {-| When moving a lot of data out of and into memory, it's rare for the entire chunk of data to
@@ -21,23 +21,28 @@ Streams are the abstraction that allows us to work on data that is in transit. T
 serve as a tool for communication between different parts of your code base.
 
 We have three kinds of streams: readable streams, writable streams, and transformation streams.
+Transformations are built with [`Stream.Transformation`](Stream-Transformation).
 
-This module is a port of the `Stream` module of gren-lang/core 7.5.0. The deliberate differences
-are: `fromArray` is called [`fromList`](#fromList); [`enqueue`](#enqueue) on a closed stream fails
-with `Cancelled` instead of producing an unhandled rejection; and
-[`customTransformationWithOptions`](#customTransformationWithOptions) never uses a write capacity
-below 1; and the built-in text and compression transformations buffer one chunk on their readable
-side (WHATWG uses zero there, so a `write` would wait until someone reads).
+This module is a port of the `Stream` module of gren-lang/core 7.5.0, together with gren's
+`Stream.Log`. The deliberate differences are: `fromArray` is called [`fromList`](#fromList);
+[`enqueue`](#enqueue) on a closed stream fails with `Cancelled` instead of producing an unhandled
+rejection; [`readLine`](#readLine) is new; the logging functions are part of this module and take
+the stream last, like [`write`](#write); and the transformations moved to their own module.
 
 
 # Readable Streams
 
-@docs Readable, fromList, read, readBytesAsString, readUntilClosed, cancelReadable
+@docs Readable, fromList, read, readString, readLine, readUntilClosed, cancelReadable
 
 
 # Writable Streams
 
-@docs Writable, write, writeStringAsBytes, writeLineAsBytes, enqueue, closeWritable, cancelWritable
+@docs Writable, write, writeString, writeLine, enqueue, closeWritable, cancelWritable
+
+
+# Logging
+
+@docs log, logString, logLine
 
 
 # Error Handling
@@ -47,12 +52,7 @@ side (WHATWG uses zero there, so a `write` would wait until someone reads).
 
 # Transformation Streams
 
-@docs Transformation, identityTransformation, identityTransformationWithOptions, nullTransformation, CustomTransformationAction, customTransformation, customTransformationWithOptions, readable, writable, pipeThrough, awaitAndPipeThrough, pipeTo
-
-
-# Useful Transformation Streams
-
-@docs textEncoder, textDecoder, gzipCompression, deflateCompression, deflateRawCompression, gzipDecompression, deflateDecompression, deflateRawDecompression
+@docs Transformation, pipeThrough, awaitAndPipeThrough, pipeTo
 
 -}
 
@@ -80,18 +80,16 @@ This was called `fromArray` in gren.
 -}
 fromList : List a -> Task Error (Readable a)
 fromList values =
-    identityTransformationWithOptions
-        { readCapacity = max 1 (List.length values)
-        , writeCapacity = 1
-        }
+    kIdentity (max 1 (List.length values)) 1
+        |> Task.mapError never
         |> Task.andThen
-            (\transformation ->
+            (\id ->
                 List.foldl
                     (\value stream -> Task.andThen (enqueue value) stream)
-                    (Task.succeed (writable transformation))
+                    (Task.succeed (Stream.Internal.Writable id))
                     values
                     |> Task.andThen closeWritable
-                    |> Task.map (\_ -> readable transformation)
+                    |> Task.map (\_ -> Stream.Internal.Readable id)
             )
 
 
@@ -113,11 +111,15 @@ valid UTF-8. If the conversion fails, the stream is cancelled and the `Task` fai
 `Cancelled`.
 
 Each call reads a single chunk. A multi-byte character split across two chunks will not convert;
-use [`textDecoder`](#textDecoder) when reading text from a byte stream in pieces.
+use [`readLine`](#readLine) for line-oriented text, or
+[`Stream.Transformation.textDecoder`](Stream-Transformation#textDecoder) when reading text from a
+byte stream in pieces.
+
+This was called `readBytesAsString`.
 
 -}
-readBytesAsString : Readable Bytes -> Task Error String
-readBytesAsString stream =
+readString : Readable Bytes -> Task Error String
+readString stream =
     read stream
         |> Task.andThen
             (\bytes ->
@@ -133,6 +135,90 @@ readBytesAsString stream =
                         cancelReadable reason stream
                             |> Task.andThen (\_ -> Task.fail (Cancelled reason))
             )
+
+
+{-| Read the next line off a byte stream: everything up to the next newline (`\n`), decoded as
+UTF-8, without the newline and without a carriage return (`\r`) just before it.
+
+    countLines : Readable Bytes -> Int -> Task Error Int
+    countLines stdin n =
+        Stream.readLine stdin
+            |> Task.andThen (\_ -> countLines stdin (n + 1))
+            |> Task.onError
+                (\err ->
+                    case err of
+                        Stream.Closed ->
+                            Task.succeed n
+
+                        _ ->
+                            Task.fail err
+                )
+
+A last line without a newline is returned as it is; after that the `Task` fails with `Closed`.
+Lines may be longer than the chunks the stream delivers. Bytes read past the newline are kept for
+the next read from the stream, so `readLine` can be mixed with [`read`](#read) and
+[`readString`](#readString). If a line is not valid UTF-8, the stream is cancelled and the `Task`
+fails with `Cancelled`.
+
+-}
+readLine : Readable Bytes -> Task Error String
+readLine ((Stream.Internal.Readable id) as stream) =
+    kCarryLine False id
+        |> Task.mapError never
+        |> Task.andThen
+            (\carried ->
+                case carried of
+                    Just line ->
+                        decodeLine stream line
+
+                    Nothing ->
+                        kReadChunk id
+                            |> Task.mapError decodeError
+                            |> Task.andThen
+                                (\chunk ->
+                                    kCarryAppend chunk id
+                                        |> Task.mapError never
+                                        |> Task.andThen (\_ -> readLine stream)
+                                )
+                            |> Task.onError (readLineAtEnd stream)
+            )
+
+
+{-| `readChunk` failed: at the end of the stream the carried bytes, if any, are the last line.
+-}
+readLineAtEnd : Readable Bytes -> Error -> Task Error String
+readLineAtEnd ((Stream.Internal.Readable id) as stream) err =
+    case err of
+        Closed ->
+            kCarryLine True id
+                |> Task.mapError never
+                |> Task.andThen
+                    (\carried ->
+                        case carried of
+                            Just line ->
+                                decodeLine stream line
+
+                            Nothing ->
+                                Task.fail Closed
+                    )
+
+        _ ->
+            Task.fail err
+
+
+decodeLine : Readable Bytes -> Bytes -> Task Error String
+decodeLine stream line =
+    case kUtf8ToString line of
+        Just str ->
+            Task.succeed str
+
+        Nothing ->
+            let
+                reason =
+                    "Failed to convert bytes to string"
+            in
+            cancelReadable reason stream
+                |> Task.andThen (\_ -> Task.fail (Cancelled reason))
 
 
 {-| Read values off the stream, incrementally building a value with the provided function, until
@@ -211,17 +297,23 @@ write value ((Stream.Internal.Writable id) as stream) =
 
 
 {-| Convert the given `String` to UTF-8 `Bytes` and write it to the stream.
+
+This was called `writeStringAsBytes`.
+
 -}
-writeStringAsBytes : String -> Writable Bytes -> Task Error (Writable Bytes)
-writeStringAsBytes str stream =
+writeString : String -> Writable Bytes -> Task Error (Writable Bytes)
+writeString str stream =
     write (kStringToUtf8 str) stream
 
 
-{-| Same as [`writeStringAsBytes`](#writeStringAsBytes) except a newline character is appended to
-the `String` before conversion.
+{-| Same as [`writeString`](#writeString) except a newline character is appended to the `String`
+before conversion.
+
+This was called `writeLineAsBytes`.
+
 -}
-writeLineAsBytes : String -> Writable Bytes -> Task Error (Writable Bytes)
-writeLineAsBytes str stream =
+writeLine : String -> Writable Bytes -> Task Error (Writable Bytes)
+writeLine str stream =
     write (kStringToUtf8 (str ++ "\n")) stream
 
 
@@ -270,6 +362,60 @@ cancelWritable : String -> Writable value -> Task Error ()
 cancelWritable reason (Stream.Internal.Writable id) =
     kCancelWritable reason id
         |> Task.mapError decodeError
+
+
+
+-- LOGGING
+
+
+{-| Write `Bytes` to a byte stream on a best effort basis: the `Task` succeeds once the write has
+finished or failed, and any error is ignored.
+
+We don't normally encourage ignoring errors in this way, but for the explicit purpose of logging
+it's not always clear how you would handle an error. If you cannot log an error message to the
+terminal, do you try again? Try again on another stream? What if that also fails? Only use the
+`log` functions if there is no sane way to handle a failed write.
+
+This was `Stream.Log.bytes`, which took the stream first.
+
+-}
+log : Bytes -> Writable Bytes -> Task x ()
+log data stream =
+    write data stream
+        |> ignoreErrors
+
+
+{-| Write a `String`, encoded as UTF-8, to a byte stream. Any error is ignored, as for
+[`log`](#log).
+
+This was `Stream.Log.string`, which took the stream first.
+
+-}
+logString : String -> Writable Bytes -> Task x ()
+logString data stream =
+    writeString data stream
+        |> ignoreErrors
+
+
+{-| Write a `String`, encoded as UTF-8, to a byte stream, followed by a newline character. Any
+error is ignored, as for [`log`](#log).
+
+    Stream.logLine "Hello, world!" env.stdout
+
+This was `Stream.Log.line`, which took the stream first.
+
+-}
+logLine : String -> Writable Bytes -> Task x ()
+logLine data stream =
+    writeLine data stream
+        |> ignoreErrors
+
+
+ignoreErrors : Task Error a -> Task x ()
+ignoreErrors task =
+    task
+        |> Task.map (\_ -> ())
+        |> Task.onError (\_ -> Task.succeed ())
 
 
 
@@ -331,132 +477,19 @@ from the readable stream. After data is written, and before it is placed on the 
 it goes through a transformation function. This function can alter the data, or even drop it
 entirely.
 
-A `Transformation input output` accepts `input` values on its [`writable`](#writable) side and
-produces `output` values on its [`readable`](#readable) side; [`textEncoder`](#textEncoder), for
-example, is a `Transformation String Bytes`. (gren-lang/core's annotations of `readable` and
-`writable` had the two parameters the wrong way round.)
+A `Transformation input output` accepts `input` values on its
+[`writable`](Stream-Transformation#writable) side and produces `output` values on its
+[`readable`](Stream-Transformation#readable) side;
+[`textEncoder`](Stream-Transformation#textEncoder), for example, is a
+`Transformation String Bytes`. (gren-lang/core's annotations of `readable` and `writable` had the
+two parameters the wrong way round.)
+
+Transformations are created with the functions in
+[`Stream.Transformation`](Stream-Transformation), and used with [`pipeThrough`](#pipeThrough).
+
 -}
 type alias Transformation input output =
     Stream.Internal.Transformation input output
-
-
-{-| A [`Transformation`](#Transformation) that doesn't actually transform the data written to
-the writable stream. Both of its buffers hold a single value.
-
-This can be useful as a communication primitive. You can pass on the readable stream, allowing
-one-way communication with some other part of your code base.
-
--}
-identityTransformation : Task x (Transformation data data)
-identityTransformation =
-    identityTransformationWithOptions { readCapacity = 1, writeCapacity = 1 }
-
-
-{-| Same as [`identityTransformation`](#identityTransformation), but allows you to set the
-capacity of the streams. The capacity decides how many chunks a stream will store in its buffer.
-When a buffer is full, the stream stops accepting new chunks until it has room. Capacities below
-1 are treated as 1.
-
-If you attempt to write to a [`Writable`](#Writable) stream with a full buffer, the write will only
-succeed when there's room in the buffer again. Reading from a [`Readable`](#Readable) stream with
-values in its buffer succeeds instantly; if the buffer is empty, the read succeeds once there's a
-value to be read.
-
--}
-identityTransformationWithOptions : { readCapacity : Int, writeCapacity : Int } -> Task x (Transformation data data)
-identityTransformationWithOptions options =
-    kIdentity (max 1 options.readCapacity) (max 1 options.writeCapacity)
-        |> Task.map Stream.Internal.Transformation
-        |> Task.mapError never
-
-
-{-| A [`Transformation`](#Transformation) that ignores all data written to it. The readable
-stream never outputs data, but is closed whenever the writable stream is closed.
--}
-nullTransformation : data -> Task x (Transformation data data)
-nullTransformation initialState =
-    customTransformation (\state _ -> UpdateState state) initialState
-
-
-{-| When defining a custom [`Transformation`](#Transformation), you need to specify how the data
-coming in is handled.
-
-  - `UpdateState`: Update the internal state of the [`Transformation`](#Transformation); no values
-    are passed to the readable stream.
-  - `Send`: Update the internal state and make chunks available for reading.
-  - `Close`: Make the given chunks available for reading, and close the streams.
-  - `Cancel`: Cancel both streams with a human-readable error message.
-
--}
-type CustomTransformationAction state value
-    = UpdateState state
-    | Send { state : state, send : List value }
-    | Close (List value)
-    | Cancel String
-
-
-{-| Create your very own [`Transformation`](#Transformation). The stream pair holds state, and is
-free to alter, batch, combine or even drop whatever data is coming in. The function is called
-with the current state and each value written to the stream, and decides what happens next.
--}
-customTransformation : (state -> input -> CustomTransformationAction state output) -> state -> Task x (Transformation input output)
-customTransformation fn initialState =
-    customTransformationWithOptions fn
-        { initialState = initialState
-        , readCapacity = 1
-        , writeCapacity = 1
-        }
-
-
-{-| Same as [`customTransformation`](#customTransformation), except you can define the capacity
-of each stream.
-
-A write capacity below 1 is treated as 1, and a read capacity below 0 as 0. A read capacity of 0
-means a value is only transformed once someone is waiting to read the result. (gren allowed a
-write capacity of 0, which made the stream unable to accept any value.)
-
--}
-customTransformationWithOptions :
-    (state -> input -> CustomTransformationAction state output)
-    -> { initialState : state, readCapacity : Int, writeCapacity : Int }
-    -> Task x (Transformation input output)
-customTransformationWithOptions fn options =
-    kCustom (customAction fn) options.initialState (max 0 options.readCapacity) (max 1 options.writeCapacity)
-        |> Task.map Stream.Internal.Transformation
-        |> Task.mapError never
-
-
-{-| The action the kernel calls for each value (plans/eco-system-library.md §3.5):
-`( ctor, state, ( values, reason ) )` with ctor 0 UpdateState, 1 Send, 2 Close, 3 Cancel.
--}
-customAction : (state -> input -> CustomTransformationAction state output) -> state -> input -> ( Int, state, ( List output, String ) )
-customAction toAction state input =
-    case toAction state input of
-        UpdateState newState ->
-            ( 0, newState, ( [], "" ) )
-
-        Send send ->
-            ( 1, send.state, ( send.send, "" ) )
-
-        Close values ->
-            ( 2, state, ( values, "" ) )
-
-        Cancel reason ->
-            ( 3, state, ( [], reason ) )
-
-
-{-| Retrieve the [`Readable`](#Readable) stream of a [`Transformation`](#Transformation).
--}
-readable : Transformation input output -> Readable output
-readable (Stream.Internal.Transformation id) =
-    Stream.Internal.Readable id
-
-
-{-| Retrieve the [`Writable`](#Writable) stream of a [`Transformation`](#Transformation).
--}
-writable : Transformation input output -> Writable input
-writable (Stream.Internal.Transformation id) =
-    Stream.Internal.Writable id
 
 
 {-| When data becomes available on a [`Readable`](#Readable) stream, immediately write that data
@@ -475,7 +508,7 @@ pipeThrough (Stream.Internal.Transformation id) (Stream.Internal.Readable source
 
 
 {-| Same as [`pipeThrough`](#pipeThrough), except the [`Transformation`](#Transformation) is
-resolved from a `Task`, such as [`gzipDecompression`](#gzipDecompression).
+resolved from a `Task`, such as [`Stream.Transformation.gunzip`](Stream-Transformation#gunzip).
 -}
 awaitAndPipeThrough : Task Error (Transformation input output) -> Readable input -> Task Error (Readable output)
 awaitAndPipeThrough builder source =
@@ -497,88 +530,6 @@ pipeTo (Stream.Internal.Writable destination) (Stream.Internal.Readable source) 
 
 
 
--- BUILT-IN TRANSFORMATIONS
-
-
-{-| Transform each `String` into UTF-8 `Bytes`. Empty strings produce no output.
--}
-textEncoder : Task x (Transformation String Bytes)
-textEncoder =
-    codec kTextEncoder
-
-
-{-| Transform UTF-8 `Bytes` into `String`s. A multi-byte character split across two chunks is
-decoded correctly, and a leading byte order mark is removed.
-
-The decoder is lenient: invalid byte sequences are replaced by the replacement character
-U+FFFD rather than cancelling the streams. Chunks that decode to nothing produce no output.
-
--}
-textDecoder : Task x (Transformation Bytes String)
-textDecoder =
-    codec kTextDecoder
-
-
-{-| Compress `Bytes` using the `gzip` format.
--}
-gzipCompression : Task x (Transformation Bytes Bytes)
-gzipCompression =
-    codec (kCompressor 0)
-
-
-{-| Compress `Bytes` using the `deflate` algorithm, in the zlib format.
--}
-deflateCompression : Task x (Transformation Bytes Bytes)
-deflateCompression =
-    codec (kCompressor 1)
-
-
-{-| Compress `Bytes` using the `deflate` algorithm, without leading headers or a trailing
-checksum.
--}
-deflateRawCompression : Task x (Transformation Bytes Bytes)
-deflateRawCompression =
-    codec (kCompressor 2)
-
-
-{-| Decompress `Bytes` in the `gzip` format.
-
-If the data is corrupt, continues past the end of the compressed data, or ends before it is
-complete (when the writable stream is closed), both streams are cancelled with a description of
-the problem.
-
--}
-gzipDecompression : Task x (Transformation Bytes Bytes)
-gzipDecompression =
-    codec (kDecompressor 0)
-
-
-{-| Decompress `Bytes` compressed with the `deflate` algorithm, in the zlib format.
--}
-deflateDecompression : Task x (Transformation Bytes Bytes)
-deflateDecompression =
-    codec (kDecompressor 1)
-
-
-{-| Decompress `Bytes` compressed with the `deflate` algorithm, without leading headers or a
-trailing checksum.
--}
-deflateRawDecompression : Task x (Transformation Bytes Bytes)
-deflateRawDecompression =
-    codec (kDecompressor 2)
-
-
-
-{-| Wrap a codec pair id. The codec streams buffer one chunk on each side.
--}
-codec : Task Never Int -> Task x (Transformation read write)
-codec kernel =
-    kernel
-        |> Task.map Stream.Internal.Transformation
-        |> Task.mapError never
-
-
-
 -- KERNELS
 -- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.2).
 
@@ -586,11 +537,6 @@ codec kernel =
 kIdentity : Int -> Int -> Task Never Int
 kIdentity =
     Eco.Kernel.Stream.identity
-
-
-kCustom : (s -> a -> ( Int, s, ( List b, String ) )) -> s -> Int -> Int -> Task Never Int
-kCustom =
-    Eco.Kernel.Stream.custom
 
 
 kPipeThrough : Int -> Int -> Task ( Int, String ) ()
@@ -603,29 +549,29 @@ kPipeTo =
     Eco.Kernel.Stream.pipeTo
 
 
-kTextEncoder : Task Never Int
-kTextEncoder =
-    Eco.Kernel.Stream.textEncoder
-
-
-kTextDecoder : Task Never Int
-kTextDecoder =
-    Eco.Kernel.Stream.textDecoder
-
-
-kCompressor : Int -> Task Never Int
-kCompressor =
-    Eco.Kernel.Stream.compressor
-
-
-kDecompressor : Int -> Task Never Int
-kDecompressor =
-    Eco.Kernel.Stream.decompressor
-
-
 kRead : Int -> Task ( Int, String ) a
 kRead =
     Eco.Kernel.Stream.read
+
+
+{-| `read`, ignoring the carry of `readLine` (plans/eco-system-api-refactor.md D18).
+-}
+kReadChunk : Int -> Task ( Int, String ) Bytes
+kReadChunk =
+    Eco.Kernel.Stream.readChunk
+
+
+{-| The next line in the stream's carry, without its line ending; with `True` (the end of the
+stream), the rest of the carry if it is not empty.
+-}
+kCarryLine : Bool -> Int -> Task Never (Maybe Bytes)
+kCarryLine =
+    Eco.Kernel.Stream.carryLine
+
+
+kCarryAppend : Bytes -> Int -> Task Never ()
+kCarryAppend =
+    Eco.Kernel.Stream.carryAppend
 
 
 kWrite : a -> Int -> Task ( Int, String ) ()

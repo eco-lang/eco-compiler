@@ -45,7 +45,7 @@ connectStreamed port_ =
 
 nextBody : WebSocket.WebSocket WebSocket.Streamed -> Task String WebSocket.StreamedMessage
 nextBody ws =
-    Stream.read (WebSocket.streamedReadable ws) |> Task.mapError Stream.errorToString
+    Stream.read (WebSocket.readableStreamed ws) |> Task.mapError Stream.errorToString
 
 
 run : WebSocket.WebSocket WebSocket.Streamed -> Task String (List String)
@@ -81,7 +81,7 @@ run ws =
                         (\text ->
                             WebSocket.close WebSocket.Normal "" ws
                                 |> Task.mapError W.wsErr
-                                |> Task.andThen (\_ -> WebSocket.closed ws)
+                                |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                 |> Task.map
                                     (\info ->
                                         [ "compression: " ++ (if WebSocket.compression ws /= Nothing then "True" else "False")
@@ -98,7 +98,7 @@ client : H.Tools -> List Server.Server -> Task String (List String)
 client _ servers =
     case servers of
         [ h2 ] ->
-            connectStreamed (Server.serverPort h2)
+            connectStreamed ((Server.endpoint h2).port_)
                 |> Task.andThen run
                 |> Task.onError (\e -> Task.succeed [ "failed " ++ e ])
 

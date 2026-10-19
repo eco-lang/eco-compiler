@@ -15,7 +15,6 @@ with `setBodyAsBytes` and its own Content-Type.
 import Bytes.Encode
 import Http
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerTestHelp as Help
 import Json.Decode as D
 import Json.Encode as E
@@ -32,7 +31,7 @@ handler : Help.Handler
 handler request response =
     let
         ( line, reply ) =
-            case Server.bodyFromJson decoder request of
+            case Server.bodyAsJson decoder request of
                 Ok ( name, n ) ->
                     ( "json " ++ name ++ " " ++ String.fromInt n, "n=" ++ String.fromInt n )
 
@@ -41,8 +40,8 @@ handler request response =
     in
     ( [ line ]
     , response
-        |> Response.setHeader "Content-Type" "application/octet-stream"
-        |> Response.setBodyAsBytes (Bytes.Encode.encode (Bytes.Encode.string reply))
+        |> Server.setHeader "Content-Type" "application/octet-stream"
+        |> Server.setBodyAsBytes (Bytes.Encode.encode (Bytes.Encode.string reply))
     )
 
 
@@ -61,6 +60,6 @@ client base =
             )
 
 
-main : System.Program Help.Model Help.Msg
+main : Platform.Program System.Environment Help.Model Help.Msg
 main =
     Help.program { handler = handler, client = client }

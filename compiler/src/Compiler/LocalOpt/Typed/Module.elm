@@ -27,6 +27,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Effects as Effects
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.EcoEnvironment as EcoEnvironment
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Expression as Expr
 import Compiler.LocalOpt.Typed.Names as Names
@@ -482,7 +483,20 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
                     ReportingResult.throw (E.BadType region tipe)
 
             Can.TType hm nm [ flags, _, message ] ->
-                if hm == ModuleName.platform && nm == Name.program then
+                if hm == ModuleName.platform && nm == Name.program && EcoEnvironment.isEnvironmentFlags tipe then
+                    -- eco/system program (D13): the environment decoder ignores the host
+                    -- JSON and builds the Environment, so no payload check applies.
+                    Names.registerGlobal A.zero
+                        EcoEnvironment.systemHome
+                        EcoEnvironment.environmentDecoderName
+                        (Can.TType ModuleName.jsonDecode "Decoder" [ flags ])
+                        Nothing
+                        |> Names.map (TOpt.Dynamic message)
+                        |> Names.run
+                        |> addMain
+                        |> ReportingResult.ok
+
+                else if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
                         Ok () ->
                             Port.toFlagsDecoder flags |> Names.map (TOpt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok

@@ -26,7 +26,6 @@ HTTP/1.1 client on the same server (ALPN `http/1.1`, `allowHTTP1`).
 
 import Dict
 import Http.Server as Server exposing (HttpVersion(..))
-import Http.Server.Response as Response
 import HttpServerH2Help as H
 import Task exposing (Task)
 
@@ -46,7 +45,7 @@ version v =
 
 info : Server.Request -> String
 info request =
-    stripPort (Server.requestInfo request)
+    stripPort (Server.requestToString request)
         ++ " "
         ++ version request.version
         ++ (if request.url.port_ /= Nothing then " port set" else " no port")
@@ -87,7 +86,7 @@ stripPort text =
             text
 
 
-handler : Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : Server.Request -> Server.Response -> ( List String, H.Answer )
 handler request response =
     case request.url.path of
         "/get" ->
@@ -97,28 +96,28 @@ handler request response =
               ]
             , H.Now
                 (response
-                    |> Response.setHeader "X-Reply" "Yes"
-                    |> Response.setHeader "Connection" "close"
-                    |> Response.setBody "hello h2"
+                    |> Server.setHeader "X-Reply" "Yes"
+                    |> Server.setHeader "Connection" "close"
+                    |> Server.setBody "hello h2"
                 )
             )
 
         "/post" ->
             ( [ info request, "body " ++ Maybe.withDefault "<invalid>" (Server.bodyAsString request) ]
-            , H.Now (response |> Response.setBody (Maybe.withDefault "" (Server.bodyAsString request)))
+            , H.Now (response |> Server.setBody (Maybe.withDefault "" (Server.bodyAsString request)))
             )
 
         "/head" ->
-            ( [ info request ], H.Now (response |> Response.setBody "abc") )
+            ( [ info request ], H.Now (response |> Server.setBody "abc") )
 
         "/nocontent" ->
-            ( [ info request ], H.Now (response |> Response.setStatus 204 |> Response.setHeader "X-Empty" "1") )
+            ( [ info request ], H.Now (response |> Server.setStatus 204 |> Server.setHeader "X-Empty" "1") )
 
         "/onexx" ->
-            ( [ info request ], H.Now (response |> Response.setStatus 103) )
+            ( [ info request ], H.Now (response |> Server.setStatus 103) )
 
         _ ->
-            ( [ info request ], H.Now (response |> Response.setBody "h1") )
+            ( [ info request ], H.Now (response |> Server.setBody "h1") )
 
 
 client : H.Tools -> List Server.Server -> Task String (List String)

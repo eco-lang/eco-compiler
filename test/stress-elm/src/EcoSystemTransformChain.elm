@@ -16,6 +16,7 @@ round trip. The result must equal the upper-cased input.
 -- CHECK: EcoSystemTransformChain: True
 
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
 import Task exposing (Task)
 
@@ -41,19 +42,19 @@ chunks cycle =
             )
 
 
-upper : Int -> String -> Stream.CustomTransformationAction Int String
+upper : Int -> String -> Stream.Transformation.CustomAction Int String
 upper n value =
-    Stream.Send { state = n + 1, send = [ String.toUpper value ] }
+    Stream.Transformation.Send { state = n + 1, send = [ String.toUpper value ] }
 
 
 roundTrip : List String -> Task Stream.Error String
 roundTrip input =
     Stream.fromList input
-        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.customTransformationWithOptions upper { initialState = 0, readCapacity = 1, writeCapacity = 1 }))
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.textEncoder)
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.gzipCompression)
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.gzipDecompression)
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.textDecoder)
+        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.Transformation.customWith upper { initialState = 0, readCapacity = 1, writeCapacity = 1 }))
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.textEncoder)
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.gzip)
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.gunzip)
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.textDecoder)
         |> Task.andThen (Stream.readUntilClosed (\part acc -> Ok (part :: acc)) [])
         |> Task.map (List.reverse >> String.concat)
 

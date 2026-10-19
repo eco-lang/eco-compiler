@@ -14,10 +14,10 @@ on the main thread (Bytes, String lists, metadata lists).
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
+import FileSystem as File
+import FileSystem.Handle as FileHandle
+import Path exposing (Path)
 import StressHarness exposing (StressFlags)
-import System.File as File
-import System.File.FileHandle as FileHandle
-import System.File.Path as Path exposing (Path)
 import Task exposing (Task)
 
 

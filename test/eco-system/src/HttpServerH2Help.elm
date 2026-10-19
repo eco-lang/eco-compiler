@@ -7,9 +7,9 @@ module HttpServerH2Help exposing
 websockets.md §4 WS8).
 
 The program writes the test CA (`TlsFixtures.caPem`) and a Node script (`h2.js`, below) into a
-fresh temporary directory, creates the servers of the test with `createServerWith` (https on
+fresh temporary directory, creates the servers of the test with `listen` (https on
 127.0.0.1, port 0, `http2 = True`, then the test's changes), subscribes to all of them, and runs the
-test's client task, which talks to the servers through peers it spawns with `System.Process.run`:
+test's client task, which talks to the servers through peers it spawns with `ChildProcess.run`:
 `curl --http2` (system curl, HTTP/2 through its nghttp2) and `node h2.js <mode> …` (Node's
 `http2` client, or raw HTTP/2 frames over `tls` for cases no client library produces). Both are
 available on every backend (WF12). When the client task ends, the server's lines (in arrival
@@ -20,15 +20,14 @@ order) and then the client's lines are printed, the directory is removed and the
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
-import Http.Server as Server exposing (Request, Server, ServerOptions)
-import Http.Server.Response as Response exposing (Response)
+import Http.Server as Server exposing (Request, Server, ListenOptions, Response)
 import Process
 import Socket.Address as Address exposing (Family(..))
-import Stream.Log
+import Stream
 import System
-import System.File as File
-import System.File.Path as Path
-import System.Process as P
+import FileSystem as File
+import Path
+import ChildProcess as P
 import Task exposing (Task)
 import TlsFixtures as Fx
 
@@ -39,7 +38,7 @@ import TlsFixtures as Fx
   - `After ms`: after a delay;
   - `HoldReverse n`: kept until `n` requests are held, then all are answered, the latest first
     (3 ms apart);
-  - `CloseThen ms`: `closeServer` (5 s deadline) at once, the answer after `ms` milliseconds;
+  - `CloseThen ms`: `close` (5 s deadline) at once, the answer after `ms` milliseconds;
   - `NoAnswer`: never.
 
 -}
@@ -58,7 +57,7 @@ type alias Tools =
 
 
 type alias Config =
-    { servers : List (ServerOptions -> ServerOptions)
+    { servers : List (ListenOptions -> ListenOptions)
     , handler : Request -> Response -> ( List String, Answer )
     , client : Tools -> List Server -> Task String (List String)
     }
@@ -84,11 +83,11 @@ type alias Model =
 
 {-| `defaultServerOptions` on 127.0.0.1, port 0, with the test certificate and `http2 = True`.
 -}
-h2Options : ServerOptions
+h2Options : ListenOptions
 h2Options =
     let
         d =
-            Server.defaultServerOptions (Address.loopback IPv4) 0
+            Server.defaultListenOptions (Address.loopback IPv4) 0
     in
     { d
         | tls = Just { certificateChain = Fx.serverCertPem, privateKey = Fx.serverKeyPem, alpn = [] }
@@ -96,9 +95,9 @@ h2Options =
     }
 
 
-program : Config -> System.Program Model Msg
+program : Config -> Platform.Program System.Environment Model Msg
 program config =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, tools = Nothing, servers = [], lines = [], held = [] }
@@ -128,8 +127,8 @@ setup config =
                             config.servers
                                 |> List.map
                                     (\change ->
-                                        Server.createServerWith (change h2Options)
-                                            |> Task.mapError (\(Server.ServerError e) -> "server error: " ++ e.code ++ " " ++ e.message)
+                                        Server.listen (change h2Options)
+                                            |> Task.mapError (\e -> "server error: " ++ Server.errorToString e)
                                     )
                                 |> Task.sequence
                         )
@@ -165,7 +164,7 @@ update config msg model =
             in
             case answer of
                 Now reply ->
-                    ( logged, Response.send reply )
+                    ( logged, Server.send reply )
 
                 After ms reply ->
                     ( logged, Process.sleep (toFloat ms) |> Task.perform (\_ -> SendLater reply) )
@@ -194,7 +193,7 @@ update config msg model =
                     ( logged
                     , Cmd.batch
                         ((Process.sleep (toFloat ms) |> Task.perform (\_ -> SendLater reply))
-                            :: List.map (\s -> Server.closeServer s |> Task.perform (\_ -> ServerClosed)) logged.servers
+                            :: List.map (\s -> Server.close s |> Task.perform (\_ -> ServerClosed)) logged.servers
                         )
                     )
 
@@ -202,7 +201,7 @@ update config msg model =
                     ( logged, Cmd.none )
 
         SendLater reply ->
-            ( model, Response.send reply )
+            ( model, Server.send reply )
 
         ServerClosed ->
             ( { model | lines = model.lines ++ [ "server: closed" ] }, Cmd.none )
@@ -221,8 +220,7 @@ finish : Model -> List String -> ( Model, Cmd Msg )
 finish model clientLines =
     let
         out =
-            Stream.Log.line model.env.stdout
-                (String.join "\n" (model.lines ++ List.map (\l -> "client: " ++ l) clientLines))
+            Stream.logLine (String.join "\n" (model.lines ++ List.map (\l -> "client: " ++ l) clientLines)) model.env.stdout
 
         cleanup =
             case model.tools of
@@ -289,7 +287,7 @@ curlTries : Int -> Tools -> Server -> List String -> String -> Task String Strin
 curlTries tries tools server args path =
     let
         port_ =
-            String.fromInt (Server.serverPort server)
+            String.fromInt ((Server.endpoint server).port_)
     in
     P.run "curl"
         ([ "-sS", "--max-time", "30", "--cacert", tools.dir ++ "/ca.pem", "--resolve", "localhost:" ++ port_ ++ ":127.0.0.1" ]
@@ -384,7 +382,7 @@ sortedHeaders headers =
 -}
 node : Tools -> Server -> String -> List String -> Task String (List String)
 node tools server mode args =
-    run "node" ([ tools.dir ++ "/h2.js", mode, String.fromInt (Server.serverPort server), tools.dir ++ "/ca.pem" ] ++ args)
+    run "node" ([ tools.dir ++ "/h2.js", mode, String.fromInt ((Server.endpoint server).port_), tools.dir ++ "/ca.pem" ] ++ args)
         |> Task.map (String.lines >> List.filter (\l -> l /= ""))
 
 

@@ -4,6 +4,9 @@
 // "Http.Server"). The Elm declaration lives in
 // system-kernel-cpp/src/Http/Server.elm, section "EFFECT MANAGER":
 //
+//     type MyCmd msg = Respond (Task Never ())          -- tag 0: [task boxed]
+//     (Http.Server.send; plans/eco-system-api-refactor.md §10.1)
+//
 //     type MySub msg
 //         = OnRequest Int (( ( String, String ), ( List ( String, List String ), Bytes ), ( Int, Int, String ) ) -> msg)
 //     -- tag 0: [serverId unboxed Int (mask 0b01), tagger boxed]
@@ -32,6 +35,10 @@
 namespace Eco::System {
 
 namespace HttpServerManager {
+
+// MyCmd
+constexpr uint16_t CTOR_RESPOND = 0;
+constexpr int RESPOND_TASK_FIELD = 0;
 
 // MySub
 constexpr uint16_t CTOR_ON_REQUEST = 0;

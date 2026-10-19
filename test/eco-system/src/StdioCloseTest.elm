@@ -16,36 +16,33 @@ process) keep working.
 import Bytes
 import Bytes.Encode
 import Stream
-import Stream.Log
 import StreamTestHelp exposing (describe)
 import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.enqueue (toBytes "enqueued line\n") env.stdout
-                    |> Task.andThen (Stream.writeLineAsBytes "written line")
-                    |> describe
-                    |> Task.andThen (\_ -> describe (Stream.closeWritable env.stdout))
-                    |> Task.andThen
-                        (\closeResult ->
-                            Task.map2
-                                (\w c ->
-                                    String.join "\n"
-                                        [ "close: " ++ closeResult
-                                        , "write after close: " ++ w
-                                        , "close again: " ++ c
-                                        ]
-                                )
-                                (describe (Stream.writeLineAsBytes "too late" env.stdout))
-                                (describe (Stream.closeWritable env.stdout))
-                        )
-                    |> Task.andThen (Stream.Log.line env.stderr)
-                )
+            Stream.enqueue (toBytes "enqueued line\n") env.stdout
+                |> Task.andThen (Stream.writeLine "written line")
+                |> describe
+                |> Task.andThen (\_ -> describe (Stream.closeWritable env.stdout))
+                |> Task.andThen
+                    (\closeResult ->
+                        Task.map2
+                            (\w c ->
+                                String.join "\n"
+                                    [ "close: " ++ closeResult
+                                    , "write after close: " ++ w
+                                    , "close again: " ++ c
+                                    ]
+                            )
+                            (describe (Stream.writeLine "too late" env.stdout))
+                            (describe (Stream.closeWritable env.stdout))
+                    )
+                |> Task.andThen (\logged -> Stream.logLine logged env.stderr)
         )
 
 

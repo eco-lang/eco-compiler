@@ -1,14 +1,14 @@
-module System.File.Path exposing
+module Path exposing
     ( Path
     , empty, fromPosixString, toPosixString, fromWin32String, toWin32String
-    , filenameWithExtension, parentPath
+    , filenameWithExtension, parent
     , append, appendPosixString, appendWin32String, prepend, prependPosixString, prependWin32String, join
     )
 
 {-| A path represents the location of a file or directory in a file system.
 
 This module is pure Elm: building, printing and combining paths never touches the file system,
-so it behaves the same on every platform. Use the functions in [System.File](System-File) to act
+so it behaves the same on every platform. Use the functions in [FileSystem](FileSystem) to act
 on the entity a path points at.
 
 @docs Path
@@ -21,7 +21,7 @@ on the entity a path points at.
 
 ## Query
 
-@docs filenameWithExtension, parentPath
+@docs filenameWithExtension, parent
 
 
 ## Manipulation
@@ -168,14 +168,14 @@ filenameWithExtension path =
 
     "/home/me/file.md"
         |> fromPosixString
-        |> parentPath
+        |> parent
         -- returns (Just "/home/me")
 
 Returns `Nothing` for the [empty](#empty) path and for a path that consists of only a root.
 
 -}
-parentPath : Path -> Maybe Path
-parentPath path =
+parent : Path -> Maybe Path
+parent path =
     case unsnoc path.directory of
         Nothing ->
             if filenameWithExtension path == "" then

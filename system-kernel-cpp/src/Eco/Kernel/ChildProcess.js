@@ -321,7 +321,7 @@ function _ChildProcess_pipe(socket)
 }
 
 
-// --- JS-only: the spawn kernel of the Elm System.Process manager (C.3) ----------------
+// --- JS-only: the spawn kernel of the Elm ChildProcess manager (C.3) ----------------
 //
 // spawn : (( Int, Int ) -> Task Never ()) -> spec -> Task Never ( Process.Id, Maybe ( Int, Int, Int ) )
 //   spec = ( ( program, args ), ( ( shellKind, customShell ), ( inheritCwd, cwd ) ),

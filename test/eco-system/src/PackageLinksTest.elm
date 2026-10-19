@@ -16,19 +16,17 @@ value is evaluated) and are not reachable from `main`.
 -- EXIT: 0
 
 import Bytes exposing (Bytes)
+import ChildProcess
+import FileSystem
+import FileSystem.Handle
 import Http.Server
-import Http.Server.Response
 import Http.Stream
+import Path
 import Platform
 import Stream
-import Stream.Log
 import System
-import System.File
-import System.File.FileHandle
-import System.File.Path
-import System.Process
-import System.Terminal
 import Task exposing (Task)
+import Terminal
 
 
 refSystem : Int -> Cmd msg
@@ -43,32 +41,32 @@ refStream err =
 
 refStreamLog : Stream.Writable Bytes -> String -> Task x ()
 refStreamLog out text =
-    Stream.Log.line out text
+    Stream.logLine text out
 
 
-refFile : System.File.Error -> String
+refFile : FileSystem.Error -> String
 refFile err =
-    System.File.errorToString err
+    FileSystem.errorToString err
 
 
-refFileHandle : System.File.FileHandle.FileHandle a b -> Task System.File.Error ()
+refFileHandle : FileSystem.Handle.Handle a b -> Task FileSystem.Error ()
 refFileHandle handle =
-    System.File.FileHandle.close handle
+    FileSystem.Handle.close handle
 
 
 refPath : String -> String
 refPath text =
-    System.File.Path.toPosixString (System.File.Path.fromPosixString text)
+    Path.toPosixString (Path.fromPosixString text)
 
 
-refProcess : String -> List String -> System.Process.SpawnOptions msg -> Cmd msg
+refProcess : String -> List String -> ChildProcess.SpawnOptions msg -> Cmd msg
 refProcess program args options =
-    System.Process.spawn program args options
+    ChildProcess.spawn program args options
 
 
 refTerminal : String -> Task x ()
 refTerminal title =
-    System.Terminal.setProcessTitle title
+    Terminal.setTitle title
 
 
 refHttpServer : Http.Server.Method -> String
@@ -76,9 +74,9 @@ refHttpServer method =
     Http.Server.methodToString method
 
 
-refHttpResponse : Http.Server.Response.Response -> Http.Server.Response.Response
+refHttpResponse : Http.Server.Response -> Http.Server.Response
 refHttpResponse response =
-    Http.Server.Response.setStatus 200 response
+    Http.Server.setStatus 200 response
 
 
 refHttpStream : () -> Http.Stream.Body

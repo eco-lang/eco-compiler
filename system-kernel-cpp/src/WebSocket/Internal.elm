@@ -126,7 +126,7 @@ toWebSocket protocol compression ( id, ( readableId, writableId ), ( local, remo
 
 
 {-| The prefix of an `ERR_WS_HANDSHAKE` message that carries the HTTP status
-(`WebSocket.handshakeStatus` reads it back).
+(`WebSocket.errorHandshakeStatus` reads it back).
 -}
 handshakeErrorPrefix : String
 handshakeErrorPrefix =

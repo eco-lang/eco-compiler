@@ -25,14 +25,14 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
 
 textOf : WebSocket.WebSocket WebSocket.Streamed -> Task String String
 textOf ws =
-    Stream.read (WebSocket.streamedReadable ws)
+    Stream.read (WebSocket.readableStreamed ws)
         |> Task.mapError Stream.errorToString
         |> Task.andThen
             (\m ->
@@ -53,12 +53,12 @@ serve ws =
                 textOf ws
                     |> Task.andThen
                         (\invalid ->
-                            Stream.read (WebSocket.streamedReadable ws)
+                            Stream.read (WebSocket.readableStreamed ws)
                                 |> Task.map (\_ -> "a message")
                                 |> Task.onError (\e -> Task.succeed (Stream.errorToString e))
                                 |> Task.andThen
                                     (\end ->
-                                        WebSocket.closed ws
+                                        WebSocket.awaitClose ws
                                             |> Task.map
                                                 (\info ->
                                                     [ "split: " ++ split

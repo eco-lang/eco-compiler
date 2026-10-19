@@ -86,7 +86,7 @@ orReason task =
     Task.onError Task.succeed task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

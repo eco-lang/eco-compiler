@@ -305,7 +305,9 @@ function _Stream_newPair(kind)
 		__readerKick: false,
 		__readerEndSent: false,
 		__demand: false,       // mapped source: last setDemand value
-		__textSink: false      // channel sink of Strings (createTextChannelSink)
+		__textSink: false,     // channel sink of Strings (createTextChannelSink)
+		__carry: null,         // Stream.readLine: bytes read past the last line (Uint8Array)
+		__carryPos: 0          // the start of the unread part of __carry
 	};
 }
 
@@ -2190,11 +2192,89 @@ var _Stream_decompressor = function(algorithm)
 // read : Int -> Task SErr a
 var _Stream_read = function(id)
 {
-	return _Stream_op(function(callback)
+	return _Stream_op(function(callback) { _Stream_readImpl(id, callback, true); });
+};
+
+// readChunk : Int -> Task SErr Bytes — read, ignoring the carry of Stream.readLine
+// (plans/eco-system-api-refactor.md D18).
+var _Stream_readChunk = function(id)
+{
+	return _Stream_op(function(callback) { _Stream_readImpl(id, callback, false); });
+};
+
+// The unread part of the carry, or null.
+function _Stream_carryRest(p)
+{
+	return p.__carry && p.__carryPos < p.__carry.length ? p.__carry.subarray(p.__carryPos) : null;
+}
+
+// carryLine : Bool -> Int -> Task Never (Maybe Bytes) — the next line of the carry without
+// its "\n" (and a "\r" before it); at the end of the stream, the rest of the carry if any.
+var _Stream_carryLine = F2(function(atEnd, id)
+{
+	return __Scheduler_binding(function(callback)
 	{
+		var p = _Stream_table[id];
+		var rest = p ? _Stream_carryRest(p) : null;
+		if (!rest) return callback(__Scheduler_succeed(__Maybe_Nothing));
+		var nl = rest.indexOf(10);
+		var line;
+		if (nl >= 0)
+		{
+			line = rest.slice(0, nl);
+			p.__carryPos += nl + 1;
+			if (line.length && line[line.length - 1] === 13) line = line.slice(0, line.length - 1);
+		}
+		else if (atEnd)
+		{
+			line = rest.slice();
+			p.__carryPos = p.__carry.length;
+		}
+		else
+		{
+			return callback(__Scheduler_succeed(__Maybe_Nothing));
+		}
+		if (p.__carryPos >= p.__carry.length)
+		{
+			p.__carry = null;
+			p.__carryPos = 0;
+		}
+		callback(__Scheduler_succeed(__Maybe_Just(_Stream_toBytes(line))));
+	});
+});
+
+// carryAppend : Bytes -> Int -> Task Never ()
+var _Stream_carryAppend = F2(function(bytes, id)
+{
+	return __Scheduler_binding(function(callback)
+	{
+		var p = _Stream_table[id];
+		if (p)
+		{
+			var add = _Stream_toUint8Array(bytes);
+			var rest = _Stream_carryRest(p);
+			var next = new Uint8Array((rest ? rest.length : 0) + add.length);
+			if (rest) next.set(rest, 0);
+			next.set(add, rest ? rest.length : 0);
+			p.__carry = next;
+			p.__carryPos = 0;
+		}
+		callback(__Scheduler_succeed(__Utils_Tuple0));
+	});
+});
+
+function _Stream_readImpl(id, callback, carryFirst)
+{
 		var p = _Stream_table[id];
 		if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CLOSED, ''));
 		if (_Stream_readLocked(p)) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_LOCKED, ''));
+		var carried = carryFirst ? _Stream_carryRest(p) : null;
+		if (carried)
+		{
+			p.__carry = null;
+			p.__carryPos = 0;
+			return _Stream_resumeNow(callback, __Scheduler_succeed(_Stream_toBytes(carried.slice())));
+		}
 		if (p.__kind === _Stream_K_MAPPED && !p.__readQ.length && p.__rawQ.length)
 		{
 			_Stream_mapHead(id);   // the chunk read ahead
@@ -2216,8 +2296,7 @@ var _Stream_read = function(id)
 			_Stream_channelRead(id, p.__channel, tok, _Stream_kChannelReadChunk);
 		}
 		_Stream_pump(id);   // mapped source: read-ahead and demand
-	});
-};
+}
 
 function _Stream_writeOrEnqueue(value, id, callback, isEnqueue)
 {

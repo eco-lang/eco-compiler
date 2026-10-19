@@ -23,19 +23,18 @@ A small body with `Expect: 100-continue` gets `100 Continue` first, then the pro
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Task exposing (Task)
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     let
         body =
             Server.bodyAsString request |> Maybe.withDefault "<invalid>"
     in
     ( [ Server.methodToString request.method ++ " " ++ request.url.path ++ " body " ++ body ]
-    , H.Now (response |> Response.setBody ("got " ++ String.fromInt (String.length body)))
+    , H.Now (response |> Server.setBody ("got " ++ String.fromInt (String.length body)))
     )
 
 

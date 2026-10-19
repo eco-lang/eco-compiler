@@ -15,7 +15,7 @@ import Process
 import Socket.Udp
 import SocketTestHelp as H
 import SocketUdpTestHelp as U
-import Stream.Log
+import Stream
 import System
 import Task exposing (Task)
 
@@ -41,9 +41,9 @@ send ( a, b ) text =
     U.sendText (Socket.Udp.localEndpoint b) text a
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, sockets = Nothing, received = Nothing, subscribed = Nothing }
@@ -121,7 +121,7 @@ check model cmd =
 report : Model -> List String -> ( Model, Cmd Msg )
 report model lines =
     ( { model | sockets = Nothing }
-    , Stream.Log.line model.env.stdout (String.join "\n" lines)
+    , Stream.logLine (String.join "\n" lines) model.env.stdout
         |> Task.andThen
             (\_ ->
                 case model.sockets of

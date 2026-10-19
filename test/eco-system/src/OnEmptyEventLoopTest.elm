@@ -13,7 +13,7 @@ exits. The subscription stays active throughout.
 -- CHECK-NOT: fired: 3
 -- EXIT: 0
 
-import Stream.Log
+import Stream
 import System
 import Task
 
@@ -29,9 +29,9 @@ type alias Model =
     }
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = \env -> ( { env = env, fired = 0 }, Cmd.none )
         , update =
             \msg model ->
@@ -46,7 +46,7 @@ main =
                         in
                         ( { model | fired = fired }
                         , if fired == 1 then
-                            Task.perform (\_ -> Logged) (Stream.Log.line model.env.stdout "io from first fire")
+                            Task.perform (\_ -> Logged) (Stream.logLine "io from first fire" model.env.stdout)
 
                           else
                             Cmd.none

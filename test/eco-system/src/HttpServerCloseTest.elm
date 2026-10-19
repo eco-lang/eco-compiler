@@ -1,6 +1,6 @@
 module HttpServerCloseTest exposing (main)
 
-{-| `closeServer` (plans/eco-system-websockets.md §3.4 "closeServer", §4 WS2): the server stops
+{-| `close` (plans/eco-system-websockets.md §3.4 "close", §4 WS2): the server stops
 accepting at once (connecting is refused when the task completes), its idle keep-alive connection
 is closed, a request in flight is still answered (with `Connection: close`) and its connection
 then closed; a request that arrived at a server nobody subscribes to is answered 503. The port can
@@ -24,20 +24,19 @@ keep nothing alive.
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Socket.Address as Address exposing (Family(..))
 import Task exposing (Task)
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     let
         path =
             request.url.path
 
         reply =
-            response |> Response.setBody (String.dropLeft 1 path)
+            response |> Server.setBody (String.dropLeft 1 path)
     in
     ( [ Server.methodToString request.method ++ " " ++ path ]
     , if path == "/slow" then
@@ -62,7 +61,7 @@ client : Server.Server -> Task String (List String)
 client server =
     let
         options =
-            Server.defaultServerOptions (Address.loopback IPv4) 0
+            Server.defaultListenOptions (Address.loopback IPv4) 0
     in
     H.connect server
         |> Task.andThen
@@ -74,7 +73,7 @@ client server =
                                 |> Task.andThen
                                     (\busy ->
                                         H.sendRaw (get "/slow") busy
-                                            |> Task.andThen (\_ -> Server.createServerWith options |> Task.mapError (\(Server.ServerError e) -> e.code))
+                                            |> Task.andThen (\_ -> Server.listen options |> Task.mapError Server.errorCode)
                                             |> Task.andThen
                                                 (\unsubscribed ->
                                                     H.connect unsubscribed
@@ -82,8 +81,8 @@ client server =
                                                             (\parked ->
                                                                 H.sendRaw (get "/parked") parked
                                                                     |> Task.andThen (\_ -> H.sleep 250)
-                                                                    |> Task.andThen (\_ -> Server.closeServer server)
-                                                                    |> Task.andThen (\_ -> H.connectCode (Server.serverPort server))
+                                                                    |> Task.andThen (\_ -> Server.close server)
+                                                                    |> Task.andThen (\_ -> H.connectCode (Server.endpoint server).port_)
                                                                     |> Task.andThen
                                                                         (\refused ->
                                                                             H.closedOrNot "" idle
@@ -107,7 +106,7 @@ client server =
                                                                         )
                                                                     |> Task.andThen
                                                                         (\lines ->
-                                                                            Server.closeServer unsubscribed
+                                                                            Server.close unsubscribed
                                                                                 |> Task.andThen (\_ -> H.readResponses 1 parked)
                                                                                 |> Task.andThen
                                                                                     (\( resps, rest ) ->
@@ -122,12 +121,12 @@ client server =
             )
         |> Task.andThen
             (\lines ->
-                Server.createServerWith { options | port_ = Server.serverPort server }
-                    |> Task.andThen (\again -> Server.closeServer again |> Task.map (\_ -> "ok"))
-                    |> Task.onError (\(Server.ServerError e) -> Task.succeed (e.code ++ " " ++ e.message))
+                Server.listen { options | port_ = (Server.endpoint server).port_ }
+                    |> Task.andThen (\again -> Server.close again |> Task.map (\_ -> "ok"))
+                    |> Task.onError (\e -> Task.succeed (Server.errorToString e))
                     |> Task.andThen
                         (\reopened ->
-                            Server.closeServer server
+                            Server.close server
                                 |> Task.map (\_ -> lines ++ [ "listen again: " ++ reopened, "close twice: done" ])
                         )
             )

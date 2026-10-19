@@ -6,10 +6,10 @@ plans/eco-system-library.md §3.3.3 gate 3).
 The program starts a server on the harness's `ECO_TEST_PORT` and makes
 `max 50 (5 * numLoops)` sequential elm/http requests to itself. Each answer is a
 5,000-element page built with elm/html and sent with
-`Response.setBodyAsHtml`, so the respondHtml export's tuple allocations and the
+`Server.setBodyAsHtml`, so the respondHtml export's tuple allocations and the
 copy-out of a large tree (HtmlWriter inside the no-allocation scope) run under
 GC pressure. The client compares every body with `<!DOCTYPE html>` followed by
-`Http.Dom.toString` of the same page.
+`Html.Dom.htmlToString` of the same page.
 -}
 
 -- CHECK: EcoSystemHttpServerHtml: True
@@ -19,17 +19,16 @@ import Dict
 import Html exposing (Html, node, span, text)
 import Html.Attributes exposing (class, id)
 import Http
-import Http.Dom
+import Html.Dom
 import Http.Server as Server
-import Http.Server.Response as Response
 import StressHarness exposing (StressFlags)
 import System
 import Task exposing (Task)
 
 
 type Msg
-    = Started (Result Server.ServerError ( Server.Server, Int ))
-    | GotRequest Server.Request Response.Response
+    = Started (Result Server.Error ( Server.Server, Int ))
+    | GotRequest Server.Request Server.Response
     | Done Bool
 
 
@@ -51,7 +50,7 @@ page i =
 
 expected : Int -> String
 expected i =
-    "<!DOCTYPE html>" ++ Http.Dom.toString (page i)
+    "<!DOCTYPE html>" ++ Html.Dom.htmlToString (page i)
 
 
 one : String -> Int -> Task Never Bool
@@ -97,11 +96,11 @@ main =
         { init =
             \flags ->
                 ( { flags = flags, server = Nothing }
-                , System.getEnvironmentVariables
+                , System.environmentVariables
                     |> Task.map (Dict.get "ECO_TEST_PORT" >> Maybe.andThen String.toInt >> Maybe.withDefault 0)
                     |> Task.andThen
                         (\p ->
-                            Server.createServer { host = "127.0.0.1", port_ = p }
+                            Server.listenOnHost "127.0.0.1" p
                                 |> Task.map (\s -> ( s, p ))
                         )
                     |> Task.attempt Started
@@ -134,8 +133,8 @@ update msg model =
             in
             ( model
             , response
-                |> Response.setBodyAsHtml (page index)
-                |> Response.send
+                |> Server.setBodyAsHtml (page index)
+                |> Server.send
             )
 
         Done ok ->

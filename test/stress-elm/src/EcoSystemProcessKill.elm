@@ -16,7 +16,7 @@ let it exit early.
 import Bytes
 import Process
 import StressHarness exposing (StressFlags)
-import System.Process as P
+import ChildProcess as P
 import Task exposing (Task)
 
 

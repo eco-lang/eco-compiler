@@ -3,7 +3,7 @@ module HttpServerKeepAliveTest exposing (main)
 {-| HTTP/1.1 keep-alive (plans/eco-system-websockets.md §3.4, §4 WS2): two requests on one
 connection, each answered with `Connection: keep-alive`, the connection staying open between them;
 an HTTP/1.0 request is answered with `Connection: close` unless it asks for keep-alive; the
-user's `Connection: close` header closes the connection after the response. `serverPort` is the
+user's `Connection: close` header closes the connection after the response. `endpoint` is the
 port the system picked for port 0.
 -}
 
@@ -23,7 +23,6 @@ port the system picked for port 0.
 -- EXIT: 0
 
 import Http.Server as Server exposing (HttpVersion(..))
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Task exposing (Task)
 
@@ -41,14 +40,14 @@ version v =
             "Http2"
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     let
         path =
             request.url.path
 
         reply =
-            response |> Response.setBody (String.dropLeft 1 path)
+            response |> Server.setBody (String.dropLeft 1 path)
     in
     ( [ Server.methodToString request.method
             ++ " "
@@ -60,7 +59,7 @@ handler _ request response =
       ]
     , H.Now
         (if path == "/bye" then
-            reply |> Response.setHeader "Connection" "close"
+            reply |> Server.setHeader "Connection" "close"
 
          else
             reply
@@ -98,7 +97,7 @@ client server =
                     |> Task.andThen (H.exchange "GET /bye HTTP/1.1\u{000D}\nHost: h\u{000D}\n\u{000D}\n" 1 True)
                     |> Task.map (\more -> lines ++ List.map ((++) "user close: ") more)
             )
-        |> Task.map (\lines -> ("port nonzero: " ++ (if Server.serverPort server /= 0 then "True" else "False")) :: lines)
+        |> Task.map (\lines -> ("port nonzero: " ++ (if (Server.endpoint server).port_ /= 0 then "True" else "False")) :: lines)
 
 
 main =

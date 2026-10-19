@@ -3,7 +3,7 @@ module EcoSystemHttpServerKeepAlive exposing (main)
 {-| Stress program for `Http.Server` on the IoReactor (plans/eco-system-websockets.md §3.4, §4
 WS2; base plan §3.3.3 gate 3).
 
-The program creates a server with `createServerWith` (port 0) and subscribes to it, then runs
+The program creates a server with `listen` (port 0) and subscribes to it, then runs
 `max 1 numLoops` waves (`-n 10`: 10 waves, 400 connections, 3 200 requests) of 40 concurrent
 keep-alive clients over raw `Socket.Tcp` connections. Every client sends 8 requests on its one
 connection, two of them pipelined in each even round, each with a different path, header and
@@ -20,19 +20,19 @@ import Bytes.Decode as D
 import Bytes.Encode as E
 import Dict
 import Http.Server as Server
-import Http.Server.Response as Response
 import Process
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
 import Task exposing (Task)
 
 
 type Msg
-    = Started (Result Server.ServerError Server.Server)
-    | GotRequest Server.Request Response.Response
+    = Started (Result Server.Error Server.Server)
+    | GotRequest Server.Request Server.Response
     | Done Bool
     | Closed
 
@@ -50,7 +50,7 @@ main =
         { init =
             \flags ->
                 ( { flags = flags, server = Nothing, closed = False }
-                , Server.createServerWith (Server.defaultServerOptions (Address.loopback IPv4) 0)
+                , Server.listen (Server.defaultListenOptions (Address.loopback IPv4) 0)
                     |> Task.attempt Started
                 )
         , update = update
@@ -88,9 +88,9 @@ update msg model =
             in
             ( model
             , response
-                |> Response.setStatus (statusFor index)
-                |> Response.setBodyAsBytes (toBytes reply)
-                |> Response.send
+                |> Server.setStatus (statusFor index)
+                |> Server.setBodyAsBytes (toBytes reply)
+                |> Server.send
             )
 
         Done ok ->
@@ -100,7 +100,7 @@ update msg model =
             in
             case model.server of
                 Just server ->
-                    ( { model | closed = True }, Task.perform (\_ -> Closed) (Server.closeServer server) )
+                    ( { model | closed = True }, Task.perform (\_ -> Closed) (Server.close server) )
 
                 Nothing ->
                     ( model, Cmd.none )
@@ -139,16 +139,16 @@ run server flags =
 
 async : Task Never a -> Task x (Task Never (Maybe a))
 async task =
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
                 Process.spawn
                     (task
-                        |> Task.andThen (\v -> Stream.write v (Stream.writable t) |> Task.map (\_ -> ()) |> Task.onError (\_ -> Task.succeed ()))
+                        |> Task.andThen (\v -> Stream.write v (Stream.Transformation.writable t) |> Task.map (\_ -> ()) |> Task.onError (\_ -> Task.succeed ()))
                     )
                     |> Task.map
                         (\_ ->
-                            Stream.read (Stream.readable t)
+                            Stream.read (Stream.Transformation.readable t)
                                 |> Task.map Just
                                 |> Task.onError (\_ -> Task.succeed Nothing)
                         )
@@ -205,7 +205,7 @@ requestOf w j r =
 
 client : Server.Server -> Int -> Int -> Task Never Bool
 client server w j =
-    Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) (Server.serverPort server))
+    Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) ((Server.endpoint server).port_))
         |> Task.mapError (\_ -> "connect")
         |> Task.andThen (\conn -> rounds w j conn 0 "" |> Task.andThen (\ok -> Socket.close conn |> Task.map (\_ -> ok)))
         |> Task.onError (\_ -> Task.succeed False)

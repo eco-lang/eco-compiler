@@ -14,14 +14,13 @@ latest first (3 ms apart); each response reaches its own stream, and they end in
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerH2Help as H
 import Task exposing (Task)
 
 
-handler : Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : Server.Request -> Server.Response -> ( List String, H.Answer )
 handler request response =
-    ( [], H.HoldReverse 100 (response |> Response.setBody ("c" ++ String.dropLeft 3 request.url.path)) )
+    ( [], H.HoldReverse 100 (response |> Server.setBody ("c" ++ String.dropLeft 3 request.url.path)) )
 
 
 client : H.Tools -> List Server.Server -> Task String (List String)

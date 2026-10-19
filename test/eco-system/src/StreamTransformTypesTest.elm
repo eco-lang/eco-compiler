@@ -14,6 +14,7 @@ annotations had the two parameters the wrong way round.
 
 import Bytes exposing (Bytes)
 import Stream
+import Stream.Transformation
 import StreamCodecHelp exposing (hex)
 import StreamTestHelp
 import System
@@ -25,11 +26,11 @@ encodeOne t =
     let
         input : Stream.Writable String
         input =
-            Stream.writable t
+            Stream.Transformation.writable t
 
         output : Stream.Readable Bytes
         output =
-            Stream.readable t
+            Stream.Transformation.readable t
     in
     Stream.write "hé" input
         |> Task.andThen Stream.closeWritable
@@ -37,11 +38,11 @@ encodeOne t =
         |> Task.map hex
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
-            Stream.textEncoder
+            Stream.Transformation.textEncoder
                 |> Task.andThen encodeOne
                 |> Task.map (\r -> [ "encoded: " ++ r ])
         )

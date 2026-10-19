@@ -22,9 +22,9 @@ import Socket.Tls
 import Socket.Udp
 import Socket.Unix
 import Dict
-import Stream.Log
+import Stream
 import System
-import System.File.Path as Path
+import Path
 import Task exposing (Task)
 
 
@@ -97,7 +97,7 @@ defaultsLine =
 
 testPort : Task x Int
 testPort =
-    System.getEnvironmentVariables
+    System.environmentVariables
         |> Task.map (Dict.get "ECO_TEST_PORT" >> Maybe.andThen String.toInt >> Maybe.withDefault 9)
 
 
@@ -108,12 +108,11 @@ outcome label task =
         |> Task.onError (\e -> Task.succeed (label ++ ": " ++ Socket.errorCode e))
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (testPort
+            (testPort
                     |> Task.andThen
                         (\freePort ->
                             Task.map3 (\a b c -> [ a, b, c ])
@@ -126,8 +125,7 @@ main =
                         )
                     |> Task.andThen
                         (\lines ->
-                            Stream.Log.line env.stdout
-                                (String.join "\n" (addressLines ++ defaultsLine :: lines))
+                            Stream.logLine (String.join "\n" (addressLines ++ defaultsLine :: lines)) env.stdout
                         )
                 )
         )

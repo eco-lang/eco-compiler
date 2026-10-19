@@ -1,7 +1,7 @@
-//===- WatchService.hpp - File system watcher thread for System.File -----===//
+//===- WatchService.hpp - File system watcher thread for FileSystem -----===//
 //
 // plans/eco-system-library.md Phase 4 step 4.5 / §3.8: the service behind
-// `System.File.watch` / `watchRecursive`.
+// `FileSystem.watch` / `watchRecursive`.
 //
 //   * Linux: one inotify instance read by one detached thread. The thread
 //     only reads raw (wd, mask, name) records and queues them; every mapping
@@ -21,7 +21,7 @@
 // node's fs.watch: IN_ATTRIB/IN_MODIFY are "change", every create, delete
 // or move is "rename" (libuv's mapping).
 //
-// The service holds no pendingAsync count itself: the System.File manager
+// The service holds no pendingAsync count itself: the FileSystem manager
 // holds one per active watch (§3.4 keep-alive rule).
 //
 // Templates used: none (POD only, G1).

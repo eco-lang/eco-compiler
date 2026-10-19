@@ -10,8 +10,8 @@ step 5.4, E.4).
 -- CHECK: notexec: InitError EACCES program=/dev/null args=
 -- EXIT: 0
 
+import ChildProcess as P
 import ProcessTestHelp exposing (describeRun, noShell, simpleRun)
-import System.Process as P
 
 
 main =

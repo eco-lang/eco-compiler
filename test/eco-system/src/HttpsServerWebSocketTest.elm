@@ -1,6 +1,6 @@
 module HttpsServerWebSocketTest exposing (main)
 
-{-| `Http.Server.upgradeRequest` over HTTPS: `wss` through `createServerWith` with `tls`
+{-| `Http.Server.upgradeRequest` over HTTPS: `wss` through `listen` with `tls`
 (plans/eco-system-websockets.md §3.5, §4 WS5), the test CA on the client side.
 
   - A raw TLS client pipelines a GET (answered after 300 ms), an opening request and a frame:
@@ -8,7 +8,7 @@ module HttpsServerWebSocketTest exposing (main)
     past the request reaches the WebSocket over TLS). Nothing but frames follows the 101.
   - A `wss://localhost` client (`WebSocket.connect`): echo, an ordinary https request while it
     is open, and the close handshake.
-  - `closeServer` leaves the upgraded `wss` WebSocket open.
+  - `close` leaves the upgraded `wss` WebSocket open.
 
 -}
 

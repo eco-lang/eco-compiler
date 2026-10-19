@@ -6,7 +6,7 @@ module HttpServerWebSocketHelp exposing
 {-| Shared helpers for the `Http.Server.upgradeRequest` tests (not a test: no `main`;
 plans/eco-system-websockets.md §4 WS5).
 
-The program creates one server with `createServerWith` on 127.0.0.1, port 0 (with TLS when
+The program creates one server with `listen` on 127.0.0.1, port 0 (with TLS when
 asked), answers ordinary requests itself and upgrades every request whose `upgrade` is
 `Just "websocket"` (except `/declined`, answered 426) with `Http.Server.upgradeRequest`, then:
 
@@ -24,8 +24,7 @@ and then the client's lines are printed, and the program exits.
 
 import Bytes exposing (Bytes)
 import Bytes.Encode as E
-import Http.Server as Server exposing (HttpVersion(..), Request, Server)
-import Http.Server.Response as Response exposing (Response)
+import Http.Server as Server exposing (HttpVersion(..), Request, Server, Response)
 import HttpServerRawHelp as H
 import Process
 import Socket
@@ -33,7 +32,7 @@ import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
 import Socket.Tls
 import SocketTlsHelp as T
-import Stream.Log
+import Stream
 import System
 import Task exposing (Task)
 import TlsFixtures as Fx
@@ -48,7 +47,7 @@ type alias Config =
 
 
 type Msg
-    = Started (Result Server.ServerError Server)
+    = Started (Result Server.Error Server)
     | GotRequest Request Response
     | SendLater Response
     | Upgraded String Request Response (Result Socket.Error WebSocket.Upgrade)
@@ -66,13 +65,13 @@ type alias Model =
     }
 
 
-program : Config -> System.Program Model Msg
+program : Config -> Platform.Program System.Environment Model Msg
 program config =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, server = Nothing, lines = [], running = 0, client = Nothing }
-                , Server.defaultServerOptions (Address.loopback IPv4) 0
+                , Server.defaultListenOptions (Address.loopback IPv4) 0
                     |> (\o ->
                             if config.tls then
                                 { o | tls = Just (T.server []) }
@@ -80,7 +79,7 @@ program config =
                             else
                                 o
                        )
-                    |> Server.createServerWith
+                    |> Server.listen
                     |> Task.attempt Started
                 )
         , update = update config
@@ -115,7 +114,7 @@ targetOf request =
 
 schemeOf : Request -> String
 schemeOf request =
-    if String.contains " https://" (Server.requestInfo request) then
+    if String.contains " https://" (Server.requestToString request) then
         "https"
 
     else
@@ -135,9 +134,9 @@ update config msg model =
             , config.client server |> Task.attempt ClientDone
             )
 
-        Started (Err (Server.ServerError e)) ->
+        Started (Err e) ->
             ( model
-            , Task.perform (\_ -> Exit) (Stream.Log.line model.env.stdout ("server error: " ++ e.code ++ " " ++ e.message))
+            , Task.perform (\_ -> Exit) (Stream.logLine ("server error: " ++ Server.errorToString e) model.env.stdout)
             )
 
         GotRequest request response ->
@@ -148,10 +147,10 @@ update config msg model =
             if request.url.path == "/declined" then
                 ( model
                 , response
-                    |> Response.setStatus 426
-                    |> Response.setHeader "Upgrade" "websocket"
-                    |> Response.setBody "declined"
-                    |> Response.send
+                    |> Server.setStatus 426
+                    |> Server.setHeader "Upgrade" "websocket"
+                    |> Server.setBody "declined"
+                    |> Server.send
                 )
 
             else if request.upgrade == Just "websocket" then
@@ -163,7 +162,7 @@ update config msg model =
                 )
 
             else if request.url.path == "/slow" then
-                ( model, Process.sleep 300 |> Task.perform (\_ -> SendLater (response |> Response.setBody "slow")) )
+                ( model, Process.sleep 300 |> Task.perform (\_ -> SendLater (response |> Server.setBody "slow")) )
 
             else if request.url.path == "/plain" then
                 ( { model | running = model.running + 1 }
@@ -172,21 +171,21 @@ update config msg model =
                         |> Task.map (\_ -> "upgraded?")
                         |> Task.onError (\e -> Task.succeed (errorString e))
                         |> Task.perform (\r -> ServerDone [ "not an upgrade " ++ target ++ ": " ++ r ])
-                    , response |> Response.setBody "plain" |> Response.send
+                    , response |> Server.setBody "plain" |> Server.send
                     ]
                 )
 
             else
-                ( model, response |> Response.setBody (String.dropLeft 1 request.url.path) |> Response.send )
+                ( model, response |> Server.setBody (String.dropLeft 1 request.url.path) |> Server.send )
 
         SendLater response ->
-            ( model, Response.send response )
+            ( model, Server.send response )
 
         Upgraded target request response (Ok up) ->
             ( { model | lines = model.lines ++ [ "taken " ++ target ++ ": upgradeTarget " ++ WebSocket.upgradeTarget up ] }
             , Cmd.batch
                 [ -- The Response was used up by upgradeRequest: this must write nothing.
-                  response |> Response.setBody "after upgrade" |> Response.send
+                  response |> Server.setBody "after upgrade" |> Server.send
                 , Server.upgradeRequest request response
                     |> Task.map (\_ -> "taken twice?")
                     |> Task.onError (\e -> Task.succeed (errorString e))
@@ -224,12 +223,11 @@ maybeFinish model =
         Just clientLines ->
             if model.running <= 0 then
                 ( model
-                , Stream.Log.line model.env.stdout
-                    (String.join "\n"
+                , Stream.logLine (String.join "\n"
                         (List.map ((++) "server: ") (List.sort model.lines)
                             ++ List.map ((++) "client: ") clientLines
                         )
-                    )
+                    ) model.env.stdout
                     |> Task.perform (\_ -> Exit)
                 )
 
@@ -261,7 +259,7 @@ tcp =
 tlsRaw : Server -> Task String Socket.Connection
 tlsRaw server =
     Socket.Tls.connect (T.trusted "localhost" [])
-        (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) (Server.serverPort server))
+        (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) ((Server.endpoint server).port_))
         |> Task.mapError Socket.errorToString
 
 
@@ -452,7 +450,7 @@ declined server =
 
 wsUrl : String -> Server -> String -> String
 wsUrl scheme server path =
-    scheme ++ "://localhost:" ++ String.fromInt (Server.serverPort server) ++ path
+    scheme ++ "://localhost:" ++ String.fromInt ((Server.endpoint server).port_) ++ path
 
 
 connectWs : String -> Server -> String -> Task String (WebSocket.WebSocket WebSocket.Whole)
@@ -467,7 +465,7 @@ closeWs : WebSocket.WebSocket WebSocket.Whole -> Task String WebSocket.CloseInfo
 closeWs ws =
     WebSocket.close WebSocket.Normal "" ws
         |> Task.mapError W.wsErr
-        |> Task.andThen (\_ -> WebSocket.closed ws)
+        |> Task.andThen (\_ -> WebSocket.awaitClose ws)
 
 
 {-| A `WebSocket.connect` client (`ws` or `wss`): echo of a text and a binary message; while it
@@ -502,9 +500,9 @@ keptCase scheme server =
     connectWs scheme server "/kept"
         |> Task.andThen
             (\ws ->
-                Server.closeServerWithin 100 server
+                Server.closeWithin 100 server
                     |> Task.andThen (\_ -> H.sleep 500)
-                    |> Task.andThen (\_ -> H.connectCode (Server.serverPort server))
+                    |> Task.andThen (\_ -> H.connectCode ((Server.endpoint server).port_))
                     |> Task.andThen
                         (\code ->
                             W.sendAll [ W.text "still open" ] ws

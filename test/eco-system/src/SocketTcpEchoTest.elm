@@ -17,7 +17,7 @@ itself.
 
 import Socket
 import SocketTestHelp as H
-import Stream.Log
+import Stream
 import System
 import Task
 
@@ -39,9 +39,9 @@ type alias Model =
     }
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, listener = Nothing, client = Nothing, server = Nothing, lines = [] }
@@ -124,7 +124,7 @@ check model =
 finish : Model -> ( Model, Cmd Msg )
 finish model =
     ( { model | listener = Nothing }
-    , Stream.Log.line model.env.stdout (String.join "\n" model.lines)
+    , Stream.logLine (String.join "\n" model.lines) model.env.stdout
         |> Task.andThen
             (\_ ->
                 case model.listener of

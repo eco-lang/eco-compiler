@@ -1,6 +1,6 @@
 module FileCopyMoveTest exposing (main)
 
-{-| `System.File.copyFile` and `move` (plans/eco-system-library.md Phase 4
+{-| `FileSystem.copyFile` and `move` (plans/eco-system-library.md Phase 4
 step 4.6, Appendix E.3): gren's argument order (`copyFile dest src`,
 `move new old`), copy overwrites, both succeed with the destination and report
 the destination in `errorPath`; `realPath` of a relative path is absolute.
@@ -20,10 +20,10 @@ the destination in `errorPath`; `realPath` of a relative path is absolute.
 -- CHECK: realpath-dir: ok True
 -- EXIT: 0
 
+import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file, fromBytes)
+import Path
 import System
-import System.File as File
-import System.File.Path as Path
 import Task
 
 
@@ -32,7 +32,7 @@ label name =
     Task.map (\s -> name ++ ": " ++ s)
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

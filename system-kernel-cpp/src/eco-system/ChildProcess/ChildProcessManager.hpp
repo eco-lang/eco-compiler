@@ -1,7 +1,7 @@
-//===- ChildProcessManager.hpp - The C++ effect manager of System.Process -===//
+//===- ChildProcessManager.hpp - The C++ effect manager of ChildProcess -===//
 //
 // plans/eco-system-library.md §3.6, Appendix C.3 (manager key
-// "System.Process") and Phase 5 step 5.2. The Elm declaration lives in
+// "ChildProcess") and Phase 5 step 5.2. The Elm declaration lives in
 // system-kernel-cpp/src/System/Process.elm, section "EFFECT MANAGER":
 //
 //     type MyCmd msg
@@ -48,7 +48,7 @@ constexpr int64_t CONN_DETACHED = 3;
 extern "C" {
 // Called from the compiler-emitted @__eco_register_ports preamble (§3.6);
 // returns `()` as the `!eco.value` result (T6).
-uint64_t Eco_System_registerManager_System_Process();
+uint64_t Eco_System_registerManager_ChildProcess();
 }
 
 #endif // ECO_SYSTEM_CHILD_PROCESS_CHILD_PROCESS_MANAGER_HPP

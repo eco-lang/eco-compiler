@@ -114,6 +114,33 @@ uint64_t Eco_Kernel_Stream_read(int64_t id) {
     )
 }
 
+// readChunk : Int -> Task SErr Bytes (read without the readLine carry, D18)
+uint64_t Eco_Kernel_Stream_readChunk(int64_t id) {
+    ECO_KERNEL_GUARD(
+        HPointer payload = alloc::allocInt(id);
+        return enc(makeAsyncBinding<streamReadChunkBody>(payload));
+    )
+}
+
+// carryLine : Bool -> Int -> Task Never (Maybe Bytes) — the Bool is packed as a 0/1 Int.
+uint64_t Eco_Kernel_Stream_carryLine(uint64_t atEnd, int64_t id) {
+    ECO_KERNEL_GUARD(
+        int64_t end = Export::decodeBoxedBool(atEnd) ? 1 : 0;
+        HPointer payload = alloc::tuple2(alloc::unboxedInt(end), alloc::unboxedInt(id), 0x5);
+        return enc(makeBinding<streamCarryLineBody>(payload));
+    )
+}
+
+// carryAppend : Bytes -> Int -> Task Never ()
+uint64_t Eco_Kernel_Stream_carryAppend(uint64_t bytes, int64_t id) {
+    ECO_KERNEL_GUARD(
+        HPointer b = dec(bytes);
+        Elm::StackRootGuard g(&b);
+        HPointer payload = alloc::tuple2(alloc::boxed(b), alloc::unboxedInt(id), 0x4);
+        return enc(makeBinding<streamCarryAppendBody>(payload));
+    )
+}
+
 // write : a -> Int -> Task SErr ()
 uint64_t Eco_Kernel_Stream_write(uint64_t value, int64_t id) {
     ECO_KERNEL_GUARD(

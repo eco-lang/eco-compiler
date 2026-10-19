@@ -13,6 +13,7 @@ reader has taken all but the buffered one.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamCodecHelp exposing (readAll)
 import StreamTestHelp exposing (describe, logEvent, sleep, spawnLogged)
 import System
@@ -21,13 +22,13 @@ import Task exposing (Task)
 
 buffered : Task Stream.Error String
 buffered =
-    Task.map2 Tuple.pair (Stream.fromList [ 1, 2, 3, 4, 5 ]) (Stream.identityTransformationWithOptions { readCapacity = 10, writeCapacity = 10 })
+    Task.map2 Tuple.pair (Stream.fromList [ 1, 2, 3, 4, 5 ]) (Stream.Transformation.identityWith { readCapacity = 10, writeCapacity = 10 })
         |> Task.andThen
             (\( source, dst ) ->
-                describe (Stream.pipeTo (Stream.writable dst) source)
+                describe (Stream.pipeTo (Stream.Transformation.writable dst) source)
                     |> Task.andThen
                         (\piped ->
-                            readAll (Stream.readable dst)
+                            readAll (Stream.Transformation.readable dst)
                                 |> Task.map (\values -> piped ++ " | " ++ String.join "," (List.map String.fromInt values) ++ " closed")
                         )
             )
@@ -38,17 +39,17 @@ backpressure =
     Task.map3 (\log source dst -> ( log, source, dst ))
         StreamTestHelp.eventLog
         (Stream.fromList [ "a", "b", "c" ])
-        Stream.identityTransformation
+        Stream.Transformation.identity
         |> Task.andThen
             (\( log, source, dst ) ->
                 let
                     r =
-                        Stream.readable dst
+                        Stream.Transformation.readable dst
 
                     readLogged label =
                         Stream.read r |> Task.andThen (\_ -> sleep) |> Task.andThen (\_ -> logEvent log label)
                 in
-                spawnLogged log "pipe" (Stream.pipeTo (Stream.writable dst) source)
+                spawnLogged log "pipe" (Stream.pipeTo (Stream.Transformation.writable dst) source)
                     |> Task.andThen (\_ -> sleep)
                     |> Task.andThen (\_ -> readLogged "r1")
                     |> Task.andThen (\_ -> readLogged "r2")
@@ -63,7 +64,7 @@ backpressure =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->

@@ -13,6 +13,7 @@ write lock; w4 fails with `Locked`. Each read releases exactly one writer.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamTestHelp exposing (logEvent, sleep, spawnLogged)
 import System
 import Task
@@ -23,19 +24,19 @@ ints values =
     String.join "," (List.map String.fromInt values)
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
-            Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.identityTransformationWithOptions { readCapacity = 1, writeCapacity = 1 })
+            Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.Transformation.identityWith { readCapacity = 1, writeCapacity = 1 })
                 |> Task.andThen
                     (\( log, t ) ->
                         let
                             w =
-                                Stream.writable t
+                                Stream.Transformation.writable t
 
                             r =
-                                Stream.readable t
+                                Stream.Transformation.readable t
                         in
                         StreamTestHelp.describe (Stream.write 1 w)
                             |> Task.andThen

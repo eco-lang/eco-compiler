@@ -25,6 +25,7 @@ module StreamCodecGzipTest exposing (main)
 import Bytes exposing (Bytes)
 import Bytes.Encode
 import Stream
+import Stream.Transformation
 import StreamCodecFixture
 import StreamCodecHelp exposing (base64ToBytes, bytesToString, concatBytes, readAll, splitBytes)
 import StreamTestHelp
@@ -57,7 +58,7 @@ roundTrip compressor decompressor =
 compressedSize : Task Stream.Error Int
 compressedSize =
     Stream.fromList [ Bytes.Encode.encode (Bytes.Encode.string data) ]
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.gzipCompression)
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.gzip)
         |> Task.andThen readAll
         |> Task.map (\chunks -> List.sum (List.map Bytes.width chunks))
 
@@ -65,7 +66,7 @@ compressedSize =
 failure : List Bytes -> Task x String
 failure input =
     Stream.fromList input
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.gzipDecompression)
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.gunzip)
         |> Task.andThen readAll
         |> StreamTestHelp.describe
 
@@ -79,17 +80,17 @@ bool b =
         "False"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
             Task.sequence
-                [ decompressFixture Stream.gzipDecompression StreamCodecFixture.gzipBase64 |> Task.map (\r -> "gzip fixture: " ++ r)
-                , decompressFixture Stream.deflateDecompression StreamCodecFixture.deflateBase64 |> Task.map (\r -> "deflate fixture: " ++ r)
-                , decompressFixture Stream.deflateRawDecompression StreamCodecFixture.deflateRawBase64 |> Task.map (\r -> "raw fixture: " ++ r)
-                , roundTrip Stream.gzipCompression Stream.gzipDecompression |> Task.map (\r -> "gzip round trip: " ++ r)
-                , roundTrip Stream.deflateCompression Stream.deflateDecompression |> Task.map (\r -> "deflate round trip: " ++ r)
-                , roundTrip Stream.deflateRawCompression Stream.deflateRawDecompression |> Task.map (\r -> "raw round trip: " ++ r)
+                [ decompressFixture Stream.Transformation.gunzip StreamCodecFixture.gzipBase64 |> Task.map (\r -> "gzip fixture: " ++ r)
+                , decompressFixture Stream.Transformation.inflate StreamCodecFixture.deflateBase64 |> Task.map (\r -> "deflate fixture: " ++ r)
+                , decompressFixture Stream.Transformation.inflateRaw StreamCodecFixture.deflateRawBase64 |> Task.map (\r -> "raw fixture: " ++ r)
+                , roundTrip Stream.Transformation.gzip Stream.Transformation.gunzip |> Task.map (\r -> "gzip round trip: " ++ r)
+                , roundTrip Stream.Transformation.deflate Stream.Transformation.inflate |> Task.map (\r -> "deflate round trip: " ++ r)
+                , roundTrip Stream.Transformation.deflateRaw Stream.Transformation.inflateRaw |> Task.map (\r -> "raw round trip: " ++ r)
                 , compressedSize |> Task.map (\n -> "gzip compresses: " ++ bool (n > 0 && n < 100000))
                 , failure [ Bytes.Encode.encode (Bytes.Encode.string "this is not gzip data") ] |> Task.map (\r -> "corrupt: " ++ r)
                 , failure (List.take 1 (splitBytes 1000 (base64ToBytes StreamCodecFixture.gzipBase64))) |> Task.map (\r -> "truncated: " ++ r)

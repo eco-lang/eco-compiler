@@ -22,7 +22,6 @@ the body.
 import Dict
 import Http
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerTestHelp as Help
 import System
 import Task
@@ -34,7 +33,7 @@ handler request response =
         header name =
             Dict.get name request.headers |> Maybe.withDefault "-"
     in
-    ( [ Server.requestInfo request
+    ( [ Server.requestToString request
       , "method "
             ++ Server.methodToString request.method
             ++ " path "
@@ -47,12 +46,12 @@ handler request response =
       , "body " ++ (Server.bodyAsString request |> Maybe.withDefault "<invalid>")
       ]
     , response
-        |> Response.setStatus 201
-        |> Response.setHeader "X-Reply" "no"
-        |> Response.setHeader "X-Reply" "yes"
-        |> Response.appendHeader "X-Multi" "a"
-        |> Response.appendHeader "X-Multi" "b"
-        |> Response.setBody "pong"
+        |> Server.setStatus 201
+        |> Server.setHeader "X-Reply" "no"
+        |> Server.setHeader "X-Reply" "yes"
+        |> Server.appendHeader "X-Multi" "a"
+        |> Server.appendHeader "X-Multi" "b"
+        |> Server.setBody "pong"
     )
 
 
@@ -78,6 +77,6 @@ client base =
             )
 
 
-main : System.Program Help.Model Help.Msg
+main : Platform.Program System.Environment Help.Model Help.Msg
 main =
     Help.program { handler = handler, client = client }

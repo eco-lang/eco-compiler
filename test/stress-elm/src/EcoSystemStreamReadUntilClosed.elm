@@ -13,6 +13,7 @@ table at once) with `readUntilClosed`.
 
 import Process
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
 import Task exposing (Task)
 
@@ -28,11 +29,11 @@ writeFrom i n w =
 
 sumThroughStream : Int -> Task Stream.Error Int
 sumThroughStream n =
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
-                Process.spawn (writeFrom 1 n (Stream.writable t) |> Task.onError (\_ -> Task.succeed ()))
-                    |> Task.andThen (\_ -> Stream.readUntilClosed (\v acc -> Ok (acc + v)) 0 (Stream.readable t))
+                Process.spawn (writeFrom 1 n (Stream.Transformation.writable t) |> Task.onError (\_ -> Task.succeed ()))
+                    |> Task.andThen (\_ -> Stream.readUntilClosed (\v acc -> Ok (acc + v)) 0 (Stream.Transformation.readable t))
             )
 
 

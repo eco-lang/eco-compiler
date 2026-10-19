@@ -25,7 +25,7 @@ client : H.Tools -> List Server.Server -> Task String (List String)
 client tools servers =
     case servers of
         server :: _ ->
-            H.node tools (Server.serverPort server) "many" [ "50", "10" ]
+            H.node tools ((Server.endpoint server).port_) "many" [ "50", "10" ]
 
         [] ->
             Task.fail "no server"

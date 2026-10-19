@@ -1,6 +1,6 @@
 module Utf8StrictTest exposing (main)
 
-{-| `readBytesAsString` decodes strictly (plans/eco-system-library.md §3.5,
+{-| `readString` decodes strictly (plans/eco-system-library.md §3.5,
 B5): valid UTF-8 converts; overlong encodings, encoded surrogates, stray
 continuation bytes and truncated sequences fail with `Cancelled`, and the
 stream is cancelled (a later read gets `Closed`).
@@ -19,6 +19,7 @@ stream is cancelled (a later read gets `Closed`).
 import Bytes exposing (Bytes)
 import Bytes.Encode as E
 import Stream
+import Stream.Transformation
 import StreamTestHelp
 import System
 import Task exposing (Task)
@@ -31,11 +32,11 @@ bytesOf ints =
 
 convert : Bytes -> Task Stream.Error String
 convert bytes =
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
-                Stream.write bytes (Stream.writable t)
-                    |> Task.andThen (\_ -> Stream.readBytesAsString (Stream.readable t))
+                Stream.write bytes (Stream.Transformation.writable t)
+                    |> Task.andThen (\_ -> Stream.readString (Stream.Transformation.readable t))
             )
 
 
@@ -45,7 +46,7 @@ describeString task =
         |> Task.onError (\err -> Task.succeed ("err " ++ Stream.errorToString err))
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
@@ -56,13 +57,13 @@ main =
                 , convert (bytesOf [ 0x61, 0x80 ]) |> describeString |> Task.map ((++) "continuation: ")
                 , convert (bytesOf [ 0xE2, 0x82 ]) |> describeString |> Task.map ((++) "truncated: ")
                 , convert (bytesOf [ 0xF4, 0x90, 0x80, 0x80 ]) |> describeString |> Task.map ((++) "above max: ")
-                , Stream.identityTransformation
+                , Stream.Transformation.identity
                     |> Task.andThen
                         (\t ->
-                            Stream.write (bytesOf [ 0xFF ]) (Stream.writable t)
-                                |> Task.andThen (\_ -> Stream.readBytesAsString (Stream.readable t))
+                            Stream.write (bytesOf [ 0xFF ]) (Stream.Transformation.writable t)
+                                |> Task.andThen (\_ -> Stream.readString (Stream.Transformation.readable t))
                                 |> Task.onError (\_ -> Task.succeed "")
-                                |> Task.andThen (\_ -> StreamTestHelp.describe (Stream.read (Stream.readable t)))
+                                |> Task.andThen (\_ -> StreamTestHelp.describe (Stream.read (Stream.Transformation.readable t)))
                         )
                     |> Task.map ((++) "after failure: ")
                 , convert (bytesOf []) |> describeString |> Task.map (\s -> "empty: <" ++ s ++ ">")

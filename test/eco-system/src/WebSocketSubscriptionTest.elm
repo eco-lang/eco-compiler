@@ -26,7 +26,6 @@ import Process
 import Socket
 import SocketTestHelp as H
 import Stream
-import Stream.Log
 import System
 import Task exposing (Task)
 import WebSocket exposing (WebSocket, Whole)
@@ -61,9 +60,9 @@ type alias Model =
     }
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, listener = Nothing, server = Nothing, client = Nothing, sub1 = False, sub2 = False, closeSub = False, closeSeen = 0, log = [] }
@@ -195,7 +194,7 @@ update msg model =
                 ( Just s, Just c ) ->
                     WebSocket.close WebSocket.Normal "end" s
                         |> Task.onError (\_ -> Task.succeed ())
-                        |> Task.andThen (\_ -> WebSocket.closed c)
+                        |> Task.andThen (\_ -> WebSocket.awaitClose c)
                         |> Task.perform Closed
 
                 _ ->
@@ -260,7 +259,7 @@ start model =
 finish : Model -> ( Model, Cmd Msg )
 finish model =
     ( { model | sub1 = False, sub2 = False, closeSub = False, client = Nothing }
-    , Stream.Log.line model.env.stdout (String.join "\n" model.log)
+    , Stream.logLine (String.join "\n" model.log) model.env.stdout
         |> Task.andThen
             (\_ ->
                 case model.listener of

@@ -38,13 +38,17 @@ namespace Eco::System {
 // channel thread after construction.
 struct FdChannelOptions {
     // >= 0: the channel reads at most this many bytes in total and then
-    // reports EOF (System.File.readFileStream `Between`, inclusive end).
+    // reports EOF (FileSystem.readFileStream `Between`, inclusive end).
     int64_t readLimit = -1;
     // On a graceful close(), truncate the file to the current file offset
-    // before closing the fd (System.File.writeFileStream `ReplaceFrom`:
+    // before closing the fd (FileSystem.writeFileStream `ReplaceFrom`:
     // the file ends at the start position plus the bytes written). An
     // ftruncate failure is reported as the close error.
     bool truncateOnClose = false;
+    // On a graceful close(), fsync the fd before closing it
+    // (FileSystem.writeFileStreamWith `sync`, plans/eco-system-api-refactor.md
+    // D12). An fsync failure is reported as the close error.
+    bool syncOnClose = false;
 };
 
 class FdChannel final : public ByteChannel {

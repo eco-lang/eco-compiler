@@ -17,8 +17,9 @@ exactly-once pendingAsync release (a leak would keep the program alive).
 import Bytes
 import Process
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
-import System.Process as P
+import ChildProcess as P
 import Task exposing (Task)
 
 
@@ -86,7 +87,7 @@ cycle size i =
         total =
             List.length jobs
     in
-    Stream.identityTransformationWithOptions { readCapacity = 100, writeCapacity = 100 }
+    Stream.Transformation.identityWith { readCapacity = 100, writeCapacity = 100 }
         |> Task.andThen
             (\log ->
                 jobs
@@ -96,14 +97,14 @@ cycle size i =
                                 (job
                                     |> Task.andThen
                                         (\ok ->
-                                            Stream.enqueue ok (Stream.writable log)
+                                            Stream.enqueue ok (Stream.Transformation.writable log)
                                                 |> Task.map (\_ -> ())
                                                 |> Task.onError (\_ -> Task.succeed ())
                                         )
                                 )
                         )
                     |> Task.sequence
-                    |> Task.andThen (\_ -> readN total (Stream.readable log) True)
+                    |> Task.andThen (\_ -> readN total (Stream.Transformation.readable log) True)
             )
         |> Task.onError (\_ -> Task.succeed False)
 

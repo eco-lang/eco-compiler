@@ -18,63 +18,64 @@ lock checks use a source that stays open.)
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamCodecHelp exposing (readAll)
 import StreamTestHelp exposing (describe)
 import System
 import Task exposing (Task)
 
 
-upper : () -> String -> Stream.CustomTransformationAction () String
+upper : () -> String -> Stream.Transformation.CustomAction () String
 upper state value =
-    Stream.Send { state = state, send = [ String.toUpper value ] }
+    Stream.Transformation.Send { state = state, send = [ String.toUpper value ] }
 
 
 chain : Task Stream.Error String
 chain =
     Stream.fromList [ "a", "b", "c", "d", "e" ]
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.identityTransformation)
-        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.customTransformation upper ()))
-        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.identityTransformationWithOptions { readCapacity = 2, writeCapacity = 3 }))
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.identity)
+        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.Transformation.custom upper ()))
+        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.Transformation.identityWith { readCapacity = 2, writeCapacity = 3 }))
         |> Task.andThen readAll
         |> Task.map (\values -> String.join "," values ++ " closed")
 
 
-inc : () -> Int -> Stream.CustomTransformationAction () Int
+inc : () -> Int -> Stream.Transformation.CustomAction () Int
 inc state value =
-    Stream.Send { state = state, send = [ value + 1 ] }
+    Stream.Transformation.Send { state = state, send = [ value + 1 ] }
 
 
 rendezvousChain : Task Stream.Error String
 rendezvousChain =
     Stream.fromList [ 0, 1, 2, 3 ]
-        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.customTransformationWithOptions inc { initialState = (), readCapacity = 0, writeCapacity = 1 }))
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.identityTransformation)
+        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.Transformation.customWith inc { initialState = (), readCapacity = 0, writeCapacity = 1 }))
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.identity)
         |> Task.andThen readAll
         |> Task.map (\values -> String.join "," (List.map String.fromInt values) ++ " closed")
 
 
 locks : Task Stream.Error (List String)
 locks =
-    Task.map2 Tuple.pair Stream.identityTransformation Stream.identityTransformation
+    Task.map2 Tuple.pair Stream.Transformation.identity Stream.Transformation.identity
         |> Task.andThen
             (\( sourceT, t ) ->
                 let
                     source =
-                        Stream.readable sourceT
+                        Stream.Transformation.readable sourceT
                 in
                 Stream.pipeThrough t source
                     |> Task.andThen
                         (\_ ->
                             Task.map4 (\a b c d -> [ a, b, c, d ])
                                 (describe (Stream.read source))
-                                (describe (Stream.write "y" (Stream.writable t)))
-                                (describe (Stream.closeWritable (Stream.writable t)))
-                                (Stream.identityTransformation |> Task.andThen (\t2 -> describe (Stream.pipeThrough t2 source)))
+                                (describe (Stream.write "y" (Stream.Transformation.writable t)))
+                                (describe (Stream.closeWritable (Stream.Transformation.writable t)))
+                                (Stream.Transformation.identity |> Task.andThen (\t2 -> describe (Stream.pipeThrough t2 source)))
                         )
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->

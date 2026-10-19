@@ -1,4 +1,4 @@
-//===- ChildProcessManager.cpp - The C++ effect manager of System.Process -===//
+//===- ChildProcessManager.cpp - The C++ effect manager of ChildProcess -===//
 //
 // plans/eco-system-library.md §3.6, Appendix C.0 / C.3 and Phase 5 step
 // 5.2 ("spawn manager"). Layout: ChildProcessManager.hpp.
@@ -117,7 +117,7 @@ StdioMode stdioFor(int64_t connection) {
 void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPointer& onExit) {
 #ifdef _WIN32
     // A Cmd is infallible: crash with a clear message (§1).
-    ::Eco::Kernel::reportFatal("eco/system: System.Process.spawn is not supported on Windows yet");
+    ::Eco::Kernel::reportFatal("eco/system: ChildProcess.spawn is not supported on Windows yet");
 #endif
     auto& s = Scheduler::instance();
     ensureChildDrains();
@@ -279,7 +279,7 @@ using namespace Eco::System;
 namespace {
 
 // Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "System.Process". Commands only: no subMap.
+// registers them under "ChildProcess". Commands only: no subMap.
 void registerProcessManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();
@@ -293,12 +293,12 @@ void registerProcessManager() {
     cmdMapCl = alloc::allocClosure(&cmdMapEval, 2);
     PlatformRuntime::ManagerInfo info{enc(initCl), enc(effCl), enc(selfCl),
                                       enc(cmdMapCl), enc(subMapCl)};
-    PlatformRuntime::instance().registerManager("System.Process", info);   // no allocation after encode
+    PlatformRuntime::instance().registerManager("ChildProcess", info);   // no allocation after encode
 }
 
 } // namespace
 
-extern "C" uint64_t Eco_System_registerManager_System_Process() {
+extern "C" uint64_t Eco_System_registerManager_ChildProcess() {
     ECO_KERNEL_GUARD(
         registerProcessManager();
         return enc(alloc::unit());

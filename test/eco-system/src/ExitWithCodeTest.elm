@@ -10,7 +10,7 @@ the exit is kept; the pending one-minute sleep is not waited for.
 -- EXIT: 3
 
 import Process
-import Stream.Log
+import Stream
 import System
 import Task
 
@@ -20,12 +20,12 @@ type Msg
     | Again
 
 
-main : System.Program () Msg
+main : Platform.Program System.Environment () Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
-                ( (), Task.perform (\_ -> Written) (Stream.Log.line env.stdout "before exit") )
+                ( (), Task.perform (\_ -> Written) (Stream.logLine "before exit" env.stdout) )
         , update =
             \msg model ->
                 case msg of

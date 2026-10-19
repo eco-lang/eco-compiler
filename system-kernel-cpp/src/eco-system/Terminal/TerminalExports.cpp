@@ -1,7 +1,7 @@
 //===- TerminalExports.cpp - C exports of Eco.Kernel.Terminal -------------===//
 //
 // plans/eco-system-library.md Appendix B.5. Exports only pack and bind
-// (G2); the bodies are in Terminal.cpp. The `System.Terminal` effect-manager
+// (G2); the bodies are in Terminal.cpp. The `Terminal` effect-manager
 // registration is in TerminalManager.cpp.
 //
 // Templates used: T1.
@@ -28,10 +28,10 @@ uint64_t Eco_Kernel_Terminal_setStdInRawMode(uint64_t toggle) {
     )
 }
 
-// setProcessTitle : String -> Task Never ()
-uint64_t Eco_Kernel_Terminal_setProcessTitle(uint64_t title) {
+// setTitle : String -> Task Never ()
+uint64_t Eco_Kernel_Terminal_setTitle(uint64_t title) {
     ECO_KERNEL_GUARD(
-        return enc(makeBinding<terminalSetProcessTitleBody>(dec(title)));
+        return enc(makeBinding<terminalSetTitleBody>(dec(title)));
     )
 }
 

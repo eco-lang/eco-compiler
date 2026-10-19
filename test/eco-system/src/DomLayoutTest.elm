@@ -1,9 +1,9 @@
 module DomLayoutTest exposing (main)
 
-{-| `Http.Dom.fromNode` / `fromAttribute` see every `Node` and `Fact` shape
+{-| `Html.Dom.fromNode` / `fromAttribute` see every `Node` and `Fact` shape
 that `Html`, `Html.Keyed`, `Html.map`, `Html.Attributes` and `VirtualDom.nodeNS`
 build (plans/elm-html-native-kernel.md P5, VDOM_001). Natively this pins the
-heap layout of the VirtualDom kernel to the `Http.Dom` declaration; on JS it
+heap layout of the VirtualDom kernel to the `Html.Dom` declaration; on JS it
 pins the twin's calibration of VirtualDom's objects.
 -}
 
@@ -30,9 +30,9 @@ import Html.Attributes as A
 import Html.Events as E
 import Html.Keyed as Keyed
 import Html.Lazy as Lazy
-import Http.Dom as Dom exposing (Fact(..), Node(..))
+import Html.Dom as Dom exposing (Fact(..), Node(..))
 import Json.Encode as Encode
-import Stream.Log
+import Stream
 import System
 import VirtualDom
 
@@ -125,16 +125,14 @@ list items =
     "[" ++ String.join ", " items ++ "]"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.Log.line env.stdout
-                    (String.join "\n"
-                        (List.map (\n -> "node: " ++ describe (Dom.fromNode n)) nodes
+            (Stream.logLine (String.join "\n"
+                        (List.map (\n -> "node: " ++ describe (Dom.fromHtml n)) nodes
                             ++ List.map (\f -> "fact: " ++ describeFact (Dom.fromAttribute f)) facts
                         )
-                    )
+                    ) env.stdout
                 )
         )

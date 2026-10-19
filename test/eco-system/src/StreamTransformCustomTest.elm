@@ -14,78 +14,79 @@ transformation drops everything and closes when its writable closes.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamCodecHelp exposing (readAll)
 import StreamTestHelp
 import System
 import Task exposing (Task)
 
 
-upper : Int -> String -> Stream.CustomTransformationAction Int String
+upper : Int -> String -> Stream.Transformation.CustomAction Int String
 upper count value =
-    Stream.Send { state = count + 1, send = [ String.fromInt (count + 1) ++ ":" ++ String.toUpper value ] }
+    Stream.Transformation.Send { state = count + 1, send = [ String.fromInt (count + 1) ++ ":" ++ String.toUpper value ] }
 
 
 upperCase : Task Stream.Error String
 upperCase =
-    Stream.customTransformation upper 0
+    Stream.Transformation.custom upper 0
         |> Task.andThen
             (\t ->
-                Stream.write "hello" (Stream.writable t)
-                    |> Task.andThen (\_ -> Stream.read (Stream.readable t))
+                Stream.write "hello" (Stream.Transformation.writable t)
+                    |> Task.andThen (\_ -> Stream.read (Stream.Transformation.readable t))
                     |> Task.andThen
                         (\a ->
-                            Stream.write "world" (Stream.writable t)
+                            Stream.write "world" (Stream.Transformation.writable t)
                                 |> Task.andThen Stream.closeWritable
-                                |> Task.andThen (\_ -> readAll (Stream.readable t))
+                                |> Task.andThen (\_ -> readAll (Stream.Transformation.readable t))
                                 |> Task.map (\rest -> String.join "," (a :: rest))
                         )
             )
 
 
-splitChars : () -> String -> Stream.CustomTransformationAction () String
+splitChars : () -> String -> Stream.Transformation.CustomAction () String
 splitChars state value =
-    Stream.Send { state = state, send = String.split "" value }
+    Stream.Transformation.Send { state = state, send = String.split "" value }
 
 
 split : Task Stream.Error String
 split =
-    Stream.customTransformationWithOptions splitChars { initialState = (), readCapacity = 10, writeCapacity = 1 }
+    Stream.Transformation.customWith splitChars { initialState = (), readCapacity = 10, writeCapacity = 1 }
         |> Task.andThen
             (\t ->
-                Stream.write "abcd" (Stream.writable t)
+                Stream.write "abcd" (Stream.Transformation.writable t)
                     |> Task.andThen Stream.closeWritable
-                    |> Task.andThen (\_ -> readAll (Stream.readable t))
+                    |> Task.andThen (\_ -> readAll (Stream.Transformation.readable t))
                     |> Task.map (String.join ",")
             )
 
 
-times10 : () -> Int -> Stream.CustomTransformationAction () Int
+times10 : () -> Int -> Stream.Transformation.CustomAction () Int
 times10 state value =
-    Stream.Send { state = state, send = [ value * 10 ] }
+    Stream.Transformation.Send { state = state, send = [ value * 10 ] }
 
 
 ints : Task Stream.Error String
 ints =
     Stream.fromList [ 1, 2, 3 ]
-        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.customTransformation times10 ()))
+        |> Task.andThen (Stream.awaitAndPipeThrough (Stream.Transformation.custom times10 ()))
         |> Task.andThen readAll
         |> Task.map (List.map String.fromInt >> String.join ",")
 
 
 null : Task Stream.Error String
 null =
-    Stream.nullTransformation "ignored"
+    Stream.Transformation.null "ignored"
         |> Task.andThen
             (\t ->
-                Stream.write "x" (Stream.writable t)
+                Stream.write "x" (Stream.Transformation.writable t)
                     |> Task.andThen (Stream.write "y")
                     |> Task.andThen Stream.closeWritable
-                    |> Task.andThen (\_ -> readAll (Stream.readable t))
+                    |> Task.andThen (\_ -> readAll (Stream.Transformation.readable t))
                     |> Task.map (\values -> "[" ++ String.join "," values ++ "] closed")
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->

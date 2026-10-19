@@ -14,10 +14,10 @@ completes, and the program still ends (the child's exit releases its count).
 -- CHECK-NOT: run completed
 -- EXIT: 0
 
+import ChildProcess as P
 import Process
-import Stream.Log
+import Stream
 import System
-import System.Process as P
 import Task
 
 
@@ -33,9 +33,9 @@ noShell o =
     { o | shell = P.NoShell }
 
 
-main : System.Program System.Environment Msg
+main : Platform.Program System.Environment System.Environment Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( env
@@ -45,7 +45,7 @@ main =
                         (P.run "sleep" [ "30" ] { shell = P.NoShell, workingDirectory = P.InheritWorkingDirectory, environmentVariables = P.InheritEnvironmentVariables, maximumBytesWrittenToStreams = 0, runDuration = P.NoLimit }
                             |> Task.map (\_ -> "ok")
                             |> Task.onError (\_ -> Task.succeed "err")
-                            |> Task.andThen (\r -> Stream.Log.line env.stdout ("run completed: " ++ r))
+                            |> Task.andThen (\r -> Stream.logLine ("run completed: " ++ r) env.stdout)
                         )
                         |> Task.andThen (\pid -> Process.sleep 100 |> Task.andThen (\_ -> Process.kill pid))
                         |> Task.perform (\_ -> Logged)
@@ -57,7 +57,7 @@ main =
                     Started pid ->
                         ( env
                         , Cmd.batch
-                            [ Task.perform (\_ -> Logged) (Stream.Log.line env.stdout "spawned")
+                            [ Task.perform (\_ -> Logged) (Stream.logLine "spawned" env.stdout)
                             , Task.perform (\_ -> Killed) (Process.sleep 50 |> Task.andThen (\_ -> Process.kill pid))
                             ]
                         )
@@ -66,7 +66,7 @@ main =
                         ( env, Cmd.none )
 
                     Exited code ->
-                        ( env, Task.perform (\_ -> Logged) (Stream.Log.line env.stdout ("exit: " ++ String.fromInt code)) )
+                        ( env, Task.perform (\_ -> Logged) (Stream.logLine ("exit: " ++ String.fromInt code) env.stdout) )
 
                     Logged ->
                         ( env, Cmd.none )

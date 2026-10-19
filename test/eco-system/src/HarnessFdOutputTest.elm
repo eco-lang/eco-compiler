@@ -11,17 +11,15 @@ fd 2 output, not only the eco-thread `Debug.log` capture. Nothing here uses
 -- CHECK-NOT: never written
 -- EXIT: 0
 
-import Stream.Log
+import Stream
 import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.Log.line env.stdout "raw stdout line"
-                    |> Task.andThen (\_ -> Stream.Log.line env.stderr "raw stderr line")
-                )
+            Stream.logLine "raw stdout line" env.stdout
+                |> Task.andThen (\_ -> Stream.logLine "raw stderr line" env.stderr)
         )

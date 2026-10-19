@@ -10,7 +10,7 @@
 //     SO_REUSEADDR, bind, listen; non-blocking). The main-thread completion
 //     hands it to HttpTables (a ListenerHandler in callback mode), which
 //     takes the server's keep-alive count (released when closeServer is
-//     done). Result: ( serverId, boundPort ) — the port the system picked
+//     done). Result: ( serverId, boundAddress, boundPort ) — the port the system picked
 //     for port 0. A failure is the FErr tuple ( code, message ), e.g.
 //     ( "EADDRINUSE", "listen EADDRINUSE: ..." ).
 //   * createServerWith (P mode, T2): the same over Socket's tcpListenOn
@@ -97,8 +97,13 @@ std::string authorityOf(const std::string& host, int64_t port) {
     return h + ":" + std::to_string(port);
 }
 
-HPointer serverResult(int64_t id, int64_t port) {
-    return succeed(alloc::tuple2(alloc::unboxedInt(id), alloc::unboxedInt(port), 0x5));
+// ( serverId, boundAddress, boundPort ): tuple3, slots 0 and 2 Int (2 bits per slot:
+// mask 0x11, HEAP_046).
+// `address` is copied out before the allocation (G3).
+HPointer serverResult(int64_t id, const std::string& address, int64_t port) {
+    HPointer text = alloc::allocStringFromUTF8(address);
+    // `text` is fresh and goes straight into the helper, which roots it (G4).
+    return succeed(alloc::tuple3(alloc::unboxedInt(id), alloc::boxed(text), alloc::unboxedInt(port), 0x11));
 }
 
 // Main thread (the pool drain), resume already taken and rooted.
@@ -110,7 +115,8 @@ HPointer createComplete(PoolResult& pr) {
     int fd = r.listen.fd;
     r.listen.fd = -1;   // owned by the listener from here on
     int64_t id = HttpSrv::httpTablesStartServer(fd, cfg, -1);
-    return serverResult(id, r.listen.boundPort);
+    std::string address = r.listen.boundAddress;
+    return serverResult(id, address, r.listen.boundPort);
 }
 
 // The ALPN protocols an https server offers (§3.5): its own list, never the
@@ -148,7 +154,8 @@ HPointer createWithComplete(PoolResult& pr) {
     int fd = r.listen.owned.fd;
     r.listen.owned.fd = -1;   // owned by the listener from here on
     int64_t id = HttpSrv::httpTablesStartServer(fd, cfg, r.spec.maxConnections, std::move(transport));
-    return serverResult(id, r.listen.bound.port);
+    std::string address = r.listen.bound.text;
+    return serverResult(id, address, r.listen.bound.port);
 }
 
 // Resumes `resume` with () now (an R-mode task that needs no reactor work).
@@ -259,7 +266,7 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
         }
 #endif
         if (http2 && !hasTls) {
-            HPointer task = failFErr("EINVAL", "createServerWith: http2 requires tls");
+            HPointer task = failFErr("EINVAL", "listen: http2 requires tls");
             Elm::StackRootGuard g(&task);
             Scheduler::callClosure1(resume, task);
             return alloc::unit();

@@ -37,6 +37,7 @@ namespace Eco::System::HttpSrv {
 struct ListenResult {
     int fd = -1;
     int64_t boundPort = 0;   // the port actually bound (getsockname)
+    std::string boundAddress;   // the address actually bound, as text (getsockname)
     std::string code;
     std::string message;
 };

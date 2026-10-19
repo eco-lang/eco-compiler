@@ -580,18 +580,25 @@ FsRes opReadFileStream(const FsArgs& a) {
     return r;
 }
 
+// a.i0: bits 0-1 the mode (0 Replace, 1 ReplaceFrom, 2 Append), bit 2 createNew
+// (O_EXCL), bit 3 sync on close (FileSystem.writeFileStreamWith,
+// plans/eco-system-api-refactor.md §10.1).
 FsRes opWriteFileStream(const FsArgs& a) {
     int flags;
     bool truncateOnClose = false;
-    switch (a.i0) {
+    const int64_t mode = a.i0 & 0x3;
+    const bool createNew = (a.i0 & 0x4) != 0;
+    const bool syncOnClose = (a.i0 & 0x8) != 0;
+    switch (mode) {
     case 1: flags = O_RDWR; truncateOnClose = true; break;          // ReplaceFrom: r+
     case 2: flags = O_WRONLY | O_CREAT | O_APPEND; break;            // Append: a
     default: flags = O_WRONLY | O_CREAT | O_TRUNC; break;            // Replace: w
     }
+    if (createNew) flags |= O_CREAT | O_EXCL;
     int fd;
     do { fd = ::open(a.s1.c_str(), flags | O_CLOEXEC, 0666); } while (fd < 0 && errno == EINTR);
     if (fd < 0) return FsRes::fail(errno, "open", a.s1);
-    if (a.i0 == 1 && a.i1 > 0 && ::lseek(fd, static_cast<off_t>(a.i1), SEEK_SET) < 0) {
+    if (mode == 1 && a.i1 > 0 && ::lseek(fd, static_cast<off_t>(a.i1), SEEK_SET) < 0) {
         int e = errno;
         ::close(fd);
         return FsRes::fail(e, "write", a.s1);
@@ -600,6 +607,7 @@ FsRes opWriteFileStream(const FsArgs& a) {
     r.kind = FsRes::Kind::WriteStream;
     r.n = fd;
     r.truncateOnClose = truncateOnClose;
+    r.syncOnClose = syncOnClose;
     return r;
 }
 

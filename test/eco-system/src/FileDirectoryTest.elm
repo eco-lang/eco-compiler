@@ -1,6 +1,6 @@
 module FileDirectoryTest exposing (main)
 
-{-| `System.File.makeDirectory`, `listDirectory` and `makeTempDirectory`
+{-| `FileSystem.makeDirectory`, `listDirectory` and `makeTempDirectory`
 (plans/eco-system-library.md Phase 4 step 4.6, Appendix E.3): recursive
 mkdir, listings sorted by `strcmp` with entity types, and temp directories
 named `<tmpDirectory>/<prefix>XXXXXX`.
@@ -24,10 +24,10 @@ named `<tmpDirectory>/<prefix>XXXXXX`.
 -- CHECK: tempdir-missing-parent: err ENOENT @x-
 -- EXIT: 0
 
+import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file)
+import Path
 import System
-import System.File as File
-import System.File.Path as Path
 import Task exposing (Task)
 
 
@@ -80,12 +80,12 @@ tempDirCheck =
         (Task.map3
             (\tmp t1 t2 ->
                 [ boolString (String.startsWith "eco-p4-check-" (Path.filenameWithExtension t1))
-                , boolString (Maybe.map Path.toPosixString (Path.parentPath t1) == Just (Path.toPosixString tmp))
+                , boolString (Maybe.map Path.toPosixString (Path.parent t1) == Just (Path.toPosixString tmp))
                 , boolString (t1 /= t2)
                 ]
                     |> (\flags -> ( flags, t1, t2 ))
             )
-            File.tmpDirectory
+            File.tempDirectory
             (File.makeTempDirectory "eco-p4-check-")
             (File.makeTempDirectory "eco-p4-check-")
             |> Task.andThen
@@ -97,7 +97,7 @@ tempDirCheck =
         )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

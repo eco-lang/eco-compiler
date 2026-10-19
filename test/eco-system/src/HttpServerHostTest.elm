@@ -26,7 +26,6 @@ gets the server's own address.
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Task exposing (Task)
 
@@ -69,12 +68,12 @@ main =
     H.program { options = identity, handler = handler, client = client, exitAtEnd = True }
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     let
         url =
             -- requestInfo is "<METHOD> <url>"
-            Server.requestInfo request |> String.split " " |> List.drop 1 |> String.join " "
+            Server.requestToString request |> String.split " " |> List.drop 1 |> String.join " "
 
         line =
             if request.url.path == "/fallback" then
@@ -89,4 +88,4 @@ handler _ request response =
             else
                 "url " ++ url
     in
-    ( [ line ], H.Now (response |> Response.setBody "ok") )
+    ( [ line ], H.Now (response |> Server.setBody "ok") )

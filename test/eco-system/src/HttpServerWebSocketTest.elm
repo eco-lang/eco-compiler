@@ -11,7 +11,7 @@ CONNECT", §3.6, §4 WS5): HTTP and WebSocket on one port.
   - A `WebSocket.connect` client: echo; an ordinary request on another connection while the
     WebSocket is open; `upgradeRequest` on an ordinary request fails `EINVAL`.
   - A declined opening request (426) is answered with `Connection: close` and closed.
-  - `closeServer` closes the port but leaves the upgraded WebSocket open: it still echoes after
+  - `close` closes the port but leaves the upgraded WebSocket open: it still echoes after
     the close deadline.
 
 -}

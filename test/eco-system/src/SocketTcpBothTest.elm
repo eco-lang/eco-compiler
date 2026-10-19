@@ -14,7 +14,7 @@ accept; the second, with no accept waiting, goes to the subscription.
 import Process
 import Socket
 import SocketTestHelp as H
-import Stream.Log
+import Stream
 import System
 import Task exposing (Task)
 
@@ -42,9 +42,9 @@ client listener text =
         |> Task.andThen (\conn -> H.streamErr (H.writeAll text (Socket.writable conn)))
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, listener = Nothing, accepted = Nothing, subscribed = Nothing }
@@ -124,7 +124,7 @@ check model cmd =
 report : Model -> List String -> ( Model, Cmd Msg )
 report model lines =
     ( { model | listener = Nothing }
-    , Stream.Log.line model.env.stdout (String.join "\n" lines)
+    , Stream.logLine (String.join "\n" lines) model.env.stdout
         |> Task.andThen
             (\_ ->
                 case model.listener of

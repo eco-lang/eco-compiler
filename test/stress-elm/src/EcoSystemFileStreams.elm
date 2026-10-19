@@ -13,11 +13,11 @@ ranges, and rewrites it in place through a FileHandle with
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
+import FileSystem as File
+import FileSystem.Handle as FileHandle
+import Path exposing (Path)
 import Stream
 import StressHarness exposing (StressFlags)
-import System.File as File
-import System.File.FileHandle as FileHandle
-import System.File.Path as Path exposing (Path)
 import Task exposing (Task)
 
 
@@ -43,7 +43,7 @@ writeChunks chunks w =
             Stream.closeWritable w
 
         c :: rest ->
-            Stream.writeStringAsBytes c w |> Task.andThen (writeChunks rest)
+            Stream.writeString c w |> Task.andThen (writeChunks rest)
 
 
 readAll : Stream.Readable Bytes -> Task Stream.Error String

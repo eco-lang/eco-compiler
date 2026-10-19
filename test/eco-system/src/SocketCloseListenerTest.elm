@@ -20,7 +20,7 @@ import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

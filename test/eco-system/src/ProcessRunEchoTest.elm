@@ -1,6 +1,6 @@
 module ProcessRunEchoTest exposing (main)
 
-{-| `System.Process.run` (plans/eco-system-library.md Phase 5 step 5.4): the
+{-| `ChildProcess.run` (plans/eco-system-library.md Phase 5 step 5.4): the
 child's stdout comes back as Bytes, with the default shell and without one.
 -}
 
@@ -10,8 +10,8 @@ child's stdout comes back as Bytes, with the default shell and without one.
 -- CHECK: binary: ok stdout=0123456789 stderr=
 -- EXIT: 0
 
+import ChildProcess as P
 import ProcessTestHelp exposing (describeRun, noShell, simpleRun)
-import System.Process as P
 
 
 main =

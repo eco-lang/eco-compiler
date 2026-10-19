@@ -22,10 +22,10 @@ module FileLinksTest exposing (main)
 -- CHECK: unlink-links: ok [hard.txt,target.txt]
 -- EXIT: 0
 
+import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file, fromBytes)
+import Path
 import System
-import System.File as File
-import System.File.Path as Path
 import Task exposing (Task)
 
 
@@ -56,7 +56,7 @@ entityName e =
             "Pipe"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

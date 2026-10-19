@@ -26,7 +26,7 @@ visibly instead of reaching some other server.
 -}
 server : Task x Server
 server =
-    System.getEnvironmentVariables
+    System.environmentVariables
         |> Task.map
             (\vars ->
                 let

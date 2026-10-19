@@ -15,37 +15,38 @@ fails with `Locked`.
 
 import Process
 import Stream
+import Stream.Transformation
 import StreamTestHelp exposing (sleep, spawnLogged)
 import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
             -- A parked read holds the read lock.
-            Stream.identityTransformation
+            Stream.Transformation.identity
                 |> Task.andThen
                     (\t ->
-                        Process.spawn (Stream.read (Stream.readable t))
+                        Process.spawn (Stream.read (Stream.Transformation.readable t))
                             |> Task.andThen (\_ -> sleep)
-                            |> Task.andThen (\_ -> StreamTestHelp.describe (Stream.cancelReadable "x" (Stream.readable t)))
+                            |> Task.andThen (\_ -> StreamTestHelp.describe (Stream.cancelReadable "x" (Stream.Transformation.readable t)))
                     )
                 |> Task.andThen
                     (\lockedResult ->
-                        Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.identityTransformationWithOptions { readCapacity = 1, writeCapacity = 1 })
+                        Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.Transformation.identityWith { readCapacity = 1, writeCapacity = 1 })
                             |> Task.andThen
                                 (\( log, t ) ->
-                                    Stream.write 1 (Stream.writable t)
-                                        |> Task.andThen (\_ -> spawnLogged log "pending" (Stream.write 2 (Stream.writable t)))
+                                    Stream.write 1 (Stream.Transformation.writable t)
+                                        |> Task.andThen (\_ -> spawnLogged log "pending" (Stream.write 2 (Stream.Transformation.writable t)))
                                         |> Task.andThen (\_ -> sleep)
-                                        |> Task.andThen (\_ -> StreamTestHelp.describe (Stream.cancelReadable "stop reading" (Stream.readable t)))
+                                        |> Task.andThen (\_ -> StreamTestHelp.describe (Stream.cancelReadable "stop reading" (Stream.Transformation.readable t)))
                                         |> Task.andThen
                                             (\cancelResult ->
                                                 Task.map2 Tuple.pair
-                                                    (StreamTestHelp.describe (Stream.read (Stream.readable t)))
-                                                    (StreamTestHelp.describe (Stream.write 3 (Stream.writable t)))
+                                                    (StreamTestHelp.describe (Stream.read (Stream.Transformation.readable t)))
+                                                    (StreamTestHelp.describe (Stream.write 3 (Stream.Transformation.writable t)))
                                                     |> Task.andThen
                                                         (\( readResult, writeResult ) ->
                                                             sleep

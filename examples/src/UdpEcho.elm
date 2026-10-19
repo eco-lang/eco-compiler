@@ -14,7 +14,6 @@ import Socket
 import Socket.Address as Address
 import Socket.Udp
 import Stream
-import Stream.Log
 import System
 import Task
 
@@ -30,11 +29,12 @@ type Msg
     = Bound (Result Socket.Error Socket.Udp.Socket)
     | Received Socket.Udp.Datagram
     | Sent
+    | Exit Int
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = init
         , update = update
         , subscriptions = subscriptions
@@ -66,19 +66,18 @@ update msg model =
                     Socket.Udp.localEndpoint socket
             in
             ( { model | socket = Just socket }
-            , System.endSimpleProgram
-                (Stream.Log.line model.stdout
-                    ("listening on " ++ Address.toString local.address ++ ":" ++ String.fromInt local.port_)
-                )
+            , Stream.logLine ("listening on " ++ Address.toString local.address ++ ":" ++ String.fromInt local.port_) model.stdout
+                |> Task.perform (\_ -> Sent)
             )
 
         ( Bound (Err err), _ ) ->
             ( model
-            , Cmd.batch
-                [ System.endSimpleProgram (Stream.Log.line model.stderr ("udp-echo: " ++ Socket.errorToString err))
-                , System.exitWithCode 1
-                ]
+            , Stream.logLine ("udp-echo: " ++ Socket.errorToString err) model.stderr
+                |> Task.perform (\_ -> Exit 1)
             )
+
+        ( Exit code, _ ) ->
+            ( model, System.exitWithCode code )
 
         ( Received datagram, Just socket ) ->
             ( model

@@ -24,6 +24,7 @@ surrogate left at close becomes EF BF BD.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamCodecHelp exposing (bytesFromList, codes, hex, readAll)
 import StreamTestHelp
 import System
@@ -33,7 +34,7 @@ import Task exposing (Task)
 decode : List (List Int) -> Task Stream.Error String
 decode chunks =
     Stream.fromList (List.map bytesFromList chunks)
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.textDecoder)
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.textDecoder)
         |> Task.andThen readAll
         |> Task.map (List.map codes >> String.join " | ")
 
@@ -41,7 +42,7 @@ decode chunks =
 encode : List String -> Task Stream.Error String
 encode chunks =
     Stream.fromList chunks
-        |> Task.andThen (Stream.awaitAndPipeThrough Stream.textEncoder)
+        |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.textEncoder)
         |> Task.andThen readAll
         |> Task.map (List.map hex >> String.join " | ")
 
@@ -56,7 +57,7 @@ lowSurrogate =
     String.fromList [ Char.fromCode 0xDE00 ]
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->

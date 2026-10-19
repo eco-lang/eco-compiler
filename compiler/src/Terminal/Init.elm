@@ -395,14 +395,14 @@ appExample : String
 appExample =
     """module Main exposing (main)
 
-import Stream.Log
+import Stream
 import System
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
-        (\\env -> System.endSimpleProgram (Stream.Log.line env.stdout "Hello World!"))
+    System.simpleProgram
+        (\\env -> Stream.logLine "Hello World!" env.stdout)
 """
 
 

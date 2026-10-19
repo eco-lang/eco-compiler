@@ -38,7 +38,7 @@ import WebSocketSha1 exposing (acceptFor)
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -95,7 +95,7 @@ runCase listener ( label, server, change ) =
                         (\( line, ws ) ->
                             (case ws of
                                 Just w ->
-                                    WebSocket.close WebSocket.Normal "" w |> Task.andThen (\_ -> WebSocket.closed w) |> Task.map (\_ -> ())
+                                    WebSocket.close WebSocket.Normal "" w |> Task.andThen (\_ -> WebSocket.awaitClose w) |> Task.map (\_ -> ())
 
                                 Nothing ->
                                     Task.succeed ()

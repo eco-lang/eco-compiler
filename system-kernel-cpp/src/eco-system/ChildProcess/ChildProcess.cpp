@@ -2,7 +2,7 @@
 //
 // plans/eco-system-library.md Appendix B.4 (`run`), E.4 (node execFile
 // semantics) and Phase 5 step 5.2: the job table shared with the
-// `System.Process` manager (ChildProcessManager.cpp), the `run` binding
+// `ChildProcess` manager (ChildProcessManager.cpp), the `run` binding
 // body, the run output collector, the runDuration timer and the drains.
 //
 // `run`:

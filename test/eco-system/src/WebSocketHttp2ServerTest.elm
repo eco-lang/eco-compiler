@@ -63,7 +63,7 @@ client tools servers =
             [ "echo", "quiet", "reset", "reject", "unknown" ]
                 |> List.map
                     (\mode ->
-                        H.node tools (Server.serverPort server) mode []
+                        H.node tools ((Server.endpoint server).port_) mode []
                             |> Task.map (List.map (\l -> mode ++ ": " ++ l))
                     )
                 |> Task.sequence

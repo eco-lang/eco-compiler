@@ -28,11 +28,11 @@ several chunks.
 
 import Bytes exposing (Bytes)
 import Bytes.Encode
+import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file, fromBytes, stream)
+import Path exposing (Path)
 import Stream
 import System
-import System.File as File
-import System.File.Path exposing (Path)
 import Task exposing (Task)
 
 
@@ -48,7 +48,7 @@ writeChunks chunks w =
             stream (Stream.closeWritable w)
 
         c :: rest ->
-            stream (Stream.writeStringAsBytes c w) |> Task.andThen (writeChunks rest)
+            stream (Stream.writeString c w) |> Task.andThen (writeChunks rest)
 
 
 streamWrite : File.WriteFileStreamMode -> List String -> Path -> Task String ()
@@ -131,7 +131,7 @@ readAfterEof path =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

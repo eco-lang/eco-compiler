@@ -37,7 +37,7 @@ on every platform and backend. Host names are not addresses; resolve them with
 
 -}
 
-import System.File.Path exposing (Path)
+import Path exposing (Path)
 
 
 
@@ -290,7 +290,7 @@ unmapIPv4 address =
   - `Inet` is an IPv4 or IPv6 address and a port.
   - `Unix` is the path of a Unix domain socket. An unnamed socket, such as the client side of a
     Unix connection or the remote end seen by a Unix server, has the
-    [empty path](System-File-Path#empty).
+    [empty path](Path#empty).
 
 -}
 type Endpoint

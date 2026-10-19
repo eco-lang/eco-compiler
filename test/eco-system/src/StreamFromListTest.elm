@@ -23,7 +23,7 @@ collect r =
         |> Task.map List.reverse
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->

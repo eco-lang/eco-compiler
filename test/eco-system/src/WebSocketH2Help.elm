@@ -7,7 +7,7 @@ module WebSocketH2Help exposing
 plans/eco-system-websockets.md §3.9, §4 WS9).
 
 The program writes the test CA, the test server certificate and key, and a Node script (`ws.js`,
-below) into a fresh temporary directory, creates the servers of the test with `createServerWith`
+below) into a fresh temporary directory, creates the servers of the test with `listen`
 (https on 127.0.0.1, port 0, `http2 = True`, then the test's changes), subscribes to all of them,
 and runs the test's client task.
 
@@ -28,17 +28,16 @@ then the client's lines are printed, the directory is removed and the program ex
 
 import Bytes
 import Bytes.Encode
-import Http.Server as Server exposing (HttpVersion(..), Request, Server, ServerOptions)
-import Http.Server.Response as Response exposing (Response)
+import Http.Server as Server exposing (HttpVersion(..), Request, Server, ListenOptions, Response)
 import Process
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tls
-import Stream.Log
+import Stream
 import System
-import System.File as File
-import System.File.Path as Path
-import System.Process as P
+import FileSystem as File
+import Path
+import ChildProcess as P
 import Task exposing (Task)
 import TlsFixtures as Fx
 import WebSocket
@@ -52,7 +51,7 @@ type alias Tools =
 
 
 type alias Config =
-    { servers : List (ServerOptions -> ServerOptions)
+    { servers : List (ListenOptions -> ListenOptions)
     , client : Tools -> List Server -> Task String (List String)
     }
 
@@ -81,11 +80,11 @@ type alias Model =
 
 {-| `defaultServerOptions` on 127.0.0.1, port 0, with the test certificate and `http2 = True`.
 -}
-h2Options : ServerOptions
+h2Options : ListenOptions
 h2Options =
     let
         d =
-            Server.defaultServerOptions (Address.loopback IPv4) 0
+            Server.defaultListenOptions (Address.loopback IPv4) 0
     in
     { d
         | tls = Just { certificateChain = Fx.serverCertPem, privateKey = Fx.serverKeyPem, alpn = [] }
@@ -93,9 +92,9 @@ h2Options =
     }
 
 
-program : Config -> System.Program Model Msg
+program : Config -> Platform.Program System.Environment Model Msg
 program config =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env
@@ -136,8 +135,8 @@ setup config =
                             config.servers
                                 |> List.map
                                     (\change ->
-                                        Server.createServerWith (change h2Options)
-                                            |> Task.mapError (\(Server.ServerError e) -> "server error: " ++ e.code ++ " " ++ e.message)
+                                        Server.listen (change h2Options)
+                                            |> Task.mapError (\e -> "server error: " ++ Server.errorToString e)
                                     )
                                 |> Task.sequence
                         )
@@ -186,7 +185,7 @@ serve path up =
             |> Task.andThen
                 (\ws ->
                     W.readAll ws
-                        |> Task.andThen (\_ -> WebSocket.closed ws)
+                        |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                         |> Task.map (\info -> [ "ws /quiet: " ++ W.closeInfoString info ])
                 )
 
@@ -209,7 +208,7 @@ serve path up =
                     W.echo ws
                         |> Task.andThen
                             (\end ->
-                                WebSocket.closed ws
+                                WebSocket.awaitClose ws
                                     |> Task.map
                                         (\info ->
                                             if isMany path then
@@ -256,7 +255,7 @@ update config msg model =
                 )
 
             else
-                ( model, response |> Response.setBody ("plain " ++ path) |> Response.send )
+                ( model, response |> Server.setBody ("plain " ++ path) |> Server.send )
 
         ServerDone lines ->
             let
@@ -326,7 +325,7 @@ finish model =
             List.map (\l -> "client: " ++ l) (Maybe.withDefault [] model.client)
 
         out =
-            Stream.Log.line model.env.stdout (String.join "\n" (serverLines ++ clientLines))
+            Stream.logLine (String.join "\n" (serverLines ++ clientLines)) model.env.stdout
 
         cleanup =
             case model.tools of
@@ -377,7 +376,7 @@ echoCase label http2 port_ path =
                         (\messages ->
                             WebSocket.close WebSocket.Normal "" ws
                                 |> Task.mapError W.wsErr
-                                |> Task.andThen (\_ -> WebSocket.closed ws)
+                                |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                 |> Task.map
                                     (\info ->
                                         String.join " | "
@@ -439,7 +438,7 @@ largeCase label http2 port_ path =
                             in
                             WebSocket.close WebSocket.Normal "" ws
                                 |> Task.mapError W.wsErr
-                                |> Task.andThen (\_ -> WebSocket.closed ws)
+                                |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                 |> Task.map
                                     (\info ->
                                         String.fromInt (List.sum (List.take 1 sizes))

@@ -21,19 +21,21 @@ request and response bodies on top of it.
 
 ## Modules
 
-- `System`: program definitions, the environment (args, stdin/stdout/stderr, platform), exit codes
-  and signals.
-- `Stream`, `Stream.Log`: readable and writable streams, transformations, compression, and simple
-  logging.
-- `System.File`, `System.File.Path`, `System.File.FileHandle`: files, directories, links, metadata,
-  file handles and paths.
-- `System.Process`: running and spawning child processes.
-- `System.Terminal`: terminal size, raw mode and resize events.
-- `Http.Server`, `Http.Server.Response`: an HTTP server (HTTP/1.1 with keep-alive, request limits
-  and timeouts, HTTPS, HTTP/2 over TLS, and WebSocket upgrades). `setBodyAsHtml` answers with a
-  page built with elm/html, serialized straight into the response.
-- `Http.Dom`: a transparent view of `Html`/`Svg` values and their HTML serialization.
-- `Http.Stream`: streaming request and response bodies for elm/http.
+- `System`: the program environment (args, start time, stdin/stdout/stderr, platform), simple
+  programs, exit codes and signals. A program is a `Platform.Program System.Environment model
+  msg`: `System.simpleProgram` for one task, `Platform.worker` for a program with a model.
+- `Stream`: readable and writable streams, reading lines, piping, and best-effort logging.
+- `Stream.Transformation`: building transformations, text encoding and compression.
+- `FileSystem`, `FileSystem.Handle`, `Path`: files, directories, links, metadata, durable and
+  exclusive writes, file handles for random access, and paths.
+- `ChildProcess`: running and spawning child processes.
+- `Terminal`: terminal size, raw mode, the window title and resize events.
+- `Http.Server`: an HTTP server (HTTP/1.1 with keep-alive, request limits and timeouts, HTTPS,
+  HTTP/2 over TLS, and WebSocket upgrades) and its responses. `setBodyAsHtml` answers with a page
+  built with elm/html, serialized straight into the response.
+- `Html.Dom`: a transparent view of `Html`/`Svg` values and their HTML serialization.
+- `Http.Stream`: streaming request and response bodies for elm/http (Node and native only; it does
+  not run in the browser).
 - `Socket`, `Socket.Address`, `Socket.Tcp`, `Socket.Unix`, `Socket.Udp`, `Socket.Tls`: TCP, Unix
   domain and TLS connections (TLS on OpenSSL 3 natively), UDP datagrams, IPv4/IPv6 addresses and
   name lookup. Native socket IO runs non-blocking on one shared event loop (epoll on Linux, kqueue
@@ -49,14 +51,14 @@ request and response bodies on top of it.
 ```elm
 module Main exposing (main)
 
-import Stream.Log
+import Stream
 import System
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
-        (\env -> System.endSimpleProgram (Stream.Log.line env.stdout "Hello, world!"))
+    System.simpleProgram
+        (\env -> Stream.logLine "Hello, world!" env.stdout)
 ```
 
 ## License

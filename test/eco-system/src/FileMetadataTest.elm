@@ -26,10 +26,10 @@ whole-second precision.
 -- CHECK: metadata-missing: err ENOENT @missing
 -- EXIT: 0
 
+import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file)
+import Path
 import System
-import System.File as File
-import System.File.Path as Path
 import Task exposing (Task)
 import Time
 
@@ -61,7 +61,7 @@ boolString b =
         "False"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

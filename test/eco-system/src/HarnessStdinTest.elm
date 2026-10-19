@@ -13,7 +13,6 @@ and repeated lines concatenated; the program sees end-of-input after it.
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Stream
-import Stream.Log
 import System
 import Task
 
@@ -24,14 +23,12 @@ decode bytes =
         |> Maybe.withDefault "<invalid>"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.readUntilClosed (\chunk acc -> Ok (acc ++ decode chunk)) "" env.stdin
-                    |> Task.map (String.replace "\t" "<TAB>" >> String.replace "\n" "<NL>")
-                    |> Task.onError (\err -> Task.succeed ("error: " ++ Stream.errorToString err))
-                    |> Task.andThen (\text -> Stream.Log.line env.stdout ("stdin: [" ++ text ++ "]"))
-                )
+            Stream.readUntilClosed (\chunk acc -> Ok (acc ++ decode chunk)) "" env.stdin
+                |> Task.map (String.replace "\t" "<TAB>" >> String.replace "\n" "<NL>")
+                |> Task.onError (\err -> Task.succeed ("error: " ++ Stream.errorToString err))
+                |> Task.andThen (\text -> Stream.logLine ("stdin: [" ++ text ++ "]") env.stdout)
         )

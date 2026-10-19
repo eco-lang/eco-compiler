@@ -21,10 +21,12 @@ import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.EcoEnvironment as EcoEnvironment
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.Port as Port
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
+import Compiler.Reporting.Annotation as A
 import Data.Map as DMap
 
 
@@ -134,12 +136,24 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
                 Can.TType hm nm [ flagsType, _, _ ] ->
                     if hm == ModuleName.platform && nm == Name.program then
                         let
-                            ( deps, _, decoderExpr ) =
-                                Names.run (Port.toFlagsDecoder flagsType)
-
                             decoderCanType : Can.Type Name
                             decoderCanType =
                                 Can.TType ModuleName.jsonDecode "Decoder" [ flagsType ]
+
+                            -- eco/system program (D13): reference the environment
+                            -- decoder of System instead of synthesizing a JSON one.
+                            ( deps, _, decoderExpr ) =
+                                if EcoEnvironment.isEnvironmentFlags tipe then
+                                    Names.run
+                                        (Names.registerGlobal A.zero
+                                            EcoEnvironment.systemHome
+                                            EcoEnvironment.environmentDecoderName
+                                            decoderCanType
+                                            Nothing
+                                        )
+
+                                else
+                                    Names.run (Port.toFlagsDecoder flagsType)
 
                             flagsGlobal : TOpt.Global
                             flagsGlobal =

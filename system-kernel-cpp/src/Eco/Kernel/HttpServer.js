@@ -6,7 +6,7 @@ import Maybe exposing (Nothing)
 import Eco.Kernel.Stream exposing (noteActivity, toBytes, toUint8Array)
 import Eco.Kernel.Tls exposing (code, errorMessage)
 import Eco.Kernel.WebSocket exposing (parkUpgrade, parkH2Upgrade)
-import Http.Dom as Dom exposing (render)
+import Html.Dom as Dom exposing (toString)
 */
 
 // HttpServer — JS twin of src/eco-system/HttpServer/ (eco/system), plans/eco-system-library.md
@@ -83,7 +83,7 @@ import Http.Dom as Dom exposing (render)
 //                            is written (or the client is gone); an unknown or answered key
 //                            completes at once.
 //   respondHtml key status headers doctype node
-//                            respond with an Http.Dom.Node body rendered by Http.Dom.render
+//                            respond with an Html.Dom.Node body rendered by Html.Dom.toString
 //                            (UTF-8), after "<!DOCTYPE html>" when doctype is true
 //                            (plans/elm-html-native-kernel.md §7.3).
 //   * Upgrade requests ('upgrade' listener: Upgrade + Connection: upgrade) are handed over as
@@ -1220,9 +1220,10 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 			started = true;
 			var addr = server.address();
 			var bound = addr && typeof addr === 'object' ? addr.port : port;
+			var boundAddress = addr && typeof addr === 'object' ? addr.address : '';
 			s.__authority = _HttpServer_authorityOf(host, bound);
 			_HttpServer_servers[id] = s;
-			callback(__Scheduler_succeed(__Utils_Tuple2(id, bound)));
+			callback(__Scheduler_succeed(__Utils_Tuple3(id, boundAddress, bound)));
 		});
 	}
 	catch (e)
@@ -1233,7 +1234,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 	}
 }
 
-// createServer : String -> Int -> Task ( String, String ) ( Int, Int )
+// createServer : String -> Int -> Task ( String, String ) ( Int, String, Int )   (id, bound address, bound port)
 var _HttpServer_createServer = F2(function(host, port)
 {
 	return __Scheduler_binding(function(callback)
@@ -1243,7 +1244,7 @@ var _HttpServer_createServer = F2(function(host, port)
 });
 
 // createServerWith : ( ( String, Int ), ( Bool, Int ) ) -> Maybe ( String, String )
-//     -> ( ( Int, Int, Int ), ( Int, Int, Int ) ) -> Task ( String, String ) ( Int, Int )
+//     -> ( ( Int, Int, Int ), ( Int, Int, Int ) ) -> Task ( String, String ) ( Int, String, Int )
 var _HttpServer_createServerWith = F3(function(target, tls, limits)
 {
 	return __Scheduler_binding(function(callback)
@@ -1251,7 +1252,7 @@ var _HttpServer_createServerWith = F3(function(target, tls, limits)
 		var hasTls = tls !== __Maybe_Nothing && tls.$ !== __Maybe_Nothing.$;
 		if (target.b.a && !hasTls)
 		{
-			callback(__Scheduler_fail(__Utils_Tuple2('EINVAL', 'createServerWith: http2 requires tls')));
+			callback(__Scheduler_fail(__Utils_Tuple2('EINVAL', 'listen: http2 requires tls')));
 			return;
 		}
 		var cfg = {
@@ -1300,7 +1301,7 @@ var _HttpServer_respond = F4(function(key, status, headers, body)
 	});
 });
 
-// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Http.Dom.Node -> Task Never ()
+// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Html.Dom.Node -> Task Never ()
 var _HttpServer_respondHtml = F5(function(key, status, headers, doctype, node)
 {
 	return __Scheduler_binding(function(callback)
@@ -1318,7 +1319,7 @@ var _HttpServer_respondHtml = F5(function(key, status, headers, doctype, node)
 		delete _HttpServer_pending[key];
 		__Stream_noteActivity();
 		var user = _HttpServer_userHeaders(headers);
-		var body = Buffer.from((doctype ? '<!DOCTYPE html>' : '') + __Dom_render(node), 'utf8');
+		var body = Buffer.from((doctype ? '<!DOCTYPE html>' : '') + __Dom_toString(node), 'utf8');
 		_HttpServer_writeAnswer(e, status, user.__raw, body, user.__askClose, complete);
 	});
 });

@@ -15,7 +15,6 @@ import Http
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
-import Stream.Log
 import System
 import Task
 import TestServerConfig
@@ -27,9 +26,9 @@ type Msg
     | Logged
 
 
-main : System.Program System.Environment Msg
+main : Platform.Program System.Environment System.Environment Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( env
@@ -61,8 +60,8 @@ main =
                                         H.describeHttpError e
                         in
                         ( env
-                        , Stream.Log.line env.stdout text
-                            |> Task.andThen (\_ -> Stream.Log.line env.stdout "done")
+                        , Stream.logLine text env.stdout
+                            |> Task.andThen (\_ -> Stream.logLine "done" env.stdout)
                             |> Task.perform (\_ -> Logged)
                         )
 

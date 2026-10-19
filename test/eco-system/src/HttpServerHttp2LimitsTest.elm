@@ -31,26 +31,25 @@ module HttpServerHttp2LimitsTest exposing (main)
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerH2Help as H
 import Task exposing (Task)
 
 
-handler : Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : Server.Request -> Server.Response -> ( List String, H.Answer )
 handler request response =
     if String.startsWith "/c" request.url.path then
-        ( [], H.After 400 (response |> Response.setBody "ok") )
+        ( [], H.After 400 (response |> Server.setBody "ok") )
 
     else
-        ( [], H.Now (response |> Response.setBody "ok") )
+        ( [], H.Now (response |> Server.setBody "ok") )
 
 
-limited : Server.ServerOptions -> Server.ServerOptions
+limited : Server.ListenOptions -> Server.ListenOptions
 limited options =
     { options | maxHeaderSize = 2000, maxBodySize = 1000 }
 
 
-capped : Server.ServerOptions -> Server.ServerOptions
+capped : Server.ListenOptions -> Server.ListenOptions
 capped options =
     { options | maxConcurrentStreams = Just 10 }
 

@@ -3,7 +3,7 @@
 // plans/eco-system-library.md Appendix B.4, C.3, E.4 and Phase 5 step 5.2.
 // Shared by ChildProcess.cpp (the `run` kernel, the job table and its
 // drains), ChildProcessExports.cpp (the C export) and
-// ChildProcessManager.cpp (the `System.Process` effect manager, `spawn`).
+// ChildProcessManager.cpp (the `ChildProcess` effect manager, `spawn`).
 //
 // Every child, run or spawned, is a JOB in one main-thread T5 registry. The
 // job id is the WaitService token (lane WaitLane::EcoSystem), so the single

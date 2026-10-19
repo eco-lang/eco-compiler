@@ -1,19 +1,19 @@
 module PathTest exposing (suite)
 
-{-| Tests for System.File.Path: the generated golden tables (PathGolden, from
+{-| Tests for Path: the generated golden tables (PathGolden, from
 scripts/gen-path-golden.js, which runs gren-node's FilePath.js semantics on node:path) plus
 hand-written cases for the rules in plans/eco-system-library.md Appendix E.2.
 -}
 
 import Expect
+import Path exposing (Path)
 import PathGolden exposing (CombineCase, JoinCase, ParseCase)
-import System.File.Path as Path exposing (Path)
 import Test exposing (Test, describe, test)
 
 
 suite : Test
 suite =
-    describe "System.File.Path"
+    describe "Path"
         [ describe "golden: fromPosixString" (List.map posixCase PathGolden.parseCases)
         , describe "golden: fromWin32String" (List.map win32Case PathGolden.parseCases)
         , describe "golden: append / prepend" (List.map combineCase PathGolden.combineCases)
@@ -28,7 +28,7 @@ suite =
 
 ancestors : Path -> List String
 ancestors path =
-    case Path.parentPath path of
+    case Path.parent path of
         Just parent ->
             Path.toPosixString parent :: ancestors parent
 
@@ -46,7 +46,7 @@ flavourExpectations parse actual e =
     , \_ -> Path.toPosixString actual |> Expect.equal e.toPosix
     , \_ -> Path.toWin32String actual |> Expect.equal e.toWin32
     , \_ -> Path.filenameWithExtension actual |> Expect.equal e.filename
-    , \_ -> Path.parentPath actual |> Expect.equal e.parent
+    , \_ -> Path.parent actual |> Expect.equal e.parent
     , \_ -> ancestors actual |> Expect.equal e.ancestors
     , \_ -> parse (e.print actual) |> Expect.equal e.roundTrip
     ]
@@ -212,21 +212,21 @@ rules =
                             , Path.toPosixString >> Expect.equal "/a/b.c"
                             ]
             ]
-        , describe "parentPath"
+        , describe "parent"
             [ test "of empty is Nothing" <|
-                \_ -> Path.parentPath Path.empty |> Expect.equal Nothing
+                \_ -> Path.parent Path.empty |> Expect.equal Nothing
             , test "of the posix root is Nothing" <|
-                \_ -> Path.parentPath (posix "/") |> Expect.equal Nothing
+                \_ -> Path.parent (posix "/") |> Expect.equal Nothing
             , test "of a drive root is Nothing" <|
-                \_ -> Path.parentPath (win32 "C:\\") |> Expect.equal Nothing
+                \_ -> Path.parent (win32 "C:\\") |> Expect.equal Nothing
             , test "of a UNC root is Nothing" <|
-                \_ -> Path.parentPath (win32 "\\\\server\\share\\") |> Expect.equal Nothing
+                \_ -> Path.parent (win32 "\\\\server\\share\\") |> Expect.equal Nothing
             , test "of /home/me/file.md is /home/me" <|
-                \_ -> posix "/home/me/file.md" |> Path.parentPath |> Maybe.map Path.toPosixString |> Expect.equal (Just "/home/me")
+                \_ -> posix "/home/me/file.md" |> Path.parent |> Maybe.map Path.toPosixString |> Expect.equal (Just "/home/me")
             , test "of /a is /" <|
-                \_ -> posix "/a" |> Path.parentPath |> Maybe.map Path.toPosixString |> Expect.equal (Just "/")
+                \_ -> posix "/a" |> Path.parent |> Maybe.map Path.toPosixString |> Expect.equal (Just "/")
             , test "of a relative single segment is empty" <|
-                \_ -> posix "a" |> Path.parentPath |> Expect.equal (Just Path.empty)
+                \_ -> posix "a" |> Path.parent |> Expect.equal (Just Path.empty)
             , test "filenameWithExtension of /home/me/file.md" <|
                 \_ -> posix "/home/me/file.md" |> Path.filenameWithExtension |> Expect.equal "file.md"
             ]

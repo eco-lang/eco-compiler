@@ -13,19 +13,20 @@ from gren, which produced an unhandled rejection).
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamTestHelp
 import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
-            Stream.identityTransformation
+            Stream.Transformation.identity
                 |> Task.andThen
                     (\t ->
-                        Stream.write 5 (Stream.writable t)
+                        Stream.write 5 (Stream.Transformation.writable t)
                             |> Task.andThen Stream.closeWritable
                             |> Task.andThen
                                 (\_ ->
@@ -37,10 +38,10 @@ main =
                                             , "value before close: " ++ String.fromInt v
                                             ]
                                         )
-                                        (StreamTestHelp.describe (Stream.write 6 (Stream.writable t)))
-                                        (StreamTestHelp.describe (Stream.enqueue 7 (Stream.writable t)))
-                                        (StreamTestHelp.describe (Stream.closeWritable (Stream.writable t)))
-                                        (Stream.read (Stream.readable t))
+                                        (StreamTestHelp.describe (Stream.write 6 (Stream.Transformation.writable t)))
+                                        (StreamTestHelp.describe (Stream.enqueue 7 (Stream.Transformation.writable t)))
+                                        (StreamTestHelp.describe (Stream.closeWritable (Stream.Transformation.writable t)))
+                                        (Stream.read (Stream.Transformation.readable t))
                                 )
                     )
         )

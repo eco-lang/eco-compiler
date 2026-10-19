@@ -9,11 +9,11 @@ submit (`unclaimed_`) path and the per-run collectors.
 -- CHECK: results: 20 all-correct: True
 -- EXIT: 0
 
+import ChildProcess as P
 import Dict exposing (Dict)
 import ProcessTestHelp exposing (bytesToString, noShell)
-import Stream.Log
+import Stream
 import System
-import System.Process as P
 import Task
 
 
@@ -74,9 +74,9 @@ correct i ( code, out ) =
     code == modBy 7 i && out == "out" ++ String.fromInt i
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, results = Dict.empty }
@@ -93,7 +93,7 @@ main =
                         ( { model | results = results }
                         , if Dict.size results == count then
                             Task.perform (\_ -> Logged)
-                                (Stream.Log.line model.env.stdout
+                                (Stream.logLine
                                     ("results: "
                                         ++ String.fromInt (Dict.size results)
                                         ++ " all-correct: "
@@ -104,6 +104,7 @@ main =
                                                 "False " ++ Debug.toString (Dict.toList results)
                                            )
                                     )
+                                    model.env.stdout
                                 )
 
                           else

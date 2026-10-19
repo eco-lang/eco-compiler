@@ -1,6 +1,6 @@
-effect module System.Terminal where { subscription = MySub } exposing
-    ( Configuration, Size, getConfiguration
-    , setStdInRawMode, setProcessTitle
+effect module Terminal where { subscription = MySub } exposing
+    ( Configuration, Size, configuration
+    , setStdinRawMode, setTitle
     , onResize
     )
 
@@ -8,18 +8,18 @@ effect module System.Terminal where { subscription = MySub } exposing
 this application.
 
 Unlike gren-node's `Terminal` module there is no permission value and no `initialize`: call
-[`getConfiguration`](#getConfiguration) to find out whether a terminal is attached, and use the
+[`configuration`](#configuration) to find out whether a terminal is attached, and use the
 other functions directly.
 
 
 ## Configuration
 
-@docs Configuration, Size, getConfiguration
+@docs Configuration, Size, configuration
 
 
 ## Commands
 
-@docs setStdInRawMode, setProcessTitle
+@docs setStdinRawMode, setTitle
 
 
 ## Subscriptions
@@ -49,7 +49,7 @@ type alias Configuration =
     }
 
 
-{-| Size of a terminal. Handy to know for drawing a text-based UI.
+{-| Size of a terminal viewport. Handy to know for drawing a text-based UI.
 -}
 type alias Size =
     { columns : Int
@@ -66,8 +66,8 @@ This replaces gren-node's `Terminal.initialize`; it can be called at any time an
 you like.
 
 -}
-getConfiguration : Task x (Maybe Configuration)
-getConfiguration =
+configuration : Task x (Maybe Configuration)
+configuration =
     kGetConfiguration
         |> Task.mapError never
         |> Task.map
@@ -88,22 +88,26 @@ restored when the program exits, also when it is ended by an interrupt (`SIGINT`
 (`SIGTERM`) signal it does not subscribe to. This does nothing if stdin is not a terminal.
 
 -}
-setStdInRawMode : Bool -> Task x ()
-setStdInRawMode toggle =
+setStdinRawMode : Bool -> Task x ()
+setStdinRawMode toggle =
     kSetStdInRawMode toggle
         |> Task.mapError never
 
 
-{-| Set the title of the running process. This will usually display in activity monitors or in
-the title bar of your terminal emulator.
+{-| Set the title of the terminal window, as shown in the title bar or tab of your terminal
+emulator.
 
-On Linux this sets the process name shown by tools like `top` and `ps -o comm` (at most 15
-bytes; the full command line shown by `ps` is unchanged). On macOS it does nothing.
+This writes the standard title escape sequence (OSC 2) to stdout when stdout is a terminal, and
+does nothing otherwise, so the sequence never ends up in a redirected file or pipe. It works in
+xterm-compatible terminals on Linux and macOS, and in Windows Terminal.
+
+This was `setProcessTitle`, which changed the process name instead (on Linux only); POSIX has no
+portable process title.
 
 -}
-setProcessTitle : String -> Task x ()
-setProcessTitle title =
-    kSetProcessTitle title
+setTitle : String -> Task x ()
+setTitle title =
+    kSetTitle title
         |> Task.mapError never
 
 
@@ -117,7 +121,7 @@ onResize toMsg =
 
 -- EFFECT MANAGER
 --
--- The native backend runs the C++ manager registered as "System.Terminal"
+-- The native backend runs the C++ manager registered as "Terminal"
 -- (src/eco-system/Terminal/TerminalManager.{hpp,cpp}, plans/eco-system-library.md Appendix C.4)
 -- and ignores the Elm functions below. The JS backend runs them (plans/eco-system-library.md
 -- Phase 10, D15): while there is at least one OnResize subscription, one listener process
@@ -197,9 +201,9 @@ kSetStdInRawMode =
     Eco.Kernel.Terminal.setStdInRawMode
 
 
-kSetProcessTitle : String -> Task Never ()
-kSetProcessTitle =
-    Eco.Kernel.Terminal.setProcessTitle
+kSetTitle : String -> Task Never ()
+kSetTitle =
+    Eco.Kernel.Terminal.setTitle
 
 
 

@@ -20,7 +20,6 @@ after the other, with messages up to 64 MiB, no heartbeat, and the default compr
 import Bytes exposing (Bytes)
 import Socket
 import Stream
-import Stream.Log
 import System
 import Task exposing (Task)
 import WebSocket
@@ -33,9 +32,9 @@ type alias Options =
     }
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
             let
                 options =
@@ -50,10 +49,9 @@ main =
             run env.stdout options
                 |> Task.onError
                     (\problem ->
-                        Stream.Log.line env.stderr ("ws-autobahn-client: " ++ problem)
+                        Stream.logLine ("ws-autobahn-client: " ++ problem) env.stderr
                             |> Task.andThen (\_ -> System.setExitCode 1)
                     )
-                |> System.endSimpleProgram
         )
 
 
@@ -88,16 +86,16 @@ run stdout options =
     caseCount options
         |> Task.andThen
             (\count ->
-                Stream.Log.line stdout ("ws-autobahn-client: " ++ String.fromInt count ++ " cases")
+                Stream.logLine ("ws-autobahn-client: " ++ String.fromInt count ++ " cases") stdout
                     |> Task.andThen (\_ -> runCases stdout options 1 count)
             )
         |> Task.andThen
             (\_ ->
                 connect options ("/updateReports?agent=" ++ options.agent)
-                    |> Task.andThen WebSocket.closed
+                    |> Task.andThen WebSocket.awaitClose
                     |> Task.mapError Socket.errorToString
             )
-        |> Task.andThen (\_ -> Stream.Log.line stdout "ws-autobahn-client: reports updated")
+        |> Task.andThen (\_ -> Stream.logLine "ws-autobahn-client: reports updated" stdout)
 
 
 connect : Options -> String -> Task Socket.Error (WebSocket.WebSocket WebSocket.Whole)
@@ -142,7 +140,7 @@ caseCount options =
                                 WebSocket.Binary _ ->
                                     Task.fail "unexpected binary case count"
                         )
-                    |> Task.andThen (\n -> WebSocket.closed ws |> Task.map (\_ -> n))
+                    |> Task.andThen (\n -> WebSocket.awaitClose ws |> Task.map (\_ -> n))
             )
 
 
@@ -153,14 +151,14 @@ runCases stdout options n count =
 
     else
         connect options ("/runCase?case=" ++ String.fromInt n ++ "&agent=" ++ options.agent)
-            |> Task.andThen (\ws -> echo ws |> Task.andThen (\_ -> WebSocket.closed ws))
+            |> Task.andThen (\ws -> echo ws |> Task.andThen (\_ -> WebSocket.awaitClose ws))
             |> Task.map (\_ -> ())
             -- A case may fail the handshake on purpose; the test suite records the outcome.
             |> Task.onError (\_ -> Task.succeed ())
             |> Task.andThen
                 (\_ ->
                     if modBy 50 n == 0 || n == count then
-                        Stream.Log.line stdout ("ws-autobahn-client: " ++ String.fromInt n ++ " / " ++ String.fromInt count)
+                        Stream.logLine ("ws-autobahn-client: " ++ String.fromInt n ++ " / " ++ String.fromInt count) stdout
 
                     else
                         Task.succeed ()

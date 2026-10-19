@@ -18,6 +18,7 @@ import Process
 import Socket
 import SocketTestHelp as H
 import Stream
+import Stream.Transformation
 import System
 import Task exposing (Task)
 import WebSocket
@@ -25,7 +26,7 @@ import WebSocketSha1 exposing (acceptFor)
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -70,26 +71,26 @@ run _ =
     H.socketErr H.listenLocal
         |> Task.andThen
             (\listener ->
-                Task.map2 Tuple.pair Stream.identityTransformation Stream.identityTransformation
+                Task.map2 Tuple.pair Stream.Transformation.identity Stream.Transformation.identity
                     |> Task.andThen
                         (\( signal, source ) ->
-                            H.async (rawServer listener (Stream.writable signal))
+                            H.async (rawServer listener (Stream.Transformation.writable signal))
                                 |> Task.andThen
                                     (\rawDone ->
                                         W.connect listener
                                             |> Task.andThen
                                                 (\client ->
-                                                    H.async (WebSocket.sendText (Stream.readable source) client |> Task.mapError W.wsErr)
+                                                    H.async (WebSocket.sendText (Stream.Transformation.readable source) client |> Task.mapError W.wsErr)
                                                         |> Task.andThen
                                                             (\sending ->
-                                                                Stream.write "part1" (Stream.writable source)
+                                                                Stream.write "part1" (Stream.Transformation.writable source)
                                                                     |> Task.mapError Stream.errorToString
-                                                                    |> Task.andThen (\_ -> Stream.read (Stream.readable signal) |> Task.mapError Stream.errorToString)
+                                                                    |> Task.andThen (\_ -> Stream.read (Stream.Transformation.readable signal) |> Task.mapError Stream.errorToString)
                                                                     |> Task.andThen (\_ -> H.async (W.sendAll [ W.text "during" ] client))
                                                                     |> Task.andThen
                                                                         (\during ->
                                                                             Process.sleep 100
-                                                                                |> Task.andThen (\_ -> W.writeAll [ "part2" ] (Stream.writable source))
+                                                                                |> Task.andThen (\_ -> W.writeAll [ "part2" ] (Stream.Transformation.writable source))
                                                                                 |> Task.andThen (\_ -> sending)
                                                                                 |> Task.andThen (\_ -> during)
                                                                         )

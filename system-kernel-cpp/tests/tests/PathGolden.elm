@@ -2,7 +2,7 @@ module PathGolden exposing (CombineCase, JoinCase, ParseCase, combineCases, join
 
 {-| GENERATED FILE — do not edit.
 
-Golden tables for System.File.Path, produced by running gren-node's FilePath.js / Path.gren
+Golden tables for Path, produced by running gren-node's FilePath.js / Path.gren
 semantics on node v22.23.3 (node:path posix and win32 normalize + parse).
 
 Regenerate from system-kernel-cpp/ with:

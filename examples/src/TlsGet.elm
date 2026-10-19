@@ -13,14 +13,14 @@ import Socket
 import Socket.Tcp
 import Socket.Tls
 import Stream
-import Stream.Log
+import Stream.Transformation
 import System
 import Task exposing (Task)
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
             case List.drop 1 env.args of
                 host :: rest ->
@@ -29,18 +29,16 @@ main =
                             rest |> List.head |> Maybe.andThen String.toInt |> Maybe.withDefault 443
                     in
                     fetch host port_
-                        |> Task.andThen (Stream.Log.line env.stdout)
+                        |> Task.andThen (\statusLine -> Stream.logLine statusLine env.stdout)
                         |> Task.onError
                             (\err ->
-                                Stream.Log.line env.stderr ("tls-get: " ++ err)
+                                Stream.logLine ("tls-get: " ++ err) env.stderr
                                     |> Task.andThen (\_ -> System.setExitCode 1)
                             )
-                        |> System.endSimpleProgram
 
                 [] ->
-                    Stream.Log.line env.stderr "usage: tls-get <host> [port]"
+                    Stream.logLine "usage: tls-get <host> [port]" env.stderr
                         |> Task.andThen (\_ -> System.setExitCode 2)
-                        |> System.endSimpleProgram
         )
 
 
@@ -65,8 +63,8 @@ fetch host port_ =
 request : String -> Socket.Connection -> Task String String
 request host conn =
     Socket.writable conn
-        |> Stream.writeStringAsBytes ("GET / HTTP/1.1\r\nHost: " ++ host ++ "\r\nConnection: close\r\n\r\n")
-        |> Task.andThen (\_ -> Stream.awaitAndPipeThrough Stream.textDecoder (Socket.readable conn))
+        |> Stream.writeString ("GET / HTTP/1.1\r\nHost: " ++ host ++ "\r\nConnection: close\r\n\r\n")
+        |> Task.andThen (\_ -> Stream.awaitAndPipeThrough Stream.Transformation.textDecoder (Socket.readable conn))
         |> Task.andThen (Stream.readUntilClosed (\chunk acc -> Ok (acc ++ chunk)) "")
         |> Task.mapError Stream.errorToString
         |> Task.map (\response -> response |> String.lines |> List.head |> Maybe.withDefault "")

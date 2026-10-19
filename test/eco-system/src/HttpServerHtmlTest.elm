@@ -1,6 +1,6 @@
 module HttpServerHtmlTest exposing (main)
 
-{-| `Http.Server.Response.setBodyAsHtml` (plans/elm-html-native-kernel.md P6,
+{-| `Http.Server.setBodyAsHtml` (plans/elm-html-native-kernel.md P6,
 D13, D15): the page is serialized as it is sent, `<!DOCTYPE html>` comes first
 only when the root element is `html` (seen through `Html.map`), and
 `Content-Type: text/html; charset=utf-8` is added unless the response already
@@ -19,7 +19,7 @@ has a Content-Type.
 
 import Html exposing (div, node, p, text)
 import Html.Attributes exposing (lang)
-import Http.Server.Response as Response
+import Http.Server as Response
 import HttpServerTestHelp as Help
 import Task
 

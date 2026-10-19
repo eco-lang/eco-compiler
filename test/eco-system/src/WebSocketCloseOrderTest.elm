@@ -20,7 +20,7 @@ import Bytes.Encode as E
 import Process
 import Socket
 import SocketTestHelp as H
-import Stream.Log
+import Stream
 import System
 import Task exposing (Task)
 import WebSocket exposing (WebSocket, Whole)
@@ -54,9 +54,9 @@ type alias Model =
     }
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, listener = Nothing, client = Nothing, subscribed = False, received = 0, inOrder = True, log = [] }
@@ -169,7 +169,7 @@ update msg model =
 finish : Model -> ( Model, Cmd Msg )
 finish model =
     ( { model | subscribed = False, client = Nothing }
-    , Stream.Log.line model.env.stdout (String.join "\n" model.log)
+    , Stream.logLine (String.join "\n" model.log) model.env.stdout
         |> Task.andThen
             (\_ ->
                 case model.listener of

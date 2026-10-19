@@ -7,32 +7,32 @@ line, with a trailing `/` on directories.
 
 -}
 
-import Stream.Log
+import FileSystem
+import Stream
 import System
-import System.File as File
-import System.File.Path as Path exposing (Path)
+import Path exposing (Path)
 import Task exposing (Task)
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram (\env -> System.endSimpleProgram (run env))
+    System.simpleProgram run
 
 
 run : System.Environment -> Task Never ()
 run env =
     directory env
-        |> Task.andThen File.listDirectory
+        |> Task.andThen FileSystem.listDirectory
         |> Task.map (List.map entryName >> List.sort >> String.join "\n")
-        |> Task.andThen (Stream.Log.line env.stdout)
+        |> Task.andThen (\listing -> Stream.logLine listing env.stdout)
         |> Task.onError
             (\err ->
-                Stream.Log.line env.stderr ("ls: " ++ File.errorToString err)
+                Stream.logLine ("ls: " ++ FileSystem.errorToString err) env.stderr
                     |> Task.andThen (\_ -> System.setExitCode 1)
             )
 
 
-directory : System.Environment -> Task File.Error Path
+directory : System.Environment -> Task FileSystem.Error Path
 directory env =
     -- args includes the program name first (the full C argv).
     case List.drop 1 env.args of
@@ -40,13 +40,13 @@ directory env =
             Task.succeed (Path.fromPosixString dir)
 
         [] ->
-            File.currentWorkingDirectory
+            FileSystem.currentWorkingDirectory
 
 
-entryName : { path : Path, entityType : File.EntityType } -> String
+entryName : { path : Path, entityType : FileSystem.EntityType } -> String
 entryName entry =
     Path.filenameWithExtension entry.path
-        ++ (if entry.entityType == File.Directory then
+        ++ (if entry.entityType == FileSystem.Directory then
                 "/"
 
             else

@@ -1,7 +1,7 @@
 //===- ChildProcessExports.cpp - C exports of Eco.Kernel.ChildProcess -----===//
 //
 // plans/eco-system-library.md Appendix B.4. Exports only decode, root, pack
-// and bind (G2); the body is in ChildProcess.cpp. The `System.Process`
+// and bind (G2); the body is in ChildProcess.cpp. The `ChildProcess`
 // effect-manager registration is in ChildProcessManager.cpp.
 //
 // Templates used: T1 (export shape), T2 (async binding).

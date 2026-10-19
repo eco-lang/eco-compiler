@@ -15,6 +15,7 @@ runs meanwhile must evacuate them in place.
 
 import Process
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
 import Task exposing (Task)
 
@@ -44,12 +45,12 @@ cycle size i =
         items =
             List.map (item i) (List.range 1 size)
     in
-    Stream.identityTransformationWithOptions { readCapacity = 7, writeCapacity = 3 }
+    Stream.Transformation.identityWith { readCapacity = 7, writeCapacity = 3 }
         |> Task.andThen
             (\t ->
-                Process.spawn (writeAll items (Stream.writable t) |> Task.onError (\_ -> Task.succeed ()))
+                Process.spawn (writeAll items (Stream.Transformation.writable t) |> Task.onError (\_ -> Task.succeed ()))
                     |> Task.andThen
-                        (\_ -> Stream.readUntilClosed (\v acc -> Ok (v :: acc)) [] (Stream.readable t))
+                        (\_ -> Stream.readUntilClosed (\v acc -> Ok (v :: acc)) [] (Stream.Transformation.readable t))
             )
         |> Task.map (\got -> List.reverse got == items)
         |> Task.onError (\_ -> Task.succeed False)

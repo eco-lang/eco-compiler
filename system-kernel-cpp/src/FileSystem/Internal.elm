@@ -1,16 +1,16 @@
-module System.File.Internal exposing (Error(..), MetadataOf, decodeError, decodeMetadata)
+module FileSystem.Internal exposing (Error(..), MetadataOf, decodeError, decodeMetadata)
 
 {-| Internal; not exposed.
 
-`Error` is defined here so that both `System.File` and `System.File.FileHandle` can build it,
-while users only see the alias exposed by `System.File`. The same goes for the metadata record
-and its decoder: `System.File` and `System.File.FileHandle` both decode the kernel's metadata
-list, but only `System.File` can name `EntityType`'s constructors, so the decoder takes the
+`Error` is defined here so that both `FileSystem` and `FileSystem.Handle` can build it,
+while users only see the alias exposed by `FileSystem`. The same goes for the metadata record
+and its decoder: `FileSystem` and `FileSystem.Handle` both decode the kernel's metadata
+list, but only `FileSystem` can name `EntityType`'s constructors, so the decoder takes the
 entity constructor as an argument (plans/eco-system-library.md §3.1).
 
 -}
 
-import System.File.Path exposing (Path)
+import Path exposing (Path)
 import Time
 
 

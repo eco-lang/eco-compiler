@@ -27,7 +27,7 @@ result task =
         |> Task.onError (\e -> Task.succeed (Stream.errorToString e))
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

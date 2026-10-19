@@ -23,7 +23,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -43,7 +43,7 @@ run _ =
                                             W.readAll ws
                                                 |> Task.andThen
                                                     (\( _, end ) ->
-                                                        WebSocket.closed ws
+                                                        WebSocket.awaitClose ws
                                                             |> Task.map
                                                                 (\info ->
                                                                     [ "server got: " ++ String.join " | " (List.map W.messageString got)

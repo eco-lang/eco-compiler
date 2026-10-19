@@ -18,7 +18,7 @@ import Socket.Address as Address
 import Socket.Udp
 import SocketTestHelp as H
 import SocketUdpTestHelp as U
-import Stream.Log
+import Stream
 import System
 import Task
 
@@ -39,9 +39,9 @@ type alias Model =
     }
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, sockets = Nothing, bGot = Nothing, aGot = Nothing }
@@ -131,7 +131,7 @@ check model =
 finish : Model -> List String -> ( Model, Cmd Msg )
 finish model lines =
     ( { model | sockets = Nothing }
-    , Stream.Log.line model.env.stdout (String.join "\n" lines)
+    , Stream.logLine (String.join "\n" lines) model.env.stdout
         |> Task.andThen
             (\_ ->
                 case model.sockets of

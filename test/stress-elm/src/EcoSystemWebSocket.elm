@@ -24,11 +24,10 @@ import Socket
 import Socket.Address as Address exposing (Endpoint(..), Family(..))
 import Socket.Tcp
 import Stream
+import Stream.Transformation
 import StressHarness exposing (StressFlags)
 import Task exposing (Task)
 import WebSocket exposing (WebSocket, Whole)
-
-
 main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
     StressHarness.taskProgram { label = "EcoSystemWebSocket", run = run }
@@ -65,16 +64,16 @@ run flags =
 
 async : Task Never a -> Task x (Task Never (Maybe a))
 async task =
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
                 Process.spawn
                     (task
-                        |> Task.andThen (\v -> Stream.write v (Stream.writable t) |> Task.map (\_ -> ()) |> Task.onError (\_ -> Task.succeed ()))
+                        |> Task.andThen (\v -> Stream.write v (Stream.Transformation.writable t) |> Task.map (\_ -> ()) |> Task.onError (\_ -> Task.succeed ()))
                     )
                     |> Task.map
                         (\_ ->
-                            Stream.read (Stream.readable t)
+                            Stream.read (Stream.Transformation.readable t)
                                 |> Task.map Just
                                 |> Task.onError (\_ -> Task.succeed Nothing)
                         )
@@ -120,7 +119,7 @@ accept listener =
             WebSocket.defaultAcceptOptions
     in
     Socket.accept listener
-        |> Task.andThen WebSocket.upgradeRequest
+        |> Task.andThen WebSocket.receiveUpgrade
         |> Task.andThen (WebSocket.accept { options | heartbeat = heartbeat })
 
 
@@ -145,7 +144,7 @@ echo ws =
 server : Socket.Listener -> Task Never Bool
 server listener =
     accept listener
-        |> Task.andThen (\ws -> echo ws |> Task.mapError never |> Task.andThen (\clean -> WebSocket.closed ws |> Task.map (\info -> clean && info.clean)))
+        |> Task.andThen (\ws -> echo ws |> Task.mapError never |> Task.andThen (\clean -> WebSocket.awaitClose ws |> Task.map (\info -> clean && info.clean)))
         |> Task.onError (\_ -> Task.succeed False)
 
 
@@ -180,7 +179,7 @@ client listener w j =
                         (\got ->
                             WebSocket.close WebSocket.Normal "" ws
                                 |> Task.mapError (\_ -> Stream.Closed)
-                                |> Task.andThen (\_ -> WebSocket.closed ws)
+                                |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                 |> Task.map (\info -> got == messages && info.clean)
                         )
             )

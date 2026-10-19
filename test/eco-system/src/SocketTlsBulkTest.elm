@@ -59,7 +59,7 @@ writeChunks n w =
         Stream.write chunk w |> Task.andThen (\_ -> writeChunks (n - 1) w)
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

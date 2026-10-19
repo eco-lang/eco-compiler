@@ -17,7 +17,6 @@ import Http
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
-import Stream.Log
 import System
 import Task
 import TestServerConfig
@@ -29,9 +28,9 @@ type Msg
     | Logged
 
 
-main : System.Program System.Environment Msg
+main : Platform.Program System.Environment System.Environment Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( env
@@ -68,19 +67,18 @@ main =
                             |> Task.onError (\e -> Task.succeed ("read error: " ++ Stream.errorToString e))
                             |> Task.andThen
                                 (\line ->
-                                    Stream.Log.line env.stdout
-                                        (String.join "\n"
+                                    Stream.logLine (String.join "\n"
                                             [ "BadStatus_ " ++ String.fromInt meta.statusCode ++ " " ++ meta.statusText
                                             , line
                                             , "content-type: " ++ Maybe.withDefault "-" (Dict.get "content-type" meta.headers)
                                             ]
-                                        )
+                                        ) env.stdout
                                 )
                             |> Task.perform (\_ -> Logged)
                         )
 
                     Got (Err e) ->
-                        ( env, Task.perform (\_ -> Logged) (Stream.Log.line env.stdout ("error: " ++ e)) )
+                        ( env, Task.perform (\_ -> Logged) (Stream.logLine ("error: " ++ e) env.stdout) )
 
                     Logged ->
                         ( env, Cmd.none )

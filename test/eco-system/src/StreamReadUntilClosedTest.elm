@@ -13,6 +13,7 @@ An `Err` from the step function cancels the stream with its reason.
 
 import Process
 import Stream
+import Stream.Transformation
 import StreamTestHelp
 import System
 import Task exposing (Task)
@@ -27,20 +28,20 @@ writeFrom i n w =
         Stream.write i w |> Task.andThen (writeFrom (i + 1) n)
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
-            Stream.identityTransformation
+            Stream.Transformation.identity
                 |> Task.andThen
                     (\t ->
-                        Process.spawn (writeFrom 1 10000 (Stream.writable t) |> Task.onError (\_ -> Task.succeed ()))
+                        Process.spawn (writeFrom 1 10000 (Stream.Transformation.writable t) |> Task.onError (\_ -> Task.succeed ()))
                             |> Task.andThen
                                 (\_ ->
                                     Stream.readUntilClosed
                                         (\v ( count, sum ) -> Ok ( count + 1, sum + v ))
                                         ( 0, 0 )
-                                        (Stream.readable t)
+                                        (Stream.Transformation.readable t)
                                 )
                     )
                 |> Task.andThen

@@ -4,7 +4,7 @@ module HttpStreamTestHelp exposing (bytesOf, countChunks, describeHttpError, ela
 
 The tests talk to the test runner's HTTP test server, whose URLs come from the
 environment (`TestServerConfig.server`), and print their observations to the
-program's real stdout through `Stream.Log`, so the `-- CHECK:` patterns are
+program's real stdout through `Stream`, so the `-- CHECK:` patterns are
 matched against raw fd output.
 
 -}
@@ -13,7 +13,6 @@ import Bytes exposing (Bytes)
 import Bytes.Encode
 import Http
 import Stream
-import Stream.Log
 import System
 import Task exposing (Task)
 import TestServerConfig
@@ -23,17 +22,15 @@ import Time
 {-| A simple program that runs `run server env` and prints every line it
 returns, or `error: <reason>` if it fails.
 -}
-program : (TestServerConfig.Server -> System.Environment -> Task String (List String)) -> System.SimpleProgram ()
+program : (TestServerConfig.Server -> System.Environment -> Task String (List String)) -> Platform.Program System.Environment () ()
 program run =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (TestServerConfig.server
-                    |> Task.andThen (\server -> run server env)
-                    |> Task.map (String.join "\n")
-                    |> Task.onError (\err -> Task.succeed ("error: " ++ err))
-                    |> Task.andThen (Stream.Log.line env.stdout)
-                )
+            TestServerConfig.server
+                |> Task.andThen (\server -> run server env)
+                |> Task.map (String.join "\n")
+                |> Task.onError (\err -> Task.succeed ("error: " ++ err))
+                |> Task.andThen (\logged -> Stream.logLine logged env.stdout)
         )
 
 
@@ -76,7 +73,7 @@ ASCII, so no character is split across chunks).
 -}
 readAllString : Stream.Readable Bytes -> Task Stream.Error String
 readAllString stream =
-    Stream.readBytesAsString stream
+    Stream.readString stream
         |> Task.andThen (\s -> readAllString stream |> Task.map (\rest -> s ++ rest))
         |> Task.onError
             (\err ->

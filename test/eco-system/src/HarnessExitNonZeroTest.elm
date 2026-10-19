@@ -8,15 +8,15 @@ the real stdout before `exitWithCode` is still checked.
 -- CHECK: exiting with 7
 -- EXIT: 7
 
-import Stream.Log
+import Stream
 import System
 import Task
 
 
-main : System.Program () ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineProgram
-        { init = \env -> ( (), Task.perform identity (Stream.Log.line env.stdout "exiting with 7") )
+    Platform.worker
+        { init = \env -> ( (), Task.perform identity (Stream.logLine "exiting with 7" env.stdout) )
         , update = \_ model -> ( model, System.exitWithCode 7 )
         , subscriptions = \_ -> Sub.none
         }

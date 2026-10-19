@@ -1,6 +1,6 @@
 module TerminalOnResizeTest exposing (main)
 
-{-| `System.Terminal.onResize` (plans/eco-system-library.md Phase 5 step 5.3):
+{-| `Terminal.onResize` (plans/eco-system-library.md Phase 5 step 5.3):
 the subscription installs a SIGWINCH listener through SignalService, holds
 no pendingAsync (resize subscriptions do not keep the program alive, §3.4),
 and delivers nothing when no stdio fd is a terminal (as Node's stdout
@@ -12,12 +12,12 @@ exits 0 once its work is done.
 -- CHECK-NOT: resized
 -- EXIT: 0
 
+import ChildProcess as P
 import ProcessTestHelp exposing (noShell)
-import Stream.Log
+import Stream
 import System
-import System.Process as P
-import System.Terminal as Terminal
 import Task
+import Terminal
 
 
 type Msg
@@ -27,9 +27,9 @@ type Msg
     | Logged
 
 
-main : System.Program System.Environment Msg
+main : Platform.Program System.Environment System.Environment Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = \env -> ( env, Task.perform (\_ -> Start) (Task.succeed ()) )
         , update =
             \msg env ->
@@ -43,14 +43,12 @@ main =
                         )
 
                     Sent r ->
-                        ( env, Task.perform (\_ -> Logged) (Stream.Log.line env.stdout ("winch sent: " ++ r)) )
+                        ( env, Task.perform (\_ -> Logged) (Stream.logLine ("winch sent: " ++ r) env.stdout) )
 
                     Resized size ->
                         ( env
                         , Task.perform (\_ -> Logged)
-                            (Stream.Log.line env.stdout
-                                ("resized " ++ String.fromInt size.columns ++ "x" ++ String.fromInt size.rows)
-                            )
+                            (Stream.logLine ("resized " ++ String.fromInt size.columns ++ "x" ++ String.fromInt size.rows) env.stdout)
                         )
 
                     Logged ->

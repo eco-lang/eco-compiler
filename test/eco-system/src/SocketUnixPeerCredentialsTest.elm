@@ -18,9 +18,9 @@ import Socket
 import Socket.Unix
 import SocketTestHelp as H
 import System
-import System.File as File
-import System.File.Path as Path
-import System.Process as P
+import FileSystem as File
+import Path
+import ChildProcess as P
 import Task exposing (Task)
 
 
@@ -39,7 +39,7 @@ describeCreds expected got =
         ++ H.boolString (expected.gid == got.gid)
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

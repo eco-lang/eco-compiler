@@ -5,7 +5,7 @@ import Elm.Kernel.List exposing (Nil, fromArray)
 import Elm.Kernel.Json exposing (wrap)
 import Elm.Kernel.Utils exposing (Tuple2)
 import Maybe exposing (Just, Nothing)
-import Http.Dom as Dom exposing (Text, Element, KeyedElement, Mapped, Attribute, AttributeNS, Property, Style, Event, render)
+import Html.Dom as Dom exposing (Text, Element, KeyedElement, Mapped, Attribute, AttributeNS, Property, Style, Event, toString)
 
 */
 
@@ -140,4 +140,4 @@ function _Dom_fromAttribute(fact)
 	return A2(__Dom_Property, key, value);                             // PROP: already a Json.Value
 }
 
-function _Dom_toString(node) { return __Dom_render(_Dom_fromNode(node)); }
+function _Dom_toString(node) { return __Dom_toString(_Dom_fromNode(node)); }

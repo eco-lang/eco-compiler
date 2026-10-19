@@ -1,6 +1,6 @@
 module HttpServerHttp2CloseTest exposing (main)
 
-{-| `closeServer` with HTTP/2 (plans/eco-system-websockets.md §3.4 "closeServer", §3.8, §4 WS8): a
+{-| `close` with HTTP/2 (plans/eco-system-websockets.md §3.4 "close", §3.8, §4 WS8): a
 Node `http2` client sends `/slow`; the server closes itself at once and answers 300 ms later. The
 client gets GOAWAY (NO_ERROR) first; a stream it opens afterwards is not served; the request in
 flight is still answered, and the connection then ends. The port is free afterwards.
@@ -17,7 +17,6 @@ flight is still answered, and the connection then ends. The port is free afterwa
 -- EXIT: 0
 
 import Http.Server as Server exposing (HttpVersion(..))
-import Http.Server.Response as Response
 import HttpServerH2Help as H
 import Socket
 import Socket.Address as Address exposing (Family(..))
@@ -25,7 +24,7 @@ import Socket.Tcp
 import Task exposing (Task)
 
 
-handler : Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : Server.Request -> Server.Response -> ( List String, H.Answer )
 handler request response =
     let
         v =
@@ -37,10 +36,10 @@ handler request response =
     in
     ( [ Server.methodToString request.method ++ " " ++ request.url.path ++ " " ++ v ]
     , if request.url.path == "/slow" then
-        H.CloseThen 300 (response |> Response.setBody "slow")
+        H.CloseThen 300 (response |> Server.setBody "slow")
 
       else
-        H.Now (response |> Response.setBody "late")
+        H.Now (response |> Server.setBody "late")
     )
 
 
@@ -58,7 +57,7 @@ client tools servers =
             H.node tools server "close" []
                 |> Task.andThen
                     (\lines ->
-                        connectCode (Server.serverPort server)
+                        connectCode ((Server.endpoint server).port_)
                             |> Task.map (\code -> lines ++ [ "port after close: " ++ code ])
                     )
 

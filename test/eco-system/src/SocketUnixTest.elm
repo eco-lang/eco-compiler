@@ -31,14 +31,14 @@ module SocketUnixTest exposing (main)
 -- EXIT: 0
 
 import Bytes exposing (Bytes)
+import ChildProcess as P
+import FileSystem as File
+import Path exposing (Path)
 import Socket
 import Socket.Address exposing (Endpoint(..))
 import Socket.Unix
 import SocketTestHelp as H
 import System
-import System.File as File
-import System.File.Path as Path exposing (Path)
-import System.Process as P
 import Task exposing (Task)
 
 
@@ -203,7 +203,7 @@ errors dir =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

@@ -15,9 +15,8 @@ stdout, and the program exits: a listening server keeps it alive otherwise.
 
 import Dict
 import Http
-import Http.Server as Server exposing (Request, Server)
-import Http.Server.Response as Response exposing (Response)
-import Stream.Log
+import Http.Server as Server exposing (Request, Response, Server)
+import Stream
 import System
 import Task exposing (Task)
 
@@ -26,7 +25,7 @@ import Task exposing (Task)
 -}
 testPort : Task x Int
 testPort =
-    System.getEnvironmentVariables
+    System.environmentVariables
         |> Task.map
             (\vars ->
                 Dict.get "ECO_TEST_PORT" vars
@@ -127,7 +126,7 @@ type alias Handler =
 
 
 type Msg
-    = Started (Result Server.ServerError ( Server, Int ))
+    = Started (Result Server.Error ( Server, Int ))
     | GotRequest Request Response
     | ClientDone (List String)
     | Exit
@@ -140,16 +139,16 @@ type alias Model =
     }
 
 
-program : { handler : Handler, client : String -> Task Never (List String) } -> System.Program Model Msg
+program : { handler : Handler, client : String -> Task Never (List String) } -> Platform.Program System.Environment Model Msg
 program config =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, server = Nothing, lines = [] }
                 , testPort
                     |> Task.andThen
                         (\p ->
-                            Server.createServer { host = "127.0.0.1", port_ = p }
+                            Server.listenOnHost "127.0.0.1" p
                                 |> Task.map (\s -> ( s, p ))
                         )
                     |> Task.attempt Started
@@ -162,10 +161,10 @@ program config =
                         , Task.perform ClientDone (config.client (baseUrl p))
                         )
 
-                    Started (Err (Server.ServerError e)) ->
+                    Started (Err e) ->
                         ( model
                         , Task.perform (\_ -> Exit)
-                            (Stream.Log.line model.env.stdout ("server error: " ++ e.code ++ " " ++ e.message))
+                            (Stream.logLine ("server error: " ++ Server.errorToString e) model.env.stdout)
                         )
 
                     GotRequest request response ->
@@ -174,15 +173,13 @@ program config =
                                 config.handler request response
                         in
                         ( { model | lines = model.lines ++ List.map (\l -> "server: " ++ l) lines }
-                        , Response.send reply
+                        , Server.send reply
                         )
 
                     ClientDone lines ->
                         ( model
                         , Task.perform (\_ -> Exit)
-                            (Stream.Log.line model.env.stdout
-                                (String.join "\n" (model.lines ++ List.map (\l -> "client: " ++ l) lines))
-                            )
+                            (Stream.logLine (String.join "\n" (model.lines ++ List.map (\l -> "client: " ++ l) lines)) model.env.stdout)
                         )
 
                     Exit ->

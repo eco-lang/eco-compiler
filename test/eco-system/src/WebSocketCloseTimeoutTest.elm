@@ -21,7 +21,7 @@ import WebSocketSha1 exposing (acceptFor)
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -56,7 +56,7 @@ run _ =
                                                                 serverDone
                                                                     |> Task.andThen
                                                                         (\( conn, chunk ) ->
-                                                                            WebSocket.closed ws
+                                                                            WebSocket.awaitClose ws
                                                                                 |> Task.andThen
                                                                                     (\info ->
                                                                                         Time.now

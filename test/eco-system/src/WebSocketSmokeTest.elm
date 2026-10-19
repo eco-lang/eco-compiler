@@ -3,9 +3,9 @@ module WebSocketSmokeTest exposing (main)
 {-| Smoke test of phase WS0 (plans/eco-system-websockets.md §4 WS0, updated for WS4): `WebSocket`
 and the new `Http.Server` items compile and link on both backends; requests carry `version` and
 `upgrade` through the new C.1 tagger layout; the WebSocket URL parser accepts and rejects URLs (an
-accepted one is dialled: port 1 refuses the connection); `createServerWith` works (WS2);
+accepted one is dialled: port 1 refuses the connection); `listen` works (WS2);
 `Http.Server.upgradeRequest` on a request that does not ask for a WebSocket fails `EINVAL` (WS5:
-`HttpServerWebSocketTest` covers real upgrades) and leaves its `Response` usable; `closeServer`
+`HttpServerWebSocketTest` covers real upgrades) and leaves its `Response` usable; `close`
 completes.
 -}
 
@@ -14,7 +14,7 @@ completes.
 -- CHECK: serverPort: True
 -- CHECK: get: 200 ok
 -- CHECK: createServerWith: ok
--- CHECK: createServerWith http2: EINVAL: createServerWith: http2 requires tls
+-- CHECK: createServerWith http2: EINVAL: listen: http2 requires tls
 -- CHECK: connect ws: ECONNREFUSED: connect ECONNREFUSED 127.0.0.1:1
 -- CHECK: connect scheme: EINVAL: invalid WebSocket URL http://127.0.0.1/: the scheme must be ws or wss
 -- CHECK: connect fragment: EINVAL: invalid WebSocket URL ws://127.0.0.1/#x: fragments are not allowed
@@ -28,18 +28,17 @@ completes.
 import Dict
 import Http
 import Http.Server as Server exposing (HttpVersion(..))
-import Http.Server.Response as Response
 import Socket
 import Socket.Address as Address exposing (Family(..))
-import Stream.Log
+import Stream
 import System
 import Task exposing (Task)
 import WebSocket
 
 
 type Msg
-    = Started (Result Server.ServerError ( Server.Server, Int ))
-    | GotRequest Server.Request Response.Response
+    = Started (Result Server.Error ( Server.Server, Int ))
+    | GotRequest Server.Request Server.Response
     | GotUpgrade String
     | ClientDone (List String)
     | Closed
@@ -56,7 +55,7 @@ type alias Model =
 
 testPort : Task x Int
 testPort =
-    System.getEnvironmentVariables
+    System.environmentVariables
         |> Task.map (Dict.get "ECO_TEST_PORT" >> Maybe.andThen String.toInt >> Maybe.withDefault 0)
 
 
@@ -127,7 +126,7 @@ defaultsLine =
             WebSocket.defaultAcceptOptions
 
         s =
-            Server.defaultServerOptions (Address.loopback IPv4) 0
+            Server.defaultListenOptions (Address.loopback IPv4) 0
     in
     String.join " "
         [ "defaults:"
@@ -176,24 +175,24 @@ client port_ =
                 |> Task.onError (\e -> Task.succeed ("get: error " ++ e))
 
         createWith label options =
-            Server.createServerWith options
+            Server.listen options
                 |> Task.map (\_ -> label ++ ": ok")
                 |> Task.onError
-                    (\(Server.ServerError e) ->
+                    (\e ->
                         Task.succeed
                             (label
                                 ++ ": "
-                                ++ (if e.code == "ENOTSUP" then
+                                ++ (if Server.errorCode e == "ENOTSUP" then
                                         "ENOTSUP"
 
                                     else
-                                        e.code ++ ": " ++ e.message
+                                        Server.errorToString e
                                    )
                             )
                     )
 
         plain =
-            Server.defaultServerOptions (Address.loopback IPv4) 0
+            Server.defaultListenOptions (Address.loopback IPv4) 0
 
         badHeader =
             WebSocket.defaultConnectOptions ("ws://" ++ base ++ "/")
@@ -213,16 +212,16 @@ client port_ =
         |> Task.sequence
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, server = Nothing, serverLines = [], clientLines = Nothing }
                 , testPort
                     |> Task.andThen
                         (\p ->
-                            Server.createServer { host = "127.0.0.1", port_ = p }
+                            Server.listenOnHost "127.0.0.1" p
                                 |> Task.map (\s -> ( s, p ))
                         )
                     |> Task.attempt Started
@@ -233,15 +232,15 @@ main =
                     Started (Ok ( server, p )) ->
                         ( { model
                             | server = Just server
-                            , serverLines = [ "serverPort: " ++ boolString (Server.serverPort server == p) ]
+                            , serverLines = [ "serverPort: " ++ boolString ((Server.endpoint server).port_ == p) ]
                           }
                         , Task.perform ClientDone (client p)
                         )
 
-                    Started (Err (Server.ServerError e)) ->
+                    Started (Err e) ->
                         ( model
                         , Task.perform (\_ -> Exit)
-                            (Stream.Log.line model.env.stdout ("server error: " ++ e.code ++ " " ++ e.message))
+                            (Stream.logLine ("server error: " ++ Server.errorToString e) model.env.stdout)
                         )
 
                     GotRequest request response ->
@@ -269,11 +268,11 @@ main =
                                                 ++ " handshakeFailed "
                                                 ++ boolString (WebSocket.errorIsHandshakeFailed e)
                                                 ++ " status "
-                                                ++ maybeIntString (WebSocket.handshakeStatus e)
+                                                ++ maybeIntString (WebSocket.errorHandshakeStatus e)
                                             )
                                     )
                                 |> Task.perform GotUpgrade
-                            , response |> Response.setBody "ok" |> Response.send
+                            , response |> Server.setBody "ok" |> Server.send
                             ]
                         )
 
@@ -286,13 +285,14 @@ main =
                     Closed ->
                         ( model
                         , Task.perform (\_ -> Exit)
-                            (Stream.Log.line model.env.stdout
+                            (Stream.logLine
                                 (String.join "\n"
                                     (List.sortBy order model.serverLines
                                         ++ Maybe.withDefault [] model.clientLines
                                         ++ [ "closeServer: ok" ]
                                     )
                                 )
+                                model.env.stdout
                             )
                         )
 
@@ -330,7 +330,7 @@ finish : Model -> ( Model, Cmd Msg )
 finish model =
     case ( model.clientLines, model.server, List.any (String.startsWith "upgradeRequest:") model.serverLines ) of
         ( Just _, Just server, True ) ->
-            ( model, Task.perform (\_ -> Closed) (Server.closeServer server) )
+            ( model, Task.perform (\_ -> Closed) (Server.close server) )
 
         _ ->
             ( model, Cmd.none )

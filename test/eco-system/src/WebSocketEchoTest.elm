@@ -1,7 +1,7 @@
 module WebSocketEchoTest exposing (main)
 
 {-| WebSocket echo over loopback (plans/eco-system-websockets.md §4 WS4): a `Socket.Tcp` listener
-whose connection is upgraded with `WebSocket.upgradeRequest` and accepted; the server echoes every
+whose connection is upgraded with `WebSocket.receiveUpgrade` and accepted; the server echoes every
 message until its readable ends. The client sends text and binary messages interleaved (empty
 ones, non-ASCII text, a 70 000-byte message with a 64-bit length and a 300 000-byte one sent in
 fragments) and reads the echoes back in order (compressed: permessage-deflate is on by default,
@@ -31,7 +31,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -107,8 +107,8 @@ run _ =
                                                                                             )
                                                                                     ]
                                                                                 )
-                                                                                (WebSocket.closed client)
-                                                                                (WebSocket.closed server)
+                                                                                (WebSocket.awaitClose client)
+                                                                                (WebSocket.awaitClose server)
                                                                         )
                                                             )
                                                 )

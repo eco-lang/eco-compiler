@@ -9,18 +9,16 @@ Phase 3 step 3.6, §3.7).
 -- CHECK: done writing
 -- EXIT: 4
 
-import Stream.Log
+import Stream
 import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (System.setExitCode 4
-                    |> Task.andThen (\_ -> Stream.Log.line env.stdout "still running")
-                    |> Task.andThen (\_ -> Stream.Log.line env.stderr "done writing")
-                )
+            System.setExitCode 4
+                |> Task.andThen (\_ -> Stream.logLine "still running" env.stdout)
+                |> Task.andThen (\_ -> Stream.logLine "done writing" env.stderr)
         )

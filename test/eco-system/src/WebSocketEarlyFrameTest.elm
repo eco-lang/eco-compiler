@@ -20,7 +20,7 @@ import WebSocketSha1 exposing (acceptFor)
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -59,7 +59,7 @@ clientSide listener =
                                 |> Task.andThen
                                     (\( got, end ) ->
                                         serverDone
-                                            |> Task.andThen (\_ -> WebSocket.closed ws)
+                                            |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                             |> Task.map
                                                 (\info ->
                                                     [ "client got: " ++ String.join " | " (List.map W.messageString got) ++ " end " ++ end

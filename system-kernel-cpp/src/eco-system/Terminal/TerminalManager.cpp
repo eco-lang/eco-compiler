@@ -1,4 +1,4 @@
-//===- TerminalManager.cpp - The C++ effect manager of System.Terminal ----===//
+//===- TerminalManager.cpp - The C++ effect manager of Terminal ----===//
 //
 // plans/eco-system-library.md §3.6, Appendix C.0 / C.4 and Phase 5 step
 // 5.3. Layout: TerminalManager.hpp.
@@ -119,7 +119,7 @@ void* onEffectsEval(void* args[]) {
 #ifdef _WIN32
     // A Sub is infallible: crash with a clear message (§1).
     if (!wanted.empty())
-        ::Eco::Kernel::reportFatal("eco/system: System.Terminal.onResize is not supported on Windows yet");
+        ::Eco::Kernel::reportFatal("eco/system: Terminal.onResize is not supported on Windows yet");
 #endif
     {
         ManagerState& st = state();
@@ -184,7 +184,7 @@ using namespace Eco::System;
 namespace {
 
 // Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "System.Terminal". Subscriptions only: no cmdMap.
+// registers them under "Terminal". Subscriptions only: no cmdMap.
 void registerTerminalManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();
@@ -198,12 +198,12 @@ void registerTerminalManager() {
     subMapCl = alloc::allocClosure(&subMapEval, 2);
     PlatformRuntime::ManagerInfo info{enc(initCl), enc(effCl), enc(selfCl),
                                       enc(cmdMapCl), enc(subMapCl)};
-    PlatformRuntime::instance().registerManager("System.Terminal", info);   // no allocation after encode
+    PlatformRuntime::instance().registerManager("Terminal", info);   // no allocation after encode
 }
 
 } // namespace
 
-extern "C" uint64_t Eco_System_registerManager_System_Terminal() {
+extern "C" uint64_t Eco_System_registerManager_Terminal() {
     ECO_KERNEL_GUARD(
         registerTerminalManager();
         return enc(alloc::unit());

@@ -21,6 +21,7 @@ import Http.Stream
 import HttpStreamTestHelp as H
 import Process
 import Stream
+import Stream.Transformation
 import System
 import Task exposing (Task)
 import TestServerConfig
@@ -51,33 +52,33 @@ upload server source =
         |> Task.onError Task.succeed
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\server _ ->
-            Stream.identityTransformation
+            Stream.Transformation.identity
                 |> Task.andThen
                     (\t ->
                         Process.spawn
-                            (Stream.write (H.bytesOf "partial") (Stream.writable t)
+                            (Stream.write (H.bytesOf "partial") (Stream.Transformation.writable t)
                                 |> Task.andThen (\_ -> Process.sleep 100)
-                                |> Task.andThen (\_ -> Stream.cancelWritable "boom" (Stream.writable t))
+                                |> Task.andThen (\_ -> Stream.cancelWritable "boom" (Stream.Transformation.writable t))
                                 |> Task.onError (\_ -> Task.succeed ())
                             )
-                            |> Task.andThen (\_ -> upload server (Stream.readable t))
+                            |> Task.andThen (\_ -> upload server (Stream.Transformation.readable t))
                     )
                 |> Task.andThen
                     (\cancelled ->
-                        Stream.identityTransformation
+                        Stream.Transformation.identity
                             |> Task.andThen
                                 (\t ->
-                                    Process.spawn (Stream.read (Stream.readable t) |> Task.onError (\_ -> Task.succeed (H.bytesOf "")))
+                                    Process.spawn (Stream.read (Stream.Transformation.readable t) |> Task.onError (\_ -> Task.succeed (H.bytesOf "")))
                                         |> Task.andThen (\_ -> Process.sleep 10)
-                                        |> Task.andThen (\_ -> upload server (Stream.readable t))
+                                        |> Task.andThen (\_ -> upload server (Stream.Transformation.readable t))
                                         |> Task.andThen
                                             (\locked ->
                                                 -- release the parked reader so nothing is left waiting
-                                                Stream.closeWritable (Stream.writable t)
+                                                Stream.closeWritable (Stream.Transformation.writable t)
                                                     |> Task.onError (\_ -> Task.succeed ())
                                                     |> Task.map (\_ -> [ "cancelled source: " ++ cancelled, "locked source: " ++ locked ])
                                             )

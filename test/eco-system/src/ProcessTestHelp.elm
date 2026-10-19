@@ -2,14 +2,14 @@ module ProcessTestHelp exposing (bytesToString, describeRun, noShell, simpleRun)
 
 {-| Shared helpers for the eco/system process tests (not a test: no `main`).
 Every test prints its observations to the program's real stdout through
-`Stream.Log`, so the `-- CHECK:` patterns are matched against raw fd output.
+`Stream`, so the `-- CHECK:` patterns are matched against raw fd output.
 -}
 
 import Bytes exposing (Bytes)
 import Bytes.Decode
-import Stream.Log
+import Stream
 import System
-import System.Process as P
+import ChildProcess as P
 import Task exposing (Task)
 
 
@@ -67,15 +67,14 @@ clean s =
 
 
 {-| A simple program printing one line per labelled task. -}
-simpleRun : List ( String, Task Never String ) -> System.SimpleProgram ()
+simpleRun : List ( String, Task Never String ) -> Platform.Program System.Environment () ()
 simpleRun steps =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (steps
+            (steps
                     |> List.map (\( label, t ) -> Task.map (\s -> label ++ ": " ++ s) t)
                     |> Task.sequence
                     |> Task.map (String.join "\n")
-                    |> Task.andThen (Stream.Log.line env.stdout)
+                    |> Task.andThen ((\logged -> Stream.logLine logged env.stdout))
                 )
         )

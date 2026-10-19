@@ -19,7 +19,6 @@ import Http
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
-import Stream.Log
 import System
 import Task exposing (Task)
 import TestServerConfig
@@ -56,9 +55,9 @@ readAll stream =
             )
 
 
-main : System.Program System.Environment Msg
+main : Platform.Program System.Environment System.Environment Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( env
@@ -81,7 +80,7 @@ main =
 
                     GotStream (Ok ( meta, stream )) ->
                         ( env
-                        , Stream.Log.line env.stdout ("status: " ++ String.fromInt meta.statusCode)
+                        , Stream.logLine ("status: " ++ String.fromInt meta.statusCode) env.stdout
                             |> Task.andThen (\_ -> readAll stream)
                             |> Task.onError (\e -> Task.succeed ("read error: " ++ Stream.errorToString e))
                             |> Task.perform Done
@@ -91,7 +90,7 @@ main =
                         ( env, Task.perform Done (Task.succeed ("http error: " ++ H.describeHttpError e)) )
 
                     Done text ->
-                        ( env, Task.perform (\_ -> Logged) (Stream.Log.line env.stdout text) )
+                        ( env, Task.perform (\_ -> Logged) (Stream.logLine text env.stdout) )
 
                     Logged ->
                         ( env, Cmd.none )

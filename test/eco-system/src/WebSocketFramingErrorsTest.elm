@@ -30,7 +30,7 @@ import WebSocketSha1 exposing (acceptFor)
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -58,7 +58,7 @@ serverCase listener ( label, bad, maxSize ) =
     in
     H.async
         (W.acceptWith { options | maxMessageSize = maxSize } listener
-            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.closed ws |> Task.map (\info -> ( end, info ))))
+            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( _, end ) -> WebSocket.awaitClose ws |> Task.map (\info -> ( end, info ))))
         )
         |> Task.andThen
             (\serverDone ->
@@ -99,7 +99,7 @@ clientCase listener =
                             W.readAll ws
                                 |> Task.andThen
                                     (\( _, end ) ->
-                                        WebSocket.closed ws
+                                        WebSocket.awaitClose ws
                                             |> Task.andThen
                                                 (\info ->
                                                     serverDone

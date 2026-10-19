@@ -12,7 +12,7 @@ module WebSocketTestHelp exposing
 
 {-| Shared helpers for the WebSocket tests (not a test: no `main`; plans/eco-system-websockets.md
 §4 WS4). A server is a `Socket.Tcp` listener whose connections are upgraded with
-`WebSocket.upgradeRequest`; malformed peers are written by hand over raw `Socket.Tcp`
+`WebSocket.receiveUpgrade`; malformed peers are written by hand over raw `Socket.Tcp`
 connections, with `frame` / `maskedFrame` building the bytes.
 -}
 
@@ -25,8 +25,9 @@ import Socket
 import Socket.Tcp
 import SocketTestHelp as H
 import Stream
-import System.File
-import System.File.Path as Path
+import Stream.Transformation
+import FileSystem
+import Path
 import Task exposing (Task)
 import WebSocket
 
@@ -56,7 +57,7 @@ connectWith change listener =
                 "err "
                     ++ Socket.errorCode e
                     ++ " status "
-                    ++ (case WebSocket.handshakeStatus e of
+                    ++ (case WebSocket.errorHandshakeStatus e of
                             Just s ->
                                 "Just " ++ String.fromInt s
 
@@ -84,7 +85,7 @@ acceptWith options listener =
 upgrade : Socket.Listener -> Task String WebSocket.Upgrade
 upgrade listener =
     Socket.accept listener
-        |> Task.andThen WebSocket.upgradeRequest
+        |> Task.andThen WebSocket.receiveUpgrade
         |> Task.mapError wsErr
 
 
@@ -682,19 +683,19 @@ patternSource count size =
         chunk =
             E.encode (E.sequence (List.repeat (size // 256) block))
     in
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
                 let
                     loop n =
                         if n <= 0 then
-                            Stream.closeWritable (Stream.writable t)
+                            Stream.closeWritable (Stream.Transformation.writable t)
 
                         else
-                            Stream.write chunk (Stream.writable t) |> Task.andThen (\_ -> loop (n - 1))
+                            Stream.write chunk (Stream.Transformation.writable t) |> Task.andThen (\_ -> loop (n - 1))
                 in
                 Process.spawn (loop count |> Task.onError (\_ -> Task.succeed ()))
-                    |> Task.map (\_ -> Stream.readable t)
+                    |> Task.map (\_ -> Stream.Transformation.readable t)
             )
         |> Task.mapError never
 
@@ -756,7 +757,7 @@ readTextBody body =
 -}
 rssKiB : Task x Int
 rssKiB =
-    System.File.readFile (Path.fromPosixString "/proc/self/status")
+    FileSystem.readFile (Path.fromPosixString "/proc/self/status")
         |> Task.map
             (\b ->
                 D.decode (D.string (Bytes.width b)) b

@@ -1,7 +1,7 @@
-//===- TerminalManager.hpp - The C++ effect manager of System.Terminal ----===//
+//===- TerminalManager.hpp - The C++ effect manager of Terminal ----===//
 //
 // plans/eco-system-library.md §3.6 and Appendix C.4 (manager key
-// "System.Terminal"). The Elm declaration lives in
+// "Terminal"). The Elm declaration lives in
 // system-kernel-cpp/src/System/Terminal.elm, section "EFFECT MANAGER":
 //
 //     type MySub msg = OnResize (( Int, Int ) -> msg)
@@ -30,7 +30,7 @@ constexpr int ON_RESIZE_TAGGER_FIELD = 0;
 extern "C" {
 // Called from the compiler-emitted @__eco_register_ports preamble (§3.6);
 // returns `()` as the `!eco.value` result (T6).
-uint64_t Eco_System_registerManager_System_Terminal();
+uint64_t Eco_System_registerManager_Terminal();
 }
 
 #endif // ECO_SYSTEM_TERMINAL_TERMINAL_MANAGER_HPP

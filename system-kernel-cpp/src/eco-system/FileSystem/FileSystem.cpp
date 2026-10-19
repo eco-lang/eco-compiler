@@ -128,6 +128,7 @@ HPointer fsComplete(PoolResult& pr) {
     case FsRes::Kind::WriteStream: {
         FdChannelOptions o;
         o.truncateOnClose = r.truncateOnClose;
+        o.syncOnClose = r.syncOnClose;
         int64_t id = createChannelSink(new FdChannel(static_cast<int>(r.n), o));
         return succeedInt(id);
     }

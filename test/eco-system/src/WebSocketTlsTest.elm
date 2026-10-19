@@ -22,7 +22,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -49,7 +49,7 @@ echoCase label host messages listener =
                                     (\got ->
                                         WebSocket.close WebSocket.Normal "" ws
                                             |> Task.mapError W.wsErr
-                                            |> Task.andThen (\_ -> WebSocket.closed ws)
+                                            |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                             |> Task.andThen (\info -> serverDone |> Task.map (\_ -> info))
                                             |> Task.map (\info -> label ++ ": " ++ String.join " | " (List.map W.messageString got ++ [ W.closeInfoString info ]))
                                     )

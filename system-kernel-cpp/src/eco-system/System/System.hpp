@@ -15,9 +15,7 @@
 
 namespace Eco::System {
 
-HPointer systemEnvironmentBody(HPointer captured);
-HPointer systemGetPlatformBody(HPointer captured);
-HPointer systemGetCpuArchitectureBody(HPointer captured);
+HPointer systemEnvironmentNow();
 HPointer systemGetEnvironmentVariablesBody(HPointer captured);
 HPointer systemExitWithCodeBody(HPointer captured);
 HPointer systemSetExitCodeBody(HPointer captured);

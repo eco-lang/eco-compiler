@@ -26,7 +26,7 @@ import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, noteA
 // opened by the readFileStream / writeFileStream task itself, so open errors are reported
 // by the task (E.3 deviation from gren), and the channel serialises its requests on the fd.
 //
-// The one JS-only kernel, `attachWatchListener`, is used by the Elm System.File manager
+// The one JS-only kernel, `attachWatchListener`, is used by the Elm FileSystem manager
 // body (the native backend drops that body and runs the C++ manager, C.2).
 
 var _FileSystem_fs = require('fs');
@@ -701,7 +701,7 @@ function _FileSystem_cancelled()
 	return e;
 }
 
-function _FileSystem_fdChannel(fd, position, readLimit, truncateOnClose)
+function _FileSystem_fdChannel(fd, position, readLimit, truncateOnClose, syncOnClose)
 {
 	var queue = [];        // { run: function(finish), cancel: function() }
 	var busy = false;
@@ -818,13 +818,20 @@ function _FileSystem_fdChannel(fd, position, readLimit, truncateOnClose)
 						if (done) done(firstErr || err);
 					});
 				};
+				// sync (FileSystem.writeFileStreamWith, plans/eco-system-api-refactor.md D12):
+				// fsync before the close; a failure is the close error.
+				var syncThenClose = function(firstErr)
+				{
+					if (!syncOnClose || firstErr) return closeFd(firstErr);
+					_FileSystem_fs.fsync(fd, function(err) { closeFd(err); });
+				};
 				if (truncateOnClose && position !== null)
 				{
-					_FileSystem_fs.ftruncate(fd, position, function(err) { closeFd(err); });
+					_FileSystem_fs.ftruncate(fd, position, function(err) { syncThenClose(err); });
 				}
 				else
 				{
-					closeFd(null);
+					syncThenClose(null);
 				}
 			}, function() { if (done) done(_FileSystem_cancelled()); });
 		},
@@ -884,13 +891,19 @@ var _FileSystem_readFileStream = F3(function(start, end, path)
 });
 
 // writeFileStream : Int -> Int -> String -> Task FErr Int   (mode, position, path) -> a
-// ChannelSink id owning the fd. Modes: 0 Replace (`w`), 1 ReplaceFrom (`r+` at position,
-// truncated on close where the writing stopped), 2 Append (`a`).
-var _FileSystem_writeFileStream = F3(function(mode, position, path)
+// ChannelSink id owning the fd. Bits 0-1 of `bits`: 0 Replace (`w`), 1 ReplaceFrom (`r+` at
+// position, truncated on close where the writing stopped), 2 Append (`a`); bit 2 createNew
+// (O_EXCL); bit 3 fsync on close (FileSystem.writeFileStreamWith).
+var _FileSystem_writeFileStream = F3(function(bits, position, path)
 {
 	return _FileSystem_task(function(ok, fail)
 	{
-		var flags = mode === 1 ? 'r+' : (mode === 2 ? 'a' : 'w');
+		var mode = bits & 3;
+		var createNew = (bits & 4) !== 0;
+		var syncOnClose = (bits & 8) !== 0;
+		var C = require('fs').constants;
+		var flags = mode === 1 ? C.O_RDWR : (mode === 2 ? (C.O_WRONLY | C.O_CREAT | C.O_APPEND) : (C.O_WRONLY | C.O_CREAT | C.O_TRUNC));
+		if (createNew) flags |= C.O_CREAT | C.O_EXCL;
 		_FileSystem_fs.open(path, flags, 438, function(err, fd)
 		{
 			if (err)
@@ -899,13 +912,13 @@ var _FileSystem_writeFileStream = F3(function(mode, position, path)
 				return;
 			}
 			var pos = mode === 1 ? (position > 0 ? position : 0) : null;
-			ok(__Stream_createChannelSink(_FileSystem_fdChannel(fd, pos, -1, mode === 1)));
+			ok(__Stream_createChannelSink(_FileSystem_fdChannel(fd, pos, -1, mode === 1, syncOnClose)));
 		});
 	});
 });
 
 
-// --- JS-only: the listener for the Elm System.File manager (C.2) ---------------------------
+// --- JS-only: the listener for the Elm FileSystem manager (C.2) ---------------------------
 //
 // attachWatchListener : String -> Bool -> (( Int, Maybe String ) -> Task Never ()) -> Task Never ()
 // A binding that never completes: it watches `path` (recursively when asked) with fs.watch

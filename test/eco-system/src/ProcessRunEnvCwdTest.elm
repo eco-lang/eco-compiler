@@ -12,9 +12,9 @@ of `run` (plans/eco-system-library.md Phase 5 step 5.4).
 -- CHECK: cwd-shell: ok stdout=/usr| stderr=
 -- EXIT: 0
 
+import ChildProcess as P
 import Dict
 import ProcessTestHelp exposing (describeRun, noShell, simpleRun)
-import System.Process as P
 
 
 main =

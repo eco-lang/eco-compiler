@@ -32,7 +32,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -44,7 +44,7 @@ fragment n =
 
 next : WebSocket.WebSocket WebSocket.Streamed -> Task String WebSocket.StreamedMessage
 next ws =
-    Stream.read (WebSocket.streamedReadable ws) |> Task.mapError Stream.errorToString
+    Stream.read (WebSocket.readableStreamed ws) |> Task.mapError Stream.errorToString
 
 
 textOf : WebSocket.StreamedMessage -> Task String String
@@ -92,12 +92,12 @@ serve ws =
                                 |> Task.andThen textOf
                                 |> Task.andThen
                                     (\cut ->
-                                        Stream.read (WebSocket.streamedReadable ws)
+                                        Stream.read (WebSocket.readableStreamed ws)
                                             |> Task.map (\_ -> "a message")
                                             |> Task.onError (\e -> Task.succeed (Stream.errorToString e))
                                             |> Task.andThen
                                                 (\end ->
-                                                    WebSocket.closed ws
+                                                    WebSocket.awaitClose ws
                                                         |> Task.map
                                                             (\info ->
                                                                 [ "first chunk: " ++ H.boolString first

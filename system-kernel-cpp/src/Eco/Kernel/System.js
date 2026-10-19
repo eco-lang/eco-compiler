@@ -55,28 +55,20 @@ function _System_applicationPath()
 
 // --- B.1 -------------------------------------------------------------------------------
 
-// environment : Task Never ( ( String, String, String ), List String, ( Int, Int, Int ) )
-// argv: process.argv without the node binary, so args[0] is the program (the script) as
-// invoked, as on the native target (D10).
-var _System_environment = __Scheduler_binding(function(callback)
+// environmentNow : Json.Value -> ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
+// Not a Task: called once by System.environmentDecoder while the flags are decoded, before
+// `init` (plans/eco-system-api-refactor.md D13). The JSON argument is ignored. argv: process.argv
+// without the node binary, so args[0] is the program (the script) as invoked, as on the native
+// target (D10).
+var _System_environmentNow = function(json)
 {
 	var ids = _System_stdio();
-	callback(__Scheduler_succeed(__Utils_Tuple3(
+	return __Utils_Tuple3(
 		__Utils_Tuple3(process.platform, process.arch, _System_applicationPath()),
-		__List_fromArray(process.argv.slice(1)),
+		__Utils_Tuple2(__List_fromArray(process.argv.slice(1)), Date.now()),
 		__Utils_Tuple3(ids.__stdin, ids.__stdout, ids.__stderr)
-	)));
-});
-
-var _System_getPlatform = __Scheduler_binding(function(callback)
-{
-	callback(__Scheduler_succeed(process.platform));
-});
-
-var _System_getCpuArchitecture = __Scheduler_binding(function(callback)
-{
-	callback(__Scheduler_succeed(process.arch));
-});
+	);
+};
 
 // getEnvironmentVariables : Task Never (List ( String, String ))
 var _System_getEnvironmentVariables = __Scheduler_binding(function(callback)

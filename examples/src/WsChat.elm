@@ -17,12 +17,10 @@ connection. The server runs until the process is stopped.
 
 import Bytes exposing (Bytes)
 import Dict exposing (Dict)
-import Http.Server as Server exposing (Request, Server)
-import Http.Server.Response as Response exposing (Response)
+import Http.Server as Server exposing (Request, Response, Server)
 import Socket
 import Socket.Address as Address
 import Stream
-import Stream.Log
 import System
 import Task
 import WebSocket
@@ -44,17 +42,18 @@ type alias Model =
 
 
 type Msg
-    = Started (Result Server.ServerError Server)
+    = Started (Result Server.Error Server)
     | Received Request Response
     | Joined Int (Result Socket.Error (WebSocket.WebSocket WebSocket.Whole))
     | Said String WebSocket.Message
     | Left Int WebSocket.CloseInfo
     | Done
+    | Exit Int
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = init
         , update = update
         , subscriptions = subscriptions
@@ -68,7 +67,7 @@ init env =
             env.args |> List.drop 1 |> List.head |> Maybe.andThen String.toInt |> Maybe.withDefault 9002
     in
     ( { stdout = env.stdout, stderr = env.stderr, server = Nothing, clients = Dict.empty, nextId = 1 }
-    , Server.createServerWith (Server.defaultServerOptions (Address.loopback Address.IPv4) port_)
+    , Server.listen (Server.defaultListenOptions (Address.loopback Address.IPv4) port_)
         |> Task.attempt Started
     )
 
@@ -78,12 +77,13 @@ update msg model =
     case msg of
         Started (Ok server) ->
             ( { model | server = Just server }
-            , log model.stdout ("ws-chat: open http://127.0.0.1:" ++ String.fromInt (Server.serverPort server) ++ "/")
+            , log model.stdout ("ws-chat: open http://127.0.0.1:" ++ String.fromInt (Server.endpoint server).port_ ++ "/")
             )
 
-        Started (Err (Server.ServerError err)) ->
+        Started (Err err) ->
             ( model
-            , Cmd.batch [ log model.stderr ("ws-chat: " ++ err.message), System.exitWithCode 1 ]
+            , Stream.logLine ("ws-chat: " ++ Server.errorToString err) model.stderr
+                |> Task.perform (\_ -> Exit 1)
             )
 
         Received request response ->
@@ -97,13 +97,13 @@ update msg model =
             else if request.url.path == "/" then
                 ( model
                 , response
-                    |> Response.setHeader "Content-Type" "text/html; charset=utf-8"
-                    |> Response.setBody page
-                    |> Response.send
+                    |> Server.setHeader "Content-Type" "text/html; charset=utf-8"
+                    |> Server.setBody page
+                    |> Server.send
                 )
 
             else
-                ( model, response |> Response.setStatus 404 |> Response.setBody "not found\n" |> Response.send )
+                ( model, response |> Server.setStatus 404 |> Server.setBody "not found\n" |> Server.send )
 
         Joined id (Ok ws) ->
             let
@@ -147,6 +147,9 @@ update msg model =
         Done ->
             ( model, Cmd.none )
 
+        Exit code ->
+            ( model, System.exitWithCode code )
+
 
 broadcast : Dict Int Client -> String -> Cmd Msg
 broadcast clients text =
@@ -163,7 +166,7 @@ send ws text =
 
 log : Stream.Writable Bytes -> String -> Cmd Msg
 log stream line =
-    Stream.Log.line stream line |> Task.perform (\_ -> Done)
+    Stream.logLine line stream |> Task.perform (\_ -> Done)
 
 
 subscriptions : Model -> Sub Msg

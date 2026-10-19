@@ -22,7 +22,7 @@ payload n =
     String.left n (String.repeat (n // 10 + 1) "0123456789")
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

@@ -13,24 +13,23 @@ an empty body; the connection stays usable.
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Task exposing (Task)
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     ( [ Server.methodToString request.method ++ " " ++ request.url.path ]
     , H.Now
         (case request.url.path of
             "/early-hints" ->
-                response |> Response.setStatus 103 |> Response.setBody "hints"
+                response |> Server.setStatus 103 |> Server.setBody "hints"
 
             "/switching" ->
-                response |> Response.setStatus 101 |> Response.setHeader "Upgrade" "websocket"
+                response |> Server.setStatus 101 |> Server.setHeader "Upgrade" "websocket"
 
             _ ->
-                response |> Response.setBody "fine"
+                response |> Server.setBody "fine"
         )
     )
 

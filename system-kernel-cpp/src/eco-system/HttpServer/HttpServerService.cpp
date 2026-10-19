@@ -274,6 +274,7 @@ ListenResult listenOn(const std::string& host, int64_t port) {
         if (::getsockname(fd, bound.get(), &bound.len) == 0 &&
             ::Eco::System::sockaddrToInet(bound, text, p)) {
             res.boundPort = p;
+            res.boundAddress = text;
         }
         return res;
     }

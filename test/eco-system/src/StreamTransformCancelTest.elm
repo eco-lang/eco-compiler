@@ -14,33 +14,34 @@ too.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamTestHelp exposing (describe, sleep, spawnLogged)
 import System
 import Task exposing (Task)
 
 
-action : () -> String -> Stream.CustomTransformationAction () String
+action : () -> String -> Stream.Transformation.CustomAction () String
 action state value =
     if value == "boom" then
-        Stream.Cancel "bad input"
+        Stream.Transformation.Cancel "bad input"
 
     else
-        Stream.Send { state = state, send = [ value ] }
+        Stream.Transformation.Send { state = state, send = [ value ] }
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
-            Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.customTransformationWithOptions action { initialState = (), readCapacity = 1, writeCapacity = 2 })
+            Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.Transformation.customWith action { initialState = (), readCapacity = 1, writeCapacity = 2 })
                 |> Task.andThen
                     (\( log, t ) ->
                         let
                             w =
-                                Stream.writable t
+                                Stream.Transformation.writable t
 
                             r =
-                                Stream.readable t
+                                Stream.Transformation.readable t
                         in
                         -- "keep" fills readQ (capacity 1); "boom" waits in writeQ;
                         -- "queued" waits behind it. The read takes "keep", which
@@ -73,16 +74,16 @@ main =
                 |> Task.andThen
                     (\lines ->
                         -- A reader parked when the cancel happens.
-                        Stream.customTransformationWithOptions action { initialState = (), readCapacity = 0, writeCapacity = 1 }
+                        Stream.Transformation.customWith action { initialState = (), readCapacity = 0, writeCapacity = 1 }
                             |> Task.andThen
                                 (\t ->
                                     Task.map2 Tuple.pair StreamTestHelp.eventLog (Task.succeed t)
                                 )
                             |> Task.andThen
                                 (\( log, t ) ->
-                                    spawnLogged log "parked" (Stream.read (Stream.readable t))
+                                    spawnLogged log "parked" (Stream.read (Stream.Transformation.readable t))
                                         |> Task.andThen (\_ -> sleep)
-                                        |> Task.andThen (\_ -> Stream.enqueue "boom" (Stream.writable t))
+                                        |> Task.andThen (\_ -> Stream.enqueue "boom" (Stream.Transformation.writable t))
                                         |> Task.andThen (\_ -> sleep)
                                         |> Task.andThen (\_ -> StreamTestHelp.finishLog log)
                                         |> Task.map (\events -> lines ++ [ String.join "," (List.map (String.replace "parked " "parked: ") events) ])

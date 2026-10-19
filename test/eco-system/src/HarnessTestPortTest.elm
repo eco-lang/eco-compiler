@@ -14,30 +14,30 @@ on it.
 import Dict
 import Http.Server as Server
 import HttpServerTestHelp as Help
-import Stream.Log
+import Stream
 import System
 import Task
 
 
-main : System.Program () ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( ()
-                , System.getEnvironmentVariables
+                , System.environmentVariables
                     |> Task.andThen
                         (\vars ->
                             let
                                 port_ =
                                     Dict.get "ECO_TEST_PORT" vars |> Maybe.andThen String.toInt
                             in
-                            Server.createServer { host = "127.0.0.1", port_ = Maybe.withDefault 0 port_ }
+                            Server.listenOnHost "127.0.0.1" (Maybe.withDefault 0 port_)
                                 |> Task.map (\_ -> "ok")
-                                |> Task.onError (\(Server.ServerError e) -> Task.succeed e.code)
+                                |> Task.onError (\e -> Task.succeed (Server.errorCode e))
                                 |> Task.andThen
                                     (\listen ->
-                                        Stream.Log.line env.stdout
+                                        Stream.logLine
                                             (String.join "\n"
                                                 [ "ECO_TEST_PORT set: " ++ Help.boolString (port_ /= Nothing)
                                                 , "ECO_TEST_PORT in range: "
@@ -46,6 +46,7 @@ main =
                                                 , "listen: " ++ listen
                                                 ]
                                             )
+                                            env.stdout
                                     )
                         )
                     |> Task.perform (\_ -> ())

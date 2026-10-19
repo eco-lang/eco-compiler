@@ -18,8 +18,8 @@ import Bytes
 import FileTestHelp exposing (file)
 import Stream
 import System
-import System.File as File
-import System.File.Path as Path
+import FileSystem as File
+import Path
 import Task exposing (Task)
 import WebSocketTestHelp as W
 
@@ -96,6 +96,6 @@ run _ =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program run

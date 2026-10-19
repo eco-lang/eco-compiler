@@ -48,9 +48,9 @@ suite =
                     preamble
         , Test.test "a dotted home maps . to _ in the symbol" <|
             \_ ->
-                registerPortsBody (generate [ ecoSystemLeaf "System.Process" "command" ] False)
+                registerPortsBody (generate [ ecoSystemLeaf "Socket.Udp" "subscription" ] False)
                     |> Maybe.map (List.filter isManagerRegistration << callees)
-                    |> Expect.equal (Just [ "Eco_System_registerManager_System_Process" ])
+                    |> Expect.equal (Just [ "Eco_System_registerManager_Socket_Udp" ])
         , Test.test "the registration comes first, before the flags decoder registration" <|
             \_ ->
                 case registerPortsBody (generate [ ecoSystemLeaf "System" "command" ] True) of

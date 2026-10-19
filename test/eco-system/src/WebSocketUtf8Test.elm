@@ -24,7 +24,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -53,7 +53,7 @@ serverCase : Socket.Listener -> ( String, Bytes ) -> Task String String
 serverCase listener ( label, bytes ) =
     H.async
         (W.acceptOne listener
-            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( got, end ) -> WebSocket.closed ws |> Task.map (\info -> ( got, end, info ))))
+            |> Task.andThen (\ws -> W.readAll ws |> Task.andThen (\( got, end ) -> WebSocket.awaitClose ws |> Task.map (\info -> ( got, end, info ))))
         )
         |> Task.andThen
             (\serverDone ->

@@ -1,6 +1,6 @@
 module FileReadWriteTest exposing (main)
 
-{-| `System.File` whole-file operations (plans/eco-system-library.md Phase 4
+{-| `FileSystem` whole-file operations (plans/eco-system-library.md Phase 4
 step 4.6, Appendix E.3): writeFile, readFile, appendToFile (creates the file),
 truncateFile (shrinks and zero-extends), and their errors: a missing file is
 ENOENT with the path, reading a directory is EISDIR, `errorToString` is node's
@@ -24,14 +24,14 @@ message.
 -- EXIT: 0
 
 import Bytes
+import FileSystem as File
 import FileTestHelp exposing (attempt, byteList, bytes, child, file, fromBytes, rawError)
+import Path
 import System
-import System.File as File
-import System.File.Path as Path
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

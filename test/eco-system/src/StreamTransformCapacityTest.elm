@@ -20,25 +20,26 @@ Phase 6 step 6.3).
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamTestHelp exposing (describe, logEvent, sleep, spawnLogged)
 import System
 import Task exposing (Task)
 
 
-counted : Int -> String -> Stream.CustomTransformationAction Int String
+counted : Int -> String -> Stream.Transformation.CustomAction Int String
 counted n value =
-    Stream.Send { state = n + 1, send = [ String.fromInt n ++ ":" ++ value ] }
+    Stream.Transformation.Send { state = n + 1, send = [ String.fromInt n ++ ":" ++ value ] }
 
 
 rendezvous : Task Stream.Error String
 rendezvous =
-    Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.customTransformationWithOptions counted { initialState = 0, readCapacity = 0, writeCapacity = 1 })
+    Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.Transformation.customWith counted { initialState = 0, readCapacity = 0, writeCapacity = 1 })
         |> Task.andThen
             (\( log, t ) ->
-                spawnLogged log "w1" (Stream.write "a" (Stream.writable t))
+                spawnLogged log "w1" (Stream.write "a" (Stream.Transformation.writable t))
                     |> Task.andThen (\_ -> sleep)
                     |> Task.andThen (\_ -> logEvent log "mark")
-                    |> Task.andThen (\_ -> Stream.read (Stream.readable t))
+                    |> Task.andThen (\_ -> Stream.read (Stream.Transformation.readable t))
                     |> Task.andThen
                         (\value ->
                             sleep
@@ -50,37 +51,37 @@ rendezvous =
 
 clamped : Task Stream.Error String
 clamped =
-    Stream.customTransformationWithOptions counted { initialState = 0, readCapacity = -5, writeCapacity = 0 }
+    Stream.Transformation.customWith counted { initialState = 0, readCapacity = -5, writeCapacity = 0 }
         |> Task.andThen
             (\t ->
-                describe (Stream.enqueue "b" (Stream.writable t))
+                describe (Stream.enqueue "b" (Stream.Transformation.writable t))
                     |> Task.andThen
                         (\enqueued ->
-                            Stream.read (Stream.readable t)
+                            Stream.read (Stream.Transformation.readable t)
                                 |> Task.map (\value -> "enqueue " ++ enqueued ++ " | " ++ value)
                         )
             )
 
 
-triple : () -> String -> Stream.CustomTransformationAction () String
+triple : () -> String -> Stream.Transformation.CustomAction () String
 triple state value =
-    Stream.Send { state = state, send = [ value ++ "1", value ++ "2", value ++ "3" ] }
+    Stream.Transformation.Send { state = state, send = [ value ++ "1", value ++ "2", value ++ "3" ] }
 
 
 overfill : Task Stream.Error String
 overfill =
-    Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.customTransformationWithOptions triple { initialState = (), readCapacity = 1, writeCapacity = 1 })
+    Task.map2 Tuple.pair StreamTestHelp.eventLog (Stream.Transformation.customWith triple { initialState = (), readCapacity = 1, writeCapacity = 1 })
         |> Task.andThen
             (\( log, t ) ->
                 let
                     r =
-                        Stream.readable t
+                        Stream.Transformation.readable t
 
                     readLogged =
                         Stream.read r |> Task.andThen (logEvent log)
                 in
-                Stream.write "x" (Stream.writable t)
-                    |> Task.andThen (\_ -> spawnLogged log "w2" (Stream.write "y" (Stream.writable t)))
+                Stream.write "x" (Stream.Transformation.writable t)
+                    |> Task.andThen (\_ -> spawnLogged log "w2" (Stream.write "y" (Stream.Transformation.writable t)))
                     |> Task.andThen (\_ -> sleep)
                     |> Task.andThen (\_ -> readLogged)
                     |> Task.andThen (\_ -> readLogged)
@@ -96,7 +97,7 @@ overfill =
             )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->

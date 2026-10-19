@@ -17,12 +17,11 @@ list `upgrade` is an ordinary request (`upgrade = Nothing`).
 -- EXIT: 0
 
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerRawHelp as H
 import Task exposing (Task)
 
 
-handler : List String -> Server.Request -> Response.Response -> ( List String, H.Answer )
+handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
     ( [ Server.methodToString request.method
             ++ " "
@@ -34,12 +33,12 @@ handler _ request response =
         (case request.upgrade of
             Just _ ->
                 response
-                    |> Response.setStatus 426
-                    |> Response.setHeader "Upgrade" "websocket"
-                    |> Response.setBody "upgrade required"
+                    |> Server.setStatus 426
+                    |> Server.setHeader "Upgrade" "websocket"
+                    |> Server.setBody "upgrade required"
 
             Nothing ->
-                response |> Response.setBody "plain"
+                response |> Server.setBody "plain"
         )
     )
 

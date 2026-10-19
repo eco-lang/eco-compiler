@@ -1,8 +1,8 @@
 module DomGoldenTest exposing (main)
 
 {-| The serializer goldens (plans/elm-html-native-kernel.md Appendix D.1), checked
-through both serializers: `Http.Dom.toString` (natively the C++ HtmlWriter) and
-`Http.Dom.render << Http.Dom.fromNode` (the Elm reference). Every case has at
+through both serializers: `Html.Dom.toString` (natively the C++ HtmlWriter) and
+`Html.Dom.render << Html.Dom.fromNode` (the Elm reference). Every case has at
 most one attribute whose order could matter, so the JS target gives the same
 text (D16). Cases 14-16 also accept the replacement text of elm/virtual-dom's
 DEV-mode filters, which the JS test runner uses; native follows PROD (D10).
@@ -82,12 +82,12 @@ DEV-mode filters, which the JS test runner uses; native follows PROD (D10).
 
 import Html exposing (..)
 import Html.Attributes exposing (..)
+import Html.Dom as Dom
 import Html.Events as Events
 import Html.Keyed as Keyed
 import Html.Lazy as Lazy
-import Http.Dom as Dom
 import Json.Encode as Encode
-import Stream.Log
+import Stream
 import System
 import VirtualDom
 
@@ -141,14 +141,14 @@ lines : List String
 lines =
     List.concatMap
         (\( n, h ) ->
-            [ String.fromInt n ++ ": " ++ Dom.toString h
-            , String.fromInt n ++ " ref: " ++ Dom.render (Dom.fromNode h)
+            [ String.fromInt n ++ ": " ++ Dom.htmlToString h
+            , String.fromInt n ++ " ref: " ++ Dom.toString (Dom.fromHtml h)
             ]
         )
         cases
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
-        (\env -> System.endSimpleProgram (Stream.Log.line env.stdout (String.join "\n" lines)))
+    System.simpleProgram
+        (\env -> Stream.logLine (String.join "\n" lines) env.stdout)

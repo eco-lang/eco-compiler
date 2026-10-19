@@ -13,12 +13,11 @@ streams are FdSink/FdSource streams over the child's pipes.
 
 import Bytes exposing (Bytes)
 import Bytes.Encode
+import ChildProcess as P
 import Process
 import ProcessTestHelp exposing (bytesToString)
 import Stream
-import Stream.Log
 import System
-import System.Process as P
 import Task exposing (Task)
 
 
@@ -48,10 +47,10 @@ readAll readable =
 
 talk : P.StreamIO -> Task Never Msg
 talk streams =
-    Stream.write (utf8 "hello child\n") streams.input
-        |> Task.andThen (\_ -> Stream.write (utf8 "second line\n") streams.input)
-        |> Task.andThen (\_ -> Stream.closeWritable streams.input)
-        |> Task.andThen (\_ -> Task.map2 Output (readAll streams.output) (readAll streams.error))
+    Stream.write (utf8 "hello child\n") streams.stdin
+        |> Task.andThen (\_ -> Stream.write (utf8 "second line\n") streams.stdin)
+        |> Task.andThen (\_ -> Stream.closeWritable streams.stdin)
+        |> Task.andThen (\_ -> Task.map2 Output (readAll streams.stdout) (readAll streams.stderr))
         |> Task.onError (\err -> Task.succeed (Output ("error: " ++ Stream.errorToString err) ""))
 
 
@@ -61,7 +60,7 @@ report model =
         ( Just ( out, err ), Just code ) ->
             ( model
             , Task.perform (\_ -> Logged)
-                (Stream.Log.line model.env.stdout
+                (Stream.logLine
                     ("stdout: "
                         ++ String.replace "\n" "|" out
                         ++ "\nstderr: "
@@ -74,6 +73,7 @@ report model =
                         ++ "\nexit: "
                         ++ String.fromInt code
                     )
+                    model.env.stdout
                 )
             )
 
@@ -81,9 +81,9 @@ report model =
             ( model, Cmd.none )
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, output = Nothing, exit = Nothing }

@@ -20,7 +20,7 @@ import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
 import SocketTestHelp as H
-import Stream.Log
+import Stream
 import System
 import Task exposing (Task)
 import Time
@@ -67,7 +67,7 @@ fill p n kept =
                 )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\env ->
@@ -86,8 +86,8 @@ main =
                                 (\( err, elapsed, kept ) ->
                                     Process.spawn
                                         (Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) (H.portOf listener))
-                                            |> Task.andThen (\_ -> Stream.Log.line env.stdout "killed connect completed")
-                                            |> Task.onError (\_ -> Stream.Log.line env.stdout "killed connect completed with an error")
+                                            |> Task.andThen (\_ -> Stream.logLine "killed connect completed" env.stdout)
+                                            |> Task.onError (\_ -> Stream.logLine "killed connect completed with an error" env.stdout)
                                         )
                                         |> Task.andThen (\pid -> Process.sleep 100 |> Task.andThen (\_ -> Process.kill pid))
                                         |> Task.andThen (\_ -> Task.sequence (List.map Socket.close kept))

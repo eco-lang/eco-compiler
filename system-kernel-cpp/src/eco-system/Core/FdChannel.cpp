@@ -97,6 +97,7 @@ struct FdChannel::State {
     bool regular = false;   // regular file: write without chunking
     int64_t readRemaining = -1;     // FdChannelOptions::readLimit (channel thread only)
     bool truncateOnClose = false;   // FdChannelOptions::truncateOnClose
+    bool syncOnClose = false;       // FdChannelOptions::syncOnClose
     bool useSelect = false;  // poll() rejects this fd (channel thread only)
 
     std::mutex m;            // guards everything below
@@ -355,6 +356,11 @@ void channelThread(std::shared_ptr<State> sp) {
         else do { rc = ::ftruncate(st.fd, pos); } while (rc != 0 && errno == EINTR);
         if (rc != 0) closeErr = errno;
     }
+    if (closeRequested && st.syncOnClose && st.fd > 2) {
+        int rc;
+        do { rc = ::fsync(st.fd); } while (rc != 0 && errno == EINTR);
+        if (rc != 0 && closeErr == 0) closeErr = errno;
+    }
     if (st.fd > 2) {
         // No retry on EINTR: the fd is released either way on Linux/macOS.
         if (::close(st.fd) != 0 && errno != EINTR && closeErr == 0) closeErr = errno;
@@ -369,6 +375,7 @@ FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State
     st_->chanId = id();
     st_->readRemaining = opts.readLimit;
     st_->truncateOnClose = opts.truncateOnClose;
+    st_->syncOnClose = opts.syncOnClose;
     struct stat sb;
     if (::fstat(fd, &sb) == 0) st_->regular = S_ISREG(sb.st_mode);
 

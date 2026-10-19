@@ -44,8 +44,8 @@ import Http.Server as Server
 import Process
 import Socket
 import SocketTestHelp as T
-import System.File as File
-import System.File.Path as Path
+import FileSystem as File
+import Path
 import Task exposing (Task)
 import WebSocket
 import WebSocketH2Help as H
@@ -129,7 +129,7 @@ noEcpCase tools =
                                     (\messages ->
                                         WebSocket.close WebSocket.Normal "" ws
                                             |> Task.mapError W.wsErr
-                                            |> Task.andThen (\_ -> WebSocket.closed ws)
+                                            |> Task.andThen (\_ -> WebSocket.awaitClose ws)
                                             |> Task.map
                                                 (\info ->
                                                     String.join " | " (List.map W.messageString messages ++ [ W.closeInfoString info ])
@@ -150,10 +150,10 @@ client tools servers =
     case servers of
         [ h2, h1only ] ->
             Task.sequence
-                [ H.echoCase "h2 to h2" True (Server.serverPort h2) "/h2" |> Task.map List.singleton
-                , H.largeCase "h2 large" True (Server.serverPort h2) "/large" |> Task.map List.singleton
-                , H.echoCase "h2 to http/1.1 only" True (Server.serverPort h1only) "/h1only" |> Task.map List.singleton
-                , H.echoCase "http/1.1 to h2" False (Server.serverPort h2) "/noh2" |> Task.map List.singleton
+                [ H.echoCase "h2 to h2" True ((Server.endpoint h2).port_) "/h2" |> Task.map List.singleton
+                , H.largeCase "h2 large" True ((Server.endpoint h2).port_) "/large" |> Task.map List.singleton
+                , H.echoCase "h2 to http/1.1 only" True ((Server.endpoint h1only).port_) "/h1only" |> Task.map List.singleton
+                , H.echoCase "http/1.1 to h2" False ((Server.endpoint h2).port_) "/noh2" |> Task.map List.singleton
                 , noEcpCase tools
                 ]
                 |> Task.map List.concat

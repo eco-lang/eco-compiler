@@ -19,10 +19,10 @@ alive, so the test ends promptly.
 -- CHECK-NOT: detached exit
 -- EXIT: 0
 
+import ChildProcess as P
 import Process
-import Stream.Log
+import Stream
 import System
-import System.Process as P
 import Task
 
 
@@ -34,12 +34,12 @@ type Msg
 
 log : System.Environment -> String -> Cmd Msg
 log env line =
-    Task.perform (\_ -> Logged) (Stream.Log.line env.stdout line)
+    Task.perform (\_ -> Logged) (Stream.logLine line env.stdout)
 
 
-main : System.Program System.Environment Msg
+main : Platform.Program System.Environment System.Environment Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( env

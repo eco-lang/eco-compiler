@@ -1,21 +1,21 @@
 effect module WebSocket where { subscription = MySub } exposing
     ( WebSocket, Whole, Streamed, Message(..), StreamedMessage(..)
-    , readable, streamedReadable, writable, sendText, sendBinary
+    , readable, readableStreamed, writable, sendText, sendBinary
     , protocol, compression, Negotiated, localEndpoint, remoteEndpoint
-    , onMessage, onClose, ping, close, closed
+    , onMessage, onClose, ping, close, awaitClose
     , CloseCode(..), CloseInfo, Heartbeat
     , ConnectOptions, ClientCompression, defaultConnectOptions, connect, connectStreamed
-    , Upgrade, upgradeRequest, upgradeTarget, upgradeHeaders, upgradeProtocols, upgradeOrigin
+    , Upgrade, receiveUpgrade, upgradeTarget, upgradeHeaders, upgradeProtocols, upgradeOrigin
     , upgradeRemote, AcceptOptions, ServerCompression, defaultAcceptOptions
     , accept, acceptStreamed, reject
-    , errorIsHandshakeFailed, handshakeStatus
+    , errorIsHandshakeFailed, errorHandshakeStatus
     )
 
 {-| WebSockets (RFC 6455): message-based, full-duplex connections, as a client and as a server.
 
 A client [`connect`](#connect)s to a `ws://` or `wss://` URL. A server receives an opening request
 as an [`Upgrade`](#Upgrade), either on a [`Socket.Connection`](Socket#Connection) it accepted
-([`upgradeRequest`](#upgradeRequest)) or from an HTTP server
+([`receiveUpgrade`](#receiveUpgrade)) or from an HTTP server
 ([`Http.Server.upgradeRequest`](Http-Server#upgradeRequest)), and answers it with
 [`accept`](#accept) or [`reject`](#reject).
 
@@ -60,13 +60,13 @@ are not followed.
 ## Connections
 
 @docs WebSocket, Whole, Streamed, Message, StreamedMessage
-@docs readable, streamedReadable, writable, sendText, sendBinary
+@docs readable, readableStreamed, writable, sendText, sendBinary
 @docs protocol, compression, Negotiated, localEndpoint, remoteEndpoint
 
 
 ## Events and closing
 
-@docs onMessage, onClose, ping, close, closed
+@docs onMessage, onClose, ping, close, awaitClose
 @docs CloseCode, CloseInfo, Heartbeat
 
 
@@ -77,14 +77,14 @@ are not followed.
 
 ## Servers
 
-@docs Upgrade, upgradeRequest, upgradeTarget, upgradeHeaders, upgradeProtocols, upgradeOrigin
+@docs Upgrade, receiveUpgrade, upgradeTarget, upgradeHeaders, upgradeProtocols, upgradeOrigin
 @docs upgradeRemote, AcceptOptions, ServerCompression, defaultAcceptOptions
 @docs accept, acceptStreamed, reject
 
 
 ## Errors
 
-@docs errorIsHandshakeFailed, handshakeStatus
+@docs errorIsHandshakeFailed, errorHandshakeStatus
 
 -}
 
@@ -154,7 +154,7 @@ type StreamedMessage
 
 The readable is `Closed` once the connection closed cleanly (both sides exchanged Close frames);
 when it ends otherwise, reads fail with `Cancelled` and a reason such as
-`"ERR_WS_PROTOCOL: <details>"`. Use [`closed`](#closed) for the close code and reason.
+`"ERR_WS_PROTOCOL: <details>"`. Use [`awaitClose`](#awaitClose) for the close code and reason.
 
 While the connection has an [`onMessage`](#onMessage) subscription, messages go to the
 subscription instead and `Stream.read` fails with `Locked`.
@@ -167,9 +167,12 @@ readable (Internal.WebSocket ws) =
 
 {-| The messages of a streamed connection, each a [`StreamedMessage`](#StreamedMessage). Closing
 and errors behave as for [`readable`](#readable).
+
+This was `streamedReadable`.
+
 -}
-streamedReadable : WebSocket Streamed -> Stream.Readable StreamedMessage
-streamedReadable (Internal.WebSocket ws) =
+readableStreamed : WebSocket Streamed -> Stream.Readable StreamedMessage
+readableStreamed (Internal.WebSocket ws) =
     Stream.Internal.Readable ws.readable
 
 
@@ -343,9 +346,12 @@ close code reason (Internal.WebSocket ws) =
 
 {-| Wait until the connection is gone, then get how it ended. A connection that ends without a
 Close frame from the peer reports `Abnormal` and `clean = False`.
+
+This was `closed`.
+
 -}
-closed : WebSocket mode -> Task x CloseInfo
-closed (Internal.WebSocket ws) =
+awaitClose : WebSocket mode -> Task x CloseInfo
+awaitClose (Internal.WebSocket ws) =
     kClosed ws.id
         |> Task.map toCloseInfo
         |> Task.mapError never
@@ -615,7 +621,7 @@ tried in order.
 
 Fails with `EINVAL` for an invalid URL or header, the usual socket and TLS errors, and
 `ERR_WS_HANDSHAKE` ([`errorIsHandshakeFailed`](#errorIsHandshakeFailed)) when the server does not
-accept the connection: [`handshakeStatus`](#handshakeStatus) then tells the HTTP status it
+accept the connection: [`errorHandshakeStatus`](#errorHandshakeStatus) then tells the HTTP status it
 answered, if any.
 
 -}
@@ -816,9 +822,11 @@ the client sends something else than an HTTP request (it is answered 400 and the
 closed). Bytes the client sent right behind its request (an early first frame) are kept for the
 WebSocket.
 
+This was `upgradeRequest`.
+
 -}
-upgradeRequest : Socket.Connection -> Task Socket.Error Upgrade
-upgradeRequest (Socket.Internal.Connection c) =
+receiveUpgrade : Socket.Connection -> Task Socket.Error Upgrade
+receiveUpgrade (Socket.Internal.Connection c) =
     kReadUpgrade c.id 30000
         |> Task.map (Internal.toUpgrade kAcceptFor)
         |> Task.mapError Socket.Internal.toError
@@ -871,7 +879,7 @@ upgradeRemote (Internal.Upgrade up) =
   - `maxMessageSize`, `heartbeat`: as in [`ConnectOptions`](#ConnectOptions).
   - `compression`: the server's permessage-deflate policy, or `Nothing` to decline every offer.
 
-The opening request itself is read by [`upgradeRequest`](#upgradeRequest), within 30 seconds.
+The opening request itself is read by [`receiveUpgrade`](#receiveUpgrade), within 30 seconds.
 
 -}
 type alias AcceptOptions =
@@ -1021,9 +1029,12 @@ errorIsHandshakeFailed error =
 
 {-| The HTTP status a server answered a refused opening request with, for example `Just 403`.
 `Nothing` for other errors.
+
+This was `handshakeStatus`.
+
 -}
-handshakeStatus : Socket.Error -> Maybe Int
-handshakeStatus ((Socket.Internal.Error e) as error) =
+errorHandshakeStatus : Socket.Error -> Maybe Int
+errorHandshakeStatus ((Socket.Internal.Error e) as error) =
     if errorIsHandshakeFailed error && String.startsWith Internal.handshakeErrorPrefix e.message then
         e.message
             |> String.dropLeft (String.length Internal.handshakeErrorPrefix)

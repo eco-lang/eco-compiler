@@ -14,18 +14,19 @@ terminated", and so does closing the writable.
 -- EXIT: 0
 
 import Stream
+import Stream.Transformation
 import StreamTestHelp exposing (describe)
 import System
 import Task exposing (Task)
 
 
-action : () -> String -> Stream.CustomTransformationAction () String
+action : () -> String -> Stream.Transformation.CustomAction () String
 action state value =
     if value == "stop" then
-        Stream.Close [ "last" ]
+        Stream.Transformation.Close [ "last" ]
 
     else
-        Stream.Send { state = state, send = [ String.toUpper value ] }
+        Stream.Transformation.Send { state = state, send = [ String.toUpper value ] }
 
 
 showRead : Stream.Readable String -> Task x String
@@ -33,19 +34,19 @@ showRead r =
     Stream.read r |> Task.onError (\err -> Task.succeed (Stream.errorToString err))
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     StreamTestHelp.program
         (\_ ->
-            Stream.customTransformationWithOptions action { initialState = (), readCapacity = 5, writeCapacity = 1 }
+            Stream.Transformation.customWith action { initialState = (), readCapacity = 5, writeCapacity = 1 }
                 |> Task.andThen
                     (\t ->
                         let
                             w =
-                                Stream.writable t
+                                Stream.Transformation.writable t
 
                             r =
-                                Stream.readable t
+                                Stream.Transformation.readable t
                         in
                         Task.map2 Tuple.pair (describe (Stream.write "a" w)) (describe (Stream.write "stop" w))
                             |> Task.andThen

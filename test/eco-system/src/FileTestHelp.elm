@@ -4,7 +4,7 @@ module FileTestHelp exposing (attempt, byteList, showInts, bytes, child, fail, f
 
 Every test runs one task in a fresh temporary directory (removed afterwards)
 and prints one labelled line per observation to the program's real stdout
-through `Stream.Log`, so the `-- CHECK:` patterns are matched against raw fd
+through `Stream`, so the `-- CHECK:` patterns are matched against raw fd
 output. Errors of the file and stream APIs are turned into Strings so the
 two can be mixed in one task.
 
@@ -14,25 +14,23 @@ import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
 import Stream
-import Stream.Log
 import System
-import System.File as File
-import System.File.Path as Path exposing (Path)
+import FileSystem as File
+import Path exposing (Path)
 import Task exposing (Task)
 
 
 {-| A simple program that runs `run env` and prints every line it returns, or
 `error: <reason>` if it fails.
 -}
-program : (System.Environment -> Task String (List String)) -> System.SimpleProgram ()
+program : (System.Environment -> Task String (List String)) -> Platform.Program System.Environment () ()
 program run =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (run env
+            (run env
                     |> Task.map (String.join "\n")
                     |> Task.onError (\err -> Task.succeed ("error: " ++ err))
-                    |> Task.andThen (Stream.Log.line env.stdout)
+                    |> Task.andThen ((\logged -> Stream.logLine logged env.stdout))
                 )
         )
 

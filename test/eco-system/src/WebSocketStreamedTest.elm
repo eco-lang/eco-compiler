@@ -31,7 +31,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -41,7 +41,7 @@ arrive, text bodies are read whole and answered with one `Text`.
 -}
 serve : WebSocket.WebSocket WebSocket.Streamed -> Task String String
 serve ws =
-    Stream.read (WebSocket.streamedReadable ws)
+    Stream.read (WebSocket.readableStreamed ws)
         |> Task.map Ok
         |> Task.onError (\e -> Task.succeed (Err e))
         |> Task.andThen
@@ -68,7 +68,7 @@ serve ws =
 
 nextBody : WebSocket.WebSocket WebSocket.Streamed -> Task String WebSocket.StreamedMessage
 nextBody ws =
-    Stream.read (WebSocket.streamedReadable ws) |> Task.mapError Stream.errorToString
+    Stream.read (WebSocket.readableStreamed ws) |> Task.mapError Stream.errorToString
 
 
 binaryBody : WebSocket.StreamedMessage -> Task String ( Int, Bool )
@@ -93,7 +93,7 @@ textBody m =
 
 readEnd : WebSocket.WebSocket WebSocket.Streamed -> Task x String
 readEnd ws =
-    Stream.read (WebSocket.streamedReadable ws)
+    Stream.read (WebSocket.readableStreamed ws)
         |> Task.map (\_ -> "a message")
         |> Task.onError (\e -> Task.succeed (Stream.errorToString e))
 
@@ -139,8 +139,8 @@ run _ =
                                                                                     , "server closed: " ++ W.closeInfoString si
                                                                                     ]
                                                                                 )
-                                                                                (WebSocket.closed client)
-                                                                                (WebSocket.closed server)
+                                                                                (WebSocket.awaitClose client)
+                                                                                (WebSocket.awaitClose server)
                                                                         )
                                                             )
                                                 )

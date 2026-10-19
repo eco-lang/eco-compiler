@@ -2,7 +2,7 @@ module WebSocketStreamedMemoryTest exposing (main)
 
 {-| Streamed messages use bounded memory (plans/eco-system-websockets.md §4 WS6): a 100 MiB
 message streamed each way, measured by the process's resident set size (VmRSS, read from
-/proc/self/status with `System.File`).
+/proc/self/status with `FileSystem`).
 
   - The client sends 100 MiB with `sendBinary` from a generated stream; the server takes the
     message (its body) but does not read it for 1.5 s. Reading pauses once a little is buffered,
@@ -38,7 +38,7 @@ import WebSocket
 import WebSocketTestHelp as W
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program run
 
@@ -60,7 +60,7 @@ oneWay chunks from to =
                     |> Task.andThen (\source -> H.async (WebSocket.sendBinary source from |> Task.mapError W.wsErr))
                     |> Task.andThen
                         (\sent ->
-                            Stream.read (WebSocket.streamedReadable to)
+                            Stream.read (WebSocket.readableStreamed to)
                                 |> Task.mapError Stream.errorToString
                                 |> Task.andThen
                                     (\m ->
@@ -120,7 +120,7 @@ run _ =
                                     (\( c2s, s2c ) ->
                                         Stream.write (WebSocket.Text "after") (WebSocket.writable client)
                                             |> Task.mapError Stream.errorToString
-                                            |> Task.andThen (\_ -> Stream.read (WebSocket.streamedReadable server) |> Task.mapError Stream.errorToString)
+                                            |> Task.andThen (\_ -> Stream.read (WebSocket.readableStreamed server) |> Task.mapError Stream.errorToString)
                                             |> Task.andThen
                                                 (\m ->
                                                     case m of
@@ -145,8 +145,8 @@ run _ =
                                                                         , "server closed: " ++ W.closeInfoString si
                                                                         ]
                                                                     )
-                                                                    (WebSocket.closed client)
-                                                                    (serverEnd server |> Task.andThen (\_ -> WebSocket.closed server))
+                                                                    (WebSocket.awaitClose client)
+                                                                    (serverEnd server |> Task.andThen (\_ -> WebSocket.awaitClose server))
                                                             )
                                                 )
                                     )
@@ -160,6 +160,6 @@ run _ =
 -}
 serverEnd : WebSocket.WebSocket WebSocket.Streamed -> Task x String
 serverEnd ws =
-    Stream.read (WebSocket.streamedReadable ws)
+    Stream.read (WebSocket.readableStreamed ws)
         |> Task.map (\_ -> "a message")
         |> Task.onError (\e -> Task.succeed (Stream.errorToString e))

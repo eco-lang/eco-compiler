@@ -1,6 +1,6 @@
 module FileWatchTest exposing (main)
 
-{-| `System.File.watch` (plans/eco-system-library.md Phase 4 step 4.6, C.2):
+{-| `FileSystem.watch` (plans/eco-system-library.md Phase 4 step 4.6, C.2):
 watch a fresh directory, create a file in it and receive `Changed` for it
 (creation itself is a `Moved`, as with node's fs.watch on Linux). A polling
 watcher (macOS, or ECO_SYSTEM_WATCH_POLL=1) may see only the creation, so if
@@ -18,10 +18,10 @@ program alive (pendingAsync) and releasing it lets the program exit.
 
 import FileTestHelp exposing (bytes, child)
 import Process
-import Stream.Log
+import Stream
 import System
-import System.File as File
-import System.File.Path as Path exposing (Path)
+import FileSystem as File
+import Path exposing (Path)
 import Task
 
 
@@ -56,12 +56,12 @@ showEvent ev =
 
 log : Model -> String -> Cmd Msg
 log model line =
-    Task.perform (\_ -> Logged) (Stream.Log.line model.env.stdout line)
+    Task.perform (\_ -> Logged) (Stream.logLine line model.env.stdout)
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, dir = Nothing, done = False }

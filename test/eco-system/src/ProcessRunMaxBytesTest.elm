@@ -12,8 +12,8 @@ is fine.
 -- EXIT: 0
 
 import Bytes
+import ChildProcess as P
 import ProcessTestHelp exposing (noShell, simpleRun)
-import System.Process as P
 import Task exposing (Task)
 
 

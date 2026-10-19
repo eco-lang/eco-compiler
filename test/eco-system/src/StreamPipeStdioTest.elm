@@ -15,34 +15,32 @@ open, §3.4), after which writing to stdout fails.
 -- EXIT: 0
 
 import Stream
-import Stream.Log
+import Stream.Transformation
 import StreamTestHelp exposing (describe)
 import System
 import Task
 
 
-capitalL : () -> String -> Stream.CustomTransformationAction () String
+capitalL : () -> String -> Stream.Transformation.CustomAction () String
 capitalL state value =
-    Stream.Send { state = state, send = [ String.replace "l" "L" value ] }
+    Stream.Transformation.Send { state = state, send = [ String.replace "l" "L" value ] }
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.awaitAndPipeThrough Stream.textDecoder env.stdin
-                    |> Task.andThen (Stream.awaitAndPipeThrough (Stream.customTransformation capitalL ()))
-                    |> Task.andThen (Stream.awaitAndPipeThrough Stream.textEncoder)
-                    |> Task.andThen (Stream.pipeTo env.stdout)
-                    |> describe
-                    |> Task.andThen
-                        (\piped ->
-                            describe (Stream.writeLineAsBytes "late" env.stdout)
-                                |> Task.andThen
-                                    (\late ->
-                                        Stream.Log.line env.stderr ("done: " ++ piped ++ ", then stdout write " ++ late)
-                                    )
-                        )
-                )
+            Stream.awaitAndPipeThrough Stream.Transformation.textDecoder env.stdin
+                |> Task.andThen (Stream.awaitAndPipeThrough (Stream.Transformation.custom capitalL ()))
+                |> Task.andThen (Stream.awaitAndPipeThrough Stream.Transformation.textEncoder)
+                |> Task.andThen (Stream.pipeTo env.stdout)
+                |> describe
+                |> Task.andThen
+                    (\piped ->
+                        describe (Stream.writeLine "late" env.stdout)
+                            |> Task.andThen
+                                (\late ->
+                                    Stream.logLine ("done: " ++ piped ++ ", then stdout write " ++ late) env.stderr
+                                )
+                    )
         )

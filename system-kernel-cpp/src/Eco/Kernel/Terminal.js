@@ -15,10 +15,11 @@ import Maybe exposing (Just, Nothing)
 //   * setStdInRawMode — process.stdin.setRawMode when fd 0 is a terminal, otherwise a
 //     no-op. Node itself restores the terminal at exit and when SIGINT / SIGTERM end
 //     the process (its ResetStdio), which is the native atexit + signal-listener rule.
-//   * setProcessTitle — process.title (Linux: libuv sets the command line and, through
-//     PR_SET_NAME, the main thread's `comm`, at most 15 bytes, as native).
+//   * setTitle — the terminal window title: when fd 1 is a terminal, the OSC 2 sequence
+//     ESC ] 2 ; title BEL written to fd 1 directly (as native), C0 controls and DEL
+//     removed from the title; otherwise nothing (plans/eco-system-api-refactor.md D10).
 //
-// `attachResizeListener` is JS-only: the Elm System.Terminal manager body uses it (the
+// `attachResizeListener` is JS-only: the Elm Terminal manager body uses it (the
 // native backend runs the C++ manager, C.4).
 
 function _Terminal_isatty(fd)
@@ -109,24 +110,28 @@ var _Terminal_setStdInRawMode = function(on)
 	});
 };
 
-// setProcessTitle : String -> Task Never ()
-var _Terminal_setProcessTitle = function(title)
+// setTitle : String -> Task Never ()
+var _Terminal_setTitle = function(title)
 {
 	return __Scheduler_binding(function(callback)
 	{
-		try
+		if (_Terminal_isatty(1))
 		{
-			process.title = title;
-		}
-		catch (e)
-		{
+			try
+			{
+				require('fs').writeSync(1, '\x1b]2;' + title.replace(/[\x00-\x1f\x7f]/g, '') + '\x07');
+			}
+			catch (e)
+			{
+				// best effort: a title is not output
+			}
 		}
 		callback(__Scheduler_succeed(__Utils_Tuple0));
 	});
 };
 
 
-// --- JS-only: the resize listener of the Elm System.Terminal manager (C.4) ------------
+// --- JS-only: the resize listener of the Elm Terminal manager (C.4) ------------
 //
 // attachResizeListener : (( Int, Int ) -> Task Never ()) -> Task Never ()
 // A binding that never completes; killing its process detaches the listener. On every

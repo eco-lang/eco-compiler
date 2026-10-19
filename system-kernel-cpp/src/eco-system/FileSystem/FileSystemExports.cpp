@@ -5,7 +5,7 @@
 // then returns a binding (G2): P mode (makeAsyncBinding + the T2 pool body)
 // for everything but the four directory getters, which are S mode
 // (makeBinding, T1). Bool arguments arrive as encoded constants and are
-// packed as 0/1 Ints. The `System.File` effect manager registration is in
+// packed as 0/1 Ints. The `FileSystem` effect manager registration is in
 // FileSystemManager.cpp.
 //
 // Templates used: T1, T2.

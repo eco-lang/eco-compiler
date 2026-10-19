@@ -16,10 +16,10 @@ and reads as empty.
 -- EXIT: 0
 
 import Bytes
+import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, file)
+import Path
 import System
-import System.File as File
-import System.File.Path as Path
 import Task exposing (Task)
 
 
@@ -46,7 +46,7 @@ isDir m =
         "Other"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->
@@ -57,7 +57,7 @@ main =
                     |> label "cwd-absolute"
                 , attempt isDir (file (File.currentWorkingDirectory |> Task.andThen (File.metadata { resolveLink = True })))
                     |> label "cwd-is-dir"
-                , attempt isDir (file (File.tmpDirectory |> Task.andThen (File.metadata { resolveLink = True })))
+                , attempt isDir (file (File.tempDirectory |> Task.andThen (File.metadata { resolveLink = True })))
                     |> label "tmp-is-dir"
                 , File.devNull |> Task.map Path.toPosixString |> label "devnull"
                 , attempt (\_ -> "") (file (File.devNull |> Task.andThen (File.writeFile (bytes "discard me"))))

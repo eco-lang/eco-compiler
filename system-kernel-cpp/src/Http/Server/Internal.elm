@@ -8,7 +8,7 @@ while users only see the alias exposed by `Http.Server.Response`.
 -}
 
 import Bytes exposing (Bytes)
-import Http.Dom as Dom
+import Html.Dom as Dom
 
 
 {-| An HTTP response under construction. `key` identifies the request it answers.

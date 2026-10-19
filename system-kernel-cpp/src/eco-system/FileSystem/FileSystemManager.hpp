@@ -1,7 +1,7 @@
-//===- FileSystemManager.hpp - The C++ effect manager of `System.File` ----===//
+//===- FileSystemManager.hpp - The C++ effect manager of `FileSystem` ----===//
 //
 // plans/eco-system-library.md §3.6 and Appendix C.2 (manager key
-// "System.File"). The Elm declaration lives in
+// "FileSystem"). The Elm declaration lives in
 // system-kernel-cpp/src/System/File.elm, in the "EFFECT MANAGER" section:
 //
 //     type MySub msg = Watch String Bool (( Int, Maybe String ) -> msg)
@@ -37,7 +37,7 @@ constexpr int KIND_MOVED = 1;
 extern "C" {
 // Called from the compiler-emitted @__eco_register_ports preamble (§3.6);
 // returns `()` as the `!eco.value` result (T6).
-uint64_t Eco_System_registerManager_System_File();
+uint64_t Eco_System_registerManager_FileSystem();
 }
 
 #endif // ECO_SYSTEM_FILESYSTEM_FILESYSTEM_MANAGER_HPP

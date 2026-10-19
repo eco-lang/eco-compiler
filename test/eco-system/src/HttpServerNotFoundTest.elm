@@ -16,7 +16,6 @@ may send the later requests on the first connection.
 
 import Http
 import Http.Server as Server
-import Http.Server.Response as Response
 import HttpServerTestHelp as Help
 import System
 import Task
@@ -27,14 +26,14 @@ handler request response =
     ( [ Server.methodToString request.method ++ " " ++ request.url.path ]
     , if request.url.path == "/hello" then
         response
-            |> Response.setHeader "Content-Type" "text/plain"
-            |> Response.setBody "hello"
+            |> Server.setHeader "Content-Type" "text/plain"
+            |> Server.setBody "hello"
 
       else
         response
-            |> Response.setStatus 404
-            |> Response.setHeader "Content-Type" "text/plain"
-            |> Response.setBody "not found"
+            |> Server.setStatus 404
+            |> Server.setHeader "Content-Type" "text/plain"
+            |> Server.setBody "not found"
     )
 
 
@@ -73,6 +72,6 @@ client base =
             )
 
 
-main : System.Program Help.Model Help.Msg
+main : Platform.Program System.Environment Help.Model Help.Msg
 main =
     Help.program { handler = handler, client = client }

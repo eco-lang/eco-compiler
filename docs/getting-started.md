@@ -48,26 +48,28 @@ streaming HTTP bodies on top of `elm/http`. Its documentation is in
 `/usr/local/share/eco/system/system-kernel-cpp/docs.json`, and it is browsable with
 `elm-doc-preview` from a checkout of the Eco repository (`cd system-kernel-cpp && pnpm run docs`).
 
-A program declares `eco/system` as a dependency in its `elm.json` and defines `main` with
-`System.defineSimpleProgram` (one-shot programs) or `System.defineProgram` (long-running programs
-with a model, `update` and subscriptions):
+A program declares `eco/system` as a dependency in its `elm.json`. Its `main` is a
+`Platform.Program` whose flags are `System.Environment`, which Eco builds when the program
+starts: `System.simpleProgram` makes a one-shot program that runs a task, and a long-running
+program with a model, `update` and subscriptions is an ordinary `Platform.worker` whose `init`
+receives the environment:
 
 ```elm
 module Main exposing (main)
 
-import Stream.Log
+import Stream
 import System
 
 
-main : System.SimpleProgram msg
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
-        (\env -> System.endSimpleProgram (Stream.Log.line env.stdout "Hello, world!"))
+    System.simpleProgram
+        (\env -> Stream.logLine "Hello, world!" env.stdout)
 ```
 
 `env` gives the program its arguments (`env.args`, the full argv with the program name first),
-its stdin, stdout and stderr as streams, the platform and CPU architecture, and the path of the
-executable.
+its stdin, stdout and stderr as streams (`Stream.readLine env.stdin` reads a line), the time it
+started, the platform and CPU architecture, and the path of the executable.
 
 The same `examples` folder holds small complete `eco/system` programs:
 
@@ -76,6 +78,8 @@ The same `examples` folder holds small complete `eco/system` programs:
     ./cat elm.json
     eco make src/Ls.elm --output=ls
     ./ls src
+    eco make src/Nl.elm --output=nl
+    ./nl < elm.json
     eco make src/HttpEcho.elm --output=http-echo
     ./http-echo 8080 &
     curl -d hello http://127.0.0.1:8080/some/path
@@ -106,11 +110,11 @@ Notes:
 
 - `Http.Server` serves HTTP/1.1 with keep-alive (one request in flight per connection, so
   pipelined requests are answered in order), request size limits and timeouts
-  (`Http.Server.createServerWith` and `defaultServerOptions`; `createServer` keeps the defaults),
-  and closes gracefully with `closeServer`. Malformed or ambiguous requests are answered 400 and
+  (`Http.Server.listen` and `defaultListenOptions`; `listenOnHost` keeps the defaults),
+  and closes gracefully with `Http.Server.close`. Malformed or ambiguous requests are answered 400 and
   the connection closed; there is no lenient parsing mode.
-- **https:** give `createServerWith` a certificate chain and private key in `tls` (PEM strings,
-  for example read with `System.File.readFile`) and the server speaks HTTPS; request URLs then have
+- **https:** give `listen` a certificate chain and private key in `tls` (PEM strings,
+  for example read with `FileSystem.readFile`) and the server speaks HTTPS; request URLs then have
   the `https` scheme.
 - **HTTP/2:** with `tls` set, `http2 = True` adds HTTP/2 on the same port (the client chooses
   through ALPN; clients without HTTP/2 get HTTP/1.1). There is no HTTP/2 without TLS (h2c), and
@@ -120,7 +124,7 @@ Notes:
 - **WebSockets:** the `WebSocket` module is a client (`WebSocket.connect` to a `ws://` or `wss://`
   URL) and a server: an `Http.Server` request whose `upgrade` is `Just "websocket"` becomes a
   WebSocket with `Http.Server.upgradeRequest` and `WebSocket.accept` (or, on a raw
-  `Socket.Connection`, with `WebSocket.upgradeRequest`). Messages are `WebSocket.Text` or
+  `Socket.Connection`, with `WebSocket.receiveUpgrade`). Messages are `WebSocket.Text` or
   `WebSocket.Binary`, read from `WebSocket.readable` or an `onMessage` subscription and written to
   `WebSocket.writable`; a streamed mode handles messages too large for memory. permessage-deflate
   compression and a ping/pong heartbeat are on by default. The examples `WsEchoServer.elm`

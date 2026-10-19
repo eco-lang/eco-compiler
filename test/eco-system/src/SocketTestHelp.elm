@@ -8,7 +8,7 @@ module SocketTestHelp exposing
 {-| Shared helpers for the socket tests (not a test: no `main`;
 plans/eco-system-sockets.md §4 S3).
 
-The tests print their observations to the program's real stdout through `Stream.Log`, so the
+The tests print their observations to the program's real stdout through `Stream`, so the
 `-- CHECK:` patterns are matched against raw fd output. `async` runs a task in its own process and
 hands back a task that waits for its result (through an in-memory stream), so a simple program can
 run a server and a client side by side.
@@ -24,24 +24,23 @@ import Socket
 import Socket.Address as Address exposing (Endpoint(..), Family(..))
 import Socket.Tcp
 import Stream
-import Stream.Log
+import Stream.Transformation
 import System
-import System.File.Path as Path
+import Path
 import Task exposing (Task)
 
 
 {-| A simple program that runs `run env` and prints every line it returns, or `error: <reason>`
 if it fails.
 -}
-program : (System.Environment -> Task String (List String)) -> System.SimpleProgram ()
+program : (System.Environment -> Task String (List String)) -> Platform.Program System.Environment () ()
 program run =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (run env
+            (run env
                     |> Task.map (String.join "\n")
                     |> Task.onError (\err -> Task.succeed ("error: " ++ err))
-                    |> Task.andThen (Stream.Log.line env.stdout)
+                    |> Task.andThen ((\logged -> Stream.logLine logged env.stdout))
                 )
         )
 
@@ -50,20 +49,20 @@ program run =
 -}
 async : Task String a -> Task x (Task String a)
 async task =
-    Stream.identityTransformation
+    Stream.Transformation.identity
         |> Task.andThen
             (\t ->
                 Process.spawn
                     (task
                         |> Task.map Ok
                         |> Task.onError (\e -> Task.succeed (Err e))
-                        |> Task.andThen (\r -> Stream.write r (Stream.writable t))
+                        |> Task.andThen (\r -> Stream.write r (Stream.Transformation.writable t))
                         |> Task.map (\_ -> ())
                         |> Task.onError (\_ -> Task.succeed ())
                     )
                     |> Task.map
                         (\_ ->
-                            Stream.read (Stream.readable t)
+                            Stream.read (Stream.Transformation.readable t)
                                 |> Task.mapError Stream.errorToString
                                 |> Task.andThen
                                     (\r ->
@@ -189,5 +188,5 @@ endpointToString endpoint =
 -}
 testPort : Task x Int
 testPort =
-    System.getEnvironmentVariables
+    System.environmentVariables
         |> Task.map (Dict.get "ECO_TEST_PORT" >> Maybe.andThen String.toInt >> Maybe.withDefault 9)

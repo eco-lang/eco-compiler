@@ -12,11 +12,11 @@ the WebSocket is still open (heartbeat timers hold nothing).
 -- CHECK: unsubscribed
 -- EXIT: 0
 
+import ChildProcess as Process
 import Socket
 import SocketTestHelp as H
-import Stream.Log
+import Stream
 import System
-import System.Process as Process
 import Task
 import WebSocket exposing (WebSocket, Whole)
 import WebSocketTestHelp as W
@@ -52,9 +52,9 @@ client port_ =
         ]
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, ws = Nothing, subscribed = False }
@@ -90,17 +90,17 @@ update msg model =
             )
 
         Listening (Err e) ->
-            ( model, Task.perform (\_ -> Done) (Stream.Log.line model.env.stdout ("error " ++ e)) )
+            ( model, Task.perform (\_ -> Done) (Stream.logLine ("error " ++ e) model.env.stdout) )
 
         Accepted (Ok ws) ->
             ( { model | ws = Just ws, subscribed = True }, Cmd.none )
 
         Accepted (Err e) ->
-            ( model, Task.perform (\_ -> Done) (Stream.Log.line model.env.stdout ("error " ++ e)) )
+            ( model, Task.perform (\_ -> Done) (Stream.logLine ("error " ++ e) model.env.stdout) )
 
         Got m ->
             ( { model | subscribed = False }
-            , Task.perform (\_ -> Done) (Stream.Log.line model.env.stdout ("got: " ++ W.messageString m ++ "\nunsubscribed"))
+            , Task.perform (\_ -> Done) (Stream.logLine ("got: " ++ W.messageString m ++ "\nunsubscribed") model.env.stdout)
             )
 
         Started ->

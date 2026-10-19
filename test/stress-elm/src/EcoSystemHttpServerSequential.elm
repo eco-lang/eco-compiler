@@ -20,15 +20,14 @@ bodies under GC. A listening server keeps the program alive, so it ends with
 import Dict
 import Http
 import Http.Server as Server
-import Http.Server.Response as Response
 import StressHarness exposing (StressFlags)
 import System
 import Task exposing (Task)
 
 
 type Msg
-    = Started (Result Server.ServerError ( Server.Server, Int ))
-    | GotRequest Server.Request Response.Response
+    = Started (Result Server.Error ( Server.Server, Int ))
+    | GotRequest Server.Request Server.Response
     | Done Bool
 
 
@@ -95,11 +94,11 @@ main =
         { init =
             \flags ->
                 ( { flags = flags, server = Nothing }
-                , System.getEnvironmentVariables
+                , System.environmentVariables
                     |> Task.map (Dict.get "ECO_TEST_PORT" >> Maybe.andThen String.toInt >> Maybe.withDefault 0)
                     |> Task.andThen
                         (\p ->
-                            Server.createServer { host = "127.0.0.1", port_ = p }
+                            Server.listenOnHost "127.0.0.1" p
                                 |> Task.map (\s -> ( s, p ))
                         )
                     |> Task.attempt Started
@@ -139,9 +138,9 @@ update msg model =
             in
             ( model
             , response
-                |> Response.setStatus (statusFor index)
-                |> Response.setBody reply
-                |> Response.send
+                |> Server.setStatus (statusFor index)
+                |> Server.setBody reply
+                |> Server.send
             )
 
         Done ok ->

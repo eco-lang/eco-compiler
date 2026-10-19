@@ -16,8 +16,10 @@
 //     the signal, with a sane terminal). When the program does listen
 //     (System.onSignalInterrupt / onSignalTerminate), raw mode stays on.
 //     Raw mode is node's (uv_tty_set_mode UV_TTY_MODE_RAW).
-//   * setProcessTitle — Linux: pthread_setname_np(eco_process_main_thread(),
-//     first 15 bytes), which changes `comm` only; macOS: a no-op (§3.8).
+//   * setTitle — the terminal window title: when isatty(1), the OSC 2
+//     sequence ESC ] 2 ; title BEL written to fd 1 in one write (EINTR
+//     retried); otherwise nothing, so the sequence never reaches a redirected
+//     file or pipe (plans/eco-system-api-refactor.md D10).
 //
 // Windows: every kernel is infallible (Task Never), so it crashes with a
 // clear message (§1).
@@ -35,9 +37,7 @@
 #include <cstring>
 
 #ifndef _WIN32
-#include "allocator/RuntimeExports.h"   // eco_process_main_thread
 #include <csignal>
-#include <pthread.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -91,12 +91,14 @@ int terminalColorDepth() {
     return 4;
 }
 
-std::string truncatedThreadName(const std::string& title) {
-    if (title.size() <= 15) return title;
-    size_t n = 15;
-    // Do not end inside a UTF-8 sequence: back off over continuation bytes.
-    while (n > 0 && (static_cast<unsigned char>(title[n]) & 0xC0) == 0x80) --n;
-    return title.substr(0, n);
+std::string terminalTitleSequence(const std::string& title) {
+    std::string out = "\x1b]2;";
+    for (char ch : title) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        if (c >= 0x20 && c != 0x7f) out.push_back(ch);   // C0 controls and DEL would end the sequence
+    }
+    out.push_back('\x07');
+    return out;
 }
 
 namespace {
@@ -194,25 +196,12 @@ HPointer terminalSetStdInRawModeBody(HPointer) {
         "eco/system: Terminal.setStdInRawMode is not supported on Windows yet");
 }
 
-HPointer terminalSetProcessTitleBody(HPointer) {
+HPointer terminalSetTitleBody(HPointer) {
     ::Eco::Kernel::reportFatal(
-        "eco/system: Terminal.setProcessTitle is not supported on Windows yet");
+        "eco/system: Terminal.setTitle is not supported on Windows yet");
 }
 
 #else // POSIX
-
-namespace {
-
-void setThreadName(const std::string& title) {
-#if defined(__linux__)
-    std::string name = truncatedThreadName(title);
-    (void)::pthread_setname_np(eco_process_main_thread(), name.c_str());
-#else
-    (void)title;   // macOS: a no-op (pthread_setname_np names only the caller)
-#endif
-}
-
-} // namespace
 
 // getConfiguration : Task Never (Maybe ( Int, Int, Int ))
 HPointer terminalGetConfigurationBody(HPointer /*captured*/) {
@@ -238,11 +227,20 @@ HPointer terminalSetStdInRawModeBody(HPointer captured) {
     )
 }
 
-// setProcessTitle : String -> Task Never ()  — payload: the String.
-HPointer terminalSetProcessTitleBody(HPointer captured) {
+// setTitle : String -> Task Never ()  — payload: the String.
+HPointer terminalSetTitleBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         std::string title = toStdString(captured);   // G3: copy out first
-        setThreadName(title);
+        if (::isatty(1)) {
+            std::string seq = terminalTitleSequence(title);
+            size_t done = 0;
+            while (done < seq.size()) {
+                ssize_t n = ::write(1, seq.data() + done, seq.size() - done);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;   // best effort: a title is not output
+                done += static_cast<size_t>(n);
+            }
+        }
         return succeedUnit();
     )
 }

@@ -10,8 +10,8 @@ module DomDeepTest exposing (main)
 -- EXIT: 0
 
 import Html exposing (Html)
-import Http.Dom as Dom
-import Stream.Log
+import Html.Dom as Dom
+import Stream
 import System
 
 
@@ -33,10 +33,10 @@ line : String -> Html msg -> String
 line label h =
     let
         native =
-            Dom.toString h
+            Dom.htmlToString h
 
         reference =
-            Dom.render (Dom.fromNode h)
+            Dom.toString (Dom.fromHtml h)
     in
     label
         ++ ": "
@@ -50,12 +50,9 @@ line label h =
            )
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Stream.Log.line env.stdout
-                    (line "deep" (deep 10000 (Html.text "leaf")) ++ "\n" ++ line "wide" (wide 200000))
-                )
+            Stream.logLine (line "deep" (deep 10000 (Html.text "leaf")) ++ "\n" ++ line "wide" (wide 200000)) env.stdout
         )

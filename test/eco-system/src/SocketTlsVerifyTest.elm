@@ -48,7 +48,7 @@ cases =
     ]
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->

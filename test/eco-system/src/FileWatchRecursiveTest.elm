@@ -1,6 +1,6 @@
 module FileWatchRecursiveTest exposing (main)
 
-{-| `System.File.watchRecursive` (plans/eco-system-library.md Phase 4 step
+{-| `FileSystem.watchRecursive` (plans/eco-system-library.md Phase 4 step
 4.6, C.2, §3.8): a sub-directory created after the watch started is watched
 too (inotify: a watch per sub-directory, added on IN_CREATE), and events
 carry paths relative to the watched directory. The subscription goes through
@@ -17,10 +17,10 @@ the file was seen.
 
 import FileTestHelp exposing (bytes, child)
 import Process
-import Stream.Log
+import Stream
 import System
-import System.File as File
-import System.File.Path as Path exposing (Path)
+import FileSystem as File
+import Path exposing (Path)
 import Task
 
 
@@ -55,12 +55,12 @@ showEvent ev =
 
 log : Model -> String -> Cmd Msg
 log model line =
-    Task.perform (\_ -> Logged) (Stream.Log.line model.env.stdout line)
+    Task.perform (\_ -> Logged) (Stream.logLine line model.env.stdout)
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init =
             \env ->
                 ( { env = env, dir = Nothing, done = False }

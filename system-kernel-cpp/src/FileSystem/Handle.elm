@@ -1,24 +1,35 @@
-module System.File.FileHandle exposing
-    ( FileHandle, ReadableFileHandle, WriteableFileHandle, ReadWriteableFileHandle, ReadAccess, WriteAccess, makeReadOnly, makeWriteOnly
+module FileSystem.Handle exposing
+    ( Handle, ReadableHandle, WriteableHandle, ReadWriteableHandle, ReadAccess, WriteAccess, makeReadOnly, makeWriteOnly
     , openForRead, OpenForWriteBehaviour(..), openForWrite, openForReadAndWrite, close
     , metadata, changeAccess, changeOwner, changeTimes
     , read, readFromOffset
     , write, writeFromOffset, truncate, sync, syncData
     )
 
-{-| This module provides access to files through file handles. A [FileHandle](#FileHandle)
+{-| This module provides access to files through file handles. A [Handle](#Handle)
 represents an open file. If you know you're going to perform repeated operations on a file, it
-will be more efficient through a [FileHandle](#FileHandle).
+will be more efficient through a [Handle](#Handle).
 
-The error type is the [Error](System-File#Error) from [System.File](System-File). For operations
-on an open [FileHandle](#FileHandle), [errorPath](System-File#errorPath) returns the empty path;
+The error type is the [Error](FileSystem#Error) from [FileSystem](FileSystem). For operations
+on an open [Handle](#Handle), [errorPath](FileSystem#errorPath) returns the empty path;
 only a failure to open a file reports the path that was being opened.
 
-Compared with gren-node's file handle module, the phantom types are named
+Handles have no file position. [read](#read) reads the whole file and [write](#write) writes
+at offset 0, so two `write` calls overwrite each other rather than appending; every other read
+and write names its offset. For sequential IO, use
+[FileSystem.readFileStream](FileSystem#readFileStream) and
+[FileSystem.writeFileStream](FileSystem#writeFileStream) instead.
+
+Most programs don't need handles: [FileSystem.writeFileWith](FileSystem#writeFileWith) covers
+durable writes and exclusive create. Handles are for random access on one open file, and for
+operations that must apply to the file you opened even if its path is renamed or replaced.
+
+Compared with gren-node's file handle module, the type is called [Handle](#Handle) (gren:
+`FileHandle`), the phantom types are named
 [ReadAccess](#ReadAccess) and [WriteAccess](#WriteAccess) (gren: `ReadPermission` and
 `WritePermission`), and opening a file needs no permission value.
 
-@docs FileHandle, ReadableFileHandle, WriteableFileHandle, ReadWriteableFileHandle, ReadAccess, WriteAccess, makeReadOnly, makeWriteOnly
+@docs Handle, ReadableHandle, WriteableHandle, ReadWriteableHandle, ReadAccess, WriteAccess, makeReadOnly, makeWriteOnly
 
 
 ## File open/close
@@ -44,9 +55,9 @@ Compared with gren-node's file handle module, the phantom types are named
 
 import Bytes exposing (Bytes)
 import Eco.Kernel.FileSystem
-import System.File as File
-import System.File.Internal
-import System.File.Path as Path exposing (Path)
+import FileSystem
+import FileSystem.Internal
+import Path exposing (Path)
 import Task exposing (Task)
 import Time
 
@@ -56,12 +67,12 @@ import Time
 Having a file handle gives you access to perform certain operations, so make sure you
 only pass a file handle to code you can trust.
 
-The [FileHandle](#FileHandle) type also records whether the file may be read and written as
+The [Handle](#Handle) type also records whether the file may be read and written as
 part of its type, using [ReadAccess](#ReadAccess) and [WriteAccess](#WriteAccess).
 
 -}
-type FileHandle readAccess writeAccess
-    = FileHandle Int
+type Handle readAccess writeAccess
+    = Handle Int
 
 
 {-| A type that represents the right to read from a file.
@@ -82,54 +93,54 @@ type WriteAccess
     = WriteAccess
 
 
-{-| An alias for a [FileHandle](#FileHandle) that can be used in read operations.
+{-| An alias for a [Handle](#Handle) that can be used in read operations.
 -}
-type alias ReadableFileHandle a =
-    FileHandle ReadAccess a
+type alias ReadableHandle a =
+    Handle ReadAccess a
 
 
-{-| An alias for a [FileHandle](#FileHandle) that can be used in write operations.
+{-| An alias for a [Handle](#Handle) that can be used in write operations.
 -}
-type alias WriteableFileHandle a =
-    FileHandle a WriteAccess
+type alias WriteableHandle a =
+    Handle a WriteAccess
 
 
-{-| An alias for a [FileHandle](#FileHandle) that can be used for both read and write operations.
+{-| An alias for a [Handle](#Handle) that can be used for both read and write operations.
 -}
-type alias ReadWriteableFileHandle =
-    FileHandle ReadAccess WriteAccess
+type alias ReadWriteableHandle =
+    Handle ReadAccess WriteAccess
 
 
-{-| This lets you downgrade a [ReadWriteableFileHandle](#ReadWriteableFileHandle) to a
-[FileHandle](#FileHandle) that only has read access.
+{-| This lets you downgrade a [ReadWriteableHandle](#ReadWriteableHandle) to a
+[Handle](#Handle) that only has read access.
 
 Comes in handy when you want full access to a file in some parts of your code, but limited access
 in other parts of your code.
 
 -}
-makeReadOnly : ReadWriteableFileHandle -> FileHandle ReadAccess Never
+makeReadOnly : ReadWriteableHandle -> Handle ReadAccess Never
 makeReadOnly handle =
     let
-        (FileHandle fd) =
+        (Handle fd) =
             handle
     in
-    FileHandle fd
+    Handle fd
 
 
-{-| This lets you downgrade a [ReadWriteableFileHandle](#ReadWriteableFileHandle) to a
-[FileHandle](#FileHandle) that only has write access.
+{-| This lets you downgrade a [ReadWriteableHandle](#ReadWriteableHandle) to a
+[Handle](#Handle) that only has write access.
 
 Comes in handy when you want full access to a file in some parts of your code, but limited access
 in other parts of your code.
 
 -}
-makeWriteOnly : ReadWriteableFileHandle -> FileHandle Never WriteAccess
+makeWriteOnly : ReadWriteableHandle -> Handle Never WriteAccess
 makeWriteOnly handle =
     let
-        (FileHandle fd) =
+        (Handle fd) =
             handle
     in
-    FileHandle fd
+    Handle fd
 
 
 
@@ -138,7 +149,7 @@ makeWriteOnly handle =
 
 {-| Open the file at the provided path with read access. The task fails if the file doesn't exist.
 -}
-openForRead : Path -> Task File.Error (FileHandle ReadAccess Never)
+openForRead : Path -> Task FileSystem.Error (Handle ReadAccess Never)
 openForRead path =
     openImpl "r" path
 
@@ -159,7 +170,7 @@ type OpenForWriteBehaviour
 
 {-| Open a file at the provided path with write access.
 -}
-openForWrite : OpenForWriteBehaviour -> Path -> Task File.Error (FileHandle Never WriteAccess)
+openForWrite : OpenForWriteBehaviour -> Path -> Task FileSystem.Error (Handle Never WriteAccess)
 openForWrite behaviour path =
     let
         access =
@@ -178,7 +189,7 @@ openForWrite behaviour path =
 
 {-| Open a file at the provided path with both read and write access.
 -}
-openForReadAndWrite : OpenForWriteBehaviour -> Path -> Task File.Error ReadWriteableFileHandle
+openForReadAndWrite : OpenForWriteBehaviour -> Path -> Task FileSystem.Error ReadWriteableHandle
 openForReadAndWrite behaviour path =
     let
         access =
@@ -195,10 +206,10 @@ openForReadAndWrite behaviour path =
     openImpl access path
 
 
-{-| Close a file. All later operations performed against the given [FileHandle](#FileHandle)
+{-| Close a file. All later operations performed against the given [Handle](#Handle)
 will fail.
 -}
-close : FileHandle a b -> Task File.Error ()
+close : Handle a b -> Task FileSystem.Error ()
 close handle =
     kClose (fdOf handle)
         |> handleError
@@ -208,34 +219,34 @@ close handle =
 -- METADATA
 
 
-{-| Retrieve [Metadata](System-File#Metadata) about the file represented by the
-[FileHandle](#FileHandle).
+{-| Retrieve [Metadata](FileSystem#Metadata) about the file represented by the
+[Handle](#Handle).
 
 **Deviation from gren-node:** the task succeeds with the `Metadata` itself; gren-node's
 annotation wrapped it in a file handle type by mistake.
 
 -}
-metadata : ReadableFileHandle a -> Task File.Error File.Metadata
+metadata : ReadableHandle a -> Task FileSystem.Error FileSystem.Metadata
 metadata handle =
     kFstat (fdOf handle)
-        |> Task.map (System.File.Internal.decodeMetadata entityFromInt)
+        |> Task.map (FileSystem.Internal.decodeMetadata entityFromInt)
         |> handleError
 
 
 {-| Change how different users can access a file. Each list becomes one octal digit of the
-file mode, as in [System.File.changeAccess](System-File#changeAccess).
+file mode, as in [FileSystem.changeAccess](FileSystem#changeAccess).
 -}
 changeAccess :
-    { owner : List File.AccessPermission, group : List File.AccessPermission, others : List File.AccessPermission }
-    -> WriteableFileHandle a
-    -> Task File.Error (WriteableFileHandle a)
+    { owner : List FileSystem.AccessPermission, group : List FileSystem.AccessPermission, others : List FileSystem.AccessPermission }
+    -> WriteableHandle a
+    -> Task FileSystem.Error (WriteableHandle a)
 changeAccess permissions handle =
     kFchmod (fdOf handle)
-        (File.accessPermissionsToInt permissions.owner
+        (FileSystem.accessPermissionsToInt permissions.owner
             * 64
-            + File.accessPermissionsToInt permissions.group
+            + FileSystem.accessPermissionsToInt permissions.group
             * 8
-            + File.accessPermissionsToInt permissions.others
+            + FileSystem.accessPermissionsToInt permissions.others
         )
         |> handleError
         |> Task.map (\_ -> handle)
@@ -243,7 +254,7 @@ changeAccess permissions handle =
 
 {-| Change who owns the file. You'll need the ID of the new user and group who will own the file.
 -}
-changeOwner : { userID : Int, groupID : Int } -> WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
+changeOwner : { userID : Int, groupID : Int } -> WriteableHandle a -> Task FileSystem.Error (WriteableHandle a)
 changeOwner ids handle =
     kFchown (fdOf handle) ids.userID ids.groupID
         |> handleError
@@ -253,7 +264,7 @@ changeOwner ids handle =
 {-| This will let you set the timestamp for when the file was last accessed, and last modified.
 The times will be rounded down to the closest second.
 -}
-changeTimes : { lastAccessed : Time.Posix, lastModified : Time.Posix } -> WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
+changeTimes : { lastAccessed : Time.Posix, lastModified : Time.Posix } -> WriteableHandle a -> Task FileSystem.Error (WriteableHandle a)
 changeTimes times handle =
     kFutimes (fdOf handle)
         (Time.posixToMillis times.lastAccessed // 1000)
@@ -268,7 +279,7 @@ changeTimes times handle =
 
 {-| Read all bytes in a file.
 -}
-read : ReadableFileHandle a -> Task File.Error Bytes
+read : ReadableHandle a -> Task FileSystem.Error Bytes
 read handle =
     readFromOffset handle { offset = 0, length = -1 }
 
@@ -279,7 +290,7 @@ A negative `length` reads everything from `offset` to the end of the file. Fewer
 for are returned if the end of the file is reached first.
 
 -}
-readFromOffset : ReadableFileHandle a -> { offset : Int, length : Int } -> Task File.Error Bytes
+readFromOffset : ReadableHandle a -> { offset : Int, length : Int } -> Task FileSystem.Error Bytes
 readFromOffset handle options =
     kReadFromOffset (fdOf handle) options.offset options.length
         |> handleError
@@ -293,7 +304,7 @@ readFromOffset handle options =
 If the file is not empty, existing bytes will be overwritten. Use
 [writeFromOffset](#writeFromOffset) to write somewhere else.
 -}
-write : WriteableFileHandle a -> Bytes -> Task File.Error (WriteableFileHandle a)
+write : WriteableHandle a -> Bytes -> Task FileSystem.Error (WriteableHandle a)
 write handle bytes =
     writeFromOffset handle 0 bytes
 
@@ -301,7 +312,7 @@ write handle bytes =
 {-| Write bytes into a specific location of a file, given as a byte offset from the beginning
 of the file.
 -}
-writeFromOffset : WriteableFileHandle a -> Int -> Bytes -> Task File.Error (WriteableFileHandle a)
+writeFromOffset : WriteableHandle a -> Int -> Bytes -> Task FileSystem.Error (WriteableHandle a)
 writeFromOffset handle offset bytes =
     kWriteFromOffset (fdOf handle) offset bytes
         |> handleError
@@ -312,7 +323,7 @@ writeFromOffset handle offset bytes =
 bytes are discarded. If the file is smaller than the given size, zeroes will be added until it is
 of the given size.
 -}
-truncate : Int -> WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
+truncate : Int -> WriteableHandle a -> Task FileSystem.Error (WriteableHandle a)
 truncate length handle =
     kFtruncate (fdOf handle) length
         |> handleError
@@ -326,7 +337,7 @@ it's time to do so.
 This task, when executed, will force changes to be written to disk.
 
 -}
-sync : WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
+sync : WriteableHandle a -> Task FileSystem.Error (WriteableHandle a)
 sync handle =
     kFsync (fdOf handle)
         |> handleError
@@ -337,7 +348,7 @@ sync handle =
 to a file's metadata are not synced. This operation might be a little faster than a full sync, at
 the risk of losing changes to metadata.
 -}
-syncData : WriteableFileHandle a -> Task File.Error (WriteableFileHandle a)
+syncData : WriteableHandle a -> Task FileSystem.Error (WriteableHandle a)
 syncData handle =
     kFdatasync (fdOf handle)
         |> handleError
@@ -348,47 +359,47 @@ syncData handle =
 -- HELPERS
 
 
-openImpl : String -> Path -> Task File.Error (FileHandle a b)
+openImpl : String -> Path -> Task FileSystem.Error (Handle a b)
 openImpl access path =
     kOpen access (Path.toPosixString path)
-        |> Task.mapError (System.File.Internal.decodeError path)
-        |> Task.map FileHandle
+        |> Task.mapError (FileSystem.Internal.decodeError path)
+        |> Task.map Handle
 
 
-fdOf : FileHandle a b -> Int
-fdOf (FileHandle fd) =
+fdOf : Handle a b -> Int
+fdOf (Handle fd) =
     fd
 
 
 {-| Errors of operations on an open handle carry the empty path (see the module docs).
 -}
-handleError : Task ( String, String ) a -> Task File.Error a
+handleError : Task ( String, String ) a -> Task FileSystem.Error a
 handleError task =
-    Task.mapError (System.File.Internal.decodeError Path.empty) task
+    Task.mapError (FileSystem.Internal.decodeError Path.empty) task
 
 
-{-| Private duplicate of the one in `System.File` (plans/eco-system-library.md Phase 4 step 4.2).
+{-| Private duplicate of the one in `FileSystem` (plans/eco-system-library.md Phase 4 step 4.2).
 -}
-entityFromInt : Int -> File.EntityType
+entityFromInt : Int -> FileSystem.EntityType
 entityFromInt n =
     case n of
         0 ->
-            File.File
+            FileSystem.File
 
         1 ->
-            File.Directory
+            FileSystem.Directory
 
         2 ->
-            File.Socket
+            FileSystem.Socket
 
         3 ->
-            File.Symlink
+            FileSystem.Symlink
 
         4 ->
-            File.Device
+            FileSystem.Device
 
         _ ->
-            File.Pipe
+            FileSystem.Pipe
 
 
 

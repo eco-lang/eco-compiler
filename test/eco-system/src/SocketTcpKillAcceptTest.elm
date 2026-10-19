@@ -11,12 +11,12 @@ completes, its credit is returned, and a later `accept` still gets the next clie
 import Process
 import Socket
 import SocketTestHelp as H
-import Stream.Log
+import Stream
 import System
 import Task
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     H.program
         (\env ->
@@ -25,8 +25,8 @@ main =
                     (\listener ->
                         Process.spawn
                             (Socket.accept listener
-                                |> Task.andThen (\_ -> Stream.Log.line env.stdout "killed accept completed")
-                                |> Task.onError (\_ -> Stream.Log.line env.stdout "killed accept completed with an error")
+                                |> Task.andThen (\_ -> Stream.logLine "killed accept completed" env.stdout)
+                                |> Task.onError (\_ -> Stream.logLine "killed accept completed with an error" env.stdout)
                             )
                             |> Task.andThen (\pid -> Process.sleep 100 |> Task.andThen (\_ -> Process.kill pid))
                             |> Task.andThen (\_ -> H.async (H.acceptRead listener))

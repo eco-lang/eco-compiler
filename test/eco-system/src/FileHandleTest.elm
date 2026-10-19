@@ -1,6 +1,6 @@
 module FileHandleTest exposing (main)
 
-{-| `System.File.FileHandle` (plans/eco-system-library.md Phase 4 step 4.6,
+{-| `FileSystem.Handle` (plans/eco-system-library.md Phase 4 step 4.6,
 Appendix E.3): the open modes (`wx` on an existing file is EEXIST, `r+` keeps
 the contents, `w+` empties the file), `write` at offset 0, `writeFromOffset`,
 `readFromOffset` with offsets and negative lengths, `truncate`, `sync`,
@@ -38,11 +38,11 @@ the empty error path after `close`.
 -- EXIT: 0
 
 import Bytes
+import FileSystem as File
+import FileSystem.Handle as FileHandle
 import FileTestHelp exposing (attempt, bytes, child, file, fromBytes)
+import Path exposing (Path)
 import System
-import System.File as File
-import System.File.FileHandle as FileHandle
-import System.File.Path as Path exposing (Path)
 import Task exposing (Task)
 import Time
 
@@ -187,7 +187,7 @@ reopenPhase h dir =
         ]
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
     FileTestHelp.program
         (\_ ->

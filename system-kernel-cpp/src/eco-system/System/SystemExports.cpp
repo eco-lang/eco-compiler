@@ -14,24 +14,12 @@ using namespace Eco::System;
 
 extern "C" {
 
-// environment : Task Never ( ( String, String, String ), List String, ( Int, Int, Int ) )
-uint64_t Eco_Kernel_System_environment() {
+// environmentNow : Json.Value -> ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
+// The JSON argument (the flags, ignored) only ties the call to System.environmentDecoder's
+// argument (plans/eco-system-api-refactor.md §10.1).
+uint64_t Eco_Kernel_System_environmentNow(uint64_t /*json*/) {
     ECO_KERNEL_GUARD(
-        return enc(makeBinding<systemEnvironmentBody>(alloc::unit()));
-    )
-}
-
-// getPlatform : Task Never String
-uint64_t Eco_Kernel_System_getPlatform() {
-    ECO_KERNEL_GUARD(
-        return enc(makeBinding<systemGetPlatformBody>(alloc::unit()));
-    )
-}
-
-// getCpuArchitecture : Task Never String
-uint64_t Eco_Kernel_System_getCpuArchitecture() {
-    ECO_KERNEL_GUARD(
-        return enc(makeBinding<systemGetCpuArchitectureBody>(alloc::unit()));
+        return enc(systemEnvironmentNow());
     )
 }
 

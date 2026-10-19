@@ -26,14 +26,12 @@ program.
 
 import Bytes exposing (Bytes)
 import Bytes.Decode
-import Http.Server as Server exposing (Request, Server)
-import Http.Server.Response as Response exposing (Response)
+import FileSystem
+import Http.Server as Server exposing (Request, Response, Server)
+import Path
 import Socket.Address as Address
 import Stream
-import Stream.Log
 import System
-import System.File
-import System.File.Path
 import Task exposing (Task)
 import WebSocket
 
@@ -60,9 +58,9 @@ type Msg
     | Done
 
 
-main : System.Program Model Msg
+main : Platform.Program System.Environment Model Msg
 main =
-    System.defineProgram
+    Platform.worker
         { init = init
         , update = update
         , subscriptions = subscriptions
@@ -131,7 +129,7 @@ start options =
         serverOptions tls =
             let
                 d =
-                    Server.defaultServerOptions (Address.loopback Address.IPv4) options.port_
+                    Server.defaultListenOptions (Address.loopback Address.IPv4) options.port_
             in
             { d | tls = tls, http2 = options.http2 }
     in
@@ -147,15 +145,15 @@ start options =
     )
         |> Task.andThen
             (\tls ->
-                Server.createServerWith (serverOptions tls)
-                    |> Task.mapError (\(Server.ServerError e) -> e.message)
+                Server.listen (serverOptions tls)
+                    |> Task.mapError Server.errorToString
             )
 
 
 readText : String -> Task String String
 readText file =
-    System.File.readFile (System.File.Path.fromPosixString file)
-        |> Task.mapError System.File.errorToString
+    FileSystem.readFile (Path.fromPosixString file)
+        |> Task.mapError FileSystem.errorToString
         |> Task.andThen
             (\bytes ->
                 case Bytes.Decode.decode (Bytes.Decode.string (Bytes.width bytes)) bytes of
@@ -170,7 +168,7 @@ readText file =
 fail : Stream.Writable Bytes -> String -> Cmd Msg
 fail stderr problem =
     Cmd.batch
-        [ Task.perform (\_ -> Done) (Stream.Log.line stderr problem)
+        [ Task.perform (\_ -> Done) (Stream.logLine problem stderr)
         , System.exitWithCode 1
         ]
 
@@ -188,13 +186,14 @@ update msg model =
                         "wss"
             in
             ( { model | server = Just server }
-            , Stream.Log.line model.stdout
+            , Stream.logLine
                 ("ws-echo-server: listening on "
                     ++ scheme
                     ++ "://127.0.0.1:"
-                    ++ String.fromInt (Server.serverPort server)
+                    ++ String.fromInt (Server.endpoint server).port_
                     ++ "/"
                 )
+                model.stdout
                 |> Task.perform (\_ -> Done)
             )
 
@@ -214,9 +213,9 @@ update msg model =
             else
                 ( model
                 , response
-                    |> Response.setHeader "Content-Type" "text/plain; charset=utf-8"
-                    |> Response.setBody "A WebSocket echo server: connect with a WebSocket client.\n"
-                    |> Response.send
+                    |> Server.setHeader "Content-Type" "text/plain; charset=utf-8"
+                    |> Server.setBody "A WebSocket echo server: connect with a WebSocket client.\n"
+                    |> Server.send
                 )
 
         Done ->

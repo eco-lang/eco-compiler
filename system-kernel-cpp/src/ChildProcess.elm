@@ -1,4 +1,4 @@
-effect module System.Process where { command = MyCmd } exposing
+effect module ChildProcess where { command = MyCmd } exposing
     ( RunOptions, defaultRunOptions, Shell(..), WorkingDirectory(..), EnvironmentVariables(..), RunDuration(..)
     , run, SuccessfulRun, FailedRun(..)
     , spawn, SpawnOptions, StreamIO, Connection(..), defaultSpawnOptions
@@ -172,7 +172,7 @@ type alias SuccessfulRun =
 
 {-| Execute a program with the given name, arguments and options, and wait for it to terminate.
 
-    System.Process.run "cat" [ "my_file" ] System.Process.defaultRunOptions
+    ChildProcess.run "cat" [ "my_file" ] ChildProcess.defaultRunOptions
 
 The task succeeds if the program exits with code 0, and fails with a [`FailedRun`](#FailedRun)
 otherwise. The program's standard input is empty (`/dev/null`). Killing the task with
@@ -218,13 +218,14 @@ type alias SpawnOptions msg =
     }
 
 
-{-| Streams that can be used to communicate with a spawned child process: `input` is connected to
-the child's stdin, `output` to its stdout and `error` to its stderr.
+{-| Streams that can be used to communicate with a spawned child process: `stdin` is connected to
+the child's standard input, `stdout` to its standard output and `stderr` to its standard error.
+(Named `input`, `output` and `error` in gren-node.)
 -}
 type alias StreamIO =
-    { input : Stream.Writable Bytes
-    , output : Stream.Readable Bytes
-    , error : Stream.Readable Bytes
+    { stdin : Stream.Writable Bytes
+    , stdout : Stream.Readable Bytes
+    , stderr : Stream.Readable Bytes
     }
 
 
@@ -267,7 +268,7 @@ defaultSpawnOptions connection onExit =
 {-| Spawn a program with the given name, arguments and options, and let it run in the
 background. This is mostly helpful for starting long-running processes.
 
-    System.Process.spawn "tail" [ "-f", "my_file" ] mySpawnOptions
+    ChildProcess.spawn "tail" [ "-f", "my_file" ] mySpawnOptions
 
 You receive the `connection` message once the process has started, and the `onExit` message
 when it terminates. If the program cannot be started at all, you still receive the `connection`
@@ -382,9 +383,9 @@ onInitFor connection ( processId, streams ) =
             toMsg
                 { processId = processId
                 , streams =
-                    { input = Stream.Internal.Writable input
-                    , output = Stream.Internal.Readable output
-                    , error = Stream.Internal.Readable error
+                    { stdin = Stream.Internal.Writable input
+                    , stdout = Stream.Internal.Readable output
+                    , stderr = Stream.Internal.Readable error
                     }
                 }
 
@@ -398,7 +399,7 @@ onInitFor connection ( processId, streams ) =
 
 -- EFFECT MANAGER
 --
--- The native backend runs the C++ manager registered as "System.Process"
+-- The native backend runs the C++ manager registered as "ChildProcess"
 -- (src/eco-system/ChildProcess/ChildProcessManager.{hpp,cpp}, plans/eco-system-library.md
 -- Appendix C.3) and ignores the Elm functions below. The JS backend runs them
 -- (plans/eco-system-library.md Phase 10, D15): each Spawn starts the child through a

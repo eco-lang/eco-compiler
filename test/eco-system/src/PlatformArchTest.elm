@@ -1,18 +1,17 @@
 module PlatformArchTest exposing (main)
 
 {-| Platform and CPU architecture (plans/eco-system-library.md Phase 3 step 3.6,
-§3.8): the environment and the tasks agree, and on the CI machines the values
-are known ones.
+§3.8): on the CI machines the environment's values are known ones. (The
+`getPlatform` / `getCpuArchitecture` tasks were removed,
+plans/eco-system-api-refactor.md D15.)
 -}
 
 -- CHECK: platform known: True
 -- CHECK: arch known: True
--- CHECK: env agrees: True
 -- EXIT: 0
 
-import Stream.Log
+import Stream
 import System exposing (CpuArchitecture(..), Platform(..))
-import Task
 
 
 platformKnown : Platform -> Bool
@@ -53,21 +52,15 @@ boolString b =
         "False"
 
 
-main : System.SimpleProgram ()
+main : Platform.Program System.Environment () ()
 main =
-    System.defineSimpleProgram
+    System.simpleProgram
         (\env ->
-            System.endSimpleProgram
-                (Task.map2 Tuple.pair System.getPlatform System.getCpuArchitecture
-                    |> Task.andThen
-                        (\( platform, arch ) ->
-                            Stream.Log.line env.stdout
-                                (String.join "\n"
-                                    [ "platform known: " ++ boolString (platformKnown platform)
-                                    , "arch known: " ++ boolString (archKnown arch)
-                                    , "env agrees: " ++ boolString (platform == env.platform && arch == env.cpuArchitecture)
-                                    ]
-                                )
-                        )
+            Stream.logLine
+                (String.join "\n"
+                    [ "platform known: " ++ boolString (platformKnown env.platform)
+                    , "arch known: " ++ boolString (archKnown env.cpuArchitecture)
+                    ]
                 )
+                env.stdout
         )
