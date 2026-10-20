@@ -4,12 +4,9 @@ POSIX-style system programming for Eco programs: files, processes,
 streams, the terminal, HTTP servers, sockets and WebSockets, from Elm.
 
 `eco/system` is the public system API for programs compiled with the Eco compiler. (Eco's own
-`eco/kernel` package is the compiler's internal IO layer and is not meant for applications.) The API
-is a port of [gren-lang/node](https://github.com/gren-lang/node), together with the `Stream` module
-from [gren-lang/core](https://github.com/gren-lang/core), adapted to Elm: lists instead of arrays,
-`()` instead of `{}`, and no permission tokens. For an HTTP client, use
-[elm/http](https://package.elm-lang.org/packages/elm/http/latest/); `Http.Stream` adds streaming
-request and response bodies on top of it.
+`eco/kernel` package is the compiler's internal IO layer and is not meant for applications.) For
+an HTTP client, use [elm/http](https://package.elm-lang.org/packages/elm/http/latest/);
+`Http.Stream` adds streaming request and response bodies on top of it.
 
 > **Status:** every module is implemented for Eco's native backend and tested on Linux. The macOS
 > code paths are written but not yet tested. Windows is not supported yet: the package is meant to
@@ -23,7 +20,7 @@ request and response bodies on top of it.
 
 - `System`: the program environment (args, start time, stdin/stdout/stderr, platform), simple
   programs, exit codes and signals. A program is a `Platform.Program System.Environment model
-  msg`: `System.simpleProgram` for one task, `Platform.worker` for a program with a model.
+  msg`: `System.program` for a program with a model, `System.simpleProgram` for one task.
 - `Stream`: readable and writable streams, reading lines, piping, and best-effort logging.
 - `Stream.Transformation`: building transformations, text encoding and compression.
 - `FileSystem`, `FileSystem.Handle`, `Path`: files, directories, links, metadata, durable and

@@ -1,5 +1,5 @@
 effect module System where { command = MyCmd, subscription = MySub } exposing
-    ( simpleProgram
+    ( program, simpleProgram
     , Environment, environmentVariables, Platform(..), CpuArchitecture(..)
     , exit, exitWithCode, setExitCode
     , onEmptyEventLoop, onSignalInterrupt, onSignalTerminate
@@ -16,12 +16,12 @@ JSON a host supplies is ignored. The environment tells you which platform the pr
 running on, which arguments it was started with and when it started, and gives you its standard
 input, output and error streams.
 
-Programs that keep state, react to messages and listen to subscriptions are made with
-`Platform.worker`:
+A long-running program, one that keeps state, reacts to messages and listens to
+subscriptions, is made with [`program`](#program):
 
     main : Platform.Program System.Environment Model Msg
     main =
-        Platform.worker
+        System.program
             { init = \env -> ( initialModel env, Cmd.none )
             , update = update
             , subscriptions = subscriptions
@@ -50,9 +50,9 @@ work: it runs until the host stops it or it calls [`exitWithCode`](#exitWithCode
 also changes what exiting and signals do, as the functions below describe.
 
 
-# Simple Program
+# Programs
 
-@docs simpleProgram
+@docs program, simpleProgram
 
 
 # Environment information
@@ -290,12 +290,27 @@ toEnvironment json =
 -- PROGRAMS
 
 
+{-| Creates a long-running program from an `init`, an `update` and `subscriptions`, as
+`Platform.worker` does, with the program's [`Environment`](#Environment) as its flags.
+-}
+program :
+    { init : Environment -> ( model, Cmd msg )
+    , update : msg -> model -> ( model, Cmd msg )
+    , subscriptions : model -> Sub msg
+    }
+    -> Platform.Program Environment model msg
+program =
+    Platform.worker
+
+
 {-| Creates a simple program: one that runs the task `run` makes from the
 [`Environment`](#Environment), and has no state, messages or subscriptions.
 
-The task's result is ignored. The program ends as any program does, so it waits for IO the
-task started even after the task has finished. To end with a non-zero
-exit code, finish the task with [`setExitCode`](#setExitCode):
+The task's result is ignored. If the task fails, the program's exit code is set to 1, as
+[`setExitCode`](#setExitCode) sets it; if it succeeds, the exit code is left as it is, which is
+0 unless the task set another. The program ends as any program does, so it waits for IO the
+task started even after the task has finished. To end with a particular non-zero exit code,
+finish the task with [`setExitCode`](#setExitCode):
 
     main : Platform.Program System.Environment () ()
     main =
@@ -311,10 +326,20 @@ exit code, finish the task with [`setExitCode`](#setExitCode):
             )
 
 -}
-simpleProgram : (Environment -> Task Never a) -> Platform.Program Environment () ()
+simpleProgram : (Environment -> Task x a) -> Platform.Program Environment () ()
 simpleProgram run =
     Platform.worker
-        { init = \env -> ( (), command (Execute (Task.map (\_ -> ()) (run env))) )
+        { init =
+            \env ->
+                ( ()
+                , command
+                    (Execute
+                        (run env
+                            |> Task.map (\_ -> ())
+                            |> Task.onError (\_ -> kSetExitCode 1)
+                        )
+                    )
+                )
         , update = \_ model -> ( model, Cmd.none )
         , subscriptions = \_ -> Sub.none
         }

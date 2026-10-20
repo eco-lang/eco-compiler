@@ -44,9 +44,6 @@ reached one of its limits, as exit code `-1`. `spawn`'s `onExit` reports a death
 number `n` as `128 + n`, and a child that could not be started at all as a negative number
 (`-2` for `ENOENT` on Linux and macOS).
 
-Unlike gren-node's `ChildProcess` module, there is no permission value to obtain first: every
-function can be called directly.
-
 
 ## Running processes
 
@@ -270,7 +267,6 @@ type alias SpawnOptions msg =
 {-| The three streams of a child spawned with `External`. `stdin` writes to the child's
 standard input; `stdout` and `stderr` read what it writes to its standard output and standard
 error. A failure on one of them arrives as a `Stream.Error`, as [`Stream`](Stream) describes.
-(They are named `input`, `output` and `error` in gren-node.)
 -}
 type alias StreamIO =
     { stdin : Stream.Writable Bytes
