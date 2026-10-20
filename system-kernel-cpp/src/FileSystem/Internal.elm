@@ -1,12 +1,24 @@
 module FileSystem.Internal exposing (Error(..), MetadataOf, decodeError, decodeMetadata)
 
-{-| Internal; not exposed.
+{-| `FileSystem` and `FileSystem.Handle` both build file system errors and decode file
+metadata, and this module lets them share one error type and one metadata decoder without
+making the error's constructor public.
 
-`Error` is defined here so that both `FileSystem` and `FileSystem.Handle` can build it,
-while users only see the alias exposed by `FileSystem`. The same goes for the metadata record
-and its decoder: `FileSystem` and `FileSystem.Handle` both decode the kernel's metadata
-list, but only `FileSystem` can name `EntityType`'s constructors, so the decoder takes the
-entity constructor as an argument (plans/eco-system-library.md §3.1).
+The package does not expose this module. `FileSystem` exposes `Error` only as an alias of the
+type defined here, so outside the package the constructor cannot be reached, and an error can be
+taken apart only through `FileSystem`'s accessors (`errorPath`, `errorCode`, `errorToString`
+and the `errorIs*` predicates).
+
+The kernel, `Eco.Kernel.FileSystem`, is the part of the runtime, not written in Elm, that
+carries out file system calls; it names an entity's type by an integer code. `FileSystem`
+imports this module, so this module cannot import `FileSystem` and cannot name
+`FileSystem.EntityType`. That is why the metadata record, `MetadataOf`, is generic in its
+entity type, and why `decodeMetadata` is given the function that turns the kernel's entity
+code into one.
+
+A kernel failure reaches Elm as a `( code, message )` pair, and `decodeError` adds a path to make
+an `Error`. `Error` is a type of its own, not interchangeable with `Socket.Error` or
+`Stream.Error`.
 
 -}
 
@@ -14,8 +26,14 @@ import Path exposing (Path)
 import Time
 
 
-{-| A file system error: the path involved, the error code (an errno name such as `"ENOENT"`)
-and a human readable message.
+{-| A failed file system operation: the path it concerned, a code naming the kind of failure,
+and a message describing it.
+
+The code is usually an errno name such as `"ENOENT"`; the kernels also report codes of their
+own, such as `"ERR_FS_EISDIR"` for a non-recursive remove of a directory. The message usually
+begins with the code, as in `"ENOENT: no such file or directory, open '/x'"`, but not always.
+The path is whichever path `decodeError` was given, which may be `Path.empty`.
+
 -}
 type Error
     = Error
@@ -25,7 +43,8 @@ type Error
         }
 
 
-{-| Build an `Error` from the kernel's `( code, message )` failure tuple (B2 `FErr`).
+{-| Builds an `Error` for `path` from a kernel's `( code, message )` failure, keeping the code
+and message as they are.
 -}
 decodeError : Path -> ( String, String ) -> Error
 decodeError path ( code, message ) =
@@ -36,7 +55,23 @@ decodeError path ( code, message ) =
         }
 
 
-{-| The metadata record, generic in its entity type.
+{-| What the kernel reports about one file system entity, with the entity type left as a
+parameter.
+
+`deviceID` identifies the device the entity is stored on, not the device a `Device` entity
+stands for. `byteSize` and `blockSize` are in bytes; `blockSize` is the block size the operating
+system prefers for IO. `blocks` is the operating system's allocated block count (`st_blocks`),
+which Linux and macOS count in 512-byte units, not in units of `blockSize`.
+
+`created` is the birth time when the kernel obtains one; otherwise both kernels report the
+status change time, so `created` equals `lastChanged`. `lastChanged` is the status change time
+(`ctime`), not a creation time; it moves when the entity's metadata changes as well as when its
+contents do.
+
+`FileSystem.Metadata` spells out these same fields with `FileSystem.EntityType` instead of
+being defined as `MetadataOf EntityType`. Record aliases are structural, so the two are
+interchangeable, but only for as long as their fields are kept identical.
+
 -}
 type alias MetadataOf e =
     { entityType : e
@@ -53,9 +88,15 @@ type alias MetadataOf e =
     }
 
 
-{-| Decode the kernel's metadata list (Appendix B.3 `stat`):
-`[ entityType, dev, uid, gid, size, blksize, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs ]`.
-Missing entries read as 0.
+{-| Builds the metadata record from the kernel's list of integers, using `toEntity` to turn the
+entity code into an entity type.
+
+The list is
+`[ entityType, dev, uid, gid, size, blksize, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs ]`,
+the four times in whole milliseconds since the Unix epoch. A missing entry reads as 0, so a
+short list gives `toEntity 0`, zeros or the epoch rather than a failure; entries past the
+eleventh are ignored.
+
 -}
 decodeMetadata : (Int -> e) -> List Int -> MetadataOf e
 decodeMetadata toEntity values =

@@ -4,12 +4,32 @@ module Socket.Tcp exposing
     , setNoDelay, setKeepAlive
     )
 
-{-| TCP connections over IPv4 and IPv6.
+{-| A TCP connection or listener is made from an IP address and a port, and this module makes
+them. Once made, it is an ordinary [`Socket.Connection`](Socket#Connection) or
+[`Socket.Listener`](Socket#Listener), used through [`Socket`](Socket) like a connection or
+listener of any other kind.
 
-A client connects with [`connect`](#connect) (to an [`Address`](Socket-Address#Address)) or
-[`connectToHost`](#connectToHost) (to a host name); a server [`listen`](#listen)s and gets its
-connections from [`Socket.accept`](Socket#accept) or [`Socket.onConnection`](Socket#onConnection).
-Both sides then use the [`Connection`](Socket#Connection)'s streams.
+Addresses are [`Socket.Address.Address`](Socket-Address#Address) values, IPv4 or IPv6, not text,
+so a host name has to be resolved before anything connects to it. [`connect`](#connect) takes an
+address; [`connectToHost`](#connectToHost) takes text, either an address literal, used as it is,
+or a host name, which it resolves with [`Socket.lookup`](Socket#lookup) first. A server
+[`listen`](#listen)s on an address and gets its connections from
+[`Socket.accept`](Socket#accept) or [`Socket.onConnection`](Socket#onConnection), by the rule the
+`Socket` module describes.
+
+What this module offers for a connection that already exists is two TCP options: Nagle's
+algorithm, which holds back small writes to send them together, and keep-alive probes, which
+the operating system sends on an idle connection to find out whether the peer is still there.
+Both can be chosen when connecting and changed later with [`setNoDelay`](#setNoDelay) and
+[`setKeepAlive`](#setKeepAlive).
+
+Times are given in milliseconds, as `Maybe Int`, and the two fields of `ConnectOptions` that
+take one read a non-positive value differently. A connect `timeout` of `Just 0` or less is no
+timeout, the same as `Nothing`. A `keepAlive` of `Just 0` or less turns keep-alive on, at 1
+second; only `Nothing` leaves it off.
+
+[`Socket.Tls`](Socket-Tls) takes the same [`ConnectOptions`](#ConnectOptions) and
+[`ListenOptions`](#ListenOptions) for the TCP side of its connections and listeners.
 
     import Socket
     import Socket.Address as Address exposing (Family(..))
@@ -46,15 +66,22 @@ import Task exposing (Task)
 -- CONNECTING
 
 
-{-| How to connect.
+{-| One attempt to open a TCP connection: where to connect, how long to wait, and the TCP
+options the connection starts with.
 
-  - `address` and `port_`: where to connect.
-  - `timeout`: the most time, in milliseconds, to wait until the connection is established (and,
-    for `Socket.Tls.connect`, the TLS handshake is done); the attempt then fails with `ETIMEDOUT`.
-    `Nothing` (or `Just n` with `n <= 0`) waits as long as the operating system does.
-  - `noDelay`: disable Nagle's algorithm (`TCP_NODELAY`), so small writes are sent at once.
-  - `keepAlive`: send keep-alive probes after the connection has been idle for this many
-    milliseconds (rounded up to whole seconds, at least 1 second). `Nothing` sends none.
+  - `timeout`, up to 2147483647 (about 24.8 days), is the most time, in milliseconds, to wait
+    until the connection is established (and, for `Socket.Tls.connect`, until the TLS handshake
+    is done as well); the attempt then fails with `ETIMEDOUT`. `Nothing`, or `Just n` with
+    `n <= 0`, waits as long as the operating system does.
+  - `noDelay = True` turns Nagle's algorithm off (`TCP_NODELAY`), so small writes are sent at
+    once.
+  - `keepAlive` is how long, in milliseconds, the connection must be idle before keep-alive
+    probes are sent, within any limit the operating system sets (32767 seconds on Linux). It
+    is rounded up to whole seconds, at least 1 second, so `Just 0` or a negative value sends
+    probes after 1 second. `Nothing` sends none.
+
+Setting `noDelay` and `keepAlive` here is best effort: if the operating system refuses one, the
+connection is still made.
 
 -}
 type alias ConnectOptions =
@@ -66,7 +93,8 @@ type alias ConnectOptions =
     }
 
 
-{-| Connect to an address and port with no timeout, `noDelay = False` and no keep-alive.
+{-| Returns options for connecting to `address` on `port_` with no timeout, Nagle's algorithm on
+(`noDelay = False`) and no keep-alive.
 -}
 defaultConnectOptions : Address -> Int -> ConnectOptions
 defaultConnectOptions address port_ =
@@ -78,11 +106,12 @@ defaultConnectOptions address port_ =
     }
 
 
-{-| Open a TCP connection.
+{-| Opens a TCP connection, succeeding once the connection is established.
 
     Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) 8080)
 
-Fails with, for example, `ECONNREFUSED` when nothing listens there, or `ETIMEDOUT`.
+Fails with, for example, `ECONNREFUSED` when nothing listens there, or `ETIMEDOUT` when the
+`timeout` has passed.
 
 -}
 connect : ConnectOptions -> Task Socket.Error Socket.Connection
@@ -96,15 +125,21 @@ connect options =
         |> Task.mapError Internal.toError
 
 
-{-| Connect to a host given by name (or by an address literal) and port, with the
-[default options](#defaultConnectOptions).
+{-| Opens a TCP connection to a host given by name, or by an address literal, and a port, with
+the [default options](#defaultConnectOptions).
 
-An address literal such as `"127.0.0.1"` or `"::1"` is used as it is. Otherwise the name is
-resolved with [`Socket.lookup`](Socket#lookup) and its addresses are tried one after the other, in
-the order the resolver returned them, until one connects. If every attempt fails, the task fails
-with the last attempt's error; a name without addresses fails with `ENOTFOUND`.
+Text that [`Socket.Address.fromString`](Socket-Address#fromString) reads as an address, such as
+`"127.0.0.1"` or `"::1"`, is used as it is. Anything else is resolved with
+[`Socket.lookup`](Socket#lookup), and a failed lookup fails the task with its error. The
+addresses found are tried one after the other, in the order `lookup` returns them, until one
+connects. If every attempt fails, the task fails with the last attempt's error; a name without
+addresses fails with `ENOTFOUND`.
 
     Socket.Tcp.connectToHost "localhost" 8080
+
+The default options have no timeout, so each attempt waits as long as the operating system does
+before the next address is tried. For a time limit on each attempt, resolve the name with
+`Socket.lookup` and call [`connect`](#connect) with a `timeout`.
 
 -}
 connectToHost : String -> Int -> Task Socket.Error Socket.Connection
@@ -131,6 +166,9 @@ connectToHost name port_ =
                     )
 
 
+{-| Connects to `port_` on `address` and, if that fails, on each address of `rest` in turn,
+with the default options. Fails with the last attempt's error once every address has failed.
+-}
 connectToFirst : Int -> Address -> List Address -> Task Socket.Error Socket.Connection
 connectToFirst port_ address rest =
     connect (defaultConnectOptions address port_)
@@ -149,17 +187,23 @@ connectToFirst port_ address rest =
 -- LISTENING
 
 
-{-| How to listen.
+{-| Where a TCP listener listens, which connections it accepts, and how it queues the ones it has
+not handed out yet.
 
-  - `address` and `port_`: where to listen. Port 0 lets the operating system pick a free port
-    (see [`Socket.listenerEndpoint`](Socket#listenerEndpoint)). The unspecified address
-    (`Socket.Address.any`) listens on every interface.
-  - `backlog`: how many connections the operating system queues before they are accepted.
-  - `ipv6Only`: for an IPv6 address, accept IPv6 connections only. When `False`, listening on
-    `any IPv6` also accepts IPv4 connections, whose addresses are then IPv4-mapped (see
-    [`Socket.Address.unmapIPv4`](Socket-Address#unmapIPv4)).
+  - `port_` 0 lets the operating system pick a free port, which
+    [`Socket.listenerEndpoint`](Socket#listenerEndpoint) then reports. The unspecified address
+    ([`Socket.Address.any`](Socket-Address#any)) listens on every interface.
+  - `backlog` is the length of the operating system's queue of connections waiting to be
+    accepted, clamped to between 1 and 65535 (the operating system may limit it further). On the
+    JavaScript backend it is also how many connections the listener holds for a later `accept`,
+    as the `Socket` module describes.
+  - `ipv6Only` matters only for an IPv6 address. When `False`, a listener on `any IPv6` also
+    accepts IPv4 connections, whose addresses are then IPv4-mapped (see
+    [`Socket.Address.unmapIPv4`](Socket-Address#unmapIPv4)). When `True`, it accepts IPv6
+    connections only.
 
-The address may be reused at once after a previous listener on it has closed (`SO_REUSEADDR`).
+On the native backend the listening socket is made with `SO_REUSEADDR`, so the port can be
+listened on again as soon as an earlier listener on it has closed.
 
 -}
 type alias ListenOptions =
@@ -170,7 +214,8 @@ type alias ListenOptions =
     }
 
 
-{-| Listen on an address and port with a backlog of 511 and `ipv6Only = False`.
+{-| Returns options for listening on `address` and `port_` with a backlog of 511 and
+`ipv6Only = False`.
 -}
 defaultListenOptions : Address -> Int -> ListenOptions
 defaultListenOptions address port_ =
@@ -181,8 +226,9 @@ defaultListenOptions address port_ =
     }
 
 
-{-| Start listening for TCP connections. Fails with, for example, `EADDRINUSE` when the address and
-port are taken, or `EACCES` for a privileged port.
+{-| Starts listening for TCP connections, succeeding with the listener once it is bound and
+listening. Fails with, for example, `EADDRINUSE` when the address and port are taken, or `EACCES`
+for a privileged port.
 -}
 listen : ListenOptions -> Task Socket.Error Socket.Listener
 listen options =
@@ -199,8 +245,9 @@ listen options =
 -- CONNECTION OPTIONS
 
 
-{-| Turn Nagle's algorithm off (`True`: small writes are sent at once) or on (`False`). On a Unix
-domain connection this succeeds and does nothing.
+{-| Turns Nagle's algorithm off for the connection (`True`, so small writes are sent at once) or
+on (`False`). On a Unix domain connection, or one that has already been closed, this succeeds
+and does nothing.
 -}
 setNoDelay : Bool -> Socket.Connection -> Task Socket.Error ()
 setNoDelay noDelay (Internal.Connection c) =
@@ -208,9 +255,14 @@ setNoDelay noDelay (Internal.Connection c) =
         |> Task.mapError Internal.toError
 
 
-{-| Send keep-alive probes after the connection has been idle for this many milliseconds (rounded
-up to whole seconds, at least 1 second), or stop sending them (`Nothing`). On a Unix domain
-connection this succeeds and does nothing.
+{-| Starts sending keep-alive probes once the connection has been idle for the given number of
+milliseconds, within any limit the operating system sets (32767 seconds on Linux), or stops
+sending them (`Nothing`). The time is rounded up to whole seconds, at least 1 second, so
+`Just 0` or a negative value turns probes on at 1 second rather than off.
+
+On a Unix domain connection, or one that has already been closed, this succeeds and does
+nothing.
+
 -}
 setKeepAlive : Maybe Int -> Socket.Connection -> Task Socket.Error ()
 setKeepAlive keepAlive (Internal.Connection c) =
@@ -220,9 +272,15 @@ setKeepAlive keepAlive (Internal.Connection c) =
 
 
 -- KERNELS
--- The annotations fix the kernel ABI (plans/eco-system-sockets.md Appendix B.1).
+-- The annotations fix the kernel ABI: the kernels rely on exactly these argument and result
+-- shapes.
 
 
+{-| The kernel's TCP connect. It takes `( address text, port, timeout in milliseconds )` and
+`( noDelay, keep-alive idle time in whole seconds )`, where a timeout or keep-alive of 0 means
+none, and succeeds with `( id, ( readableId, writableId ), ( local, remote ) )`, each endpoint
+being `( kind, text, port )`. A failure is `( code, message )`.
+-}
 kTcpConnect :
     ( String, Int, Int )
     -> ( Bool, Int )
@@ -231,16 +289,25 @@ kTcpConnect =
     Eco.Kernel.Socket.tcpConnect
 
 
+{-| The kernel's TCP listen. It takes `( address text, port )` and `( backlog, ipv6Only )`, and
+succeeds with `( id, endpoint )`, the endpoint being `( kind, text, port )`. A failure is
+`( code, message )`.
+-}
 kTcpListen : ( String, Int ) -> ( Int, Bool ) -> Task ( String, String ) ( Int, ( Int, String, Int ) )
 kTcpListen =
     Eco.Kernel.Socket.tcpListen
 
 
+{-| The kernel's `TCP_NODELAY` setter, taking the flag and a connection id.
+-}
 kSetNoDelay : Bool -> Int -> Task ( String, String ) ()
 kSetNoDelay =
     Eco.Kernel.Socket.setNoDelay
 
 
+{-| The kernel's keep-alive setter, taking the idle time in whole seconds, where 0 turns
+keep-alive off, and a connection id.
+-}
 kSetKeepAlive : Int -> Int -> Task ( String, String ) ()
 kSetKeepAlive =
     Eco.Kernel.Socket.setKeepAlive

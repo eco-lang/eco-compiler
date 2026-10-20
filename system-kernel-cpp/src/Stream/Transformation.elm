@@ -5,25 +5,40 @@ module Stream.Transformation exposing
     , gzip, gunzip, deflate, inflate, deflateRaw, inflateRaw
     )
 
-{-| Create [`Transformation`](Stream#Transformation) streams: readable-writable stream pairs that
-transform, batch or drop the values passing through them. Use them with
-[`Stream.pipeThrough`](Stream#pipeThrough):
+{-| A [`Transformation`](Stream#Transformation) is an in-memory stream that changes the values
+passing through it, and this module is where transformations are made: ones that pass values on
+unchanged, ones driven by an Elm function, and built-in ones for text and compression.
 
     Stream.Transformation.gunzip
         |> Task.andThen (\gunzip -> Stream.pipeThrough gunzip compressed)
 
-The `Transformation` type and the piping functions live in [`Stream`](Stream).
+Everything here that makes a transformation is a `Task`, not a `Transformation`. Each run of the
+task creates a new transformation with nothing in it. [`readable`](#readable) and
+[`writable`](#writable) give its two sides: values written into the writable side come out,
+transformed, on the readable side. Reading, writing, closing, cancelling and piping work on those
+sides as [`Stream`](Stream) describes.
 
-Compared with gren-lang/core, the names drop the `Transformation` suffix
-(`identityTransformation` is [`identity`](#identity)), the variants with options are named
-`…With`, and the compression codecs take zlib's names (`gzipDecompression` is
-[`gunzip`](#gunzip), `deflateDecompression` is [`inflate`](#inflate)).
-[`customWith`](#customWith) never uses a write capacity below 1, and the built-in text and
-compression transformations buffer one chunk on their readable side (WHATWG uses zero there, so a
-`write` would wait until someone reads).
+Each side has a _capacity_, a number of values. The writable side holds up to its capacity of
+values written but not yet transformed, and the readable side holds results not yet read. A value
+is transformed as it leaves the writable side, which happens only while the readable side holds
+fewer results than its capacity (or, at a read capacity of 0, while a reader waits; see
+[`customWith`](#customWith)), so a reader that falls behind fills the readable side first, then
+the writable side, after which a write waits for room, as [`Stream.write`](Stream#write)
+describes. A [`Stream.write`](Stream#write) into a transformation succeeds once its value has
+been transformed, not once the results have been read.
+
+A transformation that fails is cancelled on both sides: results not yet read are dropped, and
+writes still waiting, later writes and a close fail with `Cancelled` and the reason, as do later
+reads, apart from bytes [`Stream.readLine`](Stream#readLine) has kept, which can still be read.
+This happens, for example, when a custom transformation's step returns `Cancel`, and when a
+decompressor fails, as each decompressor describes.
 
 
 # Building Transformations
+
+An _identity_ transformation passes every value on unchanged. A _custom_ transformation calls an
+Elm function, its _step_, for each value written, with a state the step carries from one value to
+the next; [`CustomAction`](#CustomAction) is what a step returns.
 
 @docs identity, identityWith, null, CustomAction, custom, customWith
 
@@ -35,10 +50,27 @@ compression transformations buffer one chunk on their readable side (WHATWG uses
 
 # Text
 
+The text transformations convert between `String` and UTF-8 `Bytes`, and never fail. Neither
+produces an empty value: an input that yields nothing yet, such as an empty string, produces no
+output. Each side has a capacity of one value.
+
 @docs textEncoder, textDecoder
 
 
 # Compression
+
+Six transformations from `Bytes` to `Bytes`, using zlib, in three formats: gzip, deflate data in
+the zlib format, which adds a header and a checksum, and raw deflate data, which has neither. Each
+side has a capacity of one value, but one value written can produce several outputs. Each output is
+at most 64 KiB.
+
+A compressor does not produce output for every value written: zlib holds data back until it has
+enough to emit, and writes the rest when the writable side is closed, so a reader may get nothing
+until then.
+
+A decompressor that fails cancels the transformation, with a description of the problem, as
+described above. A `write` of the value that carried the bad data fails, and a close fails when the
+compressed data was incomplete.
 
 @docs gzip, gunzip, deflate, inflate, deflateRaw, inflateRaw
 
@@ -55,11 +87,10 @@ import Task exposing (Task)
 -- BUILDING TRANSFORMATIONS
 
 
-{-| A [`Transformation`](Stream#Transformation) that doesn't actually transform the data written to
-the writable stream. Both of its buffers hold a single value.
+{-| A task that creates an identity transformation, whose sides each have a capacity of one value.
 
-This can be useful as a communication primitive. You can pass on the readable stream, allowing
-one-way communication with some other part of your code base.
+Handing its readable side to another part of a program gives that part a one-way channel from
+whoever holds the writable side.
 
 -}
 identity : Task x (Transformation data data)
@@ -67,16 +98,8 @@ identity =
     identityWith { readCapacity = 1, writeCapacity = 1 }
 
 
-{-| Same as [`identity`](#identity), but allows you to set the
-capacity of the streams. The capacity decides how many chunks a stream will store in its buffer.
-When a buffer is full, the stream stops accepting new chunks until it has room. Capacities below
-1 are treated as 1.
-
-If you attempt to write to a [`Writable`](Stream#Writable) stream with a full buffer, the write will only
-succeed when there's room in the buffer again. Reading from a [`Readable`](Stream#Readable) stream with
-values in its buffer succeeds instantly; if the buffer is empty, the read succeeds once there's a
-value to be read.
-
+{-| Creates an identity transformation, as [`identity`](#identity) does, with the given
+capacities. A capacity below 1 is raised to 1.
 -}
 identityWith : { readCapacity : Int, writeCapacity : Int } -> Task x (Transformation data data)
 identityWith options =
@@ -85,22 +108,37 @@ identityWith options =
         |> Task.mapError never
 
 
-{-| A [`Transformation`](Stream#Transformation) that ignores all data written to it. The readable
-stream never outputs data, but is closed whenever the writable stream is closed.
+{-| Creates a transformation that accepts every value written into it and drops it. Its readable
+side never gives a value, and is closed when the writable side is closed.
+
+The argument becomes the step's state, which nothing reads, so any value will do. Each side
+has a capacity of one value.
+
 -}
 null : data -> Task x (Transformation data data)
 null initialState =
     custom (\state _ -> UpdateState state) initialState
 
 
-{-| When defining a custom [`Transformation`](Stream#Transformation), you need to specify how the data
-coming in is handled.
+{-| What a custom transformation's step does with one value written into it: carry on with a new
+state, possibly producing values, or end the transformation.
 
-  - `UpdateState`: Update the internal state of the [`Transformation`](Stream#Transformation); no values
-    are passed to the readable stream.
-  - `Send`: Update the internal state and make chunks available for reading.
-  - `Close`: Make the given chunks available for reading, and close the streams.
-  - `Cancel`: Cancel both streams with a human-readable error message.
+`UpdateState` carries the new state and produces nothing.
+
+`Send` carries the new state and the values to make readable, in order. All of them are put in
+the readable side's buffer, even beyond its capacity; no further value is transformed until
+readers have brought the buffer back below its capacity, or, at a read capacity of 0, emptied it
+and wait for more.
+
+`Close` ends the transformation after the values it carries. They are made readable, and once
+they and the values before them have been read, reads fail with `Closed`. Writes still waiting to
+be transformed, a close in progress, and every later write or close fail with
+`Cancelled "TransformStream has been terminated"`.
+
+`Cancel` cancels the transformation on both sides with the given reason, as the module
+documentation describes.
+
+With `Close` and `Cancel`, the write of the value that produced them still succeeds.
 
 -}
 type CustomAction state value
@@ -110,9 +148,14 @@ type CustomAction state value
     | Cancel String
 
 
-{-| Create your very own [`Transformation`](Stream#Transformation). The stream pair holds state, and is
-free to alter, batch, combine or even drop whatever data is coming in. The function is called
-with the current state and each value written to the stream, and decides what happens next.
+{-| Creates a custom transformation. For each value written, in order, the step is called with the
+current state and the value, and the [`CustomAction`](#CustomAction) it returns says what happens.
+The second argument is the first state. Each side has a capacity of one value.
+
+The step is called only for values written. Closing the writable side does not call it, so
+anything the step holds in its state, such as a partial batch, is not produced at the close; the
+readable side closes once its buffered values have been read.
+
 -}
 custom : (state -> input -> CustomAction state output) -> state -> Task x (Transformation input output)
 custom fn initialState =
@@ -123,12 +166,12 @@ custom fn initialState =
         }
 
 
-{-| Same as [`custom`](#custom), except you can define the capacity
-of each stream.
+{-| Creates a custom transformation, as [`custom`](#custom) does, with the given first state and
+capacities.
 
-A write capacity below 1 is treated as 1, and a read capacity below 0 as 0. A read capacity of 0
-means a value is only transformed once someone is waiting to read the result. (gren allowed a
-write capacity of 0, which made the stream unable to accept any value.)
+A write capacity below 1 is raised to 1, and a read capacity below 0 to 0. With a read capacity of
+0, a value is transformed only when nothing is buffered on the readable side and a read is waiting
+on it, or a pipe out of it is ready for a value.
 
 -}
 customWith :
@@ -141,8 +184,9 @@ customWith fn options =
         |> Task.mapError never
 
 
-{-| The action the kernel calls for each value (plans/eco-system-library.md §3.5):
-`( ctor, state, ( values, reason ) )` with ctor 0 UpdateState, 1 Send, 2 Close, 3 Cancel.
+{-| Encodes the action `toAction` returns for `state` and `input` as the tuple the kernel reads,
+`( ctor, state, ( values, reason ) )`, with ctor 0 for `UpdateState`, 1 for `Send`, 2 for `Close`
+and 3 for `Cancel`. A field the action does not use holds the given `state`, `[]` or `""`.
 -}
 customAction : (state -> input -> CustomAction state output) -> state -> input -> ( Int, state, ( List output, String ) )
 customAction toAction state input =
@@ -160,14 +204,14 @@ customAction toAction state input =
             ( 3, state, ( [], reason ) )
 
 
-{-| Retrieve the [`Readable`](Stream#Readable) stream of a [`Transformation`](Stream#Transformation).
+{-| Returns the readable side of a transformation, from which its output values are read.
 -}
 readable : Transformation input output -> Readable output
 readable (Stream.Internal.Transformation id) =
     Stream.Internal.Readable id
 
 
-{-| Retrieve the [`Writable`](Stream#Writable) stream of a [`Transformation`](Stream#Transformation).
+{-| Returns the writable side of a transformation, into which its input values are written.
 -}
 writable : Transformation input output -> Writable input
 writable (Stream.Internal.Transformation id) =
@@ -178,18 +222,23 @@ writable (Stream.Internal.Transformation id) =
 -- BUILT-IN TRANSFORMATIONS
 
 
-{-| Transform each `String` into UTF-8 `Bytes`. Empty strings produce no output.
+{-| A task that creates a transformation from `String`s to their UTF-8 encoding as `Bytes`.
+
+A surrogate pair split across two strings is encoded as the one character it stands for. A lone
+surrogate becomes U+FFFD, on both backends, unlike [`Stream.writeString`](Stream#writeString).
+
 -}
 textEncoder : Task x (Transformation String Bytes)
 textEncoder =
     codec kTextEncoder
 
 
-{-| Transform UTF-8 `Bytes` into `String`s. A multi-byte character split across two chunks is
-decoded correctly, and a leading byte order mark is removed.
+{-| A task that creates a transformation from UTF-8 `Bytes` to `String`s.
 
-The decoder is lenient: invalid byte sequences are replaced by the replacement character
-U+FFFD rather than cancelling the streams. Chunks that decode to nothing produce no output.
+The bytes may be split anywhere: a character split across two chunks is decoded whole. Invalid
+bytes are replaced by the replacement character U+FFFD, rather than cancelling the transformation,
+and so is a character left incomplete when the writable side is closed. A byte order mark at the
+very start is removed.
 
 -}
 textDecoder : Task x (Transformation Bytes String)
@@ -197,33 +246,36 @@ textDecoder =
     codec kTextDecoder
 
 
-{-| Compress `Bytes` using the `gzip` format.
+{-| A task that creates a transformation that compresses `Bytes` into the gzip format.
 -}
 gzip : Task x (Transformation Bytes Bytes)
 gzip =
     codec (kCompressor 0)
 
 
-{-| Compress `Bytes` using the `deflate` algorithm, in the zlib format.
+{-| A task that creates a transformation that compresses `Bytes` into deflate data in the zlib
+format.
 -}
 deflate : Task x (Transformation Bytes Bytes)
 deflate =
     codec (kCompressor 1)
 
 
-{-| Compress `Bytes` using the `deflate` algorithm, without leading headers or a trailing
-checksum.
+{-| A task that creates a transformation that compresses `Bytes` into raw deflate data, with no
+header or checksum.
 -}
 deflateRaw : Task x (Transformation Bytes Bytes)
 deflateRaw =
     codec (kCompressor 2)
 
 
-{-| Decompress `Bytes` in the `gzip` format.
+{-| A task that creates a transformation that decompresses gzip-format `Bytes`.
 
-If the data is corrupt, continues past the end of the compressed data, or ends before it is
-complete (when the writable stream is closed), both streams are cancelled with a description of
-the problem.
+The transformation is cancelled when the data cannot be decompressed, or when the writable side
+is closed before the compressed data is complete. Data after the end of the compressed data is
+treated differently by the two backends: the native backend cancels the transformation; on the
+JavaScript backend, whether such data is decompressed, ignored or cancels the transformation depends
+on the data and on how it was split into written values.
 
 -}
 gunzip : Task x (Transformation Bytes Bytes)
@@ -231,22 +283,33 @@ gunzip =
     codec (kDecompressor 0)
 
 
-{-| Decompress `Bytes` compressed with the `deflate` algorithm, in the zlib format.
+{-| A task that creates a transformation that decompresses deflate data in the zlib format.
+
+The transformation is cancelled when the data cannot be decompressed, or when the writable side
+is closed before the compressed data is complete. Data after the end of the compressed data
+cancels it on the native backend, and is ignored on the JavaScript backend.
+
 -}
 inflate : Task x (Transformation Bytes Bytes)
 inflate =
     codec (kDecompressor 1)
 
 
-{-| Decompress `Bytes` compressed with the `deflate` algorithm, without leading headers or a
-trailing checksum.
+{-| A task that creates a transformation that decompresses raw deflate data, which has no header
+or checksum.
+
+The transformation is cancelled when the data cannot be decompressed, or when the writable side
+is closed before the compressed data is complete. Data after the end of the compressed data
+cancels it on the native backend, and is ignored on the JavaScript backend.
+
 -}
 inflateRaw : Task x (Transformation Bytes Bytes)
 inflateRaw =
     codec (kDecompressor 2)
 
 
-{-| Wrap a codec pair id. The codec streams buffer one chunk on each side.
+{-| Turns a kernel task that creates a codec pair, one of the built-in text or compression
+transformations, into a task that creates the `Transformation` over the pair's id.
 -}
 codec : Task Never Int -> Task x (Transformation read write)
 codec kernel =
@@ -257,34 +320,54 @@ codec kernel =
 
 
 -- KERNELS
--- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.2).
+-- The annotations fix the kernel ABI: both kernels rely on exactly these argument and result
+-- shapes.
 
 
+{-| Creates an identity pair whose readable side has the first number as its capacity and whose
+writable side the second, each raised to at least 1, and gives its id.
+-}
 kIdentity : Int -> Int -> Task Never Int
 kIdentity =
     Eco.Kernel.Stream.identity
 
 
+{-| Creates a custom pair from the encoded step, the first state, the read capacity (raised to at
+least 0) and the write capacity (raised to at least 1), and gives its id.
+-}
 kCustom : (s -> a -> ( Int, s, ( List b, String ) )) -> s -> Int -> Int -> Task Never Int
 kCustom =
     Eco.Kernel.Stream.custom
 
 
+{-| A kernel task that creates a text encoder pair, whose sides each have capacity one, and gives
+its id.
+-}
 kTextEncoder : Task Never Int
 kTextEncoder =
     Eco.Kernel.Stream.textEncoder
 
 
+{-| A kernel task that creates a text decoder pair, whose sides each have capacity one, and gives
+its id.
+-}
 kTextDecoder : Task Never Int
 kTextDecoder =
     Eco.Kernel.Stream.textDecoder
 
 
+{-| Creates a compressor pair, whose sides each have capacity one, and gives its id. The algorithm
+is 0 for gzip, 1 for deflate in the zlib format and 2 for raw deflate; any other number is raw
+deflate in both kernels.
+-}
 kCompressor : Int -> Task Never Int
 kCompressor =
     Eco.Kernel.Stream.compressor
 
 
+{-| Creates a decompressor pair, whose sides each have capacity one, and gives its id. The
+algorithm is numbered as for `kCompressor`.
+-}
 kDecompressor : Int -> Task Never Int
 kDecompressor =
     Eco.Kernel.Stream.decompressor

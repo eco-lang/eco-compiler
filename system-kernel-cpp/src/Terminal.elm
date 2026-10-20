@@ -4,12 +4,22 @@ effect module Terminal where { subscription = MySub } exposing
     , onResize
     )
 
-{-| This lets you interact with the user's terminal, if an interactive terminal is connected to
-this application.
+{-| A program run from a terminal may want to colour its output, draw to the
+size of the window, read single keypresses or set the window title. This
+module tells it whether a terminal is there, how many colours it can show and
+how big it is, and lets it switch stdin into raw mode, set the title and hear
+about resizes.
 
-Unlike gren-node's `Terminal` module there is no permission value and no `initialize`: call
-[`configuration`](#configuration) to find out whether a terminal is attached, and use the
-other functions directly.
+A _terminal_ here is a standard stream connected to a terminal device rather
+than to a file or a pipe. `configuration` and `setTitle` act on stdout, and
+`setStdinRawMode` on stdin: `configuration` gives `Nothing` and the other two
+do nothing when that stream is not a terminal. There is therefore no setup
+step, and none of the tasks can fail. `configuration` is how a program finds
+out whether stdout is a terminal.
+
+On the native backend on Windows, running any of these tasks, or subscribing
+with `onResize`, stops the program with a fatal error saying it is not
+supported there yet.
 
 
 ## Configuration
@@ -34,12 +44,25 @@ import Process
 import Task exposing (Task)
 
 
-{-| The configuration of the attached interactive terminal: the number of colours it supports
-as a bit depth (`1` for no colour, `4` for 16 colours, `8` for 256 colours, `24` for true
-colour) and its current size in character cells.
+{-| What is known about the terminal on stdout: how many colours it can show,
+and the size of its window in character cells.
 
-The colour depth is guessed from the environment: `NO_COLOR` or `TERM=dumb` give `1`,
-`FORCE_COLOR`, `COLORTERM` and a `TERM` ending in `256color` raise it.
+`colorDepth` is a number of bits per colour: `1` for no colour, `4` for 16
+colours, `8` for 256 colours and `24` for true colour. It is not asked of the
+terminal but guessed from the environment, by the first of these rules that
+applies:
+
+  - a non-empty `NO_COLOR`, or `TERM=dumb`, gives `1`;
+  - `FORCE_COLOR` set to exactly `0`, `1`, `2` or `3` gives `1`, `4`, `8` or
+    `24`;
+  - `COLORTERM` set to `truecolor` or `24bit` gives `24`;
+  - a `TERM` ending in `256color` gives `8`;
+  - otherwise it is `4`.
+
+The size is the one stdout reports or, when stdout reports a width of zero,
+the one another standard stream that is a terminal reports (stdin, then
+stderr, on the native backend; stderr on the JS backend). `columns` and `rows`
+are both `0` when none can be read.
 
 -}
 type alias Configuration =
@@ -49,7 +72,7 @@ type alias Configuration =
     }
 
 
-{-| Size of a terminal viewport. Handy to know for drawing a text-based UI.
+{-| The size of a terminal window, in character cells.
 -}
 type alias Size =
     { columns : Int
@@ -57,13 +80,11 @@ type alias Size =
     }
 
 
-{-| Get the configuration of the attached terminal.
+{-| Gets the configuration of the terminal on stdout, or `Nothing` when stdout
+is not a terminal, as when the output is redirected to a file or a pipe.
 
-`Nothing` is returned if this program is not connected to an interactive terminal, which can
-happen in CI setups or when used as part of a Unix pipe.
-
-This replaces gren-node's `Terminal.initialize`; it can be called at any time and as often as
-you like.
+It reads the terminal again each time it is run, so a later run reports the
+current size.
 
 -}
 configuration : Task x (Maybe Configuration)
@@ -78,14 +99,24 @@ configuration =
             )
 
 
-{-| In its default mode, `stdin` only sends data when the user hits the enter key.
+{-| Switches stdin into raw mode with `True`, and back to its original mode with
+`False`. It does nothing when stdin is not a terminal.
 
-If you switch over to raw mode, every keypress will be sent over the stream, and special
-combinations like `Ctrl-C` will no longer trigger the interrupt signal.
+In its original mode a terminal usually hands input over a line at a time,
+once the user presses enter. In raw mode every keypress is sent over the stdin
+stream as it happens, and is not echoed. Key combinations such as Ctrl-C arrive
+as input too, rather than raising a signal, so `System.onSignalInterrupt` does
+not see them.
 
-Enable this when you need full control over how input is handled. The original terminal mode is
-restored when the program exits, also when it is ended by an interrupt (`SIGINT`) or terminate
-(`SIGTERM`) signal it does not subscribe to. This does nothing if stdin is not a terminal.
+The original mode is the one stdin had when this was first run. It is restored
+when the process exits, but on the native backend not when a fatal error stops
+the program. It is also restored when the program is ended by an interrupt
+(`SIGINT`) or terminate (`SIGTERM`) signal it does not subscribe to, unless,
+on the native backend, the program is embedded in a host application, which
+keeps its own signal handling; any other signal that ends the program leaves
+raw mode on. While the program subscribes to that signal
+with `System.onSignalInterrupt` or `System.onSignalTerminate`, the signal does
+not end it and raw mode stays on.
 
 -}
 setStdinRawMode : Bool -> Task x ()
@@ -94,15 +125,15 @@ setStdinRawMode toggle =
         |> Task.mapError never
 
 
-{-| Set the title of the terminal window, as shown in the title bar or tab of your terminal
-emulator.
+{-| Sets the title of the terminal window, as shown in the title bar or tab of a
+terminal emulator.
 
-This writes the standard title escape sequence (OSC 2) to stdout when stdout is a terminal, and
-does nothing otherwise, so the sequence never ends up in a redirected file or pipe. It works in
-xterm-compatible terminals on Linux and macOS, and in Windows Terminal.
-
-This was `setProcessTitle`, which changed the process name instead (on Linux only); POSIX has no
-portable process title.
+It writes the title escape sequence (OSC 2) to stdout when stdout is a
+terminal, and does nothing otherwise, so the sequence never ends up in a
+redirected file or pipe. ASCII control characters, DEL included, are removed
+from `title` first, so that none of them (BEL or ESC in particular) can end
+the sequence early. Whether the title changes is up to the terminal, and a
+failure to write is ignored.
 
 -}
 setTitle : String -> Task x ()
@@ -111,7 +142,17 @@ setTitle title =
         |> Task.mapError never
 
 
-{-| A subscription that triggers every time the size of the terminal changes, with the new size.
+{-| Creates a subscription to changes in the size of the terminal, with the new
+size.
+
+A size arrives each time the program receives `SIGWINCH`, the signal the
+operating system sends when a terminal's window is resized, and may equal the
+previous one. It is read as `configuration` reads its size, falling back to
+the other standard streams also when stdout is not a terminal, and nothing
+arrives when no standard stream reports one, or, on the native backend, when
+the program is embedded in a host application. The subscription does not keep
+the program running.
+
 -}
 onResize : (Size -> msg) -> Sub msg
 onResize toMsg =
@@ -121,39 +162,56 @@ onResize toMsg =
 
 -- EFFECT MANAGER
 --
--- The native backend runs the C++ manager registered as "Terminal"
--- (src/eco-system/Terminal/TerminalManager.{hpp,cpp}, plans/eco-system-library.md Appendix C.4)
--- and ignores the Elm functions below. The JS backend runs them (plans/eco-system-library.md
--- Phase 10, D15): while there is at least one OnResize subscription, one listener process
--- (a never-completing kernel binding, killed when the last subscription goes away)
--- notifies the manager of each new size through `Platform.sendToSelf`. The constructor
--- layout of MySub is mirrored by TerminalManager.hpp: keep them in sync.
+-- These definitions run only on the JS backend. The native backend runs the
+-- C++ manager registered as "Terminal"
+-- (src/eco-system/Terminal/TerminalManager.{hpp,cpp}) in their place, and that
+-- manager mirrors the constructor layout of MySub: keep the two in sync. On JS,
+-- one listener process (a kernel binding that never completes) runs while
+-- there is at least one OnResize subscription, and is killed when the last one
+-- goes away.
 
 
+{-| A subscription the manager holds. `OnResize` carries the function that turns
+a new size, as `( columns, rows )`, into the program's message.
+-}
 type MySub msg
     = OnResize (( Int, Int ) -> msg)
 
 
+{-| Applies `f` to the messages a subscription produces.
+-}
 subMap : (a -> b) -> MySub a -> MySub b
 subMap f (OnResize tagger) =
     OnResize (tagger >> f)
 
 
+{-| The manager's state on the JS backend: the current subscriptions' message
+functions, in the order the program declared them, and the listener process
+while there are any.
+-}
 type alias State msg =
     { taggers : List (( Int, Int ) -> msg)
     , listener : Maybe Process.Id
     }
 
 
+{-| A message the listener process sends to the manager. `Resized` carries the
+new size as `( columns, rows )`.
+-}
 type Event
     = Resized ( Int, Int )
 
 
+{-| The manager's starting state: no subscriptions and no listener.
+-}
 init : Task Never (State msg)
 init =
     Task.succeed { taggers = [], listener = Nothing }
 
 
+{-| Replaces the stored subscriptions with `subs`, starting the listener process
+when the first subscription appears and killing it when the last one goes.
+-}
 onEffects : Platform.Router msg Event -> List (MySub msg) -> State msg -> Task Never (State msg)
 onEffects router subs state =
     let
@@ -178,6 +236,9 @@ onEffects router subs state =
                 |> Task.map (\pid -> { taggers = taggers, listener = Just pid })
 
 
+{-| Sends a new size to every current subscription, in the order they were
+declared, leaving the state unchanged.
+-}
 onSelfMsg : Platform.Router msg Event -> Event -> State msg -> Task Never (State msg)
 onSelfMsg router (Resized size) state =
     state.taggers
@@ -188,29 +249,42 @@ onSelfMsg router (Resized size) state =
 
 
 -- KERNELS
--- The annotations fix the kernel ABI (plans/eco-system-library.md Appendix B.5).
+-- The type annotations fix the kernel ABI: the kernels rely on exactly these
+-- argument and result shapes.
 
 
+{-| A task that reads the terminal on stdout as `( colorDepth, columns, rows )`,
+or `Nothing` when stdout is not a terminal.
+-}
 kGetConfiguration : Task Never (Maybe ( Int, Int, Int ))
 kGetConfiguration =
     Eco.Kernel.Terminal.getConfiguration
 
 
+{-| Produces a task that switches stdin into raw mode or back to its original
+mode.
+-}
 kSetStdInRawMode : Bool -> Task Never ()
 kSetStdInRawMode =
     Eco.Kernel.Terminal.setStdInRawMode
 
 
+{-| Produces a task that writes the title escape sequence to stdout when it is a
+terminal.
+-}
 kSetTitle : String -> Task Never ()
 kSetTitle =
     Eco.Kernel.Terminal.setTitle
 
 
 
--- JS-only kernel, used by the effect-manager body above (the native backend drops that
--- body, so it has no C++ counterpart).
+-- JS-only kernel, used by the effect manager above; it has no C++ counterpart.
 
 
+{-| Produces a task that never completes and, until its process is killed, runs
+the task the given function makes from the new `( columns, rows )` on each
+`SIGWINCH` for which a size can be read.
+-}
 kAttachResizeListener : (( Int, Int ) -> Task Never ()) -> Task Never ()
 kAttachResizeListener =
     Eco.Kernel.Terminal.attachResizeListener

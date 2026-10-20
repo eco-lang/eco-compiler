@@ -6,19 +6,47 @@ module WebSocket.Internal.Handshake exposing
     , clientOffer, negotiateClient, negotiateServer
     )
 
-{-| Internal; not exposed. The WebSocket opening handshake in pure Elm (elm/core and
-`Socket.Address` only, plans/eco-system-websockets.md §3.1, §3.6, Appendix D.2, D.3, D.7).
+{-| The rules of the WebSocket opening handshake can all be checked without a network, and this
+module holds them in pure Elm so that they can be tested without one.
 
-  - URLs: [`parseUrl`](#parseUrl), [`hostHeader`](#hostHeader), [`serverName`](#serverName).
-  - Header grammar: comma-separated token lists, RFC 9110 tokens, the extension header.
-  - Handshake: the client request headers, the checks of a response (client) and of a request
-    (server), the server's response headers.
-  - permessage-deflate negotiation (RFC 7692 §7.1) in both roles.
+A WebSocket connection begins as an HTTP request. Over HTTP/1.1 the client sends a `GET` with
+`Upgrade: websocket`, a `Sec-WebSocket-Key` and `Sec-WebSocket-Version: 13`, and a server that
+agrees answers with status 101 and a `Sec-WebSocket-Accept` value made from the key. Over HTTP/2
+(RFC 8441) the request is a `CONNECT` and the answer a 2xx status; `Upgrade`, `Connection`, the
+key and the accept value play no part. In both, the client may list the subprotocols it can
+speak and offer extensions, and the server picks at most one subprotocol and answers the
+extensions it takes up.
 
-The URL parser, the `Host` header, the token grammar, the handshake checks of Appendix D.2/D.3 and
-the extension header grammar (RFC 6455 §9.1: comma-separated elements, `;` parameters, token or
-quoted-string values) are phase WS4's; the permessage-deflate negotiation (RFC 7692 §7.1,
-Appendix D.7) is WS7's.
+The module has four parts, in this order.
+
+  - URLs: `parseUrl` reads a `ws://` or `wss://` URL, and `hostHeader` and `serverName` give the
+    `Host` header and the TLS server name for one.
+  - Header grammar: header values that are comma-separated lists, HTTP tokens, and the check
+    of the headers a caller supplies.
+  - The handshake. `requestHeaders` and `checkResponse` are the client's side: the headers it
+    sends, and the check of the answer. `checkRequest` and `responseHeaders` are the server's
+    side: the check of a request, and the headers of the answer that accepts it. Both builders
+    refuse a malformed or reserved header among those their caller supplies.
+  - Extensions: the `Sec-WebSocket-Extensions` grammar, which `parseExtensions` reads, and the
+    negotiation of permessage-deflate (RFC 7692), the one extension this module knows.
+
+permessage-deflate compresses each message with DEFLATE, and each end compresses what it sends
+with its own compressor. Four terms describe how the ends agree on it.
+
+An _offer_ is a `permessage-deflate` element in a client's `Sec-WebSocket-Extensions` header;
+`clientOffer` writes one, and a client may send several. A _policy_ is what a server is willing
+to agree to. `negotiateServer` answers the first offer it can accept under its policy, and
+`negotiateClient` checks that answer against the offer on the client's side. Both give the
+settings agreed as a `Negotiated`.
+
+_Context takeover_ is a compressor keeping what it has seen from one message to the next, so that
+a message can refer back into earlier ones. The `server_no_context_takeover` and
+`client_no_context_takeover` parameters turn it off for one end, which then compresses every
+message on its own.
+
+_Window bits_ is the size of a compressor's window, the distance back it may refer, as a power of
+two: from 8 (256 bytes) to 15 (32 KiB). The `server_max_window_bits` and `client_max_window_bits`
+parameters limit it for one end.
 
 -}
 
@@ -29,12 +57,12 @@ import Socket.Address as Address exposing (Address, Family(..))
 -- URLS
 
 
-{-| A parsed WebSocket URL.
+{-| A WebSocket URL, as `parseUrl` reads it.
 
-  - `secure`: `wss` (TLS) rather than `ws`.
-  - `host`: a host name (lower-cased) or an address literal (an IPv6 literal may carry a zone).
-  - `port_`: the port, 80 or 443 when the URL has none.
-  - `target`: the request target: the path (`/` when empty) and the query, if any.
+`secure` is `True` for `wss`, a connection over TLS, and `False` for `ws`. `port_` is the port
+the URL gives, or the scheme's default port (80 for `ws`, 443 for `wss`) when it gives none.
+`target` is the request target: the path, `/` when the URL has none, followed by the query if
+there is one, both as written.
 
 -}
 type alias Url =
@@ -45,17 +73,34 @@ type alias Url =
     }
 
 
-{-| The host of a URL.
+{-| The host part of a WebSocket URL: a name, or an IP address written out.
+
+`Name` carries host text that is not an address, lower-cased and otherwise as written. It is
+not checked to be a valid DNS name, and percent-encodings in it are not decoded.
+
+`Literal` carries an address: an IPv4 address, or an IPv6 address, which may carry a scope.
+
 -}
 type Host
     = Name String
     | Literal Address
 
 
-{-| Parse a `ws://` or `wss://` URL. The scheme is case-insensitive; IPv6 literals are bracketed
-and may carry a zone written `%25` (RFC 6874: `ws://[fe80::1%25eth0]/`); a port is 0 to 65535;
-the query is kept. A fragment, user information, another scheme or characters outside printable
-ASCII are errors. The error is a message for an `EINVAL` error.
+{-| Reads a `ws://` or `wss://` URL, or gives an error message that names the URL and what is
+wrong with it.
+
+The scheme is matched without regard to case. Every character after it must be printable ASCII
+other than space. A fragment (`#`) or user information (an `@` before the path or query) is an
+error, and so is any other scheme.
+
+The host is one of three things. An IPv6 address must be in brackets, and may carry a scope
+written `%25`, as in `ws://[fe80::1%25eth0]/` (RFC 6874); a bare `%` is accepted too. Brackets
+around anything but an IPv6 address are an error, and so is unbracketed text with more than one
+`:`. Unbracketed text that `Socket.Address.fromString` reads as an address is an IPv4 `Literal`.
+Anything else is a `Name`, and may hold only ASCII letters and digits, `%` and
+`-._~!$&'()*+,;=`. A port after a `:` is 1 to 5 digits with a value from 0 to 65535; a `:` with
+no digits after it means the default port.
+
 -}
 parseUrl : String -> Result String Url
 parseUrl text =
@@ -109,6 +154,9 @@ parseUrl text =
                     |> Result.mapError (\reason -> "invalid WebSocket URL " ++ text ++ ": " ++ reason)
 
 
+{-| Returns the position in `text` of the earliest occurrence of any of `needles`, or `Nothing`
+when none occurs.
+-}
 firstIndex : List String -> String -> Maybe Int
 firstIndex needles text =
     needles
@@ -116,7 +164,9 @@ firstIndex needles text =
         |> List.minimum
 
 
-{-| Printable ASCII without space (RFC 3986 characters; anything else must be percent-encoded).
+{-| Tells whether `parseUrl` accepts a character in a URL: printable ASCII other than space,
+from `!` to `~`. This admits some characters that a URL should percent-encode, such as `"`, `<`
+and `{`.
 -}
 isUrlChar : Char -> Bool
 isUrlChar c =
@@ -127,6 +177,10 @@ isUrlChar c =
     code > 0x20 && code < 0x7F
 
 
+{-| Reads the authority of a URL, the part between the scheme and the path or query, into its
+host and port, as `parseUrl` describes; the default port is that of the scheme `secure` names.
+The error is the reason the authority is invalid.
+-}
 parseAuthority : Bool -> String -> Result String ( Host, Int )
 parseAuthority secure authority =
     if String.contains "@" authority then
@@ -200,13 +254,18 @@ parseAuthority secure authority =
                     )
 
 
-{-| RFC 3986 reg-name characters (unreserved, sub-delims, and `%` of a percent-encoding).
+{-| Tells whether a character may appear in a host name: an ASCII letter or digit, `%`, or one of
+`-._~!$&'()*+,;=`. A `%` is accepted on its own; what follows it is not checked to be a
+percent-encoding.
 -}
 isRegNameChar : Char -> Bool
 isRegNameChar c =
     Char.isAlphaNum c || String.contains (String.fromChar c) "-._~!$&'()*+,;=%"
 
 
+{-| Reads the port of a URL: 1 to 5 ASCII digits with a value up to 65535, or, for empty text,
+the default port of the scheme `secure` names.
+-}
 parsePort : Bool -> String -> Result String Int
 parsePort secure text =
     if text == "" then
@@ -228,6 +287,8 @@ parsePort secure text =
         Err "invalid port"
 
 
+{-| Returns the port a URL means when it gives none: 443 for `wss` (`secure`) and 80 for `ws`.
+-}
 defaultPort : Bool -> Int
 defaultPort secure =
     if secure then
@@ -237,8 +298,9 @@ defaultPort secure =
         80
 
 
-{-| The `Host` header of a URL: the host, and `:port` unless it is the scheme's default port.
-IPv6 literals are bracketed, without their zone.
+{-| Returns the value of the `Host` header for a URL: its host, followed by `:` and the port
+unless the port is the scheme's default. An IPv6 address is written in brackets, without its
+scope.
 -}
 hostHeader : Url -> String
 hostHeader url =
@@ -263,7 +325,8 @@ hostHeader url =
         host ++ ":" ++ String.fromInt url.port_
 
 
-{-| The TLS server name of a `wss` URL: the host name, or the address literal without a zone.
+{-| Returns the TLS server name for a URL: its host name, or its address written without
+brackets and without its scope.
 -}
 serverName : Url -> String
 serverName url =
@@ -275,6 +338,8 @@ serverName url =
             withoutZone address
 
 
+{-| Prints an address as `Socket.Address.toString` does, without its scope.
+-}
 withoutZone : Address -> String
 withoutZone address =
     Address.toString address
@@ -287,8 +352,8 @@ withoutZone address =
 -- HEADER GRAMMAR
 
 
-{-| The elements of a comma-separated header value, trimmed and lower-cased, empty ones dropped
-(`"keep-alive, Upgrade"` → `[ "keep-alive", "upgrade" ]`).
+{-| Splits a comma-separated header value into its elements, trimmed and lower-cased, with empty
+elements dropped: `"keep-alive, Upgrade"` gives `[ "keep-alive", "upgrade" ]`.
 -}
 tokenList : String -> List String
 tokenList value =
@@ -298,7 +363,8 @@ tokenList value =
         |> List.filter ((/=) "")
 
 
-{-| The lower-cased elements of every occurrence of a header (`name` lower-case).
+{-| Returns the elements of every occurrence of the header `name`, in order, each value split,
+trimmed and lower-cased as `tokenList` does. `name` must be lower-case, as for `headerValues`.
 -}
 headerTokens : String -> List ( String, String ) -> List String
 headerTokens name headers =
@@ -306,8 +372,9 @@ headerTokens name headers =
         |> List.concatMap tokenList
 
 
-{-| The values of every occurrence of a header, in order (`name` lower-case; header names are
-compared case-insensitively).
+{-| Returns the value of every occurrence of the header `name`, in order. Each header's name is
+lower-cased before it is compared with `name`, so names match without regard to case, and a
+`name` that is not itself lower-case matches nothing.
 -}
 headerValues : String -> List ( String, String ) -> List String
 headerValues name headers =
@@ -316,26 +383,32 @@ headerValues name headers =
         |> List.map Tuple.second
 
 
-{-| An RFC 9110 token: one or more of the letters, digits and ``!#$%&'*+-.^_`|~``.
+{-| Tells whether text is an HTTP token (RFC 9110): one or more ASCII letters, digits, or
+characters from `` !#$%&'*+-.^_`|~ ``.
 -}
 isToken : String -> Bool
 isToken text =
     text /= "" && String.all isTokenChar text
 
 
+{-| Tells whether a character may appear in an HTTP token: an ASCII letter or digit, or one of
+`` !#$%&'*+-.^_`|~ ``.
+-}
 isTokenChar : Char -> Bool
 isTokenChar c =
     Char.toCode c < 0x80 && (Char.isAlphaNum c || String.contains (String.fromChar c) "!#$%&'*+-.^_`|~")
 
 
-{-| A header name and value a user may send: the name a token, the value without CR, LF or NUL.
+{-| Tells whether a header may be sent as given: its name is an HTTP token and its value holds no
+carriage return, line feed or NUL. Other control characters in the value are allowed.
 -}
 isValidHeader : ( String, String ) -> Bool
 isValidHeader ( name, value ) =
     isToken name && not (String.any (\c -> c == '\u{000D}' || c == '\n' || c == '\u{0000}') value)
 
 
-{-| Header names the handshake sets itself; a user header with one of these names is an error.
+{-| The header names, lower-cased, that a header supplied by the caller may not have, in any case:
+the headers the handshake writes itself, and `content-length` and `transfer-encoding`.
 -}
 reservedNames : List String
 reservedNames =
@@ -352,6 +425,9 @@ reservedNames =
     ]
 
 
+{-| Succeeds when every header supplied by the caller may be sent and none has a reserved name,
+and otherwise gives an error message naming the first header that fails.
+-}
 checkUserHeaders : List ( String, String ) -> Result String ()
 checkUserHeaders headers =
     case List.filter (\(( name, _ ) as h) -> not (isValidHeader h) || List.member (String.toLower name) reservedNames) headers of
@@ -363,12 +439,20 @@ checkUserHeaders headers =
 
 
 
--- HANDSHAKE (Appendix D.2, D.3)
+-- HANDSHAKE
 
 
-{-| The headers of a client's opening request (D.2), in order, after the request line
-`GET <target> HTTP/1.1`. Fails (an `EINVAL` message) for a protocol that is not a token, a
-repeated protocol, or an invalid or reserved user header.
+{-| Builds the headers of a client's opening request, in this order: `Host` with `host`,
+`Upgrade: websocket`, `Connection: Upgrade`, `Sec-WebSocket-Key` with `key`,
+`Sec-WebSocket-Version: 13`, then `Sec-WebSocket-Protocol` with the `protocols` joined by `", "`
+when there are any, then `Sec-WebSocket-Extensions` when `extensions` is given, then `headers`.
+
+It gives an error message instead when a protocol is not an HTTP token, when a protocol is listed
+twice (compared exactly), or when one of `headers` has a name that is not a token, a value that
+holds a carriage return, line feed or NUL, or the name, in any case, of a header either side of
+the handshake writes (`Sec-WebSocket-Accept` included), `content-length` or `transfer-encoding`.
+`host`, `key` and `extensions` are written as given, without checks.
+
 -}
 requestHeaders :
     { host : String, key : String, protocols : List String, extensions : Maybe String, headers : List ( String, String ) }
@@ -407,6 +491,8 @@ requestHeaders r =
                 )
 
 
+{-| Tells whether any string occurs more than once in a list, compared exactly.
+-}
 hasDuplicates : List String -> Bool
 hasDuplicates list =
     case list of
@@ -417,9 +503,23 @@ hasDuplicates list =
             List.member x rest || hasDuplicates rest
 
 
-{-| Check a server's response to our opening request (D.2). On failure, the HTTP status when it
-was not 101, and a message for an `ERR_WS_HANDSHAKE` error. On success, the protocol the server
-chose and the extensions it returned.
+{-| Checks a server's answer to a client's opening request, given the answer's `status` and
+`headers`, and returns the protocol the server chose and the extensions it returned.
+
+`expected` describes the request: `expectedAccept` is the `Sec-WebSocket-Accept` value its key
+calls for, `protocols` the protocols it offered, and `isH2` whether it went over HTTP/2.
+
+Over HTTP/1.1 the status must be 101, and over HTTP/2 any 2xx. Over HTTP/1.1 the answer must
+also have `websocket` among its `Upgrade` elements and `upgrade` among its `Connection` elements
+(compared without regard to case), and exactly one `Sec-WebSocket-Accept`, equal to
+`expectedAccept` once trimmed; over HTTP/2 none of these three is checked. In both,
+`Sec-WebSocket-Protocol` may occur at most once, and its whole value, trimmed, must be exactly
+one of `protocols`. The `Sec-WebSocket-Extensions` headers must follow the grammar
+`parseExtensions` reads; whether the extensions were offered is not checked here.
+
+A failure gives an error message, paired with the status when the status was what failed and
+with `Nothing` otherwise.
+
 -}
 checkResponse :
     { expectedAccept : String, protocols : List String, isH2 : Bool }
@@ -470,9 +570,28 @@ checkResponse expected status headers =
                 Err ( Nothing, "more than one Sec-WebSocket-Protocol in the response" )
 
 
-{-| Check a client's opening request (D.3): `headers` with lower-case names. On failure, the status
-to answer (400, or 426 for a version other than 13) and a message. On success, the client's key
-(empty over HTTP/2), its protocols in order, and its extension offers.
+{-| Checks a client's opening request and returns what the client asked for: its key, its
+protocols in order, and its extensions as `parseExtensions` reads them.
+
+The checks are made in this order, and the first that fails decides the answer. Over HTTP/1.1 the
+method must be `GET`, the HTTP `version`, written `major.minor` (such as `"1.1"`), 1.1 or later,
+and the request must have a `Host` header, `websocket` among its `Upgrade` elements and `upgrade`
+among its `Connection` elements. Over HTTP/2 (`isH2`) the method must be `CONNECT`, and those
+other checks are not made. In both, `Sec-WebSocket-Version` must occur exactly once with the value
+`13` once trimmed. Over HTTP/1.1 there must then be exactly one `Sec-WebSocket-Key`, and it must
+be the base64 encoding of 16 bytes. In both, every protocol must be an HTTP token, and the
+`Sec-WebSocket-Extensions` headers must follow the grammar `parseExtensions` reads. The method is
+compared exactly; header names, and the `Upgrade` and `Connection` elements, without regard to
+case.
+
+A failure gives the status to answer with and an error message: 426 when the
+`Sec-WebSocket-Version` check failed, and 400 for every other check.
+
+The protocols are the comma-separated elements of every `Sec-WebSocket-Protocol` header, trimmed,
+with empty ones dropped and their case kept; a protocol listed twice is not an error. The key is
+trimmed. Over HTTP/2 it is not checked: it is the first `Sec-WebSocket-Key` if the request has
+one, and empty otherwise.
+
 -}
 checkRequest :
     { method : String, version : String, headers : List ( String, String ), isH2 : Bool }
@@ -530,7 +649,8 @@ checkRequest r =
                 Err ( 400, "invalid Sec-WebSocket-Extensions" )
 
 
-{-| An HTTP version (`"1.1"`, from `HTTP/1.1`) of 1.1 or later.
+{-| Tells whether an HTTP version written as `major.minor`, such as `"1.1"`, is 1.1 or later.
+Text of any other shape, such as `"2"`, is not.
 -}
 atLeastHttp11 : String -> Bool
 atLeastHttp11 version =
@@ -542,8 +662,8 @@ atLeastHttp11 version =
             False
 
 
-{-| The base64 encoding of 16 bytes: 22 base64 characters (the last one with its low four bits
-zero) and `==`.
+{-| Tells whether a `Sec-WebSocket-Key` is the canonical base64 encoding of 16 bytes: 22 base64
+digits, the last of which has its low four bits zero (`A`, `Q`, `g` or `w`), then `==`.
 -}
 isKey : String -> Bool
 isKey key =
@@ -554,13 +674,23 @@ isKey key =
         && String.contains (String.slice 21 22 key) "AQgw"
 
 
+{-| Tells whether a character is a digit of standard base64: an ASCII letter or digit, `+` or
+`/`.
+-}
 isBase64Char : Char -> Bool
 isBase64Char c =
     Char.toCode c < 0x80 && (Char.isAlphaNum c || c == '+' || c == '/')
 
 
-{-| The headers of a server's answer to an accepted opening request (101, or 200 over HTTP/2),
-after its status line. Fails (an `EINVAL` message) for an invalid or reserved user header.
+{-| Builds the headers of a server's answer that accepts an opening request, in this order: over
+HTTP/1.1, `Upgrade: websocket`, `Connection: Upgrade` and `Sec-WebSocket-Accept` with `accept`;
+then `Sec-WebSocket-Protocol` when `protocol` is given, then `Sec-WebSocket-Extensions` when
+`extensions` is given, then `headers`. Over HTTP/2 (`isH2`) the first three are left out and
+`accept` is not used.
+
+It gives an error message instead when one of `headers` is refused, by the same rule as in
+`requestHeaders`. `accept`, `protocol` and `extensions` are written as given, without checks.
+
 -}
 responseHeaders :
     { accept : String, protocol : Maybe String, extensions : Maybe String, headers : List ( String, String ), isH2 : Bool }
@@ -597,11 +727,15 @@ responseHeaders r =
 
 
 
--- EXTENSIONS (RFC 6455 §9.1, RFC 7692 §7.1, Appendix D.7)
+-- EXTENSIONS
 
 
-{-| One element of a `Sec-WebSocket-Extensions` header: the extension name (lower-cased) and its
-parameters in order (names lower-cased; values unquoted).
+{-| One element of a `Sec-WebSocket-Extensions` header: an extension's name and its parameters.
+
+`params` holds the parameters in the order written, each with its value, or with `Nothing` when
+it was written without one. In values from `parseExtensions`, `name` and the parameter names are
+lower-case.
+
 -}
 type alias Extension =
     { name : String
@@ -609,14 +743,19 @@ type alias Extension =
     }
 
 
-{-| Parse every occurrence of a `Sec-WebSocket-Extensions` header, in order; `Nothing` when the
-grammar is violated (RFC 6455 §9.1):
+{-| Reads the values of every occurrence of the `Sec-WebSocket-Extensions` header, in order, as
+one list of extensions, or gives `Nothing` when any value breaks the grammar.
 
-    extension-list = 1#extension
-    extension      = token *( OWS ";" OWS token [ "=" ( token / quoted-string ) ] )
+A value is a comma-separated list of extensions. An extension is a token, its name, followed by
+any number of parameters, each written `;` and a token, optionally followed by `=` and a value,
+which is a token or a quoted string. Spaces and tabs are allowed between any two of these parts,
+including on either side of `=`. Empty list elements are skipped, so an empty value, or no
+header at all, gives no extensions, where RFC 6455 requires at least one.
 
-Empty list elements are ignored (RFC 9110 §5.6.1). A quoted value is unescaped and must then be a
-token. Extension and parameter names are lower-cased; values are kept as written.
+A quoted string may not hold a control character other than tab, nor run on from one occurrence
+of the header into the next. Its backslash escapes are removed, and what remains must be a
+token. Extension and parameter names are lower-cased; values keep their case. Repeated or
+unknown parameters are not checked here.
 
 -}
 parseExtensions : List String -> Maybe (List Extension)
@@ -628,6 +767,15 @@ parseExtensions values =
         |> Maybe.andThen (splitOn XComma >> List.filter (not << List.isEmpty) >> List.map parseExtension >> combine)
 
 
+{-| One lexical item of a `Sec-WebSocket-Extensions` value.
+
+`XWord` carries a run of token characters.
+
+`XQuoted` carries the value of a quoted string, with its quotes and backslash escapes removed.
+
+`XComma`, `XSemi` and `XEquals` are the separators `,`, `;` and `=`.
+
+-}
 type XToken
     = XWord String
     | XQuoted String
@@ -636,6 +784,10 @@ type XToken
     | XEquals
 
 
+{-| Splits the characters of one header value into lexical items, after the items in `acc`
+(which are held in reverse), skipping spaces and tabs. It gives `Nothing` at a character that is
+not a token character or a separator, and for a quoted string that `lexQuoted` refuses.
+-}
 lexExtensions : List XToken -> List Char -> Maybe (List XToken)
 lexExtensions acc chars =
     case chars of
@@ -670,8 +822,10 @@ lexExtensions acc chars =
                 Nothing
 
 
-{-| The rest of a quoted-string after its opening quote: its unescaped value and what follows the
-closing quote.
+{-| Reads the rest of a quoted string after its opening quote, after the characters in `acc`
+(held in reverse), and returns its value and the characters after the closing quote. A backslash
+makes the next character part of the value, whatever it is. It gives `Nothing` when the closing
+quote is missing, or when a control character other than tab, or DEL, appears unescaped.
 -}
 lexQuoted : List Char -> List Char -> Maybe ( String, List Char )
 lexQuoted acc chars =
@@ -697,6 +851,8 @@ lexQuoted acc chars =
             Nothing
 
 
+{-| Returns the longest start of a list whose elements all pass `ok`.
+-}
 takeWhile : (a -> Bool) -> List a -> List a
 takeWhile ok list =
     case list of
@@ -711,6 +867,9 @@ takeWhile ok list =
             []
 
 
+{-| Splits a list of items at every `separator`, giving the groups between them in order, empty
+groups included. An empty list gives one empty group.
+-}
 splitOn : XToken -> List XToken -> List (List XToken)
 splitOn separator tokens =
     List.foldr
@@ -730,6 +889,10 @@ splitOn separator tokens =
         tokens
 
 
+{-| Reads one extension, a name followed by its parameters, from the items of one list element,
+lower-casing the name. It gives `Nothing` when the items do not start with a name or a parameter
+is malformed.
+-}
 parseExtension : List XToken -> Maybe Extension
 parseExtension tokens =
     case tokens of
@@ -741,6 +904,10 @@ parseExtension tokens =
             Nothing
 
 
+{-| Reads an extension's parameters, each `;` and a name, optionally followed by `=` and a value,
+after the parameters in `acc` (held in reverse), lower-casing their names. A quoted value must be
+a token. It gives `Nothing` for anything else.
+-}
 parseParams : List ( String, Maybe String ) -> List XToken -> Maybe (List ( String, Maybe String ))
 parseParams acc tokens =
     case tokens of
@@ -769,13 +936,25 @@ parseParams acc tokens =
             Nothing
 
 
+{-| Returns the values of a list of `Maybe`s in order, or `Nothing` if any of them is `Nothing`.
+-}
 combine : List (Maybe a) -> Maybe (List a)
 combine list =
     List.foldr (Maybe.map2 (::)) (Just []) list
 
 
-{-| The parameters of a negotiated permessage-deflate (the same record as
-`WebSocket.Negotiated`).
+{-| The permessage-deflate settings the two ends have agreed on: for each end's compressor,
+whether it takes over context from one message to the next, and how large its window may be.
+
+`serverNoContextTakeover` and `clientNoContextTakeover` are `True` when that end compresses every
+message on its own. `serverMaxWindowBits` and `clientMaxWindowBits` are the largest window that
+end compresses with, as window bits. Every value this module produces is from 8 to 15, but a field
+is a plain `Int` and the compiler accepts any.
+
+The same record is declared as `WebSocket.Negotiated` and as `WebSocket.Internal.Negotiated`.
+The three are interchangeable only because record aliases are structural, so they must be kept
+identical.
+
 -}
 type alias Negotiated =
     { serverNoContextTakeover : Bool
@@ -785,7 +964,15 @@ type alias Negotiated =
     }
 
 
-{-| What a client offers (the fields of `WebSocket.ClientCompression` the offer depends on).
+{-| What a client asks for in its permessage-deflate offer. Any record with these fields will do.
+
+`contextTakeover = False` asks for both ends to compress every message on its own.
+`serverMaxWindowBits` is `Just n` to ask the server to compress with at most `n` window bits.
+`clientMaxWindowBits` is `Nothing` to leave that parameter out, `Just Nothing` to send it without
+a value, and `Just (Just n)` to send `n`, the largest window the client compresses with; the
+server may answer with a limit for the client's window only when the parameter is sent. Window
+sizes outside 8 to 15 are clamped into that range.
+
 -}
 type alias ClientOffer r =
     { r
@@ -795,16 +982,23 @@ type alias ClientOffer r =
     }
 
 
-{-| A server's policy (the fields of `WebSocket.ServerCompression` the negotiation depends on).
+{-| What a server is willing to agree to when it answers a permessage-deflate offer. Any record
+with these fields will do.
+
+`maxWindowBits` is the largest window the server compresses with, clamped to 8 to 15.
+`contextTakeover = False` makes the server answer that both ends compress every message on its
+own, whatever the offer asked.
+
 -}
 type alias ServerPolicy r =
     { r | maxWindowBits : Int, contextTakeover : Bool }
 
 
-{-| The `Sec-WebSocket-Extensions` value of a client's permessage-deflate offer: without context
-takeover (the default) `client_no_context_takeover` and `server_no_context_takeover`, then
-`client_max_window_bits` (without a value for `Just Nothing`) and `server_max_window_bits` as asked
-(window sizes are clamped to 8–15).
+{-| Writes the `Sec-WebSocket-Extensions` value of a client's permessage-deflate offer:
+`permessage-deflate`, then `client_no_context_takeover` and `server_no_context_takeover` when
+`contextTakeover` is `False`, then `client_max_window_bits` (without a value for `Just Nothing`)
+and `server_max_window_bits` when they are asked for, all joined by `"; "`. Window sizes are
+clamped to 8 to 15.
 -}
 clientOffer : ClientOffer r -> String
 clientOffer offer =
@@ -836,7 +1030,12 @@ clientOffer offer =
         )
 
 
-{-| The parameters of one permessage-deflate element (RFC 7692 §7.1).
+{-| The parameters of one permessage-deflate element, as read from an offer or an answer.
+
+A `NoContextTakeover` field is `True` when its parameter is present, and a window size is
+`Nothing` when its parameter is absent. `clientMaxWindowBits` is `Just Nothing` when the
+parameter came without a value, which only an offer may do.
+
 -}
 type alias DeflateParams =
     { serverNoContextTakeover : Bool
@@ -846,11 +1045,15 @@ type alias DeflateParams =
     }
 
 
-{-| Read the parameters of a permessage-deflate offer (`forResponse = False`) or response (`True`).
-`Nothing` when a parameter is unknown or repeated, or has an invalid value: the context takeover
-parameters take no value; window sizes are decimal numbers from 8 to 15 without leading zeros
-(possibly quoted: the extension grammar already unquoted them); `client_max_window_bits` may come
-without a value in an offer only.
+{-| Reads the parameters of a permessage-deflate element: an offer when `forResponse` is `False`,
+a server's answer when it is `True`. It gives `Nothing` when a parameter is unknown, is repeated,
+or has an invalid value.
+
+The two `*_no_context_takeover` parameters take no value. `server_max_window_bits` needs a window
+size. `client_max_window_bits` takes one too, but may come without a value in an offer. A window
+size is a decimal number from 8 to 15 without a leading zero; a window size written as a quoted
+string in the header reads the same, since `parseExtensions` removes the quotes.
+
 -}
 deflateParams : Bool -> List ( String, Maybe String ) -> Maybe DeflateParams
 deflateParams forResponse params =
@@ -864,6 +1067,10 @@ deflateParams forResponse params =
             params
 
 
+{-| Adds one parameter, given by its name and value, to the parameters read so far, under the
+rules `deflateParams` describes. It gives `Nothing` when the parameter is unknown or its value is
+invalid.
+-}
 addDeflateParam : Bool -> String -> Maybe String -> DeflateParams -> Maybe DeflateParams
 addDeflateParam forResponse name value ps =
     case ( name, value ) of
@@ -890,7 +1097,7 @@ addDeflateParam forResponse name value ps =
             Nothing
 
 
-{-| A window size: 1*DIGIT without leading zeros, from 8 to 15.
+{-| Reads a window size: a decimal number from 8 to 15 without a leading zero.
 -}
 windowBits : String -> Maybe Int
 windowBits v =
@@ -909,18 +1116,25 @@ windowBits v =
         Nothing
 
 
-{-| Client side: the extensions a server returned, checked against our offer (`Nothing` when we
-offered nothing). `Ok Nothing`: no compression; an error message fails the connection (RFC 7692
-§7: the client fails the connection on an invalid response).
+{-| Checks the extensions a server `returned` against the client's permessage-deflate `offer`
+(`Nothing` when it offered none), and gives the settings agreed, or an error message when the
+answer cannot be accepted.
 
-The response may contain one `permessage-deflate` element, with: `server_no_context_takeover` and
-`client_no_context_takeover` (always allowed), `server_max_window_bits` (at most the value we asked
-for, if we did), `client_max_window_bits` with a value (only if we offered it). Anything else,
-another extension, a repeated or unknown parameter, or an invalid value is an error.
+When the server returned no extension, the result is `Ok Nothing`, whatever the offer. Otherwise
+there must have been an offer, and the server must have returned exactly one extension, named
+`permessage-deflate`. Its parameters may each appear at most once: `server_no_context_takeover`
+and `client_no_context_takeover` without a value, and `server_max_window_bits` and
+`client_max_window_bits` with a window size from 8 to 15 (no leading zero).
+`client_max_window_bits` is allowed only when the offer had it, and `server_max_window_bits` may
+not exceed the offer's value, clamped to 8 to 15, when the offer had one. Anything else is an
+error.
 
-The result describes what each side does: our compressor resets after every message when the server
-asked (`client_no_context_takeover`) or when we offered not to take over context; it uses the
-smaller of our window size and the server's limit.
+In the settings, the server's end takes over context unless the answer says
+`server_no_context_takeover`, and its window is the answer's `server_max_window_bits`, or 15. The
+client's end compresses every message on its own when the answer says
+`client_no_context_takeover` or the offer had `contextTakeover = False`, and its window is the
+offer's own value (clamped to 8 to 15, or 15 when the offer gave none), or the answer's
+`client_max_window_bits` when that is smaller.
 
 -}
 negotiateClient : Maybe (ClientOffer r) -> List Extension -> Result String (Maybe Negotiated)
@@ -962,6 +1176,9 @@ negotiateClient offer returned =
             Err "the server returned extensions that were not offered"
 
 
+{-| Returns the settings a client has agreed to, from its offer and the parameters of the
+server's answer, as `negotiateClient` describes.
+-}
 clientResult : ClientOffer r -> DeflateParams -> Negotiated
 clientResult o r =
     let
@@ -986,21 +1203,27 @@ clientResult o r =
     }
 
 
-{-| Server side: answer a client's offers (`Nothing`: no compression). The result is the
-negotiated parameters and the `Sec-WebSocket-Extensions` response value.
+{-| Answers a client's extension `offers` under a server's `policy` (`Nothing` for no
+compression), giving the settings agreed and the `Sec-WebSocket-Extensions` value of the answer,
+or `Nothing` when no offer is accepted.
 
-The offers are considered in order and the first acceptable `permessage-deflate` one is answered;
-an offer with an unknown or repeated parameter or an invalid value is declined (RFC 7692 §7). The
-answer:
+Only elements named exactly `permessage-deflate` are considered; other extensions are ignored.
+They are tried in order and the first with valid parameters is answered. An offer is passed over
+when a parameter is unknown or repeated, when a `*_no_context_takeover` parameter has a value, when
+`server_max_window_bits` has none, or when a window size is not a decimal number from 8 to 15
+without a leading zero.
 
-  - `server_no_context_takeover`: when offered (it must be echoed), and always without context
-    takeover (the default policy);
-  - `client_no_context_takeover`: when offered, and always without context takeover (a server may
-    include it unasked);
-  - `server_max_window_bits`: the smaller of the offered value and the policy's `maxWindowBits`;
-    sent when offered or when the policy uses less than 15 bits;
-  - `client_max_window_bits` is never sent (we inflate with a 15-bit window whatever the client
-    uses).
+The answer is `permessage-deflate` followed, joined by `"; "`, by:
+
+  - `server_no_context_takeover` when the offer has it or the policy's `contextTakeover` is
+    `False`;
+  - `client_no_context_takeover` when the offer has it or the policy's `contextTakeover` is
+    `False`;
+  - `server_max_window_bits` with the policy's `maxWindowBits` (clamped to 8 to 15), or the
+    offer's value when that is smaller, when the offer has the parameter or the size is under 15.
+
+`client_max_window_bits` is never part of the answer. The settings record the client's window as
+the value the offer gave, or 15 when it gave none.
 
 -}
 negotiateServer : Maybe (ServerPolicy r) -> List Extension -> Maybe ( Negotiated, String )
@@ -1013,6 +1236,9 @@ negotiateServer policy offers =
             firstJust (acceptOffer p) (List.filter (\e -> e.name == "permessage-deflate") offers)
 
 
+{-| Returns the first `Just` that `f` gives for the elements of a list, taken in order, or
+`Nothing` when it gives none.
+-}
 firstJust : (a -> Maybe b) -> List a -> Maybe b
 firstJust f list =
     case list of
@@ -1028,6 +1254,10 @@ firstJust f list =
                     firstJust f rest
 
 
+{-| Answers one permessage-deflate offer under `policy`, as `negotiateServer` describes, giving
+the settings agreed and the answer's header value, or `Nothing` when the offer's parameters are
+invalid.
+-}
 acceptOffer : ServerPolicy r -> Extension -> Maybe ( Negotiated, String )
 acceptOffer policy ext =
     deflateParams False ext.params
