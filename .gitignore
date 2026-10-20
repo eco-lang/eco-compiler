@@ -17,6 +17,7 @@ heap-profile.local.json
 heap-profiles/
 .pnpm-store/
 dist/
+.build-number
 .claude
 .serena
 projects/
