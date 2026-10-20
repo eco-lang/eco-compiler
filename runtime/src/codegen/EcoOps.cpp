@@ -64,7 +64,60 @@ LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
 
 LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"))
-    return verifySymRef(*this, fast, symbolTable, "fast evaluator");
+    if (failed(verifySymRef(*this, fast, symbolTable, "fast evaluator")))
+      return failure();
+
+  // CGEN_003: a typed papExtend's real newargs fill evaluator params, so their
+  // SSA types must be the target func.func's param types (the closure's slot
+  // kinds for uncaptured params come from that signature, and EcoPAPSimplify
+  // turns a saturated extend into a direct eco.call with these operands — a
+  // mismatch otherwise surfaces only as LLVM's "Calling a function with a bad
+  // signature!"). Checked when the closure traces to a papCreate through
+  // partial typed extends only; generic mode and other sources are unknown.
+  if (!getRemainingArityAttr())
+    return success();
+  size_t offset = 0;
+  Value clo = getClosure();
+  PapCreateOp create;
+  while (Operation *def = clo.getDefiningOp()) {
+    if (auto c = dyn_cast<PapCreateOp>(def)) {
+      create = c;
+      offset += static_cast<size_t>(c.getNumCaptured());
+      break;
+    }
+    auto prev = dyn_cast<PapExtendOp>(def);
+    if (!prev || !prev.getRemainingArityAttr())
+      return success();
+    size_t prevReal = prev.getNewargs().size() - getGCRootsCountAttr(prev);
+    if (static_cast<int64_t>(prevReal) >= prev.getRemainingArityAttr().getInt())
+      return success();  // saturated: result is whatever the evaluator returned
+    offset += prevReal;
+    clo = prev.getClosure();
+  }
+  if (!create)
+    return success();
+  // Two-clone closures: $cap takes (captures..., params...); $clo does not.
+  auto calleeSym = create->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+  if (!calleeSym)
+    calleeSym = create.getFunctionAttr();
+  auto callee = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, calleeSym);
+  if (!callee)
+    return success();
+  auto inputs = callee.getFunctionType().getInputs();
+  if (static_cast<uint64_t>(inputs.size()) != create.getArity())
+    return success();  // not a captures+params evaluator layout
+  auto allNewargs = getNewargs();
+  size_t realCount = allNewargs.size() - getGCRootsCountAttr(getOperation());
+  for (size_t i = 0; i < realCount && offset + i < inputs.size(); ++i) {
+    Type actual = allNewargs[i].getType();
+    Type expected = inputs[offset + i];
+    if (actual != expected)
+      return emitOpError("CGEN_003: typed papExtend newarg ")
+             << i << " has type " << actual << " but evaluator '"
+             << calleeSym.getValue() << "' expects " << expected
+             << " at parameter " << (offset + i)
+             << " (box/unbox the arg to the callee's param ABI)";
+  }
   return success();
 }
 

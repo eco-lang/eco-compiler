@@ -176,14 +176,14 @@ buildContext ecoConfig mode monoGraph0 =
 
 {-| Clears the per-function fields after a node, so they do not accumulate
 across nodes: `decoderExprs` caches let-bound decoder expressions for
-BytesFusion, and `externBoxedVars` tracks extern/kernel aliases — both are
+BytesFusion, and `localEvaluatorParams` tracks function aliases — both are
 function-local.
 -}
 resetNodeCtx : Ctx.Context -> Ctx.Context
 resetNodeCtx newCtx =
     { newCtx
         | decoderExprs = Dict.empty
-        , externBoxedVars = Set.empty
+        , localEvaluatorParams = Dict.empty
     }
 
 
@@ -288,7 +288,7 @@ streamNodesList ctx0 remaining writeChunk =
 
                 -- Clear per-function fields to avoid accumulating across nodes.
                 -- decoderExprs caches let-bound decoder expressions for BytesFusion;
-                -- externBoxedVars tracks extern/kernel aliases — both are function-local.
+                -- localEvaluatorParams tracks function aliases — both are function-local.
                 cleanCtx =
                     resetNodeCtx newCtx
             in

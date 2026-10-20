@@ -708,7 +708,7 @@ generateConstThunkRef ctx sig body =
             { ctx
                 | varMappings = Dict.empty
                 , currentLetSiblings = Dict.empty
-                , externBoxedVars = Set.empty
+                , localEvaluatorParams = Dict.empty
                 , splitAggParams = Dict.empty
                 , decoderExprs = Dict.empty
                 , fwdRefdLetNames = Set.empty
@@ -732,7 +732,7 @@ generateConstThunkRef ctx sig body =
         { ctxC
             | varMappings = ctx.varMappings
             , currentLetSiblings = ctx.currentLetSiblings
-            , externBoxedVars = ctx.externBoxedVars
+            , localEvaluatorParams = ctx.localEvaluatorParams
             , splitAggParams = ctx.splitAggParams
             , decoderExprs = ctx.decoderExprs
             , fwdRefdLetNames = ctx.fwdRefdLetNames
@@ -1963,7 +1963,7 @@ generateGenericApply ctx func args resultType =
 
 
 {-| Generate a segmentation-unknown call: eco.papExtend without remaining\_arity,
-but with typed boxing (respects per-callee evaluatorBoxesAll policy).
+but with typed boxing (args boxed to the callee evaluator's param ABI, `boxArgsToEvaluatorParams`).
 
 This is the "known ABI + unknown staging" path. Unlike generic\_apply which
 boxes all primitives for eco\_apply\_closure, this path uses the callee's
@@ -1984,29 +1984,9 @@ generateUnknownSegmentationCall ctx func args resultType =
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- Determine evaluatorBoxesAll based on callee's signature
-        evaluatorBoxesAll =
-            case func of
-                Mono.MonoVarGlobal _ specId _ ->
-                    case Array.get specId ctx.signatures |> Maybe.andThen identity of
-                        Just sig ->
-                            hasAllBoxedEvaluatorParams sig
-
-                        Nothing ->
-                            False
-
-                Mono.MonoVarKernel _ _ _ _ kernelType ->
-                    hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
-
-                Mono.MonoVarLocal name _ ->
-                    Set.member name ctx.externBoxedVars
-
-                _ ->
-                    False
-
-        -- Box args using per-callee boxing policy (typed boxing, not all-boxed)
+        -- Box args to the callee evaluator's param ABI (typed boxing, not all-boxed)
         ( boxOps, argsForClosure, ctx2 ) =
-            boxArgsForClosureBoundary evaluatorBoxesAll ctx1 argsWithTypes
+            boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
         -- Build operand list: closure + all args
         allOperandNames =
@@ -2713,39 +2693,28 @@ generateFlattenedPartialApplication ctx func args resultType =
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- 3. Get total ABI arity and evaluator boxing mode from signature
-        ( totalArity, evaluatorBoxesAll ) =
+        -- 3. Get total ABI arity from signature
+        totalArity =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Array.get specId ctx.signatures |> Maybe.andThen identity of
                         Just sig ->
-                            ( List.length sig.paramTypes
-                            , hasAllBoxedEvaluatorParams sig
-                            )
+                            List.length sig.paramTypes
 
                         Nothing ->
-                            ( Types.countTotalArity (Mono.typeOf func), False )
+                            Types.countTotalArity (Mono.typeOf func)
 
                 Mono.MonoVarKernel _ _ _ _ kernelType ->
-                    let
-                        sig =
-                            Ctx.kernelFuncSignatureFromType kernelType
-                    in
-                    ( List.length sig.paramTypes, hasAllBoxedEvaluatorParams sig )
-
-                Mono.MonoVarLocal name _ ->
-                    ( Types.countTotalArity (Mono.typeOf func)
-                    , Set.member name ctx.externBoxedVars
-                    )
+                    List.length (Ctx.kernelFuncSignatureFromType kernelType).paramTypes
 
                 _ ->
-                    ( Types.countTotalArity (Mono.typeOf func), False )
+                    Types.countTotalArity (Mono.typeOf func)
 
-        -- 4. Box args for closure boundary
-        -- Extern/kernel evaluator wrappers always have !eco.value params, so box all primitives.
-        -- User-defined closures: only box Bool (i1) per REP_CLOSURE_001.
+        -- 4. Box args for closure boundary to the evaluator's param ABI
+        -- (CGEN_003): a primitive arg whose evaluator param is !eco.value is
+        -- boxed; Bool (i1) always is (REP_CLOSURE_001).
         ( boxOps, boxedArgsWithTypes, ctx1b ) =
-            boxArgsForClosureBoundary evaluatorBoxesAll ctx1 argsWithTypes
+            boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
         -- 5. Build eco.papExtend with total arity
         ( resVar, ctx2 ) =
@@ -2887,30 +2856,10 @@ generateClosureApplication ctx func args resultType callInfo =
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
-                    -- Box args for closure boundary
-                    -- Extern/kernel evaluator wrappers always have !eco.value params, so box all primitives.
-                    -- User-defined closures: only box Bool (i1) per REP_CLOSURE_001.
-                    evaluatorBoxesAll =
-                        case func of
-                            Mono.MonoVarGlobal _ specId _ ->
-                                case Array.get specId ctx.signatures |> Maybe.andThen identity of
-                                    Just sig ->
-                                        hasAllBoxedEvaluatorParams sig
-
-                                    Nothing ->
-                                        False
-
-                            Mono.MonoVarKernel _ _ _ _ kernelType ->
-                                hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
-
-                            Mono.MonoVarLocal name _ ->
-                                Set.member name ctx.externBoxedVars
-
-                            _ ->
-                                False
-
+                    -- Box args for closure boundary to the callee evaluator's
+                    -- param ABI (CGEN_003; Bool always boxed, REP_CLOSURE_001).
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                        boxArgsForClosureBoundary evaluatorBoxesAll ctx1 argsWithTypes
+                        boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
                     -- Use precomputed staging metadata from CallInfo (CGEN_052)
                     -- initialRemaining = stage arity at this call site (sourceRemaining for applyByStages)
@@ -2986,44 +2935,95 @@ boxArgsForClosureBoundary boxAllPrimitives ctx argsWithTypes =
     ( List.reverse opsReversed, List.reverse argsReversed, ctxFinal )
 
 
-{-| Check if a function signature's evaluator has all !eco.value params.
-This covers MonoExtern, MonoManagerLeaf, AND polymorphic closures like (==)
-whose closureInfo.params remain as type variables after monomorphization.
--}
-hasAllBoxedEvaluatorParams : Ctx.FuncSignature -> Bool
-hasAllBoxedEvaluatorParams sig =
-    not (List.isEmpty sig.paramTypes)
-        && List.all (Types.isEcoValueType << Types.monoTypeToAbi) sig.paramTypes
+{-| Box closure-boundary args to the param ABI of the evaluator the closure
+will run (CGEN\_003). `paramAbis` are the evaluator's leading param ABI
+types (from `knownEvaluatorParamAbi`; `[]` when the callee is unknown). Arg i
+is boxed when it is a primitive and param i is `!eco.value` (an erased
+type variable, e.g. a kernel alias like `Task.succeed` whose spec keeps
+`a` as `CEcoValue` while the call site instantiates it to `Int`); Bool (i1)
+is always boxed (REP\_CLOSURE\_001). Args past the known params (later stages
+of an over-saturated call) get the i1-only rule.
 
+This replaces an all-or-nothing `evaluatorBoxesAll` flag, which a MIXED
+evaluator (some boxed, some unboxed params) defeated, and which the
+saturated local-call arm never consulted at all.
 
-{-| Track whether a let-bound variable aliases a function whose evaluator has
-all !eco.value params. Used by papExtend generation to decide whether to box
-all primitive args.
 -}
-trackExternBoxedVar : String -> Mono.MonoExpr -> Ctx.Context -> Ctx.Context
-trackExternBoxedVar name expr ctx =
+boxArgsToEvaluatorParams : List MlirType -> Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+boxArgsToEvaluatorParams paramAbis ctx argsWithTypes =
     let
-        isExternBoxed =
-            case expr of
-                Mono.MonoVarGlobal _ specId _ ->
-                    case Array.get specId ctx.signatures |> Maybe.andThen identity of
-                        Just sig ->
-                            hasAllBoxedEvaluatorParams sig
+        step ( var, mlirTy ) ( params, ( opsAcc, argsAcc, ctxAcc ) ) =
+            let
+                ( paramIsBoxed, restParams ) =
+                    case params of
+                        p :: ps ->
+                            ( Types.isEcoValueType p, ps )
 
-                        Nothing ->
-                            False
+                        [] ->
+                            ( False, [] )
 
-                Mono.MonoVarKernel _ _ _ _ kernelType ->
-                    hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
+                needsBoxing =
+                    mlirTy == I1 || (paramIsBoxed && not (Types.isEcoValueType mlirTy))
+            in
+            if needsBoxing then
+                let
+                    ( boxOps, boxedVar, ctx1 ) =
+                        boxToEcoValue ctxAcc var mlirTy
+                in
+                ( restParams, ( List.reverse boxOps ++ opsAcc, ( boxedVar, Types.ecoValue ) :: argsAcc, ctx1 ) )
 
-                _ ->
-                    False
+            else
+                ( restParams, ( opsAcc, ( var, mlirTy ) :: argsAcc, ctxAcc ) )
+
+        ( _, ( opsReversed, argsReversed, ctxFinal ) ) =
+            List.foldl step ( paramAbis, ( [], [], ctx ) ) argsWithTypes
     in
-    if isExternBoxed then
-        { ctx | externBoxedVars = Set.insert name ctx.externBoxedVars }
+    ( List.reverse opsReversed, List.reverse argsReversed, ctxFinal )
 
-    else
-        ctx
+
+{-| ABI param types of the evaluator a closure-valued callee expression runs,
+when the callee is statically known: a global spec (its signature), a kernel
+(its kernel signature), or a let-bound local aliasing one of those
+(`localEvaluatorParams`). `[]` when unknown.
+-}
+knownEvaluatorParamAbi : Ctx.Context -> Mono.MonoExpr -> List MlirType
+knownEvaluatorParamAbi ctx func =
+    case func of
+        Mono.MonoVarGlobal _ specId _ ->
+            case Array.get specId ctx.signatures |> Maybe.andThen identity of
+                Just sig ->
+                    List.map Types.monoTypeToAbi sig.paramTypes
+
+                Nothing ->
+                    []
+
+        Mono.MonoVarKernel _ _ _ _ kernelType ->
+            List.map Types.monoTypeToAbi (Ctx.kernelFuncSignatureFromType kernelType).paramTypes
+
+        Mono.MonoVarLocal name _ ->
+            Dict.get name ctx.localEvaluatorParams |> Maybe.withDefault []
+
+        _ ->
+            []
+
+
+{-| Record (or clear) the evaluator param ABI of a let-bound local, so calls
+through it box args exactly as calls through the aliased function would
+(see `boxArgsToEvaluatorParams`). Every binding overwrites the entry, so a
+shadowing re-binding never inherits a stale one.
+-}
+trackLocalEvaluatorParams : String -> Mono.MonoExpr -> Ctx.Context -> Ctx.Context
+trackLocalEvaluatorParams name expr ctx =
+    case knownEvaluatorParamAbi ctx expr of
+        [] ->
+            if Dict.member name ctx.localEvaluatorParams then
+                { ctx | localEvaluatorParams = Dict.remove name ctx.localEvaluatorParams }
+
+            else
+                ctx
+
+        paramAbis ->
+            { ctx | localEvaluatorParams = Dict.insert name paramAbis ctx.localEvaluatorParams }
 
 
 {-| Detect inlined Bytes.Decode.decode pattern:
@@ -4648,9 +4648,12 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             ( argOps, argsWithTypes, ctx1 ) =
                                 generateExprListTyped ctx args
 
-                            -- Box Bool (i1) to !eco.value at closure boundary per REP_CLOSURE_001
+                            -- Box args to the evaluator's param ABI when the local
+                            -- aliases a known function (CGEN_003: e.g. an inliner-bound
+                            -- `let f = Task.succeed in f 7` whose evaluator takes
+                            -- !eco.value); Bool (i1) always (REP_CLOSURE_001).
                             ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                                boxArgsForClosureBoundary False ctx1 argsWithTypes
+                                boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
                             -- CGEN_052: Use precomputed staging metadata from CallInfo.
                             -- initialRemaining = stage arity at this call site (for applyByStages sourceRemaining)
@@ -4715,8 +4718,9 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         generateExprListTyped funcResult.ctx args
 
                     -- Box Bool (i1) to !eco.value at closure boundary per REP_CLOSURE_001
+                    -- (callee evaluator unknown here: knownEvaluatorParamAbi gives [])
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                        boxArgsForClosureBoundary False ctx1 argsWithTypes
+                        boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
                     -- CGEN_052: Use precomputed staging metadata from CallInfo.
                     -- initialRemaining = stage arity at this call site (for applyByStages sourceRemaining)
@@ -5897,7 +5901,7 @@ generateLetSingle ctx def body =
                         ctx1 =
                             Ctx.addVarMapping name effectiveVar exprResult.resultType scopedCtx
                                 |> Ctx.addDecoderExpr name expr
-                                |> trackExternBoxedVar name expr
+                                |> trackLocalEvaluatorParams name expr
 
                         bodyResult : ExprResult
                         bodyResult =

@@ -218,7 +218,7 @@ type alias Context =
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
     , currentFuncName : String -- diagnostics only: the func being generated (crash context)
-    , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
+    , localEvaluatorParams : Dict.Dict String (List MlirType) -- Let-bound locals aliasing a known global/kernel function: the ABI param types of the evaluator its closure runs (CGEN_003 closure-boundary boxing)
     , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope (for safepoint filtering)
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
     , ctorBySpec : Dict.Dict Int Mono.CtorShape -- U-T1.3.2: SpecId -> ctor shape for saturated-ctor-call promotion (make.custom)
@@ -317,7 +317,7 @@ initContext mode registry signatures initialCtorShapes =
         }
     , decoderExprs = Dict.empty
     , currentFuncName = ""
-    , externBoxedVars = Set.empty
+    , localEvaluatorParams = Dict.empty
     , definedSsaVars = Set.empty
     , inlineBodies = Dict.empty
     , ctorBySpec = Dict.empty
@@ -576,7 +576,7 @@ ctxForSiblingRegion : Context -> Context -> Context
 ctxForSiblingRegion base afterPrevious =
     { afterPrevious
         | varMappings = base.varMappings
-        , externBoxedVars = base.externBoxedVars
+        , localEvaluatorParams = base.localEvaluatorParams
         , definedSsaVars = base.definedSsaVars
     }
 
