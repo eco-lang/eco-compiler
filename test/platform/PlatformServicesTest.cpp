@@ -88,14 +88,15 @@ constexpr std::uint64_t kBogusTokenBase = 0xEC05'0000'0000'0000ull;
 
 int g_quiescenceCalls = 0;
 
-// First call starts one async op (a 5 ms timer holding a pendingAsync ref)
-// and reports a delivery; the second call starts nothing and returns false,
-// so the loop exits at that quiescence.
+// First call starts one async op (a 5 ms timer holding a free-standing
+// hold, whose token is the timer token: processReadyAsync finds no resume
+// for it and releases the hold) and reports a delivery; the second call
+// starts nothing and returns false, so the loop exits at that quiescence.
 bool listenerStartsAsyncOnce(void* /*ctx*/) {
     g_quiescenceCalls++;
     if (g_quiescenceCalls == 1) {
-        Scheduler::instance().incrementPendingAsync();
-        TimerService::instance().schedule(5.0, kBogusTokenBase + 1);
+        HoldToken t = Scheduler::instance().acquireHold(HoldKind::Task, "PS1.timer");
+        TimerService::instance().schedule(5.0, t);
         return true;
     }
     return false;

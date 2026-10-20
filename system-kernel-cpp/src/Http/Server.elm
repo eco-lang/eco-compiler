@@ -132,7 +132,8 @@ only, and on the JavaScript backend on Node's default, `::` where IPv6 is availa
 the system pick a free port, which [`endpoint`](#endpoint) reports.
 
 A name that cannot be resolved fails with [`errorIsHostNotFound`](#errorIsHostNotFound). A
-listening server keeps the program running until it is closed with [`close`](#close).
+listening server keeps the program running only while an [`onRequest`](#onRequest) subscription to
+it exists or a request it handed over has not been answered.
 
 -}
 listenOnHost : String -> Int -> Task Error Server
@@ -258,7 +259,8 @@ defaultListenOptions address port_ =
 Fails with an [`Error`](#Error): for example [`errorIsAddressInUse`](#errorIsAddressInUse) when
 the port is taken, [`errorIsCertificateInvalid`](#errorIsCertificateInvalid) when the certificate
 chain or key cannot be used, and `EINVAL` when `http2` is set without `tls`. A listening server
-keeps the program running until it is closed with [`close`](#close).
+keeps the program running only while an [`onRequest`](#onRequest) subscription to it exists or
+a request it handed over has not been answered.
 
 -}
 listen : ListenOptions -> Task Error Server
@@ -317,7 +319,8 @@ are closed. A request still being received when the server closes can still be h
 subscription. WebSockets made with [`upgradeRequest`](#upgradeRequest) stay open, except one over
 HTTP/2, which shares its connection and ends with it at the deadline.
 
-Closing a server twice is fine. A closed server no longer keeps the program running.
+Closing a server twice is fine. Once the deadline has passed, nothing of a closed server keeps the program
+running.
 
 -}
 closeWithin : Int -> Server -> Task x ()
@@ -611,6 +614,9 @@ HTTP/2 it ends at the close deadline with the connection it shares.
 Fails with `EINVAL` when the request does not ask for a WebSocket; the response is then untouched
 and can still be sent. Fails with `EINVAL` too when the request was already answered or taken
 over, and with `EINVAL` or `ECANCELED` when its connection has gone away.
+
+The program keeps running until the `Upgrade` has been accepted or rejected with
+`WebSocket.accept` or `WebSocket.reject`, or its connection has gone away.
 
 -}
 upgradeRequest : Request -> Response -> Task Socket.Error WebSocket.Upgrade

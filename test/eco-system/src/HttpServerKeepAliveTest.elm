@@ -4,7 +4,9 @@ module HttpServerKeepAliveTest exposing (main)
 connection, each answered with `Connection: keep-alive`, the connection staying open between them;
 an HTTP/1.0 request is answered with `Connection: close` unless it asks for keep-alive; the
 user's `Connection: close` header closes the connection after the response. `endpoint` is the
-port the system picked for port 0.
+port the system picked for port 0. The idle keep-alive connections hold nothing
+(plans/program-liveness-rule.md LIVE_001); the program ends with `System.exit` because its
+`onRequest` subscription stays.
 -}
 
 -- CHECK: server: GET /a version Http1_1 upgrade Nothing

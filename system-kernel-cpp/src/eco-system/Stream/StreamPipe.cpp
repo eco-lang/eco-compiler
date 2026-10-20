@@ -285,7 +285,10 @@ void streamRunPipe(int64_t pid) {
             uint64_t req = streamHeldToken("StreamPipe.read");   // released by the dispatch
             s->parkedReadToken = req;
             s->parkedReadCounted = true;
-            s->channel->requestRead(req, kPipeReadChunk);
+            if (s->chanReadTok == 0) {
+                s->chanReadTok = req;
+                s->channel->requestRead(req, kPipeReadChunk);
+            }   // else a withdrawn read is in flight: its result is the pipe's
         }
         return;
     }

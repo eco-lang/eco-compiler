@@ -3,7 +3,7 @@ import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (toArray)
 import Maybe exposing (Just, Nothing)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, noteActivity, toBytes)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, toBytes)
 */
 
 // ChildProcess — JS twin of src/eco-system/ChildProcess/ (eco/system),
@@ -182,7 +182,6 @@ var _ChildProcess_run = F6(function(program, args, shell, cwd, env, limits)
 			initError(e);
 			return;
 		}
-		__Stream_noteActivity();
 
 		var out = { __chunks: [], __length: 0, __done: false, __stream: child.stdout };
 		var err = { __chunks: [], __length: 0, __done: false, __stream: child.stderr };
@@ -386,7 +385,6 @@ var _ChildProcess_spawn = F2(function(sendExit, spec)
 		var streams = __Maybe_Nothing;
 		if (child)
 		{
-			__Stream_noteActivity();
 			if (kind === 1)
 			{
 				// Node's flushStdio resumes the child's stdout / stderr when it exits, so a

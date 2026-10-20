@@ -52,6 +52,11 @@ struct WsHandshakeEntry {
     std::shared_ptr<Conn> conn;
     bool server = false;
     std::shared_ptr<H2PendingUpgrade> h2;   // WS9: an h2 extended CONNECT (conn is null)
+    // Http.Server.upgradeRequest only: the delivered request's hold, moved
+    // here by takeUpgrade (the peer is owed an answer, LIVE-1c, N5).
+    // Released when accept / reject has parked its own hold, on abandon, and
+    // on a heap reset; kNoHold for dial / readUpgrade handshakes.
+    HoldToken peerHold = kNoHold;
 };
 
 struct WsCloseInfo {
@@ -67,7 +72,7 @@ struct WsEntry {
     WsCloseInfo info;
     bool closeDelivered = false;          // the onClose subscribers got it (C.2)
     std::vector<uint64_t> closedWaiters;  // parked `closed` tasks (one count each)
-    bool closeCounted = false;            // the close handshake's count (§3.6)
+    HoldToken closeHold = kNoHold;        // the close handshake's hold (§3.6)
     int facesAlive = 2;
     uint64_t outSeq = 0;                  // outgoing streams opened (openOutgoing, WS6)
 };
@@ -96,11 +101,12 @@ void ensureWsTables();
 // Main thread (Http.Server.upgradeRequest, WS5): registers a server
 // connection taken from Http.Server as a handshake id (the id space of
 // readUpgrade / dial). The caller parks it in a HoldProtocol on the reactor
-// (before any `open` is submitted). Holds no keep-alive count.
-int64_t wsTablesAddServerHandshake(std::shared_ptr<Conn> conn);
+// (before any `open` is submitted). The entry owns `peerHold` (the request's
+// delivery hold, N5) until accept / reject / abandon.
+int64_t wsTablesAddServerHandshake(std::shared_ptr<Conn> conn, HoldToken peerHold);
 // The same for an HTTP/2 extended CONNECT stream (WS9): open / reject /
 // abandon go through `h2` on the reactor.
-int64_t wsTablesAddServerH2Handshake(std::shared_ptr<H2PendingUpgrade> h2);
+int64_t wsTablesAddServerH2Handshake(std::shared_ptr<H2PendingUpgrade> h2, HoldToken peerHold);
 
 // The CloseInfo of a WebSocket that is gone from `sockets` (or Abnormal).
 WsCloseInfo wsRecentCloseInfo(int64_t wsId);

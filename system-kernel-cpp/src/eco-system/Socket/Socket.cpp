@@ -12,10 +12,10 @@
 //     closed by the drain).
 //   * tcpListen / unixListen (P, T2): tcpListenOn / unixListenOn on the
 //     pool (RAII ListenFd in the result, N11), completeListen on the main
-//     thread (the listener's pendingAsync count, §3.3.8).
+//     thread (an open listener holds nothing of its own, LIVE_001).
 //   * accept (A): a held connection at once (§3.4), else parked on the
-//     listener entry with one credit; kill handle cancelParkedAccept
-//     (returns the credit; no count of its own).
+//     listener entry with one credit and a hold (parkResume); kill handle
+//     cancelParkedAccept (returns the credit; the handle releases the hold).
 //   * closeListener (R): idempotent; parked accepts fail ECANCELED, held
 //     connections are aborted, the task completes on ListenerClosed (after
 //     the fd is closed and the Unix path unlinked).
@@ -319,10 +319,9 @@ HPointer completeListen(ListenResult& r, TransportFactory factory) {
     ListenerEntry e;
     e.handler = h;
     e.bound = r.bound;
-    e.counted = true;
+    // An open listener holds nothing of its own (LIVE_001, L2): parked
+    // accepts and onConnection subscriptions hold.
     t.listeners.emplace(id, std::move(e));
-    // An open listener keeps the program alive until closed (§3.3.8).
-    Scheduler::instance().incrementPendingAsync();
     reactor().submit([h] { h->start(); });
     // A subscription may already name this id (it cannot: ids are fresh),
     // so only an accept or a later onEffects gives it demand.
@@ -334,8 +333,7 @@ HPointer socketStartConnect(ConnectSpec spec, TransportFactory factory, HPointer
                             uint64_t& token, bool& counted) {
     ensureSocketTables();
     auto& sched = Scheduler::instance();
-    token = sched.registerPendingResume(resume);   // G10
-    sched.incrementPendingAsync();
+    token = sched.parkResume(resume, HoldKind::Task, "Socket.connect");   // G10
     counted = true;
     auto c = Conn::makeClient(std::move(spec), std::move(factory), token, currentHeapGeneration());
     socketTables().pendingConnects[token] = c;
@@ -354,8 +352,7 @@ HPointer socketLookupBody(HPointer captured, HPointer resume) {
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
         std::string name = toStdString(captured);   // G3
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Socket.lookup");
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -450,8 +447,7 @@ HPointer socketTcpListenBody(HPointer captured, HPointer resume) {
         }
         ensureSocketTables();
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Socket.tcpListen");
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -483,8 +479,7 @@ HPointer socketUnixListenBody(HPointer captured, HPointer resume) {
         }
         ensureSocketTables();
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Socket.unixListen");
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -515,11 +510,16 @@ HPointer socketAcceptBody(HPointer captured, HPointer resume) {
             task = succeed(task);
             return resumeNow(resume, task);
         }
-        token = Scheduler::instance().registerPendingResume(resume);
+        token = Scheduler::instance().parkResume(resume, HoldKind::Task, "Socket.accept");
+        counted = true;
+        // The kill handle first: it allocates, and a throw must not leave the
+        // token parked (asyncFailure releases it).
+        HPointer kill = makeKillHandle(token, &cancelParkedAccept);
+        e = findListener(id);   // G11: looked up again after the allocation
         e->parkedAccepts.push_back(token);
         auto h = e->handler;
         if (h) reactor().submit([h] { h->addCredit(1); });
-        return makeKillHandle(token, &cancelParkedAccept);
+        return kill;
     )
 }
 
@@ -533,8 +533,7 @@ HPointer socketCloseListenerBody(HPointer captured, HPointer resume) {
         ListenerEntry* e = findListener(id);
         if (!e) return resumeNow(resume, succeedUnit());   // closed already: idempotent
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Socket.closeListener");
         counted = true;
         e->closeTokens.push_back(token);   // completed by ListenerClosed
         if (e->closing) return alloc::unit();
@@ -551,8 +550,9 @@ HPointer socketCloseListenerBody(HPointer captured, HPointer resume) {
             }
         }
         if (h) reactor().submit([h] { h->close(); });
-        // Parked accepts fail now (they hold no count). Allocates: `e` is dead.
+        // Parked accepts fail now, then release their holds. Allocates: `e` is dead.
         for (uint64_t t : parked) {
+            HoldRelease acceptHold(t);
             HPointer r = s.takePendingResume(t);
             if (alloc::isNil(r)) continue;
             HPointer task = alloc::listNil();
@@ -583,8 +583,7 @@ HPointer optionBody(int64_t connId, HPointer& resume, uint64_t& token, bool& cou
     if (!e || !e->conn || e->isUnix) return resumeNow(resume, succeedUnit());
     auto c = e->conn;
     auto& s = Scheduler::instance();
-    token = s.registerPendingResume(resume);
-    s.incrementPendingAsync();
+    token = s.parkResume(resume, HoldKind::Task, "Socket.setOption");
     counted = true;
     uint64_t tok = token;
     uint64_t gen = currentHeapGeneration();

@@ -43,10 +43,6 @@ public:
 
     // Event loop for single-threaded Elm execution
     void runEventLoop();
-    // Raw liveness counter. Being replaced by the hold API below
-    // (plans/program-liveness-rule.md §5.1); private from phase 6 (LIVE_006).
-    void incrementPendingAsync();
-    void decrementPendingAsync();
 
     // ---- Hold API (plans/program-liveness-rule.md §5.1) ----
     // Registers `resume` (as registerPendingResume does) and acquires a hold
@@ -69,14 +65,14 @@ public:
     // Census queries (0 / false when the census is off).
     size_t liveHoldCount();
     bool holdIsLive(HoldToken t);
-    // Monotonic count of acquires (hold API and raw increments) and of
+    // Monotonic count of hold acquires and of
     // enqueues. Used by the §6.1 binding check in TaskBinding.hpp.
     u64 acquireSerial() const { return acquireSerial_.load(std::memory_order_relaxed); }
     u64 enqueueSerial() const { return enqueueSerial_.load(std::memory_order_relaxed); }
     // §6.1 check failure: an async-park binding returned without resuming
     // and without acquiring a hold. Recorded in the census report; aborts
-    // only when ECO_LIVENESS_STRICT=1 (phase 1: un-migrated system-kernel-cpp
-    // parks that legitimately hold nothing, X9, still exist).
+    // only when ECO_LIVENESS_STRICT=1 (parks that legitimately hold nothing
+    // exist: in-memory streams, X9, and Detached children, X4).
     void noteHoldlessPark(const char* binding);
     // Current pendingAsync_ (tests and census).
     int pendingAsync() const { return pendingAsync_.load(); }
@@ -136,23 +132,15 @@ public:
     // target, where pending Elm work pins the loop but an idle worker does
     // not. Fired on the scheduler (eco) thread, only on a state change. The
     // hook must be quick, non-blocking, and must not re-enter the scheduler.
-    // "Real work" = a non-empty run queue OR pendingAsync_ above the
-    // liveness baseline (see setLivenessBaseline). Null by default (the
-    // standalone executable runtime registers none).
+    // "Real work" = a non-empty run queue OR a hold that is not a Host hold
+    // (pendingAsync_ - hostHolds_ > 0: the embed layer's lifetime hold is
+    // not work, plans/program-liveness-rule.md §8, L11). Null by default
+    // (the standalone executable runtime registers none).
     using ActivityHook = void (*)(bool busy, void* user);
     void setActivityHook(ActivityHook hook, void* user) {
         activityHook_ = hook;
         activityUser_ = user;
     }
-
-    // Number of pendingAsync_ holds that do NOT represent real in-flight
-    // work and so must be ignored when deciding host liveness. The embed
-    // layer takes exactly one lifetime hold to keep a worker's loop alive
-    // while idle (see eco_embed.cpp); it sets the baseline to 1 so that
-    // hold does not read as "busy". Default 0 (standalone runtime).
-    // Kept until phase 6 (plans/program-liveness-rule.md §8); host liveness
-    // now subtracts hostHolds_ (the HoldKind::Host count), which equals it.
-    void setLivenessBaseline(int n) { livenessBaseline_ = n; }
 
     // Closure calling helper: calls a 1-arg Elm closure, returns result
     static HPointer callClosure1(HPointer closurePtr, HPointer arg);
@@ -283,17 +271,17 @@ private:
     std::mutex mutex_;
     std::condition_variable eventCV_;
     std::atomic<int> pendingAsync_{0};
+    // The raw liveness counter (LIVE_006): private; called only by the hold
+    // API (noteAcquire / releaseHold), so every change of pendingAsync_ is a
+    // hold with a token and, in census builds, a census entry.
+    void incrementPendingAsync();
+    void decrementPendingAsync();
     // Hold census (plans/program-liveness-rule.md §5.1). Always declared (the
     // class layout must not depend on NDEBUG: TUs differ); populated only when
     // holdCensusEnabled(). holdsMutex_ is a leaf lock: never taken while
     // holding mutex_, never held while calling out.
     std::mutex holdsMutex_;
     std::unordered_map<HoldToken, std::pair<HoldKind, const char*>> holds_;
-    // Raw incrementPendingAsync holds not yet released (census builds). Until
-    // phase 6 a timer token acquired raw (un-migrated kernels) may be released
-    // through releaseHold by processReadyAsync; releaseHold of an unknown
-    // token consumes one of these instead of aborting.
-    int rawHolds_ = 0;
     std::vector<std::pair<const char*, u64>> holdlessParks_;
     std::atomic<u64> nextHoldId_{1};
     std::atomic<int> hostHolds_{0};
@@ -306,7 +294,6 @@ private:
     // lastActivityBusy_ is touched only on the eco thread in runEventLoop.
     ActivityHook activityHook_ = nullptr;
     void* activityUser_ = nullptr;
-    int livenessBaseline_ = 0;
     bool lastActivityBusy_ = true;  // assume busy until the loop first idles
     void fireActivity(bool busy);
     std::atomic<u32> nextProcId_{0};

@@ -4,7 +4,6 @@ import Elm.Kernel.Utils exposing (Tuple3)
 import Elm.Kernel.List exposing (toArray)
 import Maybe exposing (Just, Nothing)
 import Eco.Kernel.Socket exposing (conns, ferr, message, codeOf, netModule, inetEp, materialize, tcpListenWith, onConnection)
-import Eco.Kernel.Stream exposing (noteActivity)
 */
 
 // Tls — JS twin of src/eco-system/Tls/ (eco/system), plans/eco-system-sockets.md
@@ -213,7 +212,6 @@ var _Tls_connect = F3(function(target, settings, tlsArgs)
 			ca = _Tls_systemCertificates();
 		}
 
-		__Stream_noteActivity();
 		var net = __Socket_netModule();
 		var settled = false;
 		var timer = null;
@@ -423,6 +421,10 @@ var _Tls_listen = F3(function(target, settings, tlsArgs)
 			var handshaking = new Set();   // raw sockets whose handshake is in progress
 			server.on('connection', function(raw)
 			{
+				// A connection nobody asked for yet holds nothing, handshaking or held
+				// (plans/program-liveness-rule.md LIVE-2): a parked accept or a
+				// subscription holds the listener instead.
+				try { raw.unref(); } catch (e) { /* destroyed */ }
 				handshaking.add(raw);
 				raw.once('close', function() { handshaking.delete(raw); });
 			});

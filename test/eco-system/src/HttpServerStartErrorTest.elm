@@ -3,8 +3,9 @@ module HttpServerStartErrorTest exposing (main)
 {-| A server that cannot start fails with `ServerError` (plans/eco-system-library.md
 Phase 7 steps 7.2 and 7.4): the first server takes the harness's port, a
 second one on the same port fails with `EADDRINUSE`, and an unresolvable host
-fails with `ENOTFOUND`. The program exits explicitly, because the listening
-server keeps it alive.
+fails with `ENOTFOUND`. The program exits explicitly (a listening server
+holds nothing of its own since plans/program-liveness-rule.md phase 6, so the
+exit only makes the end independent of the open server).
 -}
 
 -- CHECK: first: started

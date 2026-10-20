@@ -47,6 +47,7 @@
 #include <deque>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -227,7 +228,7 @@ void maybeErase(int64_t id) {
     if (!p || p->pinned || p->pipeRefs > 0) return;
     if (p->w != WState::Closed || p->r != RState::Closed) return;
     if (!p->readQ.empty() || !p->writeQ.empty() || !p->waitingForRoom.empty()) return;
-    if (p->parkedReadToken || p->closeToken) return;
+    if (p->parkedReadToken || p->closeToken || p->chanReadTok) return;
     if (!p->rawQ.empty() || p->readInFlight || p->readerKick) return;   // MappedSource
     if (p->channel) channelPairs().erase(p->channel->id());
     t.erase(id);
@@ -590,6 +591,34 @@ void streamSchedulePipe(int64_t pipeId) {
 
 namespace {
 
+// Request ids of ChannelSource reads whose reader was killed (chanReadTok).
+// The kill released their holds, so their results release nothing. Never
+// cleared by a table reset: a late result must still find its id here.
+std::unordered_set<uint64_t>& withdrawnReads() {
+    static auto* s = new std::unordered_set<uint64_t>();   // leaky (§3.4)
+    return *s;
+}
+
+// The kill handle's CancelFn for a parked read / readChunk (LIVE-5): un-parks
+// it (the stream is no longer read-locked) and returns whether it held, so
+// that the handle releases that hold. A ChannelSource's request stays in
+// flight, withdrawn (see chanReadTok); a MappedSource's read-ahead is
+// uncounted and goes on; in-memory reads hold nothing (X9).
+bool cancelParkedRead(uint64_t token) {
+    for (auto& kv : streamTable().map()) {
+        StreamPair& p = kv.second;
+        if (p.parkedReadToken != token || p.pipeOutId) continue;
+        bool counted = p.parkedReadCounted;
+        p.parkedReadToken = 0;
+        p.parkedReadCounted = false;
+        p.readLock = false;
+        if (p.kind == StreamKind::ChannelSource && p.chanReadTok == token)
+            withdrawnReads().insert(token);
+        return counted;
+    }
+    return false;   // completed already: its completion released (or will)
+}
+
 void channelDispatch(ChannelResult& r) {
     auto& t = streamTable();
     int64_t id = 0;
@@ -611,6 +640,31 @@ void channelDispatch(ChannelResult& r) {
 
     switch (r.op) {
     case ChannelResult::Op::Read: {
+        // A withdrawn read (its reader was killed; readKill released its hold):
+        // its result belongs to the read parked behind it, if any, else to readQ.
+        bool withdrawn = r.token != 0 && withdrawnReads().erase(r.token) > 0;
+        if (p && p->chanReadTok == r.token) p->chanReadTok = 0;
+        if (withdrawn) {
+            if (!p) return;
+            if (!p->parkedReadToken) {
+                if (r.err) {
+                    if (p->r == RState::Open) {
+                        p->r = RState::Errored;
+                        p->rReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+                    }
+                    p->channel->shutdown();
+                } else if (r.eof) {
+                    if (p->r == RState::Open) p->r = RState::Closed;
+                    p->channel->close(0);
+                } else if (!r.bytes.empty() && p->r == RState::Open) {
+                    HPointer v = r.text ? alloc::allocStringFromUTF8(r.bytes) : makeBytes(r.bytes);
+                    if (StreamPair* q = t.find(id)) q->readQ.push_back(enc(v));   // no allocation in between
+                }
+                pumpStream(id);
+                return;
+            }
+            r.token = p->parkedReadToken;   // adopted: completed (and released) below as its own
+        }
         HoldRelease release(streamIsUncountedToken(r.token) ? kNoHold : r.token);   // mapped read-ahead: uncounted
         if (!p || r.token == 0 || p->parkedReadToken != r.token) {
             (void)s.takePendingResume(r.token);   // orphaned: drop it
@@ -1119,11 +1173,19 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
         } else {
             token = sched.registerPendingResume(resume);   // in-memory: no hold (X9)
         }
+        // The kill handle first: it allocates, and a throw must not leave the
+        // token parked (asyncFailure releases it).
+        HPointer kill = makeKillHandle(token, &cancelParkedRead);
+        Elm::StackRootGuard kg(&kill);
+        p = streamTable().find(id);             // G11: looked up again (a GC erases no pair)
         p->readLock = true;
         p->parkedReadToken = token;
-        if (p->kind == StreamKind::ChannelSource) p->channel->requestRead(token, kChannelReadChunk);
+        if (p->kind == StreamKind::ChannelSource && p->chanReadTok == 0) {
+            p->chanReadTok = token;
+            p->channel->requestRead(token, kChannelReadChunk);
+        }   // else a withdrawn read is in flight: its result is this read's
         pumpStream(id);                         // MappedSource: issues the read-ahead if due
-        return alloc::unit();
+        return kill;
     )
 }
 

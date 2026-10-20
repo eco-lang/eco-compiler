@@ -5,16 +5,17 @@
 //
 //   * udpBind (P, T2): udpBindOn on the SysWorkPool (socket, options, bind;
 //     the result owns the fd through RAII, N11); the completion hands the
-//     fd to a new UdpHandler, records the UdpEntry and takes the bound
-//     socket's pendingAsync count (§3.3.8).
-//   * udpSend / udpMembership (R): pendingAsync + submit + OpDone (released
+//     fd to a new UdpHandler and records the UdpEntry (a bound socket holds
+//     nothing of its own, LIVE_001).
+//   * udpSend / udpMembership (R): parkResume + submit + OpDone (released
 //     by SocketTables.cpp's OpDone dispatcher).
 //   * udpReceive (A): a held datagram at once (§3.4), else parked on the
-//     entry with one credit; kill handle cancelParkedReceive (returns the
-//     credit; no count of its own).
+//     entry with one credit and a hold (parkResume); kill handle
+//     cancelParkedReceive (returns the credit; the handle releases the hold).
 //   * udpClose (S): idempotent; marks the entry closed, fails the parked
-//     receives ECANCELED, drops the held datagrams and submits close(); the
-//     count is released by the UdpClosed drain.
+//     receives ECANCELED (releasing their holds), drops the held datagrams
+//     and submits close(); the subscription hold is released by the UdpClosed
+//     drain.
 //
 // Every body follows G2/G3: copy the inputs out of the heap first, then act,
 // then allocate. Error messages follow Node (§D.5): "bind <CODE> addr:port",
@@ -23,13 +24,12 @@
 //
 // Templates used: T1 (udpClose), T2 (bind + completion), T5 (table), T7
 // (receive kill handle), T8 (delivery via UdpManager.cpp), T9/G10
-// (completions, AsyncRelease), G12 (drain per delivery).
+// (completions, HoldRelease), G12 (drain per delivery).
 //
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Socket/Udp.hpp"
 
-#include "eco-system/Core/AsyncRelease.hpp"
 #include "eco-system/Core/SysWorkPool.hpp"
 #include "eco-system/Socket/SocketTables.hpp"
 
@@ -398,11 +398,18 @@ UdpBindResult udpBindOn(const std::string& address, int64_t port, bool reuseAddr
 
 namespace {
 
-// A dead heap's entries: close their handlers (their counts and tokens died
-// with the heap; the UdpClosed events are a dead heap's and are dropped).
+// A dead heap's entries: close their handlers (the UdpClosed events are a
+// dead heap's and are dropped) and release the holds of their subscriptions
+// and parked receives (their tasks never resume).
 void resetTables(UdpTables& t) {
+    auto& sched = Scheduler::instance();
     for (auto& kv : t.sockets) {
         if (auto h = kv.second.handler) reactor().submit([h] { h->close(); });
+        HoldRelease subHold(kv.second.subHold);   // holds outlive the heap: release them
+        for (uint64_t token : kv.second.parkedReceives) {
+            (void)sched.takePendingResume(token);
+            sched.releaseHold(token);
+        }
     }
     t.sockets.clear();
 }
@@ -457,6 +464,7 @@ void serveHeld(int64_t id) {
             e->parkedReceives.pop_front();
             HPointer resume = sched.takePendingResume(token);
             if (alloc::isNil(resume)) continue;   // killed (its cancel already ran)
+            HoldRelease release(token);   // the parked receive's hold, after the resume
             SocketEvent ev = std::move(e->held.front());
             e->held.pop_front();
             HPointer task = alloc::listNil();
@@ -504,9 +512,10 @@ bool onUdpClosed(SocketEvent& ev) {
     if (!e) return false;
     UdpEntry entry = std::move(*e);
     udpTables().sockets.erase(ev.ownerId);
-    AsyncRelease socketCount(entry.counted);   // the bound socket's count, once
+    HoldRelease subHold(entry.subHold);   // the subscription's hold, if any
     bool resumed = false;
     for (uint64_t token : entry.parkedReceives) {   // closeAll path: nobody failed them yet
+        HoldRelease receiveHold(token);
         resumed |= resumeFail(token, "ECANCELED", "receive ECANCELED");
     }
     return resumed;
@@ -525,10 +534,9 @@ HPointer udpBindComplete(PoolResult& pr) {
     UdpEntry e;
     e.handler = h;
     e.bound = r.bound;
-    e.counted = true;
+    // A bound socket holds nothing of its own (LIVE_001, L2): parked
+    // receives and onMessage subscriptions hold.
     t.sockets.emplace(id, std::move(e));
-    // A bound socket keeps the program alive until closed (§3.3.8).
-    Scheduler::instance().incrementPendingAsync();
     reactor().submit([h] { h->start(); });
     HPointer ut = buildUdpT(id, r.bound);
     return succeed(ut);
@@ -562,12 +570,11 @@ void readHostPort(HPointer tuple, std::string& address, int64_t& port) {
     address = toStdString(addr);
 }
 
-// R mode: registers `resume`, takes the operation's count and returns the
-// token (G10). The caller submits the work.
-uint64_t startOp(HPointer& resume, uint64_t& token, bool& counted) {
+// R mode: parks `resume` with the operation's hold (named `site`) and returns
+// the token (G10). The caller submits the work.
+uint64_t startOp(HPointer& resume, uint64_t& token, bool& counted, const char* site) {
     auto& s = Scheduler::instance();
-    token = s.registerPendingResume(resume);
-    s.incrementPendingAsync();
+    token = s.parkResume(resume, HoldKind::Task, site);
     counted = true;
     return token;
 }
@@ -601,9 +608,18 @@ void ensureUdpTables() {
 }
 
 void udpTablesSyncSubscriptions() {
+    auto& sched = Scheduler::instance();
     bool heldWaiting = false;
     for (auto& kv : udpTables().sockets) {
         UdpEntry& e = kv.second;
+        // The subscription hold (LIVE_001): while an onMessage subscription
+        // names this open socket.
+        bool wantHold = !e.closed && e.handler && udpManagerHasSubscribers(kv.first);
+        if (wantHold && !e.subHold) e.subHold = sched.acquireHold(HoldKind::Subscription, "Udp.onMessage");
+        if (!wantHold && e.subHold) {
+            sched.releaseHold(e.subHold);
+            e.subHold = kNoHold;
+        }
         if (e.closed || !e.handler) continue;
         bool on = udpManagerHasSubscribers(kv.first);
         if (on != e.subscribed) {
@@ -626,9 +642,9 @@ bool cancelParkedReceive(uint64_t token) {
             auto h = kv.second.handler;
             reactor().submit([h] { h->addCredit(-1); });   // return the credit
         }
-        break;
+        return true;   // removed: the kill handle releases its hold
     }
-    return false;   // A mode: no count of its own (§3.3.8)
+    return false;   // not parked any more: whoever took it released (or will)
 }
 
 // ---------------------------------------------------------------------------
@@ -656,8 +672,7 @@ HPointer udpBindBody(HPointer captured, HPointer resume) {
         }
         ensureUdpTables();
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Udp.bind");
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -690,7 +705,7 @@ HPointer udpSendBody(HPointer captured, HPointer resume) {
         if (!e || e->closed || !e->handler)
             return resumeNow(resume, failFErr("ECANCELED", "send ECANCELED " + hostPort(address, port)));
         auto h = e->handler;
-        uint64_t tok = startOp(resume, token, counted);
+        uint64_t tok = startOp(resume, token, counted, "Udp.send");
         reactor().submit([h, tok, address = std::move(address), port, data = std::move(data)]() mutable {
             h->send(tok, std::move(address), port, std::move(data));
         });
@@ -716,11 +731,16 @@ HPointer udpReceiveBody(HPointer captured, HPointer resume) {
             task = succeed(task);
             return resumeNow(resume, task);
         }
-        token = Scheduler::instance().registerPendingResume(resume);
+        token = Scheduler::instance().parkResume(resume, HoldKind::Task, "Udp.receive");
+        counted = true;
+        // The kill handle first: it allocates, and a throw must not leave the
+        // token parked (asyncFailure releases it).
+        HPointer kill = makeKillHandle(token, &cancelParkedReceive);
+        e = findUdp(id);   // G11: looked up again after the allocation
         e->parkedReceives.push_back(token);
         auto h = e->handler;
         if (h) reactor().submit([h] { h->addCredit(1); });
-        return makeKillHandle(token, &cancelParkedReceive);
+        return kill;
     )
 }
 
@@ -736,9 +756,10 @@ HPointer udpCloseBody(HPointer captured) {
         parked.swap(e->parkedReceives);
         e->held.clear();   // undelivered datagrams are dropped
         if (auto h = e->handler) reactor().submit([h] { h->close(); });   // UdpClosed releases the count
-        // Parked receives fail now (they hold no count). Allocates: `e` is dead.
+        // Parked receives fail now, then release their holds. Allocates: `e` is dead.
         auto& s = Scheduler::instance();
         for (uint64_t t : parked) {
+            HoldRelease receiveHold(t);
             HPointer r = s.takePendingResume(t);
             if (alloc::isNil(r)) continue;
             HPointer task = alloc::listNil();
@@ -777,7 +798,7 @@ HPointer udpMembershipBody(HPointer captured, HPointer resume) {
             return resumeNow(resume, failFErr(code, std::string(join ? "addMembership " : "dropMembership ") + code));
         }
         auto h = e->handler;
-        uint64_t tok = startOp(resume, token, counted);
+        uint64_t tok = startOp(resume, token, counted, "Udp.membership");
         reactor().submit([h, tok, join, group = std::move(group), iface = std::move(iface)]() mutable {
             h->membership(tok, join, std::move(group), std::move(iface));
         });

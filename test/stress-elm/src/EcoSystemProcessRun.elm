@@ -9,7 +9,7 @@ writing a different amount of output and exiting with its own code, plus a
 outcome is checked and logged into an identity stream, which the cycle then
 reads back. Exercises the WaitService lane, the run collectors, the
 runDuration timer (fired and cancelled), Bytes results under GC, and the
-exactly-once pendingAsync release (a leak would keep the program alive).
+exactly-once hold release (LIVE_003; a leak would keep the program alive).
 -}
 
 -- CHECK: EcoSystemProcessRun: True

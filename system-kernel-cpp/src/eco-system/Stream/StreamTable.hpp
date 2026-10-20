@@ -110,6 +110,13 @@ struct StreamPair {
     int pipeRefs = 0;                  // live pipes naming this pair: never erased
     uint64_t parkedReadToken = 0;
     bool parkedReadCounted = false;
+    // ChannelSource: the request id of the channel read in flight (0: none).
+    // Normally it is the parked read's (or the pipe's) own token. A killed
+    // read's request cannot be recalled from the channel thread, so it stays
+    // in flight WITHDRAWN (its hold released by the kill handle, LIVE-5):
+    // its result goes to a read parked behind it (which issues no request of
+    // its own meanwhile), else into readQ, so no input is lost.
+    uint64_t chanReadTok = 0;
     std::deque<PendingWrite> waitingForRoom;
 
     uint64_t closeToken = 0;

@@ -215,11 +215,11 @@ void* ecoEmbedThread(void* /*arg*/) {
     // Embedded: the host owns signals, process exit and loop lifetime.
     sched.setEmbedMode(true);
     g_lifetime.store(sched.acquireHold(Elm::Platform::HoldKind::Host, "eco_embed"));
-    // That single lifetime hold is not "real work": tell the scheduler to
-    // discount it when reporting host liveness, and wire the idle/busy
-    // transitions through to the host hook (if any) so a Node loop stays
-    // alive exactly while the program is busy.
-    sched.setLivenessBaseline(1);
+    // That lifetime hold is a Host hold, which is not "real work": the
+    // scheduler discounts Host holds when reporting host liveness
+    // (plans/program-liveness-rule.md §8). Wire the idle/busy transitions
+    // through to the host hook (if any) so a Node loop stays alive exactly
+    // while the program is busy.
     if (s.idleHook)
         sched.setActivityHook(schedActivityTrampoline, nullptr);
 

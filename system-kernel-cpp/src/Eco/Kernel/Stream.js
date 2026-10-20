@@ -38,6 +38,13 @@ import Maybe exposing (Just, Nothing)
 //   shutdown()
 //       Immediate stop: release the resource; every pending request completes with an
 //       error (ECANCELED). Idempotent.
+//   cancelRead()   (optional)
+//       The reader of the pending read was killed (LIVE-5): if a read is pending and not
+//       yet answered, drop it (its done is never called; data not delivered stays
+//       buffered for the next read), stop whatever keeps the program alive for it, and
+//       return true. Otherwise return false: the read's done comes as usual, and the
+//       stream table keeps that result for the next reader. Without this method a
+//       killed read stays in flight (withdrawn) until the channel answers it.
 //
 // Requests complete in the order they were made. A done callback may be called
 // synchronously; the stream table defers such calls to a microtask. An error may carry a
@@ -104,10 +111,6 @@ import Maybe exposing (Just, Nothing)
 //       write-locked.
 //   _Stream_pin(id)                     the pair is never erased (stdio).
 //   _Stream_toBytes(uint8Array) -> Bytes (DataView);  _Stream_toUint8Array(bytes)
-//   _Stream_noteActivity()             counts external IO a kernel starts. Unused since
-//       L-REARM (plans/program-liveness-rule.md §7): onEmptyEventLoop no longer re-arms on
-//       activity; phase 7 of that plan deletes the counter and its calls.
-//   _Stream_activityCount()            no longer read (see above).
 //
 // Kernel-file pitfall: every double-underscore Home_name reference in a kernel file,
 // comments included, must be listed in the header imports. An unlisted one makes the
@@ -137,21 +140,6 @@ function _Stream_toBytes(u8)
 function _Stream_toUint8Array(bytes)
 {
 	return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-}
-
-
-// --- Activity (no longer read since L-REARM; deleted in liveness phase 7) ---
-
-var _Stream_activity = 0;
-
-function _Stream_noteActivity()
-{
-	_Stream_activity++;
-}
-
-function _Stream_activityCount()
-{
-	return _Stream_activity;
 }
 
 
@@ -291,6 +279,7 @@ function _Stream_newPair(kind)
 		__pipeInId: 0,
 		__pipeRefs: 0,
 		__parkedRead: null,    // token
+		__chanRead: null,      // channel source: the token of the channel read in flight
 		__waitingForRoom: [],
 		__closeTok: null,
 		__customFn: null,
@@ -408,7 +397,7 @@ function _Stream_maybeErase(id)
 	if (!p || p.__pinned || p.__pipeRefs > 0) return;
 	if (p.__w !== _Stream_W_CLOSED || p.__r !== _Stream_R_CLOSED) return;
 	if (p.__readQ.length || p.__writeQ.length || p.__waitingForRoom.length) return;
-	if (p.__parkedRead || p.__closeTok) return;
+	if (p.__parkedRead || p.__closeTok || p.__chanRead) return;
 	if (p.__rawQ.length || p.__readInFlight || p.__readerKick) return;   // mapped source
 	delete _Stream_table[id];
 }
@@ -697,7 +686,6 @@ function _Stream_channelCall(request, handler)
 
 function _Stream_channelRead(id, ch, tok, maxBytes)
 {
-	_Stream_noteActivity();
 	_Stream_channelCall(
 		function(done) { ch.requestRead(maxBytes, done); },
 		function(err, chunk) { _Stream_onReadResult(id, ch, tok, err, chunk); }
@@ -706,7 +694,6 @@ function _Stream_channelRead(id, ch, tok, maxBytes)
 
 function _Stream_channelWrite(id, ch, tok, bytes)
 {
-	_Stream_noteActivity();
 	_Stream_channelCall(
 		function(done) { ch.requestWrite(bytes, done); },
 		function(err) { _Stream_onWriteResult(id, ch, tok, err); }
@@ -715,7 +702,6 @@ function _Stream_channelWrite(id, ch, tok, bytes)
 
 function _Stream_channelClose(id, ch, tok)
 {
-	_Stream_noteActivity();
 	_Stream_channelCall(
 		function(done) { ch.close(done); },
 		function(err) { _Stream_onCloseResult(id, ch, tok, err); }
@@ -731,6 +717,44 @@ function _Stream_pairOf(id, ch)
 function _Stream_onReadResult(id, ch, tok, err, chunk)
 {
 	var p = _Stream_pairOf(id, ch);
+	if (p && p.__chanRead === tok) p.__chanRead = null;
+	if (tok.__withdrawn)
+	{
+		// Its reader was killed: the result belongs to a read parked behind it, if any,
+		// else to readQ (no input is lost).
+		if (!p) return;
+		if (!p.__parkedRead)
+		{
+			if (err)
+			{
+				if (p.__r === _Stream_R_OPEN)
+				{
+					p.__r = _Stream_R_ERRORED;
+					p.__rReason = _Stream_describeError(err);
+				}
+				ch.shutdown();
+			}
+			else if (!chunk)
+			{
+				if (p.__r === _Stream_R_OPEN) p.__r = _Stream_R_CLOSED;
+				ch.close(null);
+			}
+			else if (p.__r === _Stream_R_OPEN)
+			{
+				if (typeof chunk === 'string')
+				{
+					if (chunk.length) p.__readQ.push(chunk);
+				}
+				else if (chunk.byteLength)
+				{
+					p.__readQ.push(_Stream_toBytes(chunk));
+				}
+			}
+			_Stream_pump(id);
+			return;
+		}
+		tok = p.__parkedRead;   // adopted: completed below as its own
+	}
 	if (!p || p.__parkedRead !== tok)
 	{
 		tok.__resume = null;   // orphaned: drop it
@@ -934,7 +958,6 @@ function _Stream_mappedDemand(id)
 	var demand = p.__r === _Stream_R_OPEN && (p.__parkedRead !== null || !!p.__pipeOutId);
 	if (demand === p.__demand) return;
 	p.__demand = demand;
-	if (demand) _Stream_noteActivity();
 	if (typeof p.__channel.setDemand === 'function') p.__channel.setDemand(demand);
 }
 
@@ -1038,7 +1061,6 @@ function _Stream_mappedWrite(id, p, tok, v)
 	var w = p.__mapFn(v);
 	var chunk = { tag: w.a, text: w.b, bytes: _Stream_toUint8Array(w.c) };
 	var ch = p.__channel;
-	_Stream_noteActivity();
 	_Stream_channelCall(
 		function(done)
 		{
@@ -1223,6 +1245,13 @@ function _Stream_nodeReadableChannel(readableOrThunk, options)
 		requestWrite: function(bytes, done)
 		{
 			done(new Error('not a writable channel'));
+		},
+		cancelRead: function()
+		{
+			if (!pending) return false;
+			pending = null;
+			if (readable) readable.pause();   // a paused stream keeps nothing alive
+			return true;
 		},
 		close: function(done)
 		{
@@ -1617,6 +1646,14 @@ function _Stream_nodeDuplexChannels(socket, options)
 			pendingRead = { __max: maxBytes > 0 ? maxBytes : _Stream_kChannelReadChunk, __done: done };
 			updateRef();
 			deliver();
+		},
+		cancelRead: function()
+		{
+			if (!pendingRead) return false;
+			pendingRead = null;
+			if (!socket.destroyed && !detached) socket.pause();
+			updateRef();   // idle again: unref'd
+			return true;
 		},
 		requestWrite: function(bytes, done)
 		{
@@ -2069,7 +2106,11 @@ function _Stream_runPipe(pid)
 		{
 			var tok = { __resume: null };
 			s.__parkedRead = tok;
-			_Stream_channelRead(pp.__src, s.__channel, tok, _Stream_kChannelReadChunk);
+			if (!s.__chanRead)
+			{
+				s.__chanRead = tok;
+				_Stream_channelRead(pp.__src, s.__channel, tok, _Stream_kChannelReadChunk);
+			}   // else a withdrawn read is in flight: its result is the pipe's
 		}
 		return;
 	}
@@ -2193,15 +2234,59 @@ var _Stream_decompressor = function(algorithm)
 // read : Int -> Task SErr a
 var _Stream_read = function(id)
 {
-	return _Stream_op(function(callback) { _Stream_readImpl(id, callback, true); });
+	return _Stream_readOp(id, true);
 };
 
 // readChunk : Int -> Task SErr Bytes — read, ignoring the carry of Stream.readLine
 // (plans/eco-system-api-refactor.md D18).
 var _Stream_readChunk = function(id)
 {
-	return _Stream_op(function(callback) { _Stream_readImpl(id, callback, false); });
+	return _Stream_readOp(id, false);
 };
+
+// A read binding: its kill function (a parked read only) withdraws the read.
+function _Stream_readOp(id, carryFirst)
+{
+	return __Scheduler_binding(function(callback)
+	{
+		var kill;
+		_Stream_enter(function() { kill = _Stream_readImpl(id, callback, carryFirst); });
+		return kill;
+	});
+}
+
+// The kill function of a parked read (LIVE-5, as native cancelParkedRead): the task
+// never resumes and the stream is no longer read-locked. A channel source's request is
+// dropped by the channel's cancelRead when it can (nothing then keeps the program alive
+// for it); otherwise it stays in flight, withdrawn, and its result goes to the next
+// reader (_Stream_onReadResult).
+function _Stream_readKill(id, tok)
+{
+	return function()
+	{
+		_Stream_enter(function()
+		{
+			tok.__resume = null;
+			var p = _Stream_table[id];
+			if (!p || p.__parkedRead !== tok) return;   // completed already
+			p.__parkedRead = null;
+			p.__readLock = false;
+			if (p.__kind === _Stream_K_SOURCE && p.__chanRead === tok)
+			{
+				var ch = p.__channel;
+				if (ch && typeof ch.cancelRead === 'function' && ch.cancelRead())
+				{
+					p.__chanRead = null;
+				}
+				else
+				{
+					tok.__withdrawn = true;
+				}
+			}
+			_Stream_pump(id);   // mapped source: the demand goes
+		});
+	};
+}
 
 // The unread part of the carry, or null.
 function _Stream_carryRest(p)
@@ -2292,11 +2377,13 @@ function _Stream_readImpl(id, callback, carryFirst)
 		var tok = _Stream_token(callback);
 		p.__readLock = true;
 		p.__parkedRead = tok;
-		if (p.__kind === _Stream_K_SOURCE)
+		if (p.__kind === _Stream_K_SOURCE && !p.__chanRead)
 		{
+			p.__chanRead = tok;
 			_Stream_channelRead(id, p.__channel, tok, _Stream_kChannelReadChunk);
-		}
+		}   // else a withdrawn read is in flight: its result is this read's
 		_Stream_pump(id);   // mapped source: read-ahead and demand
+		return _Stream_readKill(id, tok);
 }
 
 function _Stream_writeOrEnqueue(value, id, callback, isEnqueue)

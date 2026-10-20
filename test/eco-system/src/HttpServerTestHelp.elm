@@ -9,7 +9,8 @@ client task that talks to the server with **elm/http** (`Http.task`, so the
 requests run one after the other). The server's handler returns the lines to
 log and the response to send. When the client task ends, the server's lines
 (in request order) and then the client's lines are printed to the real
-stdout, and the program exits: a listening server keeps it alive otherwise.
+stdout, and the program exits: its `onRequest` subscription keeps it alive
+otherwise (plans/program-liveness-rule.md LIVE_001).
 
 -}
 

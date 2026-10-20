@@ -35,7 +35,9 @@ Ending one direction only, by closing the writable while the readable stays open
 _half-close_: the peer reads to the end of the data and can still reply. A connection is
 released once both of its streams have ended, or at once by [`close`](#close) or
 [`reset`](#reset); a connection that the program simply forgets is not closed for it. An open connection on which no operation is waiting does not keep the
-program running; an open [`Listener`](#Listener) keeps it running until it is closed.
+program running; an open [`Listener`](#Listener) keeps it running only while an
+[`accept`](#accept) is waiting or an [`onConnection`](#onConnection) subscription exists. Held
+connections do not keep it running.
 
 A listener hands out the connections that clients make to it, through [`accept`](#accept) and
 [`onConnection`](#onConnection), by one rule. A new connection goes to the oldest waiting
@@ -196,8 +198,8 @@ path. A listener is made by `Socket.Tcp.listen`, `Socket.Unix.listen` or `Socket
 its connections are handed out by [`accept`](#accept) and [`onConnection`](#onConnection) as
 the module documentation describes.
 
-An open listener keeps the program running until it is closed with
-[`closeListener`](#closeListener).
+An open listener keeps the program running only while an `accept` on it is waiting or an
+`onConnection` subscription to it exists.
 
 -}
 type alias Listener =

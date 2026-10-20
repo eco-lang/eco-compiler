@@ -132,6 +132,10 @@ been cancelled from its writing side or by its transformation, or its resource h
 fails with `Cancelled` and the reason. While another read is waiting on the stream, or something
 else such as a pipe is consuming it, it fails with `Locked`.
 
+Killing a task whose read is waiting (`Process.kill`) withdraws the read: the stream is no
+longer locked, the wait no longer keeps the program running, and no input is lost, since a
+value that arrives for the withdrawn read is kept for the next one.
+
 -}
 read : Readable value -> Task Error value
 read (Stream.Internal.Readable id) =

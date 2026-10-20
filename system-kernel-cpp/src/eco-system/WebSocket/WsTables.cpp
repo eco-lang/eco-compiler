@@ -3,20 +3,19 @@
 // See WsTables.hpp (plans/eco-system-websockets.md §3.6, Appendix B.1).
 // Main thread only.
 //
-// Counts (G10, §3.6), released here:
+// Holds (G10, §3.6), released here:
 //   * Dialed / UpgradeRead / Opened / OpDone / PingDone: the R-mode
-//     operation's own count (AsyncRelease), resumed or orphaned (an orphaned
+//     operation's own hold (HoldRelease), resumed or orphaned (an orphaned
 //     handshake's connection is aborted; an orphaned open's WebSocket too).
-//   * Closed: the close handshake's count (once) and one per parked `closed`.
+//   * Closed: the close handshake's hold (once) and one per parked `closed`.
 //
 // Templates used: T3 (header lists), T5 (generation-keyed tables), T9
-// (completions), G10 (AsyncRelease), G12 (drain per resume, by the drain).
+// (completions), G10 (HoldRelease), G12 (drain per resume, by the drain).
 //
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/WebSocket/WsTables.hpp"
 
-#include "eco-system/Core/AsyncRelease.hpp"
 #include "eco-system/Core/IoReactor.hpp"
 #include "eco-system/Socket/SocketTables.hpp"
 #include "eco-system/Stream/Stream.hpp"
@@ -49,9 +48,10 @@ void abortCore(const std::shared_ptr<WsCore>& k) {
 }
 
 // A dead heap's entries: close their reactor objects (their counts and
-// tokens died with the heap).
+// tokens died with the heap) and release the handshakes' peer holds.
 void resetTables(WsTables& t) {
     for (auto& kv : t.handshakes) {
+        HoldRelease peerHold(kv.second.peerHold);
         abortConn(kv.second.conn);
         if (std::shared_ptr<H2PendingUpgrade> h2 = kv.second.h2) reactor().submit([h2] { h2->abandon(); });
     }
@@ -89,7 +89,7 @@ void maybeRetire(int64_t wsId) {
 
 // dial → ( hsId, ( status, isH2 ), List ( String, List String ) ), masks 0x1 / 0x1.
 bool onDialed(WsEvent& ev) {
-    AsyncRelease release;   // the dial's count
+    HoldRelease release(ev.token);   // the dial's hold
     wsTables().pendingDials.erase(ev.token);
     HPointer resume = takeResume(ev.token);
     if (alloc::isNil(resume)) {
@@ -117,7 +117,7 @@ bool onDialed(WsEvent& ev) {
 // readUpgrade → ( upId, ( method, target, version ), ( headers, isH2, remoteEpT ) ),
 // masks 0x1 / 0 / 0.
 bool onUpgradeRead(WsEvent& ev) {
-    AsyncRelease release;
+    HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
     if (alloc::isNil(resume)) {
         abortConn(ev.conn);
@@ -148,7 +148,7 @@ bool onUpgradeRead(WsEvent& ev) {
 
 // open → ( wsId, ( readableId, writableId ), ( localEpT, remoteEpT ) ), masks 0x1 / 0x5 / 0.
 bool onOpened(WsEvent& ev) {
-    AsyncRelease release;
+    HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
     WsEntry* e = findWs(ev.wsId);
     if (alloc::isNil(resume)) {
@@ -174,7 +174,7 @@ bool onOpened(WsEvent& ev) {
 }
 
 bool onOpDone(WsEvent& ev) {
-    AsyncRelease release;
+    HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
     if (alloc::isNil(resume)) return false;
     HPointer task = alloc::listNil();
@@ -185,7 +185,7 @@ bool onOpDone(WsEvent& ev) {
 }
 
 bool onPingDone(WsEvent& ev) {
-    AsyncRelease release;
+    HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
     if (alloc::isNil(resume)) return false;
     HPointer task = alloc::listNil();
@@ -200,14 +200,14 @@ bool onClosed(WsEvent& ev) {
     if (!e || e->closed) return false;
     e->closed = true;
     e->info = WsCloseInfo{ev.closeCode, ev.reason, ev.clean};
-    AsyncRelease handshakeCount(e->closeCounted);   // the close handshake's count, once
-    e->closeCounted = false;
+    HoldRelease handshakeHold(e->closeHold);   // the close handshake's hold, once
+    e->closeHold = kNoHold;
     std::vector<uint64_t> waiters;
     waiters.swap(e->closedWaiters);
     WsCloseInfo info = e->info;
     bool resumed = false;
     for (uint64_t token : waiters) {
-        AsyncRelease waiterCount;
+        HoldRelease waiterHold(token);
         HPointer resume = takeResume(token);
         if (alloc::isNil(resume)) continue;
         HPointer reason = alloc::listNil(), task = alloc::listNil();
@@ -243,6 +243,19 @@ bool onBodyNeeded(WsEvent& ev) {
 bool onBodyDispose(WsEvent& ev) {
     discardReadable(ev.pairId);
     return true;   // it may have completed parked tasks
+}
+
+// The connection of an upgradeRequest handshake (HoldProtocol watch mode)
+// ended while it waited for accept / reject: nobody is owed an answer any
+// more, so its peer hold ends (LIVE-1c, N5). The entry stays: accept then
+// fails ECONNRESET, reject and abandon complete at once.
+bool onHandshakeGone(WsEvent& ev) {
+    auto& t = wsTables();
+    auto it = t.handshakes.find(ev.wsId);
+    if (it == t.handshakes.end() || !it->second.peerHold) return false;
+    HoldRelease release(it->second.peerHold);
+    it->second.peerHold = kNoHold;
+    return false;
 }
 
 } // namespace
@@ -282,21 +295,27 @@ void ensureWsTables() {
     setWsEventDispatch(WsEvent::Kind::Closed, &onClosed);
     setWsEventDispatch(WsEvent::Kind::BodyNeeded, &onBodyNeeded);
     setWsEventDispatch(WsEvent::Kind::BodyDispose, &onBodyDispose);
+    setWsEventDispatch(WsEvent::Kind::HandshakeGone, &onHandshakeGone);
 }
 
-int64_t wsTablesAddServerHandshake(std::shared_ptr<Conn> conn) {
+int64_t wsTablesAddServerHandshake(std::shared_ptr<Conn> conn, HoldToken peerHold) {
     auto& t = wsTables();
     int64_t id = t.nextHsId++;
-    t.handshakes.emplace(id, WsHandshakeEntry{std::move(conn), true});
+    WsHandshakeEntry e;
+    e.conn = std::move(conn);
+    e.server = true;
+    e.peerHold = peerHold;
+    t.handshakes.emplace(id, std::move(e));
     return id;
 }
 
-int64_t wsTablesAddServerH2Handshake(std::shared_ptr<H2PendingUpgrade> h2) {
+int64_t wsTablesAddServerH2Handshake(std::shared_ptr<H2PendingUpgrade> h2, HoldToken peerHold) {
     auto& t = wsTables();
     int64_t id = t.nextHsId++;
     WsHandshakeEntry e;
     e.server = true;
     e.h2 = std::move(h2);
+    e.peerHold = peerHold;
     t.handshakes.emplace(id, std::move(e));
     return id;
 }
@@ -310,9 +329,8 @@ WsCloseInfo wsRecentCloseInfo(int64_t wsId) {
 
 void wsTablesCloseStarted(int64_t wsId) {
     WsEntry* e = findWs(wsId);
-    if (!e || e->closed || e->closeCounted) return;
-    e->closeCounted = true;
-    Scheduler::instance().incrementPendingAsync();
+    if (!e || e->closed || e->closeHold != kNoHold) return;
+    e->closeHold = Scheduler::instance().acquireHold(HoldKind::Task, "WebSocket.closeHandshake");
 }
 
 void wsTablesFaceGone(int64_t wsId) {
@@ -327,7 +345,7 @@ void wsTablesRetire(int64_t wsId) { maybeRetire(wsId); }
 bool cancelPendingDial(uint64_t token) {
     auto& m = wsTables().pendingDials;
     auto it = m.find(token);
-    if (it == m.end()) return false;   // its Dialed event is queued: the drain decrements
+    if (it == m.end()) return false;   // its Dialed event is queued: the drain releases
     std::shared_ptr<DialJob> job = it->second;
     m.erase(it);
     return job->cancel();

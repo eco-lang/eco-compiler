@@ -17,7 +17,8 @@ telling either end. So datagrams here are values, not streams: [`send`](#send) t
 A [`Socket`](#Socket) is bound to one local address and port with [`bind`](#bind). The family
 of that address, IPv4 or IPv6, is the socket's family. One socket can send to any number of
 endpoints and receives the datagrams sent to its own endpoint. An open socket keeps the
-program running until it is [closed](#close).
+program running only while a [`receive`](#receive) is waiting or an [`onMessage`](#onMessage)
+subscription exists.
 
     import Socket
     import Socket.Address as Address exposing (Family(..))
@@ -81,8 +82,7 @@ import Task exposing (Task)
 
 {-| A UDP socket bound to a local address and port, made by [`bind`](#bind).
 
-The socket stays open, and keeps the program running, until it is closed with
-[`close`](#close). On a closed socket, `send`, `receive`, `joinMulticast` and `leaveMulticast`
+The socket stays open until it is closed with [`close`](#close). On a closed socket, `send`, `receive`, `joinMulticast` and `leaveMulticast`
 fail with `ECANCELED`, and `close` does nothing.
 
 -}

@@ -2,7 +2,7 @@
 import Elm.Kernel.Scheduler exposing (binding, succeed)
 import Elm.Kernel.Utils exposing (Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, pipeStreams, find, readLocked, noteActivity, toUint8Array, cancelledError)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, pipeStreams, find, readLocked, toUint8Array, cancelledError)
 */
 
 // HttpStream — JS twin of src/eco-system/HttpStream/ (eco/system), plans/eco-system-library.md
@@ -76,7 +76,6 @@ var _HttpStream_send = F4(function(request, headers, body, discard)
 {
 	return __Scheduler_binding(function(callback)
 	{
-		__Stream_noteActivity();
 		var spec = {
 			__url: request.b,
 			__timeoutMs: request.c > 0 ? request.c : 0,

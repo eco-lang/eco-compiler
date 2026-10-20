@@ -741,12 +741,8 @@ void Scheduler::fireActivity(bool busy) {
         activityHook_(busy, activityUser_);
 }
 
+// Private (LIVE_006): only noteAcquire calls it.
 void Scheduler::incrementPendingAsync() {
-    acquireSerial_.fetch_add(1, std::memory_order_relaxed);
-    if (kHoldCensus) {
-        std::lock_guard<std::mutex> g(holdsMutex_);
-        rawHolds_++;
-    }
     pendingAsync_.fetch_add(1);
 }
 
@@ -763,13 +759,8 @@ void Scheduler::removeQuiescenceListener(QuiescenceListener fn, void* ctx) {
                   });
 }
 
+// Private (LIVE_006): only releaseHold calls it.
 void Scheduler::decrementPendingAsync() {
-    if (kHoldCensus) {
-        std::lock_guard<std::mutex> g(holdsMutex_);
-        if (rawHolds_ <= 0)
-            holdFatal("raw decrementPendingAsync with no raw hold outstanding", kNoHold, nullptr);
-        rawHolds_--;
-    }
     pendingAsync_.fetch_sub(1);
     // Acquire mutex_ around the notify (as notifyWorkAvailableFromAsync /
     // requestStop do) to close the missed-wakeup window: a decrement landing
@@ -1113,7 +1104,7 @@ void Scheduler::noteAcquire(HoldToken t, HoldKind kind, const char* site) {
         if (!holds_.emplace(t, std::make_pair(kind, site)).second)
             holdFatal("hold token acquired twice", t, site);
     }
-    pendingAsync_.fetch_add(1);
+    incrementPendingAsync();
 }
 
 u64 Scheduler::parkResume(HPointer resume, HoldKind kind, const char* site) {
@@ -1138,11 +1129,6 @@ void Scheduler::releaseHold(HoldToken t) {
         if (it != holds_.end()) {
             g_releasedHolds.push(t, it->second.second);
             holds_.erase(it);
-        } else if (rawHolds_ > 0 && !g_releasedHolds.find(t)) {
-            // Transitional (until phase 6): a hold acquired through the raw
-            // incrementPendingAsync (an un-migrated kernel) whose token is
-            // released through the hold API (processReadyAsync).
-            rawHolds_--;
         } else if (const char* site = g_releasedHolds.find(t)) {
             holdFatal("second release of a hold", t, site);
         } else {
@@ -1150,10 +1136,9 @@ void Scheduler::releaseHold(HoldToken t) {
         }
     }
     if ((t & kFreeHoldBit) && freeHoldKind(t) == HoldKind::Host) hostHolds_.fetch_sub(1);
-    pendingAsync_.fetch_sub(1);
-    // Notify under mutex_ (closes the missed-wakeup window, §6.2).
-    { std::lock_guard<std::mutex> lk(mutex_); }
-    eventCV_.notify_one();
+    // Decrements, then notifies under mutex_ (closes the missed-wakeup
+    // window, §6.2).
+    decrementPendingAsync();
 }
 
 size_t Scheduler::liveHoldCount() {
@@ -1186,19 +1171,16 @@ void Scheduler::reportHolds(const char* why) {
         return;
     }
     std::map<std::pair<int, std::string>, int> bySite;
-    int raw = 0;
     std::vector<std::pair<const char*, u64>> parks;
     {
         std::lock_guard<std::mutex> g(holdsMutex_);
         for (auto& [t, ks] : holds_)
             bySite[{static_cast<int>(ks.first), ks.second ? ks.second : "?"}]++;
-        raw = rawHolds_;
         parks = holdlessParks_;
     }
-    std::fprintf(stderr, "eco: liveness report (%s): pendingAsync=%d, holds=%zu, raw=%d\n",
+    std::fprintf(stderr, "eco: liveness report (%s): pendingAsync=%d, holds=%zu\n",
                  why, pendingAsync_.load(), static_cast<size_t>(
-                     [&] { size_t n = 0; for (auto& [k, c] : bySite) n += c; return n; }()),
-                 raw);
+                     [&] { size_t n = 0; for (auto& [k, c] : bySite) n += c; return n; }()));
     for (auto& [k, c] : bySite)
         std::fprintf(stderr, "  %-12s %-40s %d\n", holdKindName(static_cast<HoldKind>(k.first)),
                      k.second.c_str(), c);

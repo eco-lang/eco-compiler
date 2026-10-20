@@ -6,9 +6,10 @@ module EcoSystemProcessKill exposing (main)
 Each cycle starts `n` long `run`s in their own Elm processes, kills every one
 of them with `Process.kill` (the T7 kill handle SIGTERMs the child; the
 killed task never resumes, and the child's exit still releases its
-pendingAsync count exactly once), and checks that a fresh `run` still works.
-A leaked count would keep the program from exiting; a double release would
-let it exit early.
+hold exactly once, plans/program-liveness-rule.md LIVE_003), and checks that
+a fresh `run` still works. A leaked hold would keep the program from exiting;
+a double release aborts in census builds and would let it exit early
+otherwise.
 -}
 
 -- CHECK: EcoSystemProcessKill: True

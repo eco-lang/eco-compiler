@@ -10,8 +10,9 @@ header and body; the server answers with a body derived from all three and a
 status that depends on the index, and the client checks every answer. This
 exercises the connection threads, llhttp, request delivery (the tagger
 argument with its unboxed response key), the respond completion and Bytes
-bodies under GC. A listening server keeps the program alive, so it ends with
-`System.exit` (the `-- EXIT:` directive runs it in process-output mode).
+bodies under GC. Its `onRequest` subscription keeps the program alive, so it
+ends with `System.exit` (the `-- EXIT:` directive runs it in process-output
+mode).
 -}
 
 -- CHECK: EcoSystemHttpServerSequential: True

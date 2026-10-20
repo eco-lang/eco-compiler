@@ -173,8 +173,8 @@ inline HPointer makeBinding(HPointer captured) {
 }
 
 // Async-park variant. The body MUST either resume synchronously or park
-// `resume` with a hold (`Scheduler::parkResume`, or the legacy
-// registerPendingResume + incrementPendingAsync) before returning; otherwise
+// `resume` with a hold (`Scheduler::parkResume`, or registerPendingResume
+// plus a hold the kernel owns) before returning; otherwise
 // the Task is dropped silently (checked in census builds, §6.1). The body's return value is treated as the kill handle (usually
 // `unit()`; in future cancellable kernels it could be a token closure).
 template <AsyncBindingBody Body>

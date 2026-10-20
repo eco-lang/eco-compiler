@@ -26,13 +26,16 @@
 //     the request itself. Keys are erased by respond, takeUpgrade (WS5),
 //     ConnGone, closeServer (parked: 503) and a new heap generation.
 //
-// Keep-alive counts (§3.4): a server holds one until ServerClosed; every
-// key holds one until it is erased; a respond task holds one until its
-// RespondDone; a closeServer task until ServerClosed. Idle connections
-// hold none.
+// Holds (LIVE_001, plans/program-liveness-rule.md §10.6): a server holds
+// nothing of its own; it holds one while an onRequest subscription names it
+// (until it is closed); a key holds one from its delivery to a subscriber
+// until it is erased, or until takeUpgrade moves it to the handshake (a
+// parked key holds none: nobody asked for it); a respond task holds one
+// until its RespondDone; a closeServer task until ServerClosed. Idle
+// connections hold none.
 //
 // Templates used: T5 (generation-keyed tables), T8/G12 via the manager,
-// G10 (AsyncRelease on every count).
+// G10 (HoldRelease on every hold).
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,6 +45,7 @@
 #include "eco-system/HttpServer/HttpServerService.hpp"
 #include "eco-system/Socket/Conn.hpp"           // TransportFactory
 #include "eco-system/Socket/SocketEvents.hpp"   // SockEndpoint
+#include "platform/Liveness.hpp"                // HoldToken
 
 #include <cstdint>
 #include <memory>
@@ -94,8 +98,8 @@ void ensureHttpTables();
 // Main thread: a listening fd (non-blocking, cloexec; owned from now on)
 // becomes a server: a ListenerHandler in callback mode (the connection's
 // protocol from makeServerProtocol once its handshake is done,
-// maxConnections < 0: unlimited), the table entry and the server's
-// keep-alive count. `transport`: the TLS transport factory of an https
+// maxConnections < 0: unlimited) and the table entry (no hold of its
+// own). `transport`: the TLS transport factory of an https
 // server (WS3, websockets plan §3.5), null for plain TCP. Returns the
 // server id.
 int64_t httpTablesStartServer(int fd, std::shared_ptr<ServerConfig> cfg, int64_t maxConnections,
@@ -103,7 +107,7 @@ int64_t httpTablesStartServer(int fd, std::shared_ptr<ServerConfig> cfg, int64_t
 
 // Main thread, from the respond body: false when `key` is unknown
 // (answered, gone, or of a dead heap: complete at once). Otherwise erases
-// the key (releasing its count) and submits the response; `token` (a
+// the key (releasing its hold) and submits the response; `token` (a
 // registered resume holding its own count) completes through RespondDone.
 bool httpTablesRespond(int64_t key, uint64_t token, ResponseData resp);
 
@@ -115,10 +119,13 @@ bool httpTablesCloseServer(int64_t serverId, int64_t deadlineMs, uint64_t token)
 // Main thread, for WS5's takeUpgrade (HttpUpgrade.cpp): when `key` is an upgrade request still
 // waiting for its answer, moves its request (raw target, headers with
 // duplicates and original case, version flags, peer) into `out`, its
-// connection into `conn`, erases the key (releasing its count: a later
-// respond on it completes at once) and returns true. The caller then
-// submits Http1Protocol::takeUpgradeHead + Conn::setProtocol to the reactor.
-bool httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn);
+// connection into `conn`, its delivery hold into `hold` (the caller owns it
+// from then on: the handshake's peerHold, plans/program-liveness-rule.md
+// N5), erases the key (a later respond on it completes at once) and returns
+// true. The caller then submits Http1Protocol::takeUpgradeHead +
+// Conn::setProtocol to the reactor.
+bool httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn,
+                           ::Elm::Platform::HoldToken& hold);
 
 // Main thread: the manager's subscriptions changed (onEffects): parked
 // requests of servers that now have a subscriber are delivered from the

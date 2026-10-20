@@ -149,13 +149,12 @@ PendingTable& pendingTable() {
     return *t;
 }
 
-// Registers the task, takes the dial's count and starts the DialJob.
+// Parks the task with the dial's hold and starts the DialJob.
 HPointer startDial(DialArgs a, TransportFactory factory, TransportFactory h1Factory, HPointer& resume,
                    uint64_t& token, bool& counted) {
     ensureWsTables();
     auto& s = Scheduler::instance();
-    token = s.registerPendingResume(resume);   // G10
-    s.incrementPendingAsync();
+    token = s.parkResume(resume, HoldKind::Task, "WebSocket.dial");   // G10
     counted = true;
     DialSpec spec;
     spec.addresses = std::move(a.addresses);
@@ -297,8 +296,7 @@ HPointer wsDialBody(HPointer captured, HPointer resume) {
         // (WS9; then a second context with http/1.1 only for the redial).
         ensureTlsInit();
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.dialPrepare");
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -342,8 +340,7 @@ HPointer wsReadUpgradeBody(HPointer captured, HPointer resume) {
         if (!ce || !ce->conn) return resumeNow(resume, failFErr("ECANCELED", "socket closed"));
         std::shared_ptr<Conn> c = ce->conn;
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.readUpgrade");
         counted = true;
         uint64_t tok = token, gen = currentHeapGeneration();
         reactor().submit([c, tok, gen, timeoutMs] {
@@ -439,6 +436,9 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
         if (mode != 1 && mode != 2) return resumeNow(resume, failFErr("EINVAL", "open EINVAL: unknown mode"));
         std::shared_ptr<Conn> c = std::move(it->second.conn);
         std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
+        // The peer's hold (upgradeRequest, N5) is released once open has
+        // parked its own hold below: no gap, no double count.
+        HoldRelease peerHold(it->second.peerHold);
         t.handshakes.erase(it);
         std::string response = role == 1 && !h2 ? serializeResponse(static_cast<int>(status), headers, false,
                                                                     std::string())
@@ -461,8 +461,7 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
         int64_t wsId = cfg.wsId;
         auto core = std::make_shared<WsCore>(cfg);
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.open");
         counted = true;
         WsEntry entry;
         entry.core = core;
@@ -568,11 +567,13 @@ HPointer wsRejectBody(HPointer captured, HPointer resume) {
         if (it == t.handshakes.end()) return resumeNow(resume, succeedUnit());   // answered already
         std::shared_ptr<Conn> c = std::move(it->second.conn);
         std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
+        // The peer's hold (upgradeRequest, N5) is released once reject has
+        // parked its own hold below: no gap, no double count.
+        HoldRelease peerHold(it->second.peerHold);
         t.handshakes.erase(it);
         if (status < 100 || status > 999) status = 400;
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.reject");
         counted = true;
         uint64_t tok = token, gen = currentHeapGeneration();
         if (h2) {
@@ -619,6 +620,7 @@ HPointer wsAbandonBody(HPointer captured) {
         if (it != t.handshakes.end()) {
             std::shared_ptr<Conn> c = std::move(it->second.conn);
             std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
+            HoldRelease peerHold(it->second.peerHold);   // abandoned: nobody is owed an answer
             t.handshakes.erase(it);
             if (c) reactor().submit([c] { c->abort(false); });
             if (h2) reactor().submit([h2] { h2->abandon(); });
@@ -645,8 +647,7 @@ HPointer wsCloseBody(HPointer captured, HPointer resume) {
         std::shared_ptr<WsCore> core = e->core;
         wsTablesCloseStarted(wsId);   // the close handshake keeps the program alive
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.close");
         counted = true;
         uint64_t tok = token;
         int c = static_cast<int>(code);
@@ -671,8 +672,7 @@ HPointer wsClosedBody(HPointer captured, HPointer resume) {
             return resumeNow(resume, task);
         }
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();   // a parked `closed` keeps the program alive (§3.6)
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.closed");   // a parked `closed` keeps the program alive (§3.6)
         counted = true;
         e->closedWaiters.push_back(token);
         return makeKillHandle(token, &cancelClosedWaiter);
@@ -716,8 +716,7 @@ HPointer wsPingBody(HPointer captured, HPointer resume) {
         }
         std::shared_ptr<WsCore> core = e->core;
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.ping");
         counted = true;
         uint64_t tok = token;
         reactor().submit([core, tok] { core->startPing(tok); });

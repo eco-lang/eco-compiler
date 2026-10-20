@@ -92,7 +92,7 @@ ManagerState& state() {
 struct Aux {
     bool attached = false;
     int64_t readableId = 0;
-    bool counted = false;
+    HoldToken hold = kNoHold;   // the subscription's hold while it waits for a msg or the close
     bool ended = false;   // the attached reader saw the readable's end
 };
 
@@ -226,13 +226,14 @@ bool reconcile(int64_t wsId) {
     bool waiting = a.attached && !a.ended;   // queued messages still to deliver
     bool want = (hasMsg && e && (!e->closed || waiting)) ||
                 (hasClose && e && !(e->closed && e->closeDelivered));
-    if (want != a.counted) {
-        if (want) Scheduler::instance().incrementPendingAsync();
-        else Scheduler::instance().decrementPendingAsync();
-        a.counted = want;
+    if (want && a.hold == kNoHold) {
+        a.hold = Scheduler::instance().acquireHold(HoldKind::Subscription, "WebSocket.subscription");
+    } else if (!want && a.hold != kNoHold) {
+        Scheduler::instance().releaseHold(a.hold);
+        a.hold = kNoHold;
     }
     bool held = hasClose && e && e->closed && !e->closeDelivered && !waiting;
-    if (!hasMsg && !hasClose && !a.attached && !a.counted) {
+    if (!hasMsg && !hasClose && !a.attached && a.hold == kNoHold) {
         table.erase(wsId);
         wsTablesRetire(wsId);
     }

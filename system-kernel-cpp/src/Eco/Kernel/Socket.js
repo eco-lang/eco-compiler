@@ -2,7 +2,8 @@
 import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeDuplexChannels, noteActivity, toBytes, toUint8Array)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeDuplexChannels, toBytes, toUint8Array)
+import Eco.Kernel.Liveness exposing (handle)
 */
 
 // Socket — JS twin of src/eco-system/Socket/ (eco/system), plans/eco-system-sockets.md
@@ -40,8 +41,7 @@ import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeD
 // "receive ECANCELED"):
 //   * udpBind: dgram.createSocket({ type udp4/udp6 by the address family, reuseAddr,
 //     ipv6Only (udp6 only) }); after the bind setBroadcast and buffer sizes raised to
-//     65 536 (never lowered, as native). A bound socket is ref'd until closed, so it keeps
-//     the program alive (native: a pendingAsync count, §3.3.8).
+//     65 536 (never lowered, as native).
 //   * udpSend: §D.4 (IPv4 destination on udp6 -> ::ffff:a.b.c.d; IPv6 on udp4 ->
 //     EAFNOSUPPORT, where Node would say EINVAL); Node's own send errors otherwise
 //     (EMSGSIZE, EACCES without broadcast).
@@ -58,7 +58,15 @@ import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeD
 // handshake info) and the listener table (_Socket_tcpListenWith with a server factory).
 //
 // The JS-only kernels at the end are used by the Elm effect-manager bodies of Socket and
-// Socket.Udp (Appendix E). Every kernel that starts IO calls _Stream_noteActivity().
+// Socket.Udp (Appendix E).
+//
+// Liveness (plans/program-liveness-rule.md §10.6, LIVE_001): an open listener or a bound
+// UDP socket holds nothing of its own. Its Node handle is wrapped in a Liveness handle
+// (unref'd) that holds while the listen / bind is in flight, while an accept / receive is
+// parked, and while the Elm manager's listener is attached (an onConnection / onMessage
+// subscription exists); closing it ends every hold (gone). Accepted connections are
+// unref'd at once: a held connection holds nothing, and a delivered one is a Connection,
+// whose stream channels ref it only while a read or write is pending (Stream.js).
 
 var _Socket_net = null;
 
@@ -149,7 +157,6 @@ function _Socket_tcpEndpoints(socket)
 // address text of the messages; `endpoints(socket)` gives { __local, __remote }.
 function _Socket_connect(callback, connectArgs, target, timeoutMs, isUnix, endpoints, onConnected)
 {
-	__Stream_noteActivity();
 	var net = _Socket_netModule();
 	var settled = false;
 	var timer = null;
@@ -220,7 +227,6 @@ var _Socket_lookup = function(name)
 			callback(_Socket_ferr('ENOTFOUND', 'getaddrinfo ENOTFOUND ' + name));
 			return;
 		}
-		__Stream_noteActivity();
 		var killed = false;
 		var fail = function(code)
 		{
@@ -340,7 +346,6 @@ function _Socket_plainServer(L)
 // closeListener calls (TLS: destroy the connections still handshaking). Null: plain.
 function _Socket_listen(callback, listenArgs, what, isUnix, path, maxHeld, ready, bound, createServer)
 {
-	__Stream_noteActivity();
 	var started = false;
 	var L = {
 		__id: 0,
@@ -357,11 +362,15 @@ function _Socket_listen(callback, listenArgs, what, isUnix, path, maxHeld, ready
 	};
 	var server = (createServer || _Socket_plainServer)(L);
 	L.__server = server;
+	L.__live = __Liveness_handle(server);   // unref'd: an open listener holds nothing
+	var listening = L.__live.hold();       // the listen task is in flight
 
 	function fail(code)
 	{
 		if (started) return;
 		started = true;
+		L.__live.gone();
+		listening();
 		try { server.close(); } catch (e) { /* not listening */ }
 		callback(_Socket_ferr(code, _Socket_message('listen', code, what)));
 	}
@@ -385,6 +394,7 @@ function _Socket_listen(callback, listenArgs, what, isUnix, path, maxHeld, ready
 			L.__id = _Socket_nextListenerId++;
 			_Socket_listeners[L.__id] = L;
 			callback(__Scheduler_succeed(__Utils_Tuple2(L.__id, bound(server))));
+			listening();   // released after the result is published
 		});
 	}
 	catch (e)
@@ -401,8 +411,10 @@ function _Socket_onConnection(L, socket, extra)
 		socket.destroy();
 		return;
 	}
-	__Stream_noteActivity();
 	socket.on('error', function() {});   // until the duplex takes over
+	// Held connections hold nothing (LIVE-2); once handed out, the stream channels ref the
+	// socket while a request is pending.
+	try { socket.unref(); } catch (e) { /* destroyed */ }
 	_Socket_deliver(L, { __seq: _Socket_nextSeq++, __socket: socket, __extra: extra, __connT: null });
 }
 
@@ -587,13 +599,21 @@ var _Socket_accept = function(listenerId)
 			callback(__Scheduler_succeed(_Socket_materializeHeld(L, L.__held.shift())));
 			return;
 		}
-		__Stream_noteActivity();
-		var entry = { __callback: callback };
+		// A parked accept holds the listener until it completes or is killed.
+		var release = L.__live.hold();
+		var entry = {
+			__callback: function(result)
+			{
+				callback(result);
+				release();   // after the result is published
+			}
+		};
 		L.__parked.push(entry);
 		return function()
 		{
 			var i = L.__parked.indexOf(entry);
 			if (i >= 0) L.__parked.splice(i, 1);
+			release();
 		};
 	});
 };
@@ -612,7 +632,7 @@ var _Socket_closeListener = function(listenerId)
 		L.__closeCallbacks.push(callback);
 		if (L.__closing) return;
 		L.__closing = true;
-		__Stream_noteActivity();
+		L.__live.gone();   // nothing holds the closed listener; the setImmediate below holds the task
 		var held = L.__held;
 		L.__held = [];
 		for (var i = 0; i < held.length; i++)
@@ -821,15 +841,16 @@ var _Socket_udpBind = F2(function(target, settings)
 			callback(_Socket_ferr('EINVAL', _Socket_message('bind', 'EINVAL', what)));
 			return;
 		}
-		__Stream_noteActivity();
 		var options = { type: fam === 6 ? 'udp6' : 'udp4', reuseAddr: reuseAddress };
 		if (fam === 6) options.ipv6Only = ipv6Only;
 		var settled = false;
 		var socket;
+		var live = null, binding = null;
 		function fail(code)
 		{
 			if (settled) return;
 			settled = true;
+			if (live) { live.gone(); binding(); }
 			try { socket.close(); } catch (e) { /* not running */ }
 			callback(_Socket_ferr(code, _Socket_message('bind', code, what)));
 		}
@@ -842,9 +863,12 @@ var _Socket_udpBind = F2(function(target, settings)
 			callback(_Socket_ferr(_Socket_codeOf(e), _Socket_message('bind', _Socket_codeOf(e), what)));
 			return;
 		}
+		live = __Liveness_handle(socket);   // unref'd: a bound socket holds nothing
+		binding = live.hold();               // the bind task is in flight
 		var U = {
 			__id: 0,
 			__socket: socket,
+			__live: live,
 			__isV6: fam === 6,
 			__held: [],          // DgramT, oldest first
 			__parked: [],        // { __callback }, oldest first
@@ -876,9 +900,10 @@ var _Socket_udpBind = F2(function(target, settings)
 				U.__id = _Socket_nextUdpId++;
 				_Socket_udps[U.__id] = U;
 				var a = socket.address();
-				// The bound socket stays ref'd: it keeps the program alive until it is
-				// closed (native: a pendingAsync count until the UdpClosed drain, §3.3.8).
+				// The bound socket holds nothing of its own (LIVE_001): parked receives
+				// and the manager's listener hold it.
 				callback(__Scheduler_succeed(__Utils_Tuple2(U.__id, __Utils_Tuple2(a.address, a.port))));
+				binding();   // released after the result is published
 			});
 		}
 		catch (e)
@@ -891,6 +916,8 @@ var _Socket_udpBind = F2(function(target, settings)
 			// orphaned pool result closes its fd).
 			if (settled) return;
 			settled = true;
+			live.gone();
+			binding();
 			try { socket.close(); } catch (e) { /* not running */ }
 		};
 	});
@@ -899,7 +926,6 @@ var _Socket_udpBind = F2(function(target, settings)
 function _Socket_onDatagram(U, msg, rinfo)
 {
 	if (U.__closed || !U.__id) return;
-	__Stream_noteActivity();
 	var dgram = __Utils_Tuple2(
 		__Stream_toBytes(new Uint8Array(msg.buffer, msg.byteOffset, msg.length)),
 		__Utils_Tuple2(rinfo.address, rinfo.port)
@@ -964,7 +990,6 @@ var _Socket_udpSend = F3(function(to, data, socketId)
 			return;
 		}
 		if (fam === 4 && U.__isV6) dest = '::ffff:' + address;
-		__Stream_noteActivity();
 		var settled = false;
 		var entry = {
 			__fail: function(code)
@@ -1017,13 +1042,21 @@ var _Socket_udpReceive = function(socketId)
 			callback(__Scheduler_succeed(U.__held.shift()));
 			return;
 		}
-		__Stream_noteActivity();
-		var entry = { __callback: callback };
+		// A parked receive holds the socket until it completes or is killed.
+		var release = U.__live.hold();
+		var entry = {
+			__callback: function(result)
+			{
+				callback(result);
+				release();   // after the result is published
+			}
+		};
 		U.__parked.push(entry);
 		return function()
 		{
 			var i = U.__parked.indexOf(entry);
 			if (i >= 0) U.__parked.splice(i, 1);
+			release();
 		};
 	});
 };
@@ -1039,6 +1072,7 @@ var _Socket_udpClose = function(socketId)
 		if (U && !U.__closed)
 		{
 			U.__closed = true;
+			U.__live.gone();   // nothing holds the closed socket
 			delete _Socket_udps[socketId];
 			U.__held = [];
 			U.__listener = null;
@@ -1096,7 +1130,6 @@ var _Socket_udpMembership = F4(function(join, group, iface, socketId)
 			var scope = iface === '' ? _Socket_scopeOf(group) : _Socket_scopeOf(iface);
 			nodeIface = scope === '' ? (iface === '' ? undefined : '::') : '::%' + _Socket_scopeName(scope);
 		}
-		__Stream_noteActivity();
 		try
 		{
 			if (join) U.__socket.addMembership(group.split('%')[0], nodeIface);
@@ -1133,6 +1166,7 @@ var _Socket_attachConnectionListener = F2(function(listenerId, toTask)
 			__Scheduler_rawSpawn(toTask(connT));
 		};
 		L.__listener = listener;
+		var release = L.__live.hold();   // an onConnection subscription holds the listener
 		var held = L.__held;
 		L.__held = [];
 		for (var i = 0; i < held.length; i++)
@@ -1141,6 +1175,7 @@ var _Socket_attachConnectionListener = F2(function(listenerId, toTask)
 		}
 		return function()
 		{
+			release();
 			if (L.__listener === listener)
 			{
 				L.__listener = null;
@@ -1190,6 +1225,7 @@ var _Socket_attachMessageListener = F2(function(socketId, toTask)
 			__Scheduler_rawSpawn(toTask(dgram));
 		};
 		U.__listener = listener;
+		var release = U.__live.hold();   // an onMessage subscription holds the socket
 		var held = U.__held;
 		U.__held = [];
 		for (var i = 0; i < held.length; i++)
@@ -1198,6 +1234,7 @@ var _Socket_attachMessageListener = F2(function(socketId, toTask)
 		}
 		return function()
 		{
+			release();
 			if (U.__listener === listener)
 			{
 				U.__listener = null;

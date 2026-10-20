@@ -7,7 +7,8 @@ watcher (macOS, or ECO_SYSTEM_WATCH_POLL=1) may see only the creation, so if
 no `Changed` has arrived 1.2 s after the `Moved`, the test appends to the file
 once more. Once the
 event has arrived the subscription is dropped; the active watch held the
-program alive (pendingAsync) and releasing it lets the program exit.
+program alive (a subscription hold, plans/program-liveness-rule.md LIVE_001)
+and releasing it lets the program exit.
 -}
 
 -- CHECK: watching

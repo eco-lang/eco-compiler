@@ -3,7 +3,7 @@ import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2)
 import Elm.Kernel.List exposing (fromArray)
 import Maybe exposing (Just, Nothing)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, noteActivity, toBytes)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, toBytes)
 */
 
 // FileSystem — JS twin of src/eco-system/FileSystem/ (eco/system), plans/eco-system-library.md
@@ -88,7 +88,6 @@ function _FileSystem_task(run)
 {
 	return __Scheduler_binding(function(callback)
 	{
-		__Stream_noteActivity();
 		run(
 			function(value) { callback(__Scheduler_succeed(value)); },
 			function(err, syscall, path) { callback(_FileSystem_errTask(err, syscall, path)); }
@@ -228,7 +227,6 @@ var _FileSystem_copyFile = F2(function(src, dest)
 {
 	return __Scheduler_binding(function(callback)
 	{
-		__Stream_noteActivity();
 		_FileSystem_fs.stat(src, function(err, s)
 		{
 			if (err)
@@ -493,7 +491,6 @@ function _FileSystem_handleTask(fd, run)
 			callback(_FileSystem_badHandle());
 			return;
 		}
-		__Stream_noteActivity();
 		run(
 			function(value) { callback(__Scheduler_succeed(value)); },
 			function(err, syscall) { callback(_FileSystem_errTask(err, syscall, '')); }
@@ -524,7 +521,6 @@ var _FileSystem_open = F2(function(flags, path)
 			callback(_FileSystem_errnoTask('EINVAL', 'open', path));
 			return;
 		}
-		__Stream_noteActivity();
 		_FileSystem_fs.open(path, flags, 438, function(err, fd)
 		{
 			if (err)
@@ -549,7 +545,6 @@ var _FileSystem_close = function(fd)
 			return;
 		}
 		_FileSystem_openHandles.delete(fd);
-		__Stream_noteActivity();
 		_FileSystem_fs.close(fd, function(err)
 		{
 			callback(err && err.code !== 'EINTR' ? _FileSystem_errTask(err, 'close', '') : __Scheduler_succeed(__Utils_Tuple0));

@@ -2,7 +2,7 @@ module TerminalOnResizeTest exposing (main)
 
 {-| `Terminal.onResize` (plans/eco-system-library.md Phase 5 step 5.3):
 the subscription installs a SIGWINCH listener through SignalService, holds
-no pendingAsync (resize subscriptions do not keep the program alive, §3.4),
+nothing (resize subscriptions are ambient, plans/program-liveness-rule.md X2),
 and delivers nothing when no stdio fd is a terminal (as Node's stdout
 'resize'). A child sends SIGWINCH to this program; the program carries on and
 exits 0 once its work is done.

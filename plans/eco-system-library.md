@@ -544,8 +544,12 @@ produce or consume chunks would block every other elm/http request.
 - `WaitService` gets per-client **lanes** and an `unclaimed_` map, and reports the raw wait status.
 - `TimerService` gets `cancel(token)`.
 
-**Keep-alive rule:** a kernel holds one `pendingAsync` count while there is external IO that should
-keep the program alive.
+**Keep-alive rule:** superseded by [`plans/program-liveness-rule.md`](program-liveness-rule.md)
+(LIVE_001-LIVE_006): a program keeps running while it waits for something it asked for, each wait
+backed by one hold of the Scheduler's hold API. The table below is the original (pre-liveness-rule)
+rule; in particular a listening server, an open listener and a bound UDP socket no longer hold
+for their lifetime (they hold through parked accepts and receives, subscriptions and delivered
+requests), and held items hold nothing.
 
 | Holds a count | Does not hold a count |
 |---|---|
@@ -665,7 +669,10 @@ runs them (D15: real bodies from Phase 10 on; `System`'s are done).
   entries must drop 1 (D10).
 - **`applicationPath`** = the executable's real path: `/proc/self/exe` on Linux, `_NSGetExecutablePath`
   plus `realpath` on macOS.
-- **`onEmptyEventLoop`** (Node `beforeExit` semantics):
+- **`onEmptyEventLoop`** (Node `beforeExit` semantics). Superseded by
+  [`plans/program-liveness-rule.md`](program-liveness-rule.md) §7 (L-REARM, LIVE_005): one armed
+  bit per program run, cleared by firing, set only by `System.rearmEmptyEventLoop`. The original
+  design was:
   1. In `runEventLoop`, when quiescent (empty queue, `pendingAsync == 0`, no stop requested), if there
      are listeners and the hook is **armed**: disarm, **unlock `mutex_`**, call the listeners (which
      `sendToApp` the subscribed msgs and `drain()`), re-lock, and `continue`.

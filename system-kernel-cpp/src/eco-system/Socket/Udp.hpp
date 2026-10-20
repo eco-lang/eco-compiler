@@ -23,17 +23,19 @@
 //   * The main-thread UDP table (T5-style, keyed on the heap generation,
 //     holding NO HPointers): UdpEntry { handler, bound endpoint, parked
 //     receive tokens (oldest first), the held FIFO of datagrams nobody took
-//     yet (max 64, the oldest dropped), closed, counted, subscribed }.
+//     yet (max 64, the oldest dropped), closed, subHold, subscribed }.
 //     Delivery (§3.4): a datagram goes to the oldest parked receive, else to
 //     every onMessage tagger of the socket (the "Socket.Udp" manager), else
 //     into the held FIFO; held items are served first whenever a consumer
 //     appears.
 //
-// Counts (§3.3.8, G10): a bound socket holds one pendingAsync count from
-// the bind completion until its UdpClosed drain; send and membership (R
-// mode) hold one each until their OpDone drain (SocketTables.cpp's OpDone
-// dispatcher); parked receives (A mode) hold none: their CancelFn returns a
-// credit and returns false.
+// Holds (§3.3.8, G10, LIVE_001): a bound socket holds nothing of its own;
+// an onMessage subscription holds `subHold` (udpTablesSyncSubscriptions,
+// released when it goes or on UdpClosed); send and membership (R mode) hold
+// one each until their OpDone drain (SocketTables.cpp's OpDone dispatcher);
+// each parked receive holds its parkResume hold until it is served, failed
+// or killed (its CancelFn returns the credit and true). Held datagrams hold
+// nothing.
 //
 // Windows: udpBind fails ENOTSUP on the pool, so no handler ever exists and
 // every other kernel fails (or, for udpClose, does nothing) on an unknown id.
@@ -141,9 +143,9 @@ UdpBindResult udpBindOn(const std::string& address, int64_t port, bool reuseAddr
 struct UdpEntry {
     std::shared_ptr<UdpHandler> handler;
     SockEndpoint bound;
-    std::deque<uint64_t> parkedReceives;   // resume tokens, oldest first (no count of their own)
-    std::deque<SocketEvent> held;          // Datagram events nobody took yet (max kMaxHeld)
-    bool counted = true;                   // holds the bound socket's pendingAsync count
+    std::deque<uint64_t> parkedReceives;   // resume tokens, oldest first (each holds its parkResume hold)
+    std::deque<SocketEvent> held;          // Datagram events nobody took yet (max kMaxHeld; hold nothing)
+    HoldToken subHold = kNoHold;           // held while an onMessage subscription exists
     bool subscribed = false;               // setUnlimited(true) was sent
     bool closed = false;                   // udpClose ran (the UdpClosed event is pending)
 };
@@ -168,11 +170,13 @@ UdpEntry* findUdp(int64_t id);
 void ensureUdpTables();
 
 // The "Socket.Udp" manager changed its subscriptions: sends setUnlimited to
-// every socket whose subscribed state changed and schedules the delivery of
-// held datagrams (from the socket drain, not from onEffects).
+// every socket whose subscribed state changed, acquires or releases its
+// subscription hold, and schedules the delivery of held datagrams (from the
+// socket drain, not from onEffects).
 void udpTablesSyncSubscriptions();
 
-// T7 CancelFn of a parked receive: always false (A mode holds no count).
+// T7 CancelFn of a parked receive: true iff it was removed (the kill handle
+// then releases its hold).
 bool cancelParkedReceive(uint64_t token);
 
 // --- Kernel bodies (Appendix B.2) --------------------------------------------------

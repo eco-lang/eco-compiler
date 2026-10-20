@@ -11,7 +11,11 @@
 //   * ListenerEntry: the ListenerHandler, the bound endpoint, the parked
 //     accept tokens (oldest first), the held FIFO of accepted connections
 //     nobody took yet (SD14), the closing state with the closeListener
-//     tokens, and whether the listener still holds its pendingAsync count.
+//     tokens, and the subscription hold. An open listener holds nothing of
+//     its own (LIVE_001, plans/program-liveness-rule.md §10.6): each parked
+//     accept holds its parkResume hold, and `subHold` exists while an
+//     onConnection subscription names the listener. Held connections hold
+//     nothing.
 //   * ConnEntry: the Conn, its two stream ids, the Unix credentials and TLS
 //     info captured as POD, and how many faces are alive (erased with the
 //     second face).
@@ -50,9 +54,9 @@ namespace Eco::System {
 struct ListenerEntry {
     std::shared_ptr<ListenerHandler> handler;
     SockEndpoint bound;
-    std::deque<uint64_t> parkedAccepts;   // resume tokens, oldest first (no count of their own)
-    std::deque<SocketEvent> held;         // Accepted events nobody took yet
-    bool counted = true;                  // holds the open listener's pendingAsync count
+    std::deque<uint64_t> parkedAccepts;   // resume tokens, oldest first (each holds its parkResume hold)
+    std::deque<SocketEvent> held;         // Accepted events nobody took yet (they hold nothing)
+    HoldToken subHold = kNoHold;          // held while an onConnection subscription exists
     bool subscribed = false;              // setUnlimited(true) was sent
     bool closing = false;                 // closeListener started
     std::vector<uint64_t> closeTokens;    // closeListener tasks (one count each)
@@ -105,13 +109,14 @@ HPointer buildListenT(int64_t listenerId, const SockEndpoint& bound);
 void socketTablesFaceGone(int64_t connId);
 
 // The "Socket" manager changed its subscriptions: sends setUnlimited to
-// every listener whose subscribed state changed and schedules the delivery
-// of held connections (from the socket drain, not from onEffects).
+// every listener whose subscribed state changed, acquires or releases its
+// subscription hold, and schedules the delivery of held connections (from
+// the socket drain, not from onEffects).
 void socketTablesSyncSubscriptions();
 
 // T7 CancelFns.
 bool cancelPendingConnect(uint64_t token);   // true iff the connect never resolved
-bool cancelParkedAccept(uint64_t token);     // always false (A mode holds no count)
+bool cancelParkedAccept(uint64_t token);     // true iff the parked accept was removed (the handle releases)
 
 // --- Manager hooks (SocketManager.cpp) ----------------------------------------
 bool socketManagerHasSubscribers(int64_t listenerId);

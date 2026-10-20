@@ -6,10 +6,11 @@
 //
 //   takeUpgrade key (S mode, Task FErr): hands a delivered HTTP/1.1 upgrade
 //   request over to WebSocket. On the main thread httpTablesTakeUpgrade
-//   consumes the key (its keep-alive count is released; a later
-//   Response.send on it completes at once and writes nothing) and returns
-//   the kept raw request; the connection becomes a WebSocket handshake id
-//   (wsTablesAddServerHandshake: the id space of readUpgrade / dial), so
+//   consumes the key (a later Response.send on it completes at once and
+//   writes nothing) and returns the kept raw request and the key's delivery
+//   hold; the connection becomes a WebSocket handshake id carrying that hold
+//   as its peerHold (wsTablesAddServerHandshake: the id space of readUpgrade
+//   / dial; plans/program-liveness-rule.md N5, L14), so
 //   WebSocket.accept / reject / abandon (open / reject / abandon kernels)
 //   work on it unchanged. A reactor command (submitted before any `open`,
 //   so it runs first) ends HTTP/1.1 on the connection
@@ -206,24 +207,44 @@ HPointer httpServerTakeUpgradeBody(HPointer captured) {
         HttpSrv::ensureHttpTables();
         HttpSrv::RequestData req;
         std::weak_ptr<Conn> weak;
-        if (!HttpSrv::httpTablesTakeUpgrade(key, req, weak)) {
+        HoldToken peerHold = kNoHold;
+        if (!HttpSrv::httpTablesTakeUpgrade(key, req, weak, peerHold)) {
             return failFErr("EINVAL",
                             "upgradeRequest EINVAL: the request was answered already or is not an upgrade request");
         }
+        // Owned here until the handshake entry takes it (released on a throw
+        // or when the connection is gone: nobody is owed an answer then).
+        LivenessHold hold = LivenessHold::adopt(peerHold);
         std::shared_ptr<Conn> c = weak.lock();
         if (!c) return failFErr("ECANCELED", "socket closed");
         ensureWsTables();
         if ((req.flags & 3) == 2) {
             // WS9: an HTTP/2 extended CONNECT; the stream stays with its connection.
-            int64_t hsId = wsTablesAddServerH2Handshake(std::make_shared<H2Upgrade>(weak, key));
+            int64_t hsId = wsTablesAddServerH2Handshake(std::make_shared<H2Upgrade>(weak, key), hold.detach());
             return upgradeResult(hsId, req, "2", true);
         }
-        int64_t hsId = wsTablesAddServerHandshake(c);
-        IoReactor::instance().submit([c, key] {
+        int64_t hsId = wsTablesAddServerHandshake(c, hold.detach());
+        uint64_t gen = currentHeapGeneration();
+        IoReactor::instance().submit([c, key, hsId, gen] {
             auto* p = dynamic_cast<HttpSrv::Http1Protocol*>(c->protocol());
-            if (!p || !p->upgradePending(key)) return;   // closed meanwhile: open fails
+            if (!p || !p->upgradePending(key)) {   // closed meanwhile: open fails
+                WsEvent ev;   // and nobody is owed an answer: the peer hold ends
+                ev.kind = WsEvent::Kind::HandshakeGone;
+                ev.gen = gen;
+                ev.wsId = hsId;
+                postWsEvent(std::move(ev));
+                return;
+            }
             std::string head = p->takeUpgradeHead(*c, key);
-            c->setProtocol(std::make_unique<HoldProtocol>(), std::move(head));   // retires p
+            // Watch mode: the end of the connection ends the peer hold (N5).
+            auto gone = [hsId, gen] {
+                WsEvent ev;
+                ev.kind = WsEvent::Kind::HandshakeGone;
+                ev.gen = gen;
+                ev.wsId = hsId;
+                postWsEvent(std::move(ev));
+            };
+            c->setProtocol(std::make_unique<HoldProtocol>(gone), std::move(head));   // retires p
         });
         // ( hsId, ( method, target, version ), ( headers, False, remote ) ).
         return upgradeResult(hsId, req, (req.flags & 3) == 0 ? "1.0" : "1.1", false);

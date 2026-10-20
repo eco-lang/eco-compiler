@@ -167,7 +167,7 @@ void completeNow(HPointer& resume, uint64_t& token, bool& counted) {
     Scheduler::callClosure1(resume, task);
     // Release after the resume is published (plans/program-liveness-rule.md
     // §6.2, L6); token/counted stay set until then.
-    s.decrementPendingAsync();
+    s.releaseHold(token);
     token = 0;
     counted = false;
 }
@@ -184,7 +184,7 @@ void copyHeaders(HPointer headers, ResponseData& data) {
 }
 
 // The rest of respond / respondHtml once the response is copied out: register
-// the resume (G10), take one count, and hand the POD to HttpTables.
+// the resume with its hold (G10), and hand the POD to HttpTables.
 HPointer submitResponse(int64_t key, ResponseData data, HPointer resume, uint64_t& token,
                         bool& counted);
 
@@ -203,8 +203,7 @@ HPointer httpServerCreateServerBody(HPointer captured, HPointer resume) {
         }
         HttpSrv::ensureHttpTables();   // bind the Scheduler on the main thread
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);   // G10
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Http.Server.createServer");   // G10
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -275,8 +274,7 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
         }
         if (hasTls) ensureTlsInit();   // main thread, before any OpenSSL use (N13)
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);   // G10
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Http.Server.createServerWith");   // G10
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -359,8 +357,7 @@ HPointer submitResponse(int64_t key, ResponseData data, HPointer resume, uint64_
                         bool& counted) {
     HttpSrv::ensureHttpTables();
     auto& s = Scheduler::instance();
-    token = s.registerPendingResume(resume);   // G10
-    s.incrementPendingAsync();
+    token = s.parkResume(resume, HoldKind::Task, "Http.Server.respond");   // G10
     counted = true;
     if (!HttpSrv::httpTablesRespond(key, token, std::move(data))) {
         completeNow(resume, token, counted);   // unknown, answered or gone: at once
@@ -382,8 +379,7 @@ HPointer httpServerCloseServerBody(HPointer captured, HPointer resume) {
         }
         HttpSrv::ensureHttpTables();
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);   // G10
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Http.Server.closeServer");   // G10
         counted = true;
         if (!HttpSrv::httpTablesCloseServer(id, deadlineMs, token)) {
             completeNow(resume, token, counted);   // unknown or closed: at once

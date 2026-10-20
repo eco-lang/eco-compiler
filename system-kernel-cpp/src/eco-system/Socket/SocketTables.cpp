@@ -4,21 +4,25 @@
 // §3.4). Main thread only.
 //
 // Counts (§3.3.8, G10), released here:
-//   * Connected: the connect's count (AsyncRelease), resumed or orphaned
+//   * Connected: the connect's hold (HoldRelease), resumed or orphaned
 //     (an orphaned success is aborted: "an orphaned success is closed").
 //   * OpDone: the R-mode operation's count.
-//   * ListenerClosed: the listener's own count (once) and one count per
-//     closeListener task.
-//   * Accepted: none (parked accepts hold no count; the listener does).
+//   * ListenerClosed: the subscription hold (`subHold`, if any), the hold
+//     of every parked accept it fails, and one hold per closeListener task.
+//   * Accepted: the hold of the parked accept it is handed to (none when it
+//     goes to the subscribers or into the held FIFO: held items hold
+//     nothing, LIVE_001).
+// An open listener holds nothing of its own (plans/program-liveness-rule.md
+// §10.6): parked accepts hold (parkResume), and so does an onConnection
+// subscription (`subHold`, socketTablesSyncSubscriptions).
 //
 // Templates used: T5 (generation-keyed tables), T8 (via the manager), T9
-// (completions), G10 (AsyncRelease), G12 (drain per delivery).
+// (completions), G10 (HoldRelease), G12 (drain per delivery).
 //
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Socket/SocketTables.hpp"
 
-#include "eco-system/Core/AsyncRelease.hpp"
 #include "eco-system/Socket/ConnChannel.hpp"
 #include "eco-system/Stream/Stream.hpp"
 #include "eco-system/Stream/StreamTable.hpp"
@@ -38,11 +42,18 @@ void abortConn(const std::shared_ptr<Conn>& c) {
     reactor().submit([cc] { cc->abort(false); });
 }
 
-// A dead heap's entries: close their reactor objects (their counts and
-// tokens died with the heap).
+// A dead heap's entries: close their reactor objects and release the
+// holds of their subscriptions and parked accepts (their resumes died with
+// the heap; their tasks never resume).
 void resetTables(SocketTables& t) {
+    auto& sched = Scheduler::instance();
     for (auto& kv : t.listeners) {
         ListenerEntry& e = kv.second;
+        HoldRelease subHold(e.subHold);
+        for (uint64_t token : e.parkedAccepts) {
+            (void)sched.takePendingResume(token);
+            sched.releaseHold(token);
+        }
         for (auto& ev : e.held) abortConn(ev.conn);
         if (e.handler) {
             auto h = e.handler;
@@ -101,6 +112,7 @@ void serveHeld(int64_t id) {
             e->parkedAccepts.pop_front();
             HPointer resume = sched.takePendingResume(token);
             if (alloc::isNil(resume)) continue;   // killed (its cancel already ran)
+            HoldRelease release(token);   // the parked accept's hold, after the resume
             SocketEvent ev = std::move(e->held.front());
             e->held.pop_front();
             HPointer task = alloc::listNil();
@@ -136,7 +148,7 @@ void serveAllHeld() {
 // --- Event dispatchers (SocketEvents.cpp drain) ------------------------------
 
 bool onConnected(SocketEvent& ev) {
-    AsyncRelease release;   // the connect's count (§3.3.8)
+    HoldRelease release(ev.token);   // the connect's hold (§3.3.8)
     socketTables().pendingConnects.erase(ev.token);
     HPointer resume = Scheduler::instance().takePendingResume(ev.token);
     if (alloc::isNil(resume)) {
@@ -169,7 +181,7 @@ bool onAccepted(SocketEvent& ev) {
 }
 
 bool onOpDone(SocketEvent& ev) {
-    AsyncRelease release;   // the operation's count
+    HoldRelease release(ev.token);   // the operation's hold
     if (ev.failed) return resumeFail(ev.token, ev.code, ev.message);
     return resumeOk(ev.token);
 }
@@ -179,14 +191,15 @@ bool onListenerClosed(SocketEvent& ev) {
     if (!e) return false;
     ListenerEntry entry = std::move(*e);
     socketTables().listeners.erase(ev.ownerId);
-    AsyncRelease listenerCount(entry.counted);   // the open listener's count, once
+    HoldRelease subHold(entry.subHold);   // the subscription's hold, if any
     for (auto& h : entry.held) abortConn(h.conn);
     bool resumed = false;
     for (uint64_t token : entry.parkedAccepts) {   // closeAll path: nobody failed them yet
+        HoldRelease acceptHold(token);
         resumed |= resumeFail(token, "ECANCELED", "accept ECANCELED");
     }
     for (uint64_t token : entry.closeTokens) {
-        AsyncRelease opCount;
+        HoldRelease opHold(token);
         resumed |= resumeOk(token);
     }
     return resumed;
@@ -295,9 +308,19 @@ void socketTablesFaceGone(int64_t connId) {
 }
 
 void socketTablesSyncSubscriptions() {
+    auto& sched = Scheduler::instance();
     bool heldWaiting = false;
     for (auto& kv : socketTables().listeners) {
         ListenerEntry& e = kv.second;
+        // The subscription hold (LIVE_001): while an onConnection subscription
+        // names this open listener. A closing listener's closeListener tasks
+        // hold until ListenerClosed.
+        bool wantHold = !e.closing && e.handler && socketManagerHasSubscribers(kv.first);
+        if (wantHold && !e.subHold) e.subHold = sched.acquireHold(HoldKind::Subscription, "Socket.onConnection");
+        if (!wantHold && e.subHold) {
+            sched.releaseHold(e.subHold);
+            e.subHold = kNoHold;
+        }
         if (e.closing || !e.handler) continue;
         bool on = socketManagerHasSubscribers(kv.first);
         if (on != e.subscribed) {
@@ -313,7 +336,7 @@ void socketTablesSyncSubscriptions() {
 bool cancelPendingConnect(uint64_t token) {
     auto& m = socketTables().pendingConnects;
     auto it = m.find(token);
-    if (it == m.end()) return false;   // its Connected event is queued: the drain decrements
+    if (it == m.end()) return false;   // its Connected event is queued: the drain releases
     std::shared_ptr<Conn> c = it->second;
     m.erase(it);
     return c->cancelConnect();
@@ -329,9 +352,9 @@ bool cancelParkedAccept(uint64_t token) {
             auto h = kv.second.handler;
             reactor().submit([h] { h->addCredit(-1); });   // return the credit
         }
-        break;
+        return true;   // removed: the kill handle releases its hold
     }
-    return false;   // A mode: no count of its own (§3.3.8)
+    return false;   // not parked any more: whoever took it released (or will)
 }
 
 } // namespace Eco::System

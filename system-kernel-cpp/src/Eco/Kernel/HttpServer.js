@@ -3,9 +3,10 @@ import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray)
 import Maybe exposing (Nothing)
-import Eco.Kernel.Stream exposing (noteActivity, toBytes, toUint8Array)
+import Eco.Kernel.Stream exposing (toBytes, toUint8Array)
 import Eco.Kernel.Tls exposing (code, errorMessage)
 import Eco.Kernel.WebSocket exposing (parkUpgrade, parkH2Upgrade)
+import Eco.Kernel.Liveness exposing (handle, hold)
 import Html.Dom as Dom exposing (toString)
 */
 
@@ -17,8 +18,8 @@ import Html.Dom as Dom exposing (toString)
 //   createServer host port   listens on host:port with the default limits (§7); fails with
 //                            ( code, message ) such as ( "EADDRINUSE", "listen EADDRINUSE:
 //                            address already in use 127.0.0.1:8080" ). Result ( serverId,
-//                            boundPort ). A listening server keeps the program alive (ref'd)
-//                            until closeServer.
+//                            boundPort ). A listening server holds nothing of its own
+//                            (see Liveness below).
 //   createServerWith         the same with ServerOptions (Appendix A.2): address text from
 //                            Socket.Address, maxConnections (Node's server.maxConnections:
 //                            connections over the limit are dropped, where native leaves them
@@ -117,11 +118,47 @@ import Html.Dom as Dom exposing (toString)
 // bits 0-1 the HTTP version (0 = 1.0, 1 = 1.1), bit 2 TLS; the upgrade token is the
 // lower-cased protocol an upgrade request asks for, or ""; headers are one
 // ( name, [ value ] ) entry per occurrence in arrival order with the name as sent.
+//
+// Liveness (plans/program-liveness-rule.md §10.6, LIVE_001): the server's Node handle is
+// wrapped in a Liveness handle (unref'd) that holds while createServer is in flight and
+// while the manager's listener is attached (an onRequest subscription exists); closeServer
+// ends it (gone). Every connection's raw socket gets its own Liveness handle (unref'd: an
+// idle keep-alive connection, or a request nobody asked for, holds nothing). A request
+// delivered to the listener holds its connection (LIVE-1c) until it is answered, re-held by
+// holdRequest, handed over by takeUpgrade (the handshake then holds the peer through a free
+// hold until accept / reject / abandon or the socket closes; WebSocket.js), or until its
+// connection goes away.
 
 var _HttpServer_servers = {};
 var _HttpServer_nextServerId = 1;
 var _HttpServer_pending = {};   // response key -> entry delivered to Elm (or held), until answered
 var _HttpServer_nextKey = 1;
+
+// The Liveness handle of the connection entry `e` arrived on (the raw socket's; an HTTP/2
+// entry's through its session), or null.
+function _HttpServer_connLive(e)
+{
+	var sock = e.__socket || (e.__session ? e.__session.socket : null);
+	if (!sock) return null;
+	var raw = sock._parent || sock;
+	return raw.__live || null;
+}
+
+// A delivered entry holds its connection until answered (LIVE-1c); idempotent.
+function _HttpServer_holdEntry(e)
+{
+	if (e.__release) return;
+	var live = _HttpServer_connLive(e);
+	e.__release = live ? live.hold() : __Liveness_hold();
+}
+
+// Ends entry `e`'s delivery hold, if any (idempotent).
+function _HttpServer_releaseEntry(e)
+{
+	var release = e.__release;
+	e.__release = null;
+	if (release) release();
+}
 
 // §7 defaults (plans/eco-system-websockets.md), as Http.Server.defaultServerOptions.
 function _HttpServer_defaults()
@@ -364,7 +401,6 @@ function _HttpServer_flagsOf(s, req)
 // 'request' / 'checkContinue': checks, then the body, then the queue.
 function _HttpServer_onRequest(s, req, res, expectContinue)
 {
-	__Stream_noteActivity();
 	var cfg = s.__cfg;
 	var hosts = _HttpServer_hostHeaders(req.rawHeaders);
 	var http11 = req.httpVersionMajor === 1 && req.httpVersionMinor >= 1;
@@ -423,7 +459,6 @@ function _HttpServer_onRequest(s, req, res, expectContinue)
 	req.on('end', function()
 	{
 		if (failed) return;
-		__Stream_noteActivity();
 		var body = Buffer.concat(chunks);
 		var host = hosts.length === 1 ? hosts[0] : '';
 		e.__size = body.length + 256;
@@ -439,7 +474,6 @@ function _HttpServer_onRequest(s, req, res, expectContinue)
 // (behind earlier requests of the same socket); its answer is written raw.
 function _HttpServer_onUpgrade(s, req, socket, head, isConnect)
 {
-	__Stream_noteActivity();
 	var hosts = _HttpServer_hostHeaders(req.rawHeaders);
 	var http11 = req.httpVersionMajor === 1 && req.httpVersionMinor >= 1;
 	var bad = hosts.length > 1 || (hosts.length === 0 && http11) || (hosts.length === 1 && !_HttpServer_validHost(hosts[0]));
@@ -490,6 +524,7 @@ function _HttpServer_deliver(s, e)
 {
 	if (s.__listener)
 	{
+		_HttpServer_holdEntry(e);   // the program owes the peer an answer from here on
 		s.__listener(e);
 		return;
 	}
@@ -526,6 +561,7 @@ function _HttpServer_writeAnswer(e, status, raw, bytes, forceClose, complete)
 		if (done) return;
 		done = true;
 		complete();
+		_HttpServer_releaseEntry(e);   // answered: after the respond task is published
 	};
 	var st = _HttpServer_finalStatus(status);
 	var s = e.__server;
@@ -807,7 +843,6 @@ function _HttpServer_createH2Server(options, cfg)
 // Delivered when the body is complete; an (extended) CONNECT at once.
 function _HttpServer_onH2Request(s, req, res)
 {
-	__Stream_noteActivity();
 	var http2 = require('http2');
 	var cfg = s.__cfg;
 	var stream = req.stream;
@@ -943,7 +978,6 @@ function _HttpServer_onH2Request(s, req, res)
 	stream.on('end', function()
 	{
 		if (failed) return;
-		__Stream_noteActivity();
 		deliver(Buffer.concat(chunks));
 	});
 }
@@ -1046,7 +1080,6 @@ function _HttpServer_writeH2(stream, st, raw, bytes, isHead, closeAfter, complet
 // the task result. `tls`: null, or { __chain, __key, __http2 } (https, WS3).
 function _HttpServer_start(host, port, cfg, tls, callback)
 {
-	__Stream_noteActivity();
 	var http = require('http');
 	var timeouts = [cfg.__headersT, cfg.__requestT, cfg.__keepAlive].filter(function(t) { return t > 0; });
 	var shortest = timeouts.length > 0 ? Math.min.apply(null, timeouts) : 30000;
@@ -1057,6 +1090,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 		headersT = requestT;   // Node requires headersTimeout <= requestTimeout
 	}
 	var server;
+	var live = null, starting = null;
 	var alpn = tls ? _HttpServer_alpnList(tls.__http2) : null;
 	try
 	{
@@ -1098,10 +1132,13 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 	{
 		server.maxConnections = cfg.__maxConnections;
 	}
+	live = __Liveness_handle(server);   // unref'd: a listening server holds nothing
+	starting = live.hold();             // the createServer task is in flight
 	var id = _HttpServer_nextServerId++;
 	var s = {
 		__id: id,
 		__server: server,
+		__live: live,
 		__cfg: cfg,
 		__authority: _HttpServer_authorityOf(host, port),
 		__listener: null,   // function(entry), while the Elm manager listens
@@ -1119,17 +1156,21 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 		if (!started)
 		{
 			started = true;
+			live.gone();
 			callback(__Scheduler_fail(__Utils_Tuple2(e.code || 'EUNKNOWN', e.message || String(e))));
+			starting();
 		}
 	});
 	var track = function(socket)
 	{
 		s.__sockets.add(socket);
+		var raw = socket._parent || socket;
+		if (!raw.__live) raw.__live = __Liveness_handle(raw);   // unref'd: an idle connection holds nothing
 		socket.on('close', function()
 		{
 			s.__sockets.delete(socket);
-			// ConnGone (native): the keys of this connection are forgotten; a later respond
-			// completes at once.
+			// ConnGone (native): the keys of this connection are forgotten (and stop holding);
+			// a later respond completes at once.
 			var q = socket.__httpQ || [];
 			for (var i = 0; i < q.length; i++)
 			{
@@ -1137,6 +1178,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 				{
 					delete _HttpServer_pending[q[i].__key];
 				}
+				_HttpServer_releaseEntry(q[i]);
 			}
 			s.__queue = s.__queue.filter(function(e)
 			{
@@ -1198,7 +1240,12 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 			// ConnGone (native): the keys of this connection are forgotten.
 			for (var k in _HttpServer_pending)
 			{
-				if (_HttpServer_pending[k].__session === session) delete _HttpServer_pending[k];
+				var pe = _HttpServer_pending[k];
+				if (pe.__session === session)
+				{
+					delete _HttpServer_pending[k];
+					_HttpServer_releaseEntry(pe);
+				}
 			}
 			s.__queue = s.__queue.filter(function(e)
 			{
@@ -1224,13 +1271,16 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 			s.__authority = _HttpServer_authorityOf(host, bound);
 			_HttpServer_servers[id] = s;
 			callback(__Scheduler_succeed(__Utils_Tuple3(id, boundAddress, bound)));
+			starting();   // released after the result is published
 		});
 	}
 	catch (e)
 	{
 		// e.g. ERR_SOCKET_BAD_PORT, thrown synchronously
 		started = true;
+		live.gone();
 		callback(__Scheduler_fail(__Utils_Tuple2(e.code || 'EUNKNOWN', e.message || String(e))));
+		starting();
 	}
 }
 
@@ -1295,7 +1345,6 @@ var _HttpServer_respond = F4(function(key, status, headers, body)
 			return;
 		}
 		delete _HttpServer_pending[key];
-		__Stream_noteActivity();
 		var user = _HttpServer_userHeaders(headers);
 		_HttpServer_writeAnswer(e, status, user.__raw, __Stream_toUint8Array(body), user.__askClose, complete);
 	});
@@ -1317,7 +1366,6 @@ var _HttpServer_respondHtml = F5(function(key, status, headers, doctype, node)
 			return;
 		}
 		delete _HttpServer_pending[key];
-		__Stream_noteActivity();
 		var user = _HttpServer_userHeaders(headers);
 		var body = Buffer.from((doctype ? '<!DOCTYPE html>' : '') + __Dom_toString(node), 'utf8');
 		_HttpServer_writeAnswer(e, status, user.__raw, body, user.__askClose, complete);
@@ -1339,8 +1387,8 @@ var _HttpServer_closeServer = F2(function(serverId, deadlineMs)
 			complete();
 			return;
 		}
-		__Stream_noteActivity();
 		s.__closing = true;
+		s.__live.gone();      // nothing holds the closed server; the setImmediate below holds the task
 		s.__server.close();   // stop accepting: the port is free
 		// Held requests (no subscriber): 503 + close.
 		var held = s.__queue;
@@ -1384,10 +1432,13 @@ var _HttpServer_takeUpgrade = function(key)
 			if (stream.destroyed || stream.closed)
 			{
 				callback(__Scheduler_fail(__Utils_Tuple2('ECANCELED', 'socket closed')));
+				_HttpServer_releaseEntry(e);
 				return;
 			}
-			__Stream_noteActivity();
-			callback(__Scheduler_succeed(__WebSocket_parkH2Upgrade(stream, e.__method, e.__target, e.__rawHeaders)));
+			// The peer is still owed an answer: the handshake holds it (N5), then this
+			// delivery hold ends.
+			callback(__Scheduler_succeed(__WebSocket_parkH2Upgrade(stream, e.__method, e.__target, e.__rawHeaders, __Liveness_hold())));
+			_HttpServer_releaseEntry(e);
 			return;
 		}
 		if (!e || !e.__raw || !e.__upgrade)
@@ -1400,12 +1451,15 @@ var _HttpServer_takeUpgrade = function(key)
 		var socket = e.__raw;
 		var s = e.__server;
 		_HttpServer_done(e);
+		// The delivery hold ends here: the handshake takes over with a free hold (N5). The
+		// connection's own handle is left unref'd for WebSocket.js, which refs the socket
+		// itself from now on.
+		_HttpServer_releaseEntry(e);
 		if (socket.destroyed)
 		{
 			callback(__Scheduler_fail(__Utils_Tuple2('ECANCELED', 'socket closed')));
 			return;
 		}
-		__Stream_noteActivity();
 		// The socket leaves the server: closeServer's deadline no longer reaches it (§3.4,
 		// Node's behaviour), and no HTTP timeout remains armed on it.
 		var raw = socket._parent || socket;
@@ -1414,7 +1468,7 @@ var _HttpServer_takeUpgrade = function(key)
 		socket.removeListener('error', e.__onError);
 		try { socket.setTimeout(0); } catch (err) { /* destroyed */ }
 		callback(__Scheduler_succeed(__WebSocket_parkUpgrade(socket, raw, e.__head,
-			e.__method, e.__target, e.__version, e.__rawHeaders)));
+			e.__method, e.__target, e.__version, e.__rawHeaders, __Liveness_hold())));
 	});
 };
 
@@ -1439,15 +1493,18 @@ var _HttpServer_attachRequestListener = F2(function(serverId, toTask)
 			__Scheduler_rawSpawn(toTask(entry.__arg));
 		};
 		s.__listener = listener;
+		var release = s.__live.hold();   // an onRequest subscription holds the server
 		var held = s.__queue;
 		s.__queue = [];
 		s.__heldBytes = 0;
 		for (var i = 0; i < held.length; i++)
 		{
+			_HttpServer_holdEntry(held[i]);   // delivered: owed an answer
 			listener(held[i]);
 		}
 		return function()
 		{
+			release();
 			if (s.__listener === listener)
 			{
 				s.__listener = null;
@@ -1465,6 +1522,10 @@ var _HttpServer_holdRequest = F2(function(serverId, key)
 	{
 		var s = _HttpServer_servers[serverId];
 		var entry = _HttpServer_pending[key];
+		if (entry)
+		{
+			_HttpServer_releaseEntry(entry);   // held again: nobody has asked for it (LIVE-2)
+		}
 		if (s && entry)
 		{
 			_HttpServer_deliver(s, entry);

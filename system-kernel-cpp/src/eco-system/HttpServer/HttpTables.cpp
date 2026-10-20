@@ -5,16 +5,15 @@
 // during std::exit never touches freed memory. The tables are main-thread
 // only (no mutex) and reset on a new heap generation (F24): their reactor
 // objects are closed first (listeners closed, connections aborted); their
-// tokens and counts died with the heap.
+// tokens and holds died with the heap.
 //
 // Templates used: T5 (generation-keyed tables), T8/G12 (via the manager),
-// G10 (AsyncRelease: every count is released exactly once).
+// G10 (HoldRelease: every hold is released exactly once).
 //
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/HttpServer/HttpTables.hpp"
 
-#include "eco-system/Core/AsyncRelease.hpp"
 #include "eco-system/Core/AsyncSources.hpp"
 #include "eco-system/Core/Core.hpp"
 #include "eco-system/Core/IoReactor.hpp"
@@ -73,8 +72,8 @@ struct ServerEntry {
     std::shared_ptr<ServerReactorState> rstate;   // handed to reactor commands only
     std::shared_ptr<const ServerConfig> cfg;
     bool closed = false;                 // closeServer ran (its reactor part may be pending)
-    bool counted = true;                 // holds the server's keep-alive count
-    std::vector<uint64_t> closeTokens;   // closeServer tasks (one count each)
+    HoldToken subHold = kNoHold;         // held while an onRequest subscription exists (LIVE_001)
+    std::vector<uint64_t> closeTokens;   // closeServer tasks (one hold each)
     std::deque<int64_t> parked;          // keys of requests nobody was subscribed for
     size_t parkedBytes = 0;
 };
@@ -82,7 +81,7 @@ struct ServerEntry {
 struct KeyEntry {
     int64_t serverId = 0;
     std::weak_ptr<Conn> conn;
-    bool counted = false;                // holds one keep-alive count (§3.4)
+    HoldToken hold = kNoHold;            // from delivery until answered or gone (LIVE-1c); parked: none
     bool parked = false;
     size_t parkedSize = 0;
     RequestData req;                     // while parked; kept for upgrade requests (WS5)
@@ -107,10 +106,13 @@ void httpManagerDeliver(int64_t serverId, int64_t key, const RequestData& req) {
     if (g_hooks.deliver != nullptr) g_hooks.deliver(serverId, key, req);
 }
 
-// A dead heap's servers: close their reactor objects (counts and tokens
-// died with the heap).
+// A dead heap's servers: close their reactor objects and release the holds
+// of their subscriptions and delivered requests (their tokens died with the
+// heap).
 void resetTables(Tables& t) {
+    for (auto& kv : t.keys) HoldRelease release(kv.second.hold);
     for (auto& kv : t.servers) {
+        HoldRelease subHold(kv.second.subHold);
         auto l = kv.second.listener;
         auto rs = kv.second.rstate;
         reactor().submit([l, rs] {
@@ -154,12 +156,12 @@ int64_t nextServerId() {
     return next++;
 }
 
-// Erases `key`, releasing its count; a parked key leaves its server's FIFO.
+// Erases `key`, releasing its hold; a parked key leaves its server's FIFO.
 void eraseKey(int64_t key) {
     auto& t = tables();
     auto it = t.keys.find(key);
     if (it == t.keys.end()) return;
-    AsyncRelease release(it->second.counted);
+    HoldRelease release(it->second.hold);
     if (it->second.parked) {
         if (ServerEntry* s = findServer(it->second.serverId)) {
             auto& p = s->parked;
@@ -219,9 +221,9 @@ void onRequest(HttpEvent& ev) {
         KeyEntry k;
         k.serverId = id;
         k.conn = ev.conn;
-        k.counted = true;
         if (!ev.req.upgrade.empty()) k.req = ev.req;   // the raw request for WS5's takeUpgrade
-        sched.incrementPendingAsync();                 // released when the key is erased
+        // No hold yet: a request nobody asked for holds nothing (LIVE-2,
+        // N4); it starts holding when it is delivered (LIVE-1c).
         tables().keys[key] = std::move(k);
     }
     bool subscribed = httpManagerHasSubscriber(id);
@@ -231,6 +233,9 @@ void onRequest(HttpEvent& ev) {
         return;
     }
     if (subscribed && (s == nullptr || s->parked.empty())) {
+        // Delivered: the program owes the peer an answer (LIVE-1c), released
+        // when the key is erased (answered, taken as an upgrade, or gone).
+        findKey(key)->hold = sched.acquireHold(HoldKind::Item, "Http.Server.request");
         httpManagerDeliver(id, key, ev.req);   // may run Elm (G11): nothing cached past here
         return;
     }
@@ -269,6 +274,8 @@ void deliverParked() {
             s->parkedBytes -= std::min(s->parkedBytes, k->parkedSize);
             k->parked = false;
             k->parkedSize = 0;
+            // Delivered: it holds from here on (LIVE-1c).
+            k->hold = Scheduler::instance().acquireHold(HoldKind::Item, "Http.Server.request");
             RequestData req = k->req;
             if (req.upgrade.empty()) k->req = RequestData{};
             httpManagerDeliver(id, key, req);
@@ -291,10 +298,10 @@ void onServerClosed(int64_t id) {
     if (!s) return;
     ServerEntry e = std::move(*s);
     tables().servers.erase(id);
-    AsyncRelease serverCount(e.counted);   // the server's own count, once
+    HoldRelease subHold(e.subHold);   // the subscription's hold, if any
     for (int64_t key : e.parked) respond503(key);   // parked after closeServer started
     for (uint64_t token : e.closeTokens) {
-        AsyncRelease opCount;
+        HoldRelease opHold(token);
         if (resumeUnit(token)) Scheduler::instance().drain();   // G12
     }
 }
@@ -311,7 +318,7 @@ void httpDrain() {
                 onRequest(ev);
                 break;
             case HttpEvent::Kind::RespondDone: {
-                AsyncRelease release;   // the respond task's count
+                HoldRelease release(ev.token);   // the respond task's hold
                 if (resumeUnit(ev.token)) Scheduler::instance().drain();
                 break;
             }
@@ -382,9 +389,9 @@ int64_t httpTablesStartServer(int fd, std::shared_ptr<ServerConfig> cfg, int64_t
     e.listener = h;
     e.rstate = rstate;
     e.cfg = cfg;
+    // A listening server holds nothing of its own (LIVE_001, L2): its
+    // onRequest subscriptions and delivered requests hold.
     t.servers.emplace(id, std::move(e));
-    // A listening server keeps the program alive until closed (§3.4).
-    Scheduler::instance().incrementPendingAsync();
     reactor().submit([h] { h->start(); });
     return id;
 }
@@ -404,6 +411,10 @@ bool httpTablesCloseServer(int64_t serverId, int64_t deadlineMs, uint64_t token)
     s->closeTokens.push_back(token);
     if (s->closed) return true;   // completes with the first close
     s->closed = true;
+    if (s->subHold) {   // the close task holds from here on (ServerClosed)
+        Scheduler::instance().releaseHold(s->subHold);
+        s->subHold = kNoHold;
+    }
     // Requests nobody was subscribed for: 503 + close (§3.4).
     std::deque<int64_t> parked;
     parked.swap(s->parked);
@@ -429,11 +440,15 @@ bool httpTablesCloseServer(int64_t serverId, int64_t deadlineMs, uint64_t token)
     return true;
 }
 
-bool httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn) {
+bool httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn, HoldToken& hold) {
     KeyEntry* k = findKey(key);
     if (!k || k->parked || k->req.upgrade.empty()) return false;
     out = std::move(k->req);
     conn = k->conn;
+    // The request's hold moves to the caller (the handshake's peerHold, N5):
+    // the peer is still owed an answer, with no gap and no double count.
+    hold = k->hold;
+    k->hold = kNoHold;
     eraseKey(key);
     return true;
 }
@@ -442,8 +457,29 @@ bool httpTablesPopEventForTest(HttpEvent& out) { return tryPop(out); }
 
 void setHttpManagerHooks(HttpManagerHooks hooks) { g_hooks = hooks; }
 
+namespace {
+
+// The subscription hold of every server (LIVE_001): held while an onRequest
+// subscription names the open server. A closed server's closeServer tasks
+// hold until ServerClosed.
+void httpTablesSyncSubscriptionHolds() {
+    auto& sched = Scheduler::instance();
+    for (auto& kv : tables().servers) {
+        ServerEntry& e = kv.second;
+        bool want = !e.closed && httpManagerHasSubscriber(kv.first);
+        if (want && !e.subHold) e.subHold = sched.acquireHold(HoldKind::Subscription, "Http.Server.onRequest");
+        if (!want && e.subHold) {
+            sched.releaseHold(e.subHold);
+            e.subHold = kNoHold;
+        }
+    }
+}
+
+} // namespace
+
 void httpTablesSubscriptionsChanged() {
     ensureHttpTables();
+    httpTablesSyncSubscriptionHolds();
     for (auto& kv : tables().servers) {
         if (!kv.second.parked.empty() && httpManagerHasSubscriber(kv.first)) {
             queue().parkedReady.store(true, std::memory_order_release);

@@ -43,6 +43,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -97,17 +98,44 @@ const char* httpStatusReason(int status);
 
 // Parks a handshaken connection: no reading; keeps what was read past the
 // head (setProtocol's leftover) for the codec.
+//
+// Watch mode (Http.Server.upgradeRequest, plans/program-liveness-rule.md N5):
+// with a `gone` callback it also reads (buffering what arrives, up to
+// kWatchCap bytes, for the codec as leftover), so that the end of the
+// connection is seen while the handshake waits for accept / reject: on end
+// of input or a read error the connection is aborted (nobody is left to
+// answer; a later accept then fails ECONNRESET as for any connection that
+// closed meanwhile), and `gone` runs once (reactor thread), also when the
+// connection is aborted otherwise.
 class HoldProtocol final : public ConnProtocol {
 public:
+    static constexpr size_t kWatchCap = 1 << 20;
+
+    HoldProtocol() = default;
+    explicit HoldProtocol(std::function<void()> gone) : gone_(std::move(gone)) {}
+
     std::string takeLeftover() { return std::exchange(leftover_, std::string()); }
     void onData(Conn&, std::string_view bytes) override { leftover_.append(bytes.data(), bytes.size()); }
-    void onEof(Conn&) override {}
-    void onError(Conn&, int, const std::string&) override {}
-    void onCloseAll(Conn&) override {}
-    bool wantsRead() const override { return false; }
+    void onEof(Conn& c) override { goneNow(c); }
+    void onError(Conn& c, int, const std::string&) override { goneNow(c); }
+    void onCloseAll(Conn&) override { fireGone(); }
+    bool wantsRead() const override { return gone_ != nullptr && leftover_.size() < kWatchCap; }
 
 private:
+    void fireGone() {
+        if (!gone_) return;
+        std::function<void()> g = std::move(gone_);
+        gone_ = nullptr;
+        g();
+    }
+    void goneNow(Conn& c) {
+        if (!gone_) return;   // not watching: the codec finds out
+        fireGone();
+        if (!c.aborted()) c.abort(false);
+    }
+
     std::string leftover_;
+    std::function<void()> gone_;
 };
 
 struct DialSpec {

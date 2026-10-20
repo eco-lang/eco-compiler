@@ -32,11 +32,11 @@ public:
 
     // Removes a scheduled, not yet fired timer. Returns true when the entry
     // was removed: its token will never be delivered, so the caller owns the
-    // pendingAsync reference it took for the timer and must call
-    // Scheduler::decrementPendingAsync() (plans/eco-system-library.md Phase 2
-    // step 6). Returns false when the token is unknown or has already fired
-    // (it is then, or will be, delivered through tryPopReadyToken, whose
-    // consumer decrements as usual). Safe to call from any thread.
+    // hold it took for the timer and must release it
+    // (Scheduler::releaseHold; withdrawParkedTimer does both,
+    // plans/program-liveness-rule.md §5.3). Returns false when the token is
+    // unknown or has already fired (it is then, or will be, delivered through
+    // tryPopReadyToken, whose consumer releases as usual). Safe to call from any thread.
     bool cancel(std::uint64_t token);
 
     // Main-thread-only consumer API. tryPopReadyToken returns true and

@@ -50,13 +50,14 @@ namespace Eco::System {
 class Conn;
 
 struct WsEvent {
-    enum class Kind : uint8_t { Dialed, UpgradeRead, Opened, OpDone, PingDone, Closed, BodyNeeded, BodyDispose };
-    static constexpr int kKinds = 8;
+    enum class Kind : uint8_t { Dialed, UpgradeRead, Opened, OpDone, PingDone, Closed, BodyNeeded, BodyDispose,
+                                HandshakeGone };
+    static constexpr int kKinds = 9;
 
     Kind kind = Kind::OpDone;
     uint64_t gen = 0;                 // heap generation of the originating main-thread object
     uint64_t token = 0;               // the task's resume token (0: none)
-    int64_t wsId = 0;                 // Opened / PingDone / Closed
+    int64_t wsId = 0;                 // Opened / PingDone / Closed; HandshakeGone: the hsId
     bool failed = false;              // failure: code + message (FErr)
     std::string code, message;
     std::shared_ptr<Conn> conn;       // Dialed / UpgradeRead: the held connection

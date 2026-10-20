@@ -2,9 +2,10 @@
 import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray, toArray)
-import Eco.Kernel.Stream exposing (createMappedSource, createMappedSink, createChannelSource, createChannelSink, createTextChannelSink, discardReadable, attachReader, detachReader, noteActivity, toBytes)
+import Eco.Kernel.Stream exposing (createMappedSource, createMappedSink, createChannelSource, createChannelSink, createTextChannelSink, discardReadable, attachReader, detachReader, toBytes)
 import Eco.Kernel.Socket exposing (detach)
 import Eco.Kernel.Tls exposing (code, errorMessage, pemCertificates, systemCertificates)
+import Eco.Kernel.Liveness exposing (handle, hold)
 */
 
 // WebSocket — JS twin of src/eco-system/WebSocket/ (eco/system), plans/eco-system-websockets.md
@@ -27,7 +28,14 @@ import Eco.Kernel.Tls exposing (code, errorMessage, pemCertificates, systemCerti
 //     channel (requestWriteTagged), with Stream.js's plain property names.
 //   * Keep-alive (native: pendingAsync, §3.6): the socket is ref'd only while something
 //     holds it: a waiting read (setDemand), a write in flight, the close handshake from a
-//     local close, a ping, a parked `closed`, a subscription. Timers are unref'd.
+//     local close, a ping, a parked `closed`, a subscription (__Liveness_handle over the
+//     socket, plans/program-liveness-rule.md §5.2). Timers are unref'd; the two handshake
+//     timeouts (readHead, dial) hold through __Liveness_hold while they are pending
+//     (_WebSocket_heldTimeout). readUpgrade holds while it reads the opening request, and
+//     reject until its answer is written. A handshake parked by Http.Server.upgradeRequest
+//     holds the peer (the request's hold handed over, plans/program-liveness-rule.md N5)
+//     until open / reject / abandon or until its socket closes; other handshakes hold
+//     nothing.
 //   * dial: our own net.Socket per address in order (connected before tls.connect, Tls.js's
 //     rules: certificates, SNI or an IP check, ALPN http/1.1), one timer for the whole
 //     handshake, the request written, the response head read (at most 64 KiB). The
@@ -100,6 +108,23 @@ function _WebSocket_unref(timer)
 {
 	if (timer && timer.unref) timer.unref();
 	return timer;
+}
+
+// A one-shot timeout that keeps the program alive while it is pending, through a
+// __Liveness_hold instead of a ref'd Node timer. Returns { cancel } (idempotent; cancel
+// releases the hold). Same liveness as a ref'd setTimeout.
+function _WebSocket_heldTimeout(fn, ms)
+{
+	var release = __Liveness_hold();
+	var timer = _WebSocket_unref(setTimeout(function() { fn(); release(); }, ms));
+	return {
+		cancel: function() { clearTimeout(timer); release(); }
+	};
+}
+
+function _WebSocket_cancelTimeout(t)
+{
+	if (t) t.cancel();
 }
 
 // EpT
@@ -821,8 +846,8 @@ function _WebSocket_codec(socket, cfg, onClosed)
 {
 	var self = {};
 	var gone = false;          // the transport is gone (destroyed / closed)
-	var holds = 0;             // keep-alive holders
-	var reffed = null;
+	var life = __Liveness_handle(socket);   // the socket is ref'd exactly while a hold exists
+	var holds = [];            // keep-alive holders: one release function per hold(1)
 
 	// Input.
 	var inputDone = false;
@@ -878,23 +903,18 @@ function _WebSocket_codec(socket, cfg, onClosed)
 		onDataEnd: onDataEnd
 	}, cfg.streamed || deflate, deflate);
 
-	function updateRef()
-	{
-		var want = holds > 0 && !gone;
-		if (want === reffed) return;
-		reffed = want;
-		try
-		{
-			if (want) socket.ref(); else socket.unref();
-		}
-		catch (e) { /* destroyed */ }
-	}
-
+	// delta +1 takes one hold on the socket's handle, -1 gives one back.
 	self.hold = function(delta)
 	{
-		holds += delta;
-		if (delta > 0) __Stream_noteActivity();
-		updateRef();
+		if (delta > 0)
+		{
+			holds.push(life.hold());
+		}
+		else
+		{
+			var release = holds.pop();
+			if (release) release();
+		}
 	};
 
 	function closeHoldOnce()
@@ -1374,7 +1394,7 @@ function _WebSocket_codec(socket, cfg, onClosed)
 		clearTimeout(pongTimer);
 		clearTimeout(closeTimer);
 		clearTimeout(drainTimer);
-		updateRef();
+		life.gone();
 	}
 
 	// --- the readable
@@ -2048,7 +2068,6 @@ function _WebSocket_codec(socket, cfg, onClosed)
 		socket.on('error', onSocketError);
 		socket.on('close', onSocketClose);
 		socket.on('drain', pump);
-		updateRef();
 		if (cfg.hbInterval > 0) armHeartbeat(Date.now() + cfg.hbInterval);
 		if (leftover && leftover.length) onSocketData(leftover);
 		if (socket.destroyed)
@@ -2065,15 +2084,23 @@ function _WebSocket_codec(socket, cfg, onClosed)
 
 // --- Tables -----------------------------------------------------------------------------
 
-// hsId → { socket, raw, isUnix, leftover, local, remote, cleanup }
+// hsId → { socket, raw, isUnix, leftover, local, remote, gone, peer, onError, onClose, h2 }
 var _WebSocket_hs = {};
 // wsId → { codec, readableId, writableId, closed, info, held, closeListener, closedWaiters }
 var _WebSocket_ws = {};
 var _WebSocket_nextId = 1;
 var _WebSocket_nextWsId = 1;
 
-// Parks a handshaken socket (paused, unref'd) until open / reject / abandon.
-function _WebSocket_park(socket, raw, isUnix, leftover)
+// Parks a handshaken socket (paused, unref'd) until open / reject / abandon. `peer` (a
+// Liveness release function, or undefined): the hold of a request Http.Server handed over
+// (upgradeRequest, plans/program-liveness-rule.md N5, L14): the peer is owed an answer, so
+// the handshake holds until open / reject / abandon takes it (open and reject complete or
+// hold on their own from there) or the connection goes away. Dial and readUpgrade
+// handshakes hold nothing (as native). `watch` (HTTP/1.1 upgradeRequest only, as native's
+// HoldProtocol watch mode): instead of pausing, the socket is read into the leftover (up
+// to 1 MiB, then paused), so that its end is seen: the end of input destroys the socket
+// (nobody is left to answer; a later open fails ECONNRESET) and ends the peer hold.
+function _WebSocket_park(socket, raw, isUnix, leftover, peer, watch)
 {
 	var h = {
 		socket: socket,
@@ -2082,32 +2109,62 @@ function _WebSocket_park(socket, raw, isUnix, leftover)
 		leftover: leftover,
 		local: _WebSocket_endpoint(raw, isUnix, true),
 		remote: _WebSocket_endpoint(raw, isUnix, false),
-		gone: false
+		gone: false,
+		peer: peer || null
 	};
 	h.onError = function() { /* reported when the codec starts (the socket is destroyed) */ };
-	h.onClose = function() { h.gone = true; };
+	h.onClose = function() { h.gone = true; _WebSocket_releasePeer(h); };
 	socket.on('error', h.onError);
 	socket.on('close', h.onClose);
 	socket.pause();
 	try { socket.unref(); } catch (e) { /* destroyed */ }
+	if (watch && h.peer)
+	{
+		h.onData = function(chunk)
+		{
+			h.leftover = h.leftover.length ? Buffer.concat([h.leftover, chunk]) : chunk;
+			if (h.leftover.length >= _WebSocket_kWatchCap) socket.pause();
+		};
+		h.onEnd = function()
+		{
+			h.gone = true;
+			_WebSocket_releasePeer(h);
+			try { socket.destroy(); } catch (e) { /* destroyed */ }
+		};
+		socket.on('data', h.onData);
+		socket.on('end', h.onEnd);
+		socket.resume();
+	}
 	var id = _WebSocket_nextId++;
 	_WebSocket_hs[id] = h;
 	return id;
 }
 
+// How much a watched handshake (see _WebSocket_park) reads ahead before it pauses.
+var _WebSocket_kWatchCap = 1 << 20;
+
+// Ends a parked handshake's peer hold, if any (idempotent).
+function _WebSocket_releasePeer(h)
+{
+	var peer = h.peer;
+	h.peer = null;
+	if (peer) peer();
+}
+
 // Http.Server.upgradeRequest (HttpServer.js takeUpgrade, phase WS5): parks the socket of an
 // HTTP/1.1 upgrade request that node:http handed over ('upgrade'), with the bytes read past
 // the request (`head`), as a handshake id for open / reject / abandon. `rawHeaders` is
-// node's flat [ name, value, ... ] list. Returns readUpgrade's result shape
-// ( id, ( method, target, version ), ( headers, isH2 = False, remote ) ).
-function _WebSocket_parkUpgrade(socket, raw, head, method, target, version, rawHeaders)
+// node's flat [ name, value, ... ] list; `peer` the request's hold (see _WebSocket_park).
+// Returns readUpgrade's result shape ( id, ( method, target, version ), ( headers,
+// isH2 = False, remote ) ).
+function _WebSocket_parkUpgrade(socket, raw, head, method, target, version, rawHeaders, peer)
 {
 	var fields = [];
 	for (var i = 0; i + 1 < rawHeaders.length; i += 2)
 	{
 		fields.push([rawHeaders[i], rawHeaders[i + 1]]);
 	}
-	var id = _WebSocket_park(socket, raw, false, Buffer.from(head || Buffer.alloc(0)));
+	var id = _WebSocket_park(socket, raw, false, Buffer.from(head || Buffer.alloc(0)), peer, true);
 	return __Utils_Tuple3(
 		id,
 		__Utils_Tuple3(method, target, version),
@@ -2193,8 +2250,9 @@ function _WebSocket_h2Fields(pairs, status)
 
 // Http.Server.upgradeRequest of an HTTP/2 extended CONNECT (HttpServer.js takeUpgrade, WS9):
 // parks the (paused) stream as a handshake id. `fields`: the flat [ name, value, ... ] list
-// without pseudo fields. Returns ( id, ( method, target, "2" ), ( headers, isH2 = True, remote ) ).
-function _WebSocket_parkH2Upgrade(stream, method, target, fields)
+// without pseudo fields; `peer` the request's hold (see _WebSocket_park). Returns
+// ( id, ( method, target, "2" ), ( headers, isH2 = True, remote ) ).
+function _WebSocket_parkH2Upgrade(stream, method, target, fields, peer)
 {
 	var pairs = [];
 	for (var i = 0; i + 1 < fields.length; i += 2)
@@ -2203,7 +2261,7 @@ function _WebSocket_parkH2Upgrade(stream, method, target, fields)
 	}
 	var session = stream.session;
 	var duplex = _WebSocket_h2Duplex(stream, session, false);
-	var id = _WebSocket_park(duplex, session.socket, false, Buffer.alloc(0));
+	var id = _WebSocket_park(duplex, session.socket, false, Buffer.alloc(0), peer);
 	_WebSocket_hs[id].h2 = stream;
 	return __Utils_Tuple3(
 		id,
@@ -2212,6 +2270,8 @@ function _WebSocket_parkH2Upgrade(stream, method, target, fields)
 	);
 }
 
+// Takes handshake `id` out of the table and ends its peer hold: the caller (open, reject,
+// abandon) completes at once or holds on its own from here on.
 function _WebSocket_unpark(id)
 {
 	var h = _WebSocket_hs[id];
@@ -2219,6 +2279,13 @@ function _WebSocket_unpark(id)
 	delete _WebSocket_hs[id];
 	h.socket.removeListener('error', h.onError);
 	h.socket.removeListener('close', h.onClose);
+	if (h.onData)
+	{
+		h.socket.removeListener('data', h.onData);
+		h.socket.removeListener('end', h.onEnd);
+		try { h.socket.pause(); } catch (e) { /* destroyed */ }
+	}
+	_WebSocket_releasePeer(h);
 	return h;
 }
 
@@ -2234,7 +2301,7 @@ function _WebSocket_readHead(socket, initial, timeoutMs, timeoutMessage, done)
 	{
 		if (settled) return;
 		settled = true;
-		clearTimeout(timer);
+		_WebSocket_cancelTimeout(timer);
 		socket.removeListener('data', onData);
 		socket.removeListener('end', onEnd);
 		socket.removeListener('error', onError);
@@ -2287,7 +2354,7 @@ function _WebSocket_readHead(socket, initial, timeoutMs, timeoutMessage, done)
 	socket.on('close', onClose);
 	if (timeoutMs > 0)
 	{
-		timer = setTimeout(function()
+		timer = _WebSocket_heldTimeout(function()
 		{
 			finish({ code: 'ETIMEDOUT', message: timeoutMessage, timeout: true });
 		}, timeoutMs);
@@ -2351,7 +2418,6 @@ var _WebSocket_dial = F3(function(target, tlsArgs, request)
 			ca = __Tls_systemCertificates();
 		}
 
-		__Stream_noteActivity();
 		var net = require('net');
 		var settled = false;
 		var timer = null;
@@ -2377,7 +2443,7 @@ var _WebSocket_dial = F3(function(target, tlsArgs, request)
 		{
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			_WebSocket_cancelTimeout(timer);
 			destroyCurrent();
 			callback(_WebSocket_ferr(code, message));
 		}
@@ -2494,7 +2560,7 @@ var _WebSocket_dial = F3(function(target, tlsArgs, request)
 					return;
 				}
 				settled = true;
-				clearTimeout(timer);
+				_WebSocket_cancelTimeout(timer);
 				var id = _WebSocket_park(s, r, false, Buffer.from(rest));
 				callback(__Scheduler_succeed(__Utils_Tuple3(
 					id,
@@ -2584,7 +2650,7 @@ var _WebSocket_dial = F3(function(target, tlsArgs, request)
 				{
 					if (settled) return;
 					settled = true;
-					clearTimeout(timer);
+					_WebSocket_cancelTimeout(timer);
 					h2Session = null;
 					var status = Number(headers[':status']) || 0;
 					var pairs = [];
@@ -2609,7 +2675,7 @@ var _WebSocket_dial = F3(function(target, tlsArgs, request)
 
 		if (timeoutMs > 0)
 		{
-			timer = setTimeout(function()
+			timer = _WebSocket_heldTimeout(function()
 			{
 				fail('ETIMEDOUT', 'WebSocket handshake ETIMEDOUT ' + what());
 			}, timeoutMs);
@@ -2620,7 +2686,7 @@ var _WebSocket_dial = F3(function(target, tlsArgs, request)
 			// Process.kill: abort the attempt; the task never completes.
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			_WebSocket_cancelTimeout(timer);
 			destroyCurrent();
 		};
 	});
@@ -2637,17 +2703,23 @@ var _WebSocket_readUpgrade = F2(function(connId, timeoutMs)
 			callback(_WebSocket_ferr(d.error, d.message));
 			return;
 		}
-		__Stream_noteActivity();
 		var socket = d.socket;
 		var raw = d.raw;
-		try { socket.ref(); } catch (e) { /* destroyed */ }
 		if (d.eof)
 		{
 			socket.destroy();
 			callback(_WebSocket_ferr('ERR_WS_HANDSHAKE', 'the client closed the connection before sending an opening request'));
 			return;
 		}
+		// The read of the opening request is in flight: hold until readHead reports (it
+		// always does, also when killed).
+		var reading = __Liveness_hold();
 		var stop = _WebSocket_readHead(socket, d.buffered, timeoutMs, 'upgradeRequest ETIMEDOUT', function(err, head, rest)
+		{
+			try { readDone(err, head, rest); } finally { reading(); }
+		});
+
+		function readDone(err, head, rest)
 		{
 			if (err)
 			{
@@ -2682,7 +2754,7 @@ var _WebSocket_readUpgrade = F2(function(connId, timeoutMs)
 				__Utils_Tuple3(parsed.method, parsed.target, parsed.version),
 				__Utils_Tuple3(_WebSocket_headerList(parsed.headers), false, h.remote)
 			)));
-		});
+		}
 
 		function answer400()
 		{
@@ -2726,7 +2798,6 @@ var _WebSocket_open = F5(function(id, response, params, fromWire, toWire)
 			callback(_WebSocket_ferr('ECONNRESET', _WebSocket_kSocketClosed));
 			return;
 		}
-		__Stream_noteActivity();
 		try
 		{
 			if (!h.isUnix && h.raw.setNoDelay) h.raw.setNoDelay(true);   // pongs and pings go out at once
@@ -2856,13 +2927,14 @@ var _WebSocket_reject = F2(function(id, response)
 			return;
 		}
 		socket.on('error', function() {});
-		try { socket.ref(); } catch (e) { /* destroyed */ }
+		// The reject task holds until its answer is written (or the socket is gone).
+		var rejecting = __Liveness_hold();
 		var timer = _WebSocket_unref(setTimeout(function() { if (!socket.destroyed) socket.destroy(); }, _WebSocket_kDrainMs));
-		socket.once('close', function() { clearTimeout(timer); });
+		socket.once('close', function() { clearTimeout(timer); rejecting(); });
 		socket.end(_WebSocket_serializeResponse(status, _WebSocket_pairs(response.b), true, response.c), function()
 		{
-			try { socket.unref(); } catch (e) { /* destroyed */ }
 			callback(_WebSocket_done());
+			rejecting();
 		});
 		socket.resume();   // discard input until the peer's FIN
 	});

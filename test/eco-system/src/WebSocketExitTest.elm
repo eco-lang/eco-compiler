@@ -1,6 +1,8 @@
 module WebSocketExitTest exposing (main)
 
-{-| Keep-alive (plans/eco-system-websockets.md §4 WS4, §3.6 "Keep-alive counts"): the only thing
+{-| Keep-alive (plans/eco-system-websockets.md §4 WS4, §3.6 "Keep-alive counts";
+plans/program-liveness-rule.md LIVE_001: the listener, closed once the connection is accepted,
+would hold nothing anyway): the only thing
 this program waits for is an `onMessage` subscription on an accepted WebSocket. The client is a
 detached Node process (it does not keep the program alive) that sends a message half a second
 after the handshake, so the subscription must keep the program running until it arrives. Once the
