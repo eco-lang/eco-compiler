@@ -6,10 +6,10 @@
 //   * onEffects: the subscriptions are grouped by registry key
 //     (path, recursive), each holding its list of encoded taggers. One
 //     WatchService watch exists per key. A key that appears starts a watch
-//     and, if the path could be watched, takes one pendingAsync count (an
+//     and, if the path could be watched, acquires one Subscription hold (an
 //     active watch keeps the program alive, §3.4); a key that disappears
-//     stops its watch and releases the count. A path that cannot be watched
-//     produces no events and holds no count (gren ignores watch errors).
+//     stops its watch and releases the hold. A path that cannot be watched
+//     produces no events and holds nothing (gren ignores watch errors).
 //   * subMap composes the tagger (TimeEffectManager pattern): a 3-slot
 //     closure capturing (f, oldTagger) applied to the event tuple.
 //   * Delivery (T8/G12): the watch drain (one eco/system async source)
@@ -47,7 +47,7 @@ using WatchKey = std::pair<std::string, bool>;   // (path, recursive)
 
 struct WatchEntry {
     int64_t watchId = 0;    // 0: the path could not be watched
-    bool counted = false;   // holds one pendingAsync count
+    HoldToken hold = kNoHold;   // the active watch's Subscription hold
     std::vector<uint64_t> taggers;   // encoded taggers
 };
 
@@ -149,9 +149,9 @@ void* initEval(void*[]) {
 
 void stopWatch(WatchEntry& e) {
     if (e.watchId != 0) WatchService::instance().remove(e.watchId);
-    if (e.counted) Scheduler::instance().decrementPendingAsync();
+    if (e.hold != kNoHold) Scheduler::instance().releaseHold(e.hold);
     e.watchId = 0;
-    e.counted = false;
+    e.hold = kNoHold;
 }
 
 // onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
@@ -197,8 +197,8 @@ void* onEffectsEval(void* args[]) {
                 e.watchId = WatchService::instance().add(kv.first.first, kv.first.second);
                 if (e.watchId != 0) {
                     addDrainSource(&watchDrain, &watchReady);   // idempotent
-                    Scheduler::instance().incrementPendingAsync();
-                    e.counted = true;
+                    e.hold = Scheduler::instance().acquireHold(
+                        HoldKind::Subscription, "FileSystem.watch");
                 }
                 it = st.watches.emplace(kv.first, std::move(e)).first;
             }

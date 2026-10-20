@@ -682,13 +682,15 @@ void testGuardsAndHelpers() {
 
     // T7: the kill handle discards the pending resume and calls cancel.
     auto& sched = Scheduler::instance();
-    uint64_t token = sched.registerPendingResume(alloc::unit());
+    // The hold is what the binding body would have acquired (parkResume).
+    int before = sched.pendingAsync();
+    uint64_t token = sched.parkResume(alloc::unit(), HoldKind::Task, "test.killHandle");
     HPointer kh = makeKillHandle(token, &cancelYes);
     Elm::StackRootGuard gk(&kh);
-    sched.incrementPendingAsync();   // what the binding body would have done
     Scheduler::callClosure1(kh, alloc::unit());
     CHECK(g_cancelled.size() == 1 && g_cancelled[0] == token);
     CHECK(alloc::isNil(sched.takePendingResume(token)));
+    CHECK(sched.pendingAsync() == before);   // cancel removed it: the handle released
 }
 
 struct TestEntry {

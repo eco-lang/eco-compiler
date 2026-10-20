@@ -2,7 +2,7 @@ effect module System where { command = MyCmd, subscription = MySub } exposing
     ( program, simpleProgram
     , Environment, environmentVariables, Platform(..), CpuArchitecture(..)
     , exit, exitWithCode, setExitCode
-    , onEmptyEventLoop, onSignalInterrupt, onSignalTerminate
+    , onEmptyEventLoop, rearmEmptyEventLoop, onSignalInterrupt, onSignalTerminate
     )
 
 {-| An Eco system program is an ordinary Elm `Platform.Program` that runs as a command-line tool
@@ -35,13 +35,26 @@ A _simple program_ runs a single task and then ends. It is made with
         System.simpleProgram
             (\env -> Stream.logLine "Hello, world!" env.stdout)
 
-A program runs while it has work, and ends when it has none: no messages are waiting to be
-handled and no IO or timer it started is still pending. That moment is called an _empty event loop_, and
-[`onEmptyEventLoop`](#onEmptyEventLoop) reports it. Some resources count as pending IO: for
-example, an open `Socket.Listener` keeps the program running until it is closed, while an idle
-`Socket.Connection`, with no read or write in progress, does not. None of this module's
-subscriptions keeps a program running. [`exit`](#exit) and
-[`exitWithCode`](#exitWithCode) end the program at once, without waiting for pending IO.
+A program runs while it is waiting for something it asked for, and ends when it is not. It is
+waiting while a task it started has not finished, such as a read, a write, an `accept`, a
+sleep, an HTTP request or a child process it spawned; while it subscribes to something that can
+still deliver, such as new connections on an open listener, messages on an open WebSocket or
+changes to a watched file; and while it owes an answer to an HTTP request it was given.
+Opening something does not keep a program running: an open listener with no `accept` waiting
+and no subscription, or an open connection with no read or write in progress, does not.
+Connections, datagrams and requests that arrive while nothing asks for them are held for later
+and do not keep a program running either. Some subscriptions never keep a program running,
+because they wait for things the program did not ask for; their docs say so.
+
+When nothing is left to wait for, the program has an _empty event loop_ and ends, unless it
+subscribes to [`onEmptyEventLoop`](#onEmptyEventLoop), which is told once and can ask to be
+told again with [`rearmEmptyEventLoop`](#rearmEmptyEventLoop). [`exit`](#exit) and
+[`exitWithCode`](#exitWithCode) end the program at once, whatever it is waiting for.
+
+The same rule covers the `elm/*` packages. A `Process.sleep` keeps the program running until it
+ends, a `Time.every` subscription while it exists, and an `elm/http` request while it is in
+flight. `Http.track` adds nothing of its own: a tracker with no request in flight does not keep
+the program running.
 
 Eco compiles a program either to native code or to JavaScript run by Node. Where the two
 behave differently, the docstrings say so. A native program can also be embedded in a host
@@ -67,7 +80,7 @@ also changes what exiting and signals do, as the functions below describe.
 
 # Subscriptions
 
-@docs onEmptyEventLoop, onSignalInterrupt, onSignalTerminate
+@docs onEmptyEventLoop, rearmEmptyEventLoop, onSignalInterrupt, onSignalTerminate
 
 -}
 
@@ -292,6 +305,11 @@ toEnvironment json =
 
 {-| Creates a long-running program from an `init`, an `update` and `subscriptions`, as
 `Platform.worker` does, with the program's [`Environment`](#Environment) as its flags.
+
+The program runs while it is waiting for something, as the module documentation describes,
+and ends when it has an empty event loop that [`onEmptyEventLoop`](#onEmptyEventLoop) does not
+take over.
+
 -}
 program :
     { init : Environment -> ( model, Cmd msg )
@@ -391,21 +409,40 @@ setExitCode code =
 
 
 {-| Creates a subscription that receives `msg` when the program has an empty event loop:
-no messages are waiting to be handled and no IO is pending, so the program would otherwise end.
+nothing it is waiting for is left, so the program would otherwise end.
 
-If handling the message starts new IO, the program keeps running, and `msg` arrives again the
-next time it runs out of work. If it starts none, the program ends once any other work it
-started has finished. The two backends count different work as new: on the native backend any
-asynchronous work does, a `Process.sleep` included, while on the JavaScript backend only IO
-started through this package's streams and kernels does.
+The message arrives once. Work started while handling it runs to completion, and the next time
+the event loop is empty the program ends. To receive the message again at the next empty
+event loop, issue [`rearmEmptyEventLoop`](#rearmEmptyEventLoop). If the program has several
+`onEmptyEventLoop` subscriptions, each receives its message at the same moment.
 
-On the native backend the subscription never fires when the program is embedded in a host
-application.
+Whether the message is due is one setting for the whole run of the program. It starts on, so a
+program that subscribes some time after it starts still receives the message once. Delivering
+the message turns it off, and only `rearmEmptyEventLoop` turns it on again: subscribing anew
+after a delivery is not enough.
+
+The subscription does not keep the program running. On the native backend it never fires
+when the program is embedded in a host application.
 
 -}
 onEmptyEventLoop : msg -> Sub msg
 onEmptyEventLoop msg =
     subscription (OnEmptyEventLoop msg)
+
+
+{-| Asks for [`onEmptyEventLoop`](#onEmptyEventLoop) to deliver its message again the next
+time the program has an empty event loop.
+
+Issue it while handling that message, or in any later update before the event loop is next
+empty, for example once more jobs have been queued. If the program issues it and then starts
+no work, the event loop is empty again at once, so the message arrives again at once; a
+program that issues it on every delivery without starting work never ends. Issuing it when
+there is no `onEmptyEventLoop` subscription has no effect until the program subscribes.
+
+-}
+rearmEmptyEventLoop : Cmd msg
+rearmEmptyEventLoop =
+    command (Execute kRearmEmptyEventLoop)
 
 
 {-| Creates a subscription that receives `msg` when the process is sent an interrupt
@@ -691,13 +728,21 @@ kSetExitCode =
     Eco.Kernel.System.setExitCode
 
 
+{-| Makes a task that arms the empty-event-loop hook, so that `onEmptyEventLoop` delivers its
+message at the next empty event loop.
+-}
+kRearmEmptyEventLoop : Task Never ()
+kRearmEmptyEventLoop =
+    Eco.Kernel.System.rearmEmptyEventLoop
+
+
 -- JS-only kernels, used by the effect-manager bodies above (the native backend drops those
 -- bodies, so these have no C++ counterpart).
 
 
-{-| Makes a task that never completes and spawns the given task the first time the program has
-an empty event loop, and again each later time if IO has been started since it last did.
-Killing its process detaches it.
+{-| Makes a task that never completes and, each time the program has an empty event loop while
+the empty-event-loop hook is armed, disarms the hook and spawns the given task. Killing its
+process detaches it.
 -}
 kAttachEmptyEventLoopListener : Task Never () -> Task Never ()
 kAttachEmptyEventLoopListener =

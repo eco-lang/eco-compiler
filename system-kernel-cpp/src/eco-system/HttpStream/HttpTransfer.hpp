@@ -21,7 +21,7 @@
 //   * When the final response's headers end, the thread posts one
 //     HttpEvent (Headers); if the transfer ends before that, one HttpEvent
 //     (BadUrl / Timeout / NetworkError). Exactly one event per transfer
-//     resolves the Elm task (it carries the task's pendingAsync count),
+//     resolves the Elm task (it carries the task's liveness hold),
 //     unless the task was killed first (T7: cancel() then owns the count).
 //
 // Lock order: HttpTransfer::m → channel-results queue → Scheduler mutex.

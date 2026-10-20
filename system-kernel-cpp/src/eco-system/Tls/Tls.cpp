@@ -192,8 +192,7 @@ HPointer tlsConnectBody(HPointer captured, HPointer resume) {
         ensureTlsInit();
         ensureSocketTables();
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Tls.connect");
         counted = true;
         SysWorkPool::instance().submit(
             token,
@@ -250,8 +249,7 @@ HPointer tlsListenBody(HPointer captured, HPointer resume) {
         ensureTlsInit();
         ensureSocketTables();
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "Tls.listen");
         counted = true;
         SysWorkPool::instance().submit(
             token,

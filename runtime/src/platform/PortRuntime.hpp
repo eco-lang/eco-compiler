@@ -2,6 +2,7 @@
 #define ECO_PLATFORM_PORT_RUNTIME_HPP
 
 #include "allocator/Heap.hpp"
+#include "platform/Liveness.hpp"
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -106,7 +107,15 @@ private:
     std::deque<std::string> registrationOrder_;
 
     std::mutex pendingMutex_;
-    std::deque<std::pair<std::string, std::string>> pendingSends_;
+    // One queued incoming send; `hold` is its HoldKind::Port hold (X7),
+    // acquired on the host thread in sendIncoming, released in
+    // drainPendingSends once the item is processed.
+    struct PendingSend {
+        std::string name;
+        std::string json;
+        HoldToken hold;
+    };
+    std::deque<PendingSend> pendingSends_;
 
     bool hooksInstalled_ = false;
 };

@@ -4,6 +4,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Allocator.hpp"
+#include "platform/Liveness.hpp"
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -42,8 +43,45 @@ public:
 
     // Event loop for single-threaded Elm execution
     void runEventLoop();
+    // Raw liveness counter. Being replaced by the hold API below
+    // (plans/program-liveness-rule.md §5.1); private from phase 6 (LIVE_006).
     void incrementPendingAsync();
     void decrementPendingAsync();
+
+    // ---- Hold API (plans/program-liveness-rule.md §5.1) ----
+    // Registers `resume` (as registerPendingResume does) and acquires a hold
+    // whose token is the returned resume token. Eco thread only.
+    u64 parkResume(HPointer resume, HoldKind kind, const char* site);
+    // Acquires a free-standing hold (bit 63 set). Any thread.
+    HoldToken acquireHold(HoldKind kind, const char* site);
+    // Releases hold `t` (a resume token from parkResume, or a token from
+    // acquireHold): decrements pendingAsync_, then notifies eventCV_ under
+    // mutex_. Any thread. Census builds abort on kNoHold, an unknown token or
+    // a second release, naming the acquiring site.
+    void releaseHold(HoldToken t);
+    // Census (ECO_LIVENESS_REPORT=1 at exit / on a 10 s idle wait): prints
+    // live holds by kind and site to stderr. Prints "census off" in builds
+    // that keep no census.
+    void reportHolds(const char* why);
+    // True iff this build keeps the per-hold census (!NDEBUG || ECO_HEAP_VALIDATE
+    // as compiled into Scheduler.cpp).
+    bool holdCensusEnabled() const;
+    // Census queries (0 / false when the census is off).
+    size_t liveHoldCount();
+    bool holdIsLive(HoldToken t);
+    // Monotonic count of acquires (hold API and raw increments) and of
+    // enqueues. Used by the §6.1 binding check in TaskBinding.hpp.
+    u64 acquireSerial() const { return acquireSerial_.load(std::memory_order_relaxed); }
+    u64 enqueueSerial() const { return enqueueSerial_.load(std::memory_order_relaxed); }
+    // §6.1 check failure: an async-park binding returned without resuming
+    // and without acquiring a hold. Recorded in the census report; aborts
+    // only when ECO_LIVENESS_STRICT=1 (phase 1: un-migrated system-kernel-cpp
+    // parks that legitimately hold nothing, X9, still exist).
+    void noteHoldlessPark(const char* binding);
+    // Current pendingAsync_ (tests and census).
+    int pendingAsync() const { return pendingAsync_.load(); }
+    // Nesting depth of drain() on the eco thread (LIVE_004 test, PS9).
+    int drainDepth() const { return drainDepth_; }
 
     // Cooperative shutdown for embedded hosts (eco_app_stop): sets a stop
     // flag and wakes the event loop, which exits after finishing the
@@ -60,18 +98,21 @@ public:
     bool embedMode() const { return embedMode_.load(); }
 
     // Quiescence hook (Node `beforeExit` semantics; plans/eco-system-library.md
-    // §3.7, Phase 2 step 3). When runEventLoop finds the run queue empty and
-    // pendingAsync_ == 0 (no stop requested), and listeners exist and the hook
-    // is armed, it disarms the hook, releases mutex_, calls every listener in
-    // registration order on the eco thread, and loops again instead of
-    // exiting. The hook re-arms only when incrementPendingAsync() runs, so a
-    // listener that starts no async work cannot keep the loop alive forever:
-    // the next quiescence with the hook disarmed exits. Never fires in embed
-    // mode. Listeners may sendToApp/drain/allocate (mutex_ is not held) but
-    // must run on, and are only called from, the eco thread. Registration is
-    // permanent (for the process lifetime) and must happen on the eco thread.
-    using QuiescenceListener = void (*)(void* ctx);
+    // §3.7, plans/program-liveness-rule.md §7, LIVE_005). Listeners are called
+    // at every quiescent point (run queue empty, pendingAsync_ == 0, no ready
+    // async source, no stop requested; never in embed mode), with mutex_
+    // released, on the eco thread, in registration order; the loop continues
+    // iff some listener returned true (it delivered something), and exits
+    // otherwise. The Scheduler keeps no armed bit: whether a listener is due
+    // is the listener's own state (SystemManager's emptyLoopArmed), so a
+    // listener that has nothing to deliver must return false or the loop
+    // spins. Listeners may sendToApp/drain/allocate (mutex_ is not held) but
+    // must run on, and are only called from, the eco thread. Registration
+    // must happen on the eco thread.
+    using QuiescenceListener = bool (*)(void* ctx);  // true iff it delivered
     void addQuiescenceListener(QuiescenceListener fn, void* ctx);
+    // Removes every registration of (fn, ctx). Eco thread. Used by unit tests.
+    void removeQuiescenceListener(QuiescenceListener fn, void* ctx);
 
     // Stop hooks (embed teardown, plans/eco-system-sockets.md §3.3.9): run
     // on the eco thread, in registration order, when runEventLoop exits
@@ -109,6 +150,8 @@ public:
     // layer takes exactly one lifetime hold to keep a worker's loop alive
     // while idle (see eco_embed.cpp); it sets the baseline to 1 so that
     // hold does not read as "busy". Default 0 (standalone runtime).
+    // Kept until phase 6 (plans/program-liveness-rule.md §8); host liveness
+    // now subtracts hostHolds_ (the HoldKind::Host count), which equals it.
     void setLivenessBaseline(int n) { livenessBaseline_ = n; }
 
     // Closure calling helper: calls a 1-arg Elm closure, returns result
@@ -240,6 +283,24 @@ private:
     std::mutex mutex_;
     std::condition_variable eventCV_;
     std::atomic<int> pendingAsync_{0};
+    // Hold census (plans/program-liveness-rule.md §5.1). Always declared (the
+    // class layout must not depend on NDEBUG: TUs differ); populated only when
+    // holdCensusEnabled(). holdsMutex_ is a leaf lock: never taken while
+    // holding mutex_, never held while calling out.
+    std::mutex holdsMutex_;
+    std::unordered_map<HoldToken, std::pair<HoldKind, const char*>> holds_;
+    // Raw incrementPendingAsync holds not yet released (census builds). Until
+    // phase 6 a timer token acquired raw (un-migrated kernels) may be released
+    // through releaseHold by processReadyAsync; releaseHold of an unknown
+    // token consumes one of these instead of aborting.
+    int rawHolds_ = 0;
+    std::vector<std::pair<const char*, u64>> holdlessParks_;
+    std::atomic<u64> nextHoldId_{1};
+    std::atomic<int> hostHolds_{0};
+    std::atomic<u64> acquireSerial_{0};
+    std::atomic<u64> enqueueSerial_{0};
+    int drainDepth_ = 0;
+    void noteAcquire(HoldToken t, HoldKind kind, const char* site);
     // Host-liveness activity hook (see setActivityHook). activityHook_ may be
     // read/written across threads but is only set once before the loop runs;
     // lastActivityBusy_ is touched only on the eco thread in runEventLoop.
@@ -251,13 +312,10 @@ private:
     std::atomic<u32> nextProcId_{0};
     std::atomic<bool> stopRequested_{false};
     std::atomic<bool> embedMode_{false};
-    // Quiescence hook state (see addQuiescenceListener). The listener list is
-    // guarded by mutex_; quiescenceArmed_ is set from any thread by
-    // incrementPendingAsync and cleared by the event loop when it fires.
+    // Quiescence hook listeners (see addQuiescenceListener), guarded by mutex_.
     std::vector<std::pair<QuiescenceListener, void*>> quiescenceListeners_;
     // Stop hooks (see addStopHook); eco thread only.
     std::vector<StopHook> stopHooks_;
-    std::atomic<bool> quiescenceArmed_{true};
 };
 
 } // namespace Elm::Platform

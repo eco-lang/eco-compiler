@@ -38,12 +38,18 @@ using namespace ::Elm;                                   // HPointer, Unboxable,
 namespace alloc  = ::Elm::alloc;                         // HeapHelpers.hpp
 namespace Export = ::Eco::Kernel::Export;                // eco-kernel ExportHelpers.hpp
 using ::Elm::Platform::Scheduler;
+// The hold API (plans/program-liveness-rule.md §5.1; runtime/src/platform/Liveness.hpp).
+using ::Elm::Platform::HoldKind;
+using ::Elm::Platform::HoldToken;
+using ::Elm::Platform::kNoHold;
+using ::Elm::Platform::HoldRelease;
+using ::Elm::Platform::LivenessHold;
 using ::Elm::Platform::PlatformRuntime;
 using ::Elm::Platform::makeBinding;
 using ::Elm::Platform::makeAsyncBinding;
 
 // T7: `cancel(token)` returns true only if it removed a job that had not yet
-// produced a result (the kill handle then decrements pendingAsync).
+// produced a result (the kill handle then releases the token's hold).
 using CancelFn = bool (*)(uint64_t token);
 
 // ---------------------------------------------------------------------------
@@ -107,9 +113,10 @@ namespace detail {
 //   RunErr → failRun(0, "EIO", -1, "", ""), Never → reportFatal(what).
 HPointer failureFor(ErrShape shape, const char* what);
 
-// The async-guard exception path: (1) take the token's resume and
-// decrement if counted; (2) resume with failureFor(shape, what); (3) return
-// unit() as the kill handle. `resume` must be rooted by the caller (the
+// The async-guard exception path: (1) take the token's resume; (2) resume
+// with failureFor(shape, what); (3) release the token's hold if counted,
+// after the failure is published (§6.2); (4) return unit() as the kill
+// handle. `resume` must be rooted by the caller (the
 // macro roots the body's parameter).
 HPointer asyncFailure(ErrShape shape, HPointer& resume, uint64_t token,
                       bool counted, const char* what);
@@ -139,8 +146,8 @@ HPointer asyncFailure(ErrShape shape, HPointer& resume, uint64_t token,
 
 // ECO_SYSTEM_ASYNC_GUARD(Shape, resume, token, counted, ...) wraps a
 // makeAsyncBinding body. `token` (uint64_t, initialised to 0) is set by the
-// body when it registers; `counted` (bool) when it calls
-// incrementPendingAsync(). It roots the body's `resume` parameter for the
+// body when it registers; `counted` (bool) when the registration also
+// acquired the token's hold (parkResume). It roots the body's `resume` parameter for the
 // whole body (the trampoline only roots its own copy). On an exception the
 // task is always completed with the shape's failure (G10).
 #define ECO_SYSTEM_ASYNC_GUARD(Shape, resume, token, counted, ...)              \

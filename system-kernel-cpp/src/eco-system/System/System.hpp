@@ -19,6 +19,7 @@ HPointer systemEnvironmentNow();
 HPointer systemGetEnvironmentVariablesBody(HPointer captured);
 HPointer systemExitWithCodeBody(HPointer captured);
 HPointer systemSetExitCodeBody(HPointer captured);
+HPointer systemRearmEmptyEventLoopBody(HPointer captured);
 
 } // namespace Eco::System
 

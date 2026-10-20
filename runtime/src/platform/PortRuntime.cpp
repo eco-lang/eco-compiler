@@ -377,20 +377,19 @@ void PortRuntime::drainPendingSends() {
     while (true) {
         std::string name;
         std::string json;
+        HoldToken hold = kNoHold;
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
             if (pendingSends_.empty()) return;
-            name = std::move(pendingSends_.front().first);
-            json = std::move(pendingSends_.front().second);
+            name = std::move(pendingSends_.front().name);
+            json = std::move(pendingSends_.front().json);
+            hold = pendingSends_.front().hold;
             pendingSends_.pop_front();
         }
 
-        // Each queued send holds one pendingAsync ref (taken in
-        // sendIncoming); release it once this item is processed,
-        // whatever the outcome.
-        struct AsyncRelease {
-            ~AsyncRelease() { Scheduler::instance().decrementPendingAsync(); }
-        } release;
+        // Each queued send holds one Port hold (taken in sendIncoming);
+        // release it once this item is processed, whatever the outcome.
+        HoldRelease release(hold);
 
         uint64_t decoderEnc = 0;
         uint64_t subsEnc = 0;
@@ -459,13 +458,13 @@ bool PortRuntime::sendIncoming(const char* name, const char* json) {
             return false;
         }
     }
-    // Hold a pendingAsync ref per queued item BEFORE publishing it, so the
+    // Hold one Port hold per queued item BEFORE publishing it, so the
     // event loop cannot observe an empty queue + zero refs and exit while
     // a send is in flight.
-    Scheduler::instance().incrementPendingAsync();
+    HoldToken hold = Scheduler::instance().acquireHold(HoldKind::Port, "port.in");
     {
         std::lock_guard<std::mutex> lock(pendingMutex_);
-        pendingSends_.emplace_back(std::string(name), std::string(json));
+        pendingSends_.push_back(PendingSend{std::string(name), std::string(json), hold});
     }
     Scheduler::instance().notifyWorkAvailableFromAsync();
     return true;

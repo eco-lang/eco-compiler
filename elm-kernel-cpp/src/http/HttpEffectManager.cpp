@@ -24,6 +24,12 @@ using namespace Elm::Platform;
 // Defined in HttpExports.cpp: mark a tracked request cancelled by its tracker
 // string (drop-delivery). The Cancel command branch calls this.
 extern "C" void Eco_Http_cancelTracker(uint64_t trackerEnc);
+// Defined in HttpExports.cpp: the stock toTask for a request this manager
+// spawns, with a spawn ticket for a tracked one (trackerEnc = its tracker
+// String, 0 = untracked), so that a Cancel issued before the spawned process
+// runs still reaches it (plans/program-liveness-rule.md §5.3).
+extern "C" uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultToTaskEnc,
+                                            uint64_t requestEnc, uint64_t trackerEnc);
 
 namespace {
 
@@ -148,11 +154,23 @@ static void* httpOnEffectsEvaluator(void* args[]) {
                     closureCapture(clPtr, boxed(router), true);
                 }
 
-                HPtr task = Elm_Kernel_Http_toTask(
-                    HPtr::fromBits(encodeHP(router)),
-                    HPtr::fromBits(encodeHP(successCl)),
-                    HPtr::fromBits(encodeHP(req)));
-                HPointer taskHP = decodeHP(task.toBits());
+                // Stock Request record field `tracker : Maybe String` (field 6
+                // in canonical order, as HttpExports.cpp REQ_TRACKER). Nothing
+                // is an embedded constant; Just is a Custom, field 0 the String.
+                // Read after the last allocation above; the call reads it
+                // before allocating.
+                uint64_t trackerEnc = 0;
+                if (void* rp = allocator.resolve(req)) {
+                    HPointer mt = static_cast<Record*>(rp)->values[6].p;
+                    if (mt.ptr_ind == 0) {
+                        if (void* mp = allocator.resolve(mt)) {
+                            trackerEnc = encodeHP(static_cast<Custom*>(mp)->values[0].p);
+                        }
+                    }
+                }
+                uint64_t taskEnc = Eco_Http_toTaskForSpawn(
+                    encodeHP(router), encodeHP(successCl), encodeHP(req), trackerEnc);
+                HPointer taskHP = decodeHP(taskEnc);
                 Elm::StackRootGuard taskRoot(&taskHP);
                 sched.rawSpawn(taskHP);
             } else if (header->tag == Tag_Custom && ctor == 0) {

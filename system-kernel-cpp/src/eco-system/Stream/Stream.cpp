@@ -8,8 +8,8 @@
 //     only then allocate results.
 //   * read/write/enqueue/closeWritable are T9 operations: they complete at
 //     once when they can and otherwise park a resume token on the pair.
-//     In-memory parks hold no pendingAsync; channel requests hold one each
-//     (keep-alive rule, §3.4), released by whoever completes the token.
+//     In-memory parks hold nothing; channel requests hold one liveness hold
+//     each (keep-alive rule, §3.4), released by whoever completes the token.
 //   * Completions issued from a binding body only enqueue the resumed
 //     process (resumeEvaluator); the channel drain (ChannelDrain.cpp) calls
 //     Scheduler::drain() once after dispatching (T9).
@@ -30,14 +30,13 @@
 //     into readQ immediately (G3).
 //
 // Templates used: T4 (Bytes out), T5 (registry), T9 (park / complete),
-// G10 via AsyncRelease (channel results), G11 (Custom action calls).
+// G10 via HoldRelease (channel results), G11 (Custom action calls).
 //
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Stream/Stream.hpp"
 #include "eco-system/Stream/StreamTable.hpp"
 
-#include "eco-system/Core/AsyncRelease.hpp"
 #include "eco-system/Core/FdChannel.hpp"
 
 #include "allocator/StringOps.hpp"
@@ -64,11 +63,8 @@ constexpr const char* kWritableClosed = "WritableStream is closed";
 constexpr const char* kTerminated = "TransformStream has been terminated";
 constexpr size_t kChannelReadChunk = 64 * 1024;
 
-// Request ids for channel requests that have no resume of their own.
-// Disjoint from Scheduler resume tokens, which count up from 1. Main thread.
-uint64_t g_nextSyntheticToken = uint64_t{1} << 62;
-// Uncounted request ids (MappedSource read-ahead, reader kicks), below the
-// synthetic ones and far above any resume token.
+// Uncounted request ids (MappedSource read-ahead, reader kicks): far above
+// any resume token, below every held token (bit 63, Scheduler::acquireHold).
 uint64_t g_nextUncountedToken = uint64_t{1} << 61;
 
 // ChannelId → pair id for ChannelSource/ChannelSink pairs. Validated on use
@@ -110,8 +106,8 @@ void payloadBoxedAndId(HPointer captured, HPointer& x, int64_t& id) {
 } // namespace
 
 // Completes parked `token` with Task.succeed `value`, then releases its
-// pendingAsync count if `counted`. A token whose resume is gone (orphaned)
-// only releases its count. `value` is rooted here across the allocations.
+// hold if `counted` (after the resume is published, §6.2). A token whose
+// resume is gone (orphaned) only releases its hold. `value` is rooted here across the allocations.
 void streamCompleteOk(uint64_t token, bool counted, HPointer value) {
     auto& s = Scheduler::instance();
     HPointer resume = s.takePendingResume(token);   // no allocation
@@ -121,7 +117,7 @@ void streamCompleteOk(uint64_t token, bool counted, HPointer value) {
         task = succeed(value);
         Scheduler::callClosure1(resume, task);
     }
-    if (counted) s.decrementPendingAsync();
+    if (counted) s.releaseHold(token);
 }
 
 // Completes parked `token` with Task.fail ( kind, reason ).
@@ -134,10 +130,12 @@ void streamCompleteErr(uint64_t token, bool counted, int kind, const std::string
         task = failSErr(kind, reason);
         Scheduler::callClosure1(resume, task);
     }
-    if (counted) s.decrementPendingAsync();
+    if (counted) s.releaseHold(token);
 }
 
-uint64_t streamSyntheticToken() { return g_nextSyntheticToken++; }
+uint64_t streamHeldToken(const char* site) {
+    return Scheduler::instance().acquireHold(HoldKind::Task, site);
+}
 
 uint64_t streamUncountedToken() { return g_nextUncountedToken++; }
 
@@ -585,8 +583,9 @@ void streamSchedulePipe(int64_t pipeId) {
 
 // ---------------------------------------------------------------------------
 // Channel results (main thread, from the Core channel drain; it calls
-// Scheduler::drain() once afterwards). Every channel request holds one
-// pendingAsync count, released here on every path (G10).
+// Scheduler::drain() once afterwards). Every channel request except an
+// uncounted one (streamIsUncountedToken) is its own liveness hold, released
+// here by its token on every path (G10, HoldRelease).
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -612,7 +611,7 @@ void channelDispatch(ChannelResult& r) {
 
     switch (r.op) {
     case ChannelResult::Op::Read: {
-        AsyncRelease release(!streamIsUncountedToken(r.token));   // mapped read-ahead: uncounted
+        HoldRelease release(streamIsUncountedToken(r.token) ? kNoHold : r.token);   // mapped read-ahead: uncounted
         if (!p || r.token == 0 || p->parkedReadToken != r.token) {
             (void)s.takePendingResume(r.token);   // orphaned: drop it
             return;
@@ -662,7 +661,7 @@ void channelDispatch(ChannelResult& r) {
     }
 
     case ChannelResult::Op::Write: {
-        AsyncRelease release;
+        HoldRelease release(r.token);
         bool found = false;
         if (p) {
             for (auto it = p->writeQ.begin(); it != p->writeQ.end(); ++it) {
@@ -696,7 +695,7 @@ void channelDispatch(ChannelResult& r) {
 
     case ChannelResult::Op::Close: {
         if (r.token == 0) return;   // a source's own release: not counted
-        AsyncRelease release;
+        HoldRelease release(r.token);
         if (!p || p->closeToken != r.token) {
             (void)s.takePendingResume(r.token);
             return;
@@ -814,9 +813,9 @@ void mappedReadResult(int64_t id, ChannelResult& r) {
         (void)s.takePendingResume(r.token);
         return;
     }
-    AsyncRelease release(p->readInFlightCounted);
+    HoldRelease release(p->readInFlightHold);
     p->readInFlight = 0;
-    p->readInFlightCounted = false;
+    p->readInFlightHold = kNoHold;
     if (r.err) {
         if (p->r == RState::Open) {
             p->r = RState::Errored;
@@ -845,10 +844,9 @@ void streamMappedMaybeRead(int64_t id) {
     if (p->r != RState::Open || p->readInFlight || p->readerKick) return;
     if (!p->rawQ.empty() || !p->readQ.empty()) return;   // read-ahead: one chunk
     uint64_t tok = streamUncountedToken();
-    bool counted = p->pipeOutId != 0;   // a pipe waits for it: keep the program alive
-    if (counted) Scheduler::instance().incrementPendingAsync();
     p->readInFlight = tok;
-    p->readInFlightCounted = counted;
+    if (p->pipeOutId != 0)   // a pipe waits for it: keep the program alive
+        p->readInFlightHold = Scheduler::instance().acquireHold(HoldKind::Task, "Stream.mappedReadAhead");
     p->channel->requestRead(tok, kChannelReadChunk);
 }
 
@@ -1108,19 +1106,22 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
             return resumeNow(resume, failSErr(kSErrCancelled, reason));
         }
         // Park (T9).
-        token = sched.registerPendingResume(resume);
+        if (p->kind == StreamKind::ChannelSource) {
+            // External IO keeps the program alive.
+            token = sched.parkResume(resume, HoldKind::Task, "Stream.read");
+            counted = true;
+            p->parkedReadCounted = true;
+        } else if (p->kind == StreamKind::MappedSource) {
+            // The read-ahead request is uncounted: the parked read holds.
+            token = sched.parkResume(resume, HoldKind::Task, "Stream.readMapped");
+            counted = true;
+            p->parkedReadCounted = true;
+        } else {
+            token = sched.registerPendingResume(resume);   // in-memory: no hold (X9)
+        }
         p->readLock = true;
         p->parkedReadToken = token;
-        if (p->kind == StreamKind::ChannelSource) {
-            sched.incrementPendingAsync();      // external IO keeps the program alive
-            counted = true;
-            p->parkedReadCounted = true;
-            p->channel->requestRead(token, kChannelReadChunk);
-        } else if (p->kind == StreamKind::MappedSource) {
-            sched.incrementPendingAsync();      // the read-ahead request is uncounted
-            counted = true;
-            p->parkedReadCounted = true;
-        }
+        if (p->kind == StreamKind::ChannelSource) p->channel->requestRead(token, kChannelReadChunk);
         pumpStream(id);                         // MappedSource: issues the read-ahead if due
         return alloc::unit();
     )
@@ -1223,15 +1224,14 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
             std::string reason = p->w == WState::Errored ? p->wReason : std::string(kWritableClosed);
             return resumeNow(resume, failSErr(kSErrCancelled, reason));
         }
-        uint64_t req;
+        uint64_t req;   // its hold is released by the channel dispatch
         if (isEnqueue) {
-            req = g_nextSyntheticToken++;
+            req = streamHeldToken("Stream.enqueue");
         } else {
-            token = sched.registerPendingResume(resume);
+            token = sched.parkResume(resume, HoldKind::Task, "Stream.write");
             req = token;
+            counted = true;
         }
-        sched.incrementPendingAsync();
-        if (!isEnqueue) counted = true;
         p->writeQ.push_back(PendingWrite{req, 0, true, true});
         p->channel->requestWriteTagged(req, tag, text, std::move(bytes));
         if (isEnqueue) return resumeNow(resume, succeedUnit());
@@ -1240,15 +1240,14 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
 
     if (p->kind == StreamKind::ChannelSink) {
         std::string bytes = p->textSink ? toStdString(v) : toStdBytes(v);   // G3: copy out first
-        uint64_t req;
+        uint64_t req;   // its hold is released by the channel dispatch
         if (isEnqueue) {
-            req = g_nextSyntheticToken++;
+            req = streamHeldToken("Stream.enqueue");
         } else {
-            token = sched.registerPendingResume(resume);
+            token = sched.parkResume(resume, HoldKind::Task, "Stream.write");
             req = token;
+            counted = true;
         }
-        sched.incrementPendingAsync();
-        if (!isEnqueue) counted = true;
         p->writeQ.push_back(PendingWrite{req, 0, true, true});
         p->channel->requestWrite(req, std::move(bytes));
         if (isEnqueue) return resumeNow(resume, succeedUnit());
@@ -1320,8 +1319,7 @@ HPointer streamCloseWritableBody(HPointer captured, HPointer resume) {
         if (p->kind == StreamKind::ChannelSink) {
             // Succeeds once the channel has written everything and released
             // the fd (never 0–2).
-            token = sched.registerPendingResume(resume);
-            sched.incrementPendingAsync();
+            token = sched.parkResume(resume, HoldKind::Task, "Stream.closeWritable");
             counted = true;
             p->closeToken = token;
             p->closeCounted = true;

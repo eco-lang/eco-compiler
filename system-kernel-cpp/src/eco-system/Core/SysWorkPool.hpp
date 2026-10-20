@@ -10,9 +10,10 @@
 // heap, call Elm, or log through Debug.log. `complete` runs on the main
 // thread, with the resume already taken and rooted.
 //
-// Keep-alive: the binding body calls incrementPendingAsync() before submit;
-// the drain decrements exactly once per result (AsyncRelease), and the T7
-// kill handle decrements instead when `cancel(token)` removed a queued job.
+// Keep-alive: the binding body acquires the token's hold (parkResume) before
+// submit; the drain releases it exactly once per result (HoldRelease), and
+// the T7 kill handle releases instead when `cancel(token)` removed a queued
+// job.
 //
 // Templates used: T2, T7 (cancel).
 //
@@ -168,14 +169,14 @@ class SysWorkPool {
 public:
     static SysWorkPool& instance();
 
-    // Main thread. The caller has registered `token` (registerPendingResume)
-    // and called incrementPendingAsync() (G10). `shape` picks the failure if
+    // Main thread. The caller has registered `token` and acquired its hold
+    // (parkResume, G10). `shape` picks the failure if
     // `work` or `complete` throws (B2).
     void submit(uint64_t token, std::function<PoolResult()> work,
                 CompleteFn complete, ErrShape shape = ErrShape::FErr);
 
     // T7 CancelFn: removes a job that has not started yet. Returns true iff
-    // it removed one (the caller — the kill handle — then decrements).
+    // it removed one (the caller — the kill handle — then releases).
     static bool cancel(uint64_t token);
 
     // One finished job.
@@ -219,8 +220,8 @@ private:
 
 // The T2 pool drain (main thread). Runs from the eco/system async source;
 // tests may call it directly. For each result: pop; take the resume (nil →
-// the task was killed: decrement and continue); root; task = complete(pr);
-// root; resume; decrement (AsyncRelease). After the loop, drain() once.
+// the task was killed: release and continue); root; task = complete(pr);
+// root; resume; release the token's hold (HoldRelease). After the loop, drain() once.
 void poolDrain();
 
 } // namespace Eco::System

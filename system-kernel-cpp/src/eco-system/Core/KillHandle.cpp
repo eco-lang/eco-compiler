@@ -6,11 +6,11 @@
 // (plans/eco-system-library.md §3.3.2):
 //
 //   * the killed task must never resume: the pending resume is discarded;
-//   * EXACTLY ONE side decrements pendingAsync. `cancel(token)` returns true
-//     only if it removed a job that had not yet produced a result; then the
-//     job will never reach a drain, so the handle decrements. Otherwise the
+//   * EXACTLY ONE side releases the token's hold. `cancel(token)` returns
+//     true only if it removed a job that had not yet produced a result; then
+//     the job will never reach a drain, so the handle releases. Otherwise the
 //     result is (or will be) queued, and the drain finds
-//     takePendingResume(token) nil, decrements, and skips the resume (G10).
+//     takePendingResume(token) nil, releases, and skips the resume (G10).
 //
 // Typed captures arrive as raw bits (MVar.cpp readBindingEvaluator), so the
 // token and the cancel function pointer are read straight from args[0..1].
@@ -31,7 +31,7 @@ void* killEval(void* args[]) {
     auto cancel = reinterpret_cast<CancelFn>(reinterpret_cast<uintptr_t>(args[1]));
     auto& s = Scheduler::instance();
     (void)s.takePendingResume(token);       // discard: the killed task never resumes
-    if (cancel && cancel(token)) s.decrementPendingAsync();   // we removed the job
+    if (cancel && cancel(token)) s.releaseHold(token);   // we removed the job
     return reinterpret_cast<void*>(enc(alloc::unit()));
 }
 

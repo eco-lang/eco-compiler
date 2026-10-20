@@ -36,7 +36,9 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -113,6 +115,53 @@ struct TrackedReq {
 std::mutex g_trackedMutex;
 std::unordered_map<uint64_t, TrackedReq> g_httpTracked;     // token -> req
 std::unordered_map<std::string, uint64_t> g_trackerToken;   // tracker -> token
+
+// ---- Withdrawal (plans/program-liveness-rule.md §5.3, decision L5) ----------
+// Every elm/http request's abort control, by token: inserted by the binding,
+// erased when its result is drained or when it is claimed while queued. Guarded
+// by g_trackedMutex; holds no heap value.
+std::unordered_map<uint64_t, std::shared_ptr<HttpService::RequestControl>> g_httpControl;
+
+// Tracked requests the Http manager has spawned whose binding has not run yet
+// (the spawned process is still on the run queue). stock elm/http's manager
+// keeps `tracker -> pid` from the moment it spawns, and `Http.cancel` kills
+// that pid, so a cancel issued in the same batch as its request stops the
+// request before it starts. Natively the binding registers the tracker only
+// when it runs, so the manager's spawn takes a ticket (httpSpawnTicket), a
+// Cancel that finds its tracker here cancels the ticket, and the binding, when
+// it runs, drops a cancelled ticket without sending anything or holding.
+// Guarded by g_trackedMutex.
+uint64_t g_nextTicket = 1;
+std::unordered_map<std::string, uint64_t> g_unboundTicket;   // tracker -> latest ticket
+std::unordered_set<uint64_t> g_cancelledTickets;
+// Tickets whose tracker a later spawn took over before they started (stock:
+// a second `Dict.insert tracker pid`). They still report progress, but never
+// become the tracker's cancel target.
+std::unordered_set<uint64_t> g_supersededTickets;
+
+// Aborts request `token` (RequestControl::abort). True iff it was still queued
+// and is now claimed: the caller then owns the release of its hold (the worker
+// posts nothing for it). False: it is running or done (or unknown), and its
+// result reaches httpDrain, which drops it (cancelled or Nil resume) and
+// releases. Eco thread.
+bool httpAbort(uint64_t token) {
+    std::shared_ptr<HttpService::RequestControl> control;
+    {
+        std::lock_guard<std::mutex> lk(g_trackedMutex);
+        auto it = g_httpControl.find(token);
+        if (it == g_httpControl.end()) return false;
+        control = it->second;
+        if (!control->abort()) return false;
+        g_httpControl.erase(it);
+    }
+    ECO_KLOG("elm-http", "abort token=%lu claimed while queued", (unsigned long)token);
+    return true;
+}
+
+void httpForgetControl(uint64_t token) {
+    std::lock_guard<std::mutex> lk(g_trackedMutex);
+    g_httpControl.erase(token);
+}
 
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
@@ -257,14 +306,21 @@ HPointer buildResponse(const HttpService::Result& r, HPointer body) {
 // ---- Tracking registry helpers (main thread) -------------------------------
 
 // Register a tracked request. trackerStr is computed here (no Allocator call)
-// and held only as a std::string key.
-void httpRegisterTracked(uint64_t token, HPointer router, HPointer tracker) {
+// and held only as a std::string key. A tracker already naming an older
+// request is re-pointed at this one; the older request is NOT cancelled. That
+// is stock elm/http's behaviour on every backend: its manager does
+// `Dict.insert tracker pid reqs` for a new request (Http.elm:1003) and only
+// `Cancel` kills (Http.elm:992); the older request runs on, delivers its
+// result, and can no longer be cancelled by tracker
+// (plans/program-liveness-rule.md §5.3 tracker reuse, phase 3 finding).
+void httpRegisterTracked(uint64_t token, HPointer router, HPointer tracker,
+                         bool claimTracker) {
     std::string trackerStr = elmStringToUTF8(encodeHP(tracker));
     ECO_KLOG("elm-http", "track-register token=%lu tracker=%s",
              (unsigned long)token, trackerStr.c_str());
     std::lock_guard<std::mutex> lk(g_trackedMutex);
     g_httpTracked[token] = TrackedReq{encodeHP(router), encodeHP(tracker), false};
-    g_trackerToken[trackerStr] = token;
+    if (claimTracker) g_trackerToken[trackerStr] = token;
 }
 
 // Clear a token's tracking on final result. Returns whether it was cancelled
@@ -402,10 +458,11 @@ void httpDrain() {
         // Clear tracking for this token (no-op for untracked). If it was
         // cancelled via Http.cancel, drop the result without resuming.
         bool cancelled = httpClearTracked(r.token);
+        httpForgetControl(r.token);
         HPointer bundle = Scheduler::instance().takePendingResume(r.token);
         if (alloc::isNil(bundle) || cancelled) {
-            // Cancelled or unknown token: drop the pending-async count.
-            Scheduler::instance().decrementPendingAsync();
+            // Cancelled or unknown token: release its hold.
+            Scheduler::instance().releaseHold(r.token);
             continue;
         }
         Elm::StackRootGuard bundleRoot(&bundle);
@@ -464,7 +521,7 @@ void httpDrain() {
             HPointer resume = static_cast<Custom*>(bp)->values[0].p;
             Scheduler::instance().callClosure1(resume, resultTask);
         }
-        Scheduler::instance().decrementPendingAsync();
+        Scheduler::instance().releaseHold(r.token);
     }
 }
 
@@ -581,14 +638,56 @@ ExtractedRequest extractRequest(HPointer requestHP) {
     return out;
 }
 
+// Kill handle of a request: `Process.kill` applies it to `()`.
+// args[0] = the request's token (PK_Int, raw bits), args[1] = ().
+// The killed task never resumes, its tracking ends, and its hold is released
+// exactly once: here if the request was claimed while queued, otherwise by
+// httpDrain when the (aborted or finished) result arrives and finds no resume.
+void* httpKillEval(void* args[]) {
+    uint64_t token = reinterpret_cast<uint64_t>(args[0]);
+    auto& s = Scheduler::instance();
+    (void)s.takePendingResume(token);
+    (void)httpClearTracked(token);
+    if (httpAbort(token)) s.releaseHold(token);
+    return reinterpret_cast<void*>(encodeHP(unit()));
+}
+
+HPointer makeHttpKillHandle(uint64_t token) {
+    HPointer cl = allocClosureK(httpKillEval, /*max_values=*/2, Elm::PK_Boxed);
+    void* p = Allocator::instance().resolve(cl);   // no allocation until captured (G8)
+    closureCapture(p, unboxedInt(static_cast<i64>(token)), Elm::PK_Int);
+    return cl;
+}
+
 // Binding evaluator (main thread). Captures: args[0]=request,
-// args[1]=resultToTask, args[2]=router. Scheduler appends the resume closure
-// as args[3].
+// args[1]=resultToTask, args[2]=router, args[3]=spawn ticket (PK_Int, 0 =
+// none; see g_unboundTicket). Scheduler appends the resume closure as args[4].
 void* httpBindingEval(void* args[]) {
     HPointer request      = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer resultToTask = decodeHP(reinterpret_cast<uint64_t>(args[1]));
     HPointer router       = decodeHP(reinterpret_cast<uint64_t>(args[2]));
-    HPointer resume       = decodeHP(reinterpret_cast<uint64_t>(args[3]));
+    uint64_t ticket       = reinterpret_cast<uint64_t>(args[3]);
+    HPointer resume       = decodeHP(reinterpret_cast<uint64_t>(args[4]));
+
+    bool claimTracker = true;
+    if (ticket != 0) {
+        bool cancelled = false;
+        {
+            std::lock_guard<std::mutex> lk(g_trackedMutex);
+            cancelled = g_cancelledTickets.erase(ticket) != 0;
+            claimTracker = g_supersededTickets.erase(ticket) == 0;
+            for (auto it = g_unboundTicket.begin(); it != g_unboundTicket.end(); ++it) {
+                if (it->second == ticket) { g_unboundTicket.erase(it); break; }
+            }
+        }
+        if (cancelled) {
+            // Cancelled before it started (as stock elm/http kills the pid
+            // before its binding runs): nothing is sent, nothing holds, and
+            // the task never resumes.
+            ECO_KLOG("elm-http", "ticket=%lu cancelled before start", (unsigned long)ticket);
+            return reinterpret_cast<void*>(encodeHP(unit()));
+        }
+    }
 
     ExtractedRequest ex = extractRequest(request);
     if (!ex.ok) {
@@ -612,21 +711,45 @@ void* httpBindingEval(void* args[]) {
     fields[4].p = type;
     HPointer bundle = custom(BUNDLE_CTOR, fields, 0);
 
-    u64 token = Scheduler::instance().registerPendingResume(bundle);
-    Scheduler::instance().incrementPendingAsync();
+    u64 token = Scheduler::instance().parkResume(bundle, Elm::Platform::HoldKind::Task,
+                                                 "Http.request");
 
     // Tracked request (tracker == Just _): register (router, tracker) so the
     // worker's progress ticks route to the Http manager self-process (P3b).
     if (ex.tracked) {
-        httpRegisterTracked(token, router, trackerHP);
+        httpRegisterTracked(token, router, trackerHP, claimTracker);
     }
 
     ex.pod.token = token;
+    ex.pod.control = std::make_shared<HttpService::RequestControl>();
+    {
+        std::lock_guard<std::mutex> lk(g_trackedMutex);
+        g_httpControl[token] = ex.pod.control;
+    }
     HttpService::instance().submit(std::move(ex.pod));
 
-    // Kill handle: Unit. Http.cancel is implemented as drop-delivery in the
-    // tracking registry (Q-L simpler option), not via this kill handle.
-    return reinterpret_cast<void*>(encodeHP(unit()));
+    // Kill handle: withdraws the request (claimed if queued, curl aborted if
+    // running). Allocates; nothing above is needed past this point.
+    return reinterpret_cast<void*>(encodeHP(makeHttpKillHandle(token)));
+}
+
+// The binding Task of one request (stock toTask contract plus a spawn ticket).
+HPointer httpMakeTask(HPointer routerHP, HPointer rttHP, HPointer reqHP, uint64_t ticket) {
+    Elm::StackRootGuard g({&reqHP, &rttHP, &routerHP});
+    httpEnsureRegistered();
+
+    // Binding closure captures [request, resultToTask, router, ticket]; arity
+    // = 4 captures + 1 scheduler-supplied resume arg. The router is needed so
+    // the binding step can register progress tracking for a tracked request.
+    HPointer bindingCallback = allocClosureK(httpBindingEval, 5, Elm::PK_Boxed);
+    void* clPtr = Allocator::instance().resolve(bindingCallback);
+    if (clPtr) {
+        closureCapture(clPtr, boxed(reqHP), true);
+        closureCapture(clPtr, boxed(rttHP), true);
+        closureCapture(clPtr, boxed(routerHP), true);
+        closureCapture(clPtr, unboxedInt(static_cast<i64>(ticket)), Elm::PK_Int);
+    }
+    return Scheduler::instance().taskBinding(bindingCallback);
 }
 
 // mapExpect composition: newToValue(response) = func(oldToValue(response)).
@@ -673,43 +796,80 @@ HPtr Elm_Kernel_Http_pair(HPtr a, HPtr b) {
 
 // toTask : router -> (a -> Task x b) -> Request -> Task x b
 HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request) {
-    httpEnsureRegistered();
-
-    HPointer reqHP    = Export::decode(request.toBits());
-    HPointer rttHP    = Export::decode(resultToTask.toBits());
-    HPointer routerHP = Export::decode(router.toBits());
-    Elm::StackRootGuard g({&reqHP, &rttHP, &routerHP});
-
-    // Binding closure captures [request, resultToTask, router]; arity = 3
-    // captures + 1 scheduler-supplied resume arg. The router is needed so the
-    // binding step can register progress tracking for a tracked request.
-    HPointer bindingCallback = allocClosureK(httpBindingEval, 4, Elm::PK_Boxed);
-    void* clPtr = Allocator::instance().resolve(bindingCallback);
-    if (clPtr) {
-        closureCapture(clPtr, boxed(reqHP), true);
-        closureCapture(clPtr, boxed(rttHP), true);
-        closureCapture(clPtr, boxed(routerHP), true);
-    }
-    HPointer task = Scheduler::instance().taskBinding(bindingCallback);
+    HPointer task = httpMakeTask(Export::decode(router.toBits()),
+                                 Export::decode(resultToTask.toBits()),
+                                 Export::decode(request.toBits()), /*ticket=*/0);
     return HPtr::fromBits(Export::encode(task));
 }
 
-// Mark a tracked request cancelled by its tracker string (drop-delivery). The
-// pending result, when it arrives, is dropped without resuming, and any further
-// progress ticks are ignored. Called by the Http effect manager's Cancel branch.
+// The Http manager's Request branch: toTask for a request the manager is about
+// to spawn. A tracked request takes a spawn ticket (g_unboundTicket), so that
+// a Cancel issued before its binding runs reaches it. `trackerEnc` is the
+// tracker String, or 0 for an untracked request.
+uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultToTaskEnc,
+                                 uint64_t requestEnc, uint64_t trackerEnc) {
+    uint64_t ticket = 0;
+    if (trackerEnc != 0) {
+        std::string trackerStr = elmStringToUTF8(trackerEnc);   // no allocation
+        std::lock_guard<std::mutex> lk(g_trackedMutex);
+        ticket = g_nextTicket++;
+        auto [it, fresh] = g_unboundTicket.try_emplace(trackerStr, ticket);
+        if (!fresh) {
+            g_supersededTickets.insert(it->second);
+            it->second = ticket;
+        }
+    }
+    HPointer task = httpMakeTask(Export::decode(routerEnc), Export::decode(resultToTaskEnc),
+                                 Export::decode(requestEnc), ticket);
+    return Export::encode(task);
+}
+
+// Http.cancel by tracker string (the Http effect manager's Cancel branch),
+// with stock elm/http's meaning: it withdraws the latest request issued with
+// that tracker, if that one is still in flight (plans/program-liveness-rule.md
+// §5.3, LIVE-5):
+//   * spawned but not started (same batch): its ticket is cancelled; the
+//     binding drops it;
+//   * queued behind another request: claimed, its hold released now;
+//   * running: curl is told to abort; the result is dropped by httpDrain,
+//     which releases.
+// The pending result never resumes and further progress ticks are ignored.
 void Eco_Http_cancelTracker(uint64_t trackerEnc) {
     std::string trackerStr = elmStringToUTF8(trackerEnc);
-    std::lock_guard<std::mutex> lk(g_trackedMutex);
-    auto ti = g_trackerToken.find(trackerStr);
-    if (ti == g_trackerToken.end()) {
-        ECO_KLOG("elm-http", "cancel tracker=%s unknown",
-                 trackerStr.c_str());
-        return;
+    uint64_t token = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_trackedMutex);
+        auto ui = g_unboundTicket.find(trackerStr);
+        if (ui != g_unboundTicket.end()) {
+            ECO_KLOG("elm-http", "cancel tracker=%s ticket=%lu (not started)",
+                     trackerStr.c_str(), (unsigned long)ui->second);
+            g_cancelledTickets.insert(ui->second);
+            g_unboundTicket.erase(ui);
+            // stock: `Dict.remove tracker reqs`; an older request with this
+            // tracker was already unreachable by tracker.
+            g_trackerToken.erase(trackerStr);
+            return;
+        }
+        auto ti = g_trackerToken.find(trackerStr);
+        if (ti == g_trackerToken.end()) {
+            ECO_KLOG("elm-http", "cancel tracker=%s unknown",
+                     trackerStr.c_str());
+            return;
+        }
+        ECO_KLOG("elm-http", "cancel tracker=%s token=%lu",
+                 trackerStr.c_str(), (unsigned long)ti->second);
+        auto it = g_httpTracked.find(ti->second);
+        if (it == g_httpTracked.end()) return;
+        it->second.cancelled = true;
+        token = ti->second;
     }
-    ECO_KLOG("elm-http", "cancel tracker=%s token=%lu",
-             trackerStr.c_str(), (unsigned long)ti->second);
-    auto it = g_httpTracked.find(ti->second);
-    if (it != g_httpTracked.end()) it->second.cancelled = true;
+    if (httpAbort(token)) {
+        // Claimed while queued: no result will arrive, so end it here.
+        auto& s = Scheduler::instance();
+        (void)s.takePendingResume(token);
+        (void)httpClearTracked(token);
+        s.releaseHold(token);
+    }
 }
 
 // expect : type -> toBody -> toValue -> Expect

@@ -69,6 +69,16 @@ private:
     std::queue<std::uint64_t>       readyTokens_;
 };
 
+// Withdraws a parked one-shot timer (plans/program-liveness-rule.md §5.3,
+// LIVE-5): `token` is a resume token from Scheduler::parkResume that was
+// passed to TimerService::schedule. The pending resume is discarded, so the
+// waiting task never resumes, and the token's hold is released exactly once:
+// here, when cancel() removed the timer before it fired; otherwise by
+// Scheduler::processReadyAsync, which pops the fired token, finds its resume
+// gone and releases. Used by the Process.sleep kill handle and by Time.every
+// on unsubscribe. Eco thread only (pending resumes are eco-thread state).
+void withdrawParkedTimer(std::uint64_t token);
+
 } // namespace Elm::Platform
 
 #endif // ECO_PLATFORM_TIMER_SERVICE_HPP

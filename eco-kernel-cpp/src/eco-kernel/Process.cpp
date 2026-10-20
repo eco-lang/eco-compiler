@@ -131,7 +131,7 @@ void waitServiceDrain() {
         int exitCode = ready.exitCode;  // 128 + signal for a signal death
         HPointer resumeClosure = sched.takePendingResume(token);
         if (Elm::alloc::isNil(resumeClosure)) {
-            sched.decrementPendingAsync();
+            sched.releaseHold(token);
             continue;
         }
         // Root resumeClosure + succeedTask across taskSucceedKind (which
@@ -144,7 +144,7 @@ void waitServiceDrain() {
                 Elm::alloc::unboxedInt(static_cast<int64_t>(exitCode)), /*kind=*/1);
             Elm::Platform::Scheduler::callClosure1(resumeClosure, succeedTask);
         }
-        sched.decrementPendingAsync();
+        sched.releaseHold(token);
     }
 }
 
@@ -174,8 +174,7 @@ HPointer waitBody(HPointer captured, HPointer resume) {
     }
 
     auto& sched = Elm::Platform::Scheduler::instance();
-    std::uint64_t token = sched.registerPendingResume(resume);
-    sched.incrementPendingAsync();
+    std::uint64_t token = sched.parkResume(resume, Elm::Platform::HoldKind::Task, "Eco.Process.wait");
     Elm::Platform::WaitService::instance().submit(
         pid, token, Elm::Platform::WaitLane::EcoKernel);
 

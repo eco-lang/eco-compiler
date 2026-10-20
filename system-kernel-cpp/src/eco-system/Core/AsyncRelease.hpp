@@ -7,6 +7,15 @@
 //
 // Templates used: T2, T9 (drain side).
 //
+// TRANSITIONAL (plans/program-liveness-rule.md §5.1, phases 4-5): replaced by
+// the hold API's HoldRelease (runtime/src/platform/Liveness.hpp, re-exported
+// into Eco::System below and by Core.hpp), which releases one hold BY TOKEN.
+// The modules migrated in phase 4 (Core, SysWorkPool, FileSystem,
+// ChildProcess, Stream, StreamPipe, HttpStream, Tls) no longer use this
+// class; Socket, Udp, HttpServer and WebSocket still do until phase 5, which
+// deletes this header. A raw decrement here pairs with a raw
+// incrementPendingAsync in those modules only.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef ECO_SYSTEM_CORE_ASYNC_RELEASE_HPP
@@ -15,6 +24,8 @@
 #include "eco-system/Core/Core.hpp"
 
 namespace Eco::System {
+
+using ::Elm::Platform::HoldRelease;   // the replacement (also via Core.hpp)
 
 class AsyncRelease {
 public:

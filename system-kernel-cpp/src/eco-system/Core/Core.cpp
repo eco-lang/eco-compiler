@@ -135,11 +135,13 @@ HPointer asyncFailure(ErrShape shape, HPointer& resume, uint64_t token,
         // Remove the registration (a stale entry would keep the closure alive
         // forever). `resume` is the body's own rooted copy.
         (void)s.takePendingResume(token);
-        if (counted) s.decrementPendingAsync();
     }
     HPointer task = failureFor(shape, what);   // `resume` rooted by the macro
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
+    // Release after the failure is published (plans/program-liveness-rule.md
+    // §6.2, L6).
+    if (token != 0 && counted) s.releaseHold(token);
     return alloc::unit();
 }
 

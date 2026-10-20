@@ -61,7 +61,7 @@ static int64_t s_nextId = 1;
 // ============================================================================
 
 // Re-enqueue a parked fiber, handing it `value` as its Task.succeed payload.
-// Balances the incrementPendingAsync() that happened when the fiber parked.
+// Releases the hold parkResume took when the fiber parked.
 // Callers must ensure `value` is reachable at call time; GC may run inside
 // taskSucceed / callClosure1, but the StackRootGuard below keeps our local
 // copy updated across those points.
@@ -70,7 +70,7 @@ static void wakeWaiter(uint64_t token, HPointer value) {
     HPointer resumeClosure = sched.takePendingResume(token);
     if (isNil(resumeClosure)) {
         // Orphaned (shouldn't happen in single-threaded path, but defensive).
-        sched.decrementPendingAsync();
+        sched.releaseHold(token);
         return;
     }
     HPointer v = value;
@@ -80,7 +80,7 @@ static void wakeWaiter(uint64_t token, HPointer value) {
         succeedTask = sched.taskSucceed(v);
         Elm::Platform::Scheduler::callClosure1(resumeClosure, succeedTask);
     }
-    sched.decrementPendingAsync();
+    sched.releaseHold(token);
 }
 
 // A value `v` has just arrived at an empty slot. Wake all readers (each
@@ -173,8 +173,7 @@ static void* readBindingEvaluator(void* rawArgs[]) {
         Elm::StackRootGuard guard2(&succeedTask);
         Elm::Platform::Scheduler::callClosure1(resumeHP, succeedTask);
     } else {
-        uint64_t token = sched.registerPendingResume(resumeHP);
-        sched.incrementPendingAsync();
+        uint64_t token = sched.parkResume(resumeHP, Elm::Platform::HoldKind::Task, "MVar.wait");
         it->second.readers.push_back({token, listNil()});
     }
     return reinterpret_cast<void*>(Export::encode(unit()));
@@ -204,8 +203,7 @@ static void* takeBindingEvaluator(void* rawArgs[]) {
             Elm::Platform::Scheduler::callClosure1(resumeHP, succeedTask);
         }
     } else {
-        uint64_t token = sched.registerPendingResume(resumeHP);
-        sched.incrementPendingAsync();
+        uint64_t token = sched.parkResume(resumeHP, Elm::Platform::HoldKind::Task, "MVar.wait");
         it->second.takers.push_back({token, listNil()});
     }
     return reinterpret_cast<void*>(Export::encode(unit()));
@@ -236,8 +234,7 @@ static void* putBindingEvaluator(void* rawArgs[]) {
             Elm::Platform::Scheduler::callClosure1(resumeHP, succeedTask);
         }
     } else {
-        uint64_t token = sched.registerPendingResume(resumeHP);
-        sched.incrementPendingAsync();
+        uint64_t token = sched.parkResume(resumeHP, Elm::Platform::HoldKind::Task, "MVar.wait");
         it->second.putters.push_back({token, valueHP});
     }
     return reinterpret_cast<void*>(Export::encode(unit()));
@@ -323,7 +320,7 @@ static HPointer dropBody(HPointer captured) {
                 Waiter w = q.front();
                 q.pop_front();
                 (void)sched.takePendingResume(w.token);
-                sched.decrementPendingAsync();
+                sched.releaseHold(w.token);
             }
         };
         abandon(it->second.readers);

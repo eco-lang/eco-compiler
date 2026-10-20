@@ -44,4 +44,11 @@ uint64_t Eco_Kernel_System_setExitCode(int64_t code) {
     )
 }
 
+// rearmEmptyEventLoop : Task Never ()
+uint64_t Eco_Kernel_System_rearmEmptyEventLoop() {
+    ECO_KERNEL_GUARD(
+        return enc(makeBinding<systemRearmEmptyEventLoopBody>(alloc::unit()));
+    )
+}
+
 } // extern "C"

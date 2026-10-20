@@ -15,6 +15,15 @@ using namespace Elm::Kernel;
 using Export::encode;
 using Export::decode;
 
+// Kill handle of a sleep: `Process.kill` applies it to `()`.
+// args[0] = the sleep's resume token (PK_Int, raw bits), args[1] = ().
+// Exactly one release of the sleep's hold happens (withdrawParkedTimer).
+static void* sleepKillEval(void* args[]) {
+    uint64_t token = reinterpret_cast<uint64_t>(args[0]);
+    Elm::Platform::withdrawParkedTimer(token);
+    return reinterpret_cast<void*>(encode(Elm::alloc::unit()));
+}
+
 // Phase-0 validation site for the generic Task_Binding helper
 // (`plans/defer-eager-kernel-tasks-via-binding.md`, Section "Phase 0 — 0.2").
 //
@@ -28,14 +37,19 @@ static HPointer sleepBindingBody(HPointer captured, HPointer resume) {
     void* ptr = Allocator::instance().resolve(captured);
     double millis = static_cast<ElmFloat*>(ptr)->value;
 
-    uint64_t resumeToken =
-        Elm::Platform::Scheduler::instance().registerPendingResume(resume);
-    Elm::Platform::Scheduler::instance().incrementPendingAsync();
+    uint64_t resumeToken = Elm::Platform::Scheduler::instance().parkResume(
+        resume, Elm::Platform::HoldKind::Task, "Process.sleep");
     Elm::Platform::TimerService::instance().schedule(millis, resumeToken);
 
-    // Kill handle: status-quo Unit placeholder (cancellation deferred —
-    // plans/dumb-timer-threads.md Q3).
-    return Elm::alloc::unit();
+    // Kill handle (plans/program-liveness-rule.md §5.3): killing the sleep
+    // withdraws its timer, so the killed task's hold ends now, not when the
+    // timer would have fired. Captures only the resume token (an unboxed
+    // Int); nothing allocates between allocClosureK and the capture (G8).
+    HPointer kill = Elm::alloc::allocClosureK(&sleepKillEval, /*max_values=*/2, Elm::PK_Boxed);
+    void* p = Allocator::instance().resolve(kill);
+    Elm::alloc::closureCapture(p, Elm::alloc::unboxedInt(static_cast<int64_t>(resumeToken)),
+                               Elm::PK_Int);
+    return kill;
 }
 
 extern "C" {

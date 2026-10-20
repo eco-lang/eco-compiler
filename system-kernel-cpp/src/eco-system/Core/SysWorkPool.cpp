@@ -9,7 +9,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Core/SysWorkPool.hpp"
-#include "eco-system/Core/AsyncRelease.hpp"
 #include "eco-system/Core/AsyncSources.hpp"
 
 #include <algorithm>
@@ -112,9 +111,9 @@ void poolDrain() {
     bool resumed = false;
     SysWorkPool::Item item;
     while (pool.tryPop(item)) {
-        AsyncRelease release;                       // exactly one decrement (G10)
+        HoldRelease release(item.token);            // exactly one release (G10)
         HPointer resume = s.takePendingResume(item.token);
-        if (alloc::isNil(resume)) continue;         // killed: decrement only
+        if (alloc::isNil(resume)) continue;         // killed: release only
         HPointer task = alloc::unit();
         Elm::StackRootGuard g(&resume, &task);
         if (item.result.holds<PoolException>()) {

@@ -35,6 +35,11 @@ constexpr uint16_t CTOR_ON_SIGNAL_TERMINATE = 2;
 constexpr int SUB_MSG_FIELD = 0;
 constexpr int SUB_CTOR_COUNT = 3;
 
+// Arms the empty-event-loop hook (System.rearmEmptyEventLoop, decision
+// L-REARM, LIVE_005): onEmptyEventLoop delivers at the next empty event
+// loop. The only setter of the armed bit. Eco thread only.
+void rearmEmptyEventLoop();
+
 } // namespace Eco::System::SystemManager
 
 extern "C" {

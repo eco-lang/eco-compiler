@@ -2,7 +2,7 @@
 import Elm.Kernel.Scheduler exposing (binding, succeed, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, pin, activityCount)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, pin)
 */
 
 // System — JS twin of src/eco-system/System/ (eco/system), plans/eco-system-library.md
@@ -102,29 +102,38 @@ var _System_setExitCode = function(code)
 };
 
 
+// The empty-event-loop armed bit (L-REARM): one per program run, starting armed. Cleared by
+// the listener below when it fires; set only by rearmEmptyEventLoop.
+var _System_emptyLoopArmed = true;
+
+// rearmEmptyEventLoop : Task Never ()
+var _System_rearmEmptyEventLoop = __Scheduler_binding(function(callback)
+{
+	_System_emptyLoopArmed = true;
+	callback(__Scheduler_succeed(__Utils_Tuple0));
+});
+
+
 // --- JS-only: listeners for the Elm System manager ---------------------------------------
 //
 // Each is a binding that never completes; killing its process (Process.kill) detaches the
 // listener. On every event it spawns `task` (a Platform.sendToSelf).
 
-// onEmptyEventLoop (§3.7, Node 'beforeExit'): fires when the program runs out of work, then
-// re-arms only once external IO has been started since it last fired (a Stream channel
-// request, or a kernel calling Stream's noteActivity), as the native hook re-arms on
-// incrementPendingAsync. After firing it keeps the loop alive for one more turn, so IO
-// that completed synchronously (a stdout write) still leads to a second check.
+// onEmptyEventLoop (§3.7, Node 'beforeExit'; decision L-REARM, plans/program-liveness-rule.md
+// §7, LIVE_005): fires only while armed, disarming first. When unarmed it schedules nothing,
+// so Node exits. After firing it keeps the loop alive for one more turn, so a second
+// 'beforeExit' reads the bit again even if the handler started nothing ref'd.
 var _System_attachEmptyEventLoopListener = function(task)
 {
 	return __Scheduler_binding(function(callback)
 	{
-		var lastSeen = -1;
 		var listener = function()
 		{
-			var now = __Stream_activityCount();
-			if (now === lastSeen)
+			if (!_System_emptyLoopArmed)
 			{
 				return;
 			}
-			lastSeen = now;
+			_System_emptyLoopArmed = false;
 			__Scheduler_rawSpawn(task);
 			setImmediate(function() {});
 		};

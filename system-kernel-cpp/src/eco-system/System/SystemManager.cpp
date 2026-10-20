@@ -14,6 +14,11 @@
 //   * Delivery (quiescence listener, signal dispatch): snapshot the msgs of
 //     the event into one rooted buffer, then sendToApp + drain() per msg
 //     (G12).
+//   * onEmptyEventLoop fires once per arming (decision L-REARM,
+//     plans/program-liveness-rule.md §7, LIVE_005): one armed bit per program
+//     run (ManagerState::emptyLoopArmed), starting armed, cleared before
+//     delivery, set only by System.rearmEmptyEventLoop
+//     (rearmEmptyEventLoop below). New async work never re-arms it.
 //
 // Signal subscriptions and the quiescence hook hold no pendingAsync (§3.4
 // keep-alive rule): a program that only listens for them exits. Neither
@@ -42,6 +47,9 @@ using namespace SystemManager;
 struct ManagerState {
     uint64_t routerEnc = 0;
     std::vector<uint64_t> msgs[SUB_CTOR_COUNT];   // encoded msgs per MySub tag
+    // L-REARM armed bit (LIVE_005). Registry state, so it is armed again
+    // after a heap reset (F24). Eco thread only.
+    bool emptyLoopArmed = true;
 
     template <typename F>
     void forEachWord(F&& f) {
@@ -94,7 +102,13 @@ void deliver(int which) {
     rs.restoreStackRangePoint(saved);
 }
 
-void onQuiescent(void*) {
+// Scheduler quiescence listener: true iff it delivered (the loop then
+// continues). Fires only while armed and subscribed; disarms before the
+// delivery, so a rearmEmptyEventLoop issued by the handler sticks.
+bool onQuiescent(void*) {
+    ManagerState& st = state();
+    if (!st.emptyLoopArmed || st.msgs[CTOR_ON_EMPTY_EVENT_LOOP].empty()) return false;
+    st.emptyLoopArmed = false;
     try {
         deliver(CTOR_ON_EMPTY_EVENT_LOOP);
     } catch (const std::exception& e) {
@@ -102,7 +116,18 @@ void onQuiescent(void*) {
     } catch (...) {
         ::Eco::Kernel::reportFatal("unknown native exception in onEmptyEventLoop");
     }
+    return true;   // reportFatal is [[noreturn]]; true keeps the contract
 }
+
+} // namespace
+
+namespace SystemManager {
+
+void rearmEmptyEventLoop() { state().emptyLoopArmed = true; }
+
+} // namespace SystemManager
+
+namespace {
 
 // SignalService listener (main thread, from the signal drain).
 void onSignal(int signo, void*) {

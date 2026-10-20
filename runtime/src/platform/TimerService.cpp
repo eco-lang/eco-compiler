@@ -48,6 +48,18 @@ bool TimerService::cancel(std::uint64_t token) {
     return true;
 }
 
+void withdrawParkedTimer(std::uint64_t token) {
+    auto& s = Scheduler::instance();
+    // First: a token that has already fired (or fires from now on) finds Nil
+    // in processReadyAsync and only releases. The firing itself happens on
+    // the worker, but its delivery runs on this (eco) thread, so it cannot
+    // interleave with these lines.
+    (void)s.takePendingResume(token);
+    if (TimerService::instance().cancel(token)) {
+        s.releaseHold(token);   // removed before firing: never delivered, we release
+    }
+}
+
 bool TimerService::tryPopReadyToken(std::uint64_t& outToken) {
     std::lock_guard<std::mutex> lk(readyMutex_);
     if (readyTokens_.empty()) return false;

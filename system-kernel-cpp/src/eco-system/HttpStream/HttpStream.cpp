@@ -11,7 +11,7 @@
 //      elm-kernel-cpp/src/http/HttpExports.cpp extractRequest).
 //   2. A stream body (bodyKind 2) must not be read-locked (it is consumed by
 //      the transfer); a locked one resolves at once with NetworkError_.
-//   3. The resume is registered and pendingAsync incremented (G10).
+//   3. The resume is registered with its hold (parkResume, G10).
 //   4. A stream body gets the upload pump: a ChannelSink over the
 //      transfer's upload HttpTransferChannel, and an internal pipe
 //      (Stream.hpp pipeStreams) from the Readable into it. The pipe reads
@@ -23,7 +23,7 @@
 //      Readable.
 //   5. The transfer thread starts; the kill handle (T7) aborts it.
 //
-// Drain (one event per transfer, each holding the task's pendingAsync count):
+// Drain (one event per transfer, each carrying the task's hold):
 //   * Bad/GoodStatus (the headers): the body becomes a ChannelSource over the
 //     download HttpTransferChannel (its reads answer EOF at once when the
 //     body is discarded), the B.7 result tuple is built and the task resumes.
@@ -31,7 +31,7 @@
 //     (keep-alive rule, §3.4).
 //   * BadUrl/Timeout/NetworkError (the transfer ended before the headers):
 //     the result carries kind 0/1/2.
-//   * A killed task (resume gone): the count is released and the transfer
+//   * A killed task (resume gone): the hold is released and the transfer
 //     aborted.
 // A curl error after the headers reaches the body stream as an Errored
 // readable with reason "network error: <curl message>" (ChannelResult
@@ -41,14 +41,13 @@
 // ( (…), List, Int ) 0x10; ( Int, String, (…) ) 0x1.
 //
 // Templates used: T2 (async binding + drain), T3 (header list, one
-// RootedSlots record), T7 (kill handle), G10 via AsyncRelease.
+// RootedSlots record), T7 (kill handle), G10 via HoldRelease.
 //
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/HttpStream/HttpStream.hpp"
 #include "eco-system/HttpStream/HttpTransfer.hpp"
 
-#include "eco-system/Core/AsyncRelease.hpp"
 #include "eco-system/Core/AsyncSources.hpp"
 #include "eco-system/Stream/Stream.hpp"
 #include "eco-system/Stream/StreamTable.hpp"
@@ -194,7 +193,7 @@ void httpStreamDrain() {
     bool resumed = false;
     HttpEvent ev;
     while (svc.tryPop(ev)) {
-        AsyncRelease release;   // every event carries the task's count (G10)
+        HoldRelease release(ev.token);   // every event carries the task's hold (G10)
         try {
             HPointer resume = sched.takePendingResume(ev.token);
             if (alloc::isNil(resume)) {
@@ -258,8 +257,7 @@ HPointer httpStreamSendBody(HPointer captured, HPointer resume) {
             }
         }
 
-        token = sched.registerPendingResume(resume);
-        sched.incrementPendingAsync();
+        token = sched.parkResume(resume, HoldKind::Task, "Http.Stream.send");
         counted = true;
         bool stream = spec.bodyKind == 2;
         auto transfer = svc.create(token, std::move(spec));

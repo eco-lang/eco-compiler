@@ -104,6 +104,7 @@ struct HeaderAccum {
 // a timer, often with identical values between actual transfers).
 struct ProgressCtx {
     Elm::Platform::HttpService* service = nullptr;
+    const Elm::Platform::HttpService::RequestControl* control = nullptr;   // may be null
     std::uint64_t token = 0;
     curl_off_t lastDl = -1;
     curl_off_t lastUl = -1;
@@ -114,7 +115,16 @@ struct ProgressCtx {
 int xferInfoCb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
                curl_off_t ultotal, curl_off_t ulnow) {
     auto* ctx = static_cast<ProgressCtx*>(clientp);
-    if (!ctx || !ctx->service) return 0;
+    if (!ctx) return 0;
+    // Abort (Http.cancel, kill, plans/program-liveness-rule.md §5.3): a
+    // non-zero return stops the transfer with CURLE_ABORTED_BY_CALLBACK.
+    // libcurl calls this at least about once a second, also while waiting
+    // for a response.
+    if (ctx->control &&
+        ctx->control->state.load() == HttpService::RequestControl::AbortRequested) {
+        return 1;
+    }
+    if (!ctx->service) return 0;
     // Upload progress (POST/PUT bodies): emit a Sending tick when ulnow moves.
     if ((ultotal > 0 || ulnow > 0) && ulnow != ctx->lastUl) {
         ctx->lastUl = ulnow;
@@ -127,7 +137,7 @@ int xferInfoCb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
         ctx->lastDl = dlnow;
         ctx->post(/*isUpload=*/false, dlnow, dltotal);
     }
-    return 0;  // 0 = continue (drop-delivery cancel; no curl-level abort)
+    return 0;  // 0 = continue
 }
 
 size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
@@ -177,6 +187,7 @@ HttpService::Result HttpService::perform(const Request& req) {
 
     ProgressCtx progressCtx;
     progressCtx.service = this;
+    progressCtx.control = req.control.get();
     progressCtx.token = req.token;
 
     auto t0 = std::chrono::steady_clock::now();
@@ -312,6 +323,14 @@ void HttpService::workerLoop() {
             requestsCV_.wait(lk, [this]{ return !requests_.empty(); });
             req = std::move(requests_.front());
             requests_.pop();
+        }
+        if (req.control) {
+            // Claimed while queued (RequestControl::abort): the eco thread has
+            // released its hold already, and nothing may be posted for it.
+            std::uint8_t q = RequestControl::Queued;
+            if (!req.control->state.compare_exchange_strong(q, RequestControl::Running)) {
+                continue;
+            }
         }
 
         bool ecoLane = req.eco_lane;

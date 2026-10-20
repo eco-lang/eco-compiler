@@ -287,7 +287,7 @@ void ecoHttpDrain() {
     while (HttpService::instance().tryPopResultEcoLane(r)) {
         HPointer bundle = sched.takePendingResume(r.token);
         if (isNil(bundle)) {
-            sched.decrementPendingAsync();
+            sched.releaseHold(r.token);
             continue;
         }
         Elm::StackRootGuard bundleRoot(&bundle);
@@ -324,7 +324,7 @@ void ecoHttpDrain() {
             Elm::StackRootGuard taskRoot(&task);
             Elm::Platform::Scheduler::callClosure1(resume, task);
         }
-        sched.decrementPendingAsync();
+        sched.releaseHold(r.token);
     }
 }
 
@@ -345,8 +345,7 @@ uint64_t parkBundle(uint16_t kind, HPointer resume) {
     fields[0] = boxed(resume);
     HPointer bundle = custom(kind, fields, /*unboxed_mask=*/0);
     auto& sched = Elm::Platform::Scheduler::instance();
-    uint64_t token = sched.registerPendingResume(bundle);
-    sched.incrementPendingAsync();
+    uint64_t token = sched.parkResume(bundle, Elm::Platform::HoldKind::Task, "Eco.Http");
     return token;
 }
 

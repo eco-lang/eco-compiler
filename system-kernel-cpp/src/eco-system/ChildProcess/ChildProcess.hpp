@@ -9,10 +9,11 @@
 // job id is the WaitService token (lane WaitLane::EcoSystem), so the single
 // EcoSystem-lane drain finds the job of every reaped child.
 //
-// pendingAsync (keep-alive rule, §3.4): a running non-detached child holds
-// one count (`counted`), released exactly once when its exit is processed;
-// an armed runDuration timer holds one more, released by the Scheduler when
-// it fires or by us when TimerService::cancel removes it (T7 rule).
+// Liveness holds (keep-alive rule, §3.4; plans/program-liveness-rule.md X4,
+// X5): a running non-detached child holds one Task hold (`hold`), released
+// exactly once when its exit is processed; an armed runDuration timer holds
+// one more (keyed by its token), released by the Scheduler when it fires or
+// by withdrawParkedTimer when TimerService::cancel removes it (T7 rule).
 //
 // Templates used: T5 (job table), T7 (kill handles), T2-style drains.
 //
@@ -41,7 +42,7 @@ struct ChildJob {
 
     bool exited = false;          // its exit was popped from the WaitService
     int rawStatus = 0;            // raw waitpid status (valid when exited)
-    bool counted = false;         // holds one pendingAsync for the child
+    HoldToken hold = kNoHold;     // the child's Task hold (kNoHold: Detached)
     uint64_t resumeToken = 0;     // run: the task's; spawn: the child binding's
     uint64_t timerToken = 0;      // armed runDuration timer, 0 when none / fired
     bool killed = false;          // we sent SIGTERM (timeout, overflow, Process.kill)

@@ -5,9 +5,9 @@
 //
 //   * fsPoolSubmit — the one P-mode body (T2): copies the payload out (G3),
 //     checks FileHandle fds against the open-handle table, registers the
-//     resume, counts pendingAsync, submits the worker operation. The pool
-//     drain (Core) takes the resume, calls the completion, resumes and
-//     decrements exactly once (G10).
+//     resume and acquires its hold (parkResume), submits the worker
+//     operation. The pool drain (Core) takes the resume, calls the
+//     completion, resumes and releases the hold exactly once (G10).
 //   * fsComplete / fsCompleteOpen — main thread: build the result (T3 for
 //     lists, T4 for Bytes) or the FErr tuple; file streams are handed to the
 //     stream table as ChannelSource / ChannelSink over an FdChannel.
@@ -189,8 +189,7 @@ HPointer fsPoolSubmit(FsOp op, FsKind kind, HPointer captured, HPointer resume) 
         if (kind == FsKind::TempDir) args.s1 = joinTmp(tmpDirectoryString(), args.s1);
 
         auto& s = Scheduler::instance();
-        token = s.registerPendingResume(resume);   // G10
-        s.incrementPendingAsync();
+        token = s.parkResume(resume, HoldKind::Task, "FileSystem.op");   // G10
         counted = true;
         CompleteFn complete = kind == FsKind::Open ? &fsCompleteOpen : &fsComplete;
         SysWorkPool::instance().submit(

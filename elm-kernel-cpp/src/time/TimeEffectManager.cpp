@@ -59,6 +59,10 @@ struct IntervalState {
     uint64_t generation;  // bumped on (re)subscription; stale ticks self-cancel
     uint64_t taggerEnc;   // encoded HPointer to (Posix -> msg) closure
     uint64_t routerEnc;   // encoded HPointer to Router
+    // Resume token of the interval's scheduled tick (0 = none recorded).
+    // Unsubscribing withdraws it, so a dropped Time.every holds nothing from
+    // that moment (plans/program-liveness-rule.md §5.3, LIVE-5).
+    uint64_t tickToken = 0;
 };
 
 static std::mutex g_timerMutex;
@@ -91,8 +95,10 @@ static void timerRegisterScannerOnce() {
 static void* timerTickEvaluator(void* args[]);
 
 // Schedule a single Time.every tick for (intervalMs, generation).
-// Mirrors sleepBindingEvaluator (ProcessExports.cpp): registerPendingResume
-// → incrementPendingAsync → TimerService::schedule.
+// Mirrors sleepBindingBody (ProcessExports.cpp): parkResume →
+// TimerService::schedule. The tick's resume token is recorded in the
+// interval's state if that interval still has this generation, so that
+// unsubscribing can withdraw the tick.
 static void scheduleTimerTick(double intervalMs, uint64_t generation) {
     // Box metadata as Elm values so they're GC-visible and travel through
     // the closure's captures.
@@ -110,9 +116,16 @@ static void scheduleTimerTick(double intervalMs, uint64_t generation) {
     }
 
     auto& sched = Scheduler::instance();
-    uint64_t token = sched.registerPendingResume(tickCl);
-    sched.incrementPendingAsync();
+    uint64_t token = sched.parkResume(tickCl, Elm::Platform::HoldKind::Task, "Time.every");
     TimerService::instance().schedule(intervalMs, token);
+
+    // Tick delivery runs on this (eco) thread, so the tick cannot have been
+    // delivered before the token is recorded.
+    std::lock_guard<std::mutex> lock(g_timerMutex);
+    auto it = g_intervals.find(intervalMs);
+    if (it != g_intervals.end() && it->second.generation == generation) {
+        it->second.tickToken = token;
+    }
 }
 
 // Per-tick evaluator. Runs entirely on the main scheduler thread, fired by
@@ -266,16 +279,20 @@ static void* timeOnEffectsEvaluator(void* args[]) {
         uint64_t generation;
     };
     std::vector<PendingStart> toStart;
+    std::vector<uint64_t> toCancel;
 
     // Update g_intervals under the mutex; do NOT allocate while holding it.
     {
         std::lock_guard<std::mutex> lock(g_timerMutex);
 
-        // Erase intervals that are no longer requested. In-flight ticks
-        // for those intervals will see the missing entry and self-cancel
-        // via the generation check.
+        // Erase intervals that are no longer requested, collecting their
+        // scheduled ticks for withdrawal below. A tick that has already
+        // fired is withdrawn too (its resume is discarded); the generation
+        // check in timerTickEvaluator remains for a tick with no recorded
+        // token.
         for (auto it = g_intervals.begin(); it != g_intervals.end(); ) {
             if (normalizedRequested.find(it->first) == normalizedRequested.end()) {
+                if (it->second.tickToken != 0) toCancel.push_back(it->second.tickToken);
                 it = g_intervals.erase(it);
             } else {
                 ++it;
@@ -288,7 +305,7 @@ static void* timeOnEffectsEvaluator(void* args[]) {
             if (it == g_intervals.end()) {
                 uint64_t gen = g_nextGeneration.fetch_add(1);
                 g_intervals.emplace(intervalMs, IntervalState{
-                    intervalMs, gen, taggerEnc, routerEnc
+                    intervalMs, gen, taggerEnc, routerEnc, /*tickToken=*/0
                 });
                 toStart.push_back({ intervalMs, gen });
             } else {
@@ -302,6 +319,13 @@ static void* timeOnEffectsEvaluator(void* args[]) {
                 it->second.routerEnc = routerEnc;
             }
         }
+    }
+
+    // Withdraw the dropped intervals' ticks (each releases its hold exactly
+    // once: here, or in processReadyAsync if it already fired). After the
+    // mutex is dropped: withdrawParkedTimer takes the Scheduler's locks.
+    for (uint64_t t : toCancel) {
+        withdrawParkedTimer(t);
     }
 
     // Allocations only AFTER releasing g_timerMutex.

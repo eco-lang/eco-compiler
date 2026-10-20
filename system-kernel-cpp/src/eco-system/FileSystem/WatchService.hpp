@@ -21,7 +21,7 @@
 // node's fs.watch: IN_ATTRIB/IN_MODIFY are "change", every create, delete
 // or move is "rename" (libuv's mapping).
 //
-// The service holds no pendingAsync count itself: the FileSystem manager
+// The service holds no liveness hold itself: the FileSystem manager
 // holds one per active watch (§3.4 keep-alive rule).
 //
 // Templates used: none (POD only, G1).

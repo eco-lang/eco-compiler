@@ -14,6 +14,7 @@
 //   * exitWithCode  — standalone: fflush + std::exit; embed: set the code
 //                     and request a stop (§3.7).
 //   * setExitCode   — eco_set_exit_code.
+//   * rearmEmptyEventLoop — SystemManager::rearmEmptyEventLoop (L-REARM).
 //
 // argv is read from the operating system (/proc/self/cmdline on Linux,
 // _NSGetArgc/_NSGetArgv on macOS, __argc/__argv on Windows), which is the
@@ -25,6 +26,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/System/System.hpp"
+#include "eco-system/System/SystemManager.hpp"
 
 #include "eco-system/Stream/Stream.hpp"
 #include "eco-system/Stream/StreamTable.hpp"
@@ -300,6 +302,15 @@ HPointer systemExitWithCodeBody(HPointer captured) {
 HPointer systemSetExitCodeBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         eco_set_exit_code(static_cast<int>(payloadInt(captured)));
+        return succeedUnit();
+    )
+}
+
+// rearmEmptyEventLoop : Task Never () — payload: unit (unused). Sets the
+// SystemManager armed bit (plans/program-liveness-rule.md §7, LIVE_005).
+HPointer systemRearmEmptyEventLoopBody(HPointer /*captured*/) {
+    ECO_SYSTEM_BODY_GUARD(Never,
+        SystemManager::rearmEmptyEventLoop();
         return succeedUnit();
     )
 }

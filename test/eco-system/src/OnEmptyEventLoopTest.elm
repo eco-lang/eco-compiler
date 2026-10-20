@@ -1,16 +1,15 @@
 module OnEmptyEventLoopTest exposing (main)
 
 {-| `System.onEmptyEventLoop` (Node `beforeExit`, plans/eco-system-library.md
-§3.7): the msg arrives when the program runs out of work. The first delivery
-starts IO (a stdout write), so the program runs out of work again and the msg
-is delivered a second time; that delivery starts nothing, so the program then
-exits. The subscription stays active throughout.
+§3.7; decision L-REARM, plans/program-liveness-rule.md §7): fires once; the
+IO its handler starts runs to completion, then the program ends. The IO does
+not arm the hook again, so there is no second delivery, although the
+subscription stays active throughout.
 -}
 
 -- CHECK: fired: 1
 -- CHECK: io from first fire
--- CHECK: fired: 2
--- CHECK-NOT: fired: 3
+-- CHECK-NOT: fired: 2
 -- EXIT: 0
 
 import Stream

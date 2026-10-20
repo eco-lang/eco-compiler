@@ -162,12 +162,14 @@ HPointer createWithComplete(PoolResult& pr) {
 void completeNow(HPointer& resume, uint64_t& token, bool& counted) {
     auto& s = Scheduler::instance();
     (void)s.takePendingResume(token);
-    s.decrementPendingAsync();
-    token = 0;
-    counted = false;
     HPointer task = succeedUnit();
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
+    // Release after the resume is published (plans/program-liveness-rule.md
+    // §6.2, L6); token/counted stay set until then.
+    s.decrementPendingAsync();
+    token = 0;
+    counted = false;
 }
 
 // The response headers ( name, values ) -> one line per value. Reads only; no

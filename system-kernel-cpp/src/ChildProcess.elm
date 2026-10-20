@@ -293,9 +293,9 @@ message still arrives, and its streams are connected to no program.
 end of input at once, and what it writes is discarded.
 
 `Detached` is `Ignored` with the child in a new session. Unlike the others, a detached child does
-not keep the program running, so the program can end while the child still runs. On the native
-backend, a detached child with a `runDuration` does keep the program running, until the limit
-expires or the child exits.
+not keep the program running, so the program can end while the child still runs. A detached
+child with a `runDuration` does keep the program running, until the limit expires or the child
+exits.
 
 -}
 type Connection msg

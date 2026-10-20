@@ -31,8 +31,8 @@
 //                     (attachReader) gets the chunks as POD instead, and
 //                     reads fail Locked meanwhile. Read-ahead requests are
 //                     uncounted (an idle source keeps nothing alive); a
-//                     parked read holds its own count, a pipe makes the
-//                     read in flight counted.
+//                     parked read holds its own hold, a pipe gives the
+//                     read in flight a hold (readInFlightHold).
 //   A ChannelSink with mapFnEnc != 0 is a MAPPED SINK: each accepted value
 //   is passed to the closure (toWire : a -> ( Int, String, Bytes )) and
 //   written with ByteChannel::requestWriteTagged.
@@ -86,7 +86,7 @@ struct PendingWrite {
     uint64_t token = 0;              // resume token; 0 = nothing to complete
     uint64_t valueEnc = 0;           // encoded value (0 for channel writes)
     bool completeOnTransform = true; // write: when it leaves writeQ; enqueue: on acceptance
-    bool counted = false;            // holds one pendingAsync count (channel writes)
+    bool counted = false;            // `token` is also a liveness hold (channel writes)
 };
 
 struct StreamPair {
@@ -129,10 +129,11 @@ struct StreamPair {
     uint64_t mapFnEnc = 0;
     // MappedSource: chunks read but not mapped yet (POD, at most one unless
     // the end arrived behind it), the outstanding read-ahead request
-    // (synthetic token, 0 none) and whether it holds a pendingAsync count.
+    // (uncounted token, 0 none) and the hold a waiting pipe gave it
+    // (kNoHold: none; released by the read's result).
     std::deque<ChannelResult> rawQ;
     uint64_t readInFlight = 0;
-    bool readInFlightCounted = false;
+    HoldToken readInFlightHold = kNoHold;
     int rErrno = 0;                    // the errno of a failed read (reader end result)
     // MappedSource: the subscription reader (attachReader), a kick posted
     // through the channel queue to hand it queued chunks / the end, and
@@ -184,8 +185,9 @@ inline bool streamReadLocked(const StreamPair* p) {
 inline bool streamWriteLocked(const StreamPair* p) { return p->writeLock || p->pipedIn; }
 
 // Completes parked `token` (T9) with Task.succeed `value` / Task.fail
-// ( kind, reason ), releasing its pendingAsync count if `counted`. An
-// orphaned token only releases its count.
+// ( kind, reason ), then releases the hold `token` names if `counted` (a
+// counted token is always its own hold id: parkResume or streamHeldToken).
+// An orphaned token only releases its hold.
 void streamCompleteOk(uint64_t token, bool counted, HPointer value);
 void streamCompleteErr(uint64_t token, bool counted, int kind, const std::string& reason);
 
@@ -195,17 +197,20 @@ void streamCancelReadableNow(int64_t id, const std::string& reason);
 void streamCancelWritableNow(int64_t id, const std::string& reason);
 
 // Request ids for channel requests that have no resume of their own
-// (enqueue on a sink, pipe reads/writes/closes). Disjoint from Scheduler
-// resume tokens; takePendingResume on one is a harmless miss.
-uint64_t streamSyntheticToken();
-// Request ids that never hold a pendingAsync count (MappedSource
+// (enqueue on a sink, pipe reads/writes/closes). Each one IS a free-standing
+// liveness hold (Scheduler::acquireHold, kind Task, census site `site`),
+// released by the channel dispatch through the request's result (G10).
+// Disjoint from Scheduler resume tokens (bit 63) and from uncounted tokens;
+// takePendingResume on one is a harmless miss.
+uint64_t streamHeldToken(const char* site);
+// Request ids that never hold anything themselves (MappedSource
 // read-ahead, reader kicks): the channel dispatch releases nothing for an
-// orphaned one. Disjoint from both resume and synthetic tokens.
+// orphaned one. Disjoint from both resume and held tokens.
 uint64_t streamUncountedToken();
 bool streamIsUncountedToken(uint64_t token);
 
 // MappedSource: issues the read-ahead request if one is due (r Open,
-// nothing buffered or in flight, no reader kick pending). Counted iff a
+// nothing buffered or in flight, no reader kick pending). Holds iff a
 // pipe reads from the pair. No heap allocation.
 void streamMappedMaybeRead(int64_t id);
 // Mapped sink: applies toWire to `value` (rooted by the caller) and copies

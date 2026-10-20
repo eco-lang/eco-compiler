@@ -37,9 +37,9 @@
 // needed. It is cleared when the heap generation changes (F24), like the
 // stream table.
 //
-// Channel requests issued here use synthetic tokens and hold one
-// pendingAsync count each, released by the channel dispatch (G10).
-// In-memory pipes hold none (an in-memory park, §3.5).
+// Channel requests issued here use held tokens (streamHeldToken: the
+// request id is its own liveness hold), released by the channel dispatch
+// (G10). In-memory pipes hold none (an in-memory park, §3.5).
 //
 // Templates used: T9 (pipeTo parks and completes), G10 (channel requests).
 //
@@ -93,8 +93,7 @@ bool dstCanAccept(const StreamPair* d) {
 void pushIntoDst(StreamPair* d, uint64_t v) {
     if (d->kind == StreamKind::ChannelSink) {
         std::string bytes = d->textSink ? toStdString(dec(v)) : toStdBytes(dec(v));   // G3: copy out first
-        uint64_t req = streamSyntheticToken();
-        Scheduler::instance().incrementPendingAsync();   // released by the dispatch
+        uint64_t req = streamHeldToken("StreamPipe.write");   // released by the dispatch
         d->writeQ.push_back(PendingWrite{req, 0, true, true});
         d->channel->requestWrite(req, std::move(bytes));
         return;
@@ -105,8 +104,7 @@ void pushIntoDst(StreamPair* d, uint64_t v) {
 void closeDst(StreamPair* d) {
     d->w = WState::Closing;
     if (d->kind == StreamKind::ChannelSink) {
-        uint64_t req = streamSyntheticToken();
-        Scheduler::instance().incrementPendingAsync();   // released by the dispatch
+        uint64_t req = streamHeldToken("StreamPipe.close");   // released by the dispatch
         d->closeToken = req;
         d->closeCounted = true;
         d->channel->close(req);
@@ -226,8 +224,7 @@ void streamRunPipe(int64_t pid) {
             std::string bytes;
             streamMapForSink(d->mapFnEnc, v, tag, text, bytes);   // G11: s, d are dead
             if (StreamPair* dd = t.find(pp.dst); dd && dd->w == WState::Open && dd->channel) {
-                uint64_t req = streamSyntheticToken();
-                Scheduler::instance().incrementPendingAsync();   // released by the dispatch
+                uint64_t req = streamHeldToken("StreamPipe.write");   // released by the dispatch
                 dd->writeQ.push_back(PendingWrite{req, 0, true, true});
                 dd->channel->requestWriteTagged(req, tag, text, std::move(bytes));
             }
@@ -267,14 +264,15 @@ void streamRunPipe(int64_t pid) {
 
         // 5c. A mapped source: a chunk read ahead is mapped by its pump (the
         //     pipe is a waiting reader); otherwise its read-ahead request
-        //     now keeps the program alive (counted) while the pipe waits.
+        //     now keeps the program alive (a hold) while the pipe waits.
         if (s->kind == StreamKind::MappedSource && s->r == RState::Open && s->readQ.empty() &&
             dstCanAccept(d)) {
             if (!s->rawQ.empty()) {
                 pumpStream(pp.src);
-            } else if (s->readInFlight && !s->readInFlightCounted) {
-                Scheduler::instance().incrementPendingAsync();   // released by the dispatch
-                s->readInFlightCounted = true;
+            } else if (s->readInFlight && s->readInFlightHold == kNoHold) {
+                // Released by the read's result (mappedReadResult).
+                s->readInFlightHold = Scheduler::instance().acquireHold(
+                    HoldKind::Task, "StreamPipe.mappedReadAhead");
             } else if (!s->readInFlight) {
                 streamMappedMaybeRead(pp.src);
             }
@@ -284,8 +282,7 @@ void streamRunPipe(int64_t pid) {
         // 5b. A channel source: the pipe reads.
         if (s->kind == StreamKind::ChannelSource && s->r == RState::Open &&
             s->parkedReadToken == 0 && s->readQ.empty() && dstCanAccept(d) && s->channel) {
-            uint64_t req = streamSyntheticToken();
-            Scheduler::instance().incrementPendingAsync();   // released by the dispatch
+            uint64_t req = streamHeldToken("StreamPipe.read");   // released by the dispatch
             s->parkedReadToken = req;
             s->parkedReadCounted = true;
             s->channel->requestRead(req, kPipeReadChunk);

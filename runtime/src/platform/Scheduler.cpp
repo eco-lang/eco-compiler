@@ -4,8 +4,11 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 
 using namespace Elm;
 using namespace Elm::alloc;
@@ -529,6 +532,7 @@ HPointer Scheduler::killTask(HPointer procHP) {
 // ============================================================================
 
 void Scheduler::enqueue(HPointer proc) {
+    enqueueSerial_.fetch_add(1, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         RootedProc rp;
@@ -542,8 +546,72 @@ void Scheduler::enqueue(HPointer proc) {
     // (runEventLoop) will wake up and call drain().
 }
 
+// ============================================================================
+// Liveness holds (plans/program-liveness-rule.md §5.1; LIVE_003)
+// ============================================================================
+
+#if !defined(NDEBUG) || defined(ECO_HEAP_VALIDATE)
+static constexpr bool kHoldCensus = true;
+#else
+static constexpr bool kHoldCensus = false;
+#endif
+
+// Free-standing token layout: bit 63 set, bits 56-62 = HoldKind (so release
+// knows a Host hold without a census), bits 0-55 = serial. Resume tokens come
+// from nextResumeToken_ and never set bit 63.
+static constexpr int kHoldKindShift = 56;
+static inline HoldKind freeHoldKind(HoldToken t) {
+    return static_cast<HoldKind>((t >> kHoldKindShift) & 0x7f);
+}
+
+const char* holdKindName(HoldKind k) noexcept {
+    switch (k) {
+    case HoldKind::Task: return "Task";
+    case HoldKind::Subscription: return "Subscription";
+    case HoldKind::Item: return "Item";
+    case HoldKind::Host: return "Host";
+    case HoldKind::Port: return "Port";
+    }
+    return "?";
+}
+
+static bool envFlag(const char* name) {
+    const char* v = std::getenv(name);
+    return v && *v && std::strcmp(v, "0") != 0;
+}
+
+static bool livenessReportEnabled() {
+    static const bool on = envFlag("ECO_LIVENESS_REPORT");
+    return on;
+}
+
+// Recently released holds (census builds), so a second release can name the
+// site that acquired it. Guarded by holdsMutex_.
+namespace {
+struct ReleasedRing {
+    static constexpr size_t N = 1024;
+    std::pair<HoldToken, const char*> e[N] = {};
+    size_t next = 0;
+    void push(HoldToken t, const char* site) { e[next] = {t, site}; next = (next + 1) % N; }
+    const char* find(HoldToken t) const {
+        for (size_t i = 0; i < N; ++i) if (e[i].first == t && t != kNoHold) return e[i].second;
+        return nullptr;
+    }
+};
+ReleasedRing g_releasedHolds;
+} // namespace
+
+[[noreturn]] static void holdFatal(const char* what, HoldToken t, const char* site) {
+    std::fprintf(stderr, "eco: liveness: %s (token 0x%llx%s%s)\n", what,
+                 static_cast<unsigned long long>(t), site ? ", acquired at " : "",
+                 site ? site : "");
+    std::fflush(stderr);
+    std::abort();
+}
+
 void Scheduler::drain() {
     working_ = true;
+    ++drainDepth_;
 
     while (true) {
         uint64_t procEnc;
@@ -556,6 +624,7 @@ void Scheduler::drain() {
         stepProcess(procEnc);
     }
 
+    --drainDepth_;
     working_ = false;
 }
 
@@ -590,23 +659,22 @@ void Scheduler::runEventLoop() {
                 lock.unlock();
                 continue;   // drain + processReadyAsync at the top
             }
-            // Quiescent. Give onEmptyEventLoop-style listeners one chance per
-            // arming (§3.7): they run with mutex_ released (they may enqueue,
-            // send to the app, drain and start async work), then the loop
-            // re-checks everything. The hook re-arms only through
-            // incrementPendingAsync, so a quiescent loop whose listeners start
-            // no async work exits on the next pass. Never in embed mode.
-            if (!embedMode_.load() && !quiescenceListeners_.empty()
-                && quiescenceArmed_.load()) {
-                quiescenceArmed_.store(false);
+            // Quiescent. Every quiescence listener is asked once, with
+            // mutex_ released (they may enqueue, send to the app, drain and
+            // start async work); the loop re-checks everything iff one of
+            // them delivered. Whether a listener is due is its own state
+            // (L-REARM, LIVE_005: SystemManager's armed bit), so new async
+            // work never re-arms anything here. Never in embed mode.
+            if (!embedMode_.load() && !quiescenceListeners_.empty()) {
                 // Copy: a listener may register another listener.
                 auto listeners = quiescenceListeners_;
                 lock.unlock();
+                bool delivered = false;
                 for (auto& [fn, ctx] : listeners) {
-                    fn(ctx);
+                    delivered |= fn(ctx);
                 }
                 lock.lock();
-                continue;
+                if (delivered) continue;
             }
             break;
         }
@@ -616,11 +684,11 @@ void Scheduler::runEventLoop() {
         // for external input — release the host loop. (runQueue_ is empty here,
         // but check both for clarity.)
         fireActivity(!runQueue_.empty() ||
-                     pendingAsync_.load() > livenessBaseline_);
+                     pendingAsync_.load() - hostHolds_.load() > 0);
         // Also wake if the timer worker pushed a token after our last
         // processReadyAsync but before we took the lock — closes the
         // missed-wakeup window.
-        eventCV_.wait(lock, [this] {
+        auto ready = [this] {
             if (stopRequested_.load()
                 || !runQueue_.empty()
                 || pendingAsync_.load() == 0
@@ -631,7 +699,18 @@ void Scheduler::runEventLoop() {
                 if (asyncSources_[i].second()) return true;
             }
             return false;
-        });
+        };
+        if (livenessReportEnabled()) {
+            // ECO_LIVENESS_REPORT: report what keeps an idle program alive
+            // every 10 s (holdsMutex_ is never taken under mutex_).
+            while (!eventCV_.wait_for(lock, std::chrono::seconds(10), ready)) {
+                lock.unlock();
+                reportHolds("idle 10 s");
+                lock.lock();
+            }
+        } else {
+            eventCV_.wait(lock, ready);
+        }
         // Woke with work (or a stop): mark busy so the host loop stays alive
         // across the upcoming drain. fireActivity is a no-op if unchanged.
         fireActivity(true);
@@ -642,6 +721,7 @@ void Scheduler::runEventLoop() {
         auto hooks = stopHooks_;
         for (StopHook h : hooks) h();
     }
+    if (livenessReportEnabled()) reportHolds("exit");
     // Loop exiting (stop / quiescence): let the host loop go.
     fireActivity(false);
 }
@@ -662,9 +742,12 @@ void Scheduler::fireActivity(bool busy) {
 }
 
 void Scheduler::incrementPendingAsync() {
+    acquireSerial_.fetch_add(1, std::memory_order_relaxed);
+    if (kHoldCensus) {
+        std::lock_guard<std::mutex> g(holdsMutex_);
+        rawHolds_++;
+    }
     pendingAsync_.fetch_add(1);
-    // New async work re-arms the quiescence hook (§3.7 step 2).
-    quiescenceArmed_.store(true);
 }
 
 void Scheduler::addQuiescenceListener(QuiescenceListener fn, void* ctx) {
@@ -672,7 +755,21 @@ void Scheduler::addQuiescenceListener(QuiescenceListener fn, void* ctx) {
     quiescenceListeners_.emplace_back(fn, ctx);
 }
 
+void Scheduler::removeQuiescenceListener(QuiescenceListener fn, void* ctx) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    std::erase_if(quiescenceListeners_,
+                  [&](const std::pair<QuiescenceListener, void*>& e) {
+                      return e.first == fn && e.second == ctx;
+                  });
+}
+
 void Scheduler::decrementPendingAsync() {
+    if (kHoldCensus) {
+        std::lock_guard<std::mutex> g(holdsMutex_);
+        if (rawHolds_ <= 0)
+            holdFatal("raw decrementPendingAsync with no raw hold outstanding", kNoHold, nullptr);
+        rawHolds_--;
+    }
     pendingAsync_.fetch_sub(1);
     // Acquire mutex_ around the notify (as notifyWorkAvailableFromAsync /
     // requestStop do) to close the missed-wakeup window: a decrement landing
@@ -702,7 +799,7 @@ void Scheduler::processReadyAsync() {
     while (TimerService::instance().tryPopReadyToken(token)) {
         HPointer resumeClosure = takePendingResume(token);
         if (alloc::isNil(resumeClosure)) {
-            decrementPendingAsync();
+            releaseHold(token);
             continue;
         }
         // Root resumeClosure and succeedTask across taskSucceed +
@@ -713,11 +810,11 @@ void Scheduler::processReadyAsync() {
             succeedTask = taskSucceed(unit());
             callClosure1(resumeClosure, succeedTask);
         }
-        decrementPendingAsync();
+        releaseHold(token);   // after the resume is published (§6.2)
     }
 
     // Drain external async sources (HTTP, etc). Each does its own HPointer/GC
-    // work on this (main) thread and is responsible for decrementPendingAsync.
+    // work on this (main) thread and is responsible for releasing its holds.
     // By index, re-reading the size: a drain can step a binding that
     // registers a new source (registerAsyncSource appends to this deque; a
     // range-for would be UB). A source added here is drained in this pass.
@@ -1000,6 +1097,151 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             break;
         }
     }
+}
+
+// ============================================================================
+// Liveness holds (continued; helpers are above Scheduler::drain)
+// ============================================================================
+
+bool Scheduler::holdCensusEnabled() const { return kHoldCensus; }
+
+void Scheduler::noteAcquire(HoldToken t, HoldKind kind, const char* site) {
+    acquireSerial_.fetch_add(1, std::memory_order_relaxed);
+    if (kind == HoldKind::Host) hostHolds_.fetch_add(1);
+    if (kHoldCensus) {
+        std::lock_guard<std::mutex> g(holdsMutex_);
+        if (!holds_.emplace(t, std::make_pair(kind, site)).second)
+            holdFatal("hold token acquired twice", t, site);
+    }
+    pendingAsync_.fetch_add(1);
+}
+
+u64 Scheduler::parkResume(HPointer resume, HoldKind kind, const char* site) {
+    u64 token = registerPendingResume(resume);
+    noteAcquire(token, kind, site);
+    return token;
+}
+
+HoldToken Scheduler::acquireHold(HoldKind kind, const char* site) {
+    u64 serial = nextHoldId_.fetch_add(1) & ((1ull << kHoldKindShift) - 1);
+    HoldToken t = kFreeHoldBit
+        | (static_cast<u64>(static_cast<uint8_t>(kind)) << kHoldKindShift) | serial;
+    noteAcquire(t, kind, site);
+    return t;
+}
+
+void Scheduler::releaseHold(HoldToken t) {
+    if (kHoldCensus) {
+        std::lock_guard<std::mutex> g(holdsMutex_);
+        if (t == kNoHold) holdFatal("releaseHold(kNoHold)", t, nullptr);
+        auto it = holds_.find(t);
+        if (it != holds_.end()) {
+            g_releasedHolds.push(t, it->second.second);
+            holds_.erase(it);
+        } else if (rawHolds_ > 0 && !g_releasedHolds.find(t)) {
+            // Transitional (until phase 6): a hold acquired through the raw
+            // incrementPendingAsync (an un-migrated kernel) whose token is
+            // released through the hold API (processReadyAsync).
+            rawHolds_--;
+        } else if (const char* site = g_releasedHolds.find(t)) {
+            holdFatal("second release of a hold", t, site);
+        } else {
+            holdFatal("release of an unknown hold", t, nullptr);
+        }
+    }
+    if ((t & kFreeHoldBit) && freeHoldKind(t) == HoldKind::Host) hostHolds_.fetch_sub(1);
+    pendingAsync_.fetch_sub(1);
+    // Notify under mutex_ (closes the missed-wakeup window, §6.2).
+    { std::lock_guard<std::mutex> lk(mutex_); }
+    eventCV_.notify_one();
+}
+
+size_t Scheduler::liveHoldCount() {
+    if (!kHoldCensus) return 0;
+    std::lock_guard<std::mutex> g(holdsMutex_);
+    return holds_.size();
+}
+
+bool Scheduler::holdIsLive(HoldToken t) {
+    if (!kHoldCensus) return false;
+    std::lock_guard<std::mutex> g(holdsMutex_);
+    return holds_.count(t) != 0;
+}
+
+void Scheduler::noteHoldlessPark(const char* binding) {
+    if (envFlag("ECO_LIVENESS_STRICT"))
+        holdFatal("async binding parked without a hold or a resume", kNoHold, binding);
+    if (!kHoldCensus) return;
+    std::lock_guard<std::mutex> g(holdsMutex_);
+    for (auto& [name, n] : holdlessParks_) {
+        if (name == binding) { ++n; return; }
+    }
+    holdlessParks_.emplace_back(binding, 1);
+}
+
+void Scheduler::reportHolds(const char* why) {
+    if (!kHoldCensus) {
+        std::fprintf(stderr, "eco: liveness report (%s): pendingAsync=%d (census off in this build)\n",
+                     why, pendingAsync_.load());
+        return;
+    }
+    std::map<std::pair<int, std::string>, int> bySite;
+    int raw = 0;
+    std::vector<std::pair<const char*, u64>> parks;
+    {
+        std::lock_guard<std::mutex> g(holdsMutex_);
+        for (auto& [t, ks] : holds_)
+            bySite[{static_cast<int>(ks.first), ks.second ? ks.second : "?"}]++;
+        raw = rawHolds_;
+        parks = holdlessParks_;
+    }
+    std::fprintf(stderr, "eco: liveness report (%s): pendingAsync=%d, holds=%zu, raw=%d\n",
+                 why, pendingAsync_.load(), static_cast<size_t>(
+                     [&] { size_t n = 0; for (auto& [k, c] : bySite) n += c; return n; }()),
+                 raw);
+    for (auto& [k, c] : bySite)
+        std::fprintf(stderr, "  %-12s %-40s %d\n", holdKindName(static_cast<HoldKind>(k.first)),
+                     k.second.c_str(), c);
+    for (auto& [name, n] : parks)
+        std::fprintf(stderr, "  holdless park: %s x%llu\n", name,
+                     static_cast<unsigned long long>(n));
+    std::fflush(stderr);
+}
+
+LivenessHold LivenessHold::acquire(HoldKind kind, const char* site) {
+    return LivenessHold(Scheduler::instance().acquireHold(kind, site));
+}
+
+LivenessHold LivenessHold::adopt(HoldToken t) noexcept { return LivenessHold(t); }
+
+LivenessHold::LivenessHold(LivenessHold&& o) noexcept : t_(o.t_) { o.t_ = kNoHold; }
+
+LivenessHold& LivenessHold::operator=(LivenessHold&& o) noexcept {
+    if (this != &o) {
+        release();
+        t_ = o.t_;
+        o.t_ = kNoHold;
+    }
+    return *this;
+}
+
+LivenessHold::~LivenessHold() { release(); }
+
+void LivenessHold::release() noexcept {
+    if (t_ == kNoHold) return;
+    HoldToken t = t_;
+    t_ = kNoHold;
+    Scheduler::instance().releaseHold(t);
+}
+
+HoldToken LivenessHold::detach() noexcept {
+    HoldToken t = t_;
+    t_ = kNoHold;
+    return t;
+}
+
+HoldRelease::~HoldRelease() {
+    if (t_ != kNoHold) Scheduler::instance().releaseHold(t_);
 }
 
 } // namespace Elm::Platform

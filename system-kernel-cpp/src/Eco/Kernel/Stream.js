@@ -104,9 +104,10 @@ import Maybe exposing (Just, Nothing)
 //       write-locked.
 //   _Stream_pin(id)                     the pair is never erased (stdio).
 //   _Stream_toBytes(uint8Array) -> Bytes (DataView);  _Stream_toUint8Array(bytes)
-//   _Stream_noteActivity()             call when a kernel starts external IO; it re-arms
-//       System.onEmptyEventLoop (§3.7: native re-arms on incrementPendingAsync).
-//   _Stream_activityCount()            read by the System manager kernel.
+//   _Stream_noteActivity()             counts external IO a kernel starts. Unused since
+//       L-REARM (plans/program-liveness-rule.md §7): onEmptyEventLoop no longer re-arms on
+//       activity; phase 7 of that plan deletes the counter and its calls.
+//   _Stream_activityCount()            no longer read (see above).
 //
 // Kernel-file pitfall: every double-underscore Home_name reference in a kernel file,
 // comments included, must be listed in the header imports. An unlisted one makes the
@@ -139,7 +140,7 @@ function _Stream_toUint8Array(bytes)
 }
 
 
-// --- Activity (System.onEmptyEventLoop re-arming, §3.7) --------------------
+// --- Activity (no longer read since L-REARM; deleted in liveness phase 7) ---
 
 var _Stream_activity = 0;
 

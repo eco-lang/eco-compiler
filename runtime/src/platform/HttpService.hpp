@@ -1,8 +1,10 @@
 #ifndef ECO_PLATFORM_HTTP_SERVICE_HPP
 #define ECO_PLATFORM_HTTP_SERVICE_HPP
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -21,6 +23,30 @@ namespace Elm::Platform {
 class HttpService {
 public:
     static HttpService& instance();
+
+    // Abort state of one abortable request, shared by the eco thread and the
+    // worker (plans/program-liveness-rule.md §5.3, decision L5). The worker
+    // moves Queued -> Running when it starts the request, and skips a request
+    // that is no longer Queued. abort() moves Queued -> Aborted (claimed: the
+    // worker posts nothing for it) or Running -> AbortRequested (the transfer
+    // callback then stops curl, CURLE_ABORTED_BY_CALLBACK, and the result is
+    // posted as a NetworkError as usual).
+    struct RequestControl {
+        enum : std::uint8_t { Queued, Running, AbortRequested, Aborted };
+        std::atomic<std::uint8_t> state{Queued};
+
+        // True iff the request was still queued and is now claimed: no result
+        // will ever be posted for it, so the caller owns the release of its
+        // hold. False: it is running (now told to stop) or finished, and its
+        // result reaches the drain, which drops it and releases.
+        bool abort() noexcept {
+            std::uint8_t q = Queued;
+            if (state.compare_exchange_strong(q, Aborted)) return true;
+            std::uint8_t r = Running;
+            (void)state.compare_exchange_strong(r, AbortRequested);
+            return false;
+        }
+    };
 
     // POD request handed to the worker. `token` is the opaque id minted by
     // Scheduler::registerPendingResume on the main thread and echoed back in
@@ -44,6 +70,9 @@ public:
         // Both lanes share the SAME worker pool and tracking, just split at
         // completion.
         bool          eco_lane = false;
+        // Abort control (elm/http requests). nullptr: not abortable (Eco.Http,
+        // the eco lane, keeps its behaviour, plans/program-liveness-rule.md §16).
+        std::shared_ptr<RequestControl> control;
     };
 
     enum class ErrorKind : int {

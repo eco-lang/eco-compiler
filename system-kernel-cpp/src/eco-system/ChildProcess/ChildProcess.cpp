@@ -14,28 +14,28 @@
 //     the main thread asked it to stop.
 //   * the WaitService (lane EcoSystem, token = job id) reports the exit.
 //   * `runDuration` arms a TimerService timer whose pending resume is a C++
-//     closure capturing the job id (it holds one pendingAsync until it fires
+//     closure capturing the job id (it holds one liveness hold until it fires
 //     or is cancelled). On expiry, and on overflow, the child gets SIGTERM
 //     and the run fails with ProgramError exitCode -1 (E.4).
 //   * The run completes once the exit has been seen AND the collector has
 //     posted (node waits for 'close'). After a kill the collector is told to
 //     stop at the exit, so a grandchild keeping the pipes open cannot delay a
 //     killed run. When the child exits first, the timer is cancelled with
-//     TimerService::cancel; if that removed it we drop its pending resume
-//     and decrement (T7 rule), otherwise it fires into a closure that finds
-//     no job.
+//     withdrawParkedTimer: its pending resume is dropped, and if
+//     TimerService::cancel removed it we release its hold (T7 rule);
+//     otherwise it fires into a Nil resume and the Scheduler releases.
 //   * Result: exit 0 → ( stdout, stderr ); a non-zero exit → ProgramError
 //     exitCode; a signal death or a kill → ProgramError -1 (node reports
 //     `code === null` as -1); a spawn failure → InitError errnoName.
 //   * The kill handle (T7) SIGTERMs the child; its CancelFn returns false, so
-//     the completion path still decrements and finds the resume gone.
+//     the completion path still releases and finds the resume gone.
 //
 // The deviation from the plan's "two FdChannels" wording: FdChannel results
 // go through the one channel dispatch that the StreamTable owns, so `run`
 // uses its own collector thread with the same fd discipline (§3.4: O_CLOEXEC,
 // EINTR retried, only the reading thread closes the fds).
 //
-// Templates used: T2-style drains (G10, AsyncRelease semantics written out),
+// Templates used: T2-style drains (G10, HoldRelease semantics written out),
 // T4 (Bytes out), T5 (job table), T7 (kill handles), T8 (onExit delivery).
 //
 //===----------------------------------------------------------------------===//
@@ -235,17 +235,15 @@ void collectRunOutput(std::shared_ptr<RunCollector> c) {
 // Timer (runDuration)
 // ---------------------------------------------------------------------------
 
-// Cancels an armed runDuration timer (T7 rule): when TimerService removed it
-// the token will never fire, so we drop its pending resume and release its
-// pendingAsync count; otherwise it fires into runDurationEval, which finds no
-// job (or an exited one) and the Scheduler releases the count.
+// Cancels an armed runDuration timer (T7 rule) through the shared one-release
+// withdrawal (TimerService.hpp): its pending resume is dropped; when
+// TimerService removed it the token will never fire and its hold is released
+// here, otherwise it fires into a Nil resume and the Scheduler releases the
+// hold. Both callers erase the job first, so a fired timer never needed
+// runDurationEval.
 void cancelTimer(uint64_t timerToken) {
     if (timerToken == 0) return;
-    if (TimerService::instance().cancel(timerToken)) {
-        auto& s = Scheduler::instance();
-        (void)s.takePendingResume(timerToken);
-        s.decrementPendingAsync();
-    }
+    ::Elm::Platform::withdrawParkedTimer(timerToken);
 }
 
 void advanceJob(int64_t jobId);
@@ -255,7 +253,7 @@ void advanceJob(int64_t jobId);
 void* runDurationEval(void* args[]) {
     int64_t jobId = static_cast<int64_t>(reinterpret_cast<uint64_t>(args[0]));
     if (ChildJob* j = childJobs().find(jobId)) {
-        j->timerToken = 0;   // fired: the Scheduler releases its count
+        j->timerToken = 0;   // fired: the Scheduler releases its hold
         if (!j->exited) {
             killJob(jobId);
         } else if (j->kind == JobKind::Run && !j->outputDone) {
@@ -290,7 +288,7 @@ void completeRun(int64_t jobId) {
     if (!j) return;
     uint64_t token = j->resumeToken;
     uint64_t timerToken = j->timerToken;
-    bool counted = j->counted;
+    HoldToken hold = j->hold;
     bool killed = j->killed || j->overflow;
     int raw = j->rawStatus;
     std::string out = std::move(j->out), err = std::move(j->err);
@@ -322,7 +320,7 @@ void completeRun(int64_t jobId) {
         }
         Scheduler::callClosure1(resume, task);
     }
-    if (counted) s.decrementPendingAsync();   // exactly once per child (G10)
+    if (hold != kNoHold) s.releaseHold(hold);   // exactly once per child (G10)
 }
 
 // Completes a spawned child whose exit is in: resumes its Elm process, then
@@ -332,7 +330,7 @@ void completeSpawn(int64_t jobId) {
     if (!j) return;
     uint64_t token = j->resumeToken;
     uint64_t timerToken = j->timerToken;
-    bool counted = j->counted;
+    HoldToken hold = j->hold;
     int raw = j->rawStatus;
     HPointer router = dec(j->routerEnc);
     HPointer tagger = dec(j->onExitEnc);
@@ -363,7 +361,7 @@ void completeSpawn(int64_t jobId) {
         PlatformRuntime::instance().sendToApp(router, msg);
         s.drain();
     }
-    if (counted) s.decrementPendingAsync();
+    if (hold != kNoHold) s.releaseHold(hold);   // after onExit is published (§6.2)
 }
 
 // Moves job `jobId` forward after one of its events. Main thread.
@@ -446,7 +444,7 @@ bool cancelRunByToken(uint64_t token) {
     for (auto& [id, job] : childJobs().map()) {
         if (job.kind == JobKind::Run && job.resumeToken == token) {
             killJob(id);
-            return false;   // the completion path decrements
+            return false;   // the completion path releases
         }
     }
     return false;
@@ -474,8 +472,7 @@ void startJobWatch(int64_t jobId, int64_t runDurationMs) {
     int64_t pid = j->pid;
     if (runDurationMs > 0) {
         auto& s = Scheduler::instance();
-        uint64_t tt = s.registerPendingResume(timer);
-        s.incrementPendingAsync();   // the timer holds one count (§3.4)
+        uint64_t tt = s.parkResume(timer, HoldKind::Task, "ChildProcess.runDuration");   // §3.4
         j->timerToken = tt;
         TimerService::instance().schedule(static_cast<double>(runDurationMs), tt);
     }
@@ -498,7 +495,7 @@ bool cancelSpawnByToken(uint64_t token) {
             break;
         }
     }
-    return false;   // the exit drain decrements and finds the resume gone
+    return false;   // the exit drain releases and finds the resume gone
 }
 
 // ---------------------------------------------------------------------------
@@ -563,16 +560,15 @@ HPointer childProcessRunBody(HPointer captured, HPointer resume) {
         int64_t jobId = childJobs().insert(std::move(job));
         col->jobId = jobId;
 
-        // G10: register, count, then publish (collector, WaitService). The
-        // JOB owns the count (`counted` stays false for the guard: on an
+        // G10: register + hold, then publish (collector, WaitService). The
+        // JOB owns the hold (`counted` stays false for the guard: on an
         // exception the guard takes the resume, and the job still releases
-        // its count exactly once when the child exits).
-        token = s.registerPendingResume(resume);
-        s.incrementPendingAsync();
+        // its hold exactly once when the child exits).
+        token = s.parkResume(resume, HoldKind::Task, "ChildProcess.run");
         {
             ChildJob* j = childJobs().find(jobId);
             j->resumeToken = token;
-            j->counted = true;
+            j->hold = token;
         }
         if (!startCollector(col)) {
             // No collector thread: the output is dropped, the exit still counts.

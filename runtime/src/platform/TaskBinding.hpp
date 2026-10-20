@@ -129,9 +129,20 @@ inline void* asyncBindingTrampoline(void* rawArgs[]) {
     HPointer resume   = decodeBits(resumeEnc);
 
     HPointer killHandle = alloc::unit();
+    // §6.1 hold-before-wait check (plans/program-liveness-rule.md): the body
+    // must either resume synchronously (an enqueue) or acquire a hold before
+    // returning to the scheduler. Census builds only; a failure is recorded
+    // (Scheduler::noteHoldlessPark, aborts under ECO_LIVENESS_STRICT=1).
+    auto& sched = Scheduler::instance();
+    const bool check = sched.holdCensusEnabled();
+    const u64 acq0 = check ? sched.acquireSerial() : 0;
+    const u64 enq0 = check ? sched.enqueueSerial() : 0;
     {
         Elm::StackRootGuard guard(&captured, &resume, &killHandle);
         killHandle = Body(captured, resume);
+    }
+    if (check && sched.acquireSerial() == acq0 && sched.enqueueSerial() == enq0) {
+        sched.noteHoldlessPark(__PRETTY_FUNCTION__);
     }
     return reinterpret_cast<void*>(encodeBits(killHandle));
 }
@@ -161,10 +172,10 @@ inline HPointer makeBinding(HPointer captured) {
     return Scheduler::instance().taskBinding(cb);
 }
 
-// Async-park variant. The body MUST register `resume` into
-// `Scheduler::registerPendingResume(...)` (and call
-// `incrementPendingAsync()`) before returning; otherwise the Task is dropped
-// silently. The body's return value is treated as the kill handle (usually
+// Async-park variant. The body MUST either resume synchronously or park
+// `resume` with a hold (`Scheduler::parkResume`, or the legacy
+// registerPendingResume + incrementPendingAsync) before returning; otherwise
+// the Task is dropped silently (checked in census builds, §6.1). The body's return value is treated as the kill handle (usually
 // `unit()`; in future cancellable kernels it could be a token closure).
 template <AsyncBindingBody Body>
 inline HPointer makeAsyncBinding(HPointer captured) {

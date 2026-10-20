@@ -336,7 +336,8 @@ function _ChildProcess_pipe(socket)
 // (exitCode = 128 + signal for a signal death). A spawn failure still returns the init
 // value (a finished process; External gets stream ids 0) and then sends
 // ( -errno, 0 ), as the native manager and gren's 'error' event do. Detached children
-// run in their own session and do not keep the program alive.
+// run in their own session and do not keep the program alive, except through their
+// runDuration timer.
 var _ChildProcess_spawn = F2(function(sendExit, spec)
 {
 	return __Scheduler_binding(function(callback)
@@ -423,8 +424,10 @@ var _ChildProcess_spawn = F2(function(sendExit, spec)
 			}
 			if (kind === 3)
 			{
+				// A Detached child holds nothing, but its runDuration timer stays ref'd: it is
+				// the program's own request to stop the child, so it keeps the program running
+				// until the limit or the exit, as natively (plans/program-liveness-rule.md X4).
 				child.unref();
-				if (job.__timer !== null) job.__timer.unref();
 			}
 		}
 		else if (kind === 1)

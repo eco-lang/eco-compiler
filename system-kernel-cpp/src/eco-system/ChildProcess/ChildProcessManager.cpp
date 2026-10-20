@@ -7,13 +7,13 @@
 //   1. spawn the child per its connection (Integrated: inherit 0–2;
 //      External: three pipes, handed to Elm as FdSink(stdin) and
 //      FdSource(stdout, stderr) via the Stream C++ API; Ignored: /dev/null;
-//      Detached: /dev/null plus a new session, and no pendingAsync);
+//      Detached: /dev/null plus a new session, and no liveness hold);
 //      register its job (router + onExit tagger, encoded, in the T5 job
 //      table) and watch it (WaitService lane EcoSystem, runDuration timer);
 //   2. create the Elm process that stands for the child:
 //      rawSpawn(makeAsyncBinding<childBody>(jobId)). Its binding parks until
 //      the child exits; its kill handle (T7) SIGTERMs the child and returns
-//      false from the CancelFn, so the exit drain still decrements. The
+//      false from the CancelFn, so the exit drain still releases. The
 //      rawSpawn result stays ROOTED until it is delivered (G13);
 //   3. Scheduler::drain(), so the binding steps and installs its kill
 //      handle before Elm can see the Process.Id (review R1.20);
@@ -51,7 +51,7 @@ using namespace ChildProcessManager;
 // child exits (completeSpawn resumes it); the kill handle SIGTERMs the child.
 HPointer childBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
-    bool counted = false;   // the job holds the child's count, not this task
+    bool counted = false;   // the job holds the child's hold, not this task
     ECO_SYSTEM_ASYNC_GUARD(Never, resume, token, counted,
         int64_t jobId = static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
         if (!childJobs().find(jobId)) {
@@ -139,9 +139,9 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
         job.pid = ch.pid;
         job.routerEnc = enc(router);
         job.onExitEnc = enc(onExit);
-        job.counted = !detached;   // Detached does not keep the program alive (E.4)
+        // Detached does not keep the program alive (E.4, X4).
+        if (!detached) job.hold = s.acquireHold(HoldKind::Task, "ChildProcess.spawn");
         jobId = childJobs().insert(std::move(job));
-        if (!detached) s.incrementPendingAsync();
         startJobWatch(jobId, cmd.runDurationMs);   // may allocate (timer closure)
     }
 
