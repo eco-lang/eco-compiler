@@ -20,6 +20,9 @@ name: mac-aot
 on:
   push:
     branches: ['ci/**', 'master']
+    # A release tag builds the plain version for release.yml to publish.
+    # GitHub skips the paths filter below for tag pushes.
+    tags: ['v*', '!v*-nightly']
     paths:
       - 'compiler/**'
       - 'runtime/**'
@@ -33,16 +36,17 @@ on:
       - 'system-kernel-cpp/**'
       - '.github/workflows/mac-aot.yml'
       - '.github/scripts/prune-caches.sh'
+      - '.github/scripts/eco-version.sh'
   workflow_dispatch:
   schedule:
     # Nightly build keeps the workflow exercised. (schedule only fires from the
     # default branch, so this is inert until merged to master.)
     - cron: '0 6 * * *'
 
-# A newer push to the same branch cancels this run. Master runs each get a
-# group of their own, so they are never cancelled or queued behind another.
+# A newer push to the same branch cancels this run. Master and tag runs each
+# get a group of their own, so they are never cancelled or queued behind another.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master' || github.ref_type == 'tag') && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -60,6 +64,15 @@ jobs:
       ECO_MAC_DEPS_DIR: ${{ github.workspace }}/experiments/mac-llvm-build/out/llvm-install
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the build number counts commits (eco-version.sh).
+          fetch-depth: 0
+
+      - name: Compute the build version
+        run: |
+          v=$(.github/scripts/eco-version.sh)
+          echo "ECO_VERSION=$v" >> "$GITHUB_ENV"
+          echo "Building eco $v"
 
       - name: Restore LLVM 21.1.8 install tree (from mac-llvm-build)
         # fail-on-cache-miss: the LLVM source build is mac-llvm-build's job
@@ -107,10 +120,12 @@ jobs:
           restore-keys: mac-aot-ccache-
 
       - name: Configure (mac-build preset, full)
+        # ECO_VERSION_OVERRIDE stamps eco --version and the bundle name.
         run: |
           cmake --preset mac-build \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DECO_VERSION_OVERRIDE="$ECO_VERSION"
 
       # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails a front-end
       #      regression fast, before any heavy C++/LLVM work. ----

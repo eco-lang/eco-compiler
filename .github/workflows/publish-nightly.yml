@@ -1,13 +1,17 @@
 # Publish the nightly pre-release.
 #
-# Decoupled from the per-platform builds: this does NOT trigger them and is NOT
-# atomic. It collects the LATEST SUCCESSFUL run of each `-aot` workflow, gathers
-# their distributable bundles, and refreshes a single rolling pre-release.
+# Decoupled from the per-platform builds: this does NOT trigger them. It picks
+# the newest master commit with a successful run of EVERY `-aot` workflow,
+# gathers those runs' distributable bundles, and refreshes a single rolling
+# pre-release. One commit means one build version on every asset
+# (<version>~b<N>.g<hash>, see .github/scripts/eco-version.sh); a platform that
+# is red holds the nightly back at the last commit all three built.
 #
 # The tag is derived from version.txt: v<version>-nightly (e.g. v0.1.0-nightly).
-# It is MOVED to the newest built commit on every run (the new release is
+# It is MOVED to the published commit on every run (the new release is
 # staged as a draft, then swapped in for the old one) so tags never accumulate. Assets are anonymously downloadable at
 #   https://github.com/eco-lang/eco-compiler/releases/download/v<ver>-nightly/<asset>
+# Asset names carry the build version, so they change with every nightly.
 name: publish-nightly
 
 on:
@@ -30,19 +34,51 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: ordering the candidate commits and computing their
+          # build number (eco-version.sh) both walk it.
+          fetch-depth: 0
 
-      - name: Resolve + download the latest green build per platform
+      - name: Pick the newest commit green on every platform
+        id: pick
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          for wf in mac-aot.yml linux-aot.yml win-aot.yml; do
+            gh run list --workflow "$wf" --branch master --status success \
+              --limit 50 --json databaseId,headSha,createdAt > "green-$wf.json"
+            jq -r '.[].headSha' "green-$wf.json" | sort -u > "shas-$wf.txt"
+          done
+          comm -12 shas-mac-aot.yml.txt shas-linux-aot.yml.txt \
+            | comm -12 - shas-win-aot.yml.txt > common.txt
+          # Newest = the most commits behind it. A SHA no longer in master's
+          # history (force-push) has no count and is skipped.
+          sha="" best=-1
+          while read -r s; do
+            n=$(git rev-list --count "$s" 2>/dev/null) || continue
+            if [ "$n" -gt "$best" ]; then best=$n sha=$s; fi
+          done < common.txt
+          if [ -z "$sha" ]; then
+            echo "::error::no master commit has a green mac-aot, linux-aot and win-aot run (last 50 each)"
+            exit 1
+          fi
+          version=$(.github/scripts/eco-version.sh "$sha")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Publishing $sha as eco $version"
+
+      - name: Download that commit's build from each platform
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.pick.outputs.sha }}
+        run: |
+          set -euo pipefail
           mkdir -p stage dist
           for wf in mac-aot.yml linux-aot.yml win-aot.yml; do
-            rid=$(gh run list --workflow "$wf" --branch master --status success \
-                    --limit 1 --json databaseId -q '.[0].databaseId')
-            if [ -z "$rid" ]; then
-              echo "::error::no green $wf build to publish"; exit 1
-            fi
+            rid=$(jq -r --arg s "$SHA" \
+                    '[.[] | select(.headSha == $s)] | max_by(.createdAt) | .databaseId' \
+                    "green-$wf.json")
             echo "::group::$wf -> run $rid"
             gh run download "$rid" --dir "stage/$wf"
             gh run view "$rid" --json headSha,url,createdAt,displayTitle > "stage/$wf.meta.json"
@@ -51,12 +87,20 @@ jobs:
           done
 
       - name: Collect distributables + checksums
+        env:
+          VERSION: ${{ steps.pick.outputs.version }}
         run: |
           set -euo pipefail
           # Extension filter drops the raw eco / eco.exe binaries and the log
           # artifacts that share those upload bundles.
           find stage -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \) \
                -exec cp -n {} dist/ \;
+          # Every asset must be the picked build: a run from before the build
+          # number existed, or one that computed another version, fails here.
+          stray=$(ls dist | grep -vF -- "$VERSION" || true)
+          if [ -n "$stray" ]; then
+            echo "::error::assets not built as $VERSION:"; echo "$stray"; exit 1
+          fi
           ( cd dist && sha256sum * | tee SHA256SUMS )
           echo "=== nightly asset set ==="
           ls -la dist/
@@ -66,9 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           nightly_tag="v$(tr -d '[:space:]' < version.txt)-nightly"
-          # Target the newest of the three source-run commits — the most honest
-          # single commit when builds span days.
-          sha=$(jq -rs 'max_by(.createdAt).headSha' stage/*.meta.json)
+          sha="${{ steps.pick.outputs.sha }}"
           echo "nightly_tag=$nightly_tag" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Rolling tag $nightly_tag -> $sha"
@@ -77,15 +119,17 @@ jobs:
         env:
           NIGHTLY_TAG: ${{ steps.meta.outputs.nightly_tag }}
           SHA: ${{ steps.meta.outputs.sha }}
+          VERSION: ${{ steps.pick.outputs.version }}
         run: |
           set -euo pipefail
           {
             echo "Rolling nightly pre-release — **moves on every build**, not a fixed point in time."
             echo
+            echo "- Version: \`$VERSION\`"
             echo "- Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo "- Target commit: \`$SHA\`"
             echo
-            echo "### Source builds (this nightly is not atomic — platforms may differ by commit)"
+            echo "### Source builds (all from the target commit)"
             echo
             echo "| Platform | Commit | Run |"
             echo "|---|---|---|"
@@ -121,10 +165,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY_TAG: ${{ steps.meta.outputs.nightly_tag }}
           SHA: ${{ steps.meta.outputs.sha }}
+          VERSION: ${{ steps.pick.outputs.version }}
         run: |
           set -euo pipefail
           repo="$GITHUB_REPOSITORY"
-          title="Nightly $NIGHTLY_TAG ($(date -u '+%Y-%m-%d'))"
+          title="Nightly $VERSION ($(date -u '+%Y-%m-%d'))"
 
           probe="eco-nightly-probe-$GITHUB_RUN_ID"
           if ! gh api -X POST "repos/$repo/git/refs" \

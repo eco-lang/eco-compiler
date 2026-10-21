@@ -19,6 +19,9 @@ name: win-aot
 on:
   push:
     branches: ['ci/**', 'master']
+    # A release tag builds the plain version for release.yml to publish.
+    # GitHub skips the paths filter below for tag pushes.
+    tags: ['v*', '!v*-nightly']
     paths:
       - 'compiler/**'
       - 'runtime/**'
@@ -31,16 +34,17 @@ on:
       - 'version.txt'
       - '.github/workflows/win-aot.yml'
       - '.github/scripts/prune-caches.sh'
+      - '.github/scripts/eco-version.sh'
   workflow_dispatch:
   schedule:
     # Nightly build keeps the LLVM-MSVC install-tree cache accessed (a restore
     # resets GitHub's 7-day eviction timer). Inert until merged to master.
     - cron: '40 6 * * *'
 
-# A newer push to the same branch cancels this run. Master runs each get a
-# group of their own, so they are never cancelled or queued behind another.
+# A newer push to the same branch cancels this run. Master and tag runs each
+# get a group of their own, so they are never cancelled or queued behind another.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master' || github.ref_type == 'tag') && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -67,6 +71,16 @@ jobs:
       CCACHE_IGNOREOPTIONS: '/clang:-W* -clang:-W*'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the build number counts commits (eco-version.sh).
+          fetch-depth: 0
+
+      - name: Compute the build version
+        shell: bash
+        run: |
+          v=$(bash .github/scripts/eco-version.sh)
+          echo "ECO_VERSION=$v" >> "$GITHUB_ENV"
+          echo "Building eco $v"
 
       - name: Set up MSVC dev environment
         # clang-cl is pinned in the win presets; it needs the MSVC headers/libs
@@ -136,7 +150,8 @@ jobs:
         # the next run. Under ccache the top-level CMakeLists.txt switches
         # clang-cl to /showIncludes dependencies (ccache refuses the default
         # -clang:-MD depfile options).
-        run: cmake --preset win-build -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        # ECO_VERSION_OVERRIDE stamps eco --version and the bundle name.
+        run: cmake --preset win-build -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "-DECO_VERSION_OVERRIDE=$env:ECO_VERSION"
 
       # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails fast. ----
       - name: Stages 1-4b (guida.js -> JS fixed point)

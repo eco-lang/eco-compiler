@@ -31,6 +31,9 @@ name: linux-aot
 on:
   push:
     branches: ['ci/**', 'master']
+    # A release tag builds the plain version for release.yml to publish.
+    # GitHub skips the paths filter below for tag pushes.
+    tags: ['v*', '!v*-nightly']
     paths:
       - 'compiler/**'
       - 'runtime/**'
@@ -49,6 +52,7 @@ on:
       - '.dockerignore'
       - '.github/workflows/linux-aot.yml'
       - '.github/scripts/prune-caches.sh'
+      - '.github/scripts/eco-version.sh'
   workflow_dispatch:
   schedule:
     # Nightly build keeps the debian + alpine LLVM caches accessed (a restore
@@ -59,10 +63,10 @@ env:
   LLVM_VERSION: '21.1.8'
   DOCKER_BUILDKIT: '1'
 
-# A newer push to the same branch cancels this run. Master runs each get a
-# group of their own, so they are never cancelled or queued behind another.
+# A newer push to the same branch cancels this run. Master and tag runs each
+# get a group of their own, so they are never cancelled or queued behind another.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master' || github.ref_type == 'tag') && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -360,6 +364,17 @@ jobs:
           - 5000:5000
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the build number counts commits (eco-version.sh).
+          fetch-depth: 0
+
+      - name: Compute the build version
+        # .git is excluded from the Docker build context, so the version is
+        # worked out here and passed in as ECO_VERSION.
+        run: |
+          v=$(.github/scripts/eco-version.sh)
+          echo "ECO_VERSION=$v" >> "$GITHUB_ENV"
+          echo "Building eco $v"
 
       - name: Free disk space
         run: |
@@ -426,14 +441,18 @@ jobs:
         run: |
           docker buildx build -f docker/static-build.Dockerfile \
             --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            --build-arg ECO_VERSION="$ECO_VERSION" \
             -t eco-static-ci .
 
       - name: Export distribution bundles to ./dist
         # Re-uses the eco-builder layers cached by the build above (same
         # BuildKit daemon), so this only runs CPack + the export exporter.
+        # Every buildx call here must pass the same ECO_VERSION: it feeds the
+        # configure step, so a different value would rebuild eco from scratch.
         run: |
           docker buildx build -f docker/static-build.Dockerfile --target eco-bundle \
             --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            --build-arg ECO_VERSION="$ECO_VERSION" \
             -o ./dist .
           ls -la dist/
 
@@ -443,6 +462,7 @@ jobs:
           # into the docker daemon, but the docker create below needs it there.
           docker buildx build -f docker/static-build.Dockerfile --target eco-static \
             --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            --build-arg ECO_VERSION="$ECO_VERSION" \
             -t eco-static-ci-bin --load .
           id=$(docker create eco-static-ci-bin)
           docker cp "$id:/eco" ./eco
