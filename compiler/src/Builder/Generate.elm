@@ -477,7 +477,7 @@ loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
 (for sequential .ecot loading), Fresh modules dict, and root/buildDir for file paths.
 -}
 type TypedLoadingObjects
-    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (List ModuleName.Raw) (Dict ModuleName.Raw ModuleTyped) FilePath (Maybe String)
+    = TypedLoadingObjects (MVar (Result (List FilePath) Details.PackageTypedArtifacts)) (List ModuleName.Raw) (Dict ModuleName.Raw ModuleTyped) FilePath (Maybe String)
 
 
 loadTypedObjects : FilePath -> Maybe String -> List ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
@@ -488,7 +488,7 @@ loadTypedObjects root maybeBuildDir localPackages details modules =
         )
 
 
-loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
+loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Result (List FilePath) Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
 loadTypedModuleObjects root maybeBuildDir modules mvar =
     let
         -- Partition: Fresh modules with typed data go directly, others need .ecot loading
@@ -568,44 +568,43 @@ loading all 232 modules simultaneously.
 finalizeAndMergeTypedObjects : TypedLoadingObjects -> Task Exit.Generate MergedTypedData
 finalizeAndMergeTypedObjects (TypedLoadingObjects mvar cachedModulesList freshModules root maybeBuildDir) =
     Task.eio identity
-        (Utils.takeMVar (BD.maybe Details.packageTypedArtifactsDecoder) mvar
+        (Utils.takeMVar (BD.result (BD.list BD.string) Details.packageTypedArtifactsDecoder) mvar
             |> Task.andThen (streamLoadAndMerge cachedModulesList freshModules root maybeBuildDir)
         )
 
 
 {-| Stream-load-and-merge: first merge Fresh modules (already in memory),
 then sequentially load each cached module's .ecot file, merge, and discard.
+Fails if any dependency's package artifacts could not be read; merging an
+empty graph in their place only defers the failure to monomorphization.
 -}
 streamLoadAndMerge :
     List ModuleName.Raw
     -> Dict ModuleName.Raw ModuleTyped
     -> FilePath
     -> Maybe String
-    -> Maybe Details.PackageTypedArtifacts
+    -> Result (List FilePath) Details.PackageTypedArtifacts
     -> Task Never (Result Exit.Generate MergedTypedData)
-streamLoadAndMerge cachedNames freshModules root maybeBuildDir maybeGlobalArtifacts =
-    let
-        ( baseGraph, baseEnv ) =
-            case maybeGlobalArtifacts of
-                Nothing ->
-                    ( TOpt.emptyGlobalGraph, TypeEnv.emptyGlobalTypeEnv )
+streamLoadAndMerge cachedNames freshModules root maybeBuildDir loadedGlobalArtifacts =
+    case loadedGlobalArtifacts of
+        Err unreadablePaths ->
+            Task.succeed (Err (Exit.GenerateCannotLoadPackageArtifacts unreadablePaths))
 
-                Just globalArtifacts ->
-                    ( globalArtifacts.typedGraph, globalArtifacts.typeEnv )
-
-        -- Merge Fresh modules (pure fold, no I/O needed)
-        ( mergedGraph, mergedEnv ) =
-            Dict.foldl
-                (\_ modTyped ( g, e ) ->
-                    ( GA.addTypedLocalGraph modTyped.graph g
-                    , Data.Map.insert ModuleName.toComparableCanonical modTyped.env.home modTyped.env e
-                    )
-                )
-                ( baseGraph, baseEnv )
-                freshModules
-    in
-    -- Sequentially load and merge cached modules
-    streamLoadAndMergeCached cachedNames root maybeBuildDir mergedGraph mergedEnv
+        Ok globalArtifacts ->
+            let
+                -- Merge Fresh modules (pure fold, no I/O needed)
+                ( mergedGraph, mergedEnv ) =
+                    Dict.foldl
+                        (\_ modTyped ( g, e ) ->
+                            ( GA.addTypedLocalGraph modTyped.graph g
+                            , Data.Map.insert ModuleName.toComparableCanonical modTyped.env.home modTyped.env e
+                            )
+                        )
+                        ( globalArtifacts.typedGraph, globalArtifacts.typeEnv )
+                        freshModules
+            in
+            -- Sequentially load and merge cached modules
+            streamLoadAndMergeCached cachedNames root maybeBuildDir mergedGraph mergedEnv
 
 
 {-| Sequentially load each cached module's .ecot file, merge into the running

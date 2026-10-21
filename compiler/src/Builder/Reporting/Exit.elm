@@ -2508,6 +2508,7 @@ toModuleNameConventionTable srcDir names =
 -}
 type Generate
     = GenerateCannotLoadArtifacts
+    | GenerateCannotLoadPackageArtifacts (List String)
     | GenerateCannotOptimizeDebugValues ModuleName.Raw (List ModuleName.Raw)
     | GenerateMonomorphizationError String
     | GenerateNativeDriverError String
@@ -2518,6 +2519,17 @@ toGenerateReport problem =
     case problem of
         GenerateCannotLoadArtifacts ->
             corruptCacheReport
+
+        GenerateCannotLoadPackageArtifacts paths ->
+            Help.report "MISSING PACKAGE ARTIFACTS"
+                Nothing
+                "I could not read the compiled artifacts of some dependencies from the package cache:"
+                [ List.map D.fromChars paths |> D.vcat |> D.red |> D.indent 4
+                , D.reflow <|
+                    "Each file is either missing or could not be decoded. Running the build again "
+                        ++ "normally rebuilds missing package artifacts. If it does not, delete the "
+                        ++ "files listed above and try again."
+                ]
 
         GenerateCannotOptimizeDebugValues m ms ->
             Help.report "DEBUG REMNANTS"

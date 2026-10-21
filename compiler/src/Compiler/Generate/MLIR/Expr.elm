@@ -5108,6 +5108,11 @@ mlirTypeToApproxMonoType mlirType =
         I16 ->
             Mono.MChar
 
+        I1 ->
+            -- A Bool capture is boxed at the papCreate (REP_CLOSURE_001), so
+            -- the lambda takes it as !eco.value = monoTypeToAbi MBool.
+            Mono.MBool
+
         _ ->
             Mono.MUnit
 
@@ -5965,18 +5970,38 @@ generateLetSingle ctx def body =
                         |> Set.fromList
                         |> Set.toList
 
-                -- Look up capture SSA vars and MlirTypes from varMappings
-                captureInfos =
-                    List.filterMap
-                        (\capName ->
-                            case Dict.get capName ctxWithPlaceholders.varMappings of
-                                Just info ->
-                                    Just ( capName, info.ssaVar, info.mlirType )
+                -- Look up capture SSA vars and MlirTypes. A scalar-split loop
+                -- param has NO varMapping (TailRec.setupVarMappings removes it):
+                -- materialize it from its slot vars, as a whole-value
+                -- MonoVarLocal use does. Looking only in varMappings dropped
+                -- such a capture, and the lambda body's lookupVar crashed.
+                ( captureMaterializeOpsRev, captureInfosRev, ctxCaptured ) =
+                    List.foldl
+                        (\capName ( opsAcc, infosAcc, ctxAcc ) ->
+                            case Dict.get capName ctxAcc.splitAggParams of
+                                Just splitInfo ->
+                                    let
+                                        ( matOps, matVar, ctxM ) =
+                                            Patterns.materializeSplitParam ctxAcc splitInfo
+                                    in
+                                    ( List.reverse matOps ++ opsAcc, ( capName, matVar, Types.ecoValue ) :: infosAcc, ctxM )
 
                                 Nothing ->
-                                    Nothing
+                                    case Dict.get capName ctxAcc.varMappings of
+                                        Just info ->
+                                            ( opsAcc, ( capName, info.ssaVar, info.mlirType ) :: infosAcc, ctxAcc )
+
+                                        Nothing ->
+                                            ( opsAcc, infosAcc, ctxAcc )
                         )
+                        ( [], [], ctxWithPlaceholders )
                         captureNames
+
+                captureMaterializeOps =
+                    List.reverse captureMaterializeOpsRev
+
+                captureInfos =
+                    List.reverse captureInfosRev
 
                 -- Convert captures to PendingLambda format (name, approxMonoType)
                 captureTypes =
@@ -5984,11 +6009,20 @@ generateLetSingle ctx def body =
                         (\( capName, _, mlirTy ) -> ( capName, mlirTypeToApproxMonoType mlirTy ))
                         captureInfos
 
+                -- Box Bool (i1) captures at the closure boundary per
+                -- REP_CLOSURE_001 / FORBID_CLOSURE_001, as generateClosure does.
+                -- The lambda side already takes them as !eco.value
+                -- (mlirTypeToApproxMonoType I1 = MBool).
+                ( captureBoxOps, boxedCaptures, ctxBoxed ) =
+                    boxArgsForClosureBoundary False
+                        ctxCaptured
+                        (List.map (\( _, ssaVar, mlirTy ) -> ( ssaVar, mlirTy )) captureInfos)
+
                 captureVarNames =
-                    List.map (\( _, ssaVar, _ ) -> ssaVar) captureInfos
+                    List.map Tuple.first boxedCaptures
 
                 captureMlirTypes =
-                    List.map (\( _, _, mlirTy ) -> mlirTy) captureInfos
+                    List.map Tuple.second boxedCaptures
 
                 -- Generate a unique function name using the opId counter
                 tailFuncName =
@@ -6008,8 +6042,8 @@ generateLetSingle ctx def body =
                     }
 
                 ctx1 =
-                    { ctxWithPlaceholders
-                        | pendingLambdas = pendingLambda :: ctxWithPlaceholders.pendingLambdas
+                    { ctxBoxed
+                        | pendingLambdas = pendingLambda :: ctxBoxed.pendingLambdas
                     }
 
                 -- Generate eco.papCreate to define the closure value
@@ -6085,7 +6119,7 @@ generateLetSingle ctx def body =
 
                 -- Force result to placeholder var
                 rawResult =
-                    { ops = [ papOp ]
+                    { ops = captureMaterializeOps ++ captureBoxOps ++ [ papOp ]
                     , resultVar = resultVar
                     , resultType = Types.ecoValue
                     , ctx = ctx3

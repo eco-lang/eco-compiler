@@ -295,47 +295,62 @@ loadObjects root maybeBuildDir (Details detailsData) =
 
 {-| Load typed global objects for MLIR backend.
 Loads both local typed objects and typed objects from all package dependencies.
+
+The MVar holds `Err paths` when the `typed-artifacts.dat` of one or more
+dependencies is missing or cannot be decoded. Those files live in the package
+cache (`~/.eco`), outside the project, so a cached `d.dat` can outlive them;
+`handleCachedDetailsWithFingerprint` regenerates in that case, and this is the
+backstop that keeps a missing package from being read as an empty one.
+
 -}
-loadTypedObjects : List ( Pkg.Name, FilePath ) -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
+loadTypedObjects : List ( Pkg.Name, FilePath ) -> Details -> Task Never (MVar (Result (List FilePath) PackageTypedArtifacts))
 loadTypedObjects locals (Details detailsData) =
-    fork (Utils.maybeEncoder packageTypedArtifactsEncoder)
+    fork (BE.result (BE.list BE.string) packageTypedArtifactsEncoder)
         (Stuff.getPackageCache locals
-            |> Task.andThen (loadAllTypedObjects detailsData.deps)
+            |> Task.andThen (loadPackageTypedArtifacts detailsData.deps)
         )
 
 
-{-| Load the typed objects of all package dependencies (graph and type env).
+{-| Load and merge the typed objects (graph and type env) of all package
+dependencies, or list the `typed-artifacts.dat` paths that could not be read.
 Local modules come from their per-module `.ecot` files (`Generate`); there is
 no project-level typed objects file.
 -}
-loadAllTypedObjects : Dict Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
-loadAllTypedObjects deps cache =
-    loadPackageTypedArtifacts cache deps |> Task.map Just
-
-
-{-| Load typed objects from all package dependencies.
--}
-loadPackageTypedArtifacts : Stuff.PackageCache -> Dict Pkg.Name V.Version -> Task Never PackageTypedArtifacts
-loadPackageTypedArtifacts cache deps =
+loadPackageTypedArtifacts : Dict Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Result (List FilePath) PackageTypedArtifacts)
+loadPackageTypedArtifacts deps cache =
     Utils.dictTraverseWithKey (loadSinglePackageTypedArtifacts cache) deps
         |> Task.map
             (\loadedArtifacts ->
-                Dict.foldl
-                    (\_ arts acc ->
-                        { typedGraph = GA.addTypedGlobalGraph arts.typedGraph acc.typedGraph
-                        , typeEnv = TypeEnv.mergeGlobalTypeEnv arts.typeEnv acc.typeEnv
-                        }
-                    )
-                    { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv }
-                    loadedArtifacts
+                case List.filterMap Result.Extra.error (Dict.values loadedArtifacts) of
+                    [] ->
+                        Ok
+                            (Dict.foldl
+                                (\_ loaded acc ->
+                                    case loaded of
+                                        Ok arts ->
+                                            { typedGraph = GA.addTypedGlobalGraph arts.typedGraph acc.typedGraph
+                                            , typeEnv = TypeEnv.mergeGlobalTypeEnv arts.typeEnv acc.typeEnv
+                                            }
+
+                                        Err _ ->
+                                            acc
+                                )
+                                { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv }
+                                loadedArtifacts
+                            )
+
+                    unreadable ->
+                        Err unreadable
             )
 
 
-{-| Load typed objects from a single package. The on-disk file is a full
-`TypedArtifactCache` (fingerprints + interfaces + typed graph + type env); the
-codegen path only needs the graph and type env, so we project those out here.
+{-| Load typed objects from a single package, or return the path of its
+`typed-artifacts.dat` if that file is missing or cannot be decoded. The on-disk
+file is a full `TypedArtifactCache` (fingerprints + interfaces + typed graph +
+type env); the codegen path only needs the graph and type env, so we project
+those out here.
 -}
-loadSinglePackageTypedArtifacts : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never PackageTypedArtifacts
+loadSinglePackageTypedArtifacts : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never (Result FilePath PackageTypedArtifacts)
 loadSinglePackageTypedArtifacts cache pkg vsn =
     let
         path : String
@@ -347,7 +362,7 @@ loadSinglePackageTypedArtifacts cache pkg vsn =
             { typedGraph = typedGraph, typeEnv = typeEnv }
     in
     File.readBinary typedArtifactCacheDecoder path
-        |> Task.map (Maybe.map project >> Maybe.withDefault { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv })
+        |> Task.map (Maybe.map project >> Result.fromMaybe path)
 
 
 
@@ -500,8 +515,41 @@ handleCachedDetailsWithFingerprint style scope root maybeBuildDir maybeConfigHas
                 -- so `seedLocalPackage` refreshes its cache copy and artifacts.
                 regenerate
 
+            else if needsTypedOpt then
+                -- A typed build reads every dependency's typed-artifacts.dat
+                -- from the package cache (~/.eco) on each build; there is no
+                -- project-level copy. Those files can be deleted while this
+                -- d.dat stays valid (e.g. a package-cache wipe), so re-verify,
+                -- which rebuilds missing package artifacts, unless they all
+                -- still exist.
+                typedPackageArtifactsExist locals detailsData.deps
+                    |> Task.andThen
+                        (\allExist ->
+                            if allExist then
+                                Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
+
+                            else
+                                regenerate
+                        )
+
             else
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
+
+
+{-| Whether the package cache holds a `typed-artifacts.dat` for every one of
+`deps`. Only existence is checked; a file that exists but cannot be decoded is
+caught by `loadTypedObjects`.
+-}
+typedPackageArtifactsExist : List ( Pkg.Name, FilePath ) -> Dict Pkg.Name V.Version -> Task Never Bool
+typedPackageArtifactsExist locals deps =
+    Stuff.getPackageCache locals
+        |> Task.andThen
+            (\cache ->
+                Utils.listTraverse
+                    (\( pkg, vsn ) -> Utils.dirDoesFileExist (Stuff.typedPackageArtifacts cache pkg vsn))
+                    (Dict.toList deps)
+            )
+        |> Task.map (List.all identity)
 
 
 {-| The combined fingerprint of every local package's seed, as

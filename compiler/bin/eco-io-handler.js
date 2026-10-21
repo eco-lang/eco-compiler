@@ -158,12 +158,35 @@ function runGc(major) {
 }
 
 /**
+ * Wrap a driver's respond callback so an exception thrown by the Elm program
+ * itself is fatal. respond() delivers the response synchronously, so it runs
+ * the program's continuation up to its next IO request; an exception from
+ * there (e.g. a Debug.todo crash in codegen) would otherwise land in the
+ * catch of whichever op was answering (most wrap respond(200) in their own
+ * try), get answered as an IO error, and leave the Elm scheduler wedged: node
+ * then drains its event loop and exits 0 with a truncated output file.
+ * @param {function} respond - respond(statusCode, body)
+ * @returns {function} respond, exiting with status 1 if the program throws
+ */
+function fatalOnProgramThrow(respond) {
+  return (status, body) => {
+    try {
+      respond(status, body);
+    } catch (e) {
+      console.error("eco-io: the program threw while handling a response:", e);
+      process.exit(1);
+    }
+  };
+}
+
+/**
  * Handle an eco-io JSON request.
  * @param {object} parsed - The parsed JSON request { op, args }
- * @param {function} respond - Function to send the response: respond(statusCode, body)
+ * @param {function} rawRespond - Function to send the response: respond(statusCode, body)
  * @returns {void}
  */
-function handleEcoIO(parsed, respond) {
+function handleEcoIO(parsed, rawRespond) {
+  const respond = fatalOnProgramThrow(rawRespond);
   const { op, args } = parsed;
 
   switch (op) {
@@ -706,10 +729,11 @@ let atomicSeq = 0;
  * Handle an eco-io binary request (raw bytes in body, op in X-Eco-Op header).
  * @param {string} op - The operation name from X-Eco-Op header
  * @param {object} request - The mock-xmlhttprequest request object (body is ArrayBuffer/Buffer)
- * @param {function} respond - Function to send the response: respond(statusCode, body)
+ * @param {function} rawRespond - Function to send the response: respond(statusCode, body)
  * @returns {void}
  */
-function handleEcoIOBinary(op, request, respond) {
+function handleEcoIOBinary(op, request, rawRespond) {
+  const respond = fatalOnProgramThrow(rawRespond);
   switch (op) {
     case "File.writeBytes": {
       const filePath = request.requestHeaders.getHeader("X-Eco-Path");
