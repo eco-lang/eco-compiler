@@ -5,6 +5,7 @@ Every test prints its observations to the program's real stdout through
 `Stream`, so the `-- CHECK:` patterns are matched against raw fd output.
 -}
 
+import ErrorNames
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Stream
@@ -42,7 +43,7 @@ describeRun task =
                 Task.succeed <|
                     case err of
                         P.InitError e ->
-                            "InitError " ++ e.errorCode ++ " program=" ++ e.program ++ " args=" ++ String.join "," e.arguments
+                            "InitError " ++ ErrorNames.startError e.error ++ " program=" ++ e.program ++ " args=" ++ String.join "," e.arguments
 
                         P.ProgramError e ->
                             "ProgramError "

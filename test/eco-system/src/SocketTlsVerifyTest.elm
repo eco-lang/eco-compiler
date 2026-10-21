@@ -3,23 +3,24 @@ module SocketTlsVerifyTest exposing (main)
 {-| TLS certificate verification (plans/eco-system-sockets.md §4 S5, §D.5). Each case is one
 handshake against a fresh listener:
 
-  - an expired certificate (signed by the trusted CA) → `CERT_HAS_EXPIRED`;
-  - a self-signed certificate → `DEPTH_ZERO_SELF_SIGNED_CERT`;
-  - a valid certificate for the wrong name (`example.com`) → `ERR_TLS_CERT_ALTNAME_INVALID`;
+  - an expired certificate (signed by the trusted CA) → `Expired` (`CERT_HAS_EXPIRED`);
+  - a self-signed certificate → `SelfSigned` (`DEPTH_ZERO_SELF_SIGNED_CERT`);
+  - a valid certificate for the wrong name (`example.com`) → `NameMismatch`
+    (`ERR_TLS_CERT_ALTNAME_INVALID`);
   - the server name `127.0.0.1` matches the certificate's IP address (no SNI);
   - `NoVerification` accepts the self-signed certificate;
   - the system certificate store does not know the test CA.
 
-Every rejection is `errorIsCertificateInvalid`.
+Every rejection is `TlsError (CertificateRejected _)`.
 
 -}
 
--- CHECK: expired: err CERT_HAS_EXPIRED certificate-invalid True
--- CHECK: self-signed: err DEPTH_ZERO_SELF_SIGNED_CERT certificate-invalid True
--- CHECK: wrong name: err ERR_TLS_CERT_ALTNAME_INVALID certificate-invalid True
+-- CHECK: expired: err TlsError (CertificateRejected Expired)
+-- CHECK: self-signed: err TlsError (CertificateRejected SelfSigned)
+-- CHECK: wrong name: err TlsError (CertificateRejected NameMismatch)
 -- CHECK: ip literal: ok alpn none
 -- CHECK: no verification: ok alpn none
--- CHECK: system store: err {{(UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE)}} certificate-invalid True
+-- CHECK: system store: err TlsError (CertificateRejected {{(IssuerNotTrusted|LeafNotVerifiable)}})
 -- EXIT: 0
 
 import Socket.Tls

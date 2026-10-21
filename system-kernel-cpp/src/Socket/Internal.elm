@@ -1,6 +1,6 @@
 module Socket.Internal exposing
     ( Connection(..), Listener(..), Error(..), UdpSocket(..)
-    , toError, toAddress, toEndpoint, toInetEndpoint, toConnection, toListener
+    , toError, error, onUnixPath, toAddress, toEndpoint, toInetEndpoint, toConnection, toListener
     , connectTimeoutMs, keepAliveSeconds, tcpConnectArgs, tcpListenArgs
     )
 
@@ -78,7 +78,7 @@ The code is usually an errno name such as `"ECONNREFUSED"`, a resolver code such
 
 -}
 type Error
-    = Error { code : String, message : String }
+    = Error { code : String, message : String, onPath : Bool }
 
 
 {-| A bound UDP socket: its id in the kernel's UDP socket table and the address and port it is
@@ -96,7 +96,23 @@ type UdpSocket
 -}
 toError : ( String, String ) -> Error
 toError ( code, message ) =
-    Error { code = code, message = message }
+    Error { code = code, message = message, onPath = False }
+
+
+{-| Makes an error with a code and a message, as `toError` does.
+-}
+error : String -> String -> Error
+error code message =
+    Error { code = code, message = message, onPath = False }
+
+
+{-| Marks a Unix domain socket's error as a failure of its path when its code is one a path gives
+(ENOENT, ENOTDIR, ELOOP, EROFS, ENAMETOOLONG, EACCES), so that `Socket.errorKind` reports it as
+`AddressPathFailed` with the file-system kind (plans/eco-system-typed-api.md S2).
+-}
+onUnixPath : Error -> Error
+onUnixPath (Error e) =
+    Error { e | onPath = List.member e.code [ "ENOENT", "ENOTDIR", "ELOOP", "EROFS", "ENAMETOOLONG", "EACCES" ] }
 
 
 {-| Parses the text of an address that a kernel printed.

@@ -13,6 +13,7 @@ the `Http.Response` with its metadata and the body stream.
 -- EXIT: 0
 
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Json.Decode as D
@@ -22,7 +23,7 @@ import Task exposing (Task)
 import TestServerConfig
 
 
-echo : TestServerConfig.Server -> String -> String -> Http.Stream.Body -> Task String ( String, String )
+echo : TestServerConfig.Server -> String -> Http.Method.Method -> Http.Stream.Body -> Task String ( String, String )
 echo server label method body =
     Http.Stream.task
         { method = method
@@ -59,13 +60,13 @@ echo server label method body =
 main =
     H.program
         (\server _ ->
-            echo server "string" "POST" (Http.Stream.stringBody "text/plain" "abc")
+            echo server "string" Http.Method.POST (Http.Stream.stringBody "text/plain" "abc")
                 |> Task.andThen
                     (\( a, _ ) ->
-                        echo server "json" "POST" (Http.Stream.jsonBody (E.object [ ( "n", E.int 1 ) ]))
+                        echo server "json" Http.Method.POST (Http.Stream.jsonBody (E.object [ ( "n", E.int 1 ) ]))
                             |> Task.andThen
                                 (\( b, _ ) ->
-                                    echo server "bytes" "PATCH" (Http.Stream.bytesBody "application/octet-stream" (H.bytesOf "raw"))
+                                    echo server "bytes" Http.Method.PATCH (Http.Stream.bytesBody "application/octet-stream" (H.bytesOf "raw"))
                                         |> Task.map (\( c, statusText ) -> [ a, b, c, "status text: " ++ statusText ])
                                 )
                     )

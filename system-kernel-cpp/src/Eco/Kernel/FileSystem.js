@@ -3,7 +3,7 @@ import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2)
 import Elm.Kernel.List exposing (fromArray)
 import Maybe exposing (Just, Nothing)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, toBytes)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, toBytes, withOrigin)
 */
 
 // FileSystem — JS twin of src/eco-system/FileSystem/ (eco/system), plans/eco-system-library.md
@@ -879,7 +879,7 @@ var _FileSystem_readFileStream = F3(function(start, end, path)
 				}
 				var from = start < 0 ? 0 : start;
 				var limit = end >= 0 ? (end >= from ? end - from + 1 : 0) : -1;
-				ok(__Stream_createChannelSource(_FileSystem_fdChannel(fd, from, limit, false)));
+				ok(__Stream_createChannelSource(__Stream_withOrigin(_FileSystem_fdChannel(fd, from, limit, false), 'file')));
 			});
 		});
 	});
@@ -907,7 +907,7 @@ var _FileSystem_writeFileStream = F3(function(bits, position, path)
 				return;
 			}
 			var pos = mode === 1 ? (position > 0 ? position : 0) : null;
-			ok(__Stream_createChannelSink(_FileSystem_fdChannel(fd, pos, -1, mode === 1, syncOnClose)));
+			ok(__Stream_createChannelSink(__Stream_withOrigin(_FileSystem_fdChannel(fd, pos, -1, mode === 1, syncOnClose), 'file')));
 		});
 	});
 });

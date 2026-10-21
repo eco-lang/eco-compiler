@@ -3,6 +3,7 @@ module Http.Stream exposing
     , Body, emptyBody, stringBody, jsonBody, bytesBody, streamBody
     , Expect, expectStream, expectStreamResponse
     , task, Resolver, streamResolver
+    , fromStreamFailure
     )
 
 {-| Lets a program send HTTP requests whose bodies are streams, so that it can upload or
@@ -15,14 +16,15 @@ handed to the program as a `Stream.Readable Bytes`, to be read chunk by chunk wh
 downloads. Everything that is not about streams stays elm/http's: headers are made with
 `Http.header`, and results are elm/http's `Http.Error`, `Http.Metadata` and `Http.Response`.
 This module has its own [`Body`](#Body), [`Expect`](#Expect) and [`Resolver`](#Resolver)
-types, and its own [`request`](#request) and [`task`](#task), shaped like elm/http's.
+types, and its own [`request`](#request) and [`task`](#task), shaped like elm/http's. The method
+of a request is an [`Http.Method.Method`](Http-Method#Method) rather than elm/http's `String`.
 
 A request has two stages, and a failure is reported differently in each. Until the headers of
 the final response arrive, the request itself can fail, with `Http.BadUrl`, `Http.Timeout` or
 `Http.NetworkError`. Once they have arrived the response is handed over. A failure after that
 point, such as the connection closing before the body is complete, reaches the body stream
 instead: once the bytes already received have been read, a read of the body fails with
-`Stream.Cancelled` and a reason that begins `"network error: "`.
+`Stream.Failed`, which [`fromStreamFailure`](#fromStreamFailure) reads as `Http.NetworkError`.
 
 Differences from elm/http:
 
@@ -64,6 +66,11 @@ joined with `", "` in the order they arrived, as elm/http joins them.
 
 @docs task, Resolver, streamResolver
 
+
+# Body stream failures
+
+@docs fromStreamFailure
+
 -}
 
 import Bytes exposing (Bytes)
@@ -71,6 +78,7 @@ import Dict exposing (Dict)
 import Eco.Kernel.HttpStream
 import Eco.Kernel.Stream
 import Http
+import Http.Method exposing (Method)
 import Json.Encode
 import Stream
 import Stream.Internal
@@ -86,6 +94,7 @@ download a large file:
 
     import Bytes exposing (Bytes)
     import Http
+    import Http.Method exposing (Method(..))
     import Http.Stream
     import Stream
 
@@ -95,13 +104,16 @@ download a large file:
     download : Cmd Msg
     download =
         Http.Stream.request
-            { method = "GET"
+            { method = GET
             , headers = []
             , url = "https://example.com/large-file.csv"
             , body = Http.Stream.emptyBody
             , expect = Http.Stream.expectStream GotStream
             , timeout = Nothing
             }
+
+The `method` is sent as [`Http.Method.toString`](Http-Method#toString) gives its name, so
+`UNKNOWN "PROPFIND"` sends `PROPFIND`.
 
 The `timeout` is how many milliseconds to wait for the final response's headers before the
 request fails with `Http.Timeout`. It is rounded to whole milliseconds, at least 1, and
@@ -114,7 +126,7 @@ a space, is not sent either.
 
 -}
 request :
-    { method : String
+    { method : Method
     , headers : List Http.Header
     , url : String
     , body : Body
@@ -127,7 +139,7 @@ request r =
         Expect discard toMsg ->
             Task.perform toMsg
                 (sendRaw
-                    { method = r.method
+                    { method = Http.Method.toString r.method
                     , headers = r.headers
                     , url = r.url
                     , body = r.body
@@ -212,7 +224,7 @@ something large, like a file, can be sent without holding it all in memory:
     upload : Stream.Readable Bytes -> Cmd Msg
     upload fileStream =
         Http.Stream.request
-            { method = "PUT"
+            { method = PUT
             , headers = []
             , url = "https://example.com/upload"
             , body = Http.Stream.streamBody "text/csv" fileStream
@@ -227,7 +239,8 @@ already locked when the request is sent makes the request fail at once with `Htt
 
 If the stream fails, because it is cancelled from its writing side or the resource behind it
 fails, a transfer still running is stopped: before the response headers the request fails with
-`Http.NetworkError`, and after them a read of the response body fails with `Stream.Cancelled`.
+`Http.NetworkError`, and after them a read of the response body fails with `Stream.Failed`, which
+[`fromStreamFailure`](#fromStreamFailure) reads as `Http.NetworkError`.
 If instead the transfer ends before the whole stream has been sent (the response is complete,
 the request has failed, or it was stopped), the rest is not sent, and the stream is cancelled,
 at the latest when it next has a value to send. A 307 or 308 redirect fails with
@@ -320,7 +333,7 @@ transfer; cancel the body stream with `Stream.cancelReadable` instead (which fai
 
 -}
 task :
-    { method : String
+    { method : Method
     , headers : List Http.Header
     , url : String
     , body : Body
@@ -332,7 +345,7 @@ task r =
     case r.resolver of
         Resolver resolve ->
             sendRaw
-                { method = r.method
+                { method = Http.Method.toString r.method
                 , headers = r.headers
                 , url = r.url
                 , body = r.body
@@ -349,6 +362,37 @@ task r =
                             Err x ->
                                 Task.fail x
                     )
+
+
+{-| Reads a failure of a response body stream as elm/http's `Http.Error`. Returns `Nothing` for a
+failure that another module's stream made.
+
+    case streamError of
+        Stream.Failed failure ->
+            case Http.Stream.fromStreamFailure failure of
+                Just Http.NetworkError ->
+                    "the download was cut off"
+
+                _ ->
+                    Stream.failureToString failure
+
+        _ ->
+            ...
+
+Every failure of a body stream is `Http.NetworkError`: the connection closing before the body is
+complete, the transfer failing, or a [`streamBody`](#streamBody) whose stream failed. Once the
+response headers have arrived, the request no longer has a timeout, so a body stream never fails
+with `Http.Timeout`. `Stream.failureToString` gives the details, such as the message the network
+library reported.
+
+-}
+fromStreamFailure : Stream.Failure -> Maybe Http.Error
+fromStreamFailure (Stream.Internal.Failure f) =
+    if f.origin == "http" then
+        Just Http.NetworkError
+
+    else
+        Nothing
 
 
 {-| How a [`task`](#task) turns its response into the task's result: success with an `a`, or

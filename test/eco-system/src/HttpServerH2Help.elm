@@ -17,6 +17,7 @@ order) and then the client's lines are printed, the directory is removed and the
 
 -}
 
+import ErrorNames
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
@@ -262,7 +263,7 @@ run program_ args =
             (\err ->
                 case err of
                     P.InitError e ->
-                        program_ ++ ": " ++ e.errorCode
+                        program_ ++ ": " ++ ErrorNames.startError e.error
 
                     P.ProgramError e ->
                         program_
@@ -316,7 +317,7 @@ curlTries tries tools server args path =
                             Task.fail ("curl exited " ++ String.fromInt e.exitCode ++ ": " ++ String.replace "\n" "|" (bytesToString e.stderr))
 
                     P.InitError e ->
-                        Task.fail ("curl: " ++ e.errorCode)
+                        Task.fail ("curl: " ++ ErrorNames.startError e.error)
             )
 
 

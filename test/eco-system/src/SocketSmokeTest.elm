@@ -10,11 +10,12 @@ Elm), and the kernels are reachable through both paths of `connectToHost` (addre
 -- CHECK: ipv6: 2001:db8::1:0:0:1%eth0
 -- CHECK: mapped: ::ffff:127.0.0.1 -> 127.0.0.1 loopback True
 -- CHECK: defaults: backlog 511 keepAlive Nothing reuse False alpn 0
--- CHECK: lookup: ENOTFOUND
+-- CHECK: lookup: HostNotFound
 -- CHECK: connectToHost literal: ECONNREFUSED: connect ECONNREFUSED 127.0.0.1:{{[0-9]+}}
--- CHECK: connectToHost name: ENOTFOUND
+-- CHECK: connectToHost name: HostNotFound
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
@@ -105,7 +106,7 @@ outcome : String -> Task Socket.Error a -> Task Never String
 outcome label task =
     task
         |> Task.map (\_ -> label ++ ": ok")
-        |> Task.onError (\e -> Task.succeed (label ++ ": " ++ Socket.errorCode e))
+        |> Task.onError (\e -> Task.succeed (label ++ ": " ++ ErrorNames.socketError e))
 
 
 main : Platform.Program System.Environment () ()

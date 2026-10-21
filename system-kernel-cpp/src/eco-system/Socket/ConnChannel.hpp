@@ -31,6 +31,7 @@
 #define ECO_SYSTEM_SOCKET_CONN_CHANNEL_HPP
 
 #include "eco-system/Core/ByteChannel.hpp"
+#include "eco-system/Core/Core.hpp"
 #include "eco-system/Socket/Conn.hpp"
 
 #include <cstdint>
@@ -47,6 +48,10 @@ public:
     void requestWrite(uint64_t token, std::string bytes) override;
     void close(uint64_t token) override;
     void shutdown() override;
+    std::string encodeFailure(int err, const std::string& reason) const override {
+        return socketFailureReason(err, reason);
+    }
+    const char* failureOrigin() const override { return "socket"; }
 
 private:
     std::shared_ptr<Conn> conn_;
@@ -63,6 +68,10 @@ public:
     void requestWrite(uint64_t token, std::string bytes) override;
     void close(uint64_t token) override;
     void shutdown() override;
+    std::string encodeFailure(int err, const std::string& reason) const override {
+        return socketFailureReason(err, reason);
+    }
+    const char* failureOrigin() const override { return "socket"; }
 
 private:
     std::shared_ptr<Conn> conn_;

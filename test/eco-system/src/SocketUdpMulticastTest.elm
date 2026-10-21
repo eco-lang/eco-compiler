@@ -2,12 +2,12 @@ module SocketUdpMulticastTest exposing (main)
 
 {-| IPv4 multicast membership (plans/eco-system-sockets.md §3.3.5, R2): joining and leaving
 `239.255.0.1` on the loopback interface (`Just (loopback IPv4)`) succeed; leaving it again fails
-with `EADDRNOTAVAIL`.
+with kind `AddressNotAvailable` (`EADDRNOTAVAIL`).
 -}
 
 -- CHECK: join: ok
 -- CHECK: leave: ok
--- CHECK: leave again: err EADDRNOTAVAIL
+-- CHECK: leave again: err AddressNotAvailable
 -- EXIT: 0
 
 import Socket.Address as Address exposing (Family(..))

@@ -22,6 +22,7 @@ A small body with `Expect: 100-continue` gets `100 Continue` first, then the pro
 -- CHECK: client: expect small: 200 keep-alive got 10
 -- EXIT: 0
 
+import Http.Method
 import Http.Server as Server
 import HttpServerRawHelp as H
 import Task exposing (Task)
@@ -33,7 +34,7 @@ handler _ request response =
         body =
             Server.bodyAsString request |> Maybe.withDefault "<invalid>"
     in
-    ( [ Server.methodToString request.method ++ " " ++ request.url.path ++ " body " ++ body ]
+    ( [ Http.Method.toString request.method ++ " " ++ request.url.path ++ " body " ++ body ]
     , H.Now (response |> Server.setBody ("got " ++ String.fromInt (String.length body)))
     )
 

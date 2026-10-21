@@ -2,15 +2,15 @@ module StreamTransformCloseTest exposing (main)
 
 {-| A custom `Close` (plans/eco-system-library.md §3.5, WHATWG terminate): the
 write that triggered it succeeds and its values are still readable, then the
-readable reports `Closed`; later writes fail with "TransformStream has been
-terminated", and so does closing the writable.
+readable reports `Closed`; later writes fail with `Closed`, and so does closing
+the writable.
 -}
 
 -- CHECK: write a: ok
 -- CHECK: write stop: ok
 -- CHECK: reads: A,last,Closed
--- CHECK: write after close: err Cancelled: TransformStream has been terminated
--- CHECK: close after close: err Cancelled: TransformStream has been terminated
+-- CHECK: write after close: err Closed
+-- CHECK: close after close: err Closed
 -- EXIT: 0
 
 import Stream

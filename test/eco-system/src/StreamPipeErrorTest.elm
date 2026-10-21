@@ -15,7 +15,7 @@ pipeTo defaults; Phase 6 step 6.3):
 -- CHECK: source error: pipe err Cancelled: boom | dst err Cancelled: boom
 -- CHECK: dest error: pipe err Cancelled: stop | src write err Cancelled: stop
 -- CHECK: chain error: err Cancelled: mid
--- CHECK: closed dest: err Cancelled: WritableStream is closed | src read err Closed
+-- CHECK: closed dest: err Closed | src read err Closed
 -- EXIT: 0
 
 import Stream

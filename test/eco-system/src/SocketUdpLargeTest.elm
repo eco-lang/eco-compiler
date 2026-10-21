@@ -1,12 +1,12 @@
 module SocketUdpLargeTest exposing (main)
 
 {-| The largest IPv4 UDP datagram (plans/eco-system-sockets.md §D.4, N15): 65 507 bytes are sent
-and arrive whole; one byte more fails with `EMSGSIZE`.
+and arrive whole; one byte more fails with kind `MessageTooLarge` (`EMSGSIZE`).
 -}
 
 -- CHECK: size: 65507
 -- CHECK: intact: True
--- CHECK: too large: err EMSGSIZE
+-- CHECK: too large: err MessageTooLarge
 -- EXIT: 0
 
 import Bytes

@@ -5,8 +5,8 @@ a TCP reset, so the peer's parked read fails with `read ECONNRESET` and its next
 (Linux reports `EPIPE` or `ECONNRESET`).
 -}
 
--- CHECK: peer read: Cancelled: {{read ECONNRESET}}
--- CHECK: peer write: Cancelled: {{write (EPIPE|ECONNRESET)}}
+-- CHECK: peer read: Failed: {{read ECONNRESET}}
+-- CHECK: peer write: Failed: {{write (EPIPE|ECONNRESET)}}
 -- EXIT: 0
 
 import Process
@@ -29,13 +29,13 @@ main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->
-            H.socketErr (T.listenTls (T.server []))
+            H.tlsErr (T.listenTls (T.server []))
                 |> Task.andThen
                     (\listener ->
                         H.async (H.socketErr (Socket.accept listener))
                             |> Task.andThen
                                 (\accepted ->
-                                    H.socketErr (T.connectTls (T.trusted "localhost" []) listener)
+                                    H.tlsErr (T.connectTls (T.trusted "localhost" []) listener)
                                         |> Task.andThen (\client -> accepted |> Task.map (\server -> ( client, server )))
                                 )
                             |> Task.andThen

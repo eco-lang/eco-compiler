@@ -11,9 +11,17 @@ as for TCP, and are used through [`Socket`](Socket); what is particular to this 
 making them and reading a connection's peer credentials.
 
 A path is handed to the operating system as [`Path.toPosixString`](Path#toPosixString) prints
-it. That text must be at most 107 bytes of UTF-8 on Linux and 103 on macOS; a longer one fails
-with `ENAMETOOLONG`. On the native backend under Windows, connecting and listening fail with
-`ENOTSUP`.
+it. That text must be at most 107 bytes of UTF-8 on Linux and 103 on macOS. On the native backend
+under Windows, connecting and listening fail with [`Socket.NotSupported`](Socket#ErrorKind).
+
+Since the address is a path, connecting and listening fail the way a file operation on that path
+would: with [`Socket.AddressPathFailed`](Socket#ErrorKind) and the
+[`FileSystem.ErrorKind`](FileSystem#ErrorKind) the path would have there, such as
+`NoSuchFileOrDirectory`, `NotADirectory`, `LinkLoop`, `ReadOnlyFileSystem`, `PathTooLong` (a
+path over the length limit) or `PermissionDenied`. The failures that describe the socket rather
+than the path keep their own kinds: [`Socket.AddressInUse`](Socket#ErrorKind) when something
+already exists at the path, and [`Socket.ConnectionRefused`](Socket#ErrorKind) when nobody
+listens on it.
 
 The socket file's path is the only name a connection has. On the side that connected it is the
 remote endpoint, and on the side that accepted it is the local endpoint, in both cases as the path
@@ -50,9 +58,16 @@ import Task exposing (Task)
 
 {-| Connects to the listener whose socket file is at `path`.
 
-Fails with `ENOENT` when nothing exists at the path, with `ECONNREFUSED` when nobody listens on
-it, and, on Linux, with `EAGAIN` when the operating system's queue of connections waiting on that
-listener is full.
+Fails with:
+
+  - [`Socket.AddressPathFailed`](Socket#ErrorKind) `FileSystem.NoSuchFileOrDirectory` when
+    nothing exists at the path, and `AddressPathFailed` with another
+    [`FileSystem.ErrorKind`](FileSystem#ErrorKind) when the path cannot be used, for example
+    `PermissionDenied` without write permission on the socket file, `NotADirectory` when a part
+    of the path is not a directory, or `PathTooLong`;
+  - [`Socket.ConnectionRefused`](Socket#ErrorKind) when nobody listens on it;
+  - on Linux, [`Socket.ListenQueueFull`](Socket#ErrorKind) when the operating system's queue of
+    connections waiting on that listener is full.
 
 The connection's remote endpoint is `path`, printed and parsed again, and its local endpoint is
 the empty path.
@@ -62,7 +77,7 @@ connect : Path -> Task Socket.Error Socket.Connection
 connect path =
     kUnixConnect (Path.toPosixString path)
         |> Task.map Internal.toConnection
-        |> Task.mapError Internal.toError
+        |> Task.mapError (Internal.toError >> Internal.onUnixPath)
 
 
 {-| The options for [`listen`](#listen): where to create the socket file, whether a socket file
@@ -70,7 +85,7 @@ already there may be replaced, and the mode to give it.
 
 `removeExisting` removes a socket file already at `path` before listening, whether or not a
 program still listens on it. Any other kind of file there, a symbolic link included, still makes
-`listen` fail with `EADDRINUSE`.
+`listen` fail with [`Socket.AddressInUse`](Socket#ErrorKind).
 
 `permissions` is the socket file's mode as a number (`0o600` is `384`), of which only the
 low twelve bits, `0o7777`, are used. On the native backend it is set before the socket starts
@@ -99,9 +114,18 @@ defaultListenOptions path =
 
 {-| Starts listening at `options.path`, creating the socket file there.
 
-Fails with `EADDRINUSE` when something already exists at the path and `removeExisting` does not
-allow it to be removed. A `listen` that fails after creating the socket file removes it again, and
-so does [`Socket.closeListener`](Socket#closeListener).
+Fails with:
+
+  - [`Socket.AddressInUse`](Socket#ErrorKind) when something already exists at the path and
+    `removeExisting` does not allow it to be removed;
+  - [`Socket.AddressPathFailed`](Socket#ErrorKind) when the path cannot be used, with the
+    [`FileSystem.ErrorKind`](FileSystem#ErrorKind) it would have there: for example
+    `NoSuchFileOrDirectory` when a parent directory does not exist, `NotADirectory` when a part
+    of the path is not a directory, `PermissionDenied` without write permission on the
+    directory, `ReadOnlyFileSystem`, or `PathTooLong`.
+
+A `listen` that fails after creating the socket file removes it again, and so does
+[`Socket.closeListener`](Socket#closeListener).
 
 Each connection the listener hands out has as its local endpoint the path printed and parsed
 again, and the empty path as its remote endpoint.
@@ -124,16 +148,16 @@ listen options =
     in
     kUnixListen (Path.toPosixString options.path) ( options.removeExisting, mode )
         |> Task.map Internal.toListener
-        |> Task.mapError Internal.toError
+        |> Task.mapError (Internal.toError >> Internal.onUnixPath)
 
 
 {-| Asks for the peer credentials of a Unix domain connection: the process id, user id and group
 id of the program at the other end, as the operating system reported them when the connection was
 made.
 
-Fails with `EINVAL` for a connection that is not a Unix domain connection, and on the JavaScript
-backend for one that has closed. Otherwise it fails with `ENOTSUP` where the credentials cannot be
-read: on the JavaScript backend for every Unix domain connection, and on the native backend on
+Fails with [`Socket.InvalidInput`](Socket#ErrorKind) for a connection that is not a Unix domain
+connection, and on the JavaScript backend for one that has closed. Otherwise it fails with
+[`Socket.NotSupported`](Socket#ErrorKind) where the credentials cannot be read: on the JavaScript backend for every Unix domain connection, and on the native backend on
 systems other than Linux and macOS.
 
 -}

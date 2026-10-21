@@ -11,7 +11,7 @@ open, §3.4), after which writing to stdout fails.
 -- STDIN: wörld\n
 -- CHECK: héLLo
 -- CHECK: wörLd
--- CHECK: done: ok, then stdout write err Cancelled: WritableStream is closed
+-- CHECK: done: ok, then stdout write err Closed
 -- EXIT: 0
 
 import Stream

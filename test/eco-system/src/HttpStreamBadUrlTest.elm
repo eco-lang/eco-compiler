@@ -12,6 +12,7 @@ gives `NetworkError`.
 -- EXIT: 0
 
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Task exposing (Task)
@@ -20,7 +21,7 @@ import Task exposing (Task)
 attempt : String -> Task x String
 attempt url =
     Http.Stream.task
-        { method = "GET"
+        { method = Http.Method.GET
         , headers = []
         , url = url
         , body = Http.Stream.emptyBody

@@ -125,8 +125,8 @@ var _Stream_K_IDENTITY = 0, _Stream_K_CUSTOM = 1, _Stream_K_CODEC = 2,
     _Stream_K_SOURCE = 3, _Stream_K_SINK = 4, _Stream_K_MAPPED = 5;
 var _Stream_E_CLOSED = 0, _Stream_E_CANCELLED = 1, _Stream_E_LOCKED = 2;
 
-var _Stream_kWritableClosed = 'WritableStream is closed';
-var _Stream_kTerminated = 'TransformStream has been terminated';
+var _Stream_kWritableClosed = '\u0002WritableStream is closed';   // Stream.Closed (Stream.Internal.decodeReason)
+var _Stream_kTerminated = '\u0002TransformStream has been terminated';   // Stream.Closed
 var _Stream_kChannelReadChunk = 64 * 1024;
 
 
@@ -234,6 +234,90 @@ function _Stream_failAll(toks, reason)
 	{
 		_Stream_completeErr(toks[i], _Stream_E_CANCELLED, reason);
 	}
+}
+
+// Stream failure reasons (plans/eco-system-typed-api.md B7), as eco-system/Core/Core.hpp
+// describes them: a reason the kernel makes itself is marked, so that Stream.Internal.decodeReason
+// never takes it for a program's own reason.
+//   "\u0001" origin "\u001F" code "\u001F" message   the resource failed (Stream.Failed)
+//   "\u0002" ...                                   the stream had ended (Stream.Closed)
+function _Stream_failureReason(origin, code, message)
+{
+	return '\u0001' + origin + '\u001F' + (code || '') + '\u001F' + message;
+}
+
+function _Stream_isMarked(reason)
+{
+	return typeof reason === 'string' && reason.length > 0
+		&& (reason.charCodeAt(0) === 1 || reason.charCodeAt(0) === 2);
+}
+
+function _Stream_isTlsCode(code)
+{
+	return /^(ERR_SSL_|ERR_TLS_|CERT_)/.test(code) || code.indexOf('_CERT') >= 0
+		|| code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE';
+}
+
+// A socket stream's error as a failure reason: "read <CODE>" / "write <CODE>" carry their code,
+// "socket closed" is ECANCELED and "upgraded to WebSocket" the connection taken over. The
+// origin is "tls" for a code the TLS layer made, "socket" otherwise (Core.cpp socketFailureReason).
+function _Stream_socketFailure(err)
+{
+	var reason = _Stream_describeError(err);
+	if (_Stream_isMarked(reason)) return reason;
+	if (reason === 'socket closed') return _Stream_failureReason('socket', 'ECANCELED', reason);
+	if (reason === 'upgraded to WebSocket') return _Stream_failureReason('socket', 'ECO_TAKEN_OVER', reason);
+	var m = /^(?:read|write) (\S+)$/.exec(reason);
+	var code = m ? m[1] : (err && err.code ? String(err.code) : '');
+	return _Stream_failureReason(_Stream_isTlsCode(code) ? 'tls' : 'socket', code, reason);
+}
+
+// A WebSocket stream's error as a failure reason (Core.cpp websocketFailureReason).
+function _Stream_websocketFailure(err)
+{
+	var reason = _Stream_describeError(err);
+	if (_Stream_isMarked(reason)) return reason;
+	if (reason === 'heartbeat ETIMEDOUT') return _Stream_failureReason('websocket', 'ECO_WS_HEARTBEAT', reason);
+	if (reason.indexOf('ERR_WS_') === 0)
+	{
+		var colon = reason.indexOf(':');
+		return _Stream_failureReason('websocket', colon < 0 ? reason : reason.slice(0, colon), reason);
+	}
+	return _Stream_socketFailure(err);
+}
+
+// Returns `ch` with its stream failures reported under `origin` ("file", "pipe", "stdio").
+function _Stream_withOrigin(ch, origin)
+{
+	ch.__origin = origin;
+	return ch;
+}
+
+// An HTTP body stream's error as a failure reason: every one is a network failure
+// (Http.Stream.fromStreamFailure reads it as Http.NetworkError).
+function _Stream_httpFailure(err)
+{
+	var reason = _Stream_describeError(err);
+	return _Stream_isMarked(reason) ? reason : _Stream_failureReason('http', 'NETWORK', reason);
+}
+
+// Returns `ch` with its stream failures reported as HTTP network failures.
+function _Stream_withHttpFailures(ch)
+{
+	ch.__encodeFailure = _Stream_httpFailure;
+	return ch;
+}
+
+// The failure reason for a channel's error: the channel's own `__encodeFailure` when it has
+// one, else the error's code and description under the channel's `__origin` ("stream" when
+// it has none).
+function _Stream_channelFailure(ch, err)
+{
+	var reason = err && typeof err === 'object' && typeof err.reason === 'string' ? err.reason : '';
+	if (_Stream_isMarked(reason)) return reason;
+	if (ch && ch.__encodeFailure) return ch.__encodeFailure(err);
+	var code = err && typeof err === 'object' && err.code ? String(err.code) : '';
+	return _Stream_failureReason((ch && ch.__origin) || 'stream', code, _Stream_describeError(err));
 }
 
 function _Stream_describeError(err)
@@ -475,6 +559,7 @@ function _Stream_transformCodec(id, pw)
 	var err = p.__codec.__transform(pw.__value, outs);
 	if (err)
 	{
+		err = _Stream_failureReason('codec', '', err);   // Stream.Failed
 		var toFail = [];
 		_Stream_errorPair(p, err, toFail);
 		_Stream_finishWrite(pw, false, err);
@@ -566,6 +651,7 @@ function _Stream_pumpCore(id)
 				var err = p.__codec.__flush(outs);
 				if (err)
 				{
+					err = _Stream_failureReason('codec', '', err);   // Stream.Failed
 					var toFail = [];
 					_Stream_errorPair(p, err, toFail);   // fails the close too
 					_Stream_failAll(toFail, err);
@@ -730,7 +816,7 @@ function _Stream_onReadResult(id, ch, tok, err, chunk)
 				if (p.__r === _Stream_R_OPEN)
 				{
 					p.__r = _Stream_R_ERRORED;
-					p.__rReason = _Stream_describeError(err);
+					p.__rReason = _Stream_channelFailure(p.__channel, err);
 				}
 				ch.shutdown();
 			}
@@ -770,7 +856,7 @@ function _Stream_onReadResult(id, ch, tok, err, chunk)
 			if (p.__r === _Stream_R_OPEN)
 			{
 				p.__r = _Stream_R_ERRORED;
-				p.__rReason = _Stream_describeError(err);
+				p.__rReason = _Stream_channelFailure(p.__channel, err);
 			}
 			ch.shutdown();
 		}
@@ -795,7 +881,7 @@ function _Stream_onReadResult(id, ch, tok, err, chunk)
 		if (p.__r === _Stream_R_OPEN)
 		{
 			p.__r = _Stream_R_ERRORED;
-			p.__rReason = _Stream_describeError(err);
+			p.__rReason = _Stream_channelFailure(p.__channel, err);
 		}
 		var kind = p.__r === _Stream_R_CLOSED ? _Stream_E_CLOSED : _Stream_E_CANCELLED;
 		var reason = p.__r === _Stream_R_ERRORED ? p.__rReason : '';
@@ -841,7 +927,7 @@ function _Stream_onWriteResult(id, ch, tok, err)
 		if (p.__w !== _Stream_W_ERRORED)
 		{
 			p.__w = _Stream_W_ERRORED;
-			p.__wReason = _Stream_describeError(err);
+			p.__wReason = _Stream_channelFailure(p.__channel, err);
 			p.__r = _Stream_R_ERRORED;
 			p.__rReason = p.__wReason;
 			ch.shutdown();
@@ -871,7 +957,7 @@ function _Stream_onCloseResult(id, ch, tok, err)
 	else if (err)
 	{
 		p.__w = _Stream_W_ERRORED;
-		p.__wReason = _Stream_describeError(err);
+		p.__wReason = _Stream_channelFailure(p.__channel, err);
 		_Stream_completeErr(tok, _Stream_E_CANCELLED, p.__wReason);
 	}
 	else
@@ -971,7 +1057,7 @@ function _Stream_onMappedRead(id, ch, tok, err, chunk)
 		if (p.__r === _Stream_R_OPEN)
 		{
 			p.__r = _Stream_R_ERRORED;
-			p.__rReason = _Stream_describeError(err);
+			p.__rReason = _Stream_channelFailure(p.__channel, err);
 			p.__rErr = err;
 		}
 		ch.shutdown();
@@ -1743,6 +1829,8 @@ function _Stream_nodeDuplexChannels(socket, options)
 		}
 	};
 
+	read.__encodeFailure = _Stream_socketFailure;    // Socket.fromStreamFailure / Socket.Tls
+	write.__encodeFailure = _Stream_socketFailure;
 	return {
 		read: read,
 		write: write,

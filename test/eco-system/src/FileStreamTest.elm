@@ -19,9 +19,9 @@ several chunks.
 -- CHECK: wstream-append-creates: ok new
 -- CHECK: wstream-replacefrom: ok chunk1XY
 -- CHECK: wstream-replacefrom-zero: ok Z
--- CHECK: wstream-replacefrom-missing: err ENOENT @nofile.txt
--- CHECK: rstream-missing: err ENOENT @missing.txt
--- CHECK: rstream-dir: err EISDIR @sub
+-- CHECK: wstream-replacefrom-missing: err NoSuchFileOrDirectory @nofile.txt
+-- CHECK: rstream-missing: err NoSuchFileOrDirectory @missing.txt
+-- CHECK: rstream-dir: err DirectoryFound @sub
 -- CHECK: big: ok 300000 True True
 -- CHECK: read-after-eof: ok closed
 -- EXIT: 0

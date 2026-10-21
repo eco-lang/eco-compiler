@@ -2,7 +2,7 @@ module Stream exposing
     ( Readable, fromList, read, readString, readLine, readUntilClosed, cancelReadable
     , Writable, write, writeString, writeLine, enqueue, closeWritable, cancelWritable
     , log, logString, logLine
-    , Error(..), errorToString
+    , Error(..), errorToString, Failure, failureToString
     , Transformation, pipeThrough, awaitAndPipeThrough, pipeTo
     )
 
@@ -27,17 +27,26 @@ is one), or, for a stream over a resource, written to it. [`enqueue`](#enqueue) 
 as soon as the value is in the writable side's buffer. On an in-memory stream both wait while
 that buffer is full.
 
-A stream ends in one of two ways, and they are reported differently. It is _closed_ when its
-writer says no more values will come ([`closeWritable`](#closeWritable)), or when the resource
-behind it has no more to give: the values already written can still be read, and after the last
-of them a read fails with `Closed`. It is _cancelled_ when something has gone wrong
-([`cancelReadable`](#cancelReadable), [`cancelWritable`](#cancelWritable), a transformation that
-fails, or a failure of the resource behind it): buffered values are dropped, except the bytes
-[`readLine`](#readLine) has kept, and reads, writes and closes fail with `Cancelled` and a reason,
-except reads after [`cancelReadable`](#cancelReadable), which fail as
-[`cancelReadable`](#cancelReadable) describes. Once a stream has been handed out, this
-is how a failure of its resource reaches the program. A connection reset, for example, is a read
-that fails with `Cancelled`, not an error of the module that made the connection.
+A stream ends in one of three ways, and they are reported differently.
+
+  - It is _closed_ when its writer says no more values will come
+    ([`closeWritable`](#closeWritable)), or when the resource behind it has no more to give: the
+    values already written can still be read, and after the last of them a read fails with
+    `Closed`. A write or a close into a closed stream fails with `Closed` too.
+  - It is _cancelled_ when the program gives up on it, with a reason:
+    [`cancelReadable`](#cancelReadable), [`cancelWritable`](#cancelWritable), or a custom
+    transformation whose step returns `Cancel`. Buffered values are dropped, except the bytes
+    [`readLine`](#readLine) has kept, and reads, writes and closes fail with `Cancelled` and the
+    reason, except reads after [`cancelReadable`](#cancelReadable), which fail as
+    [`cancelReadable`](#cancelReadable) describes.
+  - It has _failed_ when the resource behind it fails, such as a connection the peer reset or a
+    file that cannot be read. Buffered values are dropped as for a cancel, and reads, writes and
+    closes fail with `Failed` and a [`Failure`](#Failure).
+
+Once a stream has been handed out, a failure is how a problem with its resource reaches the
+program. A connection reset, for example, is a read that fails with `Failed`, not an error of the
+module that made the connection; [`Socket.fromStreamFailure`](Socket#fromStreamFailure) reads
+that failure back as a [`Socket.Error`](Socket#Error).
 
 A side is _locked_ while an operation holds it, such as a read waiting for a value, a write
 waiting for room in the buffer, or a pipe ([`pipeThrough`](#pipeThrough), [`pipeTo`](#pipeTo)),
@@ -73,7 +82,11 @@ the terminal, there is usually nowhere else to report that either.
 
 # Error Handling
 
-@docs Error, errorToString
+`Stream` knows only what any stream can go through. Why the resource behind a stream failed is
+known to the module that made the stream, and each such module reads a [`Failure`](#Failure)
+back as its own error type, as [`Failure`](#Failure) describes.
+
+@docs Error, errorToString, Failure, failureToString
 
 
 # Transformation Streams
@@ -126,10 +139,10 @@ fromList values =
 {-| Reads the next value off the stream, waiting until there is one.
 
 Once the stream has been closed and every value written before the close has been read, or
-once the reading side has been cancelled while the stream had not failed in another way, the
-`Task` fails with `Closed`. If the stream has
-been cancelled from its writing side or by its transformation, or its resource has failed, it
-fails with `Cancelled` and the reason. While another read is waiting on the stream, or something
+once the reading side has been cancelled while the stream had not been cancelled or failed in
+another way, the `Task` fails with `Closed`. If the stream has been cancelled from its writing
+side or by its transformation, it fails with `Cancelled` and the reason, and if its resource has
+failed, with `Failed` and the failure. While another read is waiting on the stream, or something
 else such as a pipe is consuming it, it fails with `Locked`.
 
 Killing a task whose read is waiting (`Process.kill`) withdraws the read: the stream is no
@@ -144,8 +157,8 @@ read (Stream.Internal.Readable id) =
 
 
 {-| Reads the next chunk of `Bytes` off the stream, as [`read`](#read) does, and converts it to
-a `String`. If the chunk is not valid UTF-8, the stream is cancelled and the `Task` fails with
-`Cancelled`; if by then another operation holds the reading side, the `Task` fails with `Locked`
+a `String`. If the chunk is not valid UTF-8, the stream is cancelled, with a reason saying so,
+and the `Task` fails with `Cancelled`; if by then another operation holds the reading side, the `Task` fails with `Locked`
 instead and the stream is not cancelled.
 
 Each chunk is converted on its own, so a multi-byte character split across two chunks does not
@@ -196,7 +209,8 @@ fails with `Closed`. On other streams this is not guaranteed: when such a stream
 `readLine` has kept can be lost, including whole lines of the last chunk of an in-memory stream.
 Bytes read past the newline are kept with the stream and handed out first by the next read, so
 `readLine` can be mixed with [`read`](#read) and [`readString`](#readString). If a line is not
-valid UTF-8, the stream is cancelled and the `Task` fails with `Cancelled`, or with `Locked` if by
+valid UTF-8, the stream is cancelled, with a reason saying so, and the `Task` fails with
+`Cancelled`, or with `Locked` if by
 then another operation holds the reading side. A cancel does not drop the kept bytes: after
 one, the next `read` still hands them out before it fails, and `readLine` still returns any
 complete lines among them. Other failures are those of [`read`](#read).
@@ -315,9 +329,9 @@ stream's buffer are dropped, except the bytes [`readLine`](#readLine) has kept, 
 a resource stops reading from it.
 
 Once any kept bytes have been handed out, later reads fail with `Closed`, unless the stream had
-already been cancelled in another way (from its writing side, by its transformation, or by a
-failure of its resource), in which case they go on failing with `Cancelled` and that earlier
-reason. If the writing side is still open, or a close of it is still in progress, writes into it
+already been cancelled from its writing side or by its transformation, in which case they go on
+failing with `Cancelled` and that earlier reason, or its resource had failed, in which case they
+go on failing with `Failed` and that failure. If the writing side is still open, or a close of it is still in progress, writes into it
 that are still waiting, that close, and later writes fail with `Cancelled` and the given reason.
 While a read is waiting on the stream, or something else such as a pipe is consuming it, the
 `Task` fails with `Locked` and nothing is cancelled.
@@ -346,8 +360,10 @@ to the stream's readable side (through the transformation, if there is one), or,
 over a resource, written to it. On an in-memory stream with no room for the value, this waits
 until a reader makes room.
 
-Writing into a stream that has been closed or cancelled fails with `Cancelled`. While another
-write is waiting for room, or a pipe is writing into the stream, it fails with `Locked`.
+Writing into a stream that has been closed fails with `Closed`, into one that has been
+cancelled with `Cancelled` and the reason, and into one whose resource has failed with `Failed`
+and the failure. While another write is waiting for room, or a pipe is writing into the stream,
+it fails with `Locked`.
 
 -}
 write : value -> Writable value -> Task Error (Writable value)
@@ -389,8 +405,8 @@ an in-memory stream with a full buffer it waits for room). The price is that it 
 what happens to the value afterwards: if the stream is cancelled, or the write to the resource
 fails, before the value is accepted, this `Task` has already succeeded.
 
-Enqueueing into a stream that has been closed or cancelled fails with `Cancelled`, and it fails
-with `Locked` in the same cases as [`write`](#write).
+Enqueueing into a stream that has been closed, cancelled or has failed fails as
+[`write`](#write) does, and it fails with `Locked` in the same cases as [`write`](#write).
 
 -}
 enqueue : value -> Writable value -> Task Error (Writable value)
@@ -405,10 +421,11 @@ value written before the close has been accepted, and, for a stream over a resou
 resource has been closed (the standard streams are never closed; the close only waits for their
 writes). Readers can still read the values in the buffer, and then get `Closed`.
 
-Closing a stream that is already closed or being closed, or has been cancelled, fails with
-`Cancelled`. While a write is waiting for room, or a pipe is writing into the stream, it fails
-with `Locked`. If the stream is cancelled while the close waits, the `Task` fails with
-`Cancelled` and the reason.
+Closing a stream that is already closed or being closed fails with `Closed`, and one that has
+been cancelled or has failed fails with `Cancelled` and the reason, or `Failed` and the failure.
+While a write is waiting for room, or a pipe is writing into the stream, it fails with `Locked`.
+If the stream is cancelled while the close waits, the `Task` fails with `Cancelled` and the
+reason, and if its resource fails, with `Failed` and the failure.
 
 -}
 closeWritable : Writable value -> Task Error ()
@@ -484,17 +501,24 @@ ignoreErrors task =
 
 {-| Why an operation on a stream failed.
 
-`Closed` is the answer to a read when the stream has ended normally: it was closed, and every
-value written before the close has been read. A read also gets `Closed` after the stream was
-cancelled from its reading side with [`cancelReadable`](#cancelReadable), unless it had already
-been cancelled in another way. Only reads fail with `Closed`; writing into a closed stream fails
-with `Cancelled`.
+`Closed` means that the stream has ended. A read gets it when the stream has ended normally: it
+was closed, and every value written before the close has been read. A read also gets `Closed`
+after the stream was cancelled from its reading side with [`cancelReadable`](#cancelReadable),
+unless it had already been cancelled or failed in another way. A write or a close gets `Closed`
+when the stream has been closed, or when its transformation has ended it, as a custom
+transformation's `Close` does.
 
-`Cancelled` carries the reason, a human-readable explanation. A read gets it when the stream was
-cancelled from its writing side or by its transformation, or its resource failed; a write or a
-close gets it when the stream has been closed or cancelled, and [`pipeTo`](#pipeTo) gets it as
-[`pipeTo`](#pipeTo) describes. When the resource behind a stream fails, the reason names the
-problem, such as `"read ECONNRESET"` for a connection the peer reset.
+`Cancelled` means that the program cancelled the stream, and carries the reason it gave, a
+human-readable explanation: the reason given to [`cancelReadable`](#cancelReadable) or
+[`cancelWritable`](#cancelWritable), to a custom transformation's `Cancel`, or returned as the
+`Err` of a [`readUntilClosed`](#readUntilClosed) step. [`readString`](#readString) and
+[`readLine`](#readLine) cancel a stream themselves, with a reason of their own, when the bytes
+are not valid UTF-8. A read gets `Cancelled` when the stream was cancelled from its writing side
+or by its transformation; a write or a close gets it when the stream has been cancelled; and
+[`pipeTo`](#pipeTo) gets it as [`pipeTo`](#pipeTo) describes.
+
+`Failed` means that the resource behind the stream failed, for example a connection the peer
+reset, and carries a [`Failure`](#Failure) describing it.
 
 `Locked` means that the side of the stream the operation needs is held by another operation,
 such as a waiting read, a write waiting for room, or a pipe. A single read, write, close, cancel
@@ -506,12 +530,14 @@ already have consumed values.
 -}
 type Error
     = Closed
-    | Cancelled String
     | Locked
+    | Cancelled String
+    | Failed Failure
 
 
-{-| Returns a human-readable description of an error: `"Closed"`, `"Locked"`, or
-`"Cancelled: "` followed by the reason.
+{-| Returns a human-readable description of an error: `"Closed"`, `"Locked"`, `"Cancelled: "`
+followed by the reason, or `"Failed: "` followed by
+[`failureToString`](#failureToString) of the failure.
 -}
 errorToString : Error -> String
 errorToString error =
@@ -525,10 +551,54 @@ errorToString error =
         Locked ->
             "Locked"
 
+        Failed failure ->
+            "Failed: " ++ failureToString failure
+
+
+{-| Why the resource behind a stream failed: a stream over a file, a pipe, a connection or an
+HTTP body that could not go on.
+
+A `Failure` is opaque, because `Stream` knows nothing about the resources behind streams. The
+module that made the stream knows, and reads its own failures back as its own error type, giving
+`Nothing` for a failure some other module made:
+
+  - [`Socket.fromStreamFailure`](Socket#fromStreamFailure), for the streams of a TCP or Unix
+    domain connection, gives a [`Socket.Error`](Socket#Error), such as one whose kind is
+    `ConnectionReset`;
+  - [`Socket.Tls.fromStreamFailure`](Socket-Tls#fromStreamFailure), for the streams of a TLS
+    connection, gives a [`Socket.Tls.Error`](Socket-Tls#Error), covering both TLS failures and
+    failures of the connection under it;
+  - [`FileSystem.fromStreamFailure`](FileSystem#fromStreamFailure), for file streams, gives a
+    [`FileSystem.Error`](FileSystem#Error);
+  - [`WebSocket.fromStreamFailure`](WebSocket#fromStreamFailure), for a WebSocket's message
+    streams, gives a [`WebSocket.Error`](WebSocket#Error);
+  - [`Http.Stream.fromStreamFailure`](Http-Stream#fromStreamFailure), for streaming HTTP bodies,
+    gives an `Http.Error`.
+
+The failures of a child process's pipes, and of a decompressing transformation, have no such
+module: [`failureToString`](#failureToString) describes them.
+
+Only the streams this package makes over a resource fail with a `Failure`. A stream made in Elm,
+such as a custom transformation, ends with `Closed` or is cancelled with a reason.
+
+-}
+type alias Failure =
+    Stream.Internal.Failure
+
+
+{-| Returns a human-readable description of a failure, naming the problem, for example
+`"read ECONNRESET"` for a connection the peer reset.
+-}
+failureToString : Failure -> String
+failureToString (Stream.Internal.Failure failure) =
+    failure.message
+
 
 {-| Converts a stream kernel failure, `( kind, reason )`, into an `Error`. Kind 0 is `Closed`
-and 2 is `Locked`; the kernels send 1 for a cancellation, and every kind other than 0 and 2
-becomes `Cancelled` with the reason.
+and 2 is `Locked`; the kernels send 1 for a cancellation, and every kind other than 0 and 2 is
+read from its reason, which the kernels mark (`Stream.Internal.decodeReason`): a resource failure
+becomes `Failed`, an operation on a stream that has ended becomes `Closed`, and any other reason,
+one a program gave, becomes `Cancelled` with it.
 -}
 decodeError : ( Int, String ) -> Error
 decodeError ( kind, reason ) =
@@ -540,7 +610,15 @@ decodeError ( kind, reason ) =
             Locked
 
         _ ->
-            Cancelled reason
+            case Stream.Internal.decodeReason reason of
+                Stream.Internal.FailureReason failure ->
+                    Failed failure
+
+                Stream.Internal.EndedReason ->
+                    Closed
+
+                Stream.Internal.ProgramReason text ->
+                    Cancelled text
 
 
 
@@ -570,8 +648,9 @@ side.
 
 The pipe locks the source and the transformation's writable side until it finishes. When the
 source has closed and every value has been moved, the transformation's writable side is closed.
-If the source is cancelled from its writing side, or its resource fails, the transformation is
-cancelled with the same reason, so reads from the result fail with `Cancelled`. If the
+If the source is cancelled from its writing side, the transformation is cancelled with the same
+reason, so reads from the result fail with `Cancelled`; if its resource fails, the
+transformation ends with the same failure, so reads from the result fail with `Failed`. If the
 transformation's writable side is cancelled, for example by cancelling the result, the source
 is cancelled with the same reason. These later failures are not reported by this `Task`, which
 has already succeeded.
@@ -599,12 +678,17 @@ awaitAndPipeThrough builder source =
 {-| Moves every value of the `Readable` into the `Writable`, locking both until it finishes.
 
 When the readable side has closed and every value has been moved, the writable side is closed,
-and the `Task` succeeds once that close has finished. If the readable side is cancelled from its
-writing side, or its resource fails, the writable side is cancelled with the same reason. If the
-writable side is cancelled (by its reader, by its transformation, or by a failure of its
-resource), or it is already closed or being closed when the pipe starts, the readable side is
-cancelled with that reason (`"WritableStream is closed"` for a closed one). Either way the `Task`
-fails with `Cancelled` and the reason.
+and the `Task` succeeds once that close has finished.
+
+If the readable side is cancelled from its writing side, the writable side is cancelled with the
+same reason, and the `Task` fails with `Cancelled` and that reason. If the readable side's
+resource fails, the writable side ends with the same failure, and the `Task` fails with `Failed`
+and that failure.
+
+If the writable side is cancelled (by its reader or by its transformation) or its resource fails,
+or it is already closed or being closed when the pipe starts, the readable side is cancelled from
+its reading side, and the `Task` fails with the writable side's error: `Cancelled` and the
+reason, `Failed` and the failure, or `Closed` for a closed one.
 
 If either side is already locked, the `Task` fails with `Locked`.
 

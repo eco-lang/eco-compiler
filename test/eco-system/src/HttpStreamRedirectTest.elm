@@ -13,6 +13,7 @@ only the final hop's (no `location`, the final content type).
 
 import Dict
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
@@ -23,7 +24,7 @@ main =
     H.program
         (\server _ ->
             Http.Stream.task
-                { method = "GET"
+                { method = Http.Method.GET
                 , headers = []
                 , url = H.url server "/redirect"
                 , body = Http.Stream.emptyBody

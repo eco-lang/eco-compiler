@@ -2,7 +2,7 @@
 import Elm.Kernel.Scheduler exposing (binding, succeed)
 import Elm.Kernel.Utils exposing (Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, pipeStreams, find, readLocked, toUint8Array, cancelledError)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, pipeStreams, find, readLocked, toUint8Array, cancelledError, withHttpFailures)
 */
 
 // HttpStream — JS twin of src/eco-system/HttpStream/ (eco/system), plans/eco-system-library.md
@@ -145,7 +145,7 @@ var _HttpStream_send = F4(function(request, headers, body, discard)
 		_HttpStream_startHop(t);
 		if (t.__bodyKind === 2 && !t.__aborted)
 		{
-			var sink = __Stream_createChannelSink(_HttpStream_uploadChannel(t));
+			var sink = __Stream_createChannelSink(__Stream_withHttpFailures(_HttpStream_uploadChannel(t)));
 			__Stream_pipeStreams(spec.__streamId, sink);   // checked above
 		}
 		return function()
@@ -338,13 +338,13 @@ function _HttpStream_onResponse(t, req, res)
 	{
 		// expectStream, non-2xx: the body is never delivered; stop the transfer now
 		// instead of downloading it. The stream reads Closed.
-		bodyId = __Stream_createChannelSource(_HttpStream_emptyChannel());
+		bodyId = __Stream_createChannelSource(__Stream_withHttpFailures(_HttpStream_emptyChannel()));
 		_HttpStream_resolve(t, _HttpStream_result(
 			_HttpStream_K_BADSTATUS, '', status, res.statusMessage || '', t.__urlString, headers, bodyId));
 		_HttpStream_abort(t);
 		return;
 	}
-	bodyId = __Stream_createChannelSource(_HttpStream_downloadChannel(t, res));
+	bodyId = __Stream_createChannelSource(__Stream_withHttpFailures(_HttpStream_downloadChannel(t, res)));
 	_HttpStream_resolve(t, _HttpStream_result(
 		ok ? _HttpStream_K_GOODSTATUS : _HttpStream_K_BADSTATUS, '',
 		status, res.statusMessage || '', t.__urlString, headers, bodyId));

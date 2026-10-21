@@ -35,7 +35,9 @@
 #define ECO_SYSTEM_HTTP_STREAM_HTTP_TRANSFER_HPP
 
 #include "eco-system/Core/ByteChannel.hpp"
+#include "eco-system/Core/Core.hpp"
 
+#include <cerrno>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -122,6 +124,15 @@ public:
     void requestWrite(uint64_t token, std::string bytes) override;
     void close(uint64_t token) override;
     void shutdown() override;
+    // Every body-stream failure is a network failure (Http.Stream.fromStreamFailure
+    // reads it as Http.NetworkError).
+    std::string encodeFailure(int err, const std::string& reason) const override {
+        if (isMarkedReason(reason)) return reason;
+        return failureReason("http", "NETWORK",
+                             reason.empty() ? std::string("network error: ") + errnoName(err != 0 ? err : EIO)
+                                            : reason);
+    }
+    const char* failureOrigin() const override { return "http"; }
 
 private:
     std::shared_ptr<HttpTransfer> t_;

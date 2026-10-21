@@ -1,14 +1,15 @@
 module SocketTcpInUseTest exposing (main)
 
-{-| A second listener on an address and port already listened on fails with `EADDRINUSE`
-(plans/eco-system-sockets.md §D.5, `errorIsAddressInUse`); the first listener is unaffected and
+{-| A second listener on an address and port already listened on fails with kind `AddressInUse`
+(`EADDRINUSE`, plans/eco-system-sockets.md §D.5); the first listener is unaffected and
 the program exits once it is closed.
 -}
 
--- CHECK: second listen: EADDRINUSE in use True
+-- CHECK: second listen: AddressInUse
 -- CHECK: first still accepts: hi
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
@@ -29,11 +30,7 @@ main =
                             |> Task.onError
                                 (\e ->
                                     Task.succeed
-                                        ("second listen: "
-                                            ++ Socket.errorCode e
-                                            ++ " in use "
-                                            ++ H.boolString (Socket.errorIsAddressInUse e)
-                                        )
+                                        ("second listen: " ++ ErrorNames.socketError e)
                                 )
                             |> Task.andThen
                                 (\line ->

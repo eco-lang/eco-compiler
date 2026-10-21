@@ -6,14 +6,15 @@ opening request to the program's server 300 ms after it starts, and ends its con
 after sending it. The handler drops its `onRequest` subscription and takes the request over with
 `upgradeRequest`, and then forgets the `Upgrade`: only the handshake's hold keeps the program
 running, until the client goes away. The empty event loop that follows (`onEmptyEventLoop`) comes
-only then, at least 300 ms after the upgrade; accepting the `Upgrade` then fails `ECONNRESET`.
+only then, at least 300 ms after the upgrade; accepting the `Upgrade` then fails with a `SocketError` of kind `ConnectionReset`.
 -}
 
 -- CHECK: upgraded
 -- CHECK: waited: True
--- CHECK: accept: ECONNRESET
+-- CHECK: accept: SocketError ConnectionReset
 -- EXIT: 0
 
+import ErrorNames
 import Http.Server as Server
 import LiveTestHelp as L
 import Socket
@@ -27,10 +28,10 @@ import WebSocket
 type Msg
     = Started (Result Server.Error Server.Server)
     | GotRequest Server.Request Server.Response
-    | Upgraded (Result Socket.Error ( WebSocket.Upgrade, Time.Posix ))
+    | Upgraded (Result WebSocket.Error ( WebSocket.Upgrade, Time.Posix ))
     | Empty
     | EmptyAt Time.Posix
-    | Accepted (Result Socket.Error (WebSocket.WebSocket WebSocket.Whole))
+    | Accepted (Result WebSocket.Error (WebSocket.WebSocket WebSocket.Whole))
     | Logged
     | Peer
 
@@ -83,7 +84,7 @@ main =
                         ( { model | upgrade = Just u }, L.log model.env Logged "upgraded" )
 
                     Upgraded (Err e) ->
-                        ( model, L.log model.env Logged ("upgrade error " ++ Socket.errorToString e) )
+                        ( model, L.log model.env Logged ("upgrade error " ++ WebSocket.errorToString e) )
 
                     Empty ->
                         ( model, Task.perform EmptyAt Time.now )
@@ -109,7 +110,7 @@ main =
                         )
 
                     Accepted (Err e) ->
-                        ( model, L.log model.env Logged ("accept: " ++ Socket.errorCode e) )
+                        ( model, L.log model.env Logged ("accept: " ++ ErrorNames.webSocketError e) )
 
                     Logged ->
                         ( model, Cmd.none )

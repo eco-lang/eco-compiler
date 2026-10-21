@@ -25,6 +25,7 @@ connection afterwards still works.
 -- CHECK: client: fine: 200 keep-alive ok
 -- EXIT: 0
 
+import Http.Method
 import Http.Server as Server
 import HttpServerRawHelp as H
 import Task exposing (Task)
@@ -32,7 +33,7 @@ import Task exposing (Task)
 
 handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
-    ( [ Server.methodToString request.method ++ " " ++ request.url.path ]
+    ( [ Http.Method.toString request.method ++ " " ++ request.url.path ]
     , H.Now (response |> Server.setBody "ok")
     )
 

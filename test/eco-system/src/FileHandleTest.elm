@@ -12,9 +12,9 @@ the empty error path after `close`.
 -- CHECK: write: ok
 -- CHECK: write-offset: ok
 -- CHECK: close-writer: ok
--- CHECK: open-wx-existing: err EEXIST @h.txt
+-- CHECK: open-wx-existing: err FileExists @h.txt
 -- CHECK: open-wx-existing-flag: True
--- CHECK: open-read-missing: err ENOENT @missing.txt
+-- CHECK: open-read-missing: err NoSuchFileOrDirectory @missing.txt
 -- CHECK: read-all: ok hello world!
 -- CHECK: read-offset: ok world
 -- CHECK: read-negative-length: ok world!
@@ -29,14 +29,15 @@ the empty error path after `close`.
 -- CHECK: fchown: ok
 -- CHECK: write-only-reopen: ok Xbc
 -- CHECK: close-rw: ok
--- CHECK: after-close: err EBADF @
+-- CHECK: after-close: err HandleClosed @
 -- CHECK: after-close-path-empty: True
--- CHECK: close-twice: err EBADF @
+-- CHECK: close-twice: err HandleClosed @
 -- CHECK: rw-ensure-empty: ok 0
--- CHECK: rw-expect-existing-missing: err ENOENT @nope.txt
+-- CHECK: rw-expect-existing-missing: err NoSuchFileOrDirectory @nope.txt
 -- CHECK: read-only-handle: ok hello
 -- EXIT: 0
 
+import ErrorNames
 import Bytes
 import FileSystem as File
 import FileSystem.Handle as FileHandle
@@ -84,7 +85,7 @@ openErrors : Path -> Path -> Task x (List String)
 openErrors h dir =
     Task.sequence
         [ attempt unit (file (FileHandle.openForWrite FileHandle.ExpectNotExisting h)) |> label "open-wx-existing"
-        , FileTestHelp.rawError (File.errorIsFileExists >> boolString) (FileHandle.openForReadAndWrite FileHandle.ExpectNotExisting h)
+        , FileTestHelp.rawError (File.errorKind >> (==) File.FileExists >> boolString) (FileHandle.openForReadAndWrite FileHandle.ExpectNotExisting h)
             |> label "open-wx-existing-flag"
         , attempt unit (file (FileHandle.openForRead (child dir "missing.txt"))) |> label "open-read-missing"
         ]

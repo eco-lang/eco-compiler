@@ -23,7 +23,7 @@ raw clients against our server:
 -- CHECK: default: answered permessage-deflate; server_no_context_takeover; client_no_context_takeover; short plain True; long compressed True; same bytes True
 -- CHECK: window 8: answered permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=8; compressed True
 -- CHECK: declined: answered none; plain True
--- CHECK: rsv1 on a continuation: end Cancelled: ERR_WS_PROTOCOL: RSV1 is set on a continuation frame; raw client got close 1002
+-- CHECK: rsv1 on a continuation: end Failed: ERR_WS_PROTOCOL: RSV1 is set on a continuation frame; raw client got close 1002
 -- EXIT: 0
 
 import Bytes exposing (Bytes)

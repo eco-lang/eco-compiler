@@ -44,7 +44,7 @@ type alias Model =
 type Msg
     = Started (Result Server.Error Server)
     | Received Request Response
-    | Joined Int (Result Socket.Error (WebSocket.WebSocket WebSocket.Whole))
+    | Joined Int (Result WebSocket.Error (WebSocket.WebSocket WebSocket.Whole))
     | Said String WebSocket.Message
     | Left Int WebSocket.CloseInfo
     | Done
@@ -87,7 +87,7 @@ update msg model =
             )
 
         Received request response ->
-            if request.upgrade == Just "websocket" then
+            if request.upgrade == Just Server.WebSocketUpgrade then
                 ( { model | nextId = model.nextId + 1 }
                 , Server.upgradeRequest request response
                     |> Task.andThen (WebSocket.accept WebSocket.defaultAcceptOptions)
@@ -121,7 +121,7 @@ update msg model =
             )
 
         Joined _ (Err err) ->
-            ( model, log model.stderr ("ws-chat: " ++ Socket.errorToString err) )
+            ( model, log model.stderr ("ws-chat: " ++ WebSocket.errorToString err) )
 
         Said name message ->
             case message of

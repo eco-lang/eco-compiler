@@ -6,8 +6,8 @@ by raw HTTP/1.1 over `Socket.Tls` clients trusting the test CA. Request URLs sta
 `Socket.Tls.ServerOptions` (here `[ "h2" ]`); a client offering `h2` first still gets `http/1.1`
 (the server has no `http2`); a client offering only `http/1.0`, or nothing, connects without
 ALPN (alpnFallback = NoAck) and is served HTTP/1.1; keep-alive works over TLS; `http2 = True`
-with `tls` offers `h2` (HTTP/2 itself: the `HttpServerHttp2*` tests) and fails `EINVAL` without
-it; an unusable key fails with an `ERR_SSL_` code. (`Socket.Tls.listen` keeps the fatal alert on no overlap:
+with `tls` offers `h2` (HTTP/2 itself: the `HttpServerHttp2*` tests) and fails `InvalidInput` without
+it; an unusable key fails with `CertificateUnusable`. (`Socket.Tls.listen` keeps the fatal alert on no overlap:
 `SocketTlsAlpnTest`.)
 -}
 
@@ -27,11 +27,12 @@ it; an unusable key fails with an `ERR_SSL_` code. (`Socket.Tls.listen` keeps th
 -- CHECK: client: no alpn: alpn none
 -- CHECK: client: no alpn: 200 close e
 -- CHECK: client: no alpn: closed
--- CHECK: client: http2 without tls: EINVAL
+-- CHECK: client: http2 without tls: InvalidInput
 -- CHECK: client: http2 with tls: alpn h2
--- CHECK: client: bad key: ERR_SSL_ True
+-- CHECK: client: bad key: CertificateUnusable True
 -- EXIT: 0
 
+import ErrorNames
 import Http.Server as Server exposing (HttpVersion(..))
 import HttpServerRawHelp as H
 import Socket
@@ -72,14 +73,14 @@ tlsConnect : List String -> Int -> Task String Socket.Connection
 tlsConnect alpn port_ =
     Socket.Tls.connect (T.trusted "localhost" alpn)
         (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) port_)
-        |> Task.mapError Socket.errorToString
+        |> Task.mapError Socket.Tls.errorToString
 
 
 alpnOf : Socket.Connection -> Task String String
 alpnOf conn =
     Socket.Tls.info conn
         |> Task.map (\info -> "alpn " ++ T.alpnString info.alpn)
-        |> Task.mapError Socket.errorToString
+        |> Task.mapError Socket.Tls.errorToString
 
 
 get : String -> String
@@ -111,7 +112,7 @@ startError : Server.ListenOptions -> Task String String
 startError options =
     Server.listen options
         |> Task.andThen (\s -> Server.close s |> Task.map (\_ -> "started"))
-        |> Task.onError (\e -> Task.succeed (Server.errorCode e))
+        |> Task.onError (\e -> Task.succeed (ErrorNames.serverKind (Server.errorKind e)))
 
 
 client : Server.Server -> Task String (List String)
@@ -139,7 +140,7 @@ client server =
             )
         |> then_
             (Server.listen (withTls { plain | http2 = True })
-                |> Task.mapError Server.errorCode
+                |> Task.mapError Server.errorToString
                 |> Task.andThen
                     (\s2 ->
                         session "http2 with tls" [ "h2", "http/1.1" ] (\_ -> Task.succeed []) ((Server.endpoint s2).port_)
@@ -148,7 +149,7 @@ client server =
             )
         |> then_
             (startError { plain | tls = Just { certificateChain = (T.server []).certificateChain, privateKey = "not a key", alpn = [] } }
-                |> Task.map (\code -> [ "bad key: ERR_SSL_ " ++ (if String.startsWith "ERR_SSL_" code then "True" else "False " ++ code) ])
+                |> Task.map (\kind -> [ "bad key: CertificateUnusable " ++ (if String.startsWith "CertificateUnusable " kind then "True" else "False " ++ kind) ])
             )
 
 

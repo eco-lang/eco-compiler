@@ -3,25 +3,26 @@ module FileLinksTest exposing (main)
 {-| Links (plans/eco-system-library.md Phase 4 step 4.6, Appendix E.3):
 `hardLink link target` / `softLink link target` (gren's argument order),
 `readLink`, `realPath` through a symlink, `metadata` with and without
-`resolveLink`, dangling links and link loops (`errorIsLinkLoop`).
+`resolveLink`, dangling links and link loops (kind `LinkLoop`).
 -}
 
 -- CHECK: hardlink: ok hard.txt
 -- CHECK: hardlink-content: ok data
--- CHECK: hardlink-exists: err EEXIST @hard.txt
+-- CHECK: hardlink-exists: err FileExists @hard.txt
 -- CHECK: softlink: ok soft.txt
 -- CHECK: readlink: ok target.txt
--- CHECK: readlink-not-link: err EINVAL @target.txt
+-- CHECK: readlink-not-link: err InvalidInput @target.txt
 -- CHECK: softlink-content: ok data
 -- CHECK: lstat-softlink: ok Symlink
 -- CHECK: stat-softlink: ok File
 -- CHECK: realpath-softlink: ok True
--- CHECK: dangling-stat: err ENOENT @dangling
+-- CHECK: dangling-stat: err NoSuchFileOrDirectory @dangling
 -- CHECK: dangling-lstat: ok Symlink
 -- CHECK: loop: True
 -- CHECK: unlink-links: ok [hard.txt,target.txt]
 -- EXIT: 0
 
+import ErrorNames
 import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file, fromBytes)
 import Path
@@ -108,11 +109,11 @@ main =
                             |> label "dangling-lstat"
                         , FileTestHelp.rawError
                             (\e ->
-                                if File.errorIsLinkLoop e then
+                                if (File.errorKind e == File.LinkLoop) then
                                     "True"
 
                                 else
-                                    "False " ++ File.errorCode e
+                                    "False " ++ ErrorNames.fileError e
                             )
                             (File.softLink (child dir "loop-a") (Path.fromPosixString "loop-b")
                                 |> Task.andThen (\_ -> File.softLink (child dir "loop-b") (Path.fromPosixString "loop-a"))

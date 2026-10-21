@@ -5,14 +5,16 @@ module SocketUnixPeerCredentialsTest exposing (main)
 {-| `Socket.Unix.peerCredentials` (plans/eco-system-sockets.md §D.3): both ends of a Unix domain
 connection made by this program see this program's process id (the `$PPID` of a shell it runs:
 `/proc/self` is Linux-only), user id and group id
-(those of a directory it created); a TCP connection fails with `EINVAL`.
+(those of a directory it created); a TCP connection fails with kind
+`InvalidInput` (`EINVAL`).
 -}
 
 -- CHECK: client side: pid True uid True gid True
 -- CHECK: server side: pid True uid True gid True
--- CHECK: tcp: EINVAL
+-- CHECK: tcp: InvalidInput
 -- EXIT: 0
 
+import ErrorNames
 import ProcessTestHelp exposing (bytesToString, noShell)
 import Socket
 import Socket.Unix
@@ -102,7 +104,7 @@ main =
                                             (\c ->
                                                 Socket.Unix.peerCredentials c
                                                     |> Task.map (\_ -> "ok?!")
-                                                    |> Task.onError (\e -> Task.succeed (Socket.errorCode e))
+                                                    |> Task.onError (\e -> Task.succeed (ErrorNames.socketError e))
                                                     |> Task.andThen (\r -> Socket.close c |> Task.map (\_ -> r))
                                             )
                                         |> Task.andThen (\r -> H.socketErr (Socket.closeListener listener) |> Task.map (\_ -> r))

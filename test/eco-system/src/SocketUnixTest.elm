@@ -8,9 +8,11 @@ module SocketUnixTest exposing (main)
     path; the client's remote is the path and its local the empty path;
   - `closeListener` removes the socket file;
   - `removeExisting` replaces a stale socket (a hard link to a closed listener's socket file) and
-    refuses a regular file (`EADDRINUSE`), as does a listen without it;
-  - connecting to a missing path fails `ENOENT`; a 200-byte path fails `ENAMETOOLONG` before any
-    system call, for connect and for listen.
+    refuses a regular file (`AddressInUse`, `EADDRINUSE`), as does a listen without it;
+  - a path that fails as a file path would is `AddressPathFailed` with the file-system kind:
+    connecting to a missing path fails `AddressPathFailed NoSuchFileOrDirectory` (`ENOENT`); a
+    200-byte path fails `AddressPathFailed PathTooLong` (`ENAMETOOLONG`) before any system call,
+    for connect and for listen.
 
 -}
 
@@ -21,17 +23,18 @@ module SocketUnixTest exposing (main)
 -- CHECK: server remote: unix ""
 -- CHECK: client remote is the path: True
 -- CHECK: client local: unix ""
--- CHECK: socket file after close: ENOENT
--- CHECK: stale without removeExisting: EADDRINUSE
+-- CHECK: socket file after close: NoSuchFileOrDirectory
+-- CHECK: stale without removeExisting: AddressInUse
 -- CHECK: stale with removeExisting: ok
--- CHECK: regular file with removeExisting: EADDRINUSE
--- CHECK: missing path: ENOENT
--- CHECK: long path connect: ENAMETOOLONG
--- CHECK: long path listen: ENAMETOOLONG
+-- CHECK: regular file with removeExisting: AddressInUse
+-- CHECK: missing path: AddressPathFailed NoSuchFileOrDirectory
+-- CHECK: long path connect: AddressPathFailed PathTooLong
+-- CHECK: long path listen: AddressPathFailed PathTooLong
 -- EXIT: 0
 
 import Bytes exposing (Bytes)
 import ChildProcess as P
+import ErrorNames
 import FileSystem as File
 import Path exposing (Path)
 import Socket
@@ -82,7 +85,7 @@ codeOf : Task Socket.Error Socket.Listener -> Task x String
 codeOf task =
     task
         |> Task.andThen (\l -> Socket.closeListener l |> Task.map (\_ -> "ok"))
-        |> Task.onError (\e -> Task.succeed (Socket.errorCode e))
+        |> Task.onError (\e -> Task.succeed (ErrorNames.socketError e))
 
 
 echo : Path -> Task String (List String)
@@ -121,7 +124,7 @@ echo path =
                                 |> Task.andThen
                                     (\( reply, got, ( c, s ) ) ->
                                         H.socketErr (Socket.closeListener listener)
-                                            |> Task.andThen (\_ -> File.metadata { resolveLink = False } path |> Task.map (\_ -> "still there") |> Task.onError (\e -> Task.succeed (File.errorCode e)))
+                                            |> Task.andThen (\_ -> File.metadata { resolveLink = False } path |> Task.map (\_ -> "still there") |> Task.onError (\e -> Task.succeed (ErrorNames.fileError e)))
                                             |> Task.map
                                                 (\after ->
                                                     [ "permissions: " ++ perms

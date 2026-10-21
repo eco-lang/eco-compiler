@@ -17,6 +17,7 @@ later read sees it closed.
 
 import Dict
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Json.Decode as D
@@ -44,7 +45,7 @@ main =
                 |> Task.andThen
                     (\source ->
                         Http.Stream.task
-                            { method = "PUT"
+                            { method = Http.Method.PUT
                             , headers = []
                             , url = H.url server "/anything"
                             , body = Http.Stream.streamBody "text/plain" source

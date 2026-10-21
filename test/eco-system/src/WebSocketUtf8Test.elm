@@ -7,12 +7,12 @@ more); a sequence cut by the end of the message fails too, while a character spl
 fragments is fine; an invalid close reason fails with 1007.
 -}
 
--- CHECK: invalid text: server Cancelled: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData "invalid UTF-8 in a text message" clean False | raw close 1007
--- CHECK: fail fast: server Cancelled: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData
--- CHECK: fail at next fragment: server Cancelled: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData
--- CHECK: cut at the end: server Cancelled: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData
+-- CHECK: invalid text: server Failed: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData "invalid UTF-8 in a text message" clean False | raw close 1007
+-- CHECK: fail fast: server Failed: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData
+-- CHECK: fail at next fragment: server Failed: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData
+-- CHECK: cut at the end: server Failed: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message | InvalidData
 -- CHECK: split character: server got Text "𝄞é" then Closed | Normal "" clean True | raw close 1000 ""
--- CHECK: invalid close reason: server Cancelled: ERR_WS_INVALID_DATA: the close reason is not valid UTF-8 | InvalidData "the close reason is not valid UTF-8" clean False | raw close 1007
+-- CHECK: invalid close reason: server Failed: ERR_WS_INVALID_DATA: the close reason is not valid UTF-8 | InvalidData "the close reason is not valid UTF-8" clean False | raw close 1007
 -- EXIT: 0
 
 import Bytes exposing (Bytes)

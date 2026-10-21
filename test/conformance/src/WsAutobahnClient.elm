@@ -93,12 +93,12 @@ run stdout options =
             (\_ ->
                 connect options ("/updateReports?agent=" ++ options.agent)
                     |> Task.andThen WebSocket.awaitClose
-                    |> Task.mapError Socket.errorToString
+                    |> Task.mapError WebSocket.errorToString
             )
         |> Task.andThen (\_ -> Stream.logLine "ws-autobahn-client: reports updated" stdout)
 
 
-connect : Options -> String -> Task Socket.Error (WebSocket.WebSocket WebSocket.Whole)
+connect : Options -> String -> Task WebSocket.Error (WebSocket.WebSocket WebSocket.Whole)
 connect options path =
     let
         d =
@@ -121,7 +121,7 @@ connect options path =
 caseCount : Options -> Task String Int
 caseCount options =
     connect options "/getCaseCount"
-        |> Task.mapError Socket.errorToString
+        |> Task.mapError WebSocket.errorToString
         |> Task.andThen
             (\ws ->
                 Stream.read (WebSocket.readable ws)

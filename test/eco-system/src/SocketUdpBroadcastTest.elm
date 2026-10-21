@@ -1,15 +1,16 @@
 module SocketUdpBroadcastTest exposing (main)
 
 {-| Broadcast needs the `broadcast` bind option (plans/eco-system-sockets.md §3.3.7, SF17): a send
-to `127.255.255.255` from a socket bound without it fails with `EACCES`
-(`errorIsPermissionDenied`); with it the send succeeds. macOS loopback (`lo0`) has no broadcast
+to `127.255.255.255` from a socket bound without it fails with kind
+`PermissionDenied` (`EACCES`); with it the send succeeds. macOS loopback (`lo0`) has no broadcast
 address, so there the send is plain unicast that succeeds either way, reported as `n/a on Darwin`.
 -}
 
--- CHECK: without broadcast: {{(err EACCES denied True|n/a on Darwin)}}
+-- CHECK: without broadcast: {{(err PermissionDenied|n/a on Darwin)}}
 -- CHECK: with broadcast: ok
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Udp
@@ -46,8 +47,7 @@ main =
                                         |> Task.map (\_ -> "ok")
                                         |> Task.onError
                                             (\e ->
-                                                Task.succeed
-                                                    ("err " ++ Socket.errorCode e ++ " denied " ++ H.boolString (Socket.errorIsPermissionDenied e))
+                                                Task.succeed ("err " ++ ErrorNames.socketError e)
                                             )
                                     )
                                         |> Task.andThen

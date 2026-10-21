@@ -17,7 +17,7 @@ out per byte in, 6.6 MB in all, sent in 65 KB frames).
 (DEFLATE cannot reach the ratio of "1 KiB to 1 GiB"; its ceiling is about 1 032:1.)
 -}
 
--- CHECK: whole: end Cancelled: ERR_WS_MESSAGE_TOO_BIG; closed MessageTooBig "the message is larger than maxMessageSize" clean False; raw client got close 1009; bounded True
+-- CHECK: whole: end Failed: ERR_WS_MESSAGE_TOO_BIG; closed MessageTooBig "the message is larger than maxMessageSize" clean False; raw client got close 1009; bounded True
 -- CHECK: streamed: stalled bounded True; after cancel bounded True; next Text "after"; end Closed
 -- EXIT: 0
 

@@ -17,6 +17,7 @@ module HttpStreamUploadErrorTest exposing (main)
 
 import Bytes exposing (Bytes)
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Process
@@ -30,7 +31,7 @@ import TestServerConfig
 upload : TestServerConfig.Server -> Stream.Readable Bytes -> Task x String
 upload server source =
     Http.Stream.task
-        { method = "POST"
+        { method = Http.Method.POST
         , headers = []
         , url = H.url server "/anything"
         , body = Http.Stream.streamBody "text/plain" source

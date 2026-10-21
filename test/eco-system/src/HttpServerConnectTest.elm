@@ -12,6 +12,7 @@ after the request are never parsed or tunnelled.
 -- CHECK: client: connect: closed
 -- EXIT: 0
 
+import Http.Method
 import Http.Server as Server
 import HttpServerRawHelp as H
 import Task exposing (Task)
@@ -19,12 +20,27 @@ import Task exposing (Task)
 
 handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
-    ( [ Server.methodToString request.method
+    ( [ Http.Method.toString request.method
             ++ " upgrade "
-            ++ (request.upgrade |> Maybe.map ((++) "Just ") |> Maybe.withDefault "Nothing")
+            ++ upgradeString request.upgrade
       ]
     , H.Now (response |> Server.setBody "no tunnel")
     )
+
+
+{-| `Nothing`, `Just WebSocketUpgrade` or `Just (UnknownUpgrade <token>)`.
+-}
+upgradeString : Maybe Server.Upgrade -> String
+upgradeString upgrade =
+    case upgrade of
+        Nothing ->
+            "Nothing"
+
+        Just Server.WebSocketUpgrade ->
+            "Just WebSocketUpgrade"
+
+        Just (Server.UnknownUpgrade token) ->
+            "Just (UnknownUpgrade " ++ token ++ ")"
 
 
 crlf : String

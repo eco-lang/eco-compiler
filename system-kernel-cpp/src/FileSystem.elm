@@ -6,8 +6,7 @@ effect module FileSystem where { subscription = MySub } exposing
     , hardLink, softLink, readLink, unlink
     , WatchEvent(..), watch, watchRecursive
     , homeDirectory, currentWorkingDirectory, tempDirectory, devNull
-    , Error, errorPath, errorCode, errorToString
-    , errorIsPermissionDenied, errorIsFileExists, errorIsDirectoryFound, errorIsTooManyOpenFiles, errorIsNoSuchFileOrDirectory, errorIsNotADirectory, errorIsDirectoryNotEmpty, errorIsNotPermitted, errorIsLinkLoop, errorIsPathTooLong, errorIsInvalidInput, errorIsIO
+    , Error, ErrorKind(..), errorKind, errorPath, errorToString, fromStreamFailure
     )
 
 {-| A program needs to read, write and manage the files, directories and links it names, and this
@@ -33,13 +32,14 @@ first. [makeTempDirectory](#makeTempDirectory) succeeds with the directory it cr
 [writeFileStream](#writeFileStream) and [writeFileStreamWith](#writeFileStreamWith) succeed with
 a stream instead.
 
-A task here that fails, fails with an [Error](#Error), which carries the path it concerns, a
-code and a message. For the two-path functions that path is the first one as well;
-[errorPath](#errorPath) gives the full rule.
+A task here that fails, fails with an [Error](#Error), which carries the path it concerns, the
+kind of failure ([ErrorKind](#ErrorKind)) and a message. For the two-path functions that path is
+the first one as well; [errorPath](#errorPath) gives the full rule.
 
 [readFileStream](#readFileStream) and [writeFileStream](#writeFileStream) hand the file over as
 a stream. They open the file before the task succeeds, so a file that cannot be opened fails the
-task with an `Error`. After that, failures arrive on the stream as a `Stream.Error`, as the
+task with an `Error`. After that, a failure of the file arrives on the stream as
+`Stream.Failed`, and [fromStreamFailure](#fromStreamFailure) reads it back as an `Error`, as the
 [Stream](Stream) module describes.
 
 Two kinds of write ask more than [writeFile](#writeFile) gives, and [WriteOptions](#WriteOptions)
@@ -51,8 +51,8 @@ path.
 While a subscription to a path that could be watched exists, it keeps the program running.
 
 On the native backend under Windows the file system is not supported: every task here that can
-fail fails with the code `"ENOTSUP"`, and a watch subscription stops the program with a fatal
-error.
+fail fails with [NotSupported](#ErrorKind), and a watch subscription stops the program with a
+fatal error.
 
 
 ## Metadata
@@ -92,8 +92,7 @@ error.
 
 ## Errors
 
-@docs Error, errorPath, errorCode, errorToString
-@docs errorIsPermissionDenied, errorIsFileExists, errorIsDirectoryFound, errorIsTooManyOpenFiles, errorIsNoSuchFileOrDirectory, errorIsNotADirectory, errorIsDirectoryNotEmpty, errorIsNotPermitted, errorIsLinkLoop, errorIsPathTooLong, errorIsInvalidInput, errorIsIO
+@docs Error, ErrorKind, errorKind, errorPath, errorToString, fromStreamFailure
 
 -}
 
@@ -114,18 +113,165 @@ import Time
 -- ERRORS
 
 
-{-| A failed file system operation: the path it concerned, a code naming the kind of failure,
-and a message describing it.
+{-| A failed file system operation: the path it concerned, the kind of failure, and a message
+describing it.
 
-The three parts are read with [errorPath](#errorPath), [errorCode](#errorCode) and
-[errorToString](#errorToString), and the `errorIs*` functions test the code. Which code a
-failure gets can depend on the operating system. An `Error` is not interchangeable with
-`Socket.Error` or `Stream.Error`. Only the tasks of this module and of
-[FileSystem.Handle](FileSystem-Handle) make one.
+The three parts are read with [errorPath](#errorPath), [errorKind](#errorKind) and
+[errorToString](#errorToString). Which kind a failure gets can depend on the operating system. An
+`Error` is not interchangeable with `Socket.Error` or `Stream.Error`. Only the tasks of this
+module and of [FileSystem.Handle](FileSystem-Handle) make one, and
+[fromStreamFailure](#fromStreamFailure) reads one back from a file stream's failure.
 
 -}
 type alias Error =
     FileSystem.Internal.Error
+
+
+{-| What kind of failure an [Error](#Error) is.
+
+Each kind names what went wrong rather than how the operating system spelled it. The codes in
+parentheses are the ones each kind stands for, errno names except where noted; they are what
+`errorToString` mentions and what a search of the operating system's documentation finds.
+
+  - `NoSuchFileOrDirectory` (`ENOENT`): the entity, or a directory on its path, does not exist.
+  - `FileExists` (`EEXIST`): something already exists at a path that had to be new, as for an
+    exclusive write (see [WriteOptions](#WriteOptions)), a link path that is taken, or a
+    non-recursive [makeDirectory](#makeDirectory) of a directory that exists.
+  - `DirectoryFound` (`EISDIR`): a directory was found where a file was needed, as when
+    [readFile](#readFile), [readFileStream](#readFileStream) or [copyFile](#copyFile) is given a
+    directory.
+  - `DirectoryRemoveNotRecursive` (Node's `ERR_FS_EISDIR`): a [remove](#remove) with
+    `recursive = False` was given a directory. It is a separate kind from `DirectoryFound`,
+    because removing the directory is possible: with `recursive = True`.
+  - `NotADirectory` (`ENOTDIR`): an entry that had to be a directory, either the path itself or
+    an entry on it, is something else.
+  - `DirectoryNotEmpty` (`ENOTEMPTY`): a directory that had to be empty is not.
+  - `PermissionDenied` (`EACCES`): access permissions, of the entity or of a directory on its
+    path, refused the operation.
+  - `NotPermitted` (`EPERM`): the operation needs a privilege the program does not have, such as
+    changing the owner of a file it does not own.
+  - `TooManyOpenFiles` (`EMFILE`, `ENFILE`): the program, or the whole system, has as many files
+    open as it is allowed.
+  - `LinkLoop` (`ELOOP`): resolving the path followed too many symbolic links, as happens when
+    links form a loop.
+  - `PathTooLong` (`ENAMETOOLONG`): the path, or an entry on it, is too long.
+  - `InvalidInput` (`EINVAL`): an argument was not valid for the operation, as when
+    [readLink](#readLink) is given a path that is not a symbolic link.
+  - `IOError` (`EIO`): a low-level input or output error, such as a failing storage device.
+  - `NotSupported` (`ENOTSUP`, `EOPNOTSUPP`): the operation is not supported here, as for every
+    task of this module on the native backend under Windows.
+  - `CrossDevice` (`EXDEV`): the operation cannot cross from one file system to another, as when
+    [move](#move) is given paths on two different file systems.
+  - `HandleClosed` (`EBADF`): a [FileSystem.Handle](FileSystem-Handle) was used after it was
+    closed.
+  - `NoSpace` (`ENOSPC`, `EDQUOT`): the storage device is full, or the user's quota is used up.
+  - `ReadOnlyFileSystem` (`EROFS`): the operation would change a file system that is mounted
+    read-only.
+  - `OtherFileSystemError code` is any other failure, with the code as the backend reported it,
+    such as `"EBUSY"`. The two backends do not always report the same code for the same
+    failure, so a program should not depend on the text.
+
+-}
+type ErrorKind
+    = NoSuchFileOrDirectory
+    | FileExists
+    | DirectoryFound
+    | DirectoryRemoveNotRecursive
+    | NotADirectory
+    | DirectoryNotEmpty
+    | PermissionDenied
+    | NotPermitted
+    | TooManyOpenFiles
+    | LinkLoop
+    | PathTooLong
+    | InvalidInput
+    | IOError
+    | NotSupported
+    | CrossDevice
+    | HandleClosed
+    | NoSpace
+    | ReadOnlyFileSystem
+    | OtherFileSystemError String
+
+
+{-| Returns the kind of failure an error is.
+
+    case FileSystem.errorKind error of
+        FileSystem.NoSuchFileOrDirectory ->
+            Task.succeed defaultConfig
+
+        _ ->
+            Task.fail error
+
+-}
+errorKind : Error -> ErrorKind
+errorKind (FileSystem.Internal.Error e) =
+    case e.code of
+        "ENOENT" ->
+            NoSuchFileOrDirectory
+
+        "EEXIST" ->
+            FileExists
+
+        "EISDIR" ->
+            DirectoryFound
+
+        "ERR_FS_EISDIR" ->
+            DirectoryRemoveNotRecursive
+
+        "ENOTDIR" ->
+            NotADirectory
+
+        "ENOTEMPTY" ->
+            DirectoryNotEmpty
+
+        "EACCES" ->
+            PermissionDenied
+
+        "EPERM" ->
+            NotPermitted
+
+        "EMFILE" ->
+            TooManyOpenFiles
+
+        "ENFILE" ->
+            TooManyOpenFiles
+
+        "ELOOP" ->
+            LinkLoop
+
+        "ENAMETOOLONG" ->
+            PathTooLong
+
+        "EINVAL" ->
+            InvalidInput
+
+        "EIO" ->
+            IOError
+
+        "ENOTSUP" ->
+            NotSupported
+
+        "EOPNOTSUPP" ->
+            NotSupported
+
+        "EXDEV" ->
+            CrossDevice
+
+        "EBADF" ->
+            HandleClosed
+
+        "ENOSPC" ->
+            NoSpace
+
+        "EDQUOT" ->
+            NoSpace
+
+        "EROFS" ->
+            ReadOnlyFileSystem
+
+        code ->
+            OtherFileSystemError code
 
 
 {-| Returns the path an error concerns.
@@ -137,7 +283,8 @@ first path, the destination or new link, even when the failure was about the sou
 appended, without the random characters, which is not the path of any directory it created.
 
 For an operation on an open [FileSystem.Handle](FileSystem-Handle) it is
-[Path.empty](Path#empty).
+[Path.empty](Path#empty), and so is it for an error read back by
+[fromStreamFailure](#fromStreamFailure).
 
 -}
 errorPath : Error -> Path
@@ -149,26 +296,11 @@ errorPath error =
     path
 
 
-{-| Returns the code naming the kind of failure.
+{-| Returns the error's message as the kernel gave it, with no path added.
 
-It is usually the operating system's errno name, such as `"ENOENT"`. A non-recursive
-[remove](#remove) of a directory reports `"ERR_FS_EISDIR"`, so
-[errorIsDirectoryFound](#errorIsDirectoryFound) is `False` in that case.
-
--}
-errorCode : Error -> String
-errorCode error =
-    let
-        (FileSystem.Internal.Error { code }) =
-            error
-    in
-    code
-
-
-{-| Returns the error's message as the kernel gave it, with no code or path added.
-
-The message usually begins with the code, as in `"ENOENT: no such file or directory, open '/x'"`.
-The message for `"ERR_FS_EISDIR"` does not: it is
+The message usually begins with the operating system's code for the failure, as in
+`"ENOENT: no such file or directory, open '/x'"`. The message for a
+[DirectoryRemoveNotRecursive](#ErrorKind) failure does not: it is
 `"Path is a directory: rm returned EISDIR (is a directory) /x"`.
 
 -}
@@ -181,99 +313,38 @@ errorToString error =
     message
 
 
-{-| Checks whether the code is `"EACCES"`: access permissions, of the entity or of a directory on
-its path, refused the operation.
+{-| Reads back the failure of a file stream as an `Error`, or returns `Nothing` for a failure that
+a stream of this module did not report.
+
+A stream from [readFileStream](#readFileStream), [writeFileStream](#writeFileStream) or
+[writeFileStreamWith](#writeFileStreamWith) that fails because of its file, for example a read
+error from a failing device or a write to a full one, fails a read or write with
+`Stream.Failed failure`:
+
+    case streamError of
+        Stream.Failed failure ->
+            case FileSystem.fromStreamFailure failure of
+                Just error ->
+                    -- FileSystem.errorKind error is, for example, FileSystem.NoSpace
+                    reportFileError error
+
+                Nothing ->
+                    reportOther (Stream.failureToString failure)
+
+        _ ->
+            reportOther (Stream.errorToString streamError)
+
+The error's [errorPath](#errorPath) is [Path.empty](Path#empty): the stream does not carry its
+file's path.
+
 -}
-errorIsPermissionDenied : Error -> Bool
-errorIsPermissionDenied error =
-    errorCode error == "EACCES"
+fromStreamFailure : Stream.Failure -> Maybe Error
+fromStreamFailure (Stream.Internal.Failure f) =
+    if f.origin == "file" then
+        Just (FileSystem.Internal.decodeError Path.empty ( f.code, f.message ))
 
-
-{-| Checks whether the code is `"EEXIST"`: something already exists at a path that had to be new,
-as for an exclusive write (see [WriteOptions](#WriteOptions)) or a link path that is taken.
--}
-errorIsFileExists : Error -> Bool
-errorIsFileExists error =
-    errorCode error == "EEXIST"
-
-
-{-| Checks whether the code is `"EISDIR"`: a directory was found where a file was needed, as when
-[readFile](#readFile), [readFileStream](#readFileStream) or [copyFile](#copyFile) is given a
-directory. A non-recursive [remove](#remove) of a directory reports `"ERR_FS_EISDIR"` instead, for
-which this is `False`.
--}
-errorIsDirectoryFound : Error -> Bool
-errorIsDirectoryFound error =
-    errorCode error == "EISDIR"
-
-
-{-| Checks whether the code is `"EMFILE"`: the program has as many files open as it is allowed.
--}
-errorIsTooManyOpenFiles : Error -> Bool
-errorIsTooManyOpenFiles error =
-    errorCode error == "EMFILE"
-
-
-{-| Checks whether the code is `"ENOENT"`: the entity, or a directory on its path, does not exist.
--}
-errorIsNoSuchFileOrDirectory : Error -> Bool
-errorIsNoSuchFileOrDirectory error =
-    errorCode error == "ENOENT"
-
-
-{-| Checks whether the code is `"ENOTDIR"`: an entry that had to be a directory, either the path
-itself or an entry on it, is something else.
--}
-errorIsNotADirectory : Error -> Bool
-errorIsNotADirectory error =
-    errorCode error == "ENOTDIR"
-
-
-{-| Checks whether the code is `"ENOTEMPTY"`: a directory that had to be empty is not.
--}
-errorIsDirectoryNotEmpty : Error -> Bool
-errorIsDirectoryNotEmpty error =
-    errorCode error == "ENOTEMPTY"
-
-
-{-| Checks whether the code is `"EPERM"`: the operation needs a privilege the program does not have,
-such as changing the owner of a file it does not own.
--}
-errorIsNotPermitted : Error -> Bool
-errorIsNotPermitted error =
-    errorCode error == "EPERM"
-
-
-{-| Checks whether the code is `"ELOOP"`: resolving the path followed too many symbolic links, as
-happens when links form a loop.
--}
-errorIsLinkLoop : Error -> Bool
-errorIsLinkLoop error =
-    errorCode error == "ELOOP"
-
-
-{-| Checks whether the code is `"ENAMETOOLONG"`: the path, or an entry on it, is too long.
--}
-errorIsPathTooLong : Error -> Bool
-errorIsPathTooLong error =
-    errorCode error == "ENAMETOOLONG"
-
-
-{-| Checks whether the code is `"EINVAL"`: an argument was not valid for the operation, as when
-[readLink](#readLink) is given a path that is not a symbolic link.
--}
-errorIsInvalidInput : Error -> Bool
-errorIsInvalidInput error =
-    errorCode error == "EINVAL"
-
-
-{-| Checks whether the code is `"EIO"`: a low-level input or output error, such as a failing
-storage device.
--}
-errorIsIO : Error -> Bool
-errorIsIO error =
-    errorCode error == "EIO"
-
+    else
+        Nothing
 
 
 -- METADATA
@@ -443,7 +514,7 @@ changeTimes options path =
 
 The task succeeds with the new path. If it fails, [errorPath](#errorPath) is the new path. This
 is the operating system's rename and nothing more, so a move to another file system fails
-(`"EXDEV"`) rather than copying.
+with [CrossDevice](#ErrorKind) rather than copying.
 
 -}
 move : Path -> Path -> Task Error Path
@@ -472,7 +543,7 @@ realPath path =
     copyFile destinationPath sourcePath
 
 An existing file at the destination is overwritten, and the copy gets the source's mode. A
-directory as the source fails with `"EISDIR"` before the destination is touched. The task
+directory as the source fails with [DirectoryFound](#ErrorKind) before the destination is touched. The task
 succeeds with the destination path, and if it fails, [errorPath](#errorPath) is the destination
 path.
 
@@ -528,8 +599,9 @@ type ReadFileStreamMode
 {-| Opens the file at the path and returns a stream of its bytes, the ones `mode` selects.
 
 The file is opened before the task succeeds, so a file that cannot be opened, such as a missing
-file or a directory (`"EISDIR"`), fails this task with an [Error](#Error). Failures while reading
-arrive on the stream as a `Stream.Error`.
+file ([NoSuchFileOrDirectory](#ErrorKind)) or a directory ([DirectoryFound](#ErrorKind)), fails
+this task with an [Error](#Error). A failure of the file while reading arrives on the stream as
+`Stream.Failed`, which [fromStreamFailure](#fromStreamFailure) reads back as an `Error`.
 
 -}
 readFileStream : ReadFileStreamMode -> Path -> Task Error (Stream.Readable Bytes)
@@ -588,7 +660,8 @@ type WriteFileStreamMode
 says. Close the stream when you are done writing to it.
 
 The file is opened before the task succeeds, so a file that cannot be opened fails this task with
-an [Error](#Error). Failures while writing arrive on the stream as a `Stream.Error`.
+an [Error](#Error). A failure of the file while writing arrives on the stream as `Stream.Failed`,
+which [fromStreamFailure](#fromStreamFailure) reads back as an `Error`.
 
 This is [writeFileStreamWith](#writeFileStreamWith) with
 [defaultWriteOptions](#defaultWriteOptions).
@@ -602,8 +675,8 @@ writeFileStream =
 {-| What [writeFileWith](#writeFileWith) and [writeFileStreamWith](#writeFileStreamWith) ask of a
 write beyond what [writeFile](#writeFile) does.
 
-`createNew` makes the write exclusive. The file is created, and the task fails with `"EEXIST"`
-([errorIsFileExists](#errorIsFileExists)) if anything already exists at the path. The operating
+`createNew` makes the write exclusive. The file is created, and the task fails with
+[FileExists](#ErrorKind) if anything already exists at the path. The operating
 system checks and creates in one step (`O_EXCL`), so of two programs creating the same file at
 most one succeeds.
 
@@ -637,8 +710,8 @@ defaultWriteOptions =
 
     FileSystem.writeFileWith { defaultWriteOptions | createNew = True, sync = True } bytes path
 
-With either option on, the file is opened (emptying an existing one, or failing with `"EEXIST"`
-for `createNew`), written from the beginning, flushed for `sync`, and closed. If a step after the
+With either option on, the file is opened (emptying an existing one, or failing with
+[FileExists](#ErrorKind) for `createNew`), written from the beginning, flushed for `sync`, and closed. If a step after the
 open fails, closing the file is still attempted, and the first failure is the one reported.
 
 -}
@@ -733,8 +806,7 @@ truncateFile length path =
 
 A symbolic link is removed itself, not the entity it points to. A directory is removed only with
 `recursive = True`, and then together with everything in it. With `recursive = False` it fails
-with the code `"ERR_FS_EISDIR"`, for which [errorIsDirectoryFound](#errorIsDirectoryFound) is
-`False`.
+with [DirectoryRemoveNotRecursive](#ErrorKind), not [DirectoryFound](#ErrorKind).
 
 -}
 remove : { recursive : Bool } -> Path -> Task Error Path
@@ -774,8 +846,8 @@ listDirectory path =
 
 {-| Creates a directory at the path.
 
-With `recursive = False` the parent directory must exist, and the task fails with `"EEXIST"` if
-something is already at the path. With `recursive = True` every missing directory on the path is
+With `recursive = False` the parent directory must exist, and the task fails with [FileExists](#ErrorKind)
+if something is already at the path. With `recursive = True` every missing directory on the path is
 created too, and a directory already at the path is not an error.
 
 -}

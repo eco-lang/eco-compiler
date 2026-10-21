@@ -20,6 +20,7 @@
         "Socket.Udp",
         "Socket.Tls",
         "WebSocket",
+        "Http.Method",
         "Http.Server",
         "Http.Stream",
         "Html.Dom"

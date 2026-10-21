@@ -83,6 +83,15 @@ public:
     // request with ECANCELED and release the resource. Idempotent.
     virtual void shutdown() = 0;
 
+    // The stream failure reason (Core.hpp, failureReason) for a failed
+    // result: `err` and the result's `reason` ("" when the channel has none).
+    // Main thread (the stream table calls it when it fails the stream). The
+    // default keeps a marked reason, describes `err` when there is no reason,
+    // and otherwise wraps the reason, all under failureOrigin().
+    virtual std::string encodeFailure(int err, const std::string& reason) const;
+    // The origin a failure of this channel's resource is reported under.
+    virtual const char* failureOrigin() const { return "stream"; }
+
 protected:
     ByteChannel();   // main thread: assigns the id, ensures the drain source
 

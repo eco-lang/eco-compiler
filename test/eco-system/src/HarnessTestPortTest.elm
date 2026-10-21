@@ -11,6 +11,7 @@ on it.
 -- CHECK: listen: ok
 -- EXIT: 0
 
+import ErrorNames
 import Dict
 import Http.Server as Server
 import HttpServerTestHelp as Help
@@ -34,7 +35,7 @@ main =
                             in
                             Server.listenOnHost "127.0.0.1" (Maybe.withDefault 0 port_)
                                 |> Task.map (\_ -> "ok")
-                                |> Task.onError (\e -> Task.succeed (Server.errorCode e))
+                                |> Task.onError (\e -> Task.succeed (ErrorNames.serverKind (Server.errorKind e)))
                                 |> Task.andThen
                                     (\listen ->
                                         Stream.logLine

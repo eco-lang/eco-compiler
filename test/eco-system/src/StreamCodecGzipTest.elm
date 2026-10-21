@@ -7,7 +7,7 @@ module StreamCodecGzipTest exposing (main)
     chunks, decompresses to the same text with all three decompressors;
   - the text written as one 1 MiB chunk round-trips through each compressor
     and its decompressor (the compressed output arrives in several chunks);
-  - corrupt input and a truncated stream cancel both streams.
+  - corrupt input and a truncated stream fail both streams (`Stream.Failed`).
 
 -}
 
@@ -18,8 +18,8 @@ module StreamCodecGzipTest exposing (main)
 -- CHECK: deflate round trip: True
 -- CHECK: raw round trip: True
 -- CHECK: gzip compresses: True
--- CHECK: corrupt: err Cancelled: incorrect header check
--- CHECK: truncated: err Cancelled: Unexpected end of compressed data.
+-- CHECK: corrupt: err Failed: incorrect header check
+-- CHECK: truncated: err Failed: Unexpected end of compressed data.
 -- EXIT: 0
 
 import Bytes exposing (Bytes)

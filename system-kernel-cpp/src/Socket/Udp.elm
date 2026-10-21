@@ -44,8 +44,9 @@ datagram sent to the group's address and a port can reach each of them that is b
 port. [`joinMulticast`](#joinMulticast) and [`leaveMulticast`](#leaveMulticast) manage a
 socket's membership.
 
-Failures are [`Socket.Error`](Socket#Error) values, classified with that module's predicates.
-On native Windows, UDP is not supported: `bind` fails with `ENOTSUP`, and an `onMessage`
+Failures are [`Socket.Error`](Socket#Error) values, whose
+[`Socket.ErrorKind`](Socket#ErrorKind) says what went wrong. On native Windows, UDP is not
+supported: `bind` fails with [`Socket.NotSupported`](Socket#ErrorKind), and an `onMessage`
 subscription is a fatal error.
 
 
@@ -83,7 +84,7 @@ import Task exposing (Task)
 {-| A UDP socket bound to a local address and port, made by [`bind`](#bind).
 
 The socket stays open until it is closed with [`close`](#close). On a closed socket, `send`, `receive`, `joinMulticast` and `leaveMulticast`
-fail with `ECANCELED`, and `close` does nothing.
+fail with [`Socket.Cancelled`](Socket#ErrorKind), and `close` does nothing.
 
 -}
 type alias Socket =
@@ -116,7 +117,7 @@ port, which [`localEndpoint`](#localEndpoint) then reports. The unspecified addr
 (`SO_REUSEADDR`), for example several receivers of one multicast group on one machine.
 
 `broadcast` allows sending to a broadcast address (`SO_BROADCAST`). Without it the operating
-system refuses such a send, with `EACCES` on Linux.
+system refuses such a send, with [`Socket.PermissionDenied`](Socket#ErrorKind) on Linux.
 
 `ipv6Only` matters only for an IPv6 address. When it is `False`, a socket bound to the
 unspecified IPv6 address also exchanges datagrams with IPv4 endpoints, which it sees as
@@ -147,8 +148,9 @@ defaultBindOptions address port_ =
 
 {-| Creates a UDP socket bound to the address and port the options name.
 
-Fails, for example, with `EADDRINUSE` ([`Socket.errorIsAddressInUse`](Socket#errorIsAddressInUse))
-when another socket already has that address and port.
+Fails, for example, with [`Socket.AddressInUse`](Socket#ErrorKind) when another socket already
+has that address and port, or with [`Socket.AddressNotAvailable`](Socket#ErrorKind) for an
+address that does not belong to this machine.
 
 -}
 bind : BindOptions -> Task Socket.Error Socket
@@ -172,7 +174,8 @@ localEndpoint (Internal.UdpSocket s) =
 
 {-| Closes the socket.
 
-Waiting [`receive`](#receive) tasks, and sends still waiting to go out, fail with `ECANCELED`,
+Waiting [`receive`](#receive) tasks, and sends still waiting to go out, fail with
+[`Socket.Cancelled`](Socket#ErrorKind),
 and held datagrams are dropped. Closing a socket that is already closed does nothing.
 
 -}
@@ -191,11 +194,12 @@ close (Internal.UdpSocket s) =
 The task succeeds once the operating system has accepted the datagram, which does not mean that
 it arrived.
 
-An IPv6 destination on an IPv4 socket fails with `EAFNOSUPPORT`. An IPv4 destination on an IPv6
-socket is sent to its IPv4-mapped address, which works only when the socket was bound with
-`ipv6Only = False`; otherwise the send fails with the operating system's error. A datagram too
-large for the operating system to send fails, usually with `EMSGSIZE`; over IPv4 no datagram can
-carry more than 65 507 bytes.
+An IPv6 destination on an IPv4 socket fails with
+[`Socket.AddressNotAvailable`](Socket#ErrorKind). An IPv4 destination on an IPv6 socket is sent
+to its IPv4-mapped address, which works only when the socket was bound with `ipv6Only = False`;
+otherwise the send fails with the operating system's error. A datagram too large for the
+operating system to send fails, usually with [`Socket.MessageTooLarge`](Socket#ErrorKind); over
+IPv4 no datagram can carry more than 65 507 bytes.
 
 -}
 send : InetEndpoint -> Bytes -> Socket -> Task Socket.Error ()
@@ -210,8 +214,8 @@ A held datagram, the oldest first, is returned at once. Otherwise the task waits
 datagram goes to the oldest waiting `receive` before any [`onMessage`](#onMessage) subscription
 sees it.
 
-Fails with `ECANCELED` ([`Socket.errorIsCancelled`](Socket#errorIsCancelled)) when the socket is
-closed while the task waits, and at once on a socket that is already closed.
+Fails with [`Socket.Cancelled`](Socket#ErrorKind) when the socket is closed while the task
+waits, and at once on a socket that is already closed.
 
 -}
 receive : Socket -> Task Socket.Error Datagram
@@ -253,7 +257,7 @@ system chooses, so that the socket can receive the datagrams sent to the group a
 bound to.
 
 The interface is given as an address of the group's family; one of the other family fails with
-`EINVAL`. For IPv4 it is an address of the interface. For IPv6 it is the address's scope that
+[`Socket.InvalidInput`](Socket#ErrorKind). For IPv4 it is an address of the interface. For IPv6 it is the address's scope that
 names the interface, by name or by index, and the address bits are ignored, so `"::%lo"` names
 the interface `lo`. With `Nothing`, an IPv6 group's own scope, if it has one, names the
 interface instead. An IPv6 interface address with no scope leaves the choice to the operating

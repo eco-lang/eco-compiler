@@ -8,7 +8,7 @@ effect module WebSocket where { subscription = MySub } exposing
     , Upgrade, receiveUpgrade, upgradeTarget, upgradeHeaders, upgradeProtocols, upgradeOrigin
     , upgradeRemote, AcceptOptions, ServerCompression, defaultAcceptOptions
     , accept, acceptStreamed, reject
-    , errorIsHandshakeFailed, errorHandshakeStatus
+    , Error(..), errorToString, fromStreamFailure
     )
 
 {-| A WebSocket (RFC 6455) is a full-duplex connection that carries messages rather than bytes
@@ -55,11 +55,12 @@ and closes the connection without waiting for an answer. And the network connect
 be lost. [`awaitClose`](#awaitClose) and [`onClose`](#onClose) report how a connection ended, as
 a [`CloseInfo`](#CloseInfo).
 
-The tasks of this module that can fail fail with a [`Socket.Error`](Socket#Error), which
-`Socket`'s predicates and [`errorIsHandshakeFailed`](#errorIsHandshakeFailed) classify. Once a
-connection is open, a failure of the connection itself arrives on its streams instead, as the
-[`Stream`](Stream) module describes: a read of [`readable`](#readable) fails with
-`Stream.Cancelled` and a reason such as `"ERR_WS_PROTOCOL: <details>"`.
+The tasks of this module that can fail fail with this module's [`Error`](#Error), which holds
+the failure of whichever layer failed: the connection underneath, TLS for `wss://`, or the
+WebSocket itself. Once a connection is open, a failure of the connection arrives on its streams
+instead, as the [`Stream`](Stream) module describes: a read of [`readable`](#readable) fails with
+`Stream.Failed`, and [`fromStreamFailure`](#fromStreamFailure) reads that failure back as an
+`Error`, such as [`ProtocolViolation`](#Error) when the peer broke the protocol.
 
 **Liveness.** By default this end checks that the peer is still there: when nothing has arrived
 for 30 seconds it sends a ping, and when still nothing at all has arrived 30 seconds later it
@@ -89,7 +90,8 @@ handshake with a host to finish before it starts another. Redirects are not foll
 status fails the handshake), and no proxy is used.
 
 On native Windows, WebSockets are not supported: connecting, receiving an opening request and
-accepting one fail with `ENOTSUP`.
+accepting one fail with [`SocketError`](#Error) of kind
+[`Socket.NotSupported`](Socket#ErrorKind).
 
 
 ## Connections
@@ -119,7 +121,7 @@ accepting one fail with `ENOTSUP`.
 
 ## Errors
 
-@docs errorIsHandshakeFailed, errorHandshakeStatus
+@docs Error, errorToString, fromStreamFailure
 
 -}
 
@@ -195,7 +197,8 @@ bytes.
 The next message is delivered only once this one's stream has been read to `Closed`, or
 cancelled with `Stream.cancelReadable`, which drops the rest of the message. When the connection
 ends or fails before the message is complete, what had arrived can still be read, and then the
-stream fails with `Cancelled`.
+stream fails with `Stream.Failed`, which [`fromStreamFailure`](#fromStreamFailure) reads as the
+[`Error`](#Error) that ended the connection.
 
 -}
 type StreamedMessage
@@ -206,10 +209,12 @@ type StreamedMessage
 {-| Returns the stream of the messages the peer sends, in order.
 
 Once the peer's Close frame has arrived, reads fail with `Closed` after the messages received
-before it. When the connection fails or is lost instead, reads fail with `Stream.Cancelled` and
-a reason, such as `"ERR_WS_PROTOCOL: <details>"`, `"ERR_WS_MESSAGE_TOO_BIG"`,
-`"heartbeat ETIMEDOUT"` or `"socket closed"`, again after the messages received before it.
-[`awaitClose`](#awaitClose) gives the close code and reason.
+before it. When the connection fails or is lost instead, reads fail with `Stream.Failed`, again
+after the messages received before it. [`fromStreamFailure`](#fromStreamFailure) reads the
+failure as an [`Error`](#Error): [`ProtocolViolation`](#Error) when the peer broke the protocol,
+[`MessageTooLarge`](#Error) for a message over `maxMessageSize`, [`HeartbeatTimedOut`](#Error)
+when the heartbeat found the peer silent, and [`SocketError`](#Error) when the connection
+underneath failed or was closed. [`awaitClose`](#awaitClose) gives the close code and reason.
 
 While the connection has an [`onMessage`](#onMessage) subscription, messages go to the
 subscription instead, and a read fails with `Locked`.
@@ -233,8 +238,7 @@ messages written or streamed before it.
 
 Closing it with `Stream.closeWritable` starts the closing handshake with `Normal` and no reason,
 as [`close`](#close) does. Cancelling it with `Stream.cancelWritable` fails the connection with
-`InternalError`. Once the connection is closing or has ended, writes fail with
-`Stream.Cancelled`.
+`InternalError`. Once the connection is closing or has ended, writes fail with `Stream.Closed`.
 
 -}
 writable : WebSocket mode -> Stream.Writable Message
@@ -254,12 +258,13 @@ sends an empty message.
 
 If `source` fails after part of the message has gone out, the message cannot be completed and
 the connection fails with `InternalError`; if nothing of it has gone out yet, nothing is sent.
-Either way the task fails with `ECANCELED`. It fails with `EBUSY` when `source` is locked, and
-with `ECANCELED` when the connection is closing or has ended, or ends before the message is
-complete.
+Either way the task fails with [`SocketError`](#Error) of kind
+[`Socket.Cancelled`](Socket#ErrorKind). It fails with `SocketError` of kind
+[`Socket.Busy`](Socket#ErrorKind) when `source` is locked, and of kind `Socket.Cancelled` when
+the connection is closing or has ended, or ends before the message is complete.
 
 -}
-sendText : Stream.Readable String -> WebSocket mode -> Task Socket.Error ()
+sendText : Stream.Readable String -> WebSocket mode -> Task Error ()
 sendText =
     sendStream 1
 
@@ -267,7 +272,7 @@ sendText =
 {-| Sends one binary message whose content is read from `source` as it arrives, exactly as
 [`sendText`](#sendText) does for text.
 -}
-sendBinary : Stream.Readable Bytes -> WebSocket mode -> Task Socket.Error ()
+sendBinary : Stream.Readable Bytes -> WebSocket mode -> Task Error ()
 sendBinary =
     sendStream 2
 
@@ -275,10 +280,10 @@ sendBinary =
 {-| Sends one message of kernel kind `kind` (1 text, 2 binary) whose content is piped from
 `source` into a new outgoing message stream, as [`sendText`](#sendText) describes.
 -}
-sendStream : Int -> Stream.Readable a -> WebSocket mode -> Task Socket.Error ()
+sendStream : Int -> Stream.Readable a -> WebSocket mode -> Task Error ()
 sendStream kind source (Internal.WebSocket ws) =
     kOpenOutgoing ws.id kind
-        |> Task.mapError Socket.Internal.toError
+        |> Task.mapError (Socket.Internal.toError >> fromSocketError)
         |> Task.andThen
             (\sink ->
                 Stream.pipeTo (Stream.Internal.Writable sink) source
@@ -293,20 +298,25 @@ sendStream kind source (Internal.WebSocket ws) =
             )
 
 
-{-| Returns the `Socket.Error` for a failed pipe: `ECANCELED` with the reason for `Cancelled`,
-`ECANCELED` with `"socket closed"` for `Closed`, and `EBUSY` for `Locked`.
+{-| Returns the `Error` for a failed pipe: a `SocketError` of kind `Cancelled` (`ECANCELED`)
+with the reason for `Cancelled`, and with `"socket closed"` for `Closed`; of kind `Busy`
+(`EBUSY`) for `Locked`; and for `Failed`, the failure as `fromStreamFailure` reads it.
 -}
-streamError : Stream.Error -> Socket.Error
+streamError : Stream.Error -> Error
 streamError error =
     case error of
         Stream.Cancelled reason ->
-            Socket.Internal.Error { code = "ECANCELED", message = reason }
+            SocketError (Socket.Internal.error "ECANCELED" reason)
 
         Stream.Closed ->
-            Socket.Internal.Error { code = "ECANCELED", message = "socket closed" }
+            SocketError (Socket.Internal.error "ECANCELED" "socket closed")
 
         Stream.Locked ->
-            Socket.Internal.Error { code = "EBUSY", message = "the stream is locked" }
+            SocketError (Socket.Internal.error "EBUSY" "the stream is locked")
+
+        Stream.Failed failure ->
+            fromStreamFailure failure
+                |> Maybe.withDefault (SocketError (Socket.Internal.error "ECANCELED" (Stream.failureToString failure)))
 
 
 {-| Returns the subprotocol the handshake agreed on (`Sec-WebSocket-Protocol`), or `Nothing`
@@ -315,6 +325,193 @@ when it agreed none.
 protocol : WebSocket mode -> Maybe String
 protocol (Internal.WebSocket ws) =
     ws.protocol
+
+
+{-| Why a WebSocket task failed, or why a connection's message streams failed.
+
+A WebSocket runs on layers: a connection, TLS for a `wss://` URL, and the WebSocket protocol
+itself. Each layer's own failure appears here once, at the same depth, whichever URL scheme was
+used:
+
+| Failure | `ws://` | `wss://` |
+|---|---|---|
+| The connection: refused, reset, timed out, host not found | `SocketError` | `SocketError` |
+| TLS: certificate rejected, handshake failed | (cannot happen) | `TlsError` |
+| The opening handshake | `HandshakeRefused`, `HandshakeFailed` | `HandshakeRefused`, `HandshakeFailed` |
+
+So a refused connection is `SocketError` with kind
+[`Socket.ConnectionRefused`](Socket#ErrorKind) for both schemes, and one pattern handles it.
+
+  - `SocketError`: the connection underneath failed, or a task was refused at the socket level,
+    for example with kind [`Socket.InvalidInput`](Socket#ErrorKind) for an invalid argument,
+    [`Socket.Busy`](Socket#ErrorKind) for a locked stream or [`Socket.Cancelled`](Socket#ErrorKind)
+    for a connection that is closing or has ended.
+  - `TlsError`: the TLS of a `wss://` connection failed, for example
+    [`Socket.Tls.CertificateRejected`](Socket-Tls#Problem). A peer that goes away during the TLS
+    handshake is a `SocketError`, since only failures made by TLS itself are a `TlsError`.
+    [`Socket.Tls.CertificateUnusable`](Socket-Tls#Problem) means the `TrustedCertificates` of the
+    connection's `verification` hold no certificate that can be read.
+  - `HandshakeRefused status`: the server answered the opening request with an HTTP `status`
+    other than 101, or other than 2xx over HTTP/2, for example `HandshakeRefused 403`.
+  - `HandshakeFailed`: the opening handshake failed for any other reason. A client gets it when
+    the server's answer has missing or wrong handshake headers or a subprotocol or extension
+    that was not offered, is not HTTP, or never comes because the server closes the connection.
+    A server gets it from [`receiveUpgrade`](#receiveUpgrade) and [`accept`](#accept) when the
+    client's request is not HTTP or not a valid opening request, or the client closes the
+    connection before sending one.
+  - `HeartbeatTimedOut`: the [`Heartbeat`](#Heartbeat) found the peer silent and failed the
+    connection.
+  - `MessageTooLarge`: the peer sent a message larger than the `maxMessageSize` of the
+    connection's options, and the connection was failed with the close code `MessageTooBig`.
+  - `ProtocolViolation details`: the peer broke the WebSocket protocol, for example with an
+    invalid frame, and the connection was failed; `details` says how.
+
+The tasks of this module, and `Http.Server.upgradeRequest`, fail with `SocketError`, `TlsError`,
+`HandshakeRefused` and `HandshakeFailed`. A connection's message streams fail with `Stream.Failed`,
+which [`fromStreamFailure`](#fromStreamFailure) reads as `SocketError`, `HeartbeatTimedOut`,
+`MessageTooLarge` or `ProtocolViolation`. One type covers both, so a program can handle them in
+one place, at the cost that each can hold cases the other never produces.
+
+-}
+type Error
+    = SocketError Socket.Error
+    | TlsError Socket.Tls.Problem
+    | HandshakeRefused Int
+    | HandshakeFailed
+    | HeartbeatTimedOut
+    | MessageTooLarge
+    | ProtocolViolation String
+
+
+{-| Returns a description of the error for people to read. A `SocketError` or a `TlsError` is
+described as [`Socket.errorToString`](Socket#errorToString) and
+[`Socket.Tls.errorToString`](Socket-Tls#errorToString) describe it, and the others by what
+happened, such as `"handshake refused with status 403"`.
+-}
+errorToString : Error -> String
+errorToString error =
+    case error of
+        SocketError e ->
+            Socket.errorToString e
+
+        TlsError problem ->
+            Socket.Tls.errorToString (Socket.Tls.TlsError problem)
+
+        HandshakeRefused status ->
+            "handshake refused with status " ++ String.fromInt status
+
+        HandshakeFailed ->
+            "the opening handshake failed"
+
+        HeartbeatTimedOut ->
+            "the heartbeat timed out: the peer stopped answering"
+
+        MessageTooLarge ->
+            "the peer sent a message larger than maxMessageSize"
+
+        ProtocolViolation details ->
+            "the peer broke the WebSocket protocol: " ++ details
+
+
+{-| Reads a stream failure of a WebSocket's message streams, from [`readable`](#readable),
+[`readableStreamed`](#readableStreamed) or a [`StreamedMessage`](#StreamedMessage), as an
+[`Error`](#Error). Returns `Nothing` for a failure that another module's stream made.
+
+    case streamError of
+        Stream.Failed failure ->
+            case WebSocket.fromStreamFailure failure of
+                Just WebSocket.HeartbeatTimedOut ->
+                    ...
+
+                _ ->
+                    ...
+
+        _ ->
+            ...
+
+The result is `SocketError` when the connection underneath failed or was closed,
+`HeartbeatTimedOut`, `MessageTooLarge` or `ProtocolViolation` when this end failed the connection,
+and `TlsError` when the TLS of a `wss://` connection failed after the handshake.
+
+-}
+fromStreamFailure : Stream.Failure -> Maybe Error
+fromStreamFailure ((Stream.Internal.Failure f) as failure) =
+    case f.origin of
+        "websocket" ->
+            Just
+                (case f.code of
+                    "ECO_WS_HEARTBEAT" ->
+                        HeartbeatTimedOut
+
+                    "ERR_WS_MESSAGE_TOO_BIG" ->
+                        MessageTooLarge
+
+                    _ ->
+                        ProtocolViolation (afterCode f.message)
+                )
+
+        "socket" ->
+            Just (SocketError (Socket.Internal.error f.code f.message))
+
+        "tls" ->
+            Socket.Tls.fromStreamFailure failure
+                |> Maybe.map fromTlsError
+
+        _ ->
+            Nothing
+
+
+{-| The text of a WebSocket failure's message after its `"ERR_WS_<X>: "` code, or all of it.
+-}
+afterCode : String -> String
+afterCode message =
+    case String.indices ": " message of
+        i :: _ ->
+            String.dropLeft (i + 2) message
+
+        [] ->
+            message
+
+
+{-| Converts a `Socket.Tls.Error` case for case: a `wss://` connection's TLS failure.
+-}
+fromTlsError : Socket.Tls.Error -> Error
+fromTlsError error =
+    case error of
+        Socket.Tls.SocketError e ->
+            SocketError e
+
+        Socket.Tls.TlsError problem ->
+            TlsError problem
+
+
+{-| Sorts a failure this module's tasks met, as the kernels and the code here report it, into an
+`Error`. An `ERR_WS_HANDSHAKE` is `HandshakeRefused` with the status when its message carries one
+(`Internal.handshakeErrorPrefix`), and `HandshakeFailed` otherwise. A TLS code is a `TlsError`, as
+`Socket.Tls` sorts it, and any other code a `SocketError`.
+-}
+fromSocketError : Socket.Error -> Error
+fromSocketError ((Socket.Internal.Error e) as error) =
+    if e.code == "ERR_WS_HANDSHAKE" then
+        if String.startsWith Internal.handshakeErrorPrefix e.message then
+            e.message
+                |> String.dropLeft (String.length Internal.handshakeErrorPrefix)
+                |> String.split ":"
+                |> List.head
+                |> Maybe.andThen String.toInt
+                |> Maybe.map HandshakeRefused
+                |> Maybe.withDefault HandshakeFailed
+
+        else
+            HandshakeFailed
+
+    else
+        case Socket.Tls.fromStreamFailure (Stream.Internal.failure "tls" e.code e.message) of
+            Just (Socket.Tls.TlsError problem) ->
+                TlsError problem
+
+            _ ->
+                SocketError error
 
 
 {-| Returns the permessage-deflate settings the handshake agreed on, or `Nothing` when it agreed
@@ -394,17 +591,18 @@ onClose (Internal.WebSocket ws) toMsg =
 
 {-| Sends a ping and waits for its pong, giving the round trip time in milliseconds.
 
-Fails with `ECANCELED` when the connection is closing or has ended, or ends before the pong
-arrives, and with `ETIMEDOUT` when no pong arrives within the heartbeat's `timeout` (30 seconds
-when `heartbeat` is `Nothing` or its `timeout` is 0 or less). While the connection has
+Fails with [`SocketError`](#Error) of kind [`Socket.Cancelled`](Socket#ErrorKind) when the
+connection is closing or has ended, or ends before the pong arrives, and of kind
+[`Socket.TimedOut`](Socket#ErrorKind) when no pong arrives within the heartbeat's `timeout` (30
+seconds when `heartbeat` is `Nothing` or its `timeout` is 0 or less). While the connection has
 stopped reading because messages wait unread, that wait is suspended, and it starts again when
 reading resumes. A pong also answers every earlier ping still waiting.
 
 -}
-ping : WebSocket mode -> Task Socket.Error Int
+ping : WebSocket mode -> Task Error Int
 ping (Internal.WebSocket ws) =
     kPing ws.id
-        |> Task.mapError Socket.Internal.toError
+        |> Task.mapError (Socket.Internal.toError >> fromSocketError)
 
 
 {-| Starts the closing handshake with `code` and `reason`: the messages already written or being
@@ -416,15 +614,16 @@ connection ends when the peer's Close frame arrives, or 30 seconds after this en
 closing if it does not, which is reported as `Abnormal`.
 
 From then on, messages that arrive are dropped (a streamed message being received fails with
-`Cancelled`), and writes to [`writable`](#writable) fail.
+`Stream.Failed`), and writes to [`writable`](#writable) fail with `Stream.Closed`.
 
-Fails with `EINVAL` for a code that cannot be sent: only 1000 to 1003, 1007 to 1014 and 3000 to
-4999 can, so `NoStatus`, `Abnormal`, and `Other` with a code outside those ranges cannot.
+Fails with [`SocketError`](#Error) of kind [`Socket.InvalidInput`](Socket#ErrorKind) for a code
+that cannot be sent: only 1000 to 1003, 1007 to 1014 and 3000 to 4999 can, so `NoStatus`,
+`Abnormal`, and `Other` with a code outside those ranges cannot.
 Closing a connection that is closing or has ended, with a code that can be sent, succeeds and
 sends nothing more.
 
 -}
-close : CloseCode -> String -> WebSocket mode -> Task Socket.Error ()
+close : CloseCode -> String -> WebSocket mode -> Task Error ()
 close code reason (Internal.WebSocket ws) =
     let
         n =
@@ -436,10 +635,10 @@ close code reason (Internal.WebSocket ws) =
 
     else
         Task.fail
-            (Socket.Internal.Error
-                { code = "EINVAL"
-                , message = "close: the close code " ++ String.fromInt n ++ " cannot be sent"
-                }
+            (SocketError
+                (Socket.Internal.error "EINVAL"
+                    ("close: the close code " ++ String.fromInt n ++ " cannot be sent")
+                )
             )
 
 
@@ -510,7 +709,8 @@ type alias CloseInfo =
 When nothing has arrived from the peer for `interval`, a ping is sent. If nothing at all
 arrives within a further `timeout`, the connection is failed: a Close frame with `GoingAway` is
 sent, the connection is closed, its end is reported as `Abnormal`, and reads fail with
-`"heartbeat ETIMEDOUT"`. Anything received counts, not only the pong. While the connection has
+`Stream.Failed`, which [`fromStreamFailure`](#fromStreamFailure) reads as
+[`HeartbeatTimedOut`](#Error). Anything received counts, not only the pong. While the connection has
 stopped reading because messages wait unread, the check is suspended.
 
 An `interval` of 0 or less turns the check off, as `heartbeat = Nothing` does, while a `timeout`
@@ -774,24 +974,34 @@ A host name is looked up first; an address written in the URL is used as it is. 
 are tried in order until a connection is made, and the opening handshake then runs on that
 connection. When no connection can be made, the error of the last address tried is reported.
 
-Fails with `EINVAL` for an invalid URL, header or subprotocol; with the errors of
-[`Socket.lookup`](Socket#lookup); with the socket and TLS errors of connecting; with `ETIMEDOUT`
-when the `timeout` runs out; and with `ERR_WS_HANDSHAKE`
-([`errorIsHandshakeFailed`](#errorIsHandshakeFailed)) when the server's answer is not an
-acceptable opening handshake, in which case
-[`errorHandshakeStatus`](#errorHandshakeStatus) gives the HTTP status when that was the problem.
+Fails with:
+
+  - [`SocketError`](#Error) of kind [`Socket.InvalidInput`](Socket#ErrorKind) for an invalid
+    URL, header or subprotocol;
+  - `SocketError` with the errors of [`Socket.lookup`](Socket#lookup), such as
+    [`Socket.HostNotFound`](Socket#ErrorKind), and of connecting, such as
+    [`Socket.ConnectionRefused`](Socket#ErrorKind);
+  - [`TlsError`](#Error) when the TLS of a `wss://` connection fails, for example
+    [`Socket.Tls.CertificateRejected`](Socket-Tls#Problem) when the server's certificate is
+    rejected;
+  - `SocketError` of kind [`Socket.TimedOut`](Socket#ErrorKind) when the `timeout` runs out;
+  - [`HandshakeRefused status`](#Error) when the server answers with an HTTP status other than
+    101 (over HTTP/2, other than 2xx), and [`HandshakeFailed`](#Error) when its answer is not an
+    acceptable opening handshake for another reason.
 
 -}
-connect : ConnectOptions -> Task Socket.Error (WebSocket Whole)
-connect =
-    connectWith 1 fromWire
+connect : ConnectOptions -> Task Error (WebSocket Whole)
+connect options =
+    connectWith 1 fromWire options
+        |> Task.mapError fromSocketError
 
 
 {-| Opens a connection in the streamed mode; everything else is as for [`connect`](#connect).
 -}
-connectStreamed : ConnectOptions -> Task Socket.Error (WebSocket Streamed)
-connectStreamed =
-    connectWith 2 fromWireStreamed
+connectStreamed : ConnectOptions -> Task Error (WebSocket Streamed)
+connectStreamed options =
+    connectWith 2 fromWireStreamed options
+        |> Task.mapError fromSocketError
 
 
 {-| Opens a client connection in kernel mode `mode` (1 whole, 2 streamed), where `decode` turns a
@@ -975,7 +1185,7 @@ flatten headers =
 -}
 einval : String -> Socket.Error
 einval text =
-    Socket.Internal.Error { code = "EINVAL", message = text }
+    Socket.Internal.error "EINVAL" text
 
 
 
@@ -996,25 +1206,28 @@ type alias Upgrade =
 {-| Reads a client's opening request from `connection`, a connection a server accepted, such as
 one from a `Socket.Tcp.listen` or `Socket.Tls.listen` listener.
 
-The connection is taken over: from then on its streams fail with
-`Stream.Cancelled "upgraded to WebSocket"`, and bytes the client sent right behind its request
-are kept for the WebSocket. The request is only read as HTTP here; whether it is a valid opening
-request is checked by [`accept`](#accept).
+The connection is taken over: from then on its streams fail with `Stream.Failed`, which
+[`Socket.fromStreamFailure`](Socket#fromStreamFailure) reads as kind
+[`Socket.ConnectionTakenOver`](Socket#ErrorKind), and bytes the client sent right behind its
+request are kept for the WebSocket. The request is only read as HTTP here; whether it is a valid
+opening request is checked by [`accept`](#accept).
 
-Fails with `EBUSY` while a read or write is waiting on the connection's streams or when the
-connection has already been taken over, and with `ECANCELED` when the connection, or its
-writable, has been closed; these leave the connection as it is. Otherwise it fails with
-`ETIMEDOUT` when the request has not arrived within 30 seconds; with `ERR_WS_HANDSHAKE` when what
-the client sends is not an HTTP request or has a head over 64 KiB (both answered with 400), or
-the client closes the connection before sending a request; and with the connection's own error
-when reading fails. After any of these the connection is closed.
+Fails with [`SocketError`](#Error) of kind [`Socket.Busy`](Socket#ErrorKind) while a read or
+write is waiting on the connection's streams or when the connection has already been taken over,
+and of kind [`Socket.Cancelled`](Socket#ErrorKind) when the connection, or its writable, has been
+closed; these leave the connection as it is. Otherwise it fails with `SocketError` of kind
+[`Socket.TimedOut`](Socket#ErrorKind) when the request has not arrived within 30 seconds; with
+[`HandshakeFailed`](#Error) when what the client sends is not an HTTP request or has a head over
+64 KiB (both answered with 400), or the client closes the connection before sending a request;
+and with `SocketError` holding the connection's own error when reading fails. After any of these
+the connection is closed.
 
 -}
-receiveUpgrade : Socket.Connection -> Task Socket.Error Upgrade
+receiveUpgrade : Socket.Connection -> Task Error Upgrade
 receiveUpgrade (Socket.Internal.Connection c) =
     kReadUpgrade c.id 30000
         |> Task.map (Internal.toUpgrade kAcceptFor)
-        |> Task.mapError Socket.Internal.toError
+        |> Task.mapError (Socket.Internal.toError >> fromSocketError)
 
 
 {-| Returns the request target, the path and the query, for example `"/chat?room=1"`, as the
@@ -1122,23 +1335,26 @@ and a valid `Sec-WebSocket-Key`; over HTTP/2 an extended `CONNECT` with
 `Sec-WebSocket-Version: 13`. Its subprotocols must be HTTP tokens and its extensions well
 formed. The checks are made in that order, and the first that fails decides the answer: 426,
 with `Sec-WebSocket-Version: 13`, for the version, and 400 for any other. The task then fails
-with `ERR_WS_HANDSHAKE`.
+with [`HandshakeFailed`](#Error).
 
-A `protocol` the client did not offer, or a refused header in `headers`, fails with `EINVAL` and
-leaves the request unanswered. Accepting an `Upgrade` that has already been answered fails.
+A `protocol` the client did not offer, or a refused header in `headers`, fails with
+[`SocketError`](#Error) of kind [`Socket.InvalidInput`](Socket#ErrorKind) and leaves the request
+unanswered. Accepting an `Upgrade` that has already been answered fails.
 
 -}
-accept : AcceptOptions -> Upgrade -> Task Socket.Error (WebSocket Whole)
-accept =
-    acceptWith 1 fromWire
+accept : AcceptOptions -> Upgrade -> Task Error (WebSocket Whole)
+accept options upgrade =
+    acceptWith 1 fromWire options upgrade
+        |> Task.mapError fromSocketError
 
 
 {-| Accepts an opening request in the streamed mode; everything else is as for
 [`accept`](#accept).
 -}
-acceptStreamed : AcceptOptions -> Upgrade -> Task Socket.Error (WebSocket Streamed)
-acceptStreamed =
-    acceptWith 2 fromWireStreamed
+acceptStreamed : AcceptOptions -> Upgrade -> Task Error (WebSocket Streamed)
+acceptStreamed options upgrade =
+    acceptWith 2 fromWireStreamed options upgrade
+        |> Task.mapError fromSocketError
 
 
 {-| Accepts `upgrade` in kernel mode `mode` (1 whole, 2 streamed), where `decode` turns a
@@ -1227,39 +1443,6 @@ reject status headers body (Internal.Upgrade up) =
 
 
 -- ERRORS
-
-
-{-| Returns `True` when the error is a failed opening handshake (`ERR_WS_HANDSHAKE`).
-
-A client gets it from [`connect`](#connect) when the server's answer is not an acceptable
-opening handshake (a wrong status, missing or wrong handshake headers, or a subprotocol or
-extension that was not offered), is not HTTP, or never comes because the server closes the
-connection. A server gets it from [`receiveUpgrade`](#receiveUpgrade) and [`accept`](#accept)
-when the client's request is not HTTP or not a valid opening request, or the client closes the
-connection before sending one.
-
--}
-errorIsHandshakeFailed : Socket.Error -> Bool
-errorIsHandshakeFailed error =
-    Socket.errorCode error == "ERR_WS_HANDSHAKE"
-
-
-{-| Returns the HTTP status with which a server refused a client's opening request, for example
-`Just 403`: the status of an answer that was not 101, or not 2xx over HTTP/2. Returns `Nothing`
-for every other error, including handshakes that failed for another reason.
--}
-errorHandshakeStatus : Socket.Error -> Maybe Int
-errorHandshakeStatus ((Socket.Internal.Error e) as error) =
-    if errorIsHandshakeFailed error && String.startsWith Internal.handshakeErrorPrefix e.message then
-        e.message
-            |> String.dropLeft (String.length Internal.handshakeErrorPrefix)
-            |> String.split ":"
-            |> List.head
-            |> Maybe.andThen String.toInt
-
-    else
-        Nothing
-
 
 
 -- WIRE VALUES

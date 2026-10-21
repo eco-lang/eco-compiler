@@ -201,7 +201,7 @@ update msg model =
             ( model, fail model.stderr ("ws-echo-server: " ++ problem) )
 
         Received request response ->
-            if request.upgrade == Just "websocket" then
+            if request.upgrade == Just Server.WebSocketUpgrade then
                 ( model
                 , Server.upgradeRequest request response
                     |> Task.andThen (WebSocket.accept (acceptOptions model.options))

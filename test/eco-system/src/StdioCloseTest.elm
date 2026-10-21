@@ -2,15 +2,15 @@ module StdioCloseTest exposing (main)
 
 {-| Closing an FdSink (plans/eco-system-library.md §3.4, §3.5): `enqueue`d and
 written bytes all reach fd 1 before `closeWritable env.stdout` succeeds; later
-writes fail with `Cancelled`. fd 1 itself is never closed, so stderr (and the
+writes fail with `Closed`. fd 1 itself is never closed, so stderr (and the
 process) keep working.
 -}
 
 -- CHECK: enqueued line
 -- CHECK: written line
 -- CHECK: close: ok
--- CHECK: write after close: err Cancelled: WritableStream is closed
--- CHECK: close again: err Cancelled: WritableStream is closed
+-- CHECK: write after close: err Closed
+-- CHECK: close again: err Closed
 -- EXIT: 0
 
 import Bytes

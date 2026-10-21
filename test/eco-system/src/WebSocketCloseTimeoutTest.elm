@@ -8,7 +8,7 @@ Close to a raw server that never answers it; 30 seconds later the connection is 
 -- CHECK: close: ok
 -- CHECK: raw server got: close 1000 "bye"
 -- CHECK: closed: Abnormal "" clean False after the timeout True
--- CHECK: readable: Cancelled: socket closed
+-- CHECK: readable: Failed: socket closed
 -- EXIT: 0
 
 import Socket

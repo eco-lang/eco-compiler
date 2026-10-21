@@ -14,6 +14,7 @@ text.
 import Bytes exposing (Bytes)
 import Dict
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
@@ -42,7 +43,7 @@ main =
                     GotServer server ->
                         ( env
                         , Http.Stream.request
-                            { method = "GET"
+                            { method = Http.Method.GET
                             , headers = []
                             , url = H.url server "/status/404"
                             , body = Http.Stream.emptyBody

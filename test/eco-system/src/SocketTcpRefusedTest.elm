@@ -1,15 +1,15 @@
 module SocketTcpRefusedTest exposing (main)
 
 {-| Connecting to a port nobody listens on (the harness's free `ECO_TEST_PORT`) fails with
-`ECONNREFUSED` (plans/eco-system-sockets.md §D.5): `errorIsConnectionRefused` holds and the
-message names the address, as Node's does.
+kind `ConnectionRefused` (`ECONNREFUSED`, plans/eco-system-sockets.md §D.5), and the message
+names the address, as Node's does.
 -}
 
--- CHECK: code: ECONNREFUSED
--- CHECK: refused: True
+-- CHECK: kind: ConnectionRefused
 -- CHECK: message: ECONNREFUSED: connect ECONNREFUSED 127.0.0.1:{{[0-9]+}}
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
@@ -30,8 +30,7 @@ main =
                             |> Task.onError
                                 (\e ->
                                     Task.succeed
-                                        [ "code: " ++ Socket.errorCode e
-                                        , "refused: " ++ H.boolString (Socket.errorIsConnectionRefused e)
+                                        [ "kind: " ++ ErrorNames.socketError e
                                         , "message: " ++ Socket.errorToString e
                                         ]
                                 )

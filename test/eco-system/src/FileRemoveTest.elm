@@ -2,27 +2,28 @@ module FileRemoveTest exposing (main)
 
 {-| `FileSystem.remove` and `unlink` (plans/eco-system-library.md Phase 4
 step 4.6, Appendix E.3): removing a directory without `recursive` fails with
-node's code `ERR_FS_EISDIR` (so `errorIsDirectoryFound` is False), recursive
+node's code `ERR_FS_EISDIR` (kind `DirectoryRemoveNotRecursive`, not `DirectoryFound`), recursive
 removal deletes a whole tree, a symlink to a directory is removed as a link.
 `unlink` of a directory reports the OS errno: EISDIR on Linux, EPERM on macOS
 (both allowed by POSIX; node reports the same).
 -}
 
 -- CHECK: remove-file: ok f.txt
--- CHECK: remove-file-gone: err ENOENT @f.txt
--- CHECK: remove-dir-nonrecursive: err ERR_FS_EISDIR @d
+-- CHECK: remove-file-gone: err NoSuchFileOrDirectory @f.txt
+-- CHECK: remove-dir-nonrecursive: err DirectoryRemoveNotRecursive @d
 -- CHECK: remove-dir-flags: False Path is a directory
 -- CHECK: remove-dir-still-there: ok Directory
 -- CHECK: remove-dir-recursive: ok d
--- CHECK: remove-dir-gone: err ENOENT @d
--- CHECK: remove-missing: err ENOENT @missing
--- CHECK: remove-recursive-missing: err ENOENT @missing
+-- CHECK: remove-dir-gone: err NoSuchFileOrDirectory @d
+-- CHECK: remove-missing: err NoSuchFileOrDirectory @missing
+-- CHECK: remove-recursive-missing: err NoSuchFileOrDirectory @missing
 -- CHECK: remove-symlink-to-dir: ok [keep]
 -- CHECK: unlink: ok u.txt
--- CHECK: unlink-missing: err ENOENT @u.txt
--- CHECK: unlink-dir: err {{(EISDIR|EPERM)}} @keep
+-- CHECK: unlink-missing: err NoSuchFileOrDirectory @u.txt
+-- CHECK: unlink-dir: err {{(DirectoryFound|NotPermitted)}} @keep
 -- EXIT: 0
 
+import ErrorNames
 import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file, rawError)
 import Path
@@ -92,7 +93,7 @@ main =
                             |> label "remove-dir-nonrecursive"
                         , rawError
                             (\e ->
-                                (if File.errorIsDirectoryFound e then
+                                (if (File.errorKind e == File.DirectoryFound) then
                                     "True "
 
                                  else

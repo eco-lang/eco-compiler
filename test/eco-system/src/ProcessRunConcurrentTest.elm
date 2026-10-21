@@ -9,6 +9,7 @@ submit (`unclaimed_`) path and the per-run collectors.
 -- CHECK: results: 20 all-correct: True
 -- EXIT: 0
 
+import ErrorNames
 import ChildProcess as P
 import Dict exposing (Dict)
 import ProcessTestHelp exposing (bytesToString, noShell)
@@ -66,7 +67,7 @@ outcome result =
             ( e.exitCode, bytesToString e.stdout )
 
         Err (P.InitError e) ->
-            ( -1000, e.errorCode )
+            ( -1000, ErrorNames.startError e.error )
 
 
 correct : Int -> ( Int, String ) -> Bool

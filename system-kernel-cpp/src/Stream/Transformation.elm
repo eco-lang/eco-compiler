@@ -27,11 +27,15 @@ the writable side, after which a write waits for room, as [`Stream.write`](Strea
 describes. A [`Stream.write`](Stream#write) into a transformation succeeds once its value has
 been transformed, not once the results have been read.
 
-A transformation that fails is cancelled on both sides: results not yet read are dropped, and
-writes still waiting, later writes and a close fail with `Cancelled` and the reason, as do later
-reads, apart from bytes [`Stream.readLine`](Stream#readLine) has kept, which can still be read.
-This happens, for example, when a custom transformation's step returns `Cancel`, and when a
-decompressor fails, as each decompressor describes.
+A transformation can end early in two ways, and both act on both sides: results not yet read
+are dropped, and writes still waiting, later writes, a close and later reads fail, apart from
+bytes [`Stream.readLine`](Stream#readLine) has kept, which can still be read.
+
+  - A custom transformation whose step returns `Cancel` is cancelled, and these fail with
+    `Stream.Cancelled` and the step's reason.
+  - A decompressor that cannot go on has failed, as each decompressor describes, and these fail
+    with `Stream.Failed` and a [`Stream.Failure`](Stream#Failure) describing the problem, which
+    [`Stream.failureToString`](Stream#failureToString) reads.
 
 
 # Building Transformations
@@ -68,9 +72,9 @@ A compressor does not produce output for every value written: zlib holds data ba
 enough to emit, and writes the rest when the writable side is closed, so a reader may get nothing
 until then.
 
-A decompressor that fails cancels the transformation, with a description of the problem, as
-described above. A `write` of the value that carried the bad data fails, and a close fails when the
-compressed data was incomplete.
+A decompressor that fails ends the transformation with a `Stream.Failed` failure describing the
+problem, as described above. A `write` of the value that carried the bad data fails, and a close
+fails when the compressed data was incomplete.
 
 @docs gzip, gunzip, deflate, inflate, deflateRaw, inflateRaw
 
@@ -131,12 +135,12 @@ readers have brought the buffer back below its capacity, or, at a read capacity 
 and wait for more.
 
 `Close` ends the transformation after the values it carries. They are made readable, and once
-they and the values before them have been read, reads fail with `Closed`. Writes still waiting to
-be transformed, a close in progress, and every later write or close fail with
-`Cancelled "TransformStream has been terminated"`.
+they and the values before them have been read, reads fail with `Stream.Closed`. Writes still
+waiting to be transformed, a close in progress, and every later write or close fail with
+`Stream.Closed` too.
 
-`Cancel` cancels the transformation on both sides with the given reason, as the module
-documentation describes.
+`Cancel` cancels the transformation on both sides with the given reason, so that reads, writes
+and closes fail with `Stream.Cancelled` and that reason, as the module documentation describes.
 
 With `Close` and `Cancel`, the write of the value that produced them still succeeds.
 
@@ -236,7 +240,7 @@ textEncoder =
 {-| A task that creates a transformation from UTF-8 `Bytes` to `String`s.
 
 The bytes may be split anywhere: a character split across two chunks is decoded whole. Invalid
-bytes are replaced by the replacement character U+FFFD, rather than cancelling the transformation,
+bytes are replaced by the replacement character U+FFFD, rather than failing the transformation,
 and so is a character left incomplete when the writable side is closed. A byte order mark at the
 very start is removed.
 
@@ -271,11 +275,11 @@ deflateRaw =
 
 {-| A task that creates a transformation that decompresses gzip-format `Bytes`.
 
-The transformation is cancelled when the data cannot be decompressed, or when the writable side
-is closed before the compressed data is complete. Data after the end of the compressed data is
-treated differently by the two backends: the native backend cancels the transformation; on the
-JavaScript backend, whether such data is decompressed, ignored or cancels the transformation depends
-on the data and on how it was split into written values.
+The transformation fails, with `Stream.Failed`, when the data cannot be decompressed, or when
+the writable side is closed before the compressed data is complete. Data after the end of the
+compressed data is treated differently by the two backends: the native backend fails the
+transformation; on the JavaScript backend, whether such data is decompressed, ignored or fails
+the transformation depends on the data and on how it was split into written values.
 
 -}
 gunzip : Task x (Transformation Bytes Bytes)
@@ -285,9 +289,9 @@ gunzip =
 
 {-| A task that creates a transformation that decompresses deflate data in the zlib format.
 
-The transformation is cancelled when the data cannot be decompressed, or when the writable side
-is closed before the compressed data is complete. Data after the end of the compressed data
-cancels it on the native backend, and is ignored on the JavaScript backend.
+The transformation fails, with `Stream.Failed`, when the data cannot be decompressed, or when
+the writable side is closed before the compressed data is complete. Data after the end of the
+compressed data fails it on the native backend, and is ignored on the JavaScript backend.
 
 -}
 inflate : Task x (Transformation Bytes Bytes)
@@ -298,9 +302,9 @@ inflate =
 {-| A task that creates a transformation that decompresses raw deflate data, which has no header
 or checksum.
 
-The transformation is cancelled when the data cannot be decompressed, or when the writable side
-is closed before the compressed data is complete. Data after the end of the compressed data
-cancels it on the native backend, and is ignored on the JavaScript backend.
+The transformation fails, with `Stream.Failed`, when the data cannot be decompressed, or when
+the writable side is closed before the compressed data is complete. Data after the end of the
+compressed data fails it on the native backend, and is ignored on the JavaScript backend.
 
 -}
 inflateRaw : Task x (Transformation Bytes Bytes)

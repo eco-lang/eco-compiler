@@ -16,6 +16,7 @@ the first bytes are the server's pattern (i & 0xff).
 import Bytes exposing (Bytes)
 import Bytes.Decode as D
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
@@ -69,7 +70,7 @@ main =
                     GotServer server ->
                         ( env
                         , Http.Stream.request
-                            { method = "GET"
+                            { method = Http.Method.GET
                             , headers = []
                             , url = H.url server "/bytes/1048576"
                             , body = Http.Stream.emptyBody

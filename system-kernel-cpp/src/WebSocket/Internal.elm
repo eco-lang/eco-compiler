@@ -23,7 +23,7 @@ WebSocket table. A `WebSocket` carries that id, never the handshake's.
 Both handles are built from tuples the kernels hand over: `UpgradeArg` and `OpenArg`, whose
 endpoints are the `( kind, text, port )` tuples `Socket.Internal` calls EpTs, decoded with its
 `toEndpoint`. The module also makes `ERR_WS_HANDSHAKE` errors, and holds the prefix that marks
-one carrying an HTTP status, which `WebSocket.errorHandshakeStatus` reads the status back from, so
+one carrying an HTTP status, which `WebSocket` reads the status back from (`HandshakeRefused`), so
 that the prefix is written down in one place.
 
 `Message` and `StreamedMessage`, and the functions that turn them into the kernel's form and back,
@@ -181,7 +181,7 @@ toWebSocket protocol compression ( id, ( readableId, writableId ), ( local, remo
 
 
 {-| The text an `ERR_WS_HANDSHAKE` message made by `handshakeError` starts with when it carries
-an HTTP status, which is what `WebSocket.errorHandshakeStatus` looks for to read the status back.
+an HTTP status, which is what `WebSocket` looks for to read the status back as `HandshakeRefused`.
 -}
 handshakeErrorPrefix : String
 handshakeErrorPrefix =
@@ -197,13 +197,11 @@ not start with `handshakeErrorPrefix`.
 -}
 handshakeError : Maybe Int -> String -> Socket.Internal.Error
 handshakeError status text =
-    Socket.Internal.Error
-        { code = "ERR_WS_HANDSHAKE"
-        , message =
-            case status of
-                Just s ->
-                    handshakeErrorPrefix ++ String.fromInt s ++ ": " ++ text
+    Socket.Internal.error "ERR_WS_HANDSHAKE"
+        (case status of
+            Just s ->
+                handshakeErrorPrefix ++ String.fromInt s ++ ": " ++ text
 
-                Nothing ->
-                    text
-        }
+            Nothing ->
+                text
+        )

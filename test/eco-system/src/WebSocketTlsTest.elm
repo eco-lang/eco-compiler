@@ -27,7 +27,7 @@ main =
     H.program run
 
 
-connectTo : String -> Socket.Listener -> Socket.Tls.Verification -> Task Socket.Error (WebSocket.WebSocket WebSocket.Whole)
+connectTo : String -> Socket.Listener -> Socket.Tls.Verification -> Task WebSocket.Error (WebSocket.WebSocket WebSocket.Whole)
 connectTo host listener verification =
     WebSocket.defaultConnectOptions ("wss://" ++ host ++ ":" ++ String.fromInt (H.portOf listener) ++ "/secure")
         |> (\o -> { o | verification = verification })
@@ -69,16 +69,33 @@ untrusted listener =
             (\e ->
                 Task.succeed
                     ("untrusted: certificate-invalid "
-                        ++ H.boolString (Socket.errorIsCertificateInvalid e)
+                        ++ H.boolString
+                            (case e of
+                                WebSocket.TlsError (Socket.Tls.CertificateRejected _) ->
+                                    True
+
+                                _ ->
+                                    False
+                            )
                         ++ " handshakeFailed "
-                        ++ H.boolString (WebSocket.errorIsHandshakeFailed e)
+                        ++ H.boolString
+                            (case e of
+                                WebSocket.HandshakeFailed ->
+                                    True
+
+                                WebSocket.HandshakeRefused _ ->
+                                    True
+
+                                _ ->
+                                    False
+                            )
                     )
             )
 
 
 run : a -> Task String (List String)
 run _ =
-    H.socketErr (T.listenTls (T.server []))
+    H.tlsErr (T.listenTls (T.server []))
         |> Task.andThen
             (\listener ->
                 echoCase "wss echo" "127.0.0.1" [ W.text "secret", W.binary [ 1, 2 ] ] listener

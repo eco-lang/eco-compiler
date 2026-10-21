@@ -1,13 +1,13 @@
 module ProcessRunInitErrorTest exposing (main)
 
-{-| A program that cannot be started is an `InitError` carrying the errno name
+{-| A program that cannot be started is an `InitError` carrying its `StartError`
 and the program and arguments as given (plans/eco-system-library.md Phase 5
 step 5.4, E.4).
 -}
 
--- CHECK: missing: InitError ENOENT program=eco-no-such-program-p5 args=x,y
--- CHECK: badcwd: InitError ENOENT program=pwd args=
--- CHECK: notexec: InitError EACCES program=/dev/null args=
+-- CHECK: missing: InitError ProgramNotFound program=eco-no-such-program-p5 args=x,y
+-- CHECK: badcwd: InitError ProgramNotFound program=pwd args=
+-- CHECK: notexec: InitError PermissionDenied program=/dev/null args=
 -- EXIT: 0
 
 import ChildProcess as P

@@ -10,7 +10,7 @@ completes.
 -}
 
 -- CHECK: request: GET /ws-smoke version Http1_1 upgrade Nothing
--- CHECK: upgradeRequest: EINVAL: upgradeRequest EINVAL: the request does not ask for a WebSocket handshakeFailed False status Nothing
+-- CHECK: upgradeRequest: EINVAL: upgradeRequest EINVAL: the request does not ask for a WebSocket | SocketError InvalidInput
 -- CHECK: serverPort: True
 -- CHECK: get: 200 ok
 -- CHECK: createServerWith: ok
@@ -26,7 +26,9 @@ completes.
 -- EXIT: 0
 
 import Dict
+import ErrorNames
 import Http
+import Http.Method
 import Http.Server as Server exposing (HttpVersion(..))
 import Socket
 import Socket.Address as Address exposing (Family(..))
@@ -91,9 +93,19 @@ maybeIntString m =
             "Nothing"
 
 
-{-| One labelled outcome of a task that fails with a `Socket.Error`.
+upgradeString : Server.Upgrade -> String
+upgradeString u =
+    case u of
+        Server.WebSocketUpgrade ->
+            "WebSocketUpgrade"
+
+        Server.UnknownUpgrade token ->
+            "UnknownUpgrade " ++ token
+
+
+{-| One labelled outcome of a task that fails with a `WebSocket.Error`.
 -}
-outcome : String -> Task Socket.Error a -> Task Never String
+outcome : String -> Task WebSocket.Error a -> Task Never String
 outcome label task =
     task
         |> Task.map (\_ -> label ++ ": ok")
@@ -102,16 +114,21 @@ outcome label task =
 
 {-| Just the code for the stubs' "not implemented yet", the full text otherwise.
 -}
-errorText : Socket.Error -> String
+errorText : WebSocket.Error -> String
 errorText e =
-    if Socket.errorCode e == "ENOTSUP" then
-        "ENOTSUP"
+    case e of
+        WebSocket.SocketError se ->
+            if Socket.errorKind se == Socket.NotSupported then
+                "ENOTSUP"
 
-    else
-        Socket.errorToString e
+            else
+                WebSocket.errorToString e
+
+        _ ->
+            WebSocket.errorToString e
 
 
-connectTo : String -> Task Socket.Error (WebSocket.WebSocket WebSocket.Whole)
+connectTo : String -> Task WebSocket.Error (WebSocket.WebSocket WebSocket.Whole)
 connectTo url =
     WebSocket.connect (WebSocket.defaultConnectOptions url)
 
@@ -182,7 +199,7 @@ client port_ =
                         Task.succeed
                             (label
                                 ++ ": "
-                                ++ (if Server.errorCode e == "ENOTSUP" then
+                                ++ (if Server.errorKind e == Server.NotSupported then
                                         "ENOTSUP"
 
                                     else
@@ -247,13 +264,13 @@ main =
                         ( { model
                             | serverLines =
                                 ("request: "
-                                    ++ Server.methodToString request.method
+                                    ++ Http.Method.toString request.method
                                     ++ " "
                                     ++ request.url.path
                                     ++ " version "
                                     ++ versionString request.version
                                     ++ " upgrade "
-                                    ++ Maybe.withDefault "Nothing" (Maybe.map (\u -> "Just " ++ u) request.upgrade)
+                                    ++ Maybe.withDefault "Nothing" (Maybe.map (\u -> "Just " ++ upgradeString u) request.upgrade)
                                 )
                                     :: model.serverLines
                           }
@@ -265,10 +282,8 @@ main =
                                         Task.succeed
                                             ("upgradeRequest: "
                                                 ++ errorText e
-                                                ++ " handshakeFailed "
-                                                ++ boolString (WebSocket.errorIsHandshakeFailed e)
-                                                ++ " status "
-                                                ++ maybeIntString (WebSocket.errorHandshakeStatus e)
+                                                ++ " | "
+                                                ++ ErrorNames.webSocketError e
                                             )
                                     )
                                 |> Task.perform GotUpgrade

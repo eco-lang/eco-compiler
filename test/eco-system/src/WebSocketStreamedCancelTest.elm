@@ -7,7 +7,7 @@ then the first fragment of a text message and a Close. The server (`acceptStream
   - reads the first message's body once, then cancels it: the rest of the message is skipped and
     a read of the cancelled body gives `Closed`;
   - gets the next message whole ("next"), proving the skipped message was consumed exactly;
-  - reads the third message's first fragment, then its body fails with `Cancelled` because the
+  - reads the third message's first fragment, then its body fails with `Failed` because the
     connection closed in the middle of it, and the server's readable ends `Closed` (a clean close).
 
 -}
@@ -15,7 +15,7 @@ then the first fragment of a text message and a Close. The server (`acceptStream
 -- CHECK: first chunk: True
 -- CHECK: after cancel: Closed
 -- CHECK: next: next | Closed
--- CHECK: cut off: part | Cancelled: socket closed
+-- CHECK: cut off: part | Failed: socket closed
 -- CHECK: server end: Closed
 -- CHECK: server closed: Normal "bye" clean True
 -- CHECK: raw client got: close 1000 ""

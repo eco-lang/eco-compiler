@@ -15,6 +15,7 @@ The order of events is logged.
 
 import Bytes
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
@@ -25,7 +26,7 @@ main =
     H.program
         (\server _ ->
             Http.Stream.task
-                { method = "GET"
+                { method = Http.Method.GET
                 , headers = []
                 , url = H.url server "/drip-chunked?bytes=4096&ms=800"
                 , body = Http.Stream.emptyBody

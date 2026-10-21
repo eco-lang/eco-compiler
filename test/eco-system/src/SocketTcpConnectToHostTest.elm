@@ -3,7 +3,8 @@ module SocketTcpConnectToHostTest exposing (main)
 {-| `Socket.Tcp.connectToHost` (plans/eco-system-sockets.md §D.2): an address literal is used as
 is; a name is resolved and its addresses are tried in order, so `localhost` reaches a listener
 bound only to `127.0.0.1` even where `::1` comes first; a name that does not exist fails with a
-host-not-found error.
+host-not-found error (kind `HostNotFound`, or `HostLookupTryAgain` where the resolver cannot
+answer).
 -}
 
 -- CHECK: literal: inet 127.0.0.1
@@ -27,6 +28,19 @@ remoteOf connect =
             )
 
 
+hostNotFound : Socket.Error -> Bool
+hostNotFound e =
+    case Socket.errorKind e of
+        Socket.HostNotFound ->
+            True
+
+        Socket.HostLookupTryAgain ->
+            True
+
+        _ ->
+            False
+
+
 main : Platform.Program System.Environment () ()
 main =
     H.program
@@ -46,7 +60,7 @@ main =
                                             (\local ->
                                                 Socket.Tcp.connectToHost "no-such-host.invalid" p
                                                     |> Task.map (\_ -> "connected?!")
-                                                    |> Task.onError (\e -> Task.succeed ("host not found " ++ H.boolString (Socket.errorIsHostNotFound e)))
+                                                    |> Task.onError (\e -> Task.succeed ("host not found " ++ H.boolString (hostNotFound e)))
                                                     |> Task.andThen
                                                         (\invalid ->
                                                             H.socketErr (Socket.closeListener listener)

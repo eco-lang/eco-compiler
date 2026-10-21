@@ -15,6 +15,7 @@ may send the later requests on the first connection.
 -- EXIT: 0
 
 import Http
+import Http.Method
 import Http.Server as Server
 import HttpServerTestHelp as Help
 import System
@@ -23,7 +24,7 @@ import Task
 
 handler : Help.Handler
 handler request response =
-    ( [ Server.methodToString request.method ++ " " ++ request.url.path ]
+    ( [ Http.Method.toString request.method ++ " " ++ request.url.path ]
     , if request.url.path == "/hello" then
         response
             |> Server.setHeader "Content-Type" "text/plain"

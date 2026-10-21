@@ -3,7 +3,7 @@ import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (toArray)
 import Maybe exposing (Just, Nothing)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, toBytes)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, toBytes, withOrigin)
 */
 
 // ChildProcess — JS twin of src/eco-system/ChildProcess/ (eco/system),
@@ -396,9 +396,9 @@ var _ChildProcess_spawn = F2(function(sendExit, spec)
 					child.stdio[2] = null;
 				}
 				streams = __Maybe_Just(__Utils_Tuple3(
-					__Stream_createChannelSink(__Stream_nodeWritableChannel(child.stdin)),
-					__Stream_createChannelSource(__Stream_nodeReadableChannel(_ChildProcess_pipe(child.stdout))),
-					__Stream_createChannelSource(__Stream_nodeReadableChannel(_ChildProcess_pipe(child.stderr)))));
+					__Stream_createChannelSink(__Stream_withOrigin(__Stream_nodeWritableChannel(child.stdin), 'pipe')),
+					__Stream_createChannelSource(__Stream_withOrigin(__Stream_nodeReadableChannel(_ChildProcess_pipe(child.stdout)), 'pipe')),
+					__Stream_createChannelSource(__Stream_withOrigin(__Stream_nodeReadableChannel(_ChildProcess_pipe(child.stderr)), 'pipe'))));
 			}
 			child.on('error', function(e)
 			{

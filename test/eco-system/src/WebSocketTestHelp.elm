@@ -16,6 +16,7 @@ module WebSocketTestHelp exposing
 connections, with `frame` / `maskedFrame` building the bytes.
 -}
 
+import ErrorNames
 import Bitwise
 import Bytes exposing (Bytes)
 import Bytes.Decode as D
@@ -32,9 +33,9 @@ import Task exposing (Task)
 import WebSocket
 
 
-wsErr : Socket.Error -> String
+wsErr : WebSocket.Error -> String
 wsErr e =
-    Socket.errorToString e
+    WebSocket.errorToString e
 
 
 {-| `ws://127.0.0.1:<port><path>` of a listener.
@@ -52,21 +53,7 @@ connect listener =
 connectWith : (WebSocket.ConnectOptions -> WebSocket.ConnectOptions) -> Socket.Listener -> Task String (WebSocket.WebSocket WebSocket.Whole)
 connectWith change listener =
     WebSocket.connect (change (WebSocket.defaultConnectOptions (url listener "/test")))
-        |> Task.mapError
-            (\e ->
-                "err "
-                    ++ Socket.errorCode e
-                    ++ " status "
-                    ++ (case WebSocket.errorHandshakeStatus e of
-                            Just s ->
-                                "Just " ++ String.fromInt s
-
-                            Nothing ->
-                                "Nothing"
-                       )
-                    ++ " failed "
-                    ++ H.boolString (WebSocket.errorIsHandshakeFailed e)
-            )
+        |> Task.mapError (\e -> "err " ++ ErrorNames.webSocketError e)
 
 
 {-| Accept one connection and upgrade it with the default options.
@@ -85,8 +72,8 @@ acceptWith options listener =
 upgrade : Socket.Listener -> Task String WebSocket.Upgrade
 upgrade listener =
     Socket.accept listener
-        |> Task.andThen WebSocket.receiveUpgrade
-        |> Task.mapError wsErr
+        |> Task.mapError Socket.errorToString
+        |> Task.andThen (\conn -> WebSocket.receiveUpgrade conn |> Task.mapError wsErr)
 
 
 text : String -> WebSocket.Message
@@ -213,11 +200,14 @@ echo ws =
             )
 
 
-describe : Task Socket.Error a -> Task x String
+{-| `"ok"`, or `"err <error>"` for a failed WebSocket task, the error as
+`ErrorNames.webSocketError` prints it.
+-}
+describe : Task WebSocket.Error a -> Task x String
 describe task =
     task
         |> Task.map (\_ -> "ok")
-        |> Task.onError (\e -> Task.succeed ("err " ++ Socket.errorCode e))
+        |> Task.onError (\e -> Task.succeed ("err " ++ ErrorNames.webSocketError e))
 
 
 codeString : WebSocket.CloseCode -> String

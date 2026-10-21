@@ -55,6 +55,9 @@ endName err =
         Stream.Locked ->
             "Locked"
 
+        Stream.Failed failure ->
+            "Failed " ++ Stream.failureToString failure
+
 
 decode : Bytes -> String
 decode b =

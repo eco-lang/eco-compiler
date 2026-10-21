@@ -10,12 +10,12 @@ the destination in `errorPath`; `realPath` of a relative path is absolute.
 -- CHECK: copy-content: ok one
 -- CHECK: copy-overwrite: ok two
 -- CHECK: copy-src-unchanged: ok two
--- CHECK: copy-missing-src: err ENOENT @dst.txt
--- CHECK: copy-dir: err EISDIR @dst.txt
+-- CHECK: copy-missing-src: err NoSuchFileOrDirectory @dst.txt
+-- CHECK: copy-dir: err DirectoryFound @dst.txt
 -- CHECK: move: ok moved.txt
--- CHECK: move-old-gone: err ENOENT @src.txt
+-- CHECK: move-old-gone: err NoSuchFileOrDirectory @src.txt
 -- CHECK: move-new-content: ok two
--- CHECK: move-missing: err ENOENT @target.txt
+-- CHECK: move-missing: err NoSuchFileOrDirectory @target.txt
 -- CHECK: move-dir: ok [inner.txt]
 -- CHECK: realpath-dir: ok True
 -- EXIT: 0

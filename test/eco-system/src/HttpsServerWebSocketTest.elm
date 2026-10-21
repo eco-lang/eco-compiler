@@ -12,8 +12,8 @@ module HttpsServerWebSocketTest exposing (main)
 
 -}
 
--- CHECK: server: again /chat: EINVAL
--- CHECK: server: again /ws?x=1: EINVAL
+-- CHECK: server: again /chat: SocketError InvalidInput
+-- CHECK: server: again /ws?x=1: SocketError InvalidInput
 -- CHECK: server: echo /chat: Closed
 -- CHECK: server: echo /kept: Closed
 -- CHECK: server: echo /ws?x=1: Closed
@@ -25,7 +25,7 @@ module HttpsServerWebSocketTest exposing (main)
 -- CHECK: client: tls pipelined: frames text "early" | close 1000 ""
 -- CHECK: client: wss client: Text "hello" | Binary [1,2,3] | Normal "" clean True
 -- CHECK: client: plain while open: 200 keep-alive plain
--- CHECK: client: after closeServer: new connection ECONNREFUSED
+-- CHECK: client: after closeServer: new connection ConnectionRefused
 -- CHECK: client: after closeServer: Text "still open" | Normal "" clean True
 -- EXIT: 0
 

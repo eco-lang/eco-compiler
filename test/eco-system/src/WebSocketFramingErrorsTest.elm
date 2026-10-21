@@ -7,17 +7,17 @@ code and text (clean False), and the raw client receives our Close. A client rec
 frame from a raw server fails the same way.
 -}
 
--- CHECK: unmasked: server Cancelled: ERR_WS_PROTOCOL: an unmasked client frame | ProtocolError "an unmasked client frame" clean False | raw close 1002 "an unmasked client frame"
--- CHECK: rsv1: server Cancelled: ERR_WS_PROTOCOL: RSV1 is set without a negotiated extension | ProtocolError "RSV1 is set without a negotiated extension" clean False | raw close 1002 "RSV1 is set without a negotiated extension"
--- CHECK: rsv2: server Cancelled: ERR_WS_PROTOCOL: RSV2 or RSV3 is set | ProtocolError "RSV2 or RSV3 is set" clean False | raw close 1002 "RSV2 or RSV3 is set"
--- CHECK: reserved opcode: server Cancelled: ERR_WS_PROTOCOL: a reserved opcode | ProtocolError "a reserved opcode" clean False | raw close 1002 "a reserved opcode"
--- CHECK: long control: server Cancelled: ERR_WS_PROTOCOL: a control frame longer than 125 bytes | ProtocolError "a control frame longer than 125 bytes" clean False | raw close 1002
--- CHECK: fragmented control: server Cancelled: ERR_WS_PROTOCOL: a fragmented control frame | ProtocolError "a fragmented control frame" clean False | raw close 1002
--- CHECK: 64-bit msb: server Cancelled: ERR_WS_PROTOCOL: a 64-bit length with the most significant bit set | ProtocolError "a 64-bit length with the most significant bit set" clean False | raw close 1002
--- CHECK: lone continuation: server Cancelled: ERR_WS_PROTOCOL: a continuation frame without a message in progress | ProtocolError
--- CHECK: data inside message: server Cancelled: ERR_WS_PROTOCOL: a new data frame inside a fragmented message | ProtocolError
--- CHECK: too big: server Cancelled: ERR_WS_MESSAGE_TOO_BIG | MessageTooBig "the message is larger than maxMessageSize" clean False | raw close 1009
--- CHECK: masked server frame: client Cancelled: ERR_WS_PROTOCOL: a masked server frame | ProtocolError "a masked server frame" clean False | raw close 1002 "a masked server frame"
+-- CHECK: unmasked: server Failed: ERR_WS_PROTOCOL: an unmasked client frame | ProtocolError "an unmasked client frame" clean False | raw close 1002 "an unmasked client frame"
+-- CHECK: rsv1: server Failed: ERR_WS_PROTOCOL: RSV1 is set without a negotiated extension | ProtocolError "RSV1 is set without a negotiated extension" clean False | raw close 1002 "RSV1 is set without a negotiated extension"
+-- CHECK: rsv2: server Failed: ERR_WS_PROTOCOL: RSV2 or RSV3 is set | ProtocolError "RSV2 or RSV3 is set" clean False | raw close 1002 "RSV2 or RSV3 is set"
+-- CHECK: reserved opcode: server Failed: ERR_WS_PROTOCOL: a reserved opcode | ProtocolError "a reserved opcode" clean False | raw close 1002 "a reserved opcode"
+-- CHECK: long control: server Failed: ERR_WS_PROTOCOL: a control frame longer than 125 bytes | ProtocolError "a control frame longer than 125 bytes" clean False | raw close 1002
+-- CHECK: fragmented control: server Failed: ERR_WS_PROTOCOL: a fragmented control frame | ProtocolError "a fragmented control frame" clean False | raw close 1002
+-- CHECK: 64-bit msb: server Failed: ERR_WS_PROTOCOL: a 64-bit length with the most significant bit set | ProtocolError "a 64-bit length with the most significant bit set" clean False | raw close 1002
+-- CHECK: lone continuation: server Failed: ERR_WS_PROTOCOL: a continuation frame without a message in progress | ProtocolError
+-- CHECK: data inside message: server Failed: ERR_WS_PROTOCOL: a new data frame inside a fragmented message | ProtocolError
+-- CHECK: too big: server Failed: ERR_WS_MESSAGE_TOO_BIG | MessageTooBig "the message is larger than maxMessageSize" clean False | raw close 1009
+-- CHECK: masked server frame: client Failed: ERR_WS_PROTOCOL: a masked server frame | ProtocolError "a masked server frame" clean False | raw close 1002 "a masked server frame"
 -- EXIT: 0
 
 import Bytes exposing (Bytes)

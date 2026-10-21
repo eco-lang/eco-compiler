@@ -7,23 +7,24 @@ named `<tmpDirectory>/<prefix>XXXXXX`.
 -}
 
 -- CHECK: mkdir: ok one
--- CHECK: mkdir-exists: err EEXIST @one
+-- CHECK: mkdir-exists: err FileExists @one
 -- CHECK: mkdir-exists-flag: True
--- CHECK: mkdir-nested-nonrecursive: err ENOENT @c
+-- CHECK: mkdir-nested-nonrecursive: err NoSuchFileOrDirectory @c
 -- CHECK: mkdir-recursive: ok c
 -- CHECK: mkdir-recursive-exists: ok c
--- CHECK: mkdir-recursive-over-file: err EEXIST @f.txt
--- CHECK: mkdir-recursive-through-file: err ENOTDIR @sub
+-- CHECK: mkdir-recursive-over-file: err FileExists @f.txt
+-- CHECK: mkdir-recursive-through-file: err NotADirectory @sub
 -- CHECK: mkdir-through-file-flag: True
 -- CHECK: list: ok [B.txt:File,a:Directory,f.txt:File,l:Symlink,one:Directory,z.txt:File]
 -- CHECK: list-nested: ok [b:Directory]
 -- CHECK: list-empty: ok []
--- CHECK: list-missing: err ENOENT @nope
--- CHECK: list-file: err ENOTDIR @f.txt
+-- CHECK: list-missing: err NoSuchFileOrDirectory @nope
+-- CHECK: list-file: err NotADirectory @f.txt
 -- CHECK: tempdir: True True True
--- CHECK: tempdir-missing-parent: err ENOENT @x-
+-- CHECK: tempdir-missing-parent: err NoSuchFileOrDirectory @x-
 -- EXIT: 0
 
+import ErrorNames
 import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file)
 import Path
@@ -115,7 +116,7 @@ main =
                             |> label "mkdir"
                         , attempt Path.filenameWithExtension (file (File.makeDirectory { recursive = False } one))
                             |> label "mkdir-exists"
-                        , FileTestHelp.rawError (File.errorIsFileExists >> boolString) (File.makeDirectory { recursive = False } one)
+                        , FileTestHelp.rawError (File.errorKind >> (==) File.FileExists >> boolString) (File.makeDirectory { recursive = False } one)
                             |> label "mkdir-exists-flag"
                         , attempt Path.filenameWithExtension (file (File.makeDirectory { recursive = False } (child dir "a/b/c")))
                             |> label "mkdir-nested-nonrecursive"
@@ -128,7 +129,7 @@ main =
                             |> label "mkdir-recursive-over-file"
                         , attempt Path.filenameWithExtension (file (File.makeDirectory { recursive = True } (child dir "f.txt/sub")))
                             |> label "mkdir-recursive-through-file"
-                        , FileTestHelp.rawError (File.errorIsNotADirectory >> boolString)
+                        , FileTestHelp.rawError (File.errorKind >> (==) File.NotADirectory >> boolString)
                             (File.makeDirectory { recursive = True } (child dir "f.txt/sub"))
                             |> label "mkdir-through-file-flag"
                         , attempt showListing

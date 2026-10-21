@@ -10,6 +10,7 @@ two can be mixed in one task.
 
 -}
 
+import ErrorNames
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
@@ -35,11 +36,12 @@ program run =
         )
 
 
-{-| `<errorCode> @<filename of errorPath>`; the empty path prints as `@`.
+{-| `<error kind> @<filename of errorPath>`, the kind as `ErrorNames.fileError` prints it; the
+empty path prints as `@`.
 -}
 describe : File.Error -> String
 describe err =
-    File.errorCode err ++ " @" ++ Path.filenameWithExtension (File.errorPath err)
+    ErrorNames.fileError err ++ " @" ++ Path.filenameWithExtension (File.errorPath err)
 
 
 file : Task File.Error a -> Task String a

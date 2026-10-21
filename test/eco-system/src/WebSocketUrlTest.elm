@@ -3,24 +3,26 @@ module WebSocketUrlTest exposing (main)
 {-| WebSocket URLs (plans/eco-system-websockets.md §4 WS4, §3.6 "Handshake"): an IPv6 literal is
 dialled and sent bracketed in `Host`; a URL without a path asks for `/`, a query is kept, the
 scheme is case-insensitive and a non-default port is written in `Host`; invalid URLs fail
-`EINVAL` before any IO, and a name that does not resolve fails `ENOTFOUND`.
+with kind `InvalidInput` before any IO, and a name that does not resolve fails with kind
+`HostNotFound`.
 -}
 
 -- CHECK: ipv6: target /v6?a=b host [::1]:PORT
 -- CHECK: no path: target / host 127.0.0.1:PORT
 -- CHECK: query only: target /?q=1 host 127.0.0.1:PORT
--- CHECK: invalid ftp: EINVAL invalid WebSocket URL ftp://127.0.0.1/: the scheme must be ws or wss
--- CHECK: invalid fragment: EINVAL invalid WebSocket URL ws://127.0.0.1/a#b: fragments are not allowed
--- CHECK: invalid userinfo: EINVAL invalid WebSocket URL ws://user:pw@127.0.0.1/: user information is not allowed
--- CHECK: invalid port: EINVAL invalid WebSocket URL ws://127.0.0.1:99999/: invalid port
--- CHECK: invalid empty host: EINVAL invalid WebSocket URL ws:///x: missing host
--- CHECK: invalid ipv6: EINVAL invalid WebSocket URL ws://[::g]/: invalid IPv6 address
--- CHECK: invalid bracketed ipv4: EINVAL invalid WebSocket URL ws://[127.0.0.1]/: only IPv6 addresses are bracketed
--- CHECK: invalid unbracketed ipv6: EINVAL invalid WebSocket URL ws://::1/: IPv6 addresses must be bracketed
--- CHECK: invalid space: EINVAL invalid WebSocket URL ws://127.0.0.1/a b: invalid character
--- CHECK: unknown name: ENOTFOUND
+-- CHECK: invalid ftp: SocketError InvalidInput invalid WebSocket URL ftp://127.0.0.1/: the scheme must be ws or wss
+-- CHECK: invalid fragment: SocketError InvalidInput invalid WebSocket URL ws://127.0.0.1/a#b: fragments are not allowed
+-- CHECK: invalid userinfo: SocketError InvalidInput invalid WebSocket URL ws://user:pw@127.0.0.1/: user information is not allowed
+-- CHECK: invalid port: SocketError InvalidInput invalid WebSocket URL ws://127.0.0.1:99999/: invalid port
+-- CHECK: invalid empty host: SocketError InvalidInput invalid WebSocket URL ws:///x: missing host
+-- CHECK: invalid ipv6: SocketError InvalidInput invalid WebSocket URL ws://[::g]/: invalid IPv6 address
+-- CHECK: invalid bracketed ipv4: SocketError InvalidInput invalid WebSocket URL ws://[127.0.0.1]/: only IPv6 addresses are bracketed
+-- CHECK: invalid unbracketed ipv6: SocketError InvalidInput invalid WebSocket URL ws://::1/: IPv6 addresses must be bracketed
+-- CHECK: invalid space: SocketError InvalidInput invalid WebSocket URL ws://127.0.0.1/a b: invalid character
+-- CHECK: unknown name: SocketError HostNotFound
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
@@ -69,7 +71,19 @@ invalid : ( String, String ) -> Task String String
 invalid ( label, url ) =
     WebSocket.connect (WebSocket.defaultConnectOptions url)
         |> Task.map (\_ -> "invalid " ++ label ++ ": connected?")
-        |> Task.onError (\e -> Task.succeed ("invalid " ++ label ++ ": " ++ Socket.errorCode e ++ " " ++ (Socket.errorToString e |> String.dropLeft (String.length (Socket.errorCode e) + 2))))
+        |> Task.onError (\e -> Task.succeed ("invalid " ++ label ++ ": " ++ ErrorNames.webSocketError e ++ " " ++ afterCode (WebSocket.errorToString e)))
+
+
+{-| The text after the `"<CODE>: "` that starts an error's description.
+-}
+afterCode : String -> String
+afterCode text =
+    case String.indices ": " text of
+        i :: _ ->
+            String.dropLeft (i + 2) text
+
+        [] ->
+            text
 
 
 invalids : List ( String, String )
@@ -110,6 +124,6 @@ run _ =
             (\lines ->
                 WebSocket.connect (WebSocket.defaultConnectOptions "ws://no-such-host.invalid/")
                     |> Task.map (\_ -> "unknown name: connected?")
-                    |> Task.onError (\e -> Task.succeed ("unknown name: " ++ Socket.errorCode e))
+                    |> Task.onError (\e -> Task.succeed ("unknown name: " ++ ErrorNames.webSocketError e))
                     |> Task.map (\l -> lines ++ [ l ])
             )

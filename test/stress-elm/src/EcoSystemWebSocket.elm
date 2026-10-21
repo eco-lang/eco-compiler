@@ -105,20 +105,21 @@ portOf listener =
             0
 
 
-connect : Socket.Listener -> Task Socket.Error (WebSocket Whole)
+connect : Socket.Listener -> Task WebSocket.Error (WebSocket Whole)
 connect listener =
     WebSocket.defaultConnectOptions ("ws://127.0.0.1:" ++ String.fromInt (portOf listener) ++ "/stress")
         |> (\o -> { o | heartbeat = heartbeat })
         |> WebSocket.connect
 
 
-accept : Socket.Listener -> Task Socket.Error (WebSocket Whole)
+accept : Socket.Listener -> Task WebSocket.Error (WebSocket Whole)
 accept listener =
     let
         options =
             WebSocket.defaultAcceptOptions
     in
     Socket.accept listener
+        |> Task.mapError WebSocket.SocketError
         |> Task.andThen WebSocket.receiveUpgrade
         |> Task.andThen (WebSocket.accept { options | heartbeat = heartbeat })
 

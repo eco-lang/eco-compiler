@@ -8,7 +8,7 @@ plans/eco-system-websockets.md §4 WS5).
 
 The program creates one server with `listen` on 127.0.0.1, port 0 (with TLS when
 asked), answers ordinary requests itself and upgrades every request whose `upgrade` is
-`Just "websocket"` (except `/declined`, answered 426) with `Http.Server.upgradeRequest`, then:
+`Just WebSocketUpgrade` (except `/declined`, answered 426) with `Http.Server.upgradeRequest`, then:
 
   - sends the request's `Response` anyway (it must be ignored: nothing may reach the client),
   - tries `upgradeRequest` a second time (it must fail: the key was consumed),
@@ -22,6 +22,7 @@ and then the client's lines are printed, and the program exits.
 
 -}
 
+import ErrorNames
 import Bytes exposing (Bytes)
 import Bytes.Encode as E
 import Http.Server as Server exposing (HttpVersion(..), Request, Server, Response)
@@ -50,7 +51,7 @@ type Msg
     = Started (Result Server.Error Server)
     | GotRequest Request Response
     | SendLater Response
-    | Upgraded String Request Response (Result Socket.Error WebSocket.Upgrade)
+    | Upgraded String Request Response (Result WebSocket.Error WebSocket.Upgrade)
     | ServerDone (List String)
     | ClientDone (Result String (List String))
     | Exit
@@ -121,9 +122,9 @@ schemeOf request =
         "http"
 
 
-errorString : Socket.Error -> String
+errorString : WebSocket.Error -> String
 errorString e =
-    Socket.errorCode e
+    ErrorNames.webSocketError e
 
 
 update : Config -> Msg -> Model -> ( Model, Cmd Msg )
@@ -153,7 +154,7 @@ update config msg model =
                     |> Server.send
                 )
 
-            else if request.upgrade == Just "websocket" then
+            else if request.upgrade == Just Server.WebSocketUpgrade then
                 ( { model
                     | lines = model.lines ++ [ "upgrade " ++ schemeOf request ++ " " ++ target ++ " " ++ versionString request.version ]
                     , running = model.running + 1
@@ -202,7 +203,7 @@ update config msg model =
             )
 
         Upgraded target _ _ (Err e) ->
-            update config (ServerDone [ "upgrade failed " ++ target ++ ": " ++ Socket.errorToString e ]) model
+            update config (ServerDone [ "upgrade failed " ++ target ++ ": " ++ WebSocket.errorToString e ]) model
 
         ServerDone lines ->
             maybeFinish { model | lines = model.lines ++ lines, running = model.running - 1 }
@@ -260,7 +261,7 @@ tlsRaw : Server -> Task String Socket.Connection
 tlsRaw server =
     Socket.Tls.connect (T.trusted "localhost" [])
         (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) ((Server.endpoint server).port_))
-        |> Task.mapError Socket.errorToString
+        |> Task.mapError Socket.Tls.errorToString
 
 
 bytesOf : String -> Bytes

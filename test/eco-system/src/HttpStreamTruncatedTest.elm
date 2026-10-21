@@ -2,17 +2,18 @@ module HttpStreamTruncatedTest exposing (main)
 
 {-| A body cut short after the headers (`/truncate`: Content-Length 1000, 10
 bytes, close; plans/eco-system-library.md Phase 8 step 8.3, E.6): the task
-succeeds at the headers, the reader gets the 10 bytes, then `Cancelled` with
+succeeds at the headers, the reader gets the 10 bytes, then `Failed` with
 the curl error ("network error: …").
 -}
 
 -- CHECK: status: 200
 -- CHECK: first: 10 bytes
--- CHECK: then: err Cancelled: network error:
+-- CHECK: then: err Failed: network error:
 -- EXIT: 0
 
 import Bytes
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
@@ -23,7 +24,7 @@ main =
     H.program
         (\server _ ->
             Http.Stream.task
-                { method = "GET"
+                { method = Http.Method.GET
                 , headers = []
                 , url = H.url server "/truncate"
                 , body = Http.Stream.emptyBody

@@ -16,6 +16,7 @@ order.
 
 import Dict
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Json.Decode as D
@@ -26,7 +27,7 @@ main =
     H.program
         (\server _ ->
             Http.Stream.task
-                { method = "GET"
+                { method = Http.Method.GET
                 , headers = [ Http.header "X-Custom" "eco-value", Http.header "X-Empty-Safe" "two words" ]
                 , url = H.url server "/echo-headers?dup=1"
                 , body = Http.Stream.emptyBody

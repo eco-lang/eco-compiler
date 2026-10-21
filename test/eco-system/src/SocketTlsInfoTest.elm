@@ -1,15 +1,16 @@
 module SocketTlsInfoTest exposing (main)
 
 {-| `Socket.Tls.info` (plans/eco-system-sockets.md Appendix B.3): on a plain TCP connection it fails
-with `EINVAL`; on a TLS connection it reports what the handshake agreed on, on both ends.
+with `SocketError` of kind `InvalidInput` (`EINVAL`); on a TLS connection it reports what the handshake agreed on, on both ends.
 -}
 
--- CHECK: plain tcp client: err EINVAL
--- CHECK: plain tcp server: err EINVAL
--- CHECK: tls client: TLSv1.3 alpn none
--- CHECK: tls server: TLSv1.3 alpn none
+-- CHECK: plain tcp client: err SocketError InvalidInput
+-- CHECK: plain tcp server: err SocketError InvalidInput
+-- CHECK: tls client: Tls1_3 alpn none
+-- CHECK: tls server: Tls1_3 alpn none
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Tls
 import SocketTestHelp as H
@@ -18,24 +19,43 @@ import System
 import Task exposing (Task)
 
 
-describeInfo : Task Socket.Error Socket.Tls.Info -> Task x String
+versionString : Socket.Tls.TlsVersion -> String
+versionString version =
+    case version of
+        Socket.Tls.Tls1_0 ->
+            "Tls1_0"
+
+        Socket.Tls.Tls1_1 ->
+            "Tls1_1"
+
+        Socket.Tls.Tls1_2 ->
+            "Tls1_2"
+
+        Socket.Tls.Tls1_3 ->
+            "Tls1_3"
+
+        Socket.Tls.UnknownTlsVersion name ->
+            "UnknownTlsVersion " ++ name
+
+
+describeInfo : Task Socket.Tls.Error Socket.Tls.Info -> Task x String
 describeInfo task =
     task
-        |> Task.map (\info -> info.protocol ++ " alpn " ++ T.alpnString info.alpn)
-        |> Task.onError (\e -> Task.succeed ("err " ++ Socket.errorCode e))
+        |> Task.map (\info -> versionString info.version ++ " alpn " ++ T.alpnString info.alpn)
+        |> Task.onError (\e -> Task.succeed ("err " ++ ErrorNames.tlsError e))
 
 
 {-| Connect with `connect`, accept the other end, describe both ends' info, close everything.
 -}
-pair : Task Socket.Error Socket.Listener -> (Socket.Listener -> Task Socket.Error Socket.Connection) -> Task String ( String, String )
+pair : Task String Socket.Listener -> (Socket.Listener -> Task String Socket.Connection) -> Task String ( String, String )
 pair listen connect =
-    H.socketErr listen
+    listen
         |> Task.andThen
             (\listener ->
                 H.async (H.socketErr (Socket.accept listener))
                     |> Task.andThen
                         (\accepted ->
-                            H.socketErr (connect listener)
+                            connect listener
                                 |> Task.andThen (\client -> accepted |> Task.map (\server -> ( client, server )))
                         )
                     |> Task.andThen
@@ -61,10 +81,10 @@ main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->
-            pair H.listenLocal H.connectTo
+            pair (H.socketErr H.listenLocal) (H.connectTo >> H.socketErr)
                 |> Task.andThen
                     (\( plainClient, plainServer ) ->
-                        pair (T.listenTls (T.server [])) (T.connectTls (T.trusted "localhost" []))
+                        pair (H.tlsErr (T.listenTls (T.server []))) (T.connectTls (T.trusted "localhost" []) >> H.tlsErr)
                             |> Task.map
                                 (\( tlsClient, tlsServer ) ->
                                     [ "plain tcp client: " ++ plainClient

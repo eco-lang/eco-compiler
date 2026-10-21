@@ -130,9 +130,9 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
     int64_t jobId = 0;
     if (ch.err == 0) {
         if (external) {
-            ids[0] = createFdSink(ch.stdinFd, /*owns=*/true);
-            ids[1] = createFdSource(ch.stdoutFd, /*owns=*/true);
-            ids[2] = createFdSource(ch.stderrFd, /*owns=*/true);
+            ids[0] = createFdSink(ch.stdinFd, /*owns=*/true, "pipe");
+            ids[1] = createFdSource(ch.stdoutFd, /*owns=*/true, "pipe");
+            ids[2] = createFdSource(ch.stderrFd, /*owns=*/true, "pipe");
         }
         ChildJob job;
         job.kind = JobKind::Spawn;

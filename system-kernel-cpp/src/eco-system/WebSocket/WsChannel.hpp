@@ -38,6 +38,7 @@
 #define ECO_SYSTEM_WEBSOCKET_WS_CHANNEL_HPP
 
 #include "eco-system/Core/ByteChannel.hpp"
+#include "eco-system/Core/Core.hpp"
 #include "eco-system/WebSocket/WsProtocol.hpp"
 
 #include <cstdint>
@@ -54,6 +55,10 @@ public:
     void requestWrite(uint64_t token, std::string bytes) override;
     void close(uint64_t token) override;
     void shutdown() override;
+    std::string encodeFailure(int err, const std::string& reason) const override {
+        return websocketFailureReason(err, reason);
+    }
+    const char* failureOrigin() const override { return "websocket"; }
 
 private:
     std::shared_ptr<WsCore> core_;
@@ -71,6 +76,10 @@ public:
     void requestWriteTagged(uint64_t token, int64_t tag, bool text, std::string bytes) override;
     void close(uint64_t token) override;
     void shutdown() override;
+    std::string encodeFailure(int err, const std::string& reason) const override {
+        return websocketFailureReason(err, reason);
+    }
+    const char* failureOrigin() const override { return "websocket"; }
 
 private:
     std::shared_ptr<WsCore> core_;
@@ -86,6 +95,10 @@ public:
     void requestWrite(uint64_t token, std::string bytes) override;
     void close(uint64_t token) override;
     void shutdown() override;
+    std::string encodeFailure(int err, const std::string& reason) const override {
+        return websocketFailureReason(err, reason);
+    }
+    const char* failureOrigin() const override { return "websocket"; }
 
 private:
     std::shared_ptr<WsCore> core_;
@@ -102,6 +115,10 @@ public:
     void requestWrite(uint64_t token, std::string bytes) override;
     void close(uint64_t token) override;
     void shutdown() override;
+    std::string encodeFailure(int err, const std::string& reason) const override {
+        return websocketFailureReason(err, reason);
+    }
+    const char* failureOrigin() const override { return "websocket"; }
 
 private:
     std::shared_ptr<WsCore> core_;

@@ -1,14 +1,15 @@
 module SocketTcpCloseTest exposing (main)
 
 {-| `Socket.close` (plans/eco-system-sockets.md §D.2): a read parked on the closed connection fails
-with the reason `socket closed`; data written before the close still reaches the peer, which then
-reads to `Closed`; later operations on the streams fail `socket closed`; closing twice is fine.
+with `Stream.Failed`, described as `socket closed` (`Socket.fromStreamFailure` gives kind
+`Cancelled`); data written before the close still reaches the peer, which then reads to `Closed`;
+later operations on the streams fail the same way; closing twice is fine.
 -}
 
--- CHECK: parked read: Cancelled: {{socket closed}}
+-- CHECK: parked read: Failed: {{socket closed}}
 -- CHECK: peer read: written before close
--- CHECK: write after close: Cancelled: {{socket closed}}
--- CHECK: read after close: Cancelled: {{socket closed}}
+-- CHECK: write after close: Failed: {{socket closed}}
+-- CHECK: read after close: Failed: {{socket closed}}
 -- CHECK: close twice: ok
 -- EXIT: 0
 

@@ -8,9 +8,9 @@ client writes a 300 kB message and half-closes (`close_notify`, then FIN); the s
 its listener and exits by itself.
 -}
 
--- CHECK: client protocol: TLSv1.3
+-- CHECK: client version: Tls1_3
 -- CHECK: client alpn: http/1.1
--- CHECK: server protocol: TLSv1.3
+-- CHECK: server version: Tls1_3
 -- CHECK: server alpn: http/1.1
 -- CHECK: cipher named: True
 -- CHECK: server got prefix: hello over tls|
@@ -33,6 +33,25 @@ message =
     "hello over tls|" ++ String.repeat 30000 "0123456789"
 
 
+versionString : Socket.Tls.TlsVersion -> String
+versionString version =
+    case version of
+        Socket.Tls.Tls1_0 ->
+            "Tls1_0"
+
+        Socket.Tls.Tls1_1 ->
+            "Tls1_1"
+
+        Socket.Tls.Tls1_2 ->
+            "Tls1_2"
+
+        Socket.Tls.Tls1_3 ->
+            "Tls1_3"
+
+        Socket.Tls.UnknownTlsVersion name ->
+            "UnknownTlsVersion " ++ name
+
+
 {-| Accept one connection, read it to `Closed`, reply `echo: <text>` and half-close.
 -}
 serve : Socket.Listener -> Task String ( String, Socket.Tls.Info )
@@ -40,7 +59,7 @@ serve listener =
     H.socketErr (Socket.accept listener)
         |> Task.andThen
             (\conn ->
-                H.socketErr (Socket.Tls.info conn)
+                H.tlsErr (Socket.Tls.info conn)
                     |> Task.andThen
                         (\info ->
                             H.streamErr (H.readAll (Socket.readable conn))
@@ -57,16 +76,16 @@ main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->
-            H.socketErr (T.listenTls (T.server [ "http/1.1" ]))
+            H.tlsErr (T.listenTls (T.server [ "http/1.1" ]))
                 |> Task.andThen
                     (\listener ->
                         H.async (serve listener)
                             |> Task.andThen
                                 (\served ->
-                                    H.socketErr (T.connectTls (T.trusted "localhost" [ "h2", "http/1.1" ]) listener)
+                                    H.tlsErr (T.connectTls (T.trusted "localhost" [ "h2", "http/1.1" ]) listener)
                                         |> Task.andThen
                                             (\client ->
-                                                H.socketErr (Socket.Tls.info client)
+                                                H.tlsErr (Socket.Tls.info client)
                                                     |> Task.andThen
                                                         (\clientInfo ->
                                                             H.send message client
@@ -78,9 +97,9 @@ main =
                                                                                     H.describe (Socket.closeListener listener)
                                                                                         |> Task.map
                                                                                             (\closed ->
-                                                                                                [ "client protocol: " ++ clientInfo.protocol
+                                                                                                [ "client version: " ++ versionString clientInfo.version
                                                                                                 , "client alpn: " ++ T.alpnString clientInfo.alpn
-                                                                                                , "server protocol: " ++ serverInfo.protocol
+                                                                                                , "server version: " ++ versionString serverInfo.version
                                                                                                 , "server alpn: " ++ T.alpnString serverInfo.alpn
                                                                                                 , "cipher named: " ++ H.boolString (clientInfo.cipher /= "" && clientInfo.cipher == serverInfo.cipher)
                                                                                                 , "server got prefix: " ++ String.left 15 got

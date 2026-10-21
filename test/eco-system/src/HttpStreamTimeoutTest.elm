@@ -13,6 +13,7 @@ body over ~1 s) with the same timeout is read to the end.
 
 import Bytes exposing (Bytes)
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Stream
@@ -23,7 +24,7 @@ import TestServerConfig
 get : TestServerConfig.Server -> String -> Task x (Result String (Stream.Readable Bytes))
 get server path =
     Http.Stream.task
-        { method = "GET"
+        { method = Http.Method.GET
         , headers = []
         , url = H.url server path
         , body = Http.Stream.emptyBody

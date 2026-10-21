@@ -64,6 +64,12 @@ void ByteChannel::requestWriteTagged(uint64_t token, int64_t tag, bool, std::str
     postChannelResult(std::move(r));
 }
 
+std::string ByteChannel::encodeFailure(int err, const std::string& reason) const {
+    if (isMarkedReason(reason)) return reason;
+    if (reason.empty()) return errnoFailureReason(failureOrigin(), err != 0 ? err : EIO);
+    return failureReason(failureOrigin(), err != 0 ? errnoName(err) : "", reason);
+}
+
 void postChannelResult(ChannelResult r) {
     auto& cr = results();
     {

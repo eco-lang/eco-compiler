@@ -6,7 +6,7 @@ module HttpStreamKillTest exposing (main)
     aborts the transfer through the binding's kill handle (T7): the task never
     completes, and nothing waits for the 3 s response.
   - `Process.kill` mid-upload aborts the transfer, and the upload's source
-    stream is cancelled: a later write to it fails with `Cancelled`.
+    stream fails with the transfer's failure: a later write to it fails with `Failed`.
   - Mid-download, `Stream.cancelReadable` on the body stream aborts the
     transfer; the stream then reads `Closed`.
 
@@ -17,7 +17,7 @@ The program exits promptly: no stalled transfer keeps it alive.
 -- CHECK: killed while waiting for headers
 -- CHECK: first write: ok
 -- CHECK: killed mid-upload
--- CHECK: write after kill: err Cancelled: the HTTP request was aborted
+-- CHECK: write after kill: err Failed: the HTTP request was aborted
 -- CHECK: first chunk read
 -- CHECK: read after cancel: err Closed
 -- CHECK: prompt: True
@@ -27,6 +27,7 @@ The program exits promptly: no stalled transfer keeps it alive.
 
 import Bytes exposing (Bytes)
 import Http
+import Http.Method
 import Http.Stream
 import HttpStreamTestHelp as H
 import Process
@@ -56,7 +57,7 @@ killBeforeHeaders : TestServerConfig.Server -> System.Environment -> Task String
 killBeforeHeaders server env =
     Process.spawn
         (Http.Stream.task
-            { method = "GET", headers = [], url = H.url server "/slow?ms=3000", body = Http.Stream.emptyBody, resolver = Http.Stream.streamResolver body, timeout = Nothing }
+            { method = Http.Method.GET, headers = [], url = H.url server "/slow?ms=3000", body = Http.Stream.emptyBody, resolver = Http.Stream.streamResolver body, timeout = Nothing }
             |> Task.andThen (\_ -> Stream.logLine "slow completed" env.stdout)
             |> Task.onError (\_ -> Stream.logLine "slow completed with an error" env.stdout)
         )
@@ -71,7 +72,7 @@ killMidUpload server env =
             (\t ->
                 Process.spawn
                     (Http.Stream.task
-                        { method = "POST", headers = [], url = H.url server "/anything", body = Http.Stream.streamBody "text/plain" (Stream.Transformation.readable t), resolver = Http.Stream.streamResolver body, timeout = Nothing }
+                        { method = Http.Method.POST, headers = [], url = H.url server "/anything", body = Http.Stream.streamBody "text/plain" (Stream.Transformation.readable t), resolver = Http.Stream.streamResolver body, timeout = Nothing }
                         |> Task.andThen (\_ -> Stream.logLine "upload completed" env.stdout)
                         |> Task.onError (\_ -> Stream.logLine "upload completed with an error" env.stdout)
                     )
@@ -101,7 +102,7 @@ killMidUpload server env =
 cancelMidDownload : TestServerConfig.Server -> Task String (List String)
 cancelMidDownload server =
     Http.Stream.task
-        { method = "GET", headers = [], url = H.url server "/drip?bytes=8192&ms=3000", body = Http.Stream.emptyBody, resolver = Http.Stream.streamResolver body, timeout = Nothing }
+        { method = Http.Method.GET, headers = [], url = H.url server "/drip?bytes=8192&ms=3000", body = Http.Stream.emptyBody, resolver = Http.Stream.streamResolver body, timeout = Nothing }
         |> Task.andThen
             (\stream ->
                 H.streamErr (Stream.read stream)

@@ -10,15 +10,16 @@ called twice, and `closed` reports the peer's answer.
 
 -- CHECK: code 4000: server Closed | Other 4000 "app" clean True | raw close 4000 ""
 -- CHECK: empty payload: server Closed | NoStatus "" clean True | raw close
--- CHECK: one byte: server Cancelled: ERR_WS_PROTOCOL: a Close frame with a 1-byte payload | ProtocolError "a Close frame with a 1-byte payload" clean False | raw close 1002
--- CHECK: code 1004: server Cancelled: ERR_WS_PROTOCOL: invalid close code 1004 | ProtocolError "invalid close code 1004" clean False | raw close 1002
--- CHECK: code 999: server Cancelled: ERR_WS_PROTOCOL: invalid close code 999 | ProtocolError
+-- CHECK: one byte: server Failed: ERR_WS_PROTOCOL: a Close frame with a 1-byte payload | ProtocolError "a Close frame with a 1-byte payload" clean False | raw close 1002
+-- CHECK: code 1004: server Failed: ERR_WS_PROTOCOL: invalid close code 1004 | ProtocolError "invalid close code 1004" clean False | raw close 1002
+-- CHECK: code 999: server Failed: ERR_WS_PROTOCOL: invalid close code 999 | ProtocolError
 -- CHECK: data after close: server Closed | Normal "bye" clean True | raw close 1000 ""
--- CHECK: dropped: server Cancelled: socket closed | Abnormal "" clean False | raw
--- CHECK: unsendable: NoStatus EINVAL, Abnormal EINVAL, Other 999 EINVAL, Other 5000 EINVAL, Other 1004 EINVAL
+-- CHECK: dropped: server Failed: socket closed | Abnormal "" clean False | raw
+-- CHECK: unsendable: NoStatus SocketError InvalidInput, Abnormal SocketError InvalidInput, Other 999 SocketError InvalidInput, Other 5000 SocketError InvalidInput, Other 1004 SocketError InvalidInput
 -- CHECK: server close: close twice ok ok | GoingAway "" clean True | raw close 1001 reason bytes 122 chars 61
 -- EXIT: 0
 
+import ErrorNames
 import Bytes exposing (Bytes)
 import Socket
 import SocketTestHelp as H
@@ -99,7 +100,7 @@ serverCloseCase listener =
                                             try code =
                                                 WebSocket.close code "x" ws
                                                     |> Task.map (\_ -> W.codeString code ++ " ok")
-                                                    |> Task.onError (\e -> Task.succeed (W.codeString code ++ " " ++ Socket.errorCode e))
+                                                    |> Task.onError (\e -> Task.succeed (W.codeString code ++ " " ++ ErrorNames.webSocketError e))
                                         in
                                         [ WebSocket.NoStatus, WebSocket.Abnormal, WebSocket.Other 999, WebSocket.Other 5000, WebSocket.Other 1004 ]
                                             |> List.map try

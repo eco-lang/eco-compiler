@@ -2,13 +2,15 @@ module SocketTlsTimeoutTest exposing (main)
 
 {-| The connect timeout covers the TLS handshake too (plans/eco-system-sockets.md §3.3.3 "Connect",
 Appendix A `Socket.Tcp.ConnectOptions.timeout`): a TLS client connecting to a plain TCP server that
-accepts but never answers fails with `ETIMEDOUT` once the timeout passes.
+accepts but never answers fails with `SocketError` of kind `TimedOut` (`ETIMEDOUT`) once the
+timeout passes.
 -}
 
--- CHECK: handshake timeout: err ETIMEDOUT
+-- CHECK: handshake timeout: err SocketError TimedOut
 -- CHECK: closed: ok
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Tcp
@@ -33,7 +35,9 @@ main =
                                         tcp =
                                             Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) (H.portOf listener)
                                     in
-                                    H.describe (Socket.Tls.connect (T.trusted "localhost" []) { tcp | timeout = Just 300 })
+                                    Socket.Tls.connect (T.trusted "localhost" []) { tcp | timeout = Just 300 }
+                                        |> Task.map (\_ -> "ok")
+                                        |> Task.onError (\e -> Task.succeed ("err " ++ ErrorNames.tlsError e))
                                         |> Task.andThen
                                             (\timedOut ->
                                                 accepted

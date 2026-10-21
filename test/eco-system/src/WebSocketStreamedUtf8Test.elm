@@ -9,8 +9,8 @@ the connection fails with 1007 (fail fast: the message never completes).
 -}
 
 -- CHECK: split: a|𝄞b end Closed
--- CHECK: invalid: ok  end Cancelled: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message
--- CHECK: server end: Cancelled: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message
+-- CHECK: invalid: ok  end Failed: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message
+-- CHECK: server end: Failed: ERR_WS_INVALID_DATA: invalid UTF-8 in a text message
 -- CHECK: server closed: InvalidData "invalid UTF-8 in a text message" clean False
 -- CHECK: raw client got: close 1007 "invalid UTF-8 in a text message"
 -- EXIT: 0

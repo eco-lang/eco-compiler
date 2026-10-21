@@ -80,6 +80,35 @@ std::string toStdBytes(HPointer b);    // T4 copy-out; empty-Bytes safe
 const char* errnoName(int err);
 
 // ---------------------------------------------------------------------------
+// Stream failure reasons (plans/eco-system-typed-api.md B7)
+// ---------------------------------------------------------------------------
+// A stream's cancellation reason reaches Elm as the String of an SErr, and
+// Stream.Internal.decodeReason reads it. A reason the kernel makes itself is
+// marked so that it is never taken for a program's own reason:
+//   "\x01" origin "\x1f" code "\x1f" message  the resource failed (Stream.Failed);
+//                                            origin names the module that reads
+//                                            it back (socket, tls, file, pipe,
+//                                            stdio, websocket, http, codec)
+//   "\x02" ...                               the stream had ended (Stream.Closed
+//                                            for a write or close)
+// Any other reason is a program's, passed on as it is (Stream.Cancelled).
+std::string failureReason(const std::string& origin, const std::string& code,
+                          const std::string& message);
+std::string errnoFailureReason(const std::string& origin, int err);   // code errnoName, message "<CODE>: <strerror>"
+bool isMarkedReason(const std::string& reason);
+constexpr const char* kEndedMarker = "\x02";
+
+// A socket stream's plain reason ("read ECONNRESET", "write EPIPE", "socket
+// closed", "upgraded to WebSocket", "") as a failure reason. The origin is
+// "tls" for a code the TLS layer made (ERR_SSL_*, ERR_TLS_*, certificate
+// verification codes), "socket" otherwise. A marked reason is returned as it is.
+std::string socketFailureReason(int err, const std::string& reason);
+// A WebSocket stream's plain reason as a failure reason: "heartbeat ETIMEDOUT"
+// and "ERR_WS_<X>[: details]" are "websocket" failures; any other reason is a
+// failure of the connection underneath (socketFailureReason).
+std::string websocketFailureReason(int err, const std::string& reason);
+
+// ---------------------------------------------------------------------------
 // Task builders (main thread; they allocate and root their own temporaries)
 // ---------------------------------------------------------------------------
 

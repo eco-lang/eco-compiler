@@ -17,6 +17,7 @@ and releasing it lets the program exit.
 -- CHECK: watch: done
 -- EXIT: 0
 
+import ErrorNames
 import FileTestHelp exposing (bytes, child)
 import Process
 import Stream
@@ -84,7 +85,7 @@ main =
                         )
 
                     GotDir (Err e) ->
-                        ( { model | done = True }, log model ("error: " ++ File.errorCode e) )
+                        ( { model | done = True }, log model ("error: " ++ ErrorNames.fileError e) )
 
                     Event ev ->
                         if model.done then

@@ -1,7 +1,7 @@
 module SocketTcpIpv6Test exposing (main)
 
 {-| IPv6 (plans/eco-system-sockets.md §4 S3, R2): an echo over `::1` prints `ipv6: ok`, or
-`ipv6: unavailable <code>` where the machine has no IPv6. A dual-stack listener on `any IPv6`
+`ipv6: unavailable <error kind>` where the machine has no IPv6. A dual-stack listener on `any IPv6`
 accepts an IPv4 client, whose remote address is IPv4-mapped; `unmapIPv4` turns it into
 `127.0.0.1`.
 -}
@@ -10,6 +10,7 @@ accepts an IPv4 client, whose remote address is IPv4-mapped; `unmapIPv4` turns i
 -- CHECK: {{dual-stack: (mapped True unmapped 127.0.0.1|unavailable \w+)}}
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Endpoint(..), Family(..))
 import Socket.Tcp
@@ -21,14 +22,14 @@ import Task exposing (Task)
 echoOver : Family -> Task String String
 echoOver family =
     Socket.Tcp.listen (Socket.Tcp.defaultListenOptions (Address.loopback family) 0)
-        |> Task.mapError (\e -> "unavailable " ++ Socket.errorCode e)
+        |> Task.mapError (\e -> "unavailable " ++ ErrorNames.socketError e)
         |> Task.andThen
             (\listener ->
                 H.async (H.acceptRead listener)
                     |> Task.andThen
                         (\accepted ->
                             Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback family) (H.portOf listener))
-                                |> Task.mapError (\e -> "unavailable " ++ Socket.errorCode e)
+                                |> Task.mapError (\e -> "unavailable " ++ ErrorNames.socketError e)
                                 |> Task.andThen (\c -> H.streamErr (H.writeAll "six" (Socket.writable c)))
                                 |> Task.andThen (\_ -> accepted)
                         )
@@ -50,7 +51,7 @@ echoOver family =
 dualStack : Task String String
 dualStack =
     Socket.Tcp.listen (Socket.Tcp.defaultListenOptions (Address.any IPv6) 0)
-        |> Task.mapError (\e -> "unavailable " ++ Socket.errorCode e)
+        |> Task.mapError (\e -> "unavailable " ++ ErrorNames.socketError e)
         |> Task.andThen
             (\listener ->
                 H.async (H.socketErr (Socket.accept listener))

@@ -49,6 +49,10 @@ struct FdChannelOptions {
     // (FileSystem.writeFileStreamWith `sync`, plans/eco-system-api-refactor.md
     // D12). An fsync failure is reported as the close error.
     bool syncOnClose = false;
+    // The origin its stream failures are reported under (Core.hpp,
+    // failureReason): "file" (FileSystem), "pipe" (a child process's
+    // stdio) or "stdio" (the program's own). A string literal.
+    const char* origin = "file";
 };
 
 class FdChannel final : public ByteChannel {
@@ -63,11 +67,13 @@ public:
     void shutdown() override;
 
     int fd() const;
+    const char* failureOrigin() const override { return origin_; }
 
     struct State;   // shared with the channel thread
 
 private:
     std::shared_ptr<State> st_;
+    const char* origin_;
 };
 
 // Creates a pipe whose ends are O_CLOEXEC (pipe2 on Linux; pipe + fcntl

@@ -21,6 +21,7 @@ the body.
 
 import Dict
 import Http
+import Http.Method
 import Http.Server as Server
 import HttpServerTestHelp as Help
 import System
@@ -35,7 +36,7 @@ handler request response =
     in
     ( [ Server.requestToString request
       , "method "
-            ++ Server.methodToString request.method
+            ++ Http.Method.toString request.method
             ++ " path "
             ++ request.url.path
             ++ " query "

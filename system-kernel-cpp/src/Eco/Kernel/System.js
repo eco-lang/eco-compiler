@@ -2,7 +2,7 @@
 import Elm.Kernel.Scheduler exposing (binding, succeed, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray)
-import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, pin)
+import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeReadableChannel, nodeWritableChannel, pin, withOrigin)
 */
 
 // System — JS twin of src/eco-system/System/ (eco/system), plans/eco-system-library.md
@@ -23,12 +23,12 @@ function _System_stdio()
 	{
 		// stdin is resolved lazily (on the first read), so a program that never reads
 		// it does not touch process.stdin. fds 0-2 are never closed (keepOpen).
-		var stdin = __Stream_createChannelSource(__Stream_nodeReadableChannel(
-			function() { return process.stdin; }, { keepOpen: true }));
-		var stdout = __Stream_createChannelSink(__Stream_nodeWritableChannel(
-			function() { return process.stdout; }, { keepOpen: true }));
-		var stderr = __Stream_createChannelSink(__Stream_nodeWritableChannel(
-			function() { return process.stderr; }, { keepOpen: true }));
+		var stdin = __Stream_createChannelSource(__Stream_withOrigin(__Stream_nodeReadableChannel(
+			function() { return process.stdin; }, { keepOpen: true }), 'stdio'));
+		var stdout = __Stream_createChannelSink(__Stream_withOrigin(__Stream_nodeWritableChannel(
+			function() { return process.stdout; }, { keepOpen: true }), 'stdio'));
+		var stderr = __Stream_createChannelSink(__Stream_withOrigin(__Stream_nodeWritableChannel(
+			function() { return process.stderr; }, { keepOpen: true }), 'stdio'));
 		__Stream_pin(stdin);
 		__Stream_pin(stdout);
 		__Stream_pin(stderr);

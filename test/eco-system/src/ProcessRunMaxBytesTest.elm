@@ -11,6 +11,7 @@ is fine.
 -- CHECK: exact: ok stdout-bytes=5
 -- EXIT: 0
 
+import ErrorNames
 import Bytes
 import ChildProcess as P
 import ProcessTestHelp exposing (noShell, simpleRun)
@@ -26,7 +27,7 @@ sizes task =
                 Task.succeed <|
                     case err of
                         P.InitError e ->
-                            "InitError " ++ e.errorCode
+                            "InitError " ++ ErrorNames.startError e.error
 
                         P.ProgramError e ->
                             "ProgramError "

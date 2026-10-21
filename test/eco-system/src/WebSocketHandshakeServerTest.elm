@@ -10,15 +10,16 @@ headers and body and closes. `upgradeTarget`, `upgradeProtocols`, `upgradeOrigin
 `upgradeHeaders` describe the request.
 -}
 
--- CHECK: post: server err ERR_WS_HANDSHAKE handshakeFailed True | client HTTP/1.1 400 Bad Request
--- CHECK: no key: server err ERR_WS_HANDSHAKE handshakeFailed True | client HTTP/1.1 400 Bad Request
--- CHECK: 20-byte key: server err ERR_WS_HANDSHAKE handshakeFailed True | client HTTP/1.1 400 Bad Request
--- CHECK: http/1.0: server err ERR_WS_HANDSHAKE handshakeFailed True | client HTTP/1.1 400 Bad Request
--- CHECK: version 8: server err ERR_WS_HANDSHAKE handshakeFailed True | client HTTP/1.1 426 Upgrade Required version 13
+-- CHECK: post: server err HandshakeFailed | client HTTP/1.1 400 Bad Request
+-- CHECK: no key: server err HandshakeFailed | client HTTP/1.1 400 Bad Request
+-- CHECK: 20-byte key: server err HandshakeFailed | client HTTP/1.1 400 Bad Request
+-- CHECK: http/1.0: server err HandshakeFailed | client HTTP/1.1 400 Bad Request
+-- CHECK: version 8: server err HandshakeFailed | client HTTP/1.1 426 Upgrade Required version 13
 -- CHECK: protocols: server ok target /chat?room=1 protocols chat,superchat origin http://example.com upgrade websocket chosen superchat | client HTTP/1.1 101 Switching Protocols protocol superchat accept s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
--- CHECK: not offered: server err EINVAL, rejected | client HTTP/1.1 403 Forbidden x-why nope body no thanks
+-- CHECK: not offered: server err SocketError InvalidInput, rejected | client HTTP/1.1 403 Forbidden x-why nope body no thanks
 -- EXIT: 0
 
+import ErrorNames
 import Bytes exposing (Bytes)
 import Socket
 import SocketTestHelp as H
@@ -74,7 +75,7 @@ acceptDefault up =
         |> Task.onError
             (\e ->
                 Task.succeed
-                    ("server err " ++ Socket.errorCode e ++ " handshakeFailed " ++ H.boolString (WebSocket.errorIsHandshakeFailed e))
+                    ("server err " ++ ErrorNames.webSocketError e)
             )
 
 
@@ -100,7 +101,7 @@ acceptProtocol up =
                 W.readAll ws
                     |> Task.map (\_ -> "server ok " ++ describeUp ++ " chosen " ++ Maybe.withDefault "-" (WebSocket.protocol ws))
             )
-        |> Task.onError (\e -> Task.succeed ("server err " ++ Socket.errorCode e))
+        |> Task.onError (\e -> Task.succeed ("server err " ++ ErrorNames.webSocketError e))
 
 
 acceptOther : WebSocket.Upgrade -> Task Never String
@@ -114,7 +115,7 @@ acceptOther up =
         |> Task.onError
             (\e ->
                 WebSocket.reject 403 [ ( "X-Why", "nope" ) ] "no thanks" up
-                    |> Task.map (\_ -> "server err " ++ Socket.errorCode e ++ ", rejected")
+                    |> Task.map (\_ -> "server err " ++ ErrorNames.webSocketError e ++ ", rejected")
             )
 
 

@@ -56,7 +56,7 @@ namespace Eco::System {
 
 namespace {
 
-constexpr const char* kWritableClosed = "WritableStream is closed";
+constexpr const char* kWritableClosed = "\x02WritableStream is closed";   // Stream.Closed
 constexpr size_t kPipeReadChunk = 64 * 1024;
 
 struct Pipe {

@@ -1,12 +1,12 @@
 effect module Http.Server where { command = MyCmd, subscription = MySub } exposing
     ( Server, ListenOptions, defaultListenOptions, listen, listenOnHost, endpoint, close, closeWithin
-    , Request, Method(..), HttpVersion(..), methodToString, bodyAsString, bodyAsJson, requestToString, onRequest
+    , Request, HttpVersion(..), Upgrade(..), bodyAsString, bodyAsJson, requestToString
+    , onRequest
     , Response, send
     , setStatus, setHeader, appendHeader
     , setBody, setBodyAsString, setBodyAsBytes, setBodyAsHtml
     , upgradeRequest
-    , Error, errorCode, errorToString
-    , errorIsAddressInUse, errorIsAddressNotAvailable, errorIsHostNotFound, errorIsPermissionDenied, errorIsCertificateInvalid
+    , Error, ErrorKind(..), errorKind, errorToString
     )
 
 {-| An HTTP server for an Elm program: requests arrive as subscription messages, and the program
@@ -42,8 +42,9 @@ it. A request that breaks them never arrives: the server answers it itself, with
 as 400, 413 or 431, or over HTTP/2 may reset its stream instead.
 
 Starting a server fails with this module's own [`Error`](#Error). On the native backend under
-Windows no server can be started (`listen` and `listenOnHost` fail with `ENOTSUP`), and an
-`onRequest` subscription stops the program with a fatal error.
+Windows no server can be started (`listen` and `listenOnHost` fail with
+[`NotSupported`](#ErrorKind)), and an `onRequest` subscription stops the program with a fatal
+error.
 
 
 ## Servers
@@ -53,7 +54,7 @@ Windows no server can be started (`listen` and `listenOnHost` fail with `ENOTSUP
 
 ## Requests
 
-@docs Request, Method, HttpVersion, methodToString, bodyAsString, bodyAsJson, requestToString, onRequest
+@docs Request, HttpVersion, Upgrade, bodyAsString, bodyAsJson, requestToString, onRequest
 
 
 ## Responses
@@ -80,8 +81,7 @@ A fresh response has status `200`, no headers and an empty body.
 
 ## Errors
 
-@docs Error, errorCode, errorToString
-@docs errorIsAddressInUse, errorIsAddressNotAvailable, errorIsHostNotFound, errorIsPermissionDenied, errorIsCertificateInvalid
+@docs Error, ErrorKind, errorKind, errorToString
 
 -}
 
@@ -91,6 +91,7 @@ import Eco.Kernel.HttpServer
 import Eco.Kernel.Stream
 import Eco.Kernel.WebSocket
 import Html.Dom as Dom
+import Http.Method exposing (Method)
 import Http.Server.Internal as Internal exposing (Body(..))
 import Json.Decode
 import Platform
@@ -131,7 +132,8 @@ if there is one. The empty string listens on every interface: natively on `0.0.0
 only, and on the JavaScript backend on Node's default, `::` where IPv6 is available. Port 0 lets
 the system pick a free port, which [`endpoint`](#endpoint) reports.
 
-A name that cannot be resolved fails with [`errorIsHostNotFound`](#errorIsHostNotFound). A
+A name that cannot be resolved fails with kind [`HostNotFound`](#ErrorKind), or
+[`HostLookupTryAgain`](#ErrorKind) when the resolver could not answer for now. A
 listening server keeps the program running only while an [`onRequest`](#onRequest) subscription to
 it exists or a request it handed over has not been answered.
 
@@ -256,9 +258,10 @@ defaultListenOptions address port_ =
     Http.Server.listen
         { options | tls = Just { certificateChain = cert, privateKey = key, alpn = [] } }
 
-Fails with an [`Error`](#Error): for example [`errorIsAddressInUse`](#errorIsAddressInUse) when
-the port is taken, [`errorIsCertificateInvalid`](#errorIsCertificateInvalid) when the certificate
-chain or key cannot be used, and `EINVAL` when `http2` is set without `tls`. A listening server
+Fails with an [`Error`](#Error): for example of kind [`AddressInUse`](#ErrorKind) when the port
+is taken, [`CertificateUnusable`](#ErrorKind) when the certificate chain or key cannot be used,
+[`InvalidPort`](#ErrorKind) for a port outside 0 to 65535, and [`InvalidInput`](#ErrorKind) when
+`http2` is set without `tls`. A listening server
 keeps the program running only while an [`onRequest`](#onRequest) subscription to it exists or
 a request it handed over has not been answered.
 
@@ -351,11 +354,15 @@ that is already an absolute URL is used as it is. When that text is not one `Url
 accepts, for example when the host is a bracketed IPv6 address, `url` has an empty host and path,
 and its protocol is `Https` when the connection uses TLS and `Http` otherwise.
 
-`upgrade` is the protocol the client asks to switch to, lower-cased, such as `Just "websocket"`:
-the first protocol of the HTTP/1.1 `Upgrade` header when `Connection` also names `upgrade`
-(natively, only for a request without a body), or HTTP/2's `:protocol`. Answer a WebSocket
-request with [`upgradeRequest`](#upgradeRequest). Any response sent instead refuses the upgrade,
-and over HTTP/1 the connection then closes.
+`method` is the request's [`Http.Method.Method`](Http-Method#Method), for example `GET`; a method
+that has no constructor of its own is `UNKNOWN` with its name as received, such as
+`UNKNOWN "PROPFIND"`.
+
+`upgrade` is the protocol the client asks to switch to, as an [`Upgrade`](#Upgrade), such as
+`Just WebSocketUpgrade`: the first protocol of the HTTP/1.1 `Upgrade` header when `Connection`
+also names `upgrade` (natively, only for a request without a body), or HTTP/2's `:protocol`.
+Answer a WebSocket request with [`upgradeRequest`](#upgradeRequest). Any response sent instead
+refuses the upgrade, and over HTTP/1 the connection then closes.
 
 -}
 type alias Request =
@@ -364,8 +371,35 @@ type alias Request =
     , body : Bytes
     , url : Url
     , version : HttpVersion
-    , upgrade : Maybe String
+    , upgrade : Maybe Upgrade
     }
+
+
+{-| The protocol a request asks to switch to, from its `upgrade` field.
+
+`WebSocketUpgrade` is a WebSocket opening request (`websocket`), to be taken over with
+[`upgradeRequest`](#upgradeRequest). `UnknownUpgrade` holds any other protocol, lower-cased, as
+it was received, for example `UnknownUpgrade "h2c"`. The server switches to no other protocol
+itself, so the program answers such a request with a normal response, which refuses the upgrade.
+
+The protocol name is compared after lower-casing, so `Upgrade: WebSocket` is a
+`WebSocketUpgrade` too.
+
+-}
+type Upgrade
+    = WebSocketUpgrade
+    | UnknownUpgrade String
+
+
+{-| The `Upgrade` for a protocol token, as the kernel hands it over: lower-cased.
+-}
+toUpgrade : String -> Upgrade
+toUpgrade token =
+    if token == "websocket" then
+        WebSocketUpgrade
+
+    else
+        UnknownUpgrade token
 
 
 {-| The HTTP version a request was made with. `Http2` occurs only on a server started with `http2`.
@@ -374,87 +408,6 @@ type HttpVersion
     = Http1_0
     | Http1_1
     | Http2
-
-
-{-| The HTTP method of a request. `UNKNOWN` holds the name of any method not listed, as it was
-received, for example `UNKNOWN "OPTIONS"`.
--}
-type Method
-    = GET
-    | HEAD
-    | POST
-    | PUT
-    | DELETE
-    | CONNECT
-    | TRACE
-    | PATCH
-    | UNKNOWN String
-
-
-{-| Returns the name of a method, for example `"GET"`. `UNKNOWN name` gives `name`.
--}
-methodToString : Method -> String
-methodToString method =
-    case method of
-        GET ->
-            "GET"
-
-        HEAD ->
-            "HEAD"
-
-        POST ->
-            "POST"
-
-        PUT ->
-            "PUT"
-
-        DELETE ->
-            "DELETE"
-
-        CONNECT ->
-            "CONNECT"
-
-        TRACE ->
-            "TRACE"
-
-        PATCH ->
-            "PATCH"
-
-        UNKNOWN value ->
-            value
-
-
-{-| Returns the `Method` named `s`, matched exactly, so that a name in another case is `UNKNOWN`.
--}
-toMethod : String -> Method
-toMethod s =
-    case s of
-        "GET" ->
-            GET
-
-        "HEAD" ->
-            HEAD
-
-        "POST" ->
-            POST
-
-        "PUT" ->
-            PUT
-
-        "DELETE" ->
-            DELETE
-
-        "CONNECT" ->
-            CONNECT
-
-        "TRACE" ->
-            TRACE
-
-        "PATCH" ->
-            PATCH
-
-        _ ->
-            UNKNOWN s
 
 
 {-| Builds a `Request` from the pieces the kernel hands over.
@@ -469,7 +422,7 @@ is `Nothing`.
 toRequest : String -> String -> List ( String, List String ) -> Bytes -> Int -> String -> Request
 toRequest method url headers body flags upgradeToken =
     { headers = List.foldl insertHeader Dict.empty headers
-    , method = toMethod method
+    , method = Http.Method.fromString method
     , body = body
     , url =
         Url.fromString url
@@ -501,7 +454,7 @@ toRequest method url headers body flags upgradeToken =
             Nothing
 
         else
-            Just upgradeToken
+            Just (toUpgrade upgradeToken)
     }
 
 
@@ -537,18 +490,19 @@ bodyAsJson decoder request =
 
 
 {-| Returns a one-line description of a request for logs: its method and URL, for example
-`"GET http://localhost:8080/"`. An `UNKNOWN` method is written as `UNKNOWN(name)`.
+`"GET http://localhost:8080/"`. An `UNKNOWN` method is written as `UNKNOWN(name)`, so that it
+cannot be mistaken for one of the methods that have a constructor.
 -}
 requestToString : Request -> String
 requestToString request =
     let
         method =
             case request.method of
-                UNKNOWN m ->
+                Http.Method.UNKNOWN m ->
                     "UNKNOWN(" ++ m ++ ")"
 
                 known ->
-                    methodToString known
+                    Http.Method.toString known
     in
     method ++ " " ++ Url.toString request.url
 
@@ -580,13 +534,13 @@ onRequest (Server s) toMsg =
 
 
 {-| Takes over a WebSocket opening request (a [`Request`](#Request) whose `upgrade` is
-`Just "websocket"`, over HTTP/1.1 or HTTP/2) instead of answering it with its
+`Just WebSocketUpgrade`, over HTTP/1.1 or HTTP/2) instead of answering it with its
 [`Response`](#Response). The result is a [`WebSocket.Upgrade`](WebSocket#Upgrade), to be answered
 with [`WebSocket.accept`](WebSocket#accept) or [`WebSocket.reject`](WebSocket#reject). The response
 is used up: sending it later writes nothing.
 
     GotRequest request response ->
-        if request.upgrade == Just "websocket" then
+        if request.upgrade == Just Http.Server.WebSocketUpgrade then
             ( model
             , Http.Server.upgradeRequest request response
                 |> Task.andThen (WebSocket.accept WebSocket.defaultAcceptOptions)
@@ -611,26 +565,28 @@ an aborted WebSocket resets it. Such a WebSocket is one of the connection's stre
 The WebSocket does not belong to the server: [`close`](#close) leaves it open, except that over
 HTTP/2 it ends at the close deadline with the connection it shares.
 
-Fails with `EINVAL` when the request does not ask for a WebSocket; the response is then untouched
-and can still be sent. Fails with `EINVAL` too when the request was already answered or taken
-over, and with `EINVAL` or `ECANCELED` when its connection has gone away.
+Fails with a [`WebSocket.Error`](WebSocket#Error): with `SocketError` of kind
+[`Socket.InvalidInput`](Socket#ErrorKind) when the request does not ask for a WebSocket, in which
+case the response is untouched and can still be sent; of kind `Socket.InvalidInput` too when the
+request was already answered or taken over; and of kind `Socket.InvalidInput` or
+[`Socket.Cancelled`](Socket#ErrorKind) when its connection has gone away.
 
 The program keeps running until the `Upgrade` has been accepted or rejected with
 `WebSocket.accept` or `WebSocket.reject`, or its connection has gone away.
 
 -}
-upgradeRequest : Request -> Response -> Task Socket.Error WebSocket.Upgrade
+upgradeRequest : Request -> Response -> Task WebSocket.Error WebSocket.Upgrade
 upgradeRequest request (Internal.Response r) =
-    if request.upgrade /= Just "websocket" then
+    if request.upgrade /= Just WebSocketUpgrade then
         Task.fail
-            (Socket.Internal.toError
-                ( "EINVAL", "upgradeRequest EINVAL: the request does not ask for a WebSocket" )
+            (WebSocket.SocketError
+                (Socket.Internal.error "EINVAL" "upgradeRequest EINVAL: the request does not ask for a WebSocket")
             )
 
     else
         kTakeUpgrade r.key
             |> Task.map (WebSocket.Internal.toUpgrade kAcceptFor)
-            |> Task.mapError Socket.Internal.toError
+            |> Task.mapError (Socket.Internal.toError >> WebSocket.SocketError)
 
 
 {-| Returns the response a request starts with, answering the request whose response key is
@@ -846,78 +802,115 @@ setBodyAsHtml node (Internal.Response r) =
 
 {-| A failure to start a server, from [`listen`](#listen) or [`listenOnHost`](#listenOnHost).
 
-Each error has a code and a human readable message. The code is, for example, an errno name such
-as `"EADDRINUSE"`, a resolver code such as `"ENOTFOUND"`, or an `"ERR_SSL_"` code for a
-certificate chain or key that cannot be used. The `errorIs…` functions below check for the common
-cases.
+[`errorKind`](#errorKind) says what kind of failure it is, and [`errorToString`](#errorToString)
+describes it for people to read.
 
-This is a separate type from `Socket.Error`, which [`upgradeRequest`](#upgradeRequest) fails with.
+This is a separate type from `Socket.Error`, and from the [`WebSocket.Error`](WebSocket#Error)
+that [`upgradeRequest`](#upgradeRequest) fails with, so that a server program matches only on what
+starting a server can produce.
 
 -}
 type Error
     = Error { code : String, message : String }
 
 
-{-| Returns the error code, for example `"EADDRINUSE"`.
+{-| What kind of failure an [`Error`](#Error) is.
+
+  - `AddressInUse` (`EADDRINUSE`): the port is already in use, for example by another server.
+  - `AddressNotAvailable` (`EADDRNOTAVAIL`, `EAFNOSUPPORT`): the address does not belong to this
+    machine, or the system does not support its family.
+  - `HostNotFound` (`ENOTFOUND`, `EAI_FAIL`): the host name given to
+    [`listenOnHost`](#listenOnHost) has no address.
+  - `HostLookupTryAgain` (`EAI_AGAIN`): the resolver could not answer for now; trying again later
+    may succeed.
+  - `PermissionDenied` (`EACCES`, `EPERM`): the operating system refused to listen, for example
+    on a privileged port.
+  - `InvalidPort` (`ERR_SOCKET_BAD_PORT`): the port is outside 0 to 65535.
+  - `InvalidInput` (`EINVAL`): the options cannot be used together, as `http2` without `tls`.
+  - `NotSupported` (`ENOTSUP`): no server can be started here, as on the native backend under
+    Windows.
+  - `CertificateUnusable reason`: the TLS certificate chain or private key cannot be used, for
+    example because it is not PEM or the key does not belong to the certificate. `reason` is the
+    TLS library's reason, upper-cased with underscores, such as `"NO_CERTIFICATES"`. This is not
+    [`Socket.Tls.CertificateRejected`](Socket-Tls#Problem), which is a peer's certificate failing
+    verification.
+  - `OtherServerError code`: any other failure, with the code the system reported, such as an
+    errno name.
+
 -}
-errorCode : Error -> String
-errorCode (Error e) =
-    e.code
+type ErrorKind
+    = AddressInUse
+    | AddressNotAvailable
+    | HostNotFound
+    | HostLookupTryAgain
+    | PermissionDenied
+    | InvalidPort
+    | InvalidInput
+    | NotSupported
+    | CertificateUnusable String
+    | OtherServerError String
 
 
-{-| Returns a human readable description of the error: the code, `": "`, and the message.
+{-| Returns what kind of failure the error is.
+
+    case Http.Server.errorKind error of
+        Http.Server.AddressInUse ->
+            "the port is taken"
+
+        _ ->
+            Http.Server.errorToString error
+
+-}
+errorKind : Error -> ErrorKind
+errorKind (Error e) =
+    case e.code of
+        "EADDRINUSE" ->
+            AddressInUse
+
+        "EADDRNOTAVAIL" ->
+            AddressNotAvailable
+
+        "EAFNOSUPPORT" ->
+            AddressNotAvailable
+
+        "ENOTFOUND" ->
+            HostNotFound
+
+        "EAI_FAIL" ->
+            HostNotFound
+
+        "EAI_AGAIN" ->
+            HostLookupTryAgain
+
+        "EACCES" ->
+            PermissionDenied
+
+        "EPERM" ->
+            PermissionDenied
+
+        "ERR_SOCKET_BAD_PORT" ->
+            InvalidPort
+
+        "EINVAL" ->
+            InvalidInput
+
+        "ENOTSUP" ->
+            NotSupported
+
+        code ->
+            if String.startsWith "ERR_SSL_" code then
+                CertificateUnusable (String.dropLeft 8 code)
+
+            else
+                OtherServerError code
+
+
+{-| Returns a human readable description of the error: the code the system reported, `": "`, and
+the message, as in `"EADDRINUSE: listen EADDRINUSE: address already in use 127.0.0.1:8080"`.
 -}
 errorToString : Error -> String
 errorToString (Error e) =
     e.code ++ ": " ++ e.message
-
-
-{-| Returns whether the error's code is one of `codes`.
--}
-codeIn : List String -> Error -> Bool
-codeIn codes (Error e) =
-    List.member e.code codes
-
-
-{-| Returns `True` when the port is already in use (`EADDRINUSE`).
--}
-errorIsAddressInUse : Error -> Bool
-errorIsAddressInUse =
-    codeIn [ "EADDRINUSE" ]
-
-
-{-| Returns `True` when the address cannot be used here (`EADDRNOTAVAIL`, `EAFNOSUPPORT`): it does
-not belong to this machine, or the system does not support its family.
--}
-errorIsAddressNotAvailable : Error -> Bool
-errorIsAddressNotAvailable =
-    codeIn [ "EADDRNOTAVAIL", "EAFNOSUPPORT" ]
-
-
-{-| Returns `True` when the host name given to [`listenOnHost`](#listenOnHost) could not be
-resolved (`ENOTFOUND`, `EAI_AGAIN`, `EAI_FAIL`).
--}
-errorIsHostNotFound : Error -> Bool
-errorIsHostNotFound =
-    codeIn [ "ENOTFOUND", "EAI_AGAIN", "EAI_FAIL" ]
-
-
-{-| Returns `True` when the operating system refused to listen (`EACCES`, `EPERM`), for example on
-a privileged port.
--}
-errorIsPermissionDenied : Error -> Bool
-errorIsPermissionDenied =
-    codeIn [ "EACCES", "EPERM" ]
-
-
-{-| Returns `True` when the TLS certificate chain or private key cannot be used: the code starts
-with `"ERR_SSL_"`. This is not what `Socket.errorIsCertificateInvalid` checks, which is whether the
-other end's certificate failed verification.
--}
-errorIsCertificateInvalid : Error -> Bool
-errorIsCertificateInvalid (Error e) =
-    String.startsWith "ERR_SSL_" e.code
-
 
 
 -- EFFECT MANAGER

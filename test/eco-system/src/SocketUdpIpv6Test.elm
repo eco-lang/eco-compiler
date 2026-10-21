@@ -1,18 +1,19 @@
 module SocketUdpIpv6Test exposing (main)
 
 {-| UDP over IPv6 (plans/eco-system-sockets.md §4 S4, §D.4, R2): an exchange over `::1` prints
-`ipv6: ok`, or `ipv6: unavailable <code>` where the machine has no IPv6. A dual-stack socket bound
+`ipv6: ok`, or `ipv6: unavailable <error kind>` where the machine has no IPv6. A dual-stack socket bound
 to `any IPv6` sends to `127.0.0.1` (sent to `::ffff:127.0.0.1`, §D.4) and reaches an IPv4 socket,
 which sees the sender as `127.0.0.1`; its reply arrives from an IPv4-mapped address that
 `unmapIPv4` turns into `127.0.0.1`. An IPv6 destination on an IPv4 socket fails with
-`EAFNOSUPPORT`.
+kind `AddressNotAvailable` (`EAFNOSUPPORT`).
 -}
 
 -- CHECK: {{ipv6: (ok|unavailable \w+)}}
 -- CHECK: {{v4 from v6 socket: (ok from 127.0.0.1 reply mapped True unmapped 127.0.0.1|unavailable \w+)}}
--- CHECK: v6 destination on v4 socket: err EAFNOSUPPORT
+-- CHECK: v6 destination on v4 socket: err AddressNotAvailable
 -- EXIT: 0
 
+import ErrorNames
 import Socket
 import Socket.Address as Address exposing (Family(..))
 import Socket.Udp
@@ -24,7 +25,7 @@ import Task exposing (Task)
 
 unavailable : Task Socket.Error a -> Task String a
 unavailable =
-    Task.mapError (\e -> "unavailable " ++ Socket.errorCode e)
+    Task.mapError (\e -> "unavailable " ++ ErrorNames.socketError e)
 
 
 overLoopback : Task String String

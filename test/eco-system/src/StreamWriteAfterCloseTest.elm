@@ -2,13 +2,13 @@ module StreamWriteAfterCloseTest exposing (main)
 
 {-| Writing to a closed writable (plans/eco-system-library.md §3.5): `write`,
 `enqueue` and a second `closeWritable` all fail with
-`Cancelled "WritableStream is closed"` (for `enqueue` this deliberately differs
+`Closed` (for `enqueue` this deliberately differs
 from gren, which produced an unhandled rejection).
 -}
 
--- CHECK: write: err Cancelled: WritableStream is closed
--- CHECK: enqueue: err Cancelled: WritableStream is closed
--- CHECK: close again: err Cancelled: WritableStream is closed
+-- CHECK: write: err Closed
+-- CHECK: enqueue: err Closed
+-- CHECK: close again: err Closed
 -- CHECK: value before close: 5
 -- EXIT: 0
 

@@ -1,6 +1,6 @@
 effect module ChildProcess where { command = MyCmd } exposing
     ( RunOptions, defaultRunOptions, Shell(..), WorkingDirectory(..), EnvironmentVariables(..), RunDuration(..)
-    , run, SuccessfulRun, FailedRun(..)
+    , run, SuccessfulRun, FailedRun(..), StartError(..)
     , spawn, SpawnOptions, StreamIO, Connection(..), defaultSpawnOptions
     )
 
@@ -48,7 +48,7 @@ number `n` as `128 + n`, and a child that could not be started at all as a negat
 ## Running processes
 
 @docs RunOptions, defaultRunOptions, Shell, WorkingDirectory, EnvironmentVariables, RunDuration
-@docs run, SuccessfulRun, FailedRun
+@docs run, SuccessfulRun, FailedRun, StartError
 
 
 ## Spawning processes
@@ -174,8 +174,8 @@ type RunDuration
 did not succeed.
 
 `InitError` means that no child was started. `program` and `arguments` are those given to
-`run`, and `errorCode` names the error, usually by its errno name, such as `"ENOENT"`. Under a
-shell, the shell is what is started, so a program the shell cannot find is a `ProgramError`
+`run`, and `error` says why the child could not be started, as a [`StartError`](#StartError).
+Under a shell, the shell is what is started, so a program the shell cannot find is a `ProgramError`
 with the shell's exit code, not an `InitError`.
 
 `ProgramError` means that the child ran. `exitCode` is `-1` when the child died from a signal,
@@ -190,13 +190,80 @@ type FailedRun
     = InitError
         { program : String
         , arguments : List String
-        , errorCode : String
+        , error : StartError
         }
     | ProgramError
         { exitCode : Int
         , stdout : Bytes
         , stderr : Bytes
         }
+
+
+{-| Why a [`run`](#run) could not start its child, as reported by the operating system when it
+tried to start the program. The system error each case stands for is given in parentheses.
+
+`ProgramNotFound` means that no program exists at the given name or path, or that it could not
+be found on the search path (`ENOENT`).
+
+`PermissionDenied` means that the program exists but may not be run: it is not executable, or a
+directory on the way to it cannot be searched (`EACCES`).
+
+`NotExecutable` means that the file is not in a format the operating system can run (`ENOEXEC`).
+
+`ArgumentsTooLong` means that the arguments, together with the environment variables, are larger
+than the operating system accepts (`E2BIG`).
+
+`ProcessLimitReached` means that the system or the user is out of the resources a new process
+needs: too many processes, too little memory, or too many open files (`EAGAIN`, `ENOMEM`,
+`EMFILE`, `ENFILE`).
+
+`OtherStartError` holds the name of any other system error, as the operating system or backend
+reported it, for example `"ENOTDIR"`.
+
+Under a shell, the shell is what is started, so these describe the shell; a program the shell
+cannot start is a `ProgramError` with the shell's exit code instead.
+
+-}
+type StartError
+    = ProgramNotFound
+    | PermissionDenied
+    | NotExecutable
+    | ArgumentsTooLong
+    | ProcessLimitReached
+    | OtherStartError String
+
+
+{-| The `StartError` for the errno name a kernel reports when it could not start a child.
+-}
+toStartError : String -> StartError
+toStartError code =
+    case code of
+        "ENOENT" ->
+            ProgramNotFound
+
+        "EACCES" ->
+            PermissionDenied
+
+        "ENOEXEC" ->
+            NotExecutable
+
+        "E2BIG" ->
+            ArgumentsTooLong
+
+        "EAGAIN" ->
+            ProcessLimitReached
+
+        "ENOMEM" ->
+            ProcessLimitReached
+
+        "EMFILE" ->
+            ProcessLimitReached
+
+        "ENFILE" ->
+            ProcessLimitReached
+
+        _ ->
+            OtherStartError code
 
 
 {-| What a [`run`](#run) that succeeded hands over: everything the child wrote to its standard
@@ -266,7 +333,9 @@ type alias SpawnOptions msg =
 
 {-| The three streams of a child spawned with `External`. `stdin` writes to the child's
 standard input; `stdout` and `stderr` read what it writes to its standard output and standard
-error. A failure on one of them arrives as a `Stream.Error`, as [`Stream`](Stream) describes.
+error. A failure on one of them arrives as a `Stream.Error`, as [`Stream`](Stream) describes:
+when a pipe itself fails, the operation fails with `Stream.Failed`, and
+[`Stream.failureToString`](Stream#failureToString) describes the problem.
 -}
 type alias StreamIO =
     { stdin : Stream.Writable Bytes
@@ -419,7 +488,7 @@ then ignored.
 decodeFailedRun : String -> List String -> ( Int, String, ( Int, Bytes, Bytes ) ) -> FailedRun
 decodeFailedRun program arguments ( kind, errorCode, ( exitCode, stdout, stderr ) ) =
     if kind == 0 then
-        InitError { program = program, arguments = arguments, errorCode = errorCode }
+        InitError { program = program, arguments = arguments, error = toStartError errorCode }
 
     else
         ProgramError { exitCode = exitCode, stdout = stdout, stderr = stderr }

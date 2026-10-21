@@ -58,7 +58,7 @@ int makeCloexecPipe(int fds[2], bool) {
     return ENOTSUP;
 }
 
-FdChannel::FdChannel(int fd, FdChannelOptions) : st_(std::make_shared<State>()) { st_->fd = fd; }
+FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State>()), origin_(opts.origin) { st_->fd = fd; }
 FdChannel::~FdChannel() = default;
 
 void FdChannel::requestRead(uint64_t token, size_t) {
@@ -370,7 +370,7 @@ void channelThread(std::shared_ptr<State> sp) {
 
 } // namespace
 
-FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State>()) {
+FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State>()), origin_(opts.origin) {
     st_->fd = fd;
     st_->chanId = id();
     st_->readRemaining = opts.readLimit;

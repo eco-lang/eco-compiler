@@ -24,6 +24,7 @@ port the system picked for port 0. The idle keep-alive connections hold nothing
 -- CHECK: client: user close: closed
 -- EXIT: 0
 
+import Http.Method
 import Http.Server as Server exposing (HttpVersion(..))
 import HttpServerRawHelp as H
 import Task exposing (Task)
@@ -51,13 +52,13 @@ handler _ request response =
         reply =
             response |> Server.setBody (String.dropLeft 1 path)
     in
-    ( [ Server.methodToString request.method
+    ( [ Http.Method.toString request.method
             ++ " "
             ++ path
             ++ " version "
             ++ version request.version
             ++ " upgrade "
-            ++ Maybe.withDefault "Nothing" request.upgrade
+            ++ (if request.upgrade == Nothing then "Nothing" else "Just")
       ]
     , H.Now
         (if path == "/bye" then

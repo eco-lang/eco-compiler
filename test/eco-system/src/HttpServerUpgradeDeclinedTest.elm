@@ -2,13 +2,13 @@ module HttpServerUpgradeDeclinedTest exposing (main)
 
 {-| An upgrade request answered with an ordinary response (plans/eco-system-websockets.md §3.4
 "Upgrade and CONNECT", §4 WS2): the request reaches the program with `upgrade = Just
-"websocket"` (the first token of `Upgrade`, lower-cased, since `Connection` lists `upgrade`); the
+WebSocketUpgrade` (the first token of `Upgrade`, lower-cased, since `Connection` lists `upgrade`); the
 program answers 426, which the server sends with `Connection: close`, then closes the connection
 (bytes the client sent after the request are never parsed). A request whose `Connection` does not
 list `upgrade` is an ordinary request (`upgrade = Nothing`).
 -}
 
--- CHECK: server: GET /ws upgrade Just websocket
+-- CHECK: server: GET /ws upgrade Just WebSocketUpgrade
 -- CHECK: server: GET /plain upgrade Nothing
 -- CHECK-NOT: server: GET /hidden
 -- CHECK: client: declined: 426 close upgrade required
@@ -16,6 +16,7 @@ list `upgrade` is an ordinary request (`upgrade = Nothing`).
 -- CHECK: client: not an upgrade: 200 keep-alive plain
 -- EXIT: 0
 
+import Http.Method
 import Http.Server as Server
 import HttpServerRawHelp as H
 import Task exposing (Task)
@@ -23,11 +24,11 @@ import Task exposing (Task)
 
 handler : List String -> Server.Request -> Server.Response -> ( List String, H.Answer )
 handler _ request response =
-    ( [ Server.methodToString request.method
+    ( [ Http.Method.toString request.method
             ++ " "
             ++ request.url.path
             ++ " upgrade "
-            ++ (request.upgrade |> Maybe.map ((++) "Just ") |> Maybe.withDefault "Nothing")
+            ++ upgradeString request.upgrade
       ]
     , H.Now
         (case request.upgrade of
@@ -41,6 +42,21 @@ handler _ request response =
                 response |> Server.setBody "plain"
         )
     )
+
+
+{-| `Nothing`, `Just WebSocketUpgrade` or `Just (UnknownUpgrade <token>)`.
+-}
+upgradeString : Maybe Server.Upgrade -> String
+upgradeString upgrade =
+    case upgrade of
+        Nothing ->
+            "Nothing"
+
+        Just Server.WebSocketUpgrade ->
+            "Just WebSocketUpgrade"
+
+        Just (Server.UnknownUpgrade token) ->
+            "Just (UnknownUpgrade " ++ token ++ ")"
 
 
 crlf : String

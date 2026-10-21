@@ -181,9 +181,9 @@ void stdioIds(int64_t ids[3]) {
     bool valid = c.made && c.gen == g;
     for (int i = 0; valid && i < 3; ++i) valid = table.find(c.ids[i]) != nullptr;
     if (!valid) {
-        c.ids[0] = createFdSource(0, /*owns=*/false);
-        c.ids[1] = createFdSink(1, /*owns=*/false);
-        c.ids[2] = createFdSink(2, /*owns=*/false);
+        c.ids[0] = createFdSource(0, /*owns=*/false, "stdio");
+        c.ids[1] = createFdSink(1, /*owns=*/false, "stdio");
+        c.ids[2] = createFdSink(2, /*owns=*/false, "stdio");
         for (int i = 0; i < 3; ++i) pinStream(c.ids[i]);
         c.gen = g;
         c.made = true;

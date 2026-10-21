@@ -2,7 +2,7 @@
 import Elm.Kernel.Scheduler exposing (binding, succeed, fail, rawSpawn)
 import Elm.Kernel.Utils exposing (Tuple0, Tuple2, Tuple3)
 import Elm.Kernel.List exposing (fromArray, toArray)
-import Eco.Kernel.Stream exposing (createMappedSource, createMappedSink, createChannelSource, createChannelSink, createTextChannelSink, discardReadable, attachReader, detachReader, toBytes)
+import Eco.Kernel.Stream exposing (createMappedSource, createMappedSink, createChannelSource, createChannelSink, createTextChannelSink, discardReadable, attachReader, detachReader, toBytes, websocketFailure)
 import Eco.Kernel.Socket exposing (detach)
 import Eco.Kernel.Tls exposing (code, errorMessage, pemCertificates, systemCertificates)
 import Eco.Kernel.Liveness exposing (handle, hold)
@@ -1199,6 +1199,7 @@ function _WebSocket_codec(socket, cfg, onClosed)
 				bodyCancel(b);
 			}
 		};
+		channel.__encodeFailure = __Stream_websocketFailure;   // WebSocket.fromStreamFailure
 		b.pairId = __Stream_createChannelSource(channel);
 		msgQ.push({ op: b.text ? 3 : 4, data: String(b.pairId), size: 0 });
 		deliverReads();
@@ -2846,6 +2847,8 @@ var _WebSocket_open = F5(function(id, response, params, fromWire, toWire)
 			peerNoContext: params.c.c.a,
 			peerBits: bitsOf(params.c.c.b)
 		}, function(info) { _WebSocket_onClosed(wsId, info); });
+		W.codec.readChannel.__encodeFailure = __Stream_websocketFailure;   // WebSocket.fromStreamFailure
+		W.codec.writeChannel.__encodeFailure = __Stream_websocketFailure;
 		W.readableId = __Stream_createMappedSource(W.codec.readChannel, fromWire);
 		W.writableId = __Stream_createMappedSink(W.codec.writeChannel, toWire);
 		W.codec.start(h.leftover);
@@ -3030,6 +3033,7 @@ var _WebSocket_openOutgoing = F2(function(wsId, kind)
 			return;
 		}
 		var channel = W.codec.openOutgoing(kind === 1 ? 1 : 2);
+		channel.__encodeFailure = __Stream_websocketFailure;
 		var id = kind === 1 ? __Stream_createTextChannelSink(channel) : __Stream_createChannelSink(channel);
 		callback(__Scheduler_succeed(id));
 	});

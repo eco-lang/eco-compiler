@@ -4,17 +4,18 @@ module SocketTcpTimeoutTest exposing (main)
 
 {-| The connect timeout (plans/eco-system-sockets.md §3.3.3 "Connect"): a listener with backlog 1
 that never accepts has its queue filled by a few connections; a further connect with
-`timeout = Just 300` fails with `ETIMEDOUT` (`errorIsTimedOut`) after about 300 ms. A second such
+`timeout = Just 300` fails with kind `TimedOut` (`ETIMEDOUT`) after about 300 ms. A second such
 connect without a timeout is killed with `Process.kill` (the T7 kill handle aborts it), and the
 program then exits by itself once the listener is closed: nothing is left waiting.
 -}
 
--- CHECK: timed out: ETIMEDOUT True
+-- CHECK: timed out: TimedOut
 -- CHECK: prompt: True
 -- CHECK: killed connect: done
 -- CHECK-NOT: killed connect completed
 -- EXIT: 0
 
+import ErrorNames
 import Process
 import Socket
 import Socket.Address as Address exposing (Family(..))
@@ -94,7 +95,7 @@ main =
                                         |> Task.andThen (\_ -> H.socketErr (Socket.closeListener listener))
                                         |> Task.map
                                             (\_ ->
-                                                [ "timed out: " ++ Socket.errorCode err ++ " " ++ H.boolString (Socket.errorIsTimedOut err)
+                                                [ "timed out: " ++ ErrorNames.socketError err
                                                 , "prompt: " ++ H.boolString (elapsed >= 250 && elapsed < 2000)
                                                 , "killed connect: done"
                                                 ]

@@ -17,6 +17,7 @@ stdout; the program then exits with `System.exit`, unless the test asks it to en
 
 -}
 
+import ErrorNames
 import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
@@ -179,13 +180,14 @@ connect server =
         |> Task.mapError Socket.errorToString
 
 
-{-| `"connected"`, or the error code of a failed connect to `port_`.
+{-| `"connected"`, or the error kind of a failed connect to `port_` (as `ErrorNames.socketError`
+prints it, such as `ConnectionRefused`).
 -}
 connectCode : Int -> Task x String
 connectCode port_ =
     Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) port_)
         |> Task.andThen (\conn -> Socket.close conn |> Task.map (\_ -> "connected"))
-        |> Task.onError (\e -> Task.succeed (Socket.errorCode e))
+        |> Task.onError (\e -> Task.succeed (ErrorNames.socketError e))
 
 
 sendRaw : String -> Socket.Connection -> Task String ()

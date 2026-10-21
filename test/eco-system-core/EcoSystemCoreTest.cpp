@@ -1858,10 +1858,10 @@ void testMappedSource() {
     // A read error fails the parked read with its reason and shuts the channel.
     streamRead(id);
     answerRead(log, chan, 0, false, "", ECONNRESET, false, "read ECONNRESET");
-    CHECK(lastResumed() == "err:1:read ECONNRESET");
+    CHECK(lastResumed() == std::string("err:1:\x01stream\x1f" "ECONNRESET\x1f" "read ECONNRESET"));   // Stream.Failed
     CHECK(log->shutdowns == 1);
     streamRead(id);
-    CHECK(lastResumed() == "err:1:read ECONNRESET");
+    CHECK(lastResumed() == std::string("err:1:\x01stream\x1f" "ECONNRESET\x1f" "read ECONNRESET"));   // Stream.Failed
 
     // EOF on a second source: a parked read gets Closed; the pair is erased
     // and its channel destroyed.
@@ -2030,10 +2030,10 @@ void testMappedSink() {
         postChannelResult(std::move(r));
         channelDrain();
     }
-    CHECK(lastResumed() == "err:1:write EPIPE");
+    CHECK(lastResumed() == std::string("err:1:\x01stream\x1f" "EPIPE\x1f" "write EPIPE"));   // Stream.Failed
     CHECK(log->shutdowns == 1);
     streamWrite(id, "Tq");
-    CHECK(lastResumed() == "err:1:write EPIPE");
+    CHECK(lastResumed() == std::string("err:1:\x01stream\x1f" "EPIPE\x1f" "write EPIPE"));   // Stream.Failed
     CHECK(g_toWireCalls == 3);   // an errored writable does not map
 
     // ByteChannel's default requestWriteTagged: tag 0 → requestWrite, else ENOTSUP.

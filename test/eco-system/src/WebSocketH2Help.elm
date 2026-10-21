@@ -11,7 +11,7 @@ below) into a fresh temporary directory, creates the servers of the test with `l
 (https on 127.0.0.1, port 0, `http2 = True`, then the test's changes), subscribes to all of them,
 and runs the test's client task.
 
-Every server upgrades a request whose `upgrade` is `Just "websocket"` with
+Every server upgrades a request whose `upgrade` is `Just WebSocketUpgrade` with
 `Http.Server.upgradeRequest` and then, by path:
 
   - `/reject`: `WebSocket.reject 403` with a body;
@@ -26,6 +26,7 @@ then the client's lines are printed, the directory is removed and the program ex
 
 -}
 
+import ErrorNames
 import Bytes
 import Bytes.Encode
 import Http.Server as Server exposing (HttpVersion(..), Request, Server, ListenOptions, Response)
@@ -237,7 +238,7 @@ update config msg model =
                 path =
                     request.url.path
             in
-            if request.upgrade == Just "websocket" then
+            if request.upgrade == Just Server.WebSocketUpgrade then
                 ( { model
                     | running = model.running + 1
                     , lines =
@@ -359,7 +360,7 @@ wssConnect http2 port_ path =
             , protocols = [ "chat" ]
             , timeout = Just 10000
         }
-        |> Task.mapError (\e -> "connect " ++ Socket.errorToString e)
+        |> Task.mapError (\e -> "connect " ++ WebSocket.errorToString e)
 
 
 {-| Connect, send a text and a binary message, read their echoes, close (Normal), and wait for
@@ -476,7 +477,7 @@ node tools port_ mode args =
             (\err ->
                 case err of
                     P.InitError e ->
-                        "node: " ++ e.errorCode
+                        "node: " ++ ErrorNames.startError e.error
 
                     P.ProgramError e ->
                         "node exited "

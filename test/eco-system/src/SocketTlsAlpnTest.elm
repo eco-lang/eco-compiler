@@ -3,12 +3,13 @@ module SocketTlsAlpnTest exposing (main)
 {-| TLS application protocol negotiation (plans/eco-system-sockets.md §3.6, §4 S5): the server
 picks the first of its protocols that the client offers; when they share none the server sends a
 fatal `no_application_protocol` alert and the client fails with
-`ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL` (Node's code); a client offering nothing, or a server
+`TlsError (HandshakeFailed "TLSV1_ALERT_NO_APPLICATION_PROTOCOL")` (Node's code
+`ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL`); a client offering nothing, or a server
 supporting nothing, negotiates no protocol.
 -}
 
 -- CHECK: server preference: ok alpn http/1.1
--- CHECK: no overlap: err {{ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL}} certificate-invalid False
+-- CHECK: no overlap: err TlsError (HandshakeFailed {{TLSV1_ALERT_NO_APPLICATION_PROTOCOL}})
 -- CHECK: client offers none: ok alpn none
 -- CHECK: server supports none: ok alpn none
 -- EXIT: 0

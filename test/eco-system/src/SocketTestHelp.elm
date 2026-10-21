@@ -1,5 +1,5 @@
 module SocketTestHelp exposing
-    ( program, async, socketErr, streamErr, describe
+    ( program, async, socketErr, streamErr, tlsErr, webSocketErr, describe
     , bytesOf, bytesToString, readAll, writeAll, send
     , listenLocal, portOf, connectTo, endpointToString, testPort, boolString
     , acceptRead
@@ -19,15 +19,18 @@ import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
 import Dict
+import ErrorNames
 import Process
 import Socket
 import Socket.Address as Address exposing (Endpoint(..), Family(..))
 import Socket.Tcp
+import Socket.Tls
 import Stream
 import Stream.Transformation
 import System
 import Path
 import Task exposing (Task)
+import WebSocket
 
 
 {-| A simple program that runs `run env` and prints every line it returns, or `error: <reason>`
@@ -87,13 +90,28 @@ streamErr =
     Task.mapError Stream.errorToString
 
 
-{-| `"ok"`, or `"err <code>"` for a failed socket task.
+{-| As `socketErr`, for a `Socket.Tls` task.
+-}
+tlsErr : Task Socket.Tls.Error a -> Task String a
+tlsErr =
+    Task.mapError Socket.Tls.errorToString
+
+
+{-| As `socketErr`, for a `WebSocket` task.
+-}
+webSocketErr : Task WebSocket.Error a -> Task String a
+webSocketErr =
+    Task.mapError WebSocket.errorToString
+
+
+{-| `"ok"`, or `"err <kind>"` for a failed socket task, the kind as `ErrorNames.socketError`
+prints it.
 -}
 describe : Task Socket.Error a -> Task x String
 describe task =
     task
         |> Task.map (\_ -> "ok")
-        |> Task.onError (\e -> Task.succeed ("err " ++ Socket.errorCode e))
+        |> Task.onError (\e -> Task.succeed ("err " ++ ErrorNames.socketError e))
 
 
 boolString : Bool -> String

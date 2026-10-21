@@ -1,16 +1,17 @@
 module SocketCloseListenerTest exposing (main)
 
 {-| `Socket.closeListener` (plans/eco-system-sockets.md §3.3.4, §3.4): a parked `accept` fails with
-`ECANCELED` (`errorIsCancelled`); closing twice is fine; `accept` on a closed listener fails the
+kind `Cancelled` (`ECANCELED`); closing twice is fine; `accept` on a closed listener fails the
 same way; the port can be listened on again at once; the program then exits by itself.
 -}
 
--- CHECK: parked accept: ECANCELED cancelled True
+-- CHECK: parked accept: Cancelled
 -- CHECK: close twice: ok ok
--- CHECK: accept after close: ECANCELED
+-- CHECK: accept after close: Cancelled
 -- CHECK: listen again: ok
 -- EXIT: 0
 
+import ErrorNames
 import Process
 import Socket
 import Socket.Address as Address exposing (Family(..))
@@ -30,7 +31,7 @@ main =
                         H.async
                             (Socket.accept listener
                                 |> Task.map (\_ -> "accepted?!")
-                                |> Task.onError (\e -> Task.succeed (Socket.errorCode e ++ " cancelled " ++ H.boolString (Socket.errorIsCancelled e)))
+                                |> Task.onError (\e -> Task.succeed (ErrorNames.socketError e))
                             )
                             |> Task.andThen
                                 (\parked ->

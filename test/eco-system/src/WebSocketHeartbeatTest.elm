@@ -9,8 +9,8 @@ that does not read for a second while over 1 024 messages wait (reading paused) 
 out.
 -}
 
--- CHECK: silent peer: Cancelled: heartbeat ETIMEDOUT | Abnormal "" clean False | raw ping 8 | close 1001 ""
--- CHECK: ping: rtt ok True | after close err ECANCELED
+-- CHECK: silent peer: Failed: heartbeat ETIMEDOUT | Abnormal "" clean False | raw ping 8 | close 1001 ""
+-- CHECK: ping: rtt ok True | after close err SocketError Cancelled
 -- CHECK: trickle: Binary 12000 bytes | Normal "" clean True
 -- CHECK: backpressure: read 1100 | raw heartbeat close False | Normal "" clean True
 -- EXIT: 0

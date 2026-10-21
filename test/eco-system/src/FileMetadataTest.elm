@@ -12,20 +12,21 @@ whole-second precision.
 -- CHECK: perms-int: 6 7 0 4 1
 -- CHECK: access-exists: ok f.txt
 -- CHECK: access-read-write: ok f.txt
--- CHECK: access-missing: err ENOENT @missing
+-- CHECK: access-missing: err NoSuchFileOrDirectory @missing
 -- CHECK: chmod-600: ok f.txt
--- CHECK: access-exec-denied: err EACCES @f.txt
+-- CHECK: access-exec-denied: err PermissionDenied @f.txt
 -- CHECK: access-exec-denied-flag: True
 -- CHECK: chmod-750: ok f.txt
 -- CHECK: access-exec-ok: ok f.txt
--- CHECK: chmod-missing: err ENOENT @missing
+-- CHECK: chmod-missing: err NoSuchFileOrDirectory @missing
 -- CHECK: utimes: ok 1000000000000 1500000000000
 -- CHECK: utimes-nofollow: ok 1200000000000
 -- CHECK: chown-self: ok f.txt
 -- CHECK: lchown-self: ok f.txt
--- CHECK: metadata-missing: err ENOENT @missing
+-- CHECK: metadata-missing: err NoSuchFileOrDirectory @missing
 -- EXIT: 0
 
+import ErrorNames
 import FileSystem as File
 import FileTestHelp exposing (attempt, bytes, child, file)
 import Path
@@ -107,7 +108,7 @@ main =
                             (file (File.changeAccess { owner = [ File.Read, File.Write ], group = [], others = [] } f))
                             |> label "chmod-600"
                         , attempt name (file (File.checkAccess [ File.Execute ] f)) |> label "access-exec-denied"
-                        , FileTestHelp.rawError (File.errorIsPermissionDenied >> boolString) (File.checkAccess [ File.Execute ] f)
+                        , FileTestHelp.rawError (File.errorKind >> (==) File.PermissionDenied >> boolString) (File.checkAccess [ File.Execute ] f)
                             |> label "access-exec-denied-flag"
                         , attempt name
                             (file

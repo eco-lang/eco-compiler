@@ -10,6 +10,7 @@ The port is the first argument (default 8080). The server runs until the process
 -}
 
 import Bytes exposing (Bytes)
+import Http.Method
 import Http.Server as Server exposing (Request, Response, Server)
 import Stream
 import System
@@ -89,7 +90,7 @@ update msg model =
 
 echo : Request -> String
 echo request =
-    Server.methodToString request.method
+    Http.Method.toString request.method
         ++ " "
         ++ Url.toString request.url
         ++ "\n"

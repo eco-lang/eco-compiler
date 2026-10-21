@@ -6,8 +6,8 @@ making the error's constructor public.
 
 The package does not expose this module. `FileSystem` exposes `Error` only as an alias of the
 type defined here, so outside the package the constructor cannot be reached, and an error can be
-taken apart only through `FileSystem`'s accessors (`errorPath`, `errorCode`, `errorToString`
-and the `errorIs*` predicates).
+taken apart only through `FileSystem`'s accessors (`errorPath`, `errorKind` and
+`errorToString`).
 
 The kernel, `Eco.Kernel.FileSystem`, is the part of the runtime, not written in Elm, that
 carries out file system calls; it names an entity's type by an integer code. `FileSystem`

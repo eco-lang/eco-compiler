@@ -12,10 +12,12 @@ flight is still answered, and the connection then ends. The port is free afterwa
 -- CHECK: client: after goaway: not served
 -- CHECK: client: slow: 200 slow
 -- CHECK: client: session closed
--- CHECK: client: port after close: ECONNREFUSED
+-- CHECK: client: port after close: ConnectionRefused
 -- CHECK-NOT: server: GET /late
 -- EXIT: 0
 
+import ErrorNames
+import Http.Method
 import Http.Server as Server exposing (HttpVersion(..))
 import HttpServerH2Help as H
 import Socket
@@ -34,7 +36,7 @@ handler request response =
             else
                 "other"
     in
-    ( [ Server.methodToString request.method ++ " " ++ request.url.path ++ " " ++ v ]
+    ( [ Http.Method.toString request.method ++ " " ++ request.url.path ++ " " ++ v ]
     , if request.url.path == "/slow" then
         H.CloseThen 300 (response |> Server.setBody "slow")
 
@@ -47,7 +49,7 @@ connectCode : Int -> Task x String
 connectCode port_ =
     Socket.Tcp.connect (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) port_)
         |> Task.andThen (\conn -> Socket.close conn |> Task.map (\_ -> "connected"))
-        |> Task.onError (\e -> Task.succeed (Socket.errorCode e))
+        |> Task.onError (\e -> Task.succeed (ErrorNames.socketError e))
 
 
 client : H.Tools -> List Server.Server -> Task String (List String)

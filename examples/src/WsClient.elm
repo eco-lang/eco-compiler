@@ -115,7 +115,7 @@ run stdout url options =
                                     Nothing
                         }
                 in
-                WebSocket.connect connectOptions |> Task.mapError Socket.errorToString
+                WebSocket.connect connectOptions |> Task.mapError WebSocket.errorToString
             )
         |> Task.andThen
             (\ws ->
@@ -175,7 +175,7 @@ sendAll messages ws =
 receive : Stream.Writable Bytes -> Int -> WebSocket.WebSocket WebSocket.Whole -> Task String ()
 receive stdout remaining ws =
     if remaining == 0 then
-        WebSocket.close WebSocket.Normal "" ws |> Task.mapError Socket.errorToString
+        WebSocket.close WebSocket.Normal "" ws |> Task.mapError WebSocket.errorToString
 
     else
         Stream.read (WebSocket.readable ws)

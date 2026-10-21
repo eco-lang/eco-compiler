@@ -2,21 +2,22 @@ module FileWriteOptionsTest exposing (main)
 
 {-| `FileSystem.writeFileWith` and `writeFileStreamWith`
 (plans/eco-system-api-refactor.md D12): `createNew` creates a new file and
-fails with `errorIsFileExists` when something is already there, without
+fails with kind `FileExists` when something is already there, without
 touching it; `sync` writes like `writeFile`; the stream variant honours both,
 with `sync` applied when the stream is closed.
 -}
 
 -- CHECK: create-new: ok new
--- CHECK: create-new-again: err EEXIST @a.txt True
+-- CHECK: create-new-again: err FileExists @a.txt True
 -- CHECK: untouched: ok new
 -- CHECK: sync: ok synced
 -- CHECK: both: ok both
 -- CHECK: stream-create-new: ok streamed
--- CHECK: stream-create-new-again: err EEXIST @s.txt True
+-- CHECK: stream-create-new-again: err FileExists @s.txt True
 -- CHECK: stream-sync-append: ok streamed+more
 -- EXIT: 0
 
+import ErrorNames
 import FileSystem
 import FileTestHelp exposing (attempt, bytes, child, file, fromBytes, rawError, stream)
 import Path
@@ -43,11 +44,11 @@ streamWrite options mode text path =
 
 exists : FileSystem.Error -> String
 exists err =
-    FileSystem.errorCode err
+    ErrorNames.fileError err
         ++ " @"
         ++ Path.filenameWithExtension (FileSystem.errorPath err)
         ++ " "
-        ++ (if FileSystem.errorIsFileExists err then
+        ++ (if (FileSystem.errorKind err == FileSystem.FileExists) then
                 "True"
 
             else

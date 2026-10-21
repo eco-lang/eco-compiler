@@ -11,6 +11,7 @@
 
 #include "eco-system/Core/Core.hpp"
 
+#include <cerrno>
 #include <cstring>
 
 namespace Eco::System {
@@ -146,5 +147,62 @@ HPointer asyncFailure(ErrShape shape, HPointer& resume, uint64_t token,
 }
 
 } // namespace detail
+
+// --- Stream failure reasons -------------------------------------------------
+
+std::string failureReason(const std::string& origin, const std::string& code,
+                          const std::string& message) {
+    std::string r;
+    r.reserve(origin.size() + code.size() + message.size() + 3);
+    r.push_back('\x01');
+    r += origin;
+    r.push_back('\x1f');
+    r += code;
+    r.push_back('\x1f');
+    r += message;
+    return r;
+}
+
+std::string errnoFailureReason(const std::string& origin, int err) {
+    const char* m = std::strerror(err);   // main thread only (G1)
+    std::string code = errnoName(err);
+    return failureReason(origin, code, code + ": " + (m ? m : ""));
+}
+
+bool isMarkedReason(const std::string& reason) {
+    return !reason.empty() && (reason[0] == '\x01' || reason[0] == '\x02');
+}
+
+namespace {
+
+bool isTlsCode(const std::string& code) {
+    return code.rfind("ERR_SSL_", 0) == 0 || code.rfind("ERR_TLS_", 0) == 0 ||
+           code.rfind("CERT_", 0) == 0 || code.find("_CERT") != std::string::npos ||
+           code == "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+}
+
+} // namespace
+
+std::string socketFailureReason(int err, const std::string& reason) {
+    if (isMarkedReason(reason)) return reason;
+    if (reason.empty()) return errnoFailureReason("socket", err != 0 ? err : EIO);
+    if (reason == "socket closed") return failureReason("socket", "ECANCELED", reason);
+    if (reason == "upgraded to WebSocket") return failureReason("socket", "ECO_TAKEN_OVER", reason);
+    std::string code;
+    if (reason.rfind("read ", 0) == 0) code = reason.substr(5);
+    else if (reason.rfind("write ", 0) == 0) code = reason.substr(6);
+    else code = err != 0 ? errnoName(err) : "";
+    return failureReason(isTlsCode(code) ? "tls" : "socket", code, reason);
+}
+
+std::string websocketFailureReason(int err, const std::string& reason) {
+    if (isMarkedReason(reason)) return reason;
+    if (reason == "heartbeat ETIMEDOUT") return failureReason("websocket", "ECO_WS_HEARTBEAT", reason);
+    if (reason.rfind("ERR_WS_", 0) == 0) {
+        std::string code = reason.substr(0, reason.find(':'));
+        return failureReason("websocket", code, reason);
+    }
+    return socketFailureReason(err, reason);
+}
 
 } // namespace Eco::System

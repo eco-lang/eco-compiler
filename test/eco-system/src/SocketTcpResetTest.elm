@@ -5,8 +5,8 @@ so the peer's parked read fails with `read ECONNRESET`, and its next write fails
 reports `EPIPE` or `ECONNRESET`).
 -}
 
--- CHECK: peer read: Cancelled: {{read ECONNRESET}}
--- CHECK: peer write: Cancelled: {{write (EPIPE|ECONNRESET)}}
+-- CHECK: peer read: Failed: {{read ECONNRESET}}
+-- CHECK: peer write: Failed: {{write (EPIPE|ECONNRESET)}}
 -- EXIT: 0
 
 import Process

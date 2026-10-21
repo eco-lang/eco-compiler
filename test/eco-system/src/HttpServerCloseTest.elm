@@ -13,7 +13,7 @@ keep nothing alive.
 -- CHECK-NOT: server: GET /parked
 -- CHECK: client: idle: 200 keep-alive idle
 -- CHECK: client: closeServer: done
--- CHECK: client: connect after close: ECONNREFUSED
+-- CHECK: client: connect after close: ConnectionRefused
 -- CHECK: client: idle after close: closed
 -- CHECK: client: in flight: 200 close slow
 -- CHECK: client: in flight: closed
@@ -23,6 +23,8 @@ keep nothing alive.
 -- CHECK: client: close twice: done
 -- EXIT: 0
 
+import ErrorNames
+import Http.Method
 import Http.Server as Server
 import HttpServerRawHelp as H
 import Socket.Address as Address exposing (Family(..))
@@ -38,7 +40,7 @@ handler _ request response =
         reply =
             response |> Server.setBody (String.dropLeft 1 path)
     in
-    ( [ Server.methodToString request.method ++ " " ++ path ]
+    ( [ Http.Method.toString request.method ++ " " ++ path ]
     , if path == "/slow" then
         H.After 600 reply
 
@@ -73,7 +75,7 @@ client server =
                                 |> Task.andThen
                                     (\busy ->
                                         H.sendRaw (get "/slow") busy
-                                            |> Task.andThen (\_ -> Server.listen options |> Task.mapError Server.errorCode)
+                                            |> Task.andThen (\_ -> Server.listen options |> Task.mapError (Server.errorKind >> ErrorNames.serverKind))
                                             |> Task.andThen
                                                 (\unsubscribed ->
                                                     H.connect unsubscribed

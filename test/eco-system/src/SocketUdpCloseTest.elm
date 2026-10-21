@@ -1,17 +1,18 @@
 module SocketUdpCloseTest exposing (main)
 
 {-| `Socket.Udp.close` (plans/eco-system-sockets.md §3.4, Appendix B.2): a parked `receive` fails
-with `ECANCELED` (`errorIsCancelled`); closing twice is fine; `receive` and `send` on a closed
-socket fail with `ECANCELED`; the program then exits by itself (a closed socket no longer keeps it
+with kind `Cancelled` (`ECANCELED`); closing twice is fine; `receive` and `send` on a closed
+socket fail the same way; the program then exits by itself (a closed socket no longer keeps it
 running).
 -}
 
--- CHECK: parked receive: ECANCELED cancelled True
--- CHECK: receive after close: err ECANCELED
--- CHECK: send after close: err ECANCELED
+-- CHECK: parked receive: Cancelled
+-- CHECK: receive after close: err Cancelled
+-- CHECK: send after close: err Cancelled
 -- CHECK: closed twice: ok
 -- EXIT: 0
 
+import ErrorNames
 import Process
 import Socket
 import Socket.Udp
@@ -31,7 +32,7 @@ main =
                         H.async
                             (Socket.Udp.receive socket
                                 |> Task.map (\_ -> "received?!")
-                                |> Task.onError (\e -> Task.succeed (Socket.errorCode e ++ " cancelled " ++ H.boolString (Socket.errorIsCancelled e)))
+                                |> Task.onError (\e -> Task.succeed (ErrorNames.socketError e))
                             )
                             |> Task.andThen
                                 (\parked ->

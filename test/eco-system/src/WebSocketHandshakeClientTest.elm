@@ -6,25 +6,25 @@ wrong `Sec-WebSocket-Accept`, a protocol or an extension that was not offered (W
 extension, permessage-deflate when compression is off, or an invalid permessage-deflate answer),
 a 302 (no
 redirects), a response that is not HTTP and a server that closes without answering all fail
-`ERR_WS_HANDSHAKE` (`handshakeStatus` gives the status when there is one); a server that never
-answers fails `ETIMEDOUT` after the handshake timeout; the protocol the server chose among the
+with `HandshakeRefused status` when there is a status and `HandshakeFailed` otherwise; a server
+that never answers fails with a `SocketError` of kind `TimedOut` after the handshake timeout; the protocol the server chose among the
 offered ones is reported. The default request offers permessage-deflate without context takeover
 (WS7); a server's acceptance of it is reported by `compression`.
 -}
 
 -- CHECK: request: GET /test?x=1 HTTP/1.1 | host ok | upgrade websocket | connection Upgrade | version 13 | key 24 | origin http://example.com | extensions permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits
 -- CHECK: request without compression: extensions none
--- CHECK: bad accept: err ERR_WS_HANDSHAKE status Nothing failed True
--- CHECK: protocol not offered: err ERR_WS_HANDSHAKE status Nothing failed True
--- CHECK: extension not offered: err ERR_WS_HANDSHAKE status Nothing failed True
--- CHECK: unknown extension: err ERR_WS_HANDSHAKE status Nothing failed True
--- CHECK: invalid deflate answer: err ERR_WS_HANDSHAKE status Nothing failed True
+-- CHECK: bad accept: err HandshakeFailed
+-- CHECK: protocol not offered: err HandshakeFailed
+-- CHECK: extension not offered: err HandshakeFailed
+-- CHECK: unknown extension: err HandshakeFailed
+-- CHECK: invalid deflate answer: err HandshakeFailed
 -- CHECK: deflate accepted: ok protocol - compression True True 15 15
--- CHECK: redirect: err ERR_WS_HANDSHAKE status Just 302 failed True
--- CHECK: forbidden: err ERR_WS_HANDSHAKE status Just 403 failed True
--- CHECK: not http: err ERR_WS_HANDSHAKE status Nothing failed True
--- CHECK: closed: err ERR_WS_HANDSHAKE status Nothing failed True
--- CHECK: silent: err ETIMEDOUT status Nothing failed False
+-- CHECK: redirect: err HandshakeRefused 302
+-- CHECK: forbidden: err HandshakeRefused 403
+-- CHECK: not http: err HandshakeFailed
+-- CHECK: closed: err HandshakeFailed
+-- CHECK: silent: err SocketError TimedOut
 -- CHECK: chosen: ok protocol b
 -- EXIT: 0
 

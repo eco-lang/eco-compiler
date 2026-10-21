@@ -60,8 +60,8 @@ namespace Eco::System {
 
 namespace {
 
-constexpr const char* kWritableClosed = "WritableStream is closed";
-constexpr const char* kTerminated = "TransformStream has been terminated";
+constexpr const char* kWritableClosed = "\x02WritableStream is closed";   // Stream.Closed
+constexpr const char* kTerminated = "\x02TransformStream has been terminated";   // Stream.Closed
 constexpr size_t kChannelReadChunk = 64 * 1024;
 
 // Uncounted request ids (MappedSource read-ahead, reader kicks): far above
@@ -74,6 +74,14 @@ uint64_t g_nextUncountedToken = uint64_t{1} << 61;
 std::unordered_map<uint64_t, int64_t>& channelPairs() {
     static auto* m = new std::unordered_map<uint64_t, int64_t>();   // leaky (§3.4)
     return *m;
+}
+
+// The failure reason of a failed channel result (Core.hpp, failureReason).
+std::string channelFailure(const StreamPair* p, const ChannelResult& r) {
+    if (p && p->channel) return p->channel->encodeFailure(r.err, r.reason);
+    if (isMarkedReason(r.reason)) return r.reason;
+    return r.reason.empty() ? errnoFailureReason("stream", r.err != 0 ? r.err : EIO)
+                            : failureReason("stream", "", r.reason);
 }
 
 std::string describeErrno(int err) {
@@ -404,6 +412,7 @@ void transformCodec(int64_t id, const PendingWrite& pw) {
     std::string err = codecTransform(codec, bytes, units, outs);
     bool asString = codecMakesString(codec);
     if (!err.empty()) {
+        err = failureReason("codec", "", err);   // Stream.Failed
         std::vector<TokenRef> toFail;
         errorPair(p, err, toFail);
         finishWrite(pw, false, err);
@@ -496,6 +505,7 @@ void pumpCore(int64_t id) {
                 std::string err = codecFlush(*p->codec, outs);
                 bool asString = codecMakesString(*p->codec);
                 if (!err.empty()) {
+                    err = failureReason("codec", "", err);   // Stream.Failed
                     std::vector<TokenRef> toFail;
                     errorPair(p, err, toFail);   // fails the close too
                     failAll(toFail, err);
@@ -650,7 +660,7 @@ void channelDispatch(ChannelResult& r) {
                 if (r.err) {
                     if (p->r == RState::Open) {
                         p->r = RState::Errored;
-                        p->rReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+                        p->rReason = channelFailure(p, r);
                     }
                     p->channel->shutdown();
                 } else if (r.eof) {
@@ -679,7 +689,7 @@ void channelDispatch(ChannelResult& r) {
             if (r.err) {
                 if (p->r == RState::Open) {
                     p->r = RState::Errored;
-                    p->rReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+                    p->rReason = channelFailure(p, r);
                 }
                 p->channel->shutdown();
             } else if (r.eof) {
@@ -695,7 +705,7 @@ void channelDispatch(ChannelResult& r) {
         if (r.err) {
             if (p->r == RState::Open) {
                 p->r = RState::Errored;
-                p->rReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+                p->rReason = channelFailure(p, r);
             }
             int kind = p->r == RState::Closed ? kSErrClosed : kSErrCancelled;
             std::string reason = p->r == RState::Errored ? p->rReason : std::string();
@@ -733,7 +743,7 @@ void channelDispatch(ChannelResult& r) {
         if (r.err) {
             if (p->w != WState::Errored) {
                 p->w = WState::Errored;
-                p->wReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+                p->wReason = channelFailure(p, r);
                 p->r = RState::Errored;
                 p->rReason = p->wReason;
                 p->channel->shutdown();
@@ -761,7 +771,7 @@ void channelDispatch(ChannelResult& r) {
             completeErr(r.token, false, kSErrCancelled, reason);
         } else if (r.err) {
             p->w = WState::Errored;
-            p->wReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+            p->wReason = channelFailure(p, r);
             std::string reason = p->wReason;
             completeErr(r.token, false, kSErrCancelled, reason);
         } else {
@@ -873,7 +883,7 @@ void mappedReadResult(int64_t id, ChannelResult& r) {
     if (r.err) {
         if (p->r == RState::Open) {
             p->r = RState::Errored;
-            p->rReason = r.reason.empty() ? describeErrno(r.err) : r.reason;
+            p->rReason = channelFailure(p, r);
             p->rErrno = r.err;
         }
         if (p->channel) p->channel->shutdown();
@@ -1017,18 +1027,22 @@ int channelFd(int fd, bool owns) {
 
 } // namespace
 
-int64_t createFdSource(int fd, bool owns) {
+int64_t createFdSource(int fd, bool owns, const char* origin) {
     (void)streamTable();   // dispatch installed before the channel exists
     int cfd = channelFd(fd, owns);
     if (cfd < 0) return 0;
-    return createChannelSource(new FdChannel(cfd));
+    FdChannelOptions o;
+    o.origin = origin;
+    return createChannelSource(new FdChannel(cfd, o));
 }
 
-int64_t createFdSink(int fd, bool owns) {
+int64_t createFdSink(int fd, bool owns, const char* origin) {
     (void)streamTable();
     int cfd = channelFd(fd, owns);
     if (cfd < 0) return 0;
-    return createChannelSink(new FdChannel(cfd));
+    FdChannelOptions o;
+    o.origin = origin;
+    return createChannelSink(new FdChannel(cfd, o));
 }
 
 // ---------------------------------------------------------------------------

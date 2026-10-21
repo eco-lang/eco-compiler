@@ -47,8 +47,8 @@ void discardReadable(int64_t id);
 // `owns == false` the caller keeps `fd`: the channel works on a duplicate
 // (fds 0–2 are never closed or duplicated, §3.4). Returns 0 on failure
 // (only possible when duplicating fails).
-int64_t createFdSource(int fd, bool owns);
-int64_t createFdSink(int fd, bool owns);
+int64_t createFdSource(int fd, bool owns, const char* origin);   // origin: FdChannelOptions::origin
+int64_t createFdSink(int fd, bool owns, const char* origin);
 
 // --- Value-mapped channel pairs (plans/eco-system-websockets.md §3.3, W16) ---
 //

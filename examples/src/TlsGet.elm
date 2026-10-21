@@ -52,7 +52,7 @@ fetch host port_ =
                     address :: _ ->
                         Socket.Tls.connect (Socket.Tls.defaultClientOptions host)
                             (Socket.Tcp.defaultConnectOptions address port_)
-                            |> Task.mapError Socket.errorToString
+                            |> Task.mapError Socket.Tls.errorToString
 
                     [] ->
                         Task.fail ("no address for " ++ host)

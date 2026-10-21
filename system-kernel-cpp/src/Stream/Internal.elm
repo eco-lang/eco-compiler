@@ -1,4 +1,7 @@
-module Stream.Internal exposing (Readable(..), Transformation(..), Writable(..))
+module Stream.Internal exposing
+    ( Readable(..), Transformation(..), Writable(..)
+    , Failure(..), Reason(..), decodeReason, encodeFailure, failure
+    )
 
 {-| The stream handle types, defined here so that every module of this package can build
 and unwrap them, while users see them only through the aliases `Stream` exposes, which
@@ -40,3 +43,64 @@ type Writable value
 -}
 type Transformation input output
     = Transformation Int
+
+
+{-| The failure of the resource behind a stream, as `Stream.Failed` carries it.
+
+`origin` names the kind of resource that failed, and so which module can read the failure back
+as its own error: `"socket"` (`Socket.fromStreamFailure`), `"tls"` (`Socket.Tls`), `"file"`
+(`FileSystem`), `"websocket"` (`WebSocket`) and `"http"` (`Http.Stream`); `"pipe"`, `"stdio"`
+and `"codec"` have no module of their own. `code` is the resource's code for the failure, such as
+an errno name (`"ECONNRESET"`), and `message` is the text `Stream.failureToString` gives.
+
+-}
+type Failure
+    = Failure { origin : String, code : String, message : String }
+
+
+{-| Makes a failure from its origin, code and message.
+-}
+failure : String -> String -> String -> Failure
+failure origin code message =
+    Failure { origin = origin, code = code, message = message }
+
+
+{-| What a cancellation reason from a kernel means. The kernels mark the reasons they make
+themselves, so that a program's own reason, which they pass on as it is, is never mistaken for
+one of theirs.
+-}
+type Reason
+    = FailureReason Failure
+    | EndedReason
+    | ProgramReason String
+
+
+{-| Reads a reason as the kernels write it. A reason starting with U+0001 is a resource failure,
+`origin`, `code` and `message` separated by U+001F; one starting with U+0002 means the stream
+had ended (it is `Stream.Closed` for a write or a close); anything else is a reason a program
+gave.
+-}
+decodeReason : String -> Reason
+decodeReason reason =
+    if String.startsWith "\u{0001}" reason then
+        case String.split "\u{001F}" (String.dropLeft 1 reason) of
+            origin :: code :: rest ->
+                FailureReason (failure origin code (String.join "\u{001F}" rest))
+
+            _ ->
+                FailureReason (failure "" "" (String.dropLeft 1 reason))
+
+    else if String.startsWith "\u{0002}" reason then
+        EndedReason
+
+    else
+        ProgramReason reason
+
+
+{-| Writes a failure as a kernel reason, the inverse of `decodeReason` for a failure. Elm code
+that fails a stream on behalf of a resource uses it.
+-}
+encodeFailure : Failure -> String
+encodeFailure (Failure f) =
+    "\u{0001}" ++ f.origin ++ "\u{001F}" ++ f.code ++ "\u{001F}" ++ f.message
+

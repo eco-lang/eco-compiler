@@ -28,8 +28,8 @@ so two `write`s overwrite each other rather than appending. To read or write a f
 end in pieces, use [FileSystem.readFileStream](FileSystem#readFileStream) and
 [FileSystem.writeFileStream](FileSystem#writeFileStream).
 
-A handle stays open until [close](#close). An operation on it started after that fails with the
-code `"EBADF"`, unless its file descriptor, the operating system's number for an open file, has
+A handle stays open until [close](#close). An operation on it started after that fails with
+[HandleClosed](FileSystem#ErrorKind), unless its file descriptor, the operating system's number for an open file, has
 since been reused for a file opened by this module or by
 [FileSystem.writeFileWith](FileSystem#writeFileWith) with an option on, and that file is still
 open. The closed handle then acts on that file.
@@ -39,8 +39,8 @@ A task that fails, fails with a [FileSystem.Error](FileSystem#Error). When openi
 handle it is [Path.empty](Path#empty). The path to open reaches the operating system as
 [Path.toPosixString](Path#toPosixString) prints it.
 
-On the native backend under Windows, opening a file fails with the code `"ENOTSUP"`, so no handle
-can be obtained there.
+On the native backend under Windows, opening a file fails with
+[NotSupported](FileSystem#ErrorKind), so no handle can be obtained there.
 
 @docs Handle, ReadableHandle, WriteableHandle, ReadWriteableHandle, ReadAccess, WriteAccess, makeReadOnly, makeWriteOnly
 
@@ -177,8 +177,8 @@ openForRead path =
 path. It opens the file for reading as well as writing, whichever function opens it, so the
 program must be allowed to read the file too.
 
-`ExpectNotExisting` creates the file, and fails with `"EEXIST"` if anything already exists at the
-path. The operating system checks and creates in one step (`O_EXCL`), so of two programs creating
+`ExpectNotExisting` creates the file, and fails with [FileExists](FileSystem#ErrorKind) if
+anything already exists at the path. The operating system checks and creates in one step (`O_EXCL`), so of two programs creating
 the same file at most one succeeds.
 
 A file that opening creates gets the mode `666`, less the bits the process's umask removes.
@@ -233,8 +233,9 @@ openForReadAndWrite behaviour path =
 {-| Closes the file.
 
 The handle, and every copy of it, counts as closed from then on, even if closing fails. An
-operation on it started afterwards, a second `close` included, fails with `"EBADF"`, except after
-the reuse of its file descriptor that the module documentation describes.
+operation on it started afterwards, a second `close` included, fails with
+[HandleClosed](FileSystem#ErrorKind), except after the reuse of its file descriptor that the
+module documentation describes.
 
 -}
 close : Handle a b -> Task FileSystem.Error ()
@@ -370,7 +371,7 @@ writeFromOffset handle offset bytes =
 {-| Sets the size of the file to `length` bytes. A longer file loses the bytes past `length`, and a
 shorter one is extended with zero bytes.
 
-A negative `length` fails with `"EINVAL"` on the native backend, and empties the file on the JS
+A negative `length` fails with [InvalidInput](FileSystem#ErrorKind) on the native backend, and empties the file on the JS
 backend.
 
 -}

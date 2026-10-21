@@ -15,14 +15,15 @@ message.
 -- CHECK: truncate-shrink: ok [98,121]
 -- CHECK: truncate-grow: ok [98,121,0,0,0]
 -- CHECK: empty-file: ok 0
--- CHECK: read-missing: err ENOENT @nope.txt
+-- CHECK: read-missing: err NoSuchFileOrDirectory @nope.txt
 -- CHECK: read-missing-is-enoent: True True ENOENT: no such file or directory, open
--- CHECK: read-dir: err EISDIR @sub
--- CHECK: write-into-missing-dir: err ENOENT @x.txt
--- CHECK: truncate-missing: err ENOENT @nope.txt
+-- CHECK: read-dir: err DirectoryFound @sub
+-- CHECK: write-into-missing-dir: err NoSuchFileOrDirectory @x.txt
+-- CHECK: truncate-missing: err NoSuchFileOrDirectory @nope.txt
 -- CHECK: utf8: ok héllo wörld ✓
 -- EXIT: 0
 
+import ErrorNames
 import Bytes
 import FileSystem as File
 import FileTestHelp exposing (attempt, byteList, bytes, child, file, fromBytes, rawError)
@@ -69,7 +70,7 @@ main =
                             |> Task.map ((++) "read-missing: ")
                         , rawError
                             (\e ->
-                                (if File.errorIsNoSuchFileOrDirectory e then
+                                (if (File.errorKind e == File.NoSuchFileOrDirectory) then
                                     "True"
 
                                  else

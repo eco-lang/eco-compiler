@@ -15,6 +15,7 @@ value is evaluated) and are not reachable from `main`.
 -- CHECK-NOT: Debug.todo
 -- EXIT: 0
 
+import Http.Method
 import Bytes exposing (Bytes)
 import ChildProcess
 import FileSystem
@@ -69,9 +70,9 @@ refTerminal title =
     Terminal.setTitle title
 
 
-refHttpServer : Http.Server.Method -> String
+refHttpServer : Http.Method.Method -> String
 refHttpServer method =
-    Http.Server.methodToString method
+    Http.Method.toString method
 
 
 refHttpResponse : Http.Server.Response -> Http.Server.Response
