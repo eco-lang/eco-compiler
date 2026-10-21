@@ -175,7 +175,11 @@ function _Socket_connect(callback, connectArgs, target, timeoutMs, isUnix, endpo
 
 	function onError(e)
 	{
-		fail(_Socket_codeOf(e));
+		var code = _Socket_codeOf(e);
+		// A path that is a file but not a socket: ENOTSOCK on macOS, reported as Linux (and
+		// the native backend) reports it.
+		if (isUnix && code === 'ENOTSOCK') code = 'ECONNREFUSED';
+		fail(code);
 	}
 
 	function onConnect()

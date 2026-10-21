@@ -11,6 +11,7 @@ resource rather than a cancellation; `FileSystem.fromStreamFailure` reads it bac
 -- CHECK: read back as FileSystem: Just NoSpace
 -- CHECK: read back as Socket: Nothing
 -- EXIT: 0
+-- LINUX-ONLY: needs /dev/full, which macOS and Windows do not have
 
 import Bytes.Encode
 import ErrorNames

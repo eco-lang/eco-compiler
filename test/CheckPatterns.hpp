@@ -403,6 +403,10 @@ inline std::string verifyPatterns(const std::string& output,
 //   -- STDIN: <text> text fed to the program's stdin through a pipe. One space
 //                    after the colon is a separator; `\n`, `\t` and `\\` are
 //                    unescaped; repeated lines are concatenated in order.
+//   -- LINUX-ONLY: <reason>
+//                    the test needs Linux (e.g. /dev/full); every harness skips
+//                    it, printing the reason, on any other host. The JS runner
+//                    reads it too (test/scripts/run-js-e2e.js).
 // ----------------------------------------------------------------------------
 
 namespace detail {
@@ -469,6 +473,25 @@ inline std::optional<std::string> extractStdinDirective(const std::string& conte
         *result += out;
     });
     return result;
+}
+
+/// Why the test cannot run on this host: the `-- LINUX-ONLY:` reason (or
+/// "Linux only" when it gives none) on a host that is not Linux, nullopt
+/// otherwise.
+inline std::optional<std::string> hostSkipReason(const std::string& content) {
+#if defined(__linux__)
+    (void)content;
+    return std::nullopt;
+#else
+    std::optional<std::string> result;
+    detail::forEachDirectiveLine(content, "-- LINUX-ONLY:", [&](const std::string& rest) {
+        if (result) return;
+        std::string t = trimCheckPattern(rest);
+        bool blank = t.find_first_not_of(" \t") == std::string::npos;
+        result = "LINUX-ONLY: " + (blank ? std::string("no reason given") : t);
+    });
+    return result;
+#endif
 }
 
 } // namespace eco_test

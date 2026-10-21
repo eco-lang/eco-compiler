@@ -1252,8 +1252,14 @@ public:
         for (const auto& entry : testEntries_) {
             const std::string& name = entry->getName();
             if (filter.empty() || name.find(filter) != std::string::npos) {
-                pathsToRun.push_back(
-                    static_cast<const ElmE2ETestEntry*>(entry.get())->getPath());
+                const std::string& path =
+                    static_cast<const ElmE2ETestEntry*>(entry.get())->getPath();
+                // `-- LINUX-ONLY:` on another host: listed, neither run nor counted.
+                if (auto why = eco_test::hostSkipReason(readFile(path))) {
+                    std::cout << "  SKIP " << name << "  (" << *why << ")" << std::endl;
+                    continue;
+                }
+                pathsToRun.push_back(path);
                 namesToRun.push_back(name);
             }
         }

@@ -30,6 +30,8 @@
 //      CHECK-LABEL, CHECK-SAME, CHECK-NEXT, {{regex}}; any other CHECK-* is an error).
 //   4. `-- SKIP-JS: <reason>` (at the start of a line) skips the test on this target. Use
 //      it only for behaviour that genuinely exists only natively, always with a reason.
+//      `-- LINUX-ONLY: <reason>` skips it on a host that is not Linux, as the native
+//      harnesses do (test/CheckPatterns.hpp).
 // Each test's output is kept in <build>/test/js-e2e/out/<Name>.log. The summary line is
 // "Tests run: N, passed: P, failed: F, skipped: S"; the exit status is 1 if any test
 // failed (or failed to compile), else 0.
@@ -241,7 +243,12 @@ function extractStdin(content) {
 
 function extractSkip(content) {
     const lines = directiveLines(content, '-- SKIP-JS:');
-    return lines.length ? (lines[0].trim() || '(no reason given)') : null;
+    if (lines.length) return lines[0].trim() || '(no reason given)';
+    const linux = directiveLines(content, '-- LINUX-ONLY:');
+    if (linux.length && process.platform !== 'linux') {
+        return 'LINUX-ONLY: ' + (linux[0].trim() || '(no reason given)');
+    }
+    return null;
 }
 
 // --- Files ---------------------------------------------------------------------------------------

@@ -277,6 +277,9 @@ void Conn::startConnect() {
         return;
     }
     // Unix: EAGAIN = the listener's backlog is full (§D.3); reported as is.
+    // ENOTSOCK = the path is a file that is not a socket (macOS); reported as
+    // Linux reports it, ECONNREFUSED: nobody listens there.
+    if (isUnix_ && e == ENOTSOCK) e = ECONNREFUSED;
     connectFailed(e);
 #endif
 }

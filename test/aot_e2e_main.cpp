@@ -10,7 +10,8 @@
 //      `-- CHECK-NOT:` patterns in the test source.
 //
 // A test with a `-- SKIP-AOT: <reason>` line is listed as skipped and not run
-// (see skip_aot_reason).
+// (see skip_aot_reason), as is a `-- LINUX-ONLY: <reason>` test on another host
+// (eco_test::hostSkipReason).
 //
 // Outputs land under ${BUILD_DIR}/test/aot-e2e/<pkg>/ so they do not
 // collide with the JIT E2E suite's outputs (which live at
@@ -38,6 +39,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -134,7 +136,7 @@ struct TestCase {
     std::string elm_file;      // absolute path to source .elm
     std::string aot_shadow;    // absolute path to AOT shadow dir (cwd for compile)
     std::string display_name;  // "<pkg>/<stem>"
-    std::string skip_reason;   // non-empty: `-- SKIP-AOT:` directive, not run
+    std::string skip_reason;   // non-empty: "SKIP-AOT: <why>" / "LINUX-ONLY: <why>", not run
 };
 
 // Packages contributing E2E test sources. Matches the JIT runner's
@@ -212,6 +214,13 @@ std::vector<TestCase> discover_all() {
             tc.aot_shadow   = std::string(BUILD_DIR "/test/aot-e2e/") + pkg;
             tc.display_name = pkg + "/" + stem;
             tc.skip_reason  = skip_aot_reason(p);
+            if (!tc.skip_reason.empty()) {
+                tc.skip_reason = "SKIP-AOT: " + tc.skip_reason;
+            } else {
+                std::ifstream in(p);
+                std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                if (auto why = eco_test::hostSkipReason(src)) tc.skip_reason = *why;
+            }
             cases.push_back(std::move(tc));
         }
     }
@@ -539,7 +548,7 @@ int main(int argc, char** argv) {
     if (args.list) {
         for (auto& c : cases) {
             std::cout << c.display_name;
-            if (!c.skip_reason.empty()) std::cout << "  (SKIP-AOT: " << c.skip_reason << ")";
+            if (!c.skip_reason.empty()) std::cout << "  (" << c.skip_reason << ")";
             std::cout << "\n";
         }
         std::cout << "\n" << cases.size() << " tests\n";
@@ -550,7 +559,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Set `-- SKIP-AOT:` tests aside before the warm-up split so a skipped
+    // Set skipped tests aside before the warm-up split so a skipped
     // test is never picked as a package's warm-up compile.
     std::vector<TestCase> skipped;
     {
@@ -633,7 +642,7 @@ int main(int argc, char** argv) {
               << " tests (jobs=" << args.jobs << ", " << skipped.size()
               << " skipped)\n" << g_color.reset();
     for (const auto& tc : skipped) {
-        std::cout << g_color.dim() << "SKIP  " << tc.display_name << "  (SKIP-AOT: "
+        std::cout << g_color.dim() << "SKIP  " << tc.display_name << "  ("
                   << tc.skip_reason << ")" << g_color.reset() << "\n";
     }
 
@@ -663,7 +672,7 @@ int main(int argc, char** argv) {
               << "Tests passed: " << g_color.green() << passed << g_color.reset() << "\n"
               << "Tests failed: " << (failed ? g_color.red() : g_color.dim())
               << failed << g_color.reset() << "\n"
-              << "Tests skipped: " << skipped.size() << " (SKIP-AOT)\n"
+              << "Tests skipped: " << skipped.size() << " (SKIP-AOT, LINUX-ONLY)\n"
               << "\nResult: " << (failed == 0 ? g_color.green() : g_color.red())
               << (failed == 0 ? "PASSED" : "FAILED") << g_color.reset() << "\n";
 
