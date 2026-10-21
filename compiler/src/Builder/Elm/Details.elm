@@ -699,7 +699,7 @@ verifyPkg env time (Outline.PkgOutline pkgData) =
 
 verifyApp : Env -> File.Time -> Outline.AppOutline -> Task Exit.Details Details
 verifyApp env time ((Outline.AppOutline appData) as outline) =
-    if appData.elm == V.elmCompiler then
+    if V.isSupportedElm appData.elm then
         checkAppDeps outline
             |> Task.andThen
                 (\stated ->

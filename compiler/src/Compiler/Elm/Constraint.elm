@@ -264,12 +264,24 @@ intersect (Range r1) (Range r2) =
 -- ====== ELM CONSTRAINT ======
 
 
-{-| Returns whether `Compiler.Elm.Version.elmCompiler`, the version of Elm this
-compiler implements, satisfies the constraint.
+{-| Returns whether some version of Elm this compiler supports satisfies the
+constraint: some 0.19.x, as `Compiler.Elm.Version.isSupportedElm` defines it,
+not only `Compiler.Elm.Version.elmCompiler`. So a package that needs
+`0.19.2 <= v < 0.20.0` is accepted.
+
+The test is that the constraint's intersection with `0.19.0 <= v < 0.20.0` is
+not empty. An intersection whose two versions are equal is empty unless both of
+its bounds are inclusive.
 -}
 goodElm : Constraint -> Bool
 goodElm constraint =
-    satisfies constraint V.elmCompiler
+    case intersect constraint (untilNextMinor (V.Version 0 19 0)) of
+        Just (Range r) ->
+            V.compare r.lower r.upper == LT
+                || (r.lowerOp == LessOrEqual && r.upperOp == LessOrEqual)
+
+        Nothing ->
+            False
 
 
 {-| The constraint on the Elm version that starts at, and includes,

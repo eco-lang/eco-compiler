@@ -119,7 +119,6 @@ import Compiler.Elm.Constraint as C
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
-import Compiler.Elm.Version_Build as Version_Build
 import Compiler.Json.Decode as Decode
 import Compiler.Json.Encode as Encode
 import Compiler.Parse.Primitives exposing (Col, Row)
@@ -1595,35 +1594,21 @@ toDetailsReport details =
                 (Just "elm.json")
                 "Your elm.json says this package needs a version of Elm in this range:"
                 [ C.toChars constraint |> D.fromChars |> D.dullyellow |> D.indent 4
-                , D.fillSep
-                    [ D.fromChars "But"
-                    , D.fromChars "you"
-                    , D.fromChars "are"
-                    , D.fromChars "using"
-                    , D.fromChars "Elm"
-                    , D.red (D.fromChars Version_Build.userFacing)
-                    , D.fromChars "right"
-                    , D.fromChars "now."
-                    ]
+                , D.reflow
+                    "But eco builds Elm 0.19 projects (any 0.19.x version), and no 0.19.x version is in that range."
                 ]
 
         DetailsBadElmInAppOutline version ->
             Help.report "ELM VERSION MISMATCH"
                 (Just "elm.json")
-                "Your elm.json says this application needs a different version of Elm."
-                [ D.fillSep
-                    [ D.fromChars "It"
-                    , D.fromChars "requires"
-                    , D.green (D.fromVersion version)
-                        |> D.a (D.fromChars ",")
-                    , D.fromChars "but"
-                    , D.fromChars "you"
-                    , D.fromChars "are"
-                    , D.fromChars "using"
-                    , D.red (D.fromChars Version_Build.userFacing)
-                    , D.fromChars "right"
-                    , D.fromChars "now."
-                    ]
+                ("Your elm.json says this application needs Elm "
+                    ++ V.toChars version
+                    ++ ", but eco builds Elm 0.19 projects: any 0.19.x version."
+                )
+                [ D.toSimpleHint <|
+                    "Set \"elm-version\" in your elm.json to \""
+                        ++ V.toChars V.elmCompiler
+                        ++ "\" if the code is written for Elm 0.19."
                 ]
 
         DetailsHandEditedDependencies ->

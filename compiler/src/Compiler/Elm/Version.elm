@@ -2,7 +2,7 @@ module Compiler.Elm.Version exposing
     ( Version(..)
     , major
     , compare, toComparable, min, max
-    , one, maxVersion, compiler, elmCompiler
+    , one, maxVersion, compiler, elmCompiler, isSupportedElm
     , bumpPatch, bumpMinor, bumpMajor
     , toChars
     , encode, decoder
@@ -43,7 +43,7 @@ artifacts are kept in. Its docstring says when to change it.
 
 # Version Constants
 
-@docs one, maxVersion, compiler, elmCompiler
+@docs one, maxVersion, compiler, elmCompiler, isSupportedElm
 
 
 # Version Bumping
@@ -200,6 +200,16 @@ compiler =
 elmCompiler : Version
 elmCompiler =
     Version 0 19 1
+
+
+{-| Whether this compiler builds a project that names Elm `version`: true for
+every 0.19.x. The language is the same across the 0.19 patch releases, so an
+`elm.json` written for Elm 0.19.2 or 0.19.3 builds as well as one written for
+`elmCompiler`.
+-}
+isSupportedElm : Version -> Bool
+isSupportedElm (Version major_ minor _) =
+    major_ == 0 && minor == 19
 
 
 
