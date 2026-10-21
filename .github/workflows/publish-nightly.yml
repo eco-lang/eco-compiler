@@ -101,6 +101,19 @@ jobs:
           if [ -n "$stray" ]; then
             echo "::error::assets not built as $VERSION:"; echo "$stray"; exit 1
           fi
+          # GitHub rewrites ~ in asset names to '.', which would leave
+          # SHA256SUMS naming files that are not there. Rename first: the
+          # archives get '-' (a semver pre-release, so 0.2.0-b<N> reads as
+          # coming before 0.2.0); the .deb gets '.', since '-' in a .deb name
+          # marks a Debian revision. The Version inside the .deb keeps its ~,
+          # which is what apt orders by.
+          for f in dist/*~*; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              *.deb) mv "$f" "${f//\~/.}" ;;
+              *)     mv "$f" "${f//\~/-}" ;;
+            esac
+          done
           ( cd dist && sha256sum * | tee SHA256SUMS )
           echo "=== nightly asset set ==="
           ls -la dist/
