@@ -532,6 +532,21 @@ var _Socket_unixListen = F2(function(path, settings)
 			return;
 		}
 		var fs = require('fs');
+		// Node reports a missing parent directory as EACCES; bind(2), and so the native
+		// backend, as ENOENT (plans/eco-system-typed-api.md S2: AddressPathFailed). Check the
+		// parent first so that both report the path's own problem.
+		try
+		{
+			fs.statSync(require('path').dirname(path));
+		}
+		catch (e)
+		{
+			if (e.code === 'ENOENT' || e.code === 'ENOTDIR' || e.code === 'ELOOP' || e.code === 'ENAMETOOLONG')
+			{
+				callback(_Socket_ferr(e.code, _Socket_message('listen', e.code, path)));
+				return;
+			}
+		}
 		var st = null;
 		try { st = fs.lstatSync(path); } catch (e) { st = null; }
 		if (st)

@@ -81,7 +81,7 @@ update msg model =
             ( model
             , Cmd.batch
                 [ W.acceptOne l
-                    |> Task.andThen (\ws -> Socket.closeListener l |> Task.mapError W.wsErr |> Task.map (\_ -> ws))
+                    |> Task.andThen (\ws -> Socket.closeListener l |> Task.mapError Socket.errorToString |> Task.map (\_ -> ws))
                     |> Task.attempt Accepted
                 , Process.spawn "node"
                     [ "-e", client (H.portOf l) ]

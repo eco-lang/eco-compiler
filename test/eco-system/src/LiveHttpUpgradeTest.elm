@@ -26,8 +26,8 @@ import WebSocket
 type Msg
     = Started (Result Server.Error Server.Server)
     | GotRequest Server.Request Server.Response
-    | Upgraded (Result Socket.Error WebSocket.Upgrade)
-    | Accepted (Result Socket.Error (WebSocket.WebSocket WebSocket.Whole))
+    | Upgraded (Result WebSocket.Error WebSocket.Upgrade)
+    | Accepted (Result WebSocket.Error (WebSocket.WebSocket WebSocket.Whole))
     | Closed
     | Logged
     | Peer
@@ -86,7 +86,7 @@ main =
                         )
 
                     Upgraded (Err e) ->
-                        ( model, L.log model.env Logged ("upgrade error " ++ Socket.errorToString e) )
+                        ( model, L.log model.env Logged ("upgrade error " ++ WebSocket.errorToString e) )
 
                     Accepted (Ok ws) ->
                         ( model
@@ -97,7 +97,7 @@ main =
                         )
 
                     Accepted (Err e) ->
-                        ( model, L.log model.env Logged ("accept error " ++ Socket.errorToString e) )
+                        ( model, L.log model.env Logged ("accept error " ++ WebSocket.errorToString e) )
 
                     Closed ->
                         ( model, L.log model.env Logged "closed" )

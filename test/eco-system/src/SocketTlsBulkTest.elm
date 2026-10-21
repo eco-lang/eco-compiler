@@ -63,13 +63,13 @@ main : Platform.Program System.Environment () ()
 main =
     H.program
         (\_ ->
-            H.socketErr (T.listenTls (T.server []))
+            H.tlsErr (T.listenTls (T.server []))
                 |> Task.andThen
                     (\listener ->
                         H.async (serve listener)
                             |> Task.andThen
                                 (\served ->
-                                    H.socketErr (T.connectTls (T.trusted "localhost" []) listener)
+                                    H.tlsErr (T.connectTls (T.trusted "localhost" []) listener)
                                         |> Task.andThen
                                             (\client ->
                                                 H.streamErr (writeChunks 8 (Socket.writable client))

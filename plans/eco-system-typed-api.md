@@ -403,9 +403,37 @@ To verify during the implementation (the stubs state them, but they were inferre
 - that `listen` / `bind` on an address not belonging to this machine is `AddressNotAvailable`
   (EADDRNOTAVAIL).
 
+# Implementation (done Oct 21)
+
+All six steps are done; nothing is committed.
+
+- **Stubs and docs.** The real package's docs are synced from the stubs, and its generated
+  `docs.json` equals `ecosyskernel/docs.json`. One stub doc changed while implementing:
+  `Socket.Tls.errorToString` gives a `TlsError`'s code and a fixed description, because a `TlsError`
+  keeps only its `Problem`, not the TLS library's message.
+- **Kernels.** A reason the kernel makes itself is marked: `\x01origin\x1fcode\x1fmessage` for a
+  resource failure (Core.hpp `failureReason`; Stream.js `_Stream_failureReason`), `\x02...` for an
+  ended stream. `Stream.Internal.decodeReason` reads it, so the `(kind, reason)` SErr shape is
+  unchanged. `ByteChannel::encodeFailure` / `failureOrigin` (C++) and `__encodeFailure` /
+  `__origin` (JS) let each channel tag its failures: sockets (`socketFailureReason`), WebSockets
+  (`websocketFailureReason`), HTTP transfers (`"http"`, code `NETWORK`), file streams (`"file"`),
+  child pipes (`"pipe"`), stdio (`"stdio"`), codecs (`"codec"`).
+- **Socket.Unix path failures** carry an internal `onPath` flag (`Socket.Internal.onUnixPath`),
+  set by `connect` and `listen`. The JS kernel checks a listen path's parent directory first,
+  because Node reports a missing one as EACCES where bind(2) reports ENOENT.
+- **Tests.** Package unit tests `HttpMethodTest` and `StreamReasonTest`. New E2E tests
+  `HttpMethodOptionsTest`, `HttpServerUnknownUpgradeTest`, `SocketUnixPathErrorsTest` and
+  `FileStreamFailureTest`. `test/eco-system/src/ErrorNames.elm` prints every error type for
+  CHECK lines. About 115 tests, helpers and examples were migrated.
+- **Gates.** `elm-tests` passed 14,138 / 0, with eco/system 918 / 0. JIT E2E passed 2448 / 2448
+  (3 type-only failures fixed and re-run). JS E2E passed 208 / 0 (4 skipped). `docs.json` equality
+  holds.
+- **Known gap.** A working directory that does not exist reaches `ChildProcess.run` as ENOENT, so
+  it is `InitError ProgramNotFound`. The kernels cannot tell it from a missing program.
+
 # Steps
 
-1. **Normative stubs (done Oct 21, uncommitted, for review).** Update `/work/ecosyskernel` (the new `Http.Method`, and changed types,
+1. **Normative stubs.** Update `/work/ecosyskernel` (the new `Http.Method`, and changed types,
    signatures and docs), then make `system-kernel-cpp/src` match. Its stock-elm `docs.json` must
    equal `ecosyskernel/docs.json`.
 2. **Kernels (C++ and JS), for B7 only.** Stream failures carry `( origin, code, message )`, and
